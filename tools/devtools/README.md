@@ -37,8 +37,8 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
 Every run of the long dev jobs, since the dashboard was merged: `tools/dev/check.sh` and each of its
 parts, `tools/app/publish.sh` and each of its steps, every test run through
 `tools/app/remote-tests.sh` (check.sh's, publish's suite, agents' and reviewers' own) with each
-suite and test, and every cargo under `tools/dev/bin/cargo`'s lock (an agent worktree's: builds,
-clippy, tests, `cargo run`, measurement runs and backtests). Recorded by the Macs themselves
+suite and test, and every cargo build through `tools/dev/bin/cargo` (builds, clippy, tests,
+`cargo run`, measurement runs and backtests; in a worktree under its lock). Recorded by the Macs themselves
 (`tools/dev/devjob.zsh` and `devjob.py`, tools/dev/testing.md, "Dev jobs"); this app keeps and shows
 them.
 

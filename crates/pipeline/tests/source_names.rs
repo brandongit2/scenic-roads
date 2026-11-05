@@ -89,6 +89,9 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("tools/nas/fetch-planet.sh", "-", "MIRRORS=", "kept (§6.9, OSM planet): the NAS's own script, run outside the app"),
     ("scripts/fonts.sh", "-", "base=\"https://raw.githubusercontent.com/protomaps/basemaps-assets", "the app's own assets, the map's fonts (§6.9, also kept), not a data source"),
     ("tools/app/install.sh", "-", "https://docs.astral.sh/uv/", "a link to the tool's documentation in a message"),
+    // The dev tools app's pages (tools/devtools).
+    ("tools/devtools/public/task-board/index.html", "-", "https://fonts.googleapis.com", "the task board page's fonts (IBM Plex), not a data source"),
+    ("tools/devtools/public/task-board/index.html", "-", "https://fonts.gstatic.com", "the task board page's fonts, as above"),
 ];
 
 /// A declared source's markers: what names it, and the declaration it's from.

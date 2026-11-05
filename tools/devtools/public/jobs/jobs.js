@@ -152,6 +152,8 @@ function runFacts(r, now, macs) {
 let main = null; // {from, to, now, runs, samples, macs}
 let tl = null, tlRange = null;
 const cards = new Map(); // a segment's key → its card's content
+// (Each render's own dropped first: the runs' timeline's keys "r", "l", "m", a run's "s", "x".)
+const dropCards = (...ps) => { for (const k of [...cards.keys()]) if (ps.includes(k[0])) cards.delete(k); };
 let lastWidth = 0;
 function rangeFrom(now) {
   const span = RANGES.find(([k]) => k === st.range)[1];
@@ -192,7 +194,7 @@ function renderMain() {
   const { span } = tl.range(now, lo, hi);
   const width = Math.max(240, tl.axis.offsetWidth || $("runs").clientWidth - 140);
   const gap = (span / width) * 3;
-  segs.clear(); segRuns.clear();
+  segs.clear(); segRuns.clear(); dropCards("r", "l", "m");
   const shown = main.runs.filter((r) => !st.hide.has(classOf(r)));
   const byMac = new Map();
   for (const r of shown) (byMac.get(r.mac) || byMac.set(r.mac, []).get(r.mac)).push(r);
@@ -312,7 +314,7 @@ function renderRun() {
   for (const s of spans) (kids.get(s.parent) || kids.set(s.parent, []).get(s.parent)).push(s);
   const depth = new Map([[run.id, 0]]);
   const depthOf = (s) => { if (depth.has(s.id)) return depth.get(s.id); const d = (s.parent && s.parent !== run.id && runSpansById.get(s.parent) ? depthOf(runSpansById.get(s.parent)) : 0) + 1; depth.set(s.id, d); return d; };
-  const runSpansById = new Map(spans.map((s) => [s.id, s]));
+  const runSpansById = new Map(spans.map((s) => [s.id, s])), byId = runSpansById;
   spans.forEach(depthOf);
   $("run-title").textContent = run.name || run.id;
   const pad = Math.max(2, (t1 - t0) * 0.02);
@@ -324,7 +326,7 @@ function renderRun() {
   const { span } = runTl.range(now, lo, hi);
   const width = Math.max(240, runTl.axis.offsetWidth || $("run").clientWidth - 140);
   const gap = (span / width) * 2;
-  runSegs = new Map(); runSpans = new Map();
+  runSegs = new Map(); runSpans = new Map(); dropCards("s", "x");
   const lanes = h("div", "lanes"), tracks = [];
   const track = (cls) => { const t = runTl.track(); if (cls) t.el.classList.add(cls); tracks.push(t); return t; };
   // The run itself, then a lane a kind at each depth.
@@ -338,13 +340,15 @@ function renderRun() {
     const ks = [...new Set(at.map((s) => s.kind))].sort((a, b) => (KIND_ORDER.indexOf(a) + 1 || 99) - (KIND_ORDER.indexOf(b) + 1 || 99));
     for (const k of ks) {
       const mine = at.filter((s) => s.kind === k);
-      pack(mine, gap, (s) => s.t0, (s) => s.t1 ?? now).forEach((row, i) => {
+      // (cargo test's tests, marks at their ends, share one row: marks may touch.)
+      const marks = mine.filter((s) => s.attrs?.untimed), timed = mine.filter((s) => !s.attrs?.untimed);
+      [...(marks.length ? [marks] : []), ...pack(timed, gap, (s) => s.t0, (s) => s.t1 ?? now)].forEach((row, i) => {
         const t = track();
         for (const s of row) {
           const key = `s ${s.id}`, untimed = s.attrs?.untimed;
           const seg = t.add({ key, from: s.t0, until: s.t1 ?? now, colour: colourOf(k), kind: untimed ? "mark" : s.status === "running" && s.lost == null ? "running" : "past", failed: bad(s) });
           runSegs.set(key, seg); runSpans.set(key, s);
-          cards.set(key, () => [h("b", null, s.name), facts([["kind", s.kind], ["status", h("span", statusClass(s), statusText(s))], ["began", clock(s.t0)], ["took", untimed ? "– (cargo test says when a test ended, not when it began)" : s.t1 != null ? dur(s.t1 - s.t0) : `${dur(now - s.t0)} so far`],
+          cards.set(key, () => [h("b", null, s.name), facts([["kind", s.kind], s.parent !== run.id && byId.get(s.parent) ? ["in", byId.get(s.parent).name] : null, ["status", h("span", statusClass(s), statusText(s))], untimed ? ["ended", clock(s.t1)] : ["began", clock(s.t0)], ["took", untimed ? "– (cargo test says when a test ended, not when it began)" : s.t1 != null ? dur(s.t1 - s.t0) : `${dur(now - s.t0)} so far`],
             s.mac !== run.mac ? ["Mac", macName(s.mac, macs)] : null, ...Object.entries(s.attrs || {}).filter(([a]) => a !== "untimed").map(([a, v]) => [a, Array.isArray(v) ? `${v.length}: ${v.slice(0, 40).join(", ")}${v.length > 40 ? "…" : ""}` : v])])]);
         }
         lanes.append(h("div", { class: "ln", title: k }, i ? "" : `${"· ".repeat(d - 1)}${k} (${mine.length})`), t.el);
@@ -372,8 +376,10 @@ function renderRun() {
   const timed = spans.filter((s) => s.t0 != null && !s.attrs?.untimed);
   const first = (kids.get(run.id) || []).filter((s) => s.t0 != null).sort((a, b) => a.t0 - b.t0);
   const whole = Math.max(1e-3, t1 - t0);
+  // (A test named with its suite.)
+  const label = (s) => (s.kind === "test" && byId.get(s.parent) ? `${byId.get(s.parent).name} › ${s.name}` : s.name);
   const row = (s, d, scale) => h("tr", { class: "pick", onpointerenter: () => runTl.hover(`s ${s.id}`), onpointerleave: () => runTl.hover(null), onclick: () => { runTl.pin(`s ${s.id}`); } },
-    h("td", { class: "nm", title: s.name }, h("span", statusClass(s), bad(s) ? "✗ " : ""), s.name), h("td", "dim", s.kind), h("td", "num", dur(d)),
+    h("td", { class: "nm", title: label(s) }, h("span", statusClass(s), bad(s) ? "✗ " : ""), label(s)), h("td", "dim", s.kind), h("td", "num", s.attrs?.untimed ? "–" : dur(d)),
     scale ? h("td", "barcell", h("div", { class: "bar", style: { width: `${Math.max(0.5, (100 * d) / scale)}%`, background: colourOf(s.kind) } })) : null);
   const byKind = new Map();
   for (const s of timed) byKind.set(s.kind, (byKind.get(s.kind) || 0) + took(s, now));
