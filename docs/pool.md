@@ -613,10 +613,13 @@ timings' main thread carried onto the pool's thread (`timings::Main`); a change 
 target runs waits for the next, so no target changes threads under way, and the thread count
 changes no output (`slope_pack`'s test: a z6 tile's packs the same bytes on 2 threads and on 8). A
 thread the target starts of its own is in no pool, and rayon would send its parallel work to the
-process's global pool, as wide as the job's starting grant: such work goes on the target's pool
-(`control::on_target_pool`: the sampling's passes from the elevation pool's chunk threads,
-`dem::generic` under `terrain_base`'s `prefetch_counted`, in terrain-hi, terrain-lakes and
-terrain-deep). Its started line in its costs file says the threads (`memguard::Targets::threads`):
+process's global pool, as wide as the job's starting grant: such work goes on a pool as wide as
+the target's grant (`control::on_target_pool`: the sampling's passes from the elevation pool's chunk
+threads, `dem::generic` under `terrain_base`'s `prefetch_counted`, in terrain-hi, terrain-lakes and
+terrain-deep), never the target's own pool, whose threads may all be waiting for that thread (the
+target joins its chunk threads): on a 1-thread grant that work never ran, and every terrain-hi job
+stalled at 0 tiles (5 Nov). Test: `pipeline::grant_tests` (terrain-hi and terrain-deep targets on
+1 and 2 threads, within a bound, the same bytes) and slope-deep's re-granted batch. Its started line in its costs file says the threads (`memguard::Targets::threads`):
 what the job runs on now. A paced job (an input check, tree cover: `inputs::pace`, one long target)
 reads the same file every second. Other steps keep their starting grant (they say no threads, so
 nothing is re-decided for them).

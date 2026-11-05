@@ -934,10 +934,10 @@ static POOL: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>
 /// the thread running `f` (crate::timings::Main) so its phases are the job's main thread's as before.
 /// The grant is read once, here: a re-grant takes effect at the next target, never inside one, and
 /// a call inside another's `f` runs on that one's pool. A thread `f` starts of its own is in no
-/// pool: its parallel work goes on the target's through `on_target_pool`. Without the file (a hand
-/// run, or a step whose job isn't told), `f` on the job's own pool (RAYON_NUM_THREADS). The thread
-/// count changes no output: every step's work is the same whatever its threads (each Mac runs its
-/// own grant).
+/// pool: its parallel work goes on one as wide as the target's, never the target's own, through
+/// `on_target_pool`. Without the file (a hand run, or a step whose job isn't told), `f` on the
+/// job's own pool (RAYON_NUM_THREADS). The thread count changes no output: every step's work is the
+/// same whatever its threads (each Mac runs its own grant).
 pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     use std::sync::atomic::Ordering;
     let n = match granted() {
@@ -970,23 +970,49 @@ pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     r
 }
 
-/// Parallel work `f` on the pool of the target under way (`on_grant`) when called on a thread of
-/// no rayon pool while one is (a thread the target started of its own: a reader's, a chunk's), as
-/// the target's own threads' work is: rayon sends a thread outside every pool to the process's
-/// global pool, as wide as the job's grant at its start (RAYON_NUM_THREADS), not its grant now, so
-/// a shrunk job's work there would run on more threads than its Mac counts it for (task #948
-/// review: terrain-deep's deep tiles, made on a thread of its own, and terrain's base sampling's
-/// passes, from its chunks' threads). Elsewhere `f` as it is: on a pool's thread (the target's or
-/// one of its own), or with no target under way.
+/// The pool a thread of no pool runs its parallel work on while a target is under way
+/// (`on_target_pool`): as wide as the target's grant (`IN_FORCE`), the last one made, kept while the
+/// grant stands. Never the target's own pool (`POOL`).
+static OUTSIDE: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>> = std::sync::Mutex::new(None);
+
+/// Parallel work `f` called on a thread of no rayon pool while a target is under way (a thread the
+/// target started of its own: a reader's, a chunk's) on a pool as wide as the target's grant
+/// (`OUTSIDE`), not the process's global one, which is as wide as the job's grant at its start
+/// (RAYON_NUM_THREADS), not its grant now: a shrunk job's work there would run on more threads than
+/// its Mac counts it for (task #948 review: terrain's base sampling's passes, from its chunks'
+/// threads). Never on the target's own pool (`on_grant`): the target's work started that thread and
+/// waits for it (terrain_base's chunks are joined by the target's prefetch), so every one of that
+/// pool's threads can be waiting on the very thread asking it, and the work would never run (a
+/// 1-thread grant always: every terrain-hi job of the pool stalled at 0 tiles, 5 Nov). The outside
+/// pool's threads run nothing but such work, which waits on no thread of the target's. Elsewhere `f`
+/// as it is: on a pool's thread (the target's, the outside pool's or one of its own), or with no
+/// target under way. The threads change no output (each step's work is the same whatever its
+/// threads).
 pub fn on_target_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
-    if in_force().is_none() || rayon::current_thread_index().is_some() {
+    let Some(n) = in_force() else { return f() };
+    if rayon::current_thread_index().is_some() {
         return f();
     }
-    let pool = POOL.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(_, p)| p.clone());
-    match pool {
-        Some(p) => p.install(f),
-        None => f(),
-    }
+    let pool = {
+        let mut g = OUTSIDE.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_ref().filter(|(w, _)| *w == n) {
+            Some((_, p)) => p.clone(),
+            None => match rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .thread_name(|i| format!("outside work {i}"))
+                .build()
+            {
+                Ok(p) => {
+                    let p = std::sync::Arc::new(p);
+                    *g = Some((n, p.clone()));
+                    p
+                }
+                // (No pool to be had: the global one, as before task #948.)
+                Err(_) => return f(),
+            },
+        }
+    };
+    pool.install(f)
 }
 
 #[cfg(test)]
@@ -1054,16 +1080,37 @@ mod tests {
         let names: Vec<(&str, bool)> = r.phases.iter().map(|p| (p.name.as_str(), p.background)).collect();
         assert_eq!(names, [("the job's targets", false), ("after the targets", false)], "{:?}", r.phases);
         assert_eq!(r.phases[0].sub.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["a target's work"]);
-        // A thread the target starts of its own: its parallel work on the target's pool (2 wide),
-        // not the process's global one; outside a target, the global one.
-        grant(&f, 2).unwrap();
+        // A thread the target starts of its own: its parallel work on a pool as wide as the
+        // target's grant, not the process's global one, nor the target's own, whose threads wait
+        // for that thread (the target joins it): on a grant of 1 or 2, done, not waiting forever
+        // (5 Nov: every terrain-hi job of the pool stalled so). Outside a target, the global one.
         let global = rayon::current_num_threads();
-        let own = on_grant(|| {
-            std::thread::scope(|s| {
-                s.spawn(|| (rayon::current_num_threads(), on_target_pool(rayon::current_num_threads))).join().unwrap()
-            })
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            if rx.recv_timeout(std::time::Duration::from_secs(60)) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                eprintln!("a target's own thread's parallel work waited 60 s: a pool waiting on it");
+                std::process::exit(1);
+            }
         });
-        assert_eq!(own, (global, 2));
+        for n in [1, 2] {
+            grant(&f, n).unwrap();
+            let own = on_grant(|| {
+                std::thread::scope(|s| {
+                    s.spawn(|| {
+                        let on = on_target_pool(|| {
+                            (rayon::current_num_threads(), std::thread::current().name().map(str::to_string), sum())
+                        });
+                        (rayon::current_num_threads(), on)
+                    })
+                    .join()
+                    .unwrap()
+                })
+            });
+            let (on_own, (on, name, s)) = own;
+            assert_eq!((on_own, on, s), (global, n, serial));
+            assert!(name.as_deref().is_some_and(|t| t.starts_with("outside work ")), "{name:?}");
+        }
+        drop(tx);
         assert_eq!(
             std::thread::scope(|s| s.spawn(|| on_target_pool(rayon::current_num_threads)).join().unwrap()),
             global

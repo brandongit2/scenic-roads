@@ -585,9 +585,9 @@ impl RawSource for Tiles<'_> {
     // job's threads idle, task #695. The same bytes: a tile's sampling reads nothing of another's.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
         // (As many at once as the job's threads: each chunk's own work, its points and their means,
-        // is on its thread, outside the job's pool; its sampler's passes on the pool, task #888: the
-        // target's, as wide as its grant as it began (crate::dem::generic's, through
-        // crate::control::on_target_pool).)
+        // is on its thread, outside the job's pool; its sampler's passes on a pool as wide as the
+        // target's grant as it began, never the target's own, whose threads wait here for these
+        // (crate::dem::generic's, through crate::control::on_target_pool).)
         let at_once = at_once();
         let chunks: Vec<&[(u32, u32)]> = tiles.chunks(chunk_tiles(at_once)).collect();
         let next = std::sync::atomic::AtomicUsize::new(0);

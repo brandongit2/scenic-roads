@@ -1756,25 +1756,19 @@ mod tests {
     /// as that target began (crate::control::on_grant, scenic-build's slope_deep_batch), while the
     /// copying ahead of the next target's pack and the target before's uploads (put off, landed by
     /// the next target's save as `Landing` does) go on across the change of pool; every target lands,
-    /// the same bytes as each made alone. (In a process of its own: the threads file's variable and
-    /// the target under way are the process's.)
+    /// the same bytes as each made alone; on grants of 2 and 1, within the bound (a target waiting
+    /// on its own pool, as terrain-hi's did on 1 thread on 5 Nov, fails it). (In a process of its
+    /// own: the threads file's variable and the target under way are the process's.)
     #[test]
     fn a_deep_batch_regranted_as_it_goes_lands_each_target_the_same() {
-        const ALONE: &str = "SCENIC_TEST_ALONE";
-        const NAME: &str = "slope_pack::tests::a_deep_batch_regranted_as_it_goes_lands_each_target_the_same";
-        if std::env::var_os(ALONE).is_none() {
-            let out = store::spawn::output(
-                store::spawn::command(std::env::current_exe().unwrap()).args(["--exact", NAME]).env(ALONE, "1"),
-            )
-            .unwrap();
-            let said = String::from_utf8_lossy(&out.stdout);
-            assert!(
-                out.status.success() && said.contains(" 1 passed"),
-                "{said}{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
+        if !crate::grant_tests::alone("slope_pack::tests::a_deep_batch_regranted_as_it_goes_lands_each_target_the_same")
+        {
             return;
         }
+        crate::grant_tests::within("a slope-deep batch on grants of 2, 5 and 1", regranted_batch);
+    }
+
+    fn regranted_batch() {
         let deep = |out: Out| -> Vec<(String, String)> {
             out.manifest
                 .into_iter()

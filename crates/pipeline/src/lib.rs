@@ -105,3 +105,6 @@ static TEST_START: extern "C" fn() = {
 
 #[cfg(test)]
 mod test_start;
+
+#[cfg(test)]
+mod grant_tests;
