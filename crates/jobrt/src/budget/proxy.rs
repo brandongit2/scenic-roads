@@ -157,7 +157,8 @@ impl Proxy {
         }
     }
 
-    /// The members the agent knows (itself among them): the NAS away, its share of the rate.
+    /// The members the agent knows (itself among them): the lead or the NAS away, its share of the
+    /// rate.
     pub fn set_members(&self, n: usize) {
         self.budget.members.store(n.max(1), Ordering::Relaxed);
     }
@@ -583,6 +584,36 @@ fn param<'a>(q: &'a str, key: &str) -> Option<&'a str> {
     q.trim_start_matches('?').split('&').find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
 }
 
+/// A job's ask of the answers' lease (`/lease/answers?op=<take|renew|release>&token=<t>&pid=<p>`,
+/// the pipeline's crate::answers::Lease), asked of the lead (`Budget::answers`): 200 with the
+/// lead's word (`super::LeaseSaid`) when done, 409 with it when not (another holds it, or it's no
+/// longer this holder's); 501 when the budget has no lead (take it on the NAS); 503 when the lead
+/// didn't answer.
+async fn lease_answers(s: &Conn, ctx: &Arc<Ctx>, q: &str) -> io::Result<()> {
+    let token = param(q, "token").filter(|t| !t.is_empty() && t.len() <= 128);
+    let (Some(op), Some(token)) = (param(q, "op").and_then(super::LeaseOp::named), token) else {
+        return answer(s, ctx.limits.idle, "400 Bad Request", "/lease/answers?op=<take|renew|release>&token=<t>\n")
+            .await;
+    };
+    let pid = param(q, "pid").and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    let (b, token) = (ctx.budget.clone(), token.to_string());
+    let said = tokio::task::spawn_blocking(move || b.answers(op, &format!("{} (pid {pid})", b.me()), &token))
+        .await
+        .map_err(io::Error::other)?;
+    match said {
+        Ok(l) => {
+            let status = if l.ok { "200 OK" } else { "409 Conflict" };
+            answer(s, ctx.limits.idle, status, &serde_json::to_string(&l).unwrap_or_default()).await
+        }
+        Err(super::NoLease::NoLead) => {
+            answer(s, ctx.limits.idle, "501 Not Implemented", "no lead takes it: the NAS's lease\n").await
+        }
+        Err(super::NoLease::Unreached(e)) => {
+            answer(s, ctx.limits.idle, "503 Service Unavailable", &format!("the lead: {e}\n")).await
+        }
+    }
+}
+
 /// A transfer relayed: its event, of its bytes `b` (in, out) and the `sent` with its head.
 fn ended(net: &Net, host: &str, b: (u64, u64), sent: u64, t0: Instant, ok: bool) {
     let outcome = if ok { Outcome::Ok } else { Outcome::Broken };
@@ -641,13 +672,13 @@ async fn handle(s: Conn, ctx: &Arc<Ctx>) -> io::Result<()> {
                 .and_then(|v| v.parse::<f64>().ok())
                 .map_or(super::HOLD_DEFAULT_S, |v| v.ceil().max(1.0) as u64);
             net.host(param(q, "host").unwrap_or("?")).holds.fetch_add(1, Ordering::Relaxed);
-            // (Held here at once; on the NAS on a thread of its own, one at a time, so the teller
-            // isn't kept waiting on the share: told is told.)
+            // (Held here at once; told the lead, or on the NAS, on a thread of its own, one at a
+            // time, so the teller isn't kept waiting on either: told is told.)
             let (now, until) = budget.hold_here(secs);
             if !ctx.holding.swap(true, Ordering::SeqCst) {
                 let c = ctx.clone();
                 let spawned = std::thread::Builder::new().name("budgets-hold".into()).spawn(move || {
-                    c.budget.hold_nas(now, until);
+                    c.budget.hold_pool(now, until);
                     c.holding.store(false, Ordering::SeqCst);
                 });
                 match spawned {
@@ -657,11 +688,14 @@ async fn handle(s: Conn, ctx: &Arc<Ctx>) -> io::Result<()> {
             }
             return answer(&s, ctx.limits.idle, "200 OK", "held\n").await;
         }
+        if let Some(q) = head.target.strip_prefix("/lease/answers") {
+            return lease_answers(&s, ctx, q).await;
+        }
         return answer(
             &s,
             ctx.limits.idle,
             "404 Not Found",
-            "a proxy: CONNECT, an absolute URL, /hold, /retry or /robots\n",
+            "a proxy: CONNECT, an absolute URL, /hold, /retry, /robots or /lease/answers\n",
         )
         .await;
     }

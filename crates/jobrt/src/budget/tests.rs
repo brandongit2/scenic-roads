@@ -204,3 +204,105 @@ fn old_leases_are_removed() {
     a.take(Class::Query);
     assert!(!f.exists(), "removed once KEEP windows behind");
 }
+
+/// A lead as a test sets it: answering from `give` (a window's slots counted by the clock), or
+/// down (`up` false).
+struct FakeLead {
+    clock: Arc<StepClock>,
+    up: std::sync::atomic::AtomicBool,
+    given: Mutex<BTreeMap<(Class, u64), u32>>,
+    held: Mutex<u64>,
+}
+
+impl Lead for FakeLead {
+    fn take(&self, class: Class) -> Result<Given, String> {
+        if !self.up.load(Ordering::SeqCst) {
+            return Err("connection refused".into());
+        }
+        let (r, now) = (class.rate(), self.clock.now_ms());
+        let held = *self.held.lock().unwrap();
+        if now < held {
+            return Ok(Given::Wait { ms: held - now });
+        }
+        let w = now / r.window_ms;
+        let mut g = self.given.lock().unwrap();
+        let n = g.entry((class, w)).or_default();
+        if *n >= r.slots() {
+            return Ok(Given::Wait { ms: (w + 1) * r.window_ms - now });
+        }
+        *n += 1;
+        Ok(Given::Batch { n: r.batch, window: w, for_ms: (w + 1) * r.window_ms - now })
+    }
+    fn hold(&self, secs: u64) -> Result<(), String> {
+        if !self.up.load(Ordering::SeqCst) {
+            return Err("connection refused".into());
+        }
+        *self.held.lock().unwrap() = self.clock.now_ms() + secs * 1000;
+        Ok(())
+    }
+    fn answers(&self, _: LeaseOp, _: &str, _: &str) -> Result<LeaseSaid, String> {
+        Err("not this test's".into())
+    }
+}
+
+/// docs/coordination.md step 7: the lead down, a Mac takes the rate divided by the members it
+/// knows, in memory (nothing on the NAS), asking the lead again only the next window; the lead
+/// back, its batches again. A 429 told meanwhile holds this Mac alone.
+#[test]
+fn the_budget_falls_back_when_the_lead_is_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(StepClock::at(T0));
+    let lead = Arc::new(FakeLead {
+        clock: clock.clone(),
+        up: true.into(),
+        given: Mutex::new(BTreeMap::new()),
+        held: Mutex::new(0),
+    });
+    let a = budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock);
+    a.set_lead(Some(lead.clone()));
+    a.members.store(3, Ordering::Relaxed);
+    assert_eq!(a.take(Class::Wiki).source, Source::Lead);
+    // (Down: its batch spent, then a third of the rate a window.)
+    lead.up.store(false, Ordering::SeqCst);
+    let before = a.ledger().len();
+    for _ in 0..60 {
+        a.take(Class::Wiki);
+    }
+    let alone: Vec<Token> = a.ledger()[before..].iter().filter(|t| t.source == Source::Alone).copied().collect();
+    assert!(!alone.is_empty());
+    let w = per_window(&[alone]);
+    assert!(w.values().all(|n| *n <= Class::Wiki.rate().tokens / 3), "{w:?}");
+    assert!(a.away().is_some_and(|e| e.contains("the lead")), "{:?}", a.away());
+    assert!(!dir.path().join(DIR).exists(), "nothing on the NAS");
+    assert!(!a.hold(20), "a hold not told: this Mac alone");
+    assert_eq!(a.held_until(), clock.now_ms() + 20_000);
+    // (Back: the lead's batches from the next window.)
+    lead.up.store(true, Ordering::SeqCst);
+    clock.set(a.held_until() + Class::Wiki.rate().window_ms);
+    assert_eq!(a.take(Class::Wiki).source, Source::Lead);
+    assert!(a.away().is_none());
+    assert!(a.hold(30));
+    let t = a.take(Class::Wiki);
+    assert!(t.window * 10_000 + 10_000 > clock.now_ms() && clock.now_ms() >= a.held_until());
+}
+
+/// A batch the lead gives is spent only within what was left of its window when asked: a batch
+/// asked late in a window isn't spent in the next.
+#[test]
+fn a_leads_batch_ends_with_its_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(StepClock::at(T0 + 9_999));
+    let lead = Arc::new(FakeLead {
+        clock: clock.clone(),
+        up: true.into(),
+        given: Mutex::new(BTreeMap::new()),
+        held: Mutex::new(0),
+    });
+    let a = budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock);
+    a.set_lead(Some(lead.clone()));
+    let first = a.take(Class::Wiki);
+    clock.set(T0 + 10_000);
+    let next = a.take(Class::Wiki);
+    assert_eq!(next.window, first.window + 1, "the batch's three left lapsed with its window");
+    assert_eq!(lead.given.lock().unwrap().values().sum::<u32>(), 2);
+}

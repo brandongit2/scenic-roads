@@ -8,15 +8,22 @@
 //! profile that denies it every outbound connection but to the Mac itself, `SANDBOX`), which takes a
 //! token for each connection to a metered host before it opens it.
 //!
-//! The tokens are on the NAS, leased in batches (the share takes 20 to 55 creates a second, fewer
-//! over Tailscale): time is cut into windows (`Rate::window_ms`) and a window's tokens into slots
-//! of a batch each; a lease is a slot's file made with create-new
-//! (`state/pool/wiki/<class>/<window>-<slot>`), so two processes, on one Mac or two, can't both
-//! lease one slot, and no window gives more tokens than it has, whatever their timing. Nothing is
-//! written in place, nor by two Macs (docs/pool.md §2, principle 3): each file is made once, and
-//! removed once its window is long past (`KEEP`). A batch unspent at its window's end is lost (a
-//! budget only ever errs below its rate). A window is a Mac's clock's: Macs a second apart may
-//! spend one window's tokens over its length and a second.
+//! The tokens are taken in batches (`Rate::batch`): time is cut into windows (`Rate::window_ms`)
+//! and a window's tokens into slots of a batch each, from one of two places:
+//!
+//! - **The lead** (`Lead`, docs/coordination.md step 7: `POST /pool/budget/take`), which counts
+//!   each window's slots in memory by its own clock alone: a batch is spendable until the lead's
+//!   window ends, counted on this Mac from when it asked (`Given::Batch::for_ms`), so a batch is
+//!   never spent past its window whatever the Macs' clocks say. The agent gives its proxy the lead
+//!   (`Budget::set_lead`) while its lead takes the budget and no member in touch takes it on the NAS.
+//! - **The NAS** (the rollout gate's, deleted one release after every member says `budgets` for a
+//!   day): a slot's lease is a file made with create-new (`state/pool/wiki/<class>/<window>-<slot>`),
+//!   so two processes, on one Mac or two, can't both lease one slot. Nothing is written in place,
+//!   nor by two Macs (docs/pool.md §2, principle 3): each file is made once, and removed once its
+//!   window is long past (`KEEP`). A window is a Mac's clock's: Macs a second apart may spend one
+//!   window's tokens over its length and a second.
+//!
+//! A batch unspent at its window's end is lost (a budget only ever errs below its rate).
 //!
 //! The query services are budgeted by the time their queries take as well as their count (the
 //! Wikidata Query Service's limit is query time a minute): a connection to one that lasted longer
@@ -24,9 +31,14 @@
 //! (`Budget::charge`).
 //!
 //! A 429 or a `Retry-After` seen by any process holds every process and Mac: the process tells its
-//! proxy (`/hold`: `seen`), which takes every slot of the windows the wait spans, so no one
-//! can lease them (`Budget::hold`). With the NAS out of reach, each Mac takes the rate divided by
-//! the members it knows (`Budget::members`), in memory.
+//! proxy (`/hold`: `seen`), which tells the lead (every class's slots given to none till it ends)
+//! or, on the NAS, takes every slot of the windows the wait spans (`Budget::hold`). With the lead
+//! (or the NAS) out of reach, each Mac takes the rate divided by the members it knows
+//! (`Budget::members`), in memory, asking the lead again the next window.
+//!
+//! The answers' lease (the pipeline's crate::answers) is the lead's too: a job asks its proxy
+//! (`/lease/answers`), which asks the lead (`Budget::answers`); with no lead given, the proxy says
+//! so (501) and the job takes it on the NAS, as before.
 //!
 //! A clock of its own (`Clock`), so the tests decide everything without the real one.
 
@@ -173,12 +185,17 @@ impl Rate {
 impl Class {
     pub const ALL: [Class; 2] = [Class::Wiki, Class::Query];
 
-    /// Its name, as its folder on the NAS.
+    /// Its name, as its folder on the NAS and in a take of the lead.
     pub fn name(self) -> &'static str {
         match self {
             Class::Wiki => "wiki",
             Class::Query => "query",
         }
+    }
+
+    /// The class named `name` (`name`'s).
+    pub fn named(name: &str) -> Option<Class> {
+        Class::ALL.into_iter().find(|c| c.name() == name)
     }
 
     /// The pool's rate, the politeness of one client (the owner's policy, not a step's figure):
@@ -273,12 +290,91 @@ impl Clock for StepClock {
 }
 
 /// Where a token came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Source {
+    /// A batch the lead gave.
+    Lead,
     /// A lease on the NAS.
+    #[default]
     Nas,
-    /// This Mac's share of the rate, the NAS out of reach.
+    /// This Mac's share of the rate, the lead (or the NAS) out of reach.
     Alone,
+}
+
+/// The lead's answer to a take (`POST /pool/budget/take {class}`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Given {
+    /// A batch of `n` tokens of the lead's window `window`, spendable for `for_ms` from the ask:
+    /// what is left of that window on the lead's clock, so counted from the ask the batch's time
+    /// ends no later than the window does, however late the answer came.
+    Batch { n: u32, window: u64, for_ms: u64 },
+    /// None now (the window's slots all given, or the pool held by a 429): ask again in `ms`.
+    Wait { ms: u64 },
+}
+
+/// What is asked of the answers' lease (`POST /pool/lease/answers`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LeaseOp {
+    /// Taken by this holder: when no one holds it, it lapsed, or it's this holder's already.
+    Take,
+    /// Renewed: only while it's this holder's and hasn't lapsed (a holder whose lease lapsed may
+    /// have been followed by another's sync: it never writes on it again).
+    Renew,
+    /// Given up: removed only while it's this holder's.
+    Release,
+}
+
+impl LeaseOp {
+    pub fn named(name: &str) -> Option<LeaseOp> {
+        match name {
+            "take" => Some(LeaseOp::Take),
+            "renew" => Some(LeaseOp::Renew),
+            "release" => Some(LeaseOp::Release),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LeaseOp::Take => "take",
+            LeaseOp::Renew => "renew",
+            LeaseOp::Release => "release",
+        }
+    }
+}
+
+/// The lead's answer about the answers' lease: whether the ask was done (`ok`), and who holds it
+/// now and until when (unix s; none: "" and 0).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LeaseSaid {
+    pub ok: bool,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub until: u64,
+}
+
+/// The lead as the budget's source (docs/coordination.md step 7): its coordinator over HTTP on a
+/// member, in process on the lead. An error: the lead out of reach (why).
+pub trait Lead: Send + Sync {
+    /// A batch of `class`'s tokens, or how long to wait for one.
+    fn take(&self, class: Class) -> Result<Given, String>;
+    /// Every class held `secs` from now (a 429 seen).
+    fn hold(&self, secs: u64) -> Result<(), String>;
+    /// The answers' lease asked `op` by holder `token` (`by`: who, for whoever looks).
+    fn answers(&self, op: LeaseOp, by: &str, token: &str) -> Result<LeaseSaid, String>;
+}
+
+/// Why the answers' lease couldn't be asked of the lead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoLease {
+    /// The budget has no lead (an older lead, or a member in touch takes it on the NAS): take it
+    /// on the NAS.
+    NoLead,
+    /// The lead didn't answer: why.
+    Unreached(String),
 }
 
 /// A token given: its class, its window, where it came from.
@@ -299,17 +395,30 @@ enum Leased {
     Away(io::Error),
 }
 
+/// What a lease of a batch found, from the lead or the NAS.
+enum Got {
+    /// A batch: its window, until when it may be spent (ms, this Mac's clock), its tokens, whence.
+    Batch { window: u64, until: u64, n: u32, source: Source },
+    /// None until then (ms).
+    Wait(u64),
+    /// Out of reach: why.
+    Away(String),
+}
+
 /// A class's state in this process.
 #[derive(Default)]
 struct Held {
-    /// The window of the batch held, and the tokens left of it.
+    /// The window of the batch held (the lead's, or this Mac's on the NAS), until when it may be
+    /// spent (ms, this Mac's clock), the tokens left of it, and where it came from.
     window: u64,
+    until: u64,
     left: u32,
+    source: Source,
     /// Tokens owed (a query's time past its token's).
     owed: u32,
     /// The windows below which every lease's file has been removed (by this process's reckoning).
     cleaned: Option<u64>,
-    /// Tokens given in each window with the NAS away (this Mac's share).
+    /// Tokens given in each window with the lead or the NAS away (this Mac's share).
     alone: BTreeMap<u64, u32>,
 }
 
@@ -320,8 +429,10 @@ struct State {
     hold_until: u64,
     /// What was given, kept for the tests (`Budget::ledger`).
     ledger: Option<Vec<Token>>,
-    /// Why the NAS was last out of reach, for the status.
+    /// Why the lead or the NAS was last out of reach, for the status.
     away: Option<String>,
+    /// The lead not asked again before then (ms): it didn't answer in this window.
+    lead_away_until: u64,
 }
 
 /// The pool's budget, as one process (an agent's proxy) takes from it.
@@ -331,9 +442,11 @@ pub struct Budget {
     /// Who leases (a member id, or the host's name): written in each lease, for whoever looks.
     me: String,
     clock: Arc<dyn Clock>,
-    /// The members this Mac knows (itself among them), the NAS away: each takes the rate divided by
-    /// them.
+    /// The members this Mac knows (itself among them), the lead or the NAS away: each takes the
+    /// rate divided by them.
     pub members: Arc<AtomicUsize>,
+    /// The lead it takes from (`set_lead`); None: the NAS.
+    lead: Mutex<Option<Arc<dyn Lead>>>,
     st: Mutex<State>,
     /// Held by the one thread leasing (or holding on the NAS) at a time: never with `st`.
     leasing: Mutex<()>,
@@ -346,6 +459,7 @@ impl Budget {
             me: me.to_string(),
             clock,
             members: Arc::new(AtomicUsize::new(1)),
+            lead: Mutex::new(None),
             st: Mutex::new(State::default()),
             leasing: Mutex::new(()),
         }
@@ -366,7 +480,29 @@ impl Budget {
         self.state().ledger.clone().unwrap_or_default()
     }
 
-    /// Why the NAS was last out of reach (None: it answered since).
+    /// Takes from `lead` from now (None: the NAS): the agent's word, as its lead's gate says. A
+    /// batch held is spent first either way (its window's).
+    pub fn set_lead(&self, lead: Option<Arc<dyn Lead>>) {
+        *self.lead.lock().unwrap_or_else(|e| e.into_inner()) = lead;
+        self.state().lead_away_until = 0;
+    }
+
+    fn lead(&self) -> Option<Arc<dyn Lead>> {
+        self.lead.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Who leases (a member id, or the host's name).
+    pub fn me(&self) -> &str {
+        &self.me
+    }
+
+    /// The answers' lease asked `op` of the lead by holder `token` (`by`).
+    pub fn answers(&self, op: LeaseOp, by: &str, token: &str) -> Result<LeaseSaid, NoLease> {
+        let lead = self.lead().ok_or(NoLease::NoLead)?;
+        lead.answers(op, by, token).map_err(NoLease::Unreached)
+    }
+
+    /// Why the lead or the NAS was last out of reach (None: it answered since).
     pub fn away(&self) -> Option<String> {
         self.state().away.clone()
     }
@@ -381,8 +517,9 @@ impl Budget {
     }
 
     /// A token of `class`, waiting for one as long as it takes (with what it owes paid first). The
-    /// state's lock is never held across the NAS's I/O (a status or a connection not metered never
-    /// waits on the share); one thread leases at a time (`leasing`), the others waiting for its batch.
+    /// state's lock is never held across the lead's or the NAS's I/O (a status or a connection not
+    /// metered never waits on them); one thread leases at a time (`leasing`), the others waiting for
+    /// its batch.
     pub fn take(&self, class: Class) -> Token {
         let rate = class.rate();
         loop {
@@ -396,42 +533,67 @@ impl Budget {
                     self.clock.sleep_until_ms(until);
                     continue;
                 }
-                let w = now / rate.window_ms;
-                if let Some(t) = Self::from_batch(&mut st, class, w) {
+                if let Some(t) = Self::from_batch(&mut st, class, now) {
                     return t;
                 }
-                w
+                now / rate.window_ms
             };
             let leasing = self.leasing.lock().unwrap_or_else(|e| e.into_inner());
             // (Another thread may have leased while this one waited: its batch first.)
-            {
+            let asked = {
                 let st = self.state();
-                if self.clock.now_ms() < st.hold_until
-                    || st.held.get(&class).is_some_and(|h| h.window == w && h.left > 0)
-                {
+                let now = self.clock.now_ms();
+                if now < st.hold_until || st.held.get(&class).is_some_and(|h| now < h.until && h.left > 0) {
                     continue;
                 }
-            }
-            match self.lease(class, w) {
-                Leased::Slot => {
+                now
+            };
+            let got = match self.lead() {
+                // (The lead didn't answer in this window: this Mac's share till the next.)
+                Some(_) if asked < self.state().lead_away_until => {
+                    Got::Away(self.state().away.clone().unwrap_or_else(|| "the lead".into()))
+                }
+                Some(l) => match l.take(class) {
+                    Ok(Given::Batch { n, window, for_ms }) => {
+                        Got::Batch { window, until: asked + for_ms, n, source: Source::Lead }
+                    }
+                    Ok(Given::Wait { ms }) => Got::Wait(asked + ms.max(1)),
+                    Err(e) => {
+                        // (Not asked again this window: each ask of a lead that's down may wait out
+                        // its connect.)
+                        self.state().lead_away_until = (w + 1) * rate.window_ms;
+                        Got::Away(format!("the lead: {e}"))
+                    }
+                },
+                None => match self.lease(class, w) {
+                    Leased::Slot => {
+                        Got::Batch { window: w, until: (w + 1) * rate.window_ms, n: rate.batch, source: Source::Nas }
+                    }
+                    Leased::Full => Got::Wait((w + 1) * rate.window_ms),
+                    Leased::Away(e) => Got::Away(format!("{}: {e}", self.dir(class).display())),
+                },
+            };
+            match got {
+                Got::Batch { window, until, n, source } => {
                     let cleaned = {
                         let mut st = self.state();
                         st.away = None;
                         let h = st.held.entry(class).or_default();
-                        h.window = w;
-                        h.left = rate.batch;
+                        (h.window, h.until, h.left, h.source) = (window, until, n, source);
                         h.cleaned
                     };
-                    let next = self.clean(class, w, cleaned);
-                    self.state().held.entry(class).or_default().cleaned = Some(next);
+                    if source == Source::Nas {
+                        let next = self.clean(class, w, cleaned);
+                        self.state().held.entry(class).or_default().cleaned = Some(next);
+                    }
                 }
-                Leased::Full => {
+                Got::Wait(until) => {
                     drop(leasing);
-                    self.clock.sleep_until_ms((w + 1) * rate.window_ms);
+                    self.clock.sleep_until_ms(until);
                 }
-                Leased::Away(e) => {
+                Got::Away(why) => {
                     let mut st = self.state();
-                    st.away = Some(format!("{}: {e}", self.dir(class).display()));
+                    st.away = Some(why);
                     // (This Mac's share, in memory: the rate divided by the members it knows.)
                     let n = self.members.load(Ordering::Relaxed).max(1) as u32;
                     let share = (rate.tokens / n).max(1);
@@ -459,11 +621,11 @@ impl Budget {
         }
     }
 
-    /// A token from the batch `class` holds for window `w` (what's owed paid from it first), if it
-    /// has one.
-    fn from_batch(st: &mut State, class: Class, w: u64) -> Option<Token> {
+    /// A token from the batch `class` holds, while it may be spent at `now` (what's owed paid from
+    /// it first), if it has one.
+    fn from_batch(st: &mut State, class: Class, now: u64) -> Option<Token> {
         let h = st.held.entry(class).or_default();
-        if h.window != w {
+        if now >= h.until {
             h.left = 0;
         }
         while h.left > 0 && h.owed > 0 {
@@ -474,7 +636,7 @@ impl Budget {
             return None;
         }
         h.left -= 1;
-        let t = Token { class, window: w, source: Source::Nas };
+        let t = Token { class, window: h.window, source: h.source };
         if let Some(l) = st.ledger.as_mut() {
             l.push(t);
         }
@@ -550,11 +712,27 @@ impl Budget {
     }
 
     /// A 429 or a `Retry-After` of `secs` (capped at `HOLD_MAX_S`): every class held here until it
-    /// ends (`hold_here`), and on the NAS (`hold_nas`), so every other process and Mac waits too.
-    /// Whether the NAS took it (false: held here alone, the NAS out of reach).
+    /// ends (`hold_here`), and by the lead or on the NAS (`hold_pool`), so every other process and
+    /// Mac waits too. Whether the pool took it (false: held here alone, the lead or the NAS out of
+    /// reach).
     pub fn hold(&self, secs: u64) -> bool {
         let (now, until) = self.hold_here(secs);
-        self.hold_nas(now, until)
+        self.hold_pool(now, until)
+    }
+
+    /// The hold from `now` to `until` (ms) told the lead, else taken on the NAS (`hold_nas`).
+    /// Whether it was.
+    pub fn hold_pool(&self, now: u64, until: u64) -> bool {
+        match self.lead() {
+            Some(l) => match l.hold(until.saturating_sub(now).div_ceil(1000).max(1)) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("budgets: a 429's hold not told the lead ({e}): held on this Mac alone");
+                    false
+                }
+            },
+            None => self.hold_nas(now, until),
+        }
     }
 
     /// The hold in this process: until `secs` from now (capped); (now, its end) in ms.
@@ -574,7 +752,7 @@ impl Budget {
     /// up to `HOLD_NAS_MAX_S` of it (a hold's cost on the share: a create a slot, fifteen slots a
     /// window across the classes (ten and five), so 450 creates at most, some 8 to 23 s on the share; past that,
     /// the other Macs, if they're still asking, meet their own 429). Whether the NAS took it.
-    pub fn hold_nas(&self, now: u64, until: u64) -> bool {
+    fn hold_nas(&self, now: u64, until: u64) -> bool {
         let until = until.min(now + HOLD_NAS_MAX_S * 1000);
         let _leasing = self.leasing.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = true;
