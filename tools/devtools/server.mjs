@@ -60,6 +60,9 @@ export function makeServer({ board: boardStore, jobs: jobsStore }) {
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://x");
+      // (The board's page from before the dev tools app, still open behind the proxy's old path, asks
+      // for /task-board/api/… and /task-board/_blob/…: the same as /api/… and /_blob/….)
+      if (/^\/task-board\/(api|_blob)\//.test(url.pathname)) url.pathname = url.pathname.slice("/task-board".length);
       if (url.pathname.startsWith("/api/")) {
         let parts;
         try { parts = url.pathname.split("/").slice(2).map(decodeURIComponent); } catch { return fail(res, 400, "invalid_argument", "the path is not valid percent-encoding"); }
@@ -78,6 +81,8 @@ export function makeServer({ board: boardStore, jobs: jobsStore }) {
       // (A page's address without its slash: to it, relative, so a proxy's path stays.)
       const m = /^\/(task-board|jobs)$/.exec(url.pathname);
       if (m) return send(res, 301, "", "text/plain", { location: `${m[1]}/${url.search}` });
+      // (A task's address from when the board was the whole app, /709: the board's now.)
+      if (/^\/\d+$/.test(url.pathname)) return send(res, 301, "", "text/plain", { location: `task-board${url.pathname}${url.search}` });
       const file = page(url.pathname);
       if (!file || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, "not found", "text/plain");
       return send(res, 200, fs.readFileSync(file), TYPES[path.extname(file)] || "application/octet-stream");

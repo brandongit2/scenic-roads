@@ -321,7 +321,7 @@ pub fn listen(addr: impl ToSocketAddrs) -> io::Result<TcpListener> {
 
 /// The ports the live programs listen on, on the Macs whose tests run beside them: the
 /// coordinator and a member's broker (pipeline::coord::PORT), the map's server
-/// (pipeline::net::DEFAULT_PORT), the task board (tools/taskboard, on the Mac mini). No test
+/// (pipeline::net::DEFAULT_PORT), the dev tools app (tools/devtools, on the Mac mini). No test
 /// listens on one (`listen`); tools/app/guards.sh refuses test code naming one on loopback.
 pub const POOL_PORTS: [u16; 3] = [8090, 7311, 8077];
 

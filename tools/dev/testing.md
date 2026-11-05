@@ -318,7 +318,7 @@ through their dev-dependency on store, `features = ["testkit"]`):
 - **Never a live program's port (#906):** the tests run on the Macs beside the live agent (the
   mini runs check.sh's remote tests and publish's suite), and a test listening on 127.0.0.1:8090
   took the agent's jobs' connections. `store::spawn::POOL_PORTS` (the coordinator's 8090, the
-  map's 7311, the task board's 8077): a test program's `store::spawn::listen` on one panics, and
+  map's 7311, the dev tools app's 8077): a test program's `store::spawn::listen` on one panics, and
   `tools/app/guards.sh` refuses test code naming one on a loopback or wildcard address (or
   `coord::PORT`, `DEFAULT_PORT`) unless the line says `pool port: not bound`. The coordinator and
   the map's server hold 127.0.0.1 beside their wildcard socket, so no other process takes it; a

@@ -302,6 +302,12 @@ test("the app's pages, the board's schema and the dashboard's timeline are serve
   const r = await fetch(base + "/task-board", { redirect: "manual" });
   assert.equal(r.status, 301);
   assert.equal(r.headers.get("location"), "task-board/");
+  // (A task's address from before the dev tools app, /709, goes to the board's.)
+  const old = await fetch(base + "/709?x=1", { redirect: "manual" });
+  assert.equal(old.status, 301);
+  assert.equal(old.headers.get("location"), "task-board/709?x=1");
+  // (And its page's API, at the old proxy path's.)
+  assert.deepEqual(await (await fetch(base + "/task-board/api/c/meta/status")).json(), await (await fetch(base + "/api/c/meta/status")).json());
   // (Only the build page's modules the dashboard imports, nothing else of the checkout.)
   for (const url of ["/lib/work/dash.js", "/lib/work/../../../README.md", "/../server.mjs", "/task-board/../../jobs.mjs"]) assert.equal((await fetch(base + url)).status, 404, url);
 });
