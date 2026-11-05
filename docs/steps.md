@@ -7,7 +7,8 @@ every ground distance, `M_PER_DEG` a degree on it), the Web Mercator (`merc`, `m
 `merc_lat`, `tile_box`, `epsg3857`; its sphere WGS 84's semi-major axis, `MERC_C` its equator in
 its own metres), the box-grower (`grow`, `tile_box_grown`: a box grown by its km at its farthest
 latitude, 89° at most), "near the coverage" (`NEAR_COVERAGE_KM`, 20 km) and the even–odd point-in-polygon
-(`inside`, exact on E7 points; the coverage's gridded test, `Coverage::inside`, aside). Every
+(`inside`, exact on E7 points; the coverage's gridded test, `Coverage::inside`, aside; the lake fill
+reads OSM's overlapping water by the nonzero rule, `winding`). Every
 transcendental function is `det`'s (`clippy.toml` refuses `f64::sin` and the rest), so a step
 makes the same bytes on every Mac.
 

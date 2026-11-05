@@ -49,12 +49,7 @@ pub fn quant(v: f64) -> u32 {
 
 /// Longitude and latitude of a point in world units.
 pub fn lonlat(p: [f64; 2]) -> (f64, f64) {
-    (p[0] * 360.0 - 180.0, roadcore::geo::merc_lat(p[1]))
-}
-
-/// Metres a world unit at latitude `lat`.
-pub fn metres_per_unit(lat: f64) -> f64 {
-    roadcore::geo::merc_m(lat)
+    (roadcore::geo::merc_lon(p[0]), roadcore::geo::merc_lat(p[1]))
 }
 
 // ---- a lake ---------------------------------------------------------------------------------------
@@ -153,16 +148,18 @@ fn seg_seg2(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> f64 {
 }
 
 /// Whether `lake` touches or overlaps `water` (rings, world units), within `tol` world units:
-/// either's shore within `tol` of the other's, or one inside the other.
+/// either's shore within `tol` of the other's, or one inside the other. Inside by the nonzero rule
+/// (roadcore::geo::winding): the basemap's polygons overlap (each z14 tile's with its buffer, a lake
+/// over a riverbank), and a point in two of them is in its water, where even–odd would say not.
 pub fn touches(lake: &Lake, water: &[Vec<[f64; 2]>], tol: f64) -> bool {
     if water.is_empty() || lake.rings.is_empty() {
         return false;
     }
     // The lake inside the water, or water inside the lake.
-    if roadcore::geo::inside(water, lake.rings[0][0]) {
+    if roadcore::geo::winding(water, lake.rings[0][0]) != 0 {
         return true;
     }
-    if water.iter().any(|r| roadcore::geo::inside(&lake.rings, r[0])) {
+    if water.iter().any(|r| roadcore::geo::winding(&lake.rings, r[0]) != 0) {
         return true;
     }
     // Shores within `tol`: the water's edges filed in a grid over the lake's box.
@@ -436,7 +433,7 @@ fn gap_sheet(l: &Lake, gap: &(dyn Fn(nts::Key) -> bool + Sync)) -> Option<nts::K
             let k = (col, row);
             if gap(k) {
                 let (sw, ss, se, sn) = nts::bounds(k);
-                if roadcore::geo::inside(&l.rings, crate::watercov::world((sw + se) / 2.0, (ss + sn) / 2.0)) {
+                if roadcore::geo::winding(&l.rings, crate::watercov::world((sw + se) / 2.0, (ss + sn) / 2.0)) != 0 {
                     return Some(k);
                 }
             }
@@ -546,7 +543,7 @@ pub fn select(
                 let on_b = |p: [f64; 2]| {
                     pb.rings.iter().any(|r| (0..r.len()).any(|k| seg_point2(r[k], r[(k + 1) % r.len()], p) <= eps2))
                 };
-                if pa.rings.iter().flatten().all(|p| roadcore::geo::inside(&pb.rings, *p) || on_b(*p)) {
+                if pa.rings.iter().flatten().all(|p| roadcore::geo::winding(&pb.rings, *p) != 0 || on_b(*p)) {
                     dropped[a as usize] = true;
                 }
             }
@@ -574,7 +571,7 @@ pub fn select(
     let tol_of = |l: &Lake| {
         let b = l.bbox();
         let (_, lat) = lonlat([(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0]);
-        rules.tol_m / metres_per_unit(lat)
+        rules.tol_m / roadcore::geo::merc_m(lat)
     };
     let grown = |l: &Lake| {
         let (b, t) = (l.bbox(), tol_of(l));
@@ -1749,6 +1746,17 @@ mod tests {
         let d = 50.0 / roadcore::geo::M_PER_DEG / 53.8f64.to_radians().dcos();
         let s = run(vec![west, east], vec![sq(-71.98 + d, 53.80, -71.97, 53.81)]);
         assert_eq!(s.stats.kept, 1);
+    }
+
+    #[test]
+    fn a_lake_inside_overlapping_osm_water_touches_it() {
+        // A small lake far inside OSM's water, which the basemap gives twice where two tiles'
+        // buffers overlap (both copies wound alike): in its water, though inside two rings.
+        let small = lake(&[sq(-72.1, 53.80, -72.099, 53.801)]);
+        let water = sq(-72.3, 53.7, -71.9, 53.9);
+        let copy = sq(-72.2, 53.7, -71.9, 53.9);
+        let s = run(vec![small], vec![water, copy]);
+        assert_eq!((s.stats.in_gaps, s.stats.touching, s.stats.kept), (1, 1, 0));
     }
 
     #[test]

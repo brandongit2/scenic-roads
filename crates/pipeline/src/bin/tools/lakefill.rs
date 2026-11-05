@@ -213,7 +213,7 @@ fn stats(path: &Path, sheets: &Path) -> Result<()> {
         let l = f.lake(i);
         let b = l.bbox();
         let (_, lat) = lf::lonlat([(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0]);
-        let m = lf::metres_per_unit(lat);
+        let m = roadcore::geo::merc_m(lat);
         let km2 = l.area() * m * m / 1e6;
         let (lon0, lat0) = lf::lonlat(l.rings[0][0]);
         let r = region.get(&nts::sheet_key(lon0, lat0)).cloned().unwrap_or_else(|| "beside a gap sheet".into());
@@ -228,7 +228,7 @@ fn stats(path: &Path, sheets: &Path) -> Result<()> {
             let l = f.lake(i);
             let b = l.bbox();
             let (lon, lat) = lf::lonlat([(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0]);
-            let m = lf::metres_per_unit(lat);
+            let m = roadcore::geo::merc_m(lat);
             (l.area() * m * m / 1e6, lon, lat)
         })
         .collect();
@@ -271,7 +271,7 @@ fn seamcheck(fill: &Path, basemap: &Path, max: usize) -> Result<()> {
             for k in 0..r.len() {
                 let (p, q) = (r[k], r[(k + 1) % r.len()]);
                 let (_, lat) = lf::lonlat(p);
-                let m = lf::metres_per_unit(lat);
+                let m = roadcore::geo::merc_m(lat);
                 let len = ((q[0] - p[0]).dhypot(q[1] - p[1])) * m;
                 if len < 20.0 {
                     continue;
@@ -288,7 +288,7 @@ fn seamcheck(fill: &Path, basemap: &Path, max: usize) -> Result<()> {
         .iter()
         .map(|(_, p, q)| {
             let (_, lat) = lf::lonlat(*p);
-            let d = 30.0 / lf::metres_per_unit(lat);
+            let d = 30.0 / roadcore::geo::merc_m(lat);
             [p[0].min(q[0]) - d, p[1].min(q[1]) - d, p[0].max(q[0]) + d, p[1].max(q[1]) + d]
         })
         .collect();
@@ -298,7 +298,7 @@ fn seamcheck(fill: &Path, basemap: &Path, max: usize) -> Result<()> {
     let mut slivers: Vec<f64> = Vec::new();
     for ((i, p, q), b) in cuts.iter().zip(&boxes) {
         let (_, lat) = lf::lonlat(*p);
-        let m = lf::metres_per_unit(lat);
+        let m = roadcore::geo::merc_m(lat);
         let px = 0.5 / m;
         let (w, h) = (((b[2] - b[0]) / px).ceil() as usize, ((b[3] - b[1]) / px).ceil() as usize);
         if w * h > 4_000_000 {

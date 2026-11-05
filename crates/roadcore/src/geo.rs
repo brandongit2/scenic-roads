@@ -1,6 +1,6 @@
 //! The Earth and the Web Mercator, once for the workspace (docs/consistency-report.md F25, F29–F32):
 //! the Earth's one radius, the projection's sphere, the projection and its inverse, a tile's box,
-//! the box-grower and the even–odd point-in-polygon. Every transcendental is `det`'s, so a value is
+//! the box-grower, the even–odd point-in-polygon and the nonzero winding number. Every transcendental is `det`'s, so a value is
 //! the same bits on every Mac and in wasm.
 
 use det::Det;
@@ -120,7 +120,7 @@ pub fn grow(b: [f64; 4], km: f64) -> [f64; 4] {
 }
 
 /// The latitude `grow` takes a box's longitudes grown at, at most.
-pub const GROW_LAT: f64 = 89.0;
+const GROW_LAT: f64 = 89.0;
 
 /// The degrees of longitude `km` spans along the parallel at `lat`: half a turn at most (a pole's
 /// circle shorter than that: every longitude).
@@ -198,6 +198,28 @@ pub fn inside<T: Coord, R: AsRef<[[T; 2]]>>(rings: &[R], p: [T; 2]) -> bool {
     ins
 }
 
+/// The nonzero winding number of `rings` at `p` (each edge counted as `inside` counts it, +1
+/// upward, −1 downward): nonzero inside the union of rings wound alike, holes wound against their
+/// outer ring. For rings that may overlap, wound by a rule (a basemap's polygons, each tile's with
+/// its buffer, as the lake fill reads them), where even–odd would call their overlap outside.
+pub fn winding<T: Coord, R: AsRef<[[T; 2]]>>(rings: &[R], p: [T; 2]) -> i32 {
+    let mut w = 0;
+    for r in rings {
+        let r = r.as_ref();
+        let n = r.len();
+        for i in 0..n {
+            let (a, b) = (r[i], r[(i + 1) % n]);
+            if (a[1] > p[1]) != (b[1] > p[1]) {
+                let up = b[1] > a[1];
+                if T::side(a, b, p) == if up { Ordering::Less } else { Ordering::Greater } {
+                    w += if up { 1 } else { -1 };
+                }
+            }
+        }
+    }
+    w
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +283,28 @@ mod tests {
         let big = [[-1_800_000_000, -900_000_000], [1_800_000_000, -900_000_000], [0, 900_000_000]];
         assert!(inside(&[&big[..]], [0, 0]));
         assert!(!inside(&[&big[..]], [1_799_999_999, 899_999_999]));
+    }
+
+    #[test]
+    fn winding_counts_overlaps_and_holes() {
+        // Two squares wound alike overlapping (a tile's polygon and its neighbour's buffered copy),
+        // a hole wound against the first.
+        let a = [[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]];
+        let b = [[8.0, 0.0], [8.0, 10.0], [18.0, 10.0], [18.0, 0.0]];
+        let hole = [[2.0, 2.0], [4.0, 2.0], [4.0, 4.0], [2.0, 4.0]];
+        let rings: Vec<&[[f64; 2]]> = vec![&a, &b, &hole];
+        assert_eq!(winding(&rings, [9.0, 5.0]).abs(), 2);
+        assert!(!inside(&rings, [9.0, 5.0]), "even–odd: the overlap outside");
+        assert_eq!(winding(&rings, [3.0, 3.0]), 0);
+        assert_eq!(winding(&rings, [20.0, 5.0]), 0);
+        assert_eq!(winding(&rings, [1.0, 5.0]).abs(), 1);
+        // Wherever rings don't overlap, the two rules agree.
+        let one: Vec<&[[f64; 2]]> = vec![&a, &hole];
+        for x in -1..=11 {
+            for y in -1..=11 {
+                let p = [x as f64 + 0.5, y as f64 + 0.5];
+                assert_eq!(winding(&one, p) != 0, inside(&one, p), "{p:?}");
+            }
+        }
     }
 }
