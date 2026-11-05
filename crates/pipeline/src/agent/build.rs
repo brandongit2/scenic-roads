@@ -2982,6 +2982,15 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     });
     let mut taken = vec![false; units.len()];
     let mut listed: BTreeSet<String> = BTreeSet::new();
+    // (The terrain's targets, in the order a region takes them, each tagged in `listed` (a z6 tile is
+    // terrain-hi's and terrain-lakes' target, a z3 tile's assembly no z6 tile's); those no region
+    // took, last: every one offered, its readiness its own.)
+    let terrain_lists: [(&str, &Vec<(String, String)>, &str); 4] = [
+        ("terrain-hi", &terrain, ""),
+        ("terrain-lakes", &terrain_lakes, "lakes "),
+        ("terrain-deep", &terrain_deep, ""),
+        ("terrain-lo", &terrain_lo, "lo "),
+    ];
     let mut by_region_all: Vec<Work> = Vec::new();
     for r in &order {
         // (Its work, then the ready work of the steps reading it in the region (its slope), each moved
@@ -2990,24 +2999,14 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         // never offered before it's built.)
         let mut chunk: Vec<Work> = Vec::new();
         let by_region = &mut chunk;
-        let t: Vec<(String, String)> =
-            terrain.iter().filter(|t| r.terrain.contains(&z3(t)) && listed.insert(t.0.clone())).cloned().collect();
-        push(by_region, "terrain-hi", t);
-        let t: Vec<(String, String)> = terrain_lakes
-            .iter()
-            .filter(|t| r.terrain.contains(&z3(t)) && listed.insert(format!("lakes {}", t.0)))
-            .cloned()
-            .collect();
-        push(by_region, "terrain-lakes", t);
-        let t: Vec<(String, String)> =
-            terrain_deep.iter().filter(|t| r.terrain.contains(&z3(t)) && listed.insert(t.0.clone())).cloned().collect();
-        push(by_region, "terrain-deep", t);
-        let t: Vec<(String, String)> = terrain_lo
-            .iter()
-            .filter(|t| r.terrain.contains(&t.0) && listed.insert(format!("lo {}", t.0)))
-            .cloned()
-            .collect();
-        push(by_region, "terrain-lo", t);
+        for (step, list, tag) in &terrain_lists {
+            let t: Vec<(String, String)> = list
+                .iter()
+                .filter(|t| r.terrain.contains(&z3(t)) && listed.insert(format!("{tag}{}", t.0)))
+                .cloned()
+                .collect();
+            push(by_region, step, t);
+        }
         let mut mine: Vec<usize> = r.stale.iter().copied().filter(|&i| !taken[i] && buildable(i)).collect();
         mine.sort_by_key(|&i| spatial_order(units[i].0));
         for &i in &mine {
@@ -3168,13 +3167,9 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     }
 
     // (Terrain no region with work left reads, and a z6 tile in no region's own coverage, last.)
-    push(&mut by_region, "terrain-hi", terrain.iter().filter(|t| !listed.contains(&t.0)).cloned().collect());
-    push(&mut by_region, "terrain-deep", terrain_deep.iter().filter(|t| !listed.contains(&t.0)).cloned().collect());
-    push(
-        &mut by_region,
-        "terrain-lo",
-        terrain_lo.iter().filter(|t| !listed.contains(&format!("lo {}", t.0))).cloned().collect(),
-    );
+    for (step, list, tag) in &terrain_lists {
+        push(&mut by_region, step, list.iter().filter(|t| !listed.contains(&format!("{tag}{}", t.0))).cloned().collect());
+    }
     let mut rest: Vec<usize> = (0..units.len()).filter(|&i| unit_stale[i] && !taken[i] && buildable(i)).collect();
     rest.sort_by_key(|&i| spatial_order(units[i].0));
     push(&mut by_region, "unit", rest.into_iter().filter_map(target).collect());
