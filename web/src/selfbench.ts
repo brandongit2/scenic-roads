@@ -16,7 +16,8 @@
 // map's own render call on the main thread (CPU, every frame and frames that moved the camera), its
 // GPU time where the browser has EXT_disjoint_timer_query_webgl2 (not Safari), long tasks where the
 // browser reports them (not Safari: there the longest frames stand for them), tiles loaded meanwhile,
-// and which layers were drawing. The view must lie in the map's coverage and the camera stay 200 m
+// and which layers were drawing; at rest after the load and after each run, the GPU memory (gpuUse:
+// all the map's, the drapes' part, and the shading's tiles by zoom). The view must lie in the map's coverage and the camera stay 200 m
 // over the ground under it and over the highest ground in view, at the start and along each run
 // (else the result is marked `invalid`, as tools/bench/bench.mjs refuses one).
 // The result is posted to the map server (`POST /api/bench?name=…`, saved under <home>/bench/), then
@@ -107,6 +108,86 @@ const takeTasks = () => {
   for (const k in tasks) delete tasks[k];
   return r;
 };
+
+/**
+ * The map's GPU memory (MB, about): every texture, renderbuffer and buffer the page's WebGL2
+ * contexts allocate, by the sizes they were given (bytes a texel by internal format; a generated
+ * mipmap chain a third more), less those deleted. Counted from the page's start, in the benchmark
+ * only: the browsers report no GPU memory to a page.
+ */
+const gpuMem = (() => {
+  if (!BENCH || typeof WebGL2RenderingContext === 'undefined') return null;
+  const G = WebGL2RenderingContext;
+  const BPP: Record<number, number> = {
+    [G.RGBA]: 4, [G.RGBA8]: 4, [G.RGB]: 4, [G.RGB8]: 4, [G.SRGB8_ALPHA8]: 4, [G.R8]: 1, [G.ALPHA]: 1, [G.LUMINANCE]: 1, [G.LUMINANCE_ALPHA]: 2,
+    [G.RG8]: 2, [G.R16F]: 2, [G.R32F]: 4, [G.RG16F]: 4, [G.RG32F]: 8, [G.RGBA16F]: 8, [G.RGBA32F]: 16, [G.R16UI]: 2, [G.R32UI]: 4, [G.RGBA8UI]: 4,
+    [G.DEPTH24_STENCIL8]: 4, [G.DEPTH_STENCIL]: 4, [G.DEPTH_COMPONENT16]: 2, [G.DEPTH_COMPONENT24]: 4, [G.DEPTH_COMPONENT32F]: 4, [G.STENCIL_INDEX8]: 1,
+  };
+  const bpp = (f: number) => BPP[f] ?? 4;
+  const tex = new Map<WebGLTexture, number[]>(), rb = new Map<WebGLRenderbuffer, number>(), buf = new Map<WebGLBuffer, number>();
+  type Bound = { unit: number; tex: Record<string, WebGLTexture | null>; buf: Record<number, WebGLBuffer | null>; rb: WebGLRenderbuffer | null };
+  const bound = new WeakMap<WebGL2RenderingContext, Bound>();
+  const st = (gl: WebGL2RenderingContext) => {
+    let b = bound.get(gl);
+    if (!b) bound.set(gl, (b = { unit: G.TEXTURE0, tex: {}, buf: {}, rb: null }));
+    return b;
+  };
+  const P = G.prototype as any;
+  const wrap = (name: string, after: (gl: WebGL2RenderingContext, a: any[]) => void) => {
+    const f = P[name];
+    P[name] = function (this: WebGL2RenderingContext, ...a: any[]) {
+      const r = f.apply(this, a);
+      after(this, a);
+      return r;
+    };
+  };
+  const cube = (target: number) => (target >= G.TEXTURE_CUBE_MAP_POSITIVE_X && target <= G.TEXTURE_CUBE_MAP_NEGATIVE_Z ? G.TEXTURE_CUBE_MAP : target);
+  const level = (gl: WebGL2RenderingContext, target: number, lvl: number, bytes: number) => {
+    const t = st(gl).tex[`${st(gl).unit}:${cube(target)}`];
+    if (!t) return;
+    const l = tex.get(t) ?? [];
+    l[lvl] = (cube(target) === target ? 0 : l[lvl] ?? 0) + bytes;
+    tex.set(t, l);
+  };
+  wrap('activeTexture', (gl, [u]) => { st(gl).unit = u; });
+  wrap('bindTexture', (gl, [target, t]) => { st(gl).tex[`${st(gl).unit}:${target}`] = t; });
+  wrap('texImage2D', (gl, a) => {
+    const [target, lvl, fmt] = a;
+    // (width and height given, or a source: an image, bitmap, canvas or video)
+    const [w, h] = a.length >= 8 ? [a[3], a[4]] : [a[5]?.width ?? a[5]?.videoWidth ?? 0, a[5]?.height ?? a[5]?.videoHeight ?? 0];
+    level(gl, target, lvl, w * h * bpp(fmt));
+  });
+  wrap('texImage3D', (gl, [target, lvl, fmt, w, h, d]) => level(gl, target, lvl, w * h * d * bpp(fmt)));
+  wrap('texStorage2D', (gl, [target, levels, fmt, w, h]) => {
+    for (let i = 0; i < levels; i++) level(gl, target, i, Math.max(1, w >> i) * Math.max(1, h >> i) * bpp(fmt));
+  });
+  wrap('texStorage3D', (gl, [target, levels, fmt, w, h, d]) => {
+    for (let i = 0; i < levels; i++) level(gl, target, i, Math.max(1, w >> i) * Math.max(1, h >> i) * d * bpp(fmt));
+  });
+  wrap('generateMipmap', (gl, [target]) => {
+    const t = st(gl).tex[`${st(gl).unit}:${target}`];
+    const l = t ? tex.get(t) : undefined;
+    if (t && l?.[0]) tex.set(t, [l[0], l[0] / 3]);
+  });
+  wrap('deleteTexture', (_gl, [t]) => tex.delete(t));
+  wrap('bindRenderbuffer', (gl, [, r]) => { st(gl).rb = r; });
+  wrap('renderbufferStorage', (gl, [, fmt, w, h]) => { const r = st(gl).rb; if (r) rb.set(r, w * h * bpp(fmt)); });
+  wrap('renderbufferStorageMultisample', (gl, [, n, fmt, w, h]) => { const r = st(gl).rb; if (r) rb.set(r, Math.max(1, n) * w * h * bpp(fmt)); });
+  wrap('deleteRenderbuffer', (_gl, [r]) => rb.delete(r));
+  wrap('bindBuffer', (gl, [target, b]) => { st(gl).buf[target] = b; });
+  // (a vertex array holds its own index buffer: unknown until one is bound)
+  wrap('bindVertexArray', (gl) => { st(gl).buf[G.ELEMENT_ARRAY_BUFFER] = null; });
+  wrap('bufferData', (gl, [target, data]) => { const b = st(gl).buf[target]; if (b) buf.set(b, typeof data === 'number' ? data : data?.byteLength ?? 0); });
+  wrap('deleteBuffer', (_gl, [b]) => buf.delete(b));
+  const mb = (n: number) => +(n / 1e6).toFixed(1);
+  return () => {
+    let t = 0, r = 0, b = 0;
+    for (const l of tex.values()) for (const x of l) t += x ?? 0;
+    for (const x of rb.values()) r += x;
+    for (const x of buf.values()) b += x;
+    return { totalMB: mb(t + r + b), texturesMB: mb(t), renderbuffersMB: mb(r), buffersMB: mb(b) };
+  };
+})();
 
 /** The hash the map opens on: the benchmark view's, as a `#map=` link. */
 export const benchHash = (): string => `#map=${BENCH!.view[1]}`;
@@ -301,6 +382,7 @@ export async function runBench(app: App): Promise<void> {
       clearance: start, prof: loadProf,
     },
     drawing: drawing(map),
+    gpu: gpuUse(map),
     runs: {} as Record<string, unknown>,
   };
   let invalid = bad(start);
@@ -361,7 +443,7 @@ export async function runBench(app: App): Promise<void> {
         renderCpuMs: stats(rd.map(([, d]) => d)), movedCpuMs: stats(rd.filter(([, , m]) => m).map(([, d]) => d)),
         gpuMs: tq ? stats(g.map(([d]) => d)) : null, movedGpuMs: tq ? stats(g.filter(([, m]) => m).map(([d]) => d)) : null,
         customMs: Object.fromEntries(Object.entries(custom).map(([k, v]) => [k, stats(v.slice(before.custom[k]))])),
-        loads: loads(t0, t1), settleMs, prof: runProf, clearance: clear.length ? worst : null,
+        loads: loads(t0, t1), settleMs, gpu: gpuUse(map), prof: runProf, clearance: clear.length ? worst : null,
       },
     };
     if (!invalid && clear.length && bad(worst)) invalid = `${bad(worst)} (along ${name})`;
@@ -403,6 +485,21 @@ function drawing(map: any): string[] {
     .filter((l) => (l.layout?.visibility ?? 'visible') !== 'none' && (l.minzoom ?? 0) <= z && z < (l.maxzoom ?? 24))
     .map((l) => l.id);
   return [...ids, ...(map.getTerrain() ? [`terrain×${map.getTerrain().exaggeration}`] : [])];
+}
+
+/** The GPU memory (gpuMem), the terrain drapes' part of it (their textures and mipmaps, held by
+ * tiles or pooled), and the shading's tiles drawn by zoom (`slope`; finer than the screen's where
+ * the terrain goes deeper: basemap.ts SHADE_DETAIL). */
+function gpuUse(map: any) {
+  const drapes = [...Object.values<any>(map.terrain?.tileManager?._tiles ?? {}).flatMap((t) => t.rttObjects ?? []), ...(map.painter._rttObjectRecyclePool ?? [])]
+    .filter(Boolean).reduce((a: number, o: { size: number }) => a + (o.size * o.size * 4 * 4) / 3, 0);
+  const tm = map.style.tileManagers.slope;
+  const shading: Record<number, number> = {};
+  for (const id of tm?.getRenderableIds() ?? []) {
+    const z = tm.getTileByID(id).tileID.overscaledZ;
+    shading[z] = (shading[z] ?? 0) + 1;
+  }
+  return { ...gpuMem?.(), drapesMB: +(drapes / 1e6).toFixed(1), shading };
 }
 
 /**

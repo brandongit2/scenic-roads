@@ -94,6 +94,8 @@ if (browser === 'safari') {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'bench-chrome-'));
   child = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', [
     `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions',
+    // (a window covered by another stops its frames on macOS: the benchmark would wait for ever)
+    '--disable-backgrounding-occluded-windows',
     `--window-size=${args.w ?? 1440},${args.h ?? 900}`, '--window-position=0,0', '--new-window', url,
   ], { stdio: 'ignore' });
   console.error(`chrome pid ${child.pid}, profile ${dir}`);
@@ -112,7 +114,10 @@ try {
     }
     const l = r.load;
     const row = [v.padEnd(10), `${r.viewport} load ${(l.navToSettledMs / 1000).toFixed(1)} s frame ${fmt(l.frameMs)} longest ${l.longestFrames.slice(0, 3).join('/')}`];
-    for (const [k, x] of Object.entries(r.runs)) row.push(`${k}: ${x.fps} fps frame ${fmt(x.frameMs)} cpu ${fmt(x.renderCpuMs)}${x.gpuMs ? ` gpu ${fmt(x.gpuMs)}` : ''} longest ${x.longestFrames.slice(0, 3).join('/')}`);
+    // (GPU memory at rest: the map's, the drapes' part, the shading's tiles by zoom)
+    const mem = (g) => (g ? `mem ${g.totalMB} MB drapes ${g.drapesMB} shading z${Object.entries(g.shading).map(([z, n]) => `${z}×${n}`).join(',')}` : '');
+    row[1] += ` ${mem(r.gpu)}`;
+    for (const [k, x] of Object.entries(r.runs)) row.push(`${k}: ${x.fps} fps frame ${fmt(x.frameMs)} cpu ${fmt(x.renderCpuMs)}${x.gpuMs ? ` gpu ${fmt(x.gpuMs)}` : ''} longest ${x.longestFrames.slice(0, 3).join('/')} settle ${(x.settleMs / 1000).toFixed(1)} s ${mem(x.gpu)}`);
     if (r.invalid) row.push(`INVALID: ${r.invalid}`);
     console.log(row.join(' | '));
   }
