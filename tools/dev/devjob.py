@@ -482,7 +482,7 @@ def sample(live_ids):
 def flush(log, url):
     """Sends what waits, oldest first: a batch a try before couldn't send, then the spool. The spool
     is moved aside to send only once nothing older waits, so while the app can't be reached the
-    events wait in one batch and the spool (which grows meanwhile, ~3 MB a day of jobs), not in a
+    events wait in one batch and the spool (which grows meanwhile, a few MB a day of jobs), not in a
     file a tick."""
     for f in sorted(glob.glob(os.path.join(DIR, "sending-*.ndjson"))):
         if not send(f, log, url):

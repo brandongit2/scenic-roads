@@ -13,7 +13,9 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
 - `server.mjs` is the app: its pages (`public/`), the event stream open pages hear of changes on
   (`/api/stream`, which collection changed), and its parts' APIs. `http.mjs` is what the parts
   share to answer.
-- **The task board** (`/task-board/`, an item's own address `/task-board/709`): `board.mjs` its API
+- **The task board** (`/task-board/`, an item's own address `/task-board/709`; `/709`, its address
+  before the dev tools app, goes there, and `/task-board/api/…` and `/task-board/_blob/…`, what its
+  page asked behind Caddy's old path, are `/api/…` and `/_blob/…`): `board.mjs` its API
   (`/api/c/…`, photos at `/_blob/<id>`), `schema.mjs` the shape of its data, enforced on every write
   (and read by the page, which shows what doesn't fit), `store.mjs` its file, `taskboard.db`:
   `items` (folders and tasks), `events` (history), `meta` (`status`, the status bar; `counter`, the
@@ -27,7 +29,9 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   (`state/devtools/<name>-<date>.db`, the newest 14 of each; `launchd/backup.sh`).
 - **On the M6:** `launchd/install.sh [node]` (default `mise which node`) installs it as a LaunchAgent
   (`local.scenic.devtools`, `--host ::`, IPv4 and IPv6, log `~/Library/Logs/scenic/devtools.log`)
-  and the backup (`local.scenic.devtools-backup`, 03:30). The other Macs use it at
+  and the backup (`local.scenic.devtools-backup`, 03:30); `launchd/move-from-taskboard.sh
+  [--rollback]` moves the M6 from the task board's own server (tools/taskboard, before #946) to it,
+  or back (what it does: its header). The other Macs use it at
   http://mac-mini-de-brandon:8077, and any device on the tailnet at https://map.brandontsang.net/dev/
   (Caddy, `tools/caddy`).
 - No sign-in, by the owner's rule: anyone on the home network or tailnet may use it. Elsewhere `--host` stays 127.0.0.1.

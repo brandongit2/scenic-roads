@@ -215,8 +215,15 @@ did (Claude Code's `CLAUDECODE`).
   `~/Library/Logs/scenic/devjobs/spool.ndjson`; the sampler (one a Mac, started by the first live
   span, gone once none is) sends it every 2 s, samples the Mac's load, memory and swap every 10 s,
   reads cargo's timing reports and ends a span whose process is gone (`gone`). The app away, the
-  spool waits (`sending-*.ndjson`) for the next sampler; nothing in a job waits on the network.
-  Its own log: `~/Library/Logs/scenic/devjobs/sampler.log`.
+  events wait, one batch (`sending-*.ndjson`) and the spool, which grows meanwhile (a few MB a day of
+  jobs, no cap: the app away for long is worth fixing, not hiding), for the next sampler; nothing
+  in a job waits on the network. Its own log: `~/Library/Logs/scenic/devjobs/sampler.log`.
+- **Recording never stops a job:** an event that can't be written (a full disk) is dropped, the
+  dj_* functions return 0 (publish.sh runs under errexit), and `devjob.py wrap` runs its command
+  whatever the spool. What a job pays: a `python3 devjob.py who` (~0.1 s: git's branch and commits)
+  at a run of its own's start, a line appended per event. A wrapped command (check.sh's parts,
+  remote-tests.sh, publish's release build and clippy) writes to a pipe, its stderr with its stdout:
+  no terminal, so cargo prints no colour there.
 - **A test that runs a recording script** (check.sh, publish.sh, remote-tests.sh, the shim) sets
   `SCENIC_DEVJOB=0` (nothing recorded) or a scratch `SCENIC_DEVJOB_DIR` with `SCENIC_BOARD` on a
   closed port, as `tools/dev/test/shared-target.zsh` does to check the shim's records: a test's
