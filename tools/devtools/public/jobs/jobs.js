@@ -65,11 +65,19 @@ const statusClass = (s) => (bad(s) ? "bad" : s.status === "running" ? "run" : s.
 const took = (s, now) => (s.t1 ?? now) - s.t0;
 // A Mac's short name: its chip ("M1 Pro"), then its host name.
 const macName = (mac, macs) => { const c = macs?.[mac]?.chip?.replace(/^Apple /, ""); return c ? `${c} · ${mac}` : mac; };
-// A colour from green to red by a share (0 fine, 1 bad), in ten steps (the canvas resolves each once).
+// A colour from green to red by a share (0 fine, 1 bad), in ten steps, as rgb() from the theme's
+// --ok, --warn and --bad (#rrggbb): what any canvas takes, Safari's too.
+const rgbOf = (name) => { const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); return [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16)); };
+const heats = new Map(); // (each step's, for the theme now)
 const heat = (x) => {
   const v = Math.round(Math.max(0, Math.min(1, x)) * 10) / 10;
-  return v <= 0.5 ? `color-mix(in srgb, var(--warn) ${v * 200}%, var(--ok))` : `color-mix(in srgb, var(--bad) ${(v - 0.5) * 200}%, var(--warn))`;
+  if (!heats.has(v)) {
+    const [a, b, f] = v <= 0.5 ? [rgbOf("--ok"), rgbOf("--warn"), v * 2] : [rgbOf("--warn"), rgbOf("--bad"), (v - 0.5) * 2];
+    heats.set(v, `rgb(${a.map((c, i) => Math.round(c + (b[i] - c) * f)).join(", ")})`);
+  }
+  return heats.get(v);
 };
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { heats.clear(); renderMain(); renderRun(); });
 // The load's share of trouble: a load at the cores' count is half, at twice it all; memory free (macOS's
 // memorystatus_level) at 50 % none, at 10 % all.
 const loadHeat = (load, ncpu) => (load == null ? null : heat(load / (2 * (ncpu || 8))));
