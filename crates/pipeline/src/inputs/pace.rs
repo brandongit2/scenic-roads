@@ -3,8 +3,9 @@
 //!
 //! A job's threads are set as it starts (`RAYON_NUM_THREADS`), and a check lasts hours: a Mac that
 //! was busy at the start leaves it on one core long after the rest are idle. So the agent keeps a
-//! file (`THREADS_ENV`) with the threads the check may use at the moment (the Mac's cores, less those
-//! kept for its owner and those its other jobs were given), and the check's pools are as wide as
+//! file (`THREADS_ENV`, replaced whole, so a read never meets it emptied and falls back to every
+//! core) with the threads the check may use at the moment (the Mac's cores, less those kept for its
+//! owner and those its other jobs were given), and the check's pools are as wide as
 //! `width`, their tasks each taking a `permit` for as long as they run: no more tasks run at once
 //! than the file says, whichever threads the pool has. A raise is seen within `POLL`.
 

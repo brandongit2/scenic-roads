@@ -148,7 +148,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      no inputs-folder path component or unit name, so these never clash with copies or nested units.
 - **Threads and progress.** A job's threads are set as it starts, and a check lasts hours, so the
   check doesn't keep its grant: its agent keeps a file (`SCENIC_THREADS_FILE`,
-  `Agent::tend_threads`, every loop) with the threads it may use now (`pace::allowed_now`). Never
+  `Agent::tend_threads`, every loop, replaced whole) with the threads it may use now (`pace::allowed_now`). Never
   fewer than its grant, at most 8 (`pace::MOST`; the regions' work ran four at once before), and
   past the grant one thread more for each core the Mac has left (its cores less those kept for its
   owner and those its other jobs were given), **only while the memory free covers each extra

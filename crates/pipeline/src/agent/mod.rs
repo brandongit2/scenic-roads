@@ -6788,7 +6788,7 @@ impl Agent {
         // (`tend_threads`; crate::inputs::pace).
         if is_paced(&spec) {
             let f = self.threads_path(k);
-            std::fs::write(&f, threads.to_string()).with_context(|| format!("write {}", f.display()))?;
+            store::whole::write(&f, threads.to_string().as_bytes())?;
             env.push((crate::inputs::pace::THREADS_ENV.into(), f.to_string_lossy().into_owned()));
         }
         // Where it says it waits on a worker holding its z6 tile's tail, while it does (`waiting_on`),
@@ -7142,8 +7142,8 @@ impl Agent {
         let now = allowed_now(cores, kept, beside, r.threads, free.and_then(memory)).to_string();
         let f = self.threads_path(k);
         if std::fs::read_to_string(&f).ok().as_deref() != Some(now.as_str()) {
-            if let Err(e) = std::fs::write(&f, &now) {
-                eprintln!("agent: telling {} its threads: {e}", r.spec.id);
+            if let Err(e) = store::whole::write(&f, now.as_bytes()) {
+                eprintln!("agent: telling {} its threads: {e:#}", r.spec.id);
             }
         }
     }
