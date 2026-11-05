@@ -4537,6 +4537,10 @@ fn depth_work_in(x: &KeyCtx, done: &Keys, left: &mut Left) -> Vec<Work> {
     // runs and again after it.)
     let root = if ready("depth-root", "depth-root", &*left) { depth_root_work(x, done) } else { None };
     let hi: Vec<(String, String)> = hi.into_iter().filter(|(t, _)| ready("depth", t, &*left)).collect();
+    // (A lake-depth target once the terrain hi packs it reads are made: a region just added runs
+    // it once, after its terrain, not before and again after; a drop at once.)
+    let lakes: Vec<(String, String)> =
+        lakes.into_iter().filter(|(t, k)| is_none_key("lake-depth", t, k) || ready("lake-depth", t, &*left)).collect();
     let mut out = Vec::new();
     for (step, targets) in [("lake-depth", lakes), ("depth", hi), ("depth-lo", lo)] {
         if !targets.is_empty() {
@@ -11238,6 +11242,13 @@ pub(crate) mod tests {
         chain_keys_derived(&c, &m, &none, &tiles, &w[..1]);
         // A pack made: the source's grid there, a depth target reading it, keyed on it.
         let t6 = TileId::parse(pieces.first().unwrap()).unwrap();
+        // Its terrain hi packs being made (a region just added): it waits for them, not run before.
+        let mut left = Left::default();
+        left.set("terrain-hi", [t6.slash()]);
+        let w = depth_work_in(&KeyCtx::new(&c, "d", &m, &none, None, &tiles), &Keys::default(), &mut left);
+        let held: Vec<&String> =
+            w.iter().filter(|w| w.step == "lake-depth").flat_map(|w| &w.targets).map(|t| &t.0).collect();
+        assert!(!held.contains(&&t6.slash()) && held.len() < pieces.len(), "{held:?}");
         let l = crate::depth::lakes::logical("globathy", (t6.x, t6.y));
         m.insert(l.clone(), format!("{l}.0404040404040404.tar"));
         tiles.hold_depth_in(&m, sources.clone());
