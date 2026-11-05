@@ -77,8 +77,9 @@ pub const BEST_WINDOW_S: u64 = 30 * 60;
 pub const BEST_SPAN_S: u64 = 48 * 3600;
 
 /// The highest value `points` held continuously for `BEST_WINDOW_S` (the highest of the rolling
-/// minimums over that window) in the `BEST_SPAN_S` to `now`: each point (time, value) stands for
-/// `step` s from its time, a later point past that breaking the run. None: no run that long. A
+/// minimums over that window) in the `BEST_SPAN_S` to `now`: each point (time, value) stands until
+/// the next, at most `step` s (and never past `now`), a later point past that breaking the run.
+/// None: no run that long. A
 /// Mac's room as the forecast takes it from now on (`MacRoom`): its quietest sustained state, a
 /// best case that foresees no use of the owner's and no passing load.
 pub fn sustained(points: &[(u64, f64)], step: u64, now: u64) -> Option<f64> {
@@ -97,7 +98,11 @@ pub fn sustained(points: &[(u64, f64)], step: u64, now: u64) -> Option<f64> {
                 }
                 lo = lo.min(p[j].1);
             }
-            if p[j].0 + step >= t0 + BEST_WINDOW_S {
+            let stands = match p.get(j + 1) {
+                Some(n) if n.0 <= p[j].0 + step => n.0 - p[j].0,
+                _ => step.min(now - p[j].0),
+            };
+            if p[j].0 + stands >= t0 + BEST_WINDOW_S {
                 best = Some(best.map_or(lo, |b: f64| b.max(lo)));
                 break;
             }

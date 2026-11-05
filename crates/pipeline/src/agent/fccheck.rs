@@ -400,34 +400,32 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
     out
 }
 
-/// Each Mac's room as the inputs' recorded asks said it (`Rooms::note`): its memory for jobs (what
-/// its jobs held and what was available, less its memory floor: its memory less what the rest of the
-/// Mac used and the floor, as `live::Store::best` reads it) and its cores less those busy outside
-/// the pool (`State::cores_left`), each at its capacity's time, by Mac.
+/// Each Mac's room as the inputs' recorded asks said it (`Rooms::note`), at each input's time: its
+/// memory for jobs (what its jobs held and what was available, less its memory floor: its memory
+/// less what the rest of the Mac used and the floor, as `live::Store::best` reads it) and its cores
+/// less those busy outside the pool (`State::cores_left`), by Mac.
 #[derive(Default)]
 struct Rooms {
     seen: BTreeMap<String, Vec<(u64, f64, f64)>>,
 }
 
 impl Rooms {
-    /// `inp`'s asks' rooms noted (each capacity once, by its time).
+    /// `inp`'s asks' rooms noted.
     fn note(&mut self, inp: &forecast::Input) {
         let Some(st) = inp.sched.as_ref() else { return };
         for w in &st.workers {
             let Some(c) = w.ask.cap.as_ref().filter(|c| c.avail_mb > 0) else { continue };
-            let at = if c.at > 0 { c.at } else { inp.now.saturating_sub(w.asked_s.unwrap_or(w.seen_s)) };
-            let mine = self.seen.entry(w.ask.worker.clone()).or_default();
-            if mine.iter().any(|x| x.0 == at) {
-                continue;
-            }
             let mem = (c.held_mb + c.avail_mb).saturating_sub(c.mem_floor_mb) as f64;
-            mine.push((at, mem, f64::from(st.cores_left(&w.ask))));
+            let mine = self.seen.entry(w.ask.worker.clone()).or_default();
+            mine.push((inp.now, mem, f64::from(st.cores_left(&w.ask))));
         }
     }
 
-    /// Each of `inp`'s asks' room at its sustained best (`Capacity::best`): over the asks noted
-    /// before it (`forecast::sustained`, each standing until the next input, `fcinputs::EVERY_S`;
-    /// the live one reads its Mac's minute samples), when `best`, and none was said; else none.
+    /// Each of `inp`'s asks' room at its sustained best (`Capacity::best`), when `best` and none was
+    /// said: over the inputs noted to it (`forecast::sustained`), each standing until the next. An
+    /// input is archived every `fcinputs::EVERY_S` at most (the first forecast after), so two more
+    /// than twice that apart had one lost between them, and the run breaks there (the live one reads
+    /// its Mac's minute samples). Not `best`: none, its room as it asked.
     fn set(&self, inp: &mut forecast::Input, best: bool) {
         let now = inp.now;
         let Some(st) = inp.sched.as_mut() else { return };
@@ -440,7 +438,7 @@ impl Rooms {
             let Some(seen) = self.seen.get(&w.ask.worker) else { continue };
             let pts =
                 |k: usize| -> Vec<(u64, f64)> { seen.iter().map(|x| (x.0, if k == 0 { x.1 } else { x.2 })).collect() };
-            let step = super::fcinputs::EVERY_S;
+            let step = 2 * super::fcinputs::EVERY_S;
             let found = (|| {
                 Some(forecast::MacRoom {
                     mem_mb: forecast::sustained(&pts(0), step, now)? as u64,
