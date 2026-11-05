@@ -326,7 +326,6 @@ fn the_tools_calls_are_the_programs() {
 /// stdin), a file the others source, and what launchd or the NAS's scheduler runs.
 const SHELL_EXEMPT: &[(&str, &str)] = &[
     ("tools/dev/board.sh", "sourced by tools/dev's scripts"),
-    ("tools/dev/health-due.sh", "a hook: its input on stdin"),
     ("tools/dev/report-guard.sh", "a hook: its input on stdin"),
     ("tools/dev/shell-guard.sh", "a hook: its input on stdin"),
     ("tools/dev/test-guard.sh", "a hook: its input on stdin"),

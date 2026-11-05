@@ -262,7 +262,6 @@ checkout it runs in from the top level), so a worktree has its own copy and no p
   ]
 }}
 ```
-  (`health-due.sh` is a PostToolUse/Stop hook of the same form; not registered since 16 Oct.)
 
 Generated state, all ignored: `.claude/health-stamp`, `.claude/sweep-targets.log`, `.claude/sweep-keep`
 (hand-made), `~/Library/Logs/scenic/`, `.git/check-passed`.

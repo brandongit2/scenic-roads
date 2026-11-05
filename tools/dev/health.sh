@@ -1,7 +1,6 @@
 #!/bin/zsh
 # The PM's health check of the build and the agents. Prints what needs attention and stamps the
-# time (.claude/health-stamp), which tools/dev/health-due.sh reads: Claude Code's hooks make the PM
-# run this at least every 20 minutes.
+# time (.claude/health-stamp).
 case $#:${1:-} in
   0:) ;;
   1:-h|1:--help) print "usage: tools/dev/health.sh   (no arguments)"; exit 0 ;;
