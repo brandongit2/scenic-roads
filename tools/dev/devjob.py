@@ -351,7 +351,10 @@ def wrap(argv):
     live(sid, os.getpid())
     env = dict(os.environ, SCENIC_DEVJOB_PARENT=sid)
     try:
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        # (Every file the caller passed on, kept, as a shell does: check.sh's SCENIC_CARGO_SAY names
+        # its own fd, and with it closed /dev/fd/<n> opened whatever took its number, a waiting
+        # cargo's ticket, whose lock the write's close let go.)
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, close_fds=False)
     except OSError as e:  # (as a shell says it: the command can't be run, 127)
         print(f"devjob.py wrap: {cmd[0]}: {e.strerror}", flush=True)
         emit({"op": "end", "id": sid, "t": round(time.time(), 3), "status": "fail", "attrs": {"exit": "127", "why": f"{cmd[0]}: {e.strerror}"}})

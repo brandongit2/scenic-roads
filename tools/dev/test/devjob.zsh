@@ -43,6 +43,11 @@ for (( i = 0; i < 600; i++ )); do zsystem flock -t 0 -f f $s/sampler.lock 2>/dev
   dj_start part "" k ""; id=$REPLY
   SCENIC_DEVJOB_PARENT= dj_span part "" $EPOCHREALTIME $EPOCHREALTIME ok "" ""
   dj_attr "" k v; dj_end "" ok; dj_end $id ok ) || fail "the functions under set -u"
+# A wrapped command keeps the files its caller passed on (check.sh's SCENIC_CARGO_SAY is its fd).
+exec {keep}>$s/kept
+dj_wrap part fd; $reply zsh -c "print -u $keep through" > /dev/null || fail "the wrapped command"
+exec {keep}>&-
+[[ $(<$s/kept) == through ]] || fail "the wrapped command lost its caller's fd: $(<$s/kept)"
 # SCENIC_DEVJOB=0: nothing.
 rm -rf $s/*(N)
 SCENIC_DEVJOB=0 dj_start check x; [[ -z $REPLY && ! -e $s/spool.ndjson ]] || fail "SCENIC_DEVJOB=0 recorded"
