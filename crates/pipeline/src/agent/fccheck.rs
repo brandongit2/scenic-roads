@@ -454,6 +454,81 @@ pub struct Backtest {
     pub split: u64,
     pub train: [Report; 2],
     pub test: [Report; 2],
+    /// The jobs' lengths against what the scheduler sized them to (`batches`), over the whole span.
+    pub batches: Vec<Batches>,
+}
+
+/// A step's jobs on a Mac (`batches`): each one's time over the time the scheduler sizes it to
+/// (`ratio`), all of them and those sized to half the batch length or more (`long`: the jobs the
+/// length bound ended, or near it, where a short one ended for want of work offered).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Batches {
+    pub step: String,
+    pub mac: String,
+    pub all: Ratio,
+    pub long: Ratio,
+}
+
+/// Jobs' time over their sized time: their count, median and 90th percentile (nearest rank).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Ratio {
+    pub n: usize,
+    pub median: f64,
+    pub p90: f64,
+}
+
+impl Ratio {
+    fn of(mut v: Vec<f64>) -> Ratio {
+        v.sort_by(f64::total_cmp);
+        let at = |q: f64| v.get(((v.len() as f64 * q).ceil() as usize).saturating_sub(1)).copied().unwrap_or(0.0);
+        Ratio { n: v.len(), median: at(0.5), p90: at(0.9) }
+    }
+}
+
+/// The history's jobs of the shared steps (`actuals`) that started in `from..to`, each against
+/// the time the scheduler of the input recorded last before its start sizes it to take its worker
+/// (`Sched::batch_secs` on that input's state, with each Mac's pace worked out from `events` to then
+/// as the lead does, crate::paces): its time (its end less its grant) over that, by step and Mac
+/// (task #927). A job of no time sized (a target measured at none) isn't counted.
+pub fn batches(inputs: &[Input], events: &[Event], from: u64, to: u64) -> Vec<Batches> {
+    use crate::coord::sched::{Clock, Sched};
+    let jobs: Vec<Actual> = actuals(events)
+        .into_iter()
+        .filter(|a| (from..to).contains(&a.start) && super::steps::SHARED.contains(&a.step.as_str()))
+        .collect();
+    let mut by: BTreeMap<(String, String), (Vec<f64>, Vec<f64>)> = BTreeMap::new();
+    for (k, i) in inputs.iter().enumerate() {
+        let until = inputs.get(k + 1).map_or(u64::MAX, |n| n.at);
+        let ours: Vec<&Actual> = jobs.iter().filter(|a| (i.at..until).contains(&a.start)).collect();
+        if ours.is_empty() {
+            continue;
+        }
+        let Ok(r) = i.record() else { continue };
+        let Some(mut st) = r.input.sched.clone() else { continue };
+        let lead = if st.lead_name.is_empty() {
+            r.input.machines.first().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).unwrap_or_default()
+        } else {
+            st.lead_name.clone()
+        };
+        st.paces = crate::paces::Paces::of(events, &lead, i.at);
+        let s = Sched::from_state(
+            &st,
+            Clock { now: std::time::Instant::now(), unix: i.at },
+            std::time::Duration::from_secs(86_400),
+        );
+        for a in ours {
+            let Some(sized) = s.batch_secs(&a.step, a.targets.iter().map(String::as_str), &a.worker) else { continue };
+            let ratio = a.end.saturating_sub(a.start) as f64 / sized.max(1) as f64;
+            let e = by.entry((a.step.clone(), a.mac.clone())).or_default();
+            e.0.push(ratio);
+            if sized * 2 >= crate::coord::JOB_S {
+                e.1.push(ratio);
+            }
+        }
+    }
+    by.into_iter()
+        .map(|((step, mac), (all, long))| Batches { step, mac, all: Ratio::of(all), long: Ratio::of(long) })
+        .collect()
 }
 
 /// The backtest of `inputs` (`replay`, old and new) against `events`, over `from`..`to`.
@@ -467,7 +542,12 @@ pub fn backtest(inputs: &[Input], events: &[Event], from: u64, to: u64, split: u
     let part =
         |es: &[Entry], test: bool| -> Vec<Entry> { es.iter().filter(|e| (e.at >= split) == test).cloned().collect() };
     let rep = |es: &[Entry], test: bool| check(&part(es, test), events, if test { split } else { from }, to);
-    Backtest { split, train: [rep(&old, false), rep(&new, false)], test: [rep(&old, true), rep(&new, true)] }
+    Backtest {
+        split,
+        train: [rep(&old, false), rep(&new, false)],
+        test: [rep(&old, true), rep(&new, true)],
+        batches: batches(inputs, events, from, to),
+    }
 }
 
 /// The backtest as text: for the test set, then the train set, the end's and the start's errors
@@ -552,6 +632,22 @@ pub fn backtest_text(b: &Backtest) -> String {
                 row(&mut o, k, s, &new.by_step.get(k).cloned().unwrap_or_default());
             }
         }
+    }
+    let _ = writeln!(
+        o,
+        "\nJobs' time over the time the scheduler sizes them to (all; sized to half the batch length or more):"
+    );
+    let _ = writeln!(
+        o,
+        "  {:<14} {:<24} {:>5} {:>7} {:>7} | {:>5} {:>7} {:>7}",
+        "step", "Mac", "n", "median", "p90", "n", "median", "p90"
+    );
+    for b in &b.batches {
+        let _ = writeln!(
+            o,
+            "  {:<14} {:<24} {:>5} {:>7.2} {:>7.2} | {:>5} {:>7.2} {:>7.2}",
+            b.step, b.mac, b.all.n, b.all.median, b.all.p90, b.long.n, b.long.median, b.long.p90
+        );
     }
     o
 }

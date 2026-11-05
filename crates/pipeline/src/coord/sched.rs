@@ -497,6 +497,13 @@ impl Sched {
         })
     }
 
+    /// How long a job of `step` over `targets` is measured to take `worker` (s): its targets' times
+    /// (`secs_of`) summed; None when one has none. What a job is sized by (`pick_every`), a leased
+    /// job's predicted time (`job_weight`) and the replay's (crate::agent::fccheck::batches).
+    pub fn batch_secs<'t>(&self, step: &str, targets: impl IntoIterator<Item = &'t str>, worker: &str) -> Option<u64> {
+        targets.into_iter().map(|t| self.secs_of(step, t, worker)).sum()
+    }
+
     /// What target `target` of `step` takes as a drop (`drops`) its own run hasn't measured: its
     /// step's drops' time and memory (crate::needs::Book::drop_need); None: no drop, or measured
     /// itself, or none of its step's drops ran yet (its step's model stands).
@@ -564,11 +571,8 @@ impl Sched {
             if targets.is_empty() { vec![""] } else { targets.iter().map(|t| t.0.as_str()).collect() };
         // (No time known for a target: `OWN_AGE`, so an unmeasured job is weighed by what it does
         // once it has run that long, never by its step's guess for good.)
-        let predicted: u64 = names
-            .iter()
-            .map(|t| self.secs_of(step, t, &l.worker))
-            .sum::<Option<u64>>()
-            .unwrap_or(crate::budget::nas::OWN_AGE.as_secs());
+        let predicted: u64 =
+            self.batch_secs(step, names.iter().copied(), &l.worker).unwrap_or(crate::budget::nas::OWN_AGE.as_secs());
         if now.saturating_duration_since(l.granted).as_secs() <= predicted {
             return (w, dl);
         }
