@@ -993,6 +993,16 @@ pub fn group_peak() -> u64 {
     GROUP_PEAK.lock().map_or(now, |g| g.1.max(now))
 }
 
+/// The osmium program, found in Homebrew's folder first (task #916: from pipeline::osmpass, which
+/// re-exports it).
+pub fn osmium() -> Command {
+    let path = format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default());
+    // (Looked up by the PATH it's given: store::spawn.)
+    let mut c = store::spawn::command_in("osmium", std::ffi::OsStr::new(&path));
+    c.env("PATH", path);
+    c
+}
+
 /// The available memory's reckoning, on the three Macs' pages as read at 14:39 on 4 Nov (task #945;
 /// `vm_stat`, the pressure normal on each), whatever Mac the test runs on.
 #[cfg(test)]

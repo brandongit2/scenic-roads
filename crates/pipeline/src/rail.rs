@@ -36,6 +36,7 @@ use crate::coverage::{Coverage, Shape};
 use crate::out::Out;
 use crate::outlines::{flag, Outlines};
 use anyhow::{Context, Result};
+use jobrt::timings::day_of;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -246,22 +247,6 @@ pub fn read_fetched(out: &Out) -> Result<Fetched> {
         Some(c) => Ok(serde_json::from_slice(&out.path(c).read().with_context(|| format!("read {c}"))?)?),
         None => Ok(Fetched::new()),
     }
-}
-
-/// The UTC day of a time, `YYYY-MM-DD`.
-pub fn day_of(t: std::time::SystemTime) -> String {
-    let s = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
-    // Civil from days (Howard Hinnant's algorithm).
-    let z = s.div_euclid(86400) + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + (m <= 2) as i64;
-    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// The NAS's zips for crate::railfeeds: `{feed id: {path, fetched}}`, every
@@ -543,15 +528,6 @@ mod tests {
             .map(|c| (u32::from_le_bytes(c[..4].try_into().unwrap()), f32::from_le_bytes(c[4..].try_into().unwrap())))
             .collect();
         assert_eq!(got, vec![(10, -2.5), (20, 1.0), (30, 5.0)], "sorted by way id; an index past the ways dropped");
-    }
-
-    #[test]
-    fn days_of_times() {
-        let t = |s: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s);
-        assert_eq!(day_of(t(0)), "1970-01-01");
-        // 2026-09-30 12:42 UTC, and the last second of a leap day.
-        assert_eq!(day_of(t(1_790_772_120)), "2026-09-30");
-        assert_eq!(day_of(t(1_709_251_199)), "2024-02-29");
     }
 
     #[test]

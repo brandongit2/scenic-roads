@@ -372,13 +372,8 @@ pub fn planetiler_room(input_len: u64) -> u64 {
 /// Extract buffer around a z6 tile, km.
 pub const BUFFER_KM: f64 = 10.0;
 
-pub fn osmium() -> Command {
-    let path = format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default());
-    // (Looked up by the PATH it's given: store::spawn.)
-    let mut c = store::spawn::command_in("osmium", std::ffi::OsStr::new(&path));
-    c.env("PATH", path);
-    c
-}
+/// The osmium program (jobrt::sys, where the steps below pipeline reach it too).
+pub use jobrt::sys::osmium;
 
 fn run(mut c: Command, what: &str) -> Result<()> {
     eprintln!("$ {what}");

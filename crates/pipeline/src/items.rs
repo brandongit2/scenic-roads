@@ -202,7 +202,7 @@ pub fn run(
         Err(e) => return Err(e.into()),
     };
     let mut note_fetch = || -> Result<()> {
-        let today = crate::rail::day_of(std::time::SystemTime::now());
+        let today = jobrt::timings::day_of(std::time::SystemTime::now());
         if fetched.get("first").is_none() {
             fetched.set("first", Py::Str(today.clone()));
         }
