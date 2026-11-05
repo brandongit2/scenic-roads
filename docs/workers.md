@@ -57,8 +57,8 @@ Four kinds, all with the same spec shape (`unit` (stored: the task's z6 or z8 ti
   {dir}/coverage.json --chm {chm} --leaf {sources}/trees/leaf --squares … --out {dir}`. The task's
   one file is the coverage cut to the row; canopy strips are read where they lie.
 - **Terrain's z8 subtrees** (`terrainsub`, `pipeline::terrain_task`, docs/steps.md §2, Terrain): a z6 tile's
-  16 subtrees go out in groups closed under the lakes they share (a lake's level depends on all its
-  shore); groups over two subtrees are not offered. Its one file `u/in.sect` holds all it reads;
+  16 subtrees go out each alone (a tile reads nothing past its subtree: its raw tile, its
+  children, its water). Its one file `u/in.sect` holds all it reads;
   the run `terrainsub --in {dir}/in.sect --out {dir}` writes `hi.sect` and `mid.sect`.
 
 Common rules:

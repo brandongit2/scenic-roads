@@ -90,27 +90,9 @@ makes the same bytes on every Mac.
     10 cm, ties to even (crate::terrain_codec); only reads across jobs (the lo packs' z3 for the
     root) see rounded tiles.
   - **The jobs** (each boundary scheduling's):
-    - **terrain-lakes**, a run per z6 tile with terrain-deep targets (crate::terrain_lakes, task
-      #942): the levels of the lakes across its targets' z10 edges, each decided once for the whole
-      lake, so a lake two targets share sits at one level in both (each from its own tiles, the
-      levels of one lake across z10 edges had stepped a few cm to metres apart at z13–14). A lake
-      across: an OSM lake whose z14 tiles lie in two z10 tiles or more; its tiles, every z14 tile
-      of the z10 tiles it reaches holding it (a z10 tile reached where one of its tiles touches one
-      of the lake's), past the z6 tile too, so the same from any of its targets. Its level: the
-      water's rule below over its z14 tiles with a shore (those it doesn't wholly cover), each sampled
-      from the pool at z14 (the pool's own sample, not the means of finer tiles); a lake none of whose
-      z14 pixels is half its own (a sliver at an edge: 6 of the 246 at 6/56/25) gets none, and each
-      target levels it from its own tiles as before. A file per target
-      with such a lake (`work/terrain-lakes/10-x-y`, docs/formats.md); its key names the water, the
-      elevation and the coverage's deep targets there whole (a lake goes on past its z6 tile).
-      Measured (`examples/lake_steps`, the M1 at 4 threads reading the NAS): 6/56/25 (Lake Biwa),
-      246 lakes across 100 targets' edges, 752 shore tiles sampled in 185 s (2.6 GB, the coverage read included); a large lake
-      (Huron, Ontario: thousands of z14 tiles) is sampled whole by each z6 tile it reaches.
     - **terrain-deep**, a run per z10 tile whose places reach past z12 (`terrain_deep::levels`, near
-      the coverage), once its z6 tile's terrain-lakes is made: its tiles z13–16 by the rule, its lakes
-      across its edges at terrain-lakes' levels (its key names its file by content: a lake changed
-      re-keys only the targets it reaches), its deep pack, and its mid
-      (`work/terrain-deep-mid/10-x-y`: its z13 tiles' means before rounding and its lakes' levels).
+      the coverage), from the start (it reads no built tile): its tiles z13–16 by the rule, its deep
+      pack, and its mid (`work/terrain-deep-mid/10-x-y`: its z13 tiles' means before rounding).
       A z10 tile, not its z6 tile: up to 5,440 tiles and GBs of a fine dataset's reads each. A tile
       of the band is kept only where some of its pixels came from a dataset reaching its zoom
       (`terrain_zoom::codes_reaching`, the sampler's sources by pixel); one that would only upsample
@@ -118,16 +100,15 @@ makes the same bytes on every Mac.
       dataset's zoom holds there, as the depth's rule (§3, #804). The band is the long part of a
       rebuild: of the ~40 Mac-days estimated for a whole terrain rebuild, most are its targets.
     - **terrain-hi**, a run per z6 tile near the coverage (`build_piece`): its z9–12 by the rule, its
-      z12 tiles' quarters over its z10 tiles' deep mids (and its lakes' levels from them first), its
-      hi pack, and its mid (`work/terrain-mid/6-x-y`: its z9 tiles' means and its lakes' levels). It
-      waits for its own z10 tiles' terrain-deep targets alone (its declared reads, docs/readiness.md):
-      a z6 tile with none waits for nothing. One run a z6 tile so one lake has one level across it;
-      its z8 subtrees may go to other workers (`terrainsub`, docs/workers.md §3), not where it takes
-      in deep mids. Each level a block at a time (a z8 subtree's tiles at z12: `blocks`), the next
-      prepared while this one's are finished; a tile whose lakes all have their levels then is
-      finished and let go. Its blocks kept as made (crate::terrain_resume), a resumed run takes them.
+      z12 tiles' quarters over its z10 tiles' deep mids, its hi pack, and its mid
+      (`work/terrain-mid/6-x-y`: its z9 tiles' means). It waits for its own z10 tiles' terrain-deep
+      targets alone (its declared reads, docs/readiness.md): a z6 tile with none waits for nothing.
+      Its z8 subtrees may go to other workers (`terrainsub`, docs/workers.md §3), each alone (a tile
+      reads nothing past its subtree), not where it takes in deep mids. Each level a block at a time
+      (a z8 subtree's tiles at z12: `blocks`), each tile made whole and let go. Its blocks kept as
+      made (crate::terrain_resume), a resumed run takes them.
     - **terrain-lo**, an assembly per z3 tile (`build_lo`): z8 → z3 from its z6 tiles' mids and the
-      relief, since a lake's level at z8 is gathered from the whole z3 tile: its lo pack.
+      relief: its lo pack.
     - **terrain-root** (z0–2), once every terrain-lo is done: from the lo packs' z3 tiles and the
       relief, at most 21 of its tiles read; seconds.
     `scenic-build terrain-same 6/x/y [--whole]` makes a live z6 tile (its deep mids taken in) and sets
@@ -160,13 +141,11 @@ makes the same bytes on every Mac.
     the target reads), so a rebuild with the same key gives identical packs. The digests are worked
     out once a basemap by the `terrain-water` job (z6 tiles, z10 targets' levels, assemblies), so a
     new pass remakes only targets whose water changed.
-  - **Water flattened** (crate::terrain_water): from the basemap's `water` layer at the tile's zoom,
-    4 × 4 samples a pixel. The sea goes to 0; each lake, pond, reservoir or dock to its level (the
-    10th percentile of its shore's dry pixels, or its source's own lower level); intermittent
-    water and pools are left. One level per lake by OSM id across the tiles made
-    together; a lake without one is its tile's alone (`own_key`: never another tile's or feature's);
-    a lake across deep targets' z10 edges at the level terrain-lakes decided for the whole of it,
-    which the z6 tiles' z9–12 then take from the deep mids. Partly-water pixels are blended.
+  - **Water** (crate::terrain_water): from the basemap's `water` layer at the tile's zoom, 4 × 4
+    samples a pixel. The sea goes to 0, a partly-sea pixel blended by its share. Lakes, ponds,
+    reservoirs and docks keep the source's heights, its artefacts too (the owner's, 5 Nov: the
+    terrain follows its source over lakes; task #942 removed the lakes' levelling and the
+    terrain-lakes step). A lake's share of a pixel is left out of a river's (below).
   - **Rivers levelled** (`terrain_water::rivers`, task #678): in a tile with both river polygons
     (the `water` layer's class `river`) and rivers' courses (the `waterway` layer's class `river`,
     not intermittent, not in tunnels), each course is cut into stations, the river pixels it
@@ -176,7 +155,7 @@ makes the same bytes on every Mac.
     regression), falling along the course or against it, whichever fits closer (no flow direction
     is trusted; a tie keeps OSM's, drawn downstream), then averaged over 8 stations each side (still
     monotone), so its flats meet in ramps rather than steps across the river. Each river pixel takes its station's level,
-    blended with its own height by its river share as lakes' are (the banks). A course whose whole
+    blended with its own height by its river share (the banks). A course whose whole
     pixels already lie within 1 m of its profile (all but a tenth: 3DEP's hydro-flattening) keeps
     its pixels, as do river pixels no course reaches and rivers drawn only as lines. Each tile's
     rivers are levelled from that tile alone, so a river crossing tiles may step a little at their
@@ -460,11 +439,13 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   across a dike or a spit; a lake without data of its own stays empty), the land a 3-pixel band of
   the nearest water's value (class none: a finer shoreline scaled up from it never meets a gap; the
   map and the floor leave it out); dries where above the chart's low water.
-- **The floor:** the depth lies on the terrain's own water, flattened to its surface, so the terrain
-  less the depth is the floor; the server serves it (`/tiles/terrain/…?floor=1`), no second terrain
-  stored. Rivers are levelled along their courses (§2, Rivers levelled), or left as their source
-  levelled them (3DEP's hydro-flattening), so under a river the floor is the depth below a smooth,
-  falling surface; a river without a course in its tile is what its sources draw there. A
+- **The floor:** the depth lies on the terrain's own water, so the terrain less the depth is the
+  floor; the server serves it (`/tiles/terrain/…?floor=1`), no second terrain stored. The sea's
+  surface is 0 m; a lake's is the terrain's source there (§2, Water: not levelled), so a lake's floor
+  follows its source's surface, artefacts too. Rivers are levelled along their courses (§2, Rivers
+  levelled), or left as their source levelled them (3DEP's hydro-flattening), so under a river the
+  floor is the depth below a smooth, falling surface; a river without a course in its tile is what
+  its sources draw there. A
   pixel of narrow water is the terrain's blend of water and shore (§2, Terrain), so its floor is
   rough. The map's toggle (Layers → Depth, "3D sea and lake floor"; web/src/depth.ts): the 3D
   terrain from the floor, the terrain itself its surface (our MapLibre's `Map#setTerrainSurface`);
@@ -536,10 +517,11 @@ drawn as a raster.
   metadata, read by our MapLibre's `draw_raster.ts`). Colours are in the URL (Settings → Map →
   Water), so a new colour needs no rebuild.
   - **Shaded by the terrain beneath:** the hill-shading is drawn over the water as over the land,
-    and the depth's colour and the coastal shading go under it. Lakes and the sea are flat in the
-    terrain (§2), so under the shading methods that leave flat ground clear (standard, combined,
-    Igor: the default) they show their colour; basic and multidirectional light flat ground, and
-    the water with it. Water on a slope (falls, cascades, a river's steep reach) shows its relief.
+    and the depth's colour and the coastal shading go under it. The sea is flat in the terrain, and
+    a lake where its source is (§2, Water), so under the shading methods that leave flat ground
+    clear (standard, combined, Igor: the default) they show their colour, and a lake its source
+    draws uneven shows that relief; basic and multidirectional light flat ground, and the water with
+    it. Water on a slope (falls, cascades, a river's steep reach) shows its relief.
     Where the terrain under a river steps (a tile's edge, its rivers levelled per tile, or two
     datasets meeting, as across the upper Niagara River), the step shows as a line across it.
   - **Whitewater** (`whitewater`, only with the water tiles; Settings → Map → Water, in the link's
@@ -585,8 +567,9 @@ drawn as a raster.
     (`water_waits_for_lakefill`), then go without it. The water layer draws its lakes as an extra
     z14 tile (`water::Extra`, the catalogue's `global.lakefill`), read only for tiles in its reach
     (`lakefill::REACH`, Canada's box, which the step refuses a lake outside), so away from the NAS a
-    region elsewhere draws its deeper zooms without it; the terrain flattens them
-    (`lakefill::FilledWater`; `terrain_pack::water_source_pin` names the fill).
+    region elsewhere draws its deeper zooms without it; the terrain's water reads them as lakes
+    (`lakefill::FilledWater`; `terrain_pack::water_source_pin` names the fill), which keep the
+    source's heights (§2, Water).
 
 ## 5. Worldwide road values (in the OSM pass)
 

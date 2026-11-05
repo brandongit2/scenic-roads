@@ -161,9 +161,9 @@ def build(check=False):
     s_aws = d.src('terr', cy, 'AWS Terrain Tiles', ['Terrarium PNG · ~27 m at z12;', 'declared; kept raw, never edited'],
                   kept=['sources/aws-terrarium/', 'a z3 or z6 tile’s tiles packed'])
     s_glo = d.src('terr', s_aws.b + 8, 'Copernicus GLO-30', ['30 m, north of 59.5° N, where', 'AWS mixes datums; declared'], kept=['sources/fetched/glo30/'])
-    s_bw = d.src('base', s_glo.b + 8, 'The basemap’s water', ['lakes to their shore’s level,', 'the sea to 0 m; digests per', 'target (terrain-water, lead)'])
-    n_terr = d.card('terr', 'd1', cy, 'terrain', 'Rust', ['z9–12 within 20 km of the', 'coverage; repaired; GLO-30', 'north of 60° N; lakes and', 'sea flattened; z8 subtrees', 'as tasks'],
-                    [(['layers/terrain/ hi'], 'packs · Terrarium PNG'), (['work/terrain-mid/'], 'z9 means, lakes’ levels')],
+    s_bw = d.src('base', s_glo.b + 8, 'The basemap’s water', ['the sea to 0 m, lakes as their', 'source has them; digests per', 'target (terrain-water, lead)'])
+    n_terr = d.card('terr', 'd1', cy, 'terrain', 'Rust', ['z9–12 within 20 km of the', 'coverage; repaired; GLO-30', 'north of 60° N; the sea', 'flattened; z8 subtrees', 'as tasks'],
+                    [(['layers/terrain/ hi'], 'packs · Terrarium PNG'), (['work/terrain-mid/'], 'z9 means')],
                     scope='z6', shared=True, task=True, fig='median 24 s a tile, p90 91 s; 6.8 GB p90')
     n_tlo = d.card('terr', 'd2', cy + 34, 'terrain, zoomed out', 'Rust', ['z3–8 from its z6 tiles’ mids;', 'the root (z0–2) once none', 'is left'],
                    [(['layers/terrain/ lo · root'], 'packs · Terrarium PNG')], scope='z3', shared=True, fig='first guess 1.2 GB')

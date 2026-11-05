@@ -606,13 +606,13 @@ owner)`. The coordinator logs the threads with each grant.
 takes the new one as its next target begins. Its agent keeps the threads it may use now in a file
 of its slot's (`threads`, `threads-<k>`; `SCENIC_THREADS_FILE`, `jobrt::control::THREADS_ENV`), written as it
 starts and at each re-grant, always replaced whole (`control::grant`), so a read never meets it
-emptied. A step that takes it (slope-hi, slope-deep, terrain-hi, terrain-lakes, terrain-deep:
+emptied. A step that takes it (slope-hi, slope-deep, terrain-hi, terrain-deep:
 `control::on_grant`)
 reads the file once as each target begins and runs that target on a rayon pool that wide, the
 timings' main thread carried onto the pool's thread (`timings::Main`); a change written while a
 target runs waits for the next, so no target changes threads under way, and the thread count
 changes no output (`slope_pack`'s test: a z6 tile's packs the same bytes on 2 threads and on 8). The
-elevation pool's sampling (`terrain_base`'s `prefetch_counted`, in terrain-hi, terrain-lakes and
+elevation pool's sampling (`terrain_base`'s `prefetch_counted`, in terrain-hi and
 terrain-deep) runs its chunks as tasks of a second pool as wide as the target's grant, one a thread
 (`control::on_outside_pool`), their passes (`dem::generic`) there too, while the target's thread
 waits, working on nothing: the job is on its grant's threads, no more. Not threads of their own
@@ -1494,7 +1494,7 @@ the most its step declares (the steps table's `mem_mb`) or it was offered with, 
 (`coord::sched::provisional_mb`), its disk its step's measures' (else none); its cores its step's
 use on the Mac where its timings have any (§7.1, task #947), else one thread (task #896)
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
-`slope-deep`, `terrain-deep` and `terrain-lakes`, on the rayon pool the agent sizes, terrain-deep's
+`slope-deep` and `terrain-deep`, on the rayon pool the agent sizes, terrain-deep's
 reads waiting on the network; `bld-fetch`, its downloads bounded by `--jobs`; `pyramids-fill`, its fetches a host's requests in
 flight, `fetch::HOST_REQUESTS`), else the whole
 Mac. It goes beside other jobs when that fits the room left, and other jobs go beside it by the

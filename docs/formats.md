@@ -908,20 +908,16 @@ class, id) within a tile. The client sends the id with the clicked point.
   `work/trees-mid/6-x-y` (sectioned, meta `{fmt: 1, step: "trees", tile, v: TREES_V}`; per block,
   by column then row, `<layer>-8-<x>-<y>` for cover, height and leaf, then `tops-8-<x>-<y>`:
   "TREETOP1", u32 x, u32 y, zstd of cover and height (f32 × 65,536 each) and five leaf-type counts
-  (u16 × 65,536 each)); `work/terrain-mid/6-x-y` and `work/terrain-deep-mid/10-x-y` (meta `{fmt: 2,
+  (u16 × 65,536 each)); `work/terrain-mid/6-x-y` and `work/terrain-deep-mid/10-x-y` (meta `{fmt: 3,
   step: "terrain", tile, v: TERRAIN_V}`; per tile three zooms down, `quad-<z+3>-<x>-<y>`: its 2×2
-  means of its heights before rounding, f32 × 128 × 128; then `lake-ids` u64 and `lake-levels` f32:
-  a z6 tile's for its assembly, a z10 tile's for its z6 tile's terrain-hi run); `work/slope-mid/6-x-y` (meta `{fmt: 1, step: "slope", tile, v: SLOPE_V}`;
+  means of its heights before rounding, f32 × 128 × 128: a z6 tile's for its assembly, a z10
+  tile's for its z6 tile's terrain-hi run); `work/slope-mid/6-x-y` (meta `{fmt: 1, step: "slope", tile, v: SLOPE_V}`;
   `<z>-<x>-<y>`, each z6–8 tile as stored, `shade-webp`); `work/slope-deep-mid/10-x-y` (a slope-deep
   z10 tile's part of its z6 tile's pyramid, which that z6 tile's slope-hi run takes in: meta `{fmt:
   2, step: "slope-deep", tile, v: SLOPE_V}`; a section `13-<x>-<y>` for each of its z13 tiles (those
   its terrain deep pack's tiles lie in), in (x, y) order: its quadrant at full precision, 128 × 128
   pixels each its steepness and direction's two parts, f32 little-endian, row by row (196,608
-  bytes), empty where it shades nothing); `work/terrain-lakes/10-x-y` (JSON `{fmt: 1, step:
-  "terrain-lakes", tile: "10/x/y", v, lakes: {<OSM id>: <level, m>}}`: a terrain-deep target's
-  lakes across its z10 tile's edges, each lake's level decided once for the whole lake, its run
-  takes them as known; only for a target with such a lake; `pipeline::terrain_lakes`);
-  `work/lake-depth/<source id>/6-x-y` (a tar, ustar with fixed headers: its first member
+  bytes), empty where it shades nothing); `work/lake-depth/<source id>/6-x-y` (a tar, ustar with fixed headers: its first member
   `index.json`, `[{file, zoom, c0, r0, w, h, at: [offset, length]}]`, each grid's zoom, first
   column and row on that zoom's global pixel grid, size, and its GeoTIFF's place in the tar; then
   the GeoTIFFs, in the depth grids' standard, docs/inputs.md §6.10: EPSG:3857, float32, NaN for
