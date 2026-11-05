@@ -789,7 +789,8 @@ mod tests {
             d.path(),
         )
         .unwrap();
-        let m = BTreeMap::new();
+        // (An accepted elevation named: the sets held are its, not the tests' world at z12.)
+        let m = BTreeMap::from([(crate::inputs::logical(crate::inputs::elevation::UNIT), "e".to_string())]);
         let mut tiles = TerrainTiles::default();
         tiles.hold_zoom_sets(&m, crate::terrain_zoom::test_world(14));
         let sets = tiles.zoom_sets(&m).unwrap();
