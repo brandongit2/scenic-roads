@@ -464,7 +464,32 @@ took (`cpu_ms`) and the time its process was stopped meanwhile (`paused_ms`: fro
 or disk guard, or paused for its conditions; `costin::stopped_ms`, a thread that counts its own
 wakes coming late, task #697), and the wall time its process waited on the NAS, the network, the
 disk or other work meanwhile (`waited_ms`, store::waits by the wall clock, task #870; where the
-run is timed). A job's measured cores (`needs::Book::cores`, its own run's, else the most of its
+run is timed). **A job is granted the threads its step keeps busy on its Mac** (task #947,
+`crate::uses`): a job holds its threads from its start to its end, so what it uses of them is its
+CPU time over its wall time, whatever it waited on or however its work came in bursts. On 4 Nov
+slope-deep kept 12–22 % of its threads busy on batches of nearly empty tiles and about 55 % on full
+ones, terrain-deep 51–67 %; one M4 slope-deep job held 3 threads for five hours and kept 0.8 of a
+core busy. The build's timings (the lead's `coord/timings.jsonl`: every job's `cpu_s`, `wall_s`
+and `threads`, read as the coordinator starts and taken as each job's come in, `Sched::add_use`)
+are grouped by step, Mac (a slot's worker is its Mac's, `paces::mac_of`) and threads, over the runs
+ended well in the window the paces read (`paces::PACE_S`, 5 days, picked by their held-out test);
+each group's busy cores are its CPU time summed over its wall time summed, so a long job weighs as
+long as it held its threads. The grant (`uses::Uses::cores`) is the most cores any group kept busy,
+rounded up to whole threads, plus one where that group needed every thread it had (its busy cores
+past one fewer) and no run there had more: a step its threads hold climbs a thread a run, measured
+at each; one held by its waits or its serial parts settles at what it keeps busy, and every core
+it would have held idle goes to other jobs (several slope-deep batches side by side, a terrain job
+beside one). It counts for those busy cores (a climb's thread besides). A step's use on a Mac
+stands whether the job is a cold start or not (the threads it takes are measured even where its
+memory isn't). What it is per batch isn't known as a batch is granted (no record says which of its
+targets will have output before they run), so a step's mix of batches is taken as its runs had
+it; a running job's grant may be decided again at its safe points (task #948, by the same rule,
+`Sched::lease_cores`). Where a step has no run on the Mac in the window, the cost book's rule
+below decides. The rule is one function, `Sched::lease_cores` (a job's step, targets and worker,
+and its Mac's cores for jobs): the live scheduler's packing, the forecast's (it runs that packing
+on the scheduler as recorded, `sched::State`, which carries the uses; its grants say their
+threads) and `State::cores_left`'s room all go through it. Without a run on the Mac, a job's
+measured cores (`needs::Book::cores`, its own run's, else the most of its
 step's) are two (task #896: no hand-set ratio or factor): its **grant**, the cores it kept busy
 while it computed (its CPU time over the time it ran and didn't wait; no waits said, over the time
 it ran), within its threads, to the nearest whole, plus one thread: to overlap its waits, or, where
@@ -1272,7 +1297,8 @@ still taken as it ran, on whichever Mac (`job_secs`: another worker's counted at
 
 **A cold start** (no target of its step measured; task #499) is packed by its *provisional need*:
 the most its step declares (the steps table's `mem_mb`) or it was offered with, times 3/2
-(`coord::sched::provisional_mb`), its disk its step's measures' (else none); its cores one thread (task #896)
+(`coord::sched::provisional_mb`), its disk its step's measures' (else none); its cores its step's
+use on the Mac where its timings have any (§7.1, task #947), else one thread (task #896)
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
 `slope-deep` and `terrain-deep`, on the rayon pool the agent sizes, the last's reads waiting on the
 network; `bld-fetch`, its downloads bounded by `--jobs`; `pyramids-fill`, its fetches a host's requests in
