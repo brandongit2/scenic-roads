@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// 9 (task #862): roadcore::geo's one Mercator, box-grower and Earth ("near the coverage" its
 /// `NEAR_COVERAGE_KM`), `det`'s maths in the sampling (the geoid's too). 10 (task #942, the
 /// owner's of 5 Nov): lakes and rivers keep the source's heights, artefacts too (none levelled;
-/// mids of format 3, no lakes' levels; the water's digests of the sea and lakes alone).
+/// mids of format 3, no lakes' levels; the water's digests of the sea alone).
 pub const TERRAIN_V: u32 = 10;
 /// Terrain-deep 2 (task #929): a z10 tile's band past z12 by the same rule, its mid for its z6 tile.
 /// 3 (task #862): as terrain-hi's 9. 5 (task #942): its lakes and rivers keep the source's

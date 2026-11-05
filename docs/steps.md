@@ -140,12 +140,12 @@ makes the same bytes on every Mac.
     the target by their lines and zooms there, its tiles near the coverage, the digest of the water
     the target reads), so a rebuild with the same key gives identical packs. The digests are worked
     out once a basemap by the `terrain-water` job (z6 tiles, z10 targets' levels, assemblies), so a
-    new pass remakes only targets whose water changed.
-  - **Water** (crate::terrain_water): from the basemap's `water` layer at the tile's zoom, 4 × 4
-    samples a pixel. The sea goes to 0, a partly-sea pixel blended by its share. Lakes, ponds,
-    reservoirs, docks and rivers keep the source's heights, its artefacts too (the owner's, 5 Nov:
-    the terrain follows its source over inland water; task #942 removed the lakes' levelling, the
-    terrain-lakes step and the rivers' levelling along their courses).
+    new pass remakes only targets whose sea changed.
+  - **Water** (crate::terrain_water): the sea of the basemap's `water` layer at the tile's zoom,
+    4 × 4 samples a pixel (`terrain_polys`). The sea goes to 0, a partly-sea pixel blended by its
+    share. Lakes, ponds, reservoirs, docks and rivers keep the source's heights, its artefacts too
+    (the owner's, 5 Nov: the terrain follows its source over inland water): the terrain reads none
+    of them, so neither its bytes nor its keys change with them.
   - **Below zero** is clamped to 0 after the water. Planned: polders keeping their depth.
   - **Stored** (crate::terrain_codec; the owner's, 24 Oct): every terrain tile, at every zoom, is
     Terrarium RGB as lossless WebP (libwebp 1.6.0, `cwebp -lossless -z 6 -exact`, no metadata:
@@ -542,14 +542,14 @@ drawn as a raster.
   - `lakefill seamcheck` checks the edges where filled lakes meet OSM's water.
   - **Where it plugs in:** the step makes `work/lakefill/<date>.<h>.sect` (docs/formats.md), keyed
     by the basemap, the outlines and the source's zips (`run::source_pin`); only the fill from the
-    latest basemap is drawn (`lakefill::current`). The water, the terrain's water digests and the
-    catalogues wait for it (`hold_for_lakefill`) until it has failed 3 times in a row
+    latest basemap is drawn (`lakefill::current`). The water, the water digests (`terrain-water`) and
+    the catalogues wait for it (`hold_for_lakefill`) until it has failed 3 times in a row
     (`water_waits_for_lakefill`), then go without it. The water layer draws its lakes as an extra
     z14 tile (`water::Extra`, the catalogue's `global.lakefill`), read only for tiles in its reach
     (`lakefill::REACH`, Canada's box, which the step refuses a lake outside), so away from the NAS a
-    region elsewhere draws its deeper zooms without it; the terrain's water reads them as lakes
-    (`lakefill::FilledWater`; `terrain_pack::water_source_pin` names the fill), which keep the
-    source's heights (§2, Water).
+    region elsewhere draws its deeper zooms without it; the depth's water reads them as lakes
+    (`lakefill::FilledWater`; `terrain_pack::water_source_pin` names the fill); the terrain reads
+    its sea alone (§2, Water).
 
 ## 5. Worldwide road values (in the OSM pass)
 
@@ -717,11 +717,12 @@ What no job makes, kept on the NAS with how it was made. Scripts run in `dem/` (
 
 A job's key is its step version plus what it reads, mostly by content name. The ones that cascade:
 - **terrain-water (one):** the water source's pin (the latest basemap, and the lake fill) and what
-  each terrain target reads of it; it fills the digests file (`work/water-idx/<hash16 of the pin>`)
-  when a target's digest is missing. The digest (`terrain_water::tiles_digest`) is over the
-  polygons as the terrain reads them (`polys`: the sea and lakes), so a river's change changes
-  none. Until a
-  target's digest exists its key is unknown and its z3 tile waits.
+  each terrain and depth target reads of it; it fills the digests file (`work/water-idx/<hash16 of
+  the pin>`) when a target's digest is missing. A terrain target's digest
+  (`terrain_water::tiles_digest`) is over the polygons as the terrain reads them (`terrain_polys`:
+  the sea alone), so a lake's or a river's change changes none; a depth target's over all its
+  water, the rivers too (`depth_polys`). Until a target's digest exists its key is unknown and its
+  z3 tile waits.
 - **pyramids-fill (a z6 tile a pyramid read tile by tile meets, making hi tiles or with terrain-deep
   targets; the lead's):** `pyramids::V` (bumped
   with any change to which tiles it wants), the tile, and what `pyramids::want` reads for it: the

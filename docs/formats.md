@@ -306,7 +306,7 @@ elsewhere.
 
 | Section | Record | Notes |
 |---|---|---|
-| `lakes` | 32 B: `id` (u64), `bbox` [u32; 4] (x0, y0, x1, y1), `first_ring`, `nrings` (u32) | `id`: bit 62 set (never an OSM id), bit 61 intermittent (drawn, not flattened), the rest a hash of its points |
+| `lakes` | 32 B: `id` (u64), `bbox` [u32; 4] (x0, y0, x1, y1), `first_ring`, `nrings` (u32) | `id`: bit 62 set (never an OSM id), bit 61 intermittent (drawn, left out of the depth's water), the rest a hash of its points |
 | `rings` | 8 B: first point, count (u32) | a lake's rings in a row |
 | `points` | 8 B: [u32; 2] | no closing point |
 | `grid` | u32 × (256² + 1) | per z8 cell (row by row) its first entry in `cells`, then the total |

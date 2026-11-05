@@ -6,7 +6,8 @@
 //! stored ancestor): 204, as every layer's missing tile (crate::cache).
 //!
 //! And the terrain with the floor (`terrain_floor`): the terrain's heights minus the depth on the
-//! water the depth lies on (the terrain flattened there to the water's surface), for the map's 3D
+//! water the depth lies on (the terrain there its water's surface: the sea's 0 m, a lake's or a
+//! river's its source's heights), for the map's 3D
 //! floor; no second terrain is stored.
 
 use crate::cache::Lru;
@@ -103,7 +104,7 @@ pub async fn class_tile(
 }
 
 /// The floor under the water: terrain heights `e` (a tile's) with the depth subtracted where the
-/// depth's class says water (its depth below the surface the terrain was flattened to there).
+/// depth's class says water (its depth below the water's surface, the terrain's heights there).
 pub fn floor(e: &mut [f32], depth: &[f32], class: &[u8]) {
     for i in 0..e.len().min(depth.len()).min(class.len()) {
         if class[i] & 7 != pipeline::depth::C_NONE && depth[i] < pipeline::depth::NODATA_MIN {

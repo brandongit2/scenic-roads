@@ -19,9 +19,10 @@
 //!
 //! **The fill** (`write`, `Fill`) is one sectioned file, content-named, made by the `lakefill` step
 //! (`run`) and read by the water layer (`water::Extra`: each z14 tile's lakes, as a basemap tile of
-//! their own, inland water), the map's server (the water's deeper zooms), the depth and the
-//! terrain's water (`terrain_water::WaterSource`, `FilledWater`: its pin names the fill, so the
-//! terrain's water digests, and with them the pieces whose water the fill changes, follow it).
+//! their own, inland water), the map's server (the water's deeper zooms) and the depth
+//! (`terrain_water::WaterSource`, `FilledWater`: its pin names the fill, so the depth's water
+//! digests, and with them the targets whose water the fill changes, follow it). The terrain reads
+//! the same source's sea alone (`terrain_water::terrain_polys`), never a lake.
 
 use anyhow::{ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
@@ -60,7 +61,7 @@ pub fn lonlat(p: [f64; 2]) -> (f64, f64) {
 pub struct Lake {
     pub rings: Vec<Vec<[f64; 2]>>,
     /// Water only some of the time (the source's `perm`): drawn as water, as OSM's intermittent
-    /// lakes are, but left out of the terrain's water (terrain_water leaves OSM's out too).
+    /// lakes are, but left out of the depth's water (terrain_water leaves OSM's out too).
     pub intermittent: bool,
 }
 
@@ -1080,8 +1081,8 @@ impl crate::water::Extra for Fill {
     }
 }
 
-/// The terrain's water: the basemap's (`base`), with the fill's lakes added when there's a fill
-/// (lakes, by their keys, as OSM's are).
+/// The water the terrain and the depth read (the terrain its sea alone): the basemap's (`base`),
+/// with the fill's lakes added when there's a fill (lakes, by their keys, as OSM's are).
 pub struct FilledWater<W> {
     pub base: W,
     pub fill: Option<Fill>,

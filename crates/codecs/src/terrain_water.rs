@@ -4,14 +4,15 @@
 //! pass's OSM, each with its OSM id). AWS fills water its detailed source lacks from a coarse one
 //! whose cells mix the hills in (57 % of the sea off Yakutat reads above 20 m).
 //!
-//! - A terrain tile's water is the basemap's tile at the same zoom (z6–14: below z6 the basemap
-//!   draws Natural Earth's; the terrain there is made from finer tiles), rasterized at 4 × 4 samples
-//!   a pixel: each pixel's share of sea and of lake, and the lake that covers most of it (the
-//!   depth's: pipeline::depth, which reads the rivers too: `WaterSource::depth_polys`,
-//!   `Kind::River`, `WaterTile::river`). Intermittent water, pools and water in tunnels are left out.
+//! - A terrain tile's water is the basemap's sea in its tile at the same zoom (z6–14: below z6 the
+//!   basemap draws Natural Earth's; the terrain there is made from finer tiles), rasterized at
+//!   4 × 4 samples a pixel: each pixel's share of sea (`terrain_polys`). The depth's tiles
+//!   (pipeline::depth) are rasterized alike from all its water (`WaterSource::depth_polys`): the
+//!   sea, each pixel's share of lake and the lake that covers most of it, and of river
+//!   (`Kind::River`, `WaterTile::river`). Intermittent water, pools and water in tunnels are left out.
 //! - The sea goes to 0 m, a pixel partly sea blended by its share (`sea·0 + (1 − sea)·its own`).
 //!   Lakes and rivers keep the source's heights, its artefacts too (the owner's, 5 Nov: the
-//!   terrain follows its source over inland water).
+//!   terrain follows its source over inland water), so the terrain reads none of them.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -401,11 +402,19 @@ pub fn is_own(id: u64) -> bool {
 }
 
 /// What a from ending so says: its target reads the depth's water (`WaterSource::depth_polys`,
-/// the rivers too), so its digest is of that; any other is the terrain's (`polys`).
+/// the rivers too), so its digest is of that; any other is the terrain's (`terrain_polys`).
 pub const RIVERS_FROM: &str = " +rivers";
 
-/// A tile's water as the terrain reads it (`WaterSource::polys`), as a digest: its polygons in
-/// order (their kind, their key, their rings' points), what `water_tile` makes of them; 0 for none.
+/// A tile's water as the terrain reads it: its sea alone (`WaterSource::polys`' `Kind::Sea`).
+/// Lakes and rivers keep the source's heights, so a change to them changes no terrain.
+pub fn terrain_polys(src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+    let mut polys = src.polys(z, x, y)?;
+    polys.retain(|p| p.kind == Kind::Sea);
+    Ok(polys)
+}
+
+/// A tile's polygons (`terrain_polys`, `WaterSource::depth_polys`) as a digest: in order (their
+/// kind, their key, their rings' points), what `water_tile` makes of them; 0 for none.
 /// A lake's key of its tile's own counts as such, not by its value (its feature's place in the
 /// tile, which other water moves): it's never shared, so its value changes no pixel.
 pub fn polys_digest(polys: &[Poly]) -> u64 {
@@ -433,14 +442,16 @@ pub fn polys_digest(polys: &[Poly]) -> u64 {
 }
 
 /// The digest of the water `src` has in the tiles `tiles` (each read in parallel as the terrain
-/// reads it, `polys`, or with `rivers` as the depth does, `depth_polys`): over each tile with
+/// reads it, `terrain_polys`, or with `rivers` as the depth does, `depth_polys`): over each tile with
 /// water, its zoom, column, row and `polys_digest`; "-" when none has any. What keys a terrain or
 /// depth target on the water it reads (agent::build).
 pub fn tiles_digest(src: &dyn WaterSource, tiles: &[(u8, u32, u32)], rivers: bool) -> Result<String> {
     use rayon::prelude::*;
     let got: Vec<Result<u64>> = tiles
         .par_iter()
-        .map(|&(z, x, y)| if rivers { src.depth_polys(z, x, y) } else { src.polys(z, x, y) }.map(|p| polys_digest(&p)))
+        .map(|&(z, x, y)| {
+            if rivers { src.depth_polys(z, x, y) } else { terrain_polys(src, z, x, y) }.map(|p| polys_digest(&p))
+        })
         .collect();
     let mut lines = String::new();
     for (&(z, x, y), d) in tiles.iter().zip(got) {
@@ -531,10 +542,9 @@ pub fn make_idx(
     Ok(out)
 }
 
-/// A tile's water, if its source has some there (an empty tile: None): its sea and lakes
-/// (`polys`).
+/// A terrain tile's water, if its source has some there (none: None): its sea (`terrain_polys`).
 pub fn tile_water(src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Option<Arc<WaterTile>>> {
-    let polys = src.polys(z, x, y)?;
+    let polys = terrain_polys(src, z, x, y)?;
     if polys.is_empty() {
         return Ok(None);
     }
@@ -673,15 +683,31 @@ pub mod tests {
         assert!(!water_tile(&[square(Kind::River, OWN, 0.0, 0.0, 10.0, 10.0)]).is_empty());
     }
 
+    /// The terrain reads its sea alone: a tile of lakes and rivers is no water to it, and its
+    /// digests change with the sea, never with a lake or a river (the depth's do).
     #[test]
-    fn a_river_keeps_the_sources_heights() {
-        // A noisy river: the terrain reads no rivers (`polys`), and a tile with one flattens nothing
-        // but its sea.
-        let wt = water_tile(&[square(Kind::River, OWN, 20.0, 100.0, 236.0, 120.0)]);
-        let mut e: Vec<f32> = (0..65536).map(|p| 200.0 + ((p * 37) % 17) as f32).collect();
-        let was = e.clone();
-        assert_eq!(flatten(&mut e, &wt), 0);
-        assert_eq!(e, was);
+    fn the_terrain_reads_the_sea_alone() {
+        let all = Fixed(|_, x, _| {
+            let sea = square(Kind::Sea, 0, 0.0, 0.0, 10.5, 256.0);
+            let lake = square(Kind::Lake, 7 + u64::from(x), 40.0, 100.0, 80.0, 140.0);
+            let river = square(Kind::River, OWN, 100.0, 100.0, 236.0, 120.0);
+            if x == 0 {
+                vec![sea, lake, river]
+            } else {
+                vec![lake, river]
+            }
+        });
+        let sea_alone =
+            Fixed(|_, x, _| if x == 0 { vec![square(Kind::Sea, 0, 0.0, 0.0, 10.5, 256.0)] } else { vec![] });
+        let p = terrain_polys(&all, 12, 0, 0).unwrap();
+        assert_eq!(p.iter().map(|p| p.kind).collect::<Vec<_>>(), [Kind::Sea]);
+        assert!(tile_water(&all, 12, 1, 0).unwrap().is_none(), "lakes and rivers alone: no water");
+        let wt = tile_water(&all, 12, 0, 0).unwrap().unwrap();
+        assert!(wt.lake.iter().all(|&l| l == 0) && wt.river.is_empty() && wt.ids.is_empty());
+        let tiles = [(12, 0, 0), (12, 1, 0)];
+        assert_eq!(tiles_digest(&all, &tiles, false).unwrap(), tiles_digest(&sea_alone, &tiles, false).unwrap());
+        assert_eq!(tiles_digest(&all, &tiles[1..], false).unwrap(), "-");
+        assert_ne!(tiles_digest(&all, &tiles, true).unwrap(), tiles_digest(&sea_alone, &tiles, true).unwrap());
     }
 
     /// The key own_key had until task #464's fix (gap 11).
