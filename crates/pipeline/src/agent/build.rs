@@ -1983,6 +1983,29 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
     if let Some(n) = held_note("terrain-deep", deep_held.iter().map(String::as_str), &w.left) {
         w.held.push(("terrain-deep", n));
     }
+    // (A target whose key can't be told yet (`UNKNOWN`) is offered to no one: it's held for what
+    // its key reads, the terrain-water job's digests while that job has work, said so (task #965:
+    // 4,222 terrain-deep targets waited on it with no word of it).)
+    let unknown = |ts: &[(String, String)]| ts.iter().filter(|(_, k)| k == UNKNOWN).count();
+    let unknowns = [
+        ("terrain-hi", unknown(&tt.terrain)),
+        ("terrain-lo", unknown(&tt.terrain_lo)),
+        ("terrain-lakes", unknown(&tt.terrain_lakes)),
+        ("terrain-deep", unknown(&tt.terrain_deep)),
+    ];
+    if unknowns.iter().any(|(_, n)| *n > 0) {
+        let water = terrain_water_work(x, done).is_some();
+        for (step, n) in unknowns.into_iter().filter(|(_, n)| *n > 0) {
+            w.held.push((
+                step,
+                if water {
+                    format!("{n} wait for terrain-water (the water digests their keys read)")
+                } else {
+                    format!("{n} wait for what their keys read (the water digests or declared sources, unread now)")
+                },
+            ));
+        }
+    }
     w.terrain_left = changing;
     w.terrain_left.extend(w.terrain_deep_left.iter().chain(&w.terrain_lakes_left).filter_map(|t| z3_of(t)));
     // (A z6 tile over a deep target waits for it: its z12 tiles there are its deep mid's means, its
@@ -5743,6 +5766,25 @@ pub(crate) mod tests {
     /// neighbours' terrain-deep; task #952: no terrain-hi or terrain-lo): it's offered while other
     /// terrain of its z3 tile (another z10 tile's deep levels, its z6 tile's terrain-hi) is left;
     /// that one waits.
+    #[test]
+    fn terrain_targets_whose_keys_cant_be_told_say_what_they_wait_for() {
+        // Task #965: terrain-deep targets keyed `UNKNOWN` (their water digests not made) are offered
+        // to no one; the plan's held notes say so.
+        let tt = TerrainTargets {
+            terrain_deep: vec![("10/400/300".into(), UNKNOWN.into()), ("10/400/301".into(), UNKNOWN.into())],
+            ..Default::default()
+        };
+        let tiles = crate::agent::tiles::TerrainTiles::default();
+        let (cov, m, inputs) = (crate::coverage::Coverage::default(), BTreeMap::new(), BTreeMap::new());
+        let w = terrain_work(&tt, &KeyCtx::new(&cov, "d", &m, &inputs, None, &tiles), &Keys::default());
+        assert!(w.terrain_deep.is_empty());
+        assert!(
+            w.held.iter().any(|(s, n)| *s == "terrain-deep" && n.starts_with("2 wait for what their keys read")),
+            "{:?}",
+            w.held
+        );
+    }
+
     #[test]
     fn a_slope_deep_target_waits_only_for_what_it_reads() {
         let k = |s: &str| (s.to_string(), "k".to_string());
