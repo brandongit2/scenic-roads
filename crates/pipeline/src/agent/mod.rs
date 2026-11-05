@@ -10407,7 +10407,8 @@ mod tests {
     }
 
     /// Task #871 step 2: the heartbeat advances every 10 s while every NAS call hangs (the slow-NAS
-    /// fake), for 2 min, the loop going round on it meanwhile; the NAS's copy never written then.
+    /// fake), for 50 s (five beats, past two NAS calls' deadlines; 2 min before #969), the loop going
+    /// round on it meanwhile; the NAS's copy never written then.
     #[test]
     fn beat_steady_while_the_nas_hangs() {
         let d = tempfile::tempdir().unwrap();
@@ -10417,32 +10418,33 @@ mod tests {
         let before = std::fs::read(&shared).unwrap();
         a.beat.spawn();
         let hung = nasread::fake::hang(&root);
-        let seen = beats_while(a.o.home.join("status.json"), Duration::from_secs(120), || {
+        let seen = beats_while(a.o.home.join("status.json"), Duration::from_secs(50), || {
             a.round().ok();
         });
-        assert!(seen.len() >= 12, "{seen:?}");
+        assert!(seen.len() >= 5, "{seen:?}");
         assert_eq!(std::fs::read(&shared).unwrap(), before, "no beat reached the hung NAS");
         drop(hung);
     }
 
-    /// Task #871 step 2: the heartbeat advances every 10 s while a plan runs 3 min (the slow-plan
-    /// fake), the loop in it all along; the status says how old the loop's part is.
+    /// Task #871 step 2: the heartbeat advances every 10 s while a plan runs 50 s (the slow-plan
+    /// fake; 3 min before #969: five beats show it as well), the loop in it all along; the status
+    /// says how old the loop's part is.
     #[test]
     fn beat_steady_while_planning() {
         let d = tempfile::tempdir().unwrap();
         let (mut a, root) = parts_agent(d.path());
         a.round().unwrap();
         a.beat.spawn();
-        a.planner().slow_plan = Some(Duration::from_secs(180));
+        a.planner().slow_plan = Some(Duration::from_secs(50));
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let r = store::nasfs::NasRoot::local_for_test(&root);
         let status = a.o.home.join("status.json");
-        let seen = beats_while(status.clone(), Duration::from_secs(180), || {
+        let seen = beats_while(status.clone(), Duration::from_secs(50), || {
             a.planner().plan(&r, &c, &mut Vec::new());
         });
-        assert!(seen.len() >= 18, "{seen:?}");
+        assert!(seen.len() >= 5, "{seen:?}");
         let s: Status = serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
-        assert!(s.loop_age_s.is_some_and(|age| age >= 170), "{:?}", s.loop_age_s);
+        assert!(s.loop_age_s.is_some_and(|age| age >= 40), "{:?}", s.loop_age_s);
     }
 
     /// A pause asked (as the menu bar asks: the hold ask's file) on another thread, `after` from
@@ -10536,7 +10538,8 @@ mod tests {
         a.beat.spawn();
         let hung = nasread::fake::hang(&root);
         a_job_running(&mut a);
-        pause_while(&mut a, Duration::from_secs(5), Duration::from_secs(30), |a| {
+        // (Asked 2 s in, inside the first round's hung calls, as the other pauses here.)
+        pause_while(&mut a, Duration::from_secs(2), Duration::from_secs(8), |a| {
             a.round().ok();
             // (The loop's own view has no job: the job said running again, as a long job's.)
             a_job_running(a);
@@ -10639,7 +10642,7 @@ mod tests {
     }
 
     /// Task #871 step 5: a cancel asked (as `scenic job cancel` asks: its file) while the loop is
-    /// in a 30-s plan (the slow-plan fake): the job's group stopped by **jobs**' thread, no round
+    /// in a 12-s plan (the slow-plan fake; 30 s before #969): the job's group stopped by **jobs**' thread, no round
     /// running; the loop, its plan done, records it as cancelled (not failed) and answers.
     #[test]
     fn a_cancel_is_acted_on_within_a_second_while_planning() {
@@ -10649,11 +10652,11 @@ mod tests {
         a.spawn_jobs_part();
         a.control.spawn();
         let pgid = a_real_job(&mut a, 0, "6/1/2", 600);
-        a.planner().slow_plan = Some(Duration::from_secs(30));
+        a.planner().slow_plan = Some(Duration::from_secs(12));
         let home = a.o.home.clone();
         let asker = std::thread::spawn(move || {
             // (sleep ok: the ask comes once the loop is deep in its plan)
-            std::thread::sleep(Duration::from_secs(5));
+            std::thread::sleep(Duration::from_secs(3));
             let t = Instant::now();
             let ask = crate::control::Cancel {
                 target: "6/1/2".into(),
@@ -10672,7 +10675,7 @@ mod tests {
         let r = store::nasfs::NasRoot::local_for_test(&root);
         let t = Instant::now();
         a.planner().plan(&r, &c, &mut Vec::new());
-        assert!(t.elapsed() >= Duration::from_secs(29), "the plan was slow all along");
+        assert!(t.elapsed() >= Duration::from_secs(11), "the plan was slow all along");
         // (No round before this: the job stopped at all was **jobs**' thread's doing, never the
         // loop's, however long a loaded Mac took: #910.)
         asker.join().unwrap();

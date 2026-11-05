@@ -17,7 +17,7 @@
 //! What may: `EXEMPT`, by file, item (a Rust function's or `const`'s, a Python function's or
 //! top-level name's; `-` in other languages) and the line's anchor, each with why. Those kept in
 //! code by §6.9's table cite its row (`KEPT`), which must say so. An exemption matching no line
-//! fails (`every_exemption_matches_a_line`), so the list can't go stale. A name built at run time
+//! fails (`no_source_is_named_in_the_apps_code`), so the list can't go stale. A name built at run time
 //! (joined from parts) isn't seen.
 //!
 //! scans: crates dem web/src tools scripts producers docs/inputs.md
@@ -561,16 +561,13 @@ fn scan() -> (Vec<String>, Vec<String>) {
     (bad, unused)
 }
 
+/// No line names a source outside the exemptions, and every exemption still matches a line it
+/// exempts: one scan for both (#969: the scan is most of this file's time, and nextest runs each
+/// test in a process of its own).
 #[test]
 fn no_source_is_named_in_the_apps_code() {
-    let (bad, _) = scan();
+    let (bad, unused) = scan();
     assert!(bad.is_empty(), "data sources named in the app's code (docs/inputs.md §7.2): read them from their declarations, or list the line in EXEMPT with why:\n{}", bad.join("\n"));
-}
-
-/// Every exemption still matches a line it exempts.
-#[test]
-fn every_exemption_matches_a_line() {
-    let (_, unused) = scan();
     assert!(unused.is_empty(), "exemptions matching no line naming a source (remove them):\n{}", unused.join("\n"));
 }
 
