@@ -1,6 +1,7 @@
 """tools/dev/devjob.py: what it reads from a job's output and cargo's timing reports, the wrapper's
 status and spool, and the sampler's send and its end of a gone span. Run by tools/dev/test/devjob.zsh
 (check.sh, publish's other tests): python3 -m unittest discover -s tools/dev/test -p 'test_devjob.py'."""
+import fcntl
 import http.server
 import json
 import os
@@ -166,6 +167,22 @@ class Wrap(unittest.TestCase):
         end = [e for e in Board.got if e["op"] == "end"][0]
         self.assertEqual((end["status"], end["attrs"]["exit"]), ("fail", "3"))
         self.assertTrue(any(e["op"] == "sample" and e["mac"] == "toy" for e in Board.got), "a sample of the Mac")
+
+    def test_a_command_that_cant_run_is_127_and_its_span_ended(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = dict(os.environ, SCENIC_DEVJOB_DIR=d, SCENIC_BOARD="http://127.0.0.1:9", SCENIC_DEVJOB_MAC="toy")
+            env.pop("SCENIC_DEVJOB", None)
+            r = subprocess.run([sys.executable, devjob.__file__, "wrap", "--kind", "part", "--name", "x", "--", os.path.join(d, "no-such")], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 127, r.stdout + r.stderr)
+            self.assertEqual(os.listdir(os.path.join(d, "live")), [])
+            # (The sampler it started ends at once: nothing is live.)
+            for _ in range(600):
+                try:
+                    with open(os.path.join(d, "sampler.lock")) as f:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    time.sleep(0.1)
 
     def test_a_span_whose_process_is_gone_is_ended_gone(self):
         with tempfile.TemporaryDirectory() as d:

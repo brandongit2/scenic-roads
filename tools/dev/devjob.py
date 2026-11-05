@@ -350,7 +350,13 @@ def wrap(argv):
     emit({"op": "start", "id": sid, "parent": parent, "kind": kind, "name": name, "mac": m, "t": round(t_start, 3), "attrs": attrs})
     live(sid, os.getpid())
     env = dict(os.environ, SCENIC_DEVJOB_PARENT=sid)
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    except OSError as e:  # (as a shell says it: the command can't be run, 127)
+        print(f"devjob.py wrap: {cmd[0]}: {e.strerror}", flush=True)
+        emit({"op": "end", "id": sid, "t": round(time.time(), 3), "status": "fail", "attrs": {"exit": "127", "why": f"{cmd[0]}: {e.strerror}"}})
+        unlive(sid)
+        return 127
     # (A signal to the wrapper goes on to the command, which decides how it ends.)
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, lambda n, _f: p.send_signal(n))
