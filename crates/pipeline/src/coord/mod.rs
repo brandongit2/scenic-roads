@@ -9239,7 +9239,7 @@ mod tests {
         let tight = Capacity { mem_mb: 0, ..m1_cap(14, false, Some((l, 3, 3, 3.0, 60))) };
         assert_eq!(m1_beat(&c, Some(tight)), [(l, 13)]);
         // Measured at 1 thread instead: each extra thread its whole 2,000 MB.
-        c.shared.lock().unwrap().leases.regranted(l, 3, 3, Some((3, Instant::now() - sched::SETTLE)));
+        c.shared.lock().unwrap().leases.regranted(l, 3, 3, Some((3, Instant::now())));
         for t in ["6/1/1", "6/1/2"] {
             let mut book = c.shared.lock().unwrap();
             let cost = book.sched.costs.get_mut(&cost_key("slope-hi", t)).unwrap();
