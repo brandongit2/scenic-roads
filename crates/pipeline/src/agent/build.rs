@@ -10794,7 +10794,7 @@ pub(crate) mod tests {
             band_m: 0.0,
             intertidal: false,
             datum_exact: true,
-            rivers: false,
+            own_surface: false,
             estimated: false,
             label: "S".into(),
             datum: "MSL".into(),

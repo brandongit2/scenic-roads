@@ -3,17 +3,22 @@
 //! flattens it (crate::terrain_water).
 //!
 //! 1. Each source is sampled onto the block (crate::depth::grids): depth, the zoom of the grid each
-//!    pixel is from, its chart low water. Sea sources stay off the lakes, lake sources in them.
-//! 2. Sources are painted coarse to fine. A pixel past its source's zoom shows the stored tiles of
-//!    that zoom scaled up, as the map's fallback makes them (crate::depth::fall); inside a source,
-//!    detail fades in over three of the capped zoom's pixels where its finer grids meet capped ones;
+//!    pixel is from, its chart low water. A sea source is drawn on the sea, a lake source in lakes,
+//!    and a source whose depths are below the water's own surface in rivers and lakes too
+//!    (`Source::drawn_in`).
+//! 2. Surveys are painted coarse to fine, then the estimates, which only fill what no survey has (a
+//!    survey beats an estimate wherever both cover water). A pixel past its source's zoom shows the
+//!    stored tiles of that zoom scaled up, as the map's fallback makes them (crate::depth::fall);
+//!    inside a source, detail fades in over three of the capped zoom's pixels where its finer grids
+//!    meet capped ones;
 //!    where a source ends in the water it's feathered into what lies beneath over its band (never
 //!    across a source whose datum isn't corrected to the others', which only fills gaps).
 //! 3. The water decides the shore: positive values stay as drying heights only where an intertidal
 //!    source gives them (else 0, and at most `DRY_MAX`); water with no data near data is filled,
 //!    falling linearly to 0 at the shore, from data of the same water body within `GAP_M`; the land
-//!    keeps a `BLEED_PX` band of the nearest water's value (≥ 0) so the map's finer shoreline never
-//!    meets a gap; a lake with no data of its own stays empty.
+//!    keeps a `BLEED_PX` band of the nearest water's value (≥ 0), class `C_NONE`, which the map
+//!    doesn't draw (it reaches from the water's own data: web/src/depthgrid.ts); a lake with no data
+//!    of its own stays empty.
 //! 4. A pixel above its chart's low water (an intertidal source's, in the sea) dries at low tide.
 //! 5. A tile is kept when one of its water pixels is a source's data of the tile's zoom (the
 //!    source painted there, not one feathered in under half nor a gap filled from it), so no tile
@@ -151,7 +156,7 @@ pub fn compose(
     let mut dok = vec![true; n];
     let mut low = vec![f32::NAN; n];
     let mut order = here.clone();
-    order.sort_by_key(|(s, z)| (*z, s.code));
+    order.sort_by_key(|(s, z)| (s.estimated, *z, s.code));
     let mut ups: std::collections::HashMap<u8, Vec<f32>> = std::collections::HashMap::new();
     let mut get_up = |zv: u8, ups: &mut std::collections::HashMap<u8, Vec<f32>>| -> Result<()> {
         if !ups.contains_key(&zv) {
@@ -164,8 +169,7 @@ pub fn compose(
     for (s, _) in &order {
         let Some(mut smp) = sample(rd, s, b.z, c0, r0, w, h)? else { continue };
         for i in 0..n {
-            let off = if water.is_river(i) { !s.rivers } else { (water.lake[i] > 0) != s.lake };
-            if off {
+            if !s.drawn_in(water.is_river(i), water.lake[i] > 0) {
                 smp.v[i] = f32::NAN;
             }
         }
@@ -205,15 +209,16 @@ pub fn compose(
             }
         }
         let mut dv: Vec<bool> = disp.iter().map(|v| v.is_finite()).collect();
-        if !s.datum_exact {
-            // (Not on the others' datum: gaps only.)
+        let gaps_only = s.estimated || !s.datum_exact;
+        if gaps_only {
+            // (An estimate, or not on the others' datum: gaps only.)
             for i in 0..n {
                 dv[i] &= !c[i].is_finite();
             }
         }
         let mut wgt = vec![1f32; n];
         let band = s.band_m / gpx;
-        if s.datum_exact && band >= 1.0 && (0..n).any(|i| dv[i] && c[i].is_finite()) {
+        if !gaps_only && band >= 1.0 && (0..n).any(|i| dv[i] && c[i].is_finite()) {
             // (Its edge in the water; along a shore it doesn't count.)
             let _p = crate::timings::sub("feathering");
             let seed: Vec<bool> = (0..n).map(|i| !dv[i] && water.water[i] && !water.is_if_data(i)).collect();
@@ -241,7 +246,7 @@ pub fn compose(
                 };
                 src[i] = i16::from(s.code);
                 inter[i] = s.intertidal;
-                dok[i] = s.datum_exact;
+                dok[i] = !gaps_only;
                 low[i] = smp.low[i];
             }
         }

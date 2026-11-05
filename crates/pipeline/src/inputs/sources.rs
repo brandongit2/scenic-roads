@@ -238,8 +238,9 @@ pub const DEPTH_PARAMS: [&str; 10] =
 /// where it's drawn), `label` (a short name for the map's popup), `datum` (what its depths are
 /// below, in words), and optionally `band_m` (the ground metres it's feathered in over, ≥ 0),
 /// `intertidal` (its positive values are drying heights), `datum_exact` (false: its datum isn't
-/// corrected to the others', so it fills gaps only, hard-edged), `rivers` (drawn in rivers too: its
-/// depths are below a river's own surface there), `estimated` (every cell an estimate) and `notice`
+/// corrected to the others', so it fills gaps only, hard-edged), `rivers` (its depths are below the
+/// water's own surface: drawn in rivers and lakes too), `estimated` (every cell an estimate, filling
+/// only what no survey has) and `notice`
 /// (a notice its licence asks every map showing it to carry).
 fn depth_params(d: &Data) -> Vec<String> {
     let mut why = Vec::new();
