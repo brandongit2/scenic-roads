@@ -628,6 +628,8 @@ catalogues-view.json.zst  the build page's Catalogues map as followed (agent::ca
 clear-request.json      the owner's ask to clear build caches ({by, at, level: caches | deep}, agent::room::ClearRequest;
                         renamed .taken when taken up)
 room-target.json        the owner's free-disk target {bytes, by, at} (agent::room::Target; none: off)
+sweep-margin.json       the dev sweep's margin past it {bytes, by, at} (agent::settings::SWEEP_MARGIN;
+                        none: SWEEP_MARGIN_DEFAULT_GB; read by tools/dev/sweep-targets.sh)
 member                  this Mac's pool member id `m-<16 hex>`, then its hardware UUID
 pack-idx/<hash16>.idx   indexes of the terrain packs the manifest names (agent::tiles); never
                         trimmed; one unnamed and untouched for a fortnight goes; the lead's

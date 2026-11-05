@@ -1,9 +1,10 @@
 //! The owner's settings (docs/workers.md §7): this Mac's in-use share (crate::agent::share), memory
 //! floor (crate::agent::memfloor) and disk room target (crate::agent::room::Target), and the pool's
-//! NAS reserve (crate::agent::room::NAS_RESERVE).
+//! NAS reserve (crate::agent::room::NAS_RESERVE), and the dev sweep's margin (`SWEEP_MARGIN`).
 //! Each is set through one function here, whoever asks: `scenic in-use`, `scenic memory`, `scenic
 //! room`, `scenic nas-room`, and the build page's
-//! POST /work/settings (crate::coord), which reads them back with `view`. The map server's mirror
+//! POST /work/settings (crate::coord), which reads them back with `view` (the sweep's margin: the
+//! build page alone). The map server's mirror
 //! reads the room target through `RoomTarget` (its reserve is the larger of the two).
 
 use super::{memfloor, room, share};
@@ -75,6 +76,44 @@ pub fn set_room(home: &Path, what: &str, by: &str) -> Result<Option<room::Target
     room::set_target(home, Some(bytes), by)
 }
 
+/// The dev sweep's margin (tools/dev/sweep-targets.sh, tools/dev/testing.md): the sweep frees the
+/// agents' build caches on this Mac once its free disk falls below the room target plus this, so
+/// dev builds never hold the pool's jobs there. In the agent's folder, as the room target
+/// ({bytes, by, at}, room::Target); none: `SWEEP_MARGIN_DEFAULT_GB`.
+pub const SWEEP_MARGIN: &str = "sweep-margin.json";
+
+/// The sweep's margin when none is set (GB). tools/dev/sweep-targets.sh reads it from this line.
+pub const SWEEP_MARGIN_DEFAULT_GB: u64 = 10;
+
+/// The sweep's margin as set in `home` (none: not set, or unreadable).
+pub fn sweep_margin(home: &Path) -> Option<room::Target> {
+    serde_json::from_slice(&std::fs::read(home.join(SWEEP_MARGIN)).ok()?).ok()
+}
+
+/// Sets the sweep's margin in `home`: `what` in GB (less than its disk holds), or "off": the default again.
+pub fn set_sweep_margin(home: &Path, what: &str, by: &str) -> Result<Option<room::Target>> {
+    let p = home.join(SWEEP_MARGIN);
+    if what == "off" {
+        match std::fs::remove_file(&p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => return Ok(None),
+        }
+    }
+    let bytes = (gb(what, "the sweep's margin")? * (1u64 << 30) as f64) as u64;
+    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+    if let Ok(n) = store::sys::disk_size(home) {
+        anyhow::ensure!(
+            bytes < n,
+            "a margin of {} is more than this disk holds ({})",
+            room::size(bytes),
+            room::size(n)
+        );
+    }
+    let t = room::Target { bytes, by: by.to_string(), at: super::jobs::now_s() };
+    store::whole::write(&p, &serde_json::to_vec(&t)?)?;
+    Ok(Some(t))
+}
+
 /// Sets the pool's NAS reserve under the project folder `root`: `what` in GB, or "off".
 pub fn set_nas_room(root: &store::nasfs::NasRoot, what: &str, by: &str) -> Result<Option<room::Target>> {
     if what == "off" {
@@ -91,6 +130,7 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
     let mem = memfloor::read(home);
     let sh = share::read(home);
     let cores = cores();
+    let margin = sweep_margin(home);
     serde_json::json!({
         "in_use": {
             "cores": share::cores(sh.as_ref(), cores),
@@ -109,6 +149,13 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
             "at": mem.as_ref().map(|m| m.at),
         },
         "room": target_view(room::target(home), room::disk_free(home).ok(), store::sys::disk_size(home).ok()),
+        "sweep_margin": {
+            "bytes": margin.as_ref().map_or(SWEEP_MARGIN_DEFAULT_GB << 30, |m| m.bytes),
+            "default": SWEEP_MARGIN_DEFAULT_GB << 30,
+            "set": margin.is_some(),
+            "by": margin.as_ref().map(|m| m.by.clone()),
+            "at": margin.as_ref().map(|m| m.at),
+        },
         "nas_room": root.map(|r| target_view(room::nas_reserve(r), room::nas_free(r).ok(), None)),
     })
 }
@@ -179,12 +226,16 @@ mod tests {
         for bad in ["0.5", "x", "NaN", "inf", "-3"] {
             assert!(set_memory(h, bad, "t").is_err(), "{bad}");
             assert!(set_room(h, bad, "t").is_err(), "{bad}");
+            assert!(set_sweep_margin(h, bad, "t").is_err(), "{bad}");
             assert!(set_nas_room(&store::nasfs::NasRoot::local_for_test(h), bad, "t").is_err(), "{bad}");
         }
         assert!(set_memory(h, "1000000", "t").is_err(), "more than this Mac has");
         let all = (crate::sys::memsize().unwrap() >> 30).to_string();
         assert!(set_memory(h, &all, "t").is_err(), "all this Mac has: no job could start");
         assert!(set_room(h, "1000000000", "t").is_err(), "more than the disk holds");
+        assert!(set_sweep_margin(h, "1000000000", "t").is_err(), "more than the disk holds");
+        assert_eq!(view(h, None)["sweep_margin"]["bytes"], SWEEP_MARGIN_DEFAULT_GB << 30, "none set: the default");
+        assert_eq!(set_sweep_margin(h, "4", "t").unwrap().unwrap().bytes, 4 << 30);
         assert_eq!(set_memory(h, "2 GB", "t").unwrap().unwrap().mb, 2048);
         assert_eq!(set_room(h, "1gb", "t").unwrap().unwrap().bytes, 1 << 30);
         assert_eq!(set_nas_room(&store::nasfs::NasRoot::local_for_test(h), "3", "t").unwrap().unwrap().bytes, 3 << 30);
@@ -196,6 +247,9 @@ mod tests {
         let v = view(h, None);
         assert!(v["memory"]["set"] == false && v["memory"]["mb"] == v["memory"]["default_mb"], "{v}");
         assert!(set_room(h, "off", "t").unwrap().is_none() && room::target(h).is_none());
+        assert!(view(h, None)["sweep_margin"]["bytes"] == 4u64 << 30 && view(h, None)["sweep_margin"]["set"] == true);
+        assert!(set_sweep_margin(h, "off", "t").unwrap().is_none() && sweep_margin(h).is_none());
+        assert!(set_sweep_margin(h, "off", "t").unwrap().is_none(), "off twice");
         assert!(
             set_nas_room(&store::nasfs::NasRoot::local_for_test(h), "off", "t").unwrap().is_none()
                 && room::nas_reserve(&store::nasfs::NasRoot::local_for_test(h)).is_none()
@@ -203,5 +257,6 @@ mod tests {
         assert!(view(h, None)["nas_room"].is_null());
         let gone = h.join("nope");
         assert!(set_room(&gone, "2", "t").is_err() && set_memory(&gone, "2", "t").is_err());
+        assert!(set_sweep_margin(&gone, "2", "t").is_err());
     }
 }

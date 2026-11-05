@@ -162,12 +162,13 @@ Common rules:
   inside beyond that.
 - **The settings** (task #521; `web/work/settings.js`, the Machines tab; `crate::agent::settings`):
   each Mac's in-use share (cores kept free while it's used), memory floor (GB kept
-  available on the Mac, docs/pool.md §7.1) and disk room target (GB kept free), and the pool's NAS
-  reserve (GB kept free on the NAS; not shown while no Mac on the page reaches the NAS). Each Mac's `POST /work/settings`
+  available on the Mac, docs/pool.md §7.1), disk room target (GB kept free) and dev sweep margin
+  (GB past the room target at which tools/dev/sweep-targets.sh frees the agents' build caches,
+  tools/dev/testing.md), and the pool's NAS reserve (GB kept free on the NAS; not shown while no Mac on the page reaches the NAS). Each Mac's `POST /work/settings`
   (its coordinator, broker or viewer; the lead's page reaches the others' through CORS) with `{}` reads them; with
-  `in_use` (cores), `memory`, `room` or `nas_room` (GB), each a
+  `in_use` (cores), `memory`, `room`, `sweep_margin` or `nas_room` (GB), each a
   number or `"off"`, sets them through the same functions as `scenic in-use`, `scenic memory`,
-  `scenic room` and `scenic nas-room`
+  `scenic room` and `scenic nas-room` (the sweep's margin has no command)
   (the same checks and files; `by` "the build page (<device>)"), and answers with them as they
   stand (`mac`: its host). One ask carrying several is set in order, so a bad one after a good one
   leaves the good one set; the page sends one at a time. A bad value is refused (400) with the check's words. They change only when a person

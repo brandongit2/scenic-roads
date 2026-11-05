@@ -4149,8 +4149,9 @@ fn route(
         "/work/settings" => {
             // The owner's settings from the build page (docs/workers.md §7): `{}` reads them;
             // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}`,
-            // set this Mac's, `{"nas_room": <GB> | "off"}` the pool's, each through the same function as
-            // its `scenic` command (crate::agent::settings). Answered with them as they stand.
+            // `{"sweep_margin": <GB> | "off"}` set this Mac's, `{"nas_room": <GB> | "off"}` the pool's,
+            // each through the same function as its `scenic` command (crate::agent::settings; the
+            // sweep's margin has none). Answered with them as they stand.
             use crate::agent::settings;
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let Some((home, root)) = shared.lock().unwrap().settings.clone() else {
@@ -4180,6 +4181,9 @@ fn route(
             }
             if let Some(v) = said("room")? {
                 settings::set_room(&home, &v, &by)?;
+            }
+            if let Some(v) = said("sweep_margin")? {
+                settings::set_sweep_margin(&home, &v, &by)?;
             }
             if let Some(v) = said("nas_room")? {
                 let root =

@@ -1,8 +1,8 @@
 // The owner's settings on the build page (the Machines tab; docs/workers.md §7): this page's Mac's
-// in-use share, memory floor and disk room target, a block per Mac, each set on that
-// Mac, and the pool's NAS reserve. Read and set through
+// in-use share, memory floor, disk room target and dev sweep margin, a block per Mac, each set on
+// that Mac, and the pool's NAS reserve. Read and set through
 // `/work/settings`, which sets each through the same function as its `scenic` command
-// (`scenic in-use`, `memory`, `room`, `nas-room`). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
+// (`scenic in-use`, `memory`, `room`, `nas-room`; the sweep's margin has none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
 function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -175,6 +175,11 @@ export function macRows(s) {
       now: s.room.bytes ? gb(s.room.bytes) : "off",
       note: `free space kept on ${s.mac || "this Mac"}'s disk${s.room.free != null ? `, ${gb(s.room.free)} free now` : ""}${by(s.room)}`,
       input: { min: 1, max: s.room.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: "No target" },
+    })),
+    guarded("sweep_margin", "Dev sweep margin", () => ({
+      now: gb(s.sweep_margin.bytes),
+      note: `tools/dev/sweep-targets.sh frees the agents' build caches on ${s.mac || "this Mac"} once free space falls below the room target plus this${s.sweep_margin.set ? by(s.sweep_margin) : " (the default)"}`,
+      input: { min: 1, max: s.room.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: `Back to the default (${gb(s.sweep_margin.default)})` },
     })),
   ];
 }
