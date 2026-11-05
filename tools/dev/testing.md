@@ -392,3 +392,36 @@ settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusi
   touch2_path for a pinch, screenshot; the first input after a boot may need a few retries). Port 8097 held
   (another agent's run): `SCENIC_SIM_PORT=<n>`; a server that can't listen fails the run, not
   showing someone else's page.
+
+## Where test time goes (#969, measured 5 Nov)
+
+From the dev job dashboard's 5 Nov records (48 check.sh runs, 4 publishes) and the last 9 publish
+suites' nextest times (M4, loaded: three runs at nice 20 beside builds):
+- **check.sh**: p50 986-2100 s a run, nearly all of it the tests part (p50 1115 s, p90 2048 s); clippy
+  p50 42 s, fmt/guards 3 s each, web 11 s when it runs. In the tests part: compiles 40-60 % (each
+  `cargo test` line built under its own feature set, a server line recompiling store, codecs,
+  buildstore and pipeline, ~170 s), the suites 30-40 % (pipeline's lib, p50 316 s, p90 753 s, is
+  nearly all of it), waits for a test-Mac slot 10-20 % (p50 188 s, p90 838 s).
+- **Selection**: 84 checks ran tests, most with 100-170 filters: a change to `agent/mod.rs` or another
+  widely used module reaches most of pipeline's lib one level out; any change under `crates/` runs
+  the scan tests (pipeline's integration tests). The heavy modules were in most: agent::tests 63,
+  agent::forecast 57, agent::build 56, depth 33 of the 84.
+- **Reuse** (#950): 5 of 61 passes on 5 Nov reused a part; the rest said "no earlier pass whose tree
+  plus main's changes is this tree": reuse holds only after a rebase with no own change since, so
+  an agent's every check after an edit runs its whole affected set.
+- **Publish** runs its whole suite whatever check.sh passed (by design: its tree is the merged one):
+  "Rust tests" p50 1754 s (compile 4-14 min, then the run 700-860 s, bounded by its slowest test).
+  An idler run (5 Nov 17:00, `--workspace`, 6bd14bb2): compile 247 s, run 306 s, 4135 s of CPU.
+- **The slowest tests** (median of 9 publish suites, s): depth's z6 tile paused at every safe point
+  718; agent::build a_key_names_exactly_its_reads 581; agent::forecast's live-scale run 425;
+  polar's block paused at every safe point 289; depth's run stopped after some blocks 288;
+  slope_pack's z6 tile down to its deep terrain 280; agent::tests a_job_is_reaped_while_the_nas_hangs
+  225 (waiting out the NAS deadlines); terrain_task's group tiles 219; agent::tests
+  beat_steady_while_planning 182 (a 3-min plan); terrain_task's z6 stopped and resumed 162;
+  beat_steady_while_the_nas_hangs 143; slope_pack's 2 threads and 8 125; terrain_task's subtrees
+  108 and paused mid-sampling 106; depth's fine source 104; trees' z3 pieces 64; agent::tests'
+  hung NAS while planning, cancel while planning and pause on a hung NAS 62 each; source_names'
+  two scans 62 and 60; offload's coordinator gone 61; trees' z3 run 59; treepacks 56; depth's
+  rivers 50; trees' room making 49; depth's resumed z6 48; slope_pack's assembly 46; polar's block
+  in progress 43; pool::sim's cache filled in parts 43. The top 10 are 45 % of the suite's test
+  time, the top 30 70 %; the 1,909 tests under a second, 3 %.
