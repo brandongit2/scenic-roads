@@ -99,12 +99,15 @@ test("stats: each name's runs, failures and times", async () => {
     { op: "span", id: "t-1", kind: "test", name: "a::b", mac: "m", t0: T, t1: T + 2, status: "ok" },
     { op: "span", id: "t-2", kind: "test", name: "a::b", mac: "m", t0: T + 10, t1: T + 14, status: "fail" },
     { op: "span", id: "t-3", kind: "test", name: "a::c", mac: "m", t0: T, t1: T + 1, status: "ok" },
+    { op: "span", id: "t-4", kind: "test", name: "a::b", mac: "m", t0: T + 20, t1: T + 20, status: "ok", attrs: { untimed: "1" } },
+    { op: "span", id: "t-5", kind: "test", name: "a::b", mac: "m", t0: T + 30, t1: T + 30, status: "skip" },
   ]);
   const s = (await get("/api/jobs/stats?kind=test")).body;
   const b = s.names.find((x) => x.name === "a::b");
-  assert.deepEqual([b.n, b.failed, b.p50, b.max, b.total, b.recent], [2, 1, 4, 4, 6, [2, 4]]);
+  // (A run with no time of its own, cargo test's, counts but has no time; a skipped one only as skipped.)
+  assert.deepEqual([b.n, b.failed, b.skipped, b.p50, b.max, b.total, b.recent], [3, 1, 1, 4, 4, 6, [2, 4]]);
   assert.equal((await get("/api/jobs/stats")).status, 400);
-  assert.ok((await get("/api/jobs/kinds")).body.kinds.some((k) => k.kind === "test" && k.n === 3));
+  assert.ok((await get("/api/jobs/kinds")).body.kinds.some((k) => k.kind === "test" && k.n === 5));
 });
 
 test("only POST events writes; a span that isn't there is a 404", async () => {

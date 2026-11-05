@@ -440,7 +440,7 @@ function renderStats() {
     tableBox.replaceChildren(h("table", null,
       h("thead", null, h("tr", null, h("th", null, "name"), th("n", "runs"), th("failed", "failed"), th("p50", "median"), th("p90", "p90"), th("max", "longest", " opt"), th("total", "total", " opt"), h("th", "opt", "recent"), h("th", "opt", "last"))),
       h("tbody", null, shown.map((g) => h("tr", null,
-        h("td", { class: "nm", title: g.name }, g.name), h("td", "num", g.n), h("td", `num${g.failed ? " bad" : ""}`, g.failed || ""),
+        h("td", { class: "nm", title: g.name }, g.name), h("td", { class: "num", title: g.skipped ? `and ${g.skipped} skipped or reused` : null }, g.n), h("td", `num${g.failed ? " bad" : ""}`, g.failed || ""),
         h("td", "num", dur(g.p50)), h("td", "num", dur(g.p90)), h("td", "num opt", dur(g.max)), h("td", "num opt", dur(g.total)),
         h("td", "opt", spark(g.recent)), h("td", { class: "num dim opt", title: g.last?.mac || "" }, g.last ? clock(g.last.t0, false) : ""))))),
       ...(names.length > shown.length ? [h("div", "more", h("button", { type: "button", onclick: () => { statsAll = true; renderTable(); } }, `show all ${names.length}`))] : []));

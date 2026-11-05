@@ -217,25 +217,27 @@ export function makeJobs(jobs, changed) {
     return { from, to, step: w, samples: out, macs: macs() };
   }
   // Durations by name for one kind of span (a check part, a publish step, a test suite, a test, a
-  // crate's compile…), all time or [from, to]: how often each ran and failed, and its times.
+  // crate's compile…), all time or [from, to]: how often each ran, failed and was skipped or reused,
+  // and its times (of those that ran and ended; not cargo test's tests, which have none).
   function stats(url) {
     const kind = url.searchParams.get("kind");
     if (!kind) refuse(400, "invalid_argument", "kind: is required");
     const has = url.searchParams.has("from") || url.searchParams.has("to");
     const { from, to } = has ? range(url) : { from: 0, to: now() + 86400 };
     const by = new Map();
-    for (const r of stmt(`SELECT name, t0, t1, status, mac FROM spans WHERE kind = ? AND t0 >= ? AND t0 <= ? ORDER BY t0`).all(kind, from, to)) {
+    for (const r of stmt(`SELECT name, t0, t1, status, mac, json_extract(attrs, '$.untimed') AS untimed FROM spans WHERE kind = ? AND t0 >= ? AND t0 <= ? ORDER BY t0`).all(kind, from, to)) {
       let g = by.get(r.name);
-      if (!g) by.set(r.name, (g = { name: r.name, n: 0, failed: 0, d: [], last: null }));
+      if (!g) by.set(r.name, (g = { name: r.name, n: 0, failed: 0, skipped: 0, d: [], last: null }));
+      if (r.status === "skip" || r.status === "reuse") { g.skipped++; continue; }
       g.n++;
       if (r.status === "fail" || r.status === "gone") g.failed++;
-      if (r.t1 != null && r.t0 != null) g.d.push(r.t1 - r.t0);
+      if (r.t1 != null && r.t0 != null && !r.untimed) g.d.push(r.t1 - r.t0);
       g.last = { t0: r.t0, t1: r.t1, status: r.status, mac: r.mac };
     }
     const q = (a, p) => (a.length ? a[Math.min(a.length - 1, Math.floor(p * a.length))] : null);
     const names = [...by.values()].map((g) => {
       const s = [...g.d].sort((a, b) => a - b);
-      return { name: g.name, n: g.n, failed: g.failed, p50: q(s, 0.5), p90: q(s, 0.9), max: s.length ? s[s.length - 1] : null, total: s.reduce((a, b) => a + b, 0), recent: g.d.slice(-40), last: g.last };
+      return { name: g.name, n: g.n, failed: g.failed, skipped: g.skipped, p50: q(s, 0.5), p90: q(s, 0.9), max: s.length ? s[s.length - 1] : null, total: s.reduce((a, b) => a + b, 0), recent: g.d.slice(-40), last: g.last };
     });
     return { kind, from: has ? from : null, to: has ? to : null, names };
   }
