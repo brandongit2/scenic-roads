@@ -64,9 +64,13 @@ pub struct TerrainTiles {
     /// the accepted sources' index content name, and what they read of it (None: not declared, or
     /// not to be read now).
     buildings: Option<(String, Option<KeyedSources>)>,
-    /// The declared depth sources (crate::depth::grids): the accepted sources' index content name,
-    /// and them (None: they can't be read now; the depth's work waits).
+    /// The declared depth sources (crate::depth::grids): the accepted sources' index content name
+    /// and the lake-depth packs' digest (`grids::estimates_key`), and them with those packs
+    /// (None: they can't be read now; the depth's work waits).
     depth: Option<(String, Option<std::sync::Arc<Vec<crate::depth::grids::Source>>>)>,
+    /// The same without the lake-depth packs (`grids::declared_alone`), by the accepted sources'
+    /// index content name: read once, not again as the packs change.
+    depth_alone: Option<(String, std::sync::Arc<Vec<crate::depth::grids::Source>>)>,
     /// The declared elevation datasets (crate::terrain_zoom), their heights
     /// conversions as the roads': the accepted elevation and sources indexes' content names, and
     /// the sets (None: they can't be read now; the terrain's z6 tiles wait: their keys name them).
@@ -214,20 +218,34 @@ impl TerrainTiles {
     }
 
     fn load_depth(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
-        let Some(want) = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) else {
+        let Some(key) = Self::depth_key(m) else {
             self.depth = None;
             return;
         };
-        if self.depth.as_ref().is_some_and(|(c, r)| c == want && r.is_some()) {
+        if self.depth.as_ref().is_some_and(|(c, r)| *c == key && r.is_some()) {
             return;
         }
-        let r = crate::depth::grids::declared(root, m)
-            .map_err(|e| {
-                eprintln!("agent: the depth waits: the declared depth sources in {want} can't be read ({e:#})")
-            })
-            .ok()
-            .map(std::sync::Arc::new);
-        self.depth = Some((want.clone(), r));
+        let want = &m[&crate::inputs::logical(crate::inputs::sources::UNIT)];
+        if self.depth_alone.as_ref().is_none_or(|(c, _)| c != want) {
+            match crate::depth::grids::declared_alone(root, m) {
+                Ok(d) => self.depth_alone = Some((want.clone(), std::sync::Arc::new(d))),
+                Err(e) => {
+                    eprintln!("agent: the depth waits: the declared depth sources in {want} can't be read ({e:#})");
+                    self.depth = Some((key, None));
+                    return;
+                }
+            }
+        }
+        let alone = self.depth_alone.as_ref().map(|(_, d)| d.as_ref().clone()).unwrap_or_default();
+        let r = crate::depth::grids::with_estimates(alone, root, m);
+        self.depth = Some((key, Some(std::sync::Arc::new(r))));
+    }
+
+    /// What the depth sources are held by (`depth`): the accepted sources' index content name and the
+    /// lake-depth packs' digest; None with no sources accepted.
+    fn depth_key(m: &BTreeMap<String, String>) -> Option<String> {
+        let want = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT))?;
+        Some(format!("{want} {}", crate::depth::grids::estimates_key(m)))
     }
 
     /// What the declared sets are read from: the accepted elevation and sources indexes `m` names.
@@ -290,21 +308,29 @@ impl TerrainTiles {
     /// The declared depth sources of the accepted sources `m` names: none declared, an empty list;
     /// None while they can't be read now (the depth's work waits).
     pub fn depth(&self, m: &BTreeMap<String, String>) -> Option<std::sync::Arc<Vec<crate::depth::grids::Source>>> {
-        let Some(want) = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) else {
-            return Some(Default::default());
-        };
+        let Some(key) = Self::depth_key(m) else { return Some(Default::default()) };
         match &self.depth {
-            Some((c, Some(d))) if c == want => Some(d.clone()),
+            Some((c, Some(d))) if *c == key => Some(d.clone()),
             #[cfg(test)]
             None => Some(Default::default()),
             _ => None,
         }
     }
 
-    /// Holds `d` as the depth sources of accepted sources index `content` (tests).
+    /// Holds `d` as the depth sources of accepted sources index `content`, no lake-depth pack made
+    /// (tests).
     #[cfg(test)]
     pub fn hold_depth(&mut self, content: &str, d: Vec<crate::depth::grids::Source>) {
-        self.depth = Some((content.to_string(), Some(std::sync::Arc::new(d))));
+        let key = format!("{content} {}", crate::depth::grids::estimates_key(&BTreeMap::new()));
+        self.depth = Some((key, Some(std::sync::Arc::new(d))));
+    }
+
+    /// Holds `d` as the depth sources `m` names, with the lake-depth packs it names (tests).
+    #[cfg(test)]
+    pub fn hold_depth_in(&mut self, m: &BTreeMap<String, String>, d: Vec<crate::depth::grids::Source>) {
+        let root = store::nasfs::NasRoot::local_for_test("/r");
+        let d = crate::depth::grids::with_estimates(d, &root, m);
+        self.depth = Some((Self::depth_key(m).unwrap_or_default(), Some(std::sync::Arc::new(d))));
     }
 
     /// The declared buildings source's release, of the accepted sources `m` names; None while

@@ -114,6 +114,9 @@ pub struct Keys {
     pub depth: BTreeMap<String, String>,
     #[serde(default)]
     pub depth_lo: BTreeMap<String, String>,
+    /// The lakes' estimated depth, per z6 tile ("6/x/y": `depth_targets`' `lakes`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lake_depth: BTreeMap<String, String>,
     /// The elevation pyramids' tiles stored on the NAS (crate::pyramids), per z6 tile ("6/x/y":
     /// `terrain_slope_targets`' `pyramids`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -210,6 +213,7 @@ impl Keys {
             "bldfield-lo" => &mut self.bldfield_lo,
             "depth" => &mut self.depth,
             "depth-lo" => &mut self.depth_lo,
+            "lake-depth" => &mut self.lake_depth,
             "pyramids-fill" => &mut self.pyramids_fill,
             "polar-terrain" => &mut self.polar_terrain,
             "polar-slope" => &mut self.polar_slope,
@@ -240,6 +244,7 @@ impl Keys {
             "bldfield-lo" => &self.bldfield_lo,
             "depth" => &self.depth,
             "depth-lo" => &self.depth_lo,
+            "lake-depth" => &self.lake_depth,
             "pyramids-fill" => &self.pyramids_fill,
             "polar-terrain" => &self.polar_terrain,
             "polar-slope" => &self.polar_slope,
@@ -4263,6 +4268,10 @@ fn bld_rank<'a>(regions: &'a [&'a Coverage]) -> impl Fn(&str) -> BldRank + 'a {
 pub struct DepthTargets {
     pub lo: Vec<(String, String)>,
     pub hi: Vec<(String, String)>,
+    /// The lake-depth step's (crate::depth::lakes): every z6 tile near the coverage while a source
+    /// it makes is declared, and under its "none" key a z6 tile with its packs and no target now
+    /// (its run drops them).
+    pub lakes: Vec<(String, String)>,
     pub unknown: Vec<(&'static str, String)>,
 }
 
@@ -4454,14 +4463,33 @@ pub fn depth_targets(x: &KeyCtx) -> Option<DepthTargets> {
     let mut out = DepthTargets::default();
     let lo = lo.into_iter().map(|q| ("depth-lo", format!("3/{}/{}", q.0, q.1)));
     let hi = hi.into_iter().map(|(tx, ty)| ("depth", format!("6/{tx}/{ty}")));
-    for (step, t) in lo.chain(hi) {
+    let lakes: Vec<String> = lake_tiles(x.cov, &sources).into_iter().map(|(tx, ty)| format!("6/{tx}/{ty}")).collect();
+    for (step, t) in lo.chain(hi).chain(lakes.iter().map(|t| ("lake-depth", t.clone()))) {
         match super::steps::derived_key(step, &t, x) {
             Some(k) if step == "depth" => out.hi.push((t, k)),
+            Some(k) if step == "lake-depth" => out.lakes.push((t, k)),
             Some(k) => out.lo.push((t, k)),
             None => out.unknown.push((step, t)),
         }
     }
+    // (A z6 tile with packs and no target now: its run drops them.)
+    let at: BTreeSet<&String> = lakes.iter().collect();
+    let had: BTreeSet<String> = crate::depth::lakes::named(x.m).map(|(_, t, _)| format!("6/{}/{}", t.0, t.1)).collect();
+    for t in had.into_iter().filter(|t| !at.contains(t)) {
+        if let Some(k) = super::steps::none_key("lake-depth", &t) {
+            out.lakes.push((t, k));
+        }
+    }
     Some(out)
+}
+
+/// The lake-depth step's z6 tiles: those near the coverage (`coverage_tiles`, the terrain's, whose
+/// z12 tiles the small lakes' slope reads) while a source it makes is declared.
+pub fn lake_tiles(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> Vec<(u32, u32)> {
+    if !sources.iter().any(|s| s.made.is_some()) {
+        return Vec::new();
+    }
+    coverage_tiles(cov).into_values().flatten().collect()
 }
 
 /// The depth chain's work that can run now: the stale z6 tiles; the stale assemblies whose z6 tiles
@@ -4473,6 +4501,10 @@ pub fn depth_work(x: &KeyCtx, done: &Keys) -> Vec<Work> {
 /// `depth_work`, what it finds left of its steps put in `left`.
 fn depth_work_in(x: &KeyCtx, done: &Keys, left: &mut Left) -> Vec<Work> {
     let Some(dt) = depth_targets(x) else { return Vec::new() };
+    // (The lakes' estimates first, reading no depth; a depth target waits for those it reads.)
+    let lakes: Vec<(String, String)> =
+        dt.lakes.iter().filter(|(t, k)| done.lake_depth.get(t) != Some(k)).cloned().collect();
+    left.set("lake-depth", lakes.iter().map(|t| t.0.clone()));
     let hi: Vec<(String, String)> = dt.hi.iter().filter(|(t, k)| done.depth.get(t) != Some(k)).cloned().collect();
     // (A target is left while stale, or while one of its packs is in a hand-off waiting to be
     // merged: such a pack isn't in the manifest its readers' keys read yet, so they would run again
@@ -4504,8 +4536,9 @@ fn depth_work_in(x: &KeyCtx, done: &Keys, left: &mut Left) -> Vec<Work> {
     // (The root once no assembly is left: its key reads their packs, so it isn't made while one
     // runs and again after it.)
     let root = if ready("depth-root", "depth-root", &*left) { depth_root_work(x, done) } else { None };
+    let hi: Vec<(String, String)> = hi.into_iter().filter(|(t, _)| ready("depth", t, &*left)).collect();
     let mut out = Vec::new();
-    for (step, targets) in [("depth", hi), ("depth-lo", lo)] {
+    for (step, targets) in [("lake-depth", lakes), ("depth", hi), ("depth-lo", lo)] {
         if !targets.is_empty() {
             out.push(Work { step: step.into(), targets });
         }
@@ -4517,6 +4550,11 @@ fn depth_work_in(x: &KeyCtx, done: &Keys, left: &mut Left) -> Vec<Work> {
 /// The depth chain's first stale step, as if each before it succeeded (`remaining`).
 fn depth_next(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let dt = depth_targets(x)?;
+    let lakes: Vec<(String, String)> =
+        dt.lakes.into_iter().filter(|(t, k)| done.lake_depth.get(t) != Some(k)).collect();
+    if !lakes.is_empty() {
+        return Some(Work { step: "lake-depth".into(), targets: lakes });
+    }
     let hi: Vec<(String, String)> = dt.hi.into_iter().filter(|(t, k)| done.depth.get(t) != Some(k)).collect();
     if !hi.is_empty() {
         return Some(Work { step: "depth".into(), targets: hi });
@@ -4914,7 +4952,7 @@ pub fn mark_shared(lines: &mut [Line]) {
 
 /// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
 /// agent's, before them).
-pub const COUNTED: [&str; 36] = [
+pub const COUNTED: [&str; 37] = [
     "heritage-sites",
     "terrain-lakes",
     "terrain-hi",
@@ -4926,6 +4964,7 @@ pub const COUNTED: [&str; 36] = [
     "slope-lo",
     "trees",
     "trees-lo",
+    "lake-depth",
     "depth",
     "depth-lo",
     "depth-root",
@@ -5073,6 +5112,7 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
     let dk = dt.as_ref().is_some_and(|d| d.unknown.is_empty());
     let empty = DepthTargets::default();
     let d = dt.as_ref().unwrap_or(&empty);
+    out.push(sized("lake-depth", &d.lakes, &done.lake_depth, dk));
     out.push(sized("depth", &d.hi, &done.depth, dk));
     out.push(sized("depth-lo", &d.lo, &done.depth_lo, dk));
     let root: Vec<(String, String)> = depth_root_key(x).map(|k| ("depth-root".to_string(), k)).into_iter().collect();
@@ -6466,6 +6506,7 @@ pub(crate) mod tests {
             "stations" | "ferries" => world(transit_key(step, x)),
             "terrain-root" => world(root_key("terrain", x)),
             "slope-root" => world(root_key("slope", x)),
+            "lake-depth" => depth_targets(x).map(|d| d.lakes),
             "depth" => depth_targets(x).map(|d| d.hi),
             "depth-lo" => depth_targets(x).map(|d| d.lo),
             "depth-root" => world(depth_root_key(x)),
@@ -10848,6 +10889,7 @@ pub(crate) mod tests {
             notice: None,
             grids,
             pin: format!("s{code} d{code}"),
+            made: None,
         };
         vec![s(1, vec![g([-45.0, 40.9, 0.0, 66.5], 8)]), s(2, vec![g([-22.4, 63.9, -21.6, 64.3], 13)])]
     }
@@ -11150,6 +11192,70 @@ pub(crate) mod tests {
         .unwrap()
         .terrain
         .is_empty());
+    }
+
+    /// The lakes' estimates follow the coverage (task #959): with a source the lake-depth step makes
+    /// declared, every z6 tile near the coverage is its target, run before the depth; a pack made
+    /// becomes the source's grids where the depth plans, a depth target reading it waits for it and
+    /// is keyed on it; a tile the coverage left is a "none" target dropping its packs.
+    #[test]
+    fn the_lakes_estimates_follow_the_coverage() {
+        let c = cov();
+        let none: BTreeMap<String, String> = BTreeMap::new();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert(crate::inputs::logical(crate::inputs::sources::UNIT), "x".into());
+        m.insert(
+            "layers/basemap/world-2026-09-28".into(),
+            "layers/basemap/world-2026-09-28.0101010101010101.pmtiles".into(),
+        );
+        let mut est = depth_sources().remove(1);
+        (est.id, est.code, est.lake, est.estimated, est.grids) = ("globathy".into(), 14, true, true, Vec::new());
+        est.made = Some(crate::depth::lakes::Method::Globathy);
+        est.pin = "globathy g".into();
+        let sources = vec![depth_sources().remove(0), est];
+        let mut tiles = TerrainTiles::new(None);
+        tiles.hold_depth_in(&m, sources.clone());
+        let x = |m: &BTreeMap<String, String>, tiles: &TerrainTiles| {
+            depth_targets(&KeyCtx::new(&c, "d", m, &none, None, tiles)).unwrap()
+        };
+        let pieces: BTreeSet<String> =
+            coverage_tiles(&c).into_values().flatten().map(|(a, b)| format!("6/{a}/{b}")).collect();
+        let dt = x(&m, &tiles);
+        assert_eq!(dt.lakes.iter().map(|t| t.0.clone()).collect::<BTreeSet<_>>(), pieces);
+        let w = depth_work(&KeyCtx::new(&c, "d", &m, &none, None, &tiles), &Keys::default());
+        assert_eq!(w[0].step, "lake-depth");
+        assert_eq!(w[0].targets.len(), pieces.len());
+        chain_keys_derived(&c, &m, &none, &tiles, &w[..1]);
+        // A pack made: the source's grid there, a depth target reading it, keyed on it.
+        let t6 = TileId::parse(pieces.first().unwrap()).unwrap();
+        let l = crate::depth::lakes::logical("globathy", (t6.x, t6.y));
+        m.insert(l.clone(), format!("{l}.0404040404040404.tar"));
+        tiles.hold_depth_in(&m, sources.clone());
+        let s = tiles.depth(&m).unwrap();
+        assert_eq!(s[1].grids.len(), 1);
+        assert_eq!(s[1].grids[0].zoom, crate::depth::lakes::GLOBATHY_Z);
+        let key_of = |m: &BTreeMap<String, String>, tiles: &TerrainTiles| {
+            let k = KeyCtx::new(&c, "d", m, &none, None, tiles);
+            super::super::idents::lake_packs(&t6.slash(), &k).unwrap().join("\n")
+        };
+        let lines = key_of(&m, &tiles);
+        assert_eq!(lines, format!("{l}={l}.0404040404040404.tar"));
+        // (An assembly reads it too: its z3 tile's.)
+        let q = format!("3/{}/{}", t6.x >> 3, t6.y >> 3);
+        let k = KeyCtx::new(&c, "d", &m, &none, None, &tiles);
+        assert_eq!(super::super::idents::lake_packs(&q, &k).unwrap(), vec![lines.clone()]);
+        let mut m2 = m.clone();
+        m2.insert(l.clone(), format!("{l}.0505050505050505.tar"));
+        tiles.hold_depth_in(&m2, sources.clone());
+        assert_ne!(key_of(&m2, &tiles), lines, "a pack made again re-keys what reads it");
+        // While its lake-depth targets are left, the depth target waits for them.
+        let w = depth_work(&KeyCtx::new(&c, "d", &m2, &none, None, &tiles), &Keys::default());
+        assert!(w.iter().all(|w| w.step == "lake-depth"), "{:?}", w.iter().map(|w| &w.step).collect::<Vec<_>>());
+        // The coverage gone from that tile: its packs dropped by a "none" target.
+        let far = Coverage::default();
+        let k = KeyCtx::new(&far, "d", &m2, &none, None, &tiles);
+        let dt = depth_targets(&k).unwrap();
+        assert_eq!(dt.lakes, vec![(t6.slash(), super::super::steps::none_key("lake-depth", &t6.slash()).unwrap())]);
     }
 
     /// The depth chain waits for its sources and its water's digests, then makes the z6 tiles

@@ -908,6 +908,8 @@ pub fn compose_lo(
     upto: u8,
     keep: bool,
 ) -> Result<Made> {
+    // (The lake-depth step's grids meeting it read from their packs: grids::resolved.)
+    let sources = &super::grids::resolved(sources, &[crate::agent::build::depth_lo_box(q)])?;
     let rd = Reader::default().with_local(local);
     let mut wc = WaterCache::default();
     let upto = upto.min(LO.1);
@@ -1148,6 +1150,8 @@ pub fn compose_hi(
     upto: u8,
     keep: bool,
 ) -> Result<Made> {
+    // (The lake-depth step's grids meeting what it reads, from their packs: grids::resolved.)
+    let sources = &super::grids::resolved(sources, &crate::agent::build::depth_hi_box_read(t))?;
     let rd = Reader::default().with_local(local);
     let upto = upto.min(HI.1);
     let mut tl = Tiles::new(out);

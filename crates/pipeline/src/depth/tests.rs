@@ -86,6 +86,7 @@ fn sources_deep(dir: &Path, deep: f32) -> Vec<Source> {
                 packed: None,
             }],
             pin: format!("s{code}"),
+            made: None,
         }
     };
     vec![

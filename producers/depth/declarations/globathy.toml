@@ -5,17 +5,18 @@ licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://doi.org/10.6084/m9.figshare.c.5243309.v1"
 territory = "world"
-notes = "GLOBathy is CC0 (figshare's records of its maximum depths and of its rasters, articles 13402070 and 13404635, both name CC0 on 19 Oct 2026; the paper, Sci Data 9:36, is CC BY 4.0, cited in the credit); HydroLAKES, whose outlines the bowls are drawn on, CC BY 4.0 (the licence given). producers/depth/globathy.py: GLOBathy's basic-parameters zip (Dmax_use_m by Hylak_id; fetched from figshare, or the depth lab's copy) and the owner's HydroLAKES v1.0 polygons zip (downloaded by hand). Each lake a bowl D = Dmax · (l/L)^0.75 on its HydroLAKES outline (the depth lab's fit), z11. Estimates: drawn only where no survey has a value. Not for navigation."
+notes = "GLOBathy is CC0 (figshare's records of its maximum depths and of its rasters, articles 13402070 and 13404635, both name CC0 on 19 Oct 2026; the paper, Sci Data 9:36, is CC BY 4.0, cited in the credit); HydroLAKES, whose outlines the bowls are drawn on, CC BY 4.0 (the licence given). Kept in sources/fetched/globathy/: GLOBathy's basic-parameters zip (GLOBathy_basic_parameters.zip, its (ALL_LAKES).csv: Dmax_use_m by Hylak_id; from the url) and the owner's HydroLAKES v1.0 polygons zip (HydroLAKES_polys_v10_shp.zip, downloaded by hand from hydrosheds.org); a new copy of either comes with a new version. The lake-depth step (crate::depth::lakes) makes its grids for every z6 tile near the coverage: each lake meeting the tile with a maximum depth a bowl D = Dmax · (l/L)^0.75 on its outline (the depth lab's fit), z11. Estimates: drawn only where no survey has a value. Not for navigation."
 
 [data]
 role = "depth"
-format = "depth-grid"
+format = "lake-estimate"
 kind = "data"
-index = "globathy-grids.geojson"
+url = "https://ndownloader.figshare.com/files/28919991"
 version = "2022"
 refresh = "pinned"
 
 [data.params]
+method = "globathy"
 code = 14
 water = "lake"
 label = "GLOBathy estimate"

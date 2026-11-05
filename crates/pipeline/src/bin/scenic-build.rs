@@ -43,6 +43,9 @@
 //!   slope-lo <Q …>               z3 tiles Q's zoomed-out slope (lo packs, z3–8) from their z6 tiles'
 //!                                mids and the lo pack as it is
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
+//!   lake-depth <6/x/y …> [--regions dir]  the lakes' estimated depth of z6 tiles
+//!                                (pipeline::depth::lakes): a pack a source it makes; one with no
+//!                                lake there, or a tile no target now, has its pack dropped
 //!   depth-root                   the depth layers' z0–2 root packs, from the lo packs' z3 tiles
 //!   polar-terrain <s/4/x/y …>    polar blocks' terrain (z4–9) from the elevation pool (pipeline::polar)
 //!   polar-slope <s/4/x/y …>      polar blocks' shading from their and their neighbours' terrain packs
@@ -821,6 +824,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "z3 tiles");
         }
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
+        "lake-depth" => lake_depth_step(&mut out, &args)?,
         "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
         "depth-root" => {
             let n = pipeline::depth::build::build_root(&mut out)?;
@@ -4920,6 +4924,112 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
         landing.then(out, "bldtiles", &t.slash(), said, c)?;
     }
     landing.land(out)
+}
+
+/// lake-depth <6/x/y …> [--regions dir]: the lakes' estimated depth of z6 tiles
+/// (pipeline::depth::lakes): each source the step makes, its grids of the tile in one pack
+/// (`work/lake-depth/<id>/6-x-y`); a source with no lake there, or a tile no target any more, has
+/// its pack dropped.
+fn lake_depth_step(out: &mut Out, args: &[String]) -> Result<()> {
+    use pipeline::depth::lakes::{self as lk, Method};
+    const STEP: &str = "lake-depth";
+    let ts = z6_tiles(args, STEP)?;
+    let cov = coverage_of(out, args)?;
+    let p = phase("reading the depth sources' declarations");
+    let sources = pipeline::depth::grids::declared_alone(out.root(), &out.manifest)?;
+    drop(p);
+    let targets: std::collections::BTreeSet<(u32, u32)> =
+        pipeline::agent::build::lake_tiles(&cov, &sources).into_iter().collect();
+    let made: Vec<(&str, &Method)> = sources.iter().filter_map(|s| Some((s.id.as_str(), s.made.as_ref()?))).collect();
+    let water = if made.iter().any(|(_, m)| matches!(m, Method::LandSlope { .. })) {
+        let _p = phase("opening the basemap's water");
+        Some(pipeline::terrain_pack::open_water(out)?)
+    } else {
+        None
+    };
+    let names: Vec<String> = ts.iter().map(|t| format!("Estimating the lakes' depth of {}", t.slash())).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for (k, t) in ts.iter().enumerate() {
+        pipeline::control::safe_point(STEP);
+        pipeline::agent::jobs::part(k, &names);
+        let had: Vec<String> = lk::named(&out.manifest)
+            .filter(|(_, u, _)| *u == (t.x, t.y))
+            .map(|(id, u, _)| lk::logical(id, u))
+            .collect();
+        if !targets.contains(&(t.x, t.y)) {
+            let n = run_drop(STEP, &t.slash(), || {
+                let n = pipeline::layers::drop(out, &had);
+                out.save()?;
+                Ok(n)
+            })?;
+            eprintln!("{STEP} {}: no target; {n} packs dropped", t.slash());
+            continue;
+        }
+        pipeline::control::on_grant(|| -> Result<()> {
+            let c = cost_start(STEP, &t.slash());
+            let b = roadcore::geo::tile_box(6, t.x, t.y);
+            // (HydroLAKES of the tile and a small margin, by the folder it's read from, once.)
+            let mut lakes: std::collections::BTreeMap<String, Vec<(u64, lk::Rings)>> = Default::default();
+            let mut gone = had;
+            for (id, m) in &made {
+                let folder = match m {
+                    Method::Globathy => *id,
+                    Method::LandSlope { outlines } => outlines.as_str(),
+                };
+                let f = lk::Folder { dir: lake_folder(out, folder) };
+                if !lakes.contains_key(folder) {
+                    let _p = phase("reading HydroLAKES' lakes");
+                    lakes.insert(
+                        folder.to_string(),
+                        f.hydrolakes([b[0] - 0.05, b[1] - 0.05, b[2] + 0.05, b[3] + 0.05])?,
+                    );
+                }
+                let hl = &lakes[folder];
+                let mut counts = lk::Counts::new();
+                let grids = match m {
+                    Method::Globathy => {
+                        let ids = hl.iter().map(|(h, _)| *h).collect();
+                        let dmax = {
+                            let _p = phase("reading GLOBathy's maximum depths");
+                            f.dmax(&ids)?
+                        };
+                        let _p = phase("shaping the lakes' bowls");
+                        counts.insert("lakes with a maximum depth", dmax.len() as u64);
+                        lk::globathy_grids(hl, &dmax, (t.x, t.y))
+                    }
+                    Method::LandSlope { .. } => {
+                        let _p = phase("estimating the small lakes");
+                        let water = water.as_ref().context("no basemap water")?;
+                        let terrain = lk::HiPacks::new(out.root(), &out.manifest);
+                        lk::small_grids(water, hl, &terrain, (t.x, t.y), &mut counts, &|d, n| {
+                            pipeline::agent::jobs::report(d, n, "z10 tiles")
+                        })?
+                    }
+                };
+                let name = lk::logical(id, (t.x, t.y));
+                if !grids.is_empty() {
+                    let _p = phase("packing the grids");
+                    let bytes = lk::pack(id, &grids)?;
+                    out.put_bytes(&name, "tar", &bytes)?;
+                    gone.retain(|g| *g != name);
+                }
+                eprintln!("{STEP} {} {id}: {} grids; {counts:?}", t.slash(), grids.len());
+            }
+            let dropped = pipeline::layers::drop(out, &gone);
+            out.save()?;
+            eprintln!("{STEP} {}: {dropped} packs dropped", t.slash());
+            pipeline::control::done(STEP, &t.slash());
+            note_cost(STEP, &t.slash(), c);
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// The folder a lake-depth source's files are kept in (`sources/fetched/<id>/`: GLOBathy's and
+/// HydroLAKES' zips), as the zip and shapefile readers open them, by path.
+fn lake_folder(out: &Out, id: &str) -> PathBuf {
+    out.root().join("sources/fetched").join(id).unchecked_path()
 }
 
 /// depth <T …> | depth-lo <Q …>: the depth and its shading of z6 tiles T (their hi packs, z9–16)

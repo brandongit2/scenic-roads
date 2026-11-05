@@ -638,6 +638,18 @@ fn td_lakes(t: &str) -> Vec<String> {
     named(6, at(t, pz).into_iter().map(|(x, y)| (x >> (pz - 6), y >> (pz - 6))))
 }
 
+/// lake-depth 6/x/y: the terrain hi packs of it and the ring of 8 around it (its small lakes'
+/// slope, read up to 160 m past a lake reaching its edge).
+fn ld_hi(t: &str) -> Vec<String> {
+    named(6, at(t, 6).into_iter().flat_map(|(x, y)| crate::depth::lakes::ring((x, y))))
+}
+
+/// depth 6/x/y and depth-lo 3/x/y: the lake-depth packs their sources' reads meet
+/// (crate::depth::lakes::read_by).
+fn d_lakes(t: &str) -> Vec<String> {
+    TileId::parse(t).map_or_else(Vec::new, |u| named(6, crate::depth::lakes::read_by(u.z, u.x, u.y)))
+}
+
 /// slope-lo 3/x/y: the lo terrain of it and its edge neighbours.
 fn sl_lo(t: &str) -> Vec<String> {
     named(3, at(t, 3).into_iter().flat_map(|(x, y)| with_edges(3, x, y)))
@@ -757,7 +769,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 60] = [
+pub const TABLE: [Step; 61] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -1172,6 +1184,27 @@ pub const TABLE: [Step; 60] = [
             w_trees_lo,
         )
     },
+    // (The lakes' estimated depth, a z6 tile's sources made by it (crate::depth::lakes): HydroLAKES'
+    // and GLOBathy's files streamed, a z10 tile's basemap water and grid (64 MB) at a time, ~0.7 GB
+    // as the producer it replaces measured. The depth waits for it. Until a target's own run says.)
+    Step {
+        mem_mb: 1200,
+        shared: true,
+        versions: &[("lake-depth", || crate::depth::lakes::V.to_string())],
+        reads: &[
+            In { name: "lake-sources", of: idents::lake_sources },
+            In { name: "water-source", of: idents::water_source },
+            Of { step: "terrain-hi", of: ld_hi, grain: Outputs },
+        ],
+        ..step(
+            "depth",
+            Derive,
+            Z6,
+            "lake-depth",
+            "Estimates the depth of a tile's lakes no survey covers, from GLOBathy's maximum depths and, for the small ones, the land's slope around them.",
+            w_lake_depth,
+        )
+    },
     // (Depth: a block's arrays and distance fields, ~0.3 GB; the sources' blocks read, 0.5 GB at
     // most; the tiles made, kept as PNG; the water of a level's tiles, 0.13 GB at most. Until a
     // target's own run says.)
@@ -1183,7 +1216,11 @@ pub const TABLE: [Step; 60] = [
         mem_mb: 2500,
         shared: true,
         versions: &[("depth", || super::build::depth_versions("depth"))],
-        reads: &[In { name: "depth-sources", of: idents::depth_sources }, In { name: "water:depth", of: idents::water_depth }],
+        reads: &[
+            In { name: "depth-sources", of: idents::depth_sources },
+            In { name: "water:depth", of: idents::water_depth },
+            Of { step: "lake-depth", of: d_lakes, grain: Grain::Read(idents::lake_packs) },
+        ],
         ..step(
             "depth",
             Pack,
@@ -1199,7 +1236,12 @@ pub const TABLE: [Step; 60] = [
         cost_v: 2,
         mem_mb: crate::depth::build::lo_peak_mb(),
         versions: &[("depth-lo", || super::build::depth_versions("depth-lo"))],
-        reads: &[Of { step: "depth", of: z6_of_z3, grain: Outputs }, In { name: "depth-sources", of: idents::depth_sources }, In { name: "water:depth", of: idents::water_depth }],
+        reads: &[
+            Of { step: "depth", of: z6_of_z3, grain: Outputs },
+            In { name: "depth-sources", of: idents::depth_sources },
+            In { name: "water:depth", of: idents::water_depth },
+            Of { step: "lake-depth", of: d_lakes, grain: Grain::Read(idents::lake_packs) },
+        ],
         ..step(
             "depth",
             Pack,
@@ -1788,7 +1830,7 @@ pub fn readers_first<T>(v: Vec<T>, step: impl Fn(&T) -> &str) -> Vec<T> {
 
 /// The shared steps: other members take their jobs (crate::coord leases them), in the table's
 /// order (no preference: which ready job goes first is derived from the reads, `readers_first`).
-pub const SHARED: [&str; 12] = set_of(Set::Shared);
+pub const SHARED: [&str; 13] = set_of(Set::Shared);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
 
@@ -1884,6 +1926,10 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         }),
         "slope-hi" if tile.is_some_and(|u| u.z == 6) => tile
             .is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
+        // (Its sources' packs.)
+        "lake-depth" => {
+            tile.is_some_and(|t| t.z == 6 && crate::depth::lakes::tile_of(l).is_some_and(|f| f.1 == (t.x, t.y)))
+        }
         // (Its z10 tiles' lakes' levels.)
         "terrain-lakes" => tile.is_some_and(|t| {
             let k = crate::terrain_deep::PACK_Z - 6;
@@ -2133,6 +2179,11 @@ fn w_terrain_lo(l: &str, _: bool) -> bool {
 /// A z6 tile's depth, class and shading hi packs (removed where it makes none).
 fn w_depth(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["hi"])
+}
+
+/// A z6 tile's lake-depth packs (crate::depth::lakes), a source's each.
+fn w_lake_depth(l: &str, _: bool) -> bool {
+    crate::depth::lakes::tile_of(l).is_some()
 }
 
 /// A z3 tile's depth, class and shading lo packs.
@@ -2453,6 +2504,7 @@ mod tests {
                 "peaks",
                 "bldprep",
                 "bldtiles",
+                "lake-depth",
                 "depth"
             ])
         );
@@ -2788,6 +2840,7 @@ mod tests {
                 "polar-root",
                 "trees",
                 "trees-lo",
+                "lake-depth",
                 "depth",
                 "depth-lo",
                 "depth-root",

@@ -61,8 +61,9 @@ pub const ROLES: [(&str, &[&str], &[&str]); 16] = [
     // (Lakes missing from OSM, Canada: crate::lakefill. Shapefile zips, its files kept by hand.)
     (LAKE_FILL, &["zip-shapefile"], &[]),
     // (Depth under the water: crate::depth. Many sources, each a set of depth grids by an index,
-    // made by a producer (producers/depth/) and kept in `sources/fetched/<id>/`: `MANY`.)
-    (DEPTH, &["depth-grid"], &[]),
+    // made by a producer (producers/depth/) and kept in `sources/fetched/<id>/`, or made by the
+    // lake-depth step from its own inputs (`lake-estimate`, crate::depth::lakes): `MANY`.)
+    (DEPTH, &["depth-grid", crate::depth::lakes::FORMAT], &[]),
     // (Height references converted: crate::dem::geoid. Many sources, each a separation grid (a
     // GeoTIFF) or a Helmert transformation between two references, chained by the elevation step
     // to bring each roads' dataset's heights to EGM2008: `MANY`.)
@@ -177,7 +178,9 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
                 ));
             }
             let ways = data.url.is_some() as usize + (!data.urls.is_empty()) as usize + data.index.is_some() as usize;
-            if ways != 1 {
+            // (A source the build makes from its other inputs alone names none: crate::depth::lakes.)
+            let made = data.format == crate::depth::lakes::FORMAT;
+            if ways != 1 && !(made && ways == 0) {
                 why.push("names where it is not in exactly one way: `url`, `urls` or `index`".into());
             }
             for u in data.url.iter().chain(&data.urls) {
@@ -253,11 +256,28 @@ pub const DEPTH_PARAMS: [&str; 11] = [
 /// depths are below a river's own surface there), `lakes` (drawn in lakes too: its depths there are
 /// below the lake's own surface), `estimated` (every cell an estimate, filling only what no survey
 /// has) and `notice` (a notice its licence asks every map showing it to carry).
+///
+/// A `lake-estimate` source (made by the lake-depth step: crate::depth::lakes) has no index, and
+/// `method` (`globathy`, from the zips in its folder, or `land-slope`, the basemap's small lakes,
+/// with `outlines`, the source whose HydroLAKES lakes it leaves out) beside those.
 fn depth_params(d: &Data) -> Vec<String> {
     let mut why = Vec::new();
     let p = &d.params;
-    if d.index.is_none() {
-        why.push("a depth source names its grids by an `index`".into());
+    let made = d.format == crate::depth::lakes::FORMAT;
+    if made {
+        if d.index.is_some() {
+            why.push("a lake-estimate source's grids are the lake-depth step's: no `index`".into());
+        }
+        if let Err(e) = crate::depth::lakes::Method::of(p) {
+            why.push(format!("{e:#}"));
+        }
+    } else {
+        if d.index.is_none() {
+            why.push("a depth source names its grids by an `index`".into());
+        }
+        for k in LAKE_ESTIMATE_PARAMS.iter().filter(|k| p.contains_key(**k)) {
+            why.push(format!("`params.{k}` is a lake-estimate source's field"));
+        }
     }
     if !matches!(p.get("code").and_then(|v| v.as_u64()), Some(1..=15)) {
         why.push("`params.code` isn't a whole number 1–15 (the source byte the depth's class tiles carry)".into());
@@ -281,11 +301,14 @@ fn depth_params(d: &Data) -> Vec<String> {
     if p.get("notice").is_some_and(|v| !v.is_string()) {
         why.push("`params.notice` isn't a text".into());
     }
-    for k in p.keys().filter(|k| !DEPTH_PARAMS.contains(&k.as_str())) {
+    for k in p.keys().filter(|k| !DEPTH_PARAMS.contains(&k.as_str()) && !LAKE_ESTIMATE_PARAMS.contains(&k.as_str())) {
         why.push(format!("`params.{k}` isn't a depth source's field"));
     }
     why
 }
+
+/// A `lake-estimate` depth source's own `params` (crate::depth::lakes::Method).
+pub const LAKE_ESTIMATE_PARAMS: [&str; 2] = ["method", "outlines"];
 
 /// What's wrong with a depth source's index features: each grid's `file` (its name in
 /// `sources/fetched/<id>/`) and `zoom` (the Web Mercator zoom whose pixels it's on), its

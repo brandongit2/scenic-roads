@@ -26,6 +26,7 @@ pub mod compose;
 pub mod edt;
 pub mod fall;
 pub mod grids;
+pub mod lakes;
 pub mod resume;
 
 /// The depth layer's name (`layers/depth/…`).

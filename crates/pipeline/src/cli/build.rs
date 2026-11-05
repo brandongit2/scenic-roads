@@ -74,6 +74,7 @@ const STEPS: &[Step] = &[
     s("bldprep", "<T …> [--dem dir]", "the 3D buildings' normalized files of z6 tiles T", &[], &["--dem"], ANY),
     s("bldtiles", "<T …> [--pass d] [--regions dir]", "the 3D buildings' tiles of z6 tiles T", &[], PASS_REGIONS, ANY),
     s("bldfield-lo", "<Q …>", "z3 tiles Q's zoomed-out buildings field", &[], &[], ANY),
+    s("lake-depth", "<6/x/y …> [--regions dir]", "z6 tiles' lakes' estimated depth (GLOBathy's, the small lakes'): a pack a source the step makes", &[], &["--regions"], ANY),
     s("depth", "<T …>", "z6 tiles T's depth and its shading (hi packs, z9–16) where a depth source is finer than the lo packs", &[], &[], ANY),
     s("depth-lo", "<Q …>", "z3 tiles Q's zoomed-out depth and its shading (lo packs, z3–8): the means of their z6 tiles' depth, composed from the declared depth sources where there's none", &[], &[], ANY),
     s("depth-root", "", "the depth's z0–2 root packs and their shading, the means of the lo packs' z3 tiles", &[], &[], 0),

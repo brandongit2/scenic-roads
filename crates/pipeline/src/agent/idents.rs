@@ -578,6 +578,30 @@ pub fn depth_sources(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     }
 }
 
+/// The sources the lake-depth step makes (crate::depth::lakes: the `lake-estimate` declarations),
+/// their pins: what a lake-depth target reads of the declarations (their methods and versions,
+/// which pin the files in their folders); None while they can't be read.
+pub fn lake_sources(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let sources = x.tiles.depth(x.m)?;
+    Some(sources.iter().filter(|s| s.made.is_some()).map(|s| s.pin.clone()).collect())
+}
+
+/// The lake-depth packs a depth target reads (crate::depth::lakes::read_by), "<logical>=<content>"
+/// each, "-" for none.
+pub fn lake_packs(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let u = TileId::parse(t)?;
+    let tiles: std::collections::BTreeSet<(u32, u32)> =
+        crate::depth::lakes::read_by(u.z, u.x, u.y).into_iter().collect();
+    let mut v: Vec<String> = crate::depth::lakes::named(x.m)
+        .filter(|(_, t, _)| tiles.contains(t))
+        .map(|(id, t, c)| format!("{}={c}", crate::depth::lakes::logical(id, t)))
+        .collect();
+    if v.is_empty() {
+        v.push("-".into());
+    }
+    Some(v)
+}
+
 /// The water a depth target reads (`build::water_key` of "depth <target>": a z6 tile's from
 /// `build::DEPTH_WATER_FROM`, an assembly's `DEPTH_LO_WATER_FROM`); None without a water source or
 /// while its digest isn't there.

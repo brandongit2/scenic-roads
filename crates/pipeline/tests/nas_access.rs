@@ -65,6 +65,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "pageview_months", 1, "pageviews' store of the months' indexes, read and written by path"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rail_feeds_step", 3, "railfeeds reads the catalogue, the checked list and the keys by path"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lakefill_step", 3, "lakefill's readers open the basemap, the outlines and the zips by path"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "lake_folder", 1, "the lake-depth step's zip and shapefile readers open GLOBathy's and HydroLAKES' zips by path"),
     ("crates/pipeline/src/inputs/regions/data.rs", "read", 1, "GDAL and the shapefile reader read the datasets by path"),
     ("crates/pipeline/src/namestodo.rs", "translation_files", 1, "the names crate's tables read their files by path"),
     // A raw path for what isn't a file's read or write.

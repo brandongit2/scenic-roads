@@ -122,6 +122,11 @@ pub struct Source {
     pub grids: Vec<Grid>,
     /// What keys name of it: its id and the digest of its declaration and index.
     pub pin: String,
+    /// Made by the lake-depth step (a `lake-estimate` declaration: crate::depth::lakes), how; its
+    /// grids then that step's packs, one a z6 tile, each its tile as one grid (`with_estimates`)
+    /// until a job reads the packs it meets for theirs (`resolved`). None: a producer's grids, by
+    /// its index.
+    pub made: Option<crate::depth::lakes::Method>,
 }
 
 impl Source {
@@ -140,12 +145,16 @@ impl Source {
         })
     }
 
-    /// Declaration `s` (of the depth role), its grids in `sources/fetched/<id>/` under `root`.
+    /// Declaration `s` (of the depth role), its grids in `sources/fetched/<id>/` under `root` (none
+    /// yet for one the lake-depth step makes: `with_estimates`).
     pub fn from_declared(root: &store::nasfs::NasRoot, s: &crate::inputs::sources::Source) -> Result<Source> {
         let dir = root.join("sources/fetched").join(&s.id);
         let p = &s.data.params;
         let code = s.param_u64("code")?;
         ensure!((1..=15).contains(&code), "the depth source {}: code {code} isn't 1–15", s.id);
+        let made = (s.data.format == crate::depth::lakes::FORMAT)
+            .then(|| crate::depth::lakes::Method::of(p).with_context(|| format!("the depth source {}", s.id)))
+            .transpose()?;
         let mut grids = Vec::with_capacity(s.index.len());
         let mut packs: HashMap<String, Arc<NasPath>> = HashMap::new();
         for f in &s.index {
@@ -194,6 +203,7 @@ impl Source {
             notice: p.get("notice").and_then(|v| v.as_str()).map(str::to_string),
             grids,
             pin: format!("{} {}", s.id, unpacked_digest(s)),
+            made,
         })
     }
 
@@ -212,9 +222,7 @@ impl Source {
 
     /// Its grids meeting lon/lat box `b`.
     pub fn meeting(&self, b: [f64; 4]) -> impl Iterator<Item = &Grid> {
-        self.grids
-            .iter()
-            .filter(move |g| g.bbox[0] <= b[2] && g.bbox[2] >= b[0] && g.bbox[1] <= b[3] && g.bbox[3] >= b[1])
+        self.grids.iter().filter(move |g| meets(g.bbox, b))
     }
 
     /// The finest zoom of its grids meeting `b`: at most what any pixel there can have (None: it
@@ -242,11 +250,94 @@ pub fn declared(
     root: &store::nasfs::NasRoot,
     manifest: &std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<Source>> {
+    Ok(with_estimates(declared_alone(root, manifest)?, root, manifest))
+}
+
+/// `declared`, the lake-depth step's sources without their grids.
+pub fn declared_alone(
+    root: &store::nasfs::NasRoot,
+    manifest: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<Source>> {
     let Some(s) = crate::inputs::sources::open(root, manifest)? else { return Ok(Vec::new()) };
     let mut out: Vec<Source> =
         s.many(crate::inputs::sources::DEPTH).iter().map(|d| Source::from_declared(root, d)).collect::<Result<_>>()?;
     out.sort_by_key(|s| s.code);
     Ok(out)
+}
+
+/// `sources` with the lake-depth step's packs `manifest` names (crate::depth::lakes::named) as the
+/// grids of the sources it makes: each pack its z6 tile as one grid of the source's zoom, so what
+/// plans the depth sees where they meet and how fine (a job reads the packs' own grids: `resolved`).
+pub fn with_estimates(
+    mut sources: Vec<Source>,
+    root: &store::nasfs::NasRoot,
+    manifest: &std::collections::BTreeMap<String, String>,
+) -> Vec<Source> {
+    for s in &mut sources {
+        let Some(m) = &s.made else { continue };
+        let zoom = m.zooms().0;
+        s.grids = crate::depth::lakes::named(manifest)
+            .filter(|(id, _, _)| *id == s.id)
+            .map(|(_, t, c)| Grid {
+                bbox: roadcore::geo::tile_box(6, t.0, t.1),
+                zoom,
+                file: root.join(c),
+                low_file: None,
+                packed: None,
+            })
+            .collect();
+    }
+    sources
+}
+
+/// What a plan's depth sources (`with_estimates`) hold of the lake-depth step's packs, as a digest:
+/// they're made again when it changes.
+pub fn estimates_key(manifest: &std::collections::BTreeMap<String, String>) -> String {
+    let lines: Vec<String> = crate::depth::lakes::named(manifest).map(|(id, t, c)| format!("{id} {t:?} {c}")).collect();
+    format!("{:016x}", store::naming::xxh3(lines.join("\n").as_bytes()))
+}
+
+/// `sources` as a job reads them over lon/lat boxes `boxes`: a lake-depth source's packs meeting
+/// them (`with_estimates`' grids) read for their own grids (each a GeoTIFF in the pack, by the
+/// range its index gives: crate::depth::lakes::unpack_index), the packs meeting none left out;
+/// every other source as it is.
+pub fn resolved(sources: &[Source], boxes: &[[f64; 4]]) -> Result<Vec<Source>> {
+    let mut out = Vec::with_capacity(sources.len());
+    for s in sources {
+        let mut s = s.clone();
+        if s.made.is_some() {
+            let packs: Vec<Grid> = s.grids.drain(..).filter(|g| boxes.iter().any(|b| meets(g.bbox, *b))).collect();
+            for p in packs {
+                let pack = Arc::new(p.file.clone());
+                let read = |off: u64, len: usize| -> Result<Vec<u8>> {
+                    use store::sys::PosIo;
+                    let f = store::nasfs::Loc::from(&*pack).open().with_context(|| format!("{}", pack.display()))?;
+                    let mut b = vec![0u8; len];
+                    f.read_exact_at(&mut b, off).with_context(|| format!("{}", pack.display()))?;
+                    Ok(b)
+                };
+                let idx = crate::depth::lakes::unpack_index(&read)
+                    .with_context(|| format!("the depth source {}: {}", s.id, pack.display()))?;
+                for e in idx {
+                    s.grids.push(Grid {
+                        bbox: window_box(e.zoom, e.c0, e.r0, e.w as usize, e.h as usize),
+                        zoom: e.zoom,
+                        file: pack.join(&e.file),
+                        low_file: None,
+                        packed: Some(Packed { pack: pack.clone(), at: [Some((e.at[0], e.at[1])), None] }),
+                    });
+                }
+            }
+            s.grids.sort_by(|a, b| a.zoom.cmp(&b.zoom).then(a.file.cmp(&b.file)));
+        }
+        out.push(s);
+    }
+    Ok(out)
+}
+
+/// Whether lon/lat boxes `a` and `b` meet.
+fn meets(a: [f64; 4], b: [f64; 4]) -> bool {
+    a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1]
 }
 
 /// The GeoTIFFs open, sharing one block cache: at most `keep` of them, the least recently used
@@ -1148,6 +1239,7 @@ pub(crate) mod tests {
             notice: None,
             grids,
             pin: "t".into(),
+            made: None,
         }
     }
 
