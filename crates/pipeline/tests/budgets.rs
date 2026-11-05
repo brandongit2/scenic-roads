@@ -29,14 +29,17 @@ const ASKS: &[(&str, &str)] = &[
     ("crates/jobrt/src/budget/net.rs", "the page's limit words (limit_of), asking no one"),
     ("crates/pipeline/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
     ("crates/pipeline/src/inputs/sources.rs", "its tests: the staged declarations' URLs, compared, asked of no one"),
-    ("crates/pipeline/src/wikiask.rs", "ureq (honours HTTPS_PROXY: Proxy::try_from_env); a 429 told (budget::seen)"),
+    ("crates/landmarks/src/wikiask.rs", "ureq (honours HTTPS_PROXY: Proxy::try_from_env); a 429 told (budget::seen)"),
     (
-        "crates/pipeline/src/heritagewd.rs",
+        "crates/landmarks/src/heritagewd.rs",
         "names Wikidata's links and Wikipedia's sites in its queries, asked through crate::wikiask",
     ),
-    ("crates/pipeline/src/areadetails.rs", "names English Wikipedia's site in its query, asked through crate::wikiask"),
     (
-        "crates/pipeline/src/items.rs",
+        "crates/landmarks/src/areadetails.rs",
+        "names English Wikipedia's site in its query, asked through crate::wikiask",
+    ),
+    (
+        "crates/landmarks/src/items.rs",
         "names Wikidata's entities and English Wikipedia's site in its queries, asked through crate::wikiask",
     ),
 ];

@@ -39,13 +39,13 @@
 //! Every number is computed in a fixed order (numpy's, where the layer began in Python), so a pass's
 //! tiles are the same bytes once unzipped, run after run; the gzip header carries no time.
 
-use crate::agent::jobs;
 use crate::interest::{isolation, min_zoom, py_round};
-use crate::pyjson::{self, Py};
-use crate::pytext;
-use crate::timings::phase;
 use anyhow::{ensure, Context, Result};
 use det::Det;
+use jobrt::jobs;
+use jobrt::timings::phase;
+use pyport::pyjson::{self, Py};
+use pyport::pytext;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -567,7 +567,7 @@ fn encode(points: &[Feature]) -> Vec<u8> {
 
 /// Runs osmium with `args`, its progress (`--progress`) said as the stage's under way.
 fn osmium(args: &[&std::ffi::OsStr], what: &str) -> Result<()> {
-    let mut c = crate::osmpass::osmium();
+    let mut c = jobrt::sys::osmium();
     c.args(args).arg("--progress");
     let st = jobs::run_watched(&mut c, jobs::within).with_context(|| format!("run {what}"))?;
     ensure!(st.success(), "{what} failed: {st}");
@@ -635,7 +635,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
     {
         let _p = phase("reading the named areas");
         let idx = work.join("labels-nodes.idx");
-        let mut c = crate::osmpass::osmium();
+        let mut c = jobrt::sys::osmium();
         c.args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "-o", "-", "-i"])
             .arg(format!("sparse_file_array,{}", idx.display()))
             .arg(&areas)

@@ -332,7 +332,7 @@ pub fn poi_base(fame: f64, named: bool, rich: usize, size_rank: f64) -> f64 {
 }
 
 /// A repeated name waits until the nearest more interesting place of its kind and name is 2^NAME_GAP
-/// times the label spacing away on screen (crate::heritage_layers, crate::marksjob).
+/// times the label spacing away on screen (crate::heritage_layers, pipeline::marksjob).
 pub const NAME_GAP: f64 = 3.0;
 
 /// Each named place's mz at least NAME_GAP after the zoom where the nearest
@@ -383,9 +383,9 @@ pub fn same_names(
 /// Heritage Site in several components once, at its dot; its other components get none), written
 /// back into data/build/heritage.json as Python's `json` writes it.
 pub fn heritage(root: &std::path::Path) -> anyhow::Result<()> {
-    use crate::pyjson::{dumps, loads, Py};
-    use crate::timings::phase;
     use anyhow::Context;
+    use jobrt::timings::phase;
+    use pyport::pyjson::{dumps, loads, Py};
     let b = root.join("data/build");
     let p = phase("reading the layers and details");
     let pv_path = root.join("data/pageviews/items.json");

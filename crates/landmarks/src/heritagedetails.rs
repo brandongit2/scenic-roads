@@ -10,11 +10,11 @@
 //! Long descriptions: the ones written in the registers' snapshot (`data/heritage/desc/*.out.jsonl`).
 //! Those written since are the NAS's descriptions/, which the server lays over the records
 //! (crates/server/src/descriptions.rs). The files' bytes are as Python's `json` writes them
-//! (crate::pyjson).
+//! (pyport::pyjson).
 
-use crate::pyjson::{dumps, dumps_spaced, loads, Py};
-use crate::timings::phase;
 use anyhow::{Context, Result};
+use jobrt::timings::phase;
+use pyport::pyjson::{dumps, dumps_spaced, loads, Py};
 use std::collections::HashMap;
 use std::path::Path;
 

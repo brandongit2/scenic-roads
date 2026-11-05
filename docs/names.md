@@ -73,7 +73,7 @@ The tables converted from the earlier translation work are `0-converted/<languag
 (converted once; the log is `inputs/translations/how/conversion-log.txt`); their lines hold for
 their source area's languages, not each language spoken where their things are.
 
-**The build carries each thing's own English and language tags:** labels (`crates/pipeline/src/labels.rs`: `en`,
+**The build carries each thing's own English and language tags:** labels (`crates/landmarks/src/labels.rs`: `en`,
 `kana`, `l` the languages OSM gives its name, `o` its OSM object); the basemap (`name:en` and
 `name:fr` from the 2026-09-28 pass; `osmpass::BASEMAP_LANGUAGES` from the next); roads
 (`global/roaden/<u>`, their own English only: no language tags). Wikidata's English labels aren't

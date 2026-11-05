@@ -25,13 +25,13 @@
 //! the facts) and the pass's answers it adds to: ids.jsonl (per register ID: its result rows, []
 //! for no item), wp.jsonl (per item: its articles), enwiki-shortdesc.json (per title; "" for none),
 //! so a rerun only asks what is new. The files' bytes are as dem/heritagewd.py wrote them
-//! (crate::pyjson's `dumps_spaced`).
+//! (pyport::pyjson's `dumps_spaced`).
 
-use crate::pyjson::{dumps_spaced, loads, Py};
-use crate::timings::phase;
 use crate::wikiask::{urlencode, val, Asker};
 use anyhow::{bail, Context, Result};
 use det::Det;
+use jobrt::timings::phase;
+use pyport::pyjson::{dumps_spaced, loads, Py};
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::path::Path;
@@ -528,7 +528,7 @@ fn shortdescs(ask: &Asker, api: &str, titles: &[String]) -> Result<Ordered<Strin
                 "short descriptions: titles {}–{}: an answer without a query: {}",
                 k * 50,
                 k * 50 + chunk.len(),
-                crate::pyjson::dumps(&d).chars().take(200).collect::<String>()
+                pyport::pyjson::dumps(&d).chars().take(200).collect::<String>()
             );
         }
         let q = q.unwrap();

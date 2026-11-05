@@ -10,11 +10,11 @@
 //! The stops & sights' values are the marks job's (`interest::poi_filter_props`). The files are
 //! read and written as Python's `json.load`/`json.dumps(ensure_ascii=False, separators=(",",":"))`
 //! do (the chain's scripts after it read them, and the outputs keep their bytes): keys in their
-//! order, numbers as Python writes them (crate::pyjson).
+//! order, numbers as Python writes them (pyport::pyjson).
 
-use crate::pyjson::{dumps, loads, Py};
-use crate::timings::phase;
 use anyhow::{bail, Context, Result};
+use jobrt::timings::phase;
+use pyport::pyjson::{dumps, loads, Py};
 use std::collections::HashMap;
 use std::path::Path;
 

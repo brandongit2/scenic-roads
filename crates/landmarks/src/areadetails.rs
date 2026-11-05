@@ -13,14 +13,14 @@
 //!
 //! The park facts are the pass's answers (data/areas/wikidata.json); those it lacks are asked of
 //! Wikidata (crate::wikiask) and added to it after each batch. The files' bytes are as Python's
-//! `json` writes them (crate::pyjson), every float operation in the order the Python's was.
+//! `json` writes them (pyport::pyjson), every float operation in the order the Python's was.
 
 use crate::interest::py_round;
-use crate::pyjson::{dumps, dumps_spaced, loads, Py};
-use crate::timings::phase;
 use crate::wikiask::{val, Asker};
 use anyhow::{bail, Context, Result};
 use det::Det;
+use jobrt::timings::phase;
+use pyport::pyjson::{dumps, dumps_spaced, loads, Py};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -137,7 +137,7 @@ fn norm(s: &str) -> String {
 
 /// Python's `re.fullmatch(r"Q\d+", s)`.
 fn is_qid(s: &str) -> bool {
-    s.strip_prefix('Q').is_some_and(|d| !d.is_empty() && d.chars().all(|c| crate::pytext::decimal(c).is_some()))
+    s.strip_prefix('Q').is_some_and(|d| !d.is_empty() && d.chars().all(|c| pyport::pytext::decimal(c).is_some()))
 }
 
 /// Facts of these items (several hundred at a time), by item; `save` given what's in so far
@@ -181,7 +181,7 @@ fn wd_parks(
             if let Some(v) = val(&b, "inc") {
                 rec.push(("inception".into(), Py::Str(v.chars().take(10).collect())));
             }
-            let float = |k: &str, v: &str| crate::pytext::float(v).with_context(|| format!("{k} {v:?} not a number"));
+            let float = |k: &str, v: &str| pyport::pytext::float(v).with_context(|| format!("{k} {v:?} not a number"));
             if let Some(v) = val(&b, "area") {
                 // (Normalised to m².)
                 rec.push(("area_km2".into(), Py::Float(py_round(float("area", v)? / 1e6, 2))));

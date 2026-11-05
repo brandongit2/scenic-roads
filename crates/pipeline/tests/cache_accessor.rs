@@ -42,7 +42,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/scache.rs", "*", "a unit folder's own scenic cache (its scache/), not the agent's"),
     ("crates/buildstore/src/localread.rs", "new", "names its folders: reads go through store::blobs (store::cachefile holds); copying/ holds only lock files"),
     ("crates/pipeline/src/answers.rs", "*", "the items and heritage answers, which room-making never deletes"),
-    ("crates/pipeline/src/items.rs", "run", "the items job's answers (crate::answers), which room-making never deletes"),
+    ("crates/landmarks/src/items.rs", "run", "the items job's answers (crate::answers), which room-making never deletes"),
     ("crates/pipeline/src/unit.rs", "scenic_kept", "the units' kept results (scenic-units/), which room-making never deletes"),
     ("crates/pipeline/src/unit.rs", "move_kept_to_shared", "the units' kept results (scenic-units/), which room-making never deletes"),
     ("crates/codecs/src/basepart.rs", "index_path", "a path: open reads, keeps and removes the index through store::cachefile"),

@@ -13,7 +13,7 @@
 //!                    links …) go to props-heritage.jsonl by record, which the marks job joins
 //!                    into the sites' popup records.
 //!   whs-shapes       the World Heritage outlines with i, their site's record (its dot's).
-//!   heritage-areas   simplified to ~1 m (topology preserved: crate::tpsimplify); coordinates to
+//!   heritage-areas   simplified to ~1 m (topology preserved: pyport::tpsimplify); coordinates to
 //!                    6 decimals.
 //!   indigenous, special   coordinates to 6 decimals.
 //!
@@ -27,13 +27,13 @@
 //! Also layer-summary.json: per polygon overlay, the feature count and each feature's area (km²),
 //! for the Layers panel's counts under the area filters, without loading the polygons.
 //!
-//! Every file is byte for byte what the chain's Python wrote before (crate::pyjson).
+//! Every file is byte for byte what the chain's Python wrote before (pyport::pyjson).
 
 use crate::interest::{py_round, same_names};
-use crate::pyjson::{dumps, loads, Py};
-use crate::pytext::{circled, differs, word_char};
-use crate::timings::phase;
 use anyhow::{bail, Context, Result};
+use jobrt::timings::phase;
+use pyport::pyjson::{dumps, loads, Py};
+use pyport::pytext::{circled, differs, word_char};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use unicode_normalization::char::is_combining_mark;
@@ -400,7 +400,7 @@ fn polygons(b: &Path, src: &str, tol: f64) -> Result<Py> {
         let mut kind = g.at("type").clone();
         let mut c = g.at("coordinates").clone();
         if tol != 0.0 {
-            if let Some((k, simplified)) = crate::tpsimplify::simplify_geojson(&kind, &c, tol)? {
+            if let Some((k, simplified)) = pyport::tpsimplify::simplify_geojson(&kind, &c, tol)? {
                 kind = Py::Str(k.into());
                 c = simplified;
             }

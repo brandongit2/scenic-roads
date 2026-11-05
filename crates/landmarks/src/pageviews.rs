@@ -19,14 +19,14 @@
 //!
 //! Outputs: `heritage` writes data/pageviews/items.json, `items` the job's views.json and meta.json
 //! (per item: its average monthly views over the sampled months, one decimal; Python's
-//! `json.dumps` bytes, crate::pyjson; the heritage file's items by QID).
+//! `json.dumps` bytes, pyport::pyjson; the heritage file's items by QID).
 
-use crate::agent::jobs::report;
 use crate::heritagewd::{read_lines, wikipedias, write_atomic, Ordered};
-use crate::pyjson::{dumps_spaced, loads, Py};
-use crate::timings::phase;
 use crate::wikiask::Asker;
 use anyhow::{bail, Context, Result};
+use jobrt::jobs::report;
+use jobrt::timings::phase;
+use pyport::pyjson::{dumps_spaced, loads, Py};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -489,7 +489,7 @@ impl Months {
             cachefile::make_dir(&self.dir)?;
             eprintln!("  {month}: streaming its dump, every article of the map's languages counted");
             let url = self.dump_url(month);
-            crate::fetch::online(&url)?;
+            buildstore::fetch::online(&url)?;
             // (A held scratch file of store::cachefile: room-making leaves it while it's written.)
             let (tmp, held) = cachefile::scratch(&local)?;
             let r = self.stream_into(month, &url, &tmp);
@@ -541,7 +541,7 @@ impl Months {
                     "300",
                     "-A",
                 ])
-                .arg(crate::fetch::USER_AGENT)
+                .arg(buildstore::fetch::USER_AGENT)
                 .arg(url)
                 .stdout(Stdio::piped()),
         )
@@ -789,7 +789,7 @@ mod tests {
 
     #[test]
     fn views_rounded_as_python() {
-        let s = |t| crate::pyjson::dumps(&mean_views(t, 4));
+        let s = |t| pyport::pyjson::dumps(&mean_views(t, 4));
         // (round(x, 1) halves to even: 0.25 → 0.2, 0.75 → 0.8.)
         assert_eq!(
             [s(0), s(1), s(3), s(5), s(7), s(10), s(123457)],
@@ -811,7 +811,7 @@ mod tests {
         let head = format!("#langs\t{}\n", LANGS.join(","));
         index(&nas.join("2026-02.tsv.zst"), &format!("{head}en|A\t3\nen|B\t5\nen|A\t4\nfr|C\t1\n"));
         // (Offline: a month with no index anywhere is an error, never a download.)
-        crate::fetch::go_offline();
+        buildstore::fetch::go_offline();
         let m = Months::new(here.clone(), Some(nas.clone()), "https://example.org/{y}/{m}".into());
         let wanted: HashSet<String> = ["en|A", "fr|C", "en|Z"].iter().map(|s| s.to_string()).collect();
         let got = m.month_views("2026-02", &wanted).unwrap();
@@ -860,7 +860,7 @@ mod tests {
             index(&nas.join(format!("{m}.tsv.zst")), &s);
         }
         // (Offline: a month whose index can't be had from the NAS fails at once, never downloads.)
-        crate::fetch::go_offline();
+        buildstore::fetch::go_offline();
         let m = Months::new(here.clone(), Some(nas), String::new());
         let wanted: HashSet<String> = (0..20000).step_by(7).map(|k| format!("en|Page_{k}")).collect();
         let look = || {
@@ -910,7 +910,7 @@ mod tests {
         .unwrap();
         std::fs::write(cache.join("fetched-2026-09-28.json"), "{\"first\": \"2026-10-05\", \"last\": \"2026-10-22\"}")
             .unwrap();
-        crate::fetch::go_offline();
+        buildstore::fetch::go_offline();
         let m = Months::new(here.clone(), None, String::new());
         let q: BTreeSet<String> = ["Q1", "Q2", "Q3", "Q4"].iter().map(|s| s.to_string()).collect();
         items(&cache, "2026-09-28", &q, 7, &m, &out).unwrap();

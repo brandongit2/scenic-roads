@@ -1,7 +1,6 @@
 pub mod agent;
 pub mod answers;
 pub mod appupdate;
-pub mod areadetails;
 pub mod areafiles;
 pub mod bld;
 pub mod buildings;
@@ -13,16 +12,9 @@ pub mod dem;
 pub mod depth;
 pub mod elev;
 pub mod ferries;
-pub mod filterprops;
 pub mod gtfs;
 pub mod heritage;
-pub mod heritage_layers;
-pub mod heritagedetails;
-pub mod heritagewd;
 pub mod inputs;
-pub mod interest;
-pub mod items;
-pub mod labels;
 pub mod lakefill;
 pub mod landcover;
 pub mod layers;
@@ -38,7 +30,6 @@ pub mod osmpass;
 pub mod out;
 pub mod ovconv;
 pub mod paces;
-pub mod pageviews;
 pub mod peaks;
 pub mod polar;
 pub mod pool;
@@ -68,8 +59,6 @@ pub mod unit;
 pub mod uses;
 pub mod view;
 pub mod water;
-pub mod whsshapes;
-pub mod wikiask;
 
 // Moved to their own crate (task #916 step 1, docs/crates.md), kept at their old paths.
 pub use pyport::{pyjson, pynumpy, pytext, tpsimplify};
@@ -86,6 +75,12 @@ pub use jobrt::{budget, control, phase_names, pyenv, resume_log, sys, timings};
 // Moved to their own crate (task #916 step 4, docs/crates.md), kept at their old paths. (out is
 // pipeline's own: its `Out` gives buildstore's the records and write sets from above.)
 pub use buildstore::{costin, coverage, fetch, geotiff, handoff, localread, outlines, rawpack};
+
+// Moved to their own crate (task #916 step 5a, docs/crates.md), kept at their old paths.
+pub use landmarks::{
+    areadetails, filterprops, heritage_layers, heritagedetails, heritagewd, interest, items, labels, pageviews,
+    whsshapes, wikiask,
+};
 
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), before
 /// any test runs, as it was while fetch was pipeline's: run by the loader as the test binary starts

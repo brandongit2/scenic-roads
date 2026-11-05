@@ -1041,6 +1041,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "landmarks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "buildstore",
+ "det",
+ "geos",
+ "jobrt",
+ "libc",
+ "names",
+ "osmpbf",
+ "pyport",
+ "rayon",
+ "roadcore",
+ "serde_json",
+ "store",
+ "tempfile",
+ "unicode-normalization",
+ "ureq",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1323,6 +1346,7 @@ dependencies = [
  "i_overlay",
  "image-webp",
  "jobrt",
+ "landmarks",
  "libc",
  "libz-sys",
  "md-5",
@@ -1344,7 +1368,6 @@ dependencies = [
  "toml",
  "tower",
  "tower-http",
- "unicode-normalization",
  "ureq",
  "webpenc",
  "weezl",

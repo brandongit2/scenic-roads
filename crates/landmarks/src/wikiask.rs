@@ -1,14 +1,14 @@
 //! Asking Wikidata's query service and Wikipedia's API, and Wikimedia's dumps, for the heritage
 //! chain's and the items job's Rust steps (crate::heritagewd, crate::items, crate::pageviews): the
-//! build's User-Agent (crate::fetch::USER_AGENT), every request refused offline first
-//! (crate::fetch::online), through the job's proxy (`HTTPS_PROXY`, which takes each from the pool's
-//! budget by its rate class: crate::budget), a 429 or a `Retry-After` told to it
-//! (crate::budget::seen) and backed off from. What it asks is declared APIs and data downloads
-//! (crate::fetch::Kind's `api` and `data`), never pages, so no robots.txt is read. Answers are read
-//! as Python's `json` reads them (crate::pyjson), for caches whose bytes stay the Python's.
+//! build's User-Agent (buildstore::fetch::USER_AGENT), every request refused offline first
+//! (buildstore::fetch::online), through the job's proxy (`HTTPS_PROXY`, which takes each from the pool's
+//! budget by its rate class: jobrt::budget), a 429 or a `Retry-After` told to it
+//! (jobrt::budget::seen) and backed off from. What it asks is declared APIs and data downloads
+//! (buildstore::fetch::Kind's `api` and `data`), never pages, so no robots.txt is read. Answers are read
+//! as Python's `json` reads them (pyport::pyjson), for caches whose bytes stay the Python's.
 
-use crate::pyjson::{loads, Py};
 use anyhow::{bail, Result};
+use pyport::pyjson::{loads, Py};
 use std::time::Duration;
 
 /// The prefixes every query is sent with.
@@ -38,7 +38,7 @@ impl Asker {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(180)))
             .timeout_connect(Some(Duration::from_secs(30)))
-            .user_agent(crate::fetch::USER_AGENT)
+            .user_agent(buildstore::fetch::USER_AGENT)
             .http_status_as_error(false)
             .proxy(ureq::Proxy::try_from_env())
             // (No redirect followed: MediaWiki resolves redirects in its answer.)
@@ -51,7 +51,7 @@ impl Asker {
     /// The size `url`'s server says it has (a HEAD's Content-Length): 0 when it doesn't say, or
     /// can't be asked (offline, no answer).
     pub fn content_length(&self, url: &str) -> u64 {
-        if crate::fetch::online(url).is_err() {
+        if buildstore::fetch::online(url).is_err() {
             return 0;
         }
         let _w = store::waits::net();
@@ -64,7 +64,7 @@ impl Asker {
 
     /// GET: the status, the body, and a `Retry-After` if any.
     fn get_text(&self, url: &str, timeout_s: u64) -> Result<(u16, String, Option<String>)> {
-        crate::fetch::online(url)?;
+        buildstore::fetch::online(url)?;
         let _w = store::waits::net();
         let r = self.agent.get(url).config().timeout_global(Some(Duration::from_secs(timeout_s))).build().call();
         answer(r)
@@ -79,7 +79,7 @@ impl Asker {
 
     /// `sparql`'s answer with its body as it came (a cache of it keeps the service's bytes).
     pub fn sparql_answer(&self, endpoint: &str, q: &str) -> Result<(String, Vec<Py>)> {
-        crate::fetch::online(endpoint)?;
+        buildstore::fetch::online(endpoint)?;
         let body = format!("{PREFIXES}{q}");
         let mut last = String::new();
         for attempt in 1..=10u64 {
@@ -97,7 +97,7 @@ impl Asker {
                     return Ok((text, b));
                 }
             }
-            crate::budget::seen(endpoint, status, retry.as_deref());
+            jobrt::budget::seen(endpoint, status, retry.as_deref());
             last = format!("HTTP {status}: {}", text.chars().take(300).collect::<String>());
             std::thread::sleep(Duration::from_secs(if status == 429 { 45 } else { 10 } * attempt));
         }
@@ -115,7 +115,7 @@ impl Asker {
                     Err(e) => last = format!("{e:#}"),
                 },
                 Ok((s, t, retry)) => {
-                    crate::budget::seen(url, s, retry.as_deref());
+                    jobrt::budget::seen(url, s, retry.as_deref());
                     last = format!("HTTP {s}: {}", t.chars().take(200).collect::<String>());
                 }
                 Err(e) => last = format!("{e:#}"),

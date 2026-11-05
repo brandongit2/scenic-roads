@@ -34,18 +34,18 @@
 //! [lon, lat] and lead [lon, lat] (the component nearest the dot, whose record the dot shows).
 //!
 //! The bytes are those dem/whsshapes.py made (shapely 2.1.2 on GEOS 3.13.1, numpy 2.5.3): the
-//! simplification is crate::tpsimplify's, the geometry GEOS's own (linked statically: the `geos`
-//! crate), numpy's sampling and float32 sums crate::pynumpy's, every float operation in the
+//! simplification is pyport::tpsimplify's, the geometry GEOS's own (linked statically: the `geos`
+//! crate), numpy's sampling and float32 sums pyport::pynumpy's, every float operation in the
 //! script's order.
 
-use crate::pyjson::{dumps, loads, Py};
-use crate::pynumpy;
-use crate::pytext::{decimal, strip};
-use crate::timings::phase;
 use crate::wikiask::Asker;
 use anyhow::{bail, Context, Result};
 use det::Det;
 use geos::{CapStyle, CoordSeq, Geom, Geometry, GeometryTypes, JoinStyle};
+use jobrt::timings::phase;
+use pyport::pyjson::{dumps, loads, Py};
+use pyport::pynumpy;
+use pyport::pytext::{decimal, strip};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -363,14 +363,14 @@ fn outlines(
     // those objects with their geometry (a filter on thousands of values at once is slow).
     let tagged = w.join("tagged.osm.pbf");
     let p = phase("filtering the tagged objects (osmium)");
-    let mut c = crate::osmpass::osmium();
+    let mut c = jobrt::sys::osmium();
     c.arg("tags-filter").arg(osm).args(["nwr/wikidata", "nwr/ref:whc", "nwr/heritage:operator=whc", "-R", "-o"]);
     c.arg(&tagged).arg("--overwrite");
     osmium_run(c, "osmium tags-filter", &[0])?;
     drop(p);
     let p = phase("picking the sites' objects");
     let opl = w.join("tagged.opl");
-    let mut c = crate::osmpass::osmium();
+    let mut c = jobrt::sys::osmium();
     c.arg("cat").arg(&tagged).args(["-f", "opl", "--overwrite", "-o"]).arg(&opl);
     osmium_run(c, "osmium cat", &[0])?;
     let text = std::fs::read_to_string(&opl)?;
@@ -392,18 +392,18 @@ fn outlines(
     let pbf = w.join("whs.osm.pbf");
     // (exit 1: some objects weren't found, e.g. a relation member outside our extracts)
     let p = phase("extracting the sites' objects (osmium)");
-    let mut c = crate::osmpass::osmium();
+    let mut c = jobrt::sys::osmium();
     c.args(["getid", "-r"]).arg(osm).arg("-i").arg(&ids).arg("-o").arg(&pbf).arg("--overwrite");
     osmium_run(c, "osmium getid", &[0, 1])?;
     drop(p);
     let p = phase("exporting the sites' objects (osmium)");
-    let mut c = crate::osmpass::osmium();
+    let mut c = jobrt::sys::osmium();
     c.arg("export").arg(&pbf).args(["-f", "geojsonseq", "-a", "type,id", "--geometry-types=linestring,polygon", "-o"]);
     c.arg(w.join("whs.geojsonseq")).arg("--overwrite");
     osmium_run(c, "osmium export", &[0])?;
     drop(p);
     let p = phase("listing the relations (osmium)");
-    let mut c = crate::osmpass::osmium();
+    let mut c = jobrt::sys::osmium();
     c.arg("cat").arg(&pbf).args(["-t", "relation", "-f", "opl", "-o"]).arg(w.join("relations.opl")).arg("--overwrite");
     osmium_run(c, "osmium cat (relations)", &[0])?;
     drop(p);
@@ -482,7 +482,7 @@ fn outlines(
         let s = site(&|k| Tags::get(p, k).map(str::to_string)).or_else(|| member_site.get(&key).cloned());
         let Some(s) = s else { continue };
         let g = f.at("geometry");
-        let Some((kind, coords)) = crate::tpsimplify::simplify_geojson(g.at("type"), g.at("coordinates"), TOL)? else {
+        let Some((kind, coords)) = pyport::tpsimplify::simplify_geojson(g.at("type"), g.at("coordinates"), TOL)? else {
             continue;
         };
         let o = Outline { kind, coords };
@@ -546,7 +546,7 @@ fn wikidata_in_opl(line: &str) -> Option<&str> {
 fn field<'a>(line: &'a str, tag: &str) -> Option<&'a str> {
     let at = line.find(tag)? + tag.len();
     let rest = &line[at..];
-    let end = rest.find(|c: char| c.is_whitespace() || crate::pytext::space(c)).unwrap_or(rest.len());
+    let end = rest.find(|c: char| c.is_whitespace() || pyport::pytext::space(c)).unwrap_or(rest.len());
     Some(&rest[..end])
 }
 

@@ -11,22 +11,22 @@
 //!   wp-<epoch>.jsonl         QID → its Wikipedia articles (crate::heritagewd::wikipedias)
 //!   fetched-<epoch>.json     the first and last days anything was fetched for the epoch
 //! They are kept on the NAS too (sources/items/<epoch>/answers.tar.zst, with kept-<epoch>.json
-//! here saying which of its archives they last matched: crate::answers), so a run on another Mac,
+//! here saying which of its archives they last matched: pipeline::answers), so a run on another Mac,
 //! or here after the cache is lost, asks only about items not seen yet. To ask Wikidata again,
 //! delete facts-<epoch>.jsonl (or wp-) here: the deletion goes to the NAS with the next run, which
 //! asks about every item again. Older epochs' files go at the end of a run.
 //!
 //! Output: `<out>/facts.json` (QID → record, the items Wikidata knows). Every failed query fails
 //! the run (no silently skipped batch). The files' bytes are as Python's `json` writes them
-//! (crate::pyjson).
+//! (pyport::pyjson).
 
-use crate::agent::jobs::report;
 use crate::heritagewd::{wikipedias_told, write_atomic};
 use crate::interest::py_round;
-use crate::pyjson::{dumps_spaced, loads, Py};
-use crate::timings::phase;
 use crate::wikiask::{val, Asker};
 use anyhow::{Context, Result};
+use jobrt::jobs::report;
+use jobrt::timings::phase;
+use pyport::pyjson::{dumps_spaced, loads, Py};
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 use std::path::Path;
@@ -80,7 +80,7 @@ fn facts_query(chunk: &[String]) -> String {
 /// numeric facts to 2 decimals.
 fn record(b: &Py) -> Result<Py> {
     let sl = match val(b, "sl") {
-        Some(s) => crate::pytext::strip(s).parse::<i128>().with_context(|| format!("sitelinks {s:?}"))?,
+        Some(s) => pyport::pytext::strip(s).parse::<i128>().with_context(|| format!("sitelinks {s:?}"))?,
         None => 0,
     };
     let mut rec = vec![("sl".to_string(), Py::Int(sl.to_string()))];
@@ -94,7 +94,7 @@ fn record(b: &Py) -> Result<Py> {
     }
     for (n, _) in Q_PROPS {
         if let Some(v) = val(b, &format!("v_{n}")) {
-            let x = crate::pytext::float(v).with_context(|| format!("{n} {v:?} not a number"))?;
+            let x = pyport::pytext::float(v).with_context(|| format!("{n} {v:?} not a number"))?;
             rec.push((n.into(), Py::Float(py_round(x, 2))));
         }
     }
