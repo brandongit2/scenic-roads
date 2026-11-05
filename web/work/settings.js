@@ -179,7 +179,7 @@ export function macRows(s) {
     guarded("sweep_margin", "Dev sweep margin", () => ({
       now: gb(s.sweep_margin.bytes),
       note: `tools/dev/sweep-targets.sh frees the agents' build caches on ${s.mac || "this Mac"} once free space falls below the room target plus this${s.sweep_margin.set ? by(s.sweep_margin) : " (the default)"}`,
-      input: { min: 1, max: s.room.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: `Back to the default (${gb(s.sweep_margin.default)})` },
+      input: { min: 1, max: s.room?.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: `Back to the default (${gb(s.sweep_margin.default)})` },
     })),
   ];
 }
