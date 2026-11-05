@@ -1071,6 +1071,11 @@ pub struct Capacity {
     /// threads): the lead sums the members' into its live store (task #634). None: not measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nas_calls: Option<[f64; 3]>,
+    /// Its room at its quietest sustained state over the last 48 hours (crate::agent::live::Store::best,
+    /// task #951): what the forecast takes it to have from now on; the scheduler never reads it.
+    /// None: not measured (an older app's, or not 30 minutes of samples yet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best: Option<crate::agent::forecast::MacRoom>,
 }
 
 /// A job of a Mac's on an older app than its agent's (`Capacity::old_app`): its id and that app.

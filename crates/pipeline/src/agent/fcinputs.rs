@@ -327,6 +327,7 @@ mod tests {
                 sched: None,
                 pace: None,
                 step_pace: Default::default(),
+                unknown: Vec::new(),
                 paused: false,
             },
             each_s: [("unit".to_string(), now as f64)].into(),

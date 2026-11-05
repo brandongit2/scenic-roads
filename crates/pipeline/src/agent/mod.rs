@@ -5610,6 +5610,7 @@ impl Agent {
                 v?.try_into().ok()
             }),
             nas_calls: self.live.as_ref().and_then(|l| l.calls_now(now_s())),
+            best: self.live.as_ref().and_then(|l| l.best(now_s(), self.mem_total(), cores)),
         }
     }
 
@@ -16739,6 +16740,7 @@ mod pool_tests {
             &work,
             Default::default(),
             None,
+            &Default::default(),
             &|_, _| 0,
         );
         let fc = rec.forecast();
@@ -16783,6 +16785,7 @@ mod pool_tests {
             &work,
             Default::default(),
             None,
+            &Default::default(),
             &|_, _| 0,
         );
         let names: Vec<&str> = rec.input.machines.iter().map(|m| m.name.as_str()).collect();
@@ -16816,6 +16819,7 @@ mod pool_tests {
             &work,
             Default::default(),
             None,
+            &Default::default(),
             &|_, _| 0,
         );
         assert!(rec.input.machines.iter().all(|m| m.mac.as_deref() != Some(a.host.as_str())));

@@ -280,7 +280,8 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      missing tile's nearest ancestor: an edge neighbour's past a z3 tile with no lo pack, beyond the
      coverage), by XXH3 in their slope tiles' lines; that is their `root-tiles` input
      (`idents::root_tiles`), and only the targets reading one (`TerrainTargets::reads_root`) wait,
-     through it (`Left::unknown_for`), while the root is stale. Every other slope tile reads
+     through it (`Left::unknown_for`, which names terrain-root as what works it out: the forecast
+     waits them for it too, `forecast::Input::unknown`), while the root is stale. Every other slope tile reads
      nothing of the root and doesn't wait for it, so a region's slope still comes with it while
      another region's terrain is left (#909's per-region order). The publishing chain keeps the
      slope's root alone (`root_held`).

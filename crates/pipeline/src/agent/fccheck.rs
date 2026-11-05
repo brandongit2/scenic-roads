@@ -353,10 +353,13 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 /// longest of late (`forecast::cap_busy`; a record holds its lanes' `busy_s` capped already), and
 /// the build's pause (`forecast::paused`) read from the history. Code 4 also each Mac's pace at
 /// each step from the history (crate::paces: the scheduler's, its costs and its lanes' times by it,
-/// `repace`); before it, none. All keep the record's lanes (a record before code 3, its lanes
-/// slowed by its Mac's hold of the day before as it was made).
+/// `repace`); before it, none. Code 5 also each Mac's room at its sustained best (`Rooms`, from the
+/// asks the inputs before it recorded); before it, each Mac's room as its last ask said. All keep
+/// the record's lanes (a record before code 3, its lanes slowed by its Mac's hold of the day before
+/// as it was made).
 pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
+    let mut rooms = Rooms::default();
     let mut out = Vec::new();
     for i in inputs {
         let mut r = match i.record() {
@@ -369,6 +372,8 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
         let inp = &mut r.input;
         inp.step_pace.clear();
         noted.note(inp);
+        rooms.note(inp);
+        rooms.set(inp, code >= 5);
         inp.paused = forecast::paused(events, inp.now);
         if code >= 4 {
             repace(inp, events);
@@ -393,6 +398,58 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
         out.push(e);
     }
     out
+}
+
+/// Each Mac's room as the inputs' recorded asks said it (`Rooms::note`): its memory for jobs (what
+/// its jobs held and what was available, less its memory floor: its memory less what the rest of the
+/// Mac used and the floor, as `live::Store::best` reads it) and its cores less those busy outside
+/// the pool (`State::cores_left`), each at its capacity's time, by Mac.
+#[derive(Default)]
+struct Rooms {
+    seen: BTreeMap<String, Vec<(u64, f64, f64)>>,
+}
+
+impl Rooms {
+    /// `inp`'s asks' rooms noted (each capacity once, by its time).
+    fn note(&mut self, inp: &forecast::Input) {
+        let Some(st) = inp.sched.as_ref() else { return };
+        for w in &st.workers {
+            let Some(c) = w.ask.cap.as_ref().filter(|c| c.avail_mb > 0) else { continue };
+            let at = if c.at > 0 { c.at } else { inp.now.saturating_sub(w.asked_s.unwrap_or(w.seen_s)) };
+            let mine = self.seen.entry(w.ask.worker.clone()).or_default();
+            if mine.iter().any(|x| x.0 == at) {
+                continue;
+            }
+            let mem = (c.held_mb + c.avail_mb).saturating_sub(c.mem_floor_mb) as f64;
+            mine.push((at, mem, f64::from(st.cores_left(&w.ask))));
+        }
+    }
+
+    /// Each of `inp`'s asks' room at its sustained best (`Capacity::best`): over the asks noted
+    /// before it (`forecast::sustained`, each standing until the next input, `fcinputs::EVERY_S`;
+    /// the live one reads its Mac's minute samples), when `best`, and none was said; else none.
+    fn set(&self, inp: &mut forecast::Input, best: bool) {
+        let now = inp.now;
+        let Some(st) = inp.sched.as_mut() else { return };
+        for w in st.workers.iter_mut() {
+            let Some(c) = w.ask.cap.as_mut() else { continue };
+            if !best {
+                c.best = None;
+                continue;
+            }
+            let Some(seen) = self.seen.get(&w.ask.worker) else { continue };
+            let pts =
+                |k: usize| -> Vec<(u64, f64)> { seen.iter().map(|x| (x.0, if k == 0 { x.1 } else { x.2 })).collect() };
+            let step = super::fcinputs::EVERY_S;
+            let found = (|| {
+                Some(forecast::MacRoom {
+                    mem_mb: forecast::sustained(&pts(0), step, now)? as u64,
+                    cores: (forecast::sustained(&pts(1), step, now)? as u32).max(1),
+                })
+            })();
+            c.best = c.best.or(found);
+        }
+    }
 }
 
 /// Record input `inp` as code 4 makes it (task #926): each Mac's pace at each step from `events`
@@ -926,6 +983,7 @@ mod tests {
                     sched: None,
                     pace: None,
                     step_pace: Default::default(),
+                    unknown: Vec::new(),
                     paused: false,
                 },
                 each_s: BTreeMap::new(),
@@ -946,10 +1004,9 @@ mod tests {
         };
         assert_eq!(span(&replay(&records, &es, 2)), (2, 300));
         assert_eq!(span(&replay(&records, &es, 3)), (3, 300));
-        // Paused by then: code 3 places nothing, code 2 as before.
+        // Paused by then (the history's pause, for every code): nothing placed.
         let mut paused = es.clone();
         paused.push(Event { t: 15_000, kind: "pause".into(), ..Default::default() });
-        assert_eq!(span(&replay(&records, &paused, 2)), (2, 300));
         let new = replay(&records, &paused, 3);
         assert!(new[1].placed().is_empty() && new[1].why.as_deref() == Some(forecast::PAUSED));
         assert_eq!(new[0].placed().len(), 3);

@@ -2073,6 +2073,7 @@ impl Planner {
                 &planned.backfill,
                 chains,
                 blind,
+                &planned.left,
                 &peak,
             );
             self.start_forecast(record);
@@ -2253,6 +2254,7 @@ impl Planner {
         backfill: &[build::Work],
         chains: [Vec<build::Work>; 5],
         blind: Option<String>,
+        left: &steps::Left,
         peak: &dyn Fn(&str, &str) -> u64,
     ) -> forecast::Record<'static> {
         use forecast::{Cost, Machine};
@@ -2426,7 +2428,6 @@ impl Planner {
             name: self.host.clone(),
             speed: 1.0,
             measured: true,
-            equal: false,
             mem_mb: u64::MAX,
             busy_s: busy(0, 1.0),
             unit_extra_s,
@@ -2455,7 +2456,6 @@ impl Planner {
                 name,
                 speed,
                 measured,
-                equal: true,
                 mem_mb: mac_mb,
                 // (With each Mac's pace, the lead's slots are all at the lead's: crate::paces.)
                 busy_s: if k >= self.inp.slots.len() {
@@ -2544,7 +2544,6 @@ impl Planner {
                     name,
                     speed,
                     measured,
-                    equal: true,
                     mem_mb: mem_all.unwrap_or(6144 * n as u64),
                     busy_s,
                     unit_extra_s: 0.0,
@@ -2604,6 +2603,19 @@ impl Planner {
             pace: forecast::pace(&self.curves.borrow(), &events, now_s()),
             step_pace: BTreeMap::new(),
             paused: self.inp.pause.is_some(),
+            // (The targets an input of which can't be worked out yet wait for what works it out,
+            // as the plan holds them: the slope tiles reading the terrain's root while it's stale.)
+            unknown: left
+                .unknown_for
+                .iter()
+                .flat_map(|(name, u)| {
+                    steps::input_readers(name).map(move |step| forecast::Unknown {
+                        step: step.to_string(),
+                        targets: u.targets.iter().cloned().collect(),
+                        until: (u.until.0.to_string(), u.until.1.clone(), mine(u.until.0, 1)),
+                    })
+                })
+                .collect(),
         };
         // (Each step's pace: its jobs of late against what the forecasts before them gave their
         // targets, at the lead's pace by their worker's speed.)

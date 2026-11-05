@@ -532,8 +532,25 @@ pub struct Left {
     pub mids: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
     pub whole: std::collections::BTreeSet<&'static str>,
     pub unknown: std::collections::BTreeSet<&'static str>,
-    /// By input, the targets it can't be worked out for now (an input some targets read only).
-    pub unknown_for: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
+    /// By input, the targets it can't be worked out for now (an input some targets read only), and
+    /// the target whose making works it out.
+    pub unknown_for: std::collections::BTreeMap<&'static str, UnknownFor>,
+}
+
+/// An input's targets that can't be worked out now (`Left::unknown_for`), and the target (step,
+/// target) whose making works it out: what they wait for, to the planner and the forecast alike.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UnknownFor {
+    pub targets: std::collections::BTreeSet<String>,
+    pub until: (&'static str, String),
+}
+
+/// The steps that read input `name` (`Read::Input`).
+pub fn input_readers(name: &str) -> impl Iterator<Item = &'static str> + '_ {
+    TABLE
+        .iter()
+        .filter(move |r| r.reads.iter().any(|x| matches!(x, Read::Input { name: n, .. } if *n == name)))
+        .map(|r| r.name)
 }
 
 impl Left {
@@ -564,7 +581,7 @@ impl View for Left {
     }
 
     fn known(&self, name: &str, t: &str) -> bool {
-        !self.unknown.contains(name) && !self.unknown_for.get(name).is_some_and(|s| s.contains(t))
+        !self.unknown.contains(name) && !self.unknown_for.get(name).is_some_and(|u| u.targets.contains(t))
     }
 }
 

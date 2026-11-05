@@ -2079,7 +2079,10 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
         w.left.world("terrain-root", true);
         // (The slope tiles reading a tile of it wait for it: their `root-tiles` input isn't known
         // until it's made.)
-        w.left.unknown_for.insert("root-tiles", tt.reads_root.clone());
+        w.left.unknown_for.insert(
+            "root-tiles",
+            super::steps::UnknownFor { targets: tt.reads_root.clone(), until: ("terrain-root", "terrain-root".into()) },
+        );
         match readiness("terrain-root", "terrain-root", &w.left) {
             Ready::Waits(n) => w.held.push(("terrain-root", super::steps::wait_note(&n))),
             _ => w.terrain_root.push(("terrain-root".to_string(), k)),
@@ -5979,6 +5982,12 @@ pub(crate) mod tests {
             &done,
         );
         assert_eq!(tw.terrain_root.len(), 1, "the root stale");
+        assert_eq!(
+            tw.left.unknown_for["root-tiles"].until,
+            ("terrain-root", "terrain-root".to_string()),
+            "what works it out"
+        );
+        assert_eq!(super::super::steps::input_readers("root-tiles").collect::<Vec<_>>(), ["slope-hi"]);
         let offered: Vec<&str> = tw.slope.iter().map(|t| t.0.as_str()).collect();
         let keyed = tt.slope.iter().filter(|t| t.1.is_some()).count();
         assert!(!offered.contains(&reads.as_str()) && offered.len() + 1 == keyed, "{offered:?}");

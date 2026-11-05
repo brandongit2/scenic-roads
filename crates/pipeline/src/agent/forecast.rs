@@ -2,16 +2,16 @@
 //! step, each region and the whole build will be done, when each region reaches the map, when the
 //! cadenced publishes may next go out, and what each machine does next.
 //!
-//! The work left is run through in the order the agent runs it: the lead's first slot takes the
-//! first it can (the pass's worldwide jobs, then the map tiles of the z6 tiles built, then a region at
-//! a time: its terrain, then its z6 tiles; with none it can do now, the slope, tree cover and the
-//! chains' work). Every other slot, the lead's and each member's (a lane each, `equal`; as many as
-//! each Mac may run now, and the slots the lead's ramp grows to later, `Machine::from_s`), takes
-//! from the front of the plan's order the first work that it may run (a member never the lead's own
-//! steps) and that fits its Mac's room beside what the Mac runs, as the coordinator packs an ask
-//! (`MacRoom`: its whole memory and its cores, a thread each where no run said its threads; a step not measured by its provisional need, one of it at a time;
-//! a job an ask while a member runs an older app). Each lane starts with its slot's job under
-//! way. The trains' and the landmarks' chains run from the start, each step once what it reads is
+//! The work left is run through as the pool runs it: each Mac's slots (a lane each: as many as it
+//! may run now, and the slots the lead's ramp grows to later, `Machine::from_s`) ask, as one frees,
+//! the coordinator's own scheduler for a job each (`run`), offered the work ready in the plan's
+//! order (the pass's worldwide jobs, the map tiles of the z6 tiles built, the slope and tree cover of
+//! a region waiting for the map, the regions' terrain and z6 tiles a region at a time, the slope and
+//! tree cover, the chains'), and granted what fits the Mac's room beside what it runs, as the
+//! coordinator packs an ask (a member never the lead's own steps; `MacRoom`: its memory and its
+//! cores, a thread each where no run said its threads; a step not measured by its provisional
+//! need, one of it at a time; a job an ask while a member runs an older app). Each lane starts with
+//! its slot's job under way. The trains' and the landmarks' chains run from the start, each step once what it reads is
 //! built. Publishing goes per z6 tile (docs/building.md §2, Publishing): each map tile of a region
 //! (`RegionLeft::packs`, at its own measured time) is drawn once the z6 tiles that draw it are built,
 //! ahead of the regions' work, and a catalogue follows within the minute (build::CATALOGUE_EVERY_S):
@@ -38,10 +38,6 @@ pub struct Machine {
     /// Its speed against the lead's (1), and whether that's measured.
     pub speed: f64,
     pub measured: bool,
-    /// A lane of any work in the lead's order that fits its memory (and that it may run:
-    /// `lead_steps`): the lead's other slots, each member's slots (as the coordinator packs them:
-    /// any step offered that fits).
-    pub equal: bool,
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
     pub busy_s: f64,
@@ -65,12 +61,49 @@ pub struct Machine {
     pub from_s: f64,
 }
 
-/// A Mac's room when the scheduler's state records no ask of it (`Input::macs`): its memory (MB; 0,
-/// not known) and cores.
+/// A Mac's room for the pool's jobs: its memory (MB; 0, not known) and cores. When the scheduler's
+/// state records no ask of it (`Input::macs`), as it is now; its sustained best (`sustained`, a
+/// member's ask's `Capacity::best`), what the run takes it to have from now on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MacRoom {
     pub mem_mb: u64,
     pub cores: u32,
+}
+
+/// How long a Mac's room must hold to count as its sustained best (`sustained`), and how far back
+/// it's looked for: the owner's choices (4 Nov, task #951: the best value held continuously for 30
+/// minutes over the last 48 hours), not measured.
+pub const BEST_WINDOW_S: u64 = 30 * 60;
+pub const BEST_SPAN_S: u64 = 48 * 3600;
+
+/// The highest value `points` held continuously for `BEST_WINDOW_S` (the highest of the rolling
+/// minimums over that window) in the `BEST_SPAN_S` to `now`: each point (time, value) stands for
+/// `step` s from its time, a later point past that breaking the run. None: no run that long. A
+/// Mac's room as the forecast takes it from now on (`MacRoom`): its quietest sustained state, a
+/// best case that foresees no use of the owner's and no passing load.
+pub fn sustained(points: &[(u64, f64)], step: u64, now: u64) -> Option<f64> {
+    let from = now.saturating_sub(BEST_SPAN_S);
+    let mut p: Vec<(u64, f64)> =
+        points.iter().copied().filter(|&(t, v)| t > from && t <= now && v.is_finite()).collect();
+    p.sort_by_key(|x| x.0);
+    let mut best: Option<f64> = None;
+    for i in 0..p.len() {
+        let (t0, mut lo) = p[i];
+        for j in i..p.len() {
+            if j > i {
+                // (A gap: the run ends short of the window.)
+                if p[j].0 > p[j - 1].0 + step {
+                    break;
+                }
+                lo = lo.min(p[j].1);
+            }
+            if p[j].0 + step >= t0 + BEST_WINDOW_S {
+                best = Some(best.map_or(lo, |b: f64| b.max(lo)));
+                break;
+            }
+        }
+    }
+    best
 }
 
 /// What a target takes: its time at the lead's pace (seconds), whether that time was measured,
@@ -140,10 +173,23 @@ pub struct Input<'a> {
     /// times this; a step not in it, at its cost.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub step_pace: BTreeMap<String, f64>,
+    /// Targets the plan holds until another is made (`Unknown`; code 5 on).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown: Vec<Unknown>,
     /// The build is paused (crate::control::Pause; code 3 on): nothing new starts until it's
     /// resumed, when no one can say, so the forecast places nothing (`PAUSED`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paused: bool,
+}
+
+/// Targets of `step` the plan holds until `until` is made (crate::agent::steps::UnknownFor: an
+/// input of theirs can't be worked out before it, a slope tile reading the terrain's root while it's
+/// stale): each waits for it, a job of its own in the run once what it reads is built.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Unknown {
+    pub step: String,
+    pub targets: Vec<String>,
+    pub until: Job,
 }
 
 /// Whether the build was paused at `now` by the history (`events`): its last "pause" or "resume"
@@ -771,7 +817,7 @@ impl ToCome {
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
 /// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// A run of a machine's work of one step: from and until when (unix seconds), and how many
 /// targets. A run is one or more jobs as the scheduler grants them in the forecast's run, one after
@@ -1094,6 +1140,18 @@ fn items(inp: &Input) -> Items {
             add(&mut out, &mut by_target, "pack", t, inp.cost("pack", t), Phase::Publish, (built, Vec::new()));
         }
     }
+    // What works out an input the plan's targets wait for (`Input::unknown`: the terrain's root),
+    // once what it reads is built (the regions' terrain, listed by now): ahead of the slope and the
+    // regions' work, as the plan lists it (build::plan: "the terrain's root first of them").
+    let until: Vec<usize> = inp
+        .unknown
+        .iter()
+        .map(|u| {
+            let (step, t, cost) = &u.until;
+            let deps = reads(&by_target, &mut groups, step, t);
+            add(&mut out, &mut by_target, step, t, *cost, Phase::Before, deps)
+        })
+        .collect();
     // The slope: each target once what it reads is built, its row's declaration
     // (crate::agent::steps::Read), the planner's waits.
     for r in inp.regions.iter() {
@@ -1160,6 +1218,16 @@ fn items(inp: &Input) -> Items {
     for (step, target, cost) in &inp.idle {
         add(&mut out, &mut by_target, step, target, *cost, Phase::After, (after.clone(), all.clone()));
     }
+    // (The targets an input of which isn't known yet: each waits for what works it out too.)
+    for (u, &w) in inp.unknown.iter().zip(&until) {
+        for t in &u.targets {
+            if let Some(i) = item_of(&by_target, &u.step, t).filter(|&i| i != w) {
+                out[i].deps.push(w);
+                out[i].deps.sort_unstable();
+                out[i].deps.dedup();
+            }
+        }
+    }
     Items { items: out, region_items, groups }
 }
 
@@ -1197,12 +1265,13 @@ impl Ready {
 }
 
 /// The most targets of a step one ask is offered in the run (`offers`), the first ready; the live
-/// plan offers all of them. Two gaps (docs/pool.md §7.7, Batch length; for task #951): where more than
-/// this many fit the batch length (`Sched::batch_len`: slope-deep's empty targets, a second or so
-/// each), the coordinator grants up to `JOB_MAX` in one job, the forecast this many; and placement's
-/// start (`Sched::placed_start`, the target measured to take longest) is drawn among these alone.
-/// Its bound is the run's CPU: `placed_start` times every target offered on each ask, and offered
-/// `JOB_MAX`, the live-scale forecast took three times the CPU, past its bound (task #927).
+/// plan offers all of them. Two gaps (docs/pool.md §7.7, Batch length): where more than this many
+/// fit the batch length (`Sched::batch_len`: slope-deep's empty targets, a second or so each), the
+/// coordinator grants up to `JOB_MAX` in one job, the forecast this many; and placement's start
+/// (`Sched::placed_start`, the target measured to take longest) is drawn among these alone. Its
+/// bound is the run's CPU: offered `JOB_MAX`, the live-scale test's three runs took 3.4 times the
+/// CPU (463 s against 135, past its bound), `placed_start`'s times of each target kept or not
+/// (task #951: the cost is in the work each ask does per target offered, not those times alone).
 const OFFER_MAX: usize = 64;
 
 /// How long a lane refused work waits before it asks again (s), when nothing ends sooner: an
@@ -1278,6 +1347,15 @@ impl Pool {
                 c.cores = cores.unwrap_or(c.cores);
                 (c.held_mb, c.reserved_mb, c.cores_free) = (0, 0, c.cores);
                 c.leases.clear();
+                // (Its sustained best room from now on (`sustained`, `Capacity::best`): its memory
+                // for jobs and its cores less those busy outside the pool then, no brake, no
+                // owner's use. None said (an older app's, or not 30 minutes measured yet): its room
+                // as it asked.)
+                if let Some(b) = c.best {
+                    a.mem_mb = b.mem_mb;
+                    (c.mem_mb, c.build_mb, c.cores, c.cores_free) = (b.mem_mb, b.mem_mb, b.cores, b.cores);
+                    (c.in_use, c.kept_cores, c.mem_held_back) = (false, 0, None);
+                }
             }
             pool.asks.insert(g, a);
         }
@@ -1316,12 +1394,12 @@ fn mac_of(m: &Machine) -> String {
     m.mac.clone().unwrap_or_else(|| m.name.clone())
 }
 
-/// One run through the work, each item's time `scale`d. Each lane, as it's free, asks the
-/// coordinator's scheduler for a job (crate::coord::sched::Sched::pack, the live coordinator's own
-/// decision) on its Mac's behalf, the work ready offered in its plan order; the job granted runs
-/// its targets one after another at the lane's pace, its lease out until it ends. Refused, a lane
-/// asks again once a job ends (or `ASK_AGAIN_S`). The pages' lane takes the shared steps' targets
-/// alone, as tasks.
+/// One run through the work, each item's time `scale`d. As a lane frees, its Mac asks the
+/// coordinator's scheduler (crate::coord::sched::Sched::pack, the live coordinator's own decision)
+/// for a job each of its lanes free then, the work ready offered in the plan's order: pulled, as a
+/// live agent asks when a slot frees, never pushed to every Mac at once. Each job granted runs its
+/// targets one after another on a lane of its own at the lane's pace, its lease out until it ends.
+/// A lane given none asks again once a job ends (or `ASK_AGAIN_S`).
 /// Cut once its thread has computed `budget`, or after `BACKSTOP` times it on the wall clock
 /// (`Sim::cut`, `thread_cpu`).
 fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
@@ -1400,17 +1478,10 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             group_waiting[g].push(i);
         }
     }
-    let mut ready = Ready::default();
-    for (i, it) in items.iter().enumerate() {
-        if it.by.is_none() && pending[i] == 0 {
-            ready.insert(i, it, pi(it.phase));
-        }
-    }
     // The regions' terrain, z6 tiles and map tiles: how many not yet taken, and when the last taken
-    // ends; each region's slope and tree cover; each item's regions.
+    // ends; each item's regions.
     let mut rp_left = vec![0usize; region_items.len()];
     let mut rp_end = vec![0.0f64; region_items.len()];
-    let mut late_of: Vec<Vec<usize>> = vec![Vec::new(); region_items.len()];
     let mut regions_of: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
     for (k, mine) in region_items.iter().enumerate() {
         for &i in mine {
@@ -1418,23 +1489,37 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             match items[i].phase {
                 Phase::Region | Phase::Publish if items[i].by.is_none() => rp_left[k] += 1,
                 Phase::Region | Phase::Publish => rp_end[k] = rp_end[k].max(items[i].end),
-                Phase::Late => late_of[k].push(i),
                 _ => {}
             }
+        }
+    }
+    // The items ready, and each region's slope and tree cover ready (what goes ahead of the regions'
+    // work once its region waits for the map alone), kept as they come and go.
+    let mut ready = Ready::default();
+    let mut late_ready: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); region_items.len()];
+    let put_ready = |ready: &mut Ready, late_ready: &mut Vec<BTreeSet<usize>>, i: usize, it: &Item| {
+        ready.insert(i, it, pi(it.phase));
+        if it.phase == Phase::Late {
+            for &k in &regions_of[i] {
+                late_ready[k].insert(i);
+            }
+        }
+    };
+    for (i, it) in items.iter().enumerate() {
+        if it.by.is_none() && pending[i] == 0 {
+            put_ready(&mut ready, &mut late_ready, i, it);
         }
     }
     let mut region_left = items.iter().filter(|i| i.phase == Phase::Region && i.by.is_none()).count();
     let mut region_end =
         items.iter().filter(|i| i.phase == Phase::Region && i.by.is_some()).map(|i| i.end).fold(0.0, f64::max);
-    let mut before_left = items.iter().filter(|i| i.phase == Phase::Before && i.by.is_none()).count();
     let mut grants: Vec<Grant> = Vec::new();
     // (The state's changes counted (a job granted or ended), and each Mac's ask refused (by its
-    // Mac, whether it may run the lead's own steps, and its lane's order) at which count and time:
-    // asked again unchanged, at the same time, the scheduler answers the same, so the lanes of a
-    // Mac woken together ask it once, task #544.)
+    // Mac and whether it may run the lead's own steps) at which count and time: asked again
+    // unchanged, at the same time, the scheduler answers the same, task #544.)
     let mut changes = 0u64;
     let mut pruned_at = f64::NEG_INFINITY;
-    let mut refused: BTreeMap<(String, bool, bool), (u64, f64)> = BTreeMap::new();
+    let mut refused: BTreeMap<(String, bool), (u64, f64)> = BTreeMap::new();
     let mut guard = 0usize;
     let mut cut = false;
     loop {
@@ -1448,7 +1533,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             cut = true;
             break;
         }
-        // The machine free first (the lead on a tie).
+        // The lane free first (the lead's on a tie), and its Mac.
         let (m, t) = free
             .iter()
             .copied()
@@ -1487,7 +1572,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             for w in freed {
                 pending[w] -= 1;
                 if pending[w] == 0 && items[w].by.is_none() {
-                    ready.insert(w, &items[w], pi(items[w].phase));
+                    put_ready(&mut ready, &mut late_ready, w, &items[w]);
                 }
             }
         }
@@ -1507,127 +1592,116 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             }
             on
         });
-        let mac = &inp.machines[m];
-        // (A lane given nothing asks again once an item or another lane's job ends, or a lease
-        // out, or in a while.)
-        let next_end = |items: &[Item], free: &[f64], out: &[(f64, u64, Vec<usize>)]| {
-            let others = free.iter().enumerate().filter(|&(k, &f)| k != m && f > t + 1e-9).map(|(_, &f)| f);
-            inflight
-                .iter()
-                .map(|&i| items[i].end)
-                .chain(others)
-                .chain(out.iter().map(|o| o.0))
-                .fold(f64::INFINITY, f64::min)
-        };
-        // The order the lane takes the work ready in: the lead's first lane, while the regions have
-        // work left, the pass's first, then the map tiles of the z6 tiles built (publishing comes
-        // before the regions' work), then the slope and tree cover of a region on the map whose
-        // catalogue doesn't record it built yet, then the regions' (in order), the chains' with none
-        // it can do now; after the last z6 tile and terrain, the map tiles left, the slope and tree
-        // cover, the chains', then what comes after. Every other lane: the plan's order.
-        let key = (mac_of(mac), m == 0 || mac.lead_steps, mac.equal);
+        // Its Mac asks once, for a job each of its lanes free now, as a live agent asks for its free
+        // slots when one frees (crate::agent's asks: `Ask::want`); granted fewer, the rest wait for
+        // the next change.
+        let g = mac_of(&inp.machines[m]);
+        let lanes: Vec<usize> = (0..n).filter(|&k| free[k] <= t + 1e-9 && mac_of(&inp.machines[k]) == g).collect();
+        let lead = lanes.iter().any(|&k| k == 0 || inp.machines[k].lead_steps);
+        let key = (g.clone(), lead);
         let asked = refused.get(&key) == Some(&(changes, t));
-        let order: Vec<Vec<usize>> = if asked {
+        // The work ready, in the plan's order (build::plan, as the coordinator offers it): the
+        // pass's, the map tiles of the z6 tiles built (publishing before the regions' work), the slope
+        // and tree cover of a region whose z6 tiles and map tiles are done but isn't on the map yet
+        // (the plan's `slope_waits`), the regions' (in order), the slope and tree cover, the chains',
+        // then what comes after.
+        let picks = if asked {
             Vec::new()
-        } else if mac.equal {
-            PHASES.iter().flat_map(|&p| ready.steps(pi(p))).collect()
-        } else if region_left > 0 || region_end > t + 1e-9 || before_left > 0 {
-            let prep: Vec<usize> = (0..inp.regions.len())
-                .filter(|&k| inp.regions[k].on_map != Some(true) && rp_left[k] == 0 && rp_end[k] <= t + 1e-9)
-                .flat_map(|k| late_of[k].iter().copied())
-                .filter(|&i| items[i].by.is_none() && pending[i] == 0)
-                .take(OFFER_MAX)
-                .collect();
-            let mut o = ready.steps(pi(Phase::Before));
-            o.extend(ready.steps(pi(Phase::Publish)));
-            o.extend(prep.into_iter().map(|i| vec![i]));
-            o.extend(ready.steps(pi(Phase::Region)));
-            o.extend(ready.steps(pi(Phase::Chain)));
-            o
         } else {
-            [Phase::Publish, Phase::Late, Phase::Chain, Phase::After].iter().flat_map(|&p| ready.steps(pi(p))).collect()
-        };
-        // What it takes: a job the scheduler grants its Mac (its targets one after another, in
-        // plan order, as crate::coord picks).
-        let took: Vec<(usize, u32)> = {
-            let (g, lead) = (key.0.clone(), key.1);
-            let picks = if asked {
+            let prep: Vec<usize> = if region_left > 0 || region_end > t + 1e-9 {
+                (0..inp.regions.len())
+                    .filter(|&k| inp.regions[k].on_map != Some(true) && rp_left[k] == 0 && rp_end[k] <= t + 1e-9)
+                    .flat_map(|k| late_ready[k].iter().copied())
+                    .take(OFFER_MAX)
+                    .collect()
+            } else {
                 Vec::new()
-            } else {
-                let ask = &pool.asks[&g];
-                let offers = offers(&items, &order, ask);
-                // (Every member asking, as the live ones do each loop: placement draws among those
-                // asking lately, which aged out as the run's seconds passed.)
-                let idle = |g: &str| {
-                    let on = |k: usize| mac_of(&inp.machines[k]) == g;
-                    (0..free.len()).filter(|&k| on(k) && free[k] <= t + 1e-9).count()
-                };
-                let room = |g: &str| pool.asks[g].cap.as_ref().map_or(0, |c| c.mem_mb);
-                let who: Vec<(&str, usize, u64)> = pool.asks.keys().map(|g| (g.as_str(), idle(g), room(g))).collect();
-                pool.sched.asking(who, pool.clock(t).now);
-                pool.sched.pack(ask, &offers, lead, pool.clock(t)).0
             };
-            if picks.is_empty() {
-                refused.insert(key, (changes, t));
-            } else {
-                changes += 1;
+            let mut order = ready.steps(pi(Phase::Before));
+            order.extend(ready.steps(pi(Phase::Publish)));
+            order.extend(prep.into_iter().map(|i| vec![i]));
+            for p in [Phase::Region, Phase::Late, Phase::Chain, Phase::After] {
+                order.extend(ready.steps(pi(p)));
             }
-            let mut took = Vec::new();
-            for p in picks {
-                jobs += 1;
-                let mut end = t;
-                let ids: Vec<usize> =
-                    p.targets.iter().filter_map(|x| at.get(&(p.step.clone(), x.0.clone())).copied()).collect();
-                for &i in &ids {
-                    let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
-                    end += inp.lane_secs(mac, &items[i].step, items[i].cost.secs) + extra;
-                }
-                out.push((end, p.lease, ids.clone()));
-                if t < GRANTS_S {
-                    grants.push(Grant {
-                        mac: g.clone(),
-                        step: p.step.clone(),
-                        targets: p.targets.iter().map(|x| x.0.clone()).collect(),
-                        at: t,
-                        threads: p.threads,
-                    });
-                }
-                took.extend(ids.iter().map(|&i| (i, jobs)));
-            }
-            took
+            let ask = Ask { want: lanes.len(), ..pool.asks[&g].clone() };
+            let offers = offers(&items, &order, &ask);
+            // (Every Mac with a lane free asking, as the live ones do each loop: placement draws
+            // among those asking lately, which aged out as the run's seconds passed.)
+            let idle = |g: &str| {
+                let on = |k: usize| mac_of(&inp.machines[k]) == g;
+                (0..free.len()).filter(|&k| on(k) && free[k] <= t + 1e-9).count()
+            };
+            let room = |g: &str| pool.asks[g].cap.as_ref().map_or(0, |c| c.mem_mb);
+            let who: Vec<(&str, usize, u64)> = pool.asks.keys().map(|g| (g.as_str(), idle(g), room(g))).collect();
+            pool.sched.asking(who, pool.clock(t).now);
+            pool.sched.pack(&ask, &offers, lead, pool.clock(t)).0
         };
-        if took.is_empty() {
-            // (Nothing in flight anywhere: nothing it waits on will change.)
-            let next = next_end(&items, &free, &out);
-            free[m] = if !next.is_finite() { next } else { next.min(t + ASK_AGAIN_S) };
-            continue;
+        if picks.is_empty() {
+            refused.insert(key, (changes, t));
+        } else {
+            changes += 1;
         }
-        // Taken: one after another at the machine's pace; the counts kept.
-        let mut start = t;
-        for (i, job) in took {
-            let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
-            let end = start + inp.lane_secs(mac, &items[i].step, items[i].cost.secs) + extra;
-            (items[i].by, items[i].from, items[i].end, items[i].job) = (Some(m), start, end, job);
-            start = end;
-            inflight.push(i);
-            unassigned -= 1;
-            match items[i].phase {
-                Phase::Region => {
+        // Each job granted on a lane of its own, its targets one after another (in plan order, as
+        // crate::coord picks) at the lane's pace; the counts kept.
+        let mut idle: Vec<usize> = Vec::new();
+        for (j, &k) in lanes.iter().enumerate() {
+            let Some(p) = picks.get(j) else {
+                idle.push(k);
+                continue;
+            };
+            jobs += 1;
+            let mac = &inp.machines[k];
+            let ids: Vec<usize> =
+                p.targets.iter().filter_map(|x| at.get(&(p.step.clone(), x.0.clone())).copied()).collect();
+            let mut start = t;
+            for &i in &ids {
+                let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
+                let end = start + inp.lane_secs(mac, &items[i].step, items[i].cost.secs) + extra;
+                (items[i].by, items[i].from, items[i].end, items[i].job) = (Some(k), start, end, jobs);
+                start = end;
+                inflight.push(i);
+                unassigned -= 1;
+                if items[i].phase == Phase::Region {
                     region_left -= 1;
                     region_end = region_end.max(end);
                 }
-                Phase::Before => before_left -= 1,
-                _ => {}
-            }
-            if matches!(items[i].phase, Phase::Region | Phase::Publish) {
-                for &k in &regions_of[i] {
-                    rp_left[k] -= 1;
-                    rp_end[k] = rp_end[k].max(end);
+                if matches!(items[i].phase, Phase::Region | Phase::Publish) {
+                    for &r in &regions_of[i] {
+                        rp_left[r] -= 1;
+                        rp_end[r] = rp_end[r].max(end);
+                    }
+                }
+                ready.remove(i, &items[i], pi(items[i].phase));
+                for &r in &regions_of[i] {
+                    late_ready[r].remove(&i);
                 }
             }
-            ready.remove(i, &items[i], pi(items[i].phase));
+            out.push((start, p.lease, ids));
+            if t < GRANTS_S {
+                grants.push(Grant {
+                    mac: g.clone(),
+                    step: p.step.clone(),
+                    targets: p.targets.iter().map(|x| x.0.clone()).collect(),
+                    at: t,
+                    threads: p.threads,
+                });
+            }
+            free[k] = start;
         }
-        free[m] = start;
+        // (A lane given nothing asks again once an item or a lane's job ends, or a lease out, or
+        // in a while; with nothing in flight anywhere, nothing it waits on will change.)
+        if !idle.is_empty() {
+            let next = inflight
+                .iter()
+                .map(|&i| items[i].end)
+                .chain(free.iter().copied().filter(|&f| f > t + 1e-9))
+                .chain(out.iter().map(|o| o.0))
+                .fold(f64::INFINITY, f64::min);
+            let at = if next.is_finite() { next.min(t + ASK_AGAIN_S) } else { next };
+            for k in idle {
+                free[k] = at;
+            }
+        }
     }
     let done = items.iter().all(|i| i.by.is_some());
     Sim { items, region_items, done, grants, cut, groups }
@@ -1639,15 +1713,22 @@ const GRANTS_S: f64 = 3600.0;
 
 /// The work ready, a step's together in `order`, as the coordinator offers it to `ask`'s Mac
 /// (crate::agent's `offer_plan`): a step offered to every member one offer, its targets in order
-/// (`OFFER_MAX` at most), where its work first comes; the lead's own steps' each a planned job of
-/// its own (`Offer::job`); only the steps the Mac does (`Ask::can`, all when it says none).
+/// (`OFFER_MAX` at most), where its work first comes, each once; the lead's own steps' each a
+/// planned job of its own (`Offer::job`); only the steps the Mac does (`Ask::can`, all when it says
+/// none).
 fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
     let mut out: Vec<Offer> = Vec::new();
     let mut of_step: BTreeMap<&str, usize> = BTreeMap::new();
     // (Whether the last step seen is offered to every member: a group is one step's.)
     let mut last: Option<(&str, bool)> = None;
+    // (An item in `order` twice, a region's slope ahead of the regions' work and again with the
+    // rest of its step, offered once.)
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for group in order {
         for &i in group {
+            if !seen.insert(i) {
+                continue;
+            }
             let it = &items[i];
             if !ask.can.is_empty() && !ask.can.contains(&it.step) {
                 break;
@@ -2375,7 +2456,6 @@ mod tests {
             name: name.into(),
             speed,
             measured: true,
-            equal: false,
             mem_mb: 6000,
             busy_s: 0.0,
             unit_extra_s: 0.0,
@@ -2416,6 +2496,7 @@ mod tests {
             sched: None,
             pace: None,
             step_pace: Default::default(),
+            unknown: Vec::new(),
             paused: false,
         }
     }
@@ -2470,8 +2551,8 @@ mod tests {
         let mut running = BTreeMap::new();
         running.insert(("unit".to_string(), "u1".to_string()), 1);
         let small = Machine { busy_s: 300.0, ..mac("m1", 1.0) };
-        // (The member's slot a lane of any work that fits, `equal`.)
-        let small = Machine { equal: true, lead_steps: true, ..small };
+        // (The member's slot, a lane of any work that fits.)
+        let small = Machine { lead_steps: true, ..small };
         let machines = vec![Machine { mem_mb: u64::MAX, ..mac("m4", 1.0) }, small];
         let f = forecast(&Input { machines, running, ..inp });
         assert!(f.lanes["m1"].iter().all(|l| l.step != "unit" || l.n == 1), "{:?}", f.lanes["m1"]);
@@ -2492,7 +2573,6 @@ mod tests {
         let regions = [region("a", &[], &["u1", "u2", "u3"], &[])];
         let inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         let slot = |k: usize, busy_s: f64| Machine {
-            equal: k > 0,
             lead_steps: true,
             mem_mb: u64::MAX,
             busy_s,
@@ -2699,6 +2779,115 @@ mod tests {
         assert!(f.regions[0].ready_at.is_some());
     }
 
+    /// Task #951 (seen 5 Nov): a slope tile reading the terrain's root while it's stale waits for it
+    /// as the plan holds it (`Input::unknown`), the root a job of the lead's; the rest don't wait.
+    #[test]
+    fn a_slope_tile_reading_the_stale_root_waits_for_it() {
+        let regions = [region("a", &[], &[], &["6/0/48", "6/1/48"])];
+        let mut inp = input(&regions, vec![mac("m4", 1.0), member("m1")], &cost);
+        let root = Cost { secs: 500.0, known: true, peak_mb: 100 };
+        inp.unknown = vec![Unknown {
+            step: "slope-hi".into(),
+            targets: vec!["6/0/48".into()],
+            until: ("terrain-root".into(), "terrain-root".into(), root),
+        }];
+        let sim = run(&inp, &|c| c.secs, far());
+        let of = |s: &str, t: &str| sim.items.iter().find(|i| i.step == s && i.target == t).unwrap();
+        let (r, held, free) = (of("terrain-root", "terrain-root"), of("slope-hi", "6/0/48"), of("slope-hi", "6/1/48"));
+        assert_eq!((r.by, r.from), (Some(0), 0.0), "the root, the lead's, at once");
+        assert!(held.from >= r.end, "{} before the root's end {}", held.from, r.end);
+        assert_eq!(free.from, 0.0);
+    }
+
+    /// A value's sustained best: the highest of its 30-minute rolling minimums over the 48 hours
+    /// (the owner's), a gap breaking a run, a run shorter than the window counting for nothing.
+    #[test]
+    fn a_sustained_best_is_the_highest_rolling_minimum() {
+        let now = 1_000_000;
+        let minutes = |from: u64, n: u64, v: f64| (0..n).map(move |k| (from + k * 60, v));
+        // (8 for 29 minutes, later 5 for 40, and 9 for an hour before the span.)
+        let mut p: Vec<(u64, f64)> = minutes(now - 7200, 29, 8.0).chain(minutes(now - 3600, 40, 5.0)).collect();
+        assert_eq!(sustained(&p, 60, now), Some(5.0), "29 minutes of 8 aren't a window");
+        p.extend(minutes(now - 4 * 86_400, 60, 9.0));
+        assert_eq!(sustained(&p, 60, now), Some(5.0), "past 48 h, not counted");
+        // (A minute of 8 more, after a gap of one: still no run of 30.)
+        p.push((now - 7200 + 30 * 60, 8.0));
+        assert_eq!(sustained(&p, 60, now), Some(5.0));
+        p.push((now - 7200 + 29 * 60, 7.0));
+        assert_eq!(sustained(&p, 60, now), Some(7.0), "now 31 minutes on end, the least 7");
+        assert_eq!(sustained(&p[..5], 60, now), None);
+    }
+
+    /// Task #951: each Mac's room is its sustained best from now on (`Capacity::best`): a member
+    /// whose last ask had the brake on takes work at its best, one whose best can't hold a target
+    /// none of it. The 4 Nov case: the mini's memory fixed mid-day (#931/#935: its floor), its
+    /// best room follows within the half hour, and its share of slope-deep with it, where the copy
+    /// rule of #808 (gone) gave it none for a day.
+    #[test]
+    fn each_mac_runs_at_its_sustained_best_room() {
+        use crate::coord::sched::{Asked, State};
+        use crate::coord::{Ask, Capacity};
+        let ts: Vec<String> = (0..6).map(|i| format!("10/{i}/0")).collect();
+        let regions = [RegionLeft { slope_deep: ts.clone(), ..region("a", &[], &[], &[]) }];
+        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 3000 };
+        let mut st = State::default();
+        for t in &ts {
+            let v = crate::coord::cost_version("slope-deep");
+            st.costs.insert(
+                cost_key("slope-deep", t),
+                crate::coord::Cost { peak_mb: 3000, secs: 600, v, ..Default::default() },
+            );
+        }
+        let asked = |best: Option<MacRoom>, brake: bool| Asked {
+            ask: Ask {
+                worker: "mini".into(),
+                kind: "native".into(),
+                mem_mb: 8000,
+                cores: 8,
+                cap: Some(Capacity {
+                    limit_mb: 14_000,
+                    mem_mb: 8000,
+                    build_mb: 8000,
+                    cores: 8,
+                    cores_free: 8,
+                    mem_held_back: brake.then(|| "4.0 GB of memory available, under the 6.0 GB floor".into()),
+                    best,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let lead = Machine { busy_s: 1e6, ..mac("m4", 1.0) };
+        let mini = Machine { mac: Some("mini".into()), ..member("mini") };
+        let mut inp = input(&regions, vec![lead, mini], &c);
+        inp.after.clear();
+        let mut on_mini = |a: Asked| {
+            st.workers = vec![a];
+            inp.sched = Some(st.clone());
+            run(&inp, &|c| c.secs, far()).items.iter().filter(|i| i.by == Some(1)).count()
+        };
+        assert_eq!(on_mini(asked(None, true)), 0, "the brake on as it asked, no best said");
+        assert_eq!(on_mini(asked(Some(MacRoom { mem_mb: 8000, cores: 8 }), true)), 6, "at its best");
+        assert_eq!(on_mini(asked(Some(MacRoom { mem_mb: 2000, cores: 8 }), false)), 0, "its best holds no target");
+        // The 4 Nov case, its minutes as its live store samples them: 16 GB, the rest of the Mac
+        // using 8, its floor 6 GB (2 GB for jobs) until noon, then 2 GB (6 GB for jobs).
+        let noon = 2_000_000 / 86_400 * 86_400 + 43_200;
+        let store = super::super::live::Store::new(None, "mini");
+        for t in (noon - 86_400..noon + 3600).step_by(60) {
+            store.record(super::super::live::OTHERS_MEM, t, 8.0);
+            store.record(super::super::live::MEM_FLOOR, t, if t < noon { 6.0 } else { 2.0 });
+            store.record(super::super::live::OTHERS_CORES, t, 1.5);
+            store.record(super::super::live::BUILD_CORES_MAX, t, 8.0);
+        }
+        let best = |at: u64| super::super::live::Store::best(&store, at, 16_384, 10);
+        assert_eq!(best(noon + 20 * 60), Some(MacRoom { mem_mb: 2048, cores: 8 }), "20 minutes on: as before");
+        assert_eq!(on_mini(asked(best(noon + 20 * 60), false)), 0);
+        let fixed = best(noon + 31 * 60);
+        assert_eq!(fixed, Some(MacRoom { mem_mb: 6144, cores: 8 }), "half an hour on: fixed");
+        assert_eq!(on_mini(asked(fixed, false)), 6);
+    }
+
     #[test]
     fn the_cadenced_publishes_go_by_their_cadence_or_once_nothing_is_left_to_build() {
         // Thirty z6 tiles (9,000 s) left. The low zooms last made an hour ago (due in two more), the
@@ -2807,7 +2996,7 @@ mod tests {
 
     /// A member's slot as the coordinator packs it: any step any Mac may run that fits it.
     fn member(name: &str) -> Machine {
-        Machine { equal: true, lead_steps: false, ..mac(name, 1.0) }
+        Machine { lead_steps: false, ..mac(name, 1.0) }
     }
 
     /// Task #926 (code 4): a lane takes an item at its Mac's pace at the item's step (the
@@ -2842,7 +3031,7 @@ mod tests {
         let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let lead2 = Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0) };
+        let lead2 = Machine { lead_steps: true, ..mac("m4 #2", 1.0) };
         let inp = input(&regions, vec![mac("m4", 1.0), lead2, member("m1"), member("m1 #2")], &cost);
         let f = forecast(&inp);
         let n = |lane: &str, step: &str| f.lanes[lane].iter().filter(|l| l.step == step).map(|l| l.n).sum::<usize>();
@@ -2857,7 +3046,7 @@ mod tests {
         let units: Vec<String> = (0..40).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let lead2 = || Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0) };
+        let lead2 = || Machine { lead_steps: true, ..mac("m4 #2", 1.0) };
         let mut one = input(&regions, vec![mac("m4", 1.0), lead2()], &cost);
         one.after = Vec::new();
         let mut two = input(&regions, vec![mac("m4", 1.0), lead2(), member("m1"), member("m1 #2")], &cost);
@@ -2877,13 +3066,8 @@ mod tests {
         let units: Vec<String> = (0..6).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let lead2 = Machine {
-            equal: true,
-            lead_steps: true,
-            busy_s: 2400.0,
-            running: Some(("depth".into(), 3)),
-            ..mac("m4 #2", 1.0)
-        };
+        let lead2 =
+            Machine { lead_steps: true, busy_s: 2400.0, running: Some(("depth".into(), 3)), ..mac("m4 #2", 1.0) };
         let mut inp = input(&regions, vec![mac("m4", 1.0), lead2, member("m1")], &cost);
         inp.chains = vec![("pois".into(), "6/8/0".into(), Cost { secs: 100.0, known: true, peak_mb: 1000 })];
         let f = forecast(&inp);
@@ -2944,8 +3128,8 @@ mod tests {
         let units: Vec<String> = (0..40).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let lead2 = Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0) };
-        let lead3 = Machine { equal: true, lead_steps: true, from_s: 3600.0, ..mac("m4 #3", 1.0) };
+        let lead2 = Machine { lead_steps: true, ..mac("m4 #2", 1.0) };
+        let lead3 = Machine { lead_steps: true, from_s: 3600.0, ..mac("m4 #3", 1.0) };
         let f = forecast(&input(&regions, vec![mac("m4", 1.0), lead2, lead3], &cost));
         assert_eq!(f.lanes["m4 #3"].first().map(|l| l.from), Some(1_000_000 + 3600), "{:?}", f.lanes);
     }
@@ -2965,7 +3149,6 @@ mod tests {
             })
             .collect();
         let slot = |host: &str, k: usize, lead: bool| Machine {
-            equal: k > 0 || !lead,
             lead_steps: lead,
             mac: Some(host.into()),
             mem_mb: 16_000,
@@ -3004,7 +3187,6 @@ mod tests {
 
     fn two_macs<'a>(regions: &'a [RegionLeft], c: &'a dyn Fn(&str, &str) -> Cost) -> Input<'a> {
         let slot = |host: &str, k: usize, lead: bool| Machine {
-            equal: k > 0 || !lead,
             lead_steps: lead,
             mac: Some(host.into()),
             mem_mb: 16_000,
@@ -3062,7 +3244,7 @@ mod tests {
         let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let others = Machine { equal: true, mem_mb: 12_000, ..mac("m4 #2", 1.0) };
+        let others = Machine { mem_mb: 12_000, ..mac("m4 #2", 1.0) };
         // Half the z6 tiles, whoever's at the Mac (the owner's choice: no rule for a Mac in use).
         let f = forecast(&input(&regions, vec![mac("m4", 1.0), others.clone()], &cost));
         assert_eq!(
@@ -3153,7 +3335,6 @@ mod tests {
         // The forecast: the same z6 tiles, the lead's four slots and the member's, the state fed.
         let regions = [region("a", &[], &units.iter().map(String::as_str).collect::<Vec<_>>(), &[])];
         let slot = |host: &str, k: usize, lead: bool| Machine {
-            equal: k > 0 || !lead,
             lead_steps: lead,
             mac: Some(host.into()),
             ..mac(&super::super::slot_worker(host, k), 1.0)
@@ -3223,12 +3404,7 @@ mod tests {
         }
         assert_eq!(real.iter().map(|r| r.1.len()).collect::<Vec<_>>(), [2, 4], "{real:?}");
         let regions = [region("a", &[], &units.iter().map(String::as_str).collect::<Vec<_>>(), &[])];
-        let one = |host: &str, lead: bool| Machine {
-            equal: !lead,
-            lead_steps: lead,
-            mac: Some(host.into()),
-            ..mac(host, 1.0)
-        };
+        let one = |host: &str, lead: bool| Machine { lead_steps: lead, mac: Some(host.into()), ..mac(host, 1.0) };
         let mut inp = input(&regions, vec![one("m4", true), one("m1", false)], &cost);
         inp.after = Vec::new();
         inp.macs.insert("m4".into(), MacRoom { mem_mb: 16_000, cores: 14 });
@@ -3493,7 +3669,6 @@ mod tests {
                     name: super::super::slot_worker(host, k),
                     speed: if lead { 1.0 } else { 0.6 },
                     measured: true,
-                    equal: k > 0 || !lead,
                     lead_steps: lead,
                     mem_mb: if lead { 36_000 } else { 10_240 },
                     mac: Some(host.into()),
@@ -3519,6 +3694,7 @@ mod tests {
             sched: Some(st),
             pace: None,
             step_pace: Default::default(),
+            unknown: Vec::new(),
             paused: false,
         }
     }

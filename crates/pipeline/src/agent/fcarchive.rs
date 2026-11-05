@@ -86,8 +86,9 @@ pub struct Mac {
     /// Its room when the scheduler had no ask of it (`Input::macs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<MacRoom>,
-    /// Its last ask's capacity (crate::coord::Capacity, a few of its fields: memory and cores free,
-    /// its limits, in use, on power, battery, NAS): its conditions. None: no ask recorded.
+    /// Its last ask's capacity (crate::coord::Capacity, a few of its fields: its sustained best room
+    /// the run took, memory and cores free, its limits, in use, on power, battery, NAS): its
+    /// conditions. None: no ask recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cond: Option<serde_json::Value>,
 }
@@ -129,7 +130,8 @@ fn is_zero(x: &f64) -> bool {
 }
 
 /// The capacity's fields kept as a Mac's conditions (`Mac::cond`).
-const COND: [&str; 11] = [
+const COND: [&str; 12] = [
+    "best",
     "limit_mb",
     "build_mb",
     "mem_mb",
@@ -745,6 +747,7 @@ mod tests {
             sched: None,
             pace: None,
             step_pace: Default::default(),
+            unknown: Vec::new(),
             paused: false,
         };
         let rec = Record { input: inp, each_s: [("unit".to_string(), 191.23)].into(), waiting: Default::default() };

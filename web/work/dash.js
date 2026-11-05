@@ -306,7 +306,7 @@ function verdictText(m) {
     if (!working) parts.push(h("b", null, "Idle"));
   }
   // (The queue's finish, never a share done: a build has no definite start, task #685.)
-  if (fc?.done_at) parts.push(parts.length ? " · " : "", "done ≈ ", h("b", null, clock(fc.done_at)));
+  if (fc?.done_at) parts.push(parts.length ? " · " : "", "done ≈ ", h("b", null, clock(fc.done_at)), h("span", { class: "dim", title: BEST_CASE }, " (best case)"));
   else if (fc?.why) parts.push(parts.length ? " · " : "", fc.why);
   // (No forecast yet, the lead's agent just started: dots where its words go, statement 51.)
   else if (!fc) parts.push(parts.length ? " · " : "", fcLoading());
@@ -321,6 +321,10 @@ function nextOnMap(m) {
   const at = Math.min(...regs.map((r) => r.map_at));
   return { at, regions: regs.filter((r) => r.map_at === at) };
 }
+
+// What the forecast's finish assumes (task #951, the owner's words): each Mac's room its sustained
+// best from now on (crate::agent::forecast::sustained), no owner's use or passing load foreseen.
+const BEST_CASE = "best case: each Mac at its quietest sustained state over the last 48 h";
 
 // The live error beside the finish (task #563): how the forecast of an hour or more ago fared
 // against the work done since.
@@ -339,7 +343,7 @@ function overview(m, md) {
   const { fc, now, lines } = m;
   const work = (fc?.steps || []).reduce((t, x) => t + (x.work_s || 0), 0);
   const left = h("div", "big", !fc ? "–" : work ? `≈ ${dur(work)}` : "Nothing",
-    h("small", null, !fc ? fcLoading() : `${work ? "of work in the queue" : "left in the queue"}${fc.done_at ? ` · done ≈ ${clock(fc.done_at)}` : fc.why ? ` · ${fc.why}` : ""}`));
+    h("small", null, !fc ? fcLoading() : `${work ? "of work in the queue" : "left in the queue"}${fc.done_at ? ` · done ≈ ${clock(fc.done_at)} (best case)` : fc.why ? ` · ${fc.why}` : ""}`));
   // (A stage's work left, its steps' in the forecast.)
   const byStage = new Map();
   for (const x of fc?.steps || []) if (x.work_s > 0) byStage.set(S.stage(x.step), (byStage.get(S.stage(x.step)) || 0) + x.work_s);
@@ -1393,7 +1397,7 @@ function schedule(m) {
   // (A forecast cut at its time budget (forecast::BUDGET): the lanes end where its run stopped.)
   const cut = fc?.partial && h("div", "why", "Partial: the forecast was cut at its time budget; each lane ends where its run stopped, the work after it not placed");
   const reaching = past.asking && past.first && past.first.t > lo ? h("span", "small dim", "reading the week's history…") : null;
-  const top = h("div", "schedtop", reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc?.why ? fc.why : fc ? "" : fcLoading()));
+  const top = h("div", "schedtop", reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)} · ${BEST_CASE}` : fc?.why ? fc.why : fc ? "" : fcLoading()));
   if (!groups.length) { schedBody.replaceChildren(top, h("div", "small dim", "Nothing ran or is planned in the week.")); return; }
   schedBody.replaceChildren(top, cut || "", tl.el, legend);
   tl.placed(lanes, tracks, span);
@@ -1882,7 +1886,7 @@ function details(m) {
   if (fc?.done_at) {
     const workLeft = fc.steps.reduce((t, s) => t + s.work_s, 0);
     box.append(h("h3", null, "Forecast", h("span", null, `made ${ago(now, fc.at)}`)),
-      h("div", "small", `${dur(workLeft)} of work left at the lead's pace; with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)`),
+      h("div", "small", `${dur(workLeft)} of work left at the lead's pace; with every machine, done ≈ ${clock(fc.done_at)} (${BEST_CASE})`),
       h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated`),
       h("div", "small dim", liveError(fc)));
   }
