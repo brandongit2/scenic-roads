@@ -5184,12 +5184,11 @@ mod http {
     }
 
     /// The most connections at once, how long a request's headers may take to arrive (and an idle
-    /// kept-alive connection to stay open: crate::coord::client lets its own go sooner), a
-    /// connection's whole life, and the end of it in which it takes no new request.
+    /// kept-alive connection to stay open: crate::coord::client lets its own go sooner), and a
+    /// request's whole time, its answer's body too (a connection takes no new request after it).
     const CONNECTIONS: usize = 512;
     pub(super) const HEADERS_MAX: Duration = Duration::from_secs(20);
     const CONNECTION_MAX: Duration = Duration::from_secs(3 * 3600);
-    const CLOSING: Duration = Duration::from_secs(600);
 
     /// Takes connections, on `listener` and its `loopback` beside it when it has one: one from
     /// elsewhere, or past the cap, is closed before a byte is read;
@@ -5257,7 +5256,11 @@ mod http {
             conns.spawn(async move {
                 use std::os::fd::{AsRawFd, BorrowedFd};
                 let fd = stream.as_raw_fd();
+                // (When its last request began: the one under way's end, `CONNECTION_MAX` after.)
+                let began = Arc::new(std::sync::Mutex::new(tokio::time::Instant::now()));
+                let begins = began.clone();
                 let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+                    *begins.lock().unwrap() = tokio::time::Instant::now();
                     req.extensions_mut().insert(ConnectInfo(peer));
                     app.clone().oneshot(req.map(Body::new))
                 });
@@ -5268,10 +5271,11 @@ mod http {
                     .header_read_timeout(HEADERS_MAX)
                     .serve_connection(hyper_util::rt::TokioIo::new(stream), svc);
                 let mut conn = Box::pin(conn);
-                // (Its life's end: from `CONNECTION_MAX` less `CLOSING`, it takes no new request,
-                // closed once the one under way is answered (a client's kept connection never cut
-                // mid-request at a busy moment); at `CONNECTION_MAX`, closed whatever it's doing.)
-                let mut life = Box::pin(tokio::time::sleep(CONNECTION_MAX - CLOSING));
+                // (Its life's end: from `CONNECTION_MAX` it takes no new request, closed once the one
+                // under way is answered (a client's kept connection never cut mid-request at a busy
+                // moment), or once that one has had its own `CONNECTION_MAX`, as when each request
+                // had its own connection.)
+                let mut life = Box::pin(tokio::time::sleep(CONNECTION_MAX));
                 let mut closing = false;
                 // (Told to end: no linger set while `conn` still owns the stream, so dropping it
                 // resets the connection, the socket gone at once.)
@@ -5294,7 +5298,8 @@ mod http {
                             }
                             closing = true;
                             conn.as_mut().graceful_shutdown();
-                            life.as_mut().reset(tokio::time::Instant::now() + CLOSING);
+                            let cut = *began.lock().unwrap() + CONNECTION_MAX;
+                            life.as_mut().reset(cut);
                         }
                     }
                 }

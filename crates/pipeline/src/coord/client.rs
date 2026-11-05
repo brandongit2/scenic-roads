@@ -83,7 +83,9 @@ const IDLE: Duration = Duration::from_secs(10);
 const IDLE_PER_ADDRESS: usize = 4;
 const IDLE_ALL: usize = 64;
 /// A request on a kept-alive connection answered nothing for this long: its address is connected to
-/// anew (`reach`), telling a lead that's slow from one that's gone.
+/// anew (`reach`), telling a lead that's slow from one that's gone. It only decides when to look,
+/// never fails a request (a slow lead's costs one connection more): any time well over a tailnet
+/// round trip (a relayed one, away, under half a second) and well under the request's 15 s does.
 const SILENT: Duration = Duration::from_secs(2);
 /// Connecting: a request's own connection, and `reach`'s.
 const CONNECT: Duration = Duration::from_secs(5);

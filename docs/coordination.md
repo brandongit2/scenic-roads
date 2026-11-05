@@ -191,13 +191,16 @@ it once opened one a request, each holding its port in TIME_WAIT for 30 s after 
 many requests ran a busy Mac out of ports). A kept connection gone stale:
 - **closed by the coordinator** (restarted, or closing it just as a request came): ureq finds it
   closed before taking it, or the request fails before any answer, and goes again at once on a new
-  connection (the coordinator never read it);
+  connection (the coordinator never read it: hyper closes an idle connection, or one shutting
+  down, only between requests; one stopping mid-request has already stopped taking them, and its
+  answer to the repeat is a 503 or none);
 - **its Mac silent** (asleep, off the network, no reset sent): after 2 s with no answer the client
   connects to the address anew (5 s); taking no connection, the request fails as a new
   connection's would (unreached, its cause read from it); taking one, the lead is there and slow,
-  and the request waits out its time.
-A coordinator closes a connection after 3 h, taking no new request on it in its last 10 minutes so
-none is cut mid-request. An older member or lead (one connection a request) works with a newer one
+  and the request waits out its time (as does one on a LAN address after this Mac changed networks:
+  its old connection's answer never comes, and it fails once, at 15 s).
+A connection takes no new request after 3 h (`CONNECTION_MAX`); the one under way is answered, or
+cut once it has had 3 h of its own, as when each request had its own connection. An older member or lead (one connection a request) works with a newer one
 as before: either side may close after an answer.
 
 ### 5.3 What a member keeps
