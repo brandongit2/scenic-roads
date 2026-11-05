@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 pub const HASH_LEN: usize = 16;
 
 /// Chunk size for streaming file copies and hashes.
-const CHUNK: usize = 4 << 20;
+pub const CHUNK: usize = 4 << 20;
 
 /// The bytes the streamed hashes and copies here have read and written, all told: a long upload
 /// says how far it is by them (pipeline's `Out::put_file_with`).

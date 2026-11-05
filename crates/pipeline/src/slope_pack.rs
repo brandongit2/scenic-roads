@@ -555,19 +555,23 @@ const MID_QUADRANTS: u64 = 1 << (2 * (FIRST_Z - PACK_Z));
 /// The most memory (MB) a slope-hi z6 tile's run takes, from its bounds: its hi tiles held until
 /// written (z9–12), each at most its raw codes; its z6–8 tiles; the deep mids open
 /// (`DeepQuadrants`: one a thread of the pyramid's, each its quadrants and, as it's read, its
-/// bytes); the pyramid's working memory (`working_bytes`); the decoded terrain kept.
+/// bytes); the pyramid's working memory (`working_bytes`); the decoded terrain kept; the z6 tile
+/// before's uploads in flight beside it (crate::out::UPLOAD_HELD).
 pub const fn peak_mb() -> u64 {
     let held = tiles_below(9 - 6, HI_MAX - 6) + tiles_below(0, 2);
     let mids = THREADS as u64 * 2 * MID_QUADRANTS * QUADRANT;
-    (held * RAW + mids + working_bytes(6, HI_MAX) + KEPT) >> 20
+    (held * RAW + mids + working_bytes(6, HI_MAX) + KEPT + crate::out::UPLOAD_HELD) >> 20
 }
 
 /// The most memory (MB) a slope-deep z10 tile's run takes, from its bounds: its deep pack's tiles
 /// (z13–16) held until written, each at most its raw codes; its z13 tiles' quadrants; the
-/// pyramid's working memory (`chains_bytes`: a z13 subtree a thread); the decoded terrain kept.
+/// pyramid's working memory (`chains_bytes`: a z13 subtree a thread); the decoded terrain kept;
+/// beside it, the target before's uploads in flight (crate::out::UPLOAD_HELD) and the next one's
+/// pack being copied ahead (`DeepBatch`: a copy's buffer, store::sys::COPY_BUF).
 pub const fn deep_peak_mb() -> u64 {
     let held = tiles_below(FIRST_Z - PACK_Z, MAX_Z - PACK_Z);
-    (held * RAW + MID_QUADRANTS * QUADRANT + chains_bytes(FIRST_Z, MAX_Z) + KEPT) >> 20
+    let beside = crate::out::UPLOAD_HELD + store::sys::COPY_BUF as u64;
+    (held * RAW + MID_QUADRANTS * QUADRANT + chains_bytes(FIRST_Z, MAX_Z) + KEPT + beside) >> 20
 }
 
 /// The most memory (MB) an assembly takes, from its bounds: its z6 tiles' mids (64 of z6–8) and
@@ -967,23 +971,104 @@ pub fn build_piece_later(
 /// `deep_part`, from its own and its edge neighbours' terrain deep packs alone: `fallback_floor`)
 /// and uploads them: its deep pack (z13–16; none when it made no deep tile: the manifest's then
 /// dropped) and its deep mid (`deep_mid_logical`: its z13 tiles' quadrants), which its z6 tile's
-/// slope-hi run takes in.
+/// slope-hi run takes in. Saved here (a batch's targets: `DeepBatch::build`, their uploads put off).
 pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+    let rep = DeepBatch::new(out, &[t]).build(out, t, on)?;
+    out.save()?;
+    out.claim_into_costin();
+    Ok(rep)
+}
+
+/// A tile of the terrain pack slope-deep target `t` reads thousands of tiles of, copied here whole
+/// before it's made: its terrain deep pack. Its edge neighbours' few edge tiles are read where they
+/// are.
+fn deep_copied(t: (u32, u32)) -> (u8, u32, u32) {
+    (FIRST_Z, t.0 << 3, t.1 << 3)
+}
+
+/// A slope-deep job's batch of z10 tiles (`targets`, in the order it makes them), its terrain read
+/// through one reader for the whole job. The next target's terrain deep pack is copied on a thread
+/// beside the target being made (its compute, its uploads), so it starts with it here; once a
+/// target is made, every copy and open pack but that one is let go. The same bytes as each made
+/// alone: a pack is content-named, read here or on the NAS alike.
+pub struct DeepBatch {
+    terr: Arc<ManifestTiles>,
+    targets: Vec<(u32, u32)>,
+    /// The thread copying the next target's pack ahead.
+    ahead: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DeepBatch {
+    pub fn new(out: &Out, targets: &[(u32, u32)]) -> Self {
+        let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
+        DeepBatch { terr: Arc::new(terr), targets: targets.to_vec(), ahead: None }
+    }
+
+    /// Makes z10 tile `t` (`build_deep`), its uploads put off (crate::out::Out::put_file_later):
+    /// they go on beside what the job does next, and the target is saved (and noted done) by a later
+    /// save (`Out::save_upto` the mark after it). Its pack copied first, or waited for where it's
+    /// being copied ahead; then the next target's copying ahead begins.
+    pub fn build(&mut self, out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+        use crate::timings::phase;
+        let at = self.targets.iter().position(|&u| u == t);
+        let p = phase("copying its terrain pack here");
+        if let Some(h) = self.ahead.take() {
+            // (Its pack copied ahead: done before its reads begin.)
+            h.join().ok();
+        }
+        let (z, x, y) = deep_copied(t);
+        if let Some(n) = self.terr.copy_here(z, x, y) {
+            p.count(n, 1);
+        }
+        drop(p);
+        let next = at.and_then(|k| self.targets.get(k + 1)).copied();
+        if let Some(next) = next {
+            let terr = self.terr.clone();
+            let h = std::thread::Builder::new().name("copies ahead".into()).spawn(move || {
+                let p = phase("copying the next target's terrain pack ahead");
+                let (z, x, y) = deep_copied(next);
+                if let Some(n) = terr.copy_here(z, x, y) {
+                    p.count(n, 1);
+                }
+            });
+            // (No thread: the next copies its own.)
+            self.ahead = h.ok();
+        }
+        let rep = build_deep_with(out, &self.terr, t, on);
+        // (All but the next target's pack let go: the copying ahead's.)
+        let ahead = next.map(|u| {
+            let (z, x, y) = deep_copied(u);
+            ManifestTiles::logical("terrain", z, x, y)
+        });
+        self.terr.keep_only(&|l| ahead.as_deref() == Some(l));
+        rep
+    }
+
+    /// The copies made here deleted now, the copying ahead's once it ends (waited for: by a safe
+    /// point it has mostly long ended): the job stopping at a safe point (its exit runs no
+    /// destructor).
+    pub fn let_go(&mut self) {
+        if let Some(h) = self.ahead.take() {
+            h.join().ok();
+        }
+        self.terr.keep_only(&|_| false);
+    }
+}
+
+/// `DeepBatch::build`'s making of z10 tile `t` from the terrain as `terr` reads it.
+fn build_deep_with(
+    out: &mut Out,
+    terr: &ManifestTiles,
+    t: (u32, u32),
+    on: &(dyn Fn(&str, u64, u64) + Sync),
+) -> Result<Report> {
     use crate::timings::phase;
     let mut rep = Report::default();
     let p = phase("reading the terrain packs' indexes");
-    let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
-    let (get, has) = terrain_reads(&terr);
+    let (get, has) = terrain_reads(terr);
     let terrain = Terrain::new(&get, &has);
-    let tiles = deep_tiles(&deep_terrain(&terr, t)?, t);
+    let tiles = deep_tiles(&deep_terrain(terr, t)?, t);
     let count = Count::new(tiles.len() as u64 + 1, on);
-    drop(p);
-    // (Its terrain deep pack, read thousands of tiles of, copied here whole; its neighbours' few
-    // edge tiles read where they are.)
-    let p = phase("copying its terrain pack here");
-    if let Some(n) = terr.copy_here(FIRST_Z, t.0 << 3, t.1 << 3) {
-        p.count(n, 1);
-    }
     drop(p);
     on("slope tiles worked out", 0, count.total);
     let p = phase("working out the slope tiles");
@@ -1002,16 +1087,14 @@ pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + S
     let path = out.scratch_file(&format!("{ml}.sect"));
     write_deep_mid(&path, t, &mid)?;
     drop(p);
-    let up = phase("uploading its deep pack and deep mid");
     match pack {
         Some(p) => {
             rep.deep_packs = 1;
-            out.put_file(&p.logical, "pack", &p.local)?;
+            out.put_file_later(&p.logical, "pack", &p.local)?;
         }
         None => rep.deep_dropped = crate::layers::drop(out, &[deep_logical(t.0, t.1)]),
     }
-    out.put_file(&ml, "sect", &path)?;
-    drop(up);
+    out.put_file_later(&ml, "sect", &path)?;
     count.one();
     Ok(rep)
 }
@@ -1576,7 +1659,63 @@ mod tests {
         assert!(out.get(&deep_mid_logical(448, 256)).is_none());
     }
 
-    /// The memory bounds are those of the tiles a run holds.
+    /// Task #928: a batch's targets (`DeepBatch`) come out as each made alone (`build_deep`); the
+    /// next target's terrain deep pack is copied ahead while one is made, read there by that target
+    /// (copied once), and kept for it alone: let go once it's made, though a neighbour after reads its
+    /// edge tiles (then on the NAS's); every copy let go after the last.
+    #[test]
+    fn a_deep_batch_is_its_targets_made_alone() {
+        use std::os::unix::fs::MetadataExt;
+        // (Targets `ts` as a batch, or each made alone.)
+        let made = |ts: &[(u32, u32)], batch: bool| {
+            let d = tempfile::tempdir().unwrap();
+            let mut out =
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                    .unwrap();
+            terrain(&mut out, true);
+            match batch {
+                true => {
+                    let copies = out.scratch_file("terrain-copies");
+                    let name = |l: &str| out.path(out.get(l).unwrap()).file_name().unwrap().to_owned();
+                    let deep = copies.join(name(&crate::terrain_deep::pack_logical(448, 256)));
+                    let mut b = DeepBatch::new(&out, ts);
+                    let seen = Mutex::new(HashSet::new());
+                    for (k, &t) in ts.iter().enumerate() {
+                        // (As it's made, the copy it reads: the one made ahead, the same file.)
+                        b.build(&mut out, t, &|_, _, _| {
+                            seen.lock().unwrap().extend(deep.metadata().ok().map(|m| m.ino()));
+                        })
+                        .unwrap();
+                        // (The copying ahead ended.)
+                        if let Some(h) = b.ahead.take() {
+                            h.join().unwrap();
+                        }
+                        out.save().unwrap();
+                        let next = ts.get(k + 1) == Some(&(448, 256));
+                        assert_eq!(deep.exists(), next, "10/448/256's deep pack kept for the next target alone ({k})");
+                    }
+                    assert_eq!(seen.into_inner().unwrap().len(), 1, "10/448/256's deep pack copied once");
+                    assert_eq!(std::fs::read_dir(&copies).unwrap().count(), 0, "every copy let go");
+                }
+                false => {
+                    for &t in ts {
+                        build_deep(&mut out, t, &|_, _, _| {}).unwrap();
+                    }
+                }
+            }
+            out.manifest
+                .into_iter()
+                .filter(|(l, _)| l.starts_with(DEEP_PREFIX) || l.starts_with(DEEP_MID_PREFIX))
+                .collect::<Vec<_>>()
+        };
+        // (10/448/256 between its edge neighbours: copied ahead for it, read by the one before as
+        // it's copied and by the one after on the NAS.)
+        let ts = [(449, 256), (448, 256), (448, 257)];
+        let alone = made(&ts, false);
+        assert_eq!(alone.len(), 4, "a deep pack and three deep mids: {alone:?}");
+        assert_eq!(made(&ts, true), alone);
+    }
+
     /// A pyramid's tiles don't depend on its threads' order: made again and again, the same bytes,
     /// and each parent the mean of its children as made, coded once.
     #[test]
@@ -1631,6 +1770,7 @@ mod tests {
         assert!(above == first.iter().filter(|m| m.0 < 2).cloned().collect::<Vec<_>>());
     }
 
+    /// The memory bounds are those of the tiles a run holds.
     #[test]
     fn the_memory_bounds_count_the_tiles_held() {
         assert_eq!(tiles_below(3, 6), 64 + 256 + 1024 + 4096);
@@ -1642,9 +1782,12 @@ mod tests {
         let working = chains + 21 * 4 * 196_608;
         assert_eq!(working_bytes(6, HI_MAX), working);
         assert_eq!(chains_bytes(FIRST_Z, MAX_Z), chains, "a z13 subtree a thread");
-        // (Slope-hi: a deep mid open a thread, its 64 quadrants and its bytes as read.)
-        assert_eq!(peak_mb(), ((5440 + 21) * 196_608 + 16 * 2 * 64 * 196_608 + working + 512 * 262_144) >> 20);
-        assert_eq!(deep_peak_mb(), (5440 * 196_608 + 64 * 196_608 + chains + 512 * 262_144) >> 20);
+        // (Beside a target: the one before's uploads in flight, an 8 MB read at a time; slope-deep's
+        // next target's copy ahead, 1 MB at a time. Slope-hi: a deep mid open a thread, its 64
+        // quadrants and its bytes as read.)
+        let (upload, copy) = (8 << 20, 1 << 20);
+        assert_eq!(peak_mb(), ((5440 + 21) * 196_608 + 16 * 2 * 64 * 196_608 + working + 512 * 262_144 + upload) >> 20);
+        assert_eq!(deep_peak_mb(), (5440 * 196_608 + 64 * 196_608 + chains + 512 * 262_144 + upload + copy) >> 20);
         assert_eq!(lo_peak_mb(), ((64 * 21 + 1365) * 196_608 + 512 * 262_144) >> 20);
     }
 
@@ -2030,6 +2173,113 @@ mod tests {
         }
         for p in &r.phases {
             println!("  {:<34} {:>8.1} s  CPU {:>6.1} s  n={}", p.name, p.wall_s, p.cpu_s.unwrap_or(0.0), p.n);
+        }
+    }
+
+    /// A measure (run by hand; the root only read): real slope-deep z10 tiles (`<x/y,…>`) made as
+    /// the step makes a batch of them (`DeepBatch`, each one's uploads landing beside the next one's
+    /// work), or with `alone` as it made each before task #928 (its own reader, its packs copied
+    /// then, its uploads waited for). Their uploads go to `<into>` (a local folder of its own: never
+    /// the root, nor the NAS). Each target's time and its outputs' content names (the same bytes either way), then
+    /// the batch's wall, CPU, the share of its threads kept busy and its peak footprint (sampled
+    /// every 50 ms; past 4 GB it stops).
+    /// SCENIC_SLOPE_DEEP_MEASURE="<root> <into> <x/y,…> [alone]"; unset, nothing.
+    #[test]
+    fn measure_a_slope_deep_batch() {
+        let Ok(m) = std::env::var("SCENIC_SLOPE_DEEP_MEASURE") else { return };
+        let a: Vec<&str> = m.split_whitespace().collect();
+        let (root, into) = (std::path::Path::new(a[0]), std::path::Path::new(a[1]));
+        assert!(!into.starts_with(root), "{} is inside the root", into.display());
+        let ts: Vec<(u32, u32)> = a[2]
+            .split(',')
+            .map(|s| {
+                let (x, y) = s.split_once('/').unwrap();
+                (x.parse().unwrap(), y.parse().unwrap())
+            })
+            .collect();
+        let alone = a.get(3) == Some(&"alone");
+        crate::sys::footprint_guard("measure_a_slope_deep_batch", 4000);
+        let peak = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        {
+            let peak = peak.clone();
+            std::thread::spawn(move || loop {
+                peak.fetch_max(crate::sys::footprint().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            });
+        }
+        let cpu = || {
+            let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+            let s = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+            s(u.ru_utime) + s(u.ru_stime)
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        // (The root only read: its records and terrain packs, nothing written there.)
+        let read = Out::unbound(&store::nasfs::NasRoot::from_arg(root), scratch.path()).unwrap();
+        std::fs::create_dir_all(into).unwrap();
+        let mut w = Out::unbound(&store::nasfs::NasRoot::local_for_test(into), scratch.path()).unwrap();
+        crate::timings::start("slope-deep");
+        let none = |_: &str, _: u64, _: u64| {};
+        let threads = rayon::current_num_threads();
+        let (t0, c0) = (std::time::Instant::now(), cpu());
+        let mut batch = (!alone).then(|| DeepBatch::new(&read, &ts));
+        let mut before: Option<crate::out::Mark> = None;
+        for &t in &ts {
+            let (s, c) = (std::time::Instant::now(), cpu());
+            let r = match &mut batch {
+                Some(b) => {
+                    let r = b.build(&mut w, t, &none).unwrap();
+                    if let Some(m) = before.take() {
+                        w.save_upto(m).unwrap();
+                    }
+                    before = Some(w.mark());
+                    r
+                }
+                None => {
+                    let r = DeepBatch::new(&read, &[t]).build(&mut w, t, &none).unwrap();
+                    w.save().unwrap();
+                    r
+                }
+            };
+            let (wall, cpu) = (s.elapsed().as_secs_f64(), cpu() - c);
+            println!(
+                "10/{}/{}: {} tiles, {wall:.1} s, CPU {cpu:.1} s ({:.0} % of {threads} threads)",
+                t.0,
+                t.1,
+                r.deep_tiles,
+                100.0 * cpu / wall / threads as f64
+            );
+        }
+        w.save().unwrap();
+        let (wall, cpu) = (t0.elapsed().as_secs_f64(), cpu() - c0);
+        println!(
+            "{} targets{}: {wall:.1} s ({:.1} s a target), CPU {cpu:.1} s, {:.0} % of {threads} threads busy, peak {} MB",
+            ts.len(),
+            if alone { " alone" } else { " as a batch" },
+            wall / ts.len() as f64,
+            100.0 * cpu / wall / threads as f64,
+            peak.load(std::sync::atomic::Ordering::Relaxed) >> 20
+        );
+        for &t in &ts {
+            println!(
+                "  10/{}/{}: {:?} {:?}",
+                t.0,
+                t.1,
+                w.get(&deep_logical(t.0, t.1)),
+                w.get(&deep_mid_logical(t.0, t.1))
+            );
+        }
+        let r = crate::timings::snapshot(true).unwrap();
+        for p in &r.phases {
+            let bg = if p.background { " (beside)" } else { "" };
+            println!(
+                "  {:<48} {:>7.1} s  CPU {:>6.1} s  n={} {} MB{bg}",
+                p.name,
+                p.wall_s,
+                p.cpu_s.unwrap_or(0.0),
+                p.n,
+                p.bytes >> 20
+            );
         }
     }
 

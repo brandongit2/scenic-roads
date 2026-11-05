@@ -188,6 +188,11 @@ What each step does, in detail. The steps as one table (names, chains, the check
   nearest ancestor within the deep levels (z13–15, `slope_pack::fallback_floor`), never a hi tile;
   where the fine data ends and there is none, the tile's own edge pixels are taken again, a strip
   of one pixel along the edge of the fine coverage (the owner's choice, task #952).
+  A slope-deep job's z10 tiles read the terrain through one reader (`slope_pack::DeepBatch`, task
+  #928): the next target's terrain deep pack is copied here while one is made and kept for it
+  alone, every other copy and open pack let go once a target is made (an edge neighbour's few edge
+  tiles are read where they are); and each target's uploads land beside the next one's work
+  (docs/storage.md, Uploads beside the work).
   **slope-hi**, a run per z6 tile once what it reads is built (its own and its edge neighbours'
   terrain-hi, their z3 tiles' terrain-lo, its z10 tiles' terrain-deep and slope-deep): its hi pack
   (z9–12: over its z10 tiles' deep terrain, z10–12 from their z13 tiles' quadrants, taken in from
@@ -207,7 +212,8 @@ What each step does, in detail. The steps as one table (names, chains, the check
   tiles a run holds (`slope_pack::peak_mb`: a z6 tile's hi tiles, each counted at its raw RGB, the
   deep mids open (one a thread, twice its quadrants while read), the pyramid's working memory and
   the decoded terrain kept; `deep_peak_mb` a z10 tile's deep tiles, its z13 quadrants, a z13
-  subtree a thread and the terrain kept; `lo_peak_mb` an assembly's); slope-hi's and
+  subtree a thread, the terrain kept and the next target's copy ahead; both with the target
+  before's uploads in flight, `out::UPLOAD_HELD`; `lo_peak_mb` an assembly's); slope-hi's and
   slope-deep's with the coverage the process reads (`coverage::Coverage::read_peak_mb`). The
   pyramid (`slope_pack::Pyramid`, the depth's shading's too) makes the children of the tiles within
   three levels of its top in parallel and each subtree below them on one thread, on at most 16 of

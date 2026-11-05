@@ -1509,7 +1509,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
     let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
         // (A safe point before each tile: with the build pausing, the job ends here.)
-        landing.safe_point(out, "pack")?;
+        landing.safe_point(out, "pack", || ())?;
         // (What each tile takes, for the lead's offers by the measures: docs/pool.md §7.7.)
         let c = cost_start("pack", &t.slash());
         at(k, 0.0);
@@ -4895,7 +4895,7 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     // (Each tile's uploads go on beside the next tile's work: it's noted done once they've landed.)
     let mut landing = Landing::default();
     for (k, &t) in ts.iter().enumerate() {
-        landing.safe_point(out, "bldtiles")?;
+        landing.safe_point(out, "bldtiles", || ())?;
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("bldtiles", &t.slash());
         // (Paused at a z8 tile kept: the uploading tile landed, the run resumed there.)
@@ -5274,7 +5274,7 @@ fn terrain_pieces_from(
     // (Each z6 tile's uploads go on beside the next z6 tile's work: it's noted done once they've landed.)
     let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
-        landing.safe_point(out, "terrain-hi")?;
+        landing.safe_point(out, "terrain-hi", || ())?;
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("terrain-hi", &t.slash());
         let offers = match ahead.take() {
@@ -5494,7 +5494,7 @@ fn slope_pieces(
     // (Each z6 tile's uploads go on beside the next z6 tile's work: it's noted done once they've landed.)
     let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
-        landing.safe_point(out, "slope-hi")?;
+        landing.safe_point(out, "slope-hi", || ())?;
         pipeline::agent::jobs::part(k, &names);
         // (A "none" z6 tile first: nothing read, its cost a drop's, `run_drop`.)
         if !pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0) {
@@ -5598,10 +5598,12 @@ impl Landing {
     }
 
     /// `step`'s safe point: with the build pausing, the target uploading is landed (saved and noted
-    /// done) and the job stops here (read once, so a drain between can't skip the landing).
-    fn safe_point(&mut self, out: &mut Out, step: &str) -> Result<()> {
+    /// done) and the job stops here (read once, so a drain between can't skip the landing), after
+    /// `let_go` (what the job deletes before it stops: its exit runs no destructor).
+    fn safe_point(&mut self, out: &mut Out, step: &str, let_go: impl FnOnce()) -> Result<()> {
         pipeline::control::reached();
         if pipeline::control::draining() {
+            let_go();
             self.land(out)?;
             pipeline::control::stop_paused(step);
         }
@@ -5651,7 +5653,6 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
                 for y in t.y << k..(t.y + 1) << k {
                     if out.get(&pipeline::terrain_deep::pack_logical(x, y)).is_some() {
                         let r = pipeline::slope_pack::build_deep(out, (x, y), &|_, _, _| {})?;
-                        out.save()?;
                         eprintln!("slope-deep {}/{x}/{y}: {r:?}", pipeline::terrain_deep::PACK_Z);
                     }
                 }
@@ -5668,27 +5669,40 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
 /// (pipeline::slope_pack::build_deep: its deep pack, z13–16, and its deep mid, which its z6 tile's
 /// slope-hi run takes in), from its and its edge neighbours' terrain deep packs; a z10 tile no
 /// slope-deep target now (no terrain-deep target there: pipeline::terrain_deep::is_target) has its
-/// deep pack and deep mid dropped.
+/// deep pack and deep mid dropped (`slope_deep_batch`).
 fn slope_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     use pipeline::terrain_deep as td;
-    const STEP: &str = "slope-deep";
     let ts: Vec<TileId> = positional(args)
         .iter()
         .map(|t| {
             TileId::parse(t).filter(|u| u.z == td::PACK_Z).with_context(|| format!("not a z{} tile: {t}", td::PACK_Z))
         })
         .collect::<Result<_>>()?;
-    anyhow::ensure!(!ts.is_empty(), "{STEP} <{}/x/y …>", td::PACK_Z);
+    anyhow::ensure!(!ts.is_empty(), "slope-deep <{}/x/y …>", td::PACK_Z);
     let cov = coverage_of(out, args)?;
     let p = phase("reading the declared datasets");
     let sets = zoom_sets(out)?;
     drop(p);
+    let made: Vec<bool> = ts.iter().map(|t| td::is_target(&sets, &cov, (t.x, t.y))).collect();
+    slope_deep_batch(out, &ts, &made)
+}
+
+/// slope-deep's z10 tiles `ts` in turn: each `made` one made (pipeline::slope_pack::DeepBatch: one
+/// terrain reader for them all, the next one's terrain deep pack copied ahead), its uploads going on beside
+/// the next one's work and noted done once they've landed (`Landing`); the others' deep packs and
+/// deep mids dropped.
+fn slope_deep_batch(out: &mut Out, ts: &[TileId], made: &[bool]) -> Result<()> {
+    const STEP: &str = "slope-deep";
     let names: Vec<String> = ts.iter().map(|t| format!("Working out {}'s deep slope", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let built: Vec<(u32, u32)> = ts.iter().zip(made).filter(|(_, &m)| m).map(|(t, _)| (t.x, t.y)).collect();
+    let mut batch = pipeline::slope_pack::DeepBatch::new(out, &built);
+    let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
-        pipeline::control::safe_point(STEP);
+        landing.safe_point(out, STEP, || batch.let_go())?;
         pipeline::agent::jobs::part(k, &names);
-        if !td::is_target(&sets, &cov, (t.x, t.y)) {
+        if !made[k] {
+            landing.land(out)?;
             let n = run_drop(STEP, &t.slash(), || {
                 let n = pipeline::slope_pack::drop_deep(out, (t.x, t.y));
                 out.save()?;
@@ -5698,16 +5712,12 @@ fn slope_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
             continue;
         }
         let c = cost_start(STEP, &t.slash());
-        let r = pipeline::slope_pack::build_deep(out, (t.x, t.y), &|what, done, total| {
-            pipeline::agent::jobs::report(done, total, what)
+        let r = landing.after(out, |out| {
+            batch.build(out, (t.x, t.y), &|what, done, total| pipeline::agent::jobs::report(done, total, what))
         })?;
-        out.save()?;
-        out.claim_into_costin();
-        eprintln!("{STEP} {}: {r:?}", t.slash());
-        pipeline::control::done(STEP, &t.slash());
-        note_cost(STEP, &t.slash(), c);
+        landing.then(out, STEP, &t.slash(), format!("{STEP} {}: {r:?}", t.slash()), c)?;
     }
-    Ok(())
+    landing.land(out)
 }
 
 /// rail-feeds [--pass <date>] [--feeds-index <index>]: the timetable feeds (pipeline::railfeeds)
@@ -6341,6 +6351,158 @@ mod tests {
         assert_eq!(noted(), ["6/1/1", "6/1/2"]);
         assert_eq!(cost_of("6/1/4"), None);
         assert!(landing.land(&mut out).is_ok(), "nothing uploading");
+    }
+
+    /// Task #928: a slope-deep batch's targets each land their uploads beside the next one's work.
+    /// Paused at a safe point with a target's uploads in flight, that target is landed (saved, noted
+    /// done) and nothing after it, and the job's copies are deleted; the rest made after, the same
+    /// bytes as a batch made at one go. An upload that fails: no target from it on is noted done or
+    /// named, the job fails; made again, the same bytes. (In processes of their own: a pause exits.)
+    #[test]
+    fn a_slope_deep_batch_lands_each_target_beside_the_next() {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        // (The child: "<root> <scratch> <x/y,…>", its z10 tiles made as slope-deep's job makes them.)
+        const CHILD: &str = "SCENIC_TEST_SLOPE_DEEP";
+        if let Some(v) = std::env::var_os(CHILD) {
+            let v = v.into_string().unwrap();
+            let a: Vec<&str> = v.split(' ').collect();
+            let root = store::nasfs::NasRoot::local_for_test(std::path::Path::new(a[0]));
+            let mut out = super::Out::unbound(&root, std::path::Path::new(a[1])).unwrap();
+            let ts: Vec<super::TileId> =
+                a[2].split(',').map(|t| super::TileId::parse(&format!("10/{t}")).unwrap()).collect();
+            super::slope_deep_batch(&mut out, &ts, &vec![true; ts.len()]).unwrap();
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        // Terrain for three z10 tiles of one z6 tile: its hi pack (their z12 tiles) and a deep pack
+        // each (z13 tiles), each tile its own hill.
+        let terrain = |root: &std::path::Path| {
+            use det::Det;
+            let root = store::nasfs::NasRoot::local_for_test(root);
+            let mut out = super::Out::unbound(&root, &d.path().join("fixture")).unwrap();
+            let tile = |z: u8, x: u32, y: u32| {
+                let e: Vec<f32> = (0..256 * 256)
+                    .map(|p| {
+                        ((p % 256) as f32 * 0.37 + (p / 256) as f32 * 1.9 + x as f32 * 7.0 - y as f32 * 3.0 + z as f32)
+                            .dsin()
+                            * 40.0
+                            + 300.0
+                    })
+                    .collect();
+                let b = roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap();
+                let n = b.len() as u32;
+                (z, x, y, b, n)
+            };
+            let hi: Vec<_> = (1792..1804).flat_map(|x| (1024..1028).map(move |y| tile(12, x, y))).collect();
+            pipeline::layers::write_pack(
+                &mut out,
+                "terrain",
+                "terrarium-png",
+                false,
+                "hi",
+                (6, 28, 16),
+                &mut hi.into_iter(),
+            )
+            .unwrap();
+            for x in 448..451u32 {
+                let deep: Vec<_> = (x * 8..x * 8 + 2).flat_map(|x| (2048..2050).map(move |y| tile(13, x, y))).collect();
+                pipeline::layers::write_pack(
+                    &mut out,
+                    "terrain",
+                    "terrarium-png",
+                    false,
+                    "deep",
+                    (10, x, 256),
+                    &mut deep.into_iter(),
+                )
+                .unwrap();
+            }
+            out.save().unwrap();
+        };
+        let fifo = d.path().join("control");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let run = |name: &str, ts: &str, control: bool| -> std::process::Child {
+            let (root, scratch) = (d.path().join(name), d.path().join(format!("{name}-scratch")));
+            let mut c = store::spawn::command(std::env::current_exe().unwrap());
+            // (Its output not captured: its log says why it failed.)
+            c.args(["--exact", "--nocapture", "tests::a_slope_deep_batch_lands_each_target_beside_the_next"])
+                .env(CHILD, format!("{} {} {ts}", root.display(), scratch.display()))
+                .env(pipeline::control::DONE_ENV, d.path().join(format!("{name}-done")))
+                .env_remove("SCENIC_COSTS")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::fs::File::create(d.path().join(format!("{name}-{}.log", ts.len()))).unwrap());
+            if control {
+                c.env(pipeline::control::CONTROL_ENV, &fifo);
+            } else {
+                c.env_remove(pipeline::control::CONTROL_ENV);
+            }
+            store::spawn::spawn(&mut c).unwrap()
+        };
+        let log =
+            |name: &str, ts: &str| std::fs::read_to_string(d.path().join(format!("{name}-{}.log", ts.len()))).unwrap();
+        // (The child at its next safe point, reading the control channel: told `a`.)
+        let answer = |child: &mut std::process::Child, a: &str| {
+            store::testkit::wait_for("the batch at its safe point", || {
+                match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
+                    Ok(mut f) => Some(f.write_all(a.as_bytes()).unwrap()),
+                    Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {
+                        assert!(child.try_wait().unwrap().is_none(), "the batch ended before its safe point");
+                        None
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            })
+        };
+        let slope = |name: &str| -> std::collections::BTreeMap<String, String> {
+            let root = store::nasfs::NasRoot::local_for_test(&d.path().join(name));
+            pipeline::out::read_manifest(&root)
+                .unwrap()
+                .into_iter()
+                .filter(|(l, _)| l.starts_with("layers/slope/") || l.starts_with("work/slope-deep-mid/"))
+                .collect()
+        };
+        let noted = |name: &str| pipeline::control::read_done(&d.path().join(format!("{name}-done")), "slope-deep");
+        let all = "448/256,449/256,450/256";
+        // At one go: every target noted done, its deep pack and deep mid named.
+        terrain(&d.path().join("whole"));
+        assert!(run("whole", all, false).wait().unwrap().success(), "{}", log("whole", all));
+        assert_eq!(noted("whole"), ["10/448/256", "10/449/256", "10/450/256"]);
+        let whole = slope("whole");
+        assert_eq!(whole.len(), 6, "{whole:?}");
+        // Paused at the second safe point, the first target's uploads put off and not yet landed:
+        // it alone landed and noted done, the job's copies gone.
+        terrain(&d.path().join("paused"));
+        let mut child = run("paused", all, true);
+        answer(&mut child, "run");
+        answer(&mut child, "drain");
+        let st = child.wait().unwrap();
+        assert_eq!(st.code(), Some(pipeline::control::PAUSED_EXIT), "{}", log("paused", all));
+        assert_eq!(noted("paused"), ["10/448/256"]);
+        let first: std::collections::BTreeMap<_, _> =
+            whole.iter().filter(|(l, _)| l.ends_with("10-448-256")).map(|(l, c)| (l.clone(), c.clone())).collect();
+        assert_eq!(first.len(), 2);
+        assert_eq!(slope("paused"), first, "the first target's outputs, landed");
+        let copies = d.path().join("paused-scratch/terrain-copies");
+        assert_eq!(std::fs::read_dir(&copies).map_or(0, |r| r.count()), 0, "no copy left behind");
+        // Resumed with the targets not done: the same bytes as at one go.
+        let rest = "449/256,450/256";
+        assert!(run("paused", rest, false).wait().unwrap().success(), "{}", log("paused", rest));
+        assert_eq!(slope("paused"), whole);
+        // An upload that fails (the slope's deep packs' folder can't be made): the job fails, its
+        // first target, whose upload it was, not noted done, and none after it.
+        terrain(&d.path().join("failed"));
+        std::fs::create_dir_all(d.path().join("failed/layers/slope")).unwrap();
+        std::fs::write(d.path().join("failed/layers/slope/deep"), b"in the way").unwrap();
+        assert!(!run("failed", all, false).wait().unwrap().success());
+        assert!(log("failed", all).contains("upload layers/slope/deep/10-448-256"), "{}", log("failed", all));
+        assert!(noted("failed").is_empty());
+        assert!(slope("failed").is_empty());
+        // Made again, the way clear: the same bytes.
+        std::fs::remove_file(d.path().join("failed/layers/slope/deep")).unwrap();
+        assert!(run("failed", all, false).wait().unwrap().success(), "{}", log("failed", all));
+        assert_eq!(slope("failed"), whole);
     }
 
     /// A job's steps' programs are its own app's: `app/current` followed to the version it names

@@ -226,13 +226,23 @@ pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &NasPath) -> Res
     }
 }
 
+/// `hashes_of`'s read buffer.
+const HASH_BUF: usize = 8 << 20;
+
+/// The most memory an upload holds as it goes (bytes; a step's memory bound counts one put off in
+/// flight beside its next target's work): its largest buffer, its hashes' read (`HASH_BUF`); its
+/// copy's and its read-back's (store::naming's) are no larger, each freed before the next begins.
+pub const UPLOAD_HELD: u64 = HASH_BUF as u64;
+
+const _: () = assert!(HASH_BUF >= store::naming::CHUNK, "an upload's copy buffer is its largest");
+
 /// A file's `hash16` (BLAKE3, its content name's) and SHA-256 (the NAS's check, `verify`), from one
 /// read of it: each chunk hashed both ways at once, on two threads.
 fn hashes_of(p: &Path) -> Result<(String, String)> {
     let mut f = std::fs::File::open(p)?;
     let mut b3 = blake3::Hasher::new();
     let mut sha = sha2::Sha256::new();
-    let mut buf = vec![0u8; 8 << 20];
+    let mut buf = vec![0u8; HASH_BUF];
     loop {
         let mut n = 0;
         while n < buf.len() {

@@ -44,7 +44,7 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   #449: heritage-sites' slices, hundreds of small files nearly all unchanged): there at its size, it
   is touched and taken; missing, put again; of another size, the put fails (a damaged file is
   removed by hand).
-- **Uploads beside the work** (`Out::put_file_later`): slope and terrain z6 tiles, map tiles (`pack`)
+- **Uploads beside the work** (`Out::put_file_later`): slope and terrain z6 tiles, slope's z10 tiles, map tiles (`pack`)
   and the 3D buildings' tiles upload a target's files on a thread of their own while the job works
   on its next target, and a z6 tile its grids and base pack while it makes its road values. A file is
   named in the manifest only once it has landed; a target is saved and noted done only after its
