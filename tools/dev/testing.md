@@ -61,14 +61,45 @@ changed. guards.sh runs there without its own fmt check and its two tests (input
 source_names: scan tests of crates/ and dem/, run by the tests part whenever a file they read
 changed; #887: they had built the pipeline's tests on this Mac, ~5 min, beside the test Mac's run).
 Tests build without debug info (`debug = false` in Cargo.toml's `[profile.test]`, #918), every run alike: check.sh's, publish's and an agent's own.
-One PASS/FAIL line per part with its wall and CPU time here (the tests part also the test Mac's);
+`tools/dev/test/check-reuse.zsh` runs when the reuse rule's files (check.sh, check-reuse.py,
+affected-tests.sh, merge-ok.sh) or the test changed.
+One PASS/FAIL/REUSE line per part with its wall and CPU time here (the tests part also the test Mac's);
 whole outputs in ~/Library/Logs/scenic/check-<time>/. A pass on a clean tree records HEAD in
-`.git/check-passed`, with its tree key (HEAD's tree and the merge-base's tree) when nothing is
-untracked; a later run on a clean checkout with the same key passes at once, recording its HEAD
-(an amend of the message, a cherry-pick onto the same base: nothing a part reads changed).
+`.git/check-passed`; when nothing is untracked, also its tree key (`tree` HEAD's tree, `base` the
+merge-base's tree), `at` the merge-base, `tests` the hash of its test commands and a `reused
+<part>=<commit>` for each part it took from an earlier pass. A later run on a clean checkout with
+the same tree key passes at once, recording its HEAD with that pass's fields and `reused
+all=<commit>` (an amend of the message, a cherry-pick onto the same base: nothing a part reads changed).
+
+A rebased branch (#950): on a clean checkout (nothing untracked), check.sh asks
+`tools/dev/check-reuse.py` whether an earlier pass P still holds for clippy and for the tests
+part, the two that take minutes (fmt, guards and the rest take seconds and always run). It holds
+only when HEAD's tree is P's plus main's changes since P's base (every file differing from P is
+one main changed, and each of those is main's version), and none of main's changes is:
+- of no known kind: a top-level entry outside the script's `KNOWN` (both parts run);
+- a Rust build input: `crates/`, Cargo.toml and Cargo.lock, rust-toolchain, mise.toml, clippy.toml,
+  rustfmt.toml, `.cargo/`, `.config/`; the package folders Cargo.toml's members, exclude and path
+  dependencies name; any file a crate's source `include_*!`s or `#[path]`s, or a build script
+  reads; the scripts running the parts (`RUNNER`: check.sh, check-reuse.py, affected-tests.sh,
+  tools/dev/bin, tools/app/remote-tests.sh). Then both parts run.
+For the tests part, also: HEAD's affected tests are P's (the same hash), and the tests that read
+one of main's changes at run time run again, those of them HEAD's commands run: a scan test whose
+`//! scans:` line covers it (affected-tests.sh over main's changes), a test without one naming a
+`CARGO_MANIFEST_DIR` path or a `"../"` path over it, and a source's such path inside a `#[test]`
+function (that test). A path it can't resolve is the whole repo; such a read outside a `#[test]`
+function runs the whole part. A part reused prints `REUSE` with P and why it holds (main's changed
+files, which tests ran again); a part run says why it wasn't reused (no such pass, a lookup failing,
+the file that is an input). Its test, `tools/dev/test/check-reuse.zsh`, runs the rule on a toy repo
+(docs only, dev tools only, a file a test reads, a Rust change, a Cargo.lock change, an included
+file, the runner changed, an unknown file, the branch changed after the rebase, no earlier pass,
+an untracked file) and checks the lists: every top-level entry of the repo is in `KNOWN`, and the
+runner scripts' code names no repo script outside `RUNNER`. publish.sh doesn't reuse: its suite is whole.
+
 Enforced twice: `tools/dev/report-guard.sh` (a SubagentStop hook) keeps a worktree agent with
 commits beyond main from finishing until its HEAD passed, and the PM runs
-`tools/dev/merge-ok.sh <commit>…` before cherry-picking.
+`tools/dev/merge-ok.sh <commit>…` before cherry-picking: ok when a pass is recorded at the commit or
+a later commit of its branch, saying what that pass reused and from which commit; refused when a
+pass it reused from has no record.
 
 ## One build folder per Mac (#915, 31 Oct)
 
