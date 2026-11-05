@@ -1361,11 +1361,13 @@ impl Ready {
     }
 }
 
-/// The most targets of a step one ask is offered in the run (`offers`): the scheduler takes a run
-/// from the front of them (the batch length of measured time at most, `Sched::batch_len`), so the
-/// rest change nothing but its time, except where more than this many fit it: a run of slope-deep's
-/// empty targets, a second or so each, which the coordinator grants up to `JOB_MAX` of. (Offered
-/// that many, the live-scale forecast took three times the CPU, past its bound: task #927.)
+/// The most targets of a step one ask is offered in the run (`offers`), the first ready; the live
+/// plan offers all of them. Two gaps (docs/pool.md §7.7, Batch length; for task #951): where more than
+/// this many fit the batch length (`Sched::batch_len`: slope-deep's empty targets, a second or so
+/// each), the coordinator grants up to `JOB_MAX` in one job, the forecast this many; and placement's
+/// start (`Sched::placed_start`, the target measured to take longest) is drawn among these alone.
+/// Its bound is the run's CPU: `placed_start` times every target offered on each ask, and offered
+/// `JOB_MAX`, the live-scale forecast took three times the CPU, past its bound (task #927).
 const OFFER_MAX: usize = 64;
 
 /// How long a lane refused work waits before it asks again (s), when nothing ends sooner: an
