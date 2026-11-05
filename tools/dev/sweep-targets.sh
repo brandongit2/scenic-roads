@@ -15,7 +15,13 @@
 # hour; one listed in .claude/sweep-keep (one agent id per line).
 # Agent worktrees build into this Mac's shared folder (tools/dev/bin/cargo, #915); a worktree's own
 # target/ comes only from a cargo run without tools/dev/bin on the PATH.
-# The agents' compile cache (sccache) is emptied when free disk is below 20 GB (end of this file).
+# - Room (#954, make_room): while this Mac's free disk is below its room target (the agent's
+#   room-target.json, set on the build page or by `scenic room`) plus the sweep's margin
+#   (sweep-margin.json beside it, the build page's "Dev sweep margin"; none set:
+#   SWEEP_MARGIN_DEFAULT_GB in crates/pipeline/src/agent/settings.rs), the shared build folder's
+#   entries go, the least recently touched first, until it is back above both; then, still below,
+#   the compile cache. No room target: the margin alone is kept free.
+# - The main checkout's target/debug: entries untouched for 2 days go.
 setopt extendedglob
 usage="usage: tools/dev/sweep-targets.sh [--dry-run]"
 dry=
@@ -27,9 +33,103 @@ case $#:${1:-} in
 esac
 repo=${$(git -C ${0:A:h} rev-parse --path-format=absolute --git-common-dir):h}   # the main checkout, found from this script (also from a worktree copy)
 log=$repo/.claude/sweep-targets.log
-cd $repo || exit 1
 say() { if [[ -n $dry ]]; then print "would: $*"; else print "$(date '+%F %T') $*" >> $log; fi }
 skip() { [[ -n $dry ]] && print "keep ${wt:t}: $*"; }
+agent_home=~/"Library/Application Support/scenic/agent"
+shared=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
+cache=~/Library/Caches/scenic-sccache
+zmodload zsh/system; zmodload -F zsh/stat b:zstat; zmodload -F zsh/files b:zf_mv b:zf_mkdir
+
+free_kb() { df -k $1 | awk 'NR==2 {print $4}' }   # the free space on <path>'s disk (KB)
+gb() { printf '%.1f GB' $(( $1 / 1048576.0 )) }   # gb <KB>
+json_bytes() { local b=$(plutil -extract bytes raw -o - $1 2>/dev/null); [[ $b == <-> ]] && print $b }
+# The free space wanted (KB, into $want): this Mac's room target plus the sweep's margin; $room
+# says which, in words.
+wanted() {
+  local t m from="set on the build page"
+  t=$(json_bytes $agent_home/room-target.json)
+  m=$(json_bytes $agent_home/sweep-margin.json)
+  if [[ -z $m ]]; then
+    from=default
+    m=$(sed -n 's/^pub const SWEEP_MARGIN_DEFAULT_GB: u64 = \([0-9][0-9]*\);.*/\1/p' $repo/crates/pipeline/src/agent/settings.rs 2>/dev/null)
+    if [[ -n $m ]]; then m=$(( m << 30 )); else m=0 from="its default unreadable: 0"; fi
+  fi
+  if [[ -n $t ]]; then room="room target $(gb $(( t >> 10 ))) + margin $(gb $(( m >> 10 ))) ($from)"
+  else room="margin $(gb $(( m >> 10 ))) ($from; no room target: no room-target.json in the agent's folder)" t=0; fi
+  want=$(( (t + m) >> 10 ))
+}
+# The shared build folder's entries (each profile's deps, incremental, build, .fingerprint and
+# examples children, and its own files but cargo's locks: the programs it links there), the least
+# recently touched first: "<mtime> <KB> <path>" lines.
+entries() {
+  local -a ps dirs files sz m; local p d s; local -A kb
+  for d in $shared/*/.fingerprint(N:h) $shared/*/*/.fingerprint(N:h); do
+    ps+=( $d/(deps|incremental|build|.fingerprint|examples)/*(DN) $d/^.cargo-*(.DN) )
+  done
+  dirs=( ${^ps}(N/) ); files=( ${^ps}(N^/) )
+  if (( $#dirs )); then
+    print -rN -- $dirs | xargs -0 du -sk 2>/dev/null | while IFS=$'\t' read -r s p; do kb[$p]=$s; done
+  fi
+  for p in $files; do zstat -A sz +blocks $p 2>/dev/null && kb[$p]=$(( sz[1] / 2 )); done
+  for p in $ps; do zstat -A m +mtime $p 2>/dev/null && print -r -- "$m[1] ${kb[$p]:-0} $p"; done | sort -n
+}
+
+# Room (#954): while the disk's free space is below the room target plus the margin, the shared
+# build folder's entries go, the least recently touched first, enough by their sizes to be back
+# above it; then, still below, the compile cache. The folder's lock (tools/dev/bin/cargo) is only
+# tried, never waited for: held, the log says so and the next run tries again. Under it each entry
+# still untouched is only renamed into .scenic-sweep-trash (a build waits for renames at most),
+# deleted once the lock is let go. Up to three rounds (an entry hard-linked elsewhere frees less
+# than its size).
+make_room() {
+  local want room free round lockfd line m p n k s first last holder
+  local -a pick t
+  rm -rf $shared/.scenic-sweep-trash  # (a run cut short)
+  wanted; free=$(free_kb $shared:h)
+  if (( free >= want )); then [[ -n $dry ]] && print "room: $(gb $free) free, at least the $room"; return 0; fi
+  for round in 1 2 3; do
+    [[ -e $shared/.scenic-lock ]] || break
+    pick=() k=0
+    for line in ${(f)"$(entries)"}; do
+      (( k >= want - free )) && break
+      pick+=$line; k=$(( k + ${${line#* }%% *} ))
+    done
+    (( $#pick )) || break
+    first=$(date -r ${pick[1]%% *} '+%F %R') last=$(date -r ${pick[-1]%% *} '+%F %R')
+    if [[ -n $dry ]]; then
+      print "would remove $#pick entries of the shared build folder ($(gb $k), untouched since $first to $last): $(gb $free) free, below the $room"
+      break
+    fi
+    if ! zsystem flock -t 0 -f lockfd $shared/.scenic-lock 2>/dev/null; then
+      holder=$(head -1 $shared/.scenic-holder 2>/dev/null)
+      say "shared build folder locked (held by: ${holder:-unknown}): nothing removed, the next run tries again; $(gb $free) free, below the $room"
+      break
+    fi
+    zf_mkdir -p $shared/.scenic-sweep-trash; n=0 k=0
+    for line in $pick; do
+      m=${line%% *} s=${${line#* }%% *} p=${${line#* }#* }
+      zstat -A t +mtime $p 2>/dev/null && (( t[1] == m )) || continue  # touched since: kept
+      zf_mv $p $shared/.scenic-sweep-trash/$n 2>/dev/null && n=$(( n + 1 )) k=$(( k + s ))
+    done
+    exec {lockfd}>&-
+    rm -rf $shared/.scenic-sweep-trash
+    free=$(free_kb $shared:h)
+    say "removed $n entries of the shared build folder ($(gb $k), untouched since $first to $last): below the $room; now $(gb $free) free"
+    (( free >= want )) && return 0
+  done
+  # The agents' compile cache (#439; sccache, set up by .claude/worktrees/.cargo/config.toml) holds
+  # itself under its 10G cap; still below, it is emptied: only a cache, which builds refill (a
+  # removed entry is a miss; the server stays up and writes new entries as before).
+  t=( $cache/*(DN[1]) ); (( $#t )) || return 0
+  s=$(du -sh $cache 2>/dev/null | cut -f1)
+  if [[ -n $dry ]]; then print "would empty the compile cache ($s): $(gb $free) free, below the $room"; return 0; fi
+  rm -rf $cache/*(DN)
+  say "emptied the compile cache ($s): below the $room; now $(gb $(free_kb $shared:h)) free"
+}
+# (Sourced by its test, tools/dev/test/sweep-targets.zsh: the definitions alone.)
+[[ $ZSH_EVAL_CONTEXT == *:file ]] && return 0
+
+cd $repo || exit 1
 busy=$(for p in $(pgrep -x cargo; pgrep -x rustc); do lsof -a -d cwd -p $p -Fn 2>/dev/null | sed -n 's/^n//p'; done | sort -u)
 keep=$(cat $repo/.claude/sweep-keep 2>/dev/null)
 locks=$(git worktree list --porcelain)
@@ -91,34 +191,15 @@ for wt in $repo/.claude/worktrees/*(N/); do
     fi
   fi
 done
-# Build folders' old artifacts: each change of flags, dependencies or branch leaves the old ones
-# behind (cargo never deletes them). Entries untouched for 2 days go: from the main checkout's
-# target/debug unless cargo runs there, and from this Mac's shared folder for agent worktrees
-# (tools/dev/bin/cargo, #915) unless its lock is held.
-stale() {  # stale <profile folder> <name in the log>
-  local d=$1 n
+# The main checkout's target/debug: each change of flags, dependencies or branch leaves old
+# artifacts behind (cargo never deletes them); entries untouched for 2 days go, unless cargo runs there.
+if ! print -r -- "$busy" | grep -qx "$repo"; then
+  d=$repo/target/debug
   n=$(find $d/deps $d/incremental $d/build $d/.fingerprint -mindepth 1 -maxdepth 1 ! -newermt '2 days ago' 2>/dev/null | wc -l | tr -d ' ')
-  (( n > 0 )) || return 0
-  say "swept $n stale entries from $2"
-  [[ -z $dry ]] && find $d/deps $d/incremental $d/build $d/.fingerprint -mindepth 1 -maxdepth 1 ! -newermt '2 days ago' -exec rm -rf {} + 2>/dev/null
-}
-print -r -- "$busy" | grep -qx "$repo" || stale $repo/target/debug target/debug
-shared=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
-zmodload zsh/system
-if [[ -e $shared/.scenic-lock ]] && zsystem flock -t 0 -f lockfd $shared/.scenic-lock 2>/dev/null; then
-  for d in $shared/*/.fingerprint(N:h) $shared/*/*/.fingerprint(N:h); do stale $d "${d#$shared/} (shared)"; done
-  exec {lockfd}>&-
+  if (( n > 0 )); then
+    say "swept $n stale entries from target/debug"
+    [[ -z $dry ]] && find $d/deps $d/incremental $d/build $d/.fingerprint -mindepth 1 -maxdepth 1 ! -newermt '2 days ago' -exec rm -rf {} + 2>/dev/null
+  fi
 fi
-# The agents' shared compile cache (#439; sccache, set up by .claude/worktrees/.cargo/config.toml):
-# sccache holds it under its 10G cap by itself. When the disk's free space falls below this Mac's
-# room target (20 GB), it is emptied: it is only a cache, and builds refill it (a removed entry is a
-# miss; the server stays up and writes new entries as before).
-cache=~/Library/Caches/scenic-sccache
-if [[ -d $cache ]]; then
-  free=$(df -g / | awk 'NR==2 {print $4}')
-  if (( free < 20 )); then
-    say "emptied the compile cache ($(du -sh $cache 2>/dev/null | cut -f1)): ${free} GB free"
-    [[ -z $dry ]] && rm -rf $cache/*(N)
-  elif [[ -n $dry ]]; then print "keep compile cache ($(du -sh $cache 2>/dev/null | cut -f1)): ${free} GB free"; fi
-fi
+make_room
 exit 0

@@ -15,6 +15,8 @@
 #   testguard tools/dev/test/test-guard.zsh (the test guard's worktree lookup), when it changed
 #   reuse     tools/dev/test/check-reuse.zsh (the reuse rule, below), when it or what it tests changed
 #   sharedtarget tools/dev/test/shared-target.zsh (tools/dev/bin/cargo on a toy workspace), when either changed
+#   sweep     tools/dev/test/sweep-targets.zsh (the sweep's room, on a fake disk), when the sweep, its
+#             test or the settings holding its default margin changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     each command tools/dev/affected-tests.sh prints, run on the test Mac (tools/app/remote-tests.sh;
 #             here when it can't be reached or SCENIC_CHECK_LOCAL=1)
@@ -111,6 +113,9 @@ if has 'tools/dev/check*' || has 'tools/dev/affected-tests.sh' || has 'tools/dev
 else skip reuse "the reuse rule unchanged"; fi
 if has 'tools/dev/bin/*' || has 'tools/dev/test/shared-target.zsh'; then part sharedtarget zsh tools/dev/test/shared-target.zsh
 else skip sharedtarget "tools/dev/bin unchanged"; fi
+if has 'tools/dev/sweep-targets.sh' || has 'tools/dev/test/sweep-targets.zsh' || has 'crates/pipeline/src/agent/settings.rs'; then
+  part sweep zsh tools/dev/test/sweep-targets.zsh
+else skip sweep "the sweep unchanged"; fi
 if has 'tools/status/*'; then
   part swift zsh -c "swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)logs}/scenic-status tools/status/*.swift && ${(q)logs}/scenic-status --test tools/status/test"
 else skip swift "tools/status unchanged"; fi

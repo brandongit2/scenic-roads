@@ -178,8 +178,20 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   never copied there.
 - sccache still wraps rustc inside `.claude/worktrees/` (the untracked
   `.claude/worktrees/.cargo/config.toml`, #439; ~/Library/Caches/scenic-sccache, 10 GB cap): it
-  refills third-party crates after a sweep. tools/dev/sweep-targets.sh empties it when free disk is
-  below 20 GB, and drops entries of the shared folder untouched for 2 days (not while it is locked).
+  refills third-party crates after a sweep.
+- Room (#954): tools/dev/sweep-targets.sh (launchd, every 20 min) keeps the Mac's room target free
+  for the pool. Once free disk falls below the room target (`room-target.json` in the agent's
+  folder, the build page's "Disk room target") plus the sweep's margin (`sweep-margin.json` beside
+  it, set on the build page's Machines tab, Settings, "Dev sweep margin"; none set:
+  `SWEEP_MARGIN_DEFAULT_GB` in crates/pipeline/src/agent/settings.rs, which the sweep reads from that
+  line), it removes the shared folder's entries (each profile's deps, incremental, build,
+  .fingerprint and examples children, and the programs linked beside them), the least recently
+  touched first, until free space is back above both; still below, it empties the compile cache.
+  With no room target it keeps the margin alone free. The folder's lock is only tried: held, the
+  log says so and the next run tries again; taken, the entries still untouched are only renamed
+  into `.scenic-sweep-trash` under it and deleted after. Each removal, with why, goes to
+  `.claude/sweep-targets.log`; `sweep-targets.sh --dry-run` prints what it would do. Nothing is
+  of the shared folder is removed by age alone. Test: tools/dev/test/sweep-targets.zsh (check.sh), on a fake disk.
 
 ## Tests on the test Mac (#442, 19 Oct)
 
