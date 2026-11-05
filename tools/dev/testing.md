@@ -39,8 +39,8 @@ refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `
   - `cargo nextest run --workspace`: every workspace crate's libraries, binaries and integration
     tests (det, roadcore, pipeline, server, store, names, pyport, codecs, jobrt, buildstore, webpenc), on the test Mac;
   - then `tools/app/other-tests.zsh`, on the publishing Mac, its parts at once: `node --test` of
-    `web/test/*.test.{ts,mjs}` and `tools/check/*.test.mjs` (by glob), `tools/taskboard/test/*.test.mjs`,
-    the status app's `swiftc` build and `--test tools/status/test`, `tools/app/test/shell.zsh` and
+    `web/test/*.test.{ts,mjs}` and `tools/check/*.test.mjs` (by glob), `tools/devtools/test/*.test.mjs`,
+    `tools/dev/test/devjob.zsh`, the status app's `swiftc` build and `--test tools/status/test`, `tools/app/test/shell.zsh` and
     `tools/dev/test/test-guard.zsh`;
   - publish's clippy line.
   Every output goes whole to ~/Library/Logs/scenic/publish-tests-<time>.log; any failure stops the
@@ -53,8 +53,9 @@ Run `tools/dev/check.sh` in your worktree after your last commit, and report onl
 PASS. It runs what publish would refuse your work on: `cargo fmt --check`, publish's clippy line
 (`-D clippy::disallowed_methods`: processes only through `store::spawn`), `tools/app/guards.sh`,
 when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/test/*.test.{ts,mjs}` and
-`tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/taskboard/test when
-tools/taskboard changed (#672), `tools/app/test/shell.zsh` (publish.sh's shell
+`tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/devtools/test when
+tools/devtools or the build page's timeline modules it serves changed (#672), `tools/dev/test/devjob.zsh` when the
+dev jobs' recorder changed (#946), `tools/app/test/shell.zsh` (publish.sh's shell
 steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, the Swift build and self-test when tools/status changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
 changed. guards.sh runs there without its own fmt check and its two tests (inputs_accessor,
@@ -82,7 +83,8 @@ one main changed, and each of those is main's version), and none of main's chang
   the paths the manifests name: path dependencies, `[patch]`); any file a crate's source
   `include_*!`s or `#[path]`s, names as a macro's or attribute's first `"../"` literal, or a build
   script or proc macro reads; the scripts running the parts (`RUNNER`: check.sh, check-reuse.py,
-  affected-tests.sh, tools/dev/bin, tools/app/remote-tests.sh). Then both parts run.
+  affected-tests.sh, tools/dev/bin, tools/app/remote-tests.sh, and the recorder wrapping them,
+  tools/dev/devjob.zsh and devjob.py). Then both parts run.
 For the tests part, also: HEAD's affected tests are P's (the same hash), and the tests that read
 one of main's changes at run time run again, those of them HEAD's commands run: a scan test whose
 `//! scans:` line covers it (affected-tests.sh over main's changes; that line is trusted for
@@ -191,6 +193,39 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   log says so and the next run tries again (the compile cache still goes); taken, the entries unused since they were listed are only renamed
   into `.scenic-sweep-trash` under it and deleted after. Each removal, with why, goes to
   `.claude/sweep-targets.log`; `sweep-targets.sh --dry-run` prints what it would do. Nothing of the shared folder is removed by age alone. Test: tools/dev/test/sweep-targets.zsh (check.sh), on a fake disk.
+
+## Dev jobs: every run recorded (#946, 5 Nov)
+
+The dev job dashboard (the dev tools app's `/jobs/`, tools/devtools/README.md) shows every run of
+check.sh (each part, its compiles from cargo's output), publish.sh (each step), remote-tests.sh
+(the waits for the test Mac's key and a slot, the copy, the run there, each compile, suite and
+test from what it prints: cargo test's tests by when they ended, nextest's by their own times) and
+every cargo under tools/dev/bin/cargo's lock (its wait for the shared folder, the reset of the
+workspace's fingerprints, the build with each crate compiled from cargo's `--timings` report, which
+the shim adds and moves out of the shared folder, each program run: a test binary a suite; a
+measurement run, an example or a release run, and a backtest, `--replay` or a backtest test, so
+named). A span started inside another's (a cargo in a check's part) is part of it: each job exports
+its id as `SCENIC_DEVJOB_PARENT`. A run of its own says who ran it: its checkout, branch, commit,
+task (`SCENIC_TASK`, else the latest `#<n>` in the branch's commits since main) and whether an agent
+did (Claude Code's `CLAUDECODE`).
+- The scripts record through `tools/dev/devjob.zsh` (`dj_start`, `dj_end`, `dj_span`, `dj_attr`,
+  `dj_wrap`) and `tools/dev/devjob.py` (`wrap`: a command run as a span, its output passed on as it
+  comes and read after; `sampler`). Each event is a JSON line appended to this Mac's spool,
+  `~/Library/Logs/scenic/devjobs/spool.ndjson`; the sampler (one a Mac, started by the first live
+  span, gone once none is) sends it every 2 s, samples the Mac's load, memory and swap every 10 s,
+  reads cargo's timing reports and ends a span whose process is gone (`gone`). The app away, the
+  spool waits (`sending-*.ndjson`) for the next sampler; nothing in a job waits on the network.
+  Its own log: `~/Library/Logs/scenic/devjobs/sampler.log`.
+- **A test that runs a recording script** (check.sh, publish.sh, remote-tests.sh, the shim) sets
+  `SCENIC_DEVJOB=0` (nothing recorded) or a scratch `SCENIC_DEVJOB_DIR` with `SCENIC_BOARD` on a
+  closed port, as `tools/dev/test/shared-target.zsh` does to check the shim's records: a test's
+  toy runs are not the owner's. remote-tests.sh doesn't send `SCENIC_DEVJOB*` to the test Mac.
+- The shim runs each program as its child, the last too (it had replaced itself with the last, so
+  neither its time nor its status could be known); a signal to the shim goes on to it, and its
+  clones go when it ends.
+Test: `tools/dev/test/devjob.zsh` (check.sh when the recorder changes; publish's other tests):
+devjob.py's own (`test_devjob.py`: reading outputs and timing reports, the wrapper, the sampler's
+send and its end of a gone span) and devjob.zsh's events, whatever the names hold.
 
 ## Tests on the test Mac (#442, 19 Oct)
 

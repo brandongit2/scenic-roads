@@ -29,6 +29,11 @@
 # rustc for them again, whose incremental state (checked by content hashes) reuses what is the same.
 # Third-party crates are untouched: their names hash their version, source and features.
 #
+# Each cargo under the lock is recorded for the dev job dashboard (tools/dev/devjob.zsh): its wait
+# for the lock, the build (each crate compiled, from cargo's --timings report, which it adds), each
+# program it runs (a test binary as a suite); a measurement (an example, a release run) or a backtest
+# (--replay, a backtest test) said so.
+#
 # Passed straight to cargo: outside .claude/worktrees/, inside a cargo this shim started under the
 # lock (SCENIC_CARGO_SHARED set: a build script's cargo), and commands that never build (reads).
 setopt extendedglob
@@ -112,6 +117,24 @@ asks=${own[(I)(-h|--help|-V|--version)]}
 [[ -z $sub ]] || (( $reads[(Ie)$sub] || asks )) && exec $real "$@"
 (( $builds[(Ie)$sub] )) || print -u2 -r -- "cargo (tools/dev/bin): \`$sub\` isn't known to build or not: run under the shared build folder's lock"
 t=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
+# The dev job dashboard's span of this cargo (a cargo of its own, or a check's part's), and what it is for.
+source ${self:h:h}/devjob.zsh
+purpose=
+case " $* " in
+  *" --replay "*|*backtest*) purpose=backtest ;;
+  *" --example "*|*" --example="*) purpose=measurement ;;
+  *) [[ $sub == (r|run|bench) ]] && (( ${own[(I)(-r|--release)]} )) && purpose=measurement ;;
+esac
+dj_start cargo "cargo ${(j: :)own}" args "$*" checkout ${top:t} ${purpose:+purpose} ${purpose:+$purpose}; djid=$REPLY
+# (Its crates' times: cargo's timing report, for the commands that make one; the sampler reads it.)
+if [[ -n $djid && $sub == (b|build|c|check|t|test|bench|r|run|clippy|d|doc|rustc|rustdoc) ]] && (( ! ${own[(I)--timings*]} )); then
+  args=( "${(@)args[1,si]}" --timings "${(@)args[si+1,-1]}" ); set -- "${args[@]}"
+fi
+[[ -n $djid ]] && export SCENIC_DEVJOB_PARENT=$djid
+djdone() {  # the span ended by how this script exits: 0 ok, by a signal stopped, else fail
+  local x=$1 st=ok; (( x )) && st=fail; (( sig )) && st=stopped
+  dj_end $djid $st exit $x
+}
 mkdir -p $t || exit 1
 lock=$t/.scenic-lock holder=$t/.scenic-holder holds=$t/.scenic-holds
 : >> $lock || exit 1
@@ -198,7 +221,10 @@ report() {  # report <holder line> <its age, s>
   else say "  using no CPU: it may be stuck (the shim doesn't kill it; tools/dev/testing.md)"; fi
 }
 fd=0 took=0
+djt0=$EPOCHREALTIME
 take || exit 1
+djgot=$EPOCHREALTIME
+(( djgot - djt0 >= 0.2 )) && dj_span wait "the shared build folder" $djt0 $djgot ok
 took=$EPOCHSECONDS; print -r -- "${me/: cargo/ since $(strftime %T $took): cargo}" > $holder  # (since it holds, not since it waited)
 release() {  # lets the lock go (once), its holder line removed and its hold's time kept
   (( fd )) || return 0
@@ -208,8 +234,9 @@ release() {  # lets the lock go (once), its holder line removed and its hold's t
   print -rl -- $l > $holds.$$ && mv -f $holds.$$ $holds
   zsystem flock -u $fd; fd=0
 }
-trap release EXIT
+trap 'x=$?; release; djdone $x' EXIT
 if [[ $(cat $t/.scenic-built-by 2>/dev/null) != $top ]]; then
+  djreset=$EPOCHREALTIME
   # The workspace's package and target names (- and _ forms): their fingerprints go.
   names=( ${(f)"$($real metadata --no-deps --format-version 1 --offline 2>/dev/null | python3 -c '
 import json, sys
@@ -221,6 +248,8 @@ for p in json.load(sys.stdin)["packages"]:
     n=${f:t}; (( ${+ws[${n%-[0-9a-f](#c16)}]} )) && rm -rf $f
   done
   print -r -- $top > $t/.scenic-built-by
+  dj_span reset "the workspace's fingerprints (another worktree built last)" $djreset $EPOCHREALTIME ok
+  djgot=$EPOCHREALTIME
 fi
 # The checkout's tools (cmake for crates/geos-src) by PATH, not by mise's shims: build scripts run in
 # the shared folder, outside the repo, where a shim finds no mise.toml.
@@ -242,7 +271,15 @@ waitchild() {  # the child's status, once it is gone (a trapped signal ends a wa
   child=0; return $s
 }
 stopped() { (( sig )) && { rm -rf $r; exit $(( $1 ? $1 : 128 + sig )) } }
-whole() { spawn realcargo "$@"; waitchild; rc=$?; stopped $rc; exit $rc }  # cargo, the lock to its end
+whole() { spawn realcargo "$@"; waitchild; rc=$?; built $rc; stopped $rc; exit $rc }  # cargo, the lock to its end
+built() {  # built <cargo's status>: the build's span, from the lock to cargo's end, and its timing report moved for the sampler
+  dj_on && [[ -n $djid ]] || return 0
+  local st=ok; (( $1 )) && st=fail; (( sig )) && st=stopped
+  dj_span build build $djgot $EPOCHREALTIME $st
+  local rep=( $t/cargo-timings/cargo-timing-*.html(Nom[1]) ) m
+  if (( $#rep )) && zstat -A m +mtime $rep[1] && (( m[1] >= ${djgot%.*} )); then mv -f $rep[1] $DJ_DIR/$REPLY.timings.html; fi
+  rm -f $t/cargo-timings/cargo-timing.html
+}
 
 # A whole `cargo clean` deletes the shared folder itself, its lock and queue with it: every waiter
 # then gave up, and a cargo starting meanwhile made a new lock to take while the clean still ran (two
@@ -265,7 +302,7 @@ esac
 host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 [[ -n $host ]] || whole "$@"
 # This run's clones, in the shared folder (an APFS clone is a copy only on the same volume). Those
-# of runs whose process is gone go first (a program exec'd below leaves its folder behind).
+# of runs whose process is gone go first (a shim killed leaves its folder behind).
 runs=$t/.scenic-runs
 for d in $runs/<->(N/); do kill -0 ${d:t} 2>/dev/null || rm -rf $d; done
 r=$runs/$$; rm -rf $r; mkdir -p $r/bin || exit 1
@@ -278,12 +315,19 @@ if [[ $mode == nextest ]]; then
   spawn realcargo "${args[@]}"
   while kill -0 $child 2>/dev/null && [[ ! -e $r/started ]]; do zselect -t 20; done
   [[ -e $r/pinned ]] || release  # (a binary naming the shared folder's programs: the lock to the end)
+  # (The build until its first test; then the tests, nextest's run.)
+  [[ -e $r/started ]] && { built 0; djnx=$EPOCHREALTIME }
   waitchild; rc=$?
+  if [[ -n ${djnx:-} ]]; then
+    st=ok; (( rc )) && st=fail; (( sig )) && st=stopped
+    dj_span tests "nextest run" $djnx $EPOCHREALTIME $st exit $rc
+  else built $rc; fi
   rm -rf $r
   exit $rc
 fi
 
 spawn realcargo "${args[@]}"; waitchild; rc=$?
+built $rc
 stopped $rc
 recs=( $r/*.cwd(N) ); recs=( ${recs%.cwd} )
 if (( ! $#recs )); then rm -rf $r; exit $rc; fi
@@ -308,7 +352,13 @@ binexe() {  # binexe <record>: its CARGO_BIN_EXE_* (cargo sets them as it runs a
   print -rN -- "${vars[@]}" > $1.env
 }
 runprog() {  # runprog <record> <keep SCENIC_CARGO_SHARED>: the program as a child (see fwd), its status
-  spawn prog $1 $cl[$1] $2; waitchild
+  local t0=$EPOCHREALTIME x st=ok n
+  spawn prog $1 $cl[$1] $2; waitchild; x=$?
+  # (Its run a span of the cargo's: a test or bench binary's a suite, a run's program a program.)
+  n=$(exe $1); n=${${n:t}%-[0-9a-f](#c16)}
+  (( x )) && st=fail; (( sig )) && st=stopped
+  dj_span ${${${sub:#(r|run)}:+suite}:-program} $n $t0 $EPOCHREALTIME $st exit $x
+  return $x
 }
 exe() { readz $1.argv; print -r -- $reply[1] }
 started() { (( quiet )) || print -u2 -r -- "     Running ${$(exe $1)#$t/}$2" }
@@ -334,18 +384,11 @@ for rec in $recs; do
   else later+=( $rec ); fi
 done
 release
+# Each a child, the last too, so its run is timed and its status known (a signal to this shell goes
+# on to it, see fwd).
 for (( i = 1; i <= $#later; i++ )); do
   rec=$later[i]
   started $rec
-  # The last one replaces this shell, so signals reach it as they reach cargo run's program (its
-  # clones stay until the next run here sweeps them); not when an earlier failure decides the status.
-  if (( i == $#later && ! first && ! rc )); then
-    if [[ $sub != (run|r) ]]; then
-      readz $rec.env; keep=( $cl[$rec] ${${(M)reply:#CARGO_BIN_EXE_*}#*=} )
-      for p in $r/bin/*/*(N); do (( $keep[(Ie)$p] )) || rm -f $p; done
-    fi
-    prog $rec $cl[$rec] 0; exit 1
-  fi
   runprog $rec 0; x=$?
   stopped $x
   if (( x )); then

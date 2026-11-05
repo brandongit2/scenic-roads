@@ -13,6 +13,8 @@
 # (app/publish.lock), the second waiting for the first's. A publish is only ever of a clean tree whose
 # commit is on origin's main (no -dirty versions), and installs only over a live version its commit
 # contains (fast-forward).
+# Each publish is recorded for the dev job dashboard (tools/dev/devjob.zsh): the run and its steps,
+# the tests, compiles and clippy under theirs.
 set -euo pipefail
 # (Its arguments checked before anything: `--help` publishes nothing.)
 usage="usage: tools/app/publish.sh [--rollback]"
@@ -25,6 +27,7 @@ case $#:${1:-} in
 esac
 cd ${0:A:h}/../..
 source tools/app/lib.zsh
+source tools/dev/devjob.zsh
 # Its tools found without a login shell's profile (over ssh, `ssh m6 '…/publish.sh'`, the PATH is the
 # system's): brew's mise and rustup's cargo; the rest come from mise.toml through `mise env` below.
 path=(/opt/homebrew/bin ~/.cargo/bin $path)
@@ -46,9 +49,23 @@ on_exit() {
   if [[ -z $published && ${rollback:-} != done ]]; then
     (( rc == 0 )) && rc=1
     echo "publish: FAILED, nothing published (exit $rc)"
+    step "" 1; dj_end $djrun fail exit $rc ${djstep_name:+failed_in} ${djstep_name:+$djstep_name}
+  else
+    step ""; dj_end $djrun ok ${published:+version} ${published:+$published}
   fi
   return $rc
 }
+# The run's steps, each a span of it (the one under way ended as the next begins; `step ""` ends it).
+djstep= djstep_name=
+step() {  # step <name> [<the exit status of the one ending: 0 ok, else fail>]
+  [[ -n $djstep ]] && { (( ${2:-0} )) && dj_end $djstep fail || dj_end $djstep ok }
+  djstep= djstep_name=$1
+  [[ -n $1 ]] || { export SCENIC_DEVJOB_PARENT=$djrun; return 0 }
+  SCENIC_DEVJOB_PARENT=$djrun dj_start step $1; djstep=$REPLY
+  export SCENIC_DEVJOB_PARENT=${djstep:-$djrun}
+}
+dj_start publish ${${rollback:+rollback}:-publish}; djrun=$REPLY
+export SCENIC_DEVJOB_PARENT=$djrun
 at_end on_exit
 who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [[ $rollback == asked ]]; then
@@ -65,18 +82,20 @@ fi
 # What's published is always the tip of origin's main, fetched now, so every version names a commit
 # either Mac can check out; this checkout (its branch, its edits) plays no part. (Built from a
 # snapshot of that commit, below.)
+step fetch
 git fetch -q origin main || { echo "can't fetch origin's main"; exit 1; }
 head=$(git rev-parse --short origin/main)
+dj_attr $djrun head $head
 # (Refused now, before building, when it couldn't go in; checked again at the install, where a
 # rollback since now refuses it too.)
 began=$(live_version $NAS/app/current.json || true)
 fast_forward $NAS/app/current.json $head || exit 1
 # The old name of the lead's role (the pattern below) nowhere in the code, docs or UI (the owner's
 # rule, 14 Oct 2026): the role is the lead's, a measure taken on a Mac names it (the M4, the M1).
-# History (the task board) is exempt.
-if git grep -qniI -E 'build[ -]mac' $head -- . ':(exclude)tools/taskboard'; then
+# History (the task board's list of where tasks ran) is exempt.
+if git grep -qniI -E 'build[ -]mac' $head -- . ':(exclude)tools/devtools/schema.mjs'; then
   echo "the old name of the lead's role is back (the role is \"the lead\"; a measure names its Mac, the M4 or the M1):"
-  git grep -niI -E 'build[ -]mac' $head -- . ':(exclude)tools/taskboard' | head -20
+  git grep -niI -E 'build[ -]mac' $head -- . ':(exclude)tools/devtools/schema.mjs' | head -20
   exit 1
 fi
 # Built from a snapshot of that commit: a checkout of its own kept
@@ -89,6 +108,7 @@ fi
 repo=$PWD
 cache=~/Library/Caches/scenic-publish
 mkdir -p $cache
+step snapshot
 claim_tree $cache
 spare=$cache/tree-2
 # (Moved aside while held, then removed after: its lock is held a moment, not for the removal, so a
@@ -109,6 +129,7 @@ git -C $snap checkout -q --detach --force $head
 git -C $snap clean -qfdx -e /target -e /web/node_modules
 cd $snap
 mise trust -q 2>/dev/null || true
+step tools
 # Rust (rust-toolchain.toml's), and Node, pnpm and cargo-nextest at mise.toml's versions, installed
 # here when this Mac lacks one (a version pinned since this Mac last published).
 mise install -q || { echo "mise install failed"; exit 1; }
@@ -133,8 +154,11 @@ codesign -s "$sign_id" --force $probe </dev/null || { echo "publish: codesign ca
 # The guards first (tools/app/guards.sh, docs/inputs.md §7): the inputs folders read only through their
 # accessor, no data source named in the app's code, and the Python steps loaded from the app's dem/
 # in a stand-in NAS root whose inputs folders can't be read (and checked by pyflakes).
+step guards
 zsh tools/app/guards.sh || exit 1
-cargo build --release -p server -p pipeline 2>&1 | tail -2
+step "release build"
+dj_wrap cargo "cargo build --release" --parse cargo
+$reply cargo build --release -p server -p pipeline 2>&1 | tail -2
 # Room for the files the tests open at once: a session over SSH starts with 256, which the tests
 # run in parallel go past (8 Oct: 15 failed so on the M4, all passing at 8192). They run under
 # cargo-nextest (mise.toml), each test its own process: pipeline's whole suite took 13.8 min against
@@ -165,11 +189,14 @@ cargo nextest run --no-fail-fast --hide-progress-bar --workspace || rc=$?
 exit $rc'
 # One publish's suite and clippy at a time on this Mac (two at once overload the test Mac, #684): the
 # second waits for the first's (tests.busy).
+step "wait for the other publish's tests"
 until hold $cache/tests.busy; do
   [[ -n ${said_wait:-} ]] || { echo "waiting for the other publish's tests ($lock_held)"; said_wait=1; }
   sleep 10
 done
 cleanup+=("unhold $cache/tests.busy")
+step "Rust tests"
+dj_attr $djrun tests_log $tests_log
 zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok=$?
 # Then every test outside the Rust workspace (tools/app/other-tests.zsh, #848: web/test and
 # tools/check/*.test.mjs by glob, the taskboard's, the status app's Swift self-test, shell.zsh and
@@ -177,10 +204,13 @@ zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok
 # than beside it: on the mini the suite runs on this same Mac. Their whole output follows the
 # suite's in the log; a failing part fails the publish.
 other_ok=0
+step "other tests" $(( tests_ok ? 1 : 0 ))
 zsh tools/app/other-tests.zsh >> $tests_log 2>&1 || other_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
 # clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
-cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
+step clippy $(( other_ok ? 1 : 0 ))
+dj_wrap cargo "cargo clippy" --parse cargo
+$reply cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
 unhold $cache/tests.busy
 # (Only the final result counts: when the M4's run ended without one and the suite ran again here,
 # remote-tests.sh marked where the rerun starts.)
@@ -198,7 +228,9 @@ fi
 # dependencies or a profile left every workspace crate's old build behind (the mini's target/ grew
 # by ~35 GB a day, to 127 GB). What these builds use is read at each publish, so only an entry a
 # later publish needs again is built again (tools/app/lib.zsh's prune_target).
+step prune
 prune_target
+step "web build"
 # Built into its own folder: web/dist may be what a development server is serving. (The type check
 # writes and checks our MapLibre's declarations, then the app's; the build compiles its source with
 # the app: web/maplibre/FORK.md.)
@@ -208,6 +240,7 @@ fonts=$repo/data/fonts
 [[ -d $fonts ]] || { echo "no fonts folder (data/fonts or the NAS's app/fonts)"; exit 1; }
 # Smoke test: the new server, its own empty home (no mirror), the NAS's catalogue.
 # (Its port its tree's, so two publishes' smoke tests can run at once.)
+step "smoke test"
 home=$(mktemp -d); port=18080; [[ $snap == $spare ]] && port=18081
 ./target/release/server --port $port --home $home --no-mirror --web web/dist-publish --fonts $fonts > $home/server.log 2>&1 &
 pid=$!
@@ -222,6 +255,7 @@ kill $pid; wait $pid 2>/dev/null || true
 version=$(date -u +%Y%m%d-%H%M)-$head
 dest=$NAS/app/$version
 sb=$(mktemp -d)
+step "sign and bundle"
 # The programs that listen (the map server; the agent, whose coordinator and broker members reach)
 # signed with the owner's certificate when this Mac has it, under fixed identifiers, so a Mac's
 # firewall allow outlives an update (an ad-hoc signature is the build's own hash, so its allow went
@@ -235,11 +269,13 @@ codesign -s "$sign_id" -i local.scenic.agent --force target/release/scenic
 zsh tools/status/bundle.sh $sb $version "$sign_id" >/dev/null
 # The install, the one part two publishes can't run at once: the lock on the NAS, waited for while
 # another publish installs (one older than six hours is taken over), freed only by its holder.
+step "wait for the install lock"
 until nas_lock $lock "$who"; do
   [[ -n ${said_lock:-} ]] || { echo "waiting for the publish holding $lock ($lock_held)"; said_lock=1; }
   sleep 10
 done
 cleanup+=('nas_unlock $lock "$who"')
+step install
 # (Again, under the lock: the publish that went in meanwhile may be newer, or a rollback since.)
 fast_forward $NAS/app/current.json $head "$began" || exit 1
 [[ ! -e $dest ]] || { echo "$dest exists already"; exit 1; }

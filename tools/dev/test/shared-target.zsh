@@ -3,11 +3,14 @@
 # folder, each runs its own code (worktree b's sources older than a's build), a second cargo waits
 # for the first, saying so, and programs and tests run outside the lock, from clones, with cargo's
 # environment and folder; what builds nothing passes the lock, waiters get it in arrival order, and
-# a long hold is reported. Run by check.sh when tools/dev/bin or this file changes.
+# a long hold is reported, and what it does is recorded for the dev job dashboard. Run by check.sh
+# when tools/dev/bin or this file changes.
 zmodload zsh/system; zmodload -F zsh/stat b:zstat
 sh=${0:A:h:h}/bin/cargo
 s=$(mktemp -d); trap 'rm -rf $s' EXIT
 w=$s/.claude/worktrees; mkdir -p $w
+# The shim's records (tools/dev/devjob.zsh) go to a scratch spool, sent nowhere (a closed port).
+export SCENIC_DEVJOB_DIR=$s/devjobs SCENIC_BOARD=http://127.0.0.1:9; unset SCENIC_DEVJOB SCENIC_DEVJOB_PARENT
 # The repo's nextest (its mise.toml's line), which the shim's `mise env` finds for the toy.
 grep -E '^"[^"]*cargo-nextest" *=' ${0:A:h:h:h:h}/mise.toml | sed '1s/^/[tools]\n/' > $s/mise.toml
 export MISE_TRUSTED_CONFIG_PATHS=$s
@@ -135,10 +138,9 @@ out=( ${(f)"$(<$s/run.out)"} )
 [[ $out[4] == 'shared None' ]] || fail "SCENIC_CARGO_SHARED outside the lock: $out[4]"
 [[ $out[5] == "cwd ${w:A}/a/src/sub" ]] || fail "not in the caller's folder: $out[5]"
 [[ $out[6] == 'arg "x y"' && $out[7] == 'arg ""' ]] || fail "arguments: $out[6,7]"
-# (The program replaced the shim, so its clones stay until the next run sweeps them.)
-d=${${out[2]#exe }:h:h:h}; [[ -d $d ]] || fail "no clones folder $d"
+# (Its clones go as it ends.)
+d=${${out[2]#exe }:h:h:h}; [[ ! -e $d ]] || fail "the run's clones stayed: $d"
 [[ $(cd $w/a && $sh run -q -- 'exit' 2>/dev/null) == a$'\n''arg "exit"' ]] || fail "a second run"
-[[ ! -e $d ]] || fail "the first run's clones were not swept: $d"
 
 # cargo test: the lib's tests outside the lock (env checks the folder, the environment and the
 # clone), cli under it (CARGO_BIN_EXE_toy), the doctest by rustdoc; another build meanwhile.
@@ -231,7 +233,8 @@ done
 mkdir -p $s/fake; print -rl -- '#!/bin/sh' 'echo "$TOY_NAME" >> "$TOY_ORDER"' > $s/fake/cargo; chmod +x $s/fake/cargo
 export TOY_ORDER=$s/order; rm -f $TOY_ORDER
 waiter() {  # waiter <name>: a build behind the lock, its pid in $waiting, its stderr in $s/<name>.err
-  (cd $w/a && TOY_NAME=$1 PATH=$s/fake:$PATH exec $sh build 2>$s/$1.err) & waiting=$!
+  # (zsh -f: a ~/.zshenv putting rustup's cargo first on the PATH, as the M1's does, hid the fake.)
+  (cd $w/a && TOY_NAME=$1 PATH=$s/fake:$PATH exec zsh -f $sh build 2>$s/$1.err) & waiting=$!
 }
 pids=()
 for x in 1 2 3; do waiter $x; pids+=( $waiting ); until_in $s/$x.err "place $x in line; held by: test pid $holding "; done
@@ -279,4 +282,37 @@ unset TOY_ORDER
 mkdir -p $s/plain/src; : > $s/plain/.git; cp $w/a/Cargo.toml $s/plain/; cp -R $w/a/src $s/plain/
 (cd $s/plain && $sh build -q) || fail "plain build"
 [[ -d $s/plain/target ]] || fail "outside worktrees: not its own target/"
+# The dev job dashboard's records of a cargo test: the cargo, its build (the toy's crates, from
+# cargo's timing report, which the sampler reads), each test binary's run as a suite, how it ended;
+# a failing one's, failed.
+dj=$SCENIC_DEVJOB_DIR
+quiet() {  # the sampler gone (it ends once nothing is live and every report is read)
+  local i f; for (( i = 0; i < 600; i++ )); do
+    zsystem flock -t 0 -f f $dj/sampler.lock 2>/dev/null && { zsystem flock -u $f; return 0 }; sleep 0.1
+  done
+  fail "the sampler never ended"
+}
+quiet; rm -rf $dj
+touch $w/a/src/lib.rs
+at a test -q --lib || fail "a recorded test: $(cat $s/err)"
+TOY_FAIL=1 at a test -q --lib; (( $? == 101 )) || fail "a recorded failing test: $(cat $s/err)"
+quiet
+python3 - $dj <<'PY' || fail "the shim's records"
+import glob, json, os, sys
+ev = [json.loads(l) for f in sorted(glob.glob(os.path.join(sys.argv[1], "s*.ndjson"))) for l in open(f)]
+starts = [e for e in ev if e["op"] == "start" and e["kind"] == "cargo"]
+assert [e["name"] for e in starts] == ["cargo test -q --lib"] * 2, [e["name"] for e in starts]
+def under(p, kind): return [e for e in ev if e["op"] == "span" and e.get("parent") == p and e["kind"] == kind]
+end = {e["id"]: e for e in ev if e["op"] == "end"}
+ok, bad = starts[0]["id"], starts[1]["id"]
+b = under(ok, "build")
+assert len(b) == 1 and b[0]["status"] == "ok", b
+crates = under(b[0]["id"], "crate")
+assert any(c["name"].startswith("toy") and c["t1"] > c["t0"] for c in crates), ("no toy crate from the timing report", crates)
+assert [(x["name"], x["status"]) for x in under(ok, "suite")] == [("toy", "ok")], under(ok, "suite")
+assert (end[ok]["status"], end[ok]["attrs"]["exit"]) == ("ok", "0"), end[ok]
+assert [(x["name"], x["status"]) for x in under(bad, "suite")] == [("toy", "fail")], under(bad, "suite")
+assert (end[bad]["status"], end[bad]["attrs"]["exit"]) == ("fail", "101"), end[bad]
+PY
+[[ -z $(print $s/shared/cargo-timings/cargo-timing-*.html(N)) ]] || fail "timing reports left in the shared folder: $(ls $s/shared/cargo-timings)"
 print "shared-target: ok"

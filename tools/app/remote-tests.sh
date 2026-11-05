@@ -37,6 +37,10 @@
 # then the least recently used, until the test Mac has its agent's room target free plus what this
 # run needs (this key's last build folder; never one locked). tools/dev/sweep-targets.sh drops a
 # removed worktree's key too.
+# Each run is recorded for the dev job dashboard (tools/dev/devjob.py wrap, the script run again
+# under it): its waits for the key and a slot, the copy, the run on the test Mac (which it names, and
+# whose load and memory the test Mac's own sampler records meanwhile), the compiles, each suite and
+# each test, from what it prints.
 # Connecting never hangs (#637): a fresh connection asks ~/.ssh/config's agent (1Password) for the
 # key, and a locked 1Password waits for its approval for ever, BatchMode or not. So each ssh this
 # side makes runs under a watchdog: the first, a fresh-connection probe, within 20 s; the lock and
@@ -231,7 +235,9 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
     done ) </dev/null >/dev/null 2>&1 &
   wd=$!; g_wd=$wd
   versions "the test Mac"
-  print "remote-tests: on the test Mac (load $(loadavg), slot $slot, $dir)"
+  # (The test Mac sampled meanwhile, by the tree's own recorder: tools/dev/devjob.zsh.)
+  [[ -f tools/dev/devjob.zsh ]] && { source tools/dev/devjob.zsh && dj_sampling } >/dev/null 2>&1
+  print "remote-tests: on the test Mac $(scutil --get LocalHostName 2>/dev/null) (load $(loadavg), slot $slot, $dir)"
   # (In the background, waited for: a TERM's trap runs at once, not when the command ends.)
   # (Timed: the run's wall and CPU on the test Mac, a line at its end.)
   nice -n 20 /usr/sbin/taskpolicy -c utility zsh -c 'TIMEFMT="remote-tests: the run took %E on the test Mac, cpu %U user + %S sys"; time ( eval "$1" )' zsh "$cmd" </dev/null 2>&1 &
@@ -344,7 +350,7 @@ local_main() {  # <key> <source dir> <command>
   local v envs=
   for v in RUST_LOG RUST_BACKTRACE RUST_TEST_THREADS RUST_MIN_STACK CARGO_TERM_COLOR CARGO_INCREMENTAL \
            CARGO_BUILD_JOBS ${(M)${(k)parameters}:#(CARGO_PROFILE_|NEXTEST_|SCENIC_)*}; do
-    [[ $v == SCENIC_(CHECK_LOCAL|TESTS_LOCAL|TEST_HOST|TESTS_TRACE) ]] && continue
+    [[ $v == SCENIC_(CHECK_LOCAL|TESTS_LOCAL|TEST_HOST|TESTS_TRACE|DEVJOB*) ]] && continue
     [[ ${(Pt)v:-} == *export* ]] && envs+="export $v=${(q)${(P)v}}; "
   done
   # (Its own connection, not the shared ControlMaster one: its sshd ends with it, which the
@@ -404,5 +410,11 @@ case ${1:-} in
     else on_test_mac --remote-drop $2; fi ;;
   *)
     (( $# == 3 )) && [[ $1 != -* ]] || { print -u2 "usage: remote-tests.sh <key> <source dir> <command> | --drop <key>"; exit 2; }
+    # (Run again as a recorded span, once: SCENIC_DEVJOB_IN says it's that run.)
+    if [[ -z ${SCENIC_DEVJOB_IN:-} ]]; then
+      source ${self:h:h}/dev/devjob.zsh
+      dj_wrap tests "tests $1" --parse remote,cargo,tests --attr "command=$3"
+      (( ${#reply} )) && { export SCENIC_DEVJOB_IN=remote-tests; exec $reply zsh $self "$@" }
+    fi
     local_main "$@"; exit $? ;;
 esac

@@ -37,10 +37,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # The Rust build's inputs besides its package folders: what cargo, rustc and clippy read.
 BUILD = ["crates", "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml", "mise.toml",
          ".mise.toml", "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml", ".cargo", ".config"]
-# The scripts that run clippy and tests (check.sh's lines, the test set, the shim, the test Mac's run).
+# The scripts that run clippy and tests (check.sh's lines, the test set, the shim, the test Mac's run, the
+# dev jobs' recorder wrapping them).
 # tools/dev/test/check-reuse.zsh checks they run no other repo script.
 RUNNER = ["tools/dev/check.sh", "tools/dev/check-reuse.py", "tools/dev/affected-tests.sh",
-          "tools/dev/bin", "tools/app/remote-tests.sh"]
+          "tools/dev/bin", "tools/app/remote-tests.sh", "tools/dev/devjob.zsh", "tools/dev/devjob.py"]
 # Every top-level entry of the repo, so a file under a new one is unknown (doubt: both parts run).
 # tools/dev/test/check-reuse.zsh checks every tracked file's entry is here.
 KNOWN = set(BUILD) | {"docs", "web", "producers", "dem", "tools", "scripts", ".claude", "README.md",

@@ -22,7 +22,7 @@ for r in tools/dev/affected-tests.sh tools/dev/bin/cargo tools/app/remote-tests.
     (( ${runner[(Ie)$s]} )) || [[ $s == tools/dev/test/* ]] || bad "$r names $s, not in check-reuse.py's RUNNER"
   done
 done
-for s in ${(f)"$(grep -E '^\s*(if .*then )?part (clippy|tests) ' $repo/tools/dev/check.sh | grep -oE 'tools/[A-Za-z0-9_./-]+')"}; do
+for s in ${(f)"$(grep -E '^\s*(if .*then )?part (--parse [^ ]+ )?(clippy|tests) ' $repo/tools/dev/check.sh | grep -oE 'tools/[A-Za-z0-9_./-]+')"}; do
   (( ${runner[(Ie)$s]} )) || bad "check.sh's clippy or tests line names $s, not in RUNNER"
 done
 grep -q '^rt=$root/tools/app/remote-tests.sh$' $repo/tools/dev/check.sh || bad "check.sh's tests run through something other than tools/app/remote-tests.sh"
