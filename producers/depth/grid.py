@@ -106,13 +106,6 @@ class Window:
         e, n = merc_to_lonlat(x1, y1)
         return [round(float(w), 7), round(float(s), 7), round(float(e), 7), round(float(n), 7)]
 
-    def centres(self):
-        """Lon/lat of every pixel's centre (h × w)."""
-        r = px_size(self.z)
-        xs = -HALF + (self.c0 + np.arange(self.w) + 0.5) * r
-        ys = HALF - (self.r0 + np.arange(self.h) + 0.5) * r
-        return merc_to_lonlat(*np.meshgrid(xs, ys))
-
 
 def warp_onto(src, band: int, win: Window, resampling: str, src_nodata=None, dtype="float32") -> np.ndarray:
     """A band of `src` (a path, an open dataset, or (array, transform, crs)) onto the window; NaN
@@ -202,14 +195,6 @@ class Writer:
         self.features = [f for f in self.features if f["properties"]["file"] != props["file"]]
         self.features.append({"type": "Feature", "properties": props, "geometry": {"type": "Polygon", "coordinates": [ring]}})
         return True
-
-    def resume(self, path: Path):
-        """Takes up the features of an index written before (a resumed run), those whose files (or
-        pack) are still in `out`."""
-        path = Path(path)
-        if path.exists():
-            feats = json.loads(path.read_text())["features"]
-            self.features = [f for f in feats if (self.out / f["properties"].get("pack", f["properties"]["file"])).exists()]
 
     def pack(self) -> list[str]:
         """The grids written since the last pack packed in `out` by z6 tile (packs.py), the loose

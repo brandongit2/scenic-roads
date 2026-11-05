@@ -1398,8 +1398,6 @@ mod tests {
     #[test]
     fn every_fetching_script_declares_its_kinds() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        // (Asking only this Mac: the map's server.)
-        const LOCAL: [&str; 2] = ["producers/depth/smalllakes.py", "producers/depth/smalllakes-run.sh"];
         fn walk(d: &Path, out: &mut Vec<PathBuf>) {
             for e in std::fs::read_dir(d).unwrap().flatten() {
                 let p = e.path();
@@ -1428,7 +1426,7 @@ mod tests {
                             || l.contains("$(curl ")
                             || (l.starts_with("from grid import") && (l.contains("fetch") || l.contains("urlopen"))))
                 });
-            if !fetches || LOCAL.contains(&rel.as_str()) {
+            if !fetches {
                 continue;
             }
             let decl = text.lines().find_map(|l| {
