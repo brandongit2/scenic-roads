@@ -829,6 +829,10 @@ pub struct Coordinator {
     /// The lead's phase shares and times, kept by their own thread (`phase_sharer`); None for a
     /// member's broker or a viewer, which run none.
     phases: Option<Phases>,
+    /// The connections it has taken (`http::accept`): a test's measure of how many its clients
+    /// open (crate::coord::client keeps them alive).
+    #[cfg_attr(not(test), allow(dead_code))]
+    taken: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Each step's phase shares over its last runs (crate::timings::PhaseShares) and its time by phase
@@ -1576,7 +1580,8 @@ impl Coordinator {
             routes: routes.clone(),
             cors: cors.clone(),
         };
-        let urls = http::serve(listener, loopback, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
+        let taken: Arc<std::sync::atomic::AtomicU64> = Default::default();
+        let urls = http::serve(listener, loopback, port, ctx, stopped.clone(), wake.clone(), taken.clone(), closed_tx)?;
         if !viewer {
             nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string());
         }
@@ -1598,11 +1603,18 @@ impl Coordinator {
             routes,
             cors,
             phases,
+            taken,
         };
         if !viewer {
             c.write_page();
         }
         Ok(c)
+    }
+
+    /// The connections it has taken so far.
+    #[cfg(test)]
+    pub(crate) fn connections_taken(&self) -> u64 {
+        self.taken.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// How many leases are out now (jobs' and tasks').
@@ -5055,6 +5067,7 @@ mod http {
         ctx: Ctx,
         stopped: Arc<std::sync::atomic::AtomicBool>,
         wake: Arc<tokio::sync::Notify>,
+        taken: Arc<std::sync::atomic::AtomicU64>,
         closed: std::sync::mpsc::Sender<()>,
     ) -> Result<Vec<String>> {
         listener.set_nonblocking(true)?;
@@ -5128,7 +5141,7 @@ mod http {
             let kept = rt.block_on(async move {
                 match (crate::net::Listener::new(listener), loopback.map(crate::net::Listener::new).transpose()) {
                     (Ok(l), Ok(lo)) => {
-                        let (l, lo) = accept(l, lo, app, stopped, wake).await;
+                        let (l, lo) = accept(l, lo, app, stopped, wake, taken).await;
                         Some(super::Listeners { listener: l.into_std(), loopback: lo.map(|l| l.into_std()) })
                     }
                     (Err(e), _) | (_, Err(e)) => {
@@ -5171,10 +5184,12 @@ mod http {
     }
 
     /// The most connections at once, how long a request's headers may take to arrive (and an idle
-    /// connection to stay open), and a connection's whole life.
+    /// kept-alive connection to stay open: crate::coord::client lets its own go sooner), a
+    /// connection's whole life, and the end of it in which it takes no new request.
     const CONNECTIONS: usize = 512;
     pub(super) const HEADERS_MAX: Duration = Duration::from_secs(20);
     const CONNECTION_MAX: Duration = Duration::from_secs(3 * 3600);
+    const CLOSING: Duration = Duration::from_secs(600);
 
     /// Takes connections, on `listener` and its `loopback` beside it when it has one: one from
     /// elsewhere, or past the cap, is closed before a byte is read;
@@ -5187,6 +5202,7 @@ mod http {
         app: Router,
         stopped: Arc<std::sync::atomic::AtomicBool>,
         wake: Arc<tokio::sync::Notify>,
+        taken: Arc<std::sync::atomic::AtomicU64>,
     ) -> (crate::net::Listener, Option<crate::net::Listener>) {
         use tower::ServiceExt;
         let room = Arc::new(tokio::sync::Semaphore::new(CONNECTIONS));
@@ -5214,7 +5230,10 @@ mod http {
                 } => got,
             };
             let (stream, peer) = match got {
-                Ok(x) => x,
+                Ok(x) => {
+                    taken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    x
+                }
                 Err(e) => {
                     eprintln!("coordinator: taking a connection: {e}");
                     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -5242,11 +5261,18 @@ mod http {
                     req.extensions_mut().insert(ConnectInfo(peer));
                     app.clone().oneshot(req.map(Body::new))
                 });
+                // (Kept alive between requests, as hyper does by default: a request's headers have
+                // `HEADERS_MAX` from the last answer too, so an idle connection closes then.)
                 let conn = hyper::server::conn::http1::Builder::new()
                     .timer(hyper_util::rt::TokioTimer::new())
                     .header_read_timeout(HEADERS_MAX)
                     .serve_connection(hyper_util::rt::TokioIo::new(stream), svc);
-                let mut conn = Box::pin(tokio::time::timeout(CONNECTION_MAX, conn));
+                let mut conn = Box::pin(conn);
+                // (Its life's end: from `CONNECTION_MAX` less `CLOSING`, it takes no new request,
+                // closed once the one under way is answered (a client's kept connection never cut
+                // mid-request at a busy moment); at `CONNECTION_MAX`, closed whatever it's doing.)
+                let mut life = Box::pin(tokio::time::sleep(CONNECTION_MAX - CLOSING));
+                let mut closing = false;
                 // (Told to end: no linger set while `conn` still owns the stream, so dropping it
                 // resets the connection, the socket gone at once.)
                 let end = async {
@@ -5257,9 +5283,20 @@ mod http {
                         .set_linger(Some(Duration::ZERO))
                         .ok();
                 };
-                tokio::select! {
-                    _ = conn.as_mut() => {}
-                    _ = end => {}
+                let mut end = std::pin::pin!(end);
+                loop {
+                    tokio::select! {
+                        _ = conn.as_mut() => break,
+                        _ = end.as_mut() => break,
+                        _ = life.as_mut() => {
+                            if closing {
+                                break;
+                            }
+                            closing = true;
+                            conn.as_mut().graceful_shutdown();
+                            life.as_mut().reset(tokio::time::Instant::now() + CLOSING);
+                        }
+                    }
                 }
                 // (Closed while no child is being started, store::spawn: one started by fork would
                 // hold it until its exec.)
@@ -6335,6 +6372,26 @@ mod tests {
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         (d, c, w)
+    }
+
+    /// A member's requests one after another share one kept-alive connection (task #958), and a
+    /// coordinator stopped and started again is reached at once on a new one.
+    #[test]
+    fn a_members_requests_keep_one_connection() {
+        let (d, c, w) = start();
+        for _ in 0..200 {
+            w.beat(1, None).unwrap();
+        }
+        assert_eq!(c.connections_taken(), 1);
+        let token = c.contact.token.clone();
+        let port = c.port;
+        drop(c);
+        let c = Coordinator::start_on(&d.path().join("coord"), listeners_on(port).unwrap(), "m4", "").unwrap();
+        assert_eq!(c.contact.token, token);
+        w.new_round();
+        w.beat(1, None).unwrap();
+        assert!(!w.round_failed());
+        assert_eq!(c.connections_taken(), 1);
     }
 
     /// `start`, a member's broker.
