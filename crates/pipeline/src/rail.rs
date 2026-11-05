@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn the_feeds_list_names_each_zip() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::open(
+        let mut out = crate::out::open(
             &store::nasfs::NasRoot::local_for_test(&d.path().join("root")),
             &d.path().join("scratch"),
             "rail-feeds",
@@ -664,7 +664,7 @@ mod tests {
             serde_json::json!({"id": "sncf", "format": "gtfs"}),
         ];
         let handoff = d.path().join("handoff.json");
-        let mut out = Out::open(&store::nasfs::NasRoot::local_for_test(&root), &scratch, "rail-feeds")
+        let mut out = crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &scratch, "rail-feeds")
             .unwrap()
             .handing_off(&handoff);
         assert_eq!(pin_seeds(&mut out, &decls, &scratch.join("pins")).unwrap(), 1);
@@ -698,7 +698,7 @@ mod tests {
         // with its day, though its local copy is gone; no list.
         let found = d.path().join("feeds.json");
         std::fs::write(&found, r#"{"feeds": [{"id": "sncf", "zip": "new", "fetched": "2026-10-04"}, {"id": "renfe", "zip": "new", "fetched": "2026-10-04"}]}"#).unwrap();
-        let mut out = Out::open(&store::nasfs::NasRoot::local_for_test(&root), &scratch, "rail-feeds").unwrap();
+        let mut out = crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &scratch, "rail-feeds").unwrap();
         assert!(put_feeds(&mut out, &found, &gtfs, FEEDS).is_err());
         let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
         let sncf = out.get(&zip_logical("sncf")).unwrap().to_string();
@@ -708,7 +708,7 @@ mod tests {
         // What a failed run downloaded, likewise.
         std::fs::write(gtfs.join("a.zip"), b"a").unwrap();
         std::fs::create_dir_all(gtfs.join("b.zip")).unwrap();
-        let mut out = Out::open(&store::nasfs::NasRoot::local_for_test(&root), &scratch, "rail-feeds").unwrap();
+        let mut out = crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &scratch, "rail-feeds").unwrap();
         assert!(keep_downloads(&mut out, &gtfs).is_err());
         let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
         let a = out.get(&zip_logical("a")).unwrap().to_string();

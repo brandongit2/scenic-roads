@@ -17,8 +17,9 @@ pub mod pageviews;
 pub mod whsshapes;
 pub mod wikiask;
 
-/// These unit tests' process is offline from its start (buildstore::fetch::go_offline), as they
-/// were in pipeline's (its lib.rs `TEST_START`): only in `cfg(test)`.
+/// These unit tests' process is offline from its start (buildstore::fetch::go_offline), and an
+/// `Out`'s waits are a test's (buildstore::out::go_testing), as they were in pipeline's (its lib.rs
+/// `TEST_START`): only in `cfg(test)`.
 #[cfg(test)]
 #[used]
 #[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
@@ -26,6 +27,7 @@ pub mod wikiask;
 static TEST_START: extern "C" fn() = {
     extern "C" fn start() {
         buildstore::fetch::go_offline();
+        buildstore::out::go_testing();
     }
     start
 };

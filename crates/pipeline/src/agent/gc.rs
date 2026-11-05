@@ -280,7 +280,7 @@ pub fn drop_names(
     if dry_run || (names.is_empty() && unpend.is_empty()) {
         return Ok(r);
     }
-    let mut out = crate::out::Out::open(root, scratch, STEP)?;
+    let mut out = crate::out::open(root, scratch, STEP)?;
     for l in names {
         out.remove(l);
     }
@@ -339,11 +339,11 @@ pub fn verify_pending(
     if todo.is_empty() {
         return Ok(v);
     }
-    let mut out = crate::out::Out::open(root, scratch, STEP)?;
+    let mut out = crate::out::open(root, scratch, STEP)?;
     for chunk in todo.chunks(VERIFY_CHUNK) {
         let batch: BTreeMap<String, String> = chunk.iter().map(|(c, h)| ((*c).clone(), (*h).clone())).collect();
         let n = bytes(chunk);
-        let (ok, bad) = match crate::out::verify::<crate::out::Pipeline>(ssh, nas_root, &batch, n) {
+        let (ok, bad) = match crate::out::verify(ssh, nas_root, &batch, n) {
             Ok(r) => r,
             // (Stopped past its deadline: what the batches before it checked is saved already; the
             // rest stays pending for the next run.)
@@ -2012,7 +2012,7 @@ mod tests {
         fs::write(root.join("state/build/manifest.json"), manifest).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         let hand = d.path().join("handoff");
-        let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
+        let mut out = crate::out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
         out.remove("sources/terrain-z8-v3");
         out.unpend("sources/terrain-z8-v3.3333333333333333.pack");
         out.save().unwrap();
@@ -2025,7 +2025,7 @@ mod tests {
             [("sources/terrain-z8-v3".to_string(), None)].into_iter().collect::<std::collections::BTreeMap<_, _>>()
         );
         assert_eq!(fs::read_to_string(root.join("state/build/manifest.json")).unwrap(), manifest);
-        let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
+        let mut out = crate::out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
         out.remove("base/6-1-1");
         assert!(out.save().is_err());
     }

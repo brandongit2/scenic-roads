@@ -50,22 +50,12 @@ pub use nas::Nas;
 pub use records::Records;
 pub use term::{Current, Term};
 
+// A member and its id as the records name them: buildstore::records's (task #916 step 6a).
+pub use buildstore::records::{is_member_id, Member};
+
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
-
-/// A member as the pool names it (§5).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Member {
-    /// Its id, made once (`member_id`), named in everything it writes.
-    pub id: String,
-    /// Its host name: only a label (renaming a Mac, or macOS adding "-2" after a clash, changes
-    /// nothing).
-    pub host: String,
-    /// The app it runs (§6.1, the app rule).
-    pub app: String,
-}
 
 /// The file in the agent's local folder that keeps this Mac's member id, and the Mac it's of.
 const ID_FILE: &str = "member";
@@ -199,12 +189,6 @@ impl MemberLock {
 /// it's let go); None when another process holds its lock.
 fn lock_file(path: &Path) -> Result<Option<crate::sys::PathLock>> {
     crate::sys::PathLock::take(path, false).with_context(|| format!("lock {}", path.display()))
-}
-
-/// Whether `s` is a member id: `m-` and 16 lowercase hex digits.
-pub fn is_member_id(s: &str) -> bool {
-    s.strip_prefix("m-")
-        .is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
 /// A new member id: the system's random bytes, with the time, the process and the host name in

@@ -3406,7 +3406,7 @@ mod tests {
         let outside = pack(2, "6/1/3", &["hidata", "layers/terrain/hi"]);
         let key = outside.key().unwrap();
         // (The same names a pack job's `Out` takes and refuses.)
-        let mut o = crate::out::Out::open(
+        let mut o = crate::out::open(
             &store::nasfs::NasRoot::local_for_test(&d.path().join("o")),
             &d.path().join("o-scratch"),
             "pack",

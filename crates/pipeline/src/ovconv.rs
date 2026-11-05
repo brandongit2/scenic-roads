@@ -790,7 +790,7 @@ mod tests {
         }
         seed.save().unwrap();
         let mut out =
-            Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s1"), "stations").unwrap();
+            crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s1"), "stations").unwrap();
         assert_eq!(drop_stale(&mut out, "stations", &["layers/stations/hi/6-1-2".to_string()]), 1);
         out.save().unwrap();
         let m: BTreeMap<String, String> =

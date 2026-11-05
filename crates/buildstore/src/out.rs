@@ -12,10 +12,9 @@
 //! saves its changes as hand-offs instead (crate::handoff), which the lead's agent merges: the
 //! lead alone writes the manifest.
 //!
-//! Two things it reads are the pool's and the agent's, above this crate (task #916 step 4): the
-//! records an `Out` starts from (pipeline::pool::records) and each step's write set
-//! (pipeline::agent::steps). An `Out` reads them through its type's `Above`: pipeline::out::Out
-//! is `Out<pipeline::out::Pipeline>`.
+//! The records an `Out` starts from are read here (crate::records, the pool's snapshot or today's
+//! files); a step's write set is the agent's (pipeline::agent::steps::writes), handed to `open` as
+//! a function (task #916 step 6a, docs/crates.md §6; pipeline::out::open passes it).
 
 use anyhow::{bail, Context, Result};
 use sha2::Digest;
@@ -24,31 +23,26 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use store::nasfs::NasPath;
 
-/// What an `Out` reads that's above this crate (pipeline::out::Pipeline's).
-pub trait Above {
-    /// Whether this is a test build of the binding's own crate (`cfg!(test)` there; never a
-    /// feature's: an example, a binary or another crate's test built with this one's dev-dependencies
-    /// is no test of it): an `Out`'s retries wait 1 ms (`upload_waits`), and `verify`'s floor and
-    /// grace are short (`verify_deadline`).
-    const TESTING: bool;
-    /// The build's records under `root` as a reader has them now (pipeline::pool::records::Records::now:
-    /// the current term's snapshot; before the pool, today's files).
-    fn records(root: &store::nasfs::NasRoot) -> Result<Recorded>;
-    /// Whether step `step` may put (`removal`: remove) `logical`; None for a step the steps table
-    /// doesn't know (pipeline::agent::steps::writes, the function the lead's merge checks every
-    /// entry against, so the writer and the check can't disagree; docs/pool.md §7.3).
-    fn writes(step: &str, logical: &str, removal: bool) -> Option<bool>;
+/// Whether step `step` may put (`removal`: remove) `logical`; None for a step the steps table
+/// doesn't know (pipeline::agent::steps::writes, the function the lead's merge checks every entry
+/// against, so the writer and the check can't disagree; docs/pool.md §7.3).
+pub type Writes = fn(step: &str, logical: &str, removal: bool) -> Option<bool>;
+
+/// Whether this process is a crate's unit tests (`go_testing`, from their start-up constructor;
+/// buildstore's own from the start): an `Out`'s retries wait 1 ms (`upload_waits`), and `verify`'s
+/// floor and grace are short (`verify_deadline`). Never a feature's: an example, a binary or another
+/// crate's test built with the dev-dependencies is no test of it (pipeline's tests/test_mode.rs).
+pub fn testing() -> bool {
+    TESTING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The parts of the build's records an `Out` reads (`Above::records`).
-pub struct Recorded {
-    /// Logical name → content name.
-    pub manifest: BTreeMap<String, String>,
-    /// Uploads not yet verified on the NAS: content name → SHA-256.
-    pub pending: BTreeMap<String, String>,
-    /// The sizes of the files the manifest names (`SIZES`).
-    pub sizes: BTreeMap<String, u64>,
+/// Makes this process a unit tests' (`testing`): called only by a crate's `#[cfg(test)]` start-up
+/// constructor (pipeline's and landmarks' lib.rs `TEST_START`).
+pub fn go_testing() {
+    TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
 }
+
+static TESTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(test));
 
 /// A job's environment: the file of its member's unacknowledged hand-offs for its step
 /// (`unmerged`), which `Out` lays over the snapshot (pipeline::agent::resume).
@@ -58,11 +52,9 @@ pub const UNMERGED_ENV: &str = "SCENIC_UNMERGED";
 /// begun, and no step saves the records (`check_writer`).
 pub const TERMS: &str = "state/build/terms";
 
-/// The outputs of a run, reading the records and write sets through `A`. (Generic, so its
-/// methods compile where `A` is named: pipeline.)
-pub struct Out<A: Above> {
+/// The outputs of a run.
+pub struct Out {
     root: store::nasfs::NasRoot,
-    above: std::marker::PhantomData<fn() -> A>,
     /// Logical name → content name of every file this build wrote or reused.
     pub manifest: BTreeMap<String, String>,
     /// This run's changes to the manifest (None: removed), merged into the file when saving.
@@ -79,9 +71,10 @@ pub struct Out<A: Above> {
     pub scratch: PathBuf,
     /// A helper's job: where its saves go as hand-offs ($SCENIC_HANDOFF), never the manifest.
     handoff: Option<PathBuf>,
-    /// The step whose job this is (`for_step`): it puts and removes only the names its outputs
-    /// function gives (`Above::writes`), and a name outside them fails the job. None: no step (the agent merging hand-offs, a tool).
-    step: Option<String>,
+    /// The step whose job this is, and its write set (`open`): it puts and removes only the names
+    /// its outputs function gives, and a name outside them fails the job. None: no step (the agent
+    /// merging hand-offs, a tool).
+    step: Option<(String, Writes)>,
     /// Names set or removed outside the step's outputs: the save fails, naming the first.
     outside: Vec<String>,
     /// Uploads put off (`put_file_later`), made in turn on a thread beside the job.
@@ -180,7 +173,7 @@ const UPLOAD_LOOK: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The waits before a put-off upload that failed transiently is tried again (an SMB moment of
 /// ENOENT, EIO or a reset connection): its file is content-named, so a retry lands the same file.
-/// A millisecond in a test (`Above::TESTING`).
+/// A millisecond in a test (`testing`).
 const fn upload_waits(testing: bool) -> &'static [std::time::Duration] {
     const TEST: &[std::time::Duration] = &[std::time::Duration::from_millis(1)];
     const REAL: &[std::time::Duration] =
@@ -270,18 +263,19 @@ fn hashes_of(p: &Path) -> Result<(String, String)> {
 }
 
 /// The records as a resumed run's identity reads them (jobrt::resume_log::names).
-impl<A: Above> jobrt::resume_log::Manifest for Out<A> {
+impl jobrt::resume_log::Manifest for Out {
     fn get(&self, logical: &str) -> Option<&str> {
         Out::get(self, logical)
     }
 }
 
-impl<A: Above> Out<A> {
+impl Out {
     /// A job of `step`'s: `root`, the NAS project folder (or a local folder standing in for it);
-    /// `scratch`, local space. It puts and removes only `step`'s outputs (`for_step`).
-    pub fn open(root: &store::nasfs::NasRoot, scratch: &Path, step: &str) -> Result<Self> {
+    /// `scratch`, local space. It puts and removes only `step`'s outputs as `writes` gives them
+    /// (`for_step`; pipeline::out::open passes the steps table's).
+    pub fn open(root: &store::nasfs::NasRoot, scratch: &Path, step: &str, writes: Writes) -> Result<Self> {
         let mut out = Self::open_here(root, scratch)?;
-        out.for_step(step);
+        out.for_step(step, writes);
         Ok(out)
     }
 
@@ -308,7 +302,7 @@ impl<A: Above> Out<A> {
         let _p = jobrt::timings::phase("reading records");
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
-        let records = A::records(root)?;
+        let records: crate::records::Recorded = crate::records::now(root)?;
         let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
         let mut manifest = records.manifest;
         if let Some(p) = unmerged {
@@ -321,7 +315,6 @@ impl<A: Above> Out<A> {
         let pending = if handoff.is_some() { BTreeMap::new() } else { records.pending };
         Ok(Out {
             root: root.clone(),
-            above: std::marker::PhantomData,
             manifest,
             changes: BTreeMap::new(),
             checked: Default::default(),
@@ -338,7 +331,7 @@ impl<A: Above> Out<A> {
     }
 
     /// Binds this to a job of `step` (scenic-build, as it starts a step): from now on it puts and
-    /// removes only `step`'s outputs (`Above::writes`: the function the lead's merge checks every
+    /// removes only `step`'s outputs (`writes`: the function the lead's merge checks every
     /// entry against, so the writer and the check can't disagree; docs/pool.md §7.3).
     /// A put outside them fails before anything is uploaded; a `set` or `remove` outside them fails
     /// the next save, and nothing of that save lands (what earlier saves saved, the targets done
@@ -354,14 +347,14 @@ impl<A: Above> Out<A> {
         self
     }
 
-    fn for_step(&mut self, step: &str) {
-        self.step = Some(step.to_string());
+    fn for_step(&mut self, step: &str, writes: Writes) {
+        self.step = Some((step.to_string(), writes));
     }
 
     /// Whether this job may put (`removal`: remove) `logical`; why not.
     fn admits(&self, logical: &str, removal: bool) -> Result<()> {
-        let Some(step) = &self.step else { return Ok(()) };
-        match A::writes(step, logical, removal) {
+        let Some((step, writes)) = &self.step else { return Ok(()) };
+        match writes(step, logical, removal) {
             Some(true) => Ok(()),
             Some(false) => bail!(
                 "{} {logical}, outside {step}'s outputs (pipeline::agent::steps)",
@@ -516,9 +509,7 @@ impl<A: Above> Out<A> {
             let spawned = std::thread::Builder::new().name("uploads".into()).spawn(move || {
                 store::naming::count_here_into(moved);
                 for u in rx {
-                    if tx
-                        .send(upload_retrying(&u.root, &u.logical, &u.ext, &u.local, upload_waits(A::TESTING)))
-                        .is_err()
+                    if tx.send(upload_retrying(&u.root, &u.logical, &u.ext, &u.local, upload_waits(testing()))).is_err()
                     {
                         return;
                     }
@@ -829,11 +820,11 @@ impl<A: Above> Out<A> {
         self.sizes.iter().filter(|(c, _)| named.contains(c)).map(|(c, n)| (c.clone(), *n)).collect()
     }
 
-    /// The sizes the records hold of the files the manifest names (`Above::records`), with this run's own:
+    /// The sizes the records hold of the files the manifest names (crate::records::now), with this run's own:
     /// what a catalogue lists them as, never looking at the NAS for them. An error when the records
     /// can't be read now; a file it lacks (written before sizes were recorded) isn't in it.
     pub fn recorded_sizes(&self) -> Result<BTreeMap<String, u64>> {
-        let mut s = A::records(&self.root)?.sizes;
+        let mut s = crate::records::now::<crate::records::Recorded>(&self.root)?.sizes;
         s.extend(self.sizes.iter().map(|(c, n)| (c.clone(), *n)));
         Ok(s)
     }
@@ -842,13 +833,12 @@ impl<A: Above> Out<A> {
 /// How long one hashing call (`verify`) may take: three minutes (the call's own authentication, and a
 /// NAS busy with others' reads), and a second for each 16 MB it hashes (the NAS's disks and CPU
 /// give far more; this is the rate it would have to fall below to be stopped). Its floor and
-/// grace are short in a test (`testing`: `Above::TESTING`).
+/// grace are short in a test (`testing`).
 pub fn verify_deadline(bytes: u64, testing: bool) -> std::time::Duration {
     std::time::Duration::from_secs(if testing { 1 } else { 180 } + (bytes >> 24))
 }
 
-/// How long a call past its deadline has to end after SIGTERM before it's killed (`testing`:
-/// `Above::TESTING`).
+/// How long a call past its deadline has to end after SIGTERM before it's killed (`testing`).
 fn verify_grace(testing: bool) -> std::time::Duration {
     if testing {
         std::time::Duration::from_millis(300)
@@ -909,8 +899,8 @@ fn output_within(
 /// there over SSH (`ssh` runs a command on the NAS; `nas_root` is the project folder as the NAS sees
 /// it). The names that match, and those that don't or aren't there; nothing is removed or written
 /// (GC's job takes the matching ones out of the records' pending: pipeline::agent::gc::verify_pending).
-/// Its deadline and grace are `A`'s (`Above::TESTING`).
-pub fn verify<A: Above>(
+/// Its deadline and grace are short in a test (`testing`).
+pub fn verify(
     ssh: &[&str],
     nas_root: &str,
     uploads: &BTreeMap<String, String>,
@@ -929,8 +919,8 @@ pub fn verify<A: Above>(
     cmd.arg(format!("cd '{nas_root}' && {{ sha256sum {} 2>/dev/null; true; }}", quoted.join(" ")));
     // (The call itself bounded too: its authentication, outside the probe's, may stall on the SSH
     // agent again, and a `sha256sum` on the NAS may hang; past `verify_deadline` it is stopped.)
-    let deadline = verify_deadline(bytes, A::TESTING);
-    let out = output_within(&mut cmd, deadline, verify_grace(A::TESTING)).map_err(|e| {
+    let deadline = verify_deadline(bytes, testing());
+    let out = output_within(&mut cmd, deadline, verify_grace(testing())).map_err(|e| {
         if e.kind() == std::io::ErrorKind::TimedOut {
             anyhow::Error::new(e)
                 .context(format!("ssh to the NAS hashing {bytes} bytes: over {} s", deadline.as_secs()))
@@ -1059,40 +1049,21 @@ impl BuildLock {
 mod tests {
     use super::*;
 
-    /// The tests' records and write sets: today's files (pipeline's records before the pool's first
-    /// term), and two steps' outputs as pipeline::agent::steps has them (`pack`'s map tiles' data
-    /// and road and rail packs at z6; the OSM pass's sources); any other step unknown.
-    enum Test {}
-
-    impl Above for Test {
-        const TESTING: bool = true;
-
-        fn records(root: &store::nasfs::NasRoot) -> Result<Recorded> {
-            Ok(Recorded {
-                pending: read_record(&root.join("state/build/pending.json"))?,
-                manifest: read_record(&root.join("state/build/manifest.json"))?,
-                sizes: read_record(&root.join(SIZES))?,
+    /// The tests' write sets: two steps' outputs as pipeline::agent::steps has them (`pack`'s map
+    /// tiles' data and road and rail packs at z6; the OSM pass's sources); any other step unknown.
+    fn writes(step: &str, logical: &str, _: bool) -> Option<bool> {
+        let z6 = |prefix: &str| {
+            logical.strip_prefix(prefix).is_some_and(|t| {
+                let p: Vec<&str> = t.split('-').collect();
+                p.len() == 3 && p[0] == "6" && p.iter().all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
             })
-        }
-
-        fn writes(step: &str, logical: &str, _: bool) -> Option<bool> {
-            let z6 = |prefix: &str| {
-                logical.strip_prefix(prefix).is_some_and(|t| {
-                    let p: Vec<&str> = t.split('-').collect();
-                    p.len() == 3
-                        && p[0] == "6"
-                        && p.iter().all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-                })
-            };
-            match step {
-                "pack" => Some(z6("hidata/") || z6("layers/roads/hi/") || z6("layers/rails/hi/")),
-                "osm-pass" => Some(logical.starts_with("sources/osm/")),
-                _ => None,
-            }
+        };
+        match step {
+            "pack" => Some(z6("hidata/") || z6("layers/roads/hi/") || z6("layers/rails/hi/")),
+            "osm-pass" => Some(logical.starts_with("sources/osm/")),
+            _ => None,
         }
     }
-
-    type Out = super::Out<Test>;
 
     /// Task #400: an upload put off lands as `put_file`'s would (the same name, size and pending
     /// check), named only once it has: a save waits for those before it (or up to a mark), and one
@@ -1171,7 +1142,8 @@ mod tests {
         assert_eq!(c.claim_written(c.mark()), (4, 1));
         assert_eq!(c.claim_written(c.mark()), (0, 0));
         // Outside the step's outputs: refused at once, as `put_file` is.
-        let mut job = Out::open(&store::nasfs::NasRoot::local_for_test(&later), &d.path().join("s3"), "pack").unwrap();
+        let mut job =
+            Out::open(&store::nasfs::NasRoot::local_for_test(&later), &d.path().join("s3"), "pack", writes).unwrap();
         assert!(job.put_file_later("base/6-1-5", "base", &file("b5", b"five")).is_err());
     }
 
@@ -1181,7 +1153,8 @@ mod tests {
         d: &Path,
         clock: Arc<store::clock::Virtual>,
     ) -> (Out, std::sync::mpsc::Sender<Result<Landed>>, Arc<std::sync::atomic::AtomicU64>) {
-        let mut c = Out::open(&store::nasfs::NasRoot::local_for_test(&d.join("nas")), &d.join("s"), "pack").unwrap();
+        let mut c =
+            Out::open(&store::nasfs::NasRoot::local_for_test(&d.join("nas")), &d.join("s"), "pack", writes).unwrap();
         let (tx, back) = std::sync::mpsc::channel();
         c.later.back = Some(std::sync::Mutex::new(back));
         c.later.clock = clock;
@@ -1344,7 +1317,7 @@ mod tests {
         std::fs::write(&f, serde_json::to_vec(&h).unwrap()).unwrap();
         let mut out =
             Out::open_with(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch"), Some(&f)).unwrap();
-        out.for_step("osm-pass");
+        out.for_step("osm-pass", writes);
         assert_eq!(
             out.get("sources/osm/2026-10-01/filtered"),
             Some("sources/osm/2026-10-01/filtered.2222222222222222.osm.pbf")
@@ -1539,7 +1512,7 @@ mod tests {
         assert!(check_writer(&store::nasfs::NasRoot::local_for_test(&root)).is_err());
     }
 
-    /// A job puts and removes only its step's outputs (`Above::writes`, the function the lead's
+    /// A job puts and removes only its step's outputs (`writes`, the function the lead's
     /// merge checks by): a put outside fails before it uploads, a set or removal outside
     /// fails the save before anything is saved, and a step the table doesn't know hands off nothing.
     #[test]
@@ -1547,7 +1520,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
         let local = d.path().join("f.bin");
-        let mut out = Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "pack").unwrap();
+        let mut out =
+            Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "pack", writes).unwrap();
         // Its own: a map tile's data and road pack, a rail pack removed.
         std::fs::write(&local, b"tile").unwrap();
         out.put_file("hidata/6-1-2", "hidata", &local).unwrap();
@@ -1583,7 +1557,8 @@ mod tests {
         // A step the table doesn't know: held to nothing while it writes the manifest (a tool run
         // by hand) and to no change at all when it hands off (the merge refuses such an entry).
         let mut tool =
-            Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s2"), "patch-ferries").unwrap();
+            Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s2"), "patch-ferries", writes)
+                .unwrap();
         tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-2", "osm", b"p").unwrap();
         tool.handoff = Some(d.path().join("handoff"));
         assert!(format!("{:#}", tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-3", "osm", b"q").unwrap_err())

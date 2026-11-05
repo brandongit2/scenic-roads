@@ -3,12 +3,10 @@
 //! unit tests' behaviour: `Out`'s retries and verify's deadline are the real ones, and fetch reaches
 //! the network (task #916 step 4 review: `testkit` had made an example offline).
 
-use buildstore::out::Above;
-
 #[test]
 fn a_build_with_the_dev_dependencies_has_no_test_time_behaviour() {
-    assert!(!pipeline::out::Pipeline::TESTING);
-    assert_eq!(buildstore::out::verify_deadline(0, pipeline::out::Pipeline::TESTING).as_secs(), 180);
+    assert!(!buildstore::out::testing());
+    assert_eq!(buildstore::out::verify_deadline(0, buildstore::out::testing()).as_secs(), 180);
     // (This binary's one test: the environment is its own.)
     std::env::remove_var("SCENIC_FETCH_OFFLINE");
     assert!(pipeline::fetch::online("https://example.org/x").is_ok());

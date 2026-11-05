@@ -1,42 +1,19 @@
-//! Where build steps put their outputs: buildstore::out (task #916 step 4, docs/crates.md), its
-//! `Out` reading what's above that crate through `Pipeline`: the pool's records
-//! (crate::pool::records) and each step's write set (crate::agent::steps::writes). Every other
-//! item is buildstore's, at this path.
+//! Where build steps put their outputs: buildstore::out (task #916 steps 4 and 6a,
+//! docs/crates.md), kept at this path. A step's job opens its `Out` here (`open`), held to its
+//! step's write set as the steps table has it (crate::agent::steps::writes).
 
 pub use buildstore::out::*;
+pub use buildstore::records::read_manifest;
 
 use anyhow::Result;
-use std::collections::BTreeMap;
+use std::path::Path;
 use store::nasfs::NasRoot;
 
-/// The outputs of a run, as every step and tool here opens them.
-pub type Out = buildstore::out::Out<Pipeline>;
-
-/// The records and write sets buildstore's `Out` reads: the pool's and the agent's.
-pub enum Pipeline {}
-
-impl Above for Pipeline {
-    /// Pipeline's unit tests alone: never its binaries, examples or integration tests, whose
-    /// library is built without `cfg(test)`.
-    const TESTING: bool = cfg!(test);
-
-    /// The build's records under `root` as a reader has them now (crate::pool::records::Records::now),
-    /// the parts an `Out` reads.
-    fn records(root: &NasRoot) -> Result<Recorded> {
-        let r = crate::pool::records::Records::now(root)?;
-        Ok(Recorded { manifest: r.manifest, pending: r.pending, sizes: r.sizes })
-    }
-
-    fn writes(step: &str, logical: &str, removal: bool) -> Option<bool> {
-        crate::agent::steps::writes(step, logical, removal)
-    }
-}
-
-/// The records' manifest under `root` (crate::pool::records::Brief::now: the current term's brief,
-/// a quarter of its snapshot's bytes), read only: the accepted versions, for a reader that needs no
-/// `Out`.
-pub fn read_manifest(root: &NasRoot) -> Result<BTreeMap<String, String>> {
-    Ok(crate::pool::records::Brief::now(root)?.manifest)
+/// A job of `step`'s outputs (buildstore::out::Out::open): it puts and removes only what the steps
+/// table gives `step` (crate::agent::steps::writes, the function the lead's merge checks every
+/// entry against, so the writer and the check can't disagree; docs/pool.md §7.3).
+pub fn open(root: &NasRoot, scratch: &Path, step: &str) -> Result<Out> {
+    Out::open(root, scratch, step, crate::agent::steps::writes)
 }
 
 #[cfg(test)]
@@ -56,7 +33,7 @@ mod tests {
         )
         .unwrap();
         let nr = NasRoot::local_for_test(&root);
-        let mut out = Out::open(&nr, &d.path().join("s"), "pack").unwrap();
+        let mut out = open(&nr, &d.path().join("s"), "pack").unwrap();
         assert_eq!(out.get("hidata/6-1-1"), Some("hidata/6-1-1.1111111111111111.hidata"));
         assert_eq!(read_manifest(&nr).unwrap().len(), 1);
         out.put_bytes("layers/roads/hi/6-1-2", "pack", b"roads").unwrap();

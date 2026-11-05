@@ -1,4 +1,5 @@
-//! `TEST_START` (lib.rs) checked: these unit tests' process is offline from its start.
+//! `TEST_START` (lib.rs) checked: these unit tests' process is offline from its start, and
+//! an `Out`'s waits are a test's (buildstore::out::testing).
 
 /// The probe's environment: set, the probe checks this fresh process; unset, it passes.
 const PROBE: &str = "SCENIC_TEST_START_PROBE";
@@ -24,5 +25,6 @@ fn probe() {
     if std::env::var_os(PROBE).is_some() {
         let e = crate::fetch::online("https://example.org/x").unwrap_err();
         assert!(format!("{e:#}").contains("no network here"), "{e:#}");
+        assert!(buildstore::out::testing(), "an `Out`'s waits a test's");
     }
 }

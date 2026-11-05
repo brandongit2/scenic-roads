@@ -80,9 +80,10 @@ pub use landmarks::{
 // Moved to their own crate (task #916 step 5b, docs/crates.md), kept at their old paths.
 pub use mapview::{buildings, scache, terr, view};
 
-/// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), before
-/// any test runs, as it was while fetch was pipeline's: run by the loader as the test binary starts
-/// (an initializer section's entry). Only in `cfg(test)`, this crate's own unit tests: its
+/// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an
+/// `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs, as it was while
+/// fetch was pipeline's: run by the loader as the test binary starts (an initializer section's
+/// entry). Only in `cfg(test)`, this crate's own unit tests: its
 /// binaries, examples and integration tests link the library without it and reach the network
 /// (tests/test_mode.rs). A test-time behaviour never rides on a feature (buildstore's `testkit`).
 #[cfg(test)]
@@ -92,6 +93,7 @@ pub use mapview::{buildings, scache, terr, view};
 static TEST_START: extern "C" fn() = {
     extern "C" fn start() {
         buildstore::fetch::go_offline();
+        buildstore::out::go_testing();
     }
     start
 };

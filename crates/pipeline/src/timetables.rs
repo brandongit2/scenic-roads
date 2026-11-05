@@ -465,12 +465,12 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
             [("rail", RAIL_LINES, &rail[..]), ("ferries", FERRY_LINES, &br#"{"lines": [], "unmatched": []}"#[..])]
         {
             let mut o =
-                crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch"), step)
+                crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch"), step)
                     .unwrap();
             o.put_bytes(l, "json", v).unwrap();
             o.save().unwrap();
         }
-        let mut out = crate::out::Out::open(
+        let mut out = crate::out::open(
             &store::nasfs::NasRoot::local_for_test(&root),
             &d.path().join("scratch"),
             "timetables-todo",

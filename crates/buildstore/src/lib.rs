@@ -4,8 +4,9 @@
 //! job's cost inputs (costin), the coverage and the outlines it is drawn from, a region as the
 //! build reads it (recipes), the inputs folders a step never reads (inputs_folder), the network's
 //! fetches (fetch), GeoTIFF reading and writing (geotiff), and a bounded `ssh` to the NAS
-//! (nasssh). Pipeline re-exports the moved modules at their old paths; what `Out` reads from the
-//! pool and the steps table above comes in as an `out::Above` (pipeline::out).
+//! (nasssh), and the build's records as a reader finds them (records: the NAS's operations, the
+//! current term, the snapshot read now). Pipeline re-exports the moved modules at their old paths;
+//! a step's write set, the steps table's above, is handed to `out::Out::open` (pipeline::out::open).
 
 pub mod costin;
 pub mod coverage;
@@ -19,3 +20,4 @@ pub mod out;
 pub mod outlines;
 pub mod rawpack;
 pub mod recipes;
+pub mod records;

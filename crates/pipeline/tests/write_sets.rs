@@ -44,7 +44,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/plan.rs", "plan_seen", "\"state/build/manifest.json\"", "reads only the manifest's and the jobs' records' size and time (an idle agent's plan digest, task #154)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"state/build/manifest.json\"", "regions-fixture: a scratch folder's records for a two-Mac procedure, never the project folder's"),
     ("crates/pipeline/src/inputs/served.rs", "RECORDS", "\"state/build/manifest.json\"", "today's manifest file: a test's records before the pool (the map server reads the term's snapshot, `manifest`)"),
-    ("crates/pipeline/src/pool/records.rs", "TODAY", "\"state/build/manifest.json\"", "today's files, term 1's first snapshot made from them"),
+    ("crates/buildstore/src/records/mod.rs", "TODAY", "\"state/build/manifest.json\"", "today's files, the records read before the pool and term 1's first snapshot made from them"),
     ("crates/pipeline/src/pool/journal.rs", "DIR", "\"state/journal\"", "the journal's own module: its folder"),
     ("crates/pipeline/src/pool/journal.rs", "REJECTED", "\"state/journal/rejected\"", "the journal's own module: the refusals' notes"),
     ("crates/pipeline/src/agent/pool.rs", "entry_of", "Handoff::default()", "a pooled job's entry: the hand-offs its job's Out wrote, gathered for the journal"),

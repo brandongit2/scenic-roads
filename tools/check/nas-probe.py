@@ -13,7 +13,7 @@ The scratch folder must be one only this run uses, on the share, the same path o
 is emptied and removed at the end. Rates stay far under the share's ~20 small-file creates/s.
 
 Contend (N trials): both Macs open the same new name O_CREAT|O_EXCL (what the pool's create_new,
-crates/pipeline/src/pool/nas.rs, does), the peer told to go at its next tick and this Mac aiming at
+crates/buildstore/src/records/nas.rs, does), the peer told to go at its next tick and this Mac aiming at
 the same instant, jittered ±30 ms. Exactly one must win; the file's bytes must be the winner's.
 
 Stale (N trials, the writer alternating between the Macs, kinds in turn):

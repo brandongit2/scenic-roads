@@ -22,6 +22,10 @@
 //! (crate::pool::journal::Mine): none is lost (invariant 3). Each target keeps the lease that last
 //! set it, so an older lease's entry merged later (a member back from sleep, a replay) doesn't undo
 //! a newer one's.
+//!
+//! Which file a reader reads them from (the paths, `load`, `newest`, `now`, `Brief::now`, term 1's
+//! fallbacks) is buildstore::records's, generic over what's read (task #916 step 6a, docs/crates.md
+//! §6): here, the whole records.
 
 use super::journal::{self, Entry, LeaseId};
 use super::nas::{Created, Nas};
@@ -29,11 +33,11 @@ use super::term::Term;
 use crate::agent::build::Keys;
 use crate::rawpack::Pack;
 use anyhow::{bail, ensure, Context, Result};
+use buildstore::records::{read_or_default, Snapshot, TODAY};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Term 1's records in today's layout: the manifest, the job keys, the unverified uploads.
-const TODAY: [&str; 3] = ["state/build/manifest.json", "state/build/jobs.json", "state/build/pending.json"];
+pub use buildstore::records::{brief_path, path, FirstUnreadable, FIRST};
 
 /// A check of a journal entry before it's applied, given the records it would apply to (§7.3: its
 /// writes within its step's write-set, its content names matching their logical names, its lease's
@@ -83,16 +87,6 @@ pub struct Records {
     pub last: BTreeMap<String, BTreeMap<String, LeaseId>>,
 }
 
-/// The path of term `term`'s snapshot.
-pub fn path(term: u64) -> String {
-    format!("state/build/term/{term}/records.json")
-}
-
-/// The path of term `term`'s brief (`Brief`): its snapshot's manifest and keys alone.
-pub fn brief_path(term: u64) -> String {
-    format!("state/build/term/{term}/brief.json")
-}
-
 /// A term's snapshot's manifest and keys alone (a quarter of its bytes: the unverified uploads,
 /// the sizes and the journal's names left out), written whole by its lead after each snapshot of a
 /// term after the first, for the readers that need no more (`Brief::now`): the map server's syncs,
@@ -113,29 +107,9 @@ pub struct Brief {
 impl Brief {
     /// `Records::now`'s manifest and keys, reading a term's brief where it has one (its snapshot
     /// where it has none: a lead on an app from before briefs, or one stopped between the two
-    /// writes); today's two files before the pool.
+    /// writes); today's two files before the pool (buildstore::records::brief_now).
     pub fn now(nas: &dyn Nas) -> Result<Brief> {
-        let cur = super::term::current(nas).context("the current term")?;
-        if cur.term == 0 {
-            no_pool(nas)?;
-            return Ok(Brief {
-                term: 1,
-                manifest: read_or_default(nas, TODAY[0])?,
-                keys: read_or_default(nas, TODAY[1])?,
-                ..Default::default()
-            });
-        }
-        for f in (2..=cur.term).rev() {
-            if let Some(b) = nas.read(&brief_path(f))? {
-                let b: Brief = serde_json::from_slice(&b).with_context(|| format!("parse {}", brief_path(f)))?;
-                ensure!(b.term == f, "{} holds term {}'s brief", brief_path(f), b.term);
-                return Ok(b);
-            }
-            if let Some(r) = Records::load(nas, f)? {
-                return Ok(Brief::of(r));
-            }
-        }
-        Ok(Brief::of(term_one(nas, true)?))
+        buildstore::records::brief_now::<Records, Brief>(nas)
     }
 
     fn of(r: Records) -> Brief {
@@ -143,23 +117,36 @@ impl Brief {
     }
 }
 
-/// Refuses to read today's files as the records when the pool has begun (term 1's first snapshot
-/// is there, never removed) but no term was found (crate::pool::term::current: the lead's hint,
-/// the terms' listing and term 1 itself not read, stale): today's files may be days old once the
-/// lead stops writing them, and GC's live set would be theirs.
-fn no_pool(nas: &dyn Nas) -> Result<()> {
-    ensure!(!nas.exists(FIRST)?, "the pool has begun and no term can be read now: the records aren't read");
-    Ok(())
+impl buildstore::records::BriefOf<Records> for Brief {
+    fn term(&self) -> u64 {
+        self.term
+    }
+
+    fn of(r: Records) -> Brief {
+        Brief::of(r)
+    }
+
+    fn today(nas: &dyn Nas) -> Result<Brief> {
+        Ok(Brief {
+            term: 1,
+            manifest: read_or_default(nas, TODAY[0])?,
+            keys: read_or_default(nas, TODAY[1])?,
+            ..Default::default()
+        })
+    }
 }
 
-/// The path of term 1's first snapshot (`first`), which only its maker writes.
-pub const FIRST: &str = "state/build/term/1/first.json";
+impl Snapshot for Records {
+    fn term(&self) -> u64 {
+        self.term
+    }
 
-/// JSON file `p` parsed, or the default when there's none.
-fn read_or_default<T: Default + serde::de::DeserializeOwned>(nas: &dyn Nas, p: &str) -> Result<T> {
-    match nas.read(p)? {
-        Some(b) => serde_json::from_slice(&b).with_context(|| format!("parse {p}")),
-        None => Ok(T::default()),
+    fn today(nas: &dyn Nas) -> Result<Records> {
+        Records::today(nas)
+    }
+
+    fn with_seq(self, seq: u64) -> Records {
+        Records { seq, ..self }
     }
 }
 
@@ -181,29 +168,14 @@ fn slots(step: &str, t: &str) -> Vec<(String, String)> {
 }
 
 impl Records {
-    /// Term `term`'s snapshot, as read now; None when it has none (its lead never saved one, or the
-    /// read is stale). An error when what's there can't be read now, or parsed.
+    /// Term `term`'s snapshot, as read now (buildstore::records::load); None when it has none.
     pub fn load(nas: &dyn Nas, term: u64) -> Result<Option<Records>> {
-        let Some(b) = nas.read(&path(term))? else { return Ok(None) };
-        let r: Records = serde_json::from_slice(&b).with_context(|| format!("parse {}", path(term)))?;
-        ensure!(r.term == term, "{} holds term {}'s records", path(term), r.term);
-        Ok(Some(r))
+        buildstore::records::load(nas, term)
     }
 
-    /// The records a reader (a job, the map server, a catalogue) has while term `term` is current:
-    /// its snapshot, or while it has none yet (its lead taking it up, or gone before saving one)
-    /// the newest of a term before it; for term 1, as `term_one` says (`today` as it says). None
-    /// before any.
+    /// The records a reader has while term `term` is current (buildstore::records::newest).
     pub fn newest(nas: &dyn Nas, term: u64, today: bool) -> Result<Option<Records>> {
-        for f in (2..=term).rev() {
-            if let Some(r) = Records::load(nas, f)? {
-                return Ok(Some(r));
-            }
-        }
-        if term == 0 {
-            return Ok(None);
-        }
-        term_one(nas, today).map(Some)
+        buildstore::records::newest(nas, term, today)
     }
 
     /// The build's records as today's three files hold them (term 1's, as the pool begins). The
@@ -222,18 +194,10 @@ impl Records {
         })
     }
 
-    /// The build's records as a reader has them now (§6.2): the current term's snapshot, or while
-    /// it has none the newest of a term before it (`newest`); before the pool's first term, today's
-    /// files (a Mac's own records, its jobs saving them: crate::out::Out::save_held). A reader
-    /// never reads today's files beside a term's snapshot: they're the lead's, for older apps'
-    /// readers, and stop once every member reads these (crate::agent::pool::Run::keep_today).
+    /// The build's records as a reader has them now (§6.2; buildstore::records::now): the current
+    /// term's snapshot, or the newest before it; before the pool's first term, today's files.
     pub fn now(nas: &dyn Nas) -> Result<Records> {
-        let cur = super::term::current(nas).context("the current term")?;
-        if cur.term == 0 {
-            no_pool(nas)?;
-            return Records::today(nas);
-        }
-        Ok(Records::newest(nas, cur.term, true)?.unwrap_or_default())
+        buildstore::records::now(nas)
     }
 
     /// Saves them as their term's next snapshot (`seq` one more), whole, then a later term's brief
@@ -340,35 +304,6 @@ pub fn first(nas: &dyn Nas) -> Result<()> {
         Created::Unwritten(_) => nas.write_whole(FIRST, &b).context("finish term 1's first snapshot"),
     }
 }
-
-/// Term 1's records as a take-up or a reader starts from them: its lead's newest snapshot; while it
-/// has none, its first (`first`); while that can't be read whole either (its maker stopped midway,
-/// or its bytes landed out of order; or a stale read), today's three files once it has stayed so
-/// longer than any stale read (`today`: the caller's to say), no lead having written them since
-/// (term 1's writes them after its snapshot, and none is there), else `FirstUnreadable`.
-fn term_one(nas: &dyn Nas, today: bool) -> Result<Records> {
-    if let Some(r) = Records::load(nas, 1)? {
-        return Ok(r);
-    }
-    match nas.read(FIRST)?.map(|b| serde_json::from_slice::<Records>(&b)) {
-        Some(Ok(r)) if r.term == 1 => Ok(r),
-        _ if today => Ok(Records { seq: 1, ..Records::today(nas)? }),
-        _ => Err(FirstUnreadable.into()),
-    }
-}
-
-/// `term_one`'s error while term 1 has no snapshot that reads whole: tried again, until it has
-/// stayed so longer than any stale read (`today`).
-#[derive(Debug)]
-pub struct FirstUnreadable;
-
-impl std::fmt::Display for FirstUnreadable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "term 1's first records can't be read whole yet: try again shortly")
-    }
-}
-
-impl std::error::Error for FirstUnreadable {}
 
 /// What a merge did, by journal key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -501,7 +436,7 @@ pub fn start(
             base = Some(o.clone());
             break;
         }
-        let loaded = if f == 1 { Some(term_one(nas, today)?) } else { Records::load(nas, f)? };
+        let loaded = if f == 1 { Some(buildstore::records::term_one(nas, today)?) } else { Records::load(nas, f)? };
         if let Some(r) = loaded {
             base = Some(r);
             break;
