@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Scenic dev tools</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+  /* The build page's palette (web/work/index.html): dark, the light one where the device is light. */
+  :root { --bg: #0e1013; --panel: #161a1f; --line: #262c33; --text: #d7dce2; --dim: #8a939c; --accent: #7aa7e0; color-scheme: dark; }
+  @media (prefers-color-scheme: light) { :root { --bg: #f4f6f8; --panel: #ffffff; --line: #d8dee5; --text: #1c232b; --dim: #5d6873; --accent: #2d6bb4; color-scheme: light; } }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  a { display: block; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); text-decoration: none; }
+  a:hover, a:focus-visible { border-color: var(--accent); }
+  a b { font-weight: 600; color: var(--accent); }
+  a span { display: block; color: var(--dim); font-size: 11px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Scenic dev tools</h1>
+  <ul>
+    <li><a href="task-board/"><b>Task board</b><span>The backlog: tasks, folders, their history and the status line</span></a></li>
+    <li><a href="jobs/"><b>Dev job dashboard</b><span>Every run of check.sh, publish.sh, the test runs and cargo's builds, on timelines</span></a></li>
+  </ul>
+</main>
+</body>
+</html>

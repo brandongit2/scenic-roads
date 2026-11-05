@@ -51,7 +51,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 - **Inputs** are NAS inputs folders, each checked before use (`docs/inputs.md`): regions (`inputs/regions/`, §6.1), translations and descriptions (`inputs/translations/`, `inputs/descriptions/`; what still lacks them is listed in each `todo/`), heritage registers (§6.5), languages (§6.2), timetables (§6.7), elevation (§6.8).
 - **Publishing the app** (`tools/app/publish.sh`) needs Rust (per `rust-toolchain.toml`), Node, pnpm and the wasi-sdk (per `mise.toml`, `mise install`) and `pnpm install --frozen-lockfile` in `web/`. The agent also needs uv, `osmium-tool`, Java 21+ and Planetiler's jar on the NAS.
 - **Formatting**: run `cargo fmt` before committing (`rustfmt.toml`); `tools/app/guards.sh` fails publishing on `cargo fmt --check`. `.git-blame-ignore-revs` skips the one reformat commit (`git config blame.ignoreRevsFile .git-blame-ignore-revs`).
-- Tools: `tools/bench/` (load and frame benchmarks), `tools/coastcheck/` (shoreline accuracy), `tools/taskboard/` (task board).
+- Tools: `tools/bench/` (load and frame benchmarks), `tools/coastcheck/` (shoreline accuracy), `tools/devtools/` (the dev tools app: the task board and the dev job dashboard).
 
 ## Docs
 

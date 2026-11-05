@@ -66,7 +66,7 @@ for f in sorted(glob.glob("crates/*/src/**/*.rs", recursive=True)):
     elif m := re.search(r"^#\[cfg\(test\)\]\s*\nmod tests\b", s, re.M):
         scan(f, s[m.start():], s[: m.start()].count("\n") + 1)
 tests = set(glob.glob("crates/*/tests/**/*.rs", recursive=True))
-for g in ["web/test/*", "tools/check/*.test.mjs", "tools/taskboard/test/*", "tools/app/test/*", "tools/dev/test/*",
+for g in ["web/test/*", "tools/check/*.test.mjs", "tools/devtools/test/*", "tools/app/test/*", "tools/dev/test/*",
           "tools/status/test/*", "producers/**/test_*.py", "dem/**/test_*.py"]:
     tests |= set(glob.glob(g, recursive=True))
 for f in sorted(tests):

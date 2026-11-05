@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
+<title>Dev jobs</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="stylesheet" href="jobs.css">
+</head>
+<body>
+<header>
+  <div class="top">
+    <a class="up" href="../" title="The dev tools">dev tools</a>
+    <h1>Dev jobs</h1>
+    <span id="state" class="dim small"></span>
+    <span id="ranges" class="seg" role="group" aria-label="How far back"></span>
+  </div>
+  <div id="kinds" class="chips" role="group" aria-label="Which jobs"></div>
+</header>
+<main>
+  <section id="runs-sec">
+    <h2>Runs <span id="runs-sum"></span></h2>
+    <div class="box"><div class="sched" id="runs"></div></div>
+  </section>
+  <section id="run-sec" hidden>
+    <h2><span id="run-title">Run</span> <button id="run-close" class="quiet" type="button" title="Close the run">close</button></h2>
+    <div class="box" id="run"></div>
+  </section>
+  <section id="stats-sec">
+    <h2>By name <span id="stats-sum"></span></h2>
+    <div class="box" id="stats"></div>
+  </section>
+</main>
+<div id="tip" class="tip" hidden></div>
+<script type="module" src="jobs.js"></script>
+</body>
+</html>

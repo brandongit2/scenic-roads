@@ -554,8 +554,8 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
 1. builds the tip of origin's main, fetched now, in its own snapshot
    (`~/Library/Caches/scenic-publish/tree`, kept as a build cache), whatever this checkout holds;
    refuses without the signing identity, or when codesign can't use its key unprompted;
-2. refuses while the lead's role's old name appears in the code, docs or UI (`tools/taskboard`
-   exempt), or when its commit doesn't contain the live version's (below);
+2. refuses while the lead's role's old name appears in the code, docs or UI (the task board's list
+   of where tasks ran, `tools/devtools/schema.mjs`, exempt), or when its commit doesn't contain the live version's (below);
 3. builds the server and pipeline;
 4. runs the crates' tests, the type check and the web build, and checks every Python step loads
    from a copy of `dem/` in a fresh environment and passes pyflakes;

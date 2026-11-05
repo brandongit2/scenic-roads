@@ -1,21 +1,44 @@
 // The task board's API: what it assigns, and that every invalid shape is refused with a 400 that
-// says why and writes nothing (#672). Run: node --test tools/taskboard/test/
+// says why and writes nothing (#672). Run: node --test tools/devtools/test/
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openStore } from "../store.mjs";
+import { openJobs } from "../jobs.mjs";
 import { makeServer } from "../server.mjs";
-import { problems } from "../migrate.mjs";
-import { STAGES, WHERES, EVENT_KINDS } from "../schema.mjs";
+import { STAGES, WHERES, EVENT_KINDS, itemErrors, eventErrors, metaErrors, errorText } from "../schema.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "taskboard-test-"));
 const store = openStore(path.join(dir, "t.db"));
-const server = makeServer(store);
+const jobs = openJobs(path.join(dir, "jobs.db"));
+const server = makeServer({ board: store, jobs });
 let base;
 before(async () => { await new Promise((r) => server.listen(0, "127.0.0.1", r)); base = `http://127.0.0.1:${server.address().port}`; });
-after(() => { server.close(); server.closeAllConnections?.(); store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+after(() => { server.close(); server.closeAllConnections?.(); store.close(); jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+
+// Every way the stored data could break the schema or its references (none expected, ever).
+function problems(store) {
+  const out = [];
+  const items = new Map(store.list("items").map((d) => [d.id, d.data]));
+  const nums = new Map();
+  for (const [id, d] of items) {
+    for (const e of itemErrors(d)) out.push(`items/${id}: ${errorText([e])}`);
+    if (d.parent && !items.has(d.parent)) out.push(`items/${id}: parent ${d.parent} doesn't exist`);
+    else if (d.parent && items.get(d.parent).kind !== "folder") out.push(`items/${id}: its parent ${d.parent} is a task`);
+    if (d.num !== undefined) { if (nums.has(d.num)) out.push(`items/${id}: #${d.num} is also ${nums.get(d.num)}'s`); nums.set(d.num, id); }
+    const seen = new Set([id]);
+    for (let p = d.parent; p; p = items.get(p)?.parent) { if (seen.has(p)) { out.push(`items/${id}: its parents loop`); break; } seen.add(p); }
+  }
+  for (const { id, data: d } of store.list("events")) {
+    for (const e of eventErrors(d)) out.push(`events/${id}: ${errorText([e])}`);
+    if (d.item && !items.has(d.item)) out.push(`events/${id}: item ${d.item} doesn't exist`);
+  }
+  for (const { id, data: d } of store.list("meta")) for (const e of metaErrors(id, d)) out.push(`meta/${id}: ${errorText([e])}`);
+  if ((store.get("meta", "counter")?.next ?? 0) <= store.maxNum()) out.push("meta/counter: next isn't past the highest number");
+  return out;
+}
 
 async function call(method, url, body, headers = {}) {
   const r = await fetch(base + url, { method, headers: { "content-type": "application/json", "user-agent": "curl/8", ...headers }, body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body) });
@@ -268,12 +291,19 @@ test("routes: nothing else is open", async () => {
   assert.deepEqual(s.body.eventKinds, EVENT_KINDS);
 });
 
-test("the page and its schema are served (the page checks what it shows by the same rules)", async () => {
-  for (const [url, type] of [["/", /text\/html/], ["/709", /text\/html/], ["/shim.js", /javascript/], ["/schema.mjs", /javascript/]]) {
+test("the app's pages, the board's schema and the dashboard's timeline are served", async () => {
+  for (const [url, type] of [["/", /text\/html/], ["/task-board/", /text\/html/], ["/task-board/709", /text\/html/], ["/task-board/shim.js", /javascript/],
+    ["/task-board/schema.mjs", /javascript/], ["/jobs/", /text\/html/], ["/jobs/jobs.js", /javascript/], ["/lib/work/timeline.js", /javascript/], ["/favicon.svg", /svg/]]) {
     const r = await fetch(base + url);
     assert.equal(r.status, 200, url);
     assert.match(r.headers.get("content-type"), type, url);
   }
+  // (Without its slash, a page's address goes to it, relative: a proxy's path stays.)
+  const r = await fetch(base + "/task-board", { redirect: "manual" });
+  assert.equal(r.status, 301);
+  assert.equal(r.headers.get("location"), "task-board/");
+  // (Only the build page's modules the dashboard imports, nothing else of the checkout.)
+  for (const url of ["/lib/work/dash.js", "/lib/work/../../../README.md", "/../server.mjs", "/task-board/../../jobs.mjs"]) assert.equal((await fetch(base + url)).status, 404, url);
 });
 
 test("after all of that, every item, event and meta document fits the schema", () => {
@@ -294,7 +324,7 @@ test("the page's shim never shows a read that began before a write was answered 
   const fetchStub = (url, o = {}) => new Promise((res) => ctl.push((state) => res({ ok: true, json: async () => state, method: o.method || "GET" })));
   class ES { constructor() { ES.me = this; this.l = {}; } addEventListener(n, f) { this.l[n] = f; } }
   const window = {};
-  vm.runInNewContext(fs.readFileSync(new URL("../public/shim.js", import.meta.url), "utf8"), { window, fetch: fetchStub, EventSource: ES, URLSearchParams, encodeURIComponent, JSON, Promise, Object, Error });
+  vm.runInNewContext(fs.readFileSync(new URL("../public/task-board/shim.js", import.meta.url), "utf8"), { window, fetch: fetchStub, EventSource: ES, URLSearchParams, encodeURIComponent, JSON, Promise, Object, Error });
   const db = (await window.claude.use("db"));
   const shown = [];
   db.collection("items").onSnapshot((s) => shown.push(s.size));

@@ -19,7 +19,7 @@
 // its tiles to the map. A legend item's hover is a key like any other. The segment under the
 // pointer is its canvas's `data-card` (dash.js's cards find it there).
 import { timeTicks } from "./chartmath.js";
-import { viewPan, viewRange, viewZoom } from "./sums.js";
+import { SCHED_MIN_SPAN, viewPan, viewRange, viewZoom } from "./sums.js";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const SVG = "http://www.w3.org/2000/svg";
@@ -30,7 +30,9 @@ export const SPAN0 = 86400;
 const LOOK = { past: [0.8, 1], next: [0.4, 1], running: [1, 0], mark: [0.75, 1] };
 const DIM = 0.14;
 
-export function createTimeline({ relations = () => null, onLit = () => {}, onRepack = () => {} } = {}) {
+// (`minSpan`, `span0`: its least width and its width at first, s; the dev job dashboard's own,
+// tools/devtools.)
+export function createTimeline({ relations = () => null, onLit = () => {}, onRepack = () => {}, minSpan = SCHED_MIN_SPAN, span0 = SPAN0 } = {}) {
   const el = document.createElement("div");
   el.className = "lanewrap";
   const axis = document.createElement("div");
@@ -50,14 +52,14 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
   archive.setAttribute("aria-label", "Older history is in the archive, not shown here");
   archive.hidden = true;
 
-  let view = { c: 0, span: SPAN0 };
+  let view = { c: 0, span: span0 };
   let dom = { now: 0, lo: 0, hi: 1 }; // the domain and now (unix s), as dash.js last rendered it
   let geo = { x0: 0, w: 0 }; // the tracks' column: its left in `el` and its width (px)
   let packed = 0; // the span its segments were packed at
   let tracks = []; // [{el, canvas, segs}]
   let hoverKey = null, pinKey = null, activeKey = null, rel = null, under = null;
 
-  const range = () => viewRange(view, dom.now, dom.lo, dom.hi);
+  const range = () => viewRange(view, dom.now, dom.lo, dom.hi, minSpan);
   // (A pointer's x as a share of the tracks' width.)
   const frac = (clientX) => {
     const r = el.getBoundingClientRect();
@@ -227,8 +229,8 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
 
   // ---- Moving and zooming ----
   const setView = (v) => { view = v; later(); };
-  const zoomAt = (k, clientX) => setView(viewZoom(view, k, frac(clientX), dom.now, dom.lo, dom.hi));
-  const panPx = (dx) => setView(viewPan(view, (dx / geo.w) * range().span, dom.now, dom.lo, dom.hi));
+  const zoomAt = (k, clientX) => setView(viewZoom(view, k, frac(clientX), dom.now, dom.lo, dom.hi, minSpan));
+  const panPx = (dx) => setView(viewPan(view, (dx / geo.w) * range().span, dom.now, dom.lo, dom.hi, minSpan));
   // (A wheel's run of events keeps the axis it began on: a trackpad's sideways drag wobbles.)
   let lock = { axis: "", t: -1e9 };
   el.addEventListener("wheel", (e) => {
@@ -281,7 +283,7 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
       const [a, b] = [...ptrs.values()];
       const span = (pinch.span * pinch.d) / Math.max(8, Math.abs(a - b)), f = frac((a + b) / 2);
       // (The time between the fingers at first stays between them.)
-      setView(viewPan(viewZoom({ c: pinch.t - dom.now, span: pinch.span }, pinch.span / span, 0.5, dom.now, dom.lo, dom.hi), (0.5 - f) * span, dom.now, dom.lo, dom.hi));
+      setView(viewPan(viewZoom({ c: pinch.t - dom.now, span: pinch.span }, pinch.span / span, 0.5, dom.now, dom.lo, dom.hi, minSpan), (0.5 - f) * span, dom.now, dom.lo, dom.hi, minSpan));
       return;
     }
     if (!drag || drag.id !== e.pointerId) return;
@@ -295,7 +297,7 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
       under = null;
       activate();
     }
-    setView(viewPan(drag.v, (-dx / geo.w) * range().span, dom.now, dom.lo, dom.hi));
+    setView(viewPan(drag.v, (-dx / geo.w) * range().span, dom.now, dom.lo, dom.hi, minSpan));
   });
   const up = (e) => {
     if (drag?.id === e.pointerId && drag.moved && drag.type !== "touch") eatClick = true;

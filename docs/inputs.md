@@ -1673,7 +1673,7 @@ publishing; the tests' whole output in `~/Library/Logs/scenic/guards-<time>.log`
 
 `crates/pipeline/tests/source_names.rs` fails when a data source's address or name is in the code
 or strings of `crates/` (tests aside: `#[cfg(test)]` items, `tests.rs` files, `tests/`), `dem/`,
-`web/src/`, `tools/` (not `tools/taskboard/`) or `scripts/`: their Rust, Python, TypeScript and
+`web/src/`, `tools/` or `scripts/`: their Rust, Python, TypeScript and
 JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`), shell, Swift, C, CSS, HTML, JSON, TOML and YAML files.
 Comments aren't scanned (nor Python's docstrings and `test_…` functions). `producers/` is exempt: the
 declarations are made and staged there.

@@ -1,0 +1,128 @@
+# Dev tools
+
+The Scenic Roads dev tools app: one Node process serving the task board and the dev job dashboard,
+each with its data in its own SQLite file. Its index (`/`) is a link to each.
+
+```
+node server.mjs [--port 8077] [--host 127.0.0.1] [--data <folder>]   # data: taskboard.db, jobs.db (default here)
+node --test test/*.test.mjs        # the APIs' tests (npm test)
+```
+
+Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
+
+- `server.mjs` is the app: its pages (`public/`), the event stream open pages hear of changes on
+  (`/api/stream`, which collection changed), and its parts' APIs. `http.mjs` is what the parts
+  share to answer.
+- **The task board** (`/task-board/`, an item's own address `/task-board/709`): `board.mjs` its API
+  (`/api/c/…`, photos at `/_blob/<id>`), `schema.mjs` the shape of its data, enforced on every write
+  (and read by the page, which shows what doesn't fit), `store.mjs` its file, `taskboard.db`:
+  `items` (folders and tasks), `events` (history), `meta` (`status`, the status bar; `counter`, the
+  next item number), `blobs` (photos). `public/task-board/index.html` is the page;
+  `public/task-board/shim.js` gives it its database API (`window.claude.use("db" | "user" |
+  "assets")`) over the app's.
+- **The dev job dashboard** (`/jobs/`, below): `jobs.mjs` its API (`/api/jobs/…`) and file,
+  `jobs.db`; `public/jobs/` the page.
+- The pages' addresses are relative (`../api/…`), so the app works under a proxy's path.
+- The data is not in git: it lives on the M6, which copies both files nightly to the NAS
+  (`state/devtools/<name>-<date>.db`, the newest 14 of each; `launchd/backup.sh`).
+- **On the M6:** `launchd/install.sh [node]` (default `mise which node`) installs it as a LaunchAgent
+  (`local.scenic.devtools`, `--host ::`, IPv4 and IPv6, log `~/Library/Logs/scenic/devtools.log`)
+  and the backup (`local.scenic.devtools-backup`, 03:30). The other Macs use it at
+  http://mac-mini-de-brandon:8077, and any device on the tailnet at https://map.brandontsang.net/dev/
+  (Caddy, `tools/caddy`).
+- No sign-in, by the owner's rule: anyone on the home network or tailnet may use it. Elsewhere `--host` stays 127.0.0.1.
+
+## The dev job dashboard (#946)
+
+Every run of the long dev jobs, since the dashboard was merged: `tools/dev/check.sh` and each of its
+parts, `tools/app/publish.sh` and each of its steps, every test run through
+`tools/app/remote-tests.sh` (check.sh's, publish's suite, agents' and reviewers' own) with each
+suite and test, and every cargo under `tools/dev/bin/cargo`'s lock (an agent worktree's: builds,
+clippy, tests, `cargo run`, measurement runs and backtests). Recorded by the Macs themselves
+(`tools/dev/devjob.zsh` and `devjob.py`, tools/dev/testing.md, "Dev jobs"); this app keeps and shows
+them.
+
+- **What a run is:** a tree of spans (`jobs.db`'s `spans`): each a kind, a name, its Mac, its start
+  and end, a status (`running`, `ok`, `fail`, `stopped`, `gone`: its process ended without saying
+  how, `skip`, `reuse`) and attributes (a run of its own: its checkout, branch, commit, task, whether
+  an agent ran it; a cargo's command and purpose; a wrapped command's exit, CPU and largest
+  process's memory; a test-Mac run's Mac, load and CPU). Kinds: `check` with a `part` each, `publish`
+  with a `step` each, `tests` (a remote-tests.sh run) with its `wait`s (the test Mac's key, a slot),
+  `copy`, `run` on the test Mac, `compile`s, `suite`s and `test`s; `cargo` with its `wait` for the
+  shared build folder, `reset` of the workspace's fingerprints, `build` and each `crate` compiled
+  (cargo's `--timings` report), each test binary run as a `suite`, a `program` run.
+- **Each Mac's load** (1-minute load average), memory free (`kern.memorystatus_level`, %) and swap
+  used, every 10 s while any recorded job runs on it (`samples`), and its chip, memory and cores
+  (`macs`). The test Mac is sampled during its runs too (remote-tests.sh starts its sampler there).
+- **The page** (`public/jobs/`): the runs on a timeline, a group a Mac, a lane a kind (a cargo
+  measurement or backtest its own), each Mac's load and memory as heat strips under them; a run
+  pointed at shows its card and lights its checkout's other runs, a click opens it. A run opened:
+  its facts, its spans on a timeline of their own (a lane a kind at each depth, deepest last), where
+  its time went, its longest and failed spans, the time by kind; its Macs' load and memory over it.
+  By name: one kind of span over all time, each name's runs, failures, median, p90, longest, total
+  and recent times. Both timelines are the build page's (`web/work/timeline.js`, served at
+  `/lib/work/`): dragged or scrolled sideways to move, pinched or ⌥-scrolled to zoom, down to 20 s.
+  The page's address keeps what's open (`?range=24h&run=<id>&kind=test&hide=cargo`).
+- **Lost:** a running span its Mac's sampler hasn't named for a minute (`jobs.mjs` LOST_S) shows as
+  lost: the Mac asleep, away or restarted. The sampler ends one whose process is gone as `gone`.
+
+**The API.** `POST /api/jobs/events` takes NDJSON (or a JSON array) of events, each merged into
+its span by its id, so they may come in any order and again: `start` (`id`, `parent`, `kind`,
+`name`, `mac`, `t`, `attrs`), `end` (`id`, `t`, `status`, `attrs`), `span` (all at once: `t0`,
+`t1`), `attr` (`id`, `attrs`), `sample` (`mac`, `t`, `load`, `memfree`, `swap`, `ncpu`, `chip`,
+`mem`, `live`: the ids of the spans live on it). Times are unix seconds. Each line that fits is
+taken; one that doesn't is answered in `refused` (`{line, why}`), the rest kept. Reads:
+`GET /api/jobs/runs?from=&to=[&kind=]` (the runs overlapping it, each with its span count and failed
+count, and the Macs), `GET /api/jobs/runs/<id>` (the run a span is part of, whole, with its Macs'
+samples), `GET /api/jobs/samples?from=&to=&n=` (each Mac's samples in at most `n` buckets: the most
+load, the least memory free, the most swap), `GET /api/jobs/stats?kind=[&from=&to=]` (each name's
+runs, failures, p50, p90, longest, total and last 40 times), `GET /api/jobs/kinds`.
+
+## The task board's API (for the PM, agents and scripts)
+
+Everything is under `/api/c/<collection>`, JSON in and out, `B=http://mac-mini-de-brandon:8077`. **You send content; the server assigns the rest.** A new item's `num`, `id`, `order` and `added`, a new event's `id` and `t`, `meta/counter` and `meta/status`'s `updated` are the server's: sending one is a 400. Every write is checked against the schema (below) in one transaction: a request that doesn't fit gets a **400** with every reason (`error.message`, and `error.errors` as `[{field, message}]`), and nothing is written. Errors are `{"error": {"code", "message"}}`: `invalid_argument` 400, `not_found` 404, `forbidden` 403, `conflict` 409.
+
+**Add a task** (`POST /api/c/items`). Only `text` is required; `kind` defaults to `task`, `parent` to `""` (top level; else an item's id), `stage` to `""` (queued), `where` to `Subagent`. Also allowed: `note`, `priority`, `discuss`. `parent` must be a folder: only folders hold items.
+
+```bash
+curl -s -X POST $B/api/c/items -H 'content-type: application/json' \
+  -d '{"text": "Task board: do the thing", "note": "What and why.", "priority": 15, "where": "Subagent (Sonnet)", "parent": "f-publish"}'
+# → {"id":"i674","num":674,"order":52,"added":"2026-10-26T09:03:14.285Z"}      (the task is #674, id i674)
+```
+
+A new item's id is `i<num>`, so `GET $B/api/c/items/i674` reads it (older items keep the ids they have, e.g. `f-publish`). A folder (`"kind": "folder"`, `text`, `parent`, `note`) is numbered from the same counter as tasks: #501 a folder, then #502 a task. `order` is one order over all items, the last + 1 for a new one: the tiebreaker of every view (siblings in the tree, equal priorities in the sort), and what a drag changes.
+
+**Add a history event** (`POST /api/c/events`): `item` (an item's id, or `""` for the board itself), `kind` (one of the list below), `text`.
+
+```bash
+curl -s -X POST $B/api/c/events -H 'content-type: application/json' \
+  -d '{"item": "i674", "kind": "delegate", "text": "Delegated to an Opus subagent in a worktree."}'
+# → {"id":"4f0c…","t":"2026-10-26T09:05:00.113Z"}
+```
+
+**Change a task**: `PATCH /api/c/items/<id>` with only the fields that change (`null` removes an optional field). A missing id is a 404: a PATCH can't create. `num`, `id` and `added` can't be changed; `order` can (a reorder); a folder made a task (`"kind": "task"` with `stage` and `where`) or a task made a folder (null its task fields in the same PATCH) keeps its number; a folder holding items can't become a task. A change of `stage` leaves a history event (`kind: "stage"`, by the client's User-Agent) whoever makes it.
+
+```bash
+curl -s -X PATCH $B/api/c/items/i674 -H 'content-type: application/json' -d '{"stage": "working", "where": "Subagent (Opus)"}'
+# → {"id":"i674","num":674,"order":52,"added":"…"}
+```
+
+`PUT /api/c/items/<id>` replaces what a client writes (it needs `kind`, `text`, `parent`, and for a task `stage` and `where`), keeping `num`, `added` and `order`; a missing id is a 404 too. **Use PATCH**: a PUT with only `{stage}` is refused, not a wipe, but PATCH is what you mean.
+
+**The status line**: `PATCH /api/c/meta/status` with `{"now": "…"}`. The server sets `updated` (send it and it's a 400); `meta/counter` can't be written (403), nor deleted.
+
+```bash
+curl -s -X PATCH $B/api/c/meta/status -H 'content-type: application/json' -d '{"now": "In flight: #601, #672."}'
+```
+
+**Delete**: `DELETE /api/c/items/<id>` also deletes what is inside it and every event about any of them (a reference never points at nothing); `DELETE /api/c/events/<id>` one event. The page's Undo puts it back with `POST /api/c/<collection>/<id>/restore` (the server keeps the last 100 deletions in memory; a restart forgets them). A deleted item's number is never given again.
+
+**Read**: `GET /api/c/items/<id>` (`{exists, data}`), `GET /api/c/items` (`{docs: [{id, data}], total}`; `?orderBy=<field>&dir=desc&limit=<n>`), the same for `events` and `meta`. `GET /api/schema` lists the fields and the fixed lists.
+
+### The schema (`schema.mjs`)
+
+- **Times** are one format everywhere: ISO 8601, UTC, to the millisecond (`2026-10-26T08:35:48.000Z`, `new Date().toISOString()`). A time you send may leave the fraction out (`…08:35:48Z`) and is stored in full. Epoch numbers or digit strings (`"1792000000000.0"`, what broke #634–#673 on 26 Oct), offsets and bare dates are refused.
+- **Items**: `kind` (`task` | `folder`), `text` (non-empty, ≤ 2000), `parent` (`""` or an existing folder; not itself or inside itself), `order` (number; one order over all items), `added`, `note`, `archived` (bool; `archivedAt` only with it), `photos` (blob ids from `POST /api/blob`), and `num` (whole number, from 1, unique; every item has one). Tasks only: `stage`, `where`, `priority` (number ≥ 0), `discuss` (bool), `started`, `finished` (times), `reply`. A folder with any of those is refused; unknown fields are refused.
+- **Events**: `item` (an existing item's id, or `""`), `kind`, `text` (non-empty), `t`. Only `kind` and `text` can be changed afterwards.
+- **Meta**: only `status` (`now`: string, `updated`: time) and `counter` (`next`).
+- **Fixed lists** (the values in use on 26 Oct 2026; to allow another, add it to `schema.mjs`): stage `""` (queued), `working`, `backgrounded`, `integrating`, `review`, `waiting`, `done`, `abandoned`; event kind `note`, `owner`, `stage`, `added`, `start`, `delegate`, `progress`, `review`, `merge`, `publish`, `done`, `wait`, `stop`, `bug`, `decision`; `where`: see `WHERES` (`Subagent`, `Subagent (Opus)`, `Subagent (Sonnet)`, `You`, `PM (M4)`, …). The page's editor offers `where` from the same list.

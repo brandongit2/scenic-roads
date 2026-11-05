@@ -1,62 +1,28 @@
-// The Scenic Roads task board: a standalone web app. One Node process (no dependencies; Node 22.5+
-// for node:sqlite) serves the page in public/ and keeps its data in a SQLite file.
-//
-//   node server.mjs [--port 8077] [--host 127.0.0.1] [--db taskboard.db]
-//
-// The page is the Claude artifact's, unchanged in spirit; public/shim.js gives it the document-database
-// API it was written against (collection/doc/get/add/update/delete/restore/onSnapshot, and photo
-// uploads) over this server's HTTP API: a change is written here, and every open tab is told through
-// an event stream to read the collection again.
-//
-// The server owns the data's shape (schema.mjs: every collection, on every write; README.md has the
-// API). A client sends content only: the server gives a new item its num, id, order and added time,
-// a new event its id and time, and keeps the counter. A write that doesn't fit is refused with 400 and
-// every reason, and nothing is written.
-import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
+// The task board's API (README.md): items, events and meta in the board's SQLite file (store.mjs),
+// every write checked against schema.mjs. A client sends content only: the server gives a new item
+// its num, id, order and added time, a new event its id and time, and keeps the counter. A write that
+// doesn't fit is refused with 400 and every reason, and nothing is written.
 import crypto from "node:crypto";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { openStore } from "./store.mjs";
 import {
   ITEM_FIELDS, ITEM_CREATE, EVENT_CREATE, ITEM_EDIT, EVENT_EDIT,
   itemErrors, eventErrors, metaErrors, sentErrors, errorText, normTime, validId, describe,
 } from "./schema.mjs";
+import { refuse, send, fail, readBody, jsonBody } from "./http.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
 const STAGE_LABEL = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
-const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json" };
 const IMAGE = /^image\/(png|jpeg|gif|webp|avif|heic|heif)$/;
 const MAX_BLOB = 20 * 1024 * 1024;
 const UNDO_KEPT = 100; // deleted groups kept for a restore
 
-// A request the server refuses: the HTTP status, a code for the shim, why (and each field's reason).
-class Refusal extends Error {
-  constructor(status, code, message, errors) { super(message); Object.assign(this, { status, code, errors }); }
-}
-const refuse = (status, code, message, errors) => { throw new Refusal(status, code, message, errors); };
 const invalid = (errs) => refuse(400, "invalid_argument", errorText(errs), errs);
 const refuseIf = (errs) => { if (errs.length) invalid(errs); };
 const newId = () => { const a = "abcdefghijklmnopqrstuvwxyz0123456789"; return Array.from(crypto.randomBytes(20), (x) => a[x % a.length]).join(""); };
 const nowIso = () => new Date().toISOString();
 
-export function makeServer(store) {
+// `changed(...cols)`: tells the open pages which collections changed (server.mjs's event stream).
+// Returns {api(req, res, url, parts): a call under /api (parts: the path after it), blob(res, id)}.
+export function makeBoard(store, changed) {
   const { db } = store;
-
-  // ---- change notices ----------------------------------------------------------------------------
-  const streams = new Set();
-  let pending = new Set(), notifyT = null;
-  const changed = (...cols) => {
-    for (const c of cols) pending.add(c);
-    if (notifyT) return;
-    notifyT = setTimeout(() => {
-      for (const c of pending) for (const res of streams) res.write(`event: change\ndata: ${JSON.stringify({ col: c })}\n\n`);
-      pending = new Set();
-      notifyT = null;
-    }, 25);
-  };
-  const ping = setInterval(() => { for (const res of streams) res.write(": ping\n\n"); }, 25000);
-  ping.unref();
 
   // One write, all or nothing.
   function tx(fn) {
@@ -240,34 +206,8 @@ export function makeServer(store) {
     });
   }
 
-  // ---- http --------------------------------------------------------------------------------------
-  const send = (res, code, body, type = "application/json; charset=utf-8", headers = {}) => {
-    res.writeHead(code, { "content-type": type, "cache-control": "no-store", ...headers });
-    res.end(typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
-  };
-  const fail = (res, code, errCode, message, errors) => send(res, code, { error: { code: errCode, message, ...(errors ? { errors } : {}) } });
-  const readBody = (req, max) => new Promise((resolve, reject) => {
-    const chunks = []; let n = 0;
-    req.on("data", (c) => { n += c.length; if (n > max) { reject({ code: "too_large" }); req.destroy(); } else chunks.push(c); });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
-  });
-  const jsonBody = async (req) => {
-    const text = (await readBody(req, 2e6)).toString("utf8");
-    try { return JSON.parse(text || "{}"); } catch { return refuse(400, "invalid_argument", "the body is not valid JSON"); }
-  };
-
-  async function api(req, res, url) {
-    let parts;
-    try { parts = url.pathname.split("/").slice(2).map(decodeURIComponent); } catch { return fail(res, 400, "invalid_argument", "the path is not valid percent-encoding"); }
+  async function api(req, res, url, parts) {
     const [what, col, id, action] = parts; // after /api
-    if (what === "stream" && req.method === "GET") {
-      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
-      res.write("retry: 1000\n\n");
-      streams.add(res);
-      req.on("close", () => streams.delete(res));
-      return;
-    }
     if (what === "schema" && req.method === "GET") return send(res, 200, describe());
     if (what === "blob" && req.method === "POST") {
       const type = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
@@ -278,7 +218,7 @@ export function makeServer(store) {
       const sha = crypto.createHash("sha256").update(data).digest("hex");
       const bid = sha.slice(0, 32);
       store.stmt(`INSERT OR IGNORE INTO blobs (id, type, data, sha256, created) VALUES (?, ?, ?, ?, ?)`).run(bid, type, data, sha, nowIso());
-      return send(res, 200, { id: bid, url: "_blob/" + bid });
+      return send(res, 200, { id: bid });
     }
     if (what !== "c" || !["items", "events", "meta"].includes(col)) return fail(res, 404, "not_found", "no such route");
     const m = req.method;
@@ -304,37 +244,10 @@ export function makeServer(store) {
     return fail(res, 405, "invalid_argument", "method not allowed");
   }
 
-  return http.createServer(async (req, res) => {
-    try {
-      const url = new URL(req.url, "http://x");
-      if (url.pathname.startsWith("/api/")) return await api(req, res, url);
-      if (url.pathname.startsWith("/_blob/") && req.method === "GET") {
-        const r = store.stmt(`SELECT type, data FROM blobs WHERE id = ?`).get(decodeURIComponent(url.pathname.slice(7)));
-        if (!r) return send(res, 404, "not found", "text/plain");
-        return send(res, 200, Buffer.from(r.data), r.type, { "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
-      }
-      if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, "method not allowed", "text/plain");
-      // (An item's own address, /709, is the page too: it opens with #709 selected.)
-      const p = url.pathname === "/" || /^\/\d+$/.test(url.pathname) ? "/index.html" : url.pathname;
-      // (schema.mjs is the page's too: it checks what it shows by the same rules.)
-      const file = p === "/schema.mjs" ? path.join(here, "schema.mjs") : path.join(here, "public", path.normalize(p));
-      if ((p !== "/schema.mjs" && !file.startsWith(path.join(here, "public") + path.sep)) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, "not found", "text/plain");
-      return send(res, 200, fs.readFileSync(file), TYPES[path.extname(file)] || "application/octet-stream");
-    } catch (e) {
-      if (e instanceof Refusal) return fail(res, e.status, e.code, e.message, e.errors);
-      if (e?.code === "too_large") return fail(res, 413, "too_large", "the body is over 2 MB");
-      console.error(e);
-      if (!res.headersSent) fail(res, 500, "internal", String(e?.message || e));
-      else res.end();
-    }
-  });
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const arg = (name, d) => { const i = process.argv.indexOf("--" + name); return i > 0 ? process.argv[i + 1] : d; };
-  const PORT = Number(arg("port", process.env.PORT || 8077));
-  const HOST = arg("host", process.env.HOST || "127.0.0.1");
-  const DB_PATH = path.resolve(arg("db", process.env.TASKBOARD_DB || path.join(here, "taskboard.db")));
-  const server = makeServer(openStore(DB_PATH));
-  server.listen(PORT, HOST, () => console.log(`Task board on http://${HOST}:${PORT}  (data: ${DB_PATH})`));
+  function blob(res, id) {
+    const r = store.stmt(`SELECT type, data FROM blobs WHERE id = ?`).get(id);
+    if (!r) return send(res, 404, "not found", "text/plain");
+    return send(res, 200, Buffer.from(r.data), r.type, { "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
+  }
+  return { api, blob };
 }

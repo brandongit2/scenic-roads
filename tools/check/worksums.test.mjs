@@ -390,6 +390,10 @@ test("schedule's view: 12 h each side of now at first, held in the domain, zoome
   assert.equal(viewRange(viewPan(v, 30 * 86400, now, lo, hi), now, lo, hi).t1, hi);
   // The view moves with now: the same view a minute later is a minute later.
   assert.equal(viewRange(v, now + 60, lo + 60, hi).t0, now + 60 - 43200);
+  // A timeline of its own least span (the dev job dashboard's, a second): zoomed and panned by it.
+  assert.equal(viewRange(viewZoom(v, 1e9, 0.5, now, lo, hi, 1), now, lo, hi, 1).span, 1);
+  const s = viewPan(viewZoom(v, 1e9, 0.5, now, lo, hi, 1), 0.5, now, lo, hi, 1);
+  assert.deepEqual(viewRange(s, now, lo, hi, 1), { t0: now, t1: now + 1, span: 1 });
 });
 
 test("forecast runs: numbered by lane name in byte order, linked both ways (#787)", () => {

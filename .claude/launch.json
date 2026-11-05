@@ -26,8 +26,17 @@
       "port": 5173
     },
     {
-      "name": "taskboard",
+      "name": "devtools",
       "url": "http://mac-mini-de-brandon:8077"
+    },
+    {
+      "name": "devtools-dev",
+      "runtimeExecutable": "zsh",
+      "runtimeArgs": [
+        "-c",
+        "d=${TMPDIR:-/tmp}/scenic-devtools; mkdir -p $d && exec node tools/devtools/server.mjs --port 8078 --data $d"
+      ],
+      "port": 8078
     }
   ]
 }

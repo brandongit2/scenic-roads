@@ -108,9 +108,9 @@ floor (docs/pool.md §7.2). A member's status goes to the lead in its beat (docs
 the members' in its own (`state/status.json`, `helpers`).
 
 **The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: the pool's lead, fixed
-(docs/pool.md §6, task #881), with room for more at once (its memory floor 4 GB by default). It also hosts the task board
-(`tools/taskboard`, http://mac-mini-de-brandon:8077, its LaunchAgent and nightly NAS backup from
-`tools/taskboard/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
+(docs/pool.md §6, task #881), with room for more at once (its memory floor 4 GB by default). It also hosts the dev tools app, the task board and the dev job dashboard
+(`tools/devtools`, http://mac-mini-de-brandon:8077, its LaunchAgent and nightly NAS backup from
+`tools/devtools/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
 away from home: https://map.brandontsang.net (Devices). It publishes the app (`ssh m6 'cd
 ~/projets/scenic-roads && tools/app/publish.sh'`, docs/building.md, App publishing), its tests
 run on the test Mac (`SCENIC_TEST_HOST`, default `m4`; `tools/app/remote-tests.sh`). Its toolchain: brew's mise
@@ -367,7 +367,8 @@ tailnet: **https://map.brandontsang.net**, or `tailscale serve`'s
   `~/Library/Logs/scenic/caddy.log`) serves it on port 443 with the owner's Let's Encrypt
   certificate (`~/certs/map.crt`, `map.key`; acme.sh with Cloudflare DNS renews it and restarts
   Caddy, the owner's token never in the repo): `/` the map (:7311), `/build` the build page (the
-  agent, :8090; the page at `/build/work/`), `/task-board` the board (:8077). The macOS firewall
+  agent, :8090; the page at `/build/work/`), `/dev` the dev tools app (:8077: `/dev/task-board/` the
+  board, `/dev/jobs/` the dev job dashboard; `/task-board/…` goes to `/dev/task-board/…`). The macOS firewall
   must let Caddy in (`socketfilterfw --add` its Cellar binary, again after `brew upgrade caddy`).
   `tailscale serve` holds port 443 on the tailnet address whatever the name asked (it ends any
   other name's TLS), so the M6's own `tailscale serve` of the agent is on 8444 instead (pool.md §14).

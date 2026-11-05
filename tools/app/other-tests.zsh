@@ -5,7 +5,8 @@
 # per part. Exit 0 only when every part passed.
 #   js         node --test of web/test/*.test.{ts,mjs} and tools/check/*.test.mjs (by glob: a new
 #              test file runs without a list to edit), types stripped (web/node_modules installed)
-#   taskboard  node --test tools/taskboard/test/*.test.mjs
+#   devtools   node --test tools/devtools/test/*.test.mjs (the task board and the dev job dashboard)
+#   devjob     tools/dev/test/devjob.zsh (the dev jobs' recorder)
 #   swift      swiftc of tools/status/*.swift and its --test tools/status/test
 #   shell      tools/app/test/shell.zsh
 #   testguard  tools/dev/test/test-guard.zsh
@@ -16,11 +17,12 @@ trap 'rm -rf $out' EXIT
 js=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
 typeset -A cmd
 cmd[js]="node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)js}}"
-cmd[taskboard]='cd tools/taskboard && node --test test/*.test.mjs'
+cmd[devtools]='cd tools/devtools && node --test test/*.test.mjs'
+cmd[devjob]='zsh tools/dev/test/devjob.zsh'
 cmd[swift]="swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)out}/scenic-status tools/status/*.swift && ${(q)out}/scenic-status --test tools/status/test"
 cmd[shell]='zsh tools/app/test/shell.zsh'
 cmd[testguard]='zsh tools/dev/test/test-guard.zsh'
-order=(js taskboard swift shell testguard)
+order=(js devtools devjob swift shell testguard)
 typeset -a pids
 for p in $order; do
   zsh -c "${cmd[$p]}" > $out/$p.log 2>&1 &

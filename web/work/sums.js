@@ -118,28 +118,28 @@ export function laneGroups(names, hosts) {
 
 // The schedule's view (task #787): its middle as seconds from now (`c`: it moves with now) and its
 // width in seconds (`span`), held in the timeline's domain [lo, hi] (unix s: the history's seven
-// days back to the forecast's end) and no narrower than SCHED_MIN_SPAN. `viewRange` is the times
-// it shows, {t0, t1, span}; `viewZoom` zooms by `k` (over 1: in) about the point at `f` (0–1) of its
-// width, that time kept under it; `viewPan` moves it `dt` seconds later. Each answers a view held
-// in the domain.
+// days back to the forecast's end) and no narrower than `min` (SCHED_MIN_SPAN; the dev job
+// dashboard's, tools/devtools, a second). `viewRange` is the times it shows, {t0, t1, span};
+// `viewZoom` zooms by `k` (over 1: in) about the point at `f` (0–1) of its width, that time kept under
+// it; `viewPan` moves it `dt` seconds later. Each answers a view held in the domain.
 export const SCHED_MIN_SPAN = 600;
-export function viewRange(v, now, lo, hi) {
-  const span = Math.min(Math.max(SCHED_MIN_SPAN, hi - lo), Math.max(SCHED_MIN_SPAN, v.span));
+export function viewRange(v, now, lo, hi, min = SCHED_MIN_SPAN) {
+  const span = Math.min(Math.max(min, hi - lo), Math.max(min, v.span));
   const t0 = Math.max(lo, Math.min(hi - span, now + v.c - span / 2));
   return { t0, t1: t0 + span, span };
 }
-const viewOf = (t0, span, now, lo, hi) => {
-  const r = viewRange({ c: t0 + span / 2 - now, span }, now, lo, hi);
+const viewOf = (t0, span, now, lo, hi, min) => {
+  const r = viewRange({ c: t0 + span / 2 - now, span }, now, lo, hi, min);
   return { c: r.t0 + r.span / 2 - now, span: r.span };
 };
-export function viewZoom(v, k, f, now, lo, hi) {
-  const r = viewRange(v, now, lo, hi), at = r.t0 + f * r.span;
-  const span = Math.min(Math.max(SCHED_MIN_SPAN, hi - lo), Math.max(SCHED_MIN_SPAN, r.span / k));
-  return viewOf(at - f * span, span, now, lo, hi);
+export function viewZoom(v, k, f, now, lo, hi, min = SCHED_MIN_SPAN) {
+  const r = viewRange(v, now, lo, hi, min), at = r.t0 + f * r.span;
+  const span = Math.min(Math.max(min, hi - lo), Math.max(min, r.span / k));
+  return viewOf(at - f * span, span, now, lo, hi, min);
 }
-export function viewPan(v, dt, now, lo, hi) {
-  const r = viewRange(v, now, lo, hi);
-  return viewOf(r.t0 + dt, r.span, now, lo, hi);
+export function viewPan(v, dt, now, lo, hi, min = SCHED_MIN_SPAN) {
+  const r = viewRange(v, now, lo, hi, min);
+  return viewOf(r.t0 + dt, r.span, now, lo, hi, min);
 }
 
 // The forecast's runs numbered as `/work/tocome` numbers them (forecast::Runs): the lanes by name

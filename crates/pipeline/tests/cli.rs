@@ -330,7 +330,7 @@ const SHELL_EXEMPT: &[(&str, &str)] = &[
     ("tools/dev/shell-guard.sh", "a hook: its input on stdin"),
     ("tools/dev/test-guard.sh", "a hook: its input on stdin"),
     ("tools/nas/fetch-planet.sh", "DSM's Task Scheduler runs it on the NAS"),
-    ("tools/taskboard/launchd/backup.sh", "launchd runs it nightly"),
+    ("tools/devtools/launchd/backup.sh", "launchd runs it nightly"),
 ];
 
 /// Every shell tool in tools/ checks its arguments first (docs/building.md, "Command lines"):
@@ -395,6 +395,8 @@ fn remote_tests_falls_back_when_ssh_hangs() {
         .args(["k637", src.to_str().unwrap(), "echo ran-here"])
         .env("PATH", path)
         .env("SCENIC_TEST_HOST", "hung-host")
+        // (A test's run isn't one of the dev job dashboard's: tools/dev/devjob.zsh.)
+        .env("SCENIC_DEVJOB", "0")
         .env_remove("SCENIC_CHECK_LOCAL")
         .env_remove("SCENIC_TESTS_LOCAL");
     // Its return at all is the proof (the fake ssh sleeps 10 min); no bound on how long a loaded

@@ -114,7 +114,7 @@ const TOOLS: &[(&str, &str)] = &[
     ("tools/app/install.sh", "installing a Mac: the share's mount"),
     ("tools/app/remote-tests.sh", "the test Mac's run: whether the NAS is mounted"),
     ("tools/dev/health.sh", "the health check: the share's mount"),
-    ("tools/taskboard/launchd/backup.sh", "the task board's nightly backup to the NAS"),
+    ("tools/devtools/launchd/backup.sh", "the dev tools app's nightly backup to the NAS"),
     ("tools/status/service.swift", "the status app: the share's mount"),
     ("tools/check/", "the two-Mac tests: a scratch folder of the NAS"),
     ("tools/worldmap/", "the build page map's outlines (countries.json, lakes.json), made by hand from the NAS's Natural Earth copies, read only"),

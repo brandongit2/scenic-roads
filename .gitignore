@@ -9,7 +9,7 @@
 !/tools/check/
 !/tools/app/
 !/tools/status/
-!/tools/taskboard/
+!/tools/devtools/
 !/tools/caddy/
 !/tools/coastcheck/
 !/tools/names/
@@ -32,6 +32,6 @@ __pycache__/
 /.claude/health-stamp
 /.claude/sweep-keep
 /docs/diagram/pipeline.html
-/tools/taskboard/*.db
-/tools/taskboard/*.db-wal
-/tools/taskboard/*.db-shm
+/tools/devtools/*.db
+/tools/devtools/*.db-wal
+/tools/devtools/*.db-shm

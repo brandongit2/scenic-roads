@@ -33,7 +33,7 @@
   let es = null;
   function stream() {
     if (es) return;
-    es = new EventSource("api/stream");
+    es = new EventSource("../api/stream");
     es.addEventListener("change", (e) => { const col = JSON.parse(e.data).col; for (const l of listeners) if (l.col === col) l.run(); });
     es.onopen = () => { for (const l of listeners) l.run(); }; // (after a drop, everything is read again)
   }
@@ -59,7 +59,7 @@
   }
 
   function docRef(col, id) {
-    const url = `api/c/${encodeURIComponent(col)}/${encodeURIComponent(id)}`;
+    const url = `../api/c/${encodeURIComponent(col)}/${encodeURIComponent(id)}`;
     const ref = {
       id,
       get: async () => docSnap(id, await call("GET", url)),
@@ -71,7 +71,7 @@
     return ref;
   }
   function query(col, opts) {
-    const qs = () => { const p = new URLSearchParams(); if (opts.orderBy) { p.set("orderBy", opts.orderBy); p.set("dir", opts.dir || "asc"); } if (opts.limit) p.set("limit", opts.limit); return `api/c/${encodeURIComponent(col)}?${p}`; };
+    const qs = () => { const p = new URLSearchParams(); if (opts.orderBy) { p.set("orderBy", opts.orderBy); p.set("dir", opts.dir || "asc"); } if (opts.limit) p.set("limit", opts.limit); return `../api/c/${encodeURIComponent(col)}?${p}`; };
     return {
       orderBy: (orderBy, dir) => query(col, { ...opts, orderBy, dir }),
       limit: (limit) => query(col, { ...opts, limit }),
@@ -81,13 +81,13 @@
   }
   const db = {
     // add(content): the server makes the doc (its id, and an item's num, order and added time) and says them.
-    collection: (col) => Object.assign(query(col, {}), { doc: (id) => docRef(col, id), add: (data) => call("POST", `api/c/${encodeURIComponent(col)}`, data) }),
+    collection: (col) => Object.assign(query(col, {}), { doc: (id) => docRef(col, id), add: (data) => call("POST", `../api/c/${encodeURIComponent(col)}`, data) }),
     doc: (path) => { const [col, id] = path.split("/"); return docRef(col, id); },
   };
   const assets = {
     upload: async (file) => {
-      const r = await call("POST", "api/blob", file, { "content-type": file.type || "application/octet-stream" });
-      return { id: r.id, url: r.url };
+      const r = await call("POST", "../api/blob", file, { "content-type": file.type || "application/octet-stream" });
+      return { id: r.id };
     },
   };
   const user = { can: async () => true };

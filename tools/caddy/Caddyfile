@@ -18,11 +18,14 @@ https://{$SCENIC_MAP_NAME}:443 {
 		reverse_proxy 127.0.0.1:8090
 	}
 
-	# The task board (tools/taskboard).
-	redir /task-board /task-board/
-	handle_path /task-board/* {
+	# The dev tools app (tools/devtools): its index, the task board at /dev/task-board/, the dev job
+	# dashboard at /dev/jobs/. (The board's address before it, a task's link with it, sent there.)
+	redir /dev /dev/
+	handle_path /dev/* {
 		reverse_proxy 127.0.0.1:8077
 	}
+	redir /task-board /dev/task-board/
+	redir /task-board/* /dev{uri}
 
 	# The map (crates/server).
 	handle {

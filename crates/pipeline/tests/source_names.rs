@@ -1,6 +1,6 @@
 //! No data source is named in the app's code (docs/inputs.md §7.2): its sources are declarations
 //! (§6), so a source's address or name written into `crates/` (outside tests), `dem/`, `web/src/`,
-//! `tools/` (not `tools/taskboard/`) or `scripts/` would be one read around them. `producers/`, where
+//! `tools/` or `scripts/` would be one read around them. `producers/`, where
 //! the declarations are made and staged, is exempt.
 //!
 //! What counts as naming one, in a line's code or strings (comments aside):
@@ -31,9 +31,8 @@ use std::path::{Path, PathBuf};
 /// The folders scanned, from the repository's root.
 const SCOPE: &[&str] = &["crates", "dem", "web/src", "tools", "scripts"];
 
-/// Folders never scanned: the task board (its history), and what's built or installed.
-const SKIP_DIRS: &[&str] =
-    &["tests", "target", "node_modules", ".venv", "__pycache__", "taskboard", "dist", "dist-publish"];
+/// Folders never scanned: what's built or installed.
+const SKIP_DIRS: &[&str] = &["tests", "target", "node_modules", ".venv", "__pycache__", "dist", "dist-publish"];
 
 /// The file types read, by extension.
 const EXTS: &[&str] = &[

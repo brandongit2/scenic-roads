@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs Caddy's LaunchAgent on this Mac (the M6): https://<name> for the tailnet, with the owner's
 # certificate (acme.sh renews it and restarts the agent), proxying / to the map (:7311), /build to
-# the build page (the agent, :8090) and /task-board to the board (:8077); the Caddyfile beside this
+# the build page (the agent, :8090) and /dev to the dev tools app (:8077); the Caddyfile beside this
 # script, log ~/Library/Logs/scenic/caddy.log. It also gives the map's server and the agent the name
 # (~/.config/scenic/names, pipeline::net::names). Re-run after moving the checkout, Caddy or the
 # certificate. Needs `brew install caddy`, and `tailscale serve` off port 443 (docs/macs.md).
