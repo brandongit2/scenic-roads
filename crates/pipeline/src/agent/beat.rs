@@ -99,7 +99,7 @@ impl ToLead {
         });
         held::Beat {
             member: self.member.clone(),
-            speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF]
+            speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS]
                 .map(str::to_string)
                 .to_vec(),
             held: self.held.clone(),
@@ -109,6 +109,7 @@ impl ToLead {
             took: 0,
             handoffs: Vec::new(),
             cap: self.cap.clone(),
+            progress: self.beats.progress(),
         }
     }
 

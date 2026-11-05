@@ -2,22 +2,26 @@
 //! eighth batch), in the pool (its switch, `state/pool/resume`, deleted with task #878 step 5: on
 //! everywhere; an older app still reads its file).
 //!
-//! - **A job's progress on its Mac's disk, named on the NAS.** A resumable job (`RESUMABLE`: the
-//!   OSM pass, whose stages its scratch folder marks) noted as it starts and as it ends in its
-//!   member's progress file, `state/pool/progress/<member>.json` (`path`): written whole by that
-//!   member alone (principle 3: one file a member, as its heartbeat, rather than one a step that
-//!   two Macs could both write), only when what it holds changes (a job's start or end, an entry
-//!   dropped), never in a loop. The lead reads the files of the members it knows (by id, never a
-//!   listing) as it plans.
+//! - **A job's progress on its Mac's disk, told the lead.** A resumable job (`RESUMABLE`: the OSM
+//!   pass, whose stages its scratch folder marks) noted as it starts and as it ends in its member's
+//!   progress (`Progress`), kept on its own disk (`FILE` in its agent's folder, written whole only
+//!   when what it holds changes: a job's start or end, an entry dropped) and carried whole in each
+//!   of its beats (docs/coordination.md step 7, crate::coord::budgets); the lead keeps each
+//!   member's in its store and plans by them. **The gate** (deleted one release after every member
+//!   says `budgets` for a day): a member whose lead doesn't say it writes its file on the NAS too,
+//!   `state/pool/progress/<member>.json` (`path`), and the lead reads the file of a member that
+//!   doesn't say it (by id, never a listing), as before.
 //! - **Offered to that Mac alone, for 24 hours or until the owner releases it** (`decide`): while a
 //!   member's file holds the job (`HOLD_S` from when its job last started or ended there, and no
 //!   release of that very progress), the lead doesn't run it itself, and offers it to that member
 //!   alone (crate::coord's `offer_resume`); a member asks for it only while its own file holds it
 //!   live (`asks`). A job its Mac finished is held the same way, unoffered, until its pass is in the
 //!   records (its entry merged), so a pass done on one Mac isn't begun again on another meanwhile.
-//!   The owner's release (`release`, `scenic pool release <member> <job>`) is a file made once
-//!   with create-new beside the member's (`release_path`, naming the progress it releases by its
-//!   time), never a write to the member's own file.
+//!   The owner's release (`scenic pool release <member> <job>`) goes to the lead
+//!   (`POST /pool/progress/release`), which keeps it with the member's progress (naming the progress
+//!   it releases by its time) and tells the member in its beats' answers. The gate's: for an older
+//!   lead or member, a file made once with create-new beside the member's (`release`,
+//!   `release_path`), never a write to the member's own file.
 //! - **The job sees its earlier attempts:** its agent lays this member's hand-offs for the job's
 //!   step that its lead hasn't acknowledged (unwritten, or written and not yet in the current term's
 //!   records) into a file of the job's folder (`unmerged`), named to the job by `UNMERGED_ENV`, which
@@ -34,7 +38,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The members' progress files' folder.
+/// A member's progress on its own disk, in its agent's folder.
+pub const FILE: &str = "progress.json";
+/// The members' progress files' folder on the NAS (the gate's).
 pub const DIR: &str = "state/pool/progress";
 // How long a job's progress is offered to its Mac alone (§7.2: 24 hours), and the variable saying
 // resuming is on: the runtime crate's (task #916 step 3, docs/crates.md), kept at these paths.
@@ -107,7 +113,23 @@ impl Held {
     }
 }
 
-/// Member `member`'s progress file.
+/// This Mac's progress kept in agent folder `home` (`FILE`): none when there's none; an error when
+/// it can't be read, or isn't one.
+pub fn read_local(home: &std::path::Path) -> Result<Option<Progress>> {
+    let p = home.join(FILE);
+    match std::fs::read(&p) {
+        Ok(b) => Ok(Some(serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("read {}", p.display())),
+    }
+}
+
+/// Writes this Mac's progress whole in agent folder `home`.
+pub fn write_local(home: &std::path::Path, p: &Progress) -> Result<()> {
+    store::whole::write(&home.join(FILE), &serde_json::to_vec_pretty(p)?)
+}
+
+/// Member `member`'s progress file on the NAS (the gate's).
 pub fn path(member: &str) -> String {
     format!("{DIR}/{member}.json")
 }

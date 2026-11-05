@@ -1499,6 +1499,8 @@ pub struct Agent {
     /// alone; the disk guard on.) (Declared before `_lock`, so dropped first: the proxy's port is
     /// free before the next agent can take the lock and bind it.)
     proxy: Option<crate::budget::Proxy>,
+    /// Where its proxy's budget is taken from, as last said (`budget_lead`).
+    budget_from: Option<String>,
     /// Held unless another agent runs (then this one only plans and reports: a dry run).
     _lock: Option<AgentLock>,
     /// The port the proxy listened on for the jobs this agent took over (`adopt_jobs`): its own
@@ -1539,8 +1541,10 @@ pub struct Agent {
     broker_failed: Option<Instant>,
     /// Its address over HTTPS and its LAN addresses last looked for, and what they were.
     broker_https: Option<(Instant, Option<String>, Vec<String>)>,
-    /// This member's progress file as it last wrote it (or read it, as the process began).
+    /// This member's progress as it last noted it (or read it, as the process began), and as it
+    /// last wrote it on the NAS (the gate's: for an older lead).
     held_progress: Option<resume::Progress>,
+    progress_nas: Option<resume::Progress>,
     /// The disk guard's room-making for the jobs it froze (when it began): its result decides
     /// whether they go on or one is given back.
     disk_room: Option<Instant>,
@@ -1961,6 +1965,7 @@ impl Agent {
             total: 0,
             guard_backoff: BTreeMap::new(),
             proxy: early_proxy,
+            budget_from: None,
             proxy_port: None,
             port,
             placement: false,
@@ -1978,6 +1983,7 @@ impl Agent {
             broker_failed: None,
             broker_https: None,
             held_progress: None,
+            progress_nas: None,
             disk_room: None,
             nas,
             lead_awake: None,
@@ -2340,12 +2346,13 @@ impl Agent {
                 can.push(s.to_string());
             }
         }
-        // (Resuming on: a resumable job whose progress this Mac's file holds, asked for too; the
-        // lead offers it to this Mac alone. Its scratch is here already: no room asked for it.)
+        // (Resuming on: a resumable job whose progress this Mac holds, asked for too; the lead
+        // offers it to this Mac alone. Its scratch is here already: no room asked for it.)
         if self.resume_on() {
             if let Some(p) = self.own_progress(root) {
                 let now = self.resume_now();
-                for job in resume::asks(&p, now, &|j, at| resume::released(root, &p.member, j, at)) {
+                let gone = self.own_released(root, &p);
+                for job in resume::asks(&p, now, &|j, at| gone.contains(&(j.to_string(), at))) {
                     if let Some(step) = job.split(' ').next().filter(|s| !can.iter().any(|c| c == s)) {
                         can.push(step.to_string());
                     }
@@ -6426,11 +6433,15 @@ impl Agent {
         let (root, cache, scratch) =
             (root.long_retry(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
         // (With the budgets on, alone among the steps keeping answers here by their lock, and each
-        // archive sent under the answers' lease on the NAS: crate::answers::Local, Lease.)
-        let leased = true;
+        // archive sent under the answers' lease, its proxy's lead's or the NAS's:
+        // crate::answers::Local, Lease.)
+        let lease = crate::answers::Leasing {
+            nas: root.join(crate::answers::LEASE),
+            proxy: self.proxy.as_ref().map(|p| p.url()),
+        };
         match std::thread::Builder::new()
             .name("answers".into())
-            .spawn(move || crate::answers::seed(&root, &cache, &scratch, leased))
+            .spawn(move || crate::answers::seed(&root, &cache, &scratch, Some(lease)))
         {
             Ok(t) => self.answers_seed = Some(t),
             Err(e) => eprintln!("agent: the pass's answers not sent to the NAS now (its thread didn't start: {e})"),
@@ -7488,8 +7499,8 @@ impl Agent {
     }
 
     /// The budgets' proxy: started once (taking from the pool's budget on the NAS's project folder
-    /// `root`, as this agent); told the members this Mac knows (its share of the rate with the NAS
-    /// away).
+    /// `root`, as this agent); told where the budget is (`budget_lead`) and the members this Mac
+    /// knows (its share of the rate with the lead or the NAS away).
     fn tend_proxy(&mut self, root: &store::nasfs::NasRoot) {
         if self.proxy.is_none() {
             let me = self.member_id.clone().unwrap_or_else(|| self.me.clone());
@@ -7515,6 +7526,34 @@ impl Agent {
         let n = if self.pool.is_some() { PoolView::heard_of(self.pool_seen.as_ref()) } else { 1 };
         if let Some(p) = &self.proxy {
             p.set_members(n);
+        }
+        self.budget_lead();
+    }
+
+    /// The Wikimedia budget's and the answers' lease's source as the gate says it
+    /// (docs/coordination.md step 7, crate::coord::budgets): the lead, while it takes them and no
+    /// member in touch takes them on the NAS (its own coordinator in process, leading; over HTTP,
+    /// a member); else the NAS, as before. Said when it changes.
+    fn budget_lead(&mut self) {
+        use crate::coord::budgets::{InProcess, OverHttp};
+        let Some(p) = &self.proxy else { return };
+        let (lead, said): (Option<std::sync::Arc<dyn crate::budget::Lead>>, String) =
+            match (&self.coord, &self.beats, &self.client) {
+                _ if self.pool.is_none() => (None, "the NAS (out of the pool)".into()),
+                (Some(c), _, _) if !c.budgets_on_nas() => {
+                    (Some(std::sync::Arc::new(InProcess(c.clone()))), "this Mac's coordinator".into())
+                }
+                (None, Some(b), Some(c)) if !b.budgets_on_nas() => {
+                    let (urls, token) = (c.urls(), c.token());
+                    let said = format!("the lead ({})", urls.join(", "));
+                    (Some(std::sync::Arc::new(OverHttp { urls, token, worker: self.host.clone() })), said)
+                }
+                _ => (None, "the NAS (a member in touch, or the lead, on an older app)".into()),
+            };
+        if self.budget_from.as_deref() != Some(said.as_str()) {
+            eprintln!("agent: the Wikimedia budget and the answers' lease from {said}");
+            p.budget.set_lead(lead);
+            self.budget_from = Some(said);
         }
     }
 
@@ -7888,21 +7927,26 @@ impl Agent {
         }
     }
 
-    /// This member's progress file: as this process last wrote it, else read from the NAS (once,
-    /// or again after a read failed). None out of the pool, or when it can't be read now.
+    /// This member's progress: as this process last noted it, else read from its disk
+    /// (`resume::FILE`), else from its file on the NAS (where an app before step 7 kept it alone;
+    /// once, or again after a read failed). None out of the pool, or when it can't be read now.
     fn own_progress(&mut self, root: &store::nasfs::NasRoot) -> Option<resume::Progress> {
         if self.held_progress.is_none() {
             let me = self.member_id.clone()?;
-            match resume::read(root, &me) {
+            let read = match resume::read_local(&self.o.home) {
+                Ok(Some(p)) if p.member == me => Ok(Some(p)),
+                Ok(_) => resume::read(root, &me),
+                Err(e) => Err(e),
+            };
+            match read {
                 Ok(p) => {
-                    self.held_progress = Some(p.unwrap_or(resume::Progress {
-                        member: me,
-                        worker: self.host.clone(),
-                        jobs: BTreeMap::new(),
-                    }))
+                    let p =
+                        p.unwrap_or(resume::Progress { member: me, worker: self.host.clone(), jobs: BTreeMap::new() });
+                    self.tell_progress(&p);
+                    self.held_progress = Some(p);
                 }
                 Err(e) => {
-                    eprintln!("agent: this Mac's progress file can't be read now ({e:#})");
+                    eprintln!("agent: this Mac's progress can't be read now ({e:#})");
                     return None;
                 }
             }
@@ -7910,8 +7954,8 @@ impl Agent {
         self.held_progress.clone()
     }
 
-    /// Notes job `job`'s progress on this Mac in its member's progress file (None: dropped),
-    /// written whole when that changes it, and only then.
+    /// Notes job `job`'s progress on this Mac in its member's progress (None: dropped), written
+    /// whole on its disk when that changes it, and only then, and told the lead (its next beat).
     fn note_progress(&mut self, root: &store::nasfs::NasRoot, job: &str, held: Option<resume::Held>) {
         let Some(mut p) = self.own_progress(root) else { return };
         let before = p.clone();
@@ -7927,11 +7971,59 @@ impl Agent {
         if p == before {
             return;
         }
+        match resume::write_local(&self.o.home, &p) {
+            Ok(()) => {
+                self.tell_progress(&p);
+                self.held_progress = Some(p);
+                self.progress_to_nas(root);
+            }
+            Err(e) => eprintln!("agent: this Mac's progress of {job} not noted ({e:#}): the lead may run it elsewhere"),
+        }
+    }
+
+    /// This member's progress told its lead: its own coordinator in process, leading; else its
+    /// beat's (each carries it whole).
+    fn tell_progress(&mut self, p: &resume::Progress) {
+        match (&self.coord, &self.beats) {
+            (Some(c), _) => {
+                c.progress_heard(p.clone());
+            }
+            (None, Some(b)) => b.set_progress(p.clone()),
+            _ => {}
+        }
+    }
+
+    /// The gate's (docs/coordination.md step 7): while this member's lead doesn't take progress in
+    /// the beat (an older lead, which reads it on the NAS), its file there written whole when it
+    /// differs from what was written last.
+    fn progress_to_nas(&mut self, root: &store::nasfs::NasRoot) {
+        if self.coord.is_some() || self.beats.as_ref().is_none_or(|b| b.lead_budgets()) {
+            return;
+        }
+        let Some(p) = self.held_progress.clone().filter(|p| self.progress_nas.as_ref() != Some(p)) else { return };
         match resume::write(root, &p) {
-            Ok(()) => self.held_progress = Some(p),
-            Err(e) => eprintln!(
-                "agent: this Mac's progress of {job} not noted on the NAS ({e:#}): the lead may run it elsewhere"
-            ),
+            Ok(()) => self.progress_nas = Some(p),
+            Err(e) => eprintln!("agent: this Mac's progress not written on the NAS for its older lead ({e:#})"),
+        }
+    }
+
+    /// Whether the owner released this member's progress of `job` that began at `at`: as the lead
+    /// keeps it (its own coordinator's, leading; its last beat's answer, a member), else (an older
+    /// lead) as its file on the NAS says.
+    fn own_released(&self, root: &store::nasfs::NasRoot, p: &resume::Progress) -> BTreeSet<(String, u64)> {
+        let of_lead = match (&self.coord, &self.beats) {
+            (Some(c), _) => Some(c.progress_heard(p.clone())),
+            (None, Some(b)) if b.lead_budgets() => Some(b.progress_released()),
+            _ => None,
+        };
+        match of_lead {
+            Some(r) => r.into_iter().collect(),
+            None => p
+                .jobs
+                .iter()
+                .filter(|(j, h)| resume::released(root, &p.member, j, h.began()))
+                .map(|(j, h)| (j.clone(), h.began()))
+                .collect(),
         }
     }
 
@@ -7963,18 +8055,22 @@ impl Agent {
         self.note_progress(&root, id, Some(resume::Held { at, since, done: ok, scratch }));
     }
 
-    /// Each loop, resuming on: this member's progress no longer held dropped from its file (a
-    /// pass the records hold complete, finished here; a day past its job's last run here, or
-    /// released by the owner), its scratch folder left to room-making as before. A job running
-    /// here is left as it is.
+    /// Each loop, resuming on: this member's progress told its lead (a lead's store opened since,
+    /// or a new lead) and, the gate's, its file on the NAS for an older lead; and what's no longer
+    /// held dropped from it (a pass the records hold complete, finished here; a day past its job's
+    /// last run here, or released by the owner), its scratch folder left to room-making as before.
+    /// A job running here is left as it is.
     fn tend_progress(&mut self, root: &store::nasfs::NasRoot) {
         if !self.resume_on() {
             return;
         }
         let Some(p) = self.own_progress(root) else { return };
+        self.tell_progress(&p);
+        self.progress_to_nas(root);
         if p.jobs.is_empty() {
             return;
         }
+        let gone = self.own_released(root, &p);
         let now = self.resume_now();
         let running: BTreeSet<String> =
             self.slots.iter().filter_map(|s| s.running.as_ref()).map(|r| r.spec.id.clone()).collect();
@@ -7990,7 +8086,7 @@ impl Agent {
             }
             let complete =
                 h.done && job.strip_prefix("osm-pass ").is_some_and(|d| latest.as_deref().is_some_and(|l| l >= d));
-            let released = resume::released(root, &p.member, job, h.began());
+            let released = gone.contains(&(job.clone(), h.began()));
             if complete || !resume::live(h, now, released) {
                 let why = if complete {
                     "its pass is in the records"
@@ -15556,10 +15652,11 @@ mod pool_tests {
         stop_jobs(&mut m);
     }
 
-    /// Resuming (`state/pool/resume`, crate::agent::resume): an OSM pass stopped mid-stage on a
-    /// member's Mac is offered to that member alone, which resumes it in its own scratch folder with
-    /// its unmerged hand-offs; finished there, it's neither run nor offered until merged; a day on
-    /// (or released), the lead runs it itself. Off, the lead plans it as before.
+    /// Resuming (crate::agent::resume): an OSM pass stopped mid-stage on a member's Mac is offered to
+    /// that member alone, which resumes it in its own scratch folder with its unmerged hand-offs;
+    /// finished there, it's neither run nor offered until merged; a day on (or released), the lead
+    /// runs it itself. Its progress reaches the lead in its beats (docs/coordination.md step 7); a
+    /// member on an older app's, by its file on the NAS (the gate).
     #[test]
     fn an_osm_pass_stopped_on_a_member_is_resumed_there_alone_and_released_after_a_day() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
@@ -15616,7 +15713,13 @@ mod pool_tests {
             )]
             .into(),
         };
-        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(now_s() - 3600, false)).unwrap();
+        // (On the member's disk, and at the lead as its beat carries it.)
+        let lc = lead.coord.clone().unwrap();
+        let tell = |p: &resume::Progress| {
+            lc.progress_heard(p.clone());
+        };
+        resume::write_local(&d.path().join("m/agent"), &held(now_s() - 3600, false)).unwrap();
+        tell(&held(now_s() - 3600, false));
         // Not here; offered to the member alone, which resumes it in its scratch folder.
         lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
@@ -15655,9 +15758,10 @@ mod pool_tests {
         );
         assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
         assert!(lead.coord.as_ref().unwrap().held("osm-pass").is_empty(), "its lease ended at the lead, not lapsing");
-        // Finished there: held, unoffered, until merged.
-        let p = resume::read(&store::nasfs::NasRoot::local_for_test(&r), &im).unwrap().unwrap();
-        assert!(p.jobs[&pass].done, "{p:?}");
+        // Finished there: held, unoffered, until merged (as its beat told the lead; nothing on the NAS).
+        let done = || lc.progress().iter().any(|k| k.progress.member == im && k.progress.jobs[&pass].done);
+        until(&mut m, |_| done());
+        assert!(resume::read(&store::nasfs::NasRoot::local_for_test(&r), &im).unwrap().is_none());
         let (here, w) = planned(&mut lead);
         assert!(!here && w.iter().any(|w| w.why.contains("waiting to be merged")), "{w:?}");
         // Released, or its day out, while the member runs it under a lease: not run here too.
@@ -15667,7 +15771,7 @@ mod pool_tests {
             .unwrap()
             .hold("osm-pass", &[(date.to_string(), format!("sources/osm/{date}/planet.osm.pbf"))])
             .unwrap();
-        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
+        tell(&held(now_s() - resume::HOLD_S - 1, false));
         let (here, w) = planned(&mut lead);
         assert!(!here && w.iter().any(|w| w.why.contains("under its lease")), "{w:?}");
         lead.coord.as_ref().unwrap().finish(lease, &[]);
@@ -15675,21 +15779,33 @@ mod pool_tests {
         // lead lost, so not run here too.
         let mut lately = held(now_s() - 60, false);
         lately.jobs.get_mut(&pass).unwrap().since = now_s() - resume::HOLD_S - 1;
-        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &lately).unwrap();
+        tell(&lately);
         let (here, w) = planned(&mut lead);
         assert!(!here && w.iter().any(|w| w.why.contains("may be running")), "{w:?}");
         // A day on with nothing more there: the lead's to run.
-        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
+        tell(&held(now_s() - resume::HOLD_S - 1, false));
         assert!(planned(&mut lead).0);
         // Released by the owner: the same. (Noted half an hour ago: not maybe running now.)
         let at = now_s() - 1800;
-        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(at, false)).unwrap();
+        tell(&held(at, false));
         assert!(!planned(&mut lead).0);
-        resume::release(&store::nasfs::NasRoot::local_for_test(&r), &im, &pass).unwrap();
+        lc.release_progress(&im, &pass).unwrap();
         assert!(planned(&mut lead).0);
         // (Progress begun a minute before the released one: not that release's.)
-        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(at - 60, false)).unwrap();
-        assert!(!planned(&mut lead).0 && lead.coord.as_ref().unwrap().shared.lock().unwrap().resume.is_some());
+        tell(&held(at - 60, false));
+        assert!(!planned(&mut lead).0 && lc.shared.lock().unwrap().resume.is_some());
+        // (The gate: a member on an older app, whose beat doesn't say `budgets`, by its file on the
+        // NAS, and its release there.)
+        tell(&resume::Progress { jobs: BTreeMap::new(), ..held(0, false) });
+        let old = "m-00000000000000ff";
+        lead.pooled().unwrap().side.know(old);
+        lead.seen_pool();
+        let older = resume::Progress { member: old.into(), worker: "old-mac".into(), ..held(at, false) };
+        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &older).unwrap();
+        let (here, w) = planned(&mut lead);
+        assert!(!here && w.iter().any(|w| w.why.contains("old-mac")), "{w:?}");
+        resume::release(&store::nasfs::NasRoot::local_for_test(&r), old, &pass).unwrap();
+        assert!(planned(&mut lead).0);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }

@@ -3094,7 +3094,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let _hold = pipeline::answers::Local::for_job(cache.parent().unwrap_or(&cache))?;
     let p = phase("merging the pass's answers with the NAS's");
     let kept =
-        pipeline::answers::items(out.root(), &cache, &date).leased(out.root(), pipeline::answers::budgets_on_for_job());
+        pipeline::answers::items(out.root(), &cache, &date).leased(pipeline::answers::Leasing::for_job(out.root()));
     let answers = || pipeline::answers::items_files(&cache, &date);
     eprintln!("items: the pass's answers {}", kept.sync(&answers(), &scratch.join("answers"))?.words());
     drop(p);
@@ -3512,7 +3512,7 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
     std::fs::write(epoch.join(".done"), b"")?;
     let e = Epoch {
         kept: pipeline::answers::heritage(out.root(), &epoch, date)
-            .leased(out.root(), pipeline::answers::budgets_on_for_job()),
+            .leased(pipeline::answers::Leasing::for_job(out.root())),
         dir: epoch,
         _hold: hold,
     };

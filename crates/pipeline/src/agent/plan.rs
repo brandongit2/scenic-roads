@@ -3099,10 +3099,31 @@ impl Planner {
         let id = format!("osm-pass {date}");
         let what = format!("Reading the OpenStreetMap planet of {date}");
         members.insert(me.clone());
+        // (The members' progress as the lead keeps it from their beats, its own among them, with
+        // the owner's releases; a member whose beat doesn't say `budgets` (an older app) by its
+        // file on the NAS, the gate's.)
+        let kept = self.coord.as_ref().map(|c| c.progress()).unwrap_or_default();
+        let mut gone: BTreeSet<(String, u64)> = BTreeSet::new();
         let mut files = Vec::new();
-        for m in &members {
+        for k in kept {
+            gone.extend(k.released.iter().filter(|(j, _)| *j == id).map(|(_, at)| (k.progress.member.clone(), *at)));
+            files.push(k.progress);
+        }
+        let by_lead = |m: &String| {
+            files.iter().any(|p: &resume::Progress| &p.member == m)
+                || self.coord.as_ref().is_some_and(|c| *m == me || c.member_speaks(m, crate::coord::beats::BUDGETS))
+        };
+        let on_nas: Vec<String> = members.iter().filter(|m| !by_lead(m)).cloned().collect();
+        for m in &on_nas {
             match resume::read(root, m) {
-                Ok(p) => files.extend(p),
+                Ok(p) => {
+                    for (j, h) in p.iter().flat_map(|p| &p.jobs) {
+                        if *j == id && resume::released(root, m, j, h.began()) {
+                            gone.insert((m.clone(), h.began()));
+                        }
+                    }
+                    files.extend(p)
+                }
                 Err(e) => {
                     offer(None);
                     return Some(Waiting {
@@ -3123,7 +3144,7 @@ impl Planner {
             });
         }
         let now = self.inp.resume_now;
-        match resume::decide(&id, &me, &files, now, &|m, at| resume::released(root, m, &id, at)) {
+        match resume::decide(&id, &me, &files, now, &|m, at| gone.contains(&(m.to_string(), at))) {
             resume::Decision::Plan => {
                 offer(None);
                 // (A member that noted it lately may be running it under a lease the restored

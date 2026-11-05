@@ -1376,8 +1376,18 @@ fn main() -> Result<()> {
                 Some(PoolCmd::Set { .. }) => {}
                 Some(PoolCmd::Release { member, job: Some(job) }) => {
                     // A job's progress on a member's Mac given up (crate::agent::resume): the lead
-                    // runs it wherever it fits from then.
-                    println!("{}", agent::resume::release(&r, &member, &job)?);
+                    // runs it wherever it fits from then. Told the lead (docs/coordination.md step
+                    // 7), which keeps it; for an older lead (404), or a member on an older app whose
+                    // progress the lead reads on the NAS, the gate's file there, made once.
+                    let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+                        .context("no lead's coordinator to ask")?;
+                    let (code, v) =
+                        c.post_json("/pool/progress/release", &serde_json::json!({ "member": member, "job": job }))?;
+                    match (code, v["said"].as_str()) {
+                        (200, Some(said)) => println!("{said}"),
+                        (200 | 404, _) => println!("{}", agent::resume::release(&r, &member, &job)?),
+                        _ => anyhow::bail!("the lead's coordinator answered {code}: {}", v["error"]),
+                    }
                 }
                 Some(PoolCmd::Release { member, job: None }) => {
                     // A member's leases released by the owner (docs/coordination.md §6.1,
