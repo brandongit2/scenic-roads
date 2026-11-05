@@ -26,17 +26,21 @@
 //! base packs; terrain-lo's sampling keeps 3-5 threads waiting on GLO-30's reads at once (1556 s
 //! of them in a 533 s run, on threads beside its main one) while its CPU says 1. Cut to its whole
 //! run's use, such a step runs those phases on fewer threads, longer: terrain-lo at 1 thread took
-//! 2063 s where at 3 and 6 it took 413-668. So a step on a Mac is granted at least its floor there
-//! (`Uses::floors`): the fewest threads at which its runs, together, are predicted to take no more
-//! than `WALL_SLACK` longer than they did. Each top-level phase of a run's main thread keeps busy
-//! its CPU over its wall, and one overlapped by phases on other threads also as many threads as those
-//! phases' wall summed over the overlapped phases' (the threads waiting beside it); at fewer threads
-//! than a phase keeps it takes that many over them as long (`kept`). Summed over the runs, a long
-//! run weighs as long as it took, and a rare short burst doesn't hold a step's threads. A job's wall
-//! time doesn't blow up to save cores: from the 6-thread run, terrain-lo at 1 thread is predicted
-//! 2151 s (it took 2063). On the M4's timings (9 Oct-4 Nov), the floor holds pack at 2 where its
-//! use cut it to 1 (its runs predicted 1.14 times as long at 1, 1.04 at 2), terrain-lo at 3 (1.35,
-//! 1.03), and trees on the M1 at 2 (1.20, 1.00).
+//! 2063 s where at 3 and 6 it took 413-668. So a step is granted at least its floor (`Uses::floors`):
+//! the fewest threads at which its runs, together, are predicted to take no more than `WALL_SLACK`
+//! longer than they did. Its runs on every Mac count: the threads a phase keeps are the step's
+//! (its readers, its batches), and a Mac whose runs were all cut low can't show them: on the lead's
+//! timings to 4 Nov the M4's one terrain-lo run in the window was the 1-thread one, whose phases keep
+//! a thread, so a floor of the M4's runs alone held it at 1 (task #948 review). Each top-level phase
+//! of a run's main thread keeps busy its CPU over its wall, and one overlapped by phases on other
+//! threads also as many threads as those phases' wall summed over the overlapped phases' (the threads
+//! waiting beside it); at fewer threads than a phase keeps it takes that many over them as long
+//! (`kept`). Summed over the runs, a long run weighs as long as it took, and a rare short burst
+//! doesn't hold a step's threads. A job's wall time doesn't blow up to save cores: from the 6-thread
+//! run, terrain-lo at 1 thread is predicted 2151 s (it took 2063). On the lead's timings (the
+//! mini's, to 4 Nov) the floor holds pack at 3 on every Mac where its use cut it to 1, slope-hi at 5
+//! (its use 2 on the mini, 4 on the M4 and the M1), terrain-lo on the M4 at 2 (1), and leaves
+//! slope-deep, terrain-hi and terrain-deep at their use (docs/pool.md §7.1).
 //!
 //! A run whose targets ran on their job's grant as each began (crate::control::on_grant) says what
 //! each thread count held (`timings::RunRec::held`): its use is read at each (`Run::of`).
@@ -205,15 +209,15 @@ impl Use {
     }
 }
 
-/// Each step's use on each Mac: step → Mac → threads → `Use`; and its floor there (`floors`, step
-/// → Mac → threads: the module's), the fewest threads at which its runs' phases, each kept to that
-/// many threads, are predicted to take their runs together no more than `WALL_SLACK` longer.
+/// Each step's use on each Mac: step → Mac → threads → `Use`; and its floor (`floors`, step →
+/// threads: the module's), the fewest threads at which its runs' phases on every Mac, each kept to
+/// that many threads, are predicted to take their runs together no more than `WALL_SLACK` longer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Uses {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub steps: BTreeMap<String, BTreeMap<String, BTreeMap<u32, Use>>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub floors: BTreeMap<String, BTreeMap<String, u32>>,
+    pub floors: BTreeMap<String, u32>,
 }
 
 impl Uses {
@@ -227,19 +231,19 @@ impl Uses {
             p.cpu_s += r.cpu_s;
             p.wall_s += r.wall_s;
         }
-        // (Each step's runs on each Mac with their phases said: their wall summed, and what fewer
+        // (Each step's runs with their phases said, on every Mac: their wall summed, and what fewer
         // threads would add to it, each phase keeping more than `t` taking that many over `t` as
         // long.)
-        let mut by: BTreeMap<(&str, &str), Vec<&Run>> = BTreeMap::new();
+        let mut by: BTreeMap<&str, Vec<&Run>> = BTreeMap::new();
         for r in runs.iter().filter(|r| !r.phases.is_empty()) {
-            by.entry((r.step.as_str(), r.mac.as_str())).or_default().push(r);
+            by.entry(r.step.as_str()).or_default().push(r);
         }
-        for ((step, mac), rs) in by {
+        for (step, rs) in by {
             let whole: f64 = rs.iter().map(|r| r.whole_s).sum();
             let more =
                 |t: f64| -> f64 { rs.iter().flat_map(|r| &r.phases).map(|&(w, k)| w * (k / t - 1.0).max(0.0)).sum() };
             let f = (1..=MOST_FLOOR).find(|&t| more(f64::from(t)) <= whole * WALL_SLACK).unwrap_or(MOST_FLOOR);
-            u.floors.entry(step.to_string()).or_default().insert(mac.to_string(), f);
+            u.floors.insert(step.to_string(), f);
         }
         u
     }
@@ -249,7 +253,7 @@ impl Uses {
     /// known.
     pub fn cores(&self, step: &str, mac: &str) -> Option<crate::needs::Cores> {
         let c = self.by_use(step, mac)?;
-        let floor = self.floors.get(step).and_then(|m| m.get(mac)).copied().unwrap_or(0);
+        let floor = self.floors.get(step).copied().unwrap_or(0);
         Some(crate::needs::Cores { grant: c.grant.max(floor), ..c })
     }
 
@@ -461,14 +465,23 @@ mod tests {
             ],
         );
         let three: Vec<Run> = [lo3a.clone(), lo3b.clone()].concat();
-        assert_eq!(Uses::of(&three).floors["terrain-lo"]["m4"], 2);
-        let all: Vec<Run> = [lo6, lo3a, lo3b].concat();
-        assert_eq!(Uses::of(&all).floors["terrain-lo"]["m4"], 5, "the 6-thread run's 5 at once weigh");
+        assert_eq!(Uses::of(&three).floors["terrain-lo"], 2);
+        let all: Vec<Run> = [lo6.clone(), lo3a, lo3b].concat();
+        assert_eq!(Uses::of(&all).floors["terrain-lo"], 5, "the 6-thread run's 5 at once weigh");
+        // (Every Mac's runs count (review): a Mac whose one run was cut to 1 thread, its phases
+        // keeping that one, isn't held there by it; the mini's 6-thread run shows what they keep.)
+        let lo1 = timed("terrain-lo", 1, 2063.0, 400.0, vec![phase(2063.0, 400.0, false, false)]);
+        let alone = Uses::of(&lo1);
+        assert_eq!(alone.cores("terrain-lo", "m4").map(|c| c.grant), Some(1));
+        let on_mini: Vec<Run> = lo6.into_iter().map(|r| Run { mac: "m6".into(), ..r }).collect();
+        let both = Uses::of(lo1.iter().chain(&on_mini));
+        assert_eq!(both.by_use("terrain-lo", "m4").map(|c| c.grant), Some(1));
+        assert_eq!(both.cores("terrain-lo", "m4").map(|c| c.grant), Some(4));
         // A 46 s burst at 7 cores among ten half-hour runs at a twentieth of one: no floor past 1.
         let mut runs: Vec<Run> =
             (0..10).flat_map(|_| timed("pack", 2, 1800.0, 90.0, vec![phase(1800.0, 90.0, false, false)])).collect();
         runs.extend(timed("pack", 14, 46.0, 322.0, vec![phase(46.0, 322.0, false, false)]));
-        assert_eq!(Uses::of(&runs).floors["pack"]["m4"], 1);
+        assert_eq!(Uses::of(&runs).floors["pack"], 1);
     }
 
     /// Task #948: a run whose targets ran on their job's grant (`RunRec::held`) is read at each thread
