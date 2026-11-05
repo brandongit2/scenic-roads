@@ -151,7 +151,8 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   crate::control::THREADS_ENV) with the threads its job may use now, which its lead re-decides on
   what the job uses and the cores and memory its Mac has (docs/pool.md §7.1, Threads re-granted:
   more as cores free up while the Mac's memory covers each extra thread at the step's measured
-  peak per thread, fewer when the owner comes back or other work wants the cores), at most 8
+  peak over the threads it was measured at, the whole peak where those aren't recorded; fewer when
+  the owner comes back or other work wants the cores), at most 8
   (`pace::MOST`; the regions' work ran four at once before). The file is read again within a
   second (a regions check once took 39 GB and panicked a 16 GB Mac: its memory guard stops one
   that overruns all the same). Tree cover jobs (`trees`) are paced the same way (their blocks'
