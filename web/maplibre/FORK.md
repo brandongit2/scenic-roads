@@ -188,24 +188,20 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   the power of two at or above its footprint, 128² to 1024² (`Tile.rttTargetSize`; one FBO per size,
   `Painter._rttFbos`). A low camera over Chamonix holds ~500 MB of drapes instead of 3.9 GB.
 - **Tiles finer than the screen where worth it** (`scenic:detail` on a raster-dem source,
-  `RasterTileSource.detail`; `TileManager._refineCover`, `detailBudget` 8, `maxTilesADrape` 240,
-  the map's `refineDelay` 300 ms): once the camera has been still for `refineDelay` (`Map._stillIn`,
-  from `_lastCameraMove`, a camera changed since the last frame counting as moving;
-  `Map._updateWhenStill` updates the sources then), each tile of the screen's own cover is replaced
-  by its tiles in the cover `detail` times finer a side (within the source's zooms, by area too),
-  nearest the camera first, while the tiles' texels stay within `detailBudget` × the screen's
-  device pixels (or the screen's own cover's, if more) and no terrain drape gets more than
-  `maxTilesADrape` of them (the stencil's IDs a texture). A tile is refined only once it has data
-  (it stands in while its finer tiles load). Until then, and while the camera moves, the cover is
-  the screen's own, as without it, so a gesture's frames cost what they did (with the finer tiles
-  kept while moving, every frame's tile matrices, drape coordinates and fingerprints, the drapes
-  redrawn and the app's terrain statistics went over 3–7× the tiles: Chrome's pan and orbit 10–20%
-  slower); the finer tiles go to the out-of-view cache, which keeps as many more as the last rest
-  held (`_detailTiles`), so coming back to them asks for none again. Until the refinement is done
-  the source isn't `loaded()` (`_detailPending`; while the camera isn't still, as long as a tile of
-  the cover has finer zooms), so `idle` waits for the finer tiles (a screenshot, a benchmark's
-  settle); `_detailOffset` holds each finer tile's zooms beyond its screen tile's, empty while the
-  camera isn't still. The app's shading (`slope`) uses 4, two zooms finer
+  `RasterTileSource.detail`; `TileManager._refineCover`, `detailBudget` 8, `maxTilesADrape` 240):
+  each tile of the screen's own cover is replaced by its tiles in the cover `detail` times finer a
+  side (within the source's zooms, by area too), nearest the camera first, while the tiles' texels
+  stay within `detailBudget` × the screen's device pixels (or the screen's own cover's, if more) and
+  no terrain drape gets more than `maxTilesADrape` of them (the stencil's IDs a texture), the camera
+  moving or not. A tile is refined only once it has data (it stands in while its finer tiles load).
+  The out-of-view cache keeps as many more tiles as the cover's finer ones (`_detailTiles`). Until
+  the refinement is done the source isn't `loaded()` (`_detailPending`), so `idle` waits for the
+  finer tiles (a screenshot, a benchmark's settle); `_detailOffset` holds each finer tile's zooms
+  beyond its screen tile's. A frame's cost is that of what changed (`_refineMemo`): the finer cover
+  is worked out again only when the screen's own cover changes (0.4–0.6 ms at saguenay's z13, 60°
+  pitch, 1440 × 900, in Node on the M1), the choice when that, a tile of the source (added, removed,
+  loaded or failed: `_tileVersion`), the drapes' cover or the budget changes (~0.1 ms); otherwise the
+  last answer, and the same `_detailOffset`. The app's shading (`slope`) uses 4, two zooms finer
   (`tile_manager_detail.test.ts`).
 - **Drapes finer than the screen** (`TerrainTileManager.drapeDetail`, default 1; the app sets 4):
   a drape tile under a draped source's finer tiles (`_detailOffset`) gets 2^offset times the texels
@@ -214,22 +210,12 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   detail is kept and the texture's mipmaps average it. The cover's textures hold at most what they
   would without it plus `drapeExtra` (2) × the screen's device pixels (`drapeBudgetTexels`): over
   it, the texture most oversampled for its footprint is halved, then the next, none below the size
-  it would have without it (`_drapeDetails`, worked out again only when the drapes or the finer
-  tiles change). Until the camera has been still for the map's `refineDelay`, the finer tiles'
-  clock, textures get the sizes they would without it (one drawn meanwhile holds no finer tile),
-  and a texture drawn with finer tiles (`RTTFingerprint.finer`) is kept as it is, whatever its size
-  and the source tiles it would have now (`RenderToTexture._textureDifference`), not drawn coarser
-  and then finer again; once still they grow and are drawn again, a tile a frame
-  (`terrain_tile_manager.test.ts`, `render_to_texture.test.ts`).
-  Measured 5 Nov on the M1 Pro (`tools/bench/inpage.mjs`, 1440 × 900 windows at 2×, 120 Hz; views
-  `saguenay` and `niagara`, z16 terrain; main vs 721b674b, two interleaved rounds in a quiet
-  period): the shading drawn at z14–16 instead of z12–15 (z13–16), the map's GPU memory at rest
-  522 → 665 MB (662 → 774), drapes 112 → 145 MB (78 → 112); Chrome pan 93 → 88 fps, GPU 7.5–8.3 →
-  8.2–8.6 ms (77–86 → 77–78), orbit 100–102 → 95–100 (64 → 60–63); Safari pan 27–30 → 24–26
-  (22–27 → 22), orbit 24–32 → 26 (27–29 → 26–28); settle 0.2–0.3 → 0.4–0.6 s in Chrome, 0.2–0.4 →
-  0.6–1.2 s in Safari: the 300 ms `refineDelay`, then the finer tiles from the cache and the drapes
-  drawn while moving drawn again with them, a tile a frame. (With the finer tiles kept in the cover
-  while moving, Chrome's saguenay pan was 81 fps and Safari's settle up to 3.1 s.)
+  it would have without it (`_drapeDetails`, worked out again only when the drapes' cover,
+  `_coverVersion`, or the finer tiles change; a frame looks each drape up). A drape whose size or
+  source tiles change while the camera moves is drawn again at the drapes' pace (below: a new size
+  waits for rest, other source tiles are drawn a few textures a frame), so finer tiles arriving
+  during a gesture don't draw many textures in one frame (`terrain_tile_manager.test.ts`).
+  Frame times and GPU memory with the finer tiles kept in gestures are not measured yet.
 - **Elevations looked up without a cover a point** (`Terrain.elevationForLngLatFn`, `_coverZoom`,
   `coverKey`): where no rendered tile holds a point, upstream's `getElevationForLngLat` worked out
   the camera's whole tile cover for every point; the cover's zoom is now worked out once a batch
@@ -281,6 +267,17 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
 - **Visible coordinates once a frame** (`TileManager#getVisibleCoordinates`, `_visibleMemo`): the
   renderable tiles' ids are sorted once a frame per source (the painter asked three times, the
   drapes and the app's layers again), a copy each time.
+- **Tile matrices when a draw asks** (`getVisibleCoordinates`; upstream's `populateCache`, gone):
+  a tile's matrix is worked out by the transform when a draw needs it, not for every tile in view
+  each frame. A source drawn only into the drapes (the shading's 300-odd tiles) draws with the
+  drapes' matrices, and only when a drape is drawn again.
+- **Drape coordinates kept** (`TerrainTileManager.getTerrainCoords`, `_coordsCache`,
+  `_coverVersion`; `RenderToTexture._sourceTiles`): the drapes over a source tile are looked up by
+  its own and its ancestors' ids and under it (upstream went over every drape for every tile, a copy
+  and a matrix each: 8 ms a frame for 336 tiles over 37 drapes, in Node on the M1); an answer is kept
+  while no drape over it comes or goes. Each draped source's tiles under each drape and their keys
+  for the fingerprints (`tileKeysOf`) are kept while its tiles in view and the drapes stay the same,
+  so such a frame only compares them (`terrain_tile_manager.test.ts`, `render_to_texture.test.ts`).
 
 - **Feature state redraws only the drapes that read it** (`render_to_texture.ts`): a source's state
   revision is part of a terrain texture's fingerprint only when one of its draped layers reads

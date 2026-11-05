@@ -546,7 +546,7 @@ export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDe
       // encoding is Terrarium's with a half-unit shift: the colour ramp's stops are packed with it as
       // usual, and the shaders know the source by it. Up to two zooms finer than the screen where the
       // terrain goes that deep (our MapLibre's `scenic:detail`: nearest the camera first, within a
-      // budget, once the screen's own tiles are in and the camera is still), the drapes sized to hold
+      // budget, each screen tile's once it is in, moving or not), the drapes sized to hold
       // it and their mipmaps averaging it (terrain.ts finerTerrainMesh).
       slope: {
         ...dem, encoding: 'custom' as const, redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SHADE_SHIFT,

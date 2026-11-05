@@ -63,7 +63,7 @@ const zoomByAreaSpec = {
 const detailSpec = {
     type: 'number',
     default: 1,
-    doc: 'Up to this many times finer a side than the screen (a power of two): the screen\'s own tiles first, then finer ones nearest the camera, within a budget, once the camera is still (`TileManager._refineCover`; Scenic Roads).',
+    doc: 'Up to this many times finer a side than the screen (a power of two): the screen\'s own tiles first, then finer ones nearest the camera, within a budget, moving or not (`TileManager._refineCover`; Scenic Roads).',
 };
 
 export const SCENIC_PROPERTIES: Record<string, Record<string, unknown>> = {

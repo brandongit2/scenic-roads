@@ -54,7 +54,7 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes its terrain and shading tiles to that
   zoom there (our MapLibre's `scenic:zoom-by-area`), z12 elsewhere. The shading goes up to two
   zooms finer than the screen within those zooms, nearest the camera first and within a budget,
-  once the screen's own tiles are in and the camera is still (web/src/basemap.ts `SHADE_DETAIL`,
+  each screen tile's once it is in, while the camera moves too (web/src/basemap.ts `SHADE_DETAIL`,
   our MapLibre's `scenic:detail`). The meta's
   `packs.terrain.deep` gives each deep pack's version by z10 tile (`"10/x/y"`), as `lo` and `hi` do
   theirs, so a tile past z12 there carries its deep pack's `?v=` and a new catalogue asks again only

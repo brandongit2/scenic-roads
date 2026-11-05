@@ -634,13 +634,6 @@ export class Map extends Evented<MapEventType> {
     _lastCameraMove: number = -Infinity;
     _lastCameraMatrix: Float64Array | null = null;
     _holdTimer: ReturnType<typeof setTimeout> | null = null;
-    /**
-     * Scenic Roads: how long the camera stays still (see _lastCameraMove) before tiles finer than
-     * the screen and the drapes holding them are asked for (TileManager._refineCover,
-     * TerrainTileManager.drapeDetail); one clock for both, so they grow in the same frame.
-     */
-    refineDelay: number = 300;
-    _stillTimer: ReturnType<typeof setTimeout> | null = null;
     // accounts for placement finishing as well
     _fullyLoaded: boolean;
     _trackResize: boolean;
@@ -2125,25 +2118,6 @@ export class Map extends Evented<MapEventType> {
         if (!last) return true;
         for (let i = 0; i < 16; i++) if (last[i] !== m[i]) return true;
         return false;
-    }
-
-    /**
-     * Scenic Roads: ms until the camera has been still for refineDelay; 0 once it has. (A camera
-     * changed since the last frame counts as moving already: the sources are updated before the
-     * frame notes the move, and a jumpTo's first frame would refine them.)
-     */
-    _stillIn(): number {
-        if (this._camera.isMoving() || this._handlers?.isMoving() || (this._lastCameraMatrix && this._cameraChanged())) return this.refineDelay;
-        return Math.max(0, this.refineDelay - (now() - this._lastCameraMove));
-    }
-
-    /** Scenic Roads: the sources updated once the camera has been still for refineDelay, though no frame asks for it. */
-    _updateWhenStill(): void {
-        if (this._stillTimer || this._removed) return;
-        this._stillTimer = setTimeout(() => {
-            this._stillTimer = null;
-            if (!this._removed) this._update();
-        }, this._stillIn() + 1);
     }
 
     /**
@@ -4702,14 +4676,10 @@ export class Map extends Evented<MapEventType> {
         this._cleanupContainer();
 
         this._removed = true;
-        // Scenic Roads: the hold's frame (MOVING_HOLD_MS) and the stillness's (refineDelay) no longer wanted.
+        // Scenic Roads: the hold's frame (MOVING_HOLD_MS) no longer wanted.
         if (this._holdTimer) {
             clearTimeout(this._holdTimer);
             this._holdTimer = null;
-        }
-        if (this._stillTimer) {
-            clearTimeout(this._stillTimer);
-            this._stillTimer = null;
         }
         this.fire(new MapLibreEvent('remove'));
     }

@@ -9,7 +9,7 @@ import {now} from '../util/time_control.ts';
 import {OverscaledTileID} from './tile_id.ts';
 import {SourceFeatureState} from '../source/source_state.ts';
 import {config} from '../util/config.ts';
-import {areaMaxZoom, coveringTiles, coveringZoomLevel} from '../geo/projection/covering_tiles.ts';
+import {coveringTiles, coveringZoomLevel} from '../geo/projection/covering_tiles.ts';
 import {cameraMercatorCoordinate} from '../geo/projection/mercator_utils.ts';
 import {Bounds} from '../geo/bounds.ts';
 import {EXTENT_BOUNDS} from '../data/extent_bounds.ts';
@@ -84,14 +84,17 @@ export class TileManager extends Evented<SourceEventType> {
     maxTilesADrape: number = 240;
     /**
      * Scenic Roads: with source.detail, each finer tile in the cover's zooms beyond its screen tile's
-     * (the drapes grow over them: TerrainTileManager._drapeDetails; a texture drawn with them is kept
-     * till the next rest: RenderToTexture). Empty while the camera isn't still.
+     * (the drapes grow over them: TerrainTileManager._drapeDetails). The same Map while they stay the same.
      */
     _detailOffset: globalThis.Map<string, {id: OverscaledTileID; offset: number}> = new globalThis.Map();
-    /** Scenic Roads: with source.detail, how many finer tiles the last rest's cover held: the out-of-view cache keeps as many more (updateCacheSize). */
+    /** Scenic Roads: with source.detail, how many finer tiles the cover holds: the out-of-view cache keeps as many more (updateCacheSize). */
     _detailTiles: number = 0;
-    /** Scenic Roads: with source.detail, finer tiles still to be asked for once the camera is still or a tile is in (not loaded till then). */
+    /** Scenic Roads: with source.detail, finer tiles still to be asked for once a tile is in (not loaded till then). */
     _detailPending: boolean = false;
+    /** Scenic Roads: with source.detail, _refineCover's last answer, the screen's cover and finer cover it was for, and all it read. */
+    _refineMemo: {today: string; kids: Record<string, OverscaledTileID[]>; inputs: string; out: OverscaledTileID[]} | null = null;
+    /** Scenic Roads: bumped whenever a tile is added, removed, loads or fails (_refineCover's memo). */
+    _tileVersion: number = 0;
     /** Scenic Roads: the frame's renderable coordinates, worked out once a frame (getVisibleCoordinates). */
     _visibleMemo: {frame: number; bearing: number; plain: OverscaledTileID[] | null; symbol: OverscaledTileID[] | null} | null = null;
     style: Style;
@@ -230,8 +233,10 @@ export class TileManager extends Evented<SourceEventType> {
     async _loadTile(tile: Tile, id: string, state: TileState, hadData: boolean): Promise<void> {
         try {
             const result = await this._source.loadTile(tile) as LoadTileResult;
+            this._tileVersion++;
             this._tileLoaded(tile, id, state, hadData, result);
         } catch (err) {
+            this._tileVersion++;
             tile.state = 'errored';
 
             if (err.status !== 404) {
@@ -501,8 +506,7 @@ export class TileManager extends Evented<SourceEventType> {
         const approxTilesInView = widthInTiles * heightInTiles;
         const commonZoomRange = this._maxTileCacheZoomLevels === null ?
             config.MAX_TILE_CACHE_ZOOM_LEVELS : this._maxTileCacheZoomLevels;
-        // (Scenic Roads: and the finer tiles of the last rest, out of the cover while the camera
-        // moves, there again when it comes back: _refineCover)
+        // (Scenic Roads: and as many more as the cover's finer tiles: _refineCover)
         const viewDependentMaxSize = Math.floor(approxTilesInView * commonZoomRange) + this._detailTiles;
         const maxSize = typeof this._maxTileCacheSize === 'number' ?
             Math.min(this._maxTileCacheSize, viewDependentMaxSize) : viewDependentMaxSize;
@@ -817,31 +821,38 @@ export class TileManager extends Evented<SourceEventType> {
 
     /**
      * Scenic Roads: a source with `detail` (RasterTileSource.detail): each tile of the screen's own
-     * cover (`today`) is replaced by its tiles in the finer cover (`fine`), nearest the camera first,
-     * while the texels of the tiles chosen stay within `detailBudget` times the screen's device
-     * pixels (or today's cover's, if more). Only once the camera has been still for the map's
-     * `refineDelay`: while it moves and till then the cover is the screen's own, so a frame costs
-     * what it did without `detail` (the finer tiles go to the out-of-view cache, kept for the next
-     * rest, and the drapes drawn with them at the last rest are kept: RenderToTexture). Progressive:
-     * a tile is refined only once it has data itself (it stands in while its finer tiles load). Until
-     * the refinement is done the source isn't loaded (`_detailPending`; while the camera isn't still,
-     * as long as a tile of the cover has finer tiles), so the map's `idle` waits for it.
+     * cover (`today`) is replaced by its tiles in the finer cover (`fineCover`), nearest the camera
+     * first, while the texels of the tiles chosen stay within `detailBudget` times the screen's
+     * device pixels (or today's cover's, if more), moving or not. Progressive: a tile is refined only
+     * once it has data itself (it stands in while its finer tiles load). Until the refinement is done
+     * the source isn't loaded (`_detailPending`), so the map's `idle` waits for it.
+     * Worked out again only when something it reads changes (`_refineMemo`): the finer cover when
+     * the screen's own does, the choice when that, a tile's state (`_tileVersion`), the terrain's
+     * drapes or the budget do. Otherwise a frame returns the last answer, the finer tiles' offsets the
+     * same Map (the drapes' sizes are worked out again only when it changes: TerrainTileManager).
      */
     _refineCover(transform: ITransform, today: OverscaledTileID[], fineCover: () => OverscaledTileID[]): OverscaledTileID[] {
-        if (this.map && this.map._stillIn() > 0) {
-            this.map._updateWhenStill();
-            const {zoomByArea, maxzoom} = this._source;
-            this._detailPending = today.some(({canonical: {z, x, y}}) => areaMaxZoom(zoomByArea, maxzoom, z, x, y) > z);
-            this._detailOffset = new globalThis.Map();
-            return today;
-        }
-        const todayKeys = new Set(today.map(id => id.key));
-        const kids: Record<string, OverscaledTileID[]> = {};
-        for (const f of fineCover()) {
-            for (let z = f.overscaledZ - 1; z >= 0; z--) {
-                const p = f.scaledTo(z);
-                if (todayKeys.has(p.key)) { (kids[p.key] ??= []).push(f); break; }
-                if (p.canonical.z === 0) break;
+        const pixelRatio = this.map?.getPixelRatio?.() ?? 1;
+        // (the terrain's drapes: at most maxTilesADrape of this source's tiles drawn into one, the
+        // stencil's IDs a texture; RenderToTexture)
+        const terrainTiles = (this.map as {terrain?: {tileManager?: {_tiles: Record<string, unknown>; _coverVersion: number}}} | undefined)?.terrain?.tileManager;
+        // (the finer cover also follows the source's zooms by area)
+        const todayKey = `${this._source.zoomByArea?.key ?? ''}|${today.map(id => id.key).join()}`;
+        const inputs = [todayKey, transform.width, transform.height, pixelRatio, this.detailBudget, this.maxTilesADrape,
+            terrainTiles?._coverVersion ?? -1, this._tileVersion].join('|');
+        const memo = this._refineMemo;
+        if (memo?.inputs === inputs) return memo.out.slice();
+
+        let kids = memo?.today === todayKey ? memo.kids : null;
+        if (!kids) {
+            kids = {};
+            const todayKeys = new Set(today.map(id => id.key));
+            for (const f of fineCover()) {
+                for (let z = f.overscaledZ - 1; z >= 0; z--) {
+                    const p = f.scaledTo(z);
+                    if (todayKeys.has(p.key)) { (kids[p.key] ??= []).push(f); break; }
+                    if (p.canonical.z === 0) break;
+                }
             }
         }
         const cam = cameraMercatorCoordinate(transform);
@@ -851,7 +862,6 @@ export class TileManager extends Evented<SourceEventType> {
         };
         const order = today.map(id => ({id, d: dist(id)})).sort((a, b) => a.d - b.d).map(o => o.id);
         const texels = (id: OverscaledTileID) => this._inViewTiles.getTileById(id.key)?.dem?.dim ** 2 || 256 * 256;
-        const pixelRatio = this.map?.getPixelRatio?.() ?? 1;
         let used = today.reduce((a, id) => a + texels(id), 0);
         const budget = Math.max(used, transform.width * transform.height * pixelRatio ** 2 * this.detailBudget);
         // (a tile that failed counts as in: it won't come)
@@ -859,9 +869,7 @@ export class TileManager extends Evented<SourceEventType> {
             const tile = this._inViewTiles.getTileById(id.key);
             return !!tile && (tile.hasData() || tile.state === 'errored');
         };
-        // (the terrain's drapes: at most maxTilesADrape of this source's tiles drawn into one, the
-        // stencil's IDs a texture; RenderToTexture)
-        const drapes = (this.map as {terrain?: {tileManager?: {_tiles: Record<string, unknown>}}} | undefined)?.terrain?.tileManager?._tiles;
+        const drapes = terrainTiles?._tiles;
         const drapeOf = (id: OverscaledTileID) => {
             if (!drapes) return null;
             for (let z = id.canonical.z; z >= 0; z--) {
@@ -876,7 +884,7 @@ export class TileManager extends Evented<SourceEventType> {
         const drapeOfToday: Record<string, string | null> = {};
         for (let i = 0; i < today.length; i++) drapeOfToday[today[i].key] = drapeKeys[i];
         const out: OverscaledTileID[] = [];
-        const offsets = new globalThis.Map<string, {id: OverscaledTileID; offset: number}>();
+        let offsets = new globalThis.Map<string, {id: OverscaledTileID; offset: number}>();
         let pending = false;
         for (const id of order) {
             const k = kids[id.key];
@@ -896,10 +904,13 @@ export class TileManager extends Evented<SourceEventType> {
                 if (k && used + cost <= budget && fits) pending = true;
             }
         }
+        const last = this._detailOffset;
+        if (last.size === offsets.size && [...offsets].every(([key, o]) => last.get(key)?.offset === o.offset)) offsets = last;
         this._detailOffset = offsets;
         this._detailTiles = offsets.size;
         this._detailPending = pending;
-        return out;
+        this._refineMemo = {today: todayKey, kids, inputs, out};
+        return out.slice();
     }
 
     /**
@@ -932,6 +943,7 @@ export class TileManager extends Evented<SourceEventType> {
 
         tile.uses++;
         this._inViewTiles.setTile(tileID.key, tile);
+        this._tileVersion++;
         if (!cached) {
             this._source.fire(new MapSourceDataEvent('dataloading', {tile, coord: tile.tileID}));
         }
@@ -1012,6 +1024,7 @@ export class TileManager extends Evented<SourceEventType> {
 
         tile.uses--;
         this._inViewTiles.deleteTileById(id);
+        this._tileVersion++;
         this._clearTileReloadTimer(id);
 
         if (tile.uses > 0)
