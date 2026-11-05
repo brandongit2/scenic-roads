@@ -228,7 +228,7 @@ pub fn bld_sources(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 }
 
 /// What a terrain z6 tile's run reads of the coverage (task #832, `build::piece_coverage`: the
-/// tiles of its levels it makes); a terrain-deep z10 tile's, its levels' (`tiles::Deep::coverage`).
+/// tiles of its levels it makes); a terrain-deep z10 tile's, its levels' (crate::terrain_deep::Deep::coverage).
 /// None while the declared datasets can't be read.
 pub fn coverage_piece(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;

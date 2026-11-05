@@ -10,11 +10,12 @@
 
 use super::nasread;
 use super::steps::{readiness, ready, Left, Ready, View};
-use super::tiles::{Deep, Reader, TerrainTiles, Tile, Unread};
+use super::tiles::{Reader, TerrainTiles, Tile, Unread};
 use crate::coverage::Coverage;
 use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
+use crate::terrain_deep::Deep;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1518,17 +1519,6 @@ pub fn water_wants(d: &Deep) -> Vec<(String, String)> {
     out
 }
 
-/// Levels' tiles (z, then each column and row), as a key names them: a terrain-deep z10 tile's run
-/// reads of the coverage the tiles of its levels (crate::terrain_deep::levels), digested
-/// (`Deep::coverage`).
-pub(crate) fn levels_digest(levels: &[(u8, Vec<(u32, u32)>)]) -> String {
-    let lines: Vec<String> = levels
-        .iter()
-        .map(|(z, ts)| format!("{z}:{}", ts.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ")))
-        .collect();
-    format!("tiles {}", store::naming::hash16(lines.join("\n").as_bytes()))
-}
-
 /// A z6 tile's water reads' from (`WaterIdx`): the coverage as it reads it (`fp`, `piece_coverage`): its
 /// tiles, as the terrain reads them since it levels rivers (crate::terrain_water::FLOW_FROM).
 pub fn piece_water_from(fp: &str) -> String {
@@ -1541,7 +1531,7 @@ pub fn piece_water_from(fp: &str) -> String {
 /// moved, an islet dropped or added, that leaves the same tiles near it changes nothing the run
 /// reads, so it rebuilds nothing. A terrain-deep target's are its levels' (`Deep::coverage`).
 pub fn piece_coverage(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> String {
-    levels_digest(&crate::terrain_pack::piece_levels(cov, sets, t))
+    crate::terrain_deep::levels_digest(&crate::terrain_pack::piece_levels(cov, sets, t))
 }
 
 /// `water_wants` with the tiles each reads: a z6 tile's z9–12 (crate::terrain_pack::piece_levels),

@@ -5537,7 +5537,7 @@ fn water_idx_of(
     };
     // (The depth's targets' too, once its sources are declared: pipeline::depth. Declarations that
     // can't be read now leave the depth out, never the terrain's digests.)
-    let mut reads = pipeline::agent::build::water_reads(&pipeline::agent::tiles::Deep::new(
+    let mut reads = pipeline::agent::build::water_reads(&pipeline::terrain_deep::Deep::new(
         cov,
         std::sync::Arc::new(zoom_sets(out)?),
     ));
