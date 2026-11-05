@@ -15,11 +15,9 @@ use det::Det;
 use rayon::prelude::*;
 use roadcore::grid::{cell_m, cell_of, class as lc, GridIndex, Layer};
 use roadcore::scenic::{area_u8, ch, flag as sf, sflag, Sample, FAR_MAX_M, NEAR_AZ, NEAR_MAX_M};
-use roadcore::{class, dist_m, flag, merc, Array, Ways, E7};
+use roadcore::{class, dist_m, flag, geo::merc, Array, Ways, E7};
 use std::collections::HashMap;
 use std::path::Path;
-
-const R_EFF: f64 = 6_371_000.0 / 0.87; // refraction-adjusted earth radius
 
 struct Grids {
     idx: GridIndex,
@@ -81,7 +79,7 @@ fn load_points(path: &Path, kinds: &[&str]) -> Vec<(f64, f64)> {
 }
 
 /// A z11 grid tile's width at the equator (m); it narrows with the cosine of the latitude.
-const TILE_M_EQUATOR: f64 = 40_075_016.7 / 2048.0;
+const TILE_M_EQUATOR: f64 = roadcore::geo::MERC_C / 2048.0;
 
 /// Heavy pass: viewsheds and landscape metrics per sample (→ samples.ch.u8), then flags and
 /// per-vertex channels.
@@ -352,7 +350,7 @@ fn sample_metrics(g: &Grids, s: &Sample, near: &[i8], roadside: &[u8]) -> [u8; c
             let step = cm.max(d * 0.03);
             let Some(i) = at(d, ux, uy) else { break };
             let h = terr[i] as f64 + can.map_or(0.0, |cv| cv[i] as f64);
-            let sl = (h - eye - d * d / (2.0 * R_EFF)) / d;
+            let sl = (h - eye - d * d / (2.0 * roadcore::scenic::SIGHT_R)) / d;
             if sl >= smax {
                 let da = step * d * dth;
                 area += da;

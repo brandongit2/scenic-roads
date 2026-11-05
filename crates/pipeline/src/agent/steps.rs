@@ -625,7 +625,7 @@ fn sl_lo(t: &str) -> Vec<String> {
 /// of z4–8's z3 tiles, the hi packs of its box's z6 tiles (z9–12's), its box's deep packs.
 fn unit_reads(t: &str, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
-    let b = crate::stage::tile_box_grown(6, x, y, crate::stage::MARGIN_KM);
+    let b = roadcore::geo::tile_box_grown(6, x, y, crate::stage::MARGIN_KM);
     let mut v: Vec<(u32, u32)> = Vec::new();
     let mut under = |zs: std::ops::RangeInclusive<u8>, to: u8| {
         for z in zs {
@@ -695,7 +695,7 @@ fn peaks_hi(t: &str) -> Vec<String> {
         6,
         at(t, 6)
             .into_iter()
-            .flat_map(|(x, y)| super::build::tiles_in_wrapped(6, crate::stage::tile_box_grown(6, x, y, 30.0))),
+            .flat_map(|(x, y)| super::build::tiles_in_wrapped(6, roadcore::geo::tile_box_grown(6, x, y, 30.0))),
     )
 }
 

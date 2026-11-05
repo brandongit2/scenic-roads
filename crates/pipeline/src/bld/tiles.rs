@@ -511,7 +511,7 @@ mod tests {
     fn a_tile() {
         // Two buildings in 14/8298/5634 (Paris), one with a hole, wound either way; one a part.
         let (z, x, y) = (14u8, 8298u32, 5634u32);
-        let b = crate::bld::tile_box_deg(z, x, y);
+        let b = roadcore::geo::tile_box(z, x, y);
         let (lon, lat) = (b[0] + 0.002, b[1] + 0.002);
         let outer = sq(lon, lat, 0.0005, false);
         let hole = sq(lon + 0.0002, lat + 0.0002, 0.0001, false);

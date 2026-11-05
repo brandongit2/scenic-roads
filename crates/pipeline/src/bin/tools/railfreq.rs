@@ -98,7 +98,8 @@ struct Edge {
 
 /// The unit vector from a to b (lon/lat), in metres east and north.
 fn heading(a: [f64; 2], b: [f64; 2]) -> [f32; 2] {
-    let (dx, dy) = ((b[0] - a[0]) * 111_320.0 * a[1].to_radians().dcos(), (b[1] - a[1]) * 110_570.0);
+    let (dx, dy) =
+        ((b[0] - a[0]) * roadcore::geo::M_PER_DEG * a[1].to_radians().dcos(), (b[1] - a[1]) * roadcore::geo::M_PER_DEG);
     let n = (dx * dx + dy * dy).sqrt().max(1e-9);
     [(dx / n) as f32, (dy / n) as f32]
 }
@@ -308,7 +309,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             .into_iter()
             .min_by(|&m, &n| (a[m] - x).abs().total_cmp(&(a[n] - x).abs()))
             .unwrap();
-        let (kx, ky) = (111_320.0 * p[1].to_radians().dcos(), 110_570.0);
+        let (kx, ky) = (roadcore::geo::M_PER_DEG * p[1].to_radians().dcos(), roadcore::geo::M_PER_DEG);
         let pt = |q: [i32; 2]| [q[0] as f64 * E7, q[1] as f64 * E7];
         let mut best = (f64::MAX, x);
         for (s, t) in [(k.wrapping_sub(1), k), (k, k + 1)] {
@@ -331,8 +332,8 @@ pub fn main(args: Vec<String>) -> Result<()> {
     // the distance from the stop, which is added to the path cost.
     let snap_within = |p: [f64; 2], bits: u8, max_m: f64, n: usize, w: f64| -> Vec<(At, f32)> {
         let (cx, cy) = ((p[0] / CELL).floor() as i32, (p[1] / CELL).floor() as i32);
-        let rx = (max_m / (CELL * 111_320.0 * p[1].to_radians().dcos().max(0.2))).ceil() as i32;
-        let ry = (max_m / (CELL * 110_570.0)).ceil() as i32;
+        let rx = (max_m / (CELL * roadcore::geo::M_PER_DEG * p[1].to_radians().dcos().max(0.2))).ceil() as i32;
+        let ry = (max_m / (CELL * roadcore::geo::M_PER_DEG)).ceil() as i32;
         let mut per_way: HashMap<u32, (f64, bool, At)> = HashMap::new();
         for dx in -rx..=rx {
             for dy in -ry..=ry {
@@ -816,7 +817,7 @@ fn corridors(
                 return most[i];
             }
             // Local metres per degree.
-            let ky = 111_320.0;
+            let ky = roadcore::geo::M_PER_DEG;
             let kx = ky * (v[0][1].to_radians()).dcos();
             let seg_len: Vec<f64> = v
                 .windows(2)

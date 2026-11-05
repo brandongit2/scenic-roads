@@ -265,7 +265,7 @@ pub fn want(
     for (t, _, cover) in &pyr {
         if let (Some(cover), Some(set)) = (cover, out.get_mut(t)) {
             set.retain(|&(z, x, y)| {
-                let b = crate::stage::tile_box_grown(z, x, y, 0.0);
+                let b = roadcore::geo::tile_box(z, x, y);
                 cover.iter().any(|c| b[0] < c[2] && c[0] < b[2] && b[1] < c[3] && c[1] < b[3])
             });
         }

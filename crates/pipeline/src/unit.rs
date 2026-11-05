@@ -595,7 +595,7 @@ pub fn prepare_folder(
     std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
     // 4. The global-source layers the steps read, from the packs.
     let s = stage("staging layers from the packs");
-    let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
+    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     // (With the terrain the roads' heights read: the deep tiles under the vertices; and the
     // datasets' codes.)
     let deep = crate::road_terrain::deep_tiles(roadcore::Ways::open(dir)?.verts(), &fine);
@@ -709,13 +709,12 @@ pub fn keep_here(runs: &mut [Run], what: &str) {
 /// The 10° canopy squares the canopy step reads for grid tiles `tiles` (those of each tile's
 /// corners), by (top latitude, left longitude).
 pub fn canopy_squares(tiles: &[[u32; 2]]) -> std::collections::BTreeSet<(i32, i32)> {
-    use det::Det;
     let mut need = std::collections::BTreeSet::new();
     for t in tiles {
         for (dx, dy) in [(0u32, 0u32), (1, 0), (0, 1), (1, 1)] {
             let (x, y) = ((t[0] + dx) as f64 * 256.0, (t[1] + dy) as f64 * 256.0);
-            let lon = x / roadcore::grid::WORLD * 360.0 - 180.0;
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
+            let lon = roadcore::geo::merc_lon(x / roadcore::grid::WORLD);
+            let lat = roadcore::geo::merc_lat(y / roadcore::grid::WORLD);
             need.insert(((lat / 10.0).ceil() as i32 * 10, (lon / 10.0).floor() as i32 * 10));
         }
     }

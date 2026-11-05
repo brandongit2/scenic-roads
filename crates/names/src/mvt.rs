@@ -18,7 +18,6 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::f64::consts::PI;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 
@@ -304,7 +303,7 @@ pub fn tile_to_lonlat(z: u32, x: u32, y: u32, extent: u32, px: f64, py: f64) -> 
     let e = f64::from(extent);
     let wx = (f64::from(x) + px / e) / n;
     let wy = (f64::from(y) + py / e) / n;
-    (wx * 360.0 - 180.0, (PI * (1.0 - 2.0 * wy)).dsinh().datan().to_degrees())
+    (roadcore::geo::merc_lon(wx), roadcore::geo::merc_lat(wy))
 }
 
 /// Tile `z`/`x`/`y`'s bounds as `[west, south, east, north]` in degrees, grown by `buffer` tiles on
@@ -315,8 +314,8 @@ pub fn tile_to_lonlat(z: u32, x: u32, y: u32, extent: u32, px: f64, py: f64) -> 
 /// label in its own tile (0.0).
 pub fn tile_bounds(z: u32, x: u32, y: u32, buffer: f64) -> [f64; 4] {
     let n = f64::from(z).dexp2();
-    let lon = |t: f64| (t / n).clamp(0.0, 1.0) * 360.0 - 180.0;
-    let lat = |t: f64| (PI * (1.0 - 2.0 * (t / n).clamp(0.0, 1.0))).dsinh().datan().to_degrees();
+    let lon = |t: f64| roadcore::geo::merc_lon((t / n).clamp(0.0, 1.0));
+    let lat = |t: f64| roadcore::geo::merc_lat((t / n).clamp(0.0, 1.0));
     let (x, y) = (f64::from(x), f64::from(y));
     [lon(x - buffer), lat(y + 1.0 + buffer), lon(x + 1.0 + buffer), lat(y - buffer)]
 }
@@ -802,8 +801,8 @@ mod tests {
     /// Tile coordinates of (lon, lat) in z/x/y at extent 4096.
     fn at(z: u32, x: u32, y: u32, lon: f64, lat: f64) -> (i32, i32) {
         let n = f64::from(z).dexp2();
-        let wx = (lon + 180.0) / 360.0 * n - f64::from(x);
-        let wy = (1.0 - lat.to_radians().dtan().dasinh() / PI) / 2.0 * n - f64::from(y);
+        let (mx, my) = roadcore::geo::merc(lon, lat);
+        let (wx, wy) = (mx * n - f64::from(x), my * n - f64::from(y));
         ((wx * 4096.0).round() as i32, (wy * 4096.0).round() as i32)
     }
 

@@ -150,7 +150,7 @@ pub fn read_set(pbf: &Path) -> Result<Vec<Summit>> {
 
 /// The summit's z8 pixel (global pixel coordinates at z8).
 pub fn z8_pixel(lon: i32, lat: i32) -> (i64, i64) {
-    let (x, y) = roadcore::merc(lon as f64 * 1e-7, lat as f64 * 1e-7);
+    let (x, y) = roadcore::geo::merc(lon as f64 * 1e-7, lat as f64 * 1e-7);
     let w = 256.0 * (1u64 << crate::peaks::z8::Z) as f64;
     ((x * w).floor() as i64, (y * w).floor() as i64)
 }

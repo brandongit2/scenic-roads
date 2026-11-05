@@ -11,14 +11,13 @@
 use crate::coverage::Coverage;
 use crate::out::Out;
 use anyhow::{Context, Result};
-use det::Det;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// What heritage.py counts as covered: the z12 tiles within 20 km of the coverage.
+/// What heritage.py counts as covered: the z12 tiles near the coverage
+/// (crate::terrain_pack::near_coverage).
 pub const COVER_Z: u8 = 12;
-pub const COVER_KM: f64 = 20.0;
 
 /// The cover's tiles, sorted by (x, y).
 pub fn cover_tiles(cov: &Coverage) -> Vec<(u32, u32)> {
@@ -29,7 +28,7 @@ pub fn cover_tiles(cov: &Coverage) -> Vec<(u32, u32)> {
         .flat_map_iter(|&(x6, y6)| {
             (x6 * s..(x6 + 1) * s)
                 .flat_map(move |x| (y6 * s..(y6 + 1) * s).map(move |y| (x, y)))
-                .filter(|&(x, y)| crate::terrain_pack::near_coverage(cov, COVER_Z, x, y, COVER_KM))
+                .filter(|&(x, y)| crate::terrain_pack::near_coverage(cov, COVER_Z, x, y))
         })
         .collect();
     out.sort_unstable();
@@ -41,7 +40,7 @@ pub fn cover_boxes(cov: &Coverage) -> Vec<[f64; 4]> {
     crate::agent::build::coverage_tiles(cov)
         .into_values()
         .flatten()
-        .map(|(x, y)| crate::stage::tile_box_grown(6, x, y, 0.0))
+        .map(|(x, y)| roadcore::geo::tile_box(6, x, y))
         .collect()
 }
 
@@ -139,8 +138,8 @@ pub fn tiles_geojson(z: u8, tiles: &[(u32, u32)]) -> serde_json::Value {
     done.extend(open.into_values());
     done.sort_unstable();
     let n = (1u64 << z) as f64;
-    let lon = |t: u32| t as f64 / n * 360.0 - 180.0;
-    let lat = |t: u32| (std::f64::consts::PI * (1.0 - 2.0 * t as f64 / n)).dsinh().datan().to_degrees();
+    let lon = |t: u32| roadcore::geo::merc_lon(t as f64 / n);
+    let lat = |t: u32| roadcore::geo::merc_lat(t as f64 / n);
     let polys: Vec<serde_json::Value> = done
         .iter()
         .map(|r| {
@@ -530,8 +529,8 @@ mod tests {
         assert_eq!(polys.len(), 4);
         // Every tile's centre inside exactly one rectangle; none outside the tiles.
         let n = 4096.0;
-        let lon = |t: f64| t / n * 360.0 - 180.0;
-        let lat = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).dsinh().datan().to_degrees();
+        let lon = |t: f64| roadcore::geo::merc_lon(t / n);
+        let lat = |t: f64| roadcore::geo::merc_lat(t / n);
         let count = |x: f64, y: f64| {
             polys
                 .iter()

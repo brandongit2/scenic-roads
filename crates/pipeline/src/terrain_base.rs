@@ -89,7 +89,7 @@ pub fn terrarium_template(
 pub fn tiles_box(z: u8, ts: &[(u32, u32)]) -> [f64; 4] {
     let mut b = [180.0f64, 90.0f64, -180.0f64, -90.0f64];
     for &(x, y) in ts {
-        let t = crate::stage::tile_box_grown(z, x, y, 0.0);
+        let t = roadcore::geo::tile_box(z, x, y);
         b = [b[0].min(t[0]), b[1].min(t[1]), b[2].max(t[2]), b[3].max(t[3])];
     }
     b
@@ -239,7 +239,7 @@ const BY_ROW: usize = (MAX_Z - ROW_Z + 1) as usize * 64;
 /// The middle latitude of z6 row `row` (its box's south and north edges averaged, as a z6 tile's
 /// own area's: `Pool::with_tiles`).
 pub fn row_mid(row: u32) -> f64 {
-    let b = crate::stage::tile_box_grown(6, 0, row, 0.0);
+    let b = roadcore::geo::tile_box(6, 0, row);
     (b[1] + b[3]) / 2.0
 }
 
@@ -558,7 +558,7 @@ pub fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
     for &(x, y) in ts {
         for r in 0..side {
             let fy = (y as f64 + (r as f64 + 0.5) / side as f64) / n;
-            let la = (std::f64::consts::PI * (1.0 - 2.0 * fy)).sinh().atan().to_degrees();
+            let la = roadcore::geo::merc_lat(fy);
             for c in 0..side {
                 lon.push((x as f64 + (c as f64 + 0.5) / side as f64) / n * 360.0 - 180.0);
                 lat.push(la);
@@ -637,8 +637,8 @@ mod tests {
         // The z12 tile over 10.5°E, 45.5°N, and its Terrarium tile: 500 m flat.
         let z = 12u8;
         let nn = (1u64 << z) as f64;
-        let x = ((10.5 + 180.0) / 360.0 * nn) as u32;
-        let y = ((1.0 - 45.5f64.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        let x = (roadcore::geo::merc_x(10.5) * nn) as u32;
+        let y = (roadcore::geo::merc_y(45.5) * nn) as u32;
         std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
         std::fs::write(
             local.join(format!("{z}/{x}/{y}.png")),
@@ -729,8 +729,8 @@ mod tests {
         // four of their pixels as read at the level's detail: `at_zoom`.)
         let (z, lon, lat) = (12u8, 10.5f64, 45.5f64);
         let nn = (1u64 << z) as f64;
-        let x = ((lon + 180.0) / 360.0 * nn) as u32;
-        let y = ((1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        let (x, y) = roadcore::geo::merc(lon, lat);
+        let (x, y) = ((x * nn) as u32, (y * nn) as u32);
         let n = 1200usize;
         let gt = [10.44, 0.0001, 0.0, 45.56, 0.0, -0.0001];
         let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32 * 0.01).collect();
@@ -784,7 +784,7 @@ mod tests {
                 .with_tiles(&raw, None, |t| t.sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap())
                 .unwrap()
         };
-        let own = tile_of(crate::stage::tile_box_grown(6, x >> 6, y >> 6, 0.0));
+        let own = tile_of(roadcore::geo::tile_box(6, x >> 6, y >> 6));
         let wide = tile_of([10.0, 20.0, 11.0, 60.0]);
         assert_eq!(own, wide, "its own z6 row's latitude, whatever the area");
         // (Read at the wide area's middle, 40°N: another blend.)
@@ -810,9 +810,9 @@ mod tests {
         std::fs::create_dir_all(store.join("flat")).unwrap();
         let (z, lon, lat) = (12u8, 10.5f64, 45.5f64);
         let nn = (1u64 << z) as f64;
-        let x = ((lon + 180.0) / 360.0 * nn) as u32;
-        let y = ((1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
-        let b = crate::stage::tile_box_grown(z, x, y, 0.0);
+        let (x, y) = roadcore::geo::merc(lon, lat);
+        let (x, y) = ((x * nn) as u32, (y * nn) as u32);
+        let b = roadcore::geo::tile_box(z, x, y);
         let n = 600usize;
         let gt =
             [b[0] - 0.01, (b[2] - b[0] + 0.02) / n as f64, 0.0, b[3] + 0.01, 0.0, -(b[3] - b[1] + 0.02) / n as f64];
@@ -999,8 +999,8 @@ mod tests {
         // (Three chunks' tiles of z12 over the raster.)
         let z = 12u8;
         let nn = (1u64 << z) as f64;
-        let x0 = ((10.5 + 180.0) / 360.0 * nn) as u32;
-        let y0 = ((1.0 - 45.5f64.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        let x0 = (roadcore::geo::merc_x(10.5) * nn) as u32;
+        let y0 = (roadcore::geo::merc_y(45.5) * nn) as u32;
         let ts: Vec<(u32, u32)> = (x0 - 4..x0 + 4).flat_map(|x| (y0 - 2..y0 + 3).map(move |y| (x, y))).collect();
         let chunk = chunk_tiles(at_once());
         assert!(ts.len() > 2 * chunk);

@@ -36,9 +36,8 @@ const KEEP: usize = 2048;
 fn pixel(z: u8, p: [i32; 2]) -> (f64, f64) {
     let (lon, lat) = (p[0] as f64 * 1e-7, p[1] as f64 * 1e-7);
     let n = (1u64 << z) as f64 * 256.0;
-    let x = (lon + 180.0) / 360.0 * n;
-    let y = (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n;
-    (x, y)
+    let (x, y) = roadcore::geo::merc(lon, lat);
+    (x * n, y * n)
 }
 
 /// The deep tiles the heights at `verts` read: each vertex's at the finer zoom its cell has

@@ -89,7 +89,7 @@ fn main() -> anyhow::Result<()> {
             let s = 1u32 << (z - 6);
             for x in t.0 * s..(t.0 + 1) * s {
                 for y in t.1 * s..(t.1 + 1) * s {
-                    if !near_coverage(&cov, z, x, y, 20.0) {
+                    if !near_coverage(&cov, z, x, y) {
                         continue;
                     }
                     if z <= cap_before(pipeline::terrain_pack::tile_lat(z, y)) {
@@ -108,10 +108,9 @@ fn main() -> anyhow::Result<()> {
         let k = 4;
         for x in t.0 << k..(t.0 + 1) << k {
             for y in t.1 << k..(t.1 + 1) << k {
-                let b = pipeline::stage::tile_box_grown(10, x, y, 0.0);
+                let b = roadcore::geo::tile_box(10, x, y);
                 let lat = b[1].abs().max(b[3].abs());
-                if near_coverage(&cov, 10, x, y, 20.0)
-                    && fine.iter().any(|(d, s)| s.cover.meets(b) && old_zoom(d, lat) >= 13)
+                if near_coverage(&cov, 10, x, y) && fine.iter().any(|(d, s)| s.cover.meets(b) && old_zoom(d, lat) >= 13)
                 {
                     deep_before += 1;
                 }
@@ -138,7 +137,7 @@ fn main() -> anyhow::Result<()> {
             for x in q.0 * s..(q.0 + 1) * s {
                 for y in q.1 * s..(q.1 + 1) * s {
                     lo_tiles += 1;
-                    if (0..4u32).any(|k| !near_coverage(&cov, z + 1, 2 * x + (k & 1), 2 * y + (k >> 1), 20.0)) {
+                    if (0..4u32).any(|k| !near_coverage(&cov, z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))) {
                         lo_relief += 1;
                     }
                 }
@@ -147,7 +146,7 @@ fn main() -> anyhow::Result<()> {
     }
     let root_relief = (0..3u8)
         .flat_map(|z| (0..1u32 << z).flat_map(move |x| (0..1u32 << z).map(move |y| (z, x, y))))
-        .filter(|&(z, x, y)| (0..4u32).any(|k| !near_coverage(&cov, z + 1, 2 * x + (k & 1), 2 * y + (k >> 1), 20.0)))
+        .filter(|&(z, x, y)| (0..4u32).any(|k| !near_coverage(&cov, z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))))
         .count();
     println!("\n## Lo and root");
     println!(

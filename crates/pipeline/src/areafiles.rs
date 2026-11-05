@@ -3,8 +3,8 @@
 //! build page's regions, crate::agent::regionsview). Areas are rings of [lon, lat] degrees, each
 //! read as a filled area.
 
+use roadcore::geo;
 use std::collections::{BTreeMap, BTreeSet};
-use std::f64::consts::PI;
 use store::catalogue::Catalogue;
 
 /// How far around an area its tiles are kept: its outlines are simplified (60 m to 1 km), and the
@@ -163,18 +163,16 @@ pub fn detail_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
             })
         })
         .collect();
-    let dlat = NEAR_KM / 111.32;
     let (mut out, mut covered) = (BTreeMap::new(), 0.0);
     for (key, logical) in &l.deep {
         let mut it = key.split('/').skip(1).map(str::parse::<u32>);
         let (Some(Ok(x)), Some(Ok(y))) = (it.next(), it.next()) else { continue };
-        let (bn, bs) = (y_lat(f64::from(y) / k), y_lat(f64::from(y + 1) / k));
-        let g = km_lon(NEAR_KM, bs.abs().max(bn.abs()));
+        let (x0, y0, x1, y1) = (f64::from(x) / k, f64::from(y) / k, f64::from(x + 1) / k, f64::from(y + 1) / k);
+        let g = geo::grow([x_lon(x0), y_lat(y1), x_lon(x1), y_lat(y0)], NEAR_KM);
         let mut meets = false;
         // (Rings may run past 180°: the tile there too.)
         for shift in [0.0, 360.0] {
-            let (w, e) = (x_lon(f64::from(x) / k) + shift, x_lon(f64::from(x + 1) / k) + shift);
-            let grown = [w - g, bs - dlat, e + g, bn + dlat];
+            let grown = [g[0] + shift, g[1], g[2] + shift, g[3]];
             for ((r, b), f) in rings.iter().zip(&boxes).zip(&flat) {
                 if grown[0] > b[2] || grown[2] < b[0] || grown[1] > b[3] || grown[3] < b[1] {
                     continue;
@@ -226,26 +224,27 @@ pub fn clip(ring: &[[f64; 2]], b: [f64; 4]) -> Vec<[f64; 2]> {
 /// z6 tiles each way.
 pub const N6: f64 = 64.0;
 
+/// A longitude, latitude, as z6 tiles from the west and north (roadcore::geo's Mercator, the
+/// latitude within the tiles), and back.
 pub fn lon_x(lon: f64) -> f64 {
-    (lon + 180.0) / 360.0 * N6
+    geo::merc_x(lon) * N6
 }
 
 pub fn lat_y(lat: f64) -> f64 {
-    let r = lat.clamp(-85.0511, 85.0511).to_radians();
-    (1.0 - (r.tan() + 1.0 / r.cos()).ln() / PI) / 2.0 * N6
+    geo::merc_clamped(0.0, lat).1 * N6
 }
 
 pub fn x_lon(x: f64) -> f64 {
-    x / N6 * 360.0 - 180.0
+    geo::merc_lon(x / N6)
 }
 
 pub fn y_lat(y: f64) -> f64 {
-    (PI * (1.0 - 2.0 * y / N6)).sinh().atan().to_degrees()
+    geo::merc_lat(y / N6)
 }
 
-/// Degrees of longitude a distance spans at a latitude.
-fn km_lon(km: f64, lat: f64) -> f64 {
-    km / (111.32 * lat.abs().min(89.0).to_radians().cos().max(0.01))
+/// Tile column `x` (past 63 east of 180°) and row `y`'s box grown by `km` (roadcore::geo::grow).
+fn tile_grown(x: f64, y: f64, km: f64) -> [f64; 4] {
+    geo::grow([x_lon(x), y_lat(y + 1.0), x_lon(x + 1.0), y_lat(y)], km)
 }
 
 /// The z6 tiles (x, y) that `rings` (lon, lat degrees; each read as a filled area; longitudes
@@ -253,24 +252,21 @@ fn km_lon(km: f64, lat: f64) -> f64 {
 /// ring (a vertex inside it, its centre inside the ring, or an edge across it).
 pub fn tiles_meeting(rings: &[Vec<[f64; 2]>], km: f64) -> BTreeSet<(u32, u32)> {
     let mut out = BTreeSet::new();
-    let dlat = km / 111.32;
     for ring in rings.iter().filter(|r| r.len() >= 3 && r.iter().all(|p| p[0].is_finite() && p[1].is_finite())) {
         let (mut w, mut s, mut e, mut n) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for p in ring {
             (w, e, s, n) = (w.min(p[0]), e.max(p[0]), s.min(p[1]), n.max(p[1]));
         }
-        let dl = km_lon(km, s.abs().max(n.abs()) + dlat);
-        let (x0, x1) = (lon_x(w - dl).floor() as i64, lon_x(e + dl).floor() as i64);
-        let (y0, y1) = (lat_y(n + dlat).floor().max(0.0) as i64, lat_y(s - dlat).floor().min(N6 - 1.0) as i64);
+        let g = geo::grow([w, s, e, n], km);
+        let (x0, x1) = (lon_x(g[0]).floor() as i64, lon_x(g[2]).floor() as i64);
+        let (y0, y1) = (lat_y(g[3]).floor().max(0.0) as i64, lat_y(g[1]).floor().min(N6 - 1.0) as i64);
         for x in x0..=x1.min(x0 + 2 * N6 as i64) {
             for y in y0..=y1 {
                 let t = (x.rem_euclid(N6 as i64) as u32, y as u32);
                 if out.contains(&t) {
                     continue;
                 }
-                let (bn, bs) = (y_lat(y as f64), y_lat(y as f64 + 1.0));
-                let g = km_lon(km, bs.abs().max(bn.abs()));
-                if ring_meets_box(ring, [x_lon(x as f64) - g, bs - dlat, x_lon(x as f64 + 1.0) + g, bn + dlat]) {
+                if ring_meets_box(ring, tile_grown(x as f64, y as f64, km)) {
                     out.insert(t);
                 }
             }
@@ -282,9 +278,9 @@ pub fn tiles_meeting(rings: &[Vec<[f64; 2]>], km: f64) -> BTreeSet<(u32, u32)> {
 /// Whether a box ([w, s, e, n], degrees) grown by `km` meets an area (`rings`, each read as a filled
 /// area; longitudes may run past ±180, so the box is tried a turn east too).
 pub fn box_meets(rings: &[Vec<[f64; 2]>], b: [f64; 4], km: f64) -> bool {
-    let (dlat, dlon) = (km / 111.32, km_lon(km, b[1].abs().max(b[3].abs())));
+    let g0 = geo::grow(b, km);
     [0.0, 360.0].iter().any(|shift| {
-        let g = [b[0] - dlon + shift, b[1] - dlat, b[2] + dlon + shift, b[3] + dlat];
+        let g = [g0[0] + shift, g0[1], g0[2] + shift, g0[3]];
         rings.iter().filter(|r| r.len() >= 3).any(|r| ring_meets_box(r, g))
     })
 }
@@ -294,25 +290,11 @@ fn ring_meets_box(ring: &[[f64; 2]], b: [f64; 4]) -> bool {
     if ring.iter().any(|p| p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]) {
         return true;
     }
-    if inside(ring, [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0]) {
+    if geo::inside(&[ring], [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0]) {
         return true;
     }
     let c = [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]];
     (0..ring.len()).any(|i| (0..4).any(|k| cross(ring[i], ring[(i + 1) % ring.len()], c[k], c[(k + 1) % 4])))
-}
-
-/// Point in ring, even–odd.
-fn inside(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
-    let mut inside = false;
-    let mut j = ring.len() - 1;
-    for i in 0..ring.len() {
-        let (a, b) = (ring[i], ring[j]);
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
 }
 
 /// Whether segments ab and cd cross (properly).

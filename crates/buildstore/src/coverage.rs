@@ -14,7 +14,6 @@
 //! A catalogue records the coverage it was built for, simplified for drawing ([`DrawnRegion`]), so
 //! the map draws it from the catalogue rather than from the recipes.
 
-use crate::outlines::inside;
 #[cfg(any(test, feature = "testkit"))]
 use crate::outlines::Outlines;
 #[cfg(any(test, feature = "testkit"))]
@@ -27,7 +26,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Metres per E7 unit of latitude (and of longitude at the equator).
-const M_PER_E7: f64 = 111_320.0 * 1e-7;
+const M_PER_E7: f64 = roadcore::geo::M_PER_DEG * 1e-7;
 
 /// One outline of the coverage, indexed for point tests.
 #[derive(Clone)]
@@ -928,8 +927,8 @@ pub fn read_poly(text: &str) -> Result<Vec<Vec<[i32; 2]>>> {
 /// A fixture's circle (`Coverage::fixture`, `inputs::regions::accept_fixture`): the 64 points the
 /// old `place:` parts had, `km` round `lon`, `lat`.
 pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
-    let dy = km * 1000.0 / 110_574.0;
-    let dx = km * 1000.0 / (111_320.0 * lat.to_radians().dcos().max(0.01));
+    let dy = km * 1000.0 / roadcore::geo::M_PER_DEG;
+    let dx = km * 1000.0 / (roadcore::geo::M_PER_DEG * lat.to_radians().dcos().max(0.01));
     (0..64)
         .map(|i| {
             let t = i as f64 / 64.0 * std::f64::consts::TAU;
@@ -1324,7 +1323,7 @@ pub fn ring_degrees(r: &[[i32; 2]]) -> Vec<[f64; 2]> {
 /// A plain even–odd test, for checking the grid.
 pub fn inside_plain(rings: &[Vec<[i32; 2]>], p: [i32; 2]) -> bool {
     let r: Vec<&[[i32; 2]]> = rings.iter().map(Vec::as_slice).collect();
-    inside(&r, p)
+    roadcore::geo::inside(&r, p)
 }
 
 /// The edge tree's check against the grid's cells, for tests here and in other crates (pipeline's
@@ -1572,7 +1571,7 @@ mod tests {
             .map(|i| {
                 let a = i as f64 / 2000.0 * std::f64::consts::TAU;
                 let r = 2.0 + 0.3 * ((i * 7919) % 13) as f64 / 13.0;
-                e7(10.0 + r * a.cos(), 50.0 + r * a.sin())
+                e7(10.0 + r * a.dcos(), 50.0 + r * a.dsin())
             })
             .collect();
         ring.push(ring[0]);
@@ -1586,7 +1585,7 @@ mod tests {
         let mut boxes = Vec::new();
         for _ in 0..3000 {
             let (x, y) = (7.0 + 6.0 * rnd(), 47.0 + 6.0 * rnd());
-            let size = 10f64.powf(-3.0 + 3.5 * rnd());
+            let size = 10f64.dpowf(-3.0 + 3.5 * rnd());
             let (a, b) = (e7(x, y), e7(x + size, y + size * rnd()));
             boxes.push([a[0] as i64, a[1] as i64, b[0] as i64, b[1] as i64]);
         }

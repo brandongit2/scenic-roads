@@ -4,7 +4,6 @@
 
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
-use det::Det;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -456,12 +455,10 @@ pub fn assign_ids(src: &[IdSource]) -> Result<Vec<u64>> {
 
 // ---- tiles ----------------------------------------------------------------------------------------
 
-/// Web Mercator in 0–1 (as the app's dot layout: clamped just inside).
+/// Web Mercator in 0–1 (roadcore::geo::merc, as the app's dot layout: clamped just inside).
 pub fn merc(lon: f64, lat: f64) -> (f64, f64) {
-    let s = (lat * std::f64::consts::PI / 180.0).dsin();
-    let x = ((lon + 180.0) / 360.0).clamp(0.0, 1.0 - 1e-9);
-    let y = (0.5 - ((1.0 + s) / (1.0 - s)).dln() / (4.0 * std::f64::consts::PI)).clamp(0.0, 1.0 - 1e-9);
-    (x, y)
+    let (x, y) = roadcore::geo::merc(lon, lat);
+    (x.clamp(0.0, 1.0 - 1e-9), y.clamp(0.0, 1.0 - 1e-9))
 }
 
 /// The tile at zoom `z` holding a point.

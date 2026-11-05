@@ -79,7 +79,7 @@ impl Fine {
                 Some(p) => p
                     .iter()
                     .flat_map(|t| {
-                        let b = crate::stage::tile_box_grown(crate::terrain_deep::PACK_Z, t[0], t[1], 0.0);
+                        let b = roadcore::geo::tile_box(crate::terrain_deep::PACK_Z, t[0], t[1]);
                         let (x0, x1) = (b[0].floor() as i32, (b[2].ceil() as i32 - 1).max(b[0].floor() as i32));
                         let (y0, y1) = (b[1].floor() as i32, (b[3].ceil() as i32 - 1).max(b[1].floor() as i32));
                         (x0..=x1).flat_map(move |x| (y0..=y1).map(move |y| (x, y)))

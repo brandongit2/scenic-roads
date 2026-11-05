@@ -358,14 +358,12 @@ impl Utm {
     }
 }
 
-/// Web Mercator tile coordinates (fractional tiles at zoom `z`) of `lon`, `lat` (degrees), in
-/// numpy's order of operations (as the DEM cache's samples were made).
+/// Web Mercator tile coordinates (fractional tiles at zoom `z`) of `lon`, `lat` (degrees):
+/// roadcore::geo::merc.
 pub fn mercator_tile(lon: f64, lat: f64, z: u32) -> (f64, f64) {
     let n = (1u64 << z) as f64;
-    let r = lat.to_radians();
-    let fx = (lon + 180.0) / 360.0 * n;
-    let fy = (1.0 - (r.dtan() + 1.0 / r.dcos()).dln() / PI) / 2.0 * n;
-    (fx, fy)
+    let (x, y) = roadcore::geo::merc(lon, lat);
+    (x * n, y * n)
 }
 
 #[cfg(test)]

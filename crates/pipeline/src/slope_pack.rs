@@ -193,11 +193,11 @@ pub fn horn(tile: &dyn Fn(u32, u32) -> Option<Arc<Vec<f32>>>, z: u8, x: u32, y: 
             p[(j + 1) as usize * W + (i + 1) as usize] = at(i, j);
         }
     }
-    let world = 40_075_016.686f64;
+    let world = roadcore::geo::MERC_C;
     let mut out = vec![Px::default(); TS * TS];
     for j in 0..256usize {
         let yy = (y as f64 + (j as f64 + 0.5) / 256.0) / n as f64;
-        let lat = (std::f64::consts::PI * (1.0 - 2.0 * yy)).dsinh().datan();
+        let lat = roadcore::geo::merc_phi(yy);
         let d = (world * lat.dcos() / (256.0 * n as f64)) as f32;
         let (r0, r1, r2) = (&p[j * W..(j + 1) * W], &p[(j + 1) * W..(j + 2) * W], &p[(j + 2) * W..(j + 3) * W]);
         for i in 0..256usize {
@@ -1409,8 +1409,8 @@ mod tests {
         let mut out = vec![Px::default(); TS * TS];
         for j in 0..256i32 {
             let yy = (y as f64 + (j as f64 + 0.5) / 256.0) / n as f64;
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * yy)).dsinh().datan();
-            let d = (40_075_016.686f64 * lat.dcos() / (256.0 * n as f64)) as f32;
+            let lat = roadcore::geo::merc_phi(yy);
+            let d = (roadcore::geo::MERC_C * lat.dcos() / (256.0 * n as f64)) as f32;
             for i in 0..256i32 {
                 let (a, b, c) = (at(i - 1, j - 1), at(i, j - 1), at(i + 1, j - 1));
                 let (dd, f) = (at(i - 1, j), at(i + 1, j));
@@ -1734,8 +1734,8 @@ mod tests {
             (z >= 4 || (x + y) % 3 != 0).then(|| {
                 (0..TS * TS)
                     .map(|i| {
-                        let t = (i as f32 * 0.37 + x as f32 * 1.3 + y as f32 * 0.7 + z as f32).sin();
-                        Px::of_gradient(t * 0.9, (t * 2.1).cos() * 0.6)
+                        let t = (i as f32 * 0.37 + x as f32 * 1.3 + y as f32 * 0.7 + z as f32).dsin();
+                        Px::of_gradient(t * 0.9, (t * 2.1).dcos() * 0.6)
                     })
                     .collect()
             })
@@ -2313,7 +2313,7 @@ mod tests {
         let shade = |p: Px| -> f32 {
             let (alt, az) = (45f32.to_radians(), 315f32.to_radians() + std::f32::consts::PI);
             let basic = |gx: f32, gy: f32| {
-                let c = (alt.sin() - (gy * az.cos() * alt.cos() - gx * az.sin() * alt.cos()))
+                let c = (alt.dsin() - (gy * az.dcos() * alt.dcos() - gx * az.dsin() * alt.dcos()))
                     / (1.0 + gx * gx + gy * gy).sqrt();
                 c.clamp(0.0, 1.0)
             };
@@ -2323,7 +2323,7 @@ mod tests {
             let rough = (0..16)
                 .map(|k| {
                     let t = (k as f32 + 0.5) * std::f32::consts::TAU / 16.0;
-                    basic(s * t.cos(), s * t.sin())
+                    basic(s * t.dcos(), s * t.dsin())
                 })
                 .sum::<f32>()
                 / 16.0;

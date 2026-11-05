@@ -15,6 +15,7 @@ use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use det::Det;
 use rayon::prelude::*;
 use std::collections::BinaryHeap;
 use std::hash::{Hash, Hasher};
@@ -630,7 +631,7 @@ impl Places {
             }
             if let Some((lon, lat)) = near {
                 let d = km(lon, lat, p.lon as f64, p.lat as f64);
-                r += (NEAR - 3.0 * (1.0 + d).log10()).max(0.0);
+                r += (NEAR - 3.0 * (1.0 + d).dlog10()).max(0.0);
             }
             best.push(std::cmp::Reverse(Hit { rank: r, place: i }));
             if best.len() > n {
@@ -999,8 +1000,8 @@ fn km(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
     let dp = p2 - p1;
     let dl = (lon2 - lon1).to_radians();
-    let a = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
-    6371.0 * 2.0 * a.sqrt().min(1.0).asin()
+    let a = (dp / 2.0).dsin().powi(2) + p1.dcos() * p2.dcos() * (dl / 2.0).dsin().powi(2);
+    roadcore::geo::EARTH_R / 1000.0 * 2.0 * a.sqrt().min(1.0).dasin()
 }
 
 #[cfg(test)]

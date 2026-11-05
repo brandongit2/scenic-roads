@@ -9,6 +9,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use det::Det;
 use serde::Deserialize;
 use std::sync::{Arc, OnceLock};
 
@@ -128,9 +129,9 @@ pub async fn detail(State(s): State<S>, Path((layer, id)): Path<(String, u64)>, 
 /// any point in it), for `/api/park`.
 pub fn parks_near(s: &crate::AppState, lon: f64, lat: f64) -> anyhow::Result<Vec<Arc<Vec<Park>>>> {
     let n = 8i64;
-    let x = (((lon + 180.0) / 360.0 * n as f64).floor() as i64).clamp(0, n - 1);
-    let sl = lat.clamp(-85.0, 85.0).to_radians().sin();
-    let y = (((0.5 - ((1.0 + sl) / (1.0 - sl)).ln() / (4.0 * std::f64::consts::PI)) * n as f64).floor() as i64)
+    let x = ((roadcore::geo::merc_x(lon) * n as f64).floor() as i64).clamp(0, n - 1);
+    let sl = lat.clamp(-85.0, 85.0).to_radians().dsin();
+    let y = (((0.5 - ((1.0 + sl) / (1.0 - sl)).dln() / (4.0 * std::f64::consts::PI)) * n as f64).floor() as i64)
         .clamp(0, n - 1);
     let mut out = Vec::new();
     for dx in -1..=1i64 {

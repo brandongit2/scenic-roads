@@ -841,7 +841,7 @@ mod tests {
             let shapes = crate::trees::mask::Shapes::parse(&coverage_json(&cov, q).to_string()).unwrap();
             let mut sqs: Vec<(i32, i32)> = crate::trees::z3_blocks(&shapes, q.x, q.y)
                 .iter()
-                .flat_map(|&(bx, by)| crate::trees::squares_of(crate::trees::tile_bounds(8, bx, by)))
+                .flat_map(|&(bx, by)| crate::trees::squares_of(roadcore::geo::tile_box(8, bx, by)))
                 .collect();
             sqs.sort_unstable();
             sqs.dedup();

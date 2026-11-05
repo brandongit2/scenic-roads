@@ -206,10 +206,6 @@ pub const CREDITS: &[Credit] = &[
     },
 ];
 
-/// How far past the coverage a catalogue's data reaches: heritage sites and terrain are made within
-/// 20 km of it.
-const NEAR_COVERAGE_KM: f64 = 20.0;
-
 /// The credits a catalogue lists, in the table's order: those for anywhere, and those whose areas meet
 /// what it serves. That's the coverage it records (`regions`) and 20 km around it, and the built
 /// units' ways (`extents`, E7), which reach past the coverage (ways are kept whole) and stay served
@@ -226,7 +222,7 @@ pub fn listed(areas: &[[f64; 4]], regions: &[DrawnRegion], extents: &[[i32; 4]])
     areas.is_empty()
         || areas.iter().any(|a| {
             let b = [e7(a[0]), e7(a[1]), e7(a[2]), e7(a[3])];
-            let near = grow(b, NEAR_COVERAGE_KM);
+            let near = grow(b, roadcore::geo::NEAR_COVERAGE_KM);
             regions.iter().any(|r| r.meets_rect(near)) || extents.iter().any(|&x| meets(b, x))
         })
 }

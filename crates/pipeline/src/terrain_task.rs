@@ -674,28 +674,21 @@ mod tests {
         b: (u32, u32),
     }
 
-    /// A z8 tile's box in degrees (west, south, east, north).
-    fn z8_box((x, y): (u32, u32)) -> [f64; 4] {
-        let n = 256.0;
-        let lat = |v: f64| (std::f64::consts::PI * (1.0 - 2.0 * v / n)).sinh().atan().to_degrees();
-        [x as f64 / n * 360.0 - 180.0, lat(y as f64 + 1.0), (x + 1) as f64 / n * 360.0 - 180.0, lat(y as f64)]
-    }
-
     impl WaterSource for Across {
         fn polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
             if z < 6 {
                 return Ok(Vec::new());
             }
             let n = (1u64 << z) as f64 * 256.0;
-            let px = |lon: f64| (lon + 180.0) / 360.0 * n - x as f64 * 256.0;
-            let py =
-                |lat: f64| (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n - y as f64 * 256.0;
+            let px = |lon: f64| roadcore::geo::merc_x(lon) * n - x as f64 * 256.0;
+            let py = |lat: f64| roadcore::geo::merc_y(lat) * n - y as f64 * 256.0;
             let rect = |kind, id, [w, s, e, nn]: [f64; 4]| Poly {
                 kind,
                 id,
                 rings: vec![vec![[px(w), py(nn)], [px(e), py(nn)], [px(e), py(s)], [px(w), py(s)]]],
             };
-            let (a, b) = (z8_box(self.a), z8_box(self.b));
+            let (a, b) =
+                (roadcore::geo::tile_box(8, self.a.0, self.a.1), roadcore::geo::tile_box(8, self.b.0, self.b.1));
             // (Near the coverage, at `a`'s south-east corner: the edge `b` east of `a`, or south.)
             let _ = b;
             let (ce, cs) = (a[2], a[1]);
@@ -710,10 +703,10 @@ mod tests {
             // (A tile has the polygons that meet it.)
             let n2 = (1u64 << z) as f64;
             let tb = [
-                x as f64 / n2 * 360.0 - 180.0,
-                (std::f64::consts::PI * (1.0 - 2.0 * (y + 1) as f64 / n2)).sinh().atan().to_degrees(),
-                (x + 1) as f64 / n2 * 360.0 - 180.0,
-                (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n2)).sinh().atan().to_degrees(),
+                roadcore::geo::merc_lon(x as f64 / n2),
+                roadcore::geo::merc_lat((y + 1) as f64 / n2),
+                roadcore::geo::merc_lon((x + 1) as f64 / n2),
+                roadcore::geo::merc_lat(y as f64 / n2),
             ];
             let meets = |r: [f64; 4]| r[0] < tb[2] && r[2] > tb[0] && r[1] < tb[3] && r[3] > tb[1];
             Ok([(lake, 0usize), (inner, 1), (sea, 2)]

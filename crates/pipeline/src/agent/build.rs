@@ -359,13 +359,12 @@ pub(crate) fn coverage_all(cov: &Coverage) -> String {
     v.join(",")
 }
 
+/// Tile `z`/`x`/`y`'s box grown by `km` (roadcore::geo::tile_box_grown), E7.
 pub fn grown_e7(z: u8, x: u32, y: u32, km: f64) -> [i32; 4] {
-    let b = crate::stage::tile_box_grown(z, x, y, km);
-    let e7 = |v: f64| (v * 1e7).round() as i32;
-    [e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])]
+    roadcore::geo::e7_box(roadcore::geo::tile_box_grown(z, x, y, km))
 }
 
-/// The z6 tiles near the coverage (20 km), by z3 pack; once per coverage version (`Coverage::kept`).
+/// The z6 tiles near the coverage (`roadcore::geo::NEAR_COVERAGE_KM`), by z3 pack; once per coverage version (`Coverage::kept`).
 pub fn coverage_tiles(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
     cov.kept().tiles.get_or_init(|| coverage_tiles_made(cov)).clone()
 }
@@ -375,7 +374,7 @@ fn coverage_tiles_made(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> 
     let mut by_q: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
     for x in 0..64u32 {
         for y in 0..64u32 {
-            if crate::terrain_pack::near_coverage(cov, 6, x, y, 20.0) {
+            if crate::terrain_pack::near_coverage(cov, 6, x, y) {
                 by_q.entry((x >> 3, y >> 3)).or_default().push((x, y));
             }
         }
@@ -606,7 +605,7 @@ pub fn unit_keys(x: &KeyCtx) -> Vec<(TileId, Option<String>)> {
 /// The content names of the packs z6 tile `u`'s staged terrain tiles are in (z0–12 over its tile +
 /// 30 km: z4–8's lo packs, z9–12's hi packs; the root aside), for `unit_terrain`'s memo.
 pub fn unit_terrain_from(u: TileId, m: &BTreeMap<String, String>) -> String {
-    let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
+    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     let mut packs: BTreeSet<String> = BTreeSet::new();
     for z in 4..=12u8 {
         let [x0, x1, y0, y1] = crate::stage::tile_range(z, b);
@@ -665,7 +664,7 @@ pub fn unit_terrain_tiles(
     m: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
 ) -> Result<Vec<Tile>, Unread> {
-    let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
+    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     let staged: Vec<[u32; 4]> = (0..=12u8).map(|z| crate::stage::tile_range(z, b)).collect();
     let mut walk = Walk { staged: &staged, read: tiles.reader(m), out: BTreeSet::new() };
     let [x0, x1, y0, y1] = staged[11];
@@ -717,7 +716,7 @@ pub fn unit_deep_tiles(
     m: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
 ) -> Result<Vec<String>, Unread> {
-    let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
+    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     let pz = crate::terrain_deep::PACK_Z;
     let packs: Vec<(u32, u32)> = crate::stage::tiles_in(pz, b)
         .into_iter()
@@ -757,10 +756,9 @@ const EDGE_DEG: f64 = 1e-6;
 /// Tile (z, x, y)'s box (w, s, e, n, degrees) grown by `EDGE_DEG`; the top row's to the pole (a
 /// point past 85.05° reads it: crate::terr).
 fn tile_deg(z: u8, x: u32, y: u32) -> [f64; 4] {
-    use det::Det;
     let n = (1u64 << z) as f64;
-    let lon = |t: f64| t / n * 360.0 - 180.0;
-    let lat = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).dsinh().datan().to_degrees();
+    let lon = |t: f64| roadcore::geo::merc_lon(t / n);
+    let lat = |t: f64| roadcore::geo::merc_lat(t / n);
     let top = if y == 0 { 90.0 } else { lat(y as f64) };
     [lon(x as f64) - EDGE_DEG, lat(y as f64 + 1.0) - EDGE_DEG, lon(x as f64 + 1.0) + EDGE_DEG, top + EDGE_DEG]
 }
@@ -1093,7 +1091,7 @@ pub fn region_steps(
     };
     let reads = |i: usize| -> BTreeSet<String> {
         let u = units[i].0;
-        crate::stage::tiles_in(6, crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM))
+        crate::stage::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM))
             .into_iter()
             .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
             .collect()
@@ -1106,7 +1104,7 @@ pub fn region_steps(
             let all: Vec<usize> = (0..units.len()).filter(|&i| builds(rc, reach, units[i].0, &fine)).collect();
             let z3s: BTreeSet<String> = (0..8u32)
                 .flat_map(|x| (0..8u32).map(move |y| (x, y)))
-                .filter(|&(x, y)| rc.meets_rect(grown_e7(3, x, y, 20.0)))
+                .filter(|&(x, y)| rc.meets_rect(grown_e7(3, x, y, roadcore::geo::NEAR_COVERAGE_KM)))
                 .map(|(x, y)| format!("3/{x}/{y}"))
                 .collect();
             let tree_z3s: BTreeSet<&String> = z3s
@@ -1551,7 +1549,7 @@ pub fn pyramids_targets(x: &KeyCtx) -> Option<Vec<(String, String)>> {
     let sets = tiles.zoom_sets(m)?;
     let mut out = Vec::new();
     for &(tx, ty) in coverage_tiles(cov).values().flatten() {
-        if crate::dem::declared::meeting(&pyr, crate::stage::tile_box_grown(6, tx, ty, 0.0)).is_empty() {
+        if crate::dem::declared::meeting(&pyr, roadcore::geo::tile_box(6, tx, ty)).is_empty() {
             continue;
         }
         // (One making no hi tile and no deep target wants nothing: no job.)
@@ -2721,7 +2719,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     let reads: Vec<BTreeSet<String>> = units
         .iter()
         .map(|(u, _)| {
-            crate::stage::tiles_in(6, crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM))
+            crate::stage::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM))
                 .into_iter()
                 .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
                 .collect()
@@ -2759,7 +2757,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
             let stale: Vec<usize> = all.iter().copied().filter(|&i| unit_stale[i]).collect();
             let z3s: BTreeSet<String> = (0..8u32)
                 .flat_map(|x| (0..8u32).map(move |y| (x, y)))
-                .filter(|&(x, y)| rc.meets_rect(grown_e7(3, x, y, 20.0)))
+                .filter(|&(x, y)| rc.meets_rect(grown_e7(3, x, y, roadcore::geo::NEAR_COVERAGE_KM)))
                 .map(|(x, y)| format!("3/{x}/{y}"))
                 .collect();
             let tree_z3s: BTreeSet<String> = z3s
@@ -2791,7 +2789,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
                 .filter(|t| {
                     TileId::parse(t).is_some_and(|u| {
                         let k = u.z.saturating_sub(6);
-                        u.z >= 6 && rc.meets_rect(grown_e7(6, u.x >> k, u.y >> k, 20.0))
+                        u.z >= 6 && rc.meets_rect(grown_e7(6, u.x >> k, u.y >> k, roadcore::geo::NEAR_COVERAGE_KM))
                     })
                 })
                 .cloned()
@@ -7115,7 +7113,7 @@ pub(crate) mod tests {
         // The dataset cut to one z10 tile's cell: the deep targets elsewhere are drops, first of the
         // step's work, the forecast's own (`Plan::drops`), no region's.
         let u = TileId::parse(&deep[0].0).unwrap();
-        let b = crate::stage::tile_box_grown(u.z, u.x, u.y, 0.0);
+        let b = roadcore::geo::tile_box(u.z, u.x, u.y);
         let cell = [b[0].floor(), b[1].floor(), b[0].floor() + 1.0, b[1].floor() + 1.0];
         let cut = vec![FineSet { cover: crate::dem::declared::Cover::of(Some(&[cell])), ..sets[0].clone() }];
         let p = plan(&m, &done, &cut);
@@ -7193,8 +7191,8 @@ pub(crate) mod tests {
         };
         let t = (28, 17);
         assert_ne!(
-            plain.fingerprint(grown_e7(6, t.0, t.1, 20.0)),
-            near.fingerprint(grown_e7(6, t.0, t.1, 20.0)),
+            plain.fingerprint(grown_e7(6, t.0, t.1, roadcore::geo::NEAR_COVERAGE_KM)),
+            near.fingerprint(grown_e7(6, t.0, t.1, roadcore::geo::NEAR_COVERAGE_KM)),
             "the rings near it differ"
         );
         let world = crate::terrain_zoom::test_world(12);
@@ -7916,7 +7914,12 @@ pub(crate) mod tests {
         // (The z6 tiles within 20 km of a: fewer than its z3 tiles' stale z6 tiles, none left out that it reads.)
         let a = &c.by_region().into_iter().find(|(id, _)| id == "a").unwrap().1;
         assert!(!now.is_empty() && now.is_subset(&before) && now.len() < before.len(), "{now:?} of {before:?}");
-        assert!(now.iter().all(|t| TileId::parse(t).is_some_and(|u| a.meets_rect(grown_e7(6, u.x, u.y, 20.0)))));
+        assert!(now.iter().all(|t| TileId::parse(t).is_some_and(|u| a.meets_rect(grown_e7(
+            6,
+            u.x,
+            u.y,
+            roadcore::geo::NEAR_COVERAGE_KM
+        )))));
         // Those and its tree cover z6 tiles made: a ready, its far z6 tiles and assemblies still to make.
         for step in ["slope-hi", "trees"] {
             let w = Work {
@@ -8115,7 +8118,7 @@ pub(crate) mod tests {
         let k1 = key(&m);
         m.insert(crate::terrain_deep::pack_logical(0, 0), "layers/terrain/deep/10-0-0.aa".into());
         assert_eq!(key(&m), k1, "a deep pack far away");
-        let b = crate::stage::tile_box_grown(6, 28, 16, crate::stage::MARGIN_KM);
+        let b = roadcore::geo::tile_box_grown(6, 28, 16, crate::stage::MARGIN_KM);
         let (x, y) = crate::stage::tiles_in(crate::terrain_deep::PACK_Z, b)[0];
         m.insert(crate::terrain_deep::pack_logical(x, y), "layers/terrain/deep/x.bb".into());
         assert_eq!(key(&m), k1, "a deep pack over it where no way lies");
@@ -8138,7 +8141,7 @@ pub(crate) mod tests {
         };
         let (a, b) = (at("l1"), at("l2"));
         // (Reykjavik's z6 tile, 6/28/17, meets the lidar's cell; the east's, 6/29/16, doesn't.)
-        let r = |t: &TerrainTiles, z, x, y| t.terrain_datasets(&m, crate::stage::tile_box_grown(z, x, y, 0.0)).unwrap();
+        let r = |t: &TerrainTiles, z, x, y| t.terrain_datasets(&m, roadcore::geo::tile_box(z, x, y)).unwrap();
         assert_ne!(r(&a, 6, 28, 17), r(&b, 6, 28, 17));
         assert_eq!(r(&a, 6, 29, 16), r(&b, 6, 29, 16));
         assert!(r(&a, 6, 29, 16).contains("world w1") && !r(&a, 6, 29, 16).contains("lidar"));
@@ -10664,11 +10667,8 @@ pub(crate) mod tests {
         let c = Coverage { shapes: Vec::new(), depth_only: vec![sea] };
         let (lo, _) = depth_tiles(&c, &depth_sources());
         assert!(!lo.is_empty());
-        assert!(
-            (0..64u32)
-                .all(|x| (0..64u32)
-                    .all(|y| !c.meets_rect(crate::hipack::grow(crate::hipack::tile_bounds(6, x, y), 20.0))))
-        );
+        assert!((0..64u32).all(|x| (0..64u32).all(|y| !c
+            .meets_rect(crate::hipack::grow(crate::hipack::tile_bounds(6, x, y), roadcore::geo::NEAR_COVERAGE_KM)))));
         assert!(bld_tiles(&c).is_empty());
         // Through the stored geometry: a region of water alone goes to `depth_only`.
         let g = crate::inputs::regions::stored::Geometry {
@@ -11869,7 +11869,7 @@ pub(crate) mod tests {
         let mut boxes: Vec<[i64; 4]> = Vec::new();
         for x in 0..64u32 {
             for y in 0..64u32 {
-                boxes.push(wide(grown_e7(6, x, y, 20.0)));
+                boxes.push(wide(grown_e7(6, x, y, roadcore::geo::NEAR_COVERAGE_KM)));
             }
         }
         for &(x, y) in coverage_tiles(&cov).values().flatten() {
@@ -11878,7 +11878,7 @@ pub(crate) mod tests {
                 for k in 0..8u32 {
                     let (dx, dy) =
                         (k.wrapping_mul(2654435761u32.wrapping_mul(z as u32 + 1)) % s, (k * 40503 + z as u32) % s);
-                    boxes.push(wide(grown_e7(z, x * s + dx, y * s + dy, 20.0)));
+                    boxes.push(wide(grown_e7(z, x * s + dx, y * s + dy, roadcore::geo::NEAR_COVERAGE_KM)));
                 }
             }
         }

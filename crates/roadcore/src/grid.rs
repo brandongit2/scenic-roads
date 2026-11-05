@@ -10,7 +10,6 @@
 
 use crate::Mmap;
 use anyhow::{bail, Context, Result};
-use det::Det;
 use std::path::Path;
 
 pub const Z: u8 = 11;
@@ -126,14 +125,14 @@ pub fn terrain_bilinear(idx: &GridIndex, terrain: &[i16], gx: f64, gy: f64) -> O
 /// Global z11 cell coordinates (fractional) of a lon/lat.
 #[inline]
 pub fn cell_of(lon: f64, lat: f64) -> (f64, f64) {
-    let (x, y) = crate::merc(lon, lat);
+    let (x, y) = crate::geo::merc(lon, lat);
     (x * WORLD, y * WORLD)
 }
 
 /// Metres per z11 cell at a latitude.
 #[inline]
 pub fn cell_m(lat: f64) -> f64 {
-    40_075_016.686 * lat.to_radians().dcos() / WORLD
+    crate::geo::merc_m(lat) / WORLD
 }
 
 /// Decode a Terrarium-encoded RGB(A) buffer into metres.

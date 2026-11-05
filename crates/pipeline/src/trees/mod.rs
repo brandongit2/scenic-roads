@@ -30,11 +30,9 @@ pub(crate) mod tests;
 
 use crate::fetch::{Fetch, Noted};
 use anyhow::{bail, ensure, Context, Result};
-use det::Det;
 use pyramid::{Tile, Tops};
 use roadcore::archive::{Archive, ArchiveWriter};
 use std::collections::BTreeMap;
-use std::f64::consts::PI;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::range::{PlainFile, RangeRead};
@@ -51,8 +49,6 @@ pub const LAYERS: [&str; 3] = ["cover", "height", "leaf"];
 pub const META: &str = r#"{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}"#;
 /// A block's zoom-8 values beside its archives (`block`).
 pub const TOPS: &str = "trees-tops.bin";
-/// Web Mercator's sphere.
-const R: f64 = 6378137.0;
 /// The canopy squares' and the leaf-type squares' pixels (degrees).
 const CHM_RES: f64 = 0.00025;
 const LEAF_RES: f64 = 0.0005;
@@ -67,29 +63,13 @@ const LEAF_ROW_CACHE: usize = 16 << 20;
 
 /// A pixel column's longitude at zoom `z` .
 fn lon_of(px: f64, z: u8) -> f64 {
-    px / (TS << z) as f64 * 360.0 - 180.0
+    roadcore::geo::merc_lon(px / (TS << z) as f64)
 }
 
 /// A pixel row's latitude at zoom `z` (det's sinh and atan where numpy's are
 /// Apple's: a few ulp apart in some rows, never another canopy row, checked over all 2^20).
 fn lat_of(py: f64, z: u8) -> f64 {
-    (PI * (1.0 - 2.0 * py / (TS << z) as f64)).dsinh().datan().to_degrees()
-}
-
-/// Tile (`z`, `x`, `y`)'s box in degrees: west, south, east, north..
-pub fn tile_bounds(z: u8, x: u32, y: u32) -> [f64; 4] {
-    let (x, y) = (x as usize, y as usize);
-    [
-        lon_of((x * TS) as f64, z),
-        lat_of(((y + 1) * TS) as f64, z),
-        lon_of(((x + 1) * TS) as f64, z),
-        lat_of((y * TS) as f64, z),
-    ]
-}
-
-/// Degrees to Web Mercator metres..
-pub fn merc(lon: f64, lat: f64) -> [f64; 2] {
-    [R * lon.to_radians(), R * (PI / 4.0 + lat.to_radians() / 2.0).dtan().dln()]
+    roadcore::geo::merc_lat(py / (TS << z) as f64)
 }
 
 /// The canopy squares (top, left) a box (degrees) meets, top to bottom then west to east.
@@ -424,7 +404,7 @@ struct Sources {
 fn sources(files: &mut Files, bx: u32, by: u32, lon: &[f64], lat: &[f64]) -> Result<Sources> {
     let inp = files.inp;
     let mut squares = Vec::new();
-    for (top, left) in sorted(squares_of(tile_bounds(ZBLOCK, bx, by))) {
+    for (top, left) in sorted(squares_of(roadcore::geo::tile_box(ZBLOCK, bx, by))) {
         let (cn, hn) = (chm_name(top, left, "cover5m"), chm_name(top, left, "p95"));
         let expected = inp.there.as_ref().is_some_and(|t| t.contains(&(top, left)));
         let (Some(c), Some(h)) = (files.file(&inp.chm, &cn)?, files.file(&inp.chm, &hn)?) else {
@@ -490,7 +470,7 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
     for &(bx, by) in list {
         let lon: Vec<f64> = (0..BS).map(|j| lon_of(px(j, bx), ZMAX)).collect();
         let lat: Vec<f64> = (0..BS).map(|i| lat_of(px(i, by), ZMAX)).collect();
-        let b = tile_bounds(ZBLOCK, bx, by);
+        let b = roadcore::geo::tile_box(ZBLOCK, bx, by);
         let src = sources(&mut files, bx, by, &lon, &lat)?;
         doing.push(Doing { src, inside: mask::inside(&shapes.meeting(b), b), pyr: pyramid::Pyramid::new(bx, by) });
     }
@@ -737,7 +717,7 @@ pub fn blocks_of(shapes: &mask::Shapes, z: u8, x: u32, y: u32) -> Vec<(u32, u32)
     let mut out = Vec::new();
     for bx in x * k..(x + 1) * k {
         for by in y * k..(y + 1) * k {
-            if shapes.meets(tile_bounds(ZBLOCK, bx, by)) {
+            if shapes.meets(roadcore::geo::tile_box(ZBLOCK, bx, by)) {
                 out.push((bx, by));
             }
         }
@@ -812,7 +792,7 @@ fn begin(a: &Run) -> Result<Begun> {
     let blocks = blocks_of(&shapes, z, x, y);
     // The canopy squares they touch, fetched when missing, and their leaf types.
     let mut want: Vec<(i32, i32)> =
-        blocks.iter().flat_map(|&(bx, by)| squares_of(tile_bounds(ZBLOCK, bx, by))).collect();
+        blocks.iter().flat_map(|&(bx, by)| squares_of(roadcore::geo::tile_box(ZBLOCK, bx, by))).collect();
     want.sort_unstable();
     want.dedup();
     let mut sqs = Vec::new();

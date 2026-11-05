@@ -340,6 +340,7 @@ mod tests {
     use super::*;
     use crate::agent::recipes::Recipe;
     use crate::dem::spacing::{Fine, Uniform, FLOOR_M};
+    use det::Det;
 
     fn e7(x: f64, y: f64) -> [i32; 2] {
         [(x * 1e7) as i32, (y * 1e7) as i32]
@@ -505,7 +506,7 @@ mod tests {
             d.path(),
         )
         .unwrap();
-        let half = 30.0 / (111_195.0 * 50.5f64.to_radians().cos());
+        let half = 30.0 / (roadcore::geo::M_PER_DEG * 50.5f64.to_radians().dcos());
         let road = LongWay { owned: true, ferry: false, verts: vec![e7(0.5 - half, 50.5), e7(0.5 + half, 50.5)] };
         let fine = Fine { cells: vec![([0, 50], 16)], ..Default::default() };
         assert_eq!(fine.at(road.verts[0]), FLOOR_M);

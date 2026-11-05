@@ -60,7 +60,7 @@ pub fn levels(
     sets: &[crate::terrain_zoom::Set],
     t: (u32, u32),
 ) -> Vec<(u8, Vec<(u32, u32)>)> {
-    if native_zoom(sets, t) < FIRST_Z || !crate::terrain_pack::near_coverage(cov, PACK_Z, t.0, t.1, 20.0) {
+    if native_zoom(sets, t) < FIRST_Z || !crate::terrain_pack::near_coverage(cov, PACK_Z, t.0, t.1) {
         return Vec::new();
     }
     // (A tile's finest zoom is never past its parent's: its sources are among its parent's, and its
@@ -72,8 +72,7 @@ pub fn levels(
             .iter()
             .flat_map(|&(x, y)| (0..4u32).map(move |k| (2 * x + (k & 1), 2 * y + (k >> 1))))
             .filter(|&(x, y)| {
-                crate::terrain_pack::near_coverage(cov, z, x, y, 20.0)
-                    && z <= crate::terrain_zoom::finest(sets, z, x, y)
+                crate::terrain_pack::near_coverage(cov, z, x, y) && z <= crate::terrain_zoom::finest(sets, z, x, y)
             })
             .collect();
         if here.is_empty() {

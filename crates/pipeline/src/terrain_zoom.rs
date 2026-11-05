@@ -209,7 +209,7 @@ pub fn sources_in(sets: &[Set], b: [f64; 4]) -> Vec<&Set> {
 /// its presence is measured (`Set::presence`), so a dataset whose cells merely meet the tile, or whose
 /// files have no data there, is none of its sources.
 pub fn sources(sets: &[Set], z: u8, x: u32, y: u32) -> Vec<&Set> {
-    let b = crate::stage::tile_box_grown(z, x, y, 0.0);
+    let b = roadcore::geo::tile_box(z, x, y);
     sources_where(sets, b, &|s| s.presence.as_ref().is_none_or(|p| p.has(z, x, y)))
 }
 
@@ -231,21 +231,21 @@ fn sources_where<'a>(sets: &'a [Set], b: [f64; 4], has: &dyn Fn(&Set) -> bool) -
 /// tile's own detail (crate::terrain_pack::Fills::keep). By dataset, not by its code: datasets
 /// share codes (HRDEM's 1 m and 2 m, GSI's 1 m and 5 m), and only some of them reach a zoom.
 pub fn reaching(sets: &[Set], z: u8, x: u32, y: u32) -> Vec<String> {
-    let lat = poleward(crate::stage::tile_box_grown(z, x, y, 0.0));
+    let lat = poleward(roadcore::geo::tile_box(z, x, y));
     sources(sets, z, x, y).iter().filter(|s| s.detail.zoom_at(lat) >= z).map(|s| s.id.clone()).collect()
 }
 
 /// Tile `z/x/y`'s finest zoom: its sources' finest at its poleward edge (`sources`), at most
 /// `DEEPEST`; 0 with none.
 pub fn finest(sets: &[Set], z: u8, x: u32, y: u32) -> u8 {
-    let lat = poleward(crate::stage::tile_box_grown(z, x, y, 0.0));
+    let lat = poleward(roadcore::geo::tile_box(z, x, y));
     sources(sets, z, x, y).iter().map(|s| s.detail.zoom_at(lat)).max().unwrap_or(0).min(DEEPEST)
 }
 
 /// What tile `z/x/y`'s key names of its sources: each one's line, where its regions cut it
 /// inside the tile, and the zoom it reaches there (so a dataset measured again moves the key).
 pub fn key_lines(sets: &[Set], z: u8, x: u32, y: u32) -> Vec<String> {
-    let b = crate::stage::tile_box_grown(z, x, y, 0.0);
+    let b = roadcore::geo::tile_box(z, x, y);
     let lat = poleward(b);
     sources(sets, z, x, y)
         .into_iter()
@@ -274,7 +274,7 @@ pub fn test_world_ref() -> &'static [Set] {
 /// A tile's column and row at zoom `z` of point `lon`, `lat` (tests).
 #[cfg(test)]
 pub fn tile_at(lon: f64, lat: f64, z: u8) -> (u32, u32) {
-    crate::bld::tile_of(roadcore::merc(lon, lat), z)
+    crate::bld::tile_of(roadcore::geo::merc(lon, lat), z)
 }
 
 /// One dataset holding the world, a pyramid of zoom `z` (tests: every place's finest zoom `z`).
@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(ids(12, x * 4 + 4, y * 4), ["b"], "its cell's, not its data's");
         assert_eq!(
             finest(&sets, 12, x * 4 + 4, y * 4),
-            raster(30.0).zoom_at(poleward(crate::stage::tile_box_grown(12, x * 4 + 4, y * 4, 0.0)))
+            raster(30.0).zoom_at(poleward(roadcore::geo::tile_box(12, x * 4 + 4, y * 4)))
         );
         assert_eq!(reaching(&sets, 14, x * 16, y * 16), ["a"], "a reaches z14 there");
         assert!(reaching(&sets, 14, x * 16 + 16, y * 16).is_empty(), "nothing past its data");
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(s.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a"], "the fine one holds it whole");
         assert_eq!(finest(&sets, 12, x, y), DEEPEST, "1 m data, to the deepest zoom stored");
         let (x, y) = tile_at(10.0, 0.5, 12);
-        let b = crate::stage::tile_box_grown(12, x, y, 0.0);
+        let b = roadcore::geo::tile_box(12, x, y);
         let s = sources(&sets, 12, x, y);
         assert_eq!(s.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b"], "the pyramid after it is hidden");
         assert_eq!(finest(&sets, 12, x, y), raster(30.0).zoom_at(poleward(b)));

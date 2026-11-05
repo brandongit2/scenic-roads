@@ -35,6 +35,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use det::Det;
 use pipeline::cli::progs::{Declaration, Lakefill, LakefillCmd};
 use pipeline::lakefill::{nts, run};
 use pipeline::watercov::Raster;
@@ -106,11 +107,8 @@ pub fn main(args: Vec<String>) -> Result<()> {
 fn view(base: &Path, b: [f64; 4], z: u8, out: &Path) -> Result<()> {
     let pm = store::pmtiles::PmTiles::with_leaf_cache(Box::new(store::range::PlainFile::open(base)?), 4096)?;
     let n = f64::from(1u32 << z);
-    let wx = |lon: f64| (lon + 180.0) / 360.0 * n;
-    let wy = |lat: f64| {
-        let r = lat.to_radians();
-        (1.0 - (r.tan() + 1.0 / r.cos()).ln() / std::f64::consts::PI) / 2.0 * n
-    };
+    let wx = |lon: f64| roadcore::geo::merc_x(lon) * n;
+    let wy = |lat: f64| roadcore::geo::merc_y(lat) * n;
     let (x0, x1, y0, y1) = (wx(b[0]), wx(b[2]), wy(b[3]), wy(b[1]));
     const T: usize = 256;
     let (w, h) = (((x1 - x0) * T as f64).round() as usize, ((y1 - y0) * T as f64).round() as usize);
@@ -142,7 +140,7 @@ fn view(base: &Path, b: [f64; 4], z: u8, out: &Path) -> Result<()> {
         px[3 * k + 2] = mix(44.0, 104.0, 230.0);
     }
     // The sheets' edges.
-    let lat_of = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan().to_degrees();
+    let lat_of = |y: f64| roadcore::geo::merc_lat(y / n);
     for yy in 0..h {
         let lat = lat_of(y0 + (yy as f64 + 0.5) / T as f64);
         let lat_up = lat_of(y0 + (yy as f64 - 0.5) / T as f64);
@@ -274,7 +272,7 @@ fn seamcheck(fill: &Path, basemap: &Path, max: usize) -> Result<()> {
                 let (p, q) = (r[k], r[(k + 1) % r.len()]);
                 let (_, lat) = lf::lonlat(p);
                 let m = lf::metres_per_unit(lat);
-                let len = ((q[0] - p[0]).hypot(q[1] - p[1])) * m;
+                let len = ((q[0] - p[0]).dhypot(q[1] - p[1])) * m;
                 if len < 20.0 {
                     continue;
                 }
@@ -320,7 +318,7 @@ fn seamcheck(fill: &Path, basemap: &Path, max: usize) -> Result<()> {
         let lake = draw(&f.lake(*i).rings);
         let water = osm.rings_near(*b)?;
         let o = draw(&water);
-        let len = (q[0] - p[0]).hypot(q[1] - p[1]) * m;
+        let len = (q[0] - p[0]).dhypot(q[1] - p[1]) * m;
         edge_m += len;
         let both: f64 = lake.iter().zip(&o).map(|(a, c)| f64::from(a.min(*c))).sum::<f64>() * 0.25;
         // Across the edge, row by row (columns for an east–west edge): where the lake is water on

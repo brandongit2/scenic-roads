@@ -1727,6 +1727,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "clap",
+ "det",
  "flate2",
  "geos",
  "libc",

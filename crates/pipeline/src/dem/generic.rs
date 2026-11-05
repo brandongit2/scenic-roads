@@ -35,7 +35,9 @@ use super::sample::{bilinear, blocks_read, sample_raster_noting, window_clean, C
 use crate::fetch::Fetch;
 use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
+use det::Det;
 use rayon::prelude::*;
+use roadcore::geo::MERC_M_PER_DEG;
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 use store::range::{PlainFile, RangeRead};
@@ -110,9 +112,6 @@ pub struct Sampled {
     /// reference (no geoid source has a value there): a seam mixing references.
     pub unconverted_seam: usize,
 }
-
-/// Metres per degree, as the resolutions and distances of geographic files are reckoned.
-pub const M_PER_DEG: f64 = 111_320.0;
 
 /// The decoded blocks kept across every open file of a run (one cache for all: a unit opens
 /// tens of files a dataset, and sampling reads each block once).
@@ -200,14 +199,14 @@ pub(crate) fn pixel_m(crs: u16, gt: &[f64; 6], lat: f64) -> (f64, f64) {
     if projected(crs) {
         (gt[1].abs(), gt[5].abs())
     } else {
-        (gt[1].abs() * M_PER_DEG * lat.to_radians().cos(), gt[5].abs() * M_PER_DEG)
+        (gt[1].abs() * MERC_M_PER_DEG * lat.to_radians().dcos(), gt[5].abs() * MERC_M_PER_DEG)
     }
 }
 
 /// A file's resolution in metres (its pixels' height), at level `level`.
 pub fn resolution(t: &Tiff, crs: u16, level: usize) -> Result<f64> {
     let gt = t.transform(level)?;
-    Ok(if projected(crs) { gt[1].abs().max(gt[5].abs()) } else { gt[5].abs() * M_PER_DEG })
+    Ok(if projected(crs) { gt[1].abs().max(gt[5].abs()) } else { gt[5].abs() * MERC_M_PER_DEG })
 }
 
 /// The level of `t` read for `read_resolution` (metres): the image whose resolution is nearest it
@@ -230,7 +229,7 @@ pub const TILE_PX: usize = 256;
 
 /// A tile pyramid's resolution in metres at latitude `lat`.
 pub fn tile_resolution(zoom: u32, lat: f64) -> f64 {
-    40_075_016.686 * lat.to_radians().cos() / (256.0 * (1u64 << zoom) as f64)
+    roadcore::geo::merc_m(lat) / (256.0 * (1u64 << zoom) as f64)
 }
 
 /// Whether a value is data.
@@ -822,7 +821,7 @@ impl GeoSet<'_> {
                             continue;
                         }
                         let dx = ((c as f64 - b.cf).abs() - 0.5).max(0.0) * b.mx;
-                        let d = dx.hypot(dy);
+                        let d = dx.dhypot(dy);
                         if d < best {
                             best = d;
                         }
@@ -1477,7 +1476,7 @@ impl TileSet<'_> {
                         if c < cs || c > ce {
                             continue;
                         }
-                        let d = ((c as f64 - gx).abs() - 0.5).max(0.0).hypot(dy) * pm;
+                        let d = ((c as f64 - gx).abs() - 0.5).max(0.0).dhypot(dy) * pm;
                         if d < best {
                             best = d;
                         }

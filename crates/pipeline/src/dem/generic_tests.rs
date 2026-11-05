@@ -1,6 +1,7 @@
 //! The sampler's own rules: the blend, and footprints.
 
 use super::*;
+use det::Det;
 
 #[test]
 fn a_blend_is_continuous_and_exact_past_its_band() {
@@ -71,7 +72,7 @@ fn tiles_blend_across_their_edges() {
     let o = Opts { fetch: &fetch, store: None, local: None };
     let w = 360.0 / 1024.0;
     // Its middle, 100 m inside its east edge, at the edge itself, and past it.
-    let lon = [w / 2.0, w - 100.0 / M_PER_DEG, w - 1e-9, w + 0.01];
+    let lon = [w / 2.0, w - 100.0 / MERC_M_PER_DEG, w - 1e-9, w + 0.01];
     let lat = [0.1; 4];
     let s = sample(&plan, &lon, &lat, &o, &|_| {}).unwrap();
     assert_eq!(s.elev[0], 100.0);
@@ -164,7 +165,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
         },
         outline: None,
     };
-    let (rf, rc) = (PX * M_PER_DEG, 3.0 * PX * M_PER_DEG);
+    let (rf, rc) = (PX * MERC_M_PER_DEG, 3.0 * PX * MERC_M_PER_DEG);
     let ds_fine = geo("fine", 1, rf, "https://a.org/fine.tif", fine_box);
     let ds_coarse = geo("coarse", 2, rc, "https://b.org/coarse.tif", [9.0, 45.0, 15.0, 51.0]);
     let plan = |ds: Vec<Dataset>| Plan { fmt: 1, version: "t".into(), tag: "1".into(), datasets: ds };
@@ -180,8 +181,8 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
         for k in 0..40 {
             let a = k as f64 * 0.157;
             let r = 1.0 + k as f64 * 0.9;
-            lon.push(10.0 + (cx + 0.5 + r * a.cos()) * PX);
-            lat.push(50.0 - (cy + 0.5 + r * a.sin()) * PX);
+            lon.push(10.0 + (cx + 0.5 + r * a.dcos()) * PX);
+            lat.push(50.0 - (cy + 0.5 + r * a.dsin()) * PX);
         }
     }
     let both = sample(&plan(vec![ds_fine.clone(), ds_coarse.clone()]), &lon, &lat, &o, &|_| {}).unwrap();
@@ -196,7 +197,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
         }
         // The scan: the nearest invalid pixel (no data, below the floor, or past the file's edge)
         // within the band, in metres, as GeoSet::distance reckons it.
-        let (mx, my) = (PX * M_PER_DEG * lat[i].to_radians().cos(), PX * M_PER_DEG);
+        let (mx, my) = (PX * MERC_M_PER_DEG * lat[i].to_radians().dcos(), PX * MERC_M_PER_DEG);
         let cf = (lon[i] - gt[0]) / gt[1] - 0.5;
         let rfl = (lat[i] - gt[3]) / gt[5] - 0.5;
         let (rx, ry) = ((band / mx).ceil() as i64 + 1, (band / my).ceil() as i64 + 1);
@@ -205,7 +206,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
         for r in r0 - ry..=r0 + 1 + ry {
             for c in c0 - rx..=c0 + 1 + rx {
                 let d =
-                    (((c as f64 - cf).abs() - 0.5).max(0.0) * mx).hypot(((r as f64 - rfl).abs() - 0.5).max(0.0) * my);
+                    (((c as f64 - cf).abs() - 0.5).max(0.0) * mx).dhypot(((r as f64 - rfl).abs() - 0.5).max(0.0) * my);
                 if d >= best {
                     continue;
                 }
@@ -329,9 +330,8 @@ fn a_pyramids_distance_is_the_whole_bands_scan() {
     let (mut lon, mut lat, mut radius) = (Vec::new(), Vec::new(), Vec::new());
     for _ in 0..3000 {
         let (fx, fy) = (rnd() * 3.0, 30.0 + rnd() * 3.0);
-        lon.push(fx / n as f64 * 360.0 - 180.0);
-        let m = std::f64::consts::PI * (1.0 - 2.0 * fy / n as f64);
-        lat.push(m.sinh().atan().to_degrees());
+        lon.push(roadcore::geo::merc_lon(fx / n as f64));
+        lat.push(roadcore::geo::merc_lat(fy / n as f64));
         radius.push(tile_resolution(z, 0.0) * (1.0 + rnd() * 60.0));
     }
     let sel: Vec<u32> = (0..lon.len() as u32).collect();
@@ -359,7 +359,7 @@ fn a_pyramids_distance_is_the_whole_bands_scan() {
         let mut best = radius[j];
         for r in r0 - rp..=r0 + 1 + rp {
             for c in c0 - rp..=c0 + 1 + rp {
-                let d = ((c as f64 - gx).abs() - 0.5).max(0.0).hypot(((r as f64 - gy).abs() - 0.5).max(0.0)) * pm;
+                let d = ((c as f64 - gx).abs() - 0.5).max(0.0).dhypot(((r as f64 - gy).abs() - 0.5).max(0.0)) * pm;
                 if d < best && !ok(c, r) {
                     best = d;
                 }
@@ -450,8 +450,8 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
     let (mut lon, mut lat) = (Vec::new(), Vec::new());
     for _ in 0..20_000 {
         let (fx, fy) = (0.2 + rnd() * 7.6, 24.2 + rnd() * 7.6);
-        lon.push(fx / n as f64 * 360.0 - 180.0);
-        lat.push((std::f64::consts::PI * (1.0 - 2.0 * fy / n as f64)).sinh().atan().to_degrees());
+        lon.push(roadcore::geo::merc_lon(fx / n as f64));
+        lat.push(roadcore::geo::merc_lat(fy / n as f64));
     }
     let one = NoneElse(crate::fetch::MapFetch(f.0.clone()));
     let want = sample(&plan, &lon, &lat, &Opts { fetch: &one, store: None, local: None }, &|_| {}).unwrap();
@@ -559,7 +559,7 @@ fn heights_are_converted_before_the_blend() {
     let fetch = NoneElse(f);
     let o = Opts { fetch: &fetch, store: None, local: None };
     let w = 360.0 / 1024.0;
-    let lon = [w / 2.0, w - 100.0 / M_PER_DEG, w + 0.01, 5.0];
+    let lon = [w / 2.0, w - 100.0 / MERC_M_PER_DEG, w + 0.01, 5.0];
     let lat = [0.1; 4];
     let s = sample(&plan, &lon, &lat, &o, &|_| {}).unwrap();
     assert_eq!(s.elev[0], 102.0);
@@ -656,8 +656,8 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
         version: "t".into(),
         tag: "1".into(),
         datasets: vec![
-            geo("fine", 1, PX * M_PER_DEG, "https://a.org/fine.tif", fine_box),
-            geo("coarse", 2, 3.0 * PX * M_PER_DEG, "https://b.org/coarse.tif", [9.0, 45.0, 15.0, 51.0]),
+            geo("fine", 1, PX * MERC_M_PER_DEG, "https://a.org/fine.tif", fine_box),
+            geo("coarse", 2, 3.0 * PX * MERC_M_PER_DEG, "https://b.org/coarse.tif", [9.0, 45.0, 15.0, 51.0]),
         ],
     };
     // (Enough points for several chunks: CHUNK_MIN each.)
@@ -815,8 +815,8 @@ fn ramps() -> (crate::fetch::MapFetch, Vec<f64>, Vec<f64>) {
     let (mut lon, mut lat) = (Vec::new(), Vec::new());
     for _ in 0..3_000 {
         let (fx, fy) = (100.0 + rnd() * 8.0, 80.0 + rnd() * 6.0);
-        lon.push(fx / n as f64 * 360.0 - 180.0);
-        lat.push((std::f64::consts::PI * (1.0 - 2.0 * fy / n as f64)).sinh().atan().to_degrees());
+        lon.push(roadcore::geo::merc_lon(fx / n as f64));
+        lat.push(roadcore::geo::merc_lat(fy / n as f64));
     }
     (f, lon, lat)
 }

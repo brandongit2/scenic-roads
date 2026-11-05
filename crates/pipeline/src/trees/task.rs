@@ -79,7 +79,7 @@ pub fn rows_of(blocks: &[(u32, u32)]) -> Vec<Vec<(u32, u32)>> {
 fn row_box(row: &[(u32, u32)]) -> [f64; 4] {
     let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
     for &(x, y) in row {
-        let t = super::tile_bounds(ZBLOCK, x, y);
+        let t = roadcore::geo::tile_box(ZBLOCK, x, y);
         b = [b[0].min(t[0]), b[1].min(t[1]), b[2].max(t[2]), b[3].max(t[3])];
     }
     b
@@ -89,7 +89,7 @@ fn row_box(row: &[(u32, u32)]) -> [f64; 4] {
 pub fn row_squares(row: &[(u32, u32)], there: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut v: Vec<(i32, i32)> = row
         .iter()
-        .flat_map(|&(x, y)| super::squares_of(super::tile_bounds(ZBLOCK, x, y)))
+        .flat_map(|&(x, y)| super::squares_of(roadcore::geo::tile_box(ZBLOCK, x, y)))
         .filter(|s| there.contains(s))
         .collect();
     v.sort_unstable();

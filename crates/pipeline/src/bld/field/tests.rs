@@ -1,6 +1,7 @@
 use super::*;
 use crate::bld::e7;
 use anyhow::Context;
+use det::Det;
 
 /// A square footprint (E7) of `half` degrees around (lon, lat), wound `ccw` or not.
 fn square(lon: f64, lat: f64, half: f64, ccw: bool) -> Vec<[i32; 2]> {
@@ -19,8 +20,8 @@ fn square(lon: f64, lat: f64, half: f64, ccw: bool) -> Vec<[i32; 2]> {
 /// A texel's area (m²) at level `z`'s row `y` of the world.
 fn texel_m2(z: u8, y: f64) -> f64 {
     let n = (1u64 << z) as f64 * T as f64;
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
-    (crate::bld::EQ * lat.cos() / n).powi(2)
+    let lat = roadcore::geo::merc_phi(y / n);
+    (roadcore::geo::MERC_C * lat.dcos() / n).powi(2)
 }
 
 /// Decodes a field3-webp tile: its mask, and each class held's texels (r, g, b).
@@ -56,7 +57,7 @@ fn town() -> Vec<(Vec<[i32; 2]>, u16, u16)> {
     }
     b.push((square(2.40, 48.85, 0.0003, true), 600, 0));
     b.push((square(2.41, 48.85, 0.0002, true), 1500, 300));
-    let edge = crate::bld::tile_box_deg(8, 129, 88)[0];
+    let edge = roadcore::geo::tile_box(8, 129, 88)[0];
     b.push((square(edge, 48.87, 0.0002, true), 90, 0));
     b
 }
@@ -199,7 +200,7 @@ fn heritage_lists_the_buildings_holding_a_site() {
     let ring: Vec<[f64; 2]> = (0..40)
         .map(|i| {
             let t = i as f64 / 40.0 * std::f64::consts::TAU;
-            [1000.0 + 300.0 * t.cos(), 1000.0 + 300.0 * t.sin()]
+            [1000.0 + 300.0 * t.dcos(), 1000.0 + 300.0 * t.dsin()]
         })
         .collect();
     assert!(simplify_to(&ring, HERITAGE_PTS).len() <= HERITAGE_PTS);

@@ -475,7 +475,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let cov = if flag(&args, "--near-coverage") { Some(coverage_of(&out, &args)?) } else { None };
             let near = |u: TileId| {
                 cov.as_ref().is_none_or(|c| {
-                    let b = pipeline::stage::tile_box_grown(u.z, u.x, u.y, 10.0);
+                    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, 10.0);
                     let e7 = |v: f64| (v * 1e7).round() as i32;
                     c.meets_rect([e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])])
                 })
@@ -3860,7 +3860,7 @@ fn unit_resume_id(
             lines.push(get(&pipeline::buildtiles::index_logical(&r)));
         }
     }
-    let b = pipeline::stage::tile_box_grown(u.z, u.x, u.y, pipeline::stage::MARGIN_KM);
+    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, pipeline::stage::MARGIN_KM);
     lines.extend(layers_source(out, pilot, Some(blobs)).pack_contents(b));
     lines.extend(pipeline::heritage::unit_contents(out, date, b));
     let parts: Vec<&str> = lines.iter().map(String::as_str).collect();
@@ -4023,7 +4023,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         if let Some(&next) = units.get(k + 1) {
             let o: &Out = out;
-            let b = pipeline::stage::tile_box_grown(next.z, next.x, next.y, pipeline::stage::MARGIN_KM);
+            let b = roadcore::geo::tile_box_grown(next.z, next.x, next.y, pipeline::stage::MARGIN_KM);
             let mut packs = layers_source(o, &pilot, Some(&blobs)).pack_contents(b);
             // (Its heritage slices too: pipeline::heritage::unit_inputs_with.)
             packs.extend(pipeline::heritage::unit_contents(o, &date, b));
@@ -4974,7 +4974,7 @@ fn treeblock_task(out: &Out, cov: &pipeline::coverage::Coverage, row: &[(u32, u3
     };
     let mut squares: Vec<(i32, i32)> = row
         .iter()
-        .flat_map(|&(x, y)| trees::squares_of(trees::tile_bounds(trees::ZBLOCK, x, y)))
+        .flat_map(|&(x, y)| trees::squares_of(roadcore::geo::tile_box(trees::ZBLOCK, x, y)))
         .filter(|&(t, l)| whole(t, l))
         .collect();
     squares.sort_unstable();
@@ -5206,7 +5206,7 @@ fn terrain_pieces(
     // ("None" z6 tiles, z6 tiles the coverage has left, first: their hi packs and mids dropped, nothing
     // read, their cost a drop's (`run_drop`); a job of them alone opens no sources and packs nothing.)
     let (ts, gone): (Vec<TileId>, Vec<TileId>) =
-        ts.iter().partition(|t| pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0));
+        ts.iter().partition(|t| pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y));
     for t in &gone {
         let n = run_drop("terrain-hi", &t.slash(), || pipeline::terrain_pack::drop_piece(out, (t.x, t.y)))?;
         eprintln!("terrain-hi {}: the coverage has left it; {n} files dropped", t.slash());
@@ -5497,7 +5497,7 @@ fn slope_pieces(
         landing.safe_point(out, "slope-hi", || ())?;
         pipeline::agent::jobs::part(k, &names);
         // (A "none" z6 tile first: nothing read, its cost a drop's, `run_drop`.)
-        if !pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0) {
+        if !pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y) {
             landing.land(out)?;
             let n = run_drop("slope-hi", &t.slash(), || pipeline::slope_pack::drop_piece(out, (t.x, t.y)))?;
             eprintln!("slope-hi {}: the coverage has left it; {n} files dropped", t.slash());
@@ -6985,7 +6985,7 @@ mod tests {
     #[test]
     fn a_boxs_canopy_files() {
         // Z6 tile 6/20/22 grown by 30 km (New Brunswick): one 10° square, its three files.
-        let b = pipeline::stage::tile_box_grown(6, 20, 22, pipeline::stage::MARGIN_KM);
+        let b = roadcore::geo::tile_box_grown(6, 20, 22, pipeline::stage::MARGIN_KM);
         assert_eq!(
             super::canopy_files(b),
             ["median", "p95", "cover5m"].map(|s| format!("meta_chm_lat=50.0_lon=-70.0_{s}.tif"))

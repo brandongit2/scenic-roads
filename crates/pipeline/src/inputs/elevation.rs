@@ -25,6 +25,7 @@ use crate::dem::declared::{self, Data, Declaration, Measured};
 use crate::fetch::Fetch;
 use crate::outlines::Outlines;
 use anyhow::Result;
+use det::Det;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -167,8 +168,8 @@ fn geographic_cell(t: &crate::geotiff::Tiff) -> anyhow::Result<(f64, f64, f64)> 
     let (a, b) = (gt[3], gt[3] + gt[5] * h);
     let (south, north) = (a.min(b), a.max(b));
     let equatorward = if south <= 0.0 && north >= 0.0 { 0.0 } else { south.abs().min(north.abs()) };
-    let m = crate::dem::generic::M_PER_DEG;
-    Ok((south, north, (gt[5].abs() * m).max(gt[1].abs() * m * equatorward.to_radians().cos())))
+    let m = roadcore::geo::MERC_M_PER_DEG;
+    Ok((south, north, (gt[5].abs() * m).max(gt[1].abs() * m * equatorward.to_radians().dcos())))
 }
 
 /// The tiles of the deep packs' zoom (crate::terrain_deep::PACK_Z) where a dataset's files really
@@ -222,7 +223,7 @@ pub fn presence_of(
     }
     let mut out = Vec::new();
     for (x, y) in tiles {
-        let b = crate::stage::tile_box_grown(PACK_Z, x, y, 0.0);
+        let b = roadcore::geo::tile_box(PACK_Z, x, y);
         // (Its box in the files' units, from points along its edges.)
         let mut nb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
         for k in 0..=8 {

@@ -21,13 +21,14 @@ use super::field;
 use super::fill::{self, src, Near, Point};
 use super::tiles::{self, Feat};
 use super::work::{flag, Block, IndexEntry, Meta, WorkFile};
-use super::{key_zxy, tile_box_deg, world7, EQ};
+use super::{key_zxy, world7};
 use crate::coverage::Coverage;
 use crate::legacy::TileId;
 use crate::out::Out;
 use anyhow::{ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
+use roadcore::geo::MERC_C;
 use std::collections::BTreeMap;
 
 /// How far beyond a z8 tile a building is copied into the z8 tile's tiles from (its centroid), ground
@@ -324,11 +325,11 @@ pub fn z8_tiles(
         for (i, h) in hs.iter().enumerate() {
             if let Some((h, _)) = h {
                 let (wx, wy) = world7(b.cen[i]);
-                pts.push(Point { x: wx * EQ, y: wy * EQ, area: b.area[i], h: *h });
+                pts.push(Point { x: wx * MERC_C, y: wy * MERC_C, area: b.area[i], h: *h });
             }
         }
     }
-    let bb = tile_box_deg(8, a.0, a.1);
+    let bb = roadcore::geo::tile_box(8, a.0, a.1);
     let near = Near::new(pts, (bb[1].abs().max(bb[3].abs()) + 0.05).min(85.0).to_radians().dcos());
     // The records filled here, filled (a record within COPY_M of the z8 tile has every building
     // within 300 m of it read: the same as its own z8 tile makes it).
@@ -352,7 +353,7 @@ pub fn z8_tiles(
                             .or_else(|| {
                                 let (wx, wy) = world7(b.cen[i]);
                                 let cos = (b.cen[i][1] as f64 * 1e-7).to_radians().dcos();
-                                near.height(wx * EQ, wy * EQ, cos, b.area[i], &mut s1, &mut s2)
+                                near.height(wx * MERC_C, wy * MERC_C, cos, b.area[i], &mut s1, &mut s2)
                                     .map(|(h, _)| (h, src::NEIGHBOURS))
                             })
                             .unwrap_or_else(|| {
@@ -470,9 +471,9 @@ pub fn z8_tiles(
 /// Area `a`'s box (a z8 tile) grown by `m` ground metres (at its latitude furthest from the
 /// equator), in world units: w, n, e, s (y grows southward).
 fn grown_z8(a: (u32, u32), m: f64) -> [f64; 4] {
-    let b = tile_box_deg(8, a.0, a.1);
+    let b = roadcore::geo::tile_box(8, a.0, a.1);
     let cos = b[1].abs().max(b[3].abs()).min(85.0).to_radians().dcos();
-    let g = m / (EQ * cos);
+    let g = m / (MERC_C * cos);
     [a.0 as f64 / 256.0 - g, a.1 as f64 / 256.0 - g, (a.0 + 1) as f64 / 256.0 + g, (a.1 + 1) as f64 / 256.0 + g]
 }
 
@@ -1039,7 +1040,7 @@ mod tests {
         // copy in the other, the same but for o.
         let t = TileId { z: 6, x: 32, y: 22 };
         let d = tempfile::tempdir().unwrap();
-        let line = crate::bld::tile_box_deg(14, 8298, 5634)[0];
+        let line = roadcore::geo::tile_box(14, 8298, 5634)[0];
         let lat = 48.86;
         let mut bs = vec![B { id: 1, rings: vec![square(line - 0.0001, lat, 0.0003)], ..Default::default() }];
         for k in 0..10 {
@@ -1050,7 +1051,7 @@ mod tests {
                 ..Default::default()
             });
         }
-        let edge = crate::bld::tile_box_deg(8, 130, 88)[0];
+        let edge = roadcore::geo::tile_box(8, 130, 88)[0];
         bs.push(B { id: 2, rings: vec![square(edge - 0.0001, lat, 0.0003)], height: 30.0, ..Default::default() });
         let mut files: Vec<Option<WorkFile>> = (0..9).map(|_| None).collect();
         files[4] = Some(work(d.path(), t, &bs));
@@ -1063,12 +1064,12 @@ mod tests {
         .unwrap();
         // A copy of each.
         assert_eq!(sum.copies, 2, "{got:?}");
-        let (x0, y0) = crate::bld::tile_of(crate::bld::world(line + 0.00005, lat + 0.00015), 14);
+        let (x0, y0) = crate::bld::tile_of(roadcore::geo::merc_clamped(line + 0.00005, lat + 0.00015), 14);
         let own = &got[&(14, x0, y0)];
         let copy = &got[&(14, x0 - 1, y0)];
         assert!(own.contains(&(120, 3, 0)), "{own:?}");
         assert_eq!(copy, &vec![(120, 3, 1)]);
-        let (x1, y1) = crate::bld::tile_of(crate::bld::world(edge + 0.00005, lat + 0.00015), 14);
+        let (x1, y1) = crate::bld::tile_of(roadcore::geo::merc_clamped(edge + 0.00005, lat + 0.00015), 14);
         assert_eq!(got[&(14, x1, y1)], vec![(300, 0, 0)]);
         assert_eq!(got[&(14, x1 - 1, y1)], vec![(300, 0, 1)], "copied across the z8 tiles' edge");
         assert!(got.keys().all(|k| k.0 == 14));

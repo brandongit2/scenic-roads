@@ -286,7 +286,7 @@ fn unit_of<'a>(t: &str, x: &KeyCtx<'a>) -> Option<(TileId, &'a crate::reach::Rea
 
 /// The box a z6 tile's roads stage over (its tile + crate::stage::MARGIN_KM).
 fn unit_box(u: TileId) -> [f64; 4] {
-    crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM)
+    roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM)
 }
 
 /// A z6 tile's road values (`sources/osm/<date>/roads/`), when made.
@@ -402,7 +402,7 @@ pub fn water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// their lines as the roads' keys name them); None while they can't be told.
 pub fn datasets_terrain(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    Some(lines_of("", &x.tiles.terrain_datasets(x.m, crate::stage::tile_box_grown(u.z, u.x, u.y, 0.0))?))
+    Some(lines_of("", &x.tiles.terrain_datasets(x.m, roadcore::geo::tile_box(u.z, u.x, u.y))?))
 }
 
 /// What a terrain target reads of the declared datasets' zooms (crate::terrain_zoom::key_lines over
@@ -450,7 +450,7 @@ pub fn pyramids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         .filter(|(a, _)| matches!(&a.declaration.data, Data::Tiles { every_zoom: false, .. }))
         .cloned()
         .collect();
-    Some(crate::dem::declared::meeting(&pyr, crate::stage::tile_box_grown(6, u.x, u.y, 0.0)))
+    Some(crate::dem::declared::meeting(&pyr, roadcore::geo::tile_box(6, u.x, u.y)))
 }
 
 /// The terrain-deep targets over a z6 tile (crate::terrain_deep::targets_in: whose base tiles the

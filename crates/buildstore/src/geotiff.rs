@@ -1267,7 +1267,7 @@ fn geographic_keys(epsg: u16) -> (Vec<u16>, Vec<f64>, String) {
         keys.push([key::GEOG_ANGULAR_UNITS, 0, 1, 9102]);
         keys.push([key::GEOG_SEMI_MAJOR_AXIS, GEO_DOUBLE_PARAMS, 1, 0]);
         keys.push([key::GEOG_INV_FLATTENING, GEO_DOUBLE_PARAMS, 1, 1]);
-        dbl = vec![6378137.0, 298.257223563];
+        dbl = vec![roadcore::geo::WGS84_A, roadcore::geo::WGS84_RF];
     } else {
         keys.push([key::GEOG_ANGULAR_UNITS, 0, 1, 9102]);
     }

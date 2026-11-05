@@ -9,6 +9,7 @@ use axum::{
     Json,
 };
 use base64::Engine;
+use det::Det;
 use roadcore::grid::{cell_m, cell_of, class as lc, WORLD};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -38,8 +39,8 @@ pub struct Out {
 }
 
 fn lnglat(gx: f64, gy: f64) -> [f64; 2] {
-    let lon = gx / WORLD * 360.0 - 180.0;
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * gy / WORLD)).sinh().atan().to_degrees();
+    let lon = roadcore::geo::merc_lon(gx / WORLD);
+    let lat = roadcore::geo::merc_lat(gy / WORLD);
     [lon, lat]
 }
 
@@ -141,10 +142,9 @@ fn compute(s: &crate::AppState, q: Q) -> Option<Out> {
     // 0 = outside / not reached, 1 = hidden, 2 = visible land, 3 = visible water
     let mut vis = vec![0u8; n * n];
     let rays = 2048;
-    let r_eff = 6_371_000.0 / 0.87;
     for a in 0..rays {
         let th = a as f64 * std::f64::consts::TAU / rays as f64;
-        let (ux, uy) = (th.sin(), -th.cos());
+        let (ux, uy) = (th.dsin(), -th.dcos());
         let mut smax = f64::MIN;
         let mut d = cm * 0.5;
         while d <= radius {
@@ -158,7 +158,7 @@ fn compute(s: &crate::AppState, q: Q) -> Option<Out> {
                 tc as f64
             };
             let h = t + if d < 60.0 { 0.0 } else { g.canopy(cx, cy) as f64 };
-            let drop = d * d / (2.0 * r_eff);
+            let drop = d * d / (2.0 * roadcore::scenic::SIGHT_R);
             let sl = (h - eye - drop) / d;
             let k = ((cy - oy) as usize) * n + (cx - ox) as usize;
             if sl >= smax {

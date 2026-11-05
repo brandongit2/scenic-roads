@@ -41,7 +41,10 @@ const MAX_W: usize = 7500;
 const MAX_H: usize = 4100;
 const CLASSES: &str = "0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data";
 const EEA_SOURCE: &str = "Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m, read at 0.0005°";
-const NALCMS_SOURCE: &str = "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°";
+/// A NALCMS square's `source` tag, which says how it was resampled: a square tagged otherwise is made
+/// again (crate::trees::squares::complete). (Its warp's maths `det`'s since task #862: before, the
+/// Mac's libm's, tagged without "det's".)
+pub(crate) const NALCMS_SOURCE: &str = "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005° with det's maths";
 
 /// NALCMS's classes → ours (254: GDAL's 255 kept off the nodata, not forest).
 fn na_class(v: u8) -> u8 {
@@ -603,8 +606,8 @@ fn nalcms_centre(t: &crate::geotiff::Tiff) -> Result<(f64, f64)> {
     }
     let wgs = k.short(crate::geotiff::key::GEOGRAPHIC_TYPE) == Some(4326)
         || k.short(crate::geotiff::key::GEOG_GEODETIC_DATUM) == Some(6326)
-        || (d(crate::geotiff::key::GEOG_SEMI_MAJOR_AXIS) == Some(6378137.0)
-            && d(crate::geotiff::key::GEOG_INV_FLATTENING) == Some(298.257223563));
+        || (d(crate::geotiff::key::GEOG_SEMI_MAJOR_AXIS) == Some(roadcore::geo::WGS84_A)
+            && d(crate::geotiff::key::GEOG_INV_FLATTENING) == Some(roadcore::geo::WGS84_RF));
     ensure!(wgs, "NALCMS: not on WGS 84");
     Ok((lat, lon))
 }

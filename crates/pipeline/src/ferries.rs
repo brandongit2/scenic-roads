@@ -33,6 +33,7 @@ use crate::interest::py_round;
 use crate::pyjson::{dumps, loads, Py};
 use crate::pytext::{decimal, space, strip, word_char};
 use anyhow::{Context, Result};
+use det::Det;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -296,8 +297,8 @@ fn seg_km(coords: &[[f64; 2]]) -> f64 {
     let mut d = 0.0;
     for w in coords.windows(2) {
         let ([x0, y0], [x1, y1]) = (w[0], w[1]);
-        let k = ((y0 + y1) / 2.0).to_radians().cos();
-        d += ferrycount::hypot((x1 - x0) * k, y1 - y0) * 111.195;
+        let k = ((y0 + y1) / 2.0).to_radians().dcos();
+        d += ferrycount::hypot((x1 - x0) * k, y1 - y0) * roadcore::geo::KM_PER_DEG;
     }
     d
 }

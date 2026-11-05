@@ -15,17 +15,13 @@
 //!   the same Mercator coordinates, so a tie at a pixel centre falls the same way.
 
 use anyhow::{bail, Context, Result};
-use det::Det;
 use rayon::prelude::*;
 use roadcore::grid::{CELLS, TS};
 use roadcore::scenic::flag::{HERITAGE, INDIGENOUS, PARK, SPECIAL_AREA};
-use std::f64::consts::PI;
 use std::path::Path;
 
 /// The bits drawn (a polygon with another bit is read but never drawn).
 const BITS: [u8; 4] = [PARK, HERITAGE, SPECIAL_AREA, INDIGENOUS];
-/// Web Mercator's sphere.
-const R: f64 = 6378137.0;
 /// Tiles per side at z11.
 const N11: f64 = 2048.0;
 
@@ -67,23 +63,11 @@ fn read_grid(path: &Path) -> Result<Vec<[u32; 2]>> {
 
 /// The grid's box in degrees: [west, south, east, north].
 fn grid_box(tiles: &[[u32; 2]]) -> [f64; 4] {
-    let lon = |x: u32| x as f64 / N11 * 360.0 - 180.0;
-    let lat = |y: u32| (PI * (1.0 - 2.0 * y as f64 / N11)).dsinh().datan().to_degrees();
+    let lon = |x: u32| roadcore::geo::merc_lon(x as f64 / N11);
+    let lat = |y: u32| roadcore::geo::merc_lat(y as f64 / N11);
     let (x0, x1) = (tiles.iter().map(|t| t[0]).min().unwrap(), tiles.iter().map(|t| t[0]).max().unwrap());
     let (y0, y1) = (tiles.iter().map(|t| t[1]).min().unwrap(), tiles.iter().map(|t| t[1]).max().unwrap());
     [lon(x0), lat(y1 + 1), lon(x1 + 1), lat(y0)]
-}
-
-/// Degrees to Web Mercator metres, latitudes clipped to ±85°.
-fn to_merc(p: [f64; 2]) -> [f64; 2] {
-    let lat = if p[1] < -85.0 {
-        -85.0
-    } else if p[1] > 85.0 {
-        85.0
-    } else {
-        p[1]
-    };
-    [p[0] * PI / 180.0 * R, (PI / 4.0 + lat * PI / 360.0).dtan().dln() * R]
 }
 
 /// One GeoJSON ring: closed if it isn't (as shapely closes it); fewer than four points is an error
@@ -163,7 +147,7 @@ pub fn read_shapes(text: &str, b: [f64; 4]) -> Result<(Vec<Shape>, usize)> {
             .map(|p| {
                 p.iter()
                     .map(|r| {
-                        let mut m: Vec<[f64; 2]> = r.iter().map(|&q| to_merc(q)).collect();
+                        let mut m: Vec<[f64; 2]> = r.iter().map(|&q| roadcore::geo::epsg3857(q[0], q[1])).collect();
                         if !is_clockwise(&m) {
                             m.reverse();
                         }
@@ -249,7 +233,7 @@ struct Scratch {
 
 /// Burns the shapes meeting z11 tile (tx, ty) into its cells.
 fn tile(tx: u32, ty: u32, shapes: &[Shape], cells: &mut [u8], s: &mut Scratch) {
-    let world = 2.0 * PI * R;
+    let world = roadcore::geo::MERC_C;
     let x0 = tx as f64 / N11 * world - world / 2.0;
     let x1 = (tx + 1) as f64 / N11 * world - world / 2.0;
     let y1 = world / 2.0 - ty as f64 / N11 * world;
@@ -498,8 +482,8 @@ mod tests {
     /// A polygon given in pixels of tile (tx, ty) as degrees (so the tile's own transform brings it
     /// back to those pixels, give or take rounding).
     fn deg(tx: u32, ty: u32, px: f64, py: f64) -> [f64; 2] {
-        let lon = (tx as f64 + px / 256.0) / N11 * 360.0 - 180.0;
-        let lat = (PI * (1.0 - 2.0 * (ty as f64 + py / 256.0) / N11)).dsinh().datan().to_degrees();
+        let lon = roadcore::geo::merc_lon((tx as f64 + px / 256.0) / N11);
+        let lat = roadcore::geo::merc_lat((ty as f64 + py / 256.0) / N11);
         [lon, lat]
     }
 

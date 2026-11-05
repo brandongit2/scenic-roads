@@ -29,6 +29,7 @@
 use super::{Checks, Derived, FileCheck, FileEntry, Finding, Level, Version};
 use crate::outlines::{OutlineRec, Outlines};
 use anyhow::Result;
+use det::Det;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
@@ -353,12 +354,17 @@ fn about_entries(check: &str, level: Level, path: &str, ls: &[(usize, String, St
 
 /// Distance from `p` to the segment `a`–`b` (lon, lat), km, flat over a few km.
 fn segment_km(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let k = p[1].to_radians().cos() * 111.32;
-    let (ax, ay, bx, by) = ((a[0] - p[0]) * k, (a[1] - p[1]) * 110.57, (b[0] - p[0]) * k, (b[1] - p[1]) * 110.57);
+    let k = p[1].to_radians().dcos() * roadcore::geo::KM_PER_DEG;
+    let (ax, ay, bx, by) = (
+        (a[0] - p[0]) * k,
+        (a[1] - p[1]) * roadcore::geo::KM_PER_DEG,
+        (b[0] - p[0]) * k,
+        (b[1] - p[1]) * roadcore::geo::KM_PER_DEG,
+    );
     let (dx, dy) = (bx - ax, by - ay);
     let l2 = dx * dx + dy * dy;
     let t = if l2 > 0.0 { (-(ax * dx + ay * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
-    (ax + t * dx).hypot(ay + t * dy)
+    (ax + t * dx).dhypot(ay + t * dy)
 }
 
 /// A territory's outlines, simplified: each polygon's box and rings (degrees, and E7 for the
@@ -395,16 +401,13 @@ impl Heritage {
             .filter(|e| {
                 let p = e.at;
                 let near = |b: &[f64; 4]| {
-                    let padx = pad / p[1].to_radians().cos().max(0.05);
+                    let padx = pad / p[1].to_radians().dcos().max(0.05);
                     p[0] >= b[0] - padx && p[0] <= b[2] + padx && p[1] >= b[1] - pad && p[1] <= b[3] + pad
                 };
                 let pe7 = [(p[0] * 1e7) as i32, (p[1] * 1e7) as i32];
                 let within = shapes.iter().filter(|(b, ..)| near(b)).any(|(b, rings, e7)| {
-                    let inside = p[0] >= b[0]
-                        && p[0] <= b[2]
-                        && p[1] >= b[1]
-                        && p[1] <= b[3]
-                        && crate::outlines::inside(&e7.iter().map(Vec::as_slice).collect::<Vec<_>>(), pe7);
+                    let inside =
+                        p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3] && roadcore::geo::inside(e7, pe7);
                     inside || rings.iter().any(|r| r.windows(2).any(|w| segment_km(p, w[0], w[1]) <= FAR_KM))
                 });
                 !within

@@ -26,6 +26,7 @@ use super::edt::nearest;
 use super::grids::{px, sample, Reader, Source};
 use super::{C_ESTIMATED, C_FILLED, C_NATIVE, C_NONE, C_SCALED, DRIES, NODATA, NODATA_MIN};
 use anyhow::Result;
+use det::Det;
 
 /// The block's margin (pixels).
 pub const PAD: usize = 32;
@@ -141,7 +142,7 @@ pub fn compose(
     if !(0..n).any(|i| water.water[i] && inner(i)) {
         return Ok(None);
     }
-    let gpx = (px(b.z) * b.mid_lat().to_radians().cos()) as f32;
+    let gpx = (px(b.z) * b.mid_lat().to_radians().dcos()) as f32;
     let mut c = vec![f32::NAN; n];
     let mut zz = vec![-1i8; n];
     let mut k = vec![0u8; n];

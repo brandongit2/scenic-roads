@@ -14,6 +14,7 @@
 use det::Det;
 pub mod archive;
 pub mod elev;
+pub mod geo;
 pub mod grid;
 pub mod lsum;
 pub mod packs;
@@ -230,7 +231,6 @@ impl<T: Pod> Array<T> {
 }
 
 pub const E7: f64 = 1e-7;
-pub const EARTH_R: f64 = 6_371_008.8;
 
 /// Fast local distance in metres between two lon/lat points (equirectangular, fine < ~10 km).
 #[inline]
@@ -238,14 +238,5 @@ pub fn dist_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     let k = std::f64::consts::PI / 180.0;
     let x = (lon2 - lon1) * k * ((lat1 + lat2) * 0.5 * k).dcos();
     let y = (lat2 - lat1) * k;
-    (x * x + y * y).sqrt() * EARTH_R
-}
-
-/// Web-Mercator normalised coordinates in [0, 1).
-#[inline]
-pub fn merc(lon: f64, lat: f64) -> (f64, f64) {
-    let x = (lon + 180.0) / 360.0;
-    let s = (lat.to_radians()).dsin().clamp(-0.9999, 0.9999);
-    let y = 0.5 - ((1.0 + s) / (1.0 - s)).dln() / (4.0 * std::f64::consts::PI);
-    (x, y)
+    (x * x + y * y).sqrt() * geo::EARTH_R
 }

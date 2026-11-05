@@ -19,6 +19,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use det::Det;
 use rayon::prelude::*;
 use roadcore::lsum::{self, LO_MIN_ROAD, LSUM_V, NO_RINFO};
 use roadcore::packs::{LBin, LPart, PSample};
@@ -148,8 +149,8 @@ fn tiles_around(region: &Region, margin_km: f64) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
     for &[w, s, e, n] in region.boxes() {
         let lat = s.abs().max(n.abs()).min(85.0);
-        let dlat = margin_km / 111.32;
-        let dlon = margin_km / 111.32 / lat.to_radians().cos().max(0.05);
+        let dlat = margin_km / roadcore::geo::KM_PER_DEG;
+        let dlon = margin_km / roadcore::geo::KM_PER_DEG / lat.to_radians().dcos().max(0.05);
         let e7 = |d: f64| (d / E7) as i32;
         out.extend(tiles_in([e7(w - dlon), e7(s - dlat), e7(e + dlon), e7(n + dlat)]));
     }

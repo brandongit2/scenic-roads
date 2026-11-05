@@ -205,7 +205,7 @@ fn good_declarations_are_measured_from_their_data() {
     let d = f.derive();
     let m: Measured = serde_json::from_value(d.facts["tiled.toml"].0["measured"].clone()).unwrap();
     assert_eq!(m.crs, Some(4326));
-    assert!((m.resolution - 100.0 * PX * crate::dem::generic::M_PER_DEG).abs() < 1e-6);
+    assert!((m.resolution - 100.0 * PX * roadcore::geo::MERC_M_PER_DEG).abs() < 1e-6);
     // Its cover: the 1° cells its footprints meet, edges included.
     assert_eq!(m.cover, Some(vec![[2.0, 48.0, 4.0, 51.0]]));
     assert_eq!(d.facts["pyramid.toml"].0["extent"], "world");

@@ -864,6 +864,7 @@ pub fn root_step(out: &mut crate::out::Out, pole: Pole, built: &[(u32, u32)]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use det::Det;
 
     /// Horn's method on the grid gives a plane's own slope, east and south on the grid, per ground
     /// metre.
@@ -886,9 +887,9 @@ mod tests {
         let (_, lat) = polar::inverse(pole, gx, gy);
         let k = polar::scale(pole, lat) as f32;
         let p = s[128 * TS + 128];
-        let g = (1e-3f32.hypot(0.5e-3)) * k * 100.0;
+        let g = (1e-3f32.dhypot(0.5e-3)) * k * 100.0;
         assert!((p.s - g).abs() < 1e-3 * g, "{} vs {g}", p.s);
-        let n = 1e-3f32.hypot(0.5e-3);
+        let n = 1e-3f32.dhypot(0.5e-3);
         assert!((p.u[0] - 1e-3 / n).abs() < 1e-3 && (p.u[1] - 0.5e-3 / n).abs() < 1e-3, "{:?}", p.u);
     }
 
@@ -1014,7 +1015,7 @@ mod tests {
         for z in 0..=6u8 {
             let last = (1u32 << z) - 1;
             for x in 0..=last {
-                assert!(!cover.meets(crate::stage::tile_box_grown(z, x, last, 0.0)), "{z}/{x}/{last}");
+                assert!(!cover.meets(roadcore::geo::tile_box(z, x, last)), "{z}/{x}/{last}");
             }
         }
         assert!(cover.meets(roadcore::polar::lat_box(Pole::South, BLOCK_Z, 7, 7)));

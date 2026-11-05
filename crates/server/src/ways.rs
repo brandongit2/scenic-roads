@@ -34,7 +34,7 @@ impl At {
 
 /// The z6 tile ("6/x/y") of a point.
 pub fn tile6(lon: f64, lat: f64) -> (u32, u32) {
-    let (x, y) = roadcore::merc(lon, lat);
+    let (x, y) = roadcore::geo::merc(lon, lat);
     let n = 64.0;
     (((x * n).floor().clamp(0.0, 63.0)) as u32, ((y * n).floor().clamp(0.0, 63.0)) as u32)
 }

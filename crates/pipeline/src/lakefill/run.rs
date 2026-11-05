@@ -451,9 +451,7 @@ struct Sheet {
 
 fn lonlat(z: u8, x: f64, y: f64) -> (f64, f64) {
     let n = f64::from(1u32 << z);
-    let lon = x / n * 360.0 - 180.0;
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan().to_degrees();
-    (lon, lat)
+    (roadcore::geo::merc_lon(x / n), roadcore::geo::merc_lat(y / n))
 }
 
 /// The survey: every NTS 1:50,000 sheet across the Canadian regions (`PROVINCES`, from the pass's
@@ -470,19 +468,13 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
     }
     let region_at = |lon: f64, lat: f64| -> Option<&str> {
         let p = [(lon * 1e7) as i32, (lat * 1e7) as i32];
-        polys
-            .iter()
-            .find(|(_, r)| crate::outlines::inside(&r.iter().map(Vec::as_slice).collect::<Vec<_>>(), p))
-            .map(|(n, _)| *n)
+        polys.iter().find(|(_, r)| roadcore::geo::inside(r, p)).map(|(n, _)| *n)
     };
     let pm = store::pmtiles::PmTiles::with_leaf_cache(Box::new(store::range::PlainFile::open(base)?), 4096)?;
     // The z5 tiles over Canada's box.
     let (w, east, s, n) = (-141.5, -52.0, 41.5, 83.5);
-    let tx = |lon: f64, z: u8| ((lon + 180.0) / 360.0 * f64::from(1u32 << z)).floor() as u32;
-    let ty = |lat: f64, z: u8| {
-        let r = lat.to_radians();
-        ((1.0 - (r.tan() + 1.0 / r.cos()).ln() / std::f64::consts::PI) / 2.0 * f64::from(1u32 << z)).floor() as u32
-    };
+    let tx = |lon: f64, z: u8| (roadcore::geo::merc_x(lon) * f64::from(1u32 << z)).floor() as u32;
+    let ty = |lat: f64, z: u8| (roadcore::geo::merc_y(lat) * f64::from(1u32 << z)).floor() as u32;
     let fives: Vec<(u32, u32)> =
         (ty(n, 5)..=ty(s, 5)).flat_map(|y| (tx(w, 5)..=tx(east, 5)).map(move |x| (x, y))).collect();
     let sheets: Mutex<HashMap<(i32, i32), Sheet>> = Mutex::new(HashMap::new());
@@ -573,7 +565,7 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
                             }
                             let (lon, lat) = lonlat(SZ, f64::from(x) + cx, f64::from(y) + cy);
                             // Ring area in km²: tile units² → metres² at this latitude.
-                            let m = 40_075_016.686 * lat.to_radians().cos() / f64::from(1u32 << SZ) / ext;
+                            let m = roadcore::geo::merc_m(lat) / f64::from(1u32 << SZ) / ext;
                             let km2 = a2 / 2.0 * m * m / 1e6;
                             let b = if km2 < 0.01 {
                                 0
@@ -592,7 +584,7 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
                 for py in 0..PX {
                     let (_, lat) =
                         lonlat(SZ, f64::from(x) + 0.5 / PX as f64, f64::from(y) + (py as f64 + 0.5) / PX as f64);
-                    let m = 40_075_016.686 * lat.to_radians().cos() / f64::from(1u32 << SZ) / PX as f64;
+                    let m = roadcore::geo::merc_m(lat) / f64::from(1u32 << SZ) / PX as f64;
                     let a = m * m / 1e6;
                     for px in 0..PX {
                         let (lon, _) = lonlat(SZ, f64::from(x) + (px as f64 + 0.5) / PX as f64, 0.0);

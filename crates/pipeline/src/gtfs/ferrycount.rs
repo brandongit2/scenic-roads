@@ -25,11 +25,12 @@
 //! to an OSM line (`osm`) counts for that line alone, its ports the calls nearest the line's two
 //! ends, however far.
 //!
-//! Distances are the Python's: `math.hypot` as CPython computes it (`hypot`), `cos` this Mac's.
+//! Distances: `math.hypot` as CPython computes it (`hypot`), `cos` det's.
 
 use super::{statics, Cell, Date, OwnedRow, PyErr, Zip, R};
 use crate::interest::py_round;
 use crate::pyjson::Py;
+use det::Det;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -112,8 +113,8 @@ fn ldexp(x: f64, e: i32) -> f64 {
 
 /// Kilometres between two points, as the Python's equirectangular formula.
 pub fn km(a: [f64; 2], b: [f64; 2]) -> f64 {
-    let k = ((a[1] + b[1]) / 2.0).to_radians().cos();
-    hypot((a[0] - b[0]) * k, a[1] - b[1]) * 111.195
+    let k = ((a[1] + b[1]) / 2.0).to_radians().dcos();
+    hypot((a[0] - b[0]) * k, a[1] - b[1]) * roadcore::geo::KM_PER_DEG
 }
 
 /// A ferry route by its type.

@@ -6,7 +6,6 @@
 //! The z6 tiles' runs (`build_piece`), the z3 tiles' assemblies (`build_lo`) and the root
 //! (`build_root`) are here; a z10 tile's band past z12 is crate::terrain_deep's.
 
-use det::Det;
 use roadcore::grid::decode_terrain;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -74,7 +73,7 @@ pub fn fill_of<'a>(
     deep: &'a (dyn Fn(u32, u32) -> bool + Sync),
 ) -> impl Fn(u8, u32, u32) -> Fill + Sync + 'a {
     move |z, x, y| {
-        if !near_coverage(cov, z, x, y, 20.0) {
+        if !near_coverage(cov, z, x, y) {
             Fill::Relief
         } else if z > crate::terrain_zoom::finest(sets, z, x, y) {
             Fill::Sample
@@ -428,7 +427,7 @@ pub fn process(
 /// Latitude of a tile's centre.
 pub fn tile_lat(z: u8, ty: u32) -> f64 {
     let y = (ty as f64 + 0.5) / (1u64 << z) as f64;
-    (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees()
+    roadcore::geo::merc_lat(y)
 }
 
 // ---- per pack ----------------------------------------------------------------------------------
@@ -438,12 +437,11 @@ use crate::out::Out;
 use rayon::prelude::*;
 use std::sync::Mutex;
 
-/// Whether the coverage comes within `km` of the tile: the tile grown by `km` meets it (exactly, so
-/// a small region between sample points isn't missed: Singapore in its z6 tile).
-pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32, km: f64) -> bool {
-    let b = crate::stage::tile_box_grown(z, x, y, km);
-    let e7 = |v: f64| (v * 1e7).round() as i32;
-    cov.meets_rect([e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])])
+/// Whether the coverage comes within `roadcore::geo::NEAR_COVERAGE_KM` of the tile: the tile grown by
+/// it meets it (exactly, so a small region between sample points isn't missed: Singapore in its z6
+/// tile).
+pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32) -> bool {
+    cov.meets_rect(crate::agent::build::grown_e7(z, x, y, roadcore::geo::NEAR_COVERAGE_KM))
 }
 
 /// A layer's tiles as the build manifest has them now (its latest uploads).
@@ -1877,7 +1875,7 @@ pub fn piece_levels(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, 
             let s = 1u32 << (z - 6);
             let tiles = (tx * s..(tx + 1) * s)
                 .flat_map(|x| (ty * s..(ty + 1) * s).map(move |y| (x, y)))
-                .filter(|&(x, y)| near_coverage(cov, z, x, y, 20.0) && z <= crate::terrain_zoom::finest(sets, z, x, y))
+                .filter(|&(x, y)| near_coverage(cov, z, x, y) && z <= crate::terrain_zoom::finest(sets, z, x, y))
                 .collect();
             (z, tiles)
         })
@@ -1892,14 +1890,13 @@ pub fn makes_hi(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)
         let kept = cov.kept();
         let got = kept.makes_hi.lock().unwrap().get(&t).copied();
         got.unwrap_or_else(|| {
-            let v = (t.0 * 8..t.0 * 8 + 8).any(|x| (t.1 * 8..t.1 * 8 + 8).any(|y| near_coverage(cov, 9, x, y, 20.0)));
+            let v = (t.0 * 8..t.0 * 8 + 8).any(|x| (t.1 * 8..t.1 * 8 + 8).any(|y| near_coverage(cov, 9, x, y)));
             kept.makes_hi.lock().unwrap().insert(t, v);
             v
         })
     };
     near && (t.0 * 8..t.0 * 8 + 8).any(|x| {
-        (t.1 * 8..t.1 * 8 + 8)
-            .any(|y| crate::terrain_zoom::finest(sets, 9, x, y) >= 9 && near_coverage(cov, 9, x, y, 20.0))
+        (t.1 * 8..t.1 * 8 + 8).any(|y| crate::terrain_zoom::finest(sets, 9, x, y) >= 9 && near_coverage(cov, 9, x, y))
     })
 }
 
@@ -2068,7 +2065,7 @@ pub(crate) fn build_piece_kept(
         t.1
     );
     let mut rep = PackReport::default();
-    if !near_coverage(cov, 6, t.0, t.1, 20.0) {
+    if !near_coverage(cov, 6, t.0, t.1) {
         anyhow::ensure!(!expect_same, "6/{}/{}: the coverage has left it, so it can't be made as it is", t.0, t.1);
         let n = drop_piece(out, t)?;
         eprintln!("terrain 6/{}/{}: the coverage has left it; {n} files dropped", t.0, t.1);
@@ -2581,7 +2578,7 @@ pub(crate) mod tests {
             for &(tx, ty) in ts {
                 for x in tx * s..(tx + 1) * s {
                     for y in ty * s..(ty + 1) * s {
-                        if near_coverage(cov, z, x, y, 20.0) {
+                        if near_coverage(cov, z, x, y) {
                             want.push((z, x, y));
                         }
                     }
@@ -2615,8 +2612,8 @@ pub(crate) mod tests {
     /// (each grown by less in longitude, at its own latitude): a small circle east of the tile's
     /// south-east corner, as the build's coverage left 6/21/18.
     pub(crate) fn near_without_hi(d: &std::path::Path) -> Coverage {
-        let b = crate::stage::tile_box_grown(6, 21, 18, 0.0);
-        let dx = |lat: f64| 20.0 / (111.320 * lat.to_radians().cos());
+        let b = roadcore::geo::tile_box(6, 21, 18);
+        let dx = |lat: f64| roadcore::geo::lon_span(roadcore::geo::NEAR_COVERAGE_KM, lat);
         let (lat, lon) = (b[1] + 0.05, b[2] + (dx(b[3]) + dx(b[1] + 0.5)) / 2.0);
         let c = Coverage::fixture(
             &[crate::agent::recipes::Recipe {
@@ -2629,7 +2626,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(
-            near_coverage(&c, 6, 21, 18, 20.0)
+            near_coverage(&c, 6, 21, 18)
                 && !makes_hi(&c, &crate::terrain_zoom::test_world(12), (21, 18))
                 && piece_levels(&c, &crate::terrain_zoom::test_world(12), (21, 18)).iter().all(|(_, t)| t.is_empty())
         );
@@ -2643,8 +2640,8 @@ pub(crate) mod tests {
         // sea in the first's top rows.
         const Z: u8 = 11;
         let n = (1u64 << Z) as f64;
-        let y = ((1.0 - 70.5f64.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n) as u32;
-        let x0 = ((10.0 + 180.0) / 360.0 * n) as u32;
+        let y = (roadcore::geo::merc_y(70.5) * n) as u32;
+        let x0 = (roadcore::geo::merc_x(10.0) * n) as u32;
         fn polys(_z: u8, x: u32, _y: u32) -> Vec<Poly> {
             // (The lake from 200 to 300 in the pair's pixels across, rows 100 to 150; the sea's rows
             // 0 to 20 of the first.)
@@ -2800,7 +2797,7 @@ pub(crate) mod tests {
             if *z == 11 {
                 // (Sampled, a quarter past the region's 20 km the relief's.)
                 for k in 0..4u32 {
-                    let near = near_coverage(&cov, 12, 2 * x + (k & 1), 2 * y + (k >> 1), 20.0);
+                    let near = near_coverage(&cov, 12, 2 * x + (k & 1), 2 * y + (k >> 1));
                     let v = e[((k >> 1) as usize * 128 + 64) * 256 + (k & 1) as usize * 128 + 64];
                     let want = if near { 100.0 } else { 7.0 };
                     assert!((v - want).abs() < 0.01, "{z}/{x}/{y} quarter {k}: {v}, not {want}");

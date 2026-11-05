@@ -20,8 +20,8 @@ use crate::summits::Summit;
 use anyhow::{Context, Result};
 use det::Det;
 use rayon::prelude::*;
+use roadcore::geo::{merc, EARTH_R};
 use roadcore::grid::decode_terrain;
-use roadcore::{merc, EARTH_R};
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -78,8 +78,8 @@ pub fn gc_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
 /// The great-circle distance (m) from (lon, lat) to the nearest point of tile z/x/y.
 pub fn tile_lower_bound_m(lon: f64, lat: f64, z: u8, tx: u32, ty: u32) -> f64 {
     let n = (1u64 << z) as f64;
-    let (lon0, lon1) = (tx as f64 / n * 360.0 - 180.0, (tx + 1) as f64 / n * 360.0 - 180.0);
-    let lat_of = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).dsinh().datan().to_degrees();
+    let (lon0, lon1) = (roadcore::geo::merc_lon(tx as f64 / n), roadcore::geo::merc_lon((tx + 1) as f64 / n));
+    let lat_of = |t: f64| roadcore::geo::merc_lat(t / n);
     let (lat_n, lat_s) = (lat_of(ty as f64), lat_of(ty as f64 + 1.0));
     // Longitude offset from the tile's west edge, wrapped into [0, 360).
     let off = (lon - lon0).rem_euclid(360.0);
@@ -217,19 +217,25 @@ pub fn read_ahead<I: Sync, T: Send>(
     })
 }
 
+/// A box grown by `PAD` degrees on every side: a disc's box (roadcore::geo::grow) taking in
+/// what the tiles' and cells' edges round off.
+fn pad(b: [f64; 4]) -> [f64; 4] {
+    [b[0] - PAD, b[1] - PAD, b[2] + PAD, b[3] + PAD]
+}
+const PAD: f64 = 0.01;
+
 /// The z12 tiles a z6 tile's peaks may read: those meeting a disc of `km` around each, padded.
 pub fn tiles_wanted(points: &[(f64, f64)], km: f64) -> BTreeSet<(u32, u32)> {
     let n = 1u32 << Z12;
     let mut want = BTreeSet::new();
     for &(lon, lat) in points {
-        let dlat = km / 110.0 + 0.01;
-        let dlon = km / (111.0 * (lat.abs() + dlat).min(85.0).to_radians().dcos()) + 0.01;
+        let g = pad(roadcore::geo::grow([lon, lat, lon, lat], km));
         let t = |lon: f64, lat: f64| {
-            let (x, y) = merc(lon, lat.clamp(-85.05, 85.05));
+            let (x, y) = roadcore::geo::merc_clamped(lon, lat);
             ((x * n as f64).floor() as i64, (y * n as f64).floor().clamp(0.0, (n - 1) as f64) as i64)
         };
-        let (x0, y0) = t(lon - dlon, lat + dlat);
-        let (x1, y1) = t(lon + dlon, lat - dlat);
+        let (x0, y0) = t(g[0], g[3]);
+        let (x1, y1) = t(g[2], g[1]);
         for x in x0..=x1 {
             for y in y0..=y1 {
                 want.insert((x.rem_euclid(n as i64) as u32, y as u32));
@@ -379,7 +385,7 @@ impl<'a> UDem<'a> {
 fn lonlat_at(w: i64, gx: i64, gy: i64) -> [f64; 2] {
     let wf = w as f64;
     let (x, y) = ((gx.rem_euclid(w) as f64 + 0.5) / wf, (gy as f64 + 0.5) / wf);
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees();
+    let lat = roadcore::geo::merc_lat(y);
     [x * 360.0 - 180.0, lat]
 }
 
@@ -593,12 +599,11 @@ pub fn run(
     }
     let within = |lon: i32, lat: i32, km: f64| -> Vec<u32> {
         let (la, lo) = (lat as f64 * 1e-7, lon as f64 * 1e-7);
-        let dlat = km / 110.0 + 0.01;
-        let dlon = km / (111.0 * (la.abs() + dlat).min(89.0).to_radians().dcos()) + 0.01;
+        let g = pad(roadcore::geo::grow([lo, la, lo, la], km));
         let c = |v: f64| (v * 10.0).floor() as i32;
         let mut out = Vec::new();
-        for cx in c(lo - dlon)..=c(lo + dlon) {
-            for cy in c(la - dlat)..=c(la + dlat) {
+        for cx in c(g[0])..=c(g[2]) {
+            for cy in c(g[1])..=c(g[3]) {
                 let cxw = (cx + 1800).rem_euclid(3600) - 1800;
                 for &i in grid.get(&(cxw, cy)).map(Vec::as_slice).unwrap_or(&[]) {
                     let s = &summits[i as usize];
@@ -940,7 +945,7 @@ mod tests {
         assert!(tile_lower_bound_m(8.0, 46.0, 8, 133, 90) > 0.0);
         // A tile due north: the distance to its southern edge along the meridian.
         let n = (1u64 << 8) as f64;
-        let lat_s = (std::f64::consts::PI * (1.0 - 2.0 * 90.0 / n)).dsinh().datan().to_degrees();
+        let lat_s = roadcore::geo::merc_lat(90.0 / n);
         let lb = tile_lower_bound_m(8.0, 40.0, 8, 133, 89);
         assert!((lb - gc_m(8.0, 40.0, 8.0, lat_s)).abs() < 1.0, "{lb}");
         // Across the antimeridian: the tile just east of 180° from a point at 179.9° E is close.
@@ -955,7 +960,7 @@ mod tests {
                         for j in 0..=8 {
                             let x = (tx as f64 + i as f64 / 8.0) / n;
                             let y = (ty as f64 + j as f64 / 8.0) / n;
-                            let plat = (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees();
+                            let plat = roadcore::geo::merc_lat(y);
                             let d = gc_m(lon, lat, x * 360.0 - 180.0, plat);
                             assert!(lb <= d + 1e-6, "{lon},{lat} tile {tx}/{ty}: bound {lb} > {d}");
                         }

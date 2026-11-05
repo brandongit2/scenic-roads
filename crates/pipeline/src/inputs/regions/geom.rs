@@ -207,7 +207,7 @@ impl Area {
         if rings.iter().any(|r| on_ring(r, p)) {
             return true;
         }
-        inside_evenodd(&rings, p)
+        roadcore::geo::inside(&rings, p)
     }
 }
 
@@ -354,26 +354,6 @@ fn on_segment(a: Pt, b: Pt, p: Pt) -> bool {
 
 fn on_ring(r: &[Pt], p: Pt) -> bool {
     (0..r.len()).any(|i| on_segment(r[i], r[(i + 1) % r.len()], p))
-}
-
-/// Even–odd point in rings (a point on an edge: either answer).
-pub fn inside_evenodd(rings: &[&Ring], p: Pt) -> bool {
-    let mut ins = false;
-    for r in rings {
-        let n = r.len();
-        for i in 0..n {
-            let (a, b) = (r[i], r[(i + 1) % n]);
-            if (a[1] > p[1]) != (b[1] > p[1]) {
-                // x of the crossing compared exactly: p.x < a.x + (p.y - a.y)(b.x - a.x)/(b.y - a.y).
-                let lhs = (p[0] - a[0]) as i128 * (b[1] - a[1]) as i128;
-                let rhs = (p[1] - a[1]) as i128 * (b[0] - a[0]) as i128;
-                if (b[1] > a[1] && lhs < rhs) || (b[1] < a[1] && lhs > rhs) {
-                    ins = !ins;
-                }
-            }
-        }
-    }
-    ins
 }
 
 /// Whether segments a–b and c–d meet (touching included).
@@ -562,8 +542,8 @@ impl Frame {
 
 // ---- Distances on the ground ----------------------------------------------------------------------
 
-const A: f64 = 6_378_137.0;
-const F: f64 = 1.0 / 298.257_223_563;
+const A: f64 = roadcore::geo::WGS84_A;
+const F: f64 = 1.0 / roadcore::geo::WGS84_RF;
 
 /// The radii of curvature at latitude `lat` (radians): along the meridian, and of the parallel (the
 /// prime vertical's times the latitude's cosine), metres.
@@ -744,7 +724,7 @@ fn buffer_coarse_in(a: &Area, r: f64) -> Area {
         // (One point a grid square of a thirty-second of the distance, its first: many small
         // islands in one place would otherwise give hundreds of discs over each other. The discs
         // then miss at most the square's diagonal, under a twentieth of the distance.)
-        let g = (r / 32.0 / 111_320.0 * 1e7).max(1.0) as i64;
+        let g = (r / 32.0 / roadcore::geo::M_PER_DEG * 1e7).max(1.0) as i64;
         let mut seen = std::collections::HashSet::new();
         for p in wide {
             if seen.insert((p[0].div_euclid(g), p[1].div_euclid(g))) {
@@ -836,10 +816,7 @@ pub fn earth() -> Area {
     box_area([-HALF, -900_000_000, HALF, 900_000_000])
 }
 
-/// The authalic sphere's radius (WGS 84), metres.
-const R_AUTHALIC: f64 = 6_371_007.2;
-
-/// An area's size on the ground, km², on the authalic sphere (edges taken as straight in
+/// An area's size on the ground, km², on the Earth's mean sphere (roadcore::geo::EARTH_R) (edges taken as straight in
 /// longitude and latitude).
 pub fn area_km2(a: &Area) -> f64 {
     let k = std::f64::consts::PI / 180.0 * 1e-7;
@@ -849,9 +826,9 @@ pub fn area_km2(a: &Area) -> f64 {
         let mut s = 0.0;
         for i in 0..n {
             let (p, q) = (ring[i], ring[(i + 1) % n]);
-            // (On the authalic sphere: the band from the equator under the edge.)
+            // (On the mean sphere: the band from the equator under the edge.)
             let (s1, s2) = ((p[1] as f64 * k).dsin(), (q[1] as f64 * k).dsin());
-            s += (q[0] - p[0]) as f64 * k * (s1 + s2) * 0.5 * R_AUTHALIC * R_AUTHALIC;
+            s += (q[0] - p[0]) as f64 * k * (s1 + s2) * 0.5 * roadcore::geo::EARTH_R * roadcore::geo::EARTH_R;
         }
         t -= s;
     }
@@ -915,13 +892,17 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64, reach: Optio
     let Some(bb) = within.bbox() else { return Some(Area::default()) };
     // With a reach, the samples within it of the area's box, in degrees of latitude, and of
     // longitude at the box's latitude farthest from the equator (all of them near a pole); a point
-    // is decided only by a sample within 99 % of it (the box's degrees are 111.32 km, a meridian's
-    // degree at least 110.57 km).
+    // is decided only by a sample within 99 % of it (the box's degrees are roadcore::geo::M_PER_DEG, the
+    // same sphere's).
     let r_m = reach.unwrap_or(f64::INFINITY);
-    let ry = (r_m.min(2.1e7) / 111_320.0 * 1e7) as i64;
+    let ry = (r_m.min(2.1e7) / roadcore::geo::M_PER_DEG * 1e7) as i64;
     let polar = ((bb[1] - ry).abs().max((bb[3] + ry).abs()) as f64 * 1e-7).min(90.0);
     let cos = polar.to_radians().dcos();
-    let rx = if cos < 0.01 { TURN } else { ((r_m.min(2.1e7) / (111_320.0 * cos)) * 1e7).min(TURN as f64) as i64 };
+    let rx = if cos < 0.01 {
+        TURN
+    } else {
+        ((r_m.min(2.1e7) / (roadcore::geo::M_PER_DEG * cos)) * 1e7).min(TURN as f64) as i64
+    };
     let near = |q: &Pt| {
         reach.is_none() || (q[0] >= bb[0] - rx && q[0] <= bb[2] + rx && q[1] >= bb[1] - ry && q[1] <= bb[3] + ry)
     };
@@ -930,7 +911,7 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64, reach: Optio
     let mut fps: Vec<Fp> = Vec::new();
     let mut coasts: Vec<&Area> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let deg = step / 111_320.0 * 1e7;
+    let deg = step / roadcore::geo::M_PER_DEG * 1e7;
     for (a, mine) in to.iter().map(|a| (a, true)).chain(than.iter().map(|a| (a, false))) {
         let k = fps.len();
         fps.push(fingerprint(a));
@@ -1010,14 +991,14 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64, reach: Optio
     // Rows of `step`, each split into runs of cells whose middles are nearer `to`. The grid is
     // anchored at 0°, 0° (rows and, in each row, cells in whole steps from it), so splits of
     // neighbouring areas fall on the same cells and meet without gaps or overlaps.
-    let dy = (step / 111_320.0 * 1e7).max(1.0) as i64;
+    let dy = (step / roadcore::geo::M_PER_DEG * 1e7).max(1.0) as i64;
     let mut rects: Vec<Ring> = Vec::new();
     let mut y = bb[1].div_euclid(dy) * dy;
     while y < bb[3] {
         let y1 = y + dy;
         let mid = (y + y1) / 2;
         let coslat = ((mid as f64) * 1e-7).to_radians().dcos().max(0.01);
-        let dx = ((step / (111_320.0 * coslat)) * 1e7).max(1.0) as i64;
+        let dx = ((step / (roadcore::geo::M_PER_DEG * coslat)) * 1e7).max(1.0) as i64;
         let mut x = bb[0].div_euclid(dx) * dx;
         let mut run: Option<i64> = None;
         while x < bb[2] {
@@ -1183,7 +1164,7 @@ pub fn cut(a: &Area, line: &[Pt], left: bool) -> Result<Area, CutError> {
         let met = line
             .windows(2)
             .any(|s| rings.iter().any(|r| (0..r.len()).any(|i| segments_meet(s[0], s[1], r[i], r[(i + 1) % r.len()]))))
-            || inside_evenodd(&rings, line[0]);
+            || roadcore::geo::inside(&rings, line[0]);
         if !met {
             // Kept whole when on the side kept: judged by its first point not on the line's side's edge.
             let p = poly[0].iter().copied().find(|&p| !on_ring(&keep.rings().concat(), p)).unwrap_or(poly[0][0]);
@@ -1193,7 +1174,7 @@ pub fn cut(a: &Area, line: &[Pt], left: bool) -> Result<Area, CutError> {
             continue;
         }
         for end in [line[0], line[line.len() - 1]] {
-            if inside_evenodd(&rings, end) && !rings.iter().any(|r| on_ring(r, end)) {
+            if roadcore::geo::inside(&rings, end) && !rings.iter().any(|r| on_ring(r, end)) {
                 return Err(CutError::EndsInside(poly[0][0]));
             }
         }

@@ -106,7 +106,7 @@ fn tile(files: &[Option<WorkFile>], cov: &Coverage, t: TileId, qs: &mut Vec<Q>, 
                     None
                 };
                 let (wx, wy) = world7(b.cen[i]);
-                let p = |h| Point { x: wx * EQ, y: wy * EQ, area: b.area[i], h };
+                let p = |h| Point { x: wx * roadcore::geo::MERC_C, y: wy * roadcore::geo::MERC_C, area: b.area[i], h };
                 if let Some(h) = first {
                     pts_all.push(p(h));
                 }
@@ -117,7 +117,7 @@ fn tile(files: &[Option<WorkFile>], cov: &Coverage, t: TileId, qs: &mut Vec<Q>, 
                 }
             }
         }
-        let bb = tile_box_deg(8, a.0, a.1);
+        let bb = roadcore::geo::tile_box(8, a.0, a.1);
         let cos_min = (bb[1].abs().max(bb[3].abs()) + 0.05).min(85.0).to_radians().dcos();
         let near_all = Near::new(pts_all, cos_min);
         let near_ho = Near::new(pts_ho, cos_min);
@@ -145,12 +145,26 @@ fn tile(files: &[Option<WorkFile>], cov: &Coverage, t: TileId, qs: &mut Vec<Q>, 
                     let (wx, wy) = world7(b.cen[i]);
                     let cos = (b.cen[i][1] as f64 * 1e-7).to_radians().dcos();
                     if taken && !is_est && held(b.cen[i]) {
-                        let (a1, a2) = near_ho.stages(wx * EQ, wy * EQ, cos, b.area[i], &mut s1, &mut s2);
+                        let (a1, a2) = near_ho.stages(
+                            wx * roadcore::geo::MERC_C,
+                            wy * roadcore::geo::MERC_C,
+                            cos,
+                            b.area[i],
+                            &mut s1,
+                            &mut s2,
+                        );
                         q.push(Q { area: b.area[i], truth: h, s1: a1, s2: a2, r45: r45.0, storey: fill::storey(cc).0 });
                     }
                     let first = taken || (1..=fill::F_MAX).contains(&f);
                     if !first {
-                        let (a1, a2) = near_all.stages(wx * EQ, wy * EQ, cos, b.area[i], &mut s1, &mut s2);
+                        let (a1, a2) = near_all.stages(
+                            wx * roadcore::geo::MERC_C,
+                            wy * roadcore::geo::MERC_C,
+                            cos,
+                            b.area[i],
+                            &mut s1,
+                            &mut s2,
+                        );
                         if a1.is_none() && a2.is_some() {
                             m.push(M { area: b.area[i], s45: r45.1 });
                         }

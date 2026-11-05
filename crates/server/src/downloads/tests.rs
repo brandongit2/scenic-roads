@@ -753,7 +753,7 @@ fn put_roads(root: &std::path::Path, cat: &mut Catalogue) {
     ];
     let e7 = |d: f64| (d * 1e7).round() as i32;
     let lat = e7(51.5);
-    let tile_of = |lon: f64| ((lon + 180.0) / 360.0 * 64.0).floor() as u32;
+    let tile_of = |lon: f64| (roadcore::geo::merc_x(lon) * 64.0).floor() as u32;
     let mut file = |logical: &str, write: &dyn Fn(&mut store::sect::SectWriter)| {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("f");
@@ -1173,7 +1173,7 @@ async fn a_download_with_nothing_left_to_copy_moves_on_before_the_copies() {
 /// A small box at the middle of z6 tile (x, y).
 fn in_tile(x: u32, y: u32) -> Vec<[f64; 2]> {
     let lon = (f64::from(x) + 0.5) / 64.0 * 360.0 - 180.0;
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 0.5) / 64.0)).sinh().atan().to_degrees();
+    let lat = roadcore::geo::merc_lat((f64::from(y) + 0.5) / 64.0);
     rect(lon - 0.1, lat - 0.1, lon + 0.1, lat + 0.1)
 }
 

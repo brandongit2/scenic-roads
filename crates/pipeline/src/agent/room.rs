@@ -1009,13 +1009,13 @@ impl Hints {
         match step {
             "unit" => {
                 for (z, x, y) in targets.iter().filter_map(|t| tile(t)) {
-                    squares(crate::stage::tile_box_grown(z, x, y, crate::stage::MARGIN_KM));
+                    squares(roadcore::geo::tile_box_grown(z, x, y, crate::stage::MARGIN_KM));
                     sooner_in(&mut self.units, format!("{z}-{x}-{y}"), at);
                 }
             }
             "trees" => {
                 for (z, x, y) in targets.iter().filter_map(|t| tile(t)) {
-                    squares(crate::trees::tile_bounds(z, x, y));
+                    squares(roadcore::geo::tile_box(z, x, y));
                 }
             }
             s @ ("terrain-hi" | "terrain-deep" | "terrain-lo") => {

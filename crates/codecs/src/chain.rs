@@ -356,7 +356,7 @@ mod tests {
 
     /// A way along points given in metres east/north of 45° N 0° E.
     fn way(id: u64, pts: &[(f64, f64)], name: u32, refs: (u32, u16), class: u8, oneway: bool) -> Link {
-        let m = 1e7 / 111_320.0;
+        let m = 1e7 / roadcore::geo::M_PER_DEG;
         let v: Vec<[i32; 2]> = pts
             .iter()
             .map(|&(x, y)| {
