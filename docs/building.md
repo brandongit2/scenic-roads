@@ -558,8 +558,9 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
 4. runs the crates' tests, the type check and the web build, and checks every Python step loads
    from a copy of `dem/` in a fresh environment and passes pyflakes;
 5. smoke-tests a server on a spare port against the NAS's catalogue (waiting up to 10 min for its first
-   answer, which comes only once it has read the catalogue; one that exits, or is still starting (still
-   reading its catalogue or past it), is said so), and signs the programs and Scenic.app;
+   answer, which comes only once it has read the catalogue, and saying once after 30 s that it is still
+   starting; one that exits, or is still starting at 10 min (still reading its catalogue or past it), is
+   said so), and signs the programs and Scenic.app;
 6. takes the lock on the NAS (`app/publish.lock`, create-new; one over six hours old taken over),
    waiting while another publish holds it, checks the order again, writes `app/<version>/` and
    `app/current.json` with every file's SHA-256, copies `tools/nas/fetch-planet.sh` to the NAS's

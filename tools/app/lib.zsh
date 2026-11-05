@@ -164,9 +164,10 @@ live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])
 # on 503 (a busy NAS's slow read), and wants 200 or 204. 0 when all answered so; else says which
 # didn't and returns 1. A server that never answered is told apart, its paths not asked: exited
 # (its status), or still starting after <seconds> (task #698: under a second publish's build the
-# mini's took over the old 2 min), with its log's last lines or that it printed nothing.
+# mini's took over the old 2 min), with its log's last lines or that it printed nothing. A wait past
+# $smoke_say s (30) is said once, with what it waits for, so a slow start shows as one.
 smoke() {
-  local port=$1 pid=$2 log=$3 wait=$4 u code try t0=$SECONDS ok=1 rc
+  local port=$1 pid=$2 log=$3 wait=$4 u code try t0=$SECONDS ok=1 rc said=
   shift 4
   until curl -sf -o /dev/null http://127.0.0.1:$port/api/ping; do
     if ! kill -0 $pid 2>/dev/null; then
@@ -181,6 +182,10 @@ smoke() {
         print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s, still reading its catalogue from the NAS"
       fi
       ok=0; break
+    fi
+    if [[ -z $said ]] && (( SECONDS - t0 >= ${smoke_say:-30} )); then
+      print -r -- "smoke test: the server is still starting (no answer yet to /api/ping after $(( SECONDS - t0 )) s; waiting up to $wait s)"
+      said=1
     fi
     sleep 0.5
   done
