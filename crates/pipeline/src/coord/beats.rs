@@ -52,6 +52,13 @@ pub const ASKS: &str = "asks";
 /// lead lists the journal while a member heard doesn't say it (`journal_on`).
 pub const HANDOFF: &str = "handoff";
 
+/// What a member's beat says it speaks, and a lead's answer that it serves (docs/coordination.md
+/// step 7, crate::coord::budgets): the Wikimedia budget and the answers' lease from the lead, its
+/// resume progress in its beat. While the lead doesn't say it, or says a member heard doesn't
+/// (`budgets_on_nas`), every Mac takes the budget and the lease on the NAS; a member writes its
+/// progress file there while its lead doesn't say it.
+pub const BUDGETS: &str = "budgets";
+
 /// A lead whose last answer is older than this (s) is taken for not reachable by a member's page:
 /// three of its beats (crate::agent::beat::EVERY, 10 s) missed.
 pub const PAGE_AWAY_S: u64 = 35;
@@ -129,6 +136,13 @@ struct Inner {
     lead_handoffs: Option<bool>,
     handoffs: Vec<crate::pool::Entry>,
     merged: Vec<String>,
+    /// On a member: whether its lead serves `BUDGETS`, and whether they go by the NAS still (its
+    /// word, `Answer::budgets_on_nas`); its resume progress as its agent last noted it (its beat
+    /// carries it), and the owner's releases of it as the lead's last answer said them.
+    lead_budgets: bool,
+    budgets_on_nas: bool,
+    progress: Option<crate::agent::resume::Progress>,
+    progress_released: Vec<(String, u64)>,
     /// On a member: the lead's line as its last answer carried it, and where it's kept
     /// (`keep_lead_view`: `LEAD_VIEW` in the agent's folder).
     lead_view: LeadView,
@@ -174,6 +188,10 @@ impl Default for Beats {
                 lead_handoffs: None,
                 handoffs: Vec::new(),
                 merged: Vec::new(),
+                lead_budgets: false,
+                budgets_on_nas: true,
+                progress: None,
+                progress_released: Vec::new(),
                 lead_view: LeadView::default(),
                 lead_view_at: None,
             }),
@@ -275,6 +293,11 @@ impl Beats {
         }
         g.lead_handoffs = Some(a.speaks.iter().any(|w| w == HANDOFF));
         g.merged.extend(a.merged.iter().cloned());
+        g.lead_budgets = a.speaks.iter().any(|w| w == BUDGETS);
+        g.budgets_on_nas = !g.lead_budgets || a.budgets_on_nas;
+        if g.lead_budgets {
+            g.progress_released = a.progress_released.clone();
+        }
         g.lead_view = LeadView { at: now, lead: a.lead.clone() };
         drop(g);
         self.save_lead_view();
@@ -356,12 +379,12 @@ impl Beats {
 
     /// Whether the asks' NAS files go on (the rollout gate, crate::coord::asks): on a member, while
     /// its lead doesn't serve `ASKS` or says a member heard doesn't speak it; on the lead, while a
-    /// member heard doesn't (`held::asks_on_nas`, said at each beat).
+    /// member heard doesn't (`held::on_nas`, said at each beat).
     pub fn asks_on_nas(&self) -> bool {
         self.inner.lock().unwrap().asks_on_nas
     }
 
-    /// The lead's word on the gate (`held::asks_on_nas`; on the lead, which serves `ASKS`).
+    /// The lead's word on the gate (`held::on_nas`; on the lead, which serves `ASKS`).
     pub fn set_asks_on_nas(&self, on: bool) {
         let mut g = self.inner.lock().unwrap();
         g.lead_asks = true;
@@ -371,6 +394,32 @@ impl Beats {
     /// Whether the lead serves `ASKS` (its last answer said so).
     pub fn lead_asks(&self) -> bool {
         self.inner.lock().unwrap().lead_asks
+    }
+
+    /// Whether its lead serves `BUDGETS` (its last answer said so): its progress goes in the beat
+    /// alone, the owner's releases of it in the answer.
+    pub fn lead_budgets(&self) -> bool {
+        self.inner.lock().unwrap().lead_budgets
+    }
+
+    /// Whether the budget and the answers' lease go by the NAS (the gate): the lead doesn't serve
+    /// `BUDGETS`, or says a member heard doesn't speak it.
+    pub fn budgets_on_nas(&self) -> bool {
+        self.inner.lock().unwrap().budgets_on_nas
+    }
+
+    /// Its resume progress as its agent noted it last: what its beat carries.
+    pub fn set_progress(&self, p: crate::agent::resume::Progress) {
+        self.inner.lock().unwrap().progress = Some(p);
+    }
+
+    pub fn progress(&self) -> Option<crate::agent::resume::Progress> {
+        self.inner.lock().unwrap().progress.clone()
+    }
+
+    /// The owner's releases of its progress (job, when it began) as the lead's last answer said.
+    pub fn progress_released(&self) -> Vec<(String, u64)> {
+        self.inner.lock().unwrap().progress_released.clone()
     }
 
     /// Whether the lead answered a beat within `PAGE_AWAY_S` of `now`: worth posting to now.
@@ -499,6 +548,7 @@ impl Beats {
         g.lead_answered = None;
         (g.lead_asks, g.asks_on_nas) = (false, true);
         g.lead_handoffs = Some(false);
+        (g.lead_budgets, g.budgets_on_nas) = (false, true);
         g.threads.clear();
         g.lead_view = LeadView { at: now, lead: None };
         drop(g);

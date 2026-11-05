@@ -8,8 +8,9 @@
 //!   `member/<host>` (what a member speaks and when the lead last heard it: `Heard`), and
 //!   `beat/<member>` (its last beat's heartbeat and status, crate::coord::beats: `Beat`, saved each
 //!   `HEARD_SAVE_S` at most, so a lead's restart has the members for the page at once), and the
-//!   owner's asks (crate::coord::asks: `hold/<member>`, `settings`) and the members' messages to
-//!   the lead (crate::coord::inbox: `inbox/<member>`);
+//!   owner's asks (crate::coord::asks: `hold/<member>`, `settings`), the members' messages to
+//!   the lead (crate::coord::inbox: `inbox/<member>`), and the answers' lease and the members'
+//!   resume progress (crate::coord::budgets: `answers-lease`, `progress/<member>`);
 //! - each save submits what changed since the last (`Mirror`), never the whole state;
 //! - opened by `Coordinator::start_on` after the coordinator's start: a store found is the truth (the
 //!   files start read are a store's first fill alone: an agent before the store's); none, it's
@@ -220,6 +221,12 @@ impl Kept {
     /// `settings`).
     pub fn put(&self, key: &str, v: Value) {
         self.submit([(key.to_string(), v)].into(), Vec::new());
+    }
+
+    /// Document `key` deleted (crate::coord::budgets's answers' lease given up, a member's progress
+    /// emptied).
+    pub fn del(&self, key: &str) {
+        self.submit(Docs::new(), vec![key.to_string()]);
     }
 
     /// `member` heard at `at`, speaking `speaks`: saved when what it speaks changed, or its time by

@@ -65,6 +65,10 @@ pub struct Beat {
     /// (docs/pool.md §7.1, Threads re-granted). Left out by apps before it; an older lead reads past it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap: Option<super::Capacity>,
+    /// Its resume progress whole (speaking `beats::BUDGETS`, crate::coord::budgets): the jobs whose
+    /// progress is on its Mac's disk. Left out by apps before it, which write it on the NAS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<crate::agent::resume::Progress>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -120,6 +124,14 @@ pub struct Answer {
     /// Left out by a lead before it (the jobs keep their grant), and read past by a member before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<(u64, u32)>,
+    /// A member heard doesn't say `beats::BUDGETS` (an older app): the Wikimedia budget and the
+    /// answers' lease are taken on the NAS meanwhile, by every Mac (the rollout gate).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgets_on_nas: bool,
+    /// The owner's releases of this member's progress the lead keeps (job, when its progress
+    /// began: crate::coord::budgets).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub progress_released: Vec<(String, u64)>,
 }
 
 /// The build in a line, from the lead (`Answer::lead`): its Mac, its app, the build's state as its
@@ -172,16 +184,22 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
             if let Some(h) = s.handoffs.as_ref().filter(|_| b.speaks.iter().any(|w| w == super::beats::HANDOFF)) {
                 (a.merged, a.lacks) = h.answer(&id, &b.handoffs);
             }
+            if let Some(p) = b.progress.clone().filter(|p| p.member == id) {
+                a.progress_released = super::budgets::heard(s, p);
+            }
         }
-        a.speaks = [super::beats::SPEAKS, super::beats::PAGE, super::beats::ASKS].map(str::to_string).to_vec();
+        a.speaks = [super::beats::SPEAKS, super::beats::PAGE, super::beats::ASKS, super::beats::BUDGETS]
+            .map(str::to_string)
+            .to_vec();
         if s.handoffs.is_some() {
             a.speaks.push(super::beats::HANDOFF.to_string());
         }
         a.nas_too = beats.nas_too();
         a.lead = lead_line(s);
         a.settings_gen = s.asks.settings.gen;
-        a.asks_on_nas = asks_on_nas(s, &beats, unix);
+        a.asks_on_nas = on_nas(s, &beats, unix, super::beats::ASKS);
         beats.set_asks_on_nas(a.asks_on_nas);
+        a.budgets_on_nas = on_nas(s, &beats, unix, super::beats::BUDGETS);
     }
     if b.speaks.iter().any(|w| w == SPEAKS) {
         // (As of when its list was made: a lease granted since isn't in it.)
@@ -208,12 +226,12 @@ fn lead_line(s: &Shared) -> Option<LeadLine> {
     Some(LeadLine { host, app: s.app.clone(), said, pause: s.paused.clone(), all_new })
 }
 
-/// Whether a member heard within `beats::FORGET_S` of `unix` doesn't say `beats::ASKS`, or one
-/// on an older app heartbeats on the NAS alone (`Beats::nas_too`): the asks' NAS files go on.
-pub fn asks_on_nas(s: &Shared, beats: &super::beats::Beats, unix: u64) -> bool {
+/// Whether a member heard within `beats::FORGET_S` of `unix` doesn't say `word`, or one on an
+/// older app heartbeats on the NAS alone (`Beats::nas_too`): that piece's NAS files go on (the
+/// rollout gates of steps 5 and 7: `beats::ASKS`, `beats::BUDGETS`).
+pub fn on_nas(s: &Shared, beats: &super::beats::Beats, unix: u64, word: &str) -> bool {
     let since = unix.saturating_sub(super::beats::FORGET_S);
-    beats.nas_too()
-        || s.keep.members().values().any(|h| h.at > since && !h.speaks.iter().any(|w| w == super::beats::ASKS))
+    beats.nas_too() || s.keep.members().values().any(|h| h.at > since && !h.speaks.iter().any(|w| w == word))
 }
 
 /// The owner's release of `member`'s jobs' leases (`scenic pool release`: that Mac is gone for

@@ -29,6 +29,7 @@ pub mod asks;
 pub mod beats;
 pub mod broker;
 pub mod brokers;
+pub mod budgets;
 pub mod client;
 pub mod handoffs;
 pub mod held;
@@ -382,6 +383,9 @@ pub struct Shared {
     pub handoffs: Option<std::sync::Arc<handoffs::Handoffs>>,
     /// The owner's asks it keeps (`/pool/hold`, `/pool/settings`; crate::coord::asks), in its store.
     pub asks: asks::Lead,
+    /// The Wikimedia budget's windows, the answers' lease and the members' resume progress
+    /// (crate::coord::budgets): the last two in its store.
+    pub small: budgets::Small,
     /// Its Mac's name and the build in a line as its agent last said them (`Coordinator::set_said`):
     /// each beat's answer carries them to the members' menu bars (`held::Answer::lead`).
     pub said: Option<(String, crate::agent::Verdict)>,
@@ -1522,6 +1526,7 @@ impl Coordinator {
             inbox: None,
             handoffs: None,
             asks: asks::Lead::default(),
+            small: budgets::Small::default(),
             said: None,
             beats: None,
             page: PageFiles::default(),
@@ -2504,6 +2509,55 @@ impl Coordinator {
         Ok(())
     }
 
+    /// A batch of the Wikimedia budget's `class` for its own agent's proxy, in process
+    /// (crate::coord::budgets::InProcess), as `/pool/budget/take` gives a member's.
+    pub fn budget_take(&self, class: crate::budget::Class) -> Result<crate::budget::Given> {
+        budgets::take(&mut self.shared.lock().unwrap(), class)
+    }
+
+    /// The budget held `secs` (a 429 its own agent's proxy was told), as `/pool/budget/hold`.
+    pub fn budget_hold(&self, secs: u64) -> Result<u64> {
+        budgets::hold(&mut self.shared.lock().unwrap(), secs)
+    }
+
+    /// The answers' lease asked of it in process, as `/pool/lease/answers`: on its disk before it
+    /// returns.
+    pub fn answers_lease(&self, op: crate::budget::LeaseOp, by: &str, token: &str) -> Result<crate::budget::LeaseSaid> {
+        let (said, keep) = {
+            let mut s = self.shared.lock().unwrap();
+            (budgets::answers(&mut s, op, by, token)?, s.keep.clone())
+        };
+        anyhow::ensure!(keep.durable(keep.last()), "the lead's disk didn't take the change in time");
+        Ok(said)
+    }
+
+    /// Its own agent's resume progress (crate::agent::resume), as a member's beat carries its: the
+    /// owner's releases of it.
+    pub fn progress_heard(&self, p: crate::agent::resume::Progress) -> Vec<(String, u64)> {
+        budgets::heard(&mut self.shared.lock().unwrap(), p)
+    }
+
+    /// The owner's release of `member`'s progress of `job`, as `/pool/progress/release`.
+    pub fn release_progress(&self, member: &str, job: &str) -> Result<String> {
+        budgets::release(&mut self.shared.lock().unwrap(), member, job)
+    }
+
+    /// The members' resume progress as it keeps it (its own among them), with the owner's releases.
+    pub fn progress(&self) -> Vec<budgets::Kept> {
+        self.shared.lock().unwrap().small.progress.values().cloned().collect()
+    }
+
+    /// Whether the budget, the answers' lease and progress go by the NAS still (`budgets::on_nas`:
+    /// a member heard is on an older app).
+    pub fn budgets_on_nas(&self) -> bool {
+        budgets::on_nas(&self.shared.lock().unwrap())
+    }
+
+    /// Whether member `id`'s last beat said it speaks `what` (crate::coord::beats).
+    pub fn member_speaks(&self, id: &str, what: &str) -> bool {
+        self.shared.lock().unwrap().beats.as_ref().is_some_and(|b| b.speaks(id, what))
+    }
+
     /// Member `member`'s hold as it keeps it.
     pub fn hold_of(&self, member: &str) -> Option<crate::control::HoldState> {
         self.shared.lock().unwrap().asks.holds.get(member).cloned()
@@ -2777,7 +2831,9 @@ impl Coordinator {
         keep.pause(s.paused.as_ref(), s.pause_at);
         held::refresh(&mut s);
         load_beats(&s);
-        s.asks = asks::Lead::of(&keep.store().map(|st| st.snapshot().docs).unwrap_or_default());
+        let docs = keep.store().map(|st| st.snapshot().docs).unwrap_or_default();
+        s.asks = asks::Lead::of(&docs);
+        s.small = budgets::Small::of(&docs);
         if let (Some(i), Some(st)) = (s.inbox.clone(), keep.store()) {
             i.attach(st);
         }
@@ -4298,6 +4354,49 @@ fn route(
                 _ => Ok((409, serde_json::json!({ "error": "not this member's mail" }))),
             }
         }
+        "/pool/budget/take" => {
+            // A batch of the Wikimedia budget for a member's proxy (crate::coord::budgets), from
+            // memory.
+            let v: serde_json::Value = serde_json::from_slice(body)?;
+            let class = v["class"]
+                .as_str()
+                .and_then(crate::budget::Class::named)
+                .ok_or_else(|| anyhow::anyhow!("{{\"class\": \"wiki\" | \"query\"}}"))?;
+            Ok((200, serde_json::to_value(budgets::take(&mut shared.lock().unwrap(), class)?)?))
+        }
+        "/pool/budget/hold" => {
+            // A 429 a member's proxy was told: every class held.
+            let v: serde_json::Value = serde_json::from_slice(body)?;
+            let secs = v["s"].as_u64().ok_or_else(|| anyhow::anyhow!("{{\"s\": <seconds>}}"))?;
+            Ok((200, serde_json::json!({ "until_ms": budgets::hold(&mut shared.lock().unwrap(), secs)? })))
+        }
+        "/pool/lease/answers" => {
+            // The answers' lease for a member's job, through its proxy: in the store before the
+            // answer.
+            let v: serde_json::Value = serde_json::from_slice(body)?;
+            let op = v["op"]
+                .as_str()
+                .and_then(crate::budget::LeaseOp::named)
+                .ok_or_else(|| anyhow::anyhow!("{{\"op\": \"take\" | \"renew\" | \"release\", …}}"))?;
+            let (by, token) = (v["by"].as_str().unwrap_or_default(), v["token"].as_str().unwrap_or_default());
+            let said = budgets::answers(&mut shared.lock().unwrap(), op, by, token)?;
+            Ok((200, serde_json::to_value(said)?))
+        }
+        "/pool/progress/release" => {
+            // The owner's release of a member's resume progress (`scenic pool release <member>
+            // <job>`): what it released, or that it keeps none of that member's (an older app's,
+            // read on the NAS: the CLI makes its file there).
+            let v: serde_json::Value = serde_json::from_slice(body)?;
+            let (member, job) = (v["member"].as_str().unwrap_or_default(), v["job"].as_str().unwrap_or_default());
+            anyhow::ensure!(!member.is_empty() && !job.is_empty(), "{{\"member\": …, \"job\": …}}");
+            let mut s = shared.lock().unwrap();
+            // (Progress it doesn't keep is a member's on an older app, on the NAS alone: the CLI's
+            // file there.)
+            if !s.small.progress.contains_key(member) {
+                return Ok((200, serde_json::json!({ "on_nas": true })));
+            }
+            Ok((200, serde_json::json!({ "said": budgets::release(&mut s, member, job)? })))
+        }
         "/pool/handoff" => {
             // A member's job's hand-off (docs/coordination.md step 6, crate::coord::handoffs): into
             // its store, on its disk before the answer; refused while its agent hasn't attached it.
@@ -5105,6 +5204,10 @@ mod http {
             .route("/work/redo", any(json))
             .route("/pool/mail", any(json))
             .route("/pool/handoff", any(json))
+            .route("/pool/budget/take", any(json))
+            .route("/pool/budget/hold", any(json))
+            .route("/pool/lease/answers", any(json))
+            .route("/pool/progress/release", any(json))
             .route("/pool/hold", any(json))
             .route("/pool/settings", any(json))
             .route("/pool/beat", any(json))
