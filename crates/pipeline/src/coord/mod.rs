@@ -8597,6 +8597,43 @@ mod tests {
         }
     }
 
+    /// Task #965: the lead's own measured job first in the plan (terrain-water, its floor 9 GB:
+    /// every terrain-deep target waits on it) holds the lead's room against the offers after it
+    /// (slope-hi): nothing more while its room is short, then it.
+    #[test]
+    fn a_measured_job_of_the_leads_own_holds_its_room() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        packable(&c, "slope-hi", 4, Some(1));
+        c.add_floors(&[(
+            cost_key("terrain-water", "terrain-water"),
+            Floor { mb: 9000, alone: true, v: cost_version("terrain-water") },
+        )]);
+        let mut offers = c.shared.lock().unwrap().offers.clone();
+        offers.insert(
+            0,
+            Offer {
+                step: "terrain-water".into(),
+                targets: vec![("terrain-water".into(), "k".into(), 0)],
+                job: Some("terrain-water terrain-water".into()),
+            },
+        );
+        c.offer("p", offers);
+        let a = Ask {
+            want: 2,
+            can: vec!["slope-hi".into(), "terrain-water".into()],
+            ..every_ask("m4", "slope-hi", 12_000, 100_000)
+        };
+        let h1 = c.hold("slope-hi", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
+        let _h2 = c.hold("slope-hi", &[("6/1/2".into(), "k 6/1/2".into())]).unwrap();
+        // 8 GB left of 12: short of its 9, and slope-hi's 2 GB jobs would fit.
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "the room held for terrain-water");
+        let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
+        assert!(why.contains("room held for a job of terrain-water"), "{why}");
+        c.finish(h1, &[]);
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).expect("10 GB left: it goes");
+        assert_eq!(g.job.as_deref(), Some("terrain-water terrain-water"));
+    }
+
     /// A job of the lead's own whose targets' floors the memory guard measured (an input check,
     /// which noted no cost, so says no cores: packed as the share) goes beside the lead's running
     /// jobs when it fits the room left; a floor past the room keeps it off.

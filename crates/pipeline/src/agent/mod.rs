@@ -11868,6 +11868,10 @@ mod tests {
         a.free_set = Some(20 << 30);
         assert!(lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty());
         a.free_set = Some(100 << 30);
+        // (With the disk, still not while labels waits for room before it in the plan: its room is
+        // held for labels, task #965.)
+        assert!(lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty());
+        let plan = [job("heritage"), job("items")];
         assert_eq!(
             lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w),
             [1],
