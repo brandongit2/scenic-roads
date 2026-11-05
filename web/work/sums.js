@@ -620,7 +620,7 @@ export const PHASE_ABOUT = {
   "blending the edges": "Blends the datasets' heights where they meet.",
   "encoding tiles": "Encodes the tiles (WebP).",
   "keeping scenic results": "Keeps the scenic programs' results on the NAS.",
-  "copying its terrain pack here": "Copies the z6 tile's terrain pack from the NAS to this Mac.",
+  "copying its terrain pack here": "Copies its terrain pack (a z6 tile's hi pack, a z10 tile's deep pack) from the NAS to this Mac.",
   "reading the basemap's water": "Reads the basemap's water for the tiles.",
   "reading the pass, coverage, pieces and reaches": "Reads the OSM pass, the coverage, the pieces and the reaches from the NAS.",
   "copying pieces from the NAS": "Copies the z6 tile's OSM pieces from the NAS to this Mac.",
