@@ -194,7 +194,9 @@ fn main() -> anyhow::Result<()> {
                 relief.with_tiles(&rt, s.water, |rel| -> anyhow::Result<()> {
                     let t0 = std::time::Instant::now();
                     let src = pipeline::terrain_pack::Sources { water: Some(&water), native: None, sets: &sets };
-                    let decided = pipeline::terrain_lakes::decide(tiles, &src, &across, &shore, &|_, _| {})?;
+                    let decided = pipeline::terrain_lakes::decide(tiles, &src, &across, &shore, &|d, n| {
+                        eprintln!("sampled {d} of {n} shore tiles, {} MB", mb())
+                    })?;
                     let given = pipeline::terrain_lakes::by_target(&across, &decided);
                     eprintln!("levels decided in {:.0} s, {} MB", t0.elapsed().as_secs_f64(), mb());
                     for (k, (t, under)) in want.iter().enumerate() {
