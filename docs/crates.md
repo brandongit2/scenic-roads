@@ -2,7 +2,7 @@
 
 **Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
 (`crates/buildstore`), 5a (`crates/landmarks`) and 5b (`crates/mapview`) are built; every later
-step below is planned.
+step below is planned, the next ones in §6.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -223,9 +223,8 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
      them (pipeline had no other user).
    - 5b, **mapview** (built): scache, view, terr, buildings into `crates/mapview`; pipeline
      re-exports them. Cut: terr's `z9_block` (no caller).
-   Next: the records' reading and the write sets below pipeline (§2.4: inputs names
-   `crate::out::Out` 31 times, and `Out<Pipeline>` can't be named below pipeline), then inputs
-   (which also needs cli, after #883).
+   Next: §6 (planned), breaking the 47-module cycle: `Out` nameable below pipeline first, then
+   inputs, the step families, and the agent's plan split from its runtime.
 6. **coordination**, after #882 lands.
 7. Path rewrites: per crate, `crate::x` → `<crate>::x`, and the re-exports dropped.
 
@@ -303,11 +302,30 @@ agent/jobs.rs, each built from the tree the clean build left:
 almost one at a time (0.86 crates at once on average before, 0.69 after, over the span from the
 first to the last): pipeline's lib is 38 s before and 36 s after, the binaries and server's 4-8 s
 after it, every other workspace crate under 2.1 s. So far the split moves leaves out from under
-pipeline, and pipeline's compile is still the build's critical path. An edit in a moved leaf now
-costs more: its crate compiles, then pipeline again with a dependency changed, which reuses less of
-its incremental state (10.4 s against 5.1 s for an edit inside it). The gain needs the big middle
-(inputs, the step families, coordination) out of pipeline, so an edit there leaves the agent alone
-and the families compile side by side.
+pipeline, and pipeline's compile is still the build's critical path. The edits' differences above
+came from unequal load: the re-measure below didn't find them.
+
+Re-measured by the review, 5 Nov 2026 16:37-16:51 UTC, on the M4 (load 90-170: the pool's jobs and
+other agents' builds), before (3763caa5) and after (29a5adca) each in a clone of its own with its
+own target folder, interleaved (before, after; then after, before; …), 3 runs each, the same
+command, `cargo build --workspace --bins` (dev) through tools/dev/bin/cargo. "Clean": the
+workspace's crates cleaned (`cargo clean -p` each), third-party crates kept built. Peak: the
+largest process's (`time -l`, always pipeline's rustc). CPU: user + system of the whole build. The
+edits: one comment line appended to wikiask.rs, scache.rs, agent/jobs.rs, each built at once:
+
+| run | before | after |
+|---|---|---|
+| dev, clean | 50.9, 52.9, 52.0 s (CPU 106-110 s), 4.37 GB | 52.4, 51.4, 48.6 s (CPU 105-111 s), 4.28-4.33 GB |
+| pipeline's lib in it (`--timings`) | 38.6, 40.3, 40.1 s | 38.4, 36.0 s |
+| dev, wikiask edit | 9.6, 10.8, 10.1 s (CPU 13.8-14.4 s), 2.39 GB | 7.0, 10.6, 9.7 s (CPU 14.0-14.7 s), 2.28 GB |
+| dev, scache edit | 7.0, 10.5, 9.5 s (CPU 13.5-14.3 s), 2.33 GB | 7.0, 10.0, 9.3 s (CPU 13.5-14.5 s), 2.22 GB |
+| dev, agent edit | 7.0, 10.5, 9.7 s (CPU 13.5-14.5 s), 2.33 GB | 7.0, 10.0, 9.2 s (CPU 13.2-14.1 s), 2.22 GB |
+| test build after a wikiask edit: its unit tests | pipeline --lib: 9.5, 7.2, 7.2 s, 3.34 GB | landmarks --lib: 0.9, 0.7, 0.6 s, 0.24 GB |
+| … and pipeline's lib tests | 9.5, 7.2, 7.2 s | 7.6, 7.3, 7.3 s |
+
+So steps 5a-5b leave dev builds where they were (clean, edits, within noise; the largest rustc
+~2-4 % smaller), cost an edit below pipeline nothing measurable, and make the moved modules' own
+test loop ~10 times faster. The gain on builds needs the big middle out of pipeline (§6).
 
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
@@ -315,3 +333,132 @@ timings: an edit in a crate recompiles every crate that depends on it, so moving
 down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile after an edit to it. The gains come
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
+
+## 6. Breaking the big cycle (planned)
+
+**Status: planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+rerun `tools/dev/modgraph.py` before each step.
+
+### 6.1 What holds the cycle
+
+Lines are without `#[cfg(test)]` code (what a dev build compiles; pipeline's lib: ~142k of them,
+compiled in 36-40 s on the M4, the build's critical path).
+
+| part | lines | its edges up (non-test) |
+|---|---|---|
+| inputs family: inputs, dem, rules, osmpass, areafiles, rail, lakefill, water | 26.9k | `out::Out` and `read_record`/`read_manifest` (~70), `pool::{term, records::Brief, nas::ReadOnly, member_id}` (8), agent items already moved down but named by the agent's path (`jobs::*`, `recipes::Recipe`, `room::*`: ~30), and a few real ones (`build::{h, PassCtx, spoken_work, outlines_work}`, `steps::row`, `app_version`, `nasread::timed_out`, `regionsview`), `cli::program` |
+| terrain: terrain_*, pyramids, stage, road_terrain, slope_pack, depth, polar, layers, peaks, summits | 14.5k | `Out` (~30), `build::{TERRAIN_V, SLOPE_V, SLOPE_LO_V, coverage_tiles, grown_e7}`, `placement::ahead_on`, `offload`, coord only in tests |
+| trees, roads (unit, reach, candidates, buildtiles, elev, timetables), names (heritage, ferries, gtfs, railfeeds, ovconv, markconv, marksjob, namestodo), bld, offload | 24.3k | the same kinds; offload's own code names `coord::client::Client` and `coord::task::{Offer, Output, clone, safe, beats, MARGIN}`; the families name only `offload::{Offload, Offered, Patience, Settled, places}`, coord only in tests (`start_for_test`, `Ask`, `Granted`, `Done`) |
+| the agent's plan: agent/{build, steps, idents, plan, tiles}.rs | 19.5k | names every family (~1,000 references: targets, keys, reads, write sets) |
+| the agent's runtime (the rest of agent/), coord, pool, needs, paces, uses, pubtimes, answers, menu, appupdate, cli, net | 56.8k | names inputs (~50), a few family constants (`*::task::KIND`, `terrain_pack::piece_peak_mb`, `trees::squares_of`), and the plan through ~49 items (106 references: the steps table's queries, `build::{Keys, Work, is_none_key, …}`) |
+
+So the cycle is two loops: every step module up to `out`/`pool`/`agent` (thin, mostly items that
+already live below), and the agent's plan ↔ its runtime (thin one way, 106 references).
+
+### 6.2 What moves where
+
+Final layering, bottom to top (each line depends only on lines above it):
+
+1. pyport, codecs, jobrt, buildstore (with the records' read side), landmarks' and mapview's
+   leaves, and **coordwire** (coord's client side);
+2. **inputs**;
+3. the families **terrain**, then **trees**, **roads**, **names** (landmarks grows into it),
+   **bld**, **offload**; and, beside them, **agentcore** (the agent's runtime, coord, pool and
+   the rest of that row);
+4. **pipeline**: the agent's plan, the binaries, the re-exports. It names everything; nothing
+   names it.
+
+The choices, against the alternatives:
+
+- **`Out` stops being generic.** Neither a registry nor `Above` across crates: `Out<Pipeline>`
+  can't be named below pipeline, and making every family generic over `A: Above` would compile
+  all of them in pipeline. What `Above` gave comes instead from: the records, read by buildstore
+  itself (below); the write set, a plain `fn(&str, &str, bool) -> Option<bool>` handed to
+  `Out::open(root, scratch, step, writes)`, which only scenic-build (`run`, line ~442) and agent/gc
+  call outside tests, both through `pipeline::out::open(root, scratch, step)` (it passes
+  `agent::steps::writes`); `Out::unbound` (103 callers, the steps' own code) needs neither; and
+  `TESTING`, a process flag `buildstore::out::testing()` set only by the `#[cfg(test)]` start-up
+  constructor each crate already has for `fetch::go_offline` (pipeline's and landmarks'
+  `TEST_START`; every new crate gets one), so tests/test_mode.rs keeps holding (extend it to
+  the flag). Family tests that check their step's writes against the real table (rail's,
+  timetables', ovconv's `Out::open(…, "rail-feeds")`) move to pipeline's tests/write_sets.rs.
+- **The records' read side goes to buildstore** (`buildstore::records`): pool/nas.rs (the `Nas`
+  trait, `ReadOnly`; 203 lines), term.rs's read half (`current`, `Term`, `Current`, the paths,
+  `HINT`, `app_at_least`, `is_version`) and records.rs's choice of file (`load`, `newest`,
+  `today`, `now`, `Brief::now`, `no_pool`, `FIRST`, `read_or_default`), written once, generic
+  over the snapshot type (`pool::records::Records`, which carries the agent's `Keys`, and
+  buildstore's `Recorded`, which reads only manifest, pending and sizes). The writing (save,
+  merge, take_up) stays in pool. No second copy of the choice.
+- **Items the steps name from the agent move to their owners**: the version constants
+  (`TERRAIN_V`, `SLOPE_V`, `SLOPE_LO_V`, …) to their family (agent::build re-exports them),
+  `grown_e7` to roadcore::geo, `coverage_tiles` to buildstore::coverage, `h` to jobrt,
+  `app_version`, `ahead_on` and `room::{disk_free, nas_room, make_room}` to jobrt,
+  `nasread::timed_out` and `publish::map_now` to buildstore, `input_digests` to inputs,
+  `bldtiles_peak` to bld, `cli::program` to jobrt (with cli, after #883). The plan functions
+  a step calls (`PassCtx`, `spoken_work`, `outlines_work`, `names_todo_work`, `trees_targets`)
+  go to the family whose work they describe; the plan calls them there.
+- **coordwire**: coord/client.rs, coord/task.rs's client half (`Offer`, `Output`, `clone`,
+  `safe`, `beats`, `MARGIN`) and the wire types (`Ask`, `Granted`, `Done`, `Handed`,
+  held's `Beat`/`Answer`); coord re-exports them. Not a trait object: offload needs the real
+  client, and the client is small. Tests that start a coordinator (`coord::start_for_test` in
+  terrain_task, trees::task, bld and offload) move to a pipeline test module, since a family
+  can't dev-depend on pipeline (its types would be two copies).
+- **The agent's plan above its runtime, through a trait.** agentcore can't name the plan (the
+  plan names every family and agentcore). The types the runtime reads (`Step`, `Kind`, `Read`,
+  `Place`, `Keys`, `Work`) move into agentcore; the table and its functions stay in pipeline,
+  which implements `agentcore::Plan` (the ~49 items as methods: `row`, `shared`, `outside`,
+  `saves`, `records_only`, `output_names`, `mem_mb`, `read_targets`, `renamed`, `made`, …) and
+  passes `&PLAN` to the agent's entry points (`agent::run`, the forecast, the simulator, scenic
+  menu). Passed, not installed: no link-time constructor (a static in an rlib may be dropped by
+  the linker) and no registry to fill in every test. The family constants agentcore names
+  (`*::task::KIND`, `piece_peak_mb`, `squares_of`, `DEEP_MIDS_MB`) go through `Plan` too.
+
+### 6.3 Order
+
+Each ships alone, measured as §5 does (interleaved, CPU time and peak memory too); one move per
+commit; re-exports at the old paths as before.
+
+1. **6a, `Out` and the records' read side** (buildstore): as above. Cuts every `→ out` and `→
+   pool` edge of the step modules. No module leaves pipeline yet. tests/grant_rules.rs scans
+   only crates/pipeline and crates/jobrt: widen it to every crate's src before steps leave.
+2. **6b, the paths**: the step modules name jobrt's and buildstore's items directly
+   (`crate::agent::jobs::report` → `jobrt::jobs::report`, `agent::recipes::Recipe`,
+   `agent::room::{free_past, job_target}`), and the item moves of §6.2. Mechanical; modgraph.py
+   then shows the step modules' remaining edges up, which should be none but §6.2's.
+3. **6c, coordwire**.
+4. **6d, inputs** (inputs, dem, rules, osmpass, areafiles, rail, lakefill, water; dem's 7
+   references to terrain's tile helpers move those helpers to codecs first). Needs cli out of
+   pipeline, so after #883, or `cli::program` alone moved first.
+5. **6e, terrain**, after #965 lands (it edits terrain_deep). Then trees, roads, names (landmarks
+   takes heritage, ferries, gtfs, railfeeds, ovconv, markconv, marksjob, namestodo), bld,
+   offload. Cut the cross-family edges where one item is all (`layers → ovconv`, treepacks →
+   layers' names to codecs) so trees, roads and names compile side by side.
+6. **6f, agentcore and `Plan`**: the last and largest step, after #882's later steps (coord).
+   Before it, pipeline still holds ~96k lines (plan 19.5k + runtime 56.8k + bins 12.9k + glue).
+
+### 6.4 Expected gain
+
+Estimated from the 5 Nov `--timings` (pipeline's lib: 36-40 s for ~142k non-test lines, ~0.27 s
+per thousand; edits measured in §5) and the line counts above; to be checked against each step's
+measurements.
+
+- **Clean dev build** (the workspace's crates; M4): today one serial chain, ~5 s of crates below, pipeline's
+  lib 36-40 s, then the binaries and server ~7 s (~50 s in all). After 6a-6e: inputs ~7 s, terrain ~4 s, the families ~2-4 s,
+  then pipeline ~20 s (76k lines): about the same sum on one chain, so ~5-10 % off the clean
+  build. After 6f: inputs ~7 s, then agentcore ~15 s beside the families, then pipeline's plan
+  ~5 s: the chain from ~50 s to ~38 s, **~25 % off**.
+- **Memory**: the largest rustc is pipeline's (4.3-4.4 GB on the M4 in dev). After 6a-6e ~2.5 GB,
+  after 6f ~2 GB (agentcore, 57k lines), **about half**; the sum at once (agentcore beside a
+  family) ~3 GB. The 9.3 GB test-profile peak on the M1 should fall in proportion (~4.5 GB).
+- **An edit's rebuild (dev)**: today ~7-10 s on the loaded M4 (§5's re-measure), whatever the
+  module, as pipeline recompiles (~5-8 s) then the binaries and server (~2 s, a floor). An edit in
+  a crate below rebuilds every crate above it; §5's re-measure found pipeline's rebuild after a
+  dependency changed costs about what an edit inside it does (CPU 14.0-14.7 s against 13.8-14.4 s).
+  So the edit's cost follows the size of what sits above it: after 6f, an edit in a family
+  rebuilds it, the families above it and pipeline (~25k lines plus the binaries): ~3-4 s against
+  ~7-10 s; in agentcore, agentcore and pipeline (~76k lines): a little under today; in inputs or
+  below, everything: as today. Until 6f, a module moved below pipeline gains nothing here.
+- **An edit's tests** gain most: a family's unit tests build only that crate's test binary,
+  not pipeline's whole library at the test profile: after a wikiask edit, landmarks' unit tests
+  build in 0.6-0.9 s, pipeline's lib tests in 7-9.5 s (§5). A family's crate brings that to its
+  steps' tests (terrain's, inputs' …), which today each rebuild pipeline's whole test library.
