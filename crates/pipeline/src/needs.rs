@@ -249,7 +249,7 @@ pub struct BySource {
 /// The doubling bin a source's time `secs` falls in: 0 for under a second, 1 under 3 s, 2 under 7,
 /// and so on.
 fn bin(secs: f64) -> u32 {
-    (1.0 + secs.max(0.0)).log2() as u32
+    det::Det::dlog2(1.0 + secs.max(0.0)) as u32
 }
 
 /// The mean of a bin's runs where it has `MIN_RUNS` (a fit's fewest).
