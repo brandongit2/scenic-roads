@@ -116,3 +116,5 @@ th.sort.on { color: var(--text); }
 .statbar select, .statbar input { font: inherit; font-size: var(--fs-s); color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
 @media (max-width: 719px) { .statbar select, .statbar input { font-size: 16px; } }
 .more { margin-top: 6px; }
+/* (A phone: the table's first columns; the longest, total, recent and last on a wider screen.) */
+@media (max-width: 600px) { #stats .opt { display: none; } }

@@ -204,8 +204,11 @@ function renderMain() {
   let running = 0, failed = 0;
   for (const mac of [...byMac.keys()].sort()) {
     const runs = byMac.get(mac), ss = main.samples[mac] || [], last = ss[ss.length - 1], info = macs[mac] || {};
-    lanes.append(h("div", { class: "gh", title: mac }, macName(mac, macs)),
-      h("div", "ghr", last && now - last[0] < 120 ? [h("span", null, `load ${last[1]?.toFixed(1)}/${info.ncpu ?? "?"}`), h("span", null, `${last[2]}% memory free`), last[3] ? h("span", null, `swap ${(last[3] / 1024).toFixed(1)} GB`) : null] : h("span", null, info.seen ? `last sampled ${clock(info.seen, false)}` : "")));
+    // (The Mac by its chip, its name, and its load and memory now, or when it was last sampled.)
+    lanes.append(h("div", { class: "gh", title: mac }, info.chip?.replace(/^Apple /, "") || mac),
+      h("div", "ghr", h("span", null, `${mac}${info.mem ? ` · ${info.mem} GB` : ""}`), last && now - last[0] < 120
+        ? [h("span", null, `load ${last[1]?.toFixed(1)}/${info.ncpu ?? "?"}`), h("span", null, `${last[2]}% memory free`), last[3] ? h("span", null, `swap ${(last[3] / 1024).toFixed(1)} GB`) : null]
+        : h("span", null, info.seen ? `last sampled ${clock(info.seen, false)}` : "")));
     for (const cls of [...CLASSES, "other"]) {
       const mine = runs.filter((r) => classOf(r) === cls);
       if (!mine.length) continue;
@@ -289,10 +292,12 @@ function hookCards(t, runOf) {
 let runTl = null, runData = null, runSegs = new Map(), runSpans = new Map();
 async function openRun(id) {
   st.run = id; saveState();
+  if (!runData || runData.run.id !== id) { $("run-sec").hidden = false; $("run").replaceChildren(h("div", "empty", "reading the run…")); }
   try { runData = await get(`runs/${encodeURIComponent(id)}`); } catch (e) { runData = null; $("run-sec").hidden = false; $("run").replaceChildren(h("div", "empty", `Can't read run ${id}: ${e.message}`)); return; }
   runTl = null;
-  renderRun();
+  // (Shown first: a timeline measures its width as it's placed.)
   $("run-sec").hidden = false;
+  renderRun();
   if (!$("run-sec").dataset.seen) { $("run-sec").scrollIntoView({ behavior: "smooth", block: "start" }); $("run-sec").dataset.seen = id; }
 }
 function runRelations(key) {
@@ -430,14 +435,14 @@ function renderStats() {
     const f = st.filter.toLowerCase();
     const names = (stats?.names || []).filter((g) => !f || g.name.toLowerCase().includes(f)).sort((a, b) => by[2](b) - by[2](a));
     $("stats-sum").textContent = `${names.length} ${st.kind} name${names.length === 1 ? "" : "s"}`;
-    const th = (k, label) => h("th", { class: `num sort${st.sort === k ? " on" : ""}`, onclick: () => { st.sort = k; saveState(); renderTable(); } }, label);
+    const th = (k, label, opt = "") => h("th", { class: `num sort${st.sort === k ? " on" : ""}${opt}`, onclick: () => { st.sort = k; saveState(); renderTable(); } }, label);
     const shown = statsAll ? names : names.slice(0, ROWS_SHOWN);
     tableBox.replaceChildren(h("table", null,
-      h("thead", null, h("tr", null, h("th", null, "name"), th("n", "runs"), th("failed", "failed"), th("p50", "median"), th("p90", "p90"), th("max", "longest"), th("total", "total"), h("th", null, "recent"), h("th", null, "last"))),
+      h("thead", null, h("tr", null, h("th", null, "name"), th("n", "runs"), th("failed", "failed"), th("p50", "median"), th("p90", "p90"), th("max", "longest", " opt"), th("total", "total", " opt"), h("th", "opt", "recent"), h("th", "opt", "last"))),
       h("tbody", null, shown.map((g) => h("tr", null,
         h("td", { class: "nm", title: g.name }, g.name), h("td", "num", g.n), h("td", `num${g.failed ? " bad" : ""}`, g.failed || ""),
-        h("td", "num", dur(g.p50)), h("td", "num", dur(g.p90)), h("td", "num", dur(g.max)), h("td", "num", dur(g.total)),
-        h("td", null, spark(g.recent)), h("td", { class: "num dim", title: g.last?.mac || "" }, g.last ? clock(g.last.t0, false) : ""))))),
+        h("td", "num", dur(g.p50)), h("td", "num", dur(g.p90)), h("td", "num opt", dur(g.max)), h("td", "num opt", dur(g.total)),
+        h("td", "opt", spark(g.recent)), h("td", { class: "num dim opt", title: g.last?.mac || "" }, g.last ? clock(g.last.t0, false) : ""))))),
       ...(names.length > shown.length ? [h("div", "more", h("button", { type: "button", onclick: () => { statsAll = true; renderTable(); } }, `show all ${names.length}`))] : []));
   }
   renderTable();
