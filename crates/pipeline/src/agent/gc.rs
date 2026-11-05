@@ -126,11 +126,14 @@ const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "ap
 /// (not `NEVER`) the sweep of the folders takes them; under `sources/` only their prefix's folder
 /// is looked in (`sweep_retired_names`). A step whose code is deleted adds its outputs' prefix
 /// here; no step of the table may make a name under one. A prefix ends in `/` for a folder.
-pub const RETIRED: [&str; 2] = [
+pub const RETIRED: [&str; 3] = [
     // (The worldwide z8 terrain and its maxima, `-v<n>` and `-v<n>-max`: its code deleted by task #670.)
     "sources/terrain-z8-",
     // (The old pipeline's data, converted once and read by nothing since; task #52.)
     "global/legacy/",
+    // (The terrain-deep targets' lakes' levels, the terrain-lakes step's: its code deleted by task
+    // #942, lakes keeping the source's heights.)
+    "work/terrain-lakes/",
 ];
 
 /// Whether logical name `l` is one a removed step made (`RETIRED`).

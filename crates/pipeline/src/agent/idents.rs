@@ -460,27 +460,6 @@ pub fn deep_targets(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(x.tiles.deep(x.m, x.cov)?.targets_in((u.x, u.y)).iter().map(|(a, b)| format!("{z}/{a}/{b}")).collect())
 }
 
-/// The terrain's water source (crate::terrain_pack::water_source_pin), "-" without one (no lake
-/// read): what terrain-lakes reads of the water, past its own tiles where a lake goes on.
-pub fn water_source(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(vec![crate::terrain_pack::water_source_pin(x.m).unwrap_or_else(|| "-".into())])
-}
-
-/// The accepted elevation datasets and sources whole (the pool, the fine datasets, the Terrarium
-/// pyramid, the geoids: crate::terrain_resume::inputs), by their versions' content: what a run
-/// sampling the pool past its own tile reads (terrain-lakes).
-pub fn elevation_all(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(crate::terrain_resume::inputs(x.m).lines().map(str::to_string).collect())
-}
-
-/// The levels of a terrain-deep target's lakes across its edges (crate::terrain_lakes), its own
-/// file by content: "<logical>=<content>", "-" where it has none.
-pub fn deep_lakes(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let u = TileId::parse(t).filter(|u| u.z == crate::terrain_deep::PACK_Z)?;
-    let l = crate::terrain_lakes::logical((u.x, u.y));
-    Some(vec![x.m.get(&l).map_or_else(|| "-".to_string(), |c| format!("{l}={c}"))])
-}
-
 /// The mids of a z3 tile's z6 tiles near the coverage (`build::coverage_tiles`) of the terrain or
 /// slope (`mid`: its mid's logical name), "6/x/y=<content>" ("-" for one not made).
 fn near_mids(t: &str, x: &KeyCtx, mid: fn(u32, u32) -> String) -> Option<Vec<String>> {

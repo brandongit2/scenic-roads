@@ -56,7 +56,6 @@ const STEPS: &[Step] = &[
     s("overlays", "[--pass d]", "the overlays", &[], PASS, 0),
     s("roadunits", "", "the road → units index from the units' road ids", &[], &[], 0),
     s("terrain-hi", "[T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…] [--pieces-of Q,…]", "the terrain hi packs (z9–12) and mids of z6 tiles T near the coverage (or every z6 tile of z3 tiles Q)", &[], &["--regions", "--pass", "--raw", "--expect-same", "--pieces-of"], ANY),
-    s("terrain-lakes", "<6/x/y …> [--regions dir] [--pass d] [--raw dir]", "the levels of the lakes across z6 tiles' terrain-deep targets' edges, decided once a lake", &[], &["--regions", "--pass", "--raw"], ANY),
     s("terrain-deep", "<10/x/y …> [--regions dir] [--pass d] [--raw dir]", "z10 tiles' terrain past z12 (deep packs, z13–16) where a declared elevation dataset has the detail, and their mids", &[], &["--regions", "--pass", "--raw"], ANY),
     s("terrain-lo", "<Q …> [--raw dir] [--regions dir] [--pass d]", "z3 tiles Q's zoomed-out terrain (lo packs, z3–8) from their z6 tiles' mids", &[], &["--raw", "--regions", "--pass"], ANY),
     s("terrain-root", "[--raw dir]", "the terrain's z0–2 root packs, from the lo packs' z3 tiles", &[], &["--raw"], 0),

@@ -205,15 +205,7 @@ fn a_terrain_deep_target_on_one_or_two_threads_finishes_the_same() {
             let rep = pool
                 .with_tiles(raw, None, |tiles| {
                     let fills = Fills::new(tiles, tiles, &fill, &reaching);
-                    crate::terrain_deep::build_target(
-                        &mut out,
-                        t,
-                        levels.clone(),
-                        &fills,
-                        &src,
-                        false,
-                        Default::default(),
-                    )
+                    crate::terrain_deep::build_target(&mut out, t, levels.clone(), &fills, &src, false)
                 })
                 .unwrap()
                 .unwrap();

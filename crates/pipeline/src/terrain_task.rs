@@ -2,11 +2,9 @@
 //! Terrain): a z6 tile (a z6 tile's levels z12 → z9, crate::terrain_pack::build_piece) is 16 z8
 //! subtrees, each a z8 tile's z9–12 tiles near the coverage. A tile's making reads only its own raw
 //! tile (the pool's base tile: crate::terrain_base) and its children, all within its subtree, and
-//! the water at its place; but a lake's level is one, from all its shore in the z6 tile's level that
-//! first has it. So the subtrees go out in groups closed under the lakes they share (a lake whose
-//! water reaches two subtrees' tiles puts them in one group): a group made alone then makes each of
-//! its tiles, and its lakes' levels, as the whole z6 tile's run does, and the z6 tile's run of the
-//! others the same as of the whole (`groups`).
+//! the water at its place: so a subtree made alone (a group of one, `groups`) makes each of its
+//! tiles as the whole z6 tile's run does, and the z6 tile's run of the others the same as of the
+//! whole.
 //!
 //! A task's one file (`u/in.sect`; docs/formats.md) holds everything its group reads, cut by the
 //! job from what it reads itself: the raw tiles (`r-<z>-<x>-<y>`, as the job's sampled them; one
@@ -20,7 +18,7 @@ use crate::offload::{Offered, Offload, Patience, Settled};
 use crate::terrain_pack::{Made, Mid, RawSource, Sources};
 use crate::terrain_water::{Kind, Poly, WaterSource};
 use anyhow::{bail, ensure, Context, Result};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// The task's kind (and what the coordinator keeps its cost under, with its group's first
@@ -43,8 +41,6 @@ pub const MOST: usize = 3;
 pub fn offer_ahead() -> bool {
     crate::agent::placement::ahead_on()
 }
-/// A group of more subtrees than this isn't offered (its memory, and the z6 tile's run waiting on it).
-pub const MOST_SUBTREES: usize = 2;
 /// The files' format (4: the raw tiles by the rule, crate::terrain_pack::Fills, and the tiles at
 /// their place's finest zoom, `Meta::native`).
 const FMT: u64 = 4;
@@ -74,51 +70,12 @@ pub fn subtrees_arg(list: &[(u32, u32)]) -> String {
     list.iter().map(|(x, y)| format!("8/{x}/{y}")).collect::<Vec<_>>().join(",")
 }
 
-/// A z6 tile's subtrees in groups closed under the lakes they share (any lake key of a tile's water,
-/// its own keys too: the z6 tile's run gathers a lake's shore by its key, whatever it is), each
-/// group's subtrees in column then row order, the groups by their first. Without water, each
-/// subtree alone.
-pub fn groups(levels: &Levels, water: Option<&dyn WaterSource>) -> Result<Vec<Vec<(u32, u32)>>> {
-    use rayon::prelude::*;
+/// A z6 tile's subtrees, each a group of its own (a tile reads nothing past its subtree), in column
+/// then row order.
+pub fn groups(levels: &Levels) -> Vec<Vec<(u32, u32)>> {
     let subs: BTreeSet<(u32, u32)> =
         levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| sub_of(*z, x, y))).collect();
-    let index: BTreeMap<(u32, u32), usize> = subs.iter().enumerate().map(|(i, s)| (*s, i)).collect();
-    let mut parent: Vec<usize> = (0..subs.len()).collect();
-    fn root(p: &mut [usize], mut i: usize) -> usize {
-        while p[i] != i {
-            p[i] = p[p[i]];
-            i = p[i];
-        }
-        i
-    }
-    if let Some(w) = water {
-        let tiles: Vec<(u8, u32, u32)> =
-            levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| (*z, x, y))).collect();
-        let lakes: Vec<Result<Vec<u64>>> = tiles
-            .par_iter()
-            .map(|&(z, x, y)| {
-                Ok(w.polys(z, x, y)?.into_iter().filter(|p| p.kind == Kind::Lake).map(|p| p.id).collect())
-            })
-            .collect();
-        let mut first: HashMap<u64, usize> = HashMap::new();
-        for (&(z, x, y), ids) in tiles.iter().zip(lakes) {
-            let s = index[&sub_of(z, x, y)];
-            for id in ids.with_context(|| format!("the water of {z}/{x}/{y}"))? {
-                let f = *first.entry(id).or_insert(s);
-                let (a, b) = (root(&mut parent, f), root(&mut parent, s));
-                if a != b {
-                    parent[a.max(b)] = a.min(b);
-                }
-            }
-        }
-    }
-    let mut by: BTreeMap<usize, Vec<(u32, u32)>> = BTreeMap::new();
-    for (s, &i) in &index {
-        let r = root(&mut parent, i);
-        by.entry(r).or_default().push(*s);
-    }
-    // (Roots are their group's least index, so the groups come by their first subtree.)
-    Ok(by.into_values().collect())
+    subs.into_iter().map(|s| vec![s]).collect()
 }
 
 /// `levels` cut to the subtrees `subs` (`keep`), or to the others (`!keep`).
@@ -427,10 +384,7 @@ pub fn read_hi(path: &Path, piece: &str, subtrees: &str, raw: &BTreeSet<(u8, u32
 #[cfg(test)]
 fn same(a: &(Vec<Made>, Mid), b: &(Vec<Made>, Mid)) -> bool {
     let bits = |m: &Mid| {
-        (
-            m.quads.iter().map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>())).collect::<Vec<_>>(),
-            m.levels.iter().map(|(k, v)| (*k, v.to_bits())).collect::<Vec<_>>(),
-        )
+        m.quads.iter().map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>())).collect::<Vec<_>>()
     };
     a.0 == b.0 && bits(&a.1) == bits(&b.1)
 }
@@ -472,7 +426,7 @@ struct Out {
 pub type Here<'a> = &'a dyn Fn(Levels) -> Result<(Vec<Made>, Mid)>;
 
 /// A z6 tile's groups out as tasks (crate::offload), as tree cover's rows are: offered from the far
-/// end (its last groups of at most `MOST_SUBTREES` subtrees) when the run begins, one per worker
+/// end (its last groups) when the run begins, one per worker
 /// that takes them around, at most `MOST`, never every group; the run makes the others (`rest`),
 /// then settles each, waiting for no worker longer than this Mac would take (`Patience`: its tiles
 /// at the pace of the run's here), its result taken.
@@ -517,16 +471,9 @@ impl<'a> Offers<'a> {
             return o;
         }
         let _p = crate::timings::phase("offering the z6 tile's subtrees to other workers");
-        let groups = match groups(levels, src.water) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("terrain 6/{}/{}: its subtrees' lakes can't be read ({e:#}): none offered", piece.0, piece.1);
-                return o;
-            }
-        };
+        let groups = groups(levels);
         let depth = workers.min(MOST).min(groups.len().saturating_sub(1));
-        let chosen: Vec<&Vec<(u32, u32)>> =
-            groups.iter().rev().filter(|g| g.len() <= MOST_SUBTREES).take(depth).collect();
+        let chosen: Vec<&Vec<(u32, u32)>> = groups.iter().rev().take(depth).collect();
         // (The run's own tiles of this z6 tile, made before it settles any group out.)
         let out_subs: BTreeSet<(u32, u32)> = chosen.iter().flat_map(|g| g.iter().copied()).collect();
         let own = count(&levels_of(levels, &out_subs, false));
@@ -601,7 +548,6 @@ impl<'a> Offers<'a> {
             let (h, m) = self.settle_one(o, here)?;
             hi.extend(h);
             mid.quads.extend(m.quads);
-            mid.levels.extend(m.levels);
         }
         Ok(())
     }
@@ -801,7 +747,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
-        let subs = groups(&levels, None).unwrap();
+        let subs = groups(&levels);
         let water = Across { a: subs[0][0], b: subs[1][0] };
         // (Its packs and mid as saved, their content names the bytes' digests; None when stopped.)
         let run = |name: &str, src: &Sources, stop: Option<usize>| -> Option<Vec<(String, String)>> {
@@ -855,26 +801,22 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
-        let subs = groups(&levels, None).unwrap();
-        assert_eq!(subs, [vec![(136, 56)], vec![(136, 57)], vec![(137, 56)], vec![(137, 57)]]);
-        // Two subtrees side by side (in a column, or a row): a lake across their edge.
-        let (a, b) = subs
+        let gs = groups(&levels);
+        assert_eq!(gs, [vec![(136, 56)], vec![(136, 57)], vec![(137, 56)], vec![(137, 57)]]);
+        // Two subtrees side by side (in a column, or a row): a lake across their edge, which keeps
+        // the source's heights, so each subtree is still made alone.
+        let (a, b) = gs
             .iter()
             .flatten()
-            .flat_map(|&a| subs.iter().flatten().map(move |&b| (a, b)))
+            .flat_map(|&a| gs.iter().flatten().map(move |&b| (a, b)))
             .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
             .unwrap();
         let water = Across { a, b };
         let src = Sources { water: Some(&water), sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
-        let gs = groups(&levels, Some(&water)).unwrap();
-        assert_eq!(gs.len(), subs.len() - 1, "the lake's two subtrees in one group");
-        let joint = gs.iter().find(|g| g.contains(&a)).unwrap();
-        assert_eq!(joint, &vec![a, b]);
         // The whole z6 tile, and each group from its file: the same tiles, the same mid.
         let whole = crate::terrain_pack::make_piece(&raw, &src, levels.clone()).unwrap();
-        assert!(whole.1.levels.contains_key(&9) && whole.1.levels.contains_key(&11), "{:?}", whole.1.levels);
-        // Each level's tiles all prepared at once (the way before task #447), and in blocks of one
-        // tile (the lakes 9, across blocks, and 11, in one block's tiles or more): the same bytes.
+        // Each level's tiles all made at once (the way before task #447), and in blocks of one
+        // tile: the same bytes.
         assert!(same(&crate::terrain_pack::make_piece_whole(&raw, &src, levels.clone()).unwrap(), &whole), "whole");
         for up in 0..4 {
             let by = crate::terrain_pack::make_piece_up(&raw, &src, levels.clone(), up).unwrap();
@@ -898,21 +840,9 @@ mod tests {
             assert!(same(&one, &alone), "group {}: from its file as made here", subtrees_arg(g));
             hi.extend(one.0);
             mid.quads.extend(one.1.quads);
-            mid.levels.extend(one.1.levels);
         }
         hi.sort_by_key(|t| (t.0, t.1, t.2));
         assert!(same(&(hi, mid), &whole), "the groups make the piece");
-        // Not closed under its lakes, the z6 tile isn't the same: the lake's level differs.
-        let split = levels_of(&levels, &[a].into(), true);
-        let rest = levels_of(&levels, &[a].into(), false);
-        let (x, y) = (
-            crate::terrain_pack::make_piece(&raw, &src, split).unwrap(),
-            crate::terrain_pack::make_piece(&raw, &src, rest).unwrap(),
-        );
-        assert!(
-            x.1.levels.get(&9) != whole.1.levels.get(&9) || y.1.levels.get(&9) != whole.1.levels.get(&9),
-            "the test's lake has a level of each side's own"
-        );
         // A tile the task wasn't cut for is refused, not "none".
         let g = &gs[0];
         let inp = Inputs::open(&d.path().join(format!("t-{}-{}", g[0].0, g[0].1)).join(INPUT)).unwrap();
@@ -955,13 +885,10 @@ mod tests {
                 let (_, m) = read_mid(&out.path(c)).unwrap();
                 format!(
                     "{:?}",
-                    (
-                        m.quads
-                            .iter()
-                            .map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>()))
-                            .collect::<Vec<_>>(),
-                        m.levels.iter().map(|(k, v)| (*k, v.to_bits())).collect::<Vec<_>>()
-                    )
+                    m.quads
+                        .iter()
+                        .map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>()))
+                        .collect::<Vec<_>>()
                 )
             }),
         )
@@ -1020,7 +947,7 @@ mod tests {
         let p = d.path();
         let (t, cov, raw) = north_piece(p);
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
-        let subs = groups(&levels, None).unwrap();
+        let subs = groups(&levels);
         let (a, b) = subs
             .iter()
             .flatten()
@@ -1052,7 +979,7 @@ mod tests {
         let w = worker(&url, &tok, "m1", p.join("m1"));
         assert_eq!(piece(p, "taken", t, &cov, &raw, &src, Some(&patient)), alone);
         let task = w.join().unwrap().unwrap();
-        let last = groups(&levels, Some(&water)).unwrap().into_iter().rev().find(|g| g.len() <= MOST_SUBTREES).unwrap();
+        let last = groups(&levels).pop().unwrap();
         assert_eq!(task["subtrees"].as_str(), Some(subtrees_arg(&last).as_str()));
         assert_eq!(task["runs"][0]["prog"], "terrainsub");
         {
@@ -1061,54 +988,6 @@ mod tests {
             assert!(s.tasks.by_id.is_empty());
         }
     }
-    /// By hand, read-only (gap 11): over every z6 tile near the live coverage (`TT_ROOT`: the
-    /// NAS's project folder, read only, as `scenic-build terrain-same` reads it), the lakes keyed by
-    /// their tile's own (no OSM id), and those of a tile's feature 16 on (`own_key`'s bit 62: their
-    /// key differs from the one before gap 11), each said with its tile.
-    #[test]
-    #[ignore]
-    fn own_lake_keys_in_live_pieces() {
-        use crate::terrain_water::{tile_water, WaterSource};
-        use rayon::prelude::*;
-        let root = store::nasfs::NasRoot::from_arg(std::env::var("TT_ROOT").expect("TT_ROOT"));
-        let out = Out::unbound(&root, &std::env::temp_dir().join("tt-own-keys")).unwrap();
-        let cov = live_coverage(&out);
-        let water = crate::terrain_pack::open_water(&out).unwrap();
-        let pieces: Vec<(u32, u32)> = crate::agent::build::coverage_tiles(&cov).into_values().flatten().collect();
-        let (mut n_tiles, mut own, mut moved) = (0usize, 0usize, 0usize);
-        for (k, &t) in pieces.iter().enumerate() {
-            for (z, tiles) in piece_levels(&cov, &crate::terrain_zoom::test_world(12), t) {
-                n_tiles += tiles.len();
-                let ids: Vec<Vec<u64>> = tiles
-                    .par_iter()
-                    .map(|&(x, y)| {
-                        tile_water(&water as &dyn WaterSource, z, x, y, false)
-                            .unwrap()
-                            .map(|w| w.ids.iter().copied().filter(|i| i >> 63 == 1).collect())
-                            .unwrap_or_default()
-                    })
-                    .collect();
-                for (&(x, y), v) in tiles.iter().zip(ids) {
-                    own += v.len();
-                    for i in v.into_iter().filter(|i| i >> 62 & 1 == 1) {
-                        moved += 1;
-                        println!("piece 6/{}/{} tile {z}/{x}/{y}: key {i:#x}, feature 16 on", t.0, t.1);
-                    }
-                }
-            }
-            if k % 50 == 0 {
-                eprintln!(
-                    "{k} of {} pieces, {n_tiles} tiles, {own} own keys, {moved} from feature 16 on",
-                    pieces.len()
-                );
-            }
-        }
-        println!(
-            "{} pieces, {n_tiles} tiles, {own} lakes keyed by their tile's own, {moved} of them from feature 16 on",
-            pieces.len()
-        );
-    }
-
     /// The coverage of `out`'s regions, as scenic-build's steps read it (the latest pass's outlines).
     fn live_coverage(out: &Out) -> Coverage {
         let root = out.root();

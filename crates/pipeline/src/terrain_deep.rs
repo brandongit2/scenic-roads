@@ -4,18 +4,17 @@
 //! is sampled from the pool, each dataset read at most at its own finest detail and the next in the
 //! declared order filling its voids (crate::terrain_base); each coarser tile is its children's 2×2
 //! means, a quarter whose child is past its place's finest zoom sampled there. Its water is
-//! flattened as every level's is: its lakes across its edges at the levels the terrain-lakes step
-//! decided for the whole lake (crate::terrain_lakes), the others levelled from its own tiles.
+//! flattened as every level's is (crate::terrain_water: the sea, the rivers; its lakes keep the
+//! source's heights), tile by tile.
 //!
 //! - **Its tiles:** under the z10 tile, each of z13 to the deepest stored zoom near the coverage
 //!   (20 km) no finer than its place's finest zoom (`levels`). A z10 tile with none is no target.
 //! - **Packs:** by z10 tile (`PACK_Z`): `layers/terrain/deep/10-x-y` (docs/formats.md, Pack), z13 to
 //!   `MAX_Z`; optional in a region's download (crate::areafiles: "Terrain detail").
 //! - **Its mid** (`mid_logical`, `work/terrain-deep-mid/10-x-y`): its z13 tiles' 2×2 means before
-//!   rounding and its lakes' levels, which its z6 tile's terrain-hi run takes in (its z12 tiles'
-//!   quarters there, its lakes' levels first: crate::terrain_pack::build_piece): so the z6 tile's
-//!   run waits for its z10 tiles' targets (agent::steps' declared reads), and a z6 tile with none
-//!   waits for nothing.
+//!   rounding, which its z6 tile's terrain-hi run takes in (its z12 tiles' quarters there:
+//!   crate::terrain_pack::build_piece): so the z6 tile's run waits for its z10 tiles' targets
+//!   (agent::steps' declared reads), and a z6 tile with none waits for nothing.
 //!
 //! The band's edges are where its packs are (the hi packs end at z12, `FIRST_Z` − 1), a storage
 //! layout the server and the downloads read; no dataset or zoom of the data is named here.
@@ -302,27 +301,15 @@ pub fn mids_under(m: &BTreeMap<String, String>, t: (u32, u32)) -> Vec<((u32, u32
 
 /// What z6 tile `t`'s terrain-hi run takes in of its z10 tiles' targets (their deep mids, each read
 /// and checked: crate::terrain_pack::read_mid_of): their z13 tiles' means (its z12 tiles' quarters
-/// there) and their lakes' levels, the first z10 tile's (column, then row) for a lake two have.
+/// there).
 pub fn read_mids(out: &Out, t: (u32, u32)) -> Result<crate::terrain_pack::Mid> {
     let mut mid = crate::terrain_pack::Mid::default();
     for (f, c) in mids_under(&out.manifest, t) {
         let (of, m) = crate::terrain_pack::read_mid_of(&out.path(&c), PACK_Z)?;
         anyhow::ensure!((of.1, of.2) == f, "{c} is {}/{}/{}'s deep mid", of.0, of.1, of.2);
         mid.quads.extend(m.quads);
-        for (k, v) in m.levels {
-            mid.levels.entry(k).or_insert(v);
-        }
     }
     Ok(mid)
-}
-
-/// Deep target `t`'s lakes across its edges and their levels, as the terrain-lakes step decided them
-/// (crate::terrain_lakes: its file, read and checked); none where the manifest names none.
-pub fn read_lakes(out: &Out, t: (u32, u32)) -> Result<BTreeMap<u64, f32>> {
-    use anyhow::Context;
-    let Some(c) = out.manifest.get(&crate::terrain_lakes::logical(t)) else { return Ok(BTreeMap::new()) };
-    let b = out.path(c).read().with_context(|| format!("read {c}"))?;
-    crate::terrain_lakes::from_bytes(t, &b).with_context(|| c.clone())
 }
 
 /// What a deep target's run came to.
@@ -335,8 +322,8 @@ pub struct Report {
 }
 
 /// Deep target `t` made, its levels `levels` (`levels`) from the tiles `raw` gives
-/// (crate::terrain_pack::Fills over the pool) and sources `src`, its lakes across its edges at the
-/// levels `lakes` (`read_lakes`), and put: its deep pack (none where it made no tile: the manifest's
+/// (crate::terrain_pack::Fills over the pool) and sources `src`, and put: its deep pack (none where
+/// it made no tile: the manifest's
 /// dropped, a retired one there too) and its mid (`mid_logical`). Its levels' blocks kept as made
 /// and an earlier run's taken (`keep`: crate::terrain_resume).
 pub fn build_target(
@@ -346,17 +333,16 @@ pub fn build_target(
     raw: &dyn crate::terrain_pack::RawSource,
     src: &crate::terrain_pack::Sources,
     keep: bool,
-    lakes: BTreeMap<u64, f32>,
 ) -> Result<Report> {
     let mut rep = Report::default();
     let p = crate::timings::phase("making its tiles, its finest zooms sampled, the coarser from them");
     let mut log = keep
         .then(|| {
-            let id = crate::terrain_resume::hi_id(&out.manifest, src, (PACK_Z, t.0, t.1), &levels, 4, &lakes);
+            let id = crate::terrain_resume::hi_id(&out.manifest, src, (PACK_Z, t.0, t.1), &levels, 4);
             crate::terrain_resume::HiLog::open(&out.scratch, (PACK_Z, t.0, t.1), &id)
         })
         .flatten();
-    let (made, mid) = crate::terrain_pack::make_piece_logged(raw, src, levels, log.as_mut(), lakes)?;
+    let (made, mid) = crate::terrain_pack::make_piece_logged(raw, src, levels, log.as_mut())?;
     drop(p);
     let _p = crate::timings::phase("writing and uploading its deep pack and mid");
     rep.tiles = made.len();

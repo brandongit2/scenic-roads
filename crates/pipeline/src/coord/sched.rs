@@ -289,13 +289,12 @@ impl RoomWait {
 /// the whole Mac; only where the step has no use on the Mac (crate::uses, task #947: its timings
 /// say what it keeps busy, honoured or not). `slope-hi` and `slope-deep`: Rust steps
 /// on the rayon pool the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `terrain-deep`: its
-/// band past z12 made on that pool, its reads ahead waiting on the network (crate::terrain_deep); `terrain-lakes`: its shore tiles sampled and prepared on that pool, a
-/// chunk at a time (crate::terrain_lakes); `bld-fetch`: its downloads bounded by its `--jobs` (3 by default, at most
+/// band past z12 made on that pool, its reads ahead waiting on the network (crate::terrain_deep); `bld-fetch`: its
+/// downloads bounded by its `--jobs` (3 by default, at most
 /// 4), waiting on the network; `pyramids-fill`: its fetches a host's requests in flight (crate::fetch::HOST_REQUESTS),
 /// waiting on the network, its own work (whole-PNG checks, packing) a fraction of a core (task #823:
 /// counted as the whole Mac, its first job held 6 of the mini's 12 cores).
-pub(super) const THREADS_HONOURED: &[&str] =
-    &["slope-hi", "slope-deep", "terrain-deep", "terrain-lakes", "bld-fetch", "pyramids-fill"];
+pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrain-deep", "bld-fetch", "pyramids-fill"];
 
 /// A cold start's provisional memory (MB) from the most its step declares or it was offered with,
 /// `mb`: times 3/2 (task #499; `Shared::provisional`, the forecast's packing too).
@@ -1137,8 +1136,8 @@ impl Sched {
             // (The first offer in plan order refused for its room alone (`room_wait`, or short of
             // cores below): the room it waits for is held for it, no later offer granted that
             // takes any of it (`RoomWait::eaten_by`), so jobs of later offers that fit each slot
-            // as it opens don't starve it (task #965: terrain-lakes' 4.4 GB, 2 threads, behind the
-            // 3D buildings' small jobs).)
+            // as it opens don't starve it (task #965: a 4.4 GB job, 2 threads, behind the 3D
+            // buildings' small jobs).)
             let mut waiting: Option<RoomWait> = None;
             let mut held_why: Option<String> = None;
             for o in offers {

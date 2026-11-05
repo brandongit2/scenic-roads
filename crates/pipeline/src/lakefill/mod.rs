@@ -19,9 +19,9 @@
 //!
 //! **The fill** (`write`, `Fill`) is one sectioned file, content-named, made by the `lakefill` step
 //! (`run`) and read by the water layer (`water::Extra`: each z14 tile's lakes, as a basemap tile of
-//! their own, inland water), the map's server (the water's deeper zooms) and the terrain's
-//! flattening (`terrain_water::WaterSource`, `FilledWater`: its pin names the fill, so the terrain's
-//! water digests, and with them the pieces whose water the fill changes, follow it).
+//! their own, inland water), the map's server (the water's deeper zooms), the depth and the
+//! terrain's water (`terrain_water::WaterSource`, `FilledWater`: its pin names the fill, so the
+//! terrain's water digests, and with them the pieces whose water the fill changes, follow it).
 
 use anyhow::{ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
@@ -60,7 +60,7 @@ pub fn lonlat(p: [f64; 2]) -> (f64, f64) {
 pub struct Lake {
     pub rings: Vec<Vec<[f64; 2]>>,
     /// Water only some of the time (the source's `perm`): drawn as water, as OSM's intermittent
-    /// lakes are, but not flattened in the terrain (terrain_water leaves OSM's alone too).
+    /// lakes are, but left out of the terrain's water (terrain_water leaves OSM's out too).
     pub intermittent: bool,
 }
 
@@ -1081,7 +1081,7 @@ impl crate::water::Extra for Fill {
 }
 
 /// The terrain's water: the basemap's (`base`), with the fill's lakes added when there's a fill
-/// (lakes, by their keys, flattened to their shores' level as OSM's are).
+/// (lakes, by their keys, as OSM's are).
 pub struct FilledWater<W> {
     pub base: W,
     pub fill: Option<Fill>,
@@ -1948,7 +1948,7 @@ mod tests {
     }
 
     #[test]
-    fn the_terrain_flattens_filled_lakes_as_lakes_and_keys_on_the_fill() {
+    fn the_terrains_water_reads_filled_lakes_as_lakes_and_keys_on_the_fill() {
         use crate::terrain_water::{Kind, Poly, WaterSource};
         struct None_;
         impl WaterSource for None_ {
@@ -1987,7 +1987,7 @@ mod tests {
     }
 
     #[test]
-    fn intermittent_lakes_are_water_but_not_flattened() {
+    fn intermittent_lakes_are_water_but_not_the_terrains() {
         use crate::terrain_water::{Poly, WaterSource};
         struct None_;
         impl WaterSource for None_ {

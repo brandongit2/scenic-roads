@@ -1,28 +1,21 @@
-//! Water flattened in the terrain (docs/steps.md §2, Terrain): the sea to 0 m and each lake or
-//! reservoir to its shore's level, from OSM's water as the pass's basemap draws it (its `water`
-//! layer: the sea from the pinned water polygons, `sources/basemap/water-polygons-split-3857.zip`;
-//! lakes, ponds, reservoirs and docks from the pass's OSM, each with its OSM id). AWS fills water its
-//! detailed source lacks from a coarse one whose cells mix the hills in (57 % of the sea off Yakutat
-//! reads above 20 m), and above 60°N some lakes come from a sea-level source beside ellipsoidal land.
+//! The water in the terrain (docs/steps.md §2, Terrain), from OSM's water as the pass's basemap draws
+//! it (its `water` layer: the sea from the pinned water polygons,
+//! `sources/basemap/water-polygons-split-3857.zip`; lakes, ponds, reservoirs and docks from the
+//! pass's OSM, each with its OSM id). AWS fills water its detailed source lacks from a coarse one
+//! whose cells mix the hills in (57 % of the sea off Yakutat reads above 20 m).
 //!
 //! - A terrain tile's water is the basemap's tile at the same zoom (z6–14: below z6 the basemap
 //!   draws Natural Earth's; the terrain there is made from finer tiles), rasterized at 4 × 4 samples
-//!   a pixel: each pixel's share of sea and of lake, and the lake that covers most of it.
-//!   Intermittent water, pools and water in tunnels are left as they are. Rivers (class `river`)
-//!   slope: where a tile has both river polygons and rivers' courses (`terrain_polys`), each is
-//!   levelled along its course (`rivers`); the depth reads the river polygons in every tile
-//!   (`WaterSource::depth_polys`, `Kind::River`, `WaterTile::river`).
-//! - The sea goes to 0 m. A lake goes to its level: the 10th percentile of the land pixels along its
-//!   shore (those wholly dry, beside a pixel at least half that lake's). The shore's lowest pixels
-//!   are where the water meets the land, the outlet's level; the very lowest are AWS's pits, voids
-//!   and the next lake's water, so a low percentile, not the minimum: a tenth of the shore must be
-//!   wrong to move it. Where the lake's own pixels are already flat (their spread within 1 m: a
-//!   source that flattened it, as GLO-30 has) and no higher than that, they keep their level: a
-//!   forest on the shore (GLO-30 is a surface model) would raise it otherwise.
-//! - A pixel partly water is blended by its shares: `sea·0 + lake·level + (1 − sea − lake)·its own`.
-//! - One level a lake, from all its shore in what's made together (a z6 tile's levels, then its z3
-//!   pack's coarser ones, finest first: a lake keeps the level its finest tiles gave it), by its OSM
-//!   id. A lake across two z6 tiles may take a level from each, a metre or two apart.
+//!   a pixel: each pixel's share of sea and of lake, and the lake that covers most of it (the
+//!   depth's: pipeline::depth). Intermittent water, pools and water in tunnels are left as they are.
+//!   Rivers (class `river`) slope: where a tile has both river polygons and rivers' courses
+//!   (`terrain_polys`), each is levelled along its course (`rivers`); the depth reads the river
+//!   polygons in every tile (`WaterSource::depth_polys`, `Kind::River`, `WaterTile::river`).
+//! - The sea goes to 0 m. Lakes keep the source's heights, its artefacts too (the owner's, 5 Nov:
+//!   the terrain follows its source over water); a lake's share of a pixel only leaves that much
+//!   less to a river.
+//! - A pixel partly water is blended by its shares: `sea·0 + river·its course's level + (1 − sea −
+//!   river)·its own`.
 
 use anyhow::{Context, Result};
 use det::Det;
@@ -34,10 +27,8 @@ const SS: usize = 4;
 const NONE: u16 = u16::MAX;
 /// A pixel's samples (SS × SS): a share of 1.
 pub const FULL: u8 = (SS * SS) as u8;
-/// A lake's own pixels are flat when their spread (the middle half's) is within this (m).
+/// A river's pixels lie flat when within this (m) of its profile (`rivers`).
 const FLAT_M: f32 = 1.0;
-/// The shore's percentile a lake's level is.
-pub const SHORE_PERCENTILE: f64 = 0.10;
 
 /// What's water in a terrain tile (256 × 256): each pixel's share of sea and of lake (its samples
 /// of SS × SS), and the lake covering most of it (an index into `ids`, or NONE); the depth's tiles
@@ -468,128 +459,20 @@ pub fn water_tile(polys: &[Poly]) -> WaterTile {
     wt
 }
 
-/// What a tile says of each lake's level: its shore's land pixels, and its own pixels' spread.
-#[derive(Clone, Debug, Default)]
-pub struct LakeSamples {
-    pub shore: Vec<f32>,
-    /// Per tile: (its pixels at least half this lake's, their median, their middle half's spread).
-    pub inside: Vec<(u32, f32, f32)>,
-}
-
-/// The samples of each lake in tile `e` (before flattening).
-pub fn samples(e: &[f32], wt: &WaterTile) -> HashMap<u64, LakeSamples> {
-    let mut out: HashMap<u64, LakeSamples> = HashMap::new();
-    if wt.ids.is_empty() {
-        return out;
-    }
-    let mut inside: Vec<Vec<f32>> = vec![Vec::new(); wt.ids.len()];
-    for p in 0..65536usize {
-        let k = wt.lake_of[p];
-        if k != NONE && wt.lake[p] * 2 >= FULL && e[p].is_finite() {
-            inside[k as usize].push(e[p]);
-        }
-        if wt.sea[p] + wt.lake[p] > 0 || !e[p].is_finite() {
-            continue;
-        }
-        let (x, y) = ((p % 256) as i32, (p / 256) as i32);
-        let mut seen = [NONE; 8];
-        let mut ns = 0;
-        for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
-            let (a, b) = (x + dx, y + dy);
-            if a < 0 || b < 0 || a > 255 || b > 255 {
-                continue;
-            }
-            let q = (b * 256 + a) as usize;
-            let k = wt.lake_of[q];
-            if k != NONE && wt.lake[q] * 2 >= FULL && !seen[..ns].contains(&k) {
-                seen[ns] = k;
-                ns += 1;
-                out.entry(wt.ids[k as usize]).or_default().shore.push(e[p]);
-            }
-        }
-    }
-    for (k, mut v) in inside.into_iter().enumerate() {
-        if v.is_empty() {
-            continue;
-        }
-        v.sort_by(f32::total_cmp);
-        let (med, iqr) = (v[v.len() / 2], v[v.len() * 3 / 4] - v[v.len() / 4]);
-        out.entry(wt.ids[k]).or_default().inside.push((v.len() as u32, med, iqr));
-    }
-    out
-}
-
-/// Adds a tile's samples to those gathered.
-pub fn gather(all: &mut HashMap<u64, LakeSamples>, mut one: HashMap<u64, LakeSamples>) {
-    for (id, s) in one.drain() {
-        let e = all.entry(id).or_default();
-        e.shore.extend(s.shore);
-        e.inside.extend(s.inside);
-    }
-}
-
-/// A lake's level from its samples (None: no shore and no flat inside).
-pub fn level(s: &LakeSamples) -> Option<f32> {
-    let mut shore = s.shore.clone();
-    shore.sort_by(f32::total_cmp);
-    let low = (!shore.is_empty()).then(|| shore[((shore.len() - 1) as f64 * SHORE_PERCENTILE).round() as usize]);
-    // Its own pixels, flat (each tile's within FLAT_M, and the tiles' medians too): their median,
-    // weighted by pixels.
-    let mut ins = s.inside.clone();
-    ins.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
-    let flat = !ins.is_empty() && ins.iter().all(|t| t.2 <= FLAT_M) && ins.last().unwrap().1 - ins[0].1 <= FLAT_M;
-    let own = flat.then(|| {
-        let total: u64 = ins.iter().map(|t| t.0 as u64).sum();
-        let mut acc = 0u64;
-        ins.iter()
-            .find(|t| {
-                acc += t.0 as u64;
-                acc * 2 >= total
-            })
-            .map(|t| t.1)
-            .unwrap()
-    });
-    match (low, own) {
-        (Some(l), Some(o)) if o <= l + FLAT_M => Some(o),
-        (Some(l), _) => Some(l),
-        (None, o) => o,
-    }
-}
-
-/// Levels for the lakes gathered that `known` hasn't, added to it.
-pub fn add_levels(known: &mut HashMap<u64, f32>, all: &HashMap<u64, LakeSamples>) {
-    let mut ids: Vec<&u64> = all.keys().collect();
-    ids.sort_unstable();
-    for id in ids {
-        if !known.contains_key(id) {
-            if let Some(l) = level(&all[id]) {
-                known.insert(*id, l);
-            }
-        }
-    }
-}
-
-/// Flattens tile `e`'s water: the sea to 0, each lake to its level (`levels`; a lake without one
-/// keeps its pixels), each river to its course's levels (`rivers`, of `e` as given), a pixel partly
-/// water blended by its shares. Returns the pixels changed.
-pub fn flatten(e: &mut [f32], wt: &WaterTile, levels: &HashMap<u64, f32>) -> usize {
+/// Flattens tile `e`'s water: the sea to 0, each river to its course's levels (`rivers`, of `e` as
+/// given), a pixel partly water blended by its shares; lakes keep their pixels. Returns the pixels
+/// changed.
+pub fn flatten(e: &mut [f32], wt: &WaterTile) -> usize {
     let rv = rivers(e, wt);
     let mut n = 0;
     for p in 0..e.len() {
         let r = rv.as_ref().map_or(f32::NAN, |v| v[p]);
-        if wt.sea[p] == 0 && wt.lake[p] == 0 && r.is_nan() {
+        if wt.sea[p] == 0 && r.is_nan() {
             continue;
         }
-        let (s, mut l) = (wt.sea[p] as f32 / FULL as f32, wt.lake[p] as f32 / FULL as f32);
-        let lv = match wt.lake_of[p] {
-            NONE => None,
-            k => levels.get(&wt.ids[k as usize]).copied(),
-        };
-        if lv.is_none() {
-            l = 0.0;
-        }
+        let s = wt.sea[p] as f32 / FULL as f32;
         let w = if r.is_nan() { 0.0 } else { wt.river_at(p) as f32 / FULL as f32 };
-        let v = l * lv.unwrap_or(0.0) + w * if r.is_nan() { 0.0 } else { r } + (1.0 - s - l - w) * e[p];
+        let v = w * if r.is_nan() { 0.0 } else { r } + (1.0 - s - w) * e[p];
         if v != e[p] {
             e[p] = v;
             n += 1;
@@ -974,10 +857,10 @@ pub mod tests {
     }
 
     #[test]
-    fn the_sea_goes_to_zero_and_a_lake_to_its_shores_tenth_percentile() {
-        // Land rising east at 1 m a pixel from 100 m; a raised lake (a coarse source's 160 m) from
-        // x 40 to 80; the sea west of x 10.
-        let polys = vec![square(Kind::Sea, 0, 0.0, 0.0, 10.0, 256.0), square(Kind::Lake, 7, 40.0, 100.0, 80.0, 140.0)];
+    fn the_sea_goes_to_zero_and_a_lake_keeps_the_sources_heights() {
+        // Land rising east at 1 m a pixel from 100 m; a raised, bumpy lake (a coarse source's
+        // 160 m) from x 40 to 80; the sea west of x 10.5.
+        let polys = vec![square(Kind::Sea, 0, 0.0, 0.0, 10.5, 256.0), square(Kind::Lake, 7, 40.0, 100.0, 80.0, 140.0)];
         let wt = water_tile(&polys);
         let mut e: Vec<f32> = (0..65536).map(|p| 100.0 + (p % 256) as f32).collect();
         for y in 100..140 {
@@ -985,73 +868,17 @@ pub mod tests {
                 e[y * 256 + x] = 160.0 + ((x * 7 + y * 3) % 11) as f32;
             }
         }
-        let s = samples(&e, &wt);
-        let mut levels = HashMap::new();
-        add_levels(&mut levels, &s);
-        // Its shore: x 39 (139 m) to x 80 (180 m), rows 99 and 140 between; the 10th percentile.
-        let mut shore: Vec<f32> = Vec::new();
-        for y in 99..=140 {
-            for x in 39..=80 {
-                if x == 39 || x == 80 || y == 99 || y == 140 {
-                    shore.push(100.0 + x as f32);
-                }
-            }
-        }
-        shore.sort_by(f32::total_cmp);
-        let want = shore[((shore.len() - 1) as f64 * 0.1).round() as usize];
-        assert_eq!(levels[&7], want);
-        flatten(&mut e, &wt, &levels);
+        let was = e.clone();
+        let n = flatten(&mut e, &wt);
         assert!((0..256).all(|y| (0..10).all(|x| e[y * 256 + x] == 0.0)));
-        assert!((100..140).all(|y| (40..80).all(|x| e[y * 256 + x] == want)));
+        // The pixel half sea (x 10): half 0, half its own (110 m).
+        assert_eq!(e[50 * 256 + 10], 0.5 * 110.0);
+        assert_eq!(n, 256 * 11, "only the sea's pixels changed");
+        assert!(
+            (100..140).all(|y| (40..80).all(|x| e[y * 256 + x] == was[y * 256 + x])),
+            "the lake as its source has it"
+        );
         assert_eq!(e[50 * 256 + 50], 150.0, "land unchanged");
-    }
-
-    #[test]
-    fn a_flat_lake_keeps_its_level_under_a_forested_shore_and_partial_pixels_blend() {
-        // A lake flattened by its source at 200 m, its shore 6 m higher (a forest): kept at 200.
-        let polys = vec![square(Kind::Lake, 9, 50.0, 50.0, 70.5, 70.0)];
-        let wt = water_tile(&polys);
-        let mut e = vec![206f32; 65536];
-        for y in 50..70 {
-            for x in 50..71 {
-                e[y * 256 + x] = 200.0;
-            }
-        }
-        let mut levels = HashMap::new();
-        add_levels(&mut levels, &samples(&e, &wt));
-        assert_eq!(levels[&9], 200.0);
-        // A raised flat lake (Kivalliq's: 47 m over its shore) goes to the shore's level instead.
-        let mut r = vec![100f32; 65536];
-        for y in 50..70 {
-            for x in 50..71 {
-                r[y * 256 + x] = 147.0;
-            }
-        }
-        let mut lv = HashMap::new();
-        add_levels(&mut lv, &samples(&r, &wt));
-        assert_eq!(lv[&9], 100.0);
-        flatten(&mut r, &wt, &lv);
-        assert_eq!(r[60 * 256 + 60], 100.0);
-        // The pixel half lake (x 70): half the level, half its own (147 m).
-        assert_eq!(r[60 * 256 + 70], 0.5 * 100.0 + 0.5 * 147.0);
-    }
-
-    #[test]
-    fn one_level_for_a_lake_across_tiles() {
-        // The same lake (id 3) in two tiles, its shore lower in one: one level from both.
-        let wt = water_tile(&[square(Kind::Lake, 3, 100.0, 100.0, 200.0, 200.0)]);
-        let a = vec![10f32; 65536];
-        let b = vec![30f32; 65536];
-        let mut all = HashMap::new();
-        gather(&mut all, samples(&a, &wt));
-        gather(&mut all, samples(&b, &wt));
-        let mut lv = HashMap::new();
-        add_levels(&mut lv, &all);
-        assert_eq!(lv[&3], 10.0);
-        // A finer zoom's level holds: add_levels keeps what's known.
-        let mut known = HashMap::from([(3u64, 12.0f32)]);
-        add_levels(&mut known, &all);
-        assert_eq!(known[&3], 12.0);
     }
 
     #[test]
@@ -1173,7 +1000,7 @@ pub mod tests {
         }
         let raw = e.clone();
         let mut drawn = e.clone();
-        let n = flatten(&mut drawn, &wt, &HashMap::new());
+        let n = flatten(&mut drawn, &wt);
         assert!(n > 4000, "{n}");
         // Across the river one level; along it never rising downstream (east), near the surface.
         for x in 20..236 {
@@ -1188,13 +1015,13 @@ pub mod tests {
         let mut back = a_river(true);
         back.flow[0].reverse();
         let mut e2 = raw.clone();
-        flatten(&mut e2, &back, &HashMap::new());
+        flatten(&mut e2, &back);
         assert_eq!(e2, drawn);
         // The land as it was.
         assert_eq!(drawn[50 * 256 + 50], 300.0);
         // Without its course, or without its polygon, the tile is as before.
         let mut e3 = raw.clone();
-        assert_eq!(flatten(&mut e3, &a_river(false), &HashMap::new()), 0);
+        assert_eq!(flatten(&mut e3, &a_river(false)), 0);
         assert_eq!(e3, raw);
         assert!(rivers(&raw, &water_tile(&[])).is_none());
         // A bank pixel half river: half its own, half the river's.
@@ -1204,7 +1031,7 @@ pub mod tests {
         ]);
         let lv = rivers(&raw, &half).unwrap();
         let mut e4 = raw.clone();
-        flatten(&mut e4, &half, &HashMap::new());
+        flatten(&mut e4, &half);
         let p = 100 * 256 + 128;
         assert_eq!(e4[p], 0.5 * lv[p] + 0.5 * raw[p]);
     }
@@ -1220,7 +1047,7 @@ pub mod tests {
             }
         }
         let was = e.clone();
-        assert_eq!(flatten(&mut e, &wt, &HashMap::new()), 0);
+        assert_eq!(flatten(&mut e, &wt), 0);
         assert_eq!(e, was);
     }
 
