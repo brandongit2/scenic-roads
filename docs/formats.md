@@ -480,8 +480,9 @@ ancestor's neighbours' edges; nearest for classes).
   steepness and mean direction, a tile for each depth tile (docs/steps.md §3), made with the
   depth's packs: the lo packs' z8 from the hi packs' z9 where they cover it, the root's z2 from the
   lo packs' z3.
-- **The catalogue's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
-  the accepted depth declarations (the credits' depth line and notices, and the footer's water info on hover).
+- **The catalogue's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "estimated", "notice"}]}`,
+  the accepted depth declarations (`grids::Source::catalogue_entry`: the credits' depth line and notices, the footer's
+  water info on hover, and the estimated ones named in the Depth section's note).
 
 ## Catalogue (the map, as its readers take it)
 

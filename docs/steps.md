@@ -427,7 +427,9 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   floor shading (its tiles reach onto the shore). Over the water fill
   and under the coast shading, draped on the 3D terrain. Hovering water (no road, line or place under the cursor) shows in the footer its depth with the ramp's colour, the water's name and kind where the map labels it, the depth's class, source, resolution and datum; the map names the sources in
   view, "not for navigation", and the notices their licences ask for (CHS's, naming the owner as the
-  maker), which the credits carry too.
+  maker), which the credits carry too. The Depth section's note names the sources whose depths are
+  estimates (the catalogue's `estimated`: GLOBathy's, the small lakes'). Past the layer's z16 the app
+  scales z16 up (web/src/depthgrid.ts), for its z16 tiles and the footer at z16 and over.
 - **The rollout:**
   1. Both Macs run the app with the depth (until a depth declaration is accepted the chain has no
      targets).

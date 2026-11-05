@@ -24,7 +24,8 @@
 //    the surface, and the water's and ferries' names stand on it (basemap.ts: the anchor `surface`,
 //    the terrain itself without a floor). Roads and bridges keep their own heights (roads/). Depth is below the local water
 // surface: mean sea level at sea, the lake's surface on lakes; estimated depths look as measured
-// ones do (the footer says which they are, on hover: ui/strip.ts showWater). The depth's sources and the notices their licences ask
+// ones do (the footer says which they are, on hover: ui/strip.ts showWater; the Depth section's note names
+// the estimated sources, ui/depth.ts setEstimated). The depth's sources and the notices their licences ask
 // for are in the credits (ui/strip.ts), not on the map.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
@@ -43,6 +44,8 @@ export interface DepthSource {
   label: string;
   datum: string;
   water: 'sea' | 'lake';
+  /** Its depths are estimates (the Depth section's note names it). */
+  estimated?: boolean;
   notice?: string | null;
 }
 

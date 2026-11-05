@@ -2447,6 +2447,7 @@ async function main() {
       layers.showDepth(depth.available);
       if (styleReady && floorWanted(store.s) !== floorShown) applyTerrainNow(store.s);
       const ds = w.status.depth?.sources ?? [];
+      layers.depth.setEstimated(ds.filter((x) => x.estimated).map((x) => x.label));
       strip.setDepth(ds.map((x) => x.label), ds.map((x) => x.notice).filter((n): n is string => !!n));
     });
     // Landmarks by view, when the catalogue has them.
