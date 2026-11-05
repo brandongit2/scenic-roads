@@ -58,12 +58,17 @@ pub struct Lease {
     #[serde(skip)]
     pub window: std::collections::VecDeque<(Instant, crate::agent::jobs::Live)>,
     /// The threads its job is counted for (0: not said): granted, then as re-granted (docs/pool.md
-    /// §7.1, Threads re-granted: the more of what it runs on now and what it was last told), the
-    /// cores the pool's own work takes on its Mac, apart from load outside the pool
-    /// (crate::coord::outside_cores).
+    /// §7.1, Threads re-granted: the most of what it runs on now, what its agent has told it and
+    /// what it is still to be told), the cores the pool's own work takes on its Mac, apart from load
+    /// outside the pool (crate::coord::outside_cores).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub threads: u32,
-    /// A re-grant its job hasn't taken up yet (crate::coord::sched's `regrant`): the threads told,
+    /// The threads it was granted as it started (0: not said, a lease from before re-grants): the
+    /// memory its grant was admitted with covers them; a re-grant past them adds its own
+    /// (crate::coord::sched's `grown_mb`).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub start_threads: u32,
+    /// A re-grant its agent hasn't told its job yet (crate::coord::sched's `regrant`): the threads,
     /// and when they were decided (in memory alone: a lead restarted decides again).
     #[serde(skip)]
     pub told: Option<(u32, Instant)>,
@@ -467,6 +472,7 @@ impl Leases {
                 window: Default::default(),
                 slot: None,
                 threads: 0,
+                start_threads: 0,
                 told: None,
                 unconfirmed: false,
             },
@@ -477,21 +483,28 @@ impl Leases {
     /// Notes the threads lease `id`'s job was granted.
     pub fn set_threads(&mut self, id: u64, threads: u32) {
         if let Some(l) = self.by_id.get_mut(&id) {
-            l.threads = threads;
+            (l.threads, l.start_threads) = (threads, threads);
         }
     }
 
     /// Lease `id`'s job, its threads re-decided (crate::coord::sched's `regrant`), as its Mac says it
-    /// runs on `now_on` threads: `told` (Some: threads decided at `at` to tell it), else the re-grant
-    /// it hasn't taken up yet kept, until it runs on them. It counts for the more of the two (a grow
-    /// at once, a shrink once a target takes it up). The re-grant still to tell, if any.
-    pub fn regranted(&mut self, id: u64, now_on: u32, told: Option<(u32, Instant)>) -> Option<u32> {
+    /// runs on `now_on` threads and its agent has told it `granted` (its threads file: what its next
+    /// target takes; 0, not said: `now_on`): `told` (Some: threads decided at `at` to tell it), else
+    /// the re-grant not told yet kept, until its agent has told it. It counts for the most of the
+    /// three (a grow at once, a shrink once a target takes it up; and a re-grant an earlier lead told
+    /// it, which it takes at its next target, though this lead never decided it). The re-grant still
+    /// to tell, if any.
+    pub fn regranted(&mut self, id: u64, now_on: u32, granted: u32, told: Option<(u32, Instant)>) -> Option<u32> {
         let l = self.by_id.get_mut(&id)?;
+        let granted = if granted == 0 { now_on } else { granted };
+        if l.start_threads == 0 {
+            l.start_threads = l.threads.max(1);
+        }
         if told.is_some() {
             l.told = told;
         }
-        l.told = l.told.filter(|(t, _)| *t != now_on);
-        l.threads = now_on.max(l.told.map_or(0, |(t, _)| t));
+        l.told = l.told.filter(|(t, _)| *t != granted);
+        l.threads = now_on.max(granted).max(l.told.map_or(0, |(t, _)| t));
         l.told.map(|(t, _)| t)
     }
 

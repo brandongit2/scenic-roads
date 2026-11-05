@@ -5537,12 +5537,14 @@ impl Agent {
                 }
                 // (A job taking a re-grant: the threads it runs on and what it used on them,
                 // `tend_grant`; docs/pool.md §7.1, Threads re-granted.)
-                if let Some((since, cpu0, on)) = s.running.as_ref().and_then(|r| r.on_threads) {
+                if let Some((r, (since, cpu0, on))) = s.running.as_ref().and_then(|r| Some((r, r.on_threads?))) {
                     threads.push(crate::coord::JobThreads {
                         lease: n,
                         threads: on,
                         cpu_ms: self.sampler.cpu_ns(k).unwrap_or(cpu0).saturating_sub(cpu0) / 1_000_000,
                         ran_ms: since.elapsed().as_millis() as u64,
+                        granted: r.threads as u32,
+                        most: self.grant_most(&r.spec, c) as u32,
                     });
                 }
             }
@@ -7145,6 +7147,17 @@ impl Agent {
         cores.saturating_sub(kept).max(1)
     }
 
+    /// The most threads `spec`'s job may be re-granted now: `threads_room`, a paced job's
+    /// (crate::inputs::pace) `MOST` at most (it never runs more at once).
+    fn grant_most(&self, spec: &JobSpec, c: &Conditions) -> usize {
+        let room = self.threads_room(c);
+        if is_paced(spec) {
+            room.min(crate::inputs::pace::MOST)
+        } else {
+            room
+        }
+    }
+
     /// The re-grants its lead decided for this Mac's running jobs (docs/pool.md §7.1, Threads
     /// re-granted; crate::coord::sched's `regrant`): the lead's own coordinator's on this loop's
     /// capacity, a member's in its last beat's answer (crate::coord::beats::Beats::lead_threads;
@@ -7164,10 +7177,11 @@ impl Agent {
     /// threads its target under way runs on measured from when it began on them (`Running::on_threads`:
     /// a job taking its grant as each target begins says them in its costs file, crate::control::
     /// on_grant; a paced one, crate::inputs::pace, runs on its file's within the second); a stopped
-    /// or stopping job measures nothing. Its lead's re-grant (`regrants`), within `threads_room`,
-    /// written to its threads file: it takes it as its next target begins.
+    /// or stopping job measures nothing. Its lead's re-grant (`regrants`), within `grant_most`,
+    /// written to its threads file (`Running::threads` says what it holds): it takes it as its next
+    /// target begins.
     fn tend_grant(&mut self, k: usize, c: &Conditions) {
-        let room = self.threads_room(c);
+        let most = self.slots[k].running.as_ref().map_or(1, |r| self.grant_most(&r.spec, c));
         let lease = match &self.slots[k].lease {
             Some(Held::Own(n) | Held::Leased { lease: n, .. } | Held::Pooled { id: n, .. }) => Some(*n),
             None => None,
@@ -7177,8 +7191,15 @@ impl Agent {
         let costs = self.slot_costs(k);
         let cpu = self.sampler.cpu_ns(k);
         let Some(r) = self.slots[k].running.as_mut() else { return };
+        // (What its file says, as this agent or one before it wrote it: a job taken over after a
+        // restart, crate::agent::jobs::adopt, has its start's threads in its record.)
+        let file = std::fs::read_to_string(&f).ok().and_then(|t| t.trim().parse::<usize>().ok()).filter(|&n| n > 0);
+        if let Some(n) = file {
+            r.threads = n;
+        }
         let on = if is_paced(&r.spec) {
-            std::fs::read_to_string(&f).ok().and_then(|t| t.trim().parse::<u32>().ok())
+            // (As many tasks at once as its file says, `MOST` at most: crate::inputs::pace.)
+            file.map(|n| n.clamp(1, crate::inputs::pace::MOST) as u32)
         } else {
             memguard::targets(&costs).threads
         };
@@ -7189,7 +7210,7 @@ impl Agent {
             },
             _ => None,
         };
-        let Some(t) = told.map(|t| t.min(room).max(1)).filter(|&t| t != r.threads) else { return };
+        let Some(t) = told.map(|t| t.min(most).max(1)).filter(|&t| t != r.threads) else { return };
         match std::fs::write(&f, t.to_string()) {
             Ok(()) => {
                 eprintln!(

@@ -1063,13 +1063,17 @@ pub struct OldAppJob {
 
 /// A running job that takes a re-grant (`Capacity::threads`): its lease, the threads its target
 /// under way runs on, and the CPU time it took (ms) over the time it has run on them (ms, its
-/// stops left out: crate::agent's `tend_grant`).
+/// stops left out: crate::agent's `tend_grant`); the threads its agent has told it (its threads
+/// file: its next target's), and the most it can run on (its Mac's cores less those its owner
+/// keeps, a paced job's `crate::inputs::pace::MOST` at most).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobThreads {
     pub lease: u64,
     pub threads: u32,
     pub cpu_ms: u64,
     pub ran_ms: u64,
+    pub granted: u32,
+    pub most: u32,
 }
 
 /// A job of a Mac's that only waits on a worker (`Capacity::waiting`): its lease, and what it holds
@@ -9139,7 +9143,9 @@ mod tests {
         }
     }
 
-    fn m1_cap(cores: u32, in_use: bool, on: Option<(u64, u32, f64, u64)>) -> Capacity {
+    /// (`on`: its lease, the threads it runs on, those its agent has told it, its busy cores and
+    /// the seconds it has run on them.)
+    fn m1_cap(cores: u32, in_use: bool, on: Option<(u64, u32, u32, f64, u64)>) -> Capacity {
         Capacity {
             at: unix_now(),
             cores,
@@ -9149,11 +9155,13 @@ mod tests {
             mem_mb: 30_000,
             leases: on.map(|o| o.0).into_iter().collect(),
             threads: on
-                .map(|(lease, threads, busy, ran_s)| JobThreads {
+                .map(|(lease, threads, granted, busy, ran_s)| JobThreads {
                     lease,
                     threads,
                     cpu_ms: (busy * ran_s as f64 * 1000.0) as u64,
                     ran_ms: ran_s * 1000,
+                    granted,
+                    most: cores,
                 })
                 .into_iter()
                 .collect(),
@@ -9173,7 +9181,7 @@ mod tests {
     /// Task #948: a running job's threads re-decided at its Mac's beat. Granted 3 of 14 while the
     /// owner used the M4 (its share keeping 11, as on 4 Nov), it **grows** once the owner has gone
     /// and it has used its 3 a minute (to 13, its step's measured grant): counted for 13 at once,
-    /// told until a target runs on them. The owner back, its 13 pass the 3 cores its Mac has for
+    /// told until its agent has told it. The owner back, its 13 pass the 3 cores its Mac has for
     /// jobs: it **shrinks** to 3, counted for 13 until a target takes them up.
     #[test]
     fn a_running_jobs_threads_grow_when_cores_free_and_shrink_when_the_owner_returns() {
@@ -9184,20 +9192,69 @@ mod tests {
         assert_eq!(g.threads, 3, "3 of 14 while the owner uses it");
         let l = g.lease;
         // Under a minute on its threads: nothing decided yet.
-        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 3.0, 30))))).is_empty());
+        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 3, 3.0, 30))))).is_empty());
         assert_eq!(counted(&c, l), 3);
         // The owner gone, its 3 threads busy a minute: 13, counted at once.
-        assert_eq!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 3.0, 60))))), [(l, 13)]);
+        assert_eq!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 3, 3.0, 60))))), [(l, 13)]);
         assert_eq!(counted(&c, l), 13);
-        // Told again until its next target runs on them; then nothing to tell.
-        assert_eq!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 3.0, 80))))), [(l, 13)]);
-        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 13, 12.4, 5))))).is_empty());
+        // Told again until its agent has told it; then nothing to tell, counted for 13 as its next
+        // target takes them, and on them.
+        assert_eq!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 3, 3.0, 80))))), [(l, 13)]);
+        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 13, 3.0, 90))))).is_empty());
+        assert_eq!(counted(&c, l), 13);
+        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 13, 13, 12.4, 5))))).is_empty());
         assert_eq!(counted(&c, l), 13);
         // The owner back: 3 cores for jobs, its 13 past them: 3, counted for 13 until taken up.
-        assert_eq!(m1_beat(&c, Some(m1_cap(14, true, Some((l, 13, 12.4, 60))))), [(l, 3)]);
+        assert_eq!(m1_beat(&c, Some(m1_cap(14, true, Some((l, 13, 13, 12.4, 60))))), [(l, 3)]);
         assert_eq!(counted(&c, l), 13);
-        assert!(m1_beat(&c, Some(m1_cap(14, true, Some((l, 3, 3.0, 1))))).is_empty());
+        assert!(m1_beat(&c, Some(m1_cap(14, true, Some((l, 13, 3, 12.4, 70))))).is_empty());
+        assert_eq!(counted(&c, l), 13, "its target under way still on 13");
+        assert!(m1_beat(&c, Some(m1_cap(14, true, Some((l, 3, 3, 3.0, 1))))).is_empty());
         assert_eq!(counted(&c, l), 3);
+    }
+
+    /// Task #948 review: a lead that takes over decides nothing yet of a job its predecessor
+    /// re-granted, which takes that grant at its next target all the same: it counts the job for the
+    /// threads its agent has told it (its file's 13), not the 3 its target under way runs on.
+    #[test]
+    fn a_new_lead_counts_a_regrant_its_predecessor_told() {
+        let (_d, c, w, _clock) = every((0, 0));
+        regrantable(&c);
+        let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
+        let l = w.ask(&a).unwrap().unwrap().lease;
+        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 13, 3.0, 10))))).is_empty());
+        assert_eq!(counted(&c, l), 13);
+    }
+
+    /// Task #948 review: a grow's memory. Each thread past those its measure covers adds its peak
+    /// over the threads it was measured at, never the peak over the threads it runs on now; the room its Mac says less what earlier grows hold (its agent counts
+    /// a job at its measure alone) caps the grow, and the lead's packing counts what it grew by.
+    #[test]
+    fn a_grow_is_covered_by_the_memory_its_extra_threads_take() {
+        let (_d, c, w, _clock) = every((0, 0));
+        regrantable(&c);
+        let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
+        let l = w.ask(&a).unwrap().unwrap().lease;
+        // Its measure covers 13 threads: room for none past them, it grows to 13 all the same.
+        let tight = Capacity { mem_mb: 0, ..m1_cap(14, false, Some((l, 3, 3, 3.0, 60))) };
+        assert_eq!(m1_beat(&c, Some(tight)), [(l, 13)]);
+        // Measured at 1 thread instead: each extra thread its whole 2,000 MB.
+        c.shared.lock().unwrap().leases.regranted(l, 3, 3, Some((3, Instant::now() - sched::SETTLE)));
+        for t in ["6/1/1", "6/1/2"] {
+            let mut book = c.shared.lock().unwrap();
+            let cost = book.sched.costs.get_mut(&cost_key("slope-hi", t)).unwrap();
+            cost.sizes.insert("threads".into(), 1);
+        }
+        let ts: Vec<String> = vec!["6/1/1".into(), "6/1/2".into()];
+        let peak = c.shared.lock().unwrap().sched.job_need("slope-hi", &ts).unwrap().mem_mb;
+        // (Its 3 threads busy: it climbs to 4 by its use, the book's 1-thread runs granting no more.)
+        let half = Capacity { mem_mb: peak / 2, ..m1_cap(14, false, Some((l, 3, 3, 3.0, 120))) };
+        assert!(m1_beat(&c, Some(half)).is_empty(), "no room for a thread of its whole peak");
+        let one = Capacity { mem_mb: peak + peak / 2, ..m1_cap(14, false, Some((l, 3, 3, 3.0, 120))) };
+        assert_eq!(m1_beat(&c, Some(one)), [(l, 4)], "room for one");
+        let s = c.shared.lock().unwrap();
+        let lease = s.leases.of(l).unwrap().clone();
+        assert_eq!(s.sched.grown_mb(&lease, "slope-hi", &ts, peak), peak);
     }
 
     /// Task #948: a job using 1 of its 8 threads keeps them while nothing else wants its Mac's
@@ -9213,18 +9270,18 @@ mod tests {
         let g = w.ask(&a).unwrap().unwrap();
         assert_eq!(g.threads, 8);
         let l = g.lease;
-        assert!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 1.0, 120))))).is_empty(), "nothing wants its cores");
+        assert!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 1.0, 120))))).is_empty(), "nothing wants its cores");
         c.shared
             .lock()
             .unwrap()
             .refused
             .insert("m1".into(), (unix_now(), "cores: 0.0 of 8 left, a job of slope-hi takes 8.0".into()));
-        assert_eq!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 1.0, 120))))), [(l, 1)]);
+        assert_eq!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 1.0, 120))))), [(l, 1)]);
         assert_eq!(counted(&c, l), 8, "until a target runs on 1");
         // (Its use busier meanwhile: not decided again within the minute.)
-        assert_eq!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8.0, 180))))), [(l, 1)]);
+        assert_eq!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 8.0, 180))))), [(l, 1)]);
         clock.advance(sched::SETTLE);
-        assert!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8.0, 240))))).is_empty(), "busy on all 8: kept");
+        assert!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 8.0, 240))))).is_empty(), "busy on all 8: kept");
         assert_eq!(counted(&c, l), 8);
     }
 
@@ -9264,7 +9321,7 @@ mod tests {
         let new = held::Beat {
             member: "m1".into(),
             held: [l].into(),
-            cap: Some(m1_cap(8, false, Some((l, 8, 1.0, 60)))),
+            cap: Some(m1_cap(8, false, Some((l, 8, 8, 1.0, 60)))),
             ..Default::default()
         };
         let read: OldBeat = serde_json::from_value(serde_json::to_value(&new).unwrap()).unwrap();

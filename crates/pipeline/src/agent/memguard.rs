@@ -498,8 +498,6 @@ struct Inner {
     idle_set: Option<u64>,
     /// As a test sets it: when each slot's job was last busy (`Watch::cpu_mark`).
     busy_set: Option<Vec<Option<std::time::Instant>>>,
-    /// As a test sets it: each slot's job's CPU time (ns, `Watch::cpu_ns`).
-    cpu_set: Option<Vec<Option<u64>>>,
     /// What the thread did last (unix seconds, in words), for the agent's loop to say.
     froze: Vec<(u64, String)>,
     /// The swap in use (MB) as each sample read it over the last `SWAP_WINDOW`; and the latest
@@ -720,18 +718,7 @@ impl Sampler {
     /// Slot `k`'s job's CPU time as last sampled (ns, `Watch::cpu_ns`); None: not sampled yet, or
     /// unreadable.
     pub fn cpu_ns(&self, k: usize) -> Option<u64> {
-        let g = self.inner.lock().ok()?;
-        match &g.cpu_set {
-            Some(v) => v.get(k).copied().flatten(),
-            None => g.watches.get(k)?.as_ref()?.cpu_ns,
-        }
-    }
-
-    /// As a test sets it: each slot's job's CPU time (ns).
-    pub fn set_test_cpu(&self, cpu: Option<Vec<Option<u64>>>) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.cpu_set = cpu;
-        }
+        self.inner.lock().ok()?.watches.get(k)?.as_ref()?.cpu_ns
     }
 
     /// As a test sets it: when each slot's job was last busy.
