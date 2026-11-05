@@ -472,23 +472,38 @@ ones, terrain-deep 51–67 %; one M4 slope-deep job held 3 threads for five hour
 core busy. The build's timings (the lead's `coord/timings.jsonl`: every job's `cpu_s`, `wall_s`
 and `threads`, read as the coordinator starts and taken as each job's come in, `Sched::add_use`)
 are grouped by step, Mac (a slot's worker is its Mac's, `paces::mac_of`) and threads, over the runs
-ended well in the window the paces read (`paces::PACE_S`, 5 days, picked by their held-out test);
+ended well in the window the paces read (`paces::PACE_S`, 5 days, picked by their held-out test;
+the log is cut to its newer half past 16 MB, about 3 days of the lead's on 4 Nov at 5 KB a line, so
+a coordinator started after a cut reads what was kept, and keeps the window's runs from then on);
 each group's busy cores are its CPU time summed over its wall time summed, so a long job weighs as
 long as it held its threads. The grant (`uses::Uses::cores`) is the most cores any group kept busy,
 rounded up to whole threads, plus one where that group needed every thread it had (its busy cores
-past one fewer) and no run there had more: a step its threads hold climbs a thread a run, measured
-at each; one held by its waits or its serial parts settles at what it keeps busy, and every core
-it would have held idle goes to other jobs (several slope-deep batches side by side, a terrain job
-beside one). It counts for those busy cores (a climb's thread besides). A step's use on a Mac
+past one fewer, and half its threads at least) and no run there had more: a step its threads hold
+climbs a thread a run, measured at each; one held by its serial parts settles at what it keeps
+busy, and every core it would have held idle goes to other jobs (several slope-deep batches side
+by side, a terrain job beside one). **A cut is a trial** (task #947 review): a step whose threads
+each wait keeps fewer cores busy at fewer threads (slope-deep about 0.3 of a core a thread on the
+M4, at 3 threads and at 14), so by its use alone it was cut run by run and never needed every
+thread to climb back (14, 5, 2, 1 at 0.32 a thread; at 0.85 a thread, 14 down to 6 in a dozen
+rounds). So where a run at the grant or fewer threads kept within a core of the busiest group the
+cut stands; where it kept more than a core less, those threads paid, and the step holds the fewest
+threads that kept within a core of the busiest. A run at more threads than the cut doesn't count
+as its trial (a group's use is its batches' as much as its threads'). It counts for those busy
+cores (a climb's thread besides; held, the held group's). A step's use on a Mac
 stands whether the job is a cold start or not (the threads it takes are measured even where its
 memory isn't). What it is per batch isn't known as a batch is granted (no record says which of its
 targets will have output before they run), so a step's mix of batches is taken as its runs had
 it; a running job's grant may be decided again at its safe points (task #948, by the same rule,
 `Sched::lease_cores`). Where a step has no run on the Mac in the window, the cost book's rule
-below decides. The rule is one function, `Sched::lease_cores` (a job's step, targets and worker,
-and its Mac's cores for jobs): the live scheduler's packing, the forecast's (it runs that packing
-on the scheduler as recorded, `sched::State`, which carries the uses; its grants say their
-threads) and `State::cores_left`'s room all go through it. Without a run on the Mac, a job's
+below decides. The rule is `Sched::pack_need` and `need_cores` (a job's step, targets and worker,
+and its Mac's cores for jobs; `Sched::lease_cores` the two for one job): the live scheduler's
+packing and the forecast's (it runs that packing on the scheduler as recorded, `sched::State`,
+which carries the uses; its grants say their threads) go through it; `State::cores_left` counts a
+held job's busy cores from the same uses, else the cost book. The whole-run use hides a step's
+phases: pack keeps 0.1–0.9 of a core busy over its run, so 1 thread, but draws its road and rail
+tiles on 4–5.5 cores, which at 1 thread makes its long runs at least 1.3–1.6 times as long (2
+threads: 1.2 at most, 3: 1.07); trees' program ran at 1.2 cores (at least 1.16 times at 1).
+Granting by phase is for #948's re-decision at safe points, which needs the use per phase. Without a run on the Mac, a job's
 measured cores (`needs::Book::cores`, its own run's, else the most of its
 step's) are two (task #896: no hand-set ratio or factor): its **grant**, the cores it kept busy
 while it computed (its CPU time over the time it ran and didn't wait; no waits said, over the time
