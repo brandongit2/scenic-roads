@@ -16,6 +16,9 @@
 //!   window ends, counted on this Mac from when it asked (`Given::Batch::for_ms`), so a batch is
 //!   never spent past its window whatever the Macs' clocks say. The agent gives its proxy the lead
 //!   (`Budget::set_lead`) while its lead takes the budget and no member in touch takes it on the NAS.
+//!   The lead is then the one source: out of reach, this Mac takes nothing, asking again each
+//!   window. (A share of its own meanwhile would add to what the lead gives the Macs that reach it:
+//!   a Mac away over Tailscale, or whose asks time out, while the others are answered.)
 //! - **The NAS** (the rollout gate's, deleted one release after every member says `budgets` for a
 //!   day): a slot's lease is a file made with create-new (`state/pool/wiki/<class>/<window>-<slot>`),
 //!   so two processes, on one Mac or two, can't both lease one slot. Nothing is written in place,
@@ -32,9 +35,14 @@
 //!
 //! A 429 or a `Retry-After` seen by any process holds every process and Mac: the process tells its
 //! proxy (`/hold`: `seen`), which tells the lead (every class's slots given to none till it ends)
-//! or, on the NAS, takes every slot of the windows the wait spans (`Budget::hold`). With the lead
-//! (or the NAS) out of reach, each Mac takes the rate divided by the members it knows
-//! (`Budget::members`), in memory, asking the lead again the next window.
+//! or, on the NAS, takes every slot of the windows the wait spans (`Budget::hold`). With the NAS
+//! out of reach (the gate's path), each Mac takes the rate divided by the members it knows
+//! (`Budget::members`), in memory; with the lead out of reach, none.
+//!
+//! A change of source (`Budget::set_lead`) drops the batch held, and a move from the lead to the
+//! NAS leases nothing there for a window's length (`SWITCH_MS`): every batch the lead gave ends
+//! within its window, and the lead gives none once its gate says the NAS (docs/coordination.md
+//! step 7).
 //!
 //! The answers' lease (the pipeline's crate::answers) is the lead's too: a job asks its proxy
 //! (`/lease/answers`), which asks the lead (`Budget::answers`); with no lead given, the proxy says
@@ -50,7 +58,8 @@ pub use proxy::Proxy;
 
 /// The budgets as the status shows them (`scenic status`, the agent's `budgets`): the proxy's
 /// address, the connections it has opened (metered, each class's, and the rest), the holds it was
-/// told, and why the NAS was last out of reach (its share of the rate taken meanwhile).
+/// told, and why the lead or the NAS was last out of reach (the lead: nothing taken meanwhile; the
+/// NAS: this Mac's share of the rate).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct View {
     pub proxy: String,
@@ -111,6 +120,16 @@ pub const HOLD_MAX_S: u64 = 900;
 pub const HOLD_NAS_MAX_S: u64 = 300;
 /// The most windows behind a process's last cleaning it cleans by name; past it, by a listing.
 pub const CLEAN_BY_NAME: u64 = 64;
+/// How long a Mac moved from the lead to the NAS leases nothing there (ms): the longest window, so
+/// every batch the lead gave before its gate turned has ended (`Budget::set_lead`).
+pub const SWITCH_MS: u64 = 10_000;
+const _: () = {
+    let mut i = 0;
+    while i < Class::ALL.len() {
+        assert!(Class::ALL[i].rate().window_ms <= SWITCH_MS, "SWITCH_MS is the longest window");
+        i += 1;
+    }
+};
 /// The hold a 429 without a `Retry-After` gives (s).
 pub const HOLD_DEFAULT_S: u64 = 60;
 /// The environment variable a job is told its proxy's address by (`http://127.0.0.1:<port>`), to
@@ -202,7 +221,7 @@ impl Class {
     /// Wikimedia's sites four requests a second (the owner's choice, 14 Oct 2026); the query
     /// services one query in two seconds, and two seconds of query time a token (so at most half
     /// of the Wikidata Query Service's minute of query time a minute).
-    pub fn rate(self) -> Rate {
+    pub const fn rate(self) -> Rate {
         match self {
             Class::Wiki => Rate { window_ms: 10_000, tokens: 40, batch: 4, per_token_ms: 0 },
             Class::Query => Rate { window_ms: 10_000, tokens: 5, batch: 1, per_token_ms: 2_000 },
@@ -297,7 +316,7 @@ pub enum Source {
     /// A lease on the NAS.
     #[default]
     Nas,
-    /// This Mac's share of the rate, the lead (or the NAS) out of reach.
+    /// This Mac's share of the rate, the NAS out of reach (the gate's path).
     Alone,
 }
 
@@ -418,7 +437,7 @@ struct Held {
     owed: u32,
     /// The windows below which every lease's file has been removed (by this process's reckoning).
     cleaned: Option<u64>,
-    /// Tokens given in each window with the lead or the NAS away (this Mac's share).
+    /// Tokens given in each window with the NAS away (this Mac's share).
     alone: BTreeMap<u64, u32>,
 }
 
@@ -433,6 +452,8 @@ struct State {
     away: Option<String>,
     /// The lead not asked again before then (ms): it didn't answer in this window.
     lead_away_until: u64,
+    /// Nothing leased on the NAS before then (ms): a move from the lead (`SWITCH_MS`).
+    nas_from: u64,
 }
 
 /// The pool's budget, as one process (an agent's proxy) takes from it.
@@ -442,8 +463,8 @@ pub struct Budget {
     /// Who leases (a member id, or the host's name): written in each lease, for whoever looks.
     me: String,
     clock: Arc<dyn Clock>,
-    /// The members this Mac knows (itself among them), the lead or the NAS away: each takes the
-    /// rate divided by them.
+    /// The members this Mac knows (itself among them), the NAS away: each takes the rate divided
+    /// by them.
     pub members: Arc<AtomicUsize>,
     /// The lead it takes from (`set_lead`); None: the NAS.
     lead: Mutex<Option<Arc<dyn Lead>>>,
@@ -480,11 +501,21 @@ impl Budget {
         self.state().ledger.clone().unwrap_or_default()
     }
 
-    /// Takes from `lead` from now (None: the NAS): the agent's word, as its lead's gate says. A
-    /// batch held is spent first either way (its window's).
+    /// Takes from `lead` from now (None: the NAS): the agent's word, as its lead's gate says. The
+    /// batch held is dropped (it's the other source's); from the lead to the NAS, nothing is leased
+    /// there for `SWITCH_MS`, so every batch the lead gave (spent within its window, and none given
+    /// once its gate says the NAS) has ended first, whichever Mac holds it.
     pub fn set_lead(&self, lead: Option<Arc<dyn Lead>>) {
-        *self.lead.lock().unwrap_or_else(|e| e.into_inner()) = lead;
-        self.state().lead_away_until = 0;
+        let was = std::mem::replace(&mut *self.lead.lock().unwrap_or_else(|e| e.into_inner()), lead.clone());
+        let now = self.clock.now_ms();
+        let mut st = self.state();
+        st.lead_away_until = 0;
+        for h in st.held.values_mut() {
+            h.left = 0;
+        }
+        if was.is_some() && lead.is_none() {
+            st.nas_from = now + SWITCH_MS;
+        }
     }
 
     fn lead(&self) -> Option<Arc<dyn Lead>> {
@@ -548,23 +579,29 @@ impl Budget {
                 }
                 now
             };
+            let (away_until, nas_from) = {
+                let st = self.state();
+                (st.lead_away_until, st.nas_from)
+            };
             let got = match self.lead() {
-                // (The lead didn't answer in this window: this Mac's share till the next.)
-                Some(_) if asked < self.state().lead_away_until => {
-                    Got::Away(self.state().away.clone().unwrap_or_else(|| "the lead".into()))
-                }
+                // (The lead didn't answer in this window: none till the next.)
+                Some(_) if asked < away_until => Got::Wait(away_until),
                 Some(l) => match l.take(class) {
                     Ok(Given::Batch { n, window, for_ms }) => {
                         Got::Batch { window, until: asked + for_ms, n, source: Source::Lead }
                     }
                     Ok(Given::Wait { ms }) => Got::Wait(asked + ms.max(1)),
                     Err(e) => {
-                        // (Not asked again this window: each ask of a lead that's down may wait out
-                        // its connect.)
-                        self.state().lead_away_until = (w + 1) * rate.window_ms;
-                        Got::Away(format!("the lead: {e}"))
+                        // (None from anywhere else: the lead is the one source. Not asked again
+                        // this window: each ask of a lead that's down may wait out its connect.)
+                        let mut st = self.state();
+                        st.lead_away_until = (w + 1) * rate.window_ms;
+                        st.away = Some(format!("the lead: {e}"));
+                        Got::Wait(st.lead_away_until)
                     }
                 },
+                // (Just moved from the lead: its batches end first.)
+                None if asked < nas_from => Got::Wait(nas_from),
                 None => match self.lease(class, w) {
                     Leased::Slot => {
                         Got::Batch { window: w, until: (w + 1) * rate.window_ms, n: rate.batch, source: Source::Nas }

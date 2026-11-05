@@ -59,6 +59,11 @@ pub const HANDOFF: &str = "handoff";
 /// progress file there while its lead doesn't say it.
 pub const BUDGETS: &str = "budgets";
 
+/// What a member's beat says while its agent's proxy takes the Wikimedia budget from the lead
+/// (crate::budget::Budget::set_lead): the lead gives batches only while every member heard says it
+/// (crate::coord::budgets::gives), so none leases on the NAS as another takes from the lead.
+pub const BY_LEAD: &str = "budgets-by-lead";
+
 /// A lead whose last answer is older than this (s) is taken for not reachable by a member's page:
 /// three of its beats (crate::agent::beat::EVERY, 10 s) missed.
 pub const PAGE_AWAY_S: u64 = 35;
@@ -143,6 +148,8 @@ struct Inner {
     budgets_on_nas: bool,
     progress: Option<crate::agent::resume::Progress>,
     progress_released: Vec<(String, u64)>,
+    /// On a member: its agent's proxy takes the budget from the lead (its beat says `BY_LEAD`).
+    by_lead: bool,
     /// On a member: the lead's line as its last answer carried it, and where it's kept
     /// (`keep_lead_view`: `LEAD_VIEW` in the agent's folder).
     lead_view: LeadView,
@@ -192,6 +199,7 @@ impl Default for Beats {
                 budgets_on_nas: true,
                 progress: None,
                 progress_released: Vec::new(),
+                by_lead: false,
                 lead_view: LeadView::default(),
                 lead_view_at: None,
             }),
@@ -413,6 +421,15 @@ impl Beats {
     /// `BUDGETS`, or says a member heard doesn't speak it.
     pub fn budgets_on_nas(&self) -> bool {
         self.inner.lock().unwrap().budgets_on_nas
+    }
+
+    /// Whether its agent's proxy takes the budget from the lead (its beat says `BY_LEAD`).
+    pub fn set_by_lead(&self, on: bool) {
+        self.inner.lock().unwrap().by_lead = on;
+    }
+
+    pub fn by_lead(&self) -> bool {
+        self.inner.lock().unwrap().by_lead
     }
 
     /// Its resume progress as its agent noted it last: what its beat carries.

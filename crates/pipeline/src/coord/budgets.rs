@@ -5,7 +5,8 @@
 //!
 //! - **The budget** (`POST /pool/budget/take {class}`, `POST /pool/budget/hold {s}`): each
 //!   window's slots counted in memory (`Windows`), by the lead's clock alone; a batch is spendable
-//!   for what is left of its window (crate::budget::Given). Not durable: a restarted lead gives
+//!   for what is left of its window (crate::budget::Given). The one source: a Mac that can't reach
+//!   the lead takes nothing (crate::budget). Not durable: a restarted lead gives
 //!   nothing in the window it first hears an ask in (its process before may have given that
 //!   window's slots), so a restart only slows; a 429's hold is forgotten with it (the next 429 holds
 //!   again).
@@ -20,7 +21,9 @@
 //! - **The gate** (`beats::BUDGETS`): a member's agent gives its proxy the lead (`OverHttp`; the
 //!   lead's own agent, `InProcess`) while the lead says it takes them and no member heard within
 //!   `beats::FORGET_S` doesn't say it, nor one heartbeats on the NAS alone (`held::on_nas`): an
-//!   older app takes its tokens and the lease on the NAS, so every Mac does meanwhile. A member
+//!   older app takes its tokens and the lease on the NAS, so every Mac does meanwhile. The lead
+//!   gives batches only while every member heard says its proxy takes from it (`beats::BY_LEAD`),
+//!   and its own does (`gives`): none leases on the NAS as another takes from the lead. A member
 //!   writes its progress file on the NAS while its lead doesn't say `BUDGETS` (an older lead
 //!   reads it there); the lead reads a member's file there while that member doesn't say it. All
 //!   deleted one release after every member says it for a day (the #642 gate).
@@ -62,6 +65,10 @@ impl Windows {
             return Given::Wait { ms: end - now };
         }
         let g = self.given.entry(class).or_insert((w, 0));
+        // (Its clock set back into a window it has given in already: none till that one ends.)
+        if w < g.0 {
+            return Given::Wait { ms: (g.0 + 1) * r.window_ms - now };
+        }
         if g.0 != w {
             *g = (w, 0);
         }
@@ -101,6 +108,8 @@ pub struct Kept {
 #[derive(Debug, Default)]
 pub struct Small {
     pub windows: Windows,
+    /// Its own agent's proxy takes from it (`Coordinator::set_budget_by_lead`): the gate's.
+    pub own_by_lead: bool,
     pub answers: Option<AnswersLease>,
     pub progress: BTreeMap<String, Kept>,
 }
@@ -129,11 +138,29 @@ fn lead_only(s: &Shared) -> Result<()> {
     Ok(())
 }
 
-/// `POST /pool/budget/take`.
+/// `POST /pool/budget/take`: a batch only while every Mac takes from it (`gives`); else a wait
+/// for a window.
 pub fn take(s: &mut Shared, class: Class) -> Result<Given> {
     lead_only(s)?;
     let now = now_ms(s);
+    if !gives(s) {
+        return Ok(Given::Wait { ms: class.rate().window_ms });
+    }
     Ok(s.small.windows.take(class, now))
+}
+
+/// Whether it gives batches (the gate, docs/coordination.md step 7): every member heard within
+/// `beats::FORGET_S` says `beats::BUDGETS` (none on the NAS: `on_nas`) and says its proxy takes
+/// from the lead (`beats::BY_LEAD`), and its own agent's proxy does: no Mac leases on the NAS
+/// meanwhile, nor holds a batch from it (a move drops it, crate::budget::Budget::set_lead). A
+/// member that moves back to the NAS waits a window first (crate::budget::SWITCH_MS), by which
+/// time every batch given before the gate turned has ended.
+pub fn gives(s: &Shared) -> bool {
+    let unix = super::held::wall(s);
+    s.small.own_by_lead
+        && s.beats.as_ref().is_some_and(|b| {
+            !super::held::on_nas(s, b, unix, beats::BUDGETS) && !super::held::on_nas(s, b, unix, beats::BY_LEAD)
+        })
 }
 
 /// `POST /pool/budget/hold`: until when (ms).
@@ -343,6 +370,10 @@ mod tests {
             assert!(*n <= class.rate().tokens, "{class:?} window {w}: {n} tokens, past {}", class.rate().tokens);
         }
         assert!(!per.contains_key(&(Class::Wiki, T0 / 10_000)), "none in the window it first heard an ask in");
+        // (Its clock set back into a window it gave in: none till that window ends.)
+        let last = per.keys().filter(|(c, _)| *c == Class::Wiki).map(|(_, w)| *w).max().unwrap();
+        let back = lead.lock().unwrap().take(Class::Wiki, (last - 1) * 10_000);
+        assert_eq!(back, Given::Wait { ms: 20_000 });
         assert!(!d.path().join(crate::budget::DIR).exists(), "nothing on the NAS");
         // (A hold: none given till it ends.)
         use crate::budget::Clock;
@@ -411,9 +442,19 @@ mod tests {
         let ans = c.member_beat(&beat(a, &all, Some(p.clone())));
         assert!(ans.speaks.iter().any(|w| w == beats::BUDGETS) && !ans.budgets_on_nas && !c.budgets_on_nas());
         assert_eq!(c.progress().into_iter().map(|k| k.progress).collect::<Vec<_>>(), [p.clone()]);
+        // (No batch while a Mac may still lease on the NAS: the member's beat not yet saying its
+        // proxy takes from the lead, then the lead's own agent's not.)
+        let gives = || gives(&c.shared.lock().unwrap());
+        assert!(!gives());
+        assert!(matches!(c.budget_take(Class::Wiki).unwrap(), Given::Wait { .. }));
+        let by_lead = [&all[..], &[beats::BY_LEAD]].concat();
+        c.member_beat(&beat(a, &by_lead, Some(p.clone())));
+        assert!(!gives());
+        c.set_budget_by_lead(true);
+        assert!(gives());
         // (An older member heard: every Mac on the NAS meanwhile.)
         let old = c.member_beat(&beat(b, &all[..5], None));
-        assert!(old.budgets_on_nas && c.budgets_on_nas());
+        assert!(old.budgets_on_nas && c.budgets_on_nas() && !gives());
         let at_a = beats::Beats::default();
         at_a.answered(&old, 10);
         assert!(at_a.lead_budgets() && at_a.budgets_on_nas());

@@ -765,10 +765,10 @@ pub fn seed(root: &store::nasfs::NasRoot, cache: &Path, scratch: &Path, lease: O
 /// so two Macs making their answers one with the NAS's never each send theirs over the other's (a
 /// merge lost: the answers fetched again). With the budgets on (crate::budget), in place of the
 /// agent holding the steps that keep answers while it seeds them. The lead's (docs/coordination.md
-/// step 7, crate::coord::budgets), asked through this Mac's agent's proxy (`/lease/answers`); while
-/// the proxy says the lead doesn't take it (an older lead, or a member in touch on an older app:
-/// the gate, deleted one release after every member says `budgets` for a day), a file under the
-/// NAS's project folder, as before.
+/// step 7, crate::coord::budgets), asked through this Mac's agent's proxy (`/lease/answers`), and,
+/// while the gate's code is in (deleted one release after every member says `budgets` for a day),
+/// a file under the NAS's project folder as well, taken first: the one an older app takes
+/// (`Lease`).
 pub const LEASE: &str = "state/pool/answers.lease";
 /// A lease lapses this long after its holder last renewed it (s): a holder gone (a Mac asleep, a
 /// process killed) costs a wait this long, never a torn archive (each is written whole).
@@ -776,8 +776,8 @@ pub const LEASE_S: u64 = 600;
 /// How often a waiting taker looks again.
 const LEASE_AGAIN: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Where the answers' lease is taken: through the agent's proxy `proxy` (its lead's), else, the
-/// proxy saying its lead doesn't take it, at `nas` (`LEASE` under the NAS's project folder).
+/// Where the answers' lease is taken: at `nas` (`LEASE` under the NAS's project folder), and through
+/// the agent's proxy `proxy` (its lead's) unless the proxy says its lead doesn't take it.
 #[derive(Clone, Debug)]
 pub struct Leasing {
     pub nas: NasPath,
@@ -823,19 +823,17 @@ pub enum Tried {
 }
 
 /// The answers' lease, held: renewed by a thread of its own while it's held, given up when dropped
-/// (only while it's still this holder's).
+/// (only while it's still this holder's). The NAS's file always (`nas`), and the lead's too when
+/// the agent's proxy takes it there (`lead`): while the NAS's lease is in the code (the gate's), a
+/// job an older agent left running takes that one alone, and a job begun before the gate turned
+/// holds the one its agent's proxy said then, so a holder of the lead's holds the NAS's as well
+/// and two never sync at once.
 pub struct Lease {
-    at: Held,
+    lead: Option<String>,
+    nas: NasPath,
     token: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     renewer: Option<std::thread::JoinHandle<()>>,
-}
-
-/// Where a lease is held: the lead's, through the agent's proxy at this address; or the NAS's file.
-#[derive(Clone)]
-enum Held {
-    Lead(String),
-    Nas(NasPath),
 }
 
 /// What the agent's proxy said of an ask of the lead's lease (`ask`).
@@ -881,8 +879,9 @@ fn ask(proxy: &str, op: crate::budget::LeaseOp, token: &str) -> Asked {
 }
 
 impl Lease {
-    /// Takes the lease at `at`, waiting while another holds it (a lapsed one broken, on the NAS),
-    /// or while the lead doesn't answer.
+    /// Takes the lease at `at`: the NAS's file (a lapsed one broken), then the lead's through the
+    /// agent's proxy when it takes it, waiting while another holds either, or while the lead
+    /// doesn't answer.
     pub fn take(at: &Leasing) -> Result<Lease> {
         let token = format!(
             "{}-{}-{}",
@@ -897,37 +896,37 @@ impl Lease {
                 said = Some(s);
             }
         };
-        let mut held = None;
+        let by = format!("{} (pid {})", hostname(), std::process::id());
+        loop {
+            match try_lease(&at.nas, &by, &token, crate::agent::jobs::now_s())? {
+                Tried::Taken => break,
+                Tried::Held(until, who) => say(format!("{who} holds it, until {until} at the latest")),
+            }
+            std::thread::sleep(LEASE_AGAIN);
+        }
+        let mut lead = None;
         if let Some(proxy) = &at.proxy {
+            let mut renewed = std::time::Instant::now();
             loop {
                 match ask(proxy, crate::budget::LeaseOp::Take, &token) {
                     Asked::Done => {
-                        held = Some(Held::Lead(proxy.clone()));
+                        lead = Some(proxy.clone());
                         break;
                     }
-                    Asked::Not(h) => say(format!("{} holds it, until {} at the latest", h.by, h.until)),
+                    Asked::Not(h) => say(format!("{} holds the lead's, until {} at the latest", h.by, h.until)),
                     Asked::Nas => break,
                     Asked::Unreached(e) => say(format!("the lead isn't answering: {e}")),
                 }
                 std::thread::sleep(LEASE_AGAIN);
+                // (The NAS's kept meanwhile.)
+                if renewed.elapsed() >= std::time::Duration::from_secs(LEASE_S / 4) {
+                    renewed = std::time::Instant::now();
+                    renew_lease(&at.nas, &token, crate::agent::jobs::now_s());
+                }
             }
         }
-        let at = match held {
-            Some(h) => h,
-            None => {
-                let by = format!("{} (pid {})", hostname(), std::process::id());
-                loop {
-                    match try_lease(&at.nas, &by, &token, crate::agent::jobs::now_s())? {
-                        Tried::Taken => break,
-                        Tried::Held(until, who) => say(format!("{who} holds it, until {until} at the latest")),
-                    }
-                    std::thread::sleep(LEASE_AGAIN);
-                }
-                Held::Nas(at.nas.clone())
-            }
-        };
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (h, t, s) = (at.clone(), token.clone(), stop.clone());
+        let (l, p, t, s) = (lead.clone(), at.nas.clone(), token.clone(), stop.clone());
         let renewer = std::thread::Builder::new()
             .name("answers-lease".into())
             .spawn(move || {
@@ -939,10 +938,8 @@ impl Lease {
                         // (A renewal that finds it another's decides nothing: on the NAS a breaker
                         // may have it aside a moment and put it back; `ours`, before each write,
                         // asks again then.)
-                        let renewed = match &h {
-                            Held::Lead(proxy) => ask(proxy, crate::budget::LeaseOp::Renew, &t) == Asked::Done,
-                            Held::Nas(p) => renew_lease(p, &t, crate::agent::jobs::now_s()),
-                        };
+                        let renewed = renew_lease(&p, &t, crate::agent::jobs::now_s())
+                            & l.as_ref().is_none_or(|proxy| ask(proxy, crate::budget::LeaseOp::Renew, &t) == Asked::Done);
                         if !renewed {
                             eprintln!("answers: the answers' lease wasn't this process's as it renewed it (lapsed and taken, aside a moment, or the lead not answering): its next write checks it first");
                         }
@@ -950,23 +947,23 @@ impl Lease {
                 }
             })
             .ok();
-        Ok(Lease { at, token, stop, renewer })
+        Ok(Lease { lead, nas: at.nas.clone(), token, stop, renewer })
     }
 
-    /// Whether it's still this holder's: the lead renews it only while it is (and hasn't lapsed);
-    /// the NAS's file names this holder and hasn't lapsed. An error to stop the work it guards, else.
+    /// Whether it's still this holder's: the NAS's file names this holder and hasn't lapsed, and
+    /// the lead renews its own only while it is (and hasn't lapsed). An error to stop the work it
+    /// guards, else.
     pub fn ours(&self) -> Result<()> {
-        match &self.at {
-            Held::Nas(p) => lease_is(p, &self.token, crate::agent::jobs::now_s()),
-            Held::Lead(proxy) => match ask(proxy, crate::budget::LeaseOp::Renew, &self.token) {
-                Asked::Done => Ok(()),
-                Asked::Not(h) if h.by.is_empty() => {
-                    anyhow::bail!("the answers' lease lapsed, or was given up: nothing written")
-                }
-                Asked::Not(h) => anyhow::bail!("the answers' lease is {}'s now: nothing written", h.by),
-                Asked::Nas => anyhow::bail!("the lead no longer keeps the answers' lease: nothing written"),
-                Asked::Unreached(e) => anyhow::bail!("the lead isn't answering ({e}): nothing written"),
-            },
+        lease_is(&self.nas, &self.token, crate::agent::jobs::now_s())?;
+        let Some(proxy) = &self.lead else { return Ok(()) };
+        match ask(proxy, crate::budget::LeaseOp::Renew, &self.token) {
+            Asked::Done => Ok(()),
+            Asked::Not(h) if h.by.is_empty() => {
+                anyhow::bail!("the answers' lease lapsed, or was given up: nothing written")
+            }
+            Asked::Not(h) => anyhow::bail!("the answers' lease is {}'s now: nothing written", h.by),
+            Asked::Nas => anyhow::bail!("the lead no longer keeps the answers' lease: nothing written"),
+            Asked::Unreached(e) => anyhow::bail!("the lead isn't answering ({e}): nothing written"),
         }
     }
 }
@@ -989,12 +986,10 @@ impl Drop for Lease {
         if let Some(t) = self.renewer.take() {
             t.join().ok();
         }
-        match &self.at {
-            Held::Lead(proxy) => {
-                ask(proxy, crate::budget::LeaseOp::Release, &self.token);
-            }
-            Held::Nas(p) => release_lease(p, &self.token),
+        if let Some(proxy) = &self.lead {
+            ask(proxy, crate::budget::LeaseOp::Release, &self.token);
         }
+        release_lease(&self.nas, &self.token);
     }
 }
 
@@ -1963,8 +1958,9 @@ mod tests {
     }
 
     /// docs/coordination.md step 7: through a proxy whose budget takes from the lead, the lease is
-    /// the lead's (nothing on the NAS): one holder, the next waiting until it's given back, a keep
-    /// checking it before it writes; a proxy with no lead (501) sends it to the NAS's file.
+    /// the lead's and the NAS's: one holder, the next waiting until it's given back, a keep checking it
+    /// before it writes; a holder of the NAS's alone (an older app's job) held off too; a proxy with no
+    /// lead (501), the NAS's alone.
     #[test]
     fn the_answers_lease_is_the_leads_through_the_proxy() {
         use crate::budget::{Budget, Proxy, SysClock};
@@ -1998,7 +1994,23 @@ mod tests {
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1"]));
         let k = items(&nas, &cache.join("items"), "2026-09-28").leased(Some(at.clone()));
         assert!(k.keep(&items_files(&cache.join("items"), "2026-09-28"), &scratch).unwrap());
-        assert!(!root.join(LEASE).exists(), "nothing on the NAS");
+        assert!(!root.join(LEASE).exists(), "both given back");
+        // (A holder of the NAS's alone, as a job an older agent left running: a holder of the
+        // lead's waits for it too.)
+        let old = Lease::take(&Leasing { nas: nas.join(LEASE), proxy: None }).unwrap();
+        let taken = store::testkit::Signal::new();
+        let (at2, t) = (at.clone(), taken.clone());
+        let waiter = std::thread::spawn(move || {
+            let l = Lease::take(&at2).unwrap();
+            t.set();
+            drop(l);
+        });
+        // (absence)
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(!taken.is_set() && c.shared.lock().unwrap().small.answers.is_none(), "the NAS's held: it waits");
+        drop(old);
+        taken.wait("the NAS's given back: taken");
+        waiter.join().unwrap();
         // (No lead: the NAS's.)
         b.set_lead(None);
         let l = Lease::take(&at).unwrap();

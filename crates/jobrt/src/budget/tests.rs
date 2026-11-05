@@ -245,11 +245,11 @@ impl Lead for FakeLead {
     }
 }
 
-/// docs/coordination.md step 7: the lead down, a Mac takes the rate divided by the members it
-/// knows, in memory (nothing on the NAS), asking the lead again only the next window; the lead
-/// back, its batches again. A 429 told meanwhile holds this Mac alone.
+/// docs/coordination.md step 7: the lead down, a Mac takes nothing (a share of its own would add to
+/// what the lead gives the Macs that reach it), asking again once a window, nothing on the NAS; the
+/// lead back, its batches again. A 429 told meanwhile holds this Mac alone.
 #[test]
-fn the_budget_falls_back_when_the_lead_is_down() {
+fn the_budget_waits_for_the_lead_while_it_is_down() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(StepClock::at(T0));
     let lead = Arc::new(FakeLead {
@@ -262,28 +262,54 @@ fn the_budget_falls_back_when_the_lead_is_down() {
     a.set_lead(Some(lead.clone()));
     a.members.store(3, Ordering::Relaxed);
     assert_eq!(a.take(Class::Wiki).source, Source::Lead);
-    // (Down: its batch spent, then a third of the rate a window.)
+    // (Down: its batch spent, then nothing till the lead is back, however long.)
     lead.up.store(false, Ordering::SeqCst);
     let before = a.ledger().len();
-    for _ in 0..60 {
+    for _ in 0..Class::Wiki.rate().batch - 1 {
         a.take(Class::Wiki);
     }
-    let alone: Vec<Token> = a.ledger()[before..].iter().filter(|t| t.source == Source::Alone).copied().collect();
-    assert!(!alone.is_empty());
-    let w = per_window(&[alone]);
-    assert!(w.values().all(|n| *n <= Class::Wiki.rate().tokens / 3), "{w:?}");
-    assert!(a.away().is_some_and(|e| e.contains("the lead")), "{:?}", a.away());
-    assert!(!dir.path().join(DIR).exists(), "nothing on the NAS");
     assert!(!a.hold(20), "a hold not told: this Mac alone");
     assert_eq!(a.held_until(), clock.now_ms() + 20_000);
-    // (Back: the lead's batches from the next window.)
+    let t = {
+        let a = a.clone();
+        std::thread::spawn(move || a.take(Class::Wiki))
+    };
+    while clock.now_ms() < T0 + 600_000 {
+        std::thread::yield_now();
+    }
+    assert!(a.away().is_some_and(|e| e.contains("the lead")), "{:?}", a.away());
     lead.up.store(true, Ordering::SeqCst);
-    clock.set(a.held_until() + Class::Wiki.rate().window_ms);
-    assert_eq!(a.take(Class::Wiki).source, Source::Lead);
+    assert_eq!(t.join().unwrap().source, Source::Lead);
+    assert!(a.ledger()[before..].iter().all(|t| t.source == Source::Lead), "none of its own");
+    assert!(!dir.path().join(DIR).exists(), "nothing on the NAS");
     assert!(a.away().is_none());
     assert!(a.hold(30));
     let t = a.take(Class::Wiki);
     assert!(t.window * 10_000 + 10_000 > clock.now_ms() && clock.now_ms() >= a.held_until());
+}
+
+/// A move of source drops the batch held; from the lead to the NAS, nothing is leased there for
+/// `SWITCH_MS` (every batch the lead gave has ended by then).
+#[test]
+fn a_move_from_the_lead_waits_out_its_batches() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(StepClock::at(T0 + 2_000));
+    let lead = Arc::new(FakeLead {
+        clock: clock.clone(),
+        up: true.into(),
+        given: Mutex::new(BTreeMap::new()),
+        held: Mutex::new(0),
+    });
+    let a = budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock);
+    a.set_lead(Some(lead.clone()));
+    assert_eq!(a.take(Class::Wiki).source, Source::Lead);
+    a.set_lead(None);
+    let t = a.take(Class::Wiki);
+    assert_eq!(t.source, Source::Nas);
+    assert!(clock.now_ms() >= T0 + 2_000 + SWITCH_MS, "{}", clock.now_ms() - T0);
+    // (Back to the lead: the NAS's batch dropped, the lead's from the first take.)
+    a.set_lead(Some(lead.clone()));
+    assert_eq!(a.take(Class::Wiki).source, Source::Lead);
 }
 
 /// A batch the lead gives is spent only within what was left of its window when asked: a batch

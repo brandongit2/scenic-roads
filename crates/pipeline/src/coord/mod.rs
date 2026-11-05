@@ -2531,6 +2531,11 @@ impl Coordinator {
         Ok(said)
     }
 
+    /// Whether its own agent's proxy takes the budget from it (the gate's: crate::coord::budgets::gives).
+    pub fn set_budget_by_lead(&self, on: bool) {
+        self.shared.lock().unwrap().small.own_by_lead = on;
+    }
+
     /// Its own agent's resume progress (crate::agent::resume), as a member's beat carries its: the
     /// owner's releases of it.
     pub fn progress_heard(&self, p: crate::agent::resume::Progress) -> Vec<(String, u64)> {

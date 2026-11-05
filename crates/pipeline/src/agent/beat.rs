@@ -97,11 +97,16 @@ impl ToLead {
             h.pool.beat = status.beat;
             h
         });
+        let mut speaks: Vec<String> =
+            [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS]
+                .map(str::to_string)
+                .to_vec();
+        if self.beats.by_lead() {
+            speaks.push(beats::BY_LEAD.to_string());
+        }
         held::Beat {
             member: self.member.clone(),
-            speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS]
-                .map(str::to_string)
-                .to_vec(),
+            speaks,
             held: self.held.clone(),
             held_age_s: 0,
             heartbeat,

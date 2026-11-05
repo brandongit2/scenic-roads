@@ -7550,10 +7550,19 @@ impl Agent {
                 }
                 _ => (None, "the NAS (a member in touch, or the lead, on an older app)".into()),
             };
+        let by_lead = lead.is_some();
         if self.budget_from.as_deref() != Some(said.as_str()) {
             eprintln!("agent: the Wikimedia budget and the answers' lease from {said}");
             p.budget.set_lead(lead);
             self.budget_from = Some(said);
+        }
+        // (Said after the move, its NAS batch dropped: the lead gives batches only while every Mac
+        // says it, crate::coord::budgets::gives.)
+        if let Some(c) = &self.coord {
+            c.set_budget_by_lead(by_lead);
+        }
+        if let Some(b) = &self.beats {
+            b.set_by_lead(by_lead);
         }
     }
 
