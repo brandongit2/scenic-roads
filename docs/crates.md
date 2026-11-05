@@ -65,8 +65,8 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | localread, osmpass → agent::room | `job_target`, `free_past`, `MAX_TARGET` | items moved (step 3): jobrt's `room` (with cond's `free_bytes`); agent::room re-exports them. The edge goes once its users name jobrt's path (they move in steps 4-5) |
 | osmpass, layers, … → agent::jobs | progress reporting (`stage`, `report`, `part`, `within`, `run_watched`, `each_line`) | items moved (step 3): jobrt's `jobs` (with the log's reading: `tail`, `said`, `parts`, `error_of`); agent::jobs re-exports them. The edge goes as for room |
 | coverage, dem → agent::recipes | the `Recipe` type | built (step 4): agent/recipes.rs is buildstore's `recipes`; agent::recipes re-exports it |
-| out → agent::steps | `steps::writes` (each step's write set, checked on every save) | built (step 4): buildstore's `Out<A: Above>` asks `A::writes`; pipeline's `out::Out` is `Out<Pipeline>`, whose `writes` is `agent::steps::writes` |
-| out → pool::records | out's two wrappers (`records_now`, `brief_now`), and `Out` itself: it opens from `Records::now`'s manifest and pending, and a catalogue's sizes are its (`recorded_sizes`) | built (step 4): the wrappers are gone (their callers name `pool::records`); `Out` reads the records by `A::records`, `Pipeline`'s from `Records::now`. `read_manifest` stays in pipeline's `out` |
+| out → agent::steps | `steps::writes` (each step's write set, checked on every save) | built (step 6a): `Out::open` takes the write set as a function (`out::Writes`); pipeline's `out::open(root, scratch, step)` passes `agent::steps::writes` |
+| out → pool::records | out's two wrappers (`records_now`, `brief_now`), and `Out` itself: it opens from `Records::now`'s manifest and pending, and a catalogue's sizes are its (`recorded_sizes`) | built (steps 4, 6a): the wrappers are gone; which file holds the records now (`now`, `newest`, `brief_now`, term 1's fallbacks), the NAS's operations and the current term are buildstore's `records`, generic over what's read: `Out` reads its `Recorded`, the pool its `Records`. `read_manifest` is buildstore's |
 | out → inputs | `in_inputs_folder` | built (step 4): it and `DROP_ROOTS` are buildstore's `inputs_folder`; inputs re-exports both |
 | out → pool::term, agent::resume | `term::DIR` (whether the pool has begun), `UNMERGED_ENV` | built (step 4): `out::TERMS` and `out::UNMERGED_ENV`; `pool::term::DIR` is `out::TERMS`, agent::resume re-exports the other |
 | fetch → control | `draining_lately` | built (step 3): `control` is jobrt's |
@@ -102,12 +102,10 @@ names, webpenc as now).
 4. **buildstore** (the build's files: the NAS/store layer above `store`; built, step 4): out,
    handoff, rawpack, localread, costin, coverage, outlines, fetch, geotiff, `recipes` (the
    `Recipe` type), `inputs_folder` (the inputs folders' predicate), `nasssh` (a bounded `ssh` to
-   the NAS, from osmpass). ~12.4k lines (4 Nov 2026), no pipeline dependency. Its `Out` is generic
-   over what it reads from above (`out::Above`: the records and the write sets), so its methods
-   compile in pipeline, where `Pipeline` is named. Planned: the records' reading
-   (pool::records' `Records::now`, `Brief::now`, pool::term's `current`) down here, before step 5:
-   a step family's crate below pipeline can't name `Pipeline`, so its code and tests can't open
-   an `Out` until then.
+   the NAS, from osmpass), `records` (the records' read side, step 6a: pool/nas.rs, pool::term's
+   reading, the choice of the file read; `Member`). ~13k lines (5 Nov 2026), no pipeline
+   dependency. Its `Out` is plain: it reads the records itself, and a step's job is handed its
+   write set (`Out::open(…, writes)`), so a crate below pipeline can open one.
 5. **inputs** (the declared inputs): inputs (21.9k lines), dem, rules, osmpass, areafiles. Its
    edges up to agent (23) and pool (7) are cut as in §1 first; ~33k lines.
 6. Step families. They are not independent today: modgraph.py shows trees → terrain (treepacks →
@@ -197,20 +195,17 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
 4. **buildstore** (built): out, handoff, rawpack, localread, costin, coverage, outlines, fetch,
    geotiff into `crates/buildstore`, with agent/recipes.rs (`recipes`), `inputs_folder` (from
    inputs) and `nasssh` (from osmpass); pipeline re-exports the modules at their old paths. The
-   cuts are §1's table's. `out` was planned behind a registry the agent fills for the write sets;
-   `Out` also reads the pool's records itself (every open, and `recorded_sizes`), and a registry
-   would have to be filled in every process and test that opens one, so `Out` is generic over an
-   `Above` (records and write sets) instead, and pipeline's `out::Out` is `Out<Pipeline>`: its
-   callers unchanged. The test helpers other crates' tests use (`Out::handing_off`,
+   cuts are §1's table's. (`Out` was generic over what it read from above until step 6a.) The
+   test helpers other crates' tests use (`Out::handing_off`,
    coverage's fixtures and `testkit::tree_agrees`, geotiff's `testtiff` and `write_f32`,
    `costin::TEST_LOCK`) sit behind a `testkit` feature, helpers only: a dev-dependency's features
    reach examples and test-built binaries too, so no behaviour rides on one. What differs in a
-   test comes from the caller's own `cfg!(test)`: `Above::TESTING` (Out's retry waits, verify's
-   deadline and grace; `Pipeline`'s is pipeline's `cfg!(test)`), and fetch's offline start, which
-   pipeline's unit tests set as their process starts (lib.rs `TEST_START`); tests/test_mode.rs
-   checks a build with the dev-dependencies has none of it. Out's tests run in buildstore with an
-   `Above` of their own (today's files, two steps' write sets); pipeline's out keeps one test of
-   the binding. One line in a file #929 edits: `pyramids::DIR` names `rawpack::PYRAMIDS`.
+   test comes from the caller's own `cfg!(test)`: fetch's offline start and (since 6a)
+   `out::testing` (Out's retry waits, verify's deadline and grace), which a crate's unit tests set
+   as their process starts (lib.rs `TEST_START`); tests/test_mode.rs checks a build with the
+   dev-dependencies has none of it. Out's tests run in buildstore with write sets of their own
+   (two steps'); pipeline's out keeps one test of the steps table's. One line in a file #929
+   edits: `pyramids::DIR` names `rawpack::PYRAMIDS`.
 5. **inputs** and the step families (one step each, bottom up: terrain, trees, roads, names, bld),
    each after rerunning modgraph.py shows it leaves no edge back into what remains above; the
    cross-family edges of §2.6 are cut where cheap so families compile in parallel. Built so far,
@@ -223,8 +218,8 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
      them (pipeline had no other user).
    - 5b, **mapview** (built): scache, view, terr, buildings into `crates/mapview`; pipeline
      re-exports them. Cut: terr's `z9_block` (no caller).
-   Next: §6 (planned), breaking the 47-module cycle: `Out` nameable below pipeline first, then
-   inputs, the step families, and the agent's plan split from its runtime.
+   Next: §6, breaking the 47-module cycle: 6a (built) made `Out` nameable below pipeline; then
+   (planned) inputs, the step families, and the agent's plan split from its runtime.
 6. **coordination**, after #882 lands.
 7. Path rewrites: per crate, `crate::x` → `<crate>::x`, and the re-exports dropped.
 
@@ -334,9 +329,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (planned)
+## 6. Breaking the big cycle (6a built; the rest planned)
 
-**Status: planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a built, 6b-6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -370,25 +365,34 @@ Final layering, bottom to top (each line depends only on lines above it):
 
 The choices, against the alternatives:
 
-- **`Out` stops being generic.** Neither a registry nor `Above` across crates: `Out<Pipeline>`
-  can't be named below pipeline, and making every family generic over `A: Above` would compile
-  all of them in pipeline. What `Above` gave comes instead from: the records, read by buildstore
-  itself (below); the write set, a plain `fn(&str, &str, bool) -> Option<bool>` handed to
-  `Out::open(root, scratch, step, writes)`, which only scenic-build (`run`, line ~442) and agent/gc
-  call outside tests, both through `pipeline::out::open(root, scratch, step)` (it passes
-  `agent::steps::writes`); `Out::unbound` (103 callers, the steps' own code) needs neither; and
-  `TESTING`, a process flag `buildstore::out::testing()` set only by the `#[cfg(test)]` start-up
-  constructor each crate already has for `fetch::go_offline` (pipeline's and landmarks'
-  `TEST_START`; every new crate gets one), so tests/test_mode.rs keeps holding (extend it to
-  the flag). Family tests that check their step's writes against the real table (rail's,
-  timetables', ovconv's `Out::open(…, "rail-feeds")`) move to pipeline's tests/write_sets.rs.
-- **The records' read side goes to buildstore** (`buildstore::records`): pool/nas.rs (the `Nas`
-  trait, `ReadOnly`; 203 lines), term.rs's read half (`current`, `Term`, `Current`, the paths,
-  `HINT`, `app_at_least`, `is_version`) and records.rs's choice of file (`load`, `newest`,
-  `today`, `now`, `Brief::now`, `no_pool`, `FIRST`, `read_or_default`), written once, generic
-  over the snapshot type (`pool::records::Records`, which carries the agent's `Keys`, and
-  buildstore's `Recorded`, which reads only manifest, pending and sizes). The writing (save,
-  merge, take_up) stays in pool. No second copy of the choice.
+- **`Out` stops being generic** (built, 6a). Neither a registry nor `Above` across crates:
+  `Out<Pipeline>` couldn't be named below pipeline, and making every family generic over
+  `A: Above` would compile all of them in pipeline. What `Above` gave comes instead from: the
+  records, read by buildstore itself (below); the write set, a plain `out::Writes`
+  (`fn(&str, &str, bool) -> Option<bool>`) handed to `Out::open(root, scratch, step, writes)`,
+  which only scenic-build (`run`) and agent/gc call outside tests, both through
+  `pipeline::out::open(root, scratch, step)` (it passes `agent::steps::writes`); `Out::unbound`
+  (the steps' own code) needs neither; and `TESTING`, a process flag `buildstore::out::testing()`,
+  `cfg!(test)` in buildstore's own tests and set otherwise only by the `#[cfg(test)]` start-up
+  constructor each crate has for `fetch::go_offline` (pipeline's and landmarks' `TEST_START`,
+  their test_start.rs probes checking it; every new crate gets one); tests/test_mode.rs checks
+  it's off in a build with the dev-dependencies. The family tests that check their step's writes
+  against the real table (rail's, timetables', ovconv's, inputs' tests) call
+  `crate::out::open`, pipeline's; they move to pipeline's tests/write_sets.rs when their family
+  leaves (6d, 6e), not before: moving them now would only collide with the work landing in those
+  files.
+- **The records' read side goes to buildstore** (built, 6a: `buildstore::records`): pool/nas.rs
+  (the `Nas` trait, its `NasRoot` impl, `ReadOnly`; `short` and the tests' `Mem` stay in pool),
+  term.rs's read half (`records::term`: `current`, `read`, `next`, `path`, `Term`, `Current`,
+  `DIR`, `HINT`, `app_at_least`, `is_version`; `Term::after` and `Term::lead` with it, so
+  `Member` and `is_member_id` moved too, which inputs names) and records.rs's choice of file
+  (`load`, `newest`, `now`, `brief_now`, `term_one`, `no_pool`, `FIRST`, `TODAY`, the paths,
+  `read_or_default`, `FirstUnreadable`), written once, generic over the snapshot read
+  (`Snapshot`: `pool::records::Records`, which carries the agent's `Keys`, and buildstore's
+  `Recorded`, which reads only the term, manifest, pending and sizes) and the brief
+  (`BriefOf`: pool's `Brief`, and `read_manifest`'s manifest alone). Pool re-exports all of it at
+  its old paths; `Records::{load, newest, now}` and `Brief::now` are one-line calls of these. The
+  writing (save, merge, take_up, making terms) stays in pool. No second copy of the choice.
 - **Items the steps name from the agent move to their owners**: the version constants
   (`TERRAIN_V`, `SLOPE_V`, `SLOPE_LO_V`, …) to their family (agent::build re-exports them),
   `grown_e7` to roadcore::geo, `coverage_tiles` to buildstore::coverage, `h` to jobrt,
@@ -418,9 +422,15 @@ The choices, against the alternatives:
 Each ships alone, measured as §5 does (interleaved, CPU time and peak memory too); one move per
 commit; re-exports at the old paths as before.
 
-1. **6a, `Out` and the records' read side** (buildstore): as above. Cuts every `→ out` and `→
-   pool` edge of the step modules. No module leaves pipeline yet. tests/grant_rules.rs scans
-   only crates/pipeline and crates/jobrt: widen it to every crate's src before steps leave.
+1. **6a, `Out` and the records' read side** (built, 5 Nov 2026): as above. Everything the step
+   modules name of `out` and `pool` now lives in buildstore (`Out`, `read_manifest`,
+   `records::nas::ReadOnly`, `records::term::{app_at_least, is_version}`, `is_member_id`);
+   inputs/served.rs's `Brief::now(…).manifest` became `read_manifest`. They still name most of it
+   by pipeline's re-exporting paths (`crate::out::Out`, `crate::pool::term::…`), so modgraph.py
+   still draws those edges: 6b rewrites the paths. No module left pipeline. Keys, outputs and the
+   records' formats are unchanged; an `Out` now parses only the snapshot's term, manifest,
+   pending and sizes (the agent's keys were parsed and dropped), and before the pool reads
+   today's manifest, pending and sizes, not jobs.json, and `read_manifest` today's manifest alone.
 2. **6b, the paths**: the step modules name jobrt's and buildstore's items directly
    (`crate::agent::jobs::report` → `jobrt::jobs::report`, `agent::recipes::Recipe`,
    `agent::room::{free_past, job_target}`), and the item moves of §6.2. Mechanical; modgraph.py
@@ -428,7 +438,9 @@ commit; re-exports at the old paths as before.
 3. **6c, coordwire**.
 4. **6d, inputs** (inputs, dem, rules, osmpass, areafiles, rail, lakefill, water; dem's 7
    references to terrain's tile helpers move those helpers to codecs first). Needs cli out of
-   pipeline, so after #883, or `cli::program` alone moved first.
+   pipeline, so after #883, or `cli::program` alone moved first. First, as the first step module
+   leaves: tests/grant_rules.rs scans only crates/pipeline and crates/jobrt; widen it to every
+   crate's src (planned for 6a, where no module left, so nothing needed it yet).
 5. **6e, terrain**, after #965 lands (it edits terrain_deep). Then trees, roads, names (landmarks
    takes heritage, ferries, gtfs, railfeeds, ovconv, markconv, marksjob, namestodo), bld,
    offload. Cut the cross-family edges where one item is all (`layers → ovconv`, treepacks →
