@@ -1980,16 +1980,18 @@ mod tests {
         let held = Lease::take(&at).unwrap();
         held.ours().unwrap();
         assert!(c.shared.lock().unwrap().small.answers.is_some());
-        let (tx, rx) = std::sync::mpsc::channel();
-        let at2 = at.clone();
+        let taken = store::testkit::Signal::new();
+        let (at2, t) = (at.clone(), taken.clone());
         let waiter = std::thread::spawn(move || {
             let l = Lease::take(&at2).unwrap();
-            tx.send(()).unwrap();
+            t.set();
             drop(l);
         });
-        assert!(rx.recv_timeout(std::time::Duration::from_secs(1)).is_err(), "held: the next waits");
+        // (absence)
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(!taken.is_set(), "held: the next waits");
         drop(held);
-        rx.recv_timeout(std::time::Duration::from_secs(30)).expect("given back: taken by the next");
+        taken.wait("given back: taken by the next");
         waiter.join().unwrap();
         assert!(c.shared.lock().unwrap().small.answers.is_none());
         // (A keep under it.)

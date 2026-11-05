@@ -52,6 +52,11 @@ const BYPASS: &[(&str, &str, &str)] = &[
         "the hold and the retries told to the proxy itself, on this Mac (budget::seen, budget::retried)",
     ),
     (
+        "crates/pipeline/src/answers.rs",
+        ".proxy(None)",
+        "the answers' lease asked of the proxy itself, on this Mac (/lease/answers)",
+    ),
+    (
         "crates/jobrt/src/budget/proxy.rs",
         "NO_PROXY",
         "the job's own Mac (its coordinator on 127.0.0.1) direct: the sandbox allows it",
