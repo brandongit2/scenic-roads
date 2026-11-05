@@ -1,6 +1,14 @@
 #!/bin/zsh
-# The PM's health check of the build and the agents. Prints what needs attention and stamps the
-# time (.claude/health-stamp).
+# The PM's health check of the build and the agents. Prints what needs attention, and stamps the
+# time (.claude/health-stamp): the next check's failures are those since this one.
+#
+# The build's part is one `scenic status --flags` (crates/pipeline/src/agent/flags.rs): the lead's
+# status covers every Mac, and it prints only what needs a look, a line each: its flags ("idle:" a
+# Mac with a slot free while work it could take waits, with what in its capacity held the job back,
+# or the waits its remaining work is held behind; "overdue:" a job past the pool's overdue factor
+# times its usual time on its Mac, with its batch's progress), the pool's warnings ("warning:" no
+# lead, the lead or a member out of touch, the lead's loop stuck) and the jobs failed since the last
+# check's stamp ("failed:"). The same flags are on the build page's alerts and the menu bar.
 case $#:${1:-} in
   0:) ;;
   1:-h|1:--help) print "usage: tools/dev/health.sh   (no arguments)"; exit 0 ;;
@@ -8,38 +16,19 @@ case $#:${1:-} in
 esac
 repo=${$(git -C ${0:A:h} rev-parse --path-format=absolute --git-common-dir):h}   # the main checkout, found from this script (also from a worktree copy)
 cd $repo || exit 1
+# (No stamp yet: the failures of the last 6 hours, scenic status --flags's own default.)
+since=$(cat .claude/health-stamp 2>/dev/null)
 date +%s > .claude/health-stamp
 print "== health $(date '+%F %T')"
 df -h / | awk 'NR==2{print "disk: "$4" free of "$2}'
 print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/catalog ]] && echo mounted || echo NOT MOUNTED)"
-# (The lead's heartbeat on the NAS: `scenic menu` answers with this Mac's own status alone since
-# docs/roles.md step 5.)
-cat /Volumes/personal/projects/scenic-roads/state/status.json 2>/dev/null | python3 -c '
-import json,sys,time
-try: s=json.load(sys.stdin)
-except Exception as e: print("BUILD STATUS UNREADABLE:",e); sys.exit()
-now=time.time()
-print("status from: %s (the lead heartbeat on the NAS), app %s" % (s.get("host"), s.get("app")))
-c=s.get("catalog") or {}
-age=(now-c.get("at",now))/3600
-print("catalogue: %s made %.1f h ago" % (c.get("n"), age)+("  <-- STALE (>6 h)" if age>6 else ""))
-js=s.get("jobs") or [x for x in [s.get("job"),s.get("beside")]+list(s.get("more") or []) if x]
-for j in js:
-  p=j.get("progress") or {}; mv=(now-p.get("moved_at",now))/60
-  print("the lead job (slot %s): %s %s/%s %s, last progress %.0f min ago" % (j.get("slot"), j.get("id"), p.get("done"), p.get("total"), p.get("unit",""), mv)+("  <-- NO PROGRESS 30 min" if mv>30 else ""))
-if not js: print("the lead job: none running")
-r=s.get("recent") or []
-if r:
-  last=(now-max(x.get("ended",0) for x in r))/60
-  print("last job finished %.0f min ago" % last+("  <-- NOTHING FINISHED 2 h" if last>120 else ""))
-  bad=[x["id"] for x in r[:20] if not x.get("ok")]
-  if bad: print("FAILED recently:",bad)
-for w in s.get("waiting") or []: print("WAIT:",w.get("what"),"|",(w.get("why") or "")[:200])
-p=s.get("pool") or {}
-for m in (p.get("lead") or {}).get("members",[]):
-  beat=(now-m.get("beat",now))/60
-  print("member %s: %s %s, beat %.0f min ago" % (m.get("host"), m.get("app"), m.get("state"), beat)+("  <-- SILENT" if beat>10 else ""))
-'
+from="6 h ago"; [[ -n $since ]] && from=$(date -r $since '+%F %T')
+print "the build (scenic status --flags, failures since $from):"
+if out=$(scenic status --flags ${since:+--since $since} 2>&1); then
+  print -r -- "${out:-  nothing flagged}" | sed 's/^\([^ ]\)/  \1/'
+else
+  print -r -- "  STATUS UNREADABLE: $out"
+fi
 print "agent worktrees (newest file change):"
 for wt in .claude/worktrees/*(N/); do
   n=$(find $wt -maxdepth 3 -not -path '*/target/*' -not -path '*/node_modules/*' -type f -newermt "30 minutes ago" 2>/dev/null | head -1)
