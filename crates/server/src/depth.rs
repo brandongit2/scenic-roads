@@ -144,19 +144,26 @@ pub fn terrain_floor(s: &crate::S, z: u8, x: u32, y: u32) -> anyhow::Result<Opti
         (served(s, pipeline::depth::LAYER, z, x, y)?, served(s, pipeline::depth::CLASS_LAYER, z, x, y)?)
     {
         let sea = crate::water::sea_shares(s, z, x, y)?;
-        floor(&mut e, sea.as_deref(), &d, &c);
+        floor(&mut e, sea.as_ref().map(|s| &s.share[..]), &d, &c);
     }
     Ok(crate::terrain::encode(e).ok())
 }
 
-/// The terrain tile z/x/y as the water's surface (`surface`), encoded as the terrain's are: where
-/// the map's 3D water stands over the floor (web/src/depth.ts). None outside the terrain.
-pub fn terrain_surface(s: &crate::S, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+/// The terrain tile z/x/y as the water's surface (`surface`) over its share of sea `sea`, encoded
+/// as the terrain's are: the map's 3D terrain, and where its water stands over the floor
+/// (web/src/depth.ts). None outside the terrain.
+pub fn terrain_surface(s: &crate::S, z: u8, x: u32, y: u32, sea: &[f32]) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(mut e) = crate::terrain::terrain_f32(s, z, x, y)? else { return Ok(None) };
-    if let Some(sea) = crate::water::sea_shares(s, z, x, y)? {
-        surface(&mut e, &sea);
-    }
+    surface(&mut e, sea);
     Ok(crate::terrain::encode(e).ok())
+}
+
+/// Whether the water's surface over a tile's share of sea (crate::water::sea_shares) has to be
+/// made: some pixel is the sea's, or the shares are an ancestor's stand-in (what's made from them
+/// isn't cached for good). Else (no water layer, past its zooms, no pixel at sea) it is the
+/// terrain tile itself.
+pub fn surface_made(sea: Option<&crate::water::Sea>) -> bool {
+    sea.is_some_and(|sea| !sea.exact || sea.share.iter().any(|&s| at_sea(s)))
 }
 
 #[cfg(test)]
@@ -196,5 +203,19 @@ mod tests {
         let mut e = vec![-35.0, -2.0, 10.0, -20.0, -6.0];
         surface(&mut e, &sea);
         assert_eq!(e, vec![0.0, 0.0, 0.0, -20.0, -6.0]);
+    }
+
+    /// The surface is made only over the sea: a tile without a pixel at sea (a shore's 0.4 of one,
+    /// a polder's or a lake's none), past the water's zooms or without its layer is the terrain
+    /// itself, served as stored; shares that are an ancestor's stand-in are made from, never
+    /// taken as no sea (a tile served as stored is cached for good).
+    #[test]
+    fn the_surface_is_made_only_over_the_sea() {
+        use crate::water::Sea;
+        let sea = |share: Vec<f32>, exact| Some(Sea { share, exact });
+        assert!(!surface_made(None));
+        assert!(!surface_made(sea(vec![0.0, 0.4, 0.0], true).as_ref()));
+        assert!(surface_made(sea(vec![0.0, 0.5, 0.0], true).as_ref()));
+        assert!(surface_made(sea(vec![0.0, 0.0, 0.0], false).as_ref()));
     }
 }

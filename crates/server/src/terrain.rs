@@ -189,7 +189,10 @@ pub(crate) fn made(
 
 /// A terrain tile; `?floor=1`: with the floor under the water (crate::depth::terrain_floor),
 /// where the catalogue has depth (else the terrain as it is); `?surface=1`: as the water's surface
-/// (crate::depth::terrain_surface), sea level at sea.
+/// (crate::depth::terrain_surface), sea level at sea. A surface tile with no pixel at sea (by
+/// exact shares: not an ancestor's stand-in) is the terrain tile itself, served as it is (a stored
+/// one with its ETag, cached for good while the URL's water version `w=` is the current one): most
+/// tiles of the map's 3D terrain, its tint and its contours, which all read the surface.
 pub async fn terrain_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
@@ -199,6 +202,7 @@ pub async fn terrain_tile(
     let v = cache::versioned(q.as_deref());
     let has = |k: &str| q.as_deref().is_some_and(|q| q.split('&').any(|kv| kv == k));
     let (floor, surface) = (has("floor=1"), has("surface=1"));
+    let s2 = s.clone();
     let got = tokio::task::spawn_blocking(move || {
         if floor && s.data.catalogue().layers.contains_key(pipeline::depth::LAYER) {
             return made(FLOOR, gen(&s), z, x, y, || {
@@ -206,9 +210,18 @@ pub async fn terrain_tile(
             });
         }
         if surface {
-            return made(SURFACE, gen(&s), z, x, y, || {
-                Ok(Some(crate::depth::terrain_surface(&s, z, x, y)?.unwrap_or_else(flat)))
-            });
+            match crate::water::sea_shares(&s, z, x, y) {
+                Ok(Some(sea)) if crate::depth::surface_made(Some(&sea)) => {
+                    return made(SURFACE, gen(&s), z, x, y, || {
+                        Ok(Some(crate::depth::terrain_surface(&s, z, x, y, &sea.share)?.unwrap_or_else(flat)))
+                    });
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("{SURFACE} {z}/{x}/{y}: {e:#}");
+                    return Some(Got::Failed);
+                }
+            }
         }
         match stored(&s, "terrain", z, x, y, &headers, "") {
             // (A deep tile that can't be read now: made from its ancestor, `terrain_f32`.)
@@ -222,6 +235,13 @@ pub async fn terrain_tile(
     })
     .await
     .unwrap_or(Some(Got::Failed));
+    // A surface tile served as the terrain's, under another water version than the current one, is
+    // not cached for good: that water may say sea there.
+    if surface && !floor && !has(&format!("w={}", crate::water::version(&s2))) {
+        let mut r = respond(got, false);
+        r.extensions_mut().insert(cache::NotForGood);
+        return r;
+    }
     respond(got, v)
 }
 
