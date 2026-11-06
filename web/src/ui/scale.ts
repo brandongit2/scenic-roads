@@ -5,8 +5,9 @@
 import { bestOfPct, setBestPct, type FitUnit } from '../autofit';
 import { PALETTE_ITEMS, paletteCss, paletteRgb } from '../palettes';
 import type { Dist } from '../roads/stats';
+import { axisTicks, spaced, unspaced, type Spacing } from '../scaleaxis';
 import type { ThresholdDir } from '../state';
-import { h, niceStep, setupCanvas } from './dom';
+import { h, setupCanvas } from './dom';
 import { RampSelect, type RampItem } from './rampselect';
 import { onDouble } from './touch';
 
@@ -30,6 +31,8 @@ export interface ScaleMetric {
   fmt: (v: number) => string;
   /** The top label reads "N+" (open-ended scales, like grade). */
   hiPlus?: boolean;
+  /** How the colours are spaced over the range, and so the legend's axis (default linear). */
+  spacing?: Spacing;
 }
 
 export interface ScaleOpts {
@@ -84,11 +87,15 @@ export function cdfOf(dist: Dist | null, range: [number, number]): Uint8Array | 
   return out;
 }
 
-/** Scale position 0..1 of a value (equalised when a lookup is given). */
-export function scaleU(v: number, range: [number, number], cdf: Uint8Array | null): number {
-  let u = Math.max(0, Math.min(1, (v - range[0]) / (range[1] - range[0] || 1e-9)));
-  if (cdf) u = cdf[Math.min(255, Math.floor(u * 255 + 0.5))] / 255;
-  return u;
+/** Scale position 0..1 of a value: by the spacing, or equalised when a lookup is given (built
+ * over the range in proportion, cdfOf). */
+export function scaleU(v: number, range: [number, number], cdf: Uint8Array | null, sp: Spacing = 'linear'): number {
+  if (cdf) {
+    const u = Math.max(0, Math.min(1, (v - range[0]) / (range[1] - range[0] || 1e-9)));
+    return cdf[Math.min(255, Math.floor(u * 255 + 0.5))] / 255;
+  }
+  const a = spaced(sp, range[0]), b = spaced(sp, range[1]);
+  return Math.max(0, Math.min(1, (spaced(sp, v) - a) / (b - a || 1e-9)));
 }
 
 /** Whether a value passes the threshold highlight ('low' follows the range's low end). */
@@ -126,6 +133,7 @@ export class ScaleControls {
   private dist: Dist | null = null;
   private cdf: Uint8Array | null = null;
   private range: [number, number] = [0, 1];
+  /** The legend's ends, in spaced units (scaleaxis.ts spaced). */
   private axis: [number, number] = [0, 1];
   private drag: { which: 0 | 1; axis: [number, number] } | null = null;
 
@@ -337,7 +345,11 @@ export class ScaleControls {
   }
 
   private uAt(v: number): number {
-    return scaleU(v, this.range, this.o.get().equalize ? this.cdf : null);
+    return scaleU(v, this.range, this.o.get().equalize ? this.cdf : null, this.spacing());
+  }
+
+  private spacing(): Spacing {
+    return this.o.metric().spacing ?? 'linear';
   }
 
   private colourAt(v: number): string {
@@ -352,8 +364,8 @@ export class ScaleControls {
 
   private bindDrag() {
     const c = this.canvas;
-    const toVal = (x: number, axis: [number, number]) => axis[0] + (x / c.clientWidth) * (axis[1] - axis[0]);
-    const toX = (v: number) => ((v - this.axis[0]) / (this.axis[1] - this.axis[0])) * c.clientWidth;
+    const toVal = (x: number, axis: [number, number]) => unspaced(this.spacing(), axis[0] + (x / c.clientWidth) * (axis[1] - axis[0]));
+    const toX = (v: number) => ((spaced(this.spacing(), v) - this.axis[0]) / (this.axis[1] - this.axis[0])) * c.clientWidth;
     const draggable = () => !this.o.fixedCaption?.();
     c.addEventListener('pointermove', (e) => {
       if (this.drag) {
@@ -391,30 +403,35 @@ export class ScaleControls {
     const d = this.o.metric();
     const st = this.dist;
     const r = this.range;
-    // Axis: union of the colour range and the distribution in view (dragging keeps it fixed).
+    // Axis, spaced as the colours are: union of the colour range and the distribution in view
+    // (dragging keeps it fixed).
+    const sp = d.spacing ?? 'linear';
+    const F = (v: number) => spaced(sp, v);
     let axis: [number, number];
     if (this.drag) axis = this.drag.axis;
-    else if (this.o.fixedCaption?.() || !st || st.total <= 0) axis = [r[0], r[1]];
+    else if (this.o.fixedCaption?.() || !st || st.total <= 0) axis = [F(r[0]), F(r[1])];
     else {
-      const lo = Math.max(d.domain[0], Math.min(r[0], st.quantile(0.001))), hi = Math.min(d.domain[1], Math.max(r[1], st.quantile(0.999)));
+      const lo = F(Math.max(d.domain[0], Math.min(r[0], st.quantile(0.001)))), hi = F(Math.min(d.domain[1], Math.max(r[1], st.quantile(0.999))));
       const pad = (hi - lo) * 0.04;
       axis = [lo - pad, hi + pad];
     }
     if (!(axis[1] > axis[0])) axis = [axis[0], axis[0] + 1];
     this.axis = axis;
-    const X = (v: number) => ((v - axis[0]) / (axis[1] - axis[0])) * W;
+    const X = (v: number) => ((F(v) - axis[0]) / (axis[1] - axis[0])) * W;
+    /** The value at fraction x of the axis. */
+    const at = (x: number) => unspaced(sp, axis[0] + x * (axis[1] - axis[0]));
     const HB = 34, SY = 38, SH = 9;
 
     // Histogram of length in view.
     const NBIN = Math.max(20, Math.floor(W / 4));
     if (st && st.total > 0) {
-      const bins = st.rebin(axis[0], axis[1], NBIN);
+      const bins = st.rebin(axis[0], axis[1], NBIN, (t) => unspaced(sp, t));
       let max = 0;
       for (const b of bins) max = Math.max(max, b);
       const bw = W / NBIN;
       for (let i = 0; i < NBIN; i++) {
         if (!bins[i]) continue;
-        const v = axis[0] + ((i + 0.5) / NBIN) * (axis[1] - axis[0]);
+        const v = at((i + 0.5) / NBIN);
         const hgt = Math.max(1, Math.sqrt(bins[i] / max) * HB);
         const inRange = v >= r[0] && v <= r[1];
         ctx.fillStyle = this.colourAt(v);
@@ -432,7 +449,7 @@ export class ScaleControls {
     const NS = s.equalize ? 64 : 24;
     for (let i = 0; i <= NS; i++) {
       const x = i / NS;
-      const v = axis[0] + x * (axis[1] - axis[0]);
+      const v = at(x);
       grd.addColorStop(x, this.colourAt(v).replace('rgb(', 'rgba(').replace(')', `,${Math.max(0.12, this.alphaAt(v)).toFixed(3)})`));
     }
     ctx.fillStyle = grd;
@@ -454,10 +471,12 @@ export class ScaleControls {
     }
 
     // Range handles + labels.
-    ctx.font = '600 11px -apple-system, system-ui, sans-serif';
+    const HF = '600 11px -apple-system, system-ui, sans-serif', TF = '500 10px -apple-system, system-ui, sans-serif';
+    ctx.font = HF;
     ctx.textBaseline = 'top';
     const lab = (v: number) => d.fmt(v);
     const xs = [X(r[0]), X(r[1])];
+    const taken: [number, number][] = [];
     for (let k = 0; k < 2; k++) {
       const x = Math.max(0, Math.min(W, xs[k]));
       ctx.fillStyle = '#fff';
@@ -467,11 +486,19 @@ export class ScaleControls {
       const tx = k === 0 ? Math.max(0, Math.min(x - tw / 2, xs[1] - tw - 8)) : Math.min(W - tw, Math.max(x - tw / 2, xs[0] + ctx.measureText(lab(r[0])).width + 8));
       ctx.fillStyle = '#e8ecf2';
       ctx.fillText(txt, tx, SY + SH + 5);
+      taken.push([tx, tx + tw]);
     }
-    // Faint axis ticks.
-    ctx.fillStyle = 'rgba(255,255,255,0.28)';
-    const step = niceStep(axis[1] - axis[0], 5);
-    for (let v = Math.ceil(axis[0] / step) * step; v <= axis[1]; v += step) ctx.fillRect(X(v), HB + 1, 1, 2);
+    // Axis ticks at round values, faint, labelled where there's room beside the handles' labels.
+    ctx.font = TF;
+    const ticks = axisTicks(sp, axis[0], axis[1], W, d.step, (v) => ctx.measureText(lab(v)).width, taken);
+    for (const t of ticks) {
+      ctx.fillStyle = 'rgba(255,255,255,0.28)';
+      ctx.fillRect(t.x, HB + 1, 1, 2);
+      if (t.lx === undefined) continue;
+      ctx.fillRect(t.x, SY + SH, 1, 3);
+      ctx.fillStyle = 'rgba(232,236,242,0.5)';
+      ctx.fillText(lab(t.v), t.lx, SY + SH + 6);
+    }
   }
 }
 

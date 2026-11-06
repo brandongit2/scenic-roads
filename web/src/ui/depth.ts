@@ -3,7 +3,7 @@
 // depths in view, the range, auto-fit and equalisation, the ramp), and the depth contours with
 // their labels; and the 3D floor's switch (depth.ts).
 import type { Dist } from '../roads/stats';
-import { DEPTH_DEFAULTS, DEPTH_DOMAIN, DEPTH_PALETTES, depthColour, rgba, scaleFns, type DepthState } from '../depthlook';
+import { DEPTH_DEFAULTS, DEPTH_DOMAIN, DEPTH_PALETTES, depthColour, rgba, type DepthState } from '../depthlook';
 import type { ScaleFields, Store } from '../state';
 import { ColourPick, Slider, pct } from './controls';
 import { h } from './dom';
@@ -56,7 +56,7 @@ export class DepthSection {
     this.scaleCtl = new ScaleControls({
       get: C,
       set: (patch: Partial<ScaleFields>) => D({ colours: { ...C(), ...patch } }),
-      metric: () => ({ domain: DEPTH_DOMAIN, step: 1, fmt: (v: number) => (v >= 1000 ? `${+(v / 1000).toFixed(2)} km` : `${Math.round(v)} m`), hiPlus: true }),
+      metric: () => ({ domain: DEPTH_DOMAIN, step: 1, fmt: (v: number) => (v >= 1000 ? `${+(v / 1000).toFixed(2)} km` : `${Math.round(v)} m`), hiPlus: true, spacing: S().scale }),
       noun: 'water',
       measure: 'water area',
       fadeDefault: 0,
@@ -159,7 +159,6 @@ export class DepthSection {
 
   /** A depth's place on the ramp, as the map colours it (depth.ts position). */
   private position(v: number): number {
-    if (this.cdf) return scaleU(v, this.range, this.cdf);
-    return scaleFns(this.store.s.depth.scale, ...this.range)[0](Math.max(0, v));
+    return scaleU(v, this.range, this.cdf, this.store.s.depth.scale);
   }
 }

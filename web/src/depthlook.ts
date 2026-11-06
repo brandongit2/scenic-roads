@@ -1,6 +1,7 @@
 // The depth layers' look (depth.ts; Layers → Depth, ui/depth.ts; `dp=` in links): their settings,
 // defaults and colour ramps, apart from the layers so the app's state can name them.
 import { PALETTE_ITEMS, baseKey, isRev, paletteFn, stopsFn } from './palettes';
+import type { Spacing } from './scaleaxis';
 import type { ScaleFields } from './state';
 
 type RGB = [number, number, number];
@@ -10,7 +11,7 @@ export interface DepthState {
   /** Depth colour and floor shading. */
   on: boolean;
   /** The ramp's spacing over its range: in proportion to depth, or more colours in the shallows. */
-  scale: 'linear' | 'log';
+  scale: Spacing;
   /** The colour scale (ui/scale.ts ScaleControls): the palette, the range (m of depth; `auto`:
    * fitted to the depths in view, between the `fit` percentiles) and equalisation. The low-end
    * fade and the highlight aren't offered for depth. */
@@ -67,17 +68,9 @@ export function depthColour(key: string, t: number): RGB {
 
 export const rgba = (c: RGB, a = 1) => `rgba(${c.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255)).join(',')},${a})`;
 
-/** Depth (m, positive) → position on the ramp, and back. */
-export function scaleFns(kind: 'linear' | 'log', lo: number, hi: number): [(d: number) => number, (t: number) => number] {
-  if (kind === 'linear') return [(d) => (d - lo) / (hi - lo || 1), (t) => lo + t * (hi - lo)];
-  const L = (d: number) => Math.log1p(Math.max(0, d));
-  const a = L(lo), b = L(hi);
-  return [(d) => (L(d) - a) / (b - a || 1), (t) => Math.expm1(a + t * (b - a))];
-}
-
-/** Histogram bins: depth (m) on a log scale from 0.1 to 12,000 m. */
 /** The depth's colour scale's whole range (m): the ramp's end goes no deeper. */
 export const DEPTH_DOMAIN: [number, number] = [0, 6000];
+/** Histogram bins: depth (m) on a log scale from 0.1 to 12,000 m. */
 export const HBINS = 120;
 export const hbin = (d: number) => Math.max(0, Math.min(HBINS - 1, Math.floor(((Math.log10(Math.max(0.1, d)) + 1) / 5.08) * HBINS)));
 export const hdepth = (b: number) => 10 ** ((b / HBINS) * 5.08 - 1);

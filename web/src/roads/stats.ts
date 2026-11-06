@@ -64,16 +64,20 @@ export class Dist {
     return this.total > 0 ? acc / this.total : 0;
   }
 
-  /** Re-bin into `n` bins over [a, b] (for the legend histogram). */
-  rebin(a: number, b: number, n: number): Float64Array {
+  /** Re-bin into `n` equal bins over [a, b] on an axis whose place t holds the value `at(t)`
+   * (default: the value itself; increasing), each bin's length spread evenly over its values (for
+   * the legend histograms). */
+  rebin(a: number, b: number, n: number, at: (t: number) => number = (t) => t): Float64Array {
     const out = new Float64Array(n);
+    const edges = Array.from({ length: n + 1 }, (_, k) => at(a + (k / n) * (b - a)));
     const m = this.bins.length;
     const w = (this.hi - this.lo) / m;
+    let k = 0;
     for (let i = 0; i < m; i++) {
       if (!this.bins[i]) continue;
-      const c = this.lo + (i + 0.5) * w;
-      const k = Math.floor(((c - a) / (b - a)) * n);
-      if (k >= 0 && k < n) out[k] += this.bins[i];
+      const b0 = this.lo + i * w, b1 = b0 + w;
+      while (k < n && edges[k + 1] <= b0) k++;
+      for (let j = k; j < n && edges[j] < b1; j++) out[j] += (this.bins[i] * (Math.min(b1, edges[j + 1]) - Math.max(b0, edges[j]))) / w;
     }
     return out;
   }

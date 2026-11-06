@@ -36,10 +36,11 @@ import { onVersions, ver } from './api';
 import { SHADE_SHIFT, floorTiles, waterTilesOn, waterTop } from './basemap';
 import { hostFor } from './hosts';
 import { DRY_MIN, depthZooms, type DepthZooms } from './depthgrid';
-import { DEPTH_DOMAIN, depthBins, depthColour, hdepth, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
+import { DEPTH_DOMAIN, depthBins, depthColour, hdepth, HBINS, rgba, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
 import { mercX, mercY, tileY } from './merc';
 import { hexRgb } from './palettes';
+import { spaced, unspaced } from './scaleaxis';
 import { WorkerPool } from './workerpool';
 import { cdfOf, scaleU } from './ui/scale';
 import { Dist } from './roads/stats';
@@ -127,8 +128,7 @@ export class Depth {
   /** Position on the ramp (0 … 1) of a depth (m, positive). */
   private position(s: DepthState): (d: number) => number {
     const r = this.domain(s), cdf = this.cdf(s);
-    const [fwd] = scaleFns(s.scale, ...r);
-    return cdf ? (d) => scaleU(d, r, cdf) : fwd;
+    return (d) => scaleU(d, r, cdf, s.scale);
   }
 
   /** The sources by code (the panel's notes). */
@@ -323,8 +323,10 @@ export class Depth {
 
   private ramp(s: DepthState): ExpressionSpecification {
     const pal = s.colours.palette;
-    const [, inv] = scaleFns(s.scale, ...this.domain(s));
     const cdf = this.cdf(s), r = this.domain(s);
+    // Depth at ramp position t: by the spacing over the range.
+    const a = spaced(s.scale, r[0]), b = spaced(s.scale, r[1]);
+    const inv = (t: number) => unspaced(s.scale, a + t * (b - a));
     const stops: [number, string][] = [];
     // Deeper than the domain: its deepest colour; then the domain, 48 steps (equalised: each at its
     // place among the depths in view); then 0 m.

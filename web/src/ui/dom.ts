@@ -32,14 +32,6 @@ export const fmt = {
   coord: (lat: number, lng: number) => `${Math.abs(lat).toFixed(5)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lng).toFixed(5)}° ${lng >= 0 ? 'E' : 'W'}`,
 };
 
-/** Round a range to "nice" tick values. */
-export function niceStep(span: number, target: number): number {
-  const raw = span / target;
-  const p = 10 ** Math.floor(Math.log10(raw));
-  const r = raw / p;
-  return (r < 1.5 ? 1 : r < 3 ? 2 : r < 7 ? 5 : 10) * p;
-}
-
 export function toast(msg: string) {
   const t = document.getElementById('toast')!;
   t.textContent = msg;

@@ -5,7 +5,8 @@ import { displayName } from '../names';
 import { paletteRgb } from '../palettes';
 import { metricOf, modeDef, type Mode } from '../scenic';
 import * as prefs from '../prefs';
-import { cap, fmt, h, niceStep, setupCanvas } from './dom';
+import { niceStep } from '../scaleaxis';
+import { cap, fmt, h, setupCanvas } from './dom';
 
 export interface ProfileColour {
   palette: string;
