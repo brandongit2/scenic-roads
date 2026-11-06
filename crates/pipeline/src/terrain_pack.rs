@@ -7,6 +7,7 @@
 //! The z6 tiles' runs (`build_piece`), the z3 tiles' assemblies (`build_lo`) and the root
 //! (`build_root`) are here; a z10 tile's band past z12 is crate::terrain_deep's.
 
+use crate::lakefill::water_pin;
 use roadcore::grid::decode_terrain;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -221,18 +222,6 @@ impl RawSource for Fills<'_> {
     fn keep(&self, z: u8, x: u32, y: u32) -> bool {
         self.kept.lock().unwrap().remove(&(z, x, y)).unwrap_or(true)
     }
-}
-
-/// The basemap the depth's water comes from: the latest pass's (`layers/basemap/world-<date>`),
-/// its logical and content names. The depth's keys name its water by digests of what each target
-/// reads of it (`water_source_pin`, agent::build), so a new pass's basemap makes again the depth
-/// whose water changed.
-pub fn water_pin(m: &std::collections::BTreeMap<String, String>) -> Option<(&str, &str)> {
-    let prefix = "layers/basemap/world-";
-    m.range(prefix.to_string()..)
-        .take_while(|(l, _)| l.starts_with(prefix))
-        .last()
-        .map(|(l, c)| (l.as_str(), c.as_str()))
 }
 
 /// The pin of the depth's water source as the jobs open it (`SourceFiles`: `WaterSource::pin`),

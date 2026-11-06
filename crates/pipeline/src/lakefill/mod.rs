@@ -679,12 +679,24 @@ pub fn logical(date: &str) -> String {
     format!("{PREFIX}{date}")
 }
 
+/// The basemap the depth's water comes from: the latest pass's (`layers/basemap/world-<date>`),
+/// its logical and content names. The depth's keys name its water by digests of what each target
+/// reads of it (terrain_pack::water_source_pin, agent::build), so a new pass's basemap makes again
+/// the depth whose water changed. (Task #916 step 6d: from terrain_pack.)
+pub fn water_pin(m: &BTreeMap<String, String>) -> Option<(&str, &str)> {
+    let prefix = "layers/basemap/world-";
+    m.range(prefix.to_string()..)
+        .take_while(|(l, _)| l.starts_with(prefix))
+        .last()
+        .map(|(l, c)| (l.as_str(), c.as_str()))
+}
+
 /// The fill the water and the terrain read with the build manifest `m`: the one made from the
-/// latest pass's basemap (`terrain_pack::water_pin`), as (logical, content name); None when that
-/// pass has none (not made yet, or no source), so a fill made from an older basemap is never
-/// drawn over a newer one.
+/// latest pass's basemap (`water_pin`), as (logical, content name); None when that pass has none
+/// (not made yet, or no source), so a fill made from an older basemap is never drawn over a newer
+/// one.
 pub fn current(m: &BTreeMap<String, String>) -> Option<(String, &str)> {
-    let (l, _) = crate::terrain_pack::water_pin(m)?;
+    let (l, _) = water_pin(m)?;
     let date = l.strip_prefix("layers/basemap/world-")?;
     let f = logical(date);
     let c = m.get(&f)?;
