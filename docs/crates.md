@@ -623,7 +623,8 @@ The choices, against the alternatives:
   passes `&PLAN` to the agent's entry points (`agent::run`, the forecast, the simulator, scenic
   menu). Passed, not installed: no link-time constructor (a static in an rlib may be dropped by
   the linker) and no registry to fill in every test. The family constants agentcore names
-  (`*::task::KIND`, `piece_peak_mb`, `squares_of`, `DEEP_MIDS_MB`) go through `Plan` too.
+  (`*::task::KIND`, `piece_peak_mb`, `squares_of`, `DEEP_MIDS_MB`) go through `Plan` too. The
+  planner (plan.rs) is the runtime's, not the plan's (§6.3, 6f).
 
 ### 6.3 Order
 
@@ -836,8 +837,66 @@ commit; re-exports at the old paths as before.
      and `MAX_TARGET` (jobrt's, which agent's re-exported). So no literal, expression or format
      string changed, and keys (`BLDPREP_V`, `BUILDINGS_V`), outputs, on-disk and wire formats are
      as before. Measured in §5.
-6. **6f, agentcore and `Plan`**: the last and largest step, after #882's later steps (coord).
-   Before it, pipeline still holds ~96k lines (plan 19.5k + runtime 56.8k + bins 12.9k + glue).
+6. **6f, agentcore and `Plan`** (planned; its order decided 6 Nov 2026 on main at 34a47749): the
+   last and largest step. It needn't wait for #882 (backgrounded): nothing left in it edits what
+   #882's later steps would. modgraph.py then: one cycle of 10 modules, 108.0k lines (agent 70.2k,
+   coord 21.0k, pool 9.6k, needs, answers, pubtimes, uses, paces, offload, out). What the runtime
+   names of the plan and the families, counted then by hand (`build::`, `steps::`, `tiles::` paths
+   and their imports; `crate::<family module>`; non-test code unless said):
+   - **plan.rs is the planner, not the plan**: the **plan** part's thread (`Planner`, `Handle`,
+     its messages `Msg`, `Inputs`, `PlanView`, `Out`). It names coord (19 mentions), pool, needs,
+     pubtimes and control, and the runtime's items in agent/mod.rs (`Holds`, `Coverages`,
+     `GuardHolds`, `edit_held`, `write_published`, `load_regions`, `WORLDWIDE_STEPS`,
+     `PASS_SPACE`, `PROXY_REPLAN`, `Forecasted`), forecast's lanes and redo's `done_of`, so it goes
+     down with the runtime, its calls of the plan through `Plan`. The plan that stays in pipeline
+     is build.rs, steps.rs, idents.rs and tiles.rs (17.3k lines with their tests), not §6.1's
+     19.5k.
+   - The runtime names the plan's items: in plan.rs ~60 distinct ones (the `*_work` functions,
+     `plan`, `plan_with`, `KeyCtx`, `KeyMemo`, `PassCtx`, `Checklist`, `Publishing`, the table's
+     readiness …); elsewhere ~100 mentions in 74 functions (agent/mod.rs 48, then forecast, pool,
+     builtview, redo, flags, every, coord/mod.rs and sched.rs, needs, jobs, pool/sim.rs and
+     records.rs, room, publish, fccheck, pubtimes, out, nasread, asks): the types it holds (`Work`,
+     51 mentions with tests; `Keys`, 30; `Line`, `Item`, `PublishLine`, `RegionState`,
+     `LastCatalogue`, `ReadTarget`, `Read`, `Along`) and the table's queries (`row`, `task`,
+     `current`, `SHARED`, `TASKS`, `records_only`, `saves`, `outside`, `read_targets`,
+     `output_names` …).
+   - The families, ~15 items: the task kinds (agent's `task_what` and helpers' need, offload's
+     `task_kind`), terrain_pack's `piece_peak_mb` and `DEEP_MIDS_MB` (`terrain_peak`, which only
+     the planner calls), `timetables::View` (a field of `Status` and `PlanView`), heritage's
+     `registers_now` and bld's `sources` (`input_digests`), trees' `squares_of` and `chm_name` and
+     stage's `MARGIN_KM` (room's hints), namestodo's `INPUTS` (publish's watches),
+     `reach::Reaches` (pubtimes, the planner), buildtiles (the planner), depth's layer names (gc),
+     and terrain_deep's `PACK_Z` (dem::zoom's already). More in tests (unit's `tail`, the tasks'
+     `spec`s, reach, `buildtiles::TEST_RELEASE`).
+   - Test time inside non-test code: `cfg(test)` constants, fields and branches (`JOIN_WAIT`,
+     `JOIN_TRY`, `Options::member`, …: ~30 in agent/mod.rs, 19 in coord/mod.rs, more in tiles,
+     nasread, jobs, room, gc, pool), which pipeline's tests stop seeing once the code is another
+     crate's, as 6e found for `disk_free`.
+   So 6f goes in parts, each shipping alone (planned):
+   1. **6f1, the types the runtime holds go to their owners**: `Work` to agent::jobs (a
+      `JobSpec`'s `record`), `Keys` with the step renames (`RENAMED`, `current`, which
+      `Keys::per_target` reads) to pool::records (the records carry them: `Records::keys`); the
+      runtime names them there, the plan through build's and steps' re-exports; and
+      `terrain_deep::PACK_Z` by its home's path (`dem::zoom`). Then the rest of the data the
+      runtime reads (`Line`, `Item`, `PublishLine`, `RegionState`, `LastCatalogue`, `ReadTarget`,
+      `Read`, `Along`; `Step`, `Kind`, `Place`), each to the runtime module holding it.
+   2. **6f2, `Plan`**: the trait, in the runtime, implemented by the plan; `&'static dyn Plan`
+      held by the agent, the planner, the forecast, the simulator and coord's scheduler, passed by
+      their entry points. Every runtime call of the table and the plan goes through it, and the
+      family items above: `input_digests` and `key_inputs` (they name heritage and bld) and
+      `terrain_peak` move to the plan, called through it, as are the kinds, room's hints of a
+      step's targets and publish's watches. `timetables::View` (a field the heartbeat carries) is
+      the open one: a type below both, or the field carried as the plan made it; decided then.
+   3. **6f3, test time**: the runtime's `cfg(test)` behaviours read the process flag
+      (`buildstore::out::testing`, set by each crate's `TEST_START`), as `disk_free` does since
+      6e; the runtime's tests that need the plan (the real table, the families) to a pipeline test
+      module, as the families' went.
+   4. **6f4, the move**: the runtime (agent but build, steps, idents and tiles; coord, pool,
+      needs, paces, uses, pubtimes, answers, menu, appupdate, cli, net) into `crates/agentcore`,
+      on inputs and the crates below it, beside the families; pipeline keeps the plan, offload's
+      `run_task` and `task_kind` (through `Plan`), `out::open`, the binaries and the re-exports.
+      Measured as §5 does.
+   Before it, pipeline holds ~120k lines (the cycle's 108.0k, the binaries' 14.2k).
 
 ### 6.4 Expected gain
 
