@@ -112,9 +112,9 @@
     `union=1`), in and around the view.
 - **Downloads on this Mac** (docs/macs.md, Mirror): nothing is copied to a Mac unless downloaded there.
   - **World, zoomed out**: its own row, Download or Remove, downloaded on its own (a region doesn't
-    bring it; it can go while regions stay). Without it the map needs the NAS; while a region is
-    downloaded and the World isn't, the row is marked and warns that away from the NAS, zoomed out,
-    the map shows nothing.
+    bring it; it can go while regions stay). Without it, away from the NAS, the map is the regions
+    downloaded (a region holds what the map reads over it at every zoom), and with none, nothing:
+    its row says so.
   - **Each region**: its size, Download, Cancel or Remove, and its state (downloaded, copying N %,
     next, waiting for room, away, updating N %), with a progress bar under it while it's downloading or
     updating. Download turns into Cancel at the click, the bar moving before the server answers;

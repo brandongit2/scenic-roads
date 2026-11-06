@@ -101,8 +101,8 @@ New steps (docs/steps.md §2, keys §12): no existing step's output or version c
 - **Served:** `/tiles/polar-terrain/<pole>/{z}/{x}/{y}` and `/tiles/polar-slope/…` (`image/webp`,
   `?v=` the pack's version from meta's `packs`): as stored, else 204 (none), as every layer's missing tile (a pole that isn't `n` or `s`: 404). Nothing is made from an
   ancestor on the server: the map draws a missing tile's loaded ancestor.
-- **Offline:** the roots are in the World download with every layer's root; a region downloads
-  the blocks meeting it (`areafiles::polar_blocks_meeting`: its rings' points in the pole's
+- **Offline:** the roots are in the World download and in every region's, with every layer's root;
+  a region downloads the blocks meeting it too (`areafiles::polar_blocks_meeting`: its rings' points in the pole's
   hemisphere, projected, boxed and grown 2 km).
 - **Progress:** `polar-terrain` and `polar-slope` say how far they are within a block, a line per 16
   tiles (`polar::terrain_block`/`slope_block`'s `progress`; docs/steps.md §2), not once per block.

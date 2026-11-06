@@ -385,8 +385,8 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   (<name>) out of touch since <time>" from `lead-view.json`; its port shows its own small page
   (§3.3). The map and the build page are the mini's, so devices have neither until it's back;
   a laptop serves its own offline map on demand (below), whole while it reaches the NAS. Away
-  from the NAS too (a laptop away from home has neither), it serves only what it downloaded, and
-  its place search and terrain then need the World download, which no laptop has (below).
+  from the NAS too (a laptop away from home has neither), it serves what it downloaded and nothing
+  else: every feature inside its downloaded regions, nothing outside them (#985, below).
 - **The M4 off the network:** over Tailscale it stays a member (docs/coordination.md §7.2): beats
   to the mini, the NAS at ~12 MB/s, jobs slower. Fully offline its jobs fail on the NAS and the
   lead keeps its leases until it's heard or 12 h pass (`held_by_away`). Off the network the M4 is
@@ -405,9 +405,9 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   work away from home again (decision 4 in §7: 7a), the laptop keeps:
   - the app's `server`, `web/` and fonts (in every app copy already);
   - its followed map: `~/Library/Caches/scenic/map/current.json.zst` (~20 MB) and `lead.json`;
-  - its downloads: `mirror/`, `downloads.json`, `reserve.json`, `idx/` (the World 18.9 GB on map
-    1640, 6 Nov; regions as chosen, e.g. Alberta 18.1 GB, British Columbia 24.7 GB; docs/macs.md,
-    Mirror);
+  - its downloads: `mirror/`, `downloads.json`, `reserve.json`, `idx/` (the World 19.3 GB on map
+    1658, 6 Nov; regions as chosen, each with what's read over it zoomed out since #985, e.g.
+    Alberta 20.7 GB, British Columbia 27.5 GB; docs/macs.md, Mirror);
   - what the server keeps for offline use: `accepted/` (0.9 GB, the translations' and descriptions'
     accepted versions), `names/` (3 MB), `profiles.json`, `region-areas.json`, `map-page`.
   Not needed by anything: `catalog/`, `~/Library/Caches/scenic/catalogue` (no catalogue read since
@@ -439,20 +439,36 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   690 MB) into its mirror. Restarted with the NAS sandboxed too, it served the kept map and the
   region's basemap and labels tiles from the mirror; its place search ("none of the labels' 741
   packs could be read") and the region's terrain tiles (503) did not.
-  **Away from the NAS too, what works is what was downloaded** (the real offline case: a laptop
-  away from home reaches neither the mini nor the NAS). On map 1640 the place search reads 741
-  packs of the labels layer (`places::sources`): its 61 lo packs (129 MB, the World download's:
-  what shows by z8 worldwide) and the hi packs of the 680 z6 tiles with roads (676 MB), and fails
-  only when it reads none of them. A terrain tile is read from its hi pack, else made from its
-  nearest stored ancestor down to the lo and root packs (the World's: terrain 2.5 GB, its shading,
-  the slope layer, 2.4 GB), and is a 503 when that read fails (`terrain::terrain_f32`). Nauru's
-  z6 tile (6/61/32) has no roads, so neither a hi pack the search reads nor a terrain hi pack, and
-  the M1 had no World download: nothing either read was on the Mac. With the World downloaded,
-  the terrain works everywhere zoomed out and in every downloaded region, and the search finds
-  what shows by z8 worldwide and every label of the downloaded regions with roads; zoomed in
-  elsewhere, nothing. Not built (a gap, for a task of its own): neither laptop has a World
-  download (no `mirror/` on either, 6 Nov), and the downloads move on only while the server on
-  demand runs.
+  **Away from the NAS too, the map is what was downloaded and nothing else** (#985, the owner's
+  rule; the real offline case: a laptop away from home reaches neither the mini nor the NAS).
+  What #882's test found: the place search read 741 packs of the labels layer (61 lo, the World
+  download's; 680 hi, of the z6 tiles with roads) and a terrain tile fell back to the lo and root
+  packs, none of which a region's download held; a file not on the Mac was read from the NAS
+  (an error, or a wait on a mount left from home). Built:
+  - **Where the server chooses its sources** (`Data::content_in`): while the NAS isn't read (not
+    mounted, or its pool's breaker open) a file not downloaded is none, as if the map had none
+    there, so every feature answers from the downloads, empty at once outside them. A share
+    found mounted is read only once it answers a probe, made at once (`IoPool::probe_first`); the
+    map log reads the NAS only while it's read.
+  - **A region holds what the map reads over it at every zoom** (docs/macs.md, Mirror): to its
+    hi packs, base packs, lists and basemap pieces were added every layer's root, its lo packs of
+    the z3 tiles over the region and the basemap's zooms 0–10. On map 1658: Jamaica +2.6 GB
+    (1.9 → 4.6 GB), Canada's 14 regions together +5.3 GB. A region downloaded before takes them
+    at its next round with the NAS, without an Update.
+  - **Kept to the downloads:** those files cover more than the region (a z3 tile, the world, the
+    landmarks' one bundle), so away from the NAS what's read of them, the place search, and a
+    tile made from a coarser one keep to the downloaded regions' z6 tiles (`Data::reaches`;
+    with the World, everywhere).
+  Tested on the M1, 6 Nov (a debug build, `--home` and `HOME` scratch folders, `--on-demand` on
+  port 7399, sandboxed with `sandbox-exec`): with the coordinator's port 8090 blocked it took the
+  NAS's map (1658), and Jamaica (4.55 GB) was downloaded into its mirror; restarted with port
+  445 and `/Volumes/personal` blocked too, it served the kept map, its search was ready 13 s after
+  the start and found Kingston, Montego Bay and Jamaica's Banff (not Canada's, nor Zurich), and
+  inside Jamaica the terrain, shading, basemap, water, roads and labels at z4, z7, z10 and z12
+  (1–450 ms each, a debug build); outside it (Banff, Zurich) each answered at once (≤ 6 ms): the terrain and
+  shading flat, every other layer 204. With nothing downloaded, the search was ready with no
+  place and every tile empty, with no error and no 503. Neither laptop has a download (no
+  `mirror/`, 6 Nov), and the downloads move on only while the server on demand runs.
   **7b (the alternative, if
   the owner overrules 7a):** the offline map is dropped: the agent deletes those files on a
   member (~1 GB each laptop with `accepted/`), and `retire.rs`'s note that the offline map stays

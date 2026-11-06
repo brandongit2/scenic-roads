@@ -205,7 +205,7 @@ docs/formats.md has the bytes. In brief:
   (`/tiles/buildings`' `?v=`: its pack's version in `/api/meta` `packs`; the field's carry none), 204 where none. The app reads them from a host of
   their own (`buildings.localhost`).
 - **Mirror:** a copy group of its own after the other hi packs (`store::mirror::groups`); field lo
-  packs come with the World download.
+  packs come with the World download, and those over a region with it (as every layer's lo packs).
 - **Devices:** the service worker keeps building tiles in a cache of their own (`bld`), so they
   don't crowd out roads and terrain.
 - **Credits** (`pipeline::rules::CREDITS`, everywhere): Overture (ODbL 1.0, the release named) and

@@ -104,9 +104,11 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   away), and quits 30 minutes after its last use (a request, or a copy of the mirror's under way).
   It keeps its map in `~/Library/Caches/scenic/map` each time the map moves (a resident server:
   every 10 minutes at most), so a start away from the Mac mini and the NAS serves the map its
-  downloads were copied for. Away from the NAS it serves only what's downloaded: its place search
-  and the terrain need the World download (its labels' and terrain's lo packs), which neither
-  laptop has (docs/roles.md §8.3). It runs no app updater (its next start runs the newest app), and
+  downloads were copied for. Away from the NAS it serves what's downloaded and nothing else (#985,
+  Mirror below): inside a downloaded region every feature works (the place search, the terrain and
+  its shading, the basemap, at every zoom), outside the downloads each answers empty at once, and
+  with nothing downloaded the search finds nothing and no terrain is drawn (docs/roles.md §8.3). It
+  runs no app updater (its next start runs the newest app), and
   ends at once when another server holds 127.0.0.1:7311. Nothing runs while it's closed, so the
   downloads are as current as the last time it ran.
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to
@@ -304,22 +306,45 @@ installed by `tools/app/install.sh`, updated by the updater).
   catalogue, so its 304s read nothing.
 
 **Mirror, the Mac mini's** (`store::mirror`, `store::pieces`, `crates/server/src/downloads.rs`).
-- **Only what's downloaded.** The map reads a file from the Mac when it's there, else from the NAS.
-  What's downloaded is this Mac's alone (`downloads.json` in its home).
+- **Only what's downloaded.** The map reads a file from the Mac when it's there, else from the NAS
+  while the NAS is read (mounted, and its I/O pool's breaker closed); away from it, from the Mac
+  alone: a file not downloaded is none, as if the map had none there (`Data::content_in`, the one
+  place the server chooses its sources), so every feature answers from the downloads, empty at
+  once outside them, with no NAS read and no timeout. A share found mounted is read only once it
+  has answered a probe, made at once (`IoPool::probe_first`): a mount left from home never holds
+  a request. Each change of whether the NAS is read drops what was made from the other side's
+  reads (the catalogue generation). What's downloaded is this Mac's alone (`downloads.json` in its
+  home).
 - **The World, zoomed out:** the build's worldwide files (`global/`: only those a step makes, the
   catalogue lists no other), the Canadian lake fill
   (`work/lakefill/<date>`, read by the water's deeper zooms anywhere in Canada), every layer's root
-  and lo packs (z0–8), markdata, ovdata, and the basemap's zooms 0–10: about 10 GB. Not the pass's
-  outlines.
-- **A region:** every layer's hi pack and the base pack and road values of each z6 tile
-  within 2 km of it, and those of the owners of the ways those tiles' hi data list whose boxes
+  and lo packs (z0–8), markdata, ovdata, and the basemap's zooms 0–10: 19.3 GB on map 1658
+  (6 Nov), the basemap's piece 1.6 GB of it. Not the pass's outlines. Away from the NAS it is the
+  whole world to zoom 8 (the basemap to 10) and the place search's places that show by zoom 8,
+  everywhere.
+- **A region:** what the map reads over it at every zoom, so away from the NAS every feature works
+  inside it without the World. Every layer's hi pack and the base pack and road values of each z6
+  tile within 2 km of it, and those of the owners of the ways those tiles' hi data list whose boxes
   meet the region within 2 km (read once per hi data and region, from the Mac's copy or the NAS;
   a downloaded region's size counts them once read, a region not downloaded doesn't), so a way
   drawn in it that starts far outside has its info; the basemap's zooms 11–14 over those tiles; the terrain's and grids' hi packs
   within 25 km (the viewshed's reach); the hi data, landmark points (markdata) and area details
   (ovdata, by z3 tile) within 50 km; the worldwide `global/` files (those by z6 tile, such as the
   roads' English names and ids, only for its tiles); the Canadian lake fill when it meets Canada.
-  So a region works zoomed in without the World; only zoomed out is missing. Away from the NAS, a
+  Zoomed out (#985): every layer's root (z0–2, 11 MB in all) and its lo packs (z3–8) of the z3
+  tiles over its z6 tiles (what a terrain or shading tile without its own is made from, and the
+  labels the place search reads there), and the basemap's zooms 0–10 (its one worldwide piece).
+  These reach past the region, to their z3 tile and the world, as does the landmark points' one
+  bundle: away from the NAS, what's read of them keeps to the downloaded regions' z6 tiles
+  (`Data::reaches`; the World's reach everywhere), as do the place search, a tile made from a
+  coarser one (terrain, shading, water, depth) and the landmarks and area details; outside them
+  every layer is none (the terrain and its shading flat), and zoomed out a tile shows where it
+  meets them. On map 1658 they add 2.6 GB to
+  Jamaica (1.9 → 4.6 GB: lo packs 1.0 GB, basemap 1.6 GB), 2.4 GB to Prince Edward Island
+  (3.5 → 6.0 GB), and 5.3 GB to Canada's 14 regions together (their 9 z3 tiles' lo packs 3.7 GB,
+  the basemap 1.6 GB); one shared with the World or another region is copied once. A region
+  downloaded before (its list without them) takes them at the catalogue served at its next round
+  with the NAS, without an Update; the rest stays at its catalogue. Away from the NAS, a
   whole road (hover, profile) leaving it is cut where this Mac's files end: the ways joined end to
   end through the one asked for, the profile marked cut short. While a downloaded region's hi data
   can't be read for its owners, no base pack or road values here go (a hi data that stays
