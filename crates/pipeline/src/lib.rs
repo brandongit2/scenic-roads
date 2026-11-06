@@ -98,3 +98,6 @@ mod grant_tests;
 
 #[cfg(test)]
 mod inputs_tests;
+
+#[cfg(test)]
+mod terrain_tests;

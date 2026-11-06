@@ -2092,6 +2092,76 @@ pub fn make_root(out: &Out, raw: &dyn RawSource, src: &Sources) -> anyhow::Resul
 }
 
 #[cfg(test)]
+pub mod testkit {
+    use super::*;
+
+    /// Raw tiles for the z3 tile of `ts` (z3 tile `q`): every z9–12 tile near `cov` and every z3–8 tile
+    /// of q; smooth slopes, every third with a one-pixel spike and a one-pixel pit (kept as read;
+    /// no repair; the level above takes them in), every seventh missing (the open sea).
+    pub fn synthetic_raw(local: &std::path::Path, cov: &Coverage, q: (u32, u32), ts: &[(u32, u32)]) {
+        let mut want: Vec<(u8, u32, u32)> = Vec::new();
+        for z in 9..=12u8 {
+            let s = 1u32 << (z - 6);
+            for &(tx, ty) in ts {
+                for x in tx * s..(tx + 1) * s {
+                    for y in ty * s..(ty + 1) * s {
+                        if near_coverage(cov, z, x, y) {
+                            want.push((z, x, y));
+                        }
+                    }
+                }
+            }
+        }
+        want.extend(upper_levels(q).into_iter().flat_map(|(z, t)| t.into_iter().map(move |(x, y)| (z, x, y))));
+        for &(z, x, y) in &want {
+            std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
+            let k = z as u32 + x + y;
+            if k % 7 == 0 {
+                std::fs::write(local.join(format!("{z}/{x}/{y}.none")), b"").unwrap();
+                continue;
+            }
+            let mut e: Vec<f32> = (0..256 * 256)
+                .map(|i| 400.0 + (i % 256) as f32 * 0.7 + (i / 256) as f32 * 0.4 + (k % 11) as f32 * 30.0)
+                .collect();
+            if k % 3 == 0 {
+                e[128 * 256 + 128] += 900.0;
+                e[64 * 256 + 200] -= 700.0;
+            }
+            std::fs::write(
+                local.join(format!("{z}/{x}/{y}.png")),
+                roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    /// A coverage near z6 tile 6/21/18 (its grown box meets it) whose z9–12 tiles none come near
+    /// (each grown by less in longitude, at its own latitude): a small circle east of the tile's
+    /// south-east corner, as the build's coverage left 6/21/18.
+    pub fn near_without_hi(d: &std::path::Path) -> Coverage {
+        let b = roadcore::geo::tile_box(6, 21, 18);
+        let dx = |lat: f64| roadcore::geo::lon_span(roadcore::geo::NEAR_COVERAGE_KM, lat);
+        let (lat, lon) = (b[1] + 0.05, b[2] + (dx(b[3]) + dx(b[1] + 0.5)) / 2.0);
+        let c = Coverage::fixture(
+            &[buildstore::recipes::Recipe {
+                id: "r".into(),
+                name: "R".into(),
+                outline: vec![format!("place:{lon},{lat},0.5")],
+            }],
+            None,
+            d,
+        )
+        .unwrap();
+        assert!(
+            near_coverage(&c, 6, 21, 18)
+                && !makes_hi(&c, &crate::terrain_zoom::test_world(12), (21, 18))
+                && piece_levels(&c, &crate::terrain_zoom::test_world(12), (21, 18)).iter().all(|(_, t)| t.is_empty())
+        );
+        c
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
@@ -2371,71 +2441,6 @@ pub(crate) mod tests {
         }
         assert!(!d.path().join("fresh/12/2048/1365.png").exists() && !d.path().join("fresh/packs").exists());
         assert_eq!(fresh.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
-    }
-
-    /// Raw tiles for the z3 tile of `ts` (z3 tile `q`): every z9–12 tile near `cov` and every z3–8 tile
-    /// of q; smooth slopes, every third with a one-pixel spike and a one-pixel pit (kept as read;
-    /// no repair; the level above takes them in), every seventh missing (the open sea).
-    pub(crate) fn synthetic_raw(local: &std::path::Path, cov: &Coverage, q: (u32, u32), ts: &[(u32, u32)]) {
-        let mut want: Vec<(u8, u32, u32)> = Vec::new();
-        for z in 9..=12u8 {
-            let s = 1u32 << (z - 6);
-            for &(tx, ty) in ts {
-                for x in tx * s..(tx + 1) * s {
-                    for y in ty * s..(ty + 1) * s {
-                        if near_coverage(cov, z, x, y) {
-                            want.push((z, x, y));
-                        }
-                    }
-                }
-            }
-        }
-        want.extend(upper_levels(q).into_iter().flat_map(|(z, t)| t.into_iter().map(move |(x, y)| (z, x, y))));
-        for &(z, x, y) in &want {
-            std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
-            let k = z as u32 + x + y;
-            if k % 7 == 0 {
-                std::fs::write(local.join(format!("{z}/{x}/{y}.none")), b"").unwrap();
-                continue;
-            }
-            let mut e: Vec<f32> = (0..256 * 256)
-                .map(|i| 400.0 + (i % 256) as f32 * 0.7 + (i / 256) as f32 * 0.4 + (k % 11) as f32 * 30.0)
-                .collect();
-            if k % 3 == 0 {
-                e[128 * 256 + 128] += 900.0;
-                e[64 * 256 + 200] -= 700.0;
-            }
-            std::fs::write(
-                local.join(format!("{z}/{x}/{y}.png")),
-                roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap(),
-            )
-            .unwrap();
-        }
-    }
-
-    /// A coverage near z6 tile 6/21/18 (its grown box meets it) whose z9–12 tiles none come near
-    /// (each grown by less in longitude, at its own latitude): a small circle east of the tile's
-    /// south-east corner, as the build's coverage left 6/21/18.
-    pub(crate) fn near_without_hi(d: &std::path::Path) -> Coverage {
-        let b = roadcore::geo::tile_box(6, 21, 18);
-        let dx = |lat: f64| roadcore::geo::lon_span(roadcore::geo::NEAR_COVERAGE_KM, lat);
-        let (lat, lon) = (b[1] + 0.05, b[2] + (dx(b[3]) + dx(b[1] + 0.5)) / 2.0);
-        let c = Coverage::fixture(
-            &[buildstore::recipes::Recipe {
-                id: "r".into(),
-                name: "R".into(),
-                outline: vec![format!("place:{lon},{lat},0.5")],
-            }],
-            None,
-            d,
-        )
-        .unwrap();
-        assert!(
-            near_coverage(&c, 6, 21, 18)
-                && !makes_hi(&c, &crate::terrain_zoom::test_world(12), (21, 18))
-                && piece_levels(&c, &crate::terrain_zoom::test_world(12), (21, 18)).iter().all(|(_, t)| t.is_empty())
-        );
-        c
     }
 
     /// Tiles of one height each, counting what's asked for: a pool or a relief (`Fills`).

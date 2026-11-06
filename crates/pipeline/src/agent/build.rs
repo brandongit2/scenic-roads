@@ -6087,7 +6087,7 @@ pub(crate) mod tests {
         .is_empty());
         // A z6 tile making no hi tile (crate::terrain_pack::makes_hi): keyed apart from one that does.
         let d = tempfile::tempdir().unwrap();
-        let near = crate::terrain_pack::tests::near_without_hi(d.path());
+        let near = crate::terrain_pack::testkit::near_without_hi(d.path());
         let (e, tiles) = (BTreeMap::new(), TerrainTiles::new(None));
         let x = KeyCtx::new(&near, "d", &e, &e, None, &tiles);
         let tt = terrain_slope_targets(&x);
