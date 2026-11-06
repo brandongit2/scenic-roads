@@ -2310,7 +2310,7 @@ async function main() {
       else (map.getSource(t.source) as { setTiles?: (tiles: string[]) => void } | undefined)?.setTiles?.([t.url]);
     }
     if (files.includes('base.pmtiles') || files.includes('water')) switchCoast(map, coastInput());
-    if (files.includes('terrain.tiles')) switchContours(map);
+    if (files.includes('terrain.tiles') || files.includes('water')) switchContours(map, files.includes('water'));
   });
   const newCatalogue = (m: Meta) => {
     // What the versions don't say: the data's bounds (where tiles are asked for), and whether the

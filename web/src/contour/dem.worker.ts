@@ -67,7 +67,11 @@ function demUrl(d: Dem, z: number, x: number, y: number): string {
   let u = d.url;
   if (d.packs) {
     const v = packToken(d.packs, z, x, y);
-    u = u.replace(/\?.*$/, '') + (v ? `?v=${v}` : '');
+    // (Its own query kept, `surface=1` and the water's version: its pack's version for the file's.)
+    const [path, q = ''] = u.split('?');
+    const kept = q.split('&').filter((kv) => kv && !kv.startsWith('v='));
+    if (v) kept.push(`v=${v}`);
+    u = path + (kept.length ? `?${kept.join('&')}` : '');
   }
   return u.replace('{z}', `${z}`).replace('{x}', `${x}`).replace('{y}', `${y}`);
 }

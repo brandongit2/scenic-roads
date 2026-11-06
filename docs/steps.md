@@ -420,8 +420,8 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   map and the floor leave it out); dries where above the chart's low water.
 - **The floor:** the depth is below the water's surface, so that surface less the depth is the
   floor; the server serves it (`/tiles/terrain/…?floor=1`), and the surface (`?surface=1`), no
-  second terrain stored. The sea's surface is sea level, 0 m, where the water tiles say sea (their
-  share of sea, a pixel partly sea blended by its share: server `water::sea_shares`), whatever the
+  second terrain stored. The sea's surface is sea level, 0 m, where the water tiles say sea (half a
+  pixel or more, as the depth's water: server `water::sea_shares`), whatever the
   terrain reads there (the source's bathymetry: §2, Terrain); a lake's is the terrain's source there
   (not levelled), so a lake's floor follows its source's surface, artefacts too; so does a river's
   (3DEP's hydro-flattening, where its source has it). A pixel of narrow water is the terrain's

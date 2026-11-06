@@ -7,9 +7,9 @@
 //!
 //! And the terrain with the floor (`terrain_floor`): the water's surface less the depth on the water
 //! the depth lies on, for the map's 3D floor; and the water's surface itself (`terrain_surface`),
-//! where the map draws the water over that floor. The surface is sea level at sea (the water tiles'
-//! share of sea: crate::water::sea_shares, a pixel partly sea blended by its share), elsewhere the
-//! terrain's heights (a lake's or a river's its source's): the terrain keeps the source's heights at
+//! where the map draws the water over that floor, and the contours' ground. The surface is sea
+//! level at sea (a pixel half sea or more in the water tiles, crate::water::sea_shares: the depth's
+//! own rule for water), elsewhere the terrain's heights (a lake's or a river's its source's): the terrain keeps the source's heights at
 //! sea, its bathymetry and artefacts included, so it is no surface there. No second terrain is
 //! stored.
 
@@ -107,12 +107,21 @@ pub async fn class_tile(
 }
 
 /// The water's surface over terrain heights `e` (a tile's): sea level where `sea` (each pixel's
-/// share of sea) says sea, a pixel partly sea blended by its share (`sea·0 + (1 − sea)·its own`),
-/// the terrain's heights elsewhere.
+/// share of sea) is half or more (`at_sea`), the terrain's heights elsewhere. Not blended: a shore
+/// pixel's mean of sea level and the source's bathymetry there would stand below sea level, a ring
+/// of contours round every coast.
 pub fn surface(e: &mut [f32], sea: &[f32]) {
-    for (v, s) in e.iter_mut().zip(sea) {
-        *v *= 1.0 - s.clamp(0.0, 1.0);
+    for (v, &s) in e.iter_mut().zip(sea) {
+        if at_sea(s) {
+            *v = 0.0;
+        }
     }
+}
+
+/// Whether a pixel with share `s` of sea is the sea's (half or more: as the depth's water,
+/// pipeline::depth).
+fn at_sea(s: f32) -> bool {
+    s >= 0.5
 }
 
 /// The floor under the water: the water's surface (`surface`, from terrain heights `e` and the
@@ -121,7 +130,7 @@ pub fn surface(e: &mut [f32], sea: &[f32]) {
 pub fn floor(e: &mut [f32], sea: Option<&[f32]>, depth: &[f32], class: &[u8]) {
     for i in 0..e.len().min(depth.len()).min(class.len()) {
         if class[i] & 7 != pipeline::depth::C_NONE && depth[i] < pipeline::depth::NODATA_MIN {
-            let top = sea.map_or(e[i], |s| e[i] * (1.0 - s[i].clamp(0.0, 1.0)));
+            let top = if sea.is_some_and(|s| at_sea(s[i])) { 0.0 } else { e[i] };
             e[i] = top + depth[i].min(0.0);
         }
     }
@@ -172,18 +181,20 @@ mod tests {
 
     /// At sea the terrain keeps the source's heights (its bathymetry, −35 m here; a shore's −2 m),
     /// and the floor stands on sea level: 0 m less the depth, whatever the terrain there, a pixel
-    /// half sea from half its height; the depth over the sea as it was. The surface is sea level
-    /// at sea, the land's own height ashore.
+    /// half sea as the sea's; the depth over the sea as it was. The surface is sea level at sea
+    /// (half a pixel or more), the land's own height ashore, a polder's −6 m too.
     #[test]
     fn the_seas_floor_and_surface_stand_on_sea_level() {
         let c = pipeline::depth::C_NATIVE | (3 << 4);
-        let (d, cl) = (vec![-40.0, -12.0, -1.0, pipeline::depth::NODATA], vec![c, c, c, pipeline::depth::C_NONE]);
-        let sea = [1.0, 1.0, 0.5, 0.0];
-        let mut e = vec![-35.0, -2.0, 10.0, 25.0];
+        let n = pipeline::depth::C_NONE;
+        let nd = pipeline::depth::NODATA;
+        let (d, cl) = (vec![-40.0, -12.0, -1.0, nd, nd], vec![c, c, c, n, n]);
+        let sea = [1.0, 1.0, 0.5, 0.25, 0.0];
+        let mut e = vec![-35.0, -2.0, 10.0, -20.0, -6.0];
         floor(&mut e, Some(&sea), &d, &cl);
-        assert_eq!(e, vec![-40.0, -12.0, 4.0, 25.0]);
-        let mut e = vec![-35.0, -2.0, 10.0, 25.0];
+        assert_eq!(e, vec![-40.0, -12.0, -1.0, -20.0, -6.0]);
+        let mut e = vec![-35.0, -2.0, 10.0, -20.0, -6.0];
         surface(&mut e, &sea);
-        assert_eq!(e, vec![0.0, 0.0, 5.0, 25.0]);
+        assert_eq!(e, vec![0.0, 0.0, 0.0, -20.0, -6.0]);
     }
 }

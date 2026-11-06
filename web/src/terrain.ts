@@ -1,7 +1,7 @@
 // Terrain presentation: 3D mesh + exaggeration, hillshade, hypsometric tint, contours, sky.
 import type { Map as MLMap } from 'maplibre-gl';
 import * as maplibregl from 'maplibre-gl';
-import { HYPSO, SHADE_DETAIL, terrainTiles } from './basemap';
+import { HYPSO, SHADE_DETAIL, surfaceTiles } from './basemap';
 import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
 import type { ScaleFields, Terrain } from './state';
 import { CONTOUR_MINZOOM } from './contours';
@@ -224,10 +224,12 @@ const contourLevels = (z: number, density: number) => (z < 8 ? [] : contourInter
 /** The contours' DEM's finest zoom where the catalogue has no finer terrain. */
 const CONTOUR_DEM_MAXZOOM = 12;
 
-/** The contours' terrain tiles (contour/dem.ts reads them itself, in its worker): to z12, finer
- * in the areas the catalogue has finer terrain; each tile at its pack's version. */
+/** The contours' terrain tiles (contour/dem.ts reads them itself, in its worker): the water's
+ * surface (basemap.ts surfaceTiles: the sea at sea level, by the water tiles, so it has no lines;
+ * land below sea level its own heights, so it has), to z12, finer in the areas the catalogue has
+ * finer terrain; each tile at its pack's version. */
 function newContourDem() {
-  setContourDem({ url: terrainTiles(), packs: layerPacks('terrain'), maxzoom: CONTOUR_DEM_MAXZOOM, areas: terrainAreas }, contourLevels);
+  setContourDem({ url: surfaceTiles(), packs: layerPacks('terrain'), maxzoom: CONTOUR_DEM_MAXZOOM, areas: terrainAreas }, contourLevels);
   contourDem = true;
 }
 
@@ -241,21 +243,23 @@ export function setTerrainAreas(map: MLMap, a: TerrainAreas | undefined) {
 }
 
 /** New terrain tiles (a new catalogue): the contours' DEM anew, and the contour tiles reading the
- * DEM tiles of the packs it changed asked for again. */
-export function switchContours(map: MLMap) {
-  refreshContours(map, terrainAreas, true);
+ * DEM tiles of the packs it changed asked for again; `water`: the water tiles changed (the sea's
+ * surface), every contour tile. */
+export function switchContours(map: MLMap, water = false) {
+  refreshContours(map, terrainAreas, true, water);
 }
 
 /** The contours' DEM anew (its areas were `old`; `packs`: the terrain's packs changed too), and
  * the contour tiles whose DEM changed asked for again: those whose area's zoom changed, or (with
  * `packs`) one of whose nine DEM tiles' pack did (dem.worker.ts reads them). The others, and the
  * worker's DEM tiles still current, are kept. */
-function refreshContours(map: MLMap, old: TerrainAreas | undefined, packs: boolean) {
+function refreshContours(map: MLMap, old: TerrainAreas | undefined, packs: boolean, all = false) {
   if (!contourDem || !map.getSource('contours')) return;
   newContourDem();
   const dz = (a: TerrainAreas | undefined, z: number, x: number, y: number) => Math.max(0, Math.min(z - 1, areaMaxZoom(a, CONTOUR_DEM_MAXZOOM, z, x, y)));
   map.refreshTilesWhere('contours', (z, x, y) => {
     if (!contourLevels(z, contourDensity).length) return false;
+    if (all) return true;
     const d = dz(terrainAreas, z, x, y);
     if (d !== dz(old, z, x, y)) return true;
     if (!packs) return false;
@@ -302,7 +306,7 @@ function setupContours(map: MLMap, density: number) {
       'source-layer': 'contours',
       minzoom: 11,
       // (no 0 m line: contours.worker.ts)
-      filter: ['all', ['>', ['get', 'level'], 0], ['>', ['get', 'ele'], 0]],
+      filter: ['all', ['>', ['get', 'level'], 0], ['!=', ['get', 'ele'], 0]],
       layout: {
         'symbol-placement': 'line',
         // Facing the viewer, along the line as it shows on screen: lying on the ground, tilted

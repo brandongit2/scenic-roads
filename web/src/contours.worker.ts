@@ -67,10 +67,10 @@ function build(buf: ArrayBuffer, ringPx: number): Omit<ContourResponse, 'id'> {
     };
     for (const f of layer.lines) {
       const ele = Math.round(Number(f.props.ele));
-      // No line at 0 m or below: the terrain keeps its source's bathymetry at sea (the depth's
-      // isolines draw the sea), and a 0 m line traced every shore and pier. So land below sea
-      // level (the Dead Sea's shore, a polder) has none either.
-      if (!(ele > 0) || ele > 32767) continue;
+      // No 0 m line: it traced every shore and pier. The sea has none (its DEM is the water's
+      // surface, sea level there: terrain.ts); land below sea level (the Dead Sea's shore, a
+      // polder) has its own.
+      if (ele === 0 || !(ele >= -32768) || ele > 32767) continue;
       const lv = (Number(f.props.level) > 0 ? 1 : 0) << 8;
       const open = (run: number[]) => {
         const p = units(run), n = p.length / 2;
