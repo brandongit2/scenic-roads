@@ -422,8 +422,11 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   ocean's (§4, The world ocean), whatever the
   terrain reads there (the source's bathymetry: §2, Terrain). An enclosed sea's surface is the
   terrain's source there, as a lake's: the Caspian's GLO-30 heights, −28 m. Its floor stands on sea
-  level, as the depth's values there are heights below 0 m (GEBCO's, the depth's sea); the depth
-  layer itself measures them from 0 m, not from the Caspian's surface. A lake's is the terrain's source there
+  level, as the depth's values there are GEBCO's heights above mean sea level (the depth's sea),
+  and never above the water's surface (GEBCO is above −28 m over much of the north Caspian: the
+  floor there is the surface). The depth's colour, contours and hover read
+  those values as depths below 0 m, not below the Caspian's surface: 28 m too deep there (planned:
+  an enclosed sea's depth below its own surface). A lake's is the terrain's source there
   (not levelled), so a lake's floor follows its source's surface, artefacts too; so does a river's
   (3DEP's hydro-flattening, where its source has it). A pixel of narrow water is the terrain's
   blend of water and shore, so its floor is rough. The map's toggle (Layers → Depth, "3D sea and

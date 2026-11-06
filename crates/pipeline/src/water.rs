@@ -1010,7 +1010,9 @@ impl Enclosed {
         bodies.sort_by_key(|&(n, x, y)| (std::cmp::Reverse(n), y, x));
         let mut out = Enclosed { z, runs: Vec::new(), bodies: bodies.iter().skip(1).copied().collect() };
         let Some(&(_, ox, oy)) = bodies.first() else { return out };
-        let mut ocean = Bits::new(sea.w, sea.h);
+        // (The ocean's pixels in the bits that held every body's: two bits a pixel at most.)
+        let mut ocean = seen;
+        ocean.words.fill(0);
         flood(sea, &mut ocean, ox as usize, oy as usize);
         for y in 0..sea.h {
             let mut x = 0;

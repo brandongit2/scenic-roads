@@ -14,7 +14,8 @@
 //! sea's its source's: the Caspian's −28 m in GLO-30): the terrain keeps the source's heights at
 //! sea, its bathymetry and artefacts included, so it is no surface there. The floor stands on the
 //! depth's own sea level wherever the depth's water is sea (the enclosed seas too: their depths are
-//! heights below 0 m). No second terrain is stored.
+//! GEBCO's heights above mean sea level), never above the water's surface. No second terrain is
+//! stored.
 
 use crate::cache::Lru;
 use crate::terrain::{made, respond, Got};
@@ -135,13 +136,17 @@ fn at_sea(s: f32) -> bool {
 
 /// The floor under the water: the depth subtracted where the depth's class says water, from the
 /// level its depth is below: sea level where `sea` (each pixel's share) is half or more, the depth's
-/// sea (an enclosed sea's too, measured from 0 m), else terrain heights `e` (a lake's surface; None:
-/// the terrain's heights throughout); the land as it is.
-pub fn floor(e: &mut [f32], sea: Option<&[f32]>, depth: &[f32], class: &[u8]) {
+/// sea (an enclosed sea's too: GEBCO's heights there are above mean sea level), else terrain heights
+/// `e` (a lake's surface; None: the terrain's heights throughout); never above the water's surface
+/// (`surface`: an enclosed sea's is the terrain's, the Caspian's −28 m, which GEBCO's heights stand
+/// above over much of its northern shelf); the land as it is.
+pub fn floor(e: &mut [f32], sea: Option<&crate::water::Sea>, depth: &[f32], class: &[u8]) {
     for i in 0..e.len().min(depth.len()).min(class.len()) {
         if class[i] & 7 != pipeline::depth::C_NONE && depth[i] < pipeline::depth::NODATA_MIN {
-            let top = if sea.is_some_and(|s| at_sea(s[i])) { 0.0 } else { e[i] };
-            e[i] = top + depth[i].min(0.0);
+            let (share, enclosed) = sea.map_or((0.0, &[][..]), |s| (s.share[i], &s.enclosed[..]));
+            let level = if at_sea(share) { 0.0 } else { e[i] };
+            let top = if on_ocean(share, enclosed, i) { 0.0 } else { e[i] };
+            e[i] = (level + depth[i].min(0.0)).min(top);
         }
     }
 }
@@ -157,7 +162,7 @@ pub fn terrain_floor(s: &crate::S, z: u8, x: u32, y: u32) -> anyhow::Result<Opti
     {
         let sea = crate::water::sea_shares(s, z, x, y)?;
         exact = sea.as_ref().is_none_or(|s| s.exact);
-        floor(&mut e, sea.as_ref().map(|s| &s.share[..]), &d, &c);
+        floor(&mut e, sea.as_ref(), &d, &c);
     }
     Ok(crate::terrain::encode(e).ok().map(|b| (b, exact)))
 }
@@ -229,7 +234,7 @@ mod tests {
             pipeline::depth::C_NONE,
             pipeline::depth::C_NONE,
         ];
-        floor(&mut e, Some(&[0.0; 4]), &d, &c);
+        floor(&mut e, Some(&sea_of(vec![0.0; 4], Vec::new())), &d, &c);
         assert_eq!(e, vec![112.0, 120.0, 135.0, 140.0]);
     }
 
@@ -245,7 +250,7 @@ mod tests {
         let (d, cl) = (vec![-40.0, -12.0, -1.0, nd, nd], vec![c, c, c, n, n]);
         let sea = [1.0, 1.0, 0.5, 0.25, 0.0];
         let mut e = vec![-35.0, -2.0, 10.0, -20.0, -6.0];
-        floor(&mut e, Some(&sea), &d, &cl);
+        floor(&mut e, Some(&sea_of(sea.to_vec(), Vec::new())), &d, &cl);
         assert_eq!(e, vec![-40.0, -12.0, -1.0, -20.0, -6.0]);
         let mut e = vec![-35.0, -2.0, 10.0, -20.0, -6.0];
         surface(&mut e, &sea, &[]);
@@ -254,17 +259,24 @@ mod tests {
 
     /// A sea closed off from the world ocean (the Caspian, OSM's coastline round it) is no sea
     /// level: its surface is the terrain's (GLO-30's −28 m), the world ocean's beside it 0 m. Its
-    /// floor stands on the depth's sea level, as the depth measures it there (GEBCO's heights).
+    /// floor stands on the depth's sea level, as the depth measures it there (GEBCO's heights above
+    /// mean sea level), and never above its surface: GEBCO's −20 m on the Caspian's shelf is a floor
+    /// at −28 m.
     #[test]
     fn an_enclosed_sea_s_surface_is_its_source_s() {
-        let mut e = vec![-28.0, -28.0, -1.5, 12.0];
-        let (sea, enclosed) = ([1.0, 1.0, 1.0, 0.0], [true, true, false, false]);
+        let mut e = vec![-28.0, -28.0, -28.0, -1.5, 12.0];
+        let (sea, enclosed) = ([1.0, 1.0, 1.0, 1.0, 0.0], [true, true, true, false, false]);
         surface(&mut e, &sea, &enclosed);
-        assert_eq!(e, vec![-28.0, -28.0, 0.0, 12.0]);
+        assert_eq!(e, vec![-28.0, -28.0, -28.0, 0.0, 12.0]);
         let c = pipeline::depth::C_NATIVE | (3 << 4);
-        let mut e = vec![-28.0, -28.0, -1.5, 12.0];
-        floor(&mut e, Some(&sea), &[-31.0, -900.0, -6.0, pipeline::depth::NODATA], &[c, c, c, pipeline::depth::C_NONE]);
-        assert_eq!(e, vec![-31.0, -900.0, -6.0, 12.0]);
+        let mut e = vec![-28.0, -28.0, -28.0, -1.5, 12.0];
+        let (d, cl) = ([-31.0, -900.0, -20.0, -6.0, pipeline::depth::NODATA], [c, c, c, c, pipeline::depth::C_NONE]);
+        floor(&mut e, Some(&sea_of(sea.to_vec(), enclosed.to_vec())), &d, &cl);
+        assert_eq!(e, vec![-31.0, -900.0, -28.0, -6.0, 12.0]);
+    }
+
+    fn sea_of(share: Vec<f32>, enclosed: Vec<bool>) -> crate::water::Sea {
+        crate::water::Sea { share, enclosed, exact: true }
     }
 
     /// The surface is made only over the world ocean: a tile without a pixel at sea (a shore's 0.4 of one,
