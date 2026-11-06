@@ -649,8 +649,8 @@ pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
     let (s, Some(t)) = (crate::pool::records::current(j.step), j.rest) else { return BTreeSet::new() };
     let Some((z, x, y)) = tile_of(t) else { return BTreeSet::new() };
     match (s, z) {
-        ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z as u32 => {
-            let k = crate::terrain_deep::PACK_Z as u32 - 6;
+        ("terrain-deep", z) if z == crate::dem::zoom::PACK_Z as u32 => {
+            let k = crate::dem::zoom::PACK_Z as u32 - 6;
             BTreeSet::from([(6, x >> k, y >> k)])
         }
         ("terrain-hi", 6) => BTreeSet::from([(6, x, y)]),

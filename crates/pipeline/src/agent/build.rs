@@ -25,8 +25,6 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 // Step versions: bumping one rebuilds that step everywhere (oldest first, when idle). Terrain-hi's
 // and slope's are their steps' own (terrain_pack::TERRAIN_V, slope_pack::{SLOPE_V, SLOPE_LO_V}).
-use crate::slope_pack::{SLOPE_LO_V, SLOPE_V};
-use crate::terrain_pack::TERRAIN_V;
 /// Terrain-deep 2 (task #929): a z10 tile's band past z12 by the same rule, its mid for its z6 tile.
 /// 3 (task #862): as terrain-hi's 9. 5 (task #942): its lakes and rivers keep the source's
 /// heights, as terrain-hi's 10 (4 had lakes at levels a terrain-lakes step decided). 6 (task #975):
