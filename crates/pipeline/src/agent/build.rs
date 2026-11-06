@@ -6533,6 +6533,8 @@ pub(crate) mod tests {
         let pin = crate::terrain_pack::water_source_pin(&dm).unwrap();
         let mut idx = crate::terrain_water::make_idx(&Sea, None, &depth_water_reads(&c, &held), &|_, _| {}).unwrap();
         idx.pin = pin.clone();
+        // (But one: the terrain-water job has that one's digest to make, so it's keyed here.)
+        idx.digests.pop_last();
         let name = format!("{}.0202020202020202.json", crate::terrain_water::idx_logical(&pin));
         dm.insert(crate::terrain_water::idx_logical(&pin), name.clone());
         let depth = move |m: &BTreeMap<String, String>| {
