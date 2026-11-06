@@ -8,121 +8,31 @@
 //!   ("lease", "start") and done ("end", "done"); and catalogue n written ("catalog": its `n`, its
 //!   job's time, and `CatalogueStats`: the files it stat'ed, its phases).
 //!   And each Mac's map server's adoption of the map at `seq` n ("adopt": `ADOPT`, its `worker` the
-//!   Mac), the lead's note of its cursor in the map's log moving there (docs/maplog.md §6.6).
-//! - **The Macs' map servers' own log on the NAS** (`SERVERS`, a file per Mac appended to: a few
-//!   lines a catalogue, never a file per event; cut to its newer half past `SERVERS_MAX`): each
-//!   server's mirror's sync of catalogue n, begun ("mirror-start") and through everything wanted
-//!   ("mirror-end"), each once per catalogue and server process. (The "adopt" lines the servers
-//!   still write there are passed over: the cursors say it.)
+//!   Mac), the lead's note of its cursor in the map's log moving there (docs/maplog.md §6.6), and its
+//!   mirror's round copying map n begun ("mirror-start": `MIRROR_START`) and through everything
+//!   wanted ("mirror-end": `MIRROR_END`), the lead's notes of what the mirror's own cursor said
+//!   (docs/maplog.md §6.2), each once per `seq` heard.
 //!
 //! `chains` joins them, per catalogue and per z6 tile; `scenic timings publish` prints them.
 
 use crate::coord::history::Event;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::Path;
-
-/// The map servers' log: `<host>.jsonl` in it, one writer each.
-pub const SERVERS: &str = "state/publish";
-/// A Mac's log past this many bytes is cut to its newer half as it's next appended to (a few
-/// hundred bytes a catalogue: months of them).
-pub const SERVERS_MAX: u64 = 512 * 1024;
 
 /// The history's event of a map server's adoption of the map at its `n` (at its `t`; its Mac the
 /// `worker`).
 pub const ADOPT: &str = "adopt";
+/// The history's events of a map server's mirror's round copying the map at its `n` begun, and
+/// through everything wanted (at their `t`; its Mac the `worker`).
+pub const MIRROR_START: &str = "mirror-start";
+pub const MIRROR_END: &str = "mirror-end";
 
 /// The steps whose runs are counted per catalogue (besides the map tiles').
 pub const COUNTED: [&str; 5] = ["ferries", "stations", "roadunits", "marks", "names-todo"];
 
-/// A map server's event.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ServerEvent {
-    pub t: u64,
-    pub host: String,
-    /// "adopt", "mirror-start" or "mirror-end".
-    pub kind: String,
-    /// The catalogue.
-    pub n: u64,
-    /// The mirror's sync, from its start for this catalogue.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secs: Option<f64>,
-}
-
 fn now_s() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
-/// Appends `e` (now, unless it says when) to its Mac's log under the project folder `root`; a log
-/// past `SERVERS_MAX` is written again with its newer half first.
-pub fn append_server(root: &store::nasfs::NasRoot, mut e: ServerEvent) -> std::io::Result<()> {
-    if e.t == 0 {
-        e.t = now_s();
-    }
-    let dir = root.join(SERVERS);
-    dir.create_dir_all()?;
-    let name: String =
-        e.host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
-    let line = serde_json::to_string(&e).map_err(std::io::Error::other)?;
-    let p = dir.join(format!("{name}.jsonl"));
-    if p.metadata().is_ok_and(|m| m.len() > SERVERS_MAX) {
-        let text = p.read_to_string()?;
-        let lines: Vec<&str> = text.lines().collect();
-        let kept = lines[lines.len() / 2..].join("\n");
-        return p.write_whole(format!("{kept}\n{line}\n")).map_err(std::io::Error::other);
-    }
-    p.open_with(std::fs::OpenOptions::new().create(true).append(true))?.write_all(format!("{line}\n").as_bytes())
-}
-
-/// Every Mac's map server's events since `since` (unix seconds), in time order.
-pub fn read_servers(root: &store::nasfs::NasRoot, since: u64) -> Vec<ServerEvent> {
-    let mut out = Vec::new();
-    let Ok(rd) = root.join(SERVERS).read_dir() else { return out };
-    for f in rd {
-        if f.path.extension() != Some("jsonl") {
-            continue;
-        }
-        let Ok(text) = f.path.read_to_string() else { continue };
-        out.extend(text.lines().filter_map(|l| serde_json::from_str::<ServerEvent>(l).ok()).filter(|e| e.t >= since));
-    }
-    out.sort_by_key(|e| e.t);
-    out
-}
-
-/// What a map server's mirror said of its syncs, per process: each catalogue's start once, its end
-/// once (a sync through everything wanted, nothing waiting or failed). A server started again says
-/// the catalogue's start again (`chains` takes the first).
-#[derive(Debug, Default)]
-pub struct MirrorMarks {
-    started: Option<(u64, u64)>,
-    ended: Option<u64>,
-}
-
-impl MirrorMarks {
-    pub const fn new() -> MirrorMarks {
-        MirrorMarks { started: None, ended: None }
-    }
-
-    /// A sync of catalogue `n` begins at `t`: whether it's this process's first of it (to say).
-    pub fn start(&mut self, n: u64, t: u64) -> bool {
-        if self.started.is_some_and(|(m, _)| m == n) {
-            return false;
-        }
-        self.started = Some((n, t));
-        true
-    }
-
-    /// A sync of catalogue `n` ended at `t`, `complete` or not: its time from the first start of it,
-    /// once, when complete.
-    pub fn end(&mut self, n: u64, t: u64, complete: bool) -> Option<f64> {
-        let (m, began) = self.started?;
-        if m != n || !complete || self.ended == Some(n) {
-            return None;
-        }
-        self.ended = Some(n);
-        Some(t.saturating_sub(began) as f64)
-    }
 }
 
 /// What a catalogue's job said of itself (a line of its log, `CATALOGUE_LINE`, which the agent reads
@@ -404,11 +314,11 @@ fn began(c: &Event) -> u64 {
     c.t.saturating_sub(c.secs.unwrap_or(0.0).ceil() as u64)
 }
 
-/// The chains of the catalogues in `events` (any order) and their z6 tiles, joined with the servers'
-/// events; oldest first. A z6 tile is in the first catalogue begun once its hand-off was merged (a
+/// The chains of the catalogues in `events` (any order) and their z6 tiles, with the servers' and
+/// their mirrors' marks; oldest first. A z6 tile is in the first catalogue begun once its hand-off was merged (a
 /// member's job; the lead's own, at its end) and the map tiles its change made stale were packed;
 /// a catalogue's map tiles and steps are those between the catalogue before's beginning and its own.
-pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogueChain>, Vec<UnitChain>) {
+pub fn chains(events: &[Event]) -> (Vec<CatalogueChain>, Vec<UnitChain>) {
     let mut ev: Vec<&Event> = events.iter().collect();
     ev.sort_by_key(|e| (e.t, e.seq));
     let cats: Vec<&Event> = ev.iter().copied().filter(|e| e.kind == store::catalogue::NAME).collect();
@@ -423,18 +333,15 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogueChain>
             merges.push((e.t, n, step, targets));
         }
     }
-    // (The servers' adoptions from the history; their mirrors' syncs from their own log.)
-    let adoptions: Vec<ServerEvent> = ev
-        .iter()
-        .filter(|e| e.kind == ADOPT)
-        .filter_map(|e| Some(ServerEvent { t: e.t, host: e.worker.clone()?, kind: ADOPT.into(), n: e.n?, secs: None }))
-        .collect();
-    let mut by_host: BTreeMap<&str, Vec<&ServerEvent>> = BTreeMap::new();
-    for s in servers.iter().filter(|s| s.kind != ADOPT).chain(&adoptions) {
-        by_host.entry(s.host.as_str()).or_default().push(s);
+    // (The servers' adoptions and their mirrors' rounds, by Mac.)
+    let mut by_host: BTreeMap<&str, Vec<&Event>> = BTreeMap::new();
+    for e in ev.iter().filter(|e| [ADOPT, MIRROR_START, MIRROR_END].contains(&e.kind.as_str()) && e.n.is_some()) {
+        if let Some(host) = e.worker.as_deref() {
+            by_host.entry(host).or_default().push(e);
+        }
     }
-    let first_at = |host: &[&ServerEvent], kind: &str, n: u64, after: u64| {
-        host.iter().filter(|s| s.kind == kind && s.n >= n && s.t >= after).map(|s| s.t).min()
+    let first_at = |host: &[&Event], kind: &str, n: u64, after: u64| {
+        host.iter().filter(|e| e.kind == kind && e.n >= Some(n) && e.t >= after).map(|e| e.t).min()
     };
     let stats_of =
         |c: &Event| -> Option<CatalogueStats> { c.data.as_ref().and_then(|d| serde_json::from_value(d.clone()).ok()) };
@@ -510,10 +417,10 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogueChain>
             if let Some(n) = uc.catalogue {
                 let after = uc.catalogue_t.unwrap_or(0).saturating_sub(120);
                 for (host, hs) in &by_host {
-                    if let Some(a) = first_at(hs, "adopt", n, after) {
+                    if let Some(a) = first_at(hs, ADOPT, n, after) {
                         uc.adopted.insert(host.to_string(), a);
                     }
-                    if let Some(m) = first_at(hs, "mirror-end", n, after) {
+                    if let Some(m) = first_at(hs, MIRROR_END, n, after) {
                         uc.mirrored.insert(host.to_string(), m);
                     }
                 }
@@ -539,13 +446,13 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogueChain>
         };
         if let Some(n) = n {
             for (host, hs) in &by_host {
-                if let Some(a) = first_at(hs, "adopt", n, c.t.saturating_sub(120)) {
+                if let Some(a) = first_at(hs, ADOPT, n, c.t.saturating_sub(120)) {
                     cc.adopted.insert(host.to_string(), a.saturating_sub(c.t) as f64);
                 }
-                if let Some(s) = first_at(hs, "mirror-start", n, c.t.saturating_sub(120)) {
+                if let Some(s) = first_at(hs, MIRROR_START, n, c.t.saturating_sub(120)) {
                     let len = hs
                         .iter()
-                        .find(|e| e.kind == "mirror-end" && e.n >= n && e.t >= s)
+                        .find(|e| e.kind == MIRROR_END && e.n >= Some(n) && e.t >= s)
                         .and_then(|e| e.secs.or(Some(e.t.saturating_sub(s) as f64)));
                     cc.mirrored.insert(host.to_string(), (s.saturating_sub(c.t) as f64, len));
                 }
@@ -785,6 +692,26 @@ mod tests {
         Event { t, ..planned_event(&tiles, by) }
     }
 
+    /// One of publishing's marks the lead notes from a cursor (crate::agent's publish_marks).
+    fn mark(kind: &str, t: u64, host: &str, n: u64) -> Event {
+        Event { t, worker: Some(host.into()), n: Some(n), ..Event::new(kind) }
+    }
+
+    /// A mirror's times are the lead's marks in the history, each round's first: a round begun
+    /// again (the server restarted) or an older seq's end counts for nothing newer.
+    #[test]
+    fn mirror_times_come_from_the_history() {
+        let events = vec![
+            catalogue(1000, 10.0, 5, false),
+            mark(MIRROR_END, 1005, "m1", 4),
+            mark(MIRROR_START, 1030, "m1", 5),
+            mark(MIRROR_START, 1060, "m1", 5),
+            mark(MIRROR_END, 1090, "m1", 5),
+        ];
+        let (cats, _) = chains(&events);
+        assert_eq!(cats[0].mirrored, [("m1".to_string(), (30.0, Some(60.0)))].into());
+    }
+
     /// A z6 tile from its job to every Mac's map: each stage's time, its restale count, the catalogue's
     /// kind, its files stat'ed, the counted steps, and the servers' adoptions and mirrors.
     #[test]
@@ -807,8 +734,7 @@ mod tests {
             job("end", 1500, "names-todo", &["names-todo"], None),
         ];
         // (The servers' adoptions: their cursors in the map's log, as the lead noted them.)
-        let adopt =
-            |t: u64, host: &str, n: u64| Event { t, worker: Some(host.into()), n: Some(n), ..Event::new(ADOPT) };
+        let adopt = |t: u64, host: &str, n: u64| mark(ADOPT, t, host, n);
         let events: Vec<Event> = events
             .into_iter()
             .chain([
@@ -817,15 +743,12 @@ mod tests {
                 adopt(1600, "m4", 9),
                 // (Catalogue 7's, before 8: not its.)
                 adopt(1010, "m4", 7),
+                // (The M1's mirror's round copying 8, through 100 s later.)
+                mark(MIRROR_START, 1440, "m1", 8),
+                mark(MIRROR_END, 1540, "m1", 8),
             ])
             .collect();
-        let servers = vec![
-            ServerEvent { t: 1440, host: "m1".into(), kind: "mirror-start".into(), n: 8, secs: None },
-            ServerEvent { t: 1540, host: "m1".into(), kind: "mirror-end".into(), n: 8, secs: Some(100.0) },
-            // (A server's own "adopt" line: passed over, the cursor says it.)
-            ServerEvent { t: 1405, host: "m4".into(), kind: "adopt".into(), n: 8, secs: None },
-        ];
-        let (cats, units) = chains(&events, &servers);
+        let (cats, units) = chains(&events);
         assert_eq!(cats.len(), 2);
         let c = &cats[1];
         assert_eq!((c.n, c.units, c.tiles), (Some(8), 2, 3));
@@ -878,7 +801,7 @@ mod tests {
             catalogue(1600, 100.0, 8, true),
             catalogue(1800, 50.0, 9, true),
         ];
-        let (cats, units) = chains(&events, &[]);
+        let (cats, units) = chains(&events);
         let cat_of = |u: &str| units.iter().find(|x| x.unit == u).unwrap().catalogue;
         assert_eq!(cat_of("6/1/1"), Some(9));
         assert_eq!(cat_of("6/2/2"), Some(9));
@@ -889,14 +812,11 @@ mod tests {
         assert_eq!(cats[1].ran, Vec::<String>::new());
         assert_eq!(cats[2].ran, ["ferries"]);
         // (A tile never packed: no catalogue yet.)
-        let (_, units) = chains(
-            &[
-                job("end", 10, "unit", &["6/4/4"], None),
-                planned(20, &["6/4/4"], &[("6/4/4", &["6/4/4"])]),
-                catalogue(100, 5.0, 3, true),
-            ],
-            &[],
-        );
+        let (_, units) = chains(&[
+            job("end", 10, "unit", &["6/4/4"], None),
+            planned(20, &["6/4/4"], &[("6/4/4", &["6/4/4"])]),
+            catalogue(100, 5.0, 3, true),
+        ]);
         assert_eq!(units[0].catalogue, None);
     }
 
@@ -917,7 +837,7 @@ mod tests {
             merged(340, "2026-10-17/3-7", "unit", &["6/1/1"]),
             catalogue(500, 10.0, 4, true),
         ];
-        let (_, units) = chains(&events, &[]);
+        let (_, units) = chains(&events);
         let m: Vec<(String, u64, Option<u64>)> = units.iter().map(|u| (u.unit.clone(), u.done, u.merged)).collect();
         assert_eq!(
             m,
@@ -1054,62 +974,6 @@ mod tests {
         let log = format!("catalogue: something\n{}\npublished /x/5.json\n", st.line());
         assert_eq!(CatalogueStats::from_log(&log), Some(st));
         assert_eq!(CatalogueStats::from_log("nothing"), None);
-    }
-
-    #[test]
-    fn the_mirror_says_each_catalogues_start_and_end_once() {
-        let mut m = MirrorMarks::default();
-        assert_eq!(m.end(3, 10, true), None);
-        assert!(m.start(3, 100));
-        assert!(!m.start(3, 160));
-        assert_eq!(m.end(3, 170, false), None);
-        assert_eq!(m.end(3, 220, true), Some(120.0));
-        assert_eq!(m.end(3, 280, true), None);
-        assert!(m.start(4, 300));
-        assert_eq!(m.end(3, 310, true), None);
-    }
-
-    #[test]
-    fn the_servers_log_is_appended_per_mac_read_in_order_and_cut() {
-        let d = tempfile::tempdir().unwrap();
-        append_server(
-            &store::nasfs::NasRoot::local_for_test(d.path()),
-            ServerEvent { t: 20, host: "Brandon's M4".into(), kind: "adopt".into(), n: 2, secs: None },
-        )
-        .unwrap();
-        append_server(
-            &store::nasfs::NasRoot::local_for_test(d.path()),
-            ServerEvent { t: 10, host: "m1".into(), kind: "adopt".into(), n: 1, secs: None },
-        )
-        .unwrap();
-        append_server(
-            &store::nasfs::NasRoot::local_for_test(d.path()),
-            ServerEvent { t: 30, host: "m1".into(), kind: "mirror-end".into(), n: 2, secs: Some(5.0) },
-        )
-        .unwrap();
-        let files: Vec<String> = std::fs::read_dir(d.path().join(SERVERS))
-            .unwrap()
-            .map(|f| f.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(files.len(), 2);
-        let all = read_servers(&store::nasfs::NasRoot::local_for_test(d.path()), 0);
-        assert_eq!(all.iter().map(|e| e.t).collect::<Vec<_>>(), [10, 20, 30]);
-        assert_eq!(read_servers(&store::nasfs::NasRoot::local_for_test(d.path()), 15).len(), 2);
-        // Past SERVERS_MAX: its newer half kept, the new line after it.
-        let p = d.path().join(SERVERS).join("m1.jsonl");
-        let line =
-            serde_json::to_string(&ServerEvent { t: 40, host: "m1".into(), kind: "adopt".into(), n: 3, secs: None })
-                .unwrap();
-        std::fs::write(&p, format!("{line}\n").repeat((SERVERS_MAX as usize / line.len()) + 10)).unwrap();
-        let before = std::fs::read_to_string(&p).unwrap().lines().count();
-        append_server(
-            &store::nasfs::NasRoot::local_for_test(d.path()),
-            ServerEvent { t: 50, host: "m1".into(), kind: "adopt".into(), n: 4, secs: None },
-        )
-        .unwrap();
-        let after: Vec<String> = std::fs::read_to_string(&p).unwrap().lines().map(str::to_string).collect();
-        assert_eq!(after.len(), before - before / 2 + 1);
-        assert!(after.last().unwrap().contains("\"n\":4"));
     }
 
     #[test]

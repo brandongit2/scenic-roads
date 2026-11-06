@@ -3,7 +3,9 @@
 //! the NAS or a disk.
 //!
 //! - `GET /map/changes?since=<seq>&client=<id>&wait=<s>`: the batches after `since`, or a reset to
-//!   the snapshot; with `wait` (30 s at most) it answers once a batch comes or the wait is out.
+//!   the snapshot; with `wait` (30 s at most) it answers once a batch comes or the wait is out. A
+//!   mirror says too `copying=<seq>` and `synced=<seq>` (its round's map, the last it was through
+//!   at: store::map::feed::Feed::said).
 //! - `GET /map/snapshot`: the whole map at the head (zstd JSON, store::map::Snapshot), its `seq` in
 //!   `X-Map-Seq`.
 //!
@@ -34,6 +36,10 @@ pub struct Ask {
     client: Option<String>,
     #[serde(default)]
     wait: Option<u64>,
+    #[serde(default)]
+    copying: Option<u64>,
+    #[serde(default)]
+    synced: Option<u64>,
 }
 
 /// The map's routes, for a router of any state.
@@ -55,6 +61,9 @@ async fn changes(State(feed): State<FeedOf>, Query(a): Query<Ask>) -> Response {
     loop {
         let gen = f.gen();
         let c = f.changes(a.since, a.client.as_deref(), unix_now());
+        if let Some(client) = a.client.as_deref().filter(|_| a.copying.is_some() || a.synced.is_some()) {
+            f.said(client, a.copying, a.synced, unix_now());
+        }
         let body = match c {
             Changes::NotReady => return not_ready(),
             Changes::Reset(head) => format!("{{\"reset\":{head}}}").into_bytes(),

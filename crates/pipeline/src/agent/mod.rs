@@ -982,7 +982,7 @@ pub struct CatalogueSeen {
 /// Publishing as it stands, for the build page's map KPI and `scenic status` (the
 /// lead's; docs/building.md §2, Publishing): the last catalogue, whether it went with the low zooms
 /// (build::LastCatalogue::low_at), the map tiles being drawn by Mac (pack's targets leased), and the
-/// catalogue each Mac's map server last adopted (crate::pubtimes, the servers' log on the NAS).
+/// catalogue each Mac's map server last adopted (its cursor in the map's log).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Published {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1014,6 +1014,24 @@ fn adopted(cursors: &BTreeMap<String, store::map::Cursor>) -> BTreeMap<String, C
 
 /// A map server's cursor's name in the map's log, before its host (crates/server's maplog).
 pub const SERVER_CURSOR: &str = "server/";
+/// A map server's mirror's, before its host (crates/server's maplog::MirrorLink).
+pub const MIRROR_CURSOR: &str = "mirror/";
+
+/// Publishing's marks in the clients' cursors (docs/maplog.md §6.1, §6.2), for the history
+/// (crate::pubtimes): each Mac's map server's adoption of a `seq`, and its mirror's round begun at
+/// one ("mirror-start") and through at one ("mirror-end"); (kind, host, seq, when first heard).
+fn publish_marks(cursors: &BTreeMap<String, store::map::Cursor>) -> Vec<(&'static str, String, CatalogueSeen)> {
+    let mut out: Vec<_> = adopted(cursors).into_iter().map(|(host, s)| (crate::pubtimes::ADOPT, host, s)).collect();
+    for (id, c) in cursors {
+        let Some(host) = id.strip_prefix(MIRROR_CURSOR) else { continue };
+        for (kind, h) in [(crate::pubtimes::MIRROR_START, c.copying), (crate::pubtimes::MIRROR_END, c.synced)] {
+            if let Some(h) = h {
+                out.push((kind, host.to_string(), CatalogueSeen { n: h.seq, at: h.at }));
+            }
+        }
+    }
+    out
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobView {
@@ -1644,8 +1662,8 @@ pub struct Agent {
     upcoming_ask: (Option<std::thread::JoinHandle<Option<(u64, room::Hints)>>>, Option<Instant>),
     /// The map's log, the lead's (crate::agent::publish::MapLog).
     maplog: publish::MapLog,
-    /// The `seq` each Mac's map server was last noted adopting (`tend_pageview`).
-    adoptions: BTreeMap<String, u64>,
+    /// The `seq` of each of publishing's marks last noted, by kind and Mac (`tend_pageview`).
+    publish_marks: BTreeMap<(&'static str, String), u64>,
     /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
     /// process isn't in it: the NAS not reached as it started, or its member's lock held by another
     /// process; it starts nothing then, and restarts into the pool once it can), and why this
@@ -2009,7 +2027,7 @@ impl Agent {
             upcoming: Default::default(),
             upcoming_ask: (None, None),
             maplog: Default::default(),
-            adoptions: BTreeMap::new(),
+            publish_marks: BTreeMap::new(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
             ticking: run.as_ref().map(|r| r.ticking.clone()),
             publish_gen: Default::default(),
@@ -7748,18 +7766,19 @@ impl Agent {
         if !coord.has_maplog() {
             coord.set_maplog(here.feed.clone());
         }
-        // (Each map server's adoption of a newer map, its cursor moved: in the history, for
-        // publishing's times, crate::pubtimes.)
-        for (host, s) in adopted(&here.feed.cursors()) {
-            if self.adoptions.get(&host) != Some(&s.n) {
+        // (Each map server's adoption of a newer map, its cursor moved, and its mirror's rounds:
+        // in the history, for publishing's times, crate::pubtimes.)
+        for (kind, host, s) in publish_marks(&here.feed.cursors()) {
+            let key = (kind, host);
+            if self.publish_marks.get(&key) != Some(&s.n) {
                 let e = crate::coord::history::Event {
                     t: s.at,
-                    worker: Some(host.clone()),
+                    worker: Some(key.1.clone()),
                     n: Some(s.n),
-                    ..crate::coord::history::Event::new(crate::pubtimes::ADOPT)
+                    ..crate::coord::history::Event::new(kind)
                 };
                 self.note(e);
-                self.adoptions.insert(host, s.n);
+                self.publish_marks.insert(key, s.n);
             }
         }
         // (The map's finished tiles, the same: the build's keys on the NAS.)
@@ -12879,6 +12898,16 @@ mod tests {
         assert_eq!(a["m4"], CatalogueSeen { n: 812, at: 110 });
         assert_eq!(a["m1"], CatalogueSeen { n: 811, at: 105 });
         assert_eq!((host_of("m4 #3"), host_of("m4"), host_of("page #1")), ("m4", "m4", "page #1"));
+        // The mirror's rounds are its marks, beside the adoptions.
+        feed.said("mirror/m1", Some(812), None, 121);
+        feed.said("mirror/m1", Some(812), Some(812), 150);
+        let marks = publish_marks(&feed.cursors());
+        let of = |kind: &str| {
+            marks.iter().filter(|m| m.0 == kind).map(|m| (m.1.as_str(), m.2.n, m.2.at)).collect::<Vec<_>>()
+        };
+        assert_eq!(of(crate::pubtimes::ADOPT), [("m1", 811, 105), ("m4", 812, 110)]);
+        assert_eq!(of(crate::pubtimes::MIRROR_START), [("m1", 812, 121)]);
+        assert_eq!(of(crate::pubtimes::MIRROR_END), [("m1", 812, 150)]);
     }
 
     /// A forecast made now: the build done (nothing left to build), or not.

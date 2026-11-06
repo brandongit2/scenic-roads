@@ -348,6 +348,14 @@ installed by `tools/app/install.sh`, updated by the updater).
   the NAS is reachable, from home or not (no rule holds them back away from home). While the build
   runs (the lead's heartbeat says a job runs) copies keep to 20 MB/s. Each copy is checked before
   it's moved into place. Each downloading or updating row shows its own progress bar.
+- **Its cursor in the map's log** (`mirror/<host>`, `crate::maplog::MirrorLink`, docs/maplog.md
+  §6.2): each round with the NAS, before it copies, it tells the lead the oldest map whose files it
+  still copies (the one served; an Update's older one until its files are here), so GC keeps them,
+  and the map its round copies and the last it got through at, which the lead notes in the history
+  (`mirror-start`, `mirror-end`, for `scenic timings publish`). The cursor is made each round from
+  `downloads.json` and the files here, so a restart says the same one. One older than the lead's
+  log (the Mac away a long time) moves each Update of an older map on to the one served, whose
+  files the NAS has.
 - **Room:** a per-Mac reserve ("Keep free", 30 GB unless set; `reserve.json`, `PUT
   /api/downloads/reserve`), applied at once. When this Mac's build agent's room target (`scenic
   room`, docs/building.md §2) is higher, the mirror keeps that instead (seen within 5 s). A

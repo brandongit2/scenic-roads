@@ -461,6 +461,26 @@ impl Plan {
         Some(out)
     }
 
+    /// The oldest map whose files the mirror still copies from the NAS (docs/maplog.md §6.2): the
+    /// one served, an Update's older one while its files aren't all here, or a download's own while
+    /// what it keeps there isn't (`Downloads::advance` moves that on). The mirror's cursor in the
+    /// map's log (crate::maplog::MirrorLink): never newer than what it lacks.
+    pub fn copies_from(&self, m: &Mirror) -> u64 {
+        let mut n = self.current;
+        for (w, p) in self.asked.pins() {
+            if let Some(t) = p.to.map(|t| self.eff(t)) {
+                if self.target(&w, t).is_some_and(|items| !complete(items.into_iter(), m)) {
+                    n = n.min(t);
+                }
+            }
+            let c = self.eff(p.cat);
+            if c != self.current && self.own(&w, p).is_some_and(|o| !o.kept.iter().all(|i| m.is_here(i))) {
+                n = n.min(c);
+            }
+        }
+        n
+    }
+
     /// The catalogue served's.
     pub fn now(&self) -> &At {
         &self.at[&self.current]
@@ -815,6 +835,33 @@ impl Downloads {
         complete
     }
 
+    /// The mirror's cursor was outside the lead's log (docs/maplog.md §6.2): each Update of a map
+    /// older than the one served goes on at the one served, whose files the NAS has (an older map's
+    /// may have gone with GC while this Mac was away). What a download keeps is here and stays.
+    /// Whether any moved.
+    fn resync(&self, plan: &Plan) -> bool {
+        let cur = plan.current;
+        let stale = |p: &Pin| p.to.is_some_and(|t| plan.eff(t) < cur);
+        if !plan.asked.pins().iter().any(|(_, p)| stale(p)) {
+            return false;
+        }
+        eprintln!("mirror: its cursor is outside the map's log: the Updates go on at map {cur}");
+        match self.edit(|a| {
+            for (w, p) in a.pins() {
+                if stale(&p) {
+                    a.pin_mut(&w).expect("a pin listed").to = Some(cur);
+                }
+            }
+            Ok(())
+        }) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("downloads: {e:#}");
+                false
+            }
+        }
+    }
+
     /// Moves each download's pin on where the plan says (`Plan::eff`, module doc): pinned at last
     /// (none yet, or its catalogue lost: the one served); an Update all here (`Plan::target`): to its
     /// catalogue; behind, with nothing to copy (all an Update would copy here already), or with
@@ -983,11 +1030,12 @@ fn of_contents<'a>(cat: &Catalogue, contents: impl IntoIterator<Item = &'a str>)
 /// catalogue copies nothing by itself (module doc). While the build runs (the lead's heartbeat on the
 /// NAS says a job runs), copies keep to 20 MB/s; a file this Mac's pack or lo job holds isn't
 /// deleted (store::mirror). Between copies it works out the basemap pieces' sizes (for the panel's
-/// sizes), those of what's downloaded first.
-pub fn spawn_mirror(s: S) {
+/// sizes), those of what's downloaded first. Each round with the NAS it tells the lead its cursor
+/// (`lead`, crate::maplog::MirrorLink: none for a server of a `--root`).
+pub fn spawn_mirror(s: S, mut lead: Option<crate::maplog::MirrorLink>) {
     let Some(m) = s.data.mirror.clone() else { return };
     let spawned = std::thread::Builder::new().name("mirror".into()).spawn(move || loop {
-        if !once(&s, &m) {
+        if !once(&s, &m, lead.as_mut()) {
             s.downloads.wait(Duration::from_secs(60));
         }
     });
@@ -996,13 +1044,9 @@ pub fn spawn_mirror(s: S) {
     }
 }
 
-/// The mirror's syncs said in publishing's log, per process.
-static MIRROR_MARKS: std::sync::Mutex<pipeline::pubtimes::MirrorMarks> =
-    std::sync::Mutex::new(pipeline::pubtimes::MirrorMarks::new());
-
 /// One round of the mirror; whether to go again at once (the catalogue or the downloads changed
 /// meanwhile).
-fn once(s: &crate::AppState, m: &Mirror) -> bool {
+fn once(s: &crate::AppState, m: &Mirror, mut lead: Option<&mut crate::maplog::MirrorLink>) -> bool {
     let cat = s.data.catalogue();
     // (Nothing known of the map yet: what's here can't be told from what isn't wanted.)
     if cat.n == 0 {
@@ -1051,15 +1095,21 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
         }
     }
     let slow = || s.data.agent_busy();
-    // (Each catalogue's sync begun and through, once, in publishing's log: pipeline::pubtimes.)
-    if MIRROR_MARKS.lock().unwrap().start(cat.n, now()) {
-        crate::data::publish_event(&root, "mirror-start", cat.n, None);
+    // (Its cursor said to the lead before it copies: the files it's after are kept on the NAS. One
+    // outside the lead's log: the Updates of an older map go on at the one served.)
+    if let Some(l) = lead.as_deref_mut() {
+        let since = plan.copies_from(m);
+        if let Some(head) = l.tell(since, plan.current) {
+            if since < head && s.downloads.resync(&plan) {
+                return true;
+            }
+        }
     }
     match m.sync(&cat, wanted, &root, &pool, &Control { stop: &changed, slow: &slow }) {
         Ok(st) => {
             let through = st.end == SyncEnd::Done && st.waiting == 0 && st.failed == 0 && st.pending == 0;
-            if let Some(secs) = MIRROR_MARKS.lock().unwrap().end(cat.n, now(), through) {
-                crate::data::publish_event(&root, "mirror-end", cat.n, Some(secs));
+            if let Some(l) = lead.as_deref_mut().filter(|_| through) {
+                l.through(plan.current, plan.copies_from(m));
             }
             if st.copied > 0 || st.removed > 0 || st.waiting > 0 || st.failed > 0 {
                 eprintln!("mirror: {st:?}");

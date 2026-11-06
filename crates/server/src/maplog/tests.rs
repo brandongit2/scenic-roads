@@ -7,13 +7,13 @@ use store::map::log::Log;
 
 /// The lead's routes (pipeline::coord::maproutes) over `feed`, on a runtime of their own, on
 /// `port` (0: any); stopped when dropped, its connections cut.
-struct FakeLead {
+pub(crate) struct FakeLead {
     rt: Option<tokio::runtime::Runtime>,
     port: u16,
 }
 
 impl FakeLead {
-    fn on(port: u16, feed: Arc<Feed>) -> FakeLead {
+    pub(crate) fn on(port: u16, feed: Arc<Feed>) -> FakeLead {
         let l = store::spawn::listen(("127.0.0.1", port)).unwrap();
         l.set_nonblocking(true).unwrap();
         let port = l.local_addr().unwrap().port();
@@ -26,7 +26,7 @@ impl FakeLead {
         FakeLead { rt: Some(rt), port }
     }
 
-    fn url(&self) -> String {
+    pub(crate) fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
 }
@@ -39,7 +39,7 @@ impl Drop for FakeLead {
     }
 }
 
-fn config(url: String, cache: &Path, wait_s: u64) -> Config {
+pub(crate) fn config(url: String, cache: &Path, wait_s: u64) -> Config {
     Config {
         cache: Some(cache.to_owned()),
         lead: Lead::At { urls: vec![url], token: "k".into() },

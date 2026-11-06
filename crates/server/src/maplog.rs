@@ -6,6 +6,8 @@
 //! the Mac mini alone (#874; crate::retire). The map is all it serves: no catalogue is read
 //! (docs/maplog.md §8, step 6).
 //!
+//! The mirror is a client of the log too, with a cursor of its own (`MirrorLink`).
+//!
 //! The map is kept on this Mac (`current.json.zst` in its cache folder, ~/Library/Caches/scenic/map),
 //! written at most every 10 minutes, and read at a start: a start away from the lead and the NAS
 //! serves it (the offline map). With the lead away it keeps the map it holds, asking again each
@@ -89,8 +91,8 @@ enum Got {
 pub(crate) struct Follower {
     d: Arc<Data>,
     cfg: Config,
+    link: Link,
     map: Option<Map>,
-    contact: Option<pipeline::coord::Contact>,
     saved: Option<(u64, Instant)>,
     nas_looked: Option<Instant>,
     /// The map's last `seq` handed on.
@@ -100,7 +102,8 @@ pub(crate) struct Follower {
 
 impl Follower {
     pub(crate) fn new(d: Arc<Data>, cfg: Config) -> Follower {
-        Follower { d, cfg, map: None, contact: None, saved: None, nas_looked: None, handed: 0, away: false }
+        let link = Link::new(d.clone(), &cfg);
+        Follower { d, cfg, link, map: None, saved: None, nas_looked: None, handed: 0, away: false }
     }
 
     fn run(mut self) {
@@ -258,14 +261,53 @@ impl Follower {
         }
     }
 
+    fn ask(&mut self, since: u64) -> Got {
+        let path = format!("/map/changes?since={since}&wait={}&client={}", self.cfg.wait_s, self.cfg.client);
+        match self.link.get(&path, self.cfg.wait_s + 30) {
+            Ok(b) => match serde_json::from_slice::<Answer>(&b) {
+                Ok(a) => Got::Answer(a),
+                Err(e) => Got::Away(format!("its answer doesn't parse: {e}")),
+            },
+            Err(why) => Got::Away(why),
+        }
+    }
+
+    fn snapshot(&mut self) -> Result<Map> {
+        let b = match self.link.get("/map/snapshot", 600) {
+            Ok(b) => b,
+            Err(why) => bail!("{why}"),
+        };
+        Ok(Snapshot::decode(&b).context("the lead's snapshot")?.0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seq(&self) -> Option<u64> {
+        self.map.as_ref().map(|m| m.seq)
+    }
+}
+
+/// The way to the lead's coordinator: its addresses and key, fixed or as the NAS says.
+struct Link {
+    d: Arc<Data>,
+    lead: Lead,
+    /// Where the lead's contact is kept for a start away from the NAS.
+    cache: Option<PathBuf>,
+    contact: Option<pipeline::coord::Contact>,
+}
+
+impl Link {
+    fn new(d: Arc<Data>, cfg: &Config) -> Link {
+        Link { d, lead: cfg.lead.clone(), cache: cfg.cache.clone(), contact: None }
+    }
+
     /// The lead's addresses and key: fixed, or as the NAS says (kept on this Mac), read again
     /// after the lead didn't answer.
     fn contact(&mut self) -> Option<pipeline::coord::Contact> {
-        if let Lead::At { urls, token } = &self.cfg.lead {
+        if let Lead::At { urls, token } = &self.lead {
             return Some(pipeline::coord::Contact { urls: urls.clone(), token: token.clone(), page: None });
         }
         if self.contact.is_none() {
-            let kept = self.cfg.cache.as_ref().map(|d| d.join(LEAD_KEPT));
+            let kept = self.cache.as_ref().map(|d| d.join(LEAD_KEPT));
             let from_nas = self.d.nas_root().and_then(|r| pipeline::coord::contact_path(&r).read().ok());
             let read = from_nas.as_deref().and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(b).ok());
             if let (Some(c), Some(k)) = (&read, &kept) {
@@ -318,29 +360,50 @@ impl Follower {
         self.contact = None;
         Err(why)
     }
+}
 
-    fn ask(&mut self, since: u64) -> Got {
-        let path = format!("/map/changes?since={since}&wait={}&client={}", self.cfg.wait_s, self.cfg.client);
-        match self.get(&path, self.cfg.wait_s + 30) {
-            Ok(b) => match serde_json::from_slice::<Answer>(&b) {
-                Ok(a) => Got::Answer(a),
-                Err(e) => Got::Away(format!("its answer doesn't parse: {e}")),
-            },
-            Err(why) => Got::Away(why),
+/// The mirror's client of the map's log (docs/maplog.md §6.2), `mirror/<host>`: each round it says
+/// its cursor, the oldest map whose files it still copies from the NAS (`since`), so the lead's GC
+/// keeps every file a map since then names; the map its round copies (`copying`) and the last it
+/// was through at (`synced`), which the lead notes in the history for publishing's times. Its
+/// cursor is made each round from what's on this Mac's disk (the downloads' pins and the files
+/// here: downloads::Plan::copies_from), so it is as durable as they are and never newer than
+/// what's copied; the batches answered are passed over (the mirror's sync is whole each round).
+pub struct MirrorLink {
+    link: Link,
+    client: String,
+    synced: Option<u64>,
+}
+
+impl MirrorLink {
+    /// The mirror's link, for the server following the lead of `cfg` (its cursor `mirror/<host>`).
+    pub fn new(d: Arc<Data>, cfg: &Config) -> MirrorLink {
+        let host = cfg.client.strip_prefix(pipeline::agent::SERVER_CURSOR).unwrap_or(&cfg.client);
+        MirrorLink {
+            link: Link::new(d, cfg),
+            client: format!("{}{host}", pipeline::agent::MIRROR_CURSOR),
+            synced: None,
         }
     }
 
-    fn snapshot(&mut self) -> Result<Map> {
-        let b = match self.get("/map/snapshot", 600) {
-            Ok(b) => b,
-            Err(why) => bail!("{why}"),
-        };
-        Ok(Snapshot::decode(&b).context("the lead's snapshot")?.0)
+    /// Says the cursor (`since`) and the map the round copies: the lead's head when the cursor is
+    /// outside the batches it holds (its answer a reset). The lead away, asked again next round.
+    pub fn tell(&mut self, since: u64, copying: u64) -> Option<u64> {
+        let mut path = format!("/map/changes?since={since}&client={}&copying={copying}", self.client);
+        if let Some(s) = self.synced {
+            path.push_str(&format!("&synced={s}"));
+        }
+        let b = self.link.get(&path, 10).ok()?;
+        serde_json::from_slice::<Answer>(&b).ok()?.reset
     }
 
-    #[cfg(test)]
-    pub(crate) fn seq(&self) -> Option<u64> {
-        self.map.as_ref().map(|m| m.seq)
+    /// A round through everything wanted at map `n`: said at once (with the cursor `since`) when
+    /// it's the first through there.
+    pub fn through(&mut self, n: u64, since: u64) {
+        if self.synced != Some(n) {
+            self.synced = Some(n);
+            self.tell(since, n);
+        }
     }
 }
 
@@ -362,4 +425,4 @@ fn keep_private(path: &std::path::Path, b: &[u8]) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

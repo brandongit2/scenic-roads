@@ -400,7 +400,8 @@ async fn main() -> Result<()> {
         });
     }
     // The mirror: what's downloaded (downloads.rs).
-    downloads::spawn_mirror(state.clone());
+    let lead = root.is_none().then(|| maplog::MirrorLink::new(state.data.clone(), &maplog::Config::this_mac()));
+    downloads::spawn_mirror(state.clone(), lead);
     tokio::spawn(warm(state.clone()));
     regions::spawn_syncer(state.clone());
     // Other devices (remote.rs): the address to open there, kept current (tailscale serve may start

@@ -1,4 +1,5 @@
 use super::*;
+use crate::maplog::MirrorLink;
 use pipeline::areafiles::{clip, lat_y, lon_x, ring_area, LISTS_KM};
 use store::catalogue::{FileRef, Layer};
 use store::naming::{write_atomic, Source};
@@ -155,7 +156,7 @@ fn file_bytes(p: &Part) -> u64 {
 /// One round of the mirror thread, until it has nothing more to do.
 fn settle(s: &S) {
     let m = s.data.mirror.clone().unwrap();
-    while once(s, &m) {}
+    while once(s, &m, None) {}
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1275,4 +1276,156 @@ async fn a_download_behind_the_log_compares_its_list() {
     assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 6, to: None });
     assert_eq!(s.data.content(roads), Some(c.files[roads].file.clone()));
     assert!(!s.data.mirror.as_ref().unwrap().has(&old));
+}
+
+// ---- the mirror's cursor in the map's log (docs/maplog.md §6.2) ---------------------------------
+
+type Feed = Arc<store::map::feed::Feed>;
+
+/// A lead over `feed` and the mirror's link to it (its cursor `mirror/test`).
+fn mirror_link(s: &S, home: &std::path::Path, feed: &Feed) -> (crate::maplog::tests::FakeLead, MirrorLink) {
+    let lead = crate::maplog::tests::FakeLead::on(0, feed.clone());
+    let cfg = crate::maplog::tests::config(lead.url(), &home.join("cache"), 0);
+    let link = MirrorLink::new(s.data.clone(), &cfg);
+    (lead, link)
+}
+
+/// The mirror's rounds, each telling the lead, until it has nothing more to do.
+fn settle_told(s: &S, link: &mut MirrorLink) {
+    let m = s.data.mirror.clone().unwrap();
+    while once(s, &m, Some(&mut *link)) {}
+}
+
+/// `cat` served (on the NAS's map and by this server), and appended to the lead's log at `map`.
+fn serve(s: &S, nas: &std::path::Path, cat: &Catalogue, lead: Option<(&Feed, &mut store::map::Map)>) {
+    store::testkit::map_root(nas, cat);
+    assert!(s.data.serve_root_map());
+    assert_eq!(s.data.catalogue().n, cat.n);
+    if let Some((feed, map)) = lead {
+        let b = map.batch_of(cat, "", "").unwrap();
+        *map = map.apply(&b).unwrap();
+        feed.push(Arc::new(map.clone()), &b);
+    }
+}
+
+/// The mirror's cursor as the lead heard it: its `seq`, and the maps it said it copied and was
+/// through at.
+fn mirror_cursor(feed: &Feed) -> (u64, Option<u64>, Option<u64>) {
+    let k = &feed.cursors()["mirror/test"];
+    (k.seq, k.copying.map(|h| h.seq), k.synced.map(|h| h.seq))
+}
+
+/// London downloaded at map 1, then map 2 served with its roads made again, and its Update to 2
+/// asked with the new roads file missing on the NAS (moved to the path returned): rounds that
+/// can't get through. `rounds` runs the mirror; `on_map` serves a map.
+async fn an_update_held_up(
+    s: &S,
+    root: &store::nasfs::NasRoot,
+    nas: &std::path::Path,
+    rounds: &mut dyn FnMut(&S),
+    on_map: &mut dyn FnMut(&Catalogue),
+) -> (Catalogue, String, std::path::PathBuf) {
+    assert_eq!(region(s, "london", true).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| rounds(s));
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 1, to: None });
+    let mut second = s.data.catalogue().as_ref().clone();
+    second.n = 2;
+    let new_roads = put(root, &mut second, "layers/roads/hi/6-31-21", 25_000);
+    second.validate().unwrap();
+    tokio::task::block_in_place(|| on_map(&second));
+    let aside = nas.join("aside");
+    std::fs::rename(nas.join(&new_roads), &aside).unwrap();
+    assert_eq!(call(post_region_update(State(s.clone()), Path("london".into())).await).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| rounds(s));
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 1, to: Some(2) });
+    (second, new_roads, aside)
+}
+
+/// The mirror's cursor is the oldest map whose files it still copies: a download all here at an
+/// older map holds nothing; an Update of map 2 holds it at 2 while the map served moves on to 3,
+/// through rounds that can't get through and a restart of the server (made again from the
+/// downloads' pins and the files here); once the Update's files are here it catches up to the map
+/// served. The maps its rounds copy and get through at are said beside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mirror_copying_an_older_seq_holds_its_cursor() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = store::nasfs::NasRoot::local_for_test(nas.path());
+    let first = catalogue(&root);
+    let s = crate::test_state_with(home.path(), &root, true);
+    let feed = store::map::feed::Feed::new();
+    let mut map = store::map::Map::of(&first).unwrap();
+    feed.start(Arc::new(map.clone()), 1, &[], Default::default());
+    let (_lead, mut link) = mirror_link(&s, home.path(), &feed);
+    let mut seen = Vec::new();
+    let (_, new_roads, aside) = an_update_held_up(
+        &s,
+        &root,
+        nas.path(),
+        &mut |s| {
+            settle_told(s, &mut link);
+            seen.push(mirror_cursor(&feed));
+        },
+        &mut |c| serve(&s, nas.path(), c, Some((&feed, &mut map))),
+    )
+    .await;
+    // (At 1, through. At 2, London behind but all here at 1, so the cursor at 2; the Update's round
+    // not through: a file missing.)
+    assert_eq!(seen, [(1, Some(1), Some(1)), (2, Some(2), Some(1))]);
+
+    // Map 3, London's terrain made again: the Update stays at 2, and so does the cursor.
+    let mut third = s.data.catalogue().as_ref().clone();
+    third.n = 3;
+    put(&root, &mut third, "layers/terrain/hi/6-31-21", 11_500);
+    third.validate().unwrap();
+    tokio::task::block_in_place(|| serve(&s, nas.path(), &third, Some((&feed, &mut map))));
+    tokio::task::block_in_place(|| settle_told(&s, &mut link));
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 1, to: Some(2) });
+    assert_eq!(mirror_cursor(&feed), (2, Some(3), Some(1)));
+
+    // The server started again: the same cursor, from what's on disk.
+    drop(link);
+    drop(s);
+    let s = crate::test_state_with(home.path(), &root, true);
+    assert_eq!(s.data.catalogue().n, 3);
+    let (_lead2, mut link) = mirror_link(&s, home.path(), &feed);
+    tokio::task::block_in_place(|| settle_told(&s, &mut link));
+    assert_eq!(mirror_cursor(&feed).0, 2);
+
+    // The file back: the Update moves London to 2, all here, and the cursor catches up to 3, its
+    // round through there.
+    std::fs::rename(&aside, nas.path().join(&new_roads)).unwrap();
+    tokio::task::block_in_place(|| settle_told(&s, &mut link));
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 2, to: None });
+    assert!(s.data.mirror.as_ref().unwrap().has(&new_roads));
+    assert_eq!(mirror_cursor(&feed), (3, Some(3), Some(3)));
+}
+
+/// A mirror whose cursor is older than the lead's log (no batch from there held: this Mac away a
+/// long time) resyncs whole: the Update of the older map goes on at the one served, whose files
+/// the NAS has, and gets through; what the download keeps stays here meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cursor_older_than_the_log_resyncs_the_updates() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = store::nasfs::NasRoot::local_for_test(nas.path());
+    catalogue(&root);
+    let s = crate::test_state_with(home.path(), &root, true);
+    let (second, new_roads, _aside) =
+        an_update_held_up(&s, &root, nas.path(), &mut |s| settle(s), &mut |c| serve(&s, nas.path(), c, None)).await;
+    let roads = "layers/roads/hi/6-31-21";
+    let old_roads = s.data.content(roads).unwrap();
+    // Map 3, the roads made again; the lead's log opened at 3.
+    let mut third = second.clone();
+    third.n = 3;
+    let roads3 = put(&root, &mut third, roads, 26_000);
+    third.validate().unwrap();
+    tokio::task::block_in_place(|| serve(&s, nas.path(), &third, None));
+    let feed = store::map::feed::Feed::new();
+    feed.start(Arc::new(store::map::Map::of(&third).unwrap()), 3, &[], Default::default());
+    let (_lead, mut link) = mirror_link(&s, home.path(), &feed);
+    let m = s.data.mirror.clone().unwrap();
+    assert!(m.has(&old_roads), "kept meanwhile");
+    tokio::task::block_in_place(|| settle_told(&s, &mut link));
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 3, to: None });
+    assert!(m.has(&roads3) && !m.has(&new_roads) && !m.has(&old_roads));
+    assert_eq!(mirror_cursor(&feed), (3, Some(3), Some(3)));
 }

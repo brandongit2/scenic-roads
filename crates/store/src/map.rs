@@ -540,6 +540,19 @@ pub struct Cursor {
     /// When it was first heard at `seq`: its adoption of it (docs/maplog.md §6.1).
     #[serde(default)]
     pub at: u64,
+    /// A mirror's (§6.2): the map whose files its round copies, and the last one it was through
+    /// at, each as first heard (`feed::Feed::said`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copying: Option<Heard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced: Option<Heard>,
+}
+
+/// A `seq` a client said, and when it first said it (seconds since 1970).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Heard {
+    pub seq: u64,
+    pub at: u64,
 }
 
 /// The whole map as stored: the lead's snapshot and the NAS's (§4.4, §4.5). Written from the map

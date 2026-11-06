@@ -81,7 +81,7 @@ fn due_waits_for_every_cursor_the_grace_and_older_leases() {
     q.open(d.path(), &m1, T0).unwrap();
     let (b2, _) = to(&m1, &[("a", "a.2.pack")], 2);
     q.batch(&b2, T0);
-    let cur = |seq: u64, heard: u64| Cursor { seq, heard, at: heard };
+    let cur = |seq: u64, heard: u64| Cursor { seq, heard, at: heard, ..Default::default() };
     let late = T0 + GRACE_S;
     let all_past: BTreeMap<String, Cursor> =
         [("server/m4".to_string(), cur(2, late)), ("snapshot".to_string(), cur(2, late))].into();

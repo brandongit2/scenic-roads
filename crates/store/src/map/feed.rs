@@ -138,8 +138,11 @@ impl Feed {
         let Some(head) = g.map.as_ref().map(|m| m.seq) else { return Changes::NotReady };
         if let Some(c) = client.filter(|c| !c.is_empty() && c.len() <= 120) {
             // (When it was first heard at `since`: its adoption of it.)
-            let at = g.cursors.get(c).filter(|k| k.seq == since && k.at > 0).map_or(now, |k| k.at);
-            g.cursors.insert(c.to_string(), Cursor { seq: since, heard: now, at });
+            let k = g.cursors.entry(c.to_string()).or_default();
+            if k.seq != since || k.at == 0 {
+                k.at = now;
+            }
+            (k.seq, k.heard) = (since, now);
         }
         if since > head || since < g.base {
             return Changes::Reset(head);
@@ -164,11 +167,24 @@ impl Feed {
         Changes::Batches { head, n, body }
     }
 
+    /// What a mirror (`client`, heard at `now` by `changes`) said of its rounds besides its cursor
+    /// (docs/maplog.md §6.2): the map whose files the one under way copies, and the last one it
+    /// was through at; each noted with when it was first said, for publishing's times.
+    pub fn said(&self, client: &str, copying: Option<u64>, synced: Option<u64>, now: u64) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(k) = g.cursors.get_mut(client) else { return };
+        for (slot, seq) in [(&mut k.copying, copying), (&mut k.synced, synced)] {
+            if let Some(seq) = seq.filter(|&s| slot.is_none_or(|h| h.seq != s)) {
+                *slot = Some(super::Heard { seq, at: now });
+            }
+        }
+    }
+
     /// Client `client`'s cursor set to `seq`, heard at `now`, by the lead itself: a holder that asks
     /// no `changes` (the NAS snapshot, `snapshot`, docs/maplog.md §5.4).
     pub fn note(&self, client: &str, seq: u64, now: u64) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.cursors.insert(client.to_string(), Cursor { seq, heard: now, at: now });
+        g.cursors.insert(client.to_string(), Cursor { seq, heard: now, at: now, ..Default::default() });
     }
 
     /// The clients' cursors as last heard (saved with the log's snapshot).
@@ -210,6 +226,7 @@ fn hold(g: &mut Inner, b: &Batch) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Heard;
     use super::*;
     use serde_json::json;
 
@@ -248,10 +265,22 @@ mod tests {
         }
         let a = answer(f.changes(3, Some("server/m4"), 77));
         assert_eq!((a.head, a.more, a.batches.iter().map(|b| b.seq).collect::<Vec<_>>()), (5, false, vec![4, 5]));
-        assert_eq!(f.cursors()["server/m4"], Cursor { seq: 3, heard: 77, at: 77 });
+        assert_eq!(f.cursors()["server/m4"], Cursor { seq: 3, heard: 77, at: 77, ..Default::default() });
         // (Heard again at the same seq: adopted when first heard there.)
         f.changes(3, Some("server/m4"), 80);
-        assert_eq!(f.cursors()["server/m4"], Cursor { seq: 3, heard: 80, at: 77 });
+        assert_eq!(f.cursors()["server/m4"], Cursor { seq: 3, heard: 80, at: 77, ..Default::default() });
+        // A mirror's rounds: each seq said noted as first said, kept as its cursor moves.
+        f.changes(3, Some("mirror/m4"), 81);
+        f.said("mirror/m4", Some(5), None, 81);
+        f.changes(3, Some("mirror/m4"), 90);
+        f.said("mirror/m4", Some(5), Some(5), 90);
+        f.changes(5, Some("mirror/m4"), 95);
+        f.said("mirror/m4", Some(5), Some(5), 95);
+        f.said("nobody", Some(5), None, 95);
+        let k = &f.cursors()["mirror/m4"];
+        assert_eq!((k.seq, k.at, k.heard), (5, 95, 95));
+        assert_eq!((k.copying, k.synced), (Some(Heard { seq: 5, at: 81 }), Some(Heard { seq: 5, at: 90 })));
+        assert!(!f.cursors().contains_key("nobody"), "said only by a client heard");
         // At the head: none. Before the oldest held, or past the head: reset.
         assert!(answer(f.changes(5, None, 0)).batches.is_empty());
         assert_eq!(answer(f.changes(0, None, 0)).reset, Some(5));

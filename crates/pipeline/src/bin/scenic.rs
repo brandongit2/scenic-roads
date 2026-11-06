@@ -142,8 +142,8 @@ fn timings(a: &cli::Timings) -> Result<()> {
 }
 
 /// `scenic timings publish [--last N]`: publishing end to end (pipeline::pubtimes), from the
-/// build's history (the NAS's, else this Mac's coordinator's; `--file` a history file) and the map
-/// servers' log on the NAS: each catalogue of the last N (10) and its z6 tiles, then the medians.
+/// build's history (the NAS's, else this Mac's coordinator's; `--file` a history file): each
+/// catalogue of the last N (10) and its z6 tiles, then the medians.
 fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::Places) -> Result<()> {
     use pipeline::pubtimes;
     let home = home_or_default(&places.home);
@@ -153,9 +153,7 @@ fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::P
         Some(f) => pubtimes::load_history(None, Some(f), days),
         None => pubtimes::load_history(root.as_ref(), Some(&home.join("coord/history.jsonl")), days),
     };
-    let servers =
-        root.as_ref().map(|r| pubtimes::read_servers(r, now_s().saturating_sub(days * 86400))).unwrap_or_default();
-    let (cats, units) = pubtimes::chains(&events, &servers);
+    let (cats, units) = pubtimes::chains(&events);
     if json {
         let from = cats.len().saturating_sub(last);
         println!(

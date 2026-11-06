@@ -32,7 +32,8 @@ pub struct Event {
     /// job), "task", "task-fail" and "task-back" (a task given back unfinished, not failed),
     /// "catalog" (a catalogue written: its `n`, its job's time and its crate::pubtimes::CatalogueStats),
     /// "merged" (journal entries merged: their keys), "adopt" (a Mac's map server at the map's `n`, its
-    /// `worker` the Mac: crate::pubtimes::ADOPT), "planned" (map tiles first
+    /// `worker` the Mac: crate::pubtimes::ADOPT), "mirror-start" and "mirror-end" (its mirror's round at
+    /// `n` begun and through: crate::pubtimes::MIRROR_START, MIRROR_END), "planned" (map tiles first
     /// planned: crate::pubtimes::planned_event), "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
     /// help accepted or declined, a device forgotten: its asks aren't), "agent" (one started),
     /// "conditions" (the lead's changed), "member" (a member coming into touch or going out of it,

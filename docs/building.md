@@ -294,11 +294,12 @@ from the first (`edit_held`).
   from the history after a restart or a change of lead; with, per z6 tile, the tiles its change made
   stale: their owners whose base pack or road values differ from the served catalogue's), leased and
   done; and map n published (`catalog`: its `n`, its job's time, the files listed and stat'ed, its
-  phases once written, from the step's own `catalog-stats:` log line). On the NAS, the map server
-  (the Mac mini's) appends to `state/publish/<host>.jsonl` its mirror's sync of each map (begun, and
-  through everything wanted). Its adoption of each is its cursor in the map's log moving there
-  (docs/maplog.md §6.1), which the lead notes in the history (`adopt`); it follows each batch by a
-  long poll (docs/macs.md). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalogue begun
+  phases once written, from the step's own `catalog-stats:` log line). A map server's adoption of
+  each map is its cursor in the map's log moving there (docs/maplog.md §6.1), which the lead notes
+  in the history (`adopt`); it follows each batch by a long poll (docs/macs.md). Its mirror's round
+  copying a map begun and through everything wanted are what its own cursor (`mirror/<host>`) says
+  (`copying`, `synced`: docs/maplog.md §6.2), which the lead notes the same way (`mirror-start`,
+  `mirror-end`). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalogue begun
   once it was merged and its stale tiles packed; per catalogue and per z6 tile, the hand-off, planned, leased, packed, catalogue, servers
   and mirrors, the tiles each z6 tile restaled, which of ferries, stations, roadunits, marks and
   names-todo ran, and the medians (the catalogues' phases among them).
