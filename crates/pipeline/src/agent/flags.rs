@@ -12,10 +12,13 @@
 //!   with those waits, and the wait of the step each names where that one waits too, never just
 //!   "nothing offered". Nothing left it could take: no flag.
 //! - **Stuck** (`stuck`): a leased job whose target under way has run past `factor` times that
-//!   target's measured time on its Mac at the job's threads (`UnderWay`: the job's safe point is a
-//!   target's end, so a job making no progress at all is found within a few of its own targets'
-//!   times, not its whole batch's: 5 Nov, terrain-hi jobs at 0 tiles and no CPU for 20 min); before
-//!   its first target, its start and first target since its grant.
+//!   target's own measured time on its Mac at the job's threads, or, one never run itself, its
+//!   step's runs' 90th percentile there where longer than what its model says (`UnderWay`,
+//!   crate::coord::sched's `Sched::late_on`: a step's mean is what a batch takes, and a long-tailed
+//!   step's big targets ran past three times it healthy). The job's safe point is a target's end,
+//!   so a job making no progress at all is found within a few of its own targets' times, not its
+//!   whole batch's: 5 Nov, terrain-hi jobs at 0 tiles and no CPU for 20 min; before its first
+//!   target, its start and first target since its grant.
 //! - **Overdue** (`overdue`): a leased job running past `factor` times the time it was sized to on
 //!   its Mac (`Run::sized_s`: its targets' measured times there at its threads and its start,
 //!   crate::coord::sched's `Sched::batch_secs`, as `pick_every` sized it), with how far its batch
@@ -80,7 +83,7 @@ pub struct Run {
 }
 
 /// A job's target under way (empty: its start, before its first target), since when (unix s), and
-/// its measured time on the job's Mac at its threads (s).
+/// the time past which it is late on the job's Mac at its threads (s, `Sched::late_on`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnderWay {
     pub target: String,

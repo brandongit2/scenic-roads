@@ -1042,8 +1042,7 @@ impl<'a> Book<'a> {
         let Some(mac) = mac else {
             if let Some(c) = own {
                 let other = worker.is_some_and(|w| c.worker.as_deref() != Some(w));
-                let secs = (c.secs as f64 * self.thread_scale(step, c, threads)).round() as u64;
-                return Some((if other { secs * 2 } else { secs }, false));
+                return Some((if other { c.secs * 2 } else { c.secs }, false));
             }
             let s = self.fitted(&md, &key, threads).or(md.prior)?;
             return Some(((s as f64 * self.pace(worker, step)).round() as u64, false));
@@ -1054,8 +1053,7 @@ impl<'a> Book<'a> {
             let at = if ran == Some(mac) { 1.0 } else { pace / self.pace(c.worker.as_deref(), step) };
             let cpu =
                 c.sizes.get("cpu_ms").filter(|_| threads > 0).map_or(0.0, |&ms| ms as f64 / 1000.0 / threads as f64);
-            let wall = c.secs as f64 * self.thread_scale(step, c, threads);
-            return Some(((wall.max(cpu) * at).round() as u64, true));
+            return Some((((c.secs as f64).max(cpu) * at).round() as u64, true));
         }
         // (Its bin: this Mac's own runs in it, else, after a good fit, every Mac's.)
         let bin_of = md.by_source.as_ref().zip(self.source_secs(step, target)).map(|(by, src)| (by, bin(src)));
@@ -1067,24 +1065,6 @@ impl<'a> Book<'a> {
             .or_else(|| bin_of.and_then(|(by, b)| bin_mean(by.all.get(&b))).map(|s| s * pace))
             .or_else(|| md.prior.map(|s| s as f64 * pace))?;
         Some((s.round() as u64, true))
-    }
-
-    /// How much longer run `c` of `step` takes on `threads` than it did as it ran, where it ran on
-    /// more (1: `threads` 0, or not fewer than it ran on, or the step's curve (`curve`) has no
-    /// point for either count): the curve's wall at `threads` over its wall at the run's. A run's
-    /// wall time says what its threads did then; a job given fewer (a z6 tile's trees at 1 thread
-    /// after its last run at 12, whose offloaded rows other Macs made meanwhile, so its CPU time
-    /// (`cpu_ms`) is no measure of its work) takes the longer the step's own runs at each count say.
-    fn thread_scale(&self, step: &str, c: &Cost, threads: u32) -> f64 {
-        let ran = c.sizes.get("threads").map_or(0, |&t| t as u32);
-        if threads == 0 || ran <= threads {
-            return 1.0;
-        }
-        let curve = self.curve(step);
-        match (curve.at(ran), curve.at(threads)) {
-            (Some(from), Some(to)) if from.wall > 0.0 => (to.wall / from.wall).max(1.0),
-            _ => 1.0,
-        }
     }
 
     /// What a drop of `step` (`DROPS`) takes, by its step's drops run the way it runs now: their
@@ -1581,23 +1561,6 @@ mod tests {
             }
         }
         costs
-    }
-
-    /// Task #978: a target whose last run was on more threads than it is asked for now takes the
-    /// longer its step's curve says (its cpu time, over those threads, says nothing of work other
-    /// Macs did); on as many or fewer threads, or with no curve point for either, as it ran.
-    #[test]
-    fn a_run_on_more_threads_takes_longer_on_fewer_by_the_steps_curve() {
-        let mut costs = curve_costs(&[1, 12], 5, 0.0, |t| if t == 1 { 120.0 } else { 20.0 });
-        let b = Book::new(&costs);
-        assert_eq!(b.secs_on("slope", "6/12/0", 12, None), Some((20, false)), "as it ran");
-        assert_eq!(b.secs_on("slope", "6/12/0", 0, None), Some((20, false)), "no threads asked: as it ran");
-        assert_eq!(b.secs_on("slope", "6/12/0", 1, None), Some((120, false)), "on 1 thread: the curve's");
-        assert_eq!(b.secs_on("slope", "6/1/0", 12, None), Some((120, false)), "more than it ran on: as it ran");
-        assert_eq!(b.secs_on("slope", "6/12/0", 4, None), Some((20, false)), "a count with no point: as it ran");
-        costs.remove(&cost_key("slope", "6/1/0"));
-        let b = Book::new(&costs);
-        assert_eq!(b.secs_on("slope", "6/12/0", 1, None), Some((120, false)), "the point stands on its other runs");
     }
 
     /// Task #904: the knee, the fewest threads no more threads beat by their runs' own spread, on

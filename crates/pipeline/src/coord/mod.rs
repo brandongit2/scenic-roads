@@ -2467,8 +2467,9 @@ impl Coordinator {
     /// worker's last beat said ended), threads, grant time, the time it was sized to on its worker at
     /// its threads (`Sched::batch_secs`, what `pick_every` sized it by and `job_weight` weighs it
     /// past; None when a target has no time), and what it has under way as its worker's beat last
-    /// said (`Lease::live`): the target and since when, with that target's measured time there
-    /// (`secs_on`); before its first target, its start and first target since its grant.
+    /// said (`Lease::live`): the target and since when, with the time past which that target is
+    /// late there (`Sched::late_on`); before its first target, its start and first target since its
+    /// grant.
     pub fn runs(&self) -> Vec<crate::agent::flags::Run> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
@@ -2489,13 +2490,15 @@ impl Coordinator {
                         Some(crate::agent::flags::UnderWay {
                             target: t.to_string(),
                             since,
-                            usual_s: s.secs_on(step, t, &l.worker, l.threads).map(|x| x.0),
+                            usual_s: s.late_on(step, t, &l.worker, l.threads),
                         })
                     }
                     None if live.is_none_or(|v| v.targets_done == 0) => Some(crate::agent::flags::UnderWay {
                         target: String::new(),
                         since: l.granted_at,
-                        usual_s: s.batch_secs(step, names[..1].iter().copied(), &l.worker, l.threads).map(|x| x.0),
+                        usual_s: s
+                            .late_on(step, names[0], &l.worker, l.threads)
+                            .map(|x| x + s.paces.start(&l.worker, step).round() as u64),
                     }),
                     None => None,
                 };
@@ -6974,43 +6977,51 @@ mod tests {
         assert_eq!(serde_json::from_value::<Lease>(v).unwrap().slot, None);
     }
 
-    /// Task #978: a leased job's target under way is compared (`flags::overdue`) with its time on
-    /// the threads the job runs with, not the threads of the run its time was measured in: a unit
-    /// last run on 12 threads (a z6 tile's rows made by other Macs then) takes the longer on the
-    /// job's fewer by the step's curve, so the job is not stuck at the first minutes past it.
+    /// Task #978: a target under way is late past its own run's time where it has one, else past
+    /// its step's runs' 90th percentile, not their mean: a long-tailed step's big target unmeasured
+    /// (trees' z6 tiles, 6 Nov: "past 3× its usual 1 min" at minutes) isn't stuck while healthy,
+    /// and a stalled one is still flagged, as a measured target past three times its own time is.
     #[test]
-    fn a_target_under_way_is_timed_on_the_threads_the_job_runs_with() {
+    fn a_target_never_run_is_late_past_its_steps_tail_not_its_mean() {
         let d = tempfile::tempdir().unwrap();
         let app = "20261018-0100-aaaaaaa";
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", app);
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
-        c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
-        let g = w.ask(&Ask { app: Some(app.into()), ..ask(4096) }).unwrap().unwrap();
-        let threads = c.runs()[0].threads;
-        assert!(threads > 0 && threads < 12, "{threads}");
-        let cost = |secs: u64, on: u64| Cost {
-            peak_mb: 500,
-            secs,
-            worker: None,
-            v: cost_version("unit"),
-            sizes: [("threads".to_string(), on), ("cpu_ms".to_string(), 1000)].into(),
-            ..Default::default()
-        };
-        let mut costs = vec![(cost_key("unit", "6/55/25"), cost(60, 12))];
-        for i in 0..3 {
-            costs.push((cost_key("unit", &format!("6/1/{i}")), cost(60, 12)));
-            costs.push((cost_key("unit", &format!("6/2/{i}")), cost(600, u64::from(threads))));
-        }
+        c.offer_units(
+            "2026-09-28",
+            vec![("6/55/25".into(), "k".into(), 100 << 20), ("6/55/26".into(), "k".into(), 100 << 20)],
+        );
+        let cost = |secs: u64| Cost { peak_mb: 500, secs, worker: None, v: cost_version("unit"), ..Default::default() };
+        // (Eight small targets and two big: their mean 48 s, their 90th percentile 200 s.)
+        let mut costs: Vec<_> =
+            (0..10).map(|i| (cost_key("unit", &format!("6/1/{i}")), cost(if i < 8 { 10 } else { 200 }))).collect();
+        costs.push((cost_key("unit", "6/55/26"), cost(20)));
         c.add_costs_by(&costs, "m1");
-        let live = crate::agent::jobs::Live {
-            target: Some("unit 6/55/25".into()),
-            target_since: Some(unix_now()),
-            targets: 1,
-            ..Default::default()
+        let g = w.ask(&Ask { app: Some(app.into()), ..ask(4096) }).unwrap().unwrap();
+        let under = |target: &str| {
+            let live = crate::agent::jobs::Live {
+                target: Some(format!("unit {target}")),
+                target_since: Some(unix_now()),
+                targets: 2,
+                ..Default::default()
+            };
+            assert!(w.beat_told(g.lease, None, Some(live), None).unwrap().0);
+            c.runs().remove(0)
         };
-        assert!(w.beat_told(g.lease, None, Some(live), None).unwrap().0);
-        let usual = c.runs()[0].under_way.clone().unwrap().usual_s;
-        assert_eq!(usual, Some(600), "10 times its 12-thread run, as the curve says");
+        let flags = |r: &crate::agent::flags::Run, ran: u64| {
+            let mut r = r.clone();
+            let now = r.under_way.as_ref().unwrap().since;
+            r.under_way.as_mut().unwrap().since -= ran;
+            let st = crate::agent::Status { host: "m4".into(), ..Default::default() };
+            crate::agent::flags::overdue(&st, &[r], 3.0, now).into_iter().map(|f| f.kind).collect::<Vec<_>>()
+        };
+        let r = under("6/55/25");
+        assert_eq!(r.under_way.as_ref().unwrap().usual_s, Some(200), "its step's 90th percentile");
+        assert!(flags(&r, 300).is_empty(), "a big target healthy at 5 min: past 3× the mean, within 3× the tail");
+        assert_eq!(flags(&r, 700), ["stuck"], "stalled past 3× the tail");
+        let r = under("6/55/26");
+        assert_eq!(r.under_way.as_ref().unwrap().usual_s, Some(20), "its own run's");
+        assert_eq!(flags(&r, 70), ["stuck"], "a measured target: past 3× its own time");
         c.stop();
     }
 

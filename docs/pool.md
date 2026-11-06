@@ -2065,11 +2065,15 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
     plan's waits with a step: slope-hi behind terrain-root), it names those waits, and the wait of
     each step a wait names that waits too. Nothing left it could take: no flag.
   - *stuck*: a leased job whose target under way has run more than the overdue factor times
-    that target's measured time on its Mac at the job's threads (its worker's beat says the target
-    and since when; a target's end is the job's safe point), or, before its first target, its start
-    and first target since its grant: a job making no progress at all is found within a few of its
-    own targets' times, not its whole batch's (5 Nov: terrain-hi jobs at 0 tiles and no CPU for
-    20 min).
+    that target's own measured time on its Mac at the job's threads, or, for a target never run
+    itself, its step's runs' 90th percentile there where longer than its model's time
+    (`Sched::late_on`; its worker's beat says the target and since when; a target's end is the job's
+    safe point), or, before its first target, its start and first target since its grant: a job
+    making no progress at all is found within a few of its own targets' times, not its whole
+    batch's (5 Nov: terrain-hi jobs at 0 tiles and no CPU for 20 min). A step's mean says what a
+    batch of its targets takes, not one: trees' unmeasured z6 tiles were flagged at minutes past
+    "3× its usual 1 min" while healthy (6 Nov; 8 % of its runs took over three times its mean,
+    1.6 % over three times its 90th percentile).
   - *overdue*: a leased job running more than the overdue factor times the time it was sized to
     (§7.7, Batch length: `Sched::batch_secs` at the lease's threads, its Mac's start and its targets'
     measured times there), with its targets done of its batch (its worker's beat) and its threads;
