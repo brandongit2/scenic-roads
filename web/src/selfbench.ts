@@ -25,6 +25,7 @@
 // origin whose HTTP cache is empty, so each view loads cold.
 import type { Map as MLMap } from 'maplibre-gl';
 import VIEWS from './data/benchviews.json';
+import { mercLat, mercLon, mercX, mercY } from './merc';
 
 const p = new URLSearchParams(location.hash.startsWith('#bench') ? location.hash.slice(6).replace(/^&/, '') : '');
 const names = (p.get('views') ?? VIEWS.map((v) => v[0]).join(',')).split(',').filter((n) => VIEWS.some((v) => v[0] === n));
@@ -396,10 +397,10 @@ export async function runBench(app: App): Promise<void> {
     pan: (t) => {
       // 600 CSS px a second at the view's zoom (512 px tiles), north-east (9:5, as bench.mjs's pan).
       const px = 600 * tri(t, S), k = 360 / (512 * 2 ** z0);
-      const mx = (c0.lng + 180) / 360 + (px * 0.874 * k) / 360;
-      const y0 = 0.5 - Math.log(Math.tan(Math.PI / 4 + (c0.lat * Math.PI) / 360)) / (2 * Math.PI);
+      const mx = mercX(c0.lng) + (px * 0.874 * k) / 360;
+      const y0 = mercY(c0.lat);
       const my = y0 - (px * 0.486 * k) / 360;
-      map.jumpTo({ center: [mx * 360 - 180, (360 / Math.PI) * Math.atan(Math.exp((0.5 - my) * 2 * Math.PI)) - 90] });
+      map.jumpTo({ center: [mercLon(mx), mercLat(my)] });
     },
     orbit: (t) => map.jumpTo({ bearing: b0 + 60 * tri(t, S), pitch: Math.max(0, p0 - 6 * Math.abs(Math.sin((2 * Math.PI * t) / S))) }),
   };

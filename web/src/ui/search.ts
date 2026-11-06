@@ -9,6 +9,7 @@
 // and less often, while it's open.
 import { fmt, h } from './dom';
 import { sameName } from '../names';
+import { EARTH_R } from '../merc';
 
 export type Place = { name: string; en: string | null; main: string; sub: string | null; kind: string; class: string; lon: number; lat: number; zoom: number };
 
@@ -24,7 +25,7 @@ function km(a: [number, number], b: [number, number]): number {
   const r = Math.PI / 180;
   const dp = (b[1] - a[1]) * r, dl = (b[0] - a[0]) * r;
   const s = Math.sin(dp / 2) ** 2 + Math.cos(a[1] * r) * Math.cos(b[1] * r) * Math.sin(dl / 2) ** 2;
-  return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(s)));
+  return (EARTH_R / 1000) * 2 * Math.asin(Math.min(1, Math.sqrt(s)));
 }
 
 /** What a place is, in words: its class as OSM names it ("national_park" → "national park"). */

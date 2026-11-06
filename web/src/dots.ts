@@ -28,6 +28,7 @@ import { CELL, ICON_PX, SDF_REACH, iconAtlas, iconIndex } from './poiicons';
 import { CHUNK_Z, DRAW_STRIDE, HEIGHT_W, HPOS_STRIDE, LOD_LEVELS, LOD_Z0, VIS_WORDS, lodZoom, tileRun, type DotData } from './dotlayout';
 import { perspectiveP22 } from './roads/layer';
 import { linkLater, type Later } from './glprog';
+import { MERC_CIRC, mercLat, mercLon, mercX, mercY, tileY } from './merc';
 
 export type { DotData } from './dotlayout';
 
@@ -186,7 +187,7 @@ void main() {
     vec2 s = (c.xy / c.w * 0.5 + 0.5);
     if (s.x >= 0.0 && s.y >= 0.0 && s.x <= 1.0 && s.y <= 1.0) {
       vec2 merc = (a_cc.xy + a_rel / 8192.0) / 16.0;
-      float mpm = 40075016.686 / cosh(DOT_PI * (1.0 - 2.0 * merc.y)); // metres per Mercator unit here
+      float mpm = ${MERC_CIRC} / cosh(DOT_PI * (1.0 - 2.0 * merc.y)); // metres per Mercator unit here
       vec3 to = vec3((u_cam.xy - merc) * mpm, u_cam.z - h);
       float m = clamp(max(u_ztol.x, u_ztol.y / max(length(to), 1.0)), 0.0, 0.5);
       float z = -u_p22 + (c.z / c.w + u_p22) / (1.0 - m);
@@ -484,9 +485,9 @@ export class LandmarkDots implements CustomLayerInterface {
     for (let j = 0; j < d.n; j++) {
       if (vis && !(vis[j * VIS_WORDS] & 1)) continue;
       const mx = (u8[j * DRAW_STRIDE + 20] + f32[j * W] / 8192) / K, my = (u8[j * DRAW_STRIDE + 21] + f32[j * W + 1] / 8192) / K;
-      const lng = mx * 360 - 180;
+      const lng = mercLon(mx);
       if (lng < box[0] || lng > box[2]) continue;
-      const lat = (Math.atan(Math.sinh(Math.PI * (1 - 2 * my))) * 180) / Math.PI;
+      const lat = mercLat(my);
       if (lat < box[1] || lat > box[3]) continue;
       out.push({ lng, lat, cls: u8[j * DRAW_STRIDE + 22] });
     }
@@ -789,12 +790,7 @@ export class LandmarkDots implements CustomLayerInterface {
     const span = b.getEast() - b.getWest() + 2 * pad;
     // West edge brought into [-180, 180); the east edge may then pass 180 (across the antimeridian).
     const w = ((((b.getWest() - pad + 180) % 360) + 360) % 360) - 180, e = w + span;
-    const s = Math.max(-85.05, b.getSouth() - pad), n = Math.min(85.05, b.getNorth() + pad);
-    const ty = (lat: number) => {
-      const v = Math.sin((lat * Math.PI) / 180);
-      return Math.min(K - 1, Math.max(0, Math.floor((0.5 - Math.log((1 + v) / (1 - v)) / (4 * Math.PI)) * K)));
-    };
-    const y0 = ty(n), y1 = ty(s);
+    const y0 = tileY(b.getNorth() + pad, CHUNK_Z), y1 = tileY(b.getSouth() - pad, CHUNK_Z);
     const cols = new Uint8Array(K);
     for (let x = 0; x < K; x++) {
       const lo = -180 + (360 * x) / K, hi = lo + 360 / K;
@@ -846,7 +842,7 @@ export class LandmarkDots implements CustomLayerInterface {
     // (Our MapLibre's terrain depth texture: CustomRenderMethodInput.terrainDepth.)
     const depthTex = three ? opts.terrainDepth?.texture ?? null : null;
     const c = map.getCenter();
-    const mpp = (40075016.686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** zoom);
+    const mpp = (MERC_CIRC * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** zoom);
     const world = zoom < WORLD_MAX_Z;
     gl.uniform1i(u.u_world, world ? 1 : 0);
     gl.uniform1f(u.u_lodZ, lodZoom(zoom, dpr));
@@ -886,8 +882,7 @@ export class LandmarkDots implements CustomLayerInterface {
     gl.uniform1i(u.u_atlas, 6);
     gl.uniform1f(u.u_atlasW, this.atlasW);
     const camLL = tr?.getCameraLngLat?.();
-    const camS = camLL ? Math.sin((camLL.lat * Math.PI) / 180) : 0;
-    gl.uniform3f(u.u_cam, camLL ? (camLL.lng + 180) / 360 : 0, camLL ? 0.5 - Math.log((1 + camS) / (1 - camS)) / (4 * Math.PI) : 0, tr?.getCameraAltitude?.() ?? 0);
+    gl.uniform3f(u.u_cam, camLL ? mercX(camLL.lng) : 0, camLL ? mercY(camLL.lat) : 0, tr?.getCameraAltitude?.() ?? 0);
     if (world) this.setProjection(gl, u, opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: 0, y: 0, z: 0 } }, applyGlobeMatrix: true }));
     const chunkProj = new Map<number, ProjData>();
 

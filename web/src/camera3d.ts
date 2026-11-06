@@ -11,6 +11,7 @@
 // a point keeps it at the same pixel. The new camera position and orientation are then turned
 // back into MapLibre's centre / zoom / pivot (applyCamera on the flat map, placeGlobe on the globe).
 import { LngLat, MercatorCoordinate, Point, type Map as MLMap } from 'maplibre-gl';
+import { EARTH_R as R, mercLat, mercLon } from './merc';
 
 /** How far the camera stays above the ground under it (m). */
 const GROUND_CLEAR_M = 30;
@@ -61,7 +62,6 @@ const DEG = Math.PI / 180;
 
 // Earth-centred coordinates on MapLibre's sphere (radius R, altitude along the normal).
 type V3 = [number, number, number];
-const R = 6371008.8;
 const ecef = (ll: { lng: number; lat: number }, alt: number): V3 => {
   const la = ll.lat * DEG, lo = ll.lng * DEG, r = R + alt;
   return [r * Math.cos(la) * Math.sin(lo), r * Math.sin(la), r * Math.cos(la) * Math.cos(lo)];
@@ -573,8 +573,8 @@ function mercatorRays(tr: Tr, pts: { x: number; y: number }[], levels: number[],
     const fx = (x0 + M[8]) / w1, fy = (y0 + M[9]) / w1, fz = (z0 + M[10]) / w1 + el;
     for (const e of levels) {
       const t = nz === fz ? 0 : (e - nz) / (fz - nz);
-      const lng = ((nx + (fx - nx) * t) / ws) * 360 - 180;
-      const lat = (360 / Math.PI) * Math.atan(Math.exp(((180 - ((ny + (fy - ny) * t) / ws) * 360) * Math.PI) / 180)) - 90;
+      const lng = mercLon((nx + (fx - nx) * t) / ws);
+      const lat = mercLat((ny + (fy - ny) * t) / ws);
       if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
       const dx = (lng - camLL.lng) * DEG * R * cosLat, dy = (lat - camLL.lat) * DEG * R;
       const dz = camAlt - e;

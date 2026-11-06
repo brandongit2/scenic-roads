@@ -21,6 +21,7 @@ import { cap, fmt, h } from './ui/dom';
 import type { LayersCard } from './ui/layers';
 import type { Credit } from './catalogue';
 import { viewArea, type Box, type ViewArea } from './inview';
+import { clampLat } from './merc';
 
 const POI_LABEL: Record<string, string> = {
   viewpoint: 'Viewpoint', peak: 'Peak', waterfall: 'Waterfall', lighthouse: 'Lighthouse', covered_bridge: 'Covered bridge',
@@ -241,8 +242,7 @@ export class Overlays {
     if (!this.marks || !s) return;
     const srcs = [...this.indexed.keys()].filter((src) => this.byView(src) && OVERLAYS.some(([k]) => OVERLAY_SOURCE[k] === src && s.overlays[k]));
     // The tiles' latitudes (a view past them, round a pole, keeps the row at their edge).
-    const lat = (y: number) => Math.max(-85.06, Math.min(85.06, y));
-    const merc = ([w, s, e, n]: Box): Box => [w, lat(s), e, lat(n)];
+    const merc = ([w, s, e, n]: Box): Box => [w, clampLat(s), e, clampLat(n)];
     const box = merc(this.area().box);
     // A tilted view sees ground beyond the outline's box, to the horizon: coarser tiles there.
     let far: Box | null = null;

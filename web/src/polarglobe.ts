@@ -10,9 +10,9 @@
 // its ground here past 85.05° (Map#setPoleGround).
 
 import type { CustomLayerInterface, CustomRenderMethodInput, Map as MlMap } from 'maplibre-gl';
-import { chooseTiles, inverse, MERCATOR_LAT, poleParams, PolarTiles, TILE_SIZE, tileBox, type Pole, type PolarTile, type TileKind, type CullOf, type ViewOf } from './polar';
+import { EARTH_R, MERCATOR_LAT } from './merc';
+import { chooseTiles, inverse, poleParams, PolarTiles, TILE_SIZE, tileBox, type Pole, type PolarTile, type TileKind, type CullOf, type ViewOf } from './polar';
 
-const GLOBE_RADIUS = 6371008.8;
 /** Mesh cells a side, and the skirt's depth under the tile's edge (m). */
 const CELLS = 32;
 const SKIRT_M = 400;
@@ -23,7 +23,7 @@ const MAX_LIGHTS = 4;
 /** The most stops of a tint's ramp. */
 const MAX_STOPS = 256;
 /** The highest ground (unit-sphere radii: ~9 km), for what may show over the horizon. */
-const HEIGHT_MARGIN = 9000 / GLOBE_RADIUS;
+const HEIGHT_MARGIN = 9000 / EARTH_R;
 /** Frames a tile stays unasked for before it goes. */
 const KEEP_FRAMES = 600;
 
@@ -78,7 +78,7 @@ void main() {
   vec2 f = p - floor(p);
   float e = mix(mix(h(i), h(i + ivec2(1, 0)), f.x), mix(h(i + ivec2(0, 1)), h(i + ivec2(1, 1)), f.x), f.y);
   e = (e - a_skirt) * u_exag;
-  vec3 pos = a_sphere * (1.0 + e / ${GLOBE_RADIUS});
+  vec3 pos = a_sphere * (1.0 + e / ${EARTH_R});
   gl_Position = u_matrix * vec4(pos, 1.0);
   v_uv = a_uv;
   v_sphere = a_sphere;

@@ -12,6 +12,7 @@
 // cell's visible dots over one another. The cells are the Morton order's tiles at zooms 9–16, one
 // run each; the flags say which dots stand for their cell at each zoom and for how many
 // (visWords, for the filters of the moment).
+import { mercXIn, mercYIn } from './merc';
 
 export const CHUNK_Z = 4;
 /** Per point, in draw order: position in its chunk (2 × f32, 8192 units a side), fame and interest
@@ -133,9 +134,7 @@ export function layoutDots(lon: Float64Array, lat: Float64Array, fa: Float32Arra
   const chunk = new Uint16Array(n);
   const counts = new Uint32Array(K * K + 1);
   for (let i = 0; i < n; i++) {
-    const s = Math.sin((lat[i] * Math.PI) / 180);
-    const x = Math.min(1 - 1e-9, Math.max(0, (lon[i] + 180) / 360));
-    const y = Math.min(1 - 1e-9, Math.max(0, 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)));
+    const x = mercXIn(lon[i]), y = mercYIn(lat[i]);
     mx[i] = x;
     my[i] = y;
     const c = morton(Math.floor(x * K), Math.floor(y * K));

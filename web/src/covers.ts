@@ -13,9 +13,9 @@
 //    from the camera (with room for mountains beyond it), such as the regional basemaps, and an empty
 //    GeoJSON source (a selection or highlight not in use).
 import type { Map as MLMap } from 'maplibre-gl';
+import { EARTH_R } from './merc';
 
 const DEG = Math.PI / 180;
-const R = 6371008.8;
 /** Terrain seen beyond the horizon: up to this high (m, before exaggeration). */
 const MAX_RELIEF = 9000;
 /** Bounding volume heights rounded up to this (m). */
@@ -103,7 +103,7 @@ function viewCap(tr: Transform, exaggeration: number) {
   capKey = k;
   const ll = tr.getCameraLngLat();
   const alt = Math.max(0, tr.getCameraAltitude());
-  const r = (Math.acos(R / (R + alt)) + Math.acos(R / (R + MAX_RELIEF * Math.max(1, exaggeration)))) / DEG;
+  const r = (Math.acos(EARTH_R / (EARTH_R + alt)) + Math.acos(EARTH_R / (EARTH_R + MAX_RELIEF * Math.max(1, exaggeration)))) / DEG;
   cap.lng = ll.lng;
   cap.lat = ll.lat;
   cap.r = Number.isFinite(r) ? r : 180;

@@ -21,6 +21,7 @@ import {
 import { levelZero, lodCells, lodSig, pieceLists, type LodFilter } from './lod';
 import { legibleRgb } from '../linecolour';
 import { ATTR, DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
+import { EARTH_R, mercPhi } from '../merc';
 
 const inflight = new Map<number, AbortController>();
 
@@ -157,9 +158,8 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
   const u32 = new Uint32Array(verts);
 
   // Metres per tile unit at this tile's latitude.
-  const n = Math.PI - (2 * Math.PI * (ty + 0.5)) / (1 << z);
-  const lat = Math.atan(Math.sinh(n));
-  const mpu = (2 * Math.PI * 6371008.8 * Math.cos(lat)) / ((1 << z) * extent);
+  const lat = mercPhi((ty + 0.5) / (1 << z));
+  const mpu = (2 * Math.PI * EARTH_R * Math.cos(lat)) / ((1 << z) * extent);
 
   // Per-line fills: style/EOL, distance, line index; and collect statistics samples.
   const nsamp = nverts; // upper bound: segments + dots

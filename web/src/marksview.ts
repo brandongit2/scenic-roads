@@ -7,6 +7,7 @@
 import { LOD_LEVELS, LOD_Z0, layoutDots, lodZoom, tileRun, visWords, type DotAux, type DotData } from './dotlayout';
 import { CELL_DZ, F_COMPONENT, F_NAMED, cellCentre, decodeMarkTile, extraTile, type MarkTile } from './marktile';
 import { stopFilterPass, type StopFilter } from './stopfilters';
+import { MERCATOR_LAT, mercXIn, mercYIn } from './merc';
 
 /** The catalogue's points (/api/catalog `marks`). */
 export interface MarksCfg {
@@ -79,12 +80,7 @@ interface FilterState {
 
 const key = (kind: string, z: number, x: number, y: number) => `${kind}|${z}/${x}/${y}`;
 
-function merc(lon: number, lat: number): [number, number] {
-  const s = Math.sin((lat * Math.PI) / 180);
-  const x = Math.min(1 - 1e-9, Math.max(0, (lon + 180) / 360));
-  const y = Math.min(1 - 1e-9, Math.max(0, 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)));
-  return [x, y];
-}
+const merc = (lon: number, lat: number): [number, number] => [mercXIn(lon), mercYIn(lat)];
 
 /** The tile at zoom z holding a point. */
 function tileAt(lon: number, lat: number, z: number): string {
@@ -99,8 +95,8 @@ function tilesIn(z: number, [w, s, e, n]: Box): [number, number][] {
   const N = 2 ** z;
   const lons: [number, number][] = w <= e ? [[w, e]] : [[w, 180], [-180, e]];
   for (const [a, b] of lons) {
-    const [x0, y0] = merc(Math.max(-180, a), Math.min(85.06, n));
-    const [x1, y1] = merc(Math.min(180, b), Math.max(-85.06, s));
+    const [x0, y0] = merc(Math.max(-180, a), n);
+    const [x1, y1] = merc(Math.min(180, b), s);
     for (let x = Math.floor(x0 * N); x <= Math.min(N - 1, Math.floor(x1 * N)); x++) {
       for (let y = Math.floor(y0 * N); y <= Math.min(N - 1, Math.floor(y1 * N)); y++) out.push([x, y]);
     }
@@ -111,7 +107,7 @@ function tilesIn(z: number, [w, s, e, n]: Box): [number, number][] {
 /** The box grown by `f` of its size on each side. */
 function grow([w, s, e, n]: Box, f: number): Box {
   const dx = ((e - w + 360) % 360 || 360) * f, dy = (n - s) * f;
-  return [Math.max(-180, w - dx), Math.max(-85.06, s - dy), Math.min(180, e + dx), Math.min(85.06, n + dy)];
+  return [Math.max(-180, w - dx), Math.max(-MERCATOR_LAT, s - dy), Math.min(180, e + dx), Math.min(MERCATOR_LAT, n + dy)];
 }
 
 export class MarksView {

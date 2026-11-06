@@ -10,6 +10,7 @@ import type { StopFilter } from './stopfilters';
 import type { OverlayKey } from './state';
 import { F_NAMED, MarksView, type MarksCfg } from './marksview';
 import type { MarkTile } from './marktile';
+import { mercX, mercY } from './merc';
 
 export interface LandmarkItem {
   k: OverlayKey;
@@ -210,8 +211,7 @@ async function viewTile(v: MarksView, m: Extract<LandmarkRequest, { type: 'tile'
   const ids: number[] = [], fas: number[] = [], ias: number[] = [], mzs: number[] = [];
   const tps: TilePoint[] = pts.map(({ t, i }) => {
     const lon = t.lon[i] / 1e7, lat = t.lat[i] / 1e7;
-    const s = Math.sin((lat * Math.PI) / 180);
-    const x = (lon + 180) / 360, y = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
+    const x = mercX(lon), y = mercY(lat);
     let props: Record<string, any> = { ...t.props(i), mid: t.ids[i] };
     if (t.flags[i] & F_NAMED && !props.pt) {
       const fa = t.fa[i], ia = t.ia[i];

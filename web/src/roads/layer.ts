@@ -23,6 +23,7 @@
 import { boundTarget } from '../glstate';
 import { linkLater, type Later } from '../glprog';
 import { hostFor } from '../hosts';
+import { EARTH_R, MERC_CIRC, mercLat, mercLon, mercPhi, mercX, mercYClamped } from '../merc';
 import { packVersion } from '../api';
 import { FOG_UNIFORMS, fogUniforms, setFogUniforms } from '../fog';
 import { MercatorCoordinate, Point, type CustomLayerInterface, type CustomRenderMethodInput, type LngLat, type Map as MLMap } from 'maplibre-gl';
@@ -1028,13 +1029,6 @@ export interface HoverInfo {
 }
 
 const tileKey = (z: number, x: number, y: number) => `${z}/${x}/${y}`;
-const lon2x = (lon: number) => (lon + 180) / 360;
-const lat2y = (lat: number) => {
-  const s = Math.sin((lat * Math.PI) / 180);
-  return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
-};
-const x2lon = (x: number) => x * 360 - 180;
-const y2lat = (y: number) => (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI;
 const S2 = STRIDE / 2;
 const S4 = STRIDE / 4;
 
@@ -1266,10 +1260,10 @@ export class RoadLayer implements CustomLayerInterface {
     const north = Math.min(b.getNorth(), this.bounds[3]);
     const south = Math.max(b.getSouth(), this.bounds[1]);
     if (!(west < east && south < north)) return [];
-    const x0 = Math.max(0, Math.floor(lon2x(west) * n)), x1 = Math.min(n - 1, Math.floor(lon2x(east) * n));
-    const y0 = Math.max(0, Math.floor(lat2y(north) * n)), y1 = Math.min(n - 1, Math.floor(lat2y(south) * n));
+    const x0 = Math.max(0, Math.floor(mercX(west) * n)), x1 = Math.min(n - 1, Math.floor(mercX(east) * n));
+    const y0 = Math.max(0, Math.floor(mercYClamped(north) * n)), y1 = Math.min(n - 1, Math.floor(mercYClamped(south) * n));
     const c = this.map.getCenter();
-    const cx = lon2x(c.lng) * n, cy = lat2y(c.lat) * n;
+    const cx = mercX(c.lng) * n, cy = mercYClamped(c.lat) * n;
     const list: [number, number, number, number][] = [];
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) list.push([zt, x, y, (x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2]);
     list.sort((a, b) => a[3] - b[3]);
@@ -1398,13 +1392,13 @@ export class RoadLayer implements CustomLayerInterface {
     const rad = Math.PI / 180, cosC = Math.cos(c.lat * rad);
     const add = (a: { lng: number; lat: number }, mpp: number) => {
       if (a.lng < bw || a.lng > be || a.lat < bs || a.lat > bn) return;
-      const want = Math.log2((40075016.686 * Math.cos(a.lat * rad)) / (256 * mpp));
+      const want = Math.log2((MERC_CIRC * Math.cos(a.lat * rad)) / (256 * mpp));
       if (!Number.isFinite(want) || want < zmin - 0.5) return;
       let dl = a.lng - c.lng;
       if (dl > 180) dl -= 360;
       else if (dl < -180) dl += 360;
-      pts.x.push(lon2x(a.lng));
-      pts.y.push(lat2y(a.lat));
+      pts.x.push(mercX(a.lng));
+      pts.y.push(mercYClamped(a.lat));
       pts.z.push(Math.max(zmin, Math.min(TILE_MAXZOOM, Math.floor(want))));
       const dx = dl * cosC, dy = a.lat - c.lat;
       pts.d.push(Math.sqrt(dx * dx + dy * dy));
@@ -1911,7 +1905,7 @@ export class RoadLayer implements CustomLayerInterface {
       const tilted = Number.isFinite(t.scale);
       let k = 1;
       if (globe && !tilted) {
-        const n = 2 ** t.z, a = y2lat(t.y / n), b = y2lat((t.y + 1) / n);
+        const n = 2 ** t.z, a = mercLat(t.y / n), b = mercLat((t.y + 1) / n);
         k = Math.max(1, Math.cos((a * b <= 0 ? 0 : Math.min(Math.abs(a), Math.abs(b))) * (Math.PI / 180)) / cosC);
       }
       t.px = tilted ? d.mpu * t.scale! * dpr : ((512 * 2 ** (zoom - t.z)) / d.extent) * dpr * k;
@@ -2595,7 +2589,7 @@ export class RoadLayer implements CustomLayerInterface {
     const camLL = tr?.getCameraLngLat?.();
     return {
       key, depthTex, three,
-      mpp: (40075016.686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** zoom),
+      mpp: (MERC_CIRC * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** zoom),
       camM: camLL ? MercatorCoordinate.fromLngLat(camLL) : null,
       camAlt: tr?.getCameraAltitude?.() ?? 0,
       camDist: tr?.cameraToCenterDistance ?? 1,
@@ -2636,13 +2630,13 @@ export class RoadLayer implements CustomLayerInterface {
   private tileProj(f: ReturnType<RoadLayer['projFrame']>, pd: ReturnType<CustomRenderMethodInput['getProjectionData']>, t: RoadTile) {
     const cp = pd.clippingPlane as ArrayLike<number>, ext = 8192 / t.data!.extent, p22 = perspectiveP22(pd.mainMatrix as ArrayLike<number>);
     const n = 2 ** t.z;
-    const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (t.y + 0.5)) / n)));
+    const lat = mercPhi((t.y + 0.5) / n);
     return {
       pd, cp, ext, p22,
       merc: pd.tileMercatorCoords as [number, number, number, number],
       // The same for every tile of a frame (the camera's), or only read during the globe's hand-off.
       key: `${f.key}|${cp[0]},${cp[1]},${cp[2]},${cp[3]}|${pd.projectionTransition}|${ext}|${p22}`,
-      cam: f.camM ? ([(f.camM.x * n - t.x) * 8192, (f.camM.y * n - t.y) * 8192, f.camAlt, (40075016.686 * Math.cos(lat)) / n / 8192] as const) : null,
+      cam: f.camM ? ([(f.camM.x * n - t.x) * 8192, (f.camM.y * n - t.y) * 8192, f.camAlt, (MERC_CIRC * Math.cos(lat)) / n / 8192] as const) : null,
     };
   }
 
@@ -2915,14 +2909,14 @@ export class RoadLayer implements CustomLayerInterface {
     const ax = map.unproject([px + 8, py]), ay = map.unproject([px, py + 8]);
     const mx = Math.max(1e-6, haversine(ll.lng, ll.lat, ax.lng, ax.lat) / 8);
     const my = Math.max(mx, haversine(ll.lng, ll.lat, ay.lng, ay.lat) / 8);
-    const mppCentre = (40075016.686 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** zoom);
+    const mppCentre = (MERC_CIRC * Math.cos((map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** zoom);
     // As drawn: at the zoom the local ground scale corresponds to (see the vertex shader).
     const kr = Math.max(1 / 256, Math.min(16, mppCentre / mx));
     const ze = zoom + Math.log2(kr);
     const widths = WIDTHS.map((w) => Math.max(1, perspWidth(interp(WIDTH_Z, w, zoom), interp(WIDTH_Z, w, ze), kr, this.style.persp) * this.style.weight));
     const TOL = 7; // px beyond the drawn edge
     const radiusM = (TOL + Math.max(...widths) / 2) * my;
-    const mxN = lon2x(ll.lng), myN = lat2y(ll.lat);
+    const mxN = mercX(ll.lng), myN = mercYClamped(ll.lat);
     const proj = new Map<string, { x: number; y: number }>();
     let best: HoverInfo | null = null;
     let bestScore = Infinity;
@@ -2942,7 +2936,7 @@ export class RoadLayer implements CustomLayerInterface {
         const key = `${t.key}:${i}`;
         let p = proj.get(key);
         if (!p) {
-          const q = map.project([x2lon((t.x + i16[i * S2] / d.extent) / n), y2lat((t.y + i16[i * S2 + 1] / d.extent) / n)]);
+          const q = map.project([mercLon((t.x + i16[i * S2] / d.extent) / n), mercLat((t.y + i16[i * S2 + 1] / d.extent) / n)]);
           p = { x: q.x, y: q.y };
           proj.set(key, p);
         }
@@ -2984,7 +2978,7 @@ export class RoadLayer implements CustomLayerInterface {
    */
   pickNear(lng: number, lat: number, px: number, wayOk?: (way: number) => boolean): HoverInfo | null | undefined {
     if (!this.style.visible) return undefined;
-    const mx = lon2x(lng), my = lat2y(lat);
+    const mx = mercX(lng), my = mercYClamped(lat);
     let t: RoadTile | null = null;
     for (const c of this.drawn) {
       const n = 2 ** c.z, tx = mx * n - c.x, ty = my * n - c.y;
@@ -2993,7 +2987,7 @@ export class RoadLayer implements CustomLayerInterface {
     if (!t) return undefined;
     const d = t.data!;
     const n = 2 ** t.z;
-    const radiusM = (px * 40075016.686 * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** this.map.getZoom());
+    const radiusM = (px * MERC_CIRC * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** this.map.getZoom());
     t.pick ??= new PickGrid(d.verts, d.nverts, d.extent);
     const u8 = new Uint8Array(d.verts), u32 = new Uint32Array(d.verts);
     const lenOn = this.lengthFiltered();
@@ -3031,7 +3025,7 @@ export class RoadLayer implements CustomLayerInterface {
     const qy = i16[seg * S2 + 1] + (i16[(seg + 1) * S2 + 1] - i16[seg * S2 + 1]) * tt;
     return {
       tile: t, hit: { line, seg, t: tt, dist }, way: d.lineWay[line], style: d.lineStyle[line], elev: e, grade: g, ch,
-      lngLat: [x2lon((t.x + qx / d.extent) / n), y2lat((t.y + qy / d.extent) / n)], ground, px, fq: this.lineFreq(d, line), fqMin: !!this.lineMin?.(d.lineWay[line]),
+      lngLat: [mercLon((t.x + qx / d.extent) / n), mercLat((t.y + qy / d.extent) / n)], ground, px, fq: this.lineFreq(d, line), fqMin: !!this.lineMin?.(d.lineWay[line]),
     };
   }
 
@@ -3127,7 +3121,7 @@ export class RoadLayer implements CustomLayerInterface {
   static tileToLngLat(t: RoadTile, ux: number, uy: number): [number, number] {
     const n = 2 ** t.z;
     const e = t.data!.extent;
-    return [x2lon((t.x + ux / e) / n), y2lat((t.y + uy / e) / n)];
+    return [mercLon((t.x + ux / e) / n), mercLat((t.y + uy / e) / n)];
   }
 
   /** The map's bounds (for viewRectIn over many tiles). */
@@ -3140,10 +3134,10 @@ export class RoadLayer implements CustomLayerInterface {
     const n = 2 ** t.z;
     const e = t.data!.extent;
     return [
-      (lon2x(b.getWest()) * n - t.x) * e,
-      (lat2y(b.getNorth()) * n - t.y) * e,
-      (lon2x(b.getEast()) * n - t.x) * e,
-      (lat2y(b.getSouth()) * n - t.y) * e,
+      (mercX(b.getWest()) * n - t.x) * e,
+      (mercYClamped(b.getNorth()) * n - t.y) * e,
+      (mercX(b.getEast()) * n - t.x) * e,
+      (mercYClamped(b.getSouth()) * n - t.y) * e,
     ];
   }
 }
@@ -3185,7 +3179,7 @@ function haversine(lon1: number, lat1: number, lon2: number, lat2: number) {
   const k = Math.PI / 180;
   const x = (lon2 - lon1) * k * Math.cos(((lat1 + lat2) / 2) * k);
   const y = (lat2 - lat1) * k;
-  return Math.sqrt(x * x + y * y) * 6371008.8;
+  return Math.sqrt(x * x + y * y) * EARTH_R;
 }
 
 function texParams(gl: WebGL2RenderingContext) {

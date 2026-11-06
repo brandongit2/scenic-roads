@@ -19,6 +19,7 @@ import { passes } from './ui/scale';
 import { labelShown, lineWeight, type AppState, type FerryState } from './state';
 import { labelLayerShown } from './labellook';
 import { cap, fmt, h } from './ui/dom';
+import { MERC_CIRC, tileX, tileY } from './merc';
 
 const LINE = 'ferry-line';
 const LABELS = ['ferry-label', 'ferry-terminal-label'];
@@ -109,15 +110,9 @@ const BLOCKS_MAX = 96;
 
 /** The tiles at zoom z covering a box (west, south, east, north). */
 function tilesOver(z: number, [w, s, e, n]: [number, number, number, number]): string[] {
-  const N = 2 ** z;
-  const tx = (lon: number) => Math.min(N - 1, Math.max(0, Math.floor(((lon + 180) / 360) * N)));
-  const ty = (lat: number) => {
-    const sn = Math.sin((Math.max(-85.05, Math.min(85.05, lat)) * Math.PI) / 180);
-    return Math.min(N - 1, Math.max(0, Math.floor((0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * N)));
-  };
   const out: string[] = [];
   const spans: [number, number][] = e - w >= 360 ? [[-180, 180]] : w <= e ? [[w, e]] : [[w, 180], [-180, e]];
-  for (const [a, b] of spans) for (let x = tx(a); x <= tx(b); x++) for (let y = ty(n); y <= ty(s); y++) out.push(`${z}/${x}/${y}`);
+  for (const [a, b] of spans) for (let x = tileX(a, z); x <= tileX(b, z); x++) for (let y = tileY(n, z); y <= tileY(s, z); y++) out.push(`${z}/${x}/${y}`);
   return out;
 }
 
@@ -295,7 +290,7 @@ export class Ferries {
       return st.groups.some((on, i) => on && String(p.gs).includes(String(i)))
         && (!st.freqOn || (v < 0 ? st.freqUnknown : (!(st.freqMin > 0) || v >= st.freqMin) && (!(st.freqMax > 0) || v <= st.freqMax)));
     };
-    const pxM = 40075016.686 / (512 * 2 ** map.getZoom());
+    const pxM = MERC_CIRC / (512 * 2 ** map.getZoom());
     let k = 0;
     for (const [ti, near] of this.nearLines) {
       if (++k % 256 === 0) {

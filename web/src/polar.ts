@@ -17,8 +17,6 @@ const E = Math.sqrt(F * (2 - F));
 const HALF = 1048576.0;
 /** A tile's pixels a side. */
 export const TILE_SIZE = 256;
-/** The Web Mercator tiles' last latitude. */
-export const MERCATOR_LAT = 85.05112877980659;
 /** roadcore::polar::CAP_LAT: the caps' tiles reach this far from the pole. */
 export const CAP_LAT = 85.0;
 const PARAMS: Record<Pole, { latTs: number; lon0: number; sign: number }> = {

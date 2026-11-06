@@ -55,6 +55,7 @@ import { hostFor } from './hosts';
 import type { FieldIn, FieldOut } from './bldfield.worker';
 import type { DrawnTalls } from './camera3d';
 import { heritageFor, heritageTint, insideRings } from './buildings';
+import { MERC_CIRC, mercLat, mercLon, mercPhi, mercX, mercYClamped } from './merc';
 
 const G = 32;
 /** The elevation grid's margin around a tile (grid cells): a roof's ground is taken at its building's
@@ -1159,17 +1160,16 @@ export class FieldLayer implements CustomLayerInterface {
     const b = map.getBounds();
     // The view's span in mercator x, as one or two ranges where it crosses the antimeridian (MapLibre
     // gives longitudes past ±180 then).
-    const xr = (lon: number) => (lon + 180) / 360;
     const w0 = b.getWest(), e0 = b.getEast();
     const xs: [number, number][] = e0 - w0 >= 360 ? [[0, 1]] : [];
     if (!xs.length) {
-      const a0 = xr(w0), a1 = xr(e0);
+      const a0 = mercX(w0), a1 = mercX(e0);
       for (const k of [-1, 0, 1]) {
         const lo = Math.max(0, a0 + k), hi = Math.min(1, a1 + k);
         if (lo <= hi) xs.push([lo, hi]);
       }
     }
-    const y0 = MercatorCoordinate.fromLngLat([0, Math.min(85, b.getNorth())]).y, y1 = MercatorCoordinate.fromLngLat([0, Math.max(-85, b.getSouth())]).y;
+    const y0 = mercYClamped(b.getNorth()), y1 = mercYClamped(b.getSouth());
     const out: FTile[] = [];
     const most = Math.min(LEVEL_MAX, Math.floor(zoom + this.levelBias));
     const visit = (z: number, x: number, y: number) => {
@@ -1872,8 +1872,8 @@ export class FieldLayer implements CustomLayerInterface {
       gl.uniform1f(u.u_trans, pd.projectionTransition);
       gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
       const n = 2 ** t.z;
-      const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (t.y + 0.5)) / n)));
-      gl.uniform4f(u.u_camTile, (camM.x * n - t.x) * EXTENT, (camM.y * n - t.y) * EXTENT, camAlt, (40075016.686 * Math.cos(lat)) / n / EXTENT);
+      const lat = mercPhi((t.y + 0.5) / n);
+      gl.uniform4f(u.u_camTile, (camM.x * n - t.x) * EXTENT, (camM.y * n - t.y) * EXTENT, camAlt, (MERC_CIRC * Math.cos(lat)) / n / EXTENT);
       gl.uniform1f(u.u_top, t.top * this.hk);
       // The light here (on the globe turned into the tile's frame at its centre, mixed by the hand-off):
       // the roofs' term and eight wall directions'.
@@ -2017,9 +2017,7 @@ export class FieldLayer implements CustomLayerInterface {
     for (const t of this.tiles.values()) {
       if (t.state !== 'ready' || t.used < this.frame - 1) continue;
       const n = 2 ** t.z;
-      const lon = (x: number) => (x / n) * 360 - 180;
-      const lat = (y: number) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
-      boxes.push([lon(t.x), lat(t.y + 1), lon(t.x + 1), lat(t.y), t.top * this.hk]);
+      boxes.push([mercLon(t.x / n), mercLat((t.y + 1) / n), mercLon((t.x + 1) / n), mercLat(t.y / n), t.top * this.hk]);
     }
     return { allowM: 0, boxes };
   }
@@ -2046,7 +2044,7 @@ export function heritageItems(list: Uint8Array, ax: number, ay: number, points: 
   const out: { ring: [number, number][]; box: [number, number, number, number]; g: number }[] = [];
   if (list.length < 4) return out;
   const count = dv.getUint32(0, true);
-  const ll = (x: number, y: number): [number, number] => [x * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI];
+  const ll = (x: number, y: number): [number, number] => [mercLon(x), mercLat(y)];
   // The sites in the whole level-8 tile, asked for once (a query scans every site: once a building,
   // a city's tile took seconds), a little beyond its edges, by a 16 × 16 grid of it; each building
   // then tests the sites in its box exactly as a query of its own box would have found them.

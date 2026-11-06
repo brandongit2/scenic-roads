@@ -17,6 +17,7 @@ import { MercatorCoordinate, type CustomLayerInterface, type CustomRenderMethodI
 import { perspectiveP22 } from './roads/layer';
 import { linkLater, type Later } from './glprog';
 import type { ContourRequest, ContourResponse } from './contours.worker';
+import { MERC_CIRC, mercPhi } from './merc';
 
 /** What the layer draws (main.ts, from the terrain settings). */
 export interface ContourDraw {
@@ -483,7 +484,7 @@ export class ContourLayer implements CustomLayerInterface {
     // The frame's uniforms.
     const dpr = window.devicePixelRatio || 1;
     const zoom = map.getZoom(), c = map.getCenter();
-    const mpp = (40075016.686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** zoom);
+    const mpp = (MERC_CIRC * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** zoom);
     const tr = (map as unknown as { _camera?: { transform?: { cameraToCenterDistance?: number; getCameraLngLat?: () => LngLat; getCameraAltitude?: () => number } } })._camera?.transform;
     const camLL = tr?.getCameraLngLat?.();
     const camM = camLL ? MercatorCoordinate.fromLngLat(camLL) : null;
@@ -522,8 +523,8 @@ export class ContourLayer implements CustomLayerInterface {
       gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
       gl.uniform1f(u.u_p22, perspectiveP22(pd.mainMatrix as ArrayLike<number>));
       if (camM) {
-        const n = 2 ** d.z, lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (d.y + 0.5)) / n)));
-        gl.uniform4f(u.u_camTile, ((camM.x - d.w) * n - d.x) * 8192, (camM.y * n - d.y) * 8192, camAlt, (40075016.686 * Math.cos(lat)) / n / 8192);
+        const n = 2 ** d.z, lat = mercPhi((d.y + 0.5) / n);
+        gl.uniform4f(u.u_camTile, ((camM.x - d.w) * n - d.x) * 8192, (camM.y * n - d.y) * 8192, camAlt, (MERC_CIRC * Math.cos(lat)) / n / 8192);
       }
       gl.uniform1i(u.u_clipN, d.clip ? d.clip.length / 4 : 0);
       if (d.clip) gl.uniform4fv(u.u_clip, d.clip);

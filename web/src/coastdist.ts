@@ -4,6 +4,7 @@
 // a pixel partly land puts the shore inside it by its share.
 //
 // A pure module (no DOM): `node tools/check/coastdist.mjs` checks it.
+import { mercPhi } from './merc';
 
 const INF = 1e20;
 
@@ -191,7 +192,7 @@ function sample(g: Float32Array, n: number, x: number, y: number): number {
  */
 export function farLevels(z: number, y: number): number {
   const n = 2 ** z, edge = y < n / 2 ? y : y + 1;
-  const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * edge) / n)));
+  const lat = mercPhi(edge / n);
   const k = Math.ceil(Math.log2(0.5 / Math.cos(lat)) - 1e-9);
   return Math.max(0, Math.min(z, k));
 }

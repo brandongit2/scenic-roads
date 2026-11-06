@@ -24,6 +24,7 @@ import type { RegionInfo } from './regions';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
 import { cap, fmt, h } from './dom';
 import { coarse } from './touch';
+import { MERC_CIRC } from '../merc';
 
 const VALUE_FONT = '600 10px -apple-system, system-ui, sans-serif';
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -156,7 +157,7 @@ export class Strip {
     const z = this.map.getZoom();
     const c = this.map.getCenter();
     // Metric scale bar (~100 px).
-    const mpp = (40075016.686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** z);
+    const mpp = (MERC_CIRC * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** z);
     const target = 100 * mpp;
     const p = 10 ** Math.floor(Math.log10(target));
     const nice = [1, 2, 5, 10].map((k) => k * p).filter((v) => v <= target).pop() ?? p;

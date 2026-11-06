@@ -9,7 +9,7 @@
 // percentiles and the equalisation.
 import type { Map as MLMap } from 'maplibre-gl';
 import { viewArea } from './inview';
-import { MERCATOR_LAT } from './polar';
+import { MERCATOR_LAT, mercLat, mercLon } from './merc';
 import { Dist } from './roads/stats';
 
 type Dem = { dim: number; stride: number; data: Uint32Array; get(x: number, y: number): number };
@@ -24,8 +24,6 @@ const SIDE_TILES = 80;
 /** The polar caps' samples: rings from the Mercator tiles' edge to the pole, and steps around. */
 const CAP_RINGS = 12, CAP_STEPS = 96;
 const BINS = 1024;
-
-const y2lat = (y: number) => (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI;
 
 /** The distribution of a raster-dem source's values over the ground in view, in `domain`; null
  * while no tile in view is loaded. `shade`: a shading source (pipeline::shade_codec), its value the
@@ -53,13 +51,13 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
     const bytes = shade ? new Uint8Array(dem.data.buffer, dem.data.byteOffset, dem.data.byteLength) : null;
     for (let j = 0; j < side; j++) {
       const py = (j + 0.5) * step;
-      const lat = y2lat((y + py / dem.dim) / n);
+      const lat = mercLat((y + py / dem.dim) / n);
       // Ground area of a sample: the tile's side shrinks with the cosine of the latitude.
       const c = Math.cos((lat * Math.PI) / 180) / n;
       const w = c * c;
       for (let i = 0; i < side; i++) {
         const px = (i + 0.5) * step;
-        const lng = ((x + px / dem.dim) / n) * 360 - 180;
+        const lng = mercLon((x + px / dem.dim) / n);
         if (!inView(lng, lat)) continue;
         if (bytes) {
           const u = bytes[((Math.floor(py) + 2) * dem.stride + Math.floor(px) + 2) * 4] / 255;

@@ -16,6 +16,7 @@
 // different zooms (the globe takes coarser ones toward the poles) agree in metres.
 import { readPolygons } from './mvt';
 import { coastCode, farLevels, signedDistance, withFarField } from './coastdist';
+import { MERC_CIRC, mercPhi } from './merc';
 
 export type CoastMessage =
   /** An input by name (`key`; coast.ts): `tiles`, the basemap's tile URL ({z}, {x}, {y});
@@ -35,7 +36,6 @@ const SIZE = 512;
 /** Pixels of the neighbouring tiles taken in around the tile by default: the farthest distance
  * measured exactly. */
 const MARGIN = 192;
-const EARTH = 40075016.686;
 
 /** An input (init): the basemap's tile URL and its deepest zoom, or instead the water's shares
  * (PNG, 512 px, red the sea's share, green the inland water's: the server's
@@ -312,8 +312,8 @@ async function encode(sd: Float32Array, z: number, y: number): Promise<ArrayBuff
   const img = outCtx.createImageData(SIZE, SIZE), o = img.data;
   const world = SIZE * 2 ** z;
   for (let r = 0; r < SIZE; r++) {
-    const latR = Math.atan(Math.sinh(Math.PI * (1 - (2 * (y * SIZE + r + 0.5)) / world)));
-    const mpp = (EARTH * Math.cos(latR)) / world;
+    const latR = mercPhi((y * SIZE + r + 0.5) / world);
+    const mpp = (MERC_CIRC * Math.cos(latR)) / world;
     for (let c = 0; c < SIZE; c++) {
       const code = coastCode(sd[r * SIZE + c] * mpp);
       const j = (r * SIZE + c) * 4;

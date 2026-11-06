@@ -13,6 +13,7 @@ import type { AppState } from './state';
 import type { FieldLayer } from './bldfield';
 import { paletteFn } from './palettes';
 import { keepWhole } from './buildings';
+import { mercLon, mercX } from './merc';
 
 const q = new URLSearchParams(location.search);
 export const CMP = q.has('bldcmp') ? { dpr: Number(q.get('dpr')) || 0, colour: q.get('bc') ?? '#b9c4d4', byHeight: q.get('bcol') === 'height' } : null;
@@ -229,17 +230,15 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
       const b = o.box ? { getWest: () => o.box![0], getSouth: () => o.box![1], getEast: () => o.box![2], getNorth: () => o.box![3] } : vb;
       // Strips of whole z14 columns (a tile meeting two strips' bounds would be drawn in both).
       const n14 = 2 ** 14;
-      const lon2x = (lon: number) => ((lon + 180) / 360) * n14;
-      const x2lon = (x: number) => (x / n14) * 360 - 180;
       const m = o.box ? 0 : (b.getEast() - b.getWest()) * 0.05;
-      const xa = Math.floor(lon2x(b.getWest() - m)), xb = Math.floor(lon2x(b.getEast() + m));
+      const xa = Math.floor(mercX(b.getWest() - m) * n14), xb = Math.floor(mercX(b.getEast() + m) * n14);
       const per = Math.ceil((xb - xa + 1) / strips);
       const dy = o.box ? 0 : 0.05 * (b.getNorth() - b.getSouth());
       for (let s = 0; s < strips; s++) {
         const t0 = xa + s * per, t1 = Math.min(xb, t0 + per - 1);
         if (t0 > t1) break;
         const eps = 1e-7;
-        resource(o.k, [x2lon(t0) + eps, Math.max(-85, b.getSouth() - dy), x2lon(t1 + 1) - eps, Math.min(85, b.getNorth() + dy)]);
+        resource(o.k, [mercLon(t0 / n14) + eps, Math.max(-85, b.getSouth() - dy), mercLon((t1 + 1) / n14) - eps, Math.min(85, b.getNorth() + dy)]);
         vis(true);
         map.setPaintProperty('buildings', 'fill-extrusion-opacity', op);
         await api.ready();

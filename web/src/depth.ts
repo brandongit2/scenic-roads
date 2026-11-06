@@ -38,6 +38,7 @@ import { hostFor } from './hosts';
 import { DRY_MIN, depthZooms, type DepthZooms } from './depthgrid';
 import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
+import { mercX, mercY, tileY } from './merc';
 
 type RGB = [number, number, number];
 
@@ -366,13 +367,9 @@ export class Depth {
     const m = this.map, z = Math.max(0, Math.min(this.zooms.tiles, Math.floor(m.getZoom())));
     const b = m.getBounds();
     const n = 2 ** z;
-    const tx = (lng: number) => Math.floor(((lng + 180) / 360) * n);
-    const ty = (lat: number) => {
-      const s = Math.sin((Math.max(-85, Math.min(85, lat)) * Math.PI) / 180);
-      return Math.floor((0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n);
-    };
+    const tx = (lng: number) => Math.floor(mercX(lng) * n);
     const tiles: [number, number, number][] = [];
-    for (let y = Math.max(0, ty(b.getNorth())); y <= Math.min(n - 1, ty(b.getSouth())); y++)
+    for (let y = tileY(b.getNorth(), z); y <= tileY(b.getSouth(), z); y++)
       for (let x = tx(b.getWest()); x <= tx(b.getEast()); x++) tiles.push([z, ((x % n) + n) % n, y]);
     return tiles.length > 48 ? [] : tiles;
   }
@@ -410,9 +407,8 @@ export class Depth {
   private tileAt(ll: maplibregl.LngLat): { z: number; x: number; y: number; px: number; py: number } {
     const z = Math.max(0, Math.min(this.zooms.tiles, Math.floor(this.map.getZoom())));
     const n = 2 ** z;
-    const fx = ((ll.lng + 180) / 360) * n;
-    const s = Math.sin((ll.lat * Math.PI) / 180);
-    const fy = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n;
+    const fx = mercX(ll.lng) * n;
+    const fy = mercY(ll.lat) * n;
     const x = Math.floor(fx), y = Math.floor(fy);
     return { z, x: ((x % n) + n) % n, y, px: Math.floor((fx - x) * 512), py: Math.floor((fy - y) * 512) };
   }

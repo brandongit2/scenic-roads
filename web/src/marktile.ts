@@ -1,6 +1,7 @@
 // Landmark points as the server sends them (docs/formats.md "Marks tile", RDMT): thinned tiles
 // below zoom 6, z6 blocks, and the view's extras. Typed arrays straight over the bytes; a point's
 // lean properties are parsed only when asked for (a name tile, a popup, a list).
+import { mercLat, mercLon } from './merc';
 
 /** A point is named (its `name` a non-empty string). */
 export const F_NAMED = 1;
@@ -100,5 +101,5 @@ export function cellCentre(z: number, x: number, y: number, code: number): [numb
   const [cx, cy] = demorton(code);
   const n = 2 ** (z + CELL_DZ);
   const mx = (x * 2 ** CELL_DZ + cx + 0.5) / n, my = (y * 2 ** CELL_DZ + cy + 0.5) / n;
-  return [mx * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - 2 * my))) * 180) / Math.PI];
+  return [mercLon(mx), mercLat(my)];
 }

@@ -14,8 +14,8 @@ import { applyWhitewater, BASEMAP_MAXZOOM, lakeColour, setWaterColours, WATER_TI
 import type { WaterLook } from './state';
 import type { CoastMessage, CoastResponse } from './coast.worker';
 import { COAST_ENCODING, COAST_LINEAR, coastElevation } from './coastdist';
+import { MERC_CIRC } from './merc';
 
-const EARTH = 40075016.686;
 
 let workers: Worker[] = [];
 let next = 0;
@@ -135,7 +135,7 @@ export function coastRamp(w: WaterLook, mpp: number): ExpressionSpecification {
 }
 
 /** Metres per CSS px at the view centre. */
-export const centreMpp = (map: MLMap) => (EARTH * Math.cos((map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** map.getZoom());
+export const centreMpp = (map: MLMap) => (MERC_CIRC * Math.cos((map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** map.getZoom());
 
 let rampKey = '';
 /**
