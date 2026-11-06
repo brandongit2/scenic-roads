@@ -9963,6 +9963,16 @@ mod tests {
         let p = a.planner();
         // (A first look: the gate's view taken in and a plan made, what the digest reads settled.)
         p.look();
+        // (The gate's first listing finished, of every unit, listed or failed: the digest reads each
+        // one's listing as last made, so one finishing after the digest is taken changes it.)
+        let t = Instant::now();
+        while crate::inputs::units(&store::nasfs::NasRoot::local_for_test(&root)).into_iter().any(|u| {
+            let w = &p.inputs.watch.as_ref().unwrap().1;
+            crate::inputs::checks(u).is_some() && w.get(u).is_none() && w.failed(u).is_none()
+        }) {
+            assert!(t.elapsed() < store::testkit::WATCHDOG, "the gate's first listing");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         // (A plan made: its result kept, its digest and the leases as it read them.)
         p.n = 5;
         *p.kept.borrow_mut() = Some((build::Plan::default(), build::KeyMemo::default()));
