@@ -411,7 +411,7 @@ use std::sync::Mutex;
 /// it meets it (exactly, so a small region between sample points isn't missed: Singapore in its z6
 /// tile).
 pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32) -> bool {
-    cov.meets_rect(crate::agent::build::grown_e7(z, x, y, roadcore::geo::NEAR_COVERAGE_KM))
+    cov.meets_rect(roadcore::geo::grown_e7(z, x, y, roadcore::geo::NEAR_COVERAGE_KM))
 }
 
 /// A layer's tiles as the build manifest has them now (its latest uploads).

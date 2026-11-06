@@ -15,6 +15,7 @@ use crate::coverage::Coverage;
 use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
+use roadcore::geo::grown_e7;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -378,11 +379,6 @@ pub(crate) fn coverage_all(cov: &Coverage) -> String {
     v.sort();
     v.dedup();
     v.join(",")
-}
-
-/// Tile `z`/`x`/`y`'s box grown by `km` (roadcore::geo::tile_box_grown), E7.
-pub fn grown_e7(z: u8, x: u32, y: u32, km: f64) -> [i32; 4] {
-    roadcore::geo::e7_box(roadcore::geo::tile_box_grown(z, x, y, km))
 }
 
 /// The z6 tiles near the coverage (`roadcore::geo::NEAR_COVERAGE_KM`), by z3 pack; once per coverage version (`Coverage::kept`).

@@ -102,7 +102,7 @@ pub fn extract(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// The coverage a candidates' z6 tile clips to: its rings over the tile and 10 km around it.
 pub fn coverage_clip(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
-    Some(vec![x.cov.fingerprint(super::build::grown_e7(u.z, u.x, u.y, 10.0))])
+    Some(vec![x.cov.fingerprint(roadcore::geo::grown_e7(u.z, u.x, u.y, 10.0))])
 }
 
 /// The pass's hiking-route ends (the trailends step's), when made.

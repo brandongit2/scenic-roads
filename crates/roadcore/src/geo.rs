@@ -139,6 +139,11 @@ pub fn tile_box_grown(z: u8, x: u32, y: u32, km: f64) -> [f64; 4] {
     within_tiles(grow(tile_box(z, x, y), km))
 }
 
+/// Tile `z`/`x`/`y`'s box grown by `km` (`tile_box_grown`), E7.
+pub fn grown_e7(z: u8, x: u32, y: u32, km: f64) -> [i32; 4] {
+    e7_box(tile_box_grown(z, x, y, km))
+}
+
 /// A box's latitudes kept within the tiles (±`MERCATOR_LAT`).
 pub fn within_tiles(b: [f64; 4]) -> [f64; 4] {
     [b[0], b[1].max(-MERCATOR_LAT), b[2], b[3].min(MERCATOR_LAT)]
