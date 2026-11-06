@@ -1894,12 +1894,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         m.addItem(.separator())
         // This Mac's map (docs/roles.md §8.3, 7a): its own server, started on demand where none is
-        // installed (a laptop), so the map, its downloads and search work with the Mac mini away.
+        // installed (a laptop), so the map and its downloads work with the Mac mini away (away from
+        // the NAS too, only what's downloaded: docs/roles.md §8.3).
         do {
             let it = NSMenuItem(title: mapStarting ? "Opening the Map on This Mac…" : "Open the Map on This Mac", action: mapStarting ? nil : #selector(openMapHere), keyEquivalent: "")
             it.target = self
             it.isEnabled = !mapStarting
-            it.toolTip = "The map served by this Mac at \(mapHere.absoluteString): its downloads and search work with the Mac mini away; started if it isn't running, it quits 30 minutes after its last use"
+            it.toolTip = "The map served by this Mac at \(mapHere.absoluteString): it works with the Mac mini away (away from the NAS too, with what this Mac downloaded); started if it isn't running, it quits 30 minutes after its last use"
             m.addItem(it)
         }
         if let log = reply?.log {

@@ -104,8 +104,11 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   away), and quits 30 minutes after its last use (a request, or a copy of the mirror's under way).
   It keeps its map in `~/Library/Caches/scenic/map` each time the map moves (a resident server:
   every 10 minutes at most), so a start away from the Mac mini and the NAS serves the map its
-  downloads were copied for. Nothing runs while it's closed, so the downloads are as current as
-  the last time it ran.
+  downloads were copied for. Away from the NAS it serves only what's downloaded: its place search
+  and the terrain need the World download (its labels' and terrain's lo packs), which neither
+  laptop has (docs/roles.md §8.3). It runs no app updater (its next start runs the newest app), and
+  ends at once when another server holds 127.0.0.1:7311. Nothing runs while it's closed, so the
+  downloads are as current as the last time it ran.
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to
   the SSD when there's room, else reads it from the NAS.
 - **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by every Mac: its canopy

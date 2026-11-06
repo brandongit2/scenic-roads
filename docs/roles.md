@@ -274,7 +274,7 @@ Each step ships alone and keeps the build running; each ends with its tests.
 7. *Built (7a).* **The laptops' offline map on demand** (§8.3; the PM's decision 4 in §7, which the
    owner may overrule for 7b: the files deleted). Tests: the server's
    `a_server_on_demand_keeps_the_map_as_it_moves` and its command line's (`--on-demand` takes no
-   `--listen`); by hand on the M1, 6 Nov (below). Either way `catalog/` and
+   `--listen`; `a_server_on_demand_ends_at_once_when_its_port_is_held`); by hand on the M1, 6 Nov (below). Either way `catalog/` and
    `~/Library/Caches/scenic/catalogue` go with #883 step 9, not here.
 8. **The member's NAS fallbacks**, with #878's gates (§8.4): nothing to build in #882; each gate's
    deletion takes a member's share of it (the `nas-switch` pool, `beat-nas`'s status copy, the pool
@@ -384,7 +384,9 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   (#878 step 6); its budgets' proxy gives nothing, so a Wikimedia job waits. Its menu says "Lead
   (<name>) out of touch since <time>" from `lead-view.json`; its port shows its own small page
   (§3.3). The map and the build page are the mini's, so devices have neither until it's back;
-  a laptop serves its own offline map on demand (below).
+  a laptop serves its own offline map on demand (below), whole while it reaches the NAS. Away
+  from the NAS too (a laptop away from home has neither), it serves only what it downloaded, and
+  its place search and terrain then need the World download, which no laptop has (below).
 - **The M4 off the network:** over Tailscale it stays a member (docs/coordination.md §7.2): beats
   to the mini, the NAS at ~12 MB/s, jobs slower. Fully offline its jobs fail on the NAS and the
   lead keeps its leases until it's heard or 12 h pass (`held_by_away`). Off the network the M4 is
@@ -403,8 +405,9 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   work away from home again (decision 4 in §7: 7a), the laptop keeps:
   - the app's `server`, `web/` and fonts (in every app copy already);
   - its followed map: `~/Library/Caches/scenic/map/current.json.zst` (~20 MB) and `lead.json`;
-  - its downloads: `mirror/`, `downloads.json`, `reserve.json`, `idx/` (the World ~10 GB, regions
-    as chosen; docs/macs.md, Mirror);
+  - its downloads: `mirror/`, `downloads.json`, `reserve.json`, `idx/` (the World 18.9 GB on map
+    1640, 6 Nov; regions as chosen, e.g. Alberta 18.1 GB, British Columbia 24.7 GB; docs/macs.md,
+    Mirror);
   - what the server keeps for offline use: `accepted/` (0.9 GB, the translations' and descriptions'
     accepted versions), `names/` (3 MB), `profiles.json`, `region-areas.json`, `map-page`.
   Not needed by anything: `catalog/`, `~/Library/Caches/scenic/catalogue` (no catalogue read since
@@ -415,8 +418,11 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   first starts `<home>/app/current/server --web … --fonts … --on-demand` (its output appended to
   `~/Library/Logs/scenic/server.log`) and waits up to two minutes for `/api/ping`. A server on
   demand (crates/server `--on-demand`) skips `retire.rs`'s start check (no LaunchAgent installed
-  or removed), answers 127.0.0.1 and `::1` alone (no second map on the tailnet: the mini's is the
-  devices'; no `map-page` written), runs in a session of its own (the menu bar may quit or be
+  or removed), takes 127.0.0.1 first of all and ends at once when another server holds it (a
+  second click, an installed one), answers 127.0.0.1 and `::1` alone (no second map on the
+  tailnet: the mini's is the devices'; no `map-page` written), runs no app updater (no launcher
+  would start it again after an exit for a new app; its next start runs the newest), runs in a
+  session of its own (the menu bar may quit or be
   replaced meanwhile), follows the log while it runs (its `server/<host>` cursor; the NAS's
   snapshot or its saved map without the lead), keeps that map each time it moves (a resident
   server: every 10 min at most; else a short run left the saved map older than its downloads),
@@ -432,8 +438,21 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   page, tiles, place search ("Banff") and `/api/downloads`, and downloaded a region (Nauru,
   690 MB) into its mirror. Restarted with the NAS sandboxed too, it served the kept map and the
   region's basemap and labels tiles from the mirror; its place search ("none of the labels' 741
-  packs could be read") and the region's terrain tiles (503) did not: a gap for a task of its
-  own (not tried with the NAS unmounted rather than sandboxed).
+  packs could be read") and the region's terrain tiles (503) did not.
+  **Away from the NAS too, what works is what was downloaded** (the real offline case: a laptop
+  away from home reaches neither the mini nor the NAS). On map 1640 the place search reads 741
+  packs of the labels layer (`places::sources`): its 61 lo packs (129 MB, the World download's:
+  what shows by z8 worldwide) and the hi packs of the 680 z6 tiles with roads (676 MB), and fails
+  only when it reads none of them. A terrain tile is read from its hi pack, else made from its
+  nearest stored ancestor down to the lo and root packs (the World's: terrain 2.5 GB, its shading,
+  the slope layer, 2.4 GB), and is a 503 when that read fails (`terrain::terrain_f32`). Nauru's
+  z6 tile (6/61/32) has no roads, so neither a hi pack the search reads nor a terrain hi pack, and
+  the M1 had no World download: nothing either read was on the Mac. With the World downloaded,
+  the terrain works everywhere zoomed out and in every downloaded region, and the search finds
+  what shows by z8 worldwide and every label of the downloaded regions with roads; zoomed in
+  elsewhere, nothing. Not built (a gap, for a task of its own): neither laptop has a World
+  download (no `mirror/` on either, 6 Nov), and the downloads move on only while the server on
+  demand runs.
   **7b (the alternative, if
   the owner overrules 7a):** the offline map is dropped: the agent deletes those files on a
   member (~1 GB each laptop with `accepted/`), and `retire.rs`'s note that the offline map stays
