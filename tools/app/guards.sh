@@ -96,8 +96,9 @@ chmod 000 $sr/inputs/sources $sr/inputs/elevation $sr/inputs $sr/translations $s
 # (Unreadable here unless this runs as root, which would prove nothing.)
 [[ ! -r $sr/inputs ]] || { echo "the stand-in's inputs folders are readable (running as root?)"; exit 1; }
 # The Python steps the build agent runs load from the app's dem/, which has nothing of the
-# repository around it: each must import there.
-steps=(${(f)"$(grep -rhoE '"[a-z_]+\.py"' crates/pipeline/src crates/jobrt/src | tr -d '"' | sed 's/\.py$//' | sort -u)"})
+# repository around it: each must import there (named in any crate's source: the steps live in
+# several since task #916).
+steps=(${(f)"$(grep -rhoE '"[a-z_]+\.py"' crates/*/src | tr -d '"' | sed 's/\.py$//' | sort -u)"})
 (cd $sr/dem && uv run python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1:]]" $steps) || { echo "a Python step doesn't load from the app's dem/ in a NAS root whose inputs folders can't be read"; exit 1; }
 # (Loading isn't running: a name used before it's bound, say, shows only then. pyflakes, a version
 # kept, reads them and the modules of dem/ they import.)
