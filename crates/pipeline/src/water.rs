@@ -24,6 +24,10 @@
 //!   one value throughout. A tile not stored is uniform: its ancestor's pixels over it say which.
 //! - Deeper zooms are made when asked (`cover`: the server), from the z14 tiles under the tile or
 //!   over it.
+//! - With the stored tiles, the sea not connected to the world ocean (`Enclosed`, `ENCLOSED`): the
+//!   basemap's sea is OSM's coastline's, which also closes off the Caspian. The tiles keep it as
+//!   sea (drawn and shaded as sea, and the depth's sea); the server's water surface is sea level
+//!   only on the world ocean (crates/server/src/depth.rs).
 
 use anyhow::{bail, Context, Result};
 use codecs::watercov::Raster;
@@ -34,8 +38,9 @@ use std::sync::{Arc, Mutex};
 /// The layer (`layers/water/…`, served at `/tiles/water`).
 pub const LAYER: &str = "water";
 /// The layer's version: a change to what it holds or how it's drawn makes the agent build it
-/// again. (3, task #862: its rings in roadcore::geo's Mercator.)
-pub const VERSION: u32 = 3;
+/// again. (3, task #862: its rings in roadcore::geo's Mercator; 4, task #975: the enclosed seas
+/// written with it, `Enclosed`.)
+pub const VERSION: u32 = 4;
 /// A tile's pixels a side.
 pub const SIZE: usize = 512;
 /// The basemap's deepest zoom, whose water is drawn.
@@ -835,6 +840,235 @@ fn node_of(c: Cov) -> Node {
     }
 }
 
+// ---- the world ocean --------------------------------------------------------------------------------
+
+/// The zoom whose pixels (`SIZE` a tile: 1.2 km at the equator, 32,768 a side for the world) tell
+/// the world ocean from the enclosed seas (`Enclosed`).
+pub const OCEAN_Z: u8 = 6;
+/// The enclosed seas' file (`Enclosed::to_bytes`), which the water step writes with its packs.
+pub const ENCLOSED: &str = "global/water-enclosed";
+
+/// A grid of bits, row by row, each row whole words.
+struct Bits {
+    w: usize,
+    h: usize,
+    row: usize,
+    words: Vec<u64>,
+}
+
+impl Bits {
+    fn new(w: usize, h: usize) -> Bits {
+        let row = w.div_ceil(64);
+        Bits { w, h, row, words: vec![0; row * h] }
+    }
+
+    fn get(&self, x: usize, y: usize) -> bool {
+        self.words[y * self.row + x / 64] >> (x % 64) & 1 == 1
+    }
+
+    /// Pixels `x0..x1` of row `y` set to `v`.
+    fn fill(&mut self, y: usize, x0: usize, x1: usize, v: bool) {
+        let mut x = x0;
+        while x < x1 {
+            let (k, b) = (y * self.row + x / 64, x % 64);
+            let n = (64 - b).min(x1 - x);
+            let m = if n == 64 { u64::MAX } else { ((1u64 << n) - 1) << b };
+            if v {
+                self.words[k] |= m;
+            } else {
+                self.words[k] &= !m;
+            }
+            x += n;
+        }
+    }
+}
+
+/// Which pixels of zoom `z` (`SIZE` a tile) hold any sea, by the stored tiles `tiles` (a tile not
+/// stored its nearest stored ancestor's pixels over it, as `uniform_from_ancestor` takes them;
+/// none: land).
+fn sea_bits(tiles: &[TileOut], z: u8) -> Result<Bits> {
+    let n = SIZE << z;
+    let mut bits = Bits::new(n, n);
+    let mut order: Vec<&TileOut> = tiles.iter().filter(|t| t.0 <= z).collect();
+    // (Coarse to fine: a finer tile's pixels over its ancestor's.)
+    order.sort_by_key(|t| (t.0, t.2, t.1));
+    for &(tz, tx, ty, ref png) in order {
+        let c = Cov::from_png(png)?;
+        let k = 1usize << (z - tz);
+        let (ox, oy) = (tx as usize * SIZE * k, ty as usize * SIZE * k);
+        for py in 0..SIZE {
+            let row = &c.sea[py * SIZE..(py + 1) * SIZE];
+            let mut px = 0;
+            while px < SIZE {
+                let v = row[px] > 0.0;
+                let p0 = px;
+                while px < SIZE && (row[px] > 0.0) == v {
+                    px += 1;
+                }
+                for r in 0..k {
+                    bits.fill(oy + py * k + r, ox + p0 * k, ox + px * k, v);
+                }
+            }
+        }
+    }
+    Ok(bits)
+}
+
+/// Floods the pixels of `sea` joined to (x, y) through the eight round each, not yet in `seen` (the
+/// world's rows wrapping round at the antimeridian), adding them to `seen`: how many.
+fn flood(sea: &Bits, seen: &mut Bits, x: usize, y: usize) -> u64 {
+    let (w, h) = (sea.w, sea.h);
+    let open = |seen: &Bits, x: usize, y: usize| sea.get(x, y) && !seen.get(x, y);
+    let mut n = 0u64;
+    let mut stack = vec![(x, y)];
+    while let Some((x, y)) = stack.pop() {
+        if !open(seen, x, y) {
+            continue;
+        }
+        let (mut l, mut r) = (x, x);
+        while l > 0 && open(seen, l - 1, y) {
+            l -= 1;
+        }
+        while r + 1 < w && open(seen, r + 1, y) {
+            r += 1;
+        }
+        seen.fill(y, l, r + 1, true);
+        n += (r + 1 - l) as u64;
+        if l == 0 {
+            stack.push((w - 1, y));
+        }
+        if r == w - 1 {
+            stack.push((0, y));
+        }
+        // The rows above and below, corners too (round the antimeridian at the ends).
+        let (a, b) = (l.saturating_sub(1), (r + 1).min(w - 1));
+        for ny in [y.wrapping_sub(1), y + 1] {
+            if ny >= h {
+                continue;
+            }
+            if l == 0 {
+                stack.push((w - 1, ny));
+            }
+            if r == w - 1 {
+                stack.push((0, ny));
+            }
+            let mut i = a;
+            while i <= b {
+                if open(seen, i, ny) {
+                    stack.push((i, ny));
+                    while i <= b && open(seen, i, ny) {
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+    n
+}
+
+/// The sea not connected to the world ocean, at zoom `z`'s pixels (`OCEAN_Z` for the layer's): the
+/// basemap's sea (OpenMapTiles' `ocean`, from OSM's coastline) holds water bodies closed off by
+/// land on every side (the Caspian), whose surface isn't sea level. The world ocean is the largest
+/// body of sea, its pixels joined to the eight round them (any sea in each, so a strait narrower
+/// than a pixel still joins; corners too, as a channel across a pixel's corner may leave too little
+/// sea to count in the pixels beside it); every other body is enclosed. Two bodies within a pixel
+/// of each other are one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Enclosed {
+    /// The zoom of its pixels.
+    pub z: u8,
+    /// Its pixels, as runs (row, first, past the last), by row and first.
+    pub runs: Vec<[u32; 3]>,
+    /// Each enclosed body's pixels and a pixel of it (x, y), largest first.
+    pub bodies: Vec<(u64, u32, u32)>,
+}
+
+impl Enclosed {
+    /// From the layer's stored tiles (`build`'s, the whole world's).
+    pub fn of(tiles: &[TileOut], z: u8) -> Result<Enclosed> {
+        Ok(Enclosed::of_sea(&sea_bits(tiles, z)?, z))
+    }
+
+    fn of_sea(sea: &Bits, z: u8) -> Enclosed {
+        let mut seen = Bits::new(sea.w, sea.h);
+        let mut bodies: Vec<(u64, u32, u32)> = Vec::new();
+        for y in 0..sea.h {
+            for k in 0..sea.row {
+                loop {
+                    let open = sea.words[y * sea.row + k] & !seen.words[y * sea.row + k];
+                    if open == 0 {
+                        break;
+                    }
+                    let x = k * 64 + open.trailing_zeros() as usize;
+                    bodies.push((flood(sea, &mut seen, x, y), x as u32, y as u32));
+                }
+            }
+        }
+        // Largest first (a tie the first found); the first is the world ocean.
+        bodies.sort_by_key(|&(n, x, y)| (std::cmp::Reverse(n), y, x));
+        let mut out = Enclosed { z, runs: Vec::new(), bodies: bodies.iter().skip(1).copied().collect() };
+        let Some(&(_, ox, oy)) = bodies.first() else { return out };
+        let mut ocean = Bits::new(sea.w, sea.h);
+        flood(sea, &mut ocean, ox as usize, oy as usize);
+        for y in 0..sea.h {
+            let mut x = 0;
+            while x < sea.w {
+                if sea.get(x, y) && !ocean.get(x, y) {
+                    let x0 = x;
+                    while x < sea.w && sea.get(x, y) && !ocean.get(x, y) {
+                        x += 1;
+                    }
+                    out.runs.push([y as u32, x0 as u32, x as u32]);
+                } else {
+                    x += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether pixel (x, y) of its zoom is an enclosed sea's.
+    pub fn has(&self, x: u32, y: u32) -> bool {
+        let i = self.runs.partition_point(|r| (r[0], r[2]) <= (y, x));
+        self.runs.get(i).is_some_and(|r| r[0] == y && r[1] <= x)
+    }
+
+    /// Whether any of its pixels lies in rows `y0..y1`, columns `x0..x1`.
+    pub fn meets(&self, x0: u32, y0: u32, x1: u32, y1: u32) -> bool {
+        let i = self.runs.partition_point(|r| r[0] < y0);
+        self.runs[i..].iter().take_while(|r| r[0] < y1).any(|r| r[1] < x1 && r[2] > x0)
+    }
+
+    /// As stored: its zoom (a u32), then its runs (three u32s each), then its bodies (a u64 and two
+    /// u32s each) after their count, little-endian.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut p = jobrt::resume_log::Put::default();
+        p.u32(u32::from(self.z));
+        p.u64(self.runs.len() as u64);
+        for r in &self.runs {
+            r.iter().for_each(|&v| p.u32(v));
+        }
+        p.u64(self.bodies.len() as u64);
+        for &(n, x, y) in &self.bodies {
+            p.u64(n);
+            p.u32(x);
+            p.u32(y);
+        }
+        p.0
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Result<Enclosed> {
+        let mut g = jobrt::resume_log::Get(b);
+        let z = u8::try_from(g.u32()?).context("the enclosed seas' zoom")?;
+        let runs = (0..g.count(12)?).map(|_| Ok([g.u32()?, g.u32()?, g.u32()?])).collect::<Result<_>>()?;
+        let bodies = (0..g.count(16)?).map(|_| Ok((g.u64()?, g.u32()?, g.u32()?))).collect::<Result<_>>()?;
+        g.end()?;
+        Ok(Enclosed { z, runs, bodies })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1124,5 +1358,63 @@ mod tests {
         let back = Cov::from_png(&c.png()).unwrap();
         assert_eq!(back.bytes_at(land[0]), (254, 0));
         assert_eq!(back.some[land[0]], SOME_NOT_SEA | SOME_LAND);
+    }
+
+    /// A grid from rows of text: `~` sea, anything else land.
+    fn grid(rows: &[&str]) -> Bits {
+        let mut b = Bits::new(rows[0].len(), rows.len());
+        for (y, r) in rows.iter().enumerate() {
+            for (x, c) in r.chars().enumerate() {
+                if c == '~' {
+                    b.fill(y, x, x + 1, true);
+                }
+            }
+        }
+        b
+    }
+
+    /// The world ocean is the largest body of sea, joined through a strait a pixel wide and round
+    /// the antimeridian (the north-east corner joins it only so), and corner to corner (x 12, y 4–5);
+    /// a sea closed off by land (a Caspian) is enclosed, and so is a smaller one two pixels from it.
+    #[test]
+    fn the_seas_closed_off_from_the_world_ocean_are_enclosed() {
+        let sea = grid(&[
+            "~~~~#########~~~",
+            "~~~~#~~~~####~~~",
+            "~~~~~~~~~####~~~",
+            "~~~~#####..##~~~",
+            "~~~~#~~~#.~#~###",
+            "~~~~#~~~#.~#~###",
+            "~~~~#####..####~",
+            "~~~~~~~~~~~~~~~~",
+        ]);
+        let e = Enclosed::of_sea(&sea, 0);
+        let enclosed: Vec<(u32, u32)> =
+            (0..8).flat_map(|y| (0..16).map(move |x| (x, y))).filter(|&(x, y)| e.has(x, y)).collect();
+        assert_eq!(enclosed, vec![(5, 4), (6, 4), (7, 4), (10, 4), (5, 5), (6, 5), (7, 5), (10, 5)]);
+        assert_eq!(e.bodies, vec![(6, 5, 4), (2, 10, 4)]);
+        assert_eq!(e.runs, vec![[4, 5, 8], [4, 10, 11], [5, 5, 8], [5, 10, 11]]);
+        assert!(e.meets(0, 4, 6, 5) && !e.meets(13, 0, 16, 8) && !e.meets(0, 6, 16, 8));
+        assert_eq!(Enclosed::from_bytes(&e.to_bytes()).unwrap(), e);
+        // No sea: nothing enclosed.
+        assert_eq!(Enclosed::of_sea(&grid(&["####"]), 0), Enclosed::default());
+    }
+
+    /// The enclosed seas are read from the stored tiles at their zoom: a tile not stored is its
+    /// ancestor's pixels over it, a finer tile's own pixels over its ancestor's.
+    #[test]
+    fn the_enclosed_seas_are_read_from_the_stored_tiles() {
+        // z0: the west half sea (the ocean), the east land; z1's 1/0 (the north-east) stored, with
+        // a sea of its own inside its land; z1's others not stored.
+        let n = SIZE * SIZE;
+        let z0 = Cov::drawn((0..n).map(|k| if k % SIZE < SIZE / 2 { 1.0 } else { 0.0 }).collect(), vec![0.0; n]);
+        let inside = |k: usize| (100..140).contains(&(k % SIZE)) && (200..230).contains(&(k / SIZE));
+        let ne = Cov::drawn((0..n).map(|k| if inside(k) { 0.6 } else { 0.0 }).collect(), vec![0.0; n]);
+        let e = Enclosed::of(&[(0, 0, 0, z0.png()), (1, 1, 0, ne.png())], 1).unwrap();
+        let s = SIZE as u32;
+        assert_eq!((e.z, e.bodies.clone()), (1, vec![(40 * 30, s + 100, 200)]));
+        assert!(e.has(s + 100, 200) && e.has(s + 139, 229));
+        assert!(!e.has(s + 140, 229) && !e.has(s + 100, 230) && !e.has(10, 10));
+        assert_eq!(e.runs.len(), 30);
     }
 }

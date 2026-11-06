@@ -295,6 +295,13 @@ basemap can't be read, the nearest stored zoom scaled up, uncached). `?c=<sea>,<
 whose blend has the lightness of the colours mixed as light (`alpha_for`); `?raw=1`: RGB, red the
 sea's share, green the inland water's.
 
+**The enclosed seas** (`global/water-enclosed`, written by the water step; `water::Enclosed`): the
+sea's pixels at z6 (512 a tile) not joined to the world ocean (docs/steps.md §4), little-endian:
+the zoom (u32, 6); the runs' count (u64), then each run as row, first pixel and past the last (three
+u32s), by row and first; the bodies' count (u64), then each body's pixels (u64) and one pixel of it
+(x, y: u32s), largest first. The server reads it (the catalogue's `global`, `"water-enclosed"`) for
+the water's surface, sea level only on the world ocean; the water version (`w=`) names it.
+
 ## Lakes filled from Canada's own data (`work/lakefill/<date>.<h>.sect`; pipeline::lakefill)
 
 Lakes OSM lacks in Canada's unimported map sheets (docs/steps.md §4), from CanVec. Meta `{"fmt":
@@ -822,7 +829,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   `depth-class.tiles`. `/tiles/terrain/{z}/{x}/{y}?floor=1`: the water's surface less the depth where
   the class tile says water (the floor under the water, for a 3D floor); the terrain as it is without
   depth in the catalogue. `?surface=1`: the water's surface (sea level where the water tiles say
-  sea, the terrain elsewhere), the map's 3D terrain without the floor; a tile with no pixel at sea
+  sea and it's the world ocean's, not an enclosed sea's (Water, above); the terrain elsewhere), the map's 3D terrain without the floor; a tile with no pixel at sea
   is the stored terrain tile, with its ETag; one with sea, made from a stored terrain tile, has its
   own (that tile's and the water version's). Under the current water version (`w=`), either is
   cached for good.

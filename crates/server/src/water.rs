@@ -63,12 +63,8 @@ fn pool() -> &'static rayon::ThreadPool {
     })
 }
 
-fn shares(c: &Cov) -> Vec<u8> {
-    c.to_bytes()
-}
-
-/// What the tiles are made from: how they're drawn (`wt::VERSION`), the water layer's packs and the
-/// basemap's archives.
+/// What the tiles are made from: how they're drawn (`wt::VERSION`), the water layer's packs, the
+/// lakes' fill, the enclosed seas (the surface's sea level: crate::depth) and the basemap's archives.
 fn made_from(s: &crate::AppState, archives: &[String]) -> u64 {
     let mut h = blake3::Hasher::new();
     h.update(&wt::VERSION.to_le_bytes());
@@ -76,6 +72,12 @@ fn made_from(s: &crate::AppState, archives: &[String]) -> u64 {
     // (The lakes filled from Canada's own data, when the catalogue has them.)
     if let Some(c) = fill_content(s) {
         h.update(b"lakefill ");
+        h.update(c.as_bytes());
+        h.update(b"\n");
+    }
+    // (The seas closed off from the world ocean: where the surface is sea level, crate::depth.)
+    if let Some(c) = s.data.content(wt::ENCLOSED) {
+        h.update(b"enclosed ");
         h.update(c.as_bytes());
         h.update(b"\n");
     }
@@ -162,7 +164,7 @@ fn from_store(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
     if has_layer && z <= wt::STORED_MAXZ {
         let from_packs = (|| -> Result<Option<Vec<u8>>> {
             if let Some(c) = stored(s, z, x, y)? {
-                return Ok(Some(shares(&c)));
+                return Ok(Some(c.to_bytes()));
             }
             Ok(wt::uniform_from_ancestor(z, x, y, &|a, ax, ay| stored(s, a, ax, ay))?
                 .map(|(se, i)| [se, i].repeat(wt::SIZE * wt::SIZE)))
@@ -216,13 +218,52 @@ fn fallback(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
 /// Tile z/x/y's shares drawn from the basemap, on the water's own threads.
 fn draw(s: &S, archives: &[String], z: u8, x: u32, y: u32) -> Result<Vec<u8>> {
     let get = |cx: u32, cy: u32| z14(s, archives, cx, cy);
-    Ok(shares(&pool().install(|| wt::cover(z, x, y, &get, blocks()))?))
+    Ok(pool().install(|| wt::cover(z, x, y, &get, blocks()))?.to_bytes())
+}
+
+/// The seas closed off from the world ocean (pipeline::water::Enclosed), as the catalogue has them,
+/// read once a content; None without them (a water layer made before them: all its sea the
+/// ocean's).
+fn enclosed(s: &crate::AppState) -> Result<Option<Arc<wt::Enclosed>>> {
+    static KEPT: OnceLock<Mutex<Option<(String, Arc<wt::Enclosed>)>>> = OnceLock::new();
+    let Some(content) = s.data.content(wt::ENCLOSED) else { return Ok(None) };
+    let mut kept = KEPT.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((c, e)) = kept.as_ref() {
+        if *c == content {
+            return Ok(Some(e.clone()));
+        }
+    }
+    let Some(b) = s.data.global(wt::ENCLOSED)? else { return Ok(None) };
+    let e = Arc::new(wt::Enclosed::from_bytes(&b)?);
+    *kept = Some((content, e.clone()));
+    Ok(Some(e))
+}
+
+/// Which of tile z/x/y's 256 × 256 pixels (their middles) lie on an enclosed sea's pixels; empty
+/// when none does.
+pub fn enclosed_in(e: &wt::Enclosed, z: u8, x: u32, y: u32) -> Vec<bool> {
+    let g = f64::from((wt::SIZE as u32) << e.z);
+    let n = f64::from(1u32 << z);
+    let at = |t: u32, p: f64| ((f64::from(t) + p) / n * g) as u32;
+    let (x0, y0, x1, y1) = (at(x, 0.0), at(y, 0.0), at(x, 1.0).max(at(x, 0.0) + 1), at(y, 1.0).max(at(y, 0.0) + 1));
+    if !e.meets(x0, y0, x1, y1) {
+        return Vec::new();
+    }
+    (0..256 * 256)
+        .map(|p| {
+            let (px, py) = ((p % 256) as f64 + 0.5, (p / 256) as f64 + 0.5);
+            e.has(at(x, px / 256.0), at(y, py / 256.0))
+        })
+        .collect()
 }
 
 /// A terrain tile's share of sea (`sea_shares`).
 pub struct Sea {
     /// Each of the terrain's 256 × 256 pixels' share, 0–1.
     pub share: Vec<f32>,
+    /// Whether each pixel's sea is a sea closed off from the world ocean (`enclosed_in`; empty:
+    /// none in the tile), whose surface isn't sea level.
+    pub enclosed: Vec<bool>,
     /// As the water tiles have it (kept, stored or drawn), not their nearest stored ancestor's
     /// stand-in (the basemap unreadable): a tile served from it can be cached for good.
     pub exact: bool,
@@ -239,8 +280,9 @@ pub fn shares_key(s: &S, z: u8, x: u32, y: u32) -> Option<(u8, u32, u32, u64)> {
 
 /// Tile z/x/y's share of sea at the terrain's 256 px (0–1, each the mean of the water tile's 2 × 2
 /// pixels over it), as the map's water tiles have it (kept, stored, drawn from the basemap, else
-/// the nearest stored ancestor's): where the water's surface is sea level, under the depth's floor
-/// and the 3D terrain (crate::depth). None without the water layer, or past its zooms.
+/// the nearest stored ancestor's), and which pixels are on a sea closed off from the world ocean:
+/// the depth's sea, its floor's sea level, and the world ocean's, the water's surface's (crate::depth).
+/// None without the water layer, or past its zooms.
 pub fn sea_shares(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Sea>> {
     let Some(key) = shares_key(s, z, x, y) else { return Ok(None) };
     let archives = s.data.basemap_names();
@@ -267,7 +309,8 @@ pub fn sea_shares(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Sea>> {
             (at(i, j) + at(i + 1, j) + at(i, j + 1) + at(i + 1, j + 1)) * 0.25
         })
         .collect();
-    Ok(Some(Sea { share, exact }))
+    let enclosed = enclosed(s)?.map(|e| enclosed_in(&e, z, x, y)).unwrap_or_default();
+    Ok(Some(Sea { share, enclosed, exact }))
 }
 
 fn png(px: &[u8], w: usize, color: png::ColorType) -> Result<Vec<u8>> {
@@ -602,5 +645,24 @@ mod tests {
         // The map's own dark colours: barely changed.
         let (sea, land) = ([12.0, 22.0, 34.0], [11.0, 14.0, 19.0]);
         assert!((alpha_for(0.5, sea, land) - 127.5).abs() < 15.0);
+    }
+
+    /// A terrain tile's pixels on an enclosed sea are those whose middles lie on its pixels, at any
+    /// zoom; a tile it doesn't reach has none.
+    #[test]
+    fn a_terrain_tile_s_pixels_on_an_enclosed_sea() {
+        // Pixels 300–301 of row 5 of z0's 512, and 20–29 of row 11.
+        let e = wt::Enclosed { z: 0, runs: vec![[5, 300, 302], [11, 20, 30]], bodies: Vec::new() };
+        let on = |m: Vec<bool>| (0..m.len()).filter(|&p| m[p]).collect::<Vec<_>>();
+        // z1/0/0: a terrain pixel an enclosed pixel.
+        assert_eq!(on(enclosed_in(&e, 1, 0, 0)), (11 * 256 + 20..11 * 256 + 30).collect::<Vec<_>>());
+        // z0: two a side to a terrain pixel, its middle on the odd ones.
+        let mut want = vec![2 * 256 + 150];
+        want.extend(5 * 256 + 10..5 * 256 + 15);
+        assert_eq!(on(enclosed_in(&e, 0, 0, 0)), want);
+        // z2/2/0 (columns 256–383, rows 0–127): pixels 300–301 of row 5, each two a side.
+        let want: Vec<usize> = [10, 11].iter().flat_map(|r| (88..92).map(move |c| r * 256 + c)).collect();
+        assert_eq!(on(enclosed_in(&e, 2, 2, 0)), want);
+        assert!(enclosed_in(&e, 1, 1, 1).is_empty());
     }
 }

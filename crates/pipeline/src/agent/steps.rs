@@ -2101,9 +2101,9 @@ fn w_lakefill(l: &str, _: bool) -> bool {
 }
 
 /// The water's packs, every zoom (those it didn't write removed, and the small water's before it,
-/// which it replaced).
+/// which it replaced), and the seas closed off from the world ocean (crate::water::ENCLOSED).
 fn w_water(l: &str, removal: bool) -> bool {
-    pack(l, "water", &ALL) || (removal && pack(l, "smallwater", &ALL))
+    pack(l, "water", &ALL) || l == crate::water::ENCLOSED || (removal && pack(l, "smallwater", &ALL))
 }
 
 /// The heritage sites by z6 tile, their positions and areas (those of the pass it didn't write
@@ -2937,6 +2937,7 @@ mod tests {
                     ("layers/water/root/0-0-0", false),
                     ("layers/water/lo/3-1-2", false),
                     ("layers/water/hi/6-1-2", false),
+                    ("global/water-enclosed", false),
                     ("layers/smallwater/hi/6-1-2", true),
                 ],
             ),

@@ -8,10 +8,13 @@
 //! And the terrain with the floor (`terrain_floor`): the water's surface less the depth on the water
 //! the depth lies on, for the map's 3D floor; and the water's surface itself (`surface_over`),
 //! where the map draws the water over that floor, and the contours' ground. The surface is sea
-//! level at sea (a pixel half sea or more in the water tiles, crate::water::sea_shares: the depth's
-//! own rule for water), elsewhere the terrain's heights (a lake's or a river's its source's): the terrain keeps the source's heights at
-//! sea, its bathymetry and artefacts included, so it is no surface there. No second terrain is
-//! stored.
+//! level on the world ocean (a pixel half sea or more in the water tiles, crate::water::sea_shares:
+//! the depth's own rule for water, and not on a sea closed off from the ocean,
+//! pipeline::water::Enclosed), elsewhere the terrain's heights (a lake's, a river's or an enclosed
+//! sea's its source's: the Caspian's −28 m in GLO-30): the terrain keeps the source's heights at
+//! sea, its bathymetry and artefacts included, so it is no surface there. The floor stands on the
+//! depth's own sea level wherever the depth's water is sea (the enclosed seas too: their depths are
+//! heights below 0 m). No second terrain is stored.
 
 use crate::cache::Lru;
 use crate::terrain::{made, respond, Got};
@@ -107,15 +110,21 @@ pub async fn class_tile(
 }
 
 /// The water's surface over terrain heights `e` (a tile's): sea level where `sea` (each pixel's
-/// share of sea) is half or more (`at_sea`), the terrain's heights elsewhere. Not blended: a shore
+/// share of sea) is half or more (`at_sea`) and the sea is the world ocean's (`enclosed`, each
+/// pixel's: an enclosed sea's; empty, none), the terrain's heights elsewhere. Not blended: a shore
 /// pixel's mean of sea level and the source's bathymetry there would stand below sea level, a ring
 /// of contours round every coast.
-pub fn surface(e: &mut [f32], sea: &[f32]) {
-    for (v, &s) in e.iter_mut().zip(sea) {
-        if at_sea(s) {
+pub fn surface(e: &mut [f32], sea: &[f32], enclosed: &[bool]) {
+    for (i, (v, &s)) in e.iter_mut().zip(sea).enumerate() {
+        if on_ocean(s, enclosed, i) {
             *v = 0.0;
         }
     }
+}
+
+/// Whether pixel `i`, with share `s` of sea, is the world ocean's (`surface`).
+fn on_ocean(s: f32, enclosed: &[bool], i: usize) -> bool {
+    at_sea(s) && !enclosed.get(i).copied().unwrap_or(false)
 }
 
 /// Whether a pixel with share `s` of sea is the sea's (half or more: as the depth's water,
@@ -124,9 +133,10 @@ fn at_sea(s: f32) -> bool {
     s >= 0.5
 }
 
-/// The floor under the water: the water's surface (`surface`, from terrain heights `e` and the
-/// share of sea `sea`; None: the terrain's heights) with the depth subtracted where the depth's
-/// class says water (its depth below that surface); the land as it is.
+/// The floor under the water: the depth subtracted where the depth's class says water, from the
+/// level its depth is below: sea level where `sea` (each pixel's share) is half or more, the depth's
+/// sea (an enclosed sea's too, measured from 0 m), else terrain heights `e` (a lake's surface; None:
+/// the terrain's heights throughout); the land as it is.
 pub fn floor(e: &mut [f32], sea: Option<&[f32]>, depth: &[f32], class: &[u8]) {
     for i in 0..e.len().min(depth.len()).min(class.len()) {
         if class[i] & 7 != pipeline::depth::C_NONE && depth[i] < pipeline::depth::NODATA_MIN {
@@ -157,14 +167,14 @@ pub fn terrain_floor(s: &crate::S, z: u8, x: u32, y: u32) -> anyhow::Result<Opti
 /// without the water layer or past its zooms (the terrain is its own surface there).
 pub fn surface_over(s: &crate::S, z: u8, x: u32, y: u32, e: &mut [f32]) -> anyhow::Result<bool> {
     let Some(sea) = crate::water::sea_shares(s, z, x, y)? else { return Ok(true) };
-    surface(e, &sea.share);
+    surface(e, &sea.share, &sea.enclosed);
     Ok(sea.exact)
 }
 
 /// What the water's surface over a terrain tile is (`surface_of`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Surface {
-    /// The terrain tile itself: no water layer, past its zooms, or no pixel at sea.
+    /// The terrain tile itself: no water layer, past its zooms, or no pixel on the world ocean.
     Terrain,
     /// Sea level over some pixel, by the water tiles' own shares.
     Sea,
@@ -179,7 +189,7 @@ impl Surface {
         match sea {
             None => Surface::Terrain,
             Some(sea) if !sea.exact => Surface::StandIn,
-            Some(sea) if sea.share.iter().any(|&s| at_sea(s)) => Surface::Sea,
+            Some(sea) if sea.share.iter().enumerate().any(|(i, &s)| on_ocean(s, &sea.enclosed, i)) => Surface::Sea,
             Some(_) => Surface::Terrain,
         }
     }
@@ -238,22 +248,41 @@ mod tests {
         floor(&mut e, Some(&sea), &d, &cl);
         assert_eq!(e, vec![-40.0, -12.0, -1.0, -20.0, -6.0]);
         let mut e = vec![-35.0, -2.0, 10.0, -20.0, -6.0];
-        surface(&mut e, &sea);
+        surface(&mut e, &sea, &[]);
         assert_eq!(e, vec![0.0, 0.0, 0.0, -20.0, -6.0]);
     }
 
-    /// The surface is made only over the sea: a tile without a pixel at sea (a shore's 0.4 of one,
+    /// A sea closed off from the world ocean (the Caspian, OSM's coastline round it) is no sea
+    /// level: its surface is the terrain's (GLO-30's −28 m), the world ocean's beside it 0 m. Its
+    /// floor stands on the depth's sea level, as the depth measures it there (GEBCO's heights).
+    #[test]
+    fn an_enclosed_sea_s_surface_is_its_source_s() {
+        let mut e = vec![-28.0, -28.0, -1.5, 12.0];
+        let (sea, enclosed) = ([1.0, 1.0, 1.0, 0.0], [true, true, false, false]);
+        surface(&mut e, &sea, &enclosed);
+        assert_eq!(e, vec![-28.0, -28.0, 0.0, 12.0]);
+        let c = pipeline::depth::C_NATIVE | (3 << 4);
+        let mut e = vec![-28.0, -28.0, -1.5, 12.0];
+        floor(&mut e, Some(&sea), &[-31.0, -900.0, -6.0, pipeline::depth::NODATA], &[c, c, c, pipeline::depth::C_NONE]);
+        assert_eq!(e, vec![-31.0, -900.0, -6.0, 12.0]);
+    }
+
+    /// The surface is made only over the world ocean: a tile without a pixel at sea (a shore's 0.4 of one,
     /// a polder's or a lake's none), past the water's zooms or without its layer is the terrain
     /// itself, served as stored; shares that are an ancestor's stand-in are neither (made from,
     /// never kept nor taken as no sea: a tile served as stored is cached for good).
     #[test]
     fn the_surface_is_made_only_over_the_sea() {
         use crate::water::Sea;
-        let of = |share: Vec<f32>, exact| Surface::of(Some(&Sea { share, exact }));
+        let of = |share: Vec<f32>, exact| Surface::of(Some(&Sea { share, enclosed: Vec::new(), exact }));
         assert_eq!(Surface::of(None), Surface::Terrain);
         assert_eq!(of(vec![0.0, 0.4, 0.0], true), Surface::Terrain);
         assert_eq!(of(vec![0.0, 0.5, 0.0], true), Surface::Sea);
         assert_eq!(of(vec![0.0, 0.0, 0.0], false), Surface::StandIn);
         assert_eq!(of(vec![1.0, 1.0, 1.0], false), Surface::StandIn);
+        // An enclosed sea's tile (the Caspian's open water) is the terrain's, the ocean's beside it not.
+        let sea = |enclosed: Vec<bool>| Surface::of(Some(&Sea { share: vec![1.0, 1.0], enclosed, exact: true }));
+        assert_eq!(sea(vec![true, true]), Surface::Terrain);
+        assert_eq!(sea(vec![true, false]), Surface::Sea);
     }
 }

@@ -418,8 +418,12 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   its own (the terrain tile's and the water's version: cached for good as a stored tile is); one
   made from the terrain's ancestor or from the water's stand-in (the basemap unreadable) as made
   tiles are (the stand-in's not kept: made again when asked for again). The sea's surface is sea level, 0 m, where the water tiles say sea (half a
-  pixel or more, as the depth's water: server `water::sea_shares`), whatever the
-  terrain reads there (the source's bathymetry: §2, Terrain); a lake's is the terrain's source there
+  pixel or more, as the depth's water: server `water::sea_shares`) and the sea is the world
+  ocean's (§4, The world ocean), whatever the
+  terrain reads there (the source's bathymetry: §2, Terrain). An enclosed sea's surface is the
+  terrain's source there, as a lake's: the Caspian's GLO-30 heights, −28 m. Its floor stands on sea
+  level, as the depth's values there are heights below 0 m (GEBCO's, the depth's sea); the depth
+  layer itself measures them from 0 m, not from the Caspian's surface. A lake's is the terrain's source there
   (not levelled), so a lake's floor follows its source's surface, artefacts too; so does a river's
   (3DEP's hydro-flattening, where its source has it). A pixel of narrow water is the terrain's
   blend of water and shore, so its floor is rough. The map's toggle (Layers → Depth, "3D sea and
@@ -488,6 +492,16 @@ drawn as a raster.
     docs/formats.md).
   - **Deeper zooms are drawn by the server** (`crates/server/src/water.rs`) from the z14 tiles under
     the tile or the one over it.
+- **The world ocean and the enclosed seas:** the sea is OSM's coastline's, and OSM maps the
+  Caspian with coastline too, so the Caspian is sea in the tiles, drawn and shaded as sea and the
+  depth's sea (§3). With the stored tiles the step finds the sea closed off from the world ocean
+  (`water::Enclosed`, `global/water-enclosed`; docs/formats.md): at z6's pixels (512 a tile, 1.2 km
+  at the equator), a pixel holding any sea joined to the eight round it (and round the
+  antimeridian), the largest body is the world ocean and every other body is enclosed. Nothing is
+  named by hand. A strait narrower than a pixel still joins (it holds some sea); two bodies within a
+  pixel of each other are one. The water's surface is sea level only on the world ocean (§3, The
+  floor). The step's peak memory adds two bits a z6 pixel (256 MB), after the z14 directory is let
+  go.
 - **Served** at `/tiles/water/{z}/{x}/{y}`: `?c=<sea>,<lake>[,<land>]` gives a coloured PNG (with
   the land's colour, the alpha that mixes water and land as light mixes: `alpha_for`); `?raw=1` the
   shares; a tile not stored takes its stored ancestor's value; a stored zoom it can't read is drawn

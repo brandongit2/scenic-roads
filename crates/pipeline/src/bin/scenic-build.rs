@@ -6336,6 +6336,23 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     drop(z14);
     drop(p);
     eprintln!("water: {} in {:.0} s", serde_json::to_string(&made)?, t.elapsed().as_secs_f64());
+    // The seas closed off from the world ocean, from the whole world's tiles (a part has no ocean
+    // to tell them from), after the z14 directory is let go (two bits a pixel of z6, 256 MB).
+    let enclosed = match &only {
+        None => {
+            let p = phase("finding the seas closed off from the world ocean");
+            let e = wt::Enclosed::of(&tiles, wt::OCEAN_Z)?;
+            drop(p);
+            let largest = &e.bodies[..e.bodies.len().min(10)];
+            eprintln!(
+                "water: {} enclosed seas; the largest (z{} pixels, a pixel's x, y): {largest:?}",
+                e.bodies.len(),
+                e.z
+            );
+            Some(e)
+        }
+        Some(_) => None,
+    };
     // (The archive in a folder of its own, removed however the step ends.)
     let work = WorkDir::new(scratch.join("water"))?;
     let local = match opt(args, "--archive") {
@@ -6359,6 +6376,9 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let lo = layers::split_archive(out, &arc, wt::LAYER, "water-png", false, wt::STORED_MAXZ)?;
     drop(p);
     eprintln!("water: root {:?}, {} lo, {} hi packs", lo.root.is_some(), lo.lo.len(), lo.hi.len());
+    if let Some(e) = &enclosed {
+        out.put_bytes(wt::ENCLOSED, "bin", &e.to_bytes())?;
+    }
     // Packs of an earlier water layer that this one doesn't have go from the manifest, and the small
     // islands and lakes' layer it replaces (`layers/smallwater/`, the dots of before).
     let keep: BTreeSet<String> = lo.root.iter().chain(lo.lo.values()).chain(lo.hi.values()).cloned().collect();
