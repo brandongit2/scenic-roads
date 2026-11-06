@@ -34,7 +34,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/store/src/iopool.rs", "write_new", 1, "the I/O pool runs the create-new on its worker thread, under its timeout"),
     ("crates/store/src/iopool.rs", "write", 1, "the I/O pool runs the write on its worker thread, under its timeout"),
     ("crates/store/src/range.rs", "new", 1, "a PooledFile keeps its path for its errors (opened and counted by the pool)"),
-    ("crates/store/src/naming.rs", "write_atomic_as", 1, "a content-named upload: its own temporary name, an exclusive rename, a read-back past the cache, counted once by its caller as the upload lands"),
+    ("crates/store/src/naming.rs", "write_atomic_as", 1, "a content-named upload: its own temporary name, an exclusive rename, a read-back past the cache; its bytes counted as it writes them, the file by its caller as it lands"),
     ("crates/store/src/blobs.rs", "get", 1, "a whole local copy by crate::sys::copy_data_held, its bytes counted as they're read (crate::nasfs's copy_counter), the file opened by its caller (pipeline::localread)"),
     // A child process's or a program's argument.
     ("crates/pipeline/src/agent/gc.rs", "run", 1, "the project folder as the NAS sees it, for the uploads' check over SSH (store::nas::on_nas)"),

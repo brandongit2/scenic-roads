@@ -2454,9 +2454,10 @@ impl Coordinator {
     /// (its first runs, every step as the stillness was first recorded), its target's time at most
     /// as measured (`Sched::target_most`, the target under way's, else its first's and its start);
     /// a step never run the way it runs now, the longest usual stillness of any step. And its pace
-    /// (`Pace`, None while its step has no usual: history::History::paces): its rate over the last
+    /// (`Pace`, None while its step has no usual: history::Paces::usual): its rate over the last
     /// `factor` times its step's usual longest wait for progress, in the unit of its part under
-    /// way, with its step's usual rate in it.
+    /// way, with its step's usual rate in it, both from its step's runs that had no more threads
+    /// than its part under way has had at its fewest.
     pub fn runs(&self, factor: f64) -> Vec<crate::agent::flags::Run> {
         use crate::agent::flags::{Pace, Still, Usual};
         let s = self.shared.lock().unwrap();
@@ -2492,11 +2493,13 @@ impl Coordinator {
                         phase: live.and_then(|v| v.phase.clone()),
                     }
                 });
-                let pace = paces.gaps.get(step).and_then(|&gap| {
-                    let window = Duration::from_secs_f64(gap as f64 * factor);
+                // (Held to its step's runs of no more threads than its part under way has had.)
+                let pace = l.pace.threads_least().and_then(|threads| {
+                    let (gap, rates) = paces.usual(step, threads);
+                    let window = Duration::from_secs_f64(gap? as f64 * factor);
                     let (unit, rate) = l.pace.lately(window)?;
-                    let usual = *paces.rates.get(&(step.clone(), unit.to_string()))?;
-                    Some(Pace { unit: unit.to_string(), rate, usual, window_s: window.as_secs() })
+                    let usual = *rates.get(unit)?;
+                    Some(Pace { unit: unit.to_string(), rate, usual, window_s: window.as_secs(), threads })
                 });
                 Some(crate::agent::flags::Run {
                     worker: l.worker.clone(),

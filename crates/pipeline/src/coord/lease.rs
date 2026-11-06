@@ -120,13 +120,15 @@ impl Lease {
     }
 
     /// `e` (its job's "done" or "end" event) with what its run measured to `end`: its longest still
-    /// stretch (`still_most`), its rate in each unit its progress said and its longest wait for its
-    /// progress to go on (`Pace`): what its step's runs are held to (crate::coord::history::History).
+    /// stretch (`still_most`), its rate in each unit its progress said, its longest wait for its
+    /// progress to go on and the most threads it had meanwhile (`Pace`): what its step's runs are
+    /// held to (crate::coord::history::History).
     pub fn noted(&self, e: crate::coord::history::Event, end: Instant) -> crate::coord::history::Event {
         crate::coord::history::Event {
             still_s: Some(self.still_most(end)),
             gap_s: self.pace.gap_most(end),
             rates: self.pace.rates(),
+            threads: self.pace.threads_most(),
             ..e
         }
     }
@@ -585,7 +587,7 @@ impl Leases {
                 }
                 if let Some(line) = &progress {
                     let target = live.as_ref().or(l.live.as_ref()).and_then(|v| v.target.as_deref());
-                    l.pace.beat(line, target, l.heard.unwrap_or(l.granted), now, l.granted);
+                    l.pace.beat(line, target, l.threads, l.heard.unwrap_or(l.granted), now, l.granted);
                 }
                 l.heard = Some(now);
                 if progress.is_some() {
@@ -679,11 +681,14 @@ pub struct Pace {
     /// its grant or one such to the next so far (s).
     on: Option<Instant>,
     gap_most: u64,
+    /// The most threads its job counted for at a beat that said its progress (0: none said).
+    threads_most: u32,
 }
 
 /// One run of a job's progress line: on one target (the target under way, as its view says), in one
 /// unit (jobrt::jobs::unit_key) and total. From the beat before the one that first said it
-/// (`since`: it began after that one), the most it has said (`best`), and each beat's most since.
+/// (`since`: it began after that one), the most it has said (`best`), each beat's most since, and
+/// the fewest threads its job counted for at any of its beats (`threads_least`; 0: not said).
 #[derive(Clone, Debug)]
 struct Part {
     target: Option<String>,
@@ -692,14 +697,16 @@ struct Part {
     since: Instant,
     best: f64,
     beats: std::collections::VecDeque<(Instant, f64)>,
+    threads_least: u32,
 }
 
 impl Pace {
     /// A beat at `now` saying progress line `line` ("<done>/<total> <unit>", as crate::agent's
-    /// beat sends it) on `target`, the beat before it heard at `prev` (its grant before one).
+    /// beat sends it) on `target`, its job counted for `threads` (0: not said), the beat before it
+    /// heard at `prev` (its grant before one).
     /// Its progress went on when its line passed the most it had said, or a new part began (the
     /// last one's end).
-    fn beat(&mut self, line: &str, target: Option<&str>, prev: Instant, now: Instant, granted: Instant) {
+    fn beat(&mut self, line: &str, target: Option<&str>, threads: u32, prev: Instant, now: Instant, granted: Instant) {
         let Some((done, total, unit)) = parse_line(line) else { return };
         let went_on = match self.part.as_mut() {
             Some(p) if p.target.as_deref() == target && p.unit == unit && p.total == total => {
@@ -711,7 +718,8 @@ impl Pace {
                 self.end_part();
                 let target = target.map(str::to_string);
                 let unit = unit.to_string();
-                self.part = Some(Part { target, unit, total, since: prev, best: done, beats: Default::default() });
+                let beats = Default::default();
+                self.part = Some(Part { target, unit, total, since: prev, best: done, beats, threads_least: threads });
                 true
             }
         };
@@ -721,7 +729,9 @@ impl Pace {
         }
         if let Some(p) = self.part.as_mut() {
             p.beats.push_back((now, p.best));
+            p.threads_least = p.threads_least.min(threads);
         }
+        self.threads_most = self.threads_most.max(threads);
     }
 
     /// The part under way taken into `ran`, to its last beat.
@@ -761,6 +771,19 @@ impl Pace {
         let from = last.checked_sub(window).filter(|f| *f >= p.since && !window.is_zero())?;
         let base = p.beats.iter().rev().find(|b| b.0 <= from).map_or(0.0, |b| b.1);
         Some((&p.unit, (best - base) / window.as_secs_f64()))
+    }
+
+    /// The fewest threads its job counted for over its part under way (None: no part, or not said):
+    /// what its step's usual is taken at (crate::coord::history::Paces), so a job isn't held to
+    /// runs that had more threads than it.
+    pub fn threads_least(&self) -> Option<u32> {
+        self.part.as_ref().map(|p| p.threads_least).filter(|&t| t > 0)
+    }
+
+    /// The most threads its job counted for while it said its progress (None: not said): its
+    /// "done" or "end" event's `threads`.
+    pub fn threads_most(&self) -> Option<u32> {
+        (self.threads_most > 0).then_some(self.threads_most)
     }
 }
 
@@ -1000,8 +1023,20 @@ mod tests {
         assert_eq!(l.pace.lately(Duration::from_secs(240)), Some(("tiles", 12.0 / 240.0)), "from its part's start");
         assert_eq!(l.pace.lately(Duration::from_secs(120)), Some(("tiles", 2.0 / 120.0)));
         assert_eq!(l.pace.gap_most(at(700)), Some(180), "180 s to 360 s, and 480 s to 660 s");
+        assert_eq!((l.pace.threads_least(), l.pace.threads_most()), (None, None), "its threads not said");
         let e = l.noted(crate::coord::history::Event::new("done"), at(900));
         assert_eq!((e.gap_s, e.still_s, e.rates.len()), (Some(240), Some(240), 1), "its end 240 s after its last");
+        // (Its threads: the fewest over its part under way, the most over its run.)
+        ls.set_threads(id, 4);
+        beat(&mut ls, 720, "14/100 tiles", "6/1/2", 210);
+        ls.regranted(id, 2, 2, None);
+        beat(&mut ls, 780, "16/100 tiles", "6/1/2", 220);
+        beat(&mut ls, 840, "1/9 packs", "6/1/2", 230);
+        ls.set_threads(id, 3);
+        beat(&mut ls, 900, "2/9 packs", "6/1/2", 240);
+        let l = ls.of(id).unwrap();
+        assert_eq!((l.pace.threads_least(), l.pace.threads_most()), (Some(2), Some(4)));
+        assert_eq!(l.noted(crate::coord::history::Event::new("done"), at(900)).threads, Some(4));
         // (A job that never said its progress: no rate, no wait for it.)
         let quiet = ls.grant("m1", Work::Job { step: "pack".into(), targets: vec![] }, t0);
         assert!(ls.renew_live(quiet, "m1", None, None, at(60)));

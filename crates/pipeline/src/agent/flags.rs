@@ -32,12 +32,15 @@
 //!   step's usual rate divided by `factor` (`Pace`). Its rate is in the unit its progress line says
 //!   (tiles, z6 tiles, packs…: crate::coord::lease::Pace), within its part under way (one line's
 //!   run on one target): the most the line has said, so a line gone back (work done again) counts
-//!   nothing until it passes it, and bytes never count (a retry sending its bytes again moves no
-//!   line). Its step's usual rate in that unit is the 10th percentile of its jobs' that ended well
+//!   nothing until it passes it, and its job view's bytes never count (a retry sending its bytes
+//!   again moves no line). Its step's usual rate in that unit is the 10th percentile of its jobs' that ended well
 //!   (each one's progress in the unit over the time its parts in it took: `rates` on its "done" or
 //!   "end" event), its usual wait the 90th percentile of their longest stretch without progress
-//!   (`gap_s`), each from `ENOUGH` jobs at least (crate::coord::history::History::paces): a step
-//!   with fewer, a part younger than its window, isn't judged. A window that long holds a working
+//!   (`gap_s`), both from its jobs that had no more threads than its part under way has had at its
+//!   fewest (`threads` on the events: more threads may make a job faster, never slower, so one on
+//!   fewer isn't held to runs on more), each from `ENOUGH` jobs at least
+//!   (crate::coord::history::Paces::usual): a step with fewer, a part younger than its window,
+//!   a job whose threads aren't said, isn't judged. A window that long holds a working
 //!   job's progress however bursty its line (terrain-hi says its tiles a few hundred at a time);
 //!   one with none in it is at a rate of nothing. A job flagged stuck isn't flagged slow too.
 //! - **Stale** (`stale`): the lead's catalogue due (`publish::PublishLine::due_since`: held back,
@@ -99,13 +102,15 @@ pub struct Run {
 }
 
 /// A job's progress rate over its window (`window_s`) in its part under way's unit, and its step's
-/// usual rate in that unit (units a second: the module's doc, Slow).
+/// usual rate in that unit from its runs of `threads` threads or fewer (units a second: the
+/// module's doc, Slow).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pace {
     pub unit: String,
     pub rate: f64,
     pub usual: f64,
     pub window_s: u64,
+    pub threads: u32,
 }
 
 /// How long a job's work hasn't moved by its worker's beats (s), the usual it is held to (s, and
@@ -287,13 +292,14 @@ pub fn slow(st: &Status, runs: &[Run], factor: f64) -> Vec<Flag> {
                 format!(" ({t}{})", s.phase.as_ref().map_or(String::new(), |p| format!(", {p}")))
             });
             let said = format!(
-                "{} (lease {}) on {mac}: {} {} a minute over the last {}{at}, under its step's usual {} a minute (its slowest tenth of jobs) ÷ {factor}{}, {}",
+                "{} (lease {}) on {mac}: {} {} a minute over the last {}{at}, under its step's usual {} a minute (the slowest tenth of its jobs at {}) ÷ {factor}{}, {}",
                 r.step,
                 r.lease,
                 per_min(p.rate),
                 p.unit,
                 span(p.window_s),
                 per_min(p.usual),
+                if p.threads == 1 { "one thread".to_string() } else { format!("{} threads or fewer", p.threads) },
                 batch(r),
                 threads(r)
             );
@@ -475,7 +481,7 @@ mod tests {
     /// A job moving, at `rate` tiles a second over its window of 30 min, against its step's usual
     /// `usual`.
     fn paced(rate: f64, usual: f64) -> Run {
-        let pace = Pace { unit: "tiles".into(), rate, usual, window_s: 1800 };
+        let pace = Pace { unit: "tiles".into(), rate, usual, window_s: 1800, threads: 4 };
         Run { pace: Some(pace), ..run("terrain-hi", 60, Some(240)) }
     }
 
@@ -489,7 +495,7 @@ mod tests {
         let f = of(&st, &[], &[paced(0.05, 1.1)], 3.0, 0);
         assert_eq!(
             f.iter().map(Flag::line).collect::<Vec<_>>(),
-            ["slow: terrain-hi (lease 9) on m1: 3 tiles a minute over the last 30 min (6/55/26, sampling glo30), under its step's usual 66 a minute (its slowest tenth of jobs) ÷ 3, 2 of 8 targets done, 4 threads"]
+            ["slow: terrain-hi (lease 9) on m1: 3 tiles a minute over the last 30 min (6/55/26, sampling glo30), under its step's usual 66 a minute (the slowest tenth of its jobs at 4 threads or fewer) ÷ 3, 2 of 8 targets done, 4 threads"]
         );
         assert!(of(&st, &[], &[paced(0.4, 1.1)], 3.0, 0).is_empty(), "within 3×");
         assert!(of(&st, &[], &[paced(0.4, 1.1)], 2.5, 0).len() == 1, "a smaller factor set");

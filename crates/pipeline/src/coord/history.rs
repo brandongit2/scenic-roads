@@ -93,6 +93,11 @@ pub struct Event {
     /// Events before task #990 have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gap_s: Option<u64>,
+    /// The most threads its job counted for while it said its progress (Pace::threads_most), on
+    /// the same events: a step's usual pace for a job of so many threads is taken from its runs
+    /// that had no more (`Paces`). Events before task #990 have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<u32>,
 }
 
 /// The fewest jobs a step's usual pace is taken from (`History::paces`): its 10th and 90th
@@ -100,12 +105,41 @@ pub struct Event {
 /// ten that tenth is no whole job, the percentile its one slowest or longest job.
 pub const ENOUGH: usize = 10;
 
-/// A step's usual pace (`History::paces`): its 10th-percentile rate in each unit, by (step,
-/// unit), and its 90th-percentile longest wait for progress (s), by step.
+/// What a step's runs measured of their pace (`History::paces`), from its jobs kept that ended
+/// well: by step, each run's threads (the most it had), its longest wait for progress (s) and its
+/// rate in each unit. A job is held to the runs of its step that had no more threads than it
+/// (`usual`): more threads may make a job faster, never slower, so one running on fewer isn't
+/// held to runs that had more.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Paces {
-    pub rates: BTreeMap<(String, String), f64>,
-    pub gaps: BTreeMap<String, u64>,
+    pub runs: BTreeMap<String, Vec<PaceRun>>,
+}
+
+/// One run's pace (`Paces`): its `Event::threads`, `gap_s` and `rates`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaceRun {
+    pub threads: u32,
+    pub gap_s: Option<u64>,
+    pub rates: BTreeMap<String, f64>,
+}
+
+impl Paces {
+    /// Step `step`'s usual for a job of `threads` threads at most, from its runs that had no more,
+    /// each from `ENOUGH` of them at least: the 90th percentile of their longest wait for progress
+    /// (s), and the 10th of their rate in each unit. None when fewer runs said either.
+    pub fn usual(&self, step: &str, threads: u32) -> (Option<u64>, BTreeMap<String, f64>) {
+        let runs = self.runs.get(step).map_or(&[][..], Vec::as_slice);
+        let within = || runs.iter().filter(|r| r.threads <= threads);
+        let gaps: Vec<u64> = within().filter_map(|r| r.gap_s).collect();
+        let gap = (gaps.len() >= ENOUGH).then(|| crate::needs::p90(gaps)).flatten();
+        let mut by: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        for r in within() {
+            for (u, &x) in &r.rates {
+                by.entry(u.clone()).or_default().push(x);
+            }
+        }
+        (gap, by.into_iter().filter_map(|(u, v)| Some((u, p10(v)?))).collect())
+    }
 }
 
 /// The 10th percentile (nearest rank) of `v`, with at least `ENOUGH` of them.
@@ -502,29 +536,16 @@ impl History {
         by.into_iter().filter_map(|(step, v)| Some((step, crate::needs::p90(v)?))).collect()
     }
 
-    /// What a running job's pace is held to (crate::agent::flags' slow), from the jobs kept that
-    /// ended well, by step: the 10th percentile of their rate in each unit (`Event::rates`) and the
-    /// 90th of their longest wait for progress (`Event::gap_s`), each where `ENOUGH` of them say it.
+    /// What a running job's pace is held to (crate::agent::flags' slow): the runs kept that ended
+    /// well and measured their pace (`Event::threads`, `gap_s`, `rates`), by step (`Paces`).
     pub fn paces(&self) -> Paces {
-        let (mut rates, mut gaps): (BTreeMap<(String, String), Vec<f64>>, BTreeMap<String, Vec<u64>>) =
-            Default::default();
+        let mut runs: BTreeMap<String, Vec<PaceRun>> = BTreeMap::new();
         for e in self.events.iter().filter(|e| matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true)) {
-            let Some(step) = &e.step else { continue };
-            for (unit, &r) in &e.rates {
-                rates.entry((step.clone(), unit.clone())).or_default().push(r);
-            }
-            if let Some(g) = e.gap_s {
-                gaps.entry(step.clone()).or_default().push(g);
-            }
+            let (Some(step), Some(threads)) = (&e.step, e.threads) else { continue };
+            let run = PaceRun { threads, gap_s: e.gap_s, rates: e.rates.clone() };
+            runs.entry(step.clone()).or_default().push(run);
         }
-        Paces {
-            rates: rates.into_iter().filter_map(|(k, v)| Some((k, p10(v)?))).collect(),
-            gaps: gaps
-                .into_iter()
-                .filter(|(_, v)| v.len() >= ENOUGH)
-                .filter_map(|(k, v)| Some((k, crate::needs::p90(v)?)))
-                .collect(),
-        }
+        Paces { runs }
     }
 
     /// Adds `e` (now, unless it says when), kept on disk at once; its number.
@@ -725,34 +746,42 @@ mod tests {
 
     /// Task #990: a step's usual pace, from its jobs that ended well: the 10th percentile of their
     /// rate in each unit and the 90th of their longest wait for progress, each from `ENOUGH` jobs
-    /// (fewer: none, the percentile no more than its one slowest or longest job).
+    /// (fewer: none, the percentile no more than its one slowest or longest job), of those that had
+    /// no more threads than the job judged (one on fewer isn't held to runs on more).
     #[test]
     fn a_steps_usual_pace_is_its_jobs_slowest_tenth_from_enough_of_them() {
         let mut h = History::load(None);
-        let done = |rate: f64, gap: u64, ok: bool| Event {
+        let done = |rate: f64, gap: u64, ok: bool, threads: u32| Event {
             step: Some("terrain-hi".into()),
             ok: Some(ok),
             rates: BTreeMap::from([("tiles".to_string(), rate)]),
             gap_s: Some(gap),
+            threads: Some(threads),
             ..Event::new("done")
         };
         for i in 1..ENOUGH {
-            h.add(done(i as f64, 60 * i as u64, true));
+            h.add(done(i as f64, 60 * i as u64, true, 1));
         }
-        h.add(done(0.001, 99_999, false));
-        assert_eq!(h.paces(), Paces::default(), "nine that ended well: not enough");
-        h.add(done(10.0, 600, true));
-        let p = h.paces();
-        assert_eq!(p.rates.get(&("terrain-hi".into(), "tiles".into())), Some(&1.0), "the slowest of ten");
-        assert_eq!(p.gaps.get("terrain-hi"), Some(&540), "the 9th longest of ten");
-        for _ in 0..10 {
-            h.add(done(5.0, 60, true));
-        }
+        h.add(done(0.001, 99_999, false, 1));
+        h.add(Event { threads: None, ..done(0.001, 99_999, true, 1) });
         assert_eq!(
-            h.paces().rates.get(&("terrain-hi".into(), "tiles".into())),
-            Some(&2.0),
-            "the 2nd slowest of twenty"
+            h.paces().usual("terrain-hi", 1),
+            (None, BTreeMap::new()),
+            "nine that ended well and said their threads: not enough"
         );
+        h.add(done(10.0, 600, true, 1));
+        let (gap, rates) = h.paces().usual("terrain-hi", 1);
+        assert_eq!(rates.get("tiles"), Some(&1.0), "the slowest of ten");
+        assert_eq!(gap, Some(540), "the 9th longest of ten");
+        // (Ten faster runs on four threads: a job on one isn't held to them, one on four is.)
+        for _ in 0..10 {
+            h.add(done(5.0, 60, true, 4));
+        }
+        let p = h.paces();
+        assert_eq!(p.usual("terrain-hi", 1).1.get("tiles"), Some(&1.0), "on one thread: its ten alone");
+        assert_eq!(p.usual("terrain-hi", 4).1.get("tiles"), Some(&2.0), "the 2nd slowest of twenty");
+        assert_eq!((p.usual("terrain-hi", 1).0, p.usual("terrain-hi", 4).0), (Some(540), Some(480)), "its wait too");
+        assert_eq!(p.usual("pack", 4), (None, BTreeMap::new()), "a step never measured");
     }
 
     #[test]
