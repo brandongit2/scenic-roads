@@ -205,59 +205,6 @@ pub fn group_members(pgid: i32) -> Vec<i32> {
     }
 }
 
-/// A process's children.
-pub fn children(pid: i32) -> Vec<i32> {
-    #[cfg(target_os = "macos")]
-    {
-        const PROC_PPID_ONLY: u32 = 6;
-        let mut buf = vec![0i32; 1024];
-        // SAFETY: the buffer holds `len` pids and its size in bytes is passed.
-        let n = unsafe {
-            libc::proc_listpids(PROC_PPID_ONLY, pid as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int)
-        };
-        if n <= 0 {
-            return Vec::new();
-        }
-        buf.truncate(n as usize / 4);
-        buf.retain(|&p| p > 0);
-        buf
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = pid;
-        Vec::new()
-    }
-}
-
-/// Kills a process and every process it started, theirs too, in their process group: each stopped
-/// before its children are listed (so none starts another, and none's pid is freed for another
-/// process before the kill), then all killed. For a child that starts its own (`uv run` starting
-/// Python) inside a job's group, which stays the agent's to pause: a group of their own would run
-/// on through a pause.
-pub fn kill_tree(pid: i32) {
-    #[cfg(unix)]
-    {
-        let mut all = vec![pid];
-        let mut i = 0;
-        while i < all.len() {
-            // SAFETY: a plain syscall on a process this one started, or one of theirs.
-            unsafe { libc::kill(all[i], libc::SIGSTOP) };
-            for c in children(all[i]) {
-                if !all.contains(&c) {
-                    all.push(c);
-                }
-            }
-            i += 1;
-        }
-        for p in all {
-            // SAFETY: as above.
-            unsafe { libc::kill(p, libc::SIGKILL) };
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = pid;
-}
-
 /// Takes an exclusive lock on `f`, waiting for it if `wait`; Ok(false) when it's held elsewhere and
 /// not waited for.
 pub fn lock(f: &File, wait: bool) -> io::Result<bool> {
@@ -1184,18 +1131,5 @@ mod tests {
         drop(c.stdin.take());
         c.wait().unwrap();
         assert!(with >= me + (190 << 20), "{with} vs {me}");
-    }
-
-    #[test]
-    fn a_tree_killed_whole() {
-        // A shell with two sleeps (as uv with Python): the shell killed, its children too.
-        let mut c = store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600 & sleep 3600; wait"]))
-            .unwrap();
-        let pid = c.id() as i32;
-        let kids = store::testkit::wait_for("its two sleeps started", || Some(children(pid)).filter(|k| k.len() == 2));
-        kill_tree(pid);
-        assert!(!c.wait().unwrap().success());
-        // (Gone once launchd has reaped them.)
-        store::testkit::eventually("its sleeps gone", || kids.iter().all(|&k| unsafe { libc::kill(k, 0) } != 0));
     }
 }

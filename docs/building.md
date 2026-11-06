@@ -186,6 +186,13 @@ from the first (`edit_held`).
     Each ends early when the agent is asked to stop.
 - **Z6 tiles run in map order** (by 10° square, then tile), so what one fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours.
+- **Stopping a job** (a cancel, a lapsed lease, a guard, the Mac's sleep, a quit): SIGCONT and
+  SIGTERM to its process group, SIGKILL after the grace (`jobs::Running::stop`). A group can
+  outlive its SIGKILL: a member's fork under way as the signal goes out finishes after it, its
+  child never signalled (task #987: 56 groups in 12,600 killed as they started, the M4 under
+  load). So the agent sends the group SIGKILL again as the stop ends and at each round after,
+  while any of it runs (`jobs::Group::kill_again`); so too a job an earlier agent left that
+  outlived its stop.
 - **Restarts** (task #393): a job outlives its agent. Its record (`job[-k].json` in the agent's
   folder) holds its spec, threads and log from its start, and the agent saves its slot there (its
   lease, its grant's disk and memory, the budgets' proxy's port) whenever that changes

@@ -1643,8 +1643,12 @@ pub struct Agent {
     /// The lead's: the members' last clear or declined ask noted in the history (its time), by host.
     helper_caches: BTreeMap<String, u64>,
     /// Jobs an earlier agent left that couldn't be shown stopped (jobs::Orphan): their process
-    /// groups, running work while they're still the jobs' (jobs::Group::is_the_jobs).
+    /// groups, running work while they're still the jobs' (jobs::Group::is_the_jobs), killed again
+    /// each round until they're gone (jobs::Group::kill_again).
     orphans: Vec<jobs::Group>,
+    /// This agent's stopped jobs' process groups that outlived their SIGKILL (jobs::Running::stop):
+    /// killed again each round until they're gone (jobs::Group::kill_again).
+    outlived: Vec<jobs::Group>,
     /// The conditions the last loop saw: a change is noted in the history (crate::coord::history).
     last_cond: Option<Conditions>,
     fc_archiver: std::cell::OnceCell<Option<fcarchive::Archiver>>,
@@ -2026,6 +2030,7 @@ impl Agent {
             retire_task: None,
             helper_caches: BTreeMap::new(),
             orphans: Vec::new(),
+            outlived: Vec::new(),
             last_cond: None,
             fc_archiver: Default::default(),
             upcoming: Default::default(),
@@ -3797,7 +3802,7 @@ impl Agent {
         for k in 0..self.slots.len() {
             if let Some(r) = self.slots[k].running.as_mut() {
                 eprintln!("agent: stopping {}", r.spec.id);
-                r.stop(Duration::from_secs(30));
+                self.outlived.extend(r.stop(Duration::from_secs(30)));
                 self.stopped(k, why);
                 self.slots[k].running = None;
                 std::fs::remove_file(self.record_path(k)).ok();
@@ -3949,7 +3954,7 @@ impl Agent {
             }
             if let Some(r) = self.slots[k].running.as_mut() {
                 eprintln!("agent: stopping {}: {why}", r.spec.id);
-                r.stop(Duration::from_secs(30));
+                self.outlived.extend(r.stop(Duration::from_secs(30)));
             }
             self.stopped(k, &format!("stopped: {why}"));
             self.slots[k].running = None;
@@ -4260,6 +4265,9 @@ impl Agent {
     /// (**plan** does, on its thread: `tell_plan`) and never writes the status (**beat** does).
     /// True when a job just ended (look again at once).
     fn round(&mut self) -> Result<bool> {
+        // Stopped jobs' groups still there after their SIGKILL: killed again (task #987).
+        self.outlived.retain(jobs::Group::kill_again);
+        self.orphans.retain(jobs::Group::kill_again);
         nasread::phase("the NAS's mount");
         let slept = self.sleep.slept();
         let home = self.mac.at_home();
@@ -5027,7 +5035,7 @@ impl Agent {
             // Open SMB handles often don't survive sleep: stop it; the plan below starts it again
             // from its completion markers once its conditions hold.
             eprintln!("agent: slept {slept} s; restarting {}", r.spec.id);
-            r.stop(Duration::from_secs(30));
+            self.outlived.extend(r.stop(Duration::from_secs(30)));
             self.stopped(k, "stopped: the Mac slept");
             self.slots[k].running = None;
             std::fs::remove_file(self.record_path(k)).ok();
@@ -5044,7 +5052,7 @@ impl Agent {
             // the lead's pause is over.)
             let r = self.slots[k].running.as_mut().unwrap();
             eprintln!("agent: {}'s lease lapsed and its work went to another worker; stopping it", r.spec.id);
-            r.stop(Duration::from_secs(30));
+            self.outlived.extend(r.stop(Duration::from_secs(30)));
             self.stopped(k, "its lease lapsed");
             self.slots[k].running = None;
             std::fs::remove_file(self.record_path(k)).ok();
@@ -5943,7 +5951,7 @@ impl Agent {
         let Some(r) = self.slots[k].running.as_mut() else { return false };
         let (id, scratch) = (r.spec.id.clone(), scratch_of(&r.spec));
         eprintln!("agent: memory guard: {id} {why}");
-        r.stop(Duration::from_secs(30));
+        self.outlived.extend(r.stop(Duration::from_secs(30)));
         self.guard_last = Some((now_s(), format!("{id} {why}")));
         self.slots[k].yield_stopped = true;
         self.stopped(k, why);
@@ -5981,7 +5989,7 @@ impl Agent {
         let id = r.spec.id.clone();
         let scratch = scratch_of(&r.spec);
         eprintln!("agent: {what}: {id} {why}");
-        r.stop(Duration::from_secs(30));
+        self.outlived.extend(r.stop(Duration::from_secs(30)));
         self.guard_last = Some((now_s(), format!("{id} {why}")));
         if fail {
             self.guard_backoff.insert(id, (now_s() + GUARD_BACKOFF_S, why.clone()));
@@ -7449,7 +7457,7 @@ impl Agent {
     fn cancel_slot(&mut self, k: usize, c: &crate::control::Cancel) {
         let Some(r) = self.slots[k].running.as_mut() else { return };
         eprintln!("agent: cancelling {} ({})", r.spec.id, c.said());
-        r.stop(Duration::from_secs(30));
+        self.outlived.extend(r.stop(Duration::from_secs(30)));
         let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
         let scratch = r.spec.cmd.windows(2).find(|w| w[0] == "--scratch").map(|w| PathBuf::from(&w[1]));
         let secs = r.elapsed().as_secs();

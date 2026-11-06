@@ -470,8 +470,9 @@ impl Running {
     }
 
     /// Stops the whole group: SIGTERM (after SIGCONT, so a paused job can handle it), then SIGKILL
-    /// after `grace` to whatever of it is left.
-    pub fn stop(&mut self, grace: Duration) {
+    /// after `grace` to whatever of it is left. Its group when some of it outlived the SIGKILL, for
+    /// the agent to kill again each round until it's gone (`Group::kill_again`).
+    pub fn stop(&mut self, grace: Duration) -> Option<Group> {
         let child = &mut self.child;
         stop_group(self.pgid, grace, || {
             if let Some(c) = child.as_mut() {
@@ -484,6 +485,15 @@ impl Running {
         if let Some(c) = self.caffeinate.as_mut() {
             let _ = c.kill();
         }
+        let g = self.group();
+        let left = g.kill_again();
+        if left {
+            eprintln!(
+                "agent: {}'s group {} outlived its SIGKILL: killed again each round until it's gone",
+                g.id, g.pgid
+            );
+        }
+        left.then_some(g)
     }
 
     /// Left running for the agent after this one (`adopt`): its record kept with `hand`, the
@@ -656,14 +666,31 @@ pub struct Group {
 impl Group {
     /// Whether the group is still the job's: its leader the process the job started; or, the
     /// leader gone, every member started after the job did (a group id isn't reused while any
-    /// member lives, and is once none does).
+    /// member lives, and is once none does). Its members as they run: one ended and not yet reaped
+    /// (whose start can't be read) is none, so a group of those alone is gone, and one beside a
+    /// running member doesn't hide it (task #987).
     pub fn is_the_jobs(&self) -> bool {
-        let members = if self.pgid > 1 { group_members(self.pgid) } else { Vec::new() };
+        let members: Vec<i32> = if self.pgid > 1 { group_members(self.pgid) } else { Vec::new() };
+        let members: Vec<i32> = members.into_iter().filter(|&p| process_start(p).is_some()).collect();
         !members.is_empty()
             && match process_start(self.pgid) {
                 Some(t) => self.leader_start != 0 && t == self.leader_start,
                 None => members.iter().all(|&p| process_start(p).is_some_and(|t| t + 2 >= self.started)),
             }
+    }
+
+    /// SIGKILL to the group again while it's still the job's; whether any of it was left. A killed
+    /// group can outlive its SIGKILL: a member's fork under way as the signal went out finishes
+    /// after it, its child in the group never signalled (or signalled while still being made, the
+    /// signal lost; task #987: 56 groups in 12,600 killed as they started, the M4 under load).
+    /// The forking member dies as its fork returns, and a SIGKILL sent after the fork reaches the
+    /// child: each round's reaches what the one before missed, until the group is gone.
+    pub fn kill_again(&self) -> bool {
+        let left = self.is_the_jobs();
+        if left {
+            crate::sys::signal_group(self.pgid, Signal::Kill);
+        }
+        left
     }
 }
 
@@ -1044,5 +1071,48 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(600), "stopped by SIGTERM, not after the grace");
         assert!(!crate::sys::signal_group(pgid, Signal::Probe));
         assert!(!rec.exists());
+    }
+
+    /// Task #987: what of a group outlives its SIGKILL (a fork under way as it went out) is killed
+    /// again, its ended processes not yet reaped counting for nothing.
+    #[test]
+    fn a_group_left_after_its_kill_is_killed_again() {
+        let d = tempfile::tempdir().unwrap();
+        let live = |pgid: i32| group_members(pgid).into_iter().filter(|&p| process_start(p).is_some()).count();
+        // A job (its head's shell, the command's, two sleeps) stopped once all of it runs (no fork
+        // under way): nothing left.
+        let cmd = "/bin/sleep 3600 & /bin/sleep 3600; wait";
+        let mut r = Running::start(
+            spec(&["/bin/sh", "-c", cmd]),
+            1,
+            &[],
+            d.path().join("log"),
+            &d.path().join("job.json"),
+            None,
+            None,
+        )
+        .unwrap();
+        let pgid = r.pgid;
+        let sleeps = |pgid: i32| {
+            group_members(pgid).into_iter().filter_map(crate::sys::process).filter(|p| p.exe == "sleep").count()
+        };
+        store::testkit::eventually("its two sleeps", || sleeps(pgid) == 2);
+        assert_eq!(r.stop(Duration::from_secs(1)), None);
+        // A group whose head has ended (unreaped: not running, its start unreadable) beside a
+        // sleep it left: still the job's, killed again, then gone.
+        let mut c = store::spawn::command("/bin/sh");
+        c.args(["-c", "/bin/sleep 3600 & exit 0"]);
+        crate::sys::own_group(&mut c);
+        let mut head = store::spawn::spawn(&mut c).unwrap();
+        let pgid = head.id() as i32;
+        // (Its head's start not kept: it may have ended already.)
+        let g = Group { pgid, leader_start: 0, started: now_s() - 5, id: "left".into() };
+        store::testkit::eventually("its head ended, the sleep left", || {
+            process_start(pgid).is_none() && live(pgid) == 1
+        });
+        assert!(g.kill_again());
+        store::testkit::eventually("the sleep gone", || live(pgid) == 0);
+        assert!(!g.kill_again());
+        head.wait().unwrap();
     }
 }
