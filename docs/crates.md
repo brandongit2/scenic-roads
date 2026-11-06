@@ -731,8 +731,9 @@ commit; re-exports at the old paths as before.
    - **trees** (`crates/trees`): trees::task's tests that start a coordinator and trees' test of
      room-making mid-run (`agent::room::make_room`) to pipeline's `trees_tests`, the helpers they
      and treepacks' tests name out of the test modules into a `testkit` module each (trees'
-     staged sources and squares with the TIFF writers they use, trees::task's coverage),
-     trees::task's `block_files` and trees' `ROWS_DIR` made `pub` for them; the paths
+     staged sources and squares with the TIFF writers they use, trees::task's coverage,
+     and accessors of trees::task's `block_files` and trees' `ROWS_DIR`, which stay private as
+     before); the paths
      (`crate::inputs`, `dem`, `osmpass` → the inputs crate's, `layers` → terrain's, `offload` and
      `unit::Run` → the offload crate's, `cli::program` → jobrt::sys's); the move of trees,
      treepacks, leaftype and landcover. Not the cut planned (treepacks → layers' names to codecs):
@@ -742,16 +743,18 @@ commit; re-exports at the old paths as before.
      crates' and jobrt::sys's); the move of unit, reach, candidates, elev, stage, peaks, summits
      and timetables. Not buildtiles (it goes with bld, §2).
    - **names** (into `crates/landmarks`): ovconv's stale-sweep test (`crate::out::open`) to
-     pipeline's `names_tests`, ovconv's `drop_stale` made `pub` for it; the paths (to the inputs,
-     terrain and roads crates'); the move of heritage, ferries, gtfs, railfeeds, ovconv, markconv,
+     pipeline's `names_tests`, ovconv's `drop_stale` (private, as before) reached through
+     landmarks' testkit (`ovconv::testkit`, behind its new `testkit` feature); the paths (to the
+     inputs, terrain and roads crates'); the move of heritage, ferries, gtfs, railfeeds, ovconv, markconv,
      marksjob and namestodo, their mentions of landmarks' own modules (`landmarks::interest`)
      made `crate::`. Not the cuts that would have names compile beside roads: heritage names
      stage's `tiles_in`, marksjob candidates' `Cand`, ovconv timetables' `FERRY_LINES`, three
      items of three modules; landmarks sits on roads.
-   Pipeline re-exports the twenty modules at their old paths (`pub use ::trees::{…}`, `roads::{…}`,
-   `landmarks::{…}`); each new crate's unit tests start offline (lib.rs `TEST_START`,
-   test_start.rs), trees' testkit modules behind its `testkit` feature. Cut: pipeline's blake3
-   dependency (reach was its last user); nothing else was dead: every re-export left has users
+   Pipeline re-exports eighteen of the twenty modules at their old paths (`pub use ::trees::{…}`,
+   `roads::{…}`, `landmarks::{…}`); each new crate's unit tests start offline (lib.rs `TEST_START`,
+   test_start.rs), the trees and landmarks crates' testkit modules behind their `testkit`
+   features. Cut: pipeline's blake3 dependency (reach was its last user), and the re-exports of
+   leaftype and ferries (nothing names them by pipeline's paths); every re-export left has users
    above, and libz-sys and image-webp keep users in pipeline (bld::fetch's gzip, the fields'
    tests). modgraph.py (main at dd7246c6): the families' mentions of the rest of pipeline, tests
    included, 58 for trees (39 of the root's re-exports of the lower crates; coord 11, offload 5,
@@ -760,9 +763,8 @@ commit; re-exports at the old paths as before.
    the compiler holds it); the cycle 21 modules (128.3k lines) before, 12 (117.6k) after (§1).
    Pure moves and paths: each moved module compared with main's token by token, comments dropped
    and every path reduced to its last name: the same tokens but for `use` order (reach, stage,
-   ferries, gtfs::ferrycount, marksjob, ovconv), the testkit modules and the moved tests (trees,
-   trees::task, trees::tests, timetables, ovconv) and the `pub` of `block_files`, `ROWS_DIR` and
-   `drop_stale`. So no literal, expression or format string changed, and keys, versions,
+   ferries, gtfs::ferrycount, marksjob, ovconv), and the testkit modules and the moved tests
+   (trees, trees::task, trees::tests, timetables, ovconv). So no literal, expression or format string changed, and keys, versions,
    outputs and on-disk formats are as before. Measured in §5.
    - **bld** (planned, not moved): it reaches back into pipeline beyond its tests. buildtiles
      (which goes with it) calls `agent::room::disk_free` and bld::fetch `agent::room::nas_room`
@@ -776,8 +778,8 @@ commit; re-exports at the old paths as before.
      `nas_room`, `nas_free`, `nas_reserve`, `NAS_RESERVE`, `Target` and its parsing, agent::room
      re-exporting them; bld::task's tests that start a coordinator to a pipeline `bld_tests`, as
      trees'; buildtiles' `TEST_RELEASE` (agent tests name it) into a testkit; then the paths
-     (`crate::heritage` → landmarks', `unit::Run` and `offload` → the offload crate's, `inputs`,
-     `layers`) and the move of bld and buildtiles into `crates/bld`, on landmarks and roads.
+     (`crate::heritage` → landmarks', `reach` and `stage` → roads', `unit::Run` and `offload` →
+     the offload crate's, `inputs`, `layers`) and the move of bld and buildtiles into `crates/bld`, on landmarks and roads.
 6. **6f, agentcore and `Plan`**: the last and largest step, after #882's later steps (coord).
    Before it, pipeline still holds ~96k lines (plan 19.5k + runtime 56.8k + bins 12.9k + glue).
 
