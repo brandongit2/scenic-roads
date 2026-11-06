@@ -109,7 +109,8 @@ pub struct WayRec {
     pub class: u8,
     pub flags: u8,
     pub lanes: u8,
-    /// Unused, zero.
+    /// Unused: zero (the route network's until task #853; base packs made before still hold it
+    /// there, unread). Kept as padding so `rail` keeps its offset in those packs.
     pub _pad0: u8,
     /// Passenger rail: bit per service group using the track (bit k = class TRAM + k).
     pub rail: u8,
