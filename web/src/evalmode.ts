@@ -26,6 +26,7 @@ import type { Map as MLMap, LayerSpecification } from 'maplibre-gl';
 import type { AppState, WaterLook } from './state';
 import { addCoastSource, centreMpp, coastRamp, switchCoast } from './coast';
 import { lakeColour, landColourNow, setWaterColours, waterTiles, waterTilesOn } from './basemap';
+import { hexBytes, hexRgb } from './palettes';
 
 const q = new URLSearchParams(location.search);
 /** The eval mode's settings, or null outside it. */
@@ -198,15 +199,14 @@ function screenRgb(map: MLMap) {
 const toLinear = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
 const toSrgb = (v: number) => (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055);
 const LIN = Float64Array.from({ length: 256 }, (_, i) => toLinear(i / 255));
-const hexRgb = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 
 /** The screen at full detail, shrunk: each sample's land, sea and inland water (`sea`, `inland`:
  * their coverage, 0–255) mixed in linear light, the shading (`shade`: its opacity) over that as
  * MapLibre blends it, and the `ss` × `ss` samples of each device pixel averaged in linear light. */
 function compose(w: number, h: number, ss: number, sea: Uint8Array, inland: Uint8Array, shade: Uint8Array, colours: { land: string; sea: string; lake: string; shade: string }, linear = true) {
   const W = Math.floor(w / ss), H = Math.floor(h / ss);
-  const L = hexRgb(colours.land).map((v) => LIN[v]), S = hexRgb(colours.sea).map((v) => LIN[v]), K = hexRgb(colours.lake).map((v) => LIN[v]);
-  const C = hexRgb(colours.shade).map((v) => v / 255);
+  const L = hexBytes(colours.land).map((v) => LIN[v]), S = hexBytes(colours.sea).map((v) => LIN[v]), K = hexBytes(colours.lake).map((v) => LIN[v]);
+  const C = hexRgb(colours.shade);
   const out = new Uint8Array(W * H * 3);
   const acc = [0, 0, 0];
   for (let Y = 0; Y < H; Y++) {

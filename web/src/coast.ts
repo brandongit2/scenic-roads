@@ -15,6 +15,7 @@ import type { WaterLook } from './state';
 import type { CoastMessage, CoastResponse } from './coast.worker';
 import { COAST_ENCODING, COAST_LINEAR, coastElevation } from './coastdist';
 import { MERC_CIRC } from './merc';
+import { hexBytes } from './palettes';
 
 
 let workers: Worker[] = [];
@@ -102,7 +103,6 @@ export function addCoastSource(map: MLMap, id: string, input: CoastInput, lakes:
   map.addLayer({ id, type: 'color-relief', source: id, paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, before);
 }
 
-const rgb = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
 const hexOf = (c: number[]) => `#${c.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')}`;
 
 /** The shading's colour ramp over the distance to the shore (m), for `mpp` metres per CSS px: its
@@ -125,7 +125,7 @@ export function coastRamp(w: WaterLook, mpp: number): ExpressionSpecification {
   // (The encoding's bend, where it falls within the band: the ramp linear in metres either side.)
   if (COAST_LINEAR < W) pts.add(COAST_LINEAR);
   const ds = [...pts].filter((d) => d >= 0 && d <= W).sort((a, b) => a - b);
-  const [r, g, b] = rgb(w.shadeColour);
+  const [r, g, b] = hexBytes(w.shadeColour);
   const col = (a: number) => `rgba(${r},${g},${b},${+a.toFixed(4)})`;
   // Land: clear; the shoreline falls where the ramp crosses from −0.7 px to 0 (antialiased).
   const expr: unknown[] = ['interpolate', ['linear'], ['elevation'], coastElevation(-0.7 * px), col(0)];
@@ -146,7 +146,7 @@ let rampKey = '';
  */
 let tilesSoon: ReturnType<typeof setTimeout> | undefined;
 export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, waterShown: boolean) {
-  const c = rgb(w.colour);
+  const c = hexBytes(w.colour);
   const lake = lakeColour(w.colour), river = hexOf([c[0] + 5, c[1] + 10, c[2] + 13]);
   if (waterTilesOn()) {
     // The water's tiles carry their colours: asked for again in the new ones.

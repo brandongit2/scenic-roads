@@ -4,7 +4,7 @@
 // forest mask above a threshold; leaf type is categorical.
 
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
-import { PALETTE_ITEMS, baseKey, isRev, paletteRgb } from './palettes';
+import { baseKey, hexBytes, isRev, PALETTE_ITEMS, paletteRgb } from './palettes';
 
 export type TreeVar = 'cover' | 'height' | 'leaf';
 export type TreeStyle = 'ramp' | 'mask';
@@ -44,10 +44,9 @@ export function treeColour(palette: string, t: number): string {
   const x = Math.max(0, Math.min(1, t)) * (GREENS.length - 1);
   const i = Math.min(GREENS.length - 2, Math.floor(x));
   const f = x - i;
-  const a = hex(GREENS[i]), b = hex(GREENS[i + 1]);
+  const a = hexBytes(GREENS[i]), b = hexBytes(GREENS[i + 1]);
   return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',')})`;
 }
-const hex = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 const CLEAR = 'rgba(0,0,0,0)';
 
 export interface TreeState {

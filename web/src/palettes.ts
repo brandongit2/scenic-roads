@@ -57,16 +57,26 @@ function turbo(x: number): RGB {
   ];
 }
 
-function hexStops(stops: [number, string][]): (t: number) => RGB {
-  const cs = stops.map(([t, h]) => [t, parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255]);
+/** A '#rrggbb' colour's channels, 0–255 (an '#rrggbbaa''s alpha left out). */
+export const hexBytes = (s: string): RGB => [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16)) as RGB;
+
+/** A '#rrggbb' colour's channels, 0–1. */
+export const hexRgb = (s: string): RGB => [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16) / 255) as RGB;
+
+/** A ramp through '#rrggbb' stops at rising positions, linear between them: the first stop's colour
+ * before it (extrapolated below it, as callers keep t within the stops), the last's after. Two stops
+ * at one position are a step there (the first's colour up to it). */
+export function stopsFn(stops: [number, string][]): (t: number) => RGB {
+  const cs = stops.map(([t, h]) => [t, ...hexRgb(h)]);
   return (t) => {
     for (let i = 1; i < cs.length; i++) {
       if (t <= cs[i][0]) {
-        const u = (t - cs[i - 1][0]) / (cs[i][0] - cs[i - 1][0]);
+        const u = (t - cs[i - 1][0]) / (cs[i][0] - cs[i - 1][0] || 1);
         return [1, 2, 3].map((k) => cs[i - 1][k] + (cs[i][k] - cs[i - 1][k]) * u) as RGB;
       }
     }
-    return [cs[cs.length - 1][1], cs[cs.length - 1][2], cs[cs.length - 1][3]];
+    const l = cs[cs.length - 1];
+    return [l[1], l[2], l[3]];
   };
 }
 
@@ -92,7 +102,7 @@ const BUILTIN: Palette[] = [
     key: 'hypso',
     label: 'Hypsometric',
     group: 'Multi-hue',
-    fn: hexStops([
+    fn: stopsFn([
       [0, '#2f7d57'], [0.18, '#6fa65a'], [0.36, '#c8c46e'], [0.54, '#c9965a'],
       [0.72, '#a86b53'], [0.88, '#b89a92'], [1, '#f4f1ec'],
     ]),
@@ -102,7 +112,7 @@ const BUILTIN: Palette[] = [
     key: 'diverge',
     label: 'Blue–grey–orange',
     group: 'Diverging',
-    fn: hexStops([[0, '#3d7fd9'], [0.25, '#79a9df'], [0.5, '#8b919c'], [0.75, '#e6a25c'], [1, '#ff6a3d']]),
+    fn: stopsFn([[0, '#3d7fd9'], [0.25, '#79a9df'], [0.5, '#8b919c'], [0.75, '#e6a25c'], [1, '#ff6a3d']]),
   },
 ];
 
@@ -110,7 +120,7 @@ const SAMPLED: Palette[] = (RAMPS as { key: string; label: string; group: string
   key: r.key,
   label: r.label,
   group: r.group,
-  fn: hexStops(r.stops.map((c, i) => [i / (r.stops.length - 1), c] as [number, string])),
+  fn: stopsFn(r.stops.map((c, i) => [i / (r.stops.length - 1), c] as [number, string])),
 }));
 
 export const PALETTES: Palette[] = [...BUILTIN, ...SAMPLED].sort((a, b) => PALETTE_GROUPS.indexOf(a.group) - PALETTE_GROUPS.indexOf(b.group));

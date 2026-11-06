@@ -36,9 +36,10 @@ import { onVersions, ver } from './api';
 import { SHADE_SHIFT, floorTiles, waterTilesOn, waterTop } from './basemap';
 import { hostFor } from './hosts';
 import { DRY_MIN, depthZooms, type DepthZooms } from './depthgrid';
-import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
+import { depthColour, hdepth, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
 import { mercX, mercY, tileY } from './merc';
+import { hexRgb } from './palettes';
 
 type RGB = [number, number, number];
 

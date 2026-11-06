@@ -13,10 +13,10 @@ import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, setRegisterCredits, summariseFeature, withDetails } from './overlays';
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
-import { paletteRgb } from './palettes';
+import { hexRgb, paletteRgb } from './palettes';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from './roads/layer';
 import { BG, CASING_CLASSES_MASK, DIM_GREY, FADES, FADE_Z, RAIL0, RAIL_GROUPS, interp, setWidths } from './config';
-import { MAP_SCHEMES, lookUniforms, presetLook, rgb, type RoadMapLook } from './mapschemes';
+import { MAP_SCHEMES, lookUniforms, presetLook, type RoadMapLook } from './mapschemes';
 import { RAIL_GROUP_COLOURS, railMetricDef, railMetricOf } from './rail';
 import type { FeatureSummary } from './overlays';
 import { RailCard } from './ui/rail';
@@ -33,7 +33,7 @@ import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
 import { Depth } from './depth';
 import { waterNameAt } from './watername';
-import { addBuildings, applyBuildings, rgb01, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
+import { addBuildings, applyBuildings, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -391,8 +391,8 @@ async function main() {
   const railScheme: SchemeUniforms = (() => {
     const u = lookUniforms(presetLook(MAP_SCHEMES.find((m) => m.key === 'mono')!));
     RAIL_GROUP_COLOURS.forEach((c, k) => {
-      u.classCol.set([...rgb(c), 1], (RAIL0 + k) * 4);
-      u.classCas.set(rgb('#07090c'), (RAIL0 + k) * 3);
+      u.classCol.set([...hexRgb(c), 1], (RAIL0 + k) * 4);
+      u.classCas.set(hexRgb('#07090c'), (RAIL0 + k) * 3);
     });
     return u;
   })();
@@ -419,7 +419,7 @@ async function main() {
     st.railMask = railMask(s);
     st.direct = r.colour === 'line' ? 2 : r.colour === 'group' ? 3 : r.colour === 'single' ? 4 : 0;
     st.scheme = railScheme;
-    st.single = rgb(r.single);
+    st.single = hexRgb(r.single);
     st.modeId = railMetricDef(r.metric).id;
     st.palette = r.palette;
     st.railWeights = [...r.weights];
@@ -2094,7 +2094,7 @@ async function main() {
       field.on = b.on && !b.flat && s.terrain.on;
       // The plain colour (the comparison's own); by height, the meshes' colours (the field plain when
       // coloured by source: the owner's call).
-      field.colour = rgb01(CMP ? CMP.colour : b.plain);
+      field.colour = hexRgb(CMP ? CMP.colour : b.plain);
       if (!CMP) {
         const hc = heightColourFn(b, bldLook);
         field.setHeightColour(hc?.key ?? '', hc?.colour ?? null);

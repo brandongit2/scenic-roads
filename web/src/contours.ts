@@ -18,6 +18,7 @@ import { perspectiveP22 } from './roads/layer';
 import { linkLater, type Later } from './glprog';
 import type { ContourRequest, ContourResponse } from './contours.worker';
 import { MERC_CIRC, mercPhi } from './merc';
+import { hexRgb } from './palettes';
 
 /** What the layer draws (main.ts, from the terrain settings). */
 export interface ContourDraw {
@@ -497,7 +498,7 @@ export class ContourLayer implements CustomLayerInterface {
     gl.uniform2f(u.u_w, s.width[0] * dpr, s.width[1] * dpr);
     gl.uniform2f(u.u_a, s.opacity[0], s.opacity[1]);
     gl.uniform1f(u.u_persp, s.perspective);
-    const col = [1, 3, 5].map((i) => parseInt(s.colour.slice(i, i + 2), 16) / 255);
+    const col = hexRgb(s.colour);
     gl.uniform3f(u.u_col, col[0], col[1], col[2]);
     gl.uniform1i(u.u_dem, 5);
     // Each tile's elevation tile, first (getting one can upload it, binding textures on the way).

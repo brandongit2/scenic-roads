@@ -2,6 +2,7 @@
 // for the dark basemap, by road class; by a road attribute). A preset only sets the Map look
 // (RoadMapLook, AppState.roadMap: Layers → Roads → Colour → Map), which is then edited freely; the
 // map draws the look.
+import { hexRgb } from './palettes';
 
 export type MapKind = 'class' | 'speed' | 'lanes' | 'surface' | 'oneway';
 
@@ -147,14 +148,9 @@ export function presetOfLook(l: RoadMapLook): MapScheme | null {
 }
 const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x.toLowerCase() === b[i].toLowerCase());
 
-export function rgb(hex: string): [number, number, number] {
-  const n = parseInt(hex.slice(1, 7), 16);
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-}
-
 /** Colour and opacity of a #rrggbb or #rrggbbaa colour. */
 export function rgba(hex: string): [number, number, number, number] {
-  return [...rgb(hex), hex.length >= 9 ? parseInt(hex.slice(7, 9), 16) / 255 : 1];
+  return [...hexRgb(hex), hex.length >= 9 ? parseInt(hex.slice(7, 9), 16) / 255 : 1];
 }
 
 /** Uniform arrays for the shader: 15 class fills (RGBA) and casings (rail classes unused), 8
@@ -164,7 +160,7 @@ export function lookUniforms(l: RoadMapLook) {
   let casedMask = 0;
   for (let c = 0; c < 10; c++) {
     classCol.set(rgba(l.fill[c]), c * 4);
-    classCas.set(rgb(l.casing[c]), c * 3);
+    classCas.set(hexRgb(l.casing[c]), c * 3);
     if (l.cased[c]) casedMask |= 1 << c;
   }
   const catCol = new Float32Array(8 * 4);

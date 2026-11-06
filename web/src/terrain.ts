@@ -2,7 +2,7 @@
 import type { Map as MLMap } from 'maplibre-gl';
 import * as maplibregl from 'maplibre-gl';
 import { HYPSO, SHADE_DETAIL, surfaceTiles } from './basemap';
-import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
+import { baseKey, isRev, paletteFn, PALETTES, stopsFn } from './palettes';
 import type { ScaleFields, Terrain } from './state';
 import { CONTOUR_MINZOOM } from './contours';
 import { contourTiles, setContourDem } from './contour/dem';
@@ -11,21 +11,7 @@ import { areaMaxZoom, type TerrainAreas } from './packs';
 
 type RGB = [number, number, number];
 
-function ramp(stops: [number, string][]): (t: number) => RGB {
-  const cs = stops.map(([t, h]) => [t, parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255]);
-  return (t) => {
-    for (let i = 1; i < cs.length; i++) {
-      if (t <= cs[i][0]) {
-        const u = (t - cs[i - 1][0]) / (cs[i][0] - cs[i - 1][0]);
-        return [1, 2, 3].map((k) => cs[i - 1][k] + (cs[i][k] - cs[i - 1][k]) * u) as RGB;
-      }
-    }
-    const l = cs[cs.length - 1];
-    return [l[1], l[2], l[3]];
-  };
-}
-
-const atlas = ramp(HYPSO.slice(1).map(([e, c]) => [e / 1900, c] as [number, string]));
+const atlas = stopsFn(HYPSO.slice(1).map(([e, c]) => [e / 1900, c] as [number, string]));
 /** Tint colour ramps: terrain ramps ('roads' follows the current road palette), then every shared
  * ramp. Keys ending in "_r" are reversed. */
 export const TINT_PALETTES: { key: string; label: string; group: string; fn?: (t: number) => RGB }[] = [
@@ -34,12 +20,12 @@ export const TINT_PALETTES: { key: string; label: string; group: string; fn?: (t
     key: 'steep',
     label: 'Slope classes (green → red → purple)',
     group: 'Terrain',
-    fn: ramp([[0, '#20352a'], [0.1, '#2f5a3a'], [0.2, '#7a9a3e'], [0.3, '#d2c14a'], [0.45, '#e58a3a'], [0.6, '#d6453b'], [0.8, '#a3337f'], [1, '#5b2a8f']]),
+    fn: stopsFn([[0, '#20352a'], [0.1, '#2f5a3a'], [0.2, '#7a9a3e'], [0.3, '#d2c14a'], [0.45, '#e58a3a'], [0.6, '#d6453b'], [0.8, '#a3337f'], [1, '#5b2a8f']]),
   },
   { key: 'roads', label: 'Same as roads', group: 'Terrain' },
-  { key: 'earth', label: 'Earth tones', group: 'Terrain', fn: ramp([[0, '#23321f'], [0.3, '#4b5a2e'], [0.55, '#7d6a3e'], [0.8, '#8f5e44'], [1, '#d9c9b4']]) },
-  { key: 'glacier', label: 'Glacier (blue → white)', group: 'Terrain', fn: ramp([[0, '#0f2440'], [0.4, '#2e5f8a'], [0.75, '#7fb2d4'], [1, '#eef6ff']]) },
-  { key: 'grey', label: 'Greyscale', group: 'Terrain', fn: ramp([[0, '#101318'], [1, '#d8dde5']]) },
+  { key: 'earth', label: 'Earth tones', group: 'Terrain', fn: stopsFn([[0, '#23321f'], [0.3, '#4b5a2e'], [0.55, '#7d6a3e'], [0.8, '#8f5e44'], [1, '#d9c9b4']]) },
+  { key: 'glacier', label: 'Glacier (blue → white)', group: 'Terrain', fn: stopsFn([[0, '#0f2440'], [0.4, '#2e5f8a'], [0.75, '#7fb2d4'], [1, '#eef6ff']]) },
+  { key: 'grey', label: 'Greyscale', group: 'Terrain', fn: stopsFn([[0, '#101318'], [1, '#d8dde5']]) },
   ...PALETTES.map((p) => ({ key: p.key, label: p.label, group: p.group, fn: p.fn })),
 ];
 

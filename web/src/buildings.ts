@@ -14,7 +14,7 @@
 // colour (plain, by height, by where the height comes from), opacity, height scale.
 
 import type { ExpressionSpecification, FilterSpecification, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { paletteFn } from './palettes';
+import { hexRgb, paletteFn } from './palettes';
 import { hostFor } from './hosts';
 import { ver } from './api';
 import type { FeatureSummary } from './overlays';
@@ -77,7 +77,6 @@ export const KINDS = ['', 'residential', 'outbuilding', 'commercial', 'industria
 
 export { PLAIN };
 /** A #rrggbb colour as 0–1 floats. */
-export const rgb01 = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255) as [number, number, number];
 /** By height: the scale's domain (m). */
 export const HEIGHT_DOMAIN: [number, number] = [0, 400];
 
@@ -93,7 +92,7 @@ export const buildingTiles = (): string => {
 /** By height: the colour at height v (m) on the scale, faded toward the plain colour at its low
  * end (the low-end fade: extrusions have no per-building opacity), as an rgb() string. */
 export function heightColour(v: number, sc: ScaleFields, look: HeightLook, plain = PLAIN): string {
-  return `rgb(${heightRgb(v, sc, look, rgb01(plain)).join(',')})`;
+  return `rgb(${heightRgb(v, sc, look, hexRgb(plain)).join(',')})`;
 }
 function heightRgb(v: number, sc: ScaleFields, look: HeightLook, base: [number, number, number]): [number, number, number] {
   const u = scaleU(v, look.range, look.cdf);
@@ -110,7 +109,7 @@ export function heightColourFn(b: BuildingState, look: HeightLook): { key: strin
   if (b.colour !== 'height') return null;
   const sc = b.height;
   const [lo, hi] = look.range;
-  const base = rgb01(b.plain);
+  const base = hexRgb(b.plain);
   const stops: [number, [number, number, number]][] = [];
   for (let i = 0; i <= 32; i++) {
     const v = lo + ((hi - lo) * i) / 32;
@@ -535,13 +534,13 @@ const HERITAGE_TINT = 0.6;
 /** A heritage group's tint (sRGB 0–1): its colour (#rrggbb) part way from a plain colour (the
  * meshes: the user's; the far field's tint textures: the default). */
 export function heritageTint(g: number, plain = PLAIN): [number, number, number] {
-  const p = rgb01(plain), c = rgb01(HERITAGE_GROUPS[g].colour);
+  const p = hexRgb(plain), c = hexRgb(HERITAGE_GROUPS[g].colour);
   return p.map((x, k) => x + (c[k] - x) * HERITAGE_TINT) as [number, number, number];
 }
 const rgb = (c: number[]) => `rgb(${c.map((x) => Math.round(x * 255)).join(',')})`;
 
 /** The hovered building's colour: amber over the plain colour (as the old highlight at 0.7 over it). */
-const hoverColour = (plain: string) => rgb(rgb01(plain).map((x, i) => x * 0.3 + ([0xff, 0xd2, 0x7a][i] / 255) * 0.7));
+const hoverColour = (plain: string) => rgb(hexRgb(plain).map((x, i) => x * 0.3 + ([0xff, 0xd2, 0x7a][i] / 255) * 0.7));
 
 /** A colour expression with the highlights: the hovered building amber, a heritage building in its
  * group's tint (feature state `hover`, `her`), the rest `c`. */

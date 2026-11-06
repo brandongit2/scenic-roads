@@ -29,6 +29,7 @@ import { CHUNK_Z, DRAW_STRIDE, HEIGHT_W, HPOS_STRIDE, LOD_LEVELS, LOD_Z0, VIS_WO
 import { perspectiveP22 } from './roads/layer';
 import { linkLater, type Later } from './glprog';
 import { MERC_CIRC, mercLat, mercLon, mercX, mercY, tileY } from './merc';
+import { hexRgb } from './palettes';
 
 export type { DotData } from './dotlayout';
 
@@ -53,7 +54,6 @@ const OCCLUDED_ALPHA = 0.3;
 const WORLD_MAX_Z = 10;
 const K = 1 << CHUNK_Z;
 
-const hex = (c: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16) / 255) as [number, number, number];
 const interpStops = (stops: [number, number][], z: number) => {
   if (z <= stops[0][0]) return stops[0][1];
   for (let i = 1; i < stops.length; i++) {
@@ -873,7 +873,7 @@ export class LandmarkDots implements CustomLayerInterface {
     gl.uniform1f(u.u_balance, q.balance);
     gl.uniform1f(u.u_emphasis, q.emphasis);
     gl.uniform1f(u.u_opacity, q.opacity);
-    gl.uniform3f(u.u_halo, ...hex(this.outline.colour));
+    gl.uniform3f(u.u_halo, ...hexRgb(this.outline.colour));
     gl.uniform1f(u.u_haloA, this.outline.opacity);
     gl.uniform1f(u.u_iconR, interpStops(POI_ICON_R, zoom));
     gl.uniform1f(u.u_iconSw, POI_ICON_STROKE);
@@ -896,13 +896,13 @@ export class LandmarkDots implements CustomLayerInterface {
       if (id === 'heritage') {
         gl.uniform3f(u.u_baseR, ...(HER_R.map((stops) => interpStops(stops as [number, number][], zoom)) as [number, number, number]));
         gl.uniform3f(u.u_strokeW, 1.2, 0.8, 0.8);
-        gl.uniform3fv(u.u_col, HERITAGE_GROUPS.flatMap((g) => hex(g.colour)));
+        gl.uniform3fv(u.u_col, HERITAGE_GROUPS.flatMap((g) => hexRgb(g.colour)));
         gl.uniform1f(u.u_icon, -1);
       } else {
         const r = interpStops(POI_R, zoom), sw = interpStops(POI_STROKE, zoom);
         gl.uniform3f(u.u_baseR, r, r, r);
         gl.uniform3f(u.u_strokeW, sw, sw, sw);
-        const col = hex(POI_STYLE[id.slice(5)]?.[1] ?? '#cccccc');
+        const col = hexRgb(POI_STYLE[id.slice(5)]?.[1] ?? '#cccccc');
         gl.uniform3fv(u.u_col, [...col, ...col, ...col, ...col]);
         gl.uniform1f(u.u_icon, iconIndex(id.slice(5)) ?? -1);
       }

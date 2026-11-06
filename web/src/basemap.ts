@@ -4,6 +4,7 @@ import { ver, version } from './api';
 import type { TerrainAreas } from './packs';
 import { hostFor } from './hosts';
 import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights, type WaterLook } from './state';
+import { hexBytes } from './palettes';
 
 // Base style: terrain (hillshade, tint, 3D mesh source), context layers from the self-built
 // Planetiler tiles, designation / stop overlays (GeoJSON, loaded on demand) and labels.
@@ -208,7 +209,7 @@ let waterColours = ['#0c1622', '#0f1a27', LAND_COLOUR];
 export const setWaterColours = (sea: string, lake: string, land = landColour) => (waterColours = [sea, lake, land].filter(Boolean));
 /** The lakes' colour for a water colour: a shade lighter. */
 export const lakeColour = (sea: string): string =>
-  `#${[1, 3, 5].map((i, k) => Math.min(255, parseInt(sea.slice(i, i + 2), 16) + [3, 4, 5][k]).toString(16).padStart(2, '0')).join('')}`;
+  `#${hexBytes(sea).map((v, k) => Math.min(255, v + [3, 4, 5][k]).toString(16).padStart(2, '0')).join('')}`;
 /** The water's tiles, in its colours. */
 export const waterTiles = (): string =>
   `${hostFor('base')}/tiles/water/{z}/{x}/{y}?c=${waterColours.map((c) => c.replace('#', '')).join(',')}${ver('water').replace('?', '&')}`;
@@ -233,7 +234,7 @@ export const SHADE_DETAIL = 4;
 /** The whitewater by the steepness under the water (%): none up to its start, then toward its
  * colour at full (Settings → Map → Water; AppState.water). */
 const whitewaterRamp = (w: WaterLook) => {
-  const [r, g, b] = [1, 3, 5].map((i) => parseInt(w.foamColour.slice(i, i + 2), 16));
+  const [r, g, b] = hexBytes(w.foamColour);
   return ['interpolate', ['linear'], ['elevation'], w.foamFrom, `rgba(${r},${g},${b},0)`, w.foamTo, `rgba(${r},${g},${b},${w.foam})`] as unknown as ExpressionSpecification;
 };
 

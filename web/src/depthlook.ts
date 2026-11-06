@@ -1,6 +1,6 @@
 // The depth layers' look (depth.ts; Layers → Depth, ui/depth.ts; `dp=` in links): their settings,
 // defaults and colour ramps, apart from the layers so the app's state can name them.
-import { PALETTE_ITEMS, baseKey, isRev, paletteFn } from './palettes';
+import { PALETTE_ITEMS, baseKey, isRev, paletteFn, stopsFn } from './palettes';
 
 type RGB = [number, number, number];
 
@@ -46,6 +46,7 @@ const RAMPS: Record<string, { label: string; stops: [number, string][] }> = {
   nautical: { label: 'Nautical blues', stops: [[0, '#cfeef5'], [0.12, '#8fd0e6'], [0.3, '#4fa3d1'], [0.5, '#2f73b0'], [0.72, '#1e4b85'], [0.88, '#152f5a'], [1, '#0e1d36']] },
   quiet: { label: 'Quiet blues', stops: [[0, '#4a6b87'], [0.35, '#304d66'], [0.7, '#1c3043'], [1, '#101d2b']] },
 };
+const RAMP_FNS = Object.fromEntries(Object.entries(RAMPS).map(([k, r]) => [k, stopsFn(r.stops)]));
 
 /** The depth's colour ramps: its own, then the app's. */
 export const DEPTH_PALETTES: { key: string; label: string; group: string }[] = [
@@ -56,21 +57,10 @@ export const DEPTH_PALETTES: { key: string; label: string; group: string }[] = [
 /** Position t (0 shallow … 1 deep) on ramp `key` (reversed with its "_r"). */
 export function depthColour(key: string, t: number): RGB {
   t = Math.max(0, Math.min(1, isRev(key) ? 1 - t : t));
-  const r = RAMPS[baseKey(key)];
-  if (!r) return paletteFn(baseKey(key))(t);
-  const cs = r.stops.map(([s, c]) => [s, parseInt(c.slice(1, 3), 16) / 255, parseInt(c.slice(3, 5), 16) / 255, parseInt(c.slice(5, 7), 16) / 255]);
-  for (let i = 1; i < cs.length; i++) {
-    if (t <= cs[i][0]) {
-      const u = (t - cs[i - 1][0]) / (cs[i][0] - cs[i - 1][0] || 1);
-      return [1, 2, 3].map((k) => cs[i - 1][k] + (cs[i][k] - cs[i - 1][k]) * u) as RGB;
-    }
-  }
-  const l = cs[cs.length - 1];
-  return [l[1], l[2], l[3]];
+  return (RAMP_FNS[baseKey(key)] ?? paletteFn(baseKey(key)))(t);
 }
 
 export const rgba = (c: RGB, a = 1) => `rgba(${c.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255)).join(',')},${a})`;
-export const hexRgb = (s: string): RGB => [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16) / 255) as RGB;
 
 /** Depth (m, positive) → position on the ramp, and back. */
 export function scaleFns(kind: 'linear' | 'log', lo: number, hi: number): [(d: number) => number, (t: number) => number] {

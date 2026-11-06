@@ -12,6 +12,7 @@
 import type { CustomLayerInterface, CustomRenderMethodInput, Map as MlMap } from 'maplibre-gl';
 import { EARTH_R, MERCATOR_LAT } from './merc';
 import { chooseTiles, inverse, poleParams, PolarTiles, TILE_SIZE, tileBox, type Pole, type PolarTile, type TileKind, type CullOf, type ViewOf } from './polar';
+import { hexRgb } from './palettes';
 
 /** Mesh cells a side, and the skirt's depth under the tile's edge (m). */
 const CELLS = 32;
@@ -301,8 +302,8 @@ const DEFAULT_SHADE = {
   shadows: [[0, 0, 0, 0.85] as Rgba], highlights: [premultipliedHex('#aabed7', 0.3)],
 };
 function premultipliedHex(c: string, a: number): Rgba {
-  const n = parseInt(c.slice(1), 16);
-  return [(((n >> 16) & 255) / 255) * a, (((n >> 8) & 255) / 255) * a, ((n & 255) / 255) * a, a];
+  const [r, g, b] = hexRgb(c);
+  return [r * a, g * a, b * a, a];
 }
 
 // The caps drawn, by pole: the map's pole caps and its ground past 85.05° follow them.

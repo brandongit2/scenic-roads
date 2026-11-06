@@ -3,6 +3,7 @@
 // sets each type's defaults (basemap.ts); AppState.labelLooks holds only what was changed, per
 // type, applied over them with setPaintProperty / setLayoutProperty.
 import type { Map as MLMap } from 'maplibre-gl';
+import { hexBytes } from './palettes';
 
 /** Text case: as written, or MapLibre's text-transform. */
 export type TextCase = 'none' | 'uppercase' | 'lowercase';
@@ -78,8 +79,8 @@ export function parseColour(c: unknown): [string, number] | null {
 }
 /** A colour with an alpha, as MapLibre reads it. */
 export function rgba(hex: string, a: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  return a >= 1 ? hex : `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${+a.toFixed(3)})`;
+  const [r, g, b] = hexBytes(hex);
+  return a >= 1 ? hex : `rgba(${r}, ${g}, ${b}, ${+a.toFixed(3)})`;
 }
 /** Every colour in a style value with alpha × a (a colour expression: each colour it names). */
 function withAlpha(v: unknown, a: number): unknown {
