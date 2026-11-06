@@ -915,7 +915,7 @@ pub struct Status {
     /// The timetables' to-do list's counts and the routes matching nothing on the map
     /// (crate::timetables, docs/inputs.md §6.7.3): the lead's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timetables: Option<crate::timetables::View>,
+    pub timetables: Option<crate::inputs::gtfs::View>,
     /// The last catalogue the plan read: its number and when it went out (seconds since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "catalog")] // wire key: old spelling
     pub catalogue: Option<CatalogueSeen>,

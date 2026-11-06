@@ -29,6 +29,7 @@
 
 use super::{Checks, FileCheck, Finding, Level, Version};
 use anyhow::{bail, Context, Result};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
@@ -569,6 +570,80 @@ impl Checks for Gtfs {
 pub fn zips(a: &super::Accepted) -> Vec<(String, std::path::PathBuf)> {
     // (The counters' zip reader opens a member by its file's path, each time: tests/nas_access.rs.)
     a.files().filter(|(p, _)| p.ends_with(".zip")).map(|(p, c)| (p.clone(), c.unchecked_path())).collect()
+}
+
+/// The report: `{"to_do", "to_do_km", "by_kind", "unmatched": [...]}`.
+pub const REPORT: &str = "work/timetables/report";
+
+/// The report as the lead shows it (`Status::timetables`): its counts and the first unmatched
+/// routes.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct View {
+    pub to_do: u64,
+    pub to_do_km: f64,
+    pub rail: u64,
+    pub ferry: u64,
+    pub file: String,
+    pub unmatched_total: u64,
+    /// The first [`VIEW_MAX`]: `{mode, source, route, name, agency, osm, why}`.
+    pub unmatched: Vec<Unmatched>,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Unmatched {
+    pub mode: String,
+    pub source: String,
+    pub route: String,
+    pub name: String,
+    pub osm: String,
+    pub why: String,
+}
+
+/// Unmatched routes the status lists (the report has them all).
+pub const VIEW_MAX: usize = 40;
+
+impl View {
+    pub fn of(report: &Value) -> View {
+        let n = |v: &Value| v.as_u64().unwrap_or(0);
+        let all = report["unmatched"].as_array().cloned().unwrap_or_default();
+        let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+        View {
+            to_do: n(&report["to_do"]),
+            to_do_km: report["to_do_km"].as_f64().unwrap_or(0.0),
+            rail: n(&report["by_kind"]["rail"]),
+            ferry: n(&report["by_kind"]["ferry"]),
+            file: s(report, "file"),
+            unmatched_total: all.len() as u64,
+            unmatched: all
+                .iter()
+                .take(VIEW_MAX)
+                .map(|u| Unmatched {
+                    mode: s(u, "mode"),
+                    source: s(u, "source"),
+                    route: s(u, "route"),
+                    name: s(u, "name"),
+                    osm: s(u, "osm"),
+                    why: s(u, "why"),
+                })
+                .collect(),
+        }
+    }
+
+    /// The status's lines.
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = vec![format!(
+            "Timetables: {} lines with no timetable ({} rail, {} ferry, {:.0} km) listed in {}; {} timetable routes match nothing on the map",
+            self.to_do, self.rail, self.ferry, self.to_do_km, self.file, self.unmatched_total
+        )];
+        for u in &self.unmatched {
+            let name = if u.name.is_empty() { String::new() } else { format!(" {}", u.name) };
+            out.push(format!("  {} {}/{}{name}: {}", u.mode, u.source, u.route, u.why));
+        }
+        if self.unmatched_total as usize > self.unmatched.len() {
+            out.push(format!("  … and {} more ({REPORT})", self.unmatched_total as usize - self.unmatched.len()));
+        }
+        out
+    }
 }
 
 #[cfg(test)]

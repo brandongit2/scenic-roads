@@ -101,7 +101,7 @@ pub(super) struct PlanView {
     pub built: BTreeMap<String, progress::RegionState>,
     pub forecast: Option<forecast::Forecast>,
     pub publishing: Option<publish::PublishLine>,
-    pub timetables: Option<crate::timetables::View>,
+    pub timetables: Option<crate::inputs::gtfs::View>,
     pub catalogue: Option<CatalogueSeen>,
     pub published: Option<Published>,
     pub inputs: Vec<crate::inputs::view::InputView>,
@@ -463,7 +463,7 @@ pub(super) struct Planner {
     /// again only when it changes).
     pub(super) publish_line: std::cell::RefCell<Option<publish::PublishLine>>,
     /// The timetables' report as last read (its content name, and what the status shows).
-    pub(super) timetables: std::cell::RefCell<Option<(String, crate::timetables::View)>>,
+    pub(super) timetables: std::cell::RefCell<Option<(String, crate::inputs::gtfs::View)>>,
     pub(super) publish_logged: std::cell::RefCell<String>,
     /// The map's `seq` and when its batch went out (`map_now`), for the status.
     pub(super) catalogue_seen: std::cell::Cell<Option<CatalogueSeen>>,
@@ -992,14 +992,14 @@ impl Planner {
 
     /// The timetables' report, read again when the records name another (a small file).
     pub(super) fn note_timetables(&self, root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) {
-        let Some(c) = manifest.get(crate::timetables::REPORT) else { return };
+        let Some(c) = manifest.get(crate::inputs::gtfs::REPORT) else { return };
         if self.timetables.borrow().as_ref().is_some_and(|t| &t.0 == c) {
             return;
         }
         if let Some(v) =
             nasread::read(&root.join(c)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
         {
-            *self.timetables.borrow_mut() = Some((c.clone(), crate::timetables::View::of(&v)));
+            *self.timetables.borrow_mut() = Some((c.clone(), crate::inputs::gtfs::View::of(&v)));
         }
     }
 

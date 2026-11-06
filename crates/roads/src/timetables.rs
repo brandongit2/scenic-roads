@@ -22,8 +22,8 @@ use std::io::BufRead;
 pub const RAIL_LINES: &str = "work/rail/lines";
 /// The ferries job's piece: the ferry lines no timetable counts, and its unmatched routes.
 pub const FERRY_LINES: &str = "work/ferries/lines";
-/// The report: `{"to_do", "to_do_km", "by_kind", "unmatched": [...]}`.
-pub const REPORT: &str = "work/timetables/report";
+/// The report (the status's view of it is the inputs' gtfs::View).
+pub use inputs::inputs::gtfs::REPORT;
 /// The to-do list's file in the inputs folder's `todo/`.
 pub const TODO_FILE: &str = "lines.jsonl";
 /// The job's version: in its key.
@@ -299,77 +299,6 @@ pub fn run(
     Ok(r)
 }
 
-/// The report as the lead shows it (`Status::timetables`): its counts and the first unmatched
-/// routes.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct View {
-    pub to_do: u64,
-    pub to_do_km: f64,
-    pub rail: u64,
-    pub ferry: u64,
-    pub file: String,
-    pub unmatched_total: u64,
-    /// The first [`VIEW_MAX`]: `{mode, source, route, name, agency, osm, why}`.
-    pub unmatched: Vec<Unmatched>,
-}
-
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct Unmatched {
-    pub mode: String,
-    pub source: String,
-    pub route: String,
-    pub name: String,
-    pub osm: String,
-    pub why: String,
-}
-
-/// Unmatched routes the status lists (the report has them all).
-pub const VIEW_MAX: usize = 40;
-
-impl View {
-    pub fn of(report: &Value) -> View {
-        let n = |v: &Value| v.as_u64().unwrap_or(0);
-        let all = report["unmatched"].as_array().cloned().unwrap_or_default();
-        let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
-        View {
-            to_do: n(&report["to_do"]),
-            to_do_km: report["to_do_km"].as_f64().unwrap_or(0.0),
-            rail: n(&report["by_kind"]["rail"]),
-            ferry: n(&report["by_kind"]["ferry"]),
-            file: s(report, "file"),
-            unmatched_total: all.len() as u64,
-            unmatched: all
-                .iter()
-                .take(VIEW_MAX)
-                .map(|u| Unmatched {
-                    mode: s(u, "mode"),
-                    source: s(u, "source"),
-                    route: s(u, "route"),
-                    name: s(u, "name"),
-                    osm: s(u, "osm"),
-                    why: s(u, "why"),
-                })
-                .collect(),
-        }
-    }
-
-    /// The status's lines.
-    pub fn lines(&self) -> Vec<String> {
-        let mut out = vec![format!(
-            "Timetables: {} lines with no timetable ({} rail, {} ferry, {:.0} km) listed in {}; {} timetable routes match nothing on the map",
-            self.to_do, self.rail, self.ferry, self.to_do_km, self.file, self.unmatched_total
-        )];
-        for u in &self.unmatched {
-            let name = if u.name.is_empty() { String::new() } else { format!(" {}", u.name) };
-            out.push(format!("  {} {}/{}{name}: {}", u.mode, u.source, u.route, u.why));
-        }
-        if self.unmatched_total as usize > self.unmatched.len() {
-            out.push(format!("  … and {} more ({REPORT})", self.unmatched_total as usize - self.unmatched.len()));
-        }
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,7 +379,7 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
             ["osm", "kind", "name", "ref", "operator", "from", "to", "km", "priority"].map(String::from).into()
         );
         assert_eq!((r.rail, r.ferry, r.unmatched), (2, 1, 2));
-        let v = View::of(&report);
+        let v = inputs::inputs::gtfs::View::of(&report);
         assert_eq!((v.to_do, v.unmatched_total, v.unmatched[0].mode.as_str()), (3, 2, "ferry"));
         assert!(v.lines()[0].contains("3 lines with no timetable"));
     }
