@@ -21,7 +21,7 @@
 //!
 //! The pairs (`Counted::pairs`): per (stop A, stop B, mode) the number of trains that day from A to
 //! B; little-endian f32 lon_a, lat_a, lon_b, lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular),
-//! f32 trains (crate::rail::PAIR). Every pair, wherever its stops are: the step then marks the stops
+//! f32 trains (inputs::rail::PAIR). Every pair, wherever its stops are: the step then marks the stops
 //! beyond the coverage. And `used`: per feed its day, trips and duplicates, or why it was left out.
 //!
 //! The static files (the accepted zips of inputs/timetables/gtfs/, docs/inputs.md §6.7.2, in their
@@ -602,10 +602,10 @@ impl Counted {
     /// The stop pairs: the trains of the typical day, then the pairs served only on other days of
     /// the week at their weekly average; and how many of those.
     pub fn pairs(&self) -> (Vec<u8>, usize) {
-        let mut out = Vec::with_capacity((self.pairs.len() + self.weekly.len()) * crate::rail::PAIR);
+        let mut out = Vec::with_capacity((self.pairs.len() + self.weekly.len()) * inputs::rail::PAIR);
         let mut put = |v: &[f64; 4], m: u8, n: f64| {
             let p = |i: usize| [v[i] as f32, v[i + 1] as f32];
-            crate::rail::Pair { a: p(0), b: p(2), mode: m, trains: n as f32 }.write(&mut out);
+            inputs::rail::Pair { a: p(0), b: p(2), mode: m, trains: n as f32 }.write(&mut out);
         };
         for (v, m, n) in &self.pairs.items {
             put(v, *m, *n);
@@ -725,7 +725,7 @@ pub fn run(feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)
     let sum = |k: &str| ok.iter().filter_map(|u| u.at(k).number()).sum::<f64>();
     eprintln!(
         "{} stop pairs from {} feeds, {} trains, {} duplicates dropped",
-        pairs.len() / crate::rail::PAIR,
+        pairs.len() / inputs::rail::PAIR,
         ok.len(),
         sum("trips"),
         sum("duplicates")

@@ -3,7 +3,7 @@
 //! table read as Python's `csv` module reads it (its line ends, quoting and field limit), decoded
 //! as UTF-8 with its byte-order mark dropped, and dates as Python's `datetime.date`. The counters:
 //! the static files' readings (`statics`, docs/inputs.md §6.7.2), the rail counter (`railcount`) and
-//! the ferry counter (`ferrycount`); their callers crate::rail's steps and crate::ferries.
+//! the ferry counter (`ferrycount`); their callers inputs::rail's steps and crate::ferries.
 //!
 //! Errors keep the class Python would have raised (`PyErr`): each caller catches the ones the
 //! Python caught (a feed that can't be read is one of the others' status, not the step's failure).
@@ -323,7 +323,7 @@ pub fn ymd(s: &str) -> R<Date> {
 /// A zip's tables, by their names without folders.
 pub struct Zip {
     path: PathBuf,
-    members: HashMap<String, crate::lakefill::zip::Member>,
+    members: HashMap<String, inputs::lakefill::zip::Member>,
 }
 
 /// An I/O error while a member is read, as the class Python's zipfile and zlib raise.
@@ -345,7 +345,7 @@ impl Zip {
     pub fn open(path: &Path) -> R<Zip> {
         std::fs::File::open(path)
             .map_err(|e| PyErr::new(Kind::Os, format!("{e}: {}", py_repr(&path.to_string_lossy()))))?;
-        let ms = crate::lakefill::zip::members(path)
+        let ms = inputs::lakefill::zip::members(path)
             .map_err(|e| PyErr::new(Kind::BadZip, format!("File is not a zip file ({e:#})")))?;
         let mut members = HashMap::new();
         for m in ms {
@@ -359,7 +359,7 @@ impl Zip {
     /// UTF-8 replaced, as `errors="replace"`).
     pub fn csv(&self, name: &str, lossy: bool) -> R<Option<Csv>> {
         let Some(m) = self.members.get(name) else { return Ok(None) };
-        let r = crate::lakefill::zip::open(&self.path, m).map_err(|e| PyErr::new(Kind::BadZip, format!("{e:#}")))?;
+        let r = inputs::lakefill::zip::open(&self.path, m).map_err(|e| PyErr::new(Kind::BadZip, format!("{e:#}")))?;
         Ok(Some(Csv::new(Box::new(std::io::BufReader::with_capacity(1 << 16, r)), lossy)))
     }
 
@@ -378,7 +378,7 @@ impl Zip {
     pub fn read(&self, name: &str) -> R<Option<Vec<u8>>> {
         let Some(m) = self.members.get(name) else { return Ok(None) };
         let mut r =
-            crate::lakefill::zip::open(&self.path, m).map_err(|e| PyErr::new(Kind::BadZip, format!("{e:#}")))?;
+            inputs::lakefill::zip::open(&self.path, m).map_err(|e| PyErr::new(Kind::BadZip, format!("{e:#}")))?;
         let mut v = Vec::new();
         r.read_to_end(&mut v).map_err(read_err)?;
         Ok(Some(v))

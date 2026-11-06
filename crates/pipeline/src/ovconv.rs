@@ -15,7 +15,6 @@
 //!   it, its ways' lines' records; each way with its whole length (`km`) and an id, so the app
 //!   merges blocks by id and measures what's in view on the geometry it has.
 
-use crate::layers::{pack_of, write_pack};
 use crate::markconv::{self, src_bytes};
 use anyhow::{bail, Context, Result};
 use buildstore::out::Out;
@@ -27,6 +26,7 @@ use det::Det;
 use names::mvt::Value as MvtValue;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use terrain::layers::{pack_of, write_pack};
 
 /// The areas' vector-tile layer.
 pub const LAYER: &str = "a";
@@ -395,11 +395,11 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
 /// The `ferries` job (docs/phase5.md "Build"): the pass's `ferries` set exported as crate::ferries
 /// reads it, crate::ferries with the ferry feeds the rail-feeds job fetched (`rail::FERRY_FEEDS`,
 /// each zip's path on the NAS and its day: crate::gtfs::ferrycount counts them) and the static
-/// timetables' accepted zips (`statics`, crate::inputs::gtfs: the timetables looked up by hand,
+/// timetables' accepted zips (`statics`, inputs::inputs::gtfs: the timetables looked up by hand,
 /// crate::gtfs::statics), and the blocks from what it writes.
-pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted) -> Result<usize> {
+pub fn ferries_job(out: &mut Out, date: &str, statics: &inputs::inputs::Accepted) -> Result<usize> {
     use std::process::Command;
-    let logical = crate::osmpass::set_name(date, "ferries");
+    let logical = inputs::osmpass::set_name(date, "ferries");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
     let work = out.scratch.join("ferries-work");
     std::fs::remove_dir_all(&work).ok();
@@ -464,8 +464,8 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted)
     )?;
     drop(p);
     let p = jobrt::timings::phase("listing the feeds and static files");
-    let feeds = crate::rail::feeds_for_counting(out, crate::rail::FERRY_FEEDS)?;
-    let zips = crate::inputs::gtfs::zips(statics);
+    let feeds = inputs::rail::feeds_for_counting(out, inputs::rail::FERRY_FEEDS)?;
+    let zips = inputs::inputs::gtfs::zips(statics);
     let n_static = zips.len();
     drop(p);
     let p = jobrt::timings::phase("finding the ferry lines and their sailings");
@@ -480,8 +480,8 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted)
         lines.len()
     );
     // (The lines no timetable counts and the routes matching none, for the timetables' to-do list
-    // and report: crate::timetables.)
-    out.put_file(crate::timetables::FERRY_LINES, "json", &work.join("timetables.json"))?;
+    // and report: roads::timetables.)
+    out.put_file(roads::timetables::FERRY_LINES, "json", &work.join("timetables.json"))?;
     let mut ntiles = 0;
     ferry_blocks(out, &fc, &lines, &mut ntiles)
 }
@@ -628,7 +628,7 @@ pub fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
 }
 
 /// Writes a layer's tiles (gzipped, in packs by scope, or with `bundle` all in the layer's bundle:
-/// crate::layers::write_layer_bundle).
+/// terrain::layers::write_layer_bundle).
 /// The features as vector tiles in the layer's packs; the packs' logical names.
 fn write_tiles(
     out: &mut Out,
@@ -658,7 +658,7 @@ fn write_tiles(
     if bundle {
         let tiles: Vec<_> = packs.into_values().flatten().collect();
         *ntiles += tiles.len();
-        wrote.extend(crate::layers::write_layer_bundle(out, layer, "mvt", true, tiles)?.map(|b| b.0));
+        wrote.extend(terrain::layers::write_layer_bundle(out, layer, "mvt", true, tiles)?.map(|b| b.0));
         jobrt::jobs::within(1.0);
         return Ok(wrote);
     }
@@ -703,7 +703,7 @@ pub fn station_props(s: &codecs::stations::Stop) -> serde_json::Map<String, Valu
 /// (+ 20 km, the hi tiles' reach) as the stations' tiles; each stop's id its lowest member's
 /// (docs/phase5.md "Ids").
 pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>) -> Result<(usize, usize)> {
-    let logical = crate::osmpass::set_name(date, "rail");
+    let logical = inputs::osmpass::set_name(date, "rail");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
     let t0 = std::time::Instant::now();
     let p = jobrt::timings::phase("reading the rail set's stops");

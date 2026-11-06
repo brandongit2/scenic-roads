@@ -42,7 +42,7 @@ pub const VERSION: u32 = 2;
 /// The translators' brief, `translations/todo/README.md`.
 pub const TRANSLATORS: &str = include_str!("../../../tools/names/translations-todo.md");
 /// Its checker, `translations/todo/check.py`.
-pub const CHECK: &str = crate::inputs::lint::CHECK;
+pub const CHECK: &str = inputs::inputs::lint::CHECK;
 /// The writers' brief, `descriptions/todo/README.md`.
 pub const WRITERS: &str = include_str!("../../../tools/names/descriptions-todo.md");
 
@@ -371,7 +371,7 @@ pub const INPUTS: [&str; 17] = [
     "f/ovdata/",
 ];
 
-/// The agent's key of what `run` reads (crate::agent::build::names_todo_work): the `seq` of the
+/// The agent's key of what `run` reads (pipeline::agent::build::names_todo_work): the `seq` of the
 /// last batch that touched any of `INPUTS`, by the log's `marks`; None before the log has any. A
 /// batch that changed none of them (most: a depth or terrain tile alone) leaves the lists as they
 /// are, so they aren't made again. A file the map's `NAMING` sections name whose `f/` key no prefix
@@ -726,7 +726,7 @@ struct Wanted {
 /// The descriptions written: Wikidata items and OSM objects (the descriptions' accepted `.jsonl`
 /// files, in their paths' order: later ones win, `drop` removes one). An error when a file can't be
 /// read: a list made without it would ask for descriptions already written.
-fn described(accepted: &crate::inputs::Accepted) -> Result<HashSet<String>> {
+fn described(accepted: &inputs::inputs::Accepted) -> Result<HashSet<String>> {
     let mut files: Vec<(&String, store::nasfs::NasPath)> =
         accepted.files().filter(|(p, _)| p.ends_with(".jsonl")).collect();
     // (By the paths' components, as the map's server reads them.)
@@ -749,7 +749,7 @@ fn described(accepted: &crate::inputs::Accepted) -> Result<HashSet<String>> {
 
 /// The translations' accepted files as the tables read them: by inputs-folder path, the copy and its
 /// content name.
-pub fn translation_files(accepted: &crate::inputs::Accepted) -> BTreeMap<String, (PathBuf, String)> {
+pub fn translation_files(accepted: &inputs::inputs::Accepted) -> BTreeMap<String, (PathBuf, String)> {
     accepted
         .files()
         .filter(|(p, _)| p.ends_with(".jsonl"))
@@ -940,8 +940,8 @@ fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
 pub fn run(
     root: &store::nasfs::NasRoot,
     out: &store::nasfs::NasRoot,
-    translations: &crate::inputs::Accepted,
-    descriptions: &crate::inputs::Accepted,
+    translations: &inputs::inputs::Accepted,
+    descriptions: &inputs::inputs::Accepted,
     scratch: &Path,
     progress: &dyn Fn(&str, u64, u64),
 ) -> Result<Report> {
@@ -984,7 +984,7 @@ pub fn run(
     for ((n, k, l), e) in entries {
         by_lang.entry(l).or_default().push((n, k, e));
     }
-    let dir = crate::inputs::todo_dir(out, crate::inputs::translations::UNIT);
+    let dir = inputs::inputs::todo_dir(out, inputs::inputs::translations::UNIT);
     dir.create_dir_all()?;
     let mut written = HashSet::new();
     for (lang, mut es) in by_lang {
@@ -1023,7 +1023,7 @@ pub fn run(
     put(&dir.join("check").with_extension("py"), CHECK.as_bytes())?;
 
     // The descriptions' lists.
-    let ddir = crate::inputs::todo_dir(out, crate::inputs::descriptions::UNIT);
+    let ddir = inputs::inputs::todo_dir(out, inputs::inputs::descriptions::UNIT);
     ddir.create_dir_all()?;
     for (file, mut w) in [("landmarks.jsonl", want), ("areas.jsonl", wanted_areas)] {
         w.sort_by(|a, b| b.fame.total_cmp(&a.fame));

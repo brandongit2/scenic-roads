@@ -2,7 +2,7 @@
 //! rail (trains, metros, trams, funiculars) for the rail counter (crate::gtfs::railcount), and the
 //! ferry feeds for the ferry counter (crate::gtfs::ferrycount, run by the ferries step). The
 //! `rail-feeds` step runs it (docs/steps.md §10) on the accepted declarations of
-//! inputs/timetables/feeds/ (docs/inputs.md §6.7.1: each as crate::inputs::feeds gives it).
+//! inputs/timetables/feeds/ (docs/inputs.md §6.7.1: each as inputs::inputs::feeds gives it).
 //!
 //! The feeds:
 //!   - the Mobility Database catalogue's (the `mdb-catalogue` declaration; its pinned copy, else
@@ -230,7 +230,7 @@ impl Net {
         let a = self.ask(url, Some((start, size - 1)), false);
         if a.code == 200 && a.body.len() as u64 == size {
             // The server ignores ranges, and the whole file came (it's no bigger than the range).
-            return match crate::inputs::gtfs::unzip(&a.body) {
+            return match inputs::inputs::gtfs::unzip(&a.body) {
                 Ok(files) => files.get(name).cloned().ok_or_else(|| Why::Refused(format!("no {name}"))),
                 Err(e) if format!("{e:#}").contains("compression method") => {
                     Err(Why::Refused("an unknown compression".into()))
@@ -850,7 +850,7 @@ fn ferry_feed(f: &Py) -> ferrycount::Feed {
 
 /// What the step gives the run.
 pub struct Args<'a> {
-    /// The accepted declarations (crate::inputs::feeds::of_accepted).
+    /// The accepted declarations (inputs::inputs::feeds::of_accepted).
     pub declarations: &'a [serde_json::Value],
     /// The catalogue's pinned copy; none: fetched from its declaration's URL.
     pub catalogue: Option<PathBuf>,

@@ -51,7 +51,7 @@ pub fn meets(cover: &[[f64; 4]], b: [f64; 4]) -> bool {
 
 /// The accepted registers as the agent's inputs carry them (`registers_line`): a line each, its id,
 /// its files' keyed digests and its box (`-` without entries).
-pub fn registers_line(regs: &[crate::inputs::heritage::Register]) -> String {
+pub fn registers_line(regs: &[inputs::inputs::heritage::Register]) -> String {
     regs.iter()
         .map(|r| {
             format!(
@@ -78,18 +78,18 @@ pub fn parse_registers(s: &str) -> Vec<(String, String, Option<[f64; 4]>)> {
 }
 
 /// The accepted registers as the records now name them (`registers_line`), for the agent's plan
-/// (crate::agent::input_digests): None without an accepted version.
+/// (pipeline::agent::input_digests): None without an accepted version.
 pub fn registers_now(root: &store::nasfs::NasRoot) -> Result<Option<String>> {
     let m = buildstore::records::read_manifest(root)?;
-    Ok(crate::inputs::open(root, &m, crate::inputs::heritage::UNIT)?
-        .map(|a| registers_line(&crate::inputs::heritage::registers(&a))))
+    Ok(inputs::inputs::open(root, &m, inputs::inputs::heritage::UNIT)?
+        .map(|a| registers_line(&inputs::inputs::heritage::registers(&a))))
 }
 
 /// The registers of accepted version `a` whose entries meet the cover (`cover_boxes`): what the
 /// heritage-sites job reads, and its key names. (A register without entries meets nothing.)
-pub fn registers_meeting(cov: &Coverage, a: &crate::inputs::Accepted) -> Vec<crate::inputs::heritage::Register> {
+pub fn registers_meeting(cov: &Coverage, a: &inputs::inputs::Accepted) -> Vec<inputs::inputs::heritage::Register> {
     let cover = cover_boxes(cov);
-    crate::inputs::heritage::registers(a).into_iter().filter(|r| r.bbox.is_some_and(|b| meets(&cover, b))).collect()
+    inputs::inputs::heritage::registers(a).into_iter().filter(|r| r.bbox.is_some_and(|b| meets(&cover, b))).collect()
 }
 
 /// The tiles as uint32 (x, y) pairs, little-endian (heritage.py's `--tiles`).
@@ -152,7 +152,7 @@ pub fn tiles_geojson(z: u8, tiles: &[(u32, u32)]) -> serde_json::Value {
 
 /// The z6 tile holding a point (degrees), as tiles are cut (half-open).
 fn z6_of(lon: f64, lat: f64) -> (u32, u32) {
-    crate::stage::tiles_in(6, [lon, lat, lon, lat])[0]
+    roads::stage::tiles_in(6, [lon, lat, lon, lat])[0]
 }
 
 /// heritage.json's sites' positions (E7) by the z6 tile holding them, each list sorted, no repeats.
@@ -300,7 +300,7 @@ pub fn slice_areas(area_shapes: &str) -> Result<BTreeMap<(u32, u32), Vec<(String
         let h = store::naming::hash16(line.as_bytes());
         let boxes = if b[2] - b[0] > 180.0 { part_boxes(&v["geometry"]) } else { vec![b] };
         let tiles: std::collections::BTreeSet<(u32, u32)> =
-            boxes.into_iter().flat_map(|b| crate::stage::tiles_in(6, b)).collect();
+            boxes.into_iter().flat_map(|b| roads::stage::tiles_in(6, b)).collect();
         for t in tiles {
             out.entry(t).or_default().push((h.clone(), line.to_string()));
         }
@@ -402,7 +402,7 @@ pub fn unit_inputs(out: &Out, date: &str, b: [f64; 4], dir: &Path) -> Result<(us
 
 /// The heritage-sites job's slices `unit_inputs` reads for box `b` (content names).
 pub fn unit_contents(out: &Out, date: &str, b: [f64; 4]) -> Vec<String> {
-    crate::stage::tiles_in(6, b)
+    roads::stage::tiles_in(6, b)
         .into_iter()
         .flat_map(|(x, y)| [pos_logical(date, x, y), areas_logical(date, x, y)])
         .filter_map(|l| out.get(&l).map(str::to_string))
@@ -430,7 +430,7 @@ pub fn unit_inputs_with(
     };
     let mut sites: Vec<[i32; 2]> = Vec::new();
     let mut polys: BTreeMap<String, String> = BTreeMap::new();
-    for (x, y) in crate::stage::tiles_in(6, b) {
+    for (x, y) in roads::stage::tiles_in(6, b) {
         if let Some(c) = out.get(&pos_logical(date, x, y)) {
             let pts: Vec<[i32; 2]> = serde_json::from_slice(&path(c)?.loc().read()?)
                 .with_context(|| format!("{}", pos_logical(date, x, y)))?;

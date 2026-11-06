@@ -301,7 +301,7 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
     // (One bundle of every tile's file, uploaded beside the thinned tiles' making: task #449.)
     let ntiles = written.len();
     let files = written.into_iter().map(|((x, y), local)| (6u8, x, y, local)).collect();
-    if crate::layers::write_file_bundle(
+    if terrain::layers::write_file_bundle(
         out,
         marks::MARKDATA_BUNDLE,
         serde_json::json!({"bundle": "markdata", "fmt": 1}),
@@ -364,7 +364,7 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
         }
         drop(made_p);
         let _p = phase("uploading thinned packs");
-        if let Some((l, _)) = crate::layers::write_layer_bundle(out, &format!("marks-{kind}"), "rdmt", true, tiles)? {
+        if let Some((l, _)) = terrain::layers::write_layer_bundle(out, &format!("marks-{kind}"), "rdmt", true, tiles)? {
             wrote.insert(l);
         }
     }
