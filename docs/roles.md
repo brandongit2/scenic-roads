@@ -164,16 +164,27 @@ view stay.
 
 ### 3.5 Leftovers
 
-At a member's start, the agent removes what only a lead writes, if older than a day: its
-`status.json`, `backups/`, `gc-depth-keep.json`, `publishing.json`, `pageview-waits.json`,
-`loop-stall-sample-*.txt`, and in `coord/` the coordinator's files (`costs.json`, `disks.json`,
-`floors.json`, `cache-fills.json`, `job-disks*.json`, `leases.json`, `pause.json`,
-`timings.jsonl`, `store/`, `journal/`, `workers-token`). Not `coord/` itself: it is the member's
-broker's folder (§3.2: `jobs-token`, `page`, `history.jsonl`, written on the M1 on 6 Nov). Not the
-agent's own `timings.jsonl`: every Mac appends its own jobs' timings there (`take_timings`,
-crates/pipeline/src/agent/mod.rs), which `scenic` reads as "this Mac's jobs". One function
-(`room::member_leftovers`) lists them; a test names each path the lead writes in the home and
-requires it in the list or in a kept list. The map server's files on a laptop are §8.3's.
+At a member's start, the agent removes, if older than a day, what only a lead writes and what no
+code writes any more (on both laptops, 6 Nov):
+- the lead's: `status.json`, `backups/`, `gc-depth-keep.json`, `publishing.json`,
+  `pageview-waits.json`, `inputs-listing/` (the plan's, agent/plan.rs), `maplog/` (the map log's
+  writer, agent/publish.rs `MAPLOG`), `plan-stall-sample-*.txt`, and in `coord/` the coordinator's
+  files (`costs.json`, `disks.json`, `floors.json`, `cache-fills.json`, `job-disks*.json`,
+  `leases.json`, `pause.json`, `timings.jsonl`, `store/`), each read by a broker at its start as
+  a first fill only;
+- written by nothing since the code that wrote them went: `loop-stall-sample-*.txt` (the loop
+  watchdog, cut by #871 step 6), `round.json` (the map update's old name, #209), `costs-<n>.jsonl`,
+  `battery-floor.moved`, and `helper.json.<host>.<pid>.<n>.tmp` (a whole write cut off; five on
+  each laptop).
+
+Kept: `coord/` itself, the member's broker's folder (§3.2), with `jobs-token`, `page`,
+`history.jsonl` (written on the M1 on 6 Nov), `workers-token` (the pool's, copied in by
+`pool::seed` at each broker's start: agent/mod.rs `make_broker`) and `journal/` (made by every
+broker's start, `Coordinator::start_with`); and the agent's own `timings.jsonl`: every Mac appends
+its own jobs' timings there (`take_timings`, crates/pipeline/src/agent/mod.rs), which `scenic`
+reads as "this Mac's jobs". One function (`room::member_leftovers`) lists them; a test names each
+path the lead writes in the home and requires it in the list or in a kept list. The map server's
+files on a laptop are §8.3's.
 
 ## 4. What the member still needs from the lead
 
@@ -243,18 +254,19 @@ Each step ships alone and keeps the build running; each ends with its tests.
    `job` field, which an all-new pool no longer writes (no Open the Build Log); now the first of
    `jobs`. tools/dev/health.sh reads the lead's heartbeat on the NAS itself.
 6. **Leftovers** (§3.5). Tests: `member_leftovers_names_every_lead_file` (the agent's own
-   `timings.jsonl` and the broker's `coord/` files in the kept list), removal by age. Saves ~1.1 GB
+   `timings.jsonl` and the broker's `coord/` files, `workers-token` and `journal/` among them, in
+   the kept list), removal by age. Saves ~1.1 GB
    of disk on each laptop (`backups/`; §8.1). Touches agent/room.rs only: land it before #916 6f
    moves the agent's runtime (§8.4).
-7. **The laptops' map files** (§8.3), once the owner decides §7's decision 4: either the offline
-   map on demand (7a), or its files deleted (7b). Either way `catalog/` and
+7. **The laptops' offline map on demand** (7a, §8.3; the PM's decision 4 in §7, which the owner
+   may overrule for 7b: the files deleted). Either way `catalog/` and
    `~/Library/Caches/scenic/catalogue` go with #883 step 9, not here.
 8. **The member's NAS fallbacks**, with #878's gates (§8.4): nothing to build in #882; each gate's
    deletion takes a member's share of it (the `nas-switch` pool, `beat-nas`'s status copy, the pool
    thread's mail and journal), and `pool::term::role` moves out of `pool::term` before #878 step 8
    deletes that module.
-9. **Docs**: macs.md (Devices: roles; the App Macs' offline map as 7 decides), agent-parts.md (the
-   member's parts), pool.md §5 (a member no longer "passes its build page's asks to the lead": its
+9. **Docs**: macs.md (Devices: roles; the App Macs' offline map as 7a builds it), agent-parts.md
+   (the member's parts), pool.md §5 (a member no longer "passes its build page's asks to the lead": its
    port redirects), pool.md §10 (the page is the lead's), this doc folded in.
 
 Steps 1–3 need nothing from #878 and cut the measured cost (the busy core, the loop stalls, the
@@ -278,11 +290,12 @@ pack indexes). Step 4 needs only the lead's contact, which members already have.
    member's URL stays in the address bar, but every answer then crosses the member).
 3. **`Unknown` role** (NAS unread at start): start the member's parts (proposed: a subset, safe),
    or wait for the declaration.
-4. **The laptops' offline map, again** (6 Nov; the owner's: a product call). Decision 1 below and
-   docs/maplog.md's of 1 Nov keep it, but nothing on a laptop serves it: #874's retire removes the
-   server there, and neither laptop has a mirror any more (§8.3). Proposed: **on demand** (7a): the
-   menu bar's "Open the Map on This Mac" starts the app's server on 127.0.0.1 alone, which quits
-   after 30 min unused; nothing resident. Else: delete the laptops' map files (7b, ~1 GB each).
+4. **The laptops' offline map, again** (6 Nov). Decision 1 below and docs/maplog.md's of 1 Nov
+   (the owner's) keep it, but nothing on a laptop serves it since #874 (§8.3: a regression).
+   **Decided by the PM, 6 Nov: on demand (7a)**, since an offline map is what Scenic Roads is for:
+   the menu bar's "Open the Map on This Mac" starts the app's server on 127.0.0.1 alone, which
+   quits after 30 min unused; nothing resident. The owner may overrule it. The alternative, 7b:
+   drop the laptops' offline map and delete its files (~1 GB each).
 
 ## 8. After step 5: every service, where it runs (6 Nov)
 
@@ -341,8 +354,10 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 | Caddy, dev tools app and its backup | the mini | the mini | — |
 
 So the owner's split already holds in what runs: the laptops run jobs, their broker, the beat and
-the menu bar's local status. What #882 has left is disk (§8.1: lead and server leftovers) and the
-laptops' offline map (§8.3).
+the menu bar's local status, with what those need of their own Mac (control, the NAS pools, the
+budgets' proxy, the live store, the memory guard, the updater) and the pool thread until #878's
+gates. What #882 has left is disk (§8.1: lead and server leftovers) and the laptops' offline map
+(§8.3).
 
 ### 8.3 When something is away, and the offline map
 
@@ -350,16 +365,24 @@ laptops' offline map (§8.3).
   (no grant); its hand-offs stay in its saved state and are posted when the lead answers again
   (#878 step 6); its budgets' proxy gives nothing, so a Wikimedia job waits. Its menu says "Lead
   (<name>) out of touch since <time>" from `lead-view.json`; its port shows its own small page
-  (§3.3). The map and the build page are the mini's, so devices have neither until it's back,
-  except a laptop's offline map (below).
+  (§3.3). The map and the build page are the mini's, so devices have neither until it's back;
+  a laptop's offline map would serve it there, but none runs today (below).
 - **The M4 off the network:** over Tailscale it stays a member (docs/coordination.md §7.2): beats
   to the mini, the NAS at ~12 MB/s, jobs slower. Fully offline its jobs fail on the NAS and the
   lead keeps its leases until it's heard or 12 h pass (`held_by_away`). Off the network the M4 is
   also no test Mac: check.sh's tests part and publish's suite fail to reach it
   (`SCENIC_TEST_HOST`); that is the dev tools', not a role of #882's.
-- **A laptop's offline map.** Today none works: no laptop has a server (retired by #874) or a
-  mirror (neither has `mirror/`, `idx/` or `downloads.json` on 6 Nov); each has a saved map of
-  4–5 Nov. For one to work away from home (decision 4 in §7, proposed 7a), the laptop keeps:
+- **A laptop's offline map: broken since #874, a regression.** Until #874 every Mac's own server
+  served its map and its downloads on localhost with nothing else reachable: the M1's synced its
+  mirror until it retired on 31 Oct 00:37 (its `server.log`). Since then no laptop has a server
+  (`retire.rs` ends one at its start), and on 6 Nov neither has `mirror/`, `idx/` or
+  `downloads.json` (the M1 had ~15 GB of mirror on 31 Oct, §2); each has a saved map of 4–5 Nov
+  that nothing serves. The owner's decision of 1 Nov (docs/maplog.md) kept this map, so its loss
+  is a regression, not a choice. What a laptop has without the mini is what a phone has: the
+  map's page at map.brandontsang.net and its service worker's kept files (`web/public/sw.js`,
+  registered on any HTTPS host but localhost: the page, and data as viewed, at most 12,000
+  files), no downloaded region, no search, nothing it hasn't looked at. For the offline map to
+  work away from home again (decision 4 in §7: 7a), the laptop keeps:
   - the app's `server`, `web/` and fonts (in every app copy already);
   - its followed map: `~/Library/Caches/scenic/map/current.json.zst` (~20 MB) and `lead.json`;
   - its downloads: `mirror/`, `downloads.json`, `reserve.json`, `idx/` (the World ~10 GB, regions
@@ -368,15 +391,18 @@ laptops' offline map (§8.3).
     accepted versions), `names/` (3 MB), `profiles.json`, `region-areas.json`, `map-page`.
   Not needed by anything: `catalog/`, `~/Library/Caches/scenic/catalogue` (no catalogue read since
   #883 step 6; #883 step 9 deletes them) and the home's `regions.json` (no code reads it; written
-  22 Oct). **7a:** the server starts only when asked (the menu bar), answers 127.0.0.1 alone (no
+  22 Oct). **7a (the PM's decision; planned):** the server starts only when asked (the menu bar;
+  `retire.rs`'s start check then lets an on-demand server on a member run, installing no
+  LaunchAgent), answers 127.0.0.1 alone (no
   second map on the tailnet: the mini's is the devices'), follows the log while it runs (its
   `server/<host>` cursor; the NAS's snapshot or its saved map without the lead), copies and
   Updates downloads only while it runs (`mirror/<host>`), and quits 30 min after its last use
   (the server's own "in use"). Resident, it would cost what the mini's does (1.7–1.8 GB, 3 % of a
   core with the phone's use); on demand, nothing while closed. Its cursors hold the files of the
-  map it was at for at most `CURSOR_TTL_S` (7 days) after it closes. **7b:** the owner drops the
-  offline map: the agent deletes those files on a member (~1 GB each laptop with `accepted/`),
-  and `retire.rs`'s note that the offline map stays goes.
+  map it was at for at most `CURSOR_TTL_S` (7 days) after it closes. **7b (the alternative, if
+  the owner overrules 7a):** the offline map is dropped: the agent deletes those files on a
+  member (~1 GB each laptop with `accepted/`), and `retire.rs`'s note that the offline map stays
+  goes.
 
 ### 8.4 With the other architecture tasks
 
@@ -404,7 +430,7 @@ laptops' offline map (§8.3).
 | Step | Laptop saving | Mini |
 | --- | --- | --- |
 | 1–5 (built) | measured in §8.1: per laptop ~2.7–3.9 GB of agent footprint and 25–45 % of a core outside jobs; `pack-idx/` (555 MB) gone | the same services, as before |
-| 6, leftovers | ~1.1 GB disk each (`backups/` 1.1 GB, `status.json`, `coord/`'s lead files ~6 MB, stall samples 2 MB) | — |
+| 6, leftovers | ~1.1 GB disk each (`backups/` 1.1 GB, `status.json`, `coord/`'s lead files ~6 MB, stall samples 2 MB, the rest of §3.5's list KBs) | — |
 | 7a, map on demand | nothing resident; ~1.7 GB and ~3 % of a core avoided against a resident server; disk as downloaded | — |
 | 7b, no offline map | ~1 GB disk each (`accepted/` 0.9 GB and the rest of §8.3's list) | — |
 | 8, #878's gates | three threads (`nas-switch` ×2, `beat-nas`), the NAS status and mailbox writes at each start | the journal listings and old-member paths |
@@ -412,8 +438,8 @@ laptops' offline map (§8.3).
 
 Nothing moves to the mini that it doesn't run already, so its load stays as measured (the agent
 2.3 cores and 3.3 GB, the server 1.7–1.8 GB, 71 GB of disk free of 926). Each step ships alone:
-6 and 8 on the agent's start or a gate, 7 behind the owner's decision; none stops the build or the
-map.
+6 and 8 on the agent's start or a gate, 7 as the PM decided (7a, unless the owner overrules it);
+none stops the build or the map.
 
 ## Decisions (PM, 31 Oct night)
 

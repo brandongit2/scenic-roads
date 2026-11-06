@@ -724,7 +724,9 @@ job deletes and `--days` goes with the window). Nothing left edits `cli/mod.rs`,
 map are the lead's already, so with the lead fixed on the mini they are where #882 puts them, and
 #882 moves none of them. What #882 leaves on the laptops is what is a client here: their own map
 server for the offline map (the owner's decision of 1 Nov, 2) and its mirror (7b), each a cursor
-that `CURSOR_TTL` drops while a laptop is away, so a laptop never holds GC up for long. A lead moved
+that `CURSOR_TTL` drops while a laptop is away, so a laptop never holds GC up for long. None runs
+today: #874 retired the laptops' servers, a regression that #882 step 7a (planned: the server on
+demand) mends (docs/roles.md §8.3). A lead moved
 to another Mac starts its log from the NAS's snapshot and loses its queue (§4.5; the orphan sweep,
 8b, finds what it held); #882's fixed lead makes that rare, which is what 8b relies on.
 

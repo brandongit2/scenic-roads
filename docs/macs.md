@@ -278,7 +278,8 @@ installed by `tools/app/install.sh`, updated by the updater).
   one. Each map is handed to the server as one catalogue, swapped whole, never an older one than
   served. Its map is kept in `~/Library/Caches/scenic/map/current.json.zst` (at most every 10
   minutes) and read at a start, before the server answers: a start away from the lead and the NAS
-  serves it (the laptops' offline map, kept: owner's decision, 1 Nov). The lead's contact is kept
+  serves it (the laptops' offline map, kept: owner's decision, 1 Nov; but no laptop runs a server
+  since #874, so none works today: docs/roles.md §8.3, planned in #882 step 7a). The lead's contact is kept
   beside it (`lead.json`, mode 600, the build's key in it, as on the NAS); losing the folder means a
   cold start (the NAS's snapshot). A server started on a folder laid out as the NAS's (`--root`)
   serves that folder's newest snapshot.
