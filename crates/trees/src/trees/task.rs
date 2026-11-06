@@ -201,7 +201,7 @@ pub fn read_block(dir: &Path, (bx, by): (u32, u32)) -> Result<(Vec<Tile>, Vec<u8
 }
 
 /// The files of a block's results.
-pub fn block_files() -> Vec<String> {
+fn block_files() -> Vec<String> {
     LAYERS.iter().map(|l| format!("trees-{l}.tiles")).chain([TOPS.to_string()]).collect()
 }
 
@@ -395,9 +395,14 @@ pub fn here_run<'a>(
     move |row: &[(u32, u32)], out: &Path| super::blocks_files(shapes, inp, row, out).map(|_| ())
 }
 
-/// A coverage for tests (this module's, pipeline's trees_tests).
+/// A coverage for tests (this module's, pipeline's trees_tests), and the files of a block's results.
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit {
+    /// The files of a block's results (`block_files`), for pipeline's trees_tests.
+    pub fn block_files() -> Vec<String> {
+        super::block_files()
+    }
+
     /// Over blocks 8/132–133, rows 88 and 89: two rows of two in z6 tile 6/33/22, the squares'
     /// data in 8/132/88.
     pub const COV: &str = r#"{"shapes": [[[[5.7, 47.3], [8.3, 47.3], [8.3, 48.9], [5.7, 48.9]]], [[[20.0, 10.0], [21.0, 10.0], [21.0, 11.0]]]]}"#;

@@ -4,12 +4,10 @@
 #![cfg(test)]
 
 use crate::coord::client::{Client, LeaseCalls};
-use crate::trees::task::testkit::COV;
-use crate::trees::task::{block_files, parse_blocks, parse_squares, KIND};
-use crate::trees::testkit::{sources_file, squares_dir};
-use crate::trees::{
-    block_dir, blocks_files, chm_name, mask::Shapes, z3, Inputs, Run, Source, LAYERS, MID, ROWS_DIR, ZBLOCK,
-};
+use crate::trees::task::testkit::{block_files, COV};
+use crate::trees::task::{parse_blocks, parse_squares, KIND};
+use crate::trees::testkit::{sources_file, squares_dir, ROWS_DIR};
+use crate::trees::{block_dir, blocks_files, chm_name, mask::Shapes, z3, Inputs, Run, Source, LAYERS, MID, ZBLOCK};
 use offload::Offload;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

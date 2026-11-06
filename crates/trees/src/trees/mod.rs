@@ -35,6 +35,9 @@ pub mod testkit {
     use super::*;
     use std::io::Write;
 
+    /// Where a run keeps the canopy rows it read (`ROWS_DIR`), for pipeline's trees_tests.
+    pub const ROWS_DIR: &str = super::ROWS_DIR;
+
     /// The staged declarations' sources as a run reads them (inputs::inputs::sources::staged).
     pub(crate) fn run_sources() -> RunSources {
         RunSources::of(&inputs::inputs::sources::staged()).unwrap()
@@ -952,7 +955,7 @@ type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>, Source);
 
 /// Where a run keeps the canopy rows it read from the NAS (squares::rows_here), in its `out`;
 /// removed as the blocks are made.
-pub const ROWS_DIR: &str = "canopy-rows";
+const ROWS_DIR: &str = "canopy-rows";
 
 /// The canopy rows (first, last) of square (`top`, `left`) that `blocks` read; None when none.
 fn chm_rows(blocks: &[(u32, u32)], top: i32, left: i32) -> Option<(u32, u32)> {

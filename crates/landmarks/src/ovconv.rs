@@ -610,7 +610,7 @@ fn ferry_blocks(
 
 /// Drops from the manifest every pack of `layer` that a job making the whole layer didn't write this
 /// time: a tile it has nothing for any more (a pass without that ferry, a region removed). How many.
-pub fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
+fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
     let prefix = format!("layers/{layer}/");
     let stale: Vec<String> = out
         .manifest
@@ -742,6 +742,18 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     let wrote = write_tiles(out, "stations", STATION_LAYER, &made, &want, &mut ntiles, false)?;
     drop_stale(out, "stations", &wrote);
     Ok((kept.len(), ntiles))
+}
+
+/// `drop_stale` for pipeline's names_tests (its stale-sweep test opens the step's `Out` by the
+/// steps table's write sets, pipeline's).
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit {
+    use buildstore::out::Out;
+
+    /// `drop_stale`.
+    pub fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
+        super::drop_stale(out, layer, wrote)
+    }
 }
 
 #[cfg(test)]

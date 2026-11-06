@@ -70,6 +70,7 @@ bytes = "1"
 
 [dev-dependencies]
 trees = { path = "../trees", features = ["testkit"] }
+landmarks = { path = "../landmarks", features = ["testkit"] }
 terrain = { path = "../terrain", features = ["testkit"] }
 offload = { path = "../offload", features = ["testkit"] }
 inputs = { path = "../inputs", features = ["testkit"] }

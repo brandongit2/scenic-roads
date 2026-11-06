@@ -3,7 +3,7 @@
 //! docs/crates.md §6.2), so they're pipeline's, as inputs_tests are.
 #![cfg(test)]
 
-use crate::ovconv::drop_stale;
+use crate::ovconv::testkit::drop_stale;
 use buildstore::out::Out;
 use std::collections::BTreeMap;
 
