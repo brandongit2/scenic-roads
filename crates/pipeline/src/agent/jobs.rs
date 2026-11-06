@@ -186,14 +186,10 @@ impl Live {
     }
 
     /// Its job's mean NAS rate (crate::budget::nas::Rate) over the `secs` since `base` (an earlier
-    /// beat's view of the same job; None: since it began): what it moved over that time; None when
-    /// either says not all it moved (`nas_moved`).
-    pub fn nas_rate(&self, base: Option<&Live>, secs: f64) -> Option<crate::budget::nas::Rate> {
-        let now = self.nas_moved()?;
-        let then = match base {
-            Some(b) => b.nas_moved()?,
-            None => [0; 5],
-        };
+    /// beat's view of the same job): what it moved over that time; None when either says not all
+    /// it moved (`nas_moved`).
+    pub fn nas_rate(&self, base: &Live, secs: f64) -> Option<crate::budget::nas::Rate> {
+        let (now, then) = (self.nas_moved()?, base.nas_moved()?);
         let s = secs.max(1.0);
         let per = |i: usize| now[i].saturating_sub(then[i]) as f64 / s;
         Some(crate::budget::nas::Rate {

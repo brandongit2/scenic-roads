@@ -744,7 +744,8 @@ impl Sched {
     /// What leased job `l` weighs of the NAS budget now, and whether it downloads (`job_nas`): its
     /// targets' measured rates, as predicted, until it has run past the time they predict it takes
     /// its worker (`secs_of`, summed; a target of no known time, `OWN_AGE`); then the greater of its
-    /// mean rate since it was granted and its rate over its last minute or so of beats
+    /// mean rate since its lease's first beat (`Lease::mean`: its job's counts run from its start,
+    /// before a lease taken up at a restart or a take-over) and its rate over its last minute or so of beats
     /// (`Lease::lately`), by what its job has moved on the NAS as its worker's beats said
     /// (`Lease::live`; a job quiet early and heavy late is weighed by its heavy stretch within two
     /// minutes, where its mean would lag; one quiet a moment between heavy stretches keeps its
@@ -757,7 +758,9 @@ impl Sched {
     pub(super) fn job_weight(&self, nw: &NasWeigher, l: &Lease, now: Instant) -> (u32, bool) {
         let Work::Job { step, targets } = &l.work else { return (0, false) };
         let (w, dl) = Self::job_nas(nw, step, Some(&l.worker), targets.iter().map(|t| t.0.as_str()));
-        let (Some(live), Some(at)) = (l.live.as_ref(), l.live_at) else { return (w, dl) };
+        if l.live.is_none() {
+            return (w, dl);
+        }
         let names: Vec<&str> =
             if targets.is_empty() { vec![""] } else { targets.iter().map(|t| t.0.as_str()).collect() };
         // (No time known for a target: `OWN_AGE`, so an unmeasured job is weighed by what it does
@@ -768,8 +771,7 @@ impl Sched {
         if now.saturating_duration_since(l.granted).as_secs() <= predicted {
             return (w, dl);
         }
-        let mean = live.nas_rate(None, at.saturating_duration_since(l.granted).as_secs_f64());
-        match (mean, l.lately()) {
+        match (l.mean(), l.lately()) {
             (None, _) => (w, dl),
             (Some(m), r) => (nw.limits.weight(m).max(r.map_or(0, |r| nw.limits.weight(r))), dl),
         }

@@ -54,6 +54,10 @@ pub struct Lease {
     pub live_at: Option<Instant>,
     #[serde(skip)]
     pub window: std::collections::VecDeque<(Instant, crate::agent::jobs::Live)>,
+    /// The first live view it heard, and when: what its job's mean NAS rate is reckoned from
+    /// (`Lease::mean`; in memory alone).
+    #[serde(skip)]
+    pub first: Option<(Instant, crate::agent::jobs::Live)>,
     /// Its job's stillness as its worker's beats show it (docs/pool.md §10, Flags; in memory
     /// alone, a lead restarted counts from its load): the last beat heard, the last at which its
     /// work moved (None: none yet, counted from its grant: `Lease::still`), and the longest stretch
@@ -101,9 +105,24 @@ impl Lease {
     /// Its job's NAS rate over its last `WINDOW` or so of beats: None until a view said `WINDOW`
     /// before the newest, or when one doesn't say all it moved (crate::agent::jobs::Live::nas_rate).
     pub fn lately(&self) -> Option<crate::budget::nas::Rate> {
+        self.rate_since(self.window.front())
+    }
+
+    /// Its job's mean NAS rate since the first view its lease heard (`first`): what it moved from
+    /// that view to the newest over the time between them. A view's counts run from its job's
+    /// start, which may be long before its lease (one taken up at a lead's restart, or held again
+    /// at an agent's take-over), so they're never put over the lease's own time (task #991: a
+    /// 5 MB/s download taken over five hours in weighed 56 MB/s, two thirds of the NAS). None
+    /// until the two are `WINDOW` apart, or when one doesn't say all it moved.
+    pub fn mean(&self) -> Option<crate::budget::nas::Rate> {
+        self.rate_since(self.first.as_ref())
+    }
+
+    /// What its job moved from view `from` to the newest, a second, the two `WINDOW` or more apart.
+    fn rate_since(&self, from: Option<&(Instant, crate::agent::jobs::Live)>) -> Option<crate::budget::nas::Rate> {
         let (live, at) = (self.live.as_ref()?, self.live_at?);
-        let (t, base) = self.window.front().filter(|(t, _)| at.saturating_duration_since(*t) >= WINDOW)?;
-        live.nas_rate(Some(base), at.saturating_duration_since(*t).as_secs_f64())
+        let (t, base) = from.filter(|(t, _)| at.saturating_duration_since(*t) >= WINDOW)?;
+        live.nas_rate(base, at.saturating_duration_since(*t).as_secs_f64())
     }
 
     /// How long its job's work has not moved, by the beats heard: from the last beat at which it
@@ -507,6 +526,7 @@ impl Leases {
                 live: None,
                 live_at: None,
                 window: Default::default(),
+                first: None,
                 heard: None,
                 moved: None,
                 still_most: 0,
@@ -600,6 +620,9 @@ impl Leases {
                     }
                     while l.window.get(1).is_some_and(|(t, _)| now.saturating_duration_since(*t) >= WINDOW) {
                         l.window.pop_front();
+                    }
+                    if l.first.is_none() {
+                        l.first = Some((now, v.clone()));
                     }
                     l.live = Some(v);
                     l.live_at = Some(now);
@@ -818,8 +841,8 @@ mod tests {
 
     /// Task #925 review: a lease keeps its job's newest live view and one from one to two
     /// `WINDOW`s before it, so its recent NAS rate is their difference: a job quiet for minutes
-    /// then reading hard shows its hard reads within two minutes, where its mean since its start
-    /// lags. A view not saying all it moved (an older agent's: bytes alone) gives no rate.
+    /// then reading hard shows its hard reads within two minutes, where its mean since its lease's
+    /// first beat (`Lease::mean`) lags. A view not saying all it moved (an older agent's: bytes alone) gives no rate.
     #[test]
     fn a_lease_keeps_a_recent_window_of_what_its_job_moved() {
         let t0 = Instant::now();
@@ -846,10 +869,11 @@ mod tests {
         let span = x.live_at.unwrap().duration_since(x.window.front().unwrap().0);
         assert!(span >= WINDOW && span < 2 * WINDOW, "{span:?}");
         let lately = x.lately().unwrap().bytes_s;
-        let mean = x.live.as_ref().unwrap().nas_rate(None, 900.0).unwrap().bytes_s;
-        assert!((lately - 100e6).abs() < 1.0 && mean < 34e6, "{lately} {mean}");
+        // (Its mean since its first beat, at 20 s: 30 GB over 880 s.)
+        let mean = x.mean().unwrap().bytes_s;
+        assert!((lately - 100e6).abs() < 1.0 && (mean - 30e9 / 880.0).abs() < 1.0, "{lately} {mean}");
         let old = crate::agent::jobs::Live { nas_read: Some(b), nas_wrote: Some(0), ..Default::default() };
-        assert!(old.nas_rate(None, 900.0).is_none());
+        assert!(old.nas_rate(&moved(0), 900.0).is_none() && moved(b).nas_rate(&old, 900.0).is_none());
     }
 
     fn job(ts: &[(&str, &str)]) -> Work {

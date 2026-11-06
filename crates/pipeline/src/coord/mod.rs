@@ -8488,6 +8488,76 @@ mod tests {
         }
     }
 
+    /// Task #991: a job's beats count what it moved since it began, and a lease may be far younger
+    /// than its job: one taken up at a lead's restart, or held again at an agent's take-over. Its
+    /// mean rate is what it moved since its lease's first beat over the time since, never all its
+    /// job moved over the lease's time. The lead's records of 6 Nov 18:00: its own bld-fetch, 5h20m
+    /// in at 5.4 MB/s (103 GB moved) when its agent was last restarted, the day's best probes for
+    /// the NAS's rates. Before, 33 min after the take-over it weighed 667 of the NAS's 1000 and the
+    /// lead's own terrain-hi (356) waited; now it weighs what it moves, 64, and terrain-hi goes.
+    /// A busy NAS is still held: once the job moves 70 MB/s, its room is gone within two minutes.
+    #[test]
+    fn a_job_taken_over_is_weighed_by_what_it_moved_since_its_lease() {
+        let (_d, c, _w, clock) = every((0, 0));
+        c.set_nas(Some(crate::budget::nas::Limits {
+            bytes_s: 84_473_317.0,
+            creates_s: 47.9,
+            listed_s: 79_844.7,
+            stats_s: 289_083.5,
+            deletes_s: 685.4,
+            downloads: None,
+            held: false,
+        }));
+        // (terrain-hi's target: 30 MB/s for ten minutes, 356 thousandths.)
+        let cost = Cost {
+            peak_mb: 2000,
+            secs: 600,
+            worker: None,
+            v: cost_version("terrain-hi"),
+            sizes: [("threads".to_string(), 1), ("bytes".to_string(), 18_000_000_000)].into(),
+            ..Default::default()
+        };
+        c.add_costs_by(&[(cost_key("terrain-hi", "6/2/1"), cost)], "m4");
+        c.add_disks(&[(cost_key("terrain-hi", "6/2/1"), 100)]);
+        // (bld-fetch run before, not measured the way it runs now: a cold job sized, its NAS rate
+        // not known.)
+        ran_before(&c, "bld-fetch");
+        let fetch = c.hold("bld-fetch", &[("bld-fetch".into(), "k".into())]).expect("taken over");
+        let offer =
+            Offer { step: "terrain-hi".into(), targets: vec![("6/2/1".into(), "k 6/2/1".into(), 0)], job: None };
+        c.offer("p", vec![offer]);
+        let a = every_ask("m4", "terrain-hi", 64_000, 100_000);
+        let moved = |b: u64| crate::agent::jobs::Live {
+            nas_read: Some(0),
+            nas_wrote: Some(b),
+            nas_creates: Some(0),
+            nas_listed: Some(0),
+            nas_stats: Some(0),
+            nas_deletes: Some(0),
+            ..Default::default()
+        };
+        // (A beat every 20 s for 33 min, 5.4 MB/s on from 103 GB.)
+        let mut b: u64 = 103_000_000_000;
+        for _ in 0..99 {
+            clock.advance(Duration::from_secs(20));
+            b += 108_000_000;
+            assert!(c.renew_live(fetch, None, Some(moved(b))));
+        }
+        let share = c.nas_shares()["m4"];
+        assert!((60..=70).contains(&share), "weighed by what it moves: {share}");
+        let g = c.ask_own(&a, &BTreeSet::new(), 0).expect("terrain-hi beside it");
+        assert!(matches!(&g.work, Granted::Job { targets, .. } if targets[0].0 == "6/2/1"));
+        c.finish(g.lease, &[]);
+        // (It moves 70 MB/s: its last minute's rate weighs 829, and terrain-hi waits.)
+        for _ in 0..6 {
+            clock.advance(Duration::from_secs(20));
+            b += 1_400_000_000;
+            assert!(c.renew_live(fetch, None, Some(moved(b))));
+        }
+        assert!(c.nas_shares()["m4"] > 800, "{:?}", c.nas_shares());
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "the NAS busy: waits");
+    }
+
     /// A job heavier than the whole (its weight capped at the whole) goes while the lead's own jobs
     /// alone hold weight, not only with nothing leased: the lead's jobs never starve it. One more
     /// waits; a target held back past half an hour is said (`nas_waits`), and let go once granted.
