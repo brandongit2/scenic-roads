@@ -1525,7 +1525,7 @@ impl Planner {
             // (The lakes filled from Canada's own data first: while the lakefill job has work, unless
             // it has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with
             // a new app), the jobs that read the fill wait (`hold_for_lakefill`: the water, the
-            // terrain's water digests, the catalogue), so the pass's water, terrain and map all have
+            // depth's water digests, the catalogue), so the pass's water, depth and map all have
             // the new fill, or after that many failures all go without it. While the source's folder
             // can't be read, or while its source isn't declared, they wait too.)
             match crate::lakefill::run::planned_source(root, &manifest) {

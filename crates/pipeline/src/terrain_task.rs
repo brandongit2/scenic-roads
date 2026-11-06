@@ -1,23 +1,20 @@
 //! A terrain z6 tile's z8 subtrees as tasks (kind `terrainsub`; docs/workers.md §3, docs/steps.md
 //! Terrain): a z6 tile (a z6 tile's levels z12 → z9, crate::terrain_pack::build_piece) is 16 z8
 //! subtrees, each a z8 tile's z9–12 tiles near the coverage. A tile's making reads only its own raw
-//! tile (the pool's base tile: crate::terrain_base) and its children, all within its subtree, and
-//! the water at its place: so a subtree made alone (a group of one, `groups`) makes each of its
-//! tiles as the whole z6 tile's run does, and the z6 tile's run of the others the same as of the
-//! whole.
+//! tile (the pool's base tile: crate::terrain_base) and its children, all within its subtree: so a
+//! subtree made alone (a group of one, `groups`) makes each of its tiles as the whole z6 tile's run
+//! does, and the z6 tile's run of the others the same as of the whole.
 //!
 //! A task's one file (`u/in.sect`; docs/formats.md) holds everything its group reads, cut by the
 //! job from what it reads itself: the raw tiles (`r-<z>-<x>-<y>`, as the job's sampled them; one
-//! no dataset has data in, absent), the water's polygons as the terrain reads them (`w-…`: its sea, crate::terrain_water::terrain_polys), its meta
-//! the z6 tile, the group's levels and whether the job's run has the water. A worker reads nothing else: no
-//! NAS, no network. Its run (the program `terrainsub`) writes the group's tiles (`u/hi.sect`) and
+//! no dataset has data in, absent), its meta the z6 tile, the group's levels and its tiles at their
+//! place's finest zoom. A worker reads nothing else: no NAS, no network. Its run (the program `terrainsub`) writes the group's tiles (`u/hi.sect`) and
 //! its mid's part (`u/mid.sect`, crate::terrain_pack::write_mid's), which the job takes into the
 //! z6 tile as if made here: the same bytes.
 
 use crate::offload::{Offered, Offload, Patience, Settled};
 use crate::terrain_pack::{Made, Mid, RawSource, Sources};
-use crate::terrain_water::{Kind, Poly, WaterSource};
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -43,8 +40,8 @@ pub fn offer_ahead() -> bool {
 }
 /// The files' format (4: the raw tiles by the rule, crate::terrain_pack::Fills, and the tiles at
 /// their place's finest zoom, `Meta::native`. 5: the water's sea alone, as the terrain reads it:
-/// no lake, river or course).
-const FMT: u64 = 5;
+/// no lake, river or course. 6: no water, task #975: the terrain keeps the source's heights at sea).
+const FMT: u64 = 6;
 
 /// A z6 tile's levels, or a part of them: (zoom, its tiles), z12 → z9.
 pub type Levels = Vec<(u8, Vec<(u32, u32)>)>;
@@ -102,67 +99,6 @@ fn name(prefix: &str, z: u8, x: u32, y: u32) -> String {
     format!("{prefix}-{z}-{x}-{y}")
 }
 
-/// Polygons as a task holds them: each its kind (1 sea, 2 lake, 3 river), key, rings, each ring's points
-/// (x, y f64), little-endian, counts u32.
-pub fn polys_bytes(polys: &[Poly]) -> Vec<u8> {
-    let mut b = Vec::new();
-    b.extend((polys.len() as u32).to_le_bytes());
-    for p in polys {
-        b.push(match p.kind {
-            Kind::Sea => 1,
-            Kind::Lake => 2,
-            Kind::River => 3,
-        });
-        b.extend(p.id.to_le_bytes());
-        b.extend((p.rings.len() as u32).to_le_bytes());
-        for r in &p.rings {
-            b.extend((r.len() as u32).to_le_bytes());
-            for pt in r {
-                b.extend(pt[0].to_le_bytes());
-                b.extend(pt[1].to_le_bytes());
-            }
-        }
-    }
-    b
-}
-
-/// `polys_bytes` read back.
-pub fn polys_from(b: &[u8]) -> Result<Vec<Poly>> {
-    let mut at = 0usize;
-    let mut take = |n: usize| -> Result<&[u8]> {
-        let s = b.get(at..at + n).context("water polygons cut short")?;
-        at += n;
-        Ok(s)
-    };
-    let u32_ = |s: &[u8]| u32::from_le_bytes(s.try_into().unwrap()) as usize;
-    let n = u32_(take(4)?);
-    let mut out = Vec::with_capacity(n.min(1 << 16));
-    for _ in 0..n {
-        let kind = match take(1)?[0] {
-            1 => Kind::Sea,
-            2 => Kind::Lake,
-            3 => Kind::River,
-            k => bail!("a water polygon of kind {k}"),
-        };
-        let id = u64::from_le_bytes(take(8)?.try_into().unwrap());
-        let nr = u32_(take(4)?);
-        let mut rings = Vec::with_capacity(nr.min(1 << 16));
-        for _ in 0..nr {
-            let np = u32_(take(4)?);
-            let mut r = Vec::with_capacity(np.min(1 << 20));
-            for _ in 0..np {
-                let x = f64::from_le_bytes(take(8)?.try_into().unwrap());
-                let y = f64::from_le_bytes(take(8)?.try_into().unwrap());
-                r.push([x, y]);
-            }
-            rings.push(r);
-        }
-        out.push(Poly { kind, id, rings });
-    }
-    ensure!(at == b.len(), "water polygons with {} bytes more", b.len() - at);
-    Ok(out)
-}
-
 /// What a task's file says, but for its sections.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Meta {
@@ -173,8 +109,6 @@ pub struct Meta {
     pub piece: String,
     pub subtrees: String,
     pub levels: Levels,
-    /// Whether the job's run has the water (crate::terrain_pack::Sources).
-    pub water: bool,
     /// Its tiles at their place's finest zoom (crate::terrain_pack::Sources::native: rounded to
     /// the centimetre).
     pub native: Vec<(u8, u32, u32)>,
@@ -206,10 +140,6 @@ pub fn cut(
     let reads: Vec<(u8, u32, u32)> = raw_read(levels).into_iter().collect();
     let got: Vec<Result<Option<Vec<u8>>>> = reads.par_iter().map(|&(z, x, y)| raw.get(z, x, y).map(|r| r.0)).collect();
     let tiles: Vec<(u8, u32, u32)> = levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| (*z, x, y))).collect();
-    let water: Vec<Result<Vec<Poly>>> = match src.water {
-        Some(w) => tiles.par_iter().map(|&(z, x, y)| crate::terrain_water::terrain_polys(w, z, x, y)).collect(),
-        None => Vec::new(),
-    };
     let meta = Meta {
         fmt: FMT,
         step: KIND.into(),
@@ -217,7 +147,6 @@ pub fn cut(
         piece: format!("6/{}/{}", piece.0, piece.1),
         subtrees: subtrees_arg(group),
         levels: levels.clone(),
-        water: src.water.is_some(),
         native: tiles.iter().copied().filter(|&(z, x, y)| src.native.is_some_and(|n| n(z, x, y))).collect(),
     };
     let mut w = store::sect::SectWriter::create(path, serde_json::to_value(&meta)?)?;
@@ -241,12 +170,6 @@ pub fn cut(
             if (0..4u32).any(|k| made.contains(&(tz + 1, 2 * x + (k & 1), 2 * y + (k >> 1)))) {
                 made.insert((tz, x, y));
             }
-        }
-    }
-    for (&(z, x, y), p) in tiles.iter().zip(water) {
-        let p = p.with_context(|| format!("the water of {z}/{x}/{y}"))?;
-        if !p.is_empty() {
-            w.add(&name("w", z, x, y), &polys_bytes(&p))?;
         }
     }
     let bytes = w.finish()?;
@@ -293,7 +216,7 @@ impl Inputs {
     pub fn make(&self) -> Result<(Vec<Made>, Mid)> {
         let native: std::collections::BTreeSet<(u8, u32, u32)> = self.meta.native.iter().copied().collect();
         let is = |z: u8, x: u32, y: u32| native.contains(&(z, x, y));
-        let src = Sources { water: self.meta.water.then_some(self as &dyn WaterSource), native: Some(&is), sets: &[] };
+        let src = Sources { native: Some(&is), sets: &[] };
         crate::terrain_pack::make_piece(self, &src, self.meta.levels.clone())
     }
 }
@@ -313,20 +236,6 @@ impl RawSource for Inputs {
     ) -> Result<usize> {
         done.fetch_add(tiles.len() as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(0)
-    }
-}
-
-impl WaterSource for Inputs {
-    /// The job's `terrain_polys`, as cut.
-    fn polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
-        let n = name("w", z, x, y);
-        match self.r.section(&n) {
-            Some(_) => polys_from(&self.r.read(&n)?),
-            None => Ok(Vec::new()),
-        }
-    }
-    fn pin(&self) -> String {
-        "a terrain task's".into()
     }
 }
 
@@ -401,7 +310,7 @@ pub fn spec(group: &[(u32, u32)], version: &str, input: u64) -> serde_json::Valu
 /// A group's predicted memory on a worker (MB), until a worker measures it (the coordinator's
 /// `terrainsub 8/x/y`): its file twice (the worker holds it, and the program reads its sections), and
 /// its levels' tiles as the run holds them, a level at a time (each its raw tile, its elevations
-/// three times over, its water and AWS's z9 tile over it: ~1.3 MB at most), with room.
+/// three times over and AWS's z9 tile over it: ~1.3 MB at most), with room.
 pub fn mem_mb(input: u64, levels: &Levels) -> u64 {
     let most = levels.iter().map(|(_, t)| t.len()).max().unwrap_or(0) as u64;
     (input >> 20) * 2 + most * 13 / 10 + 120
@@ -605,63 +514,6 @@ mod tests {
     use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles};
     use std::path::PathBuf;
 
-    /// Water across two subtrees' edge (`a` west or north of `b`): a lake straddling it (key 9),
-    /// one inside `a` alone (key 11), and the sea in the far north-west corner of `a`, in every
-    /// tile from z6 (as the basemap draws them).
-    struct Across {
-        a: (u32, u32),
-        b: (u32, u32),
-    }
-
-    impl WaterSource for Across {
-        fn polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
-            if z < 6 {
-                return Ok(Vec::new());
-            }
-            let n = (1u64 << z) as f64 * 256.0;
-            let px = |lon: f64| roadcore::geo::merc_x(lon) * n - x as f64 * 256.0;
-            let py = |lat: f64| roadcore::geo::merc_y(lat) * n - y as f64 * 256.0;
-            let rect = |kind, id, [w, s, e, nn]: [f64; 4]| Poly {
-                kind,
-                id,
-                rings: vec![vec![[px(w), py(nn)], [px(e), py(nn)], [px(e), py(s)], [px(w), py(s)]]],
-            };
-            let (a, b) =
-                (roadcore::geo::tile_box(8, self.a.0, self.a.1), roadcore::geo::tile_box(8, self.b.0, self.b.1));
-            // (Near the coverage, at `a`'s south-east corner: the edge `b` east of `a`, or south.)
-            let _ = b;
-            let (ce, cs) = (a[2], a[1]);
-            let lake = if self.b.0 > self.a.0 {
-                [ce - 0.03, cs + 0.01, ce + 0.03, cs + 0.03]
-            } else {
-                [ce - 0.08, cs - 0.01, ce - 0.03, cs + 0.01]
-            };
-            let inner = [ce - 0.12, cs + 0.03, ce - 0.08, cs + 0.05];
-            let sea = [ce - 0.2, cs + 0.06, ce - 0.15, cs + 0.08];
-            let all = [rect(Kind::Lake, 9, lake), rect(Kind::Lake, 11, inner), rect(Kind::Sea, 0, sea)];
-            // (A tile has the polygons that meet it.)
-            let n2 = (1u64 << z) as f64;
-            let tb = [
-                roadcore::geo::merc_lon(x as f64 / n2),
-                roadcore::geo::merc_lat((y + 1) as f64 / n2),
-                roadcore::geo::merc_lon((x + 1) as f64 / n2),
-                roadcore::geo::merc_lat(y as f64 / n2),
-            ];
-            let meets = |r: [f64; 4]| r[0] < tb[2] && r[2] > tb[0] && r[1] < tb[3] && r[3] > tb[1];
-            Ok([(lake, 0usize), (inner, 1), (sea, 2)]
-                .into_iter()
-                .filter(|(r, _)| meets(*r))
-                .map(|(_, i)| {
-                    let p = &all[i];
-                    Poly { kind: p.kind, id: p.id, rings: p.rings.clone() }
-                })
-                .collect())
-        }
-        fn pin(&self) -> String {
-            "test".into()
-        }
-    }
-
     /// A z6 tile in the far north, the coverage at a corner of four of its subtrees (12.656°E, 70.10°N: z8 columns 136–137, rows 56–57, in z6
     /// tile 6/34/14), and its raw tiles under `d`: the z6 tile, its coverage, its raw tiles' cache.
     fn north_piece(d: &Path) -> ((u32, u32), Coverage, RawTiles) {
@@ -741,7 +593,7 @@ mod tests {
         let (t, cov, raw) = north_piece(d.path());
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
         let subs = groups(&levels);
-        let water = Across { a: subs[0][0], b: subs[1][0] };
+        let _ = subs;
         // (Its packs and mid as saved, their content names the bytes' digests; None when stopped.)
         let run = |name: &str, src: &Sources, stop: Option<usize>| -> Option<Vec<(String, String)>> {
             let root = d.path().join(name);
@@ -764,8 +616,9 @@ mod tests {
                     .collect(),
             )
         };
-        let with = Sources { water: Some(&water), sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
-        let without = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
+        let with = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
+        let every: &(dyn Fn(u8, u32, u32) -> bool + Sync) = &|_, _, _| true;
+        let without = Sources { native: Some(every), sets: crate::terrain_zoom::test_world_ref() };
         let fresh = run("fresh", &with, None).unwrap();
         assert_eq!(fresh.len(), 2, "{fresh:?}");
         // Stopped after each of its blocks and level ends in turn, then resumed: the same bytes.
@@ -782,7 +635,7 @@ mod tests {
         // Stopped twice, the second time further on.
         assert!(run("twice", &with, Some(2)).is_none() && run("twice", &with, Some(3)).is_none());
         assert_eq!(run("twice", &with, None).as_ref(), Some(&fresh), "stopped twice");
-        // Another input (no water) voids the log: the dry run's bytes, not the wet log's.
+        // Another input (every tile at its finest zoom) voids the log: that run's bytes, not the log's.
         let dry = run("dry", &without, None).unwrap();
         assert_ne!(dry, fresh);
         assert!(run("voided", &with, Some(kept - 1)).is_none());
@@ -796,16 +649,7 @@ mod tests {
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
         let gs = groups(&levels);
         assert_eq!(gs, [vec![(136, 56)], vec![(136, 57)], vec![(137, 56)], vec![(137, 57)]]);
-        // Two subtrees side by side (in a column, or a row): a lake across their edge, which keeps
-        // the source's heights, so each subtree is still made alone.
-        let (a, b) = gs
-            .iter()
-            .flatten()
-            .flat_map(|&a| gs.iter().flatten().map(move |&b| (a, b)))
-            .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
-            .unwrap();
-        let water = Across { a, b };
-        let src = Sources { water: Some(&water), sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
+        let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         // The whole z6 tile, and each group from its file: the same tiles, the same mid.
         let whole = crate::terrain_pack::make_piece(&raw, &src, levels.clone()).unwrap();
         // Each level's tiles all made at once (the way before task #447), and in blocks of one
@@ -840,15 +684,7 @@ mod tests {
         let g = &gs[0];
         let inp = Inputs::open(&d.path().join(format!("t-{}-{}", g[0].0, g[0].1)).join(INPUT)).unwrap();
         assert!(RawSource::get(&inp, 12, 0, 0).is_err());
-        // Polygons read back bit for bit.
-        let p = water.polys(12, (a.0 << 4) + 15, (a.1 << 4) + 15).unwrap();
-        assert!(!p.is_empty(), "the lake at its corner");
-        let back = polys_from(&polys_bytes(&p)).unwrap();
-        assert_eq!(
-            back.iter().map(|q| (q.kind, q.id, q.rings.clone())).collect::<Vec<_>>(),
-            p.iter().map(|q| (q.kind, q.id, q.rings.clone())).collect::<Vec<_>>()
-        );
-        assert!(polys_from(&polys_bytes(&p)[..10]).is_err());
+        let (a, b) = (gs[0][0], gs[1][0]);
         assert_eq!(parse_subtrees(&subtrees_arg(&[a, b])).unwrap(), [a, b]);
     }
 
@@ -940,15 +776,7 @@ mod tests {
         let p = d.path();
         let (t, cov, raw) = north_piece(p);
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
-        let subs = groups(&levels);
-        let (a, b) = subs
-            .iter()
-            .flatten()
-            .flat_map(|&a| subs.iter().flatten().map(move |&b| (a, b)))
-            .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
-            .unwrap();
-        let water = Across { a, b };
-        let src = Sources { water: Some(&water), sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
+        let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         let alone = piece(p, "alone", t, &cov, &raw, &src, None);
         assert!(alone.0.is_some() && alone.1.is_some());
         let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
@@ -1008,8 +836,7 @@ mod tests {
             &crate::terrain_base::terrarium_template(&store::nasfs::NasRoot::local_for_test(&root), &out.manifest)
                 .unwrap(),
         );
-        let water = crate::terrain_pack::open_water(&out).unwrap();
-        let src = Sources { water: Some(&water), sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
+        let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         let (c, port) = crate::coord::start_for_test(&scratch.join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let off = Offload::at(url.clone(), c.job_token.clone(), &scratch.join("offload"))

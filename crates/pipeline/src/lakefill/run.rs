@@ -1248,7 +1248,7 @@ mod tests {
         done2.record("lakefill", &w.targets);
         assert!(build::lakefill_work(date, &m, &done2, Some("a.zip 1")).is_none(), "done");
         assert!(build::lakefill_work(date, &m, &done2, Some("a.zip 2")).is_some(), "a zip replaced");
-        // The water's key and the terrain's water pin take the fill once the manifest has it.
+        // The water's key and the depth's water pin take the fill once the manifest has it.
         let water = build::water_work(&crate::agent::build::PassCtx::default().ctx(date, &m), &done).unwrap().targets
             [0]
         .1

@@ -361,38 +361,17 @@ fn lines_of(head: &str, s: &str) -> Vec<String> {
     s.lines().map(|l| if head.is_empty() { l.to_string() } else { format!("{head} {l}") }).collect()
 }
 
-/// The terrain's water source (crate::terrain_pack::water_source_pin: the latest pass's basemap's
+/// The depth's water source (crate::terrain_pack::water_source_pin: the latest pass's basemap's
 /// digests' file), required: the terrain-water job's.
 pub fn water_pin(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(vec![crate::terrain_pack::water_source_pin(x.m)?])
 }
 
-/// What the terrain's and the depth's targets read of the water (`build::water_wants`, and
-/// `build::depth_water_reads` once the depth's sources are read): what the terrain-water job
-/// digests, "<target> <from>" each.
+/// What the depth's targets read of the water (`build::depth_water_reads`): what the terrain-water
+/// job digests, "<target> <from>" each; None while the depth's sources can't be read.
 pub fn water_wants(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let mut wants = super::build::water_wants(&x.tiles.deep(x.m, x.cov)?);
-    if let Some(d) = x.tiles.depth(x.m) {
-        wants.extend(super::build::depth_water_reads(x.cov, &d).into_iter().map(|(t, f, _)| (t, f)));
-        wants.sort();
-        wants.dedup();
-    }
-    Some(wants.into_iter().map(|(t, f)| format!("{t} {f}")).collect())
-}
-
-/// The water a terrain target reads (`build::water_key`: its digest from the terrain-water job's
-/// file, made from what it reads: a z6 tile's tiles near the coverage, an assembly's area), "-"
-/// without a water source; None while its digest isn't there.
-pub fn water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let u = TileId::parse(t)?;
-    let pin = crate::terrain_pack::water_source_pin(x.m);
-    let idx = pin.as_deref().and_then(|p| x.tiles.water_idx(x.m, p));
-    let from = match u.z {
-        6 => super::build::piece_coverage(x.cov, &x.tiles.zoom_sets(x.m)?, (u.x, u.y)),
-        z if z == crate::terrain_deep::PACK_Z => x.tiles.deep(x.m, x.cov)?.coverage((u.x, u.y)),
-        _ => crate::terrain_water::AREA_FROM.to_string(),
-    };
-    Some(vec![super::build::water_key(pin.as_deref(), idx, t, &from)?])
+    let d = x.tiles.depth(x.m)?;
+    Some(super::build::depth_water_reads(x.cov, &d).into_iter().map(|(t, f, _)| format!("{t} {f}")).collect())
 }
 
 /// The elevation pool's datasets meeting a terrain target's tile (`TerrainTiles::terrain_datasets`:

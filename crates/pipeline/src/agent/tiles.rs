@@ -50,7 +50,7 @@ pub struct TerrainTiles {
     /// z6 tile's terrain digest (build::unit_terrain), by z6 tile. Shared by the copies, so a count
     /// off the loop (Agent::start_as_built) and the loop fill and read one.
     memo: std::sync::Arc<std::sync::Mutex<HashMap<String, (String, Kept)>>>,
-    /// The terrain's water digests the manifest names (crate::terrain_water::WaterIdx), by content
+    /// The depth's water digests the manifest names (crate::terrain_water::WaterIdx), by content
     /// name: read as the indexes are (kept beside them as `<hash16>.water`), a few KB each.
     water: HashMap<String, crate::terrain_water::WaterIdx>,
     /// The declared elevation datasets the z6 tiles' keys name once the build reads them

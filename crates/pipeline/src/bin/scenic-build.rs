@@ -121,8 +121,8 @@
 //!                                (pipeline::gtfs::railcount on the feeds and the static
 //!                                timetables of index i, else the records' accepted one, then
 //!                                railfreq on the pass's rail set), as global/railfreq
-//!   terrain-water [--pass d]     the terrain's water digests (pipeline::terrain_water::WaterIdx):
-//!                                what each terrain z6 tile and assembly near the coverage reads of
+//!   terrain-water [--pass d]     the depth's water digests (pipeline::terrain_water::WaterIdx):
+//!                                what each depth z6 tile and assembly near the coverage reads of
 //!                                the latest basemap's water, as work/water-idx/<hash16 of its
 //!                                pin>; those made before for the same reads kept
 //!   inputs <unit> [--full] [--listing f]  a gate unit's inputs folder checked (pipeline::inputs::gate): its clean
@@ -979,7 +979,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
             let raw = raw_tiles(&out, &raw_dir)?;
-            let water = pipeline::terrain_pack::open_water(&out)?;
             let sets = zoom_sets(&out)?;
             let pool = base_pool(&out, 6, &[(t.x, t.y)])?;
             let levels = pipeline::terrain_pack::piece_levels(&cov, &sets, (t.x, t.y));
@@ -996,7 +995,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let lv = pipeline::terrain_task::levels_of(&levels, &g.iter().copied().collect(), true);
                 let path = dir.join(format!("{}-{}", g[0].0, g[0].1)).join("u").join(pipeline::terrain_task::INPUT);
                 let t0 = std::time::Instant::now();
-                let c = with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| {
+                let c = with_fills(&raw, &pool, &cov, &sets, &|_, _| false, |tiles, src| {
                     pipeline::terrain_task::cut((t.x, t.y), g, &lv, tiles, src, &path)
                 })?;
                 println!(
@@ -1025,7 +1024,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
             let raw = raw_tiles(&out, &raw_dir)?;
-            let water = pipeline::terrain_pack::open_water(&out)?;
             let whole = flag(&args, "--whole");
             let lo = t.z == 3;
             anyhow::ensure!(!(lo && whole), "--whole is a z6 tile's");
@@ -1036,7 +1034,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 anyhow::ensure!(!ts.is_empty(), "{} has no z6 tile near the coverage", q.slash());
                 let sets = zoom_sets(&out)?;
                 let pool = base_pool(&out, 3, &[(q.x, q.y)])?;
-                let (lo, _) = with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| {
+                let (lo, _) = with_fills(&raw, &pool, &cov, &sets, &|_, _| false, |tiles, src| {
                     pipeline::terrain_pack::make_lo(&out, tiles, (q.x, q.y), &ts, src, &|_, _, _| {})
                 })?;
                 (lo, None)
@@ -1047,7 +1045,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let mut pool = base_pool(&out, 6, &[(t.x, t.y)])?;
                 pyramids_arg(&mut pool, &args);
                 let levels = pipeline::terrain_pack::piece_levels(&cov, &sets, (t.x, t.y));
-                let (hi, mid) = with_fills(&raw, &pool, &water, &cov, &sets, &keys, |tiles, src| {
+                let (hi, mid) = with_fills(&raw, &pool, &cov, &sets, &keys, |tiles, src| {
                     pipeline::terrain_pack::make_piece_from(tiles, src, levels, deep.clone(), !whole)
                 })?;
                 (hi, Some(mid))
@@ -1120,14 +1118,13 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let raw_dir = PathBuf::from(
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
-            let p = phase("opening the relief's tiles and the terrain's sources");
+            let p = phase("opening the relief's tiles");
             let raw = raw_tiles(&out, &raw_dir)?;
-            let water = pipeline::terrain_pack::open_water(&out)?;
             let sets = zoom_sets(&out)?;
             let pool = base_pool(&out, 0, &[(0, 0)])?;
             drop(p);
             // (Paused mid-sampling: nothing of it put.)
-            let n = with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| {
+            let n = with_fills(&raw, &pool, &cov, &sets, &|_, _| false, |tiles, src| {
                 pipeline::terrain_pack::build_root(&mut out, tiles, src)
             })
             .map_err(|e| pipeline::control::stop_if_paused("terrain-root", e))?;
@@ -2457,14 +2454,13 @@ fn zoom_sets(out: &Out) -> Result<Vec<pipeline::terrain_zoom::Set>> {
 }
 
 /// `f` given the terrain's tiles by the rule (pipeline::terrain_pack::Fills) over `pool` and its
-/// relief (`Pool::relief`), the Terrarium tiles read through `raw`, and its sources: the water,
-/// which tiles are native, and `sets` (each place's finest zoom); `deep`, whether a z13 tile is
+/// relief (`Pool::relief`), the Terrarium tiles read through `raw`, and its sources: which tiles
+/// are native, and `sets` (each place's finest zoom); `deep`, whether a z13 tile is
 /// one the z6 tiles' runs take in from their z10 tiles' deep mids.
 #[allow(clippy::too_many_arguments)]
 fn with_fills<R>(
     raw: &pipeline::terrain_pack::RawTiles,
     pool: &pipeline::terrain_base::Pool,
-    water: &dyn pipeline::terrain_water::WaterSource,
     cov: &pipeline::coverage::Coverage,
     sets: &[pipeline::terrain_zoom::Set],
     deep: &(dyn Fn(u32, u32) -> bool + Sync),
@@ -2473,9 +2469,9 @@ fn with_fills<R>(
     let relief = pool.relief();
     let fill = pipeline::terrain_pack::fill_of(cov, sets, deep);
     let native = |z: u8, x: u32, y: u32| pipeline::terrain_pack::native_of(&fill, z, x, y);
-    let src = pipeline::terrain_pack::Sources { water: Some(water), native: Some(&native), sets };
-    pool.with_tiles(raw, src.water, |tiles| {
-        relief.with_tiles(raw, src.water, |rt| {
+    let src = pipeline::terrain_pack::Sources { native: Some(&native), sets };
+    pool.with_tiles(raw, |tiles| {
+        relief.with_tiles(raw, |rt| {
             let reaching = |z: u8, x: u32, y: u32| pipeline::terrain_zoom::reaching(sets, z, x, y);
             let fills = pipeline::terrain_pack::Fills::new(tiles, rt, &fill, &reaching);
             f(&fills, &src)
@@ -2520,7 +2516,6 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
     }
     let ts = z6_tiles(args, "pyramids-fill")?;
     let cov = coverage_of(out, args)?;
-    let water = pipeline::terrain_pack::open_water(out)?;
     let sets = zoom_sets(out)?;
     let net = pipeline::fetch::Fetcher::from_env();
     let cache = out.scratch.join("pyramids");
@@ -2546,7 +2541,7 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
         let pool = base_pool(out, 6, &[t])?;
         let levels = pipeline::terrain_pack::piece_levels(&cov, &sets, t);
         let deep = py::deep_bases(&sets, &cov, t);
-        let want = py::want(&pool.plan, &water, &levels, &deep)?;
+        let want = py::want(&pool.plan, &levels, &deep);
         let before = pipeline::fetch::fetched_bytes();
         // (How far the z6 tile's fill is, in its part: the tiles asked of GSI of those to fetch.)
         let f = py::fill(
@@ -5341,15 +5336,12 @@ fn terrain_pieces(
         opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
     );
     let raw = raw_tiles(out, &raw_dir)?;
-    let water = pipeline::terrain_pack::open_water(out)?;
     let sets = zoom_sets(out)?;
     // (Each z6 tile's z10 tiles' deep mids, read as it begins: its z12 tiles' quarters there.)
     let deep: std::sync::Mutex<std::collections::HashSet<(u32, u32)>> = Default::default();
     let has = |x: u32, y: u32| deep.lock().unwrap().contains(&(x, y));
     let pool = base_pool(out, 6, &ts.iter().map(|t| (t.x, t.y)).collect::<Vec<_>>())?;
-    with_fills(&raw, &pool, &water, cov, &sets, &has, |tiles, src| {
-        terrain_pieces_from(out, cov, ts, same, tiles, src, &deep)
-    })?;
+    with_fills(&raw, &pool, cov, &sets, &has, |tiles, src| terrain_pieces_from(out, cov, ts, same, tiles, src, &deep))?;
     pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what));
     Ok(())
 }
@@ -5472,14 +5464,11 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
         opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
     );
     let raw = raw_tiles(out, &raw_dir)?;
-    let p = phase("opening the basemap's water");
-    let water = pipeline::terrain_pack::open_water(out)?;
-    drop(p);
     let mut names: Vec<String> = ts.iter().map(|t| format!("Making {}'s terrain past z12", t.slash())).collect();
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let pool = base_pool(out, td::PACK_Z, &ts.iter().map(|t| (t.x, t.y)).collect::<Vec<_>>())?;
-    with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| -> Result<()> {
+    with_fills(&raw, &pool, &cov, &sets, &|_, _| false, |tiles, src| -> Result<()> {
         for (k, t) in ts.iter().enumerate() {
             pipeline::control::safe_point(STEP);
             pipeline::agent::jobs::part(k, &names);
@@ -5513,8 +5502,8 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// terrain-water [--pass d]: the terrain's water digests (`pipeline::terrain_water::make_idx`) of
-/// what each terrain z6 tile and assembly near the coverage reads (agent::build::water_wants), of
+/// terrain-water [--pass d]: the depth's water digests (`pipeline::terrain_water::make_idx`) of
+/// what each depth z6 tile and assembly near the coverage reads (agent::build::depth_water_reads), of
 /// the latest basemap's water, under `work/water-idx/<hash16 of its pin>`: those already there for
 /// the same reads kept, the others read from the basemap.
 fn terrain_water_step(out: &mut Out, args: &[String]) -> Result<()> {
@@ -5536,8 +5525,8 @@ fn terrain_water_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The water digests the coverage's terrain wants of `src` (agent::build::water_wants), those the
-/// manifest has for its pin kept.
+/// The water digests the coverage's depth wants of `src` (agent::build::depth_water_reads), those
+/// the manifest has for its pin kept.
 fn water_idx_of(
     out: &Out,
     cov: &pipeline::coverage::Coverage,
@@ -5554,21 +5543,9 @@ fn water_idx_of(
         Some(c) => Some(pipeline::terrain_water::WaterIdx::from_bytes(&out.path(c).read()?)?),
         None => None,
     };
-    // (The depth's targets' too, once its sources are declared: pipeline::depth. Declarations that
-    // can't be read now leave the depth out, never the terrain's digests.)
-    let mut reads = pipeline::agent::build::water_reads(&pipeline::terrain_deep::Deep::new(
-        cov,
-        std::sync::Arc::new(zoom_sets(out)?),
-    ));
-    let depth = pipeline::depth::grids::declared(out.root(), &out.manifest).unwrap_or_else(|e| {
-        eprintln!("terrain-water: the depth's targets left out: its declarations can't be read ({e:#})");
-        Vec::new()
-    });
-    for r in pipeline::agent::build::depth_water_reads(cov, &depth) {
-        if !reads.iter().any(|x| x.0 == r.0 && x.1 == r.1) {
-            reads.push(r);
-        }
-    }
+    let depth = pipeline::depth::grids::declared(out.root(), &out.manifest)
+        .context("the depth's declarations, whose targets' water this digests")?;
+    let reads = pipeline::agent::build::depth_water_reads(cov, &depth);
     drop(p);
     let _p = phase("reading and digesting the targets' water");
     pipeline::terrain_water::make_idx(src, prior.as_ref(), &reads, progress)
@@ -5586,7 +5563,6 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
         opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
     );
     let raw = raw_tiles(out, &raw_dir)?;
-    let water = pipeline::terrain_pack::open_water(out)?;
     let sets = zoom_sets(out)?;
     let mut names: Vec<String> =
         qs.iter().map(|(q, _)| format!("Assembling {}'s zoomed-out terrain", q.slash())).collect();
@@ -5599,7 +5575,7 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
         let c = cost_start("terrain-lo", &q.slash());
         let pool = base_pool(out, 3, &[(q.x, q.y)])?;
         // (Paused mid-sampling: nothing of it put.)
-        let r = with_fills(&raw, &pool, &water, &cov, &sets, &|_, _| false, |tiles, src| {
+        let r = with_fills(&raw, &pool, &cov, &sets, &|_, _| false, |tiles, src| {
             pipeline::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, src, &say)
         })
         .map_err(|e| pipeline::control::stop_if_paused("terrain-lo", e))?;

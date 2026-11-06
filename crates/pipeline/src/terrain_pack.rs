@@ -1,9 +1,9 @@
 //! Terrain tiles (docs/steps.md §2, Terrain): one pyramid by one rule (`Fill`): a tile is sampled
 //! from the elevation pool (crate::terrain_base) only at its place's finest zoom
 //! (crate::terrain_zoom), each coarser quarter its children's 2×2 means (of their heights before
-//! rounding), outside every region the relief (`Fills`). Levels are made finest first: each tile's
-//! sea goes to 0 m (crate::terrain_water; its lakes and rivers keep the source's heights), its
-//! bathymetry goes to sea level, and it's rounded only as it's stored.
+//! rounding), outside every region the relief (`Fills`). Levels are made finest first, each tile
+//! keeping the source's heights (at sea, over lakes and below 0 m too: the owner's, 5 Nov; only
+//! where no dataset has data, sea level), rounded only as it's stored.
 //! The z6 tiles' runs (`build_piece`), the z3 tiles' assemblies (`build_lo`) and the root
 //! (`build_root`) are here; a z10 tile's band past z12 is crate::terrain_deep's.
 
@@ -26,12 +26,10 @@ pub fn tile_url(url: &str, z: u8, x: u32, y: u32) -> String {
     url.replace("{z}", &z.to_string()).replace("{x}", &x.to_string()).replace("{y}", &y.to_string())
 }
 
-/// What the terrain is made from besides its sampled tiles (docs/steps.md §2, Terrain): OSM's water
-/// (crate::terrain_water), and which tiles are at their place's finest zoom. Default: no water,
-/// every tile coarser than native.
+/// What the terrain is made from besides its sampled tiles (docs/steps.md §2, Terrain): which tiles
+/// are at their place's finest zoom. Default: every tile coarser than native.
 #[derive(Clone, Copy, Default)]
 pub struct Sources<'a> {
-    pub water: Option<&'a dyn crate::terrain_water::WaterSource>,
     /// Whether tile `z/x/y` is at its place's finest zoom (crate::terrain_zoom::finest): its heights
     /// rounded to the centimetre (`quantum`).
     pub native: Option<&'a (dyn Fn(u8, u32, u32) -> bool + Sync)>,
@@ -213,9 +211,9 @@ impl RawSource for Fills<'_> {
     }
 }
 
-/// The basemap the terrain's water comes from: the latest pass's (`layers/basemap/world-<date>`),
-/// its logical and content names. The terrain's keys name its water by digests of what each target
-/// reads of it (`water_source_pin`, agent::build), so a new pass's basemap makes again the terrain
+/// The basemap the depth's water comes from: the latest pass's (`layers/basemap/world-<date>`),
+/// its logical and content names. The depth's keys name its water by digests of what each target
+/// reads of it (`water_source_pin`, agent::build), so a new pass's basemap makes again the depth
 /// whose water changed.
 pub fn water_pin(m: &std::collections::BTreeMap<String, String>) -> Option<(&str, &str)> {
     let prefix = "layers/basemap/world-";
@@ -225,18 +223,18 @@ pub fn water_pin(m: &std::collections::BTreeMap<String, String>) -> Option<(&str
         .map(|(l, c)| (l.as_str(), c.as_str()))
 }
 
-/// The pin of the terrain's water source as the jobs open it (`SourceFiles`: `WaterSource::pin`),
+/// The pin of the depth's water source as the jobs open it (`SourceFiles`: `WaterSource::pin`),
 /// from the manifest alone: the latest pass's basemap's content name, and the lakes filled from
 /// Canada's own data's after it when the manifest has them for that basemap
 /// (crate::lakefill::current, filled_pin); None
-/// without a basemap. What the terrain's keys name the water by (agent::build: its digests,
+/// without a basemap. What the depth's keys name the water by (agent::build: its digests,
 /// crate::terrain_water::WaterIdx).
 pub fn water_source_pin(m: &std::collections::BTreeMap<String, String>) -> Option<String> {
     let (_, c) = water_pin(m)?;
     Some(crate::lakefill::filled_pin(c, crate::lakefill::current(m).map(|(_, f)| f)))
 }
 
-/// The terrain's water source, open (its pin `water_source_pin`'s): the latest pass's basemap, with
+/// The depth's water source, open (its pin `water_source_pin`'s): the latest pass's basemap, with
 /// the fill's lakes when the manifest has a fill.
 pub fn open_water(out: &Out) -> anyhow::Result<crate::lakefill::FilledWater<crate::terrain_water::BasemapWater>> {
     open_water_with(out, None)
@@ -250,7 +248,7 @@ pub fn open_water_with(
 ) -> anyhow::Result<crate::lakefill::FilledWater<crate::terrain_water::BasemapWater>> {
     use anyhow::Context;
     let (_, c) = water_pin(&out.manifest)
-        .context("no basemap (layers/basemap/world-<date>): the terrain's water is the latest pass's basemap's")?;
+        .context("no basemap (layers/basemap/world-<date>): the depth's water is the latest pass's basemap's")?;
     let base = crate::terrain_water::BasemapWater::open(&crate::localread::path(local, &out.path(c)), c)?;
     let fill = match crate::lakefill::current(&out.manifest) {
         Some((_, f)) => Some(crate::lakefill::Fill::open(&out.path(f), f)?),
@@ -302,26 +300,24 @@ impl RawSource for RawTiles {
     }
 }
 
-/// A tile made but for its water (`prepare`): its elevations (the raw tile's, the quarters over
-/// children and the pixels above changed ones made again from them), the raw tile's as decoded,
-/// its water, and what it's rounded to stored (`Sources::quantum`). None of it when the raw tile
-/// doesn't decode (no tile).
+/// A tile made but for its rounding (`prepare`): its elevations (the raw tile's, the quarters over
+/// children and the pixels above changed ones made again from them), the raw tile's as decoded, and
+/// what it's rounded to stored (`Sources::quantum`). None of it when the raw tile doesn't decode
+/// (no tile).
 struct Prepared {
     e: Vec<f32>,
     before: Vec<f32>,
-    water: Option<std::sync::Arc<crate::terrain_water::WaterTile>>,
     decoded: bool,
     z: u8,
     quantum: f64,
 }
 
-/// A tile's elevations made (docs/steps.md §2, Terrain), but for its water: its raw tile's (`raw`:
-/// its sampled and relief quarters, `Fills`; None: every quarter its children's), each quarter whose
-/// child tile exists made from it (`quads`, the children's 2×2 means of their heights before
-/// rounding, their water flattened: a coarser zoom's pixel is the mean of the finer ones under it);
-/// its voids (pixels not `roadcore::grid::defined`) at sea level. Then `finish` flattens its water.
-/// Not decoded (no tile) with neither. An error where its water can't be read: a tile made without
-/// it would be kept under a key naming that water.
+/// A tile's elevations made (docs/steps.md §2, Terrain): its raw tile's (`raw`: its sampled and
+/// relief quarters, `Fills`; None: every quarter its children's), each quarter whose child tile
+/// exists made from it (`quads`, the children's 2×2 means of their heights before rounding: a
+/// coarser zoom's pixel is the mean of the finer ones under it); its voids (pixels not
+/// `roadcore::grid::defined`, where no dataset has data) at sea level. Not decoded (no tile) with
+/// neither.
 fn prepare(
     raw: Option<Vec<u8>>,
     z: u8,
@@ -335,7 +331,7 @@ fn prepare(
     let mut e = match raw.map(|b| decode_terrain(&b)) {
         Some(Ok(e)) => e,
         _ if kids => vec![f32::NAN; 256 * 256],
-        _ => return Ok(Prepared { e: Vec::new(), before: Vec::new(), water: None, decoded: false, z, quantum }),
+        _ => return Ok(Prepared { e: Vec::new(), before: Vec::new(), decoded: false, z, quantum }),
     };
     let before = e.clone();
     for k in 0..4u32 {
@@ -351,32 +347,17 @@ fn prepare(
             *v = 0.0;
         }
     }
-    let water = match src.water {
-        Some(w) => {
-            crate::terrain_water::tile_water(w, z, x, y).map_err(|e| e.context(format!("the water of {z}/{x}/{y}")))?
-        }
-        None => None,
-    };
-    Ok(Prepared { e, before, water, decoded: true, z, quantum })
+    Ok(Prepared { e, before, decoded: true, z, quantum })
 }
 
-/// A prepared tile finished: its water flattened (crate::terrain_water::flatten), bathymetry to sea
-/// level, rounded and encoded (crate::terrain_codec).
-/// Returns the tile to store (None: its raw tile didn't decode), whether its water or children
-/// moved a pixel by over half a metre from the raw tile's, and from z1 on its 2×2 means (of the
-/// heights as stored) for the level above.
+/// A prepared tile finished: rounded and encoded (crate::terrain_codec), its heights the source's
+/// (below 0 m too). Returns the tile to store (None: its raw tile didn't decode), whether its
+/// children or voids moved a pixel by over half a metre from the raw tile's, and from z1 on its
+/// 2×2 means (of the heights before rounding) for the level above.
 fn finish(p: Prepared) -> (Option<Vec<u8>>, bool, Option<Vec<f32>>) {
-    let Prepared { mut e, before, water, decoded, z, quantum } = p;
+    let Prepared { mut e, before, decoded, z, quantum } = p;
     if !decoded {
         return (None, false, None);
-    }
-    if let Some(w) = &water {
-        crate::terrain_water::flatten(&mut e, w);
-    }
-    for v in e.iter_mut() {
-        if *v < 0.0 {
-            *v = 0.0;
-        }
     }
     let changed = e.iter().zip(&before).any(|(a, b)| !((*a - *b).abs() <= 0.5));
     // (The level above takes its heights before rounding: rounded once, as stored, not a level at a
@@ -400,8 +381,8 @@ fn quad_mean(e: &[f32]) -> Vec<f32> {
     q
 }
 
-/// A tile made (`prepare`, then `finish`): it reads only its own raw tile, its children's means and
-/// its water, so it's the same made alone or with any others.
+/// A tile made (`prepare`, then `finish`): it reads only its own raw tile and its children's means,
+/// so it's the same made alone or with any others.
 pub fn process(
     raw: Option<Vec<u8>>,
     z: u8,
@@ -1441,7 +1422,7 @@ impl<'a> Maker<'a> {
     /// (`process`). `by_block`: its tiles made a block at a time (`blocks`: the tiles under one tile
     /// four levels up, a z8 subtree's at z12), each kept to `log` as it's made, so a resumed run
     /// makes only the blocks not kept; else all at once (one block). The same bytes either way: a
-    /// tile reads only its own raw tile, its children's means and its water.
+    /// tile reads only its own raw tile and its children's means.
     fn level(
         &self,
         z: u8,
@@ -1496,7 +1477,7 @@ impl<'a> Maker<'a> {
             }
         }
         let src = self.src;
-        let _p = sub("making the tiles with their water, shading and encoding them");
+        let _p = sub("making the tiles, shading and encoding them");
         for bi in todo {
             let made: Vec<anyhow::Result<Finished>> = blocks[bi]
                 .par_iter()
@@ -2183,24 +2164,23 @@ pub(crate) mod tests {
         out
     }
 
-    /// A tile whose water can't be read fails (6/18/22 on 25 Oct: every tile's water read failed
-    /// while the NAS restarted, the tiles were made dry and kept under a key naming the water).
+    /// A tile keeps the source's heights below 0 m, the sea's and the land's (the Dead Sea's shore
+    /// at −430 m, a basin at −3,000 m), each to the centimetre; a void (no dataset's data) is sea level.
     #[test]
-    fn a_tile_whose_water_cant_be_read_fails() {
-        struct Down;
-        impl crate::terrain_water::WaterSource for Down {
-            fn polys(&self, _: u8, _: u32, _: u32) -> anyhow::Result<Vec<crate::terrain_water::Poly>> {
-                anyhow::bail!("Input/output error (os error 5)")
-            }
-            fn pin(&self) -> String {
-                "down".into()
-            }
+    fn a_tile_keeps_the_sources_heights_below_zero() {
+        let mut want: Vec<f32> = (0..256 * 256).map(|p| -430.0 + (p % 256) as f32 * 0.25).collect();
+        want[0] = -3000.0;
+        let mut raw = want.clone();
+        raw[1] = f32::NAN;
+        let raw = roadcore::grid::encode_terrain_png(&raw, 256, 256).unwrap();
+        let src = Sources { native: Some(&|_, _, _| true), ..Default::default() };
+        let (b, changed, _) = process(Some(raw), 12, 2449, 1652, &HashMap::new(), &src).unwrap();
+        let got = roadcore::grid::decode_terrain(&b.unwrap()).unwrap();
+        want[1] = 0.0;
+        for (p, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() <= 0.005 + 1.0 / 256.0, "pixel {p}: {g}, not {w}");
         }
-        let raw = roadcore::grid::encode_terrain_png(&vec![10.0; 256 * 256], 256, 256).unwrap();
-        let src = Sources { water: Some(&Down), ..Default::default() };
-        let err = prepare(Some(raw.clone()), 12, 1, 2, &HashMap::new(), &src).err().expect("an error");
-        assert!(format!("{err:#}").contains("the water of 12/1/2"), "{err:#}");
-        assert!(process(Some(raw), 12, 1, 2, &HashMap::new(), &src).is_err());
+        assert!(changed, "the void filled");
     }
 
     /// A pack copied here reads the same tiles as the NAS's, and the copy goes with the reader: a

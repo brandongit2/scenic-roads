@@ -347,7 +347,7 @@ fn a_pyramids_distance_is_the_whole_bands_scan() {
             return false;
         }
         let tile = tiles.entry((tx, ty)).or_insert_with(|| t.tile(tx, ty).unwrap().map(|(_, _, a)| a));
-        tile.as_ref().is_some_and(|a| valid(a[r.rem_euclid(256) as usize * 256 + c.rem_euclid(256) as usize], None))
+        tile.as_ref().is_some_and(|a| tile_valid(a[r.rem_euclid(256) as usize * 256 + c.rem_euclid(256) as usize]))
     };
     let mut near = 0;
     for j in 0..lon.len() {
@@ -852,9 +852,15 @@ fn rolling_tile_fetches_give_the_old_heights_to_the_bit() {
             let (tx, ty) = (fx.floor() as i64, fy.floor() as i64);
             match plain.tile(tx, ty).unwrap() {
                 None => f32::NAN.to_bits(),
-                Some((w, h, a)) => {
-                    bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5).to_bits()
-                }
+                Some((w, h, a)) => crate::dem::sample::bilinear_above(
+                    &a,
+                    w,
+                    h,
+                    (fx - tx as f64) * 256.0 - 0.5,
+                    (fy - ty as f64) * 256.0 - 0.5,
+                    TILE_BELOW,
+                )
+                .to_bits(),
             }
         })
         .collect();

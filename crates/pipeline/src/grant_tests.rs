@@ -163,7 +163,7 @@ fn a_terrain_hi_target_on_one_or_two_threads_finishes_the_same() {
     let src = Sources { native: Some(&native), sets: &sets, ..Default::default() };
     let made = with_pool(|pool, raw| {
         on_grants("a terrain-hi target", &[1, 2], || {
-            pool.with_tiles(raw, None, |tiles| {
+            pool.with_tiles(raw, |tiles| {
                 let fills = Fills::new(tiles, tiles, &fill, &reaching);
                 make_piece(&fills, &src, levels.clone()).unwrap().0
             })
@@ -203,7 +203,7 @@ fn a_terrain_deep_target_on_one_or_two_threads_finishes_the_same() {
                 crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&r.join("root")), &r.join("scratch"))
                     .unwrap();
             let rep = pool
-                .with_tiles(raw, None, |tiles| {
+                .with_tiles(raw, |tiles| {
                     let fills = Fills::new(tiles, tiles, &fill, &reaching);
                     crate::terrain_deep::build_target(&mut out, t, levels.clone(), &fills, &src, false)
                 })

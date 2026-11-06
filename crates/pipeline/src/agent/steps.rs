@@ -950,7 +950,7 @@ pub const TABLE: [Step; 60] = [
             Derive,
             World,
             "terrain-water",
-            "Reads the water the terrain flattens, for the terrain's keys.",
+            "Reads the water the depth lies on, for the depth's keys.",
             w_terrain_water,
         )
     },
@@ -959,7 +959,7 @@ pub const TABLE: [Step; 60] = [
     // tile's fetch at most 4,096 tiles in memory at once, its wanted set a few MB.)
     Step {
         versions: &[("pyramids-fill", || crate::pyramids::V.to_string())],
-        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "pyramids", of: idents::pyramids }, In { name: "water", of: idents::water }, In { name: "deep-targets", of: idents::deep_targets }],
+        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "pyramids", of: idents::pyramids }, In { name: "deep-targets", of: idents::deep_targets }],
         ..step(
             "terrain",
             Fetch,
@@ -979,13 +979,13 @@ pub const TABLE: [Step; 60] = [
         cost_v: 8,
         shared: true,
         versions: &[("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
-        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "water", of: idents::water }, In { name: "makes-hi", of: idents::makes_hi }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Read(idents::terrain_deep_mids) }],
+        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "makes-hi", of: idents::makes_hi }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Read(idents::terrain_deep_mids) }],
         ..step(
             "terrain",
             Pack,
             Z6,
             "terrain-hi",
-            "Builds a tile's terrain hi pack (z9–12), its water flattened.",
+            "Builds a tile's terrain hi pack (z9–12).",
             w_terrain_hi,
         )
     },
@@ -997,7 +997,7 @@ pub const TABLE: [Step; 60] = [
         mem_mb: crate::terrain_deep::target_peak_mb(),
         shared: true,
         versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
-        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "water", of: idents::water }],
+        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }],
         ..step(
             "terrain",
             Pack,
@@ -1013,7 +1013,7 @@ pub const TABLE: [Step; 60] = [
         cost_v: 3,
         mem_mb: 1200,
         versions: &[("terrain-lo", || super::build::TERRAIN_LO_V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
-        reads: &[Mids { step: "terrain-hi", of: z6_of_z3, named: idents::terrain_mids }, In { name: "water", of: idents::water }, In { name: "datasets:terrain", of: idents::datasets_terrain }],
+        reads: &[Mids { step: "terrain-hi", of: z6_of_z3, named: idents::terrain_mids }, In { name: "datasets:terrain", of: idents::datasets_terrain }],
         ..step(
             "terrain",
             Pack,
@@ -1027,7 +1027,7 @@ pub const TABLE: [Step; 60] = [
     // docs/readiness.md decision 2.)
     Step {
         cost_v: 1,
-        versions: &[("terrain-root", || 1.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        versions: &[("terrain-root", || 2.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[All { step: "terrain-lo", grain: Outputs }],
         ..step(
             "terrain",
@@ -2164,7 +2164,7 @@ fn w_depth_root(l: &str, _: bool) -> bool {
 /// The depth steps' layers: the depth, its classes and the floor's shading (crate::depth).
 const DEPTH_LAYERS: [&str; 3] = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER];
 
-/// The water's index for the terrain's repairs, by the content it's made of.
+/// The water's index for the depth's repairs, by the content it's made of.
 fn w_terrain_water(l: &str, _: bool) -> bool {
     l.strip_prefix(crate::terrain_water::IDX_PREFIX).is_some_and(|k| !k.is_empty() && !k.contains('/'))
 }

@@ -7,10 +7,10 @@
 //!   tiles of one z8 tile, at z11 of one z7 tile, …, up to 64 a level), each kept as it's made: its
 //!   tiles (each its bytes, whether it changed, its 2×2 means for the level above); then the
 //!   level's end. A resumed run takes the blocks kept and makes the rest: a tile reads only its own
-//!   raw tile, its children's means and its water, so the same bytes. The identity (`hi_id`): the
-//!   terrain's versions and codec, the tile, the levels' tiles this run makes (the coverage's, less
-//!   the subtrees out to other workers), the accepted elevation datasets and the geoid sources (the
-//!   pool and its geoids: `inputs`), the water's pin, and which of its tiles are at their place's finest zoom.
+//!   raw tile and its children's means, so the same bytes. The identity (`hi_id`): the terrain's
+//!   versions and codec, the tile, the levels' tiles this run makes (the coverage's, less the
+//!   subtrees out to other workers), the accepted elevation datasets and the geoid sources (the
+//!   pool and its geoids: `inputs`), and which of its tiles are at their place's finest zoom.
 //!
 //! The steps not kept, measured from the history (21–25 Oct): slope-hi and slope-deep (the slope's
 //! z6 tiles took 37 s at the median and 2 minutes at the 90th percentile with their deep levels
@@ -172,7 +172,6 @@ pub fn hi_id(
         &format!("{}/{}/{}", t.0, t.1, t.2),
         &h.finalize().to_hex(),
         inputs,
-        &src.water.map(|w| w.pin()).unwrap_or_else(|| "-".into()),
         &natives(src, levels),
     ])
 }

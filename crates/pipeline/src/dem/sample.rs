@@ -15,9 +15,14 @@ pub const NODATA_BELOW: f32 = -1000.0;
 pub const BLOCK: i64 = 512;
 
 /// Block `a` (`w` by `h`) sampled at pixel-centre coordinates `c`, `r`: bilinear, the edges
-/// clamping; the nearest pixel when any of the four neighbours is nodata (or the sum isn't
-/// finite); NaN when that one is nodata too.
+/// clamping; the nearest pixel when any of the four neighbours is nodata (below `NODATA_BELOW`, or
+/// the sum isn't finite); NaN when that one is nodata too.
 pub fn bilinear(a: &[f32], w: usize, h: usize, c: f64, r: f64) -> f32 {
+    bilinear_above(a, w, h, c, r, NODATA_BELOW)
+}
+
+/// `bilinear` with nodata below `below` (a tile pyramid's: crate::dem::generic::TILE_BELOW).
+pub fn bilinear_above(a: &[f32], w: usize, h: usize, c: f64, r: f64, below: f32) -> f32 {
     let c0 = c.floor() as i32;
     let r0 = r.floor() as i32;
     let fx = (c - c0 as f64) as f32;
@@ -27,14 +32,14 @@ pub fn bilinear(a: &[f32], w: usize, h: usize, c: f64, r: f64) -> f32 {
     let (r0c, r1) = (clip(r0, h), clip(r0 + 1, h));
     let (v00, v01, v10, v11) = (a[r0c * w + c0c], a[r0c * w + c1], a[r1 * w + c0c], a[r1 * w + c1]);
     let val = (v00 * (1.0 - fx) + v01 * fx) * (1.0 - fy) + (v10 * (1.0 - fx) + v11 * fx) * fy;
-    let bad = v00 < NODATA_BELOW || v01 < NODATA_BELOW || v10 < NODATA_BELOW || v11 < NODATA_BELOW || !val.is_finite();
+    let bad = v00 < below || v01 < below || v10 < below || v11 < below || !val.is_finite();
     if !bad {
         return val;
     }
     let rn = clip(r.round_ties_even() as i32, h);
     let cn = clip(c.round_ties_even() as i32, w);
     let vn = a[rn * w + cn];
-    if vn < NODATA_BELOW || !vn.is_finite() {
+    if vn < below || !vn.is_finite() {
         f32::NAN
     } else {
         vn
@@ -227,6 +232,14 @@ mod tests {
         assert_eq!(bilinear(&b, 3, 2, 0.4, 0.4), 1.0);
         assert_eq!(bilinear(&b, 3, 2, 1.5, 0.5), 4.0, "row 0, column 2");
         assert!(bilinear(&b, 3, 2, 1.2, 0.2).is_nan());
+        // A tile pyramid's sea floor is data to the trench (crate::dem::generic::TILE_BELOW), a
+        // raster's nodata limit cuts it; its no data (−1e9) is none either way.
+        let sea = [-3000.0f32, -3200.0, -10_994.0, -10_000.0];
+        let below = crate::dem::generic::TILE_BELOW;
+        assert_eq!(bilinear_above(&sea, 2, 2, 0.5, 0.0, below), -3100.0);
+        assert_eq!(bilinear_above(&sea, 2, 2, 0.0, 1.0, below), -10_994.0);
+        assert!(bilinear(&sea, 2, 2, 0.5, 0.0).is_nan());
+        assert!(bilinear_above(&[-1e9f32; 4], 2, 2, 0.5, 0.5, below).is_nan());
     }
 
     #[test]

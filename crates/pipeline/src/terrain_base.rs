@@ -5,11 +5,11 @@
 //! one dataset at every point. Each pixel is the mean of 2 × 2 samples over it (`K`), each dataset
 //! read at the level's detail: a GeoTIFF at its overview nearest half a pixel, a Terrarium pyramid at the level's own zoom (AWS's publishes every zoom),
 //! another pyramid at its declared zoom, and only from z9 (`ROW_Z`) on: below, its next dataset serves
-//! (a z8 tile would read 16,384 of GSI's z15 tiles over the network); never in the open sea, which
-//! the water flattens to 0 m (`Tiles::over_water`). Where no dataset has data, sea level. Heights are EGM2008
-//! (each dataset's brought there as the roads' are). The tiles come out as Terrarium PNGs, the
-//! terrain's levels made from them as from any raw tile (crate::terrain_pack: the water, the coarser
-//! levels from the finer).
+//! (a z8 tile would read 16,384 of GSI's z15 tiles over the network). The source's heights are kept
+//! at sea and below 0 m too (the owner's, 5 Nov); where no dataset has data, sea level. Heights are
+//! EGM2008 (each dataset's brought there as the roads' are). The tiles come out as Terrarium PNGs,
+//! the terrain's levels made from them as from any raw tile (crate::terrain_pack: the coarser levels
+//! from the finer).
 //!
 //! A Terrarium pyramid's tiles are read through `RawTiles` (this Mac's cache, the NAS's archives,
 //! else AWS: crate::terrain_pack), not fetched by the sampler; a pyramid read tile by tile (GSI's)
@@ -21,7 +21,6 @@ use crate::dem::declared::{Plan, Source};
 use crate::dem::generic::{tile_resolution, Copies, Opts, Sampler};
 use crate::fetch::Fetch;
 use crate::terrain_pack::{RawSource, RawTiles};
-use crate::terrain_water::WaterSource;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -188,15 +187,8 @@ impl Pool {
         self.pyramids.as_ref().map(|d| crate::pyramids::Stored::new(inner, d, &self.plan))
     }
 
-    /// `f` given the pool's tiles (`Tiles`), the Terrarium pyramid's read through `raw`; `water`, the
-    /// terrain's (crate::terrain_pack::Sources), spares the open sea the pyramids fetched tile by
-    /// tile (`Tiles::over_water`).
-    pub fn with_tiles<R>(
-        &self,
-        raw: &RawTiles,
-        water: Option<&dyn WaterSource>,
-        f: impl FnOnce(&Tiles) -> R,
-    ) -> Result<R> {
+    /// `f` given the pool's tiles (`Tiles`), the Terrarium pyramid's read through `raw`.
+    pub fn with_tiles<R>(&self, raw: &RawTiles, f: impl FnOnce(&Tiles) -> R) -> Result<R> {
         let net = crate::fetch::Fetcher::from_env();
         let stored = self.stored(&net);
         let fetch = RawFetch::new(raw, self.terrarium.as_deref(), stored.as_ref().map_or(&net as &dyn Fetch, |s| s));
@@ -209,11 +201,7 @@ impl Pool {
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| self.at_zoom(z, mid)).collect();
         let by_row: Vec<OnceLock<Plan>> = (0..BY_ROW).map(|_| OnceLock::new()).collect();
         let row_plan = |z: u8, row: u32| self.at_zoom(z, row_mid(row));
-        let mut t = Tiles::new(&plans, &o).by_row(&by_row, &row_plan);
-        let at_sea: Vec<OnceLock<Plan>> = (0..t.samplers.len()).map(|_| OnceLock::new()).collect();
-        if let Some(w) = water {
-            t = t.over_water(w, &at_sea);
-        }
+        let t = Tiles::new(&plans, &o).by_row(&by_row, &row_plan);
         Ok(f(&t))
     }
 }
@@ -324,10 +312,6 @@ pub struct Tiles<'a> {
     row_plan: Option<&'a (dyn Fn(u8, u32) -> Plan + Sync)>,
     o: &'a Opts<'a>,
     samplers: Vec<OnceLock<Result<Sampler<'a>, String>>>,
-    /// The terrain's water (`over_water`), and by slot past the first `at_sea.len()` samplers, its
-    /// plan without the pyramids read tile by tile (`by_tile`).
-    water: Option<&'a dyn WaterSource>,
-    at_sea: &'a [OnceLock<Plan>],
     held: Mutex<HashMap<(u8, u32, u32), Option<Vec<u8>>>>,
     /// By tile sampled, the datasets its pixels came from (their ids, sorted:
     /// crate::terrain_pack::RawSource::from), until asked for.
@@ -345,8 +329,6 @@ impl<'a> Tiles<'a> {
             row_plan: None,
             o,
             samplers: plans.iter().map(|_| OnceLock::new()).collect(),
-            water: None,
-            at_sea: &[],
             held: Mutex::new(HashMap::new()),
             from: Mutex::new(HashMap::new()),
             draining: &crate::control::draining_lately,
@@ -357,17 +339,6 @@ impl<'a> Tiles<'a> {
     fn by_row(mut self, by_row: &'a [OnceLock<Plan>], row_plan: &'a (dyn Fn(u8, u32) -> Plan + Sync)) -> Tiles<'a> {
         self.samplers.extend(by_row.iter().map(|_| OnceLock::new()));
         (self.by_row, self.row_plan) = (by_row, Some(row_plan));
-        self
-    }
-
-    /// With the open sea's points (`open_sea`) read without the pyramids fetched tile by tile
-    /// (`by_tile`): those pixels' heights are the sea's, 0 m, whatever they read
-    /// (crate::terrain_water::flatten), and over Japan's seas each of GSI's five layers answered 64
-    /// requests a z12 tile with 404s (task #706). `at_sea`: a slot for each of the samplers so far.
-    fn over_water(mut self, water: &'a dyn WaterSource, at_sea: &'a [OnceLock<Plan>]) -> Tiles<'a> {
-        debug_assert_eq!(at_sea.len(), self.samplers.len());
-        self.samplers.extend(at_sea.iter().map(|_| OnceLock::new()));
-        (self.water, self.at_sea) = (Some(water), at_sea);
         self
     }
 
@@ -384,13 +355,6 @@ impl<'a> Tiles<'a> {
 
     /// The plan of slot `k` (`slot`).
     fn plan(&self, k: usize) -> &'a Plan {
-        if let Some(own) = k.checked_sub(self.at_sea.len()).filter(|_| !self.at_sea.is_empty()) {
-            return self.at_sea[own].get_or_init(|| {
-                let mut p = self.plan(own).clone();
-                p.datasets.retain(|d| !by_tile(d));
-                p
-            });
-        }
         match k.checked_sub(self.plans.len()) {
             None => &self.plans[k],
             Some(r) => {
@@ -445,35 +409,15 @@ impl<'a> Tiles<'a> {
         Ok(out.into_iter().map(|t| t.expect("each tile sampled")).collect())
     }
 
-    /// Tiles `ts` of zoom `z` sampled with slot `k`'s plan; the open sea's points (`open_sea`)
-    /// with it less its pyramids read tile by tile, where it has some and the water is given.
+    /// Tiles `ts` of zoom `z` sampled with slot `k`'s plan.
     fn sample_with(&self, k: usize, z: u8, ts: &[(u32, u32)]) -> Result<Vec<Option<Vec<u8>>>> {
         let s = self.sampler(k)?;
         let (lon, lat) = points(z, ts);
-        let sea = match self.water {
-            Some(w) if self.plan(k).datasets.iter().any(by_tile) => open_sea(w, z, ts)?,
-            _ => Vec::new(),
-        };
-        // (Each point's height and its first dataset's id, by the plan it was sampled with: the
-        // open sea's by the plan without the pyramids read tile by tile.)
-        fn id_of(p: &Plan, f: u16) -> Option<&str> {
-            p.datasets.get(f as usize).map(|d| d.id.as_str())
-        }
-        let (elev, ids): (Vec<f32>, Vec<Option<&str>>) = if sea.iter().any(|&b| b) {
-            let pick = |at_sea: bool, v: &[f64]| -> Vec<f64> {
-                v.iter().zip(&sea).filter(|p| *p.1 == at_sea).map(|p| *p.0).collect()
-            };
-            let ashore = s.sample(&pick(false, &lon), &pick(false, &lat), &|_| {})?;
-            let afloat = self.sampler(k + self.at_sea.len())?.sample(&pick(true, &lon), &pick(true, &lat), &|_| {})?;
-            let (pa, pb) = (self.plan(k), self.plan(k + self.at_sea.len()));
-            let mut a = ashore.elev.into_iter().zip(ashore.first.into_iter().map(|f| id_of(pa, f)));
-            let mut b = afloat.elev.into_iter().zip(afloat.first.into_iter().map(|f| id_of(pb, f)));
-            sea.iter().map(|&at| if at { b.next() } else { a.next() }.expect("a height a point")).unzip()
-        } else {
-            let got = s.sample(&lon, &lat, &|_| {})?;
-            let p = self.plan(k);
-            (got.elev, got.first.into_iter().map(|f| id_of(p, f)).collect())
-        };
+        // (Each point's height and its first dataset's id.)
+        let got = s.sample(&lon, &lat, &|_| {})?;
+        let p = self.plan(k);
+        let (elev, ids): (Vec<f32>, Vec<Option<&str>>) =
+            (got.elev, got.first.into_iter().map(|f| p.datasets.get(f as usize).map(|d| d.id.as_str())).collect());
         // (By tile, the datasets its pixels came from: `from`.)
         {
             let per = 256 * 256 * K * K;
@@ -511,39 +455,6 @@ impl<'a> Tiles<'a> {
         }
         Ok(out)
     }
-}
-
-/// By point of tiles `ts` of zoom `z` (`points`' order), whether it's in the open sea: its pixel and
-/// those around it in its tile (a tile's edges read no neighbour's water), wholly sea in `water`'s tile of the same zoom (all of their
-/// samples, crate::terrain_water::FULL), so a pixel flattened to 0 m whatever it reads, and an
-/// islet or a shore the samples of one pixel missed still read as land. Empty: none.
-pub(crate) fn open_sea(water: &dyn WaterSource, z: u8, ts: &[(u32, u32)]) -> Result<Vec<bool>> {
-    let side = 256 * K;
-    let per = side * side;
-    let mut out: Vec<bool> = Vec::new();
-    for (t, &(x, y)) in ts.iter().enumerate() {
-        let Some(wt) = crate::terrain_water::tile_water(water, z, x, y)? else { continue };
-        let full = |j: usize, i: usize| wt.sea[j * 256 + i] == crate::terrain_water::FULL;
-        let deep: Vec<bool> = (0..256 * 256)
-            .map(|p: usize| {
-                let (j, i) = (p / 256, p % 256);
-                (j.saturating_sub(1)..=(j + 1).min(255))
-                    .all(|jj| (i.saturating_sub(1)..=(i + 1).min(255)).all(|ii| full(jj, ii)))
-            })
-            .collect();
-        if !deep.iter().any(|&d| d) {
-            continue;
-        }
-        if out.is_empty() {
-            out = vec![false; ts.len() * per];
-        }
-        for r in 0..side {
-            for c in 0..side {
-                out[t * per + r * side + c] = deep[(r / K) * 256 + c / K];
-            }
-        }
-    }
-    Ok(out)
 }
 
 /// The sample points of tiles `ts` of zoom `z`: K × K a pixel, by tile, row (of samples) and
@@ -689,7 +600,7 @@ mod tests {
         let raw = RawTiles::new(&local, crate::terrain_pack::TEST_BASE);
         crate::fetch::go_offline();
         let (png, again) = pool
-            .with_tiles(&raw, None, |t| {
+            .with_tiles(&raw, |t| {
                 let done = AtomicU64::new(0);
                 t.prefetch_counted(z, &[(x, y)], 1, &done).unwrap();
                 assert_eq!(done.load(Ordering::Relaxed), 1);
@@ -784,7 +695,7 @@ mod tests {
         crate::fetch::go_offline();
         let tile_of = |area: [f64; 4]| {
             Pool::of(plan.clone(), store::nasfs::NasPath::local_for_test(store.clone()), area)
-                .with_tiles(&raw, None, |t| t.sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap())
+                .with_tiles(&raw, |t| t.sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap())
                 .unwrap()
         };
         let own = tile_of(roadcore::geo::tile_box(6, x >> 6, y >> 6));
@@ -800,101 +711,6 @@ mod tests {
         let at_area = Tiles::new(&plans, &o).sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap();
         assert_ne!(at_area, own, "the area's middle blends otherwise");
         assert!((45.0..49.0).contains(&row_mid(y >> 6)), "6/x/22: 45.1°N to 49.0°N");
-    }
-
-    /// Task #706: the open sea's points read no pyramid fetched tile by tile. A z12 tile, its east
-    /// half sea; a z14 GSI-like pyramid over a 500 m raster: its tiles in the sea's west column 404,
-    /// its east column's never asked (unsupplied: asking fails), the land its tiles' heights.
-    #[test]
-    fn the_open_sea_fetches_no_tile_of_a_pyramid() {
-        use crate::terrain_water::{tests::*, Kind, Poly};
-        let d = tempfile::tempdir().unwrap();
-        let store = d.path().join("fetched");
-        std::fs::create_dir_all(store.join("flat")).unwrap();
-        let (z, lon, lat) = (12u8, 10.5f64, 45.5f64);
-        let nn = (1u64 << z) as f64;
-        let (x, y) = roadcore::geo::merc(lon, lat);
-        let (x, y) = ((x * nn) as u32, (y * nn) as u32);
-        let b = roadcore::geo::tile_box(z, x, y);
-        let n = 600usize;
-        let gt =
-            [b[0] - 0.01, (b[2] - b[0] + 0.02) / n as f64, 0.0, b[3] + 0.01, 0.0, -(b[3] - b[1] + 0.02) / n as f64];
-        let tif = crate::geotiff::write_f32(n as u32, n as u32, &vec![500.0; n * n], 256, gt, 4326, None).unwrap();
-        std::fs::write(store.join("flat/G.tif"), tif).unwrap();
-        // (A GSI tile: 1,000 + 0.01·x m at pixel x.)
-        let mut rgb = Vec::with_capacity(256 * 256 * 3);
-        for _ in 0..256u32 {
-            for px in 0..256u32 {
-                let v = 100_000 + px;
-                rgb.extend_from_slice(&[(v >> 16) as u8, (v >> 8) as u8, v as u8]);
-            }
-        }
-        let mut gsi = Vec::new();
-        let mut e = png::Encoder::new(&mut gsi, 256, 256);
-        e.set_color(png::ColorType::Rgb);
-        e.set_depth(png::BitDepth::Eight);
-        e.write_header().unwrap().write_image_data(&rgb).unwrap();
-        let mut net = crate::fetch::MapFetch::default();
-        // (Its neighbours' too, which the blend's measure reads.)
-        for c in -1..3i64 {
-            for r in -1..5i64 {
-                let url = format!("https://g.test/{}/{}/{}.png", 14, 4 * x as i64 + c, 4 * y as i64 + r);
-                net.0.insert(url, (c < 2).then(|| gsi.clone()));
-            }
-        }
-        let plan = Plan {
-            fmt: 1,
-            version: "t".into(),
-            tag: "t".into(),
-            datasets: vec![
-                Dataset {
-                    id: "g".into(),
-                    code: 5,
-                    resolution: tile_resolution(14, lat),
-                    cover: None,
-                    source: Source::Tiles {
-                        url: "https://g.test/{z}/{x}/{y}.png".into(),
-                        zoom: 14,
-                        encoding: "gsi-png".into(),
-                        every_zoom: false,
-                    },
-                    convert: None,
-                    outline: None,
-                },
-                Dataset {
-                    id: "flat".into(),
-                    code: 3,
-                    resolution: 30.0,
-                    cover: None,
-                    source: Source::Geotiff {
-                        crs: 4326,
-                        read_resolution: None,
-                        store: true,
-                        files: vec![(
-                            "https://e.org/G/G.tif".into(),
-                            Some([b[0] - 0.01, b[1] - 0.01, b[2] + 0.01, b[3] + 0.01]),
-                        )],
-                        masks: vec![None],
-                    },
-                    convert: None,
-                    outline: None,
-                },
-            ],
-        };
-        let o = Opts { fetch: &net, store: Some(store::nasfs::NasPath::local_for_test(store.clone())), local: None };
-        let plans = vec![plan; 13];
-        let east: fn(u8, u32, u32) -> Vec<Poly> = |_, _, _| vec![square(Kind::Sea, 1, 128.0, 0.0, 256.0, 256.0)];
-        let water = Fixed(east);
-        let at_sea: Vec<OnceLock<Plan>> = (0..plans.len()).map(|_| OnceLock::new()).collect();
-        let t = Tiles::new(&plans, &o).over_water(&water, &at_sea);
-        let h = roadcore::grid::decode_terrain(&t.sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap()).unwrap();
-        for j in [0, 100, 255] {
-            assert!((h[j * 256 + 10] - 1000.0).abs() < 1.0, "land: the pyramid's, {}", h[j * 256 + 10]);
-            assert!((h[j * 256 + 200] - 500.0).abs() < 0.01, "open sea: the next dataset's, {}", h[j * 256 + 200]);
-        }
-        // Without the water, the sea's tiles are asked for: the east column's fails.
-        let plain = Tiles::new(&plans, &o);
-        assert!(plain.sample(z, &[(x, y)]).is_err(), "the unsupplied tiles asked for");
     }
 
     #[test]

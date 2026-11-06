@@ -31,7 +31,9 @@
 
 use super::declared::{Cover, Dataset, Plan, Source};
 use super::proj::{mercator_tile, projected, Projection};
-use super::sample::{bilinear, blocks_read, sample_raster_noting, window_clean, Clean, Seen, BLOCK, NODATA_BELOW};
+use super::sample::{
+    bilinear_above, blocks_read, sample_raster_noting, window_clean, Clean, Seen, BLOCK, NODATA_BELOW,
+};
 use crate::fetch::Fetch;
 use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
@@ -235,6 +237,16 @@ pub fn tile_resolution(zoom: u32, lat: f64) -> f64 {
 /// Whether a value is data.
 pub(crate) fn valid(v: f32, nodata: Option<f64>) -> bool {
     v.is_finite() && v >= NODATA_BELOW && nodata.is_none_or(|nd| v as f64 != nd)
+}
+
+/// A tile pyramid's values below this are no data: its encoding's own no data decodes far under it
+/// (crate::dem::encoding), and its sea floor, to the deepest trench, is data (a raster's nodata
+/// limit, `NODATA_BELOW`, would cut AWS's ocean off at −1,000 m).
+pub const TILE_BELOW: f32 = roadcore::grid::MIN_ELEV;
+
+/// Whether a tile pyramid's value is data (`TILE_BELOW`).
+pub(crate) fn tile_valid(v: f32) -> bool {
+    v.is_finite() && v >= TILE_BELOW
 }
 
 /// Opens a file: a URL, or a local path; None when the server has none.
@@ -1285,7 +1297,7 @@ impl TileSet<'_> {
     /// `tile`, noted in `clean`: whether every pixel of it holds data.
     fn tile_noted(&self, tx: i64, ty: i64) -> Result<Option<(usize, usize, Vec<f32>)>> {
         let t = self.tile(tx, ty)?;
-        let clean = t.as_ref().is_some_and(|(_, _, a)| a.iter().all(|&v| valid(v, None)));
+        let clean = t.as_ref().is_some_and(|(_, _, a)| a.iter().all(|&v| tile_valid(v)));
         self.clean.lock().unwrap().insert((tx, ty), clean);
         Ok(t)
     }
@@ -1340,7 +1352,7 @@ impl TileSet<'_> {
             for part in sel[s..e].chunks(TALLY_RUN) {
                 v.extend(part.iter().map(|&i| {
                     let (fx, fy) = at(i);
-                    bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5)
+                    bilinear_above(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5, TILE_BELOW)
                 }));
                 tally.add(part.len());
             }
@@ -1458,7 +1470,7 @@ impl TileSet<'_> {
                                 None => true,
                                 Some(None) => false,
                                 Some(Some((_, _, a))) => {
-                                    valid(a[(r - py0) as usize * TILE_PX + (c - px0) as usize], None)
+                                    tile_valid(a[(r - py0) as usize * TILE_PX + (c - px0) as usize])
                                 }
                             };
                         }

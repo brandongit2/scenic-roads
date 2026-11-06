@@ -45,10 +45,10 @@ pub const BLOCK_Z: u8 = 4;
 pub const POLES: [Pole; 1] = [Pole::South];
 
 /// The steps' versions (in their keys). (Terrain 4, task #862: sampled with `det`'s maths and
-/// roadcore::geo's Mercator.)
-pub const TERRAIN_V: u32 = 4;
+/// roadcore::geo's Mercator; 5, task #975: below 0 m kept. Root 4: the same.)
+pub const TERRAIN_V: u32 = 5;
 pub const SLOPE_V: u32 = 2;
-pub const ROOT_V: u32 = 3;
+pub const ROOT_V: u32 = 4;
 
 /// A polar layer's name: `polar-terrain-s`, `polar-slope-s` (`kind` "terrain" or "slope").
 pub fn layer(kind: &str, pole: Pole) -> String {
@@ -221,8 +221,8 @@ pub fn sample_pieces(
 /// Tiles `ts` of zoom `z` sampled from `s`: each its 256 × 256 heights (m, EGM2008), each the
 /// mean of its `K` × `K` samples with data; where no dataset has data, a fill mask's own filled
 /// value (`Sampler::fill_voids`; both counted in `voids`); a pixel with no sample with data in a
-/// gap up to `GAP_PX` wide its neighbours' (`close_gaps`), else sea level; below zero to zero (the
-/// Mercator terrain's rule after its water).
+/// gap up to `GAP_PX` wide its neighbours' (`close_gaps`), else sea level; the source's heights below
+/// 0 m kept, as the Mercator terrain's are.
 pub fn sample(s: &Sampler, pole: Pole, z: u8, ts: &[(u32, u32)], voids: &Voids) -> Result<Vec<Vec<f32>>> {
     let per = TS * TS * K * K;
     let mut lon = Vec::with_capacity(per * ts.len());
@@ -262,7 +262,9 @@ pub fn sample(s: &Sampler, pole: Pole, z: u8, ts: &[(u32, u32)], voids: &Voids) 
             }
             close_gaps(&mut e);
             for v in &mut e {
-                *v = if v.is_nan() { 0.0 } else { v.max(0.0) };
+                if v.is_nan() {
+                    *v = 0.0;
+                }
             }
             e
         })

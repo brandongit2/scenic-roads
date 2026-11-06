@@ -8,7 +8,7 @@
 //!   the lead: its duties (`LEAD_ONLY`: the catalogues, a prune, the 3D buildings' sources' and the elevation pyramids' fetches),
 //!   the steps that keep the pass's answers (the agent seeds them as it starts), and the worldwide
 //!   steps (one target, the world: the roads' index, the rail stops, the ferries, the world's roots,
-//!   the landmarks' and overlays' draws, the rail chain, the terrain's water; the pass's own), whose
+//!   the landmarks' and overlays' draws, the rail chain, the depth's water digests; the pass's own), whose
 //!   inputs aren't followed onto a member's Mac.
 //! - **By the measures** (crate::coord's `pick_every`): a member offered a target only when its
 //!   measured memory and disk fit what the member spares; a cold start (a step none of whose

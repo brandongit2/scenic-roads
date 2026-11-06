@@ -3,9 +3,8 @@
 //! at its place's finest zoom (crate::terrain_zoom::finest, from the declared datasets meeting it)
 //! is sampled from the pool, each dataset read at most at its own finest detail and the next in the
 //! declared order filling its voids (crate::terrain_base); each coarser tile is its children's 2×2
-//! means, a quarter whose child is past its place's finest zoom sampled there. Its water is
-//! flattened as every level's is (crate::terrain_water: the sea; its lakes and rivers keep the
-//! source's heights), tile by tile.
+//! means, a quarter whose child is past its place's finest zoom sampled there. It keeps the
+//! source's heights as every level does: at sea, over lakes and below 0 m.
 //!
 //! - **Its tiles:** under the z10 tile, each of z13 to the deepest stored zoom near the coverage
 //!   (20 km) no finer than its place's finest zoom (`levels`). A z10 tile with none is no target.

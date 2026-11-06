@@ -1,6 +1,6 @@
 //! A block of depth tiles composed from the depth sources (docs/steps.md §3): up to 8 × 8
-//! tiles of one zoom with a margin of `PAD` pixels, on the basemap's own water as the terrain
-//! flattens it (crate::terrain_water).
+//! tiles of one zoom with a margin of `PAD` pixels, on the basemap's own water
+//! (crate::terrain_water).
 //!
 //! 1. Each source is sampled onto the block (crate::depth::grids): depth, the zoom of the grid each
 //!    pixel is from, its chart low water. A sea source is drawn on the sea (and in rivers and lakes

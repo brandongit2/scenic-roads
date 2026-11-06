@@ -15,7 +15,6 @@ use crate::coverage::Coverage;
 use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
-use crate::terrain_deep::Deep;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,12 +26,15 @@ use std::collections::{BTreeMap, BTreeSet};
 /// 9 (task #862): roadcore::geo's one Mercator, box-grower and Earth ("near the coverage" its
 /// `NEAR_COVERAGE_KM`), `det`'s maths in the sampling (the geoid's too). 10 (task #942, the
 /// owner's of 5 Nov): lakes and rivers keep the source's heights, artefacts too (none levelled;
-/// mids of format 3, no lakes' levels; the water's digests of the sea alone).
-pub const TERRAIN_V: u32 = 10;
+/// mids of format 3, no lakes' levels; the water's digests of the sea alone). 11 (task #975, the
+/// owner's of 5 Nov): the sea and below 0 m keep the source's heights too (no water read, no clamp
+/// at 0 m; every dataset read at sea).
+pub const TERRAIN_V: u32 = 11;
 /// Terrain-deep 2 (task #929): a z10 tile's band past z12 by the same rule, its mid for its z6 tile.
 /// 3 (task #862): as terrain-hi's 9. 5 (task #942): its lakes and rivers keep the source's
-/// heights, as terrain-hi's 10 (4 had lakes at levels a terrain-lakes step decided).
-pub const TERRAIN_DEEP_V: u32 = 5;
+/// heights, as terrain-hi's 10 (4 had lakes at levels a terrain-lakes step decided). 6 (task #975):
+/// the sea and below 0 m too, as terrain-hi's 11.
+pub const TERRAIN_DEEP_V: u32 = 6;
 /// Slope 4 (task #952): a missing deep terrain tile (z13 on) is made from its nearest ancestor
 /// within the deep levels alone, past them its own edge repeated (crate::slope_pack::fallback_floor),
 /// and z10–12 are made by slope-hi from its z10 tiles' z13 quadrants (their deep mids, format 2) and
@@ -1221,8 +1223,9 @@ pub fn region_steps(
 
 /// The assemblies' versions (their keys): bumped on any change to the bytes of the lo packs an
 /// assembly makes from the same z6 tiles' mids. Terrain's 3 (task #929): z3–8 from the mids alone,
-/// a quarter outside every region the relief's (crate::terrain_pack::Fill).
-pub const TERRAIN_LO_V: u32 = 3;
+/// a quarter outside every region the relief's (crate::terrain_pack::Fill). 4 (task #975): the sea
+/// and below 0 m keep the source's heights.
+pub const TERRAIN_LO_V: u32 = 4;
 /// Slope's 3: the shading pyramid (`SLOPE_V` 2), lossless WebP (crate::shade_codec, its version in
 /// the key). 2: an assembly's z6 tiles that aren't its z6 tiles' made from their terrain, never kept
 /// from the lo pack as an earlier run stored them, and their z7–8 tiles not kept
@@ -1445,14 +1448,13 @@ pub fn is_none_key(step: &str, t: &str, key: &str) -> bool {
 pub const UNKNOWN: &str = "?";
 
 /// The terrain-water job's version (`terrain_water_work`): bumped with any change to the digests it
-/// makes (crate::terrain_water::tiles_digest), which changes every terrain key.
+/// makes (crate::terrain_water::tiles_digest), which changes every depth key.
 pub const TERRAIN_WATER_V: u32 = 1;
 
-/// The water terrain target `t` (a z6 tile "6/x/y", an assembly "3/x/y") reads, as its key names it:
-/// "water <digest>" from the water source's digests (`idx`, pinned `pin`) made from `from` (a
-/// z6 tile's: the coverage as it reads it (`piece_coverage`); an assembly's,
-/// crate::terrain_water::AREA_FROM); "-" without a water source (none read); None while its digest
-/// isn't there.
+/// The water depth target `t` ("depth 6/x/y", "depth 3/x/y") reads, as its key names it: "water
+/// <digest>" from the water source's digests (`idx`, pinned `pin`) made from `from`
+/// (`depth_water_reads`); "-" without a water source (none read); None while its digest isn't
+/// there.
 pub fn water_key(
     pin: Option<&str>,
     idx: Option<&crate::terrain_water::WaterIdx>,
@@ -1465,23 +1467,6 @@ pub fn water_key(
     }
 }
 
-/// What the terrain's targets read of the water, as the `terrain-water` job works their digests
-/// out (crate::terrain_water::WaterIdx): each z6 tile ("6/x/y") and deep target with the coverage it reads (`piece_coverage`, `Deep::coverage`), each assembly ("3/x/y") with AREA_FROM.
-pub fn water_wants(d: &Deep) -> Vec<(String, String)> {
-    let (cov, sets) = (d.cov, d.sets.as_slice());
-    let mut out = Vec::new();
-    for (q, ts) in &coverage_tiles(cov) {
-        for &(x, y) in ts {
-            out.push((format!("6/{x}/{y}"), piece_coverage(cov, sets, (x, y))));
-            for &(a, b) in d.targets_in((x, y)).iter() {
-                out.push((format!("{}/{a}/{b}", crate::terrain_deep::PACK_Z), d.coverage((a, b))));
-            }
-        }
-        out.push((format!("3/{}/{}", q.0, q.1), crate::terrain_water::AREA_FROM.to_string()));
-    }
-    out
-}
-
 /// What a terrain z6 tile's run reads of the coverage (task #832), as its keys name it: the tiles
 /// of its levels it makes (crate::terrain_pack::piece_levels, each z9–12 tile within 20 km of
 /// it), digested. Not the coverage's rings near it (`Coverage::fingerprint`): a region's outline
@@ -1491,41 +1476,15 @@ pub fn piece_coverage(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32
     crate::terrain_deep::levels_digest(&crate::terrain_pack::piece_levels(cov, sets, t))
 }
 
-/// `water_wants` with the tiles each reads: a z6 tile's z9–12 (crate::terrain_pack::piece_levels),
-/// an assembly's z6–8 (crate::terrain_water::z3_tiles).
-pub fn water_reads(d: &Deep) -> Vec<crate::terrain_water::Reads> {
-    let (cov, sets) = (d.cov, d.sets.as_slice());
-    let flat = |lv: Vec<(u8, Vec<(u32, u32)>)>| -> Vec<(u8, u32, u32)> {
-        lv.into_iter().flat_map(|(z, ts)| ts.into_iter().map(move |(x, y)| (z, x, y))).collect()
-    };
-    water_wants(d)
-        .into_iter()
-        .map(|(t, from)| {
-            let u = TileId::parse(&t).unwrap();
-            let tiles = match u.z {
-                6 => flat(crate::terrain_pack::piece_levels(cov, sets, (u.x, u.y))),
-                z if z == crate::terrain_deep::PACK_Z => flat(crate::terrain_deep::levels(cov, sets, (u.x, u.y))),
-                _ => crate::terrain_water::z3_tiles((u.x, u.y)),
-            };
-            (t, from, tiles)
-        })
-        .collect()
-}
-
-/// The terrain-water job (one, "terrain-water"): the water source's digests of what the terrain's
-/// targets read (`water_wants`), when its digests' file lacks one of them (the source new, or the
-/// coverage grown); keyed on its version, the source's pin and what's wanted. None with nothing
-/// lacking, no water source, or once run for the same.
+/// The terrain-water job (one, "terrain-water"): the water source's digests of what the depth's
+/// targets read (`depth_water_reads`), when its digests' file lacks one of them (the source new, or
+/// the coverage grown); keyed on its version, the source's pin and what's wanted. None with nothing
+/// lacking, no water source, the depth's sources unread, or once run for the same.
 pub fn terrain_water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (cov, m, tiles) = (x.cov, x.m, x.tiles);
     let pin = crate::terrain_pack::water_source_pin(m)?;
-    let mut wants = water_wants(&tiles.deep(m, cov)?);
-    // (The depth's targets' too, once its sources are read: crate::depth.)
-    if let Some(d) = tiles.depth(m) {
-        wants.extend(depth_water_reads(cov, &d).into_iter().map(|(t, f, _)| (t, f)));
-        wants.sort();
-        wants.dedup();
-    }
+    let wants: Vec<(String, String)> =
+        depth_water_reads(cov, &tiles.depth(m)?).into_iter().map(|(t, f, _)| (t, f)).collect();
     let idx = tiles.water_idx(m, &pin);
     if wants.iter().all(|(t, from)| idx.is_some_and(|w| w.get(t, from).is_some())) {
         return None;
@@ -1541,8 +1500,8 @@ pub fn terrain_water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 
 /// The pyramids-fill step's z6 tiles (crate::pyramids): each near the coverage (`coverage_tiles`)
 /// that a declared pyramid read tile by tile meets (its accepted cover) and that makes hi tiles or has
-/// terrain-deep targets, with its key (`key_now`); `UNKNOWN` while the water or the fine datasets it
-/// reads aren't worked out.
+/// terrain-deep targets, with its key (`key_now`); `UNKNOWN` while the fine datasets it reads aren't
+/// worked out.
 /// None while the declared elevation datasets can't be read now; none without them.
 pub fn pyramids_targets(x: &KeyCtx) -> Option<Vec<(String, String)>> {
     use crate::dem::declared::Data;
@@ -1907,26 +1866,15 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
         .cloned()
         .collect();
     // (A target whose key can't be told yet (`UNKNOWN`) is offered to no one: it's held for what
-    // its key reads, the terrain-water job's digests while that job has work, said so (task #965:
-    // 4,222 terrain-deep targets waited on it with no word of it).)
+    // its key reads, said so (task #965: 4,222 terrain-deep targets waited with no word of it).)
     let unknown = |ts: &[(String, String)]| ts.iter().filter(|(_, k)| k == UNKNOWN).count();
     let unknowns = [
         ("terrain-hi", unknown(&tt.terrain)),
         ("terrain-lo", unknown(&tt.terrain_lo)),
         ("terrain-deep", unknown(&tt.terrain_deep)),
     ];
-    if unknowns.iter().any(|(_, n)| *n > 0) {
-        let water = terrain_water_work(x, done).is_some();
-        for (step, n) in unknowns.into_iter().filter(|(_, n)| *n > 0) {
-            w.held.push((
-                step,
-                if water {
-                    format!("{n} wait for terrain-water (the water digests their keys read)")
-                } else {
-                    format!("{n} wait for what their keys read (the water digests or declared sources, unread now)")
-                },
-            ));
-        }
+    for (step, n) in unknowns.into_iter().filter(|(_, n)| *n > 0) {
+        w.held.push((step, format!("{n} wait for what their keys read (the declared sources, unread now)")));
     }
     w.terrain_left = changing;
     w.terrain_left.extend(w.terrain_deep_left.iter().filter_map(|t| z3_of(t)));
@@ -6526,7 +6474,7 @@ pub(crate) mod tests {
         }
         let inputs = spaced(&bld_inputs(&c, "d"));
         let plain = |m: &BTreeMap<String, String>| tiles_for(m);
-        // (With the pass's basemap the terrain reads its water from: its digests not made yet.)
+        // (With the pass's basemap the depth reads its water from: its digests not made yet.)
         let mut water = m.clone();
         water.insert("layers/basemap/world-d".into(), "layers/basemap/world-d.7c7c7c7c7c7c7c7c.pmtiles".into());
         // (A pyramid read tile by tile over the coverage, and the world's dataset.)

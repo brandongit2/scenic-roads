@@ -90,7 +90,7 @@ const STEPS: &[Step] = &[
     s("spoken", "[--pass d] [--languages-index i]", "the languages spoken where, for names", &[], &["--pass", "--languages-index"], 0),
     s("lakefill", "[--pass d]", "Canada's lakes missing from OpenStreetMap filled in", &[], PASS, 0),
     s("water", "[--pass d] [--basemap f] [--only x/y,…] [--archive f] [--lakefill f]", "the water layer, z0–9 (--archive: into that local file, the NAS untouched)", &[], &["--pass", "--basemap", "--only", "--archive", "--lakefill"], 0),
-    s("terrain-water", "[--pass d] [--regions dir]", "the terrain's water digests", &[], PASS_REGIONS, 0),
+    s("terrain-water", "[--pass d] [--regions dir]", "the depth's water digests", &[], PASS_REGIONS, 0),
     s("stations", "--pass d [--geojson f]", "the rail stops of the pass's rail set within the coverage, as the stations' tiles", &[], &["--pass", "--geojson"], 0),
     s("ferries", "--pass d [--gtfs-index i]", "the pass's ferries set (with the ferry feeds and the static timetables of index i, else the accepted one), as the ferries' blocks", &[], &["--pass", "--gtfs-index"], 0),
     s("rail-feeds", "[--pass d] [--regions dir] [--feeds-index i]", "the timetable feeds (the declarations of index i, else the accepted one): the coverage's rail feeds and the ferry feeds, each fetched once into the rail sources", &[], &["--pass", "--regions", "--feeds-index"], 0),

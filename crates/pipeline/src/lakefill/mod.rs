@@ -22,7 +22,7 @@
 //! their own, inland water), the map's server (the water's deeper zooms) and the depth
 //! (`terrain_water::WaterSource`, `FilledWater`: its pin names the fill, so the depth's water
 //! digests, and with them the targets whose water the fill changes, follow it). The terrain reads
-//! the same source's sea alone (`terrain_water::terrain_polys`), never a lake.
+//! no water.
 
 use anyhow::{ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};

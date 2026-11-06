@@ -79,4 +79,20 @@ mod tests {
             }
         }
     }
+
+    /// Heights below 0 m come back as stored, to the trench's depth (the terrain keeps the source's
+    /// at sea and below 0 m: the Dead Sea's −430 m, a polder's −6.5 m, the Mariana's −10,994 m),
+    /// each still told from the voids decode marks (roadcore::grid::defined).
+    #[test]
+    fn heights_below_zero_come_back() {
+        let lows = [-0.01f32, -6.5, -430.37, -1000.25, -4321.0, -10_994.0];
+        let mut e: Vec<f32> = (0..65536).map(|i| lows[i % lows.len()]).collect();
+        let b = encode(&mut e, NATIVE_M).unwrap();
+        let back = roadcore::grid::decode_terrain(&b).unwrap();
+        for (i, a) in back.iter().enumerate() {
+            let want = lows[i % lows.len()];
+            assert!((a - want).abs() <= 0.005 + 1.0 / 256.0, "{want} came back {a}");
+            assert!(roadcore::grid::defined(*a), "{a}");
+        }
+    }
 }
