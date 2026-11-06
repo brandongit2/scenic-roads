@@ -267,7 +267,7 @@ fn a_server_on_demand_keeps_the_map_as_it_moves() {
     let nas = tempfile::tempdir().unwrap();
     let root = store::nasfs::NasRoot::local_for_test(nas.path().to_owned());
     let dead = store::spawn::listen("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let kept = |cache: &Path| Snapshot::decode(&std::fs::read(cache.join(SAVED)).unwrap()).unwrap().0.seq;
+    let kept = |folder: &Path| Snapshot::decode(&std::fs::read(folder.join(SAVED)).unwrap()).unwrap().0.seq;
     let one = Map::of(&publish(&[nas.path()], 1)).unwrap();
     for (save_every, want) in [(Duration::ZERO, 3), (SAVE_EVERY, 1)] {
         let (home, cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());

@@ -68,6 +68,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/build.rs", "record", "^\"inputs\"| \"outlines\"", "the `inputs` step's name"),
     ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "[\"inputs\",", "the backups: every inputs folder and the acceptances, by design (§4.9)"),
     ("crates/pipeline/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
+    ("crates/pipeline/src/agent/room.rs", "is_member_leftover", "\"inputs-listing\",", "the lead's inputs listing named as a leftover a member removes (docs/roles.md §3.5), never read"),
     ("crates/pipeline/src/agent/plan.rs", "take", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/pipeline/src/cli/build.rs", "STEPS", "s(\"inputs", "the `inputs` step's name and usage"),
     ("crates/pipeline/src/agent/mod.rs", "is_paced", "Some(\"inputs\" | \"trees\")", "the `inputs` step's name"),
