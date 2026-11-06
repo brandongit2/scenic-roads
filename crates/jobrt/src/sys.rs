@@ -1,9 +1,19 @@
-//! The operating system's processes, signals and locks, for the agent and the steps' runner (macOS's).
+//! The operating system's processes, signals and locks, for the agent and the steps' runner (macOS's), and the
+//! app version a program runs from.
 //! (I/O that differs by platform is `store::sys`.)
 
 use std::fs::File;
 use std::io;
 use std::process::{Child, Command, ExitStatus};
+
+/// The app version of the programs in `bin` (`…/app/<version>/`), or "development".
+pub fn app_version(bin: &std::path::Path) -> String {
+    let canon = bin.canonicalize().unwrap_or_else(|_| bin.to_path_buf());
+    match (canon.parent().and_then(|p| p.file_name()), canon.file_name()) {
+        (Some(app), Some(v)) if app == "app" => v.to_string_lossy().into_owned(),
+        _ => "development".into(),
+    }
+}
 
 /// A signal to a process group.
 #[derive(Clone, Copy, Debug)]

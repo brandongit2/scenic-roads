@@ -55,7 +55,7 @@ pub struct Elevation {
     /// its accepted entry has): a version checked whole twice reads the data once, and a dataset
     /// as accepted is taken from its accepted entry (`seed`), not read again.
     memo: Mutex<HashMap<String, std::result::Result<Measured, String>>>,
-    /// The app the switch records; None: this program's (`agent::app_version`).
+    /// The app the switch records; None: this program's (`jobrt::sys::app_version`).
     pub app: Option<String>,
     /// The stores' folder (`sources/fetched/`): a dataset declared `store` is measured from its
     /// stored files there (crate::dem::generic::stored), never fetched.
@@ -766,7 +766,7 @@ impl Checks for Elevation {
         // records it.)
         let app = match &self.app {
             Some(a) => a.clone(),
-            None => crate::agent::app_version(
+            None => jobrt::sys::app_version(
                 std::env::current_exe()?.parent().ok_or_else(|| anyhow::anyhow!("the program's folder"))?,
             ),
         };

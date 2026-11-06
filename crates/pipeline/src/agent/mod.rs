@@ -1790,7 +1790,7 @@ impl Agent {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        let app = app_version(&o.bin);
+        let app = jobrt::sys::app_version(&o.bin);
         if mem.app != app {
             if !mem.retry.is_empty() {
                 eprintln!("agent: a new app ({app}); failed jobs may run again at once");
@@ -9466,15 +9466,6 @@ fn job_apps_of<'a>(cmds: impl Iterator<Item = &'a str>, bin: &Path, app: &str) -
     out.sort();
     out.dedup();
     out
-}
-
-/// The app version of the programs in `bin` (`…/app/<version>/`), or "development".
-pub fn app_version(bin: &Path) -> String {
-    let canon = bin.canonicalize().unwrap_or_else(|_| bin.to_path_buf());
-    match (canon.parent().and_then(|p| p.file_name()), canon.file_name()) {
-        (Some(app), Some(v)) if app == "app" => v.to_string_lossy().into_owned(),
-        _ => "development".into(),
-    }
 }
 
 /// A read's bytes (Some(Some)), the file missing (Some(None)), or None when it can't be read now

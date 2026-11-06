@@ -2195,7 +2195,7 @@ fn catalogue(
         "n": n,
         "created": utc(now as i64),
         // The published app that made it (its folder's name), or "development".
-        "app": std::env::current_exe().ok().and_then(|e| e.parent().map(pipeline::agent::app_version)).unwrap_or_else(|| "development".into()),
+        "app": std::env::current_exe().ok().and_then(|e| e.parent().map(jobrt::sys::app_version)).unwrap_or_else(|| "development".into()),
         "files": files,
         "units": units,
         "layers": layers,

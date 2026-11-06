@@ -316,7 +316,7 @@ pub struct Worker {
     pub can: Vec<String>,
     pub mem_mb: u64,
     pub cores: u32,
-    /// The app it runs (an agent's: crate::agent::app_version), when it says.
+    /// The app it runs (an agent's: jobrt::sys::app_version), when it says.
     pub app: Option<String>,
     /// Its Mac's capacity, as its last ask said (an older agent's: none).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -893,7 +893,7 @@ pub struct Ask {
     pub mem_mb: u64,
     #[serde(default)]
     pub cores: u32,
-    /// The app it runs (an agent's, crate::agent::app_version).
+    /// The app it runs (an agent's, jobrt::sys::app_version).
     #[serde(default)]
     pub app: Option<String>,
     /// The most its Mac's jobs could hold together (MB: its memory less its memory floor, nothing
