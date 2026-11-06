@@ -1918,7 +1918,16 @@ lane runs at its speed any more, and a Mac of few or no pairs runs at about the 
 **The near term, measured again (task #934, 6 Nov).** The p90 of the end error under 15 min, in
 minutes. Live (`forecast-check` over each code's own span, the forecasts as the lead made them):
 code 3 (2 Nov 07:00 to 4 Nov 10:50 UTC, 10,800 samples) 284, code 4 (to 5 Nov 23:34, 2,365) 76,
-code 5 (to 6 Nov 16:07, 4,299) 300. Replayed on the inputs' archive (`--replay --from 2026-11-04T22:00
+code 5 (to 6 Nov 16:07, 4,299) 300. The three spans ran different work, so these don't weigh the
+codes against each other (the replay below does). What the error is made of (task #934's review,
+the archived forecasts of code 5's span joined to the history by hand, a sample a forecast and job,
+5,504 under 15 min): the end's p90 224, the start's lateness 222, the job's own time against its
+forecast 14. A target forecast to run within 15 min ran hours later, or not by the history's end;
+it didn't run slower. Most were bldtiles (p90 332, 1,303 samples) and depth (369, 289): the
+forecasts placed about 27 depth targets to end in their first 15 min, where the pool did about 2 a
+quarter hour then, mostly terrain-hi instead. Code 4's span had little of either (bldtiles 497
+samples, p90 150; depth 63, 26). So the near term's error is which targets run next, not how fast
+a Mac runs them (the paces' part, the job's time, erred 14 at p90). Replayed on the inputs' archive (`--replay --from 2026-11-04T22:00
 --split 2026-11-05T22:00`, release build on the M1, 2.3-2.8 GB): code 3 against 4, train 171 to
 172 (n 403 to 440), test 506 to 447 (n 893 to 847); code 4 against 5, train 172 to 138, test 449 to
 459. So no near-term loss from the paces since the archive began. Replayed on #926's own window
