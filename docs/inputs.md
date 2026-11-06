@@ -1563,9 +1563,9 @@ from by `url` or nothing (made from the map's own inputs). Its grids are that st
 **`[data.params]`:** `code` (1–15, the source byte the class tiles carry, one a source), `water`
 (`sea` or `lake`: where it's drawn: a sea source on the sea, a lake source in lakes),
 `label` (the map's name for it), `datum` (what its depths are below, in words), optionally `band_m`
-(ground metres it's feathered in over where it ends in the water), `intertidal` (its positive values
-are drying heights), `datum_exact` (false: not corrected to the others' datum, so it fills gaps only,
-hard-edged), `rivers` (drawn in the basemap's rivers too: its depths there are below the river's own
+(ground metres it's feathered in over where it ends in the water over another source's data; with
+none beneath, its edge is its own), `intertidal` (its positive values are drying heights), `datum_exact`
+(false: not corrected to the others' datum, so it fills gaps only, hard-edged), `rivers` (drawn in the basemap's rivers too: its depths there are below the river's own
 surface, not a fixed level's), `lakes` (drawn in the basemap's lakes too: its depths there are
 below the lake's own surface), `estimated` (every cell an estimate:
 classed so, painted after every survey and filling only what none has) and `notice` (a
