@@ -22,52 +22,15 @@ use anyhow::{bail, ensure, Context, Result};
 use det::Det;
 use std::collections::{BTreeMap, HashMap};
 
+// The declarations' format and a source's method with its grids' zooms: crate::inputs::estimate's
+// (task #916 step 6d: the input check reads them), kept at these paths.
+pub use crate::inputs::estimate::{Method, FORMAT, GLOBATHY_Z, SMALL_Z};
+
 /// Bumped with any change to the grids made from the same inputs.
 pub const V: u32 = 1;
-/// The declarations' format: a depth source made by this step.
-pub const FORMAT: &str = "lake-estimate";
 /// The packs' logical names' prefix: `work/lake-depth/<source id>/6-x-y`.
 pub const PREFIX: &str = "work/lake-depth/";
 
-/// How a source is estimated (its declaration's `params.method`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum Method {
-    /// GLOBathy's maximum depths on HydroLAKES' outlines, from the source's folder.
-    Globathy,
-    /// The basemap's small lakes from the land's slope, leaving out the lakes under the HydroLAKES
-    /// polygons of source `outlines`.
-    LandSlope { outlines: String },
-}
-
-impl Method {
-    /// The method a `lake-estimate` declaration's params name.
-    pub fn of(params: &BTreeMap<String, serde_json::Value>) -> Result<Method> {
-        match params.get("method").and_then(|v| v.as_str()) {
-            Some("globathy") => Ok(Method::Globathy),
-            Some("land-slope") => Ok(Method::LandSlope {
-                outlines: params
-                    .get("outlines")
-                    .and_then(|v| v.as_str())
-                    .context("`params.outlines`: the source whose HydroLAKES outlines it leaves out")?
-                    .to_string(),
-            }),
-            m => bail!("`params.method` is {m:?}: globathy or land-slope"),
-        }
-    }
-
-    /// Its grids' zoom and the zoom of the tiles they're cut along (one grid a tile).
-    pub fn zooms(&self) -> (u8, u8) {
-        match self {
-            Method::Globathy => (GLOBATHY_Z, 8),
-            Method::LandSlope { .. } => (SMALL_Z, 10),
-        }
-    }
-}
-
-/// GLOBathy's grids' zoom (~40 m at 50°N: an estimate, held coarser than its 1″ rasters).
-pub const GLOBATHY_Z: u8 = 11;
-/// The small lakes' (the basemap's own finest).
-pub const SMALL_Z: u8 = 14;
 /// The terrain the small lakes' slope is read from.
 pub const TERRAIN_Z: u8 = 12;
 

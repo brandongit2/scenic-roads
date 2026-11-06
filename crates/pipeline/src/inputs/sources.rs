@@ -63,7 +63,7 @@ pub const ROLES: [(&str, &[&str], &[&str]); 16] = [
     // (Depth under the water: crate::depth. Many sources, each a set of depth grids by an index,
     // made by a producer (producers/depth/) and kept in `sources/fetched/<id>/`, or made by the
     // lake-depth step from its own inputs (`lake-estimate`, crate::depth::lakes): `MANY`.)
-    (DEPTH, &["depth-grid", crate::depth::lakes::FORMAT], &[]),
+    (DEPTH, &["depth-grid", crate::inputs::estimate::FORMAT], &[]),
     // (Height references converted: crate::dem::geoid. Many sources, each a separation grid (a
     // GeoTIFF) or a Helmert transformation between two references, chained by the elevation step
     // to bring each roads' dataset's heights to EGM2008: `MANY`.)
@@ -179,7 +179,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
             }
             let ways = data.url.is_some() as usize + (!data.urls.is_empty()) as usize + data.index.is_some() as usize;
             // (A source the build makes from its other inputs alone names none: crate::depth::lakes.)
-            let made = data.format == crate::depth::lakes::FORMAT;
+            let made = data.format == crate::inputs::estimate::FORMAT;
             if ways != 1 && !(made && ways == 0) {
                 why.push("names where it is not in exactly one way: `url`, `urls` or `index`".into());
             }
@@ -263,12 +263,12 @@ pub const DEPTH_PARAMS: [&str; 11] = [
 fn depth_params(d: &Data) -> Vec<String> {
     let mut why = Vec::new();
     let p = &d.params;
-    let made = d.format == crate::depth::lakes::FORMAT;
+    let made = d.format == crate::inputs::estimate::FORMAT;
     if made {
         if d.index.is_some() {
             why.push("a lake-estimate source's grids are the lake-depth step's: no `index`".into());
         }
-        if let Err(e) = crate::depth::lakes::Method::of(p) {
+        if let Err(e) = crate::inputs::estimate::Method::of(p) {
             why.push(format!("{e:#}"));
         }
     } else {

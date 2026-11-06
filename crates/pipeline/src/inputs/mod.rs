@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 pub mod credits;
 pub mod descriptions;
 pub mod elevation;
+pub mod estimate;
 pub mod feeds;
 pub mod gate;
 pub mod gatetest;
