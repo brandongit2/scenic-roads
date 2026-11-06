@@ -107,14 +107,19 @@ pub fn block_end(code: &[String], at: usize) -> usize {
 }
 
 /// The lines inside `#[cfg(test)]` items (a test module, a test helper), each attribute's item to
-/// its block's end; `#[cfg(any(test, …))]` too: a crate's test helpers other crates' tests reach
-/// by its `testkit` feature (docs/crates.md: helpers only, never behaviour).
+/// its block's end; `#[cfg(any(test, feature = "testkit"))]` ones too: a crate's test helpers
+/// other crates' tests reach by its `testkit` feature, which only dev-dependencies turn on
+/// (tests/test_mode.rs: never a release build's). Only that spelling: an `any(test, …)` of
+/// anything else (`debug_assertions`, a target) is code a build runs, and is scanned.
 pub fn test_lines(code: &[String]) -> Vec<bool> {
     let mut mask = vec![false; code.len()];
     let mut k = 0;
     while k < code.len() {
         let t = code[k].trim();
-        if t.starts_with("#[cfg(test)]") || t.starts_with("#[cfg(all(test") || t.starts_with("#[cfg(any(test,") {
+        if t.starts_with("#[cfg(test)]")
+            || t.starts_with("#[cfg(all(test")
+            || t.starts_with("#[cfg(any(test, feature = \"testkit\"))]")
+        {
             let end = block_end(code, k + 1);
             for m in mask.iter_mut().take(end + 1).skip(k) {
                 *m = true;
