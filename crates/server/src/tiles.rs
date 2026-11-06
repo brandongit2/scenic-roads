@@ -281,8 +281,9 @@ impl Basemap {
     }
 
     /// What tile z/x/y of `archive` (a content name) is read from: the piece of it this Mac has, else
-    /// the archive (from the NAS). Its key (a piece's path in the mirror, else the archive's name)
-    /// and the archive or piece opened.
+    /// the archive (from the NAS while it's read: `Data::basemap_key`). Its key (a piece's path in
+    /// the mirror, else the archive's name) and the archive or piece opened; None away from the NAS
+    /// where nothing of it is here.
     pub fn source(
         &self,
         data: &crate::data::Data,
@@ -290,12 +291,13 @@ impl Basemap {
         z: u8,
         x: u32,
         y: u32,
-    ) -> anyhow::Result<(String, Arc<store::pmtiles::PmTiles>)> {
-        let key = data.basemap_key(archive, z, x, y);
+    ) -> anyhow::Result<Option<(String, Arc<store::pmtiles::PmTiles>)>> {
+        let Some(key) = data.basemap_key(archive, z, x, y) else { return Ok(None) };
         match self.open(data, &key) {
-            Ok(pm) => Ok((key, pm)),
-            // (A piece removed just now: the archive.)
-            Err(_) if key != archive => Ok((archive.to_string(), self.open(data, archive)?)),
+            Ok(pm) => Ok(Some((key, pm))),
+            // (A piece removed just now: the archive, while it's read.)
+            Err(_) if key != archive && data.online() => Ok(Some((archive.to_string(), self.open(data, archive)?))),
+            Err(_) if key != archive => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -318,7 +320,8 @@ impl Basemap {
     ) -> anyhow::Result<Vec<Vec<u8>>> {
         let mut out = Vec::new();
         for a in contents {
-            if let Some(b) = self.source(data, a, z, x, y)?.1.get(z, x, y)? {
+            let Some((_, pm)) = self.source(data, a, z, x, y)? else { continue };
+            if let Some(b) = pm.get(z, x, y)? {
                 out.push(b);
             }
         }

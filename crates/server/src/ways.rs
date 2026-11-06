@@ -258,8 +258,14 @@ pub fn road_ways(s: &AppState, f: &Found, window: f32) -> anyhow::Result<(Vec<Ro
     let mut out: Vec<RoadWay> = Vec::new();
     let (mut truncated, mut away) = (false, false);
     for u in units {
-        let bp = match s.data.base(&unit_str(u)) {
+        let unit = unit_str(u);
+        let bp = match s.data.base(&unit) {
             Ok(Some(bp)) => bp,
+            // (Away from the NAS, a unit the map has that isn't downloaded is none: crate::data.)
+            Ok(None) if !s.data.online() && s.data.catalogue().base.contains_key(&unit) => {
+                away = true;
+                continue;
+            }
             Ok(None) => continue,
             Err(_) if !s.data.online() => {
                 away = true;

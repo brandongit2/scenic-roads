@@ -108,7 +108,8 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
     let cat = catalogue(&store::nasfs::NasRoot::local_for_test(nas.path()));
     let f = files_of(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
     // Its tile's packs, the terrain of the tile within 25 km across the meridian (for the
-    // viewshed), the hi data within 50 km, the worldwide file (read zoomed in too).
+    // viewshed), the hi data within 50 km, the worldwide file (read zoomed in too), and zoomed out
+    // over it, the terrain's root and its lo pack of the z3 tile over its tile.
     assert_eq!(
         logicals(&f),
         [
@@ -119,17 +120,23 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
             "hidata/6-32-21",
             "layers/roads/hi/6-31-21",
             "layers/terrain/hi/6-31-21",
-            "layers/terrain/hi/6-32-21"
+            "layers/terrain/hi/6-32-21",
+            "layers/terrain/lo/3-3-2",
+            "layers/terrain/root"
         ]
     );
-    assert_eq!(f.bytes, 30_031 + 300 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032);
-    // And the basemap's zooms 11–14 over its tile, after its files.
+    assert_eq!(f.bytes, 30_031 + 300 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032 + 2_000 + 1_000);
+    // And after its files, the basemap's zooms 0–10, then 11–14 over its tile.
     let p = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)], &BTreeSet::new());
+    let archive = cat.content("layers/basemap/world").unwrap().to_string();
     assert_eq!(
-        p.items.last(),
-        Some(&Item::Piece { archive: cat.content("layers/basemap/world").unwrap().into(), piece: Piece::Tile(31, 21) })
+        p.items[p.items.len() - 2..],
+        [
+            Item::Piece { archive: archive.clone(), piece: Piece::Lo },
+            Item::Piece { archive, piece: Piece::Tile(31, 21) }
+        ]
     );
-    assert_eq!(p.items.len(), 9);
+    assert_eq!(p.items.len(), 12);
 }
 
 async fn call(r: Response) -> (StatusCode, Value) {
@@ -182,7 +189,7 @@ async fn downloading_the_world_and_regions() {
     );
     assert_eq!(
         v["regions"]["london"],
-        json!({"name": "London", "bytes": file_bytes(&london) + piece, "here": 0, "unknown": 0, "on": false, "state": null})
+        json!({"name": "London", "bytes": file_bytes(&london) + lo + piece, "here": 0, "unknown": 0, "on": false, "state": null})
     );
 
     // London downloaded: not the World with it; written to downloads.json; copied by the thread.
@@ -210,8 +217,8 @@ async fn downloading_the_world_and_regions() {
     let v = get(&s).await;
     assert_eq!(
         (v["regions"]["london"]["state"].as_str(), v["world"]["here"].as_u64()),
-        (Some("done"), Some(300)),
-        "London keeps the worldwide file"
+        (Some("done"), Some(300 + 1_000 + 2_000 + lo)),
+        "London keeps the worldwide file, the terrain's root and lo pack and the basemap's zooms 0–10"
     );
     assert_eq!(v["here"].as_u64(), v["regions"]["london"]["bytes"].as_u64(), "the rest of the World went");
     assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
@@ -517,6 +524,42 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
     assert_eq!(m.usage(), (0, 0));
 }
 
+/// A region downloaded before it held what's read over it zoomed out (its list without its root and
+/// lo packs or the basemap's zooms 0–10), behind the catalogue served: at its next round with the
+/// NAS it takes them at the served catalogue, and stays at its own for the rest (no Update).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_region_listed_without_its_zoomed_out_files_gains_them_and_stays_behind() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = store::nasfs::NasRoot::local_for_test(nas.path());
+    let cat = catalogue(&root);
+    let s = crate::test_state_with(home.path(), &root, true);
+    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    let (lo, roads) = ("layers/terrain/lo/3-3-2", "layers/roads/hi/6-31-21");
+    // Its list as one made before: without them.
+    let path = home.path().join(FILE);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let coarse = v["lists"]["1"]["regions"]["london"]["coarse"].as_array_mut().unwrap();
+    let n = coarse.len();
+    let zoomed_out = |i: &Value| {
+        i["piece"] == "lo" || ["layers/terrain/root", lo].iter().any(|l| i["file"].as_str() == cat.content(l))
+    };
+    coarse.retain(|i| !zoomed_out(i));
+    assert_eq!(coarse.len(), n - 3, "{v}");
+    std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+    // Catalogue 2: London's roads and the lo pack made again.
+    drop(s);
+    let s = crate::test_state_with(home.path(), &root, true);
+    let two = next_catalogue(&s, nas.path(), &cat, 2, &[roads, lo]);
+    tokio::task::block_in_place(|| settle(&s));
+    let m = s.data.mirror.clone().unwrap();
+    assert!(m.has(two.content(lo).unwrap()), "the lo pack taken at the served catalogue");
+    assert!(m.has(two.content("layers/terrain/root").unwrap()));
+    assert!(m.has_piece(two.content("layers/basemap/world").unwrap(), Piece::Lo));
+    assert!(m.has(cat.content(roads).unwrap()) && !m.has(two.content(roads).unwrap()), "its roads as they were");
+    assert_eq!(Downloads::load(home.path()).asked().regions[0].pin, Pin { cat: 1, to: None }, "behind, as it was");
+}
+
 /// A download whose catalogue's files for it are the same as the served one's moves on by itself
 /// (nothing to copy), as does one its catalogue didn't have yet (nothing to keep).
 #[tokio::test(flavor = "multi_thread")]
@@ -725,9 +768,65 @@ async fn a_region_alone_has_what_the_map_reads_zoomed_in() {
         assert!(m.has(cat.content(l).unwrap()), "{l} here with London alone");
     }
     assert!(!m.has(cat.content("global/roaden/6-10-10").unwrap()), "not a far tile's");
-    assert!(!m.has(cat.content("layers/terrain/lo/3-3-2").unwrap()), "nor the World's zoomed-out packs");
+    // Zoomed out over it too: the root and lo packs over its tile, the basemap's zooms 0–10.
+    for l in ["layers/terrain/root", "layers/terrain/lo/3-3-2"] {
+        assert!(m.has(cat.content(l).unwrap()), "{l} here with London alone");
+    }
+    assert!(m.has_piece(cat.content("layers/basemap/world").unwrap(), Piece::Lo));
     let v = get(&s).await;
     assert_eq!(v["regions"]["london"]["here"], v["regions"]["london"]["bytes"], "counted in its size");
+}
+
+/// Away from the NAS the map is what's downloaded (crate::data): a file of a region downloaded is
+/// read from this Mac, at every zoom over it; one outside it, and everything with nothing
+/// downloaded, is none, at once (never a NAS read, never an error); the downloads reach the
+/// region's tiles. Back at home, the NAS's again.
+#[tokio::test(flavor = "multi_thread")]
+async fn away_from_the_nas_the_map_is_its_downloads() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = nas.path().join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let cat = catalogue(&store::nasfs::NasRoot::local_for_test(&root));
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
+    let world = cat.content("layers/basemap/world").unwrap().to_string();
+    let basemap = |z: u8, x: u32, y: u32| s.basemap.tiles(&s.data, std::slice::from_ref(&world), z, x, y);
+    let (far, here) = ("layers/terrain/hi/6-30-21", "layers/terrain/hi/6-31-21");
+    assert_eq!(s.data.content(far).as_deref(), cat.content(far), "at home: the NAS's");
+    assert_eq!(s.data.reach(), None);
+    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+
+    // Away.
+    std::fs::rename(&root, nas.path().join("gone")).unwrap();
+    let g = s.data.generation.load(Ordering::SeqCst);
+    s.data.pool().unwrap().mark_offline("test");
+    assert!(s.data.generation.load(Ordering::SeqCst) > g, "what's read changed");
+    for l in [here, "layers/terrain/lo/3-3-2", "layers/terrain/root", "base/6-31-21"] {
+        assert_eq!(s.data.content(l).as_deref(), cat.content(l), "{l}: downloaded, read here");
+    }
+    for l in [far, "base/6-30-21", "layers/roads/hi/6-30-21"] {
+        assert_eq!(s.data.content(l), None, "{l}: not downloaded, none");
+    }
+    assert!(s.data.tile("roads", 12, 30 << 6, 21 << 6).unwrap().is_none(), "none, not an error");
+    assert_eq!(basemap(0, 0, 0).unwrap(), [gz(b"world")], "zoomed out over it");
+    assert_eq!(basemap(12, 31 << 6, 21 << 6).unwrap(), [gz(b"12/31")]);
+    assert!(basemap(12, 30 << 6, 21 << 6).unwrap().is_empty(), "outside it: none, not an error");
+    assert_eq!(s.data.reach(), Some(Arc::new([(31, 21)].into())));
+
+    // Nothing downloaded: nothing at all.
+    assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    for l in [here, "layers/terrain/lo/3-3-2", "global/railfreq"] {
+        assert_eq!(s.data.content(l), None, "{l}");
+    }
+    assert!(basemap(0, 0, 0).unwrap().is_empty());
+    assert_eq!(s.data.reach(), Some(Arc::new(HashSet::new())));
+
+    // Home again: the NAS's.
+    std::fs::rename(nas.path().join("gone"), &root).unwrap();
+    store::testkit::eventually("the NAS read again", || s.data.online());
+    assert_eq!(s.data.content(far).as_deref(), cat.content(far));
+    assert_eq!(s.data.reach(), None);
 }
 
 /// One way of the roads fixture: its id, owner (z6 x at y 21), and its two ends' longitudes (at

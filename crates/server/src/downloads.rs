@@ -23,8 +23,8 @@
 //!
 //! **Updates only when asked.** Each download (the World, a region, a region's terrain detail) stays
 //! at the catalogue it was downloaded or last updated at (its `Pin`): a new catalogue copies nothing.
-//! The map reads a download's own older files while it's behind (Data::content), the NAS for what
-//! it lacks. An Update copies the catalogue served's files for it alongside the old ones; once all
+//! The map reads a download's own older files while it's behind (Data::content_in), the NAS for
+//! what it lacks (away from the NAS, nothing: the map is the downloads alone). An Update copies the catalogue served's files for it alongside the old ones; once all
 //! are here, the download moves to that catalogue and the files only the old one named go. A
 //! download moves on by itself only when that copies nothing: all an Update would copy is here (the
 //! catalogue's files for it are the same, or other downloads brought them), or its own catalogue had
@@ -40,7 +40,10 @@
 //! what an Update copies are its list against the catalogue served, one pass over its own items,
 //! however far behind it is. No catalogue is kept on this Mac (docs/maplog.md §8, step 6): a
 //! download whose list wasn't kept (a file of format 4, from before lists) reads at the map served,
-//! as one whose catalogue is lost (`Plan::eff`).
+//! as one whose catalogue is lost (`Plan::eff`). A region behind whose list lacks some file of no z6
+//! tile it now holds (one listed before a region held what's read over it zoomed out) takes it at
+//! the served catalogue, at the mirror's next round with the NAS (`unlisted`): no Update, and the
+//! rest stays at its own catalogue.
 //!
 //! **Whole tiles.** No z6 tile is read from two catalogues (a list's ways index their owner's base
 //! pack). A download at the served catalogue moves every tile it has files of there (`Plan::moved`):
@@ -53,24 +56,28 @@
 //!
 //! - **The World, zoomed out** (`world_part`): the worldwide files, every layer's root and lo
 //!   packs, the landmark points and area details (store::mirror::essentials), and the basemap's
-//!   zooms 0–10 (its `lo` piece, store::pieces). Without it the map works only while the NAS is
-//!   reachable. It's downloaded on its own: a region doesn't bring it, and it can be removed while
-//!   regions are downloaded (away from the NAS, zoomed out, the map then shows nothing: the panel
-//!   warns of it).
-//! - **A region** (`area_part`): every layer's hi pack (zooms
-//!   9–14), and the base pack and road values, of each z6 tile within 2 km of it (its outlines are
-//!   simplified), and those of the owners of the ways those tiles' hidata list
-//!   (`Downloads::learn_owners`), and the basemap's zooms 11–14 over those tiles; the terrain's and the grids' hi
-//!   packs within 25 km (the viewshed's reach, so one from inside works offline); and the hi data
-//!   of the z6 tiles within 50 km (what the lists of a view read around it); and what the map reads
-//!   zoomed in from the World's files (pipeline::areafiles::files_of), so only zoomed out needs it.
+//!   zooms 0–10 (its `lo` piece, store::pieces): away from the NAS, the whole world to zoom 8 (the
+//!   basemap to 10), and the place search's places that show by zoom 8, everywhere. It's downloaded
+//!   on its own: a region doesn't bring it.
+//! - **A region** (`area_part`): what the map reads over it at every zoom, so away from the NAS
+//!   every feature works inside it without the World. Every layer's hi pack (zooms 9–14), and the
+//!   base pack and road values, of each z6 tile within 2 km of it (its outlines are simplified),
+//!   and those of the owners of the ways those tiles' hidata list (`Downloads::learn_owners`), and
+//!   the basemap's zooms 11–14 over those tiles; zoomed out, every layer's root and its lo packs of
+//!   the z3 tiles over those tiles (what a terrain or shading tile without its own is made from, and
+//!   the labels the place search reads there), and the basemap's zooms 0–10 (one piece, worldwide);
+//!   the terrain's and the grids' hi packs within 25 km (the viewshed's reach, so one from inside
+//!   works offline); the hi data of the z6 tiles within 50 km (what the lists of a view read around
+//!   it); and what the map reads of the World's files (pipeline::areafiles::files_of). Zoomed out
+//!   a region's lo packs and basemap reach past it, as far as their z3 tile and the world; its
+//!   place search, away from the NAS, keeps to its z6 tiles (Data::reach).
 //! - **A region's terrain detail** (`detail_of`), an add-on to its download: the terrain's deep
 //!   packs (pipeline::terrain_deep, z13 and finer, by z10 tile) within 2 km of it, and their
 //!   shading's (the slope layer's deep packs: pipeline::slope_pack). They cover only parts of a
 //!   region; its terrain to z12 (the hi packs) is the rest and every zoom to z12, so it needs the
 //!   region: downloaded only while the region is. Copied after every other download.
 
-use crate::data::Data;
+use crate::data::{Data, Reach};
 use crate::S;
 use anyhow::{bail, ensure, Context, Result};
 use axum::{
@@ -427,8 +434,9 @@ impl Plan {
     }
 
     /// What `w`, pinned at `pin`, keeps: at its own catalogue, its files there of tiles no download
-    /// at the served one has (`kept`, with every file of no tile), and its files at the served one
-    /// of the tiles one has (`taken`: moved, with that download's, by its download or Update).
+    /// at the served one has (`kept`, with every file of no tile), and at the served one (`taken`)
+    /// its files of the tiles one has (moved, with that download's, by its download or Update)
+    /// and, a region's, the items of no tile its list doesn't name at all (`unlisted`).
     fn own(&self, w: &Which, pin: Pin) -> Option<Own<'_>> {
         let c = self.eff(pin.cat);
         let old = self.part(w, c)?;
@@ -437,7 +445,11 @@ impl Plan {
         }
         let moved = |i: &&Item| tile_of(i).is_some_and(|t| self.moved.contains(&t));
         let kept = old.items.iter().filter(|i| !moved(i)).collect();
-        let taken = self.part(w, self.current).map_or(Vec::new(), |p| p.items.iter().filter(moved).collect());
+        let now = self.part(w, self.current);
+        let mut taken: Vec<&Item> = now.map_or(Vec::new(), |p| p.items.iter().filter(moved).collect());
+        if let (Which::Region(_), Some(now)) = (w, now) {
+            taken.extend(unlisted(old, now));
+        }
         Some(Own { kept, taken })
     }
 
@@ -501,6 +513,27 @@ struct Own<'a> {
 impl<'a> Own<'a> {
     fn all(&self) -> impl Iterator<Item = &'a Item> + '_ {
         self.kept.iter().chain(&self.taken).copied()
+    }
+}
+
+/// The items of no z6 tile in `now` (a region's part at the catalogue served) whose logical names
+/// `old` (its list at its own) doesn't have: what a region holds that its list, made before it did,
+/// lacks (one made before a region held what's read over it zoomed out: the roots and lo packs, the
+/// basemap's zooms 0–10). A download behind takes them at the served catalogue, as copies of what it
+/// never had, at its next round with the NAS: no Update, and what it keeps stays as it is.
+fn unlisted<'a>(old: &Part, now: &'a Part) -> impl Iterator<Item = &'a Item> {
+    let named: HashSet<String> = old.items.iter().map(logical_of).collect();
+    now.items.iter().filter(move |i| tile_of(i).is_none() && !named.contains(&logical_of(i)))
+}
+
+/// What an item is of in any catalogue: a file's logical name, a basemap piece's archive's and its
+/// own.
+fn logical_of(i: &Item) -> String {
+    let logical =
+        |n: &str| store::naming::parse_content_name(n).map_or_else(|| n.to_string(), |c| c.logical.to_string());
+    match i {
+        Item::File { name, .. } => logical(name),
+        Item::Piece { archive, piece } => format!("{}#{}", logical(archive), piece.name()),
     }
 }
 
@@ -724,13 +757,33 @@ impl Downloads {
         let mut plan = make_plan(generation, version, asked, cur.n, at);
         // (A change moves the generation on: the plan is for the one it leaves.)
         let older = data.mirror.as_ref().map(|m| older(&plan, m)).unwrap_or_default();
-        if data.set_older(older) {
+        if data.set_older(older) | data.set_reach(reach(&plan)) {
             plan.generation = data.generation.load(Ordering::SeqCst);
         }
         let plan = Arc::new(plan);
         *self.plan.lock().unwrap() = Some(plan.clone());
         plan
     }
+}
+
+/// Where the downloads reach (Data::reach): everywhere with the World, else the z6 tiles of the
+/// regions downloaded (their basemap pieces').
+fn reach(plan: &Plan) -> Reach {
+    if plan.asked.world.is_some() {
+        return Reach::World;
+    }
+    let tiles = plan
+        .asked
+        .regions
+        .iter()
+        .filter_map(|r| plan.part(&Which::Region(r.id.clone()), r.pin.cat))
+        .flat_map(Part::pieces)
+        .filter_map(|(_, p)| match p {
+            Piece::Tile(x, y) => Some((x, y)),
+            Piece::Lo => None,
+        })
+        .collect();
+    Reach::Tiles(Arc::new(tiles))
 }
 
 /// What downloads of `cat` copy, with the owners learned.
@@ -989,7 +1042,7 @@ fn world_part(cat: &Catalogue) -> Part {
 
 /// A region's download (`rings`, each read as a filled area): its files, with the base packs and
 /// road values of `units` (the owners of its ways, `Downloads::learn_owners`), then its basemap
-/// pieces.
+/// pieces: zooms 0–10 (one piece, worldwide) and 11–14 over its tiles.
 fn area_part(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> Part {
     let tiles = tiles_meeting(rings, NEAR_KM);
     let mut files: BTreeMap<String, u64> = files_of(cat, rings).names.into_iter().collect();
@@ -1001,7 +1054,8 @@ fn area_part(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) ->
             }
         }
     }
-    let pieces: Vec<Piece> = tiles.into_iter().map(|(x, y)| Piece::Tile(x, y)).collect();
+    let pieces: Vec<Piece> =
+        std::iter::once(Piece::Lo).chain(tiles.into_iter().map(|(x, y)| Piece::Tile(x, y))).collect();
     Part::new(cat, Files::from_map(files), &basemap_archives(cat), &pieces)
 }
 

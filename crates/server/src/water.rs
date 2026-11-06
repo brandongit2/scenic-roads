@@ -131,8 +131,11 @@ fn fill(s: &crate::AppState) -> Result<Option<Arc<pipeline::lakefill::Fill>>> {
 fn z14(s: &S, archives: &[String], x: u32, y: u32) -> Result<Vec<wt::Stored>> {
     let mut out = Vec::new();
     for a in archives {
-        // (From the piece this Mac downloaded when it has it: keyed by the piece then.)
-        let (name, pm) = s.basemap.source(&s.data, a, wt::BASE_Z, x, y)?;
+        // (From the piece this Mac downloaded when it has it: keyed by the piece then. Away from the
+        // NAS, one not downloaded can't be drawn from: never drawn as if it had no water.)
+        let Some((name, pm)) = s.basemap.source(&s.data, a, wt::BASE_Z, x, y)? else {
+            anyhow::bail!("basemap {}/{x}/{y}: not downloaded", wt::BASE_Z)
+        };
         if let Some((off, len)) = pm.locate(wt::BASE_Z, x, y)? {
             let bytes = pm.source().read_at(off, len as usize)?;
             let key = xxhash_rust::xxh3::xxh3_64_with_seed(name.as_bytes(), off);
@@ -264,7 +267,8 @@ pub fn shares_key(s: &S, z: u8, x: u32, y: u32) -> Option<(u8, u32, u32, u64)> {
 /// pixels over it), as the map's water tiles have it (kept, stored, drawn from the basemap, else
 /// the nearest stored ancestor's), and which pixels are on a sea closed off from the world ocean:
 /// the depth's sea, its floor's sea level, and the world ocean's, the water's surface's (crate::depth).
-/// None without the water layer, or past its zooms.
+/// None without the water layer, or past its zooms, or away from the NAS where nothing downloaded
+/// has its water.
 pub fn sea_shares(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Sea>> {
     let Some(key) = shares_key(s, z, x, y) else { return Ok(None) };
     let archives = s.data.basemap_names();
@@ -279,6 +283,8 @@ pub fn sea_shares(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Sea>> {
             }
             Err(e) => match fallback(s, z, x, y)? {
                 Some(b) => (Arc::new(b), false),
+                // (Away from the NAS, outside the downloads: no water known there.)
+                None if !s.data.online() => return Ok(None),
                 None => return Err(e),
             },
         },
@@ -471,7 +477,13 @@ pub async fn water_tile(
                     // read again.
                     let s2 = s.clone();
                     let fb = tokio::task::spawn_blocking(move || fallback(&s2, z, x, y)).await;
-                    let Ok(Ok(Some(b))) = fb else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
+                    let Ok(Ok(Some(b))) = fb else {
+                        // (Away from the NAS, outside the downloads: none there, as every layer's.)
+                        if !s.data.online() {
+                            return cache::none();
+                        }
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    };
                     return match tokio::task::spawn_blocking(move || encode(&b, colours)).await {
                         Ok(Ok(body)) => {
                             let mut r = cache::respond(body, "image/png", false, None, false);

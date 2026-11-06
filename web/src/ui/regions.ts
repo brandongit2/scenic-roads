@@ -544,7 +544,7 @@ export class RegionsPanel {
     }
     els.size.className = cls;
     els.size.textContent = text;
-    els.size.title = rk ? `Its packs and the basemap’s zooms 11–14 over it: ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac` : '';
+    els.size.title = rk ? `What the map reads over it at every zoom (its packs, the basemap): ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac` : '';
     const name = r?.name ?? rk?.name ?? id;
     const say = (t: string, w?: boolean) => this.sayRow(els.row, t, w);
     this.showProg(els.prog, k?.mirror && on ? rk : undefined, id, `“${name}”`, () => dlUpdate(id), say, on && !rk?.on);
@@ -745,9 +745,9 @@ export class RegionsPanel {
     this.dlNow.replaceChildren(...act);
   }
 
-  /** The World, zoomed out: its size, its state or what the map needs without it, its button; a
-   * warning while regions are downloaded without it (away from the NAS, zoomed out, the map shows
-   * nothing). */
+  /** The World, zoomed out: its size, its state or what the map shows without it, its button. (A
+   * region holds what the map reads over it at every zoom: without the World, away from the NAS,
+   * the map is the regions downloaded.) */
   private renderWorld(k: DlStatus) {
     const wd = k.world;
     if (!wd) return;
@@ -756,17 +756,13 @@ export class RegionsPanel {
     this.showProg(this.worldProg, wd, 'world', 'the World, zoomed out', () => dlUpdate(), (t, w) => this.sayDl(t, w));
     if (this.worldOn !== wd.on || !this.worldBtn) {
       this.worldBtn = this.dlButton(wd.on, 'the World, zoomed out', () => this.dl?.world?.bytes ?? 0, (o) => dlWorld(o), (o) =>
-        o ? 'Downloading the World, zoomed out: the map then shows the whole world without the NAS, to zoom 10.' : 'The World is removed from this Mac: the map needs the NAS to show anything.');
+        o ? 'Downloading the World, zoomed out: the map then shows the whole world without the NAS, to zoom 10.' : 'The World is removed from this Mac: away from the NAS, the map shows only what’s downloaded.');
       this.worldOn = wd.on;
     }
     const btn = this.worldBtn;
-    btn.title = wd.on ? `Remove the World, zoomed out, from this Mac${regions ? ': away from the NAS, the downloaded regions then show only zoomed in' : ''}` : 'Download the World, zoomed out, to this Mac';
-    const lacking = !wd.on && regions > 0;
-    this.worldRow.classList.toggle('dl-lack', lacking);
-    const off = lacking
-      ? h('span', { class: 'rg2s warn', title: 'Away from the NAS, the downloaded regions show only zoomed in (zoom 11 and closer); zoomed out, and everywhere else, the map is blank. Download the World to see the whole map.' },
-        `⚠ Not downloaded, but ${regions === 1 ? 'a region is' : `${regions} regions are`}: away from the NAS, zoomed out, the map shows nothing`)
-      : h('span', { class: 'rg2s warn', title: 'Nothing is copied to this Mac unless it’s downloaded.' }, 'not downloaded: the map needs the NAS to show anything');
+    btn.title = wd.on ? `Remove the World, zoomed out, from this Mac${regions ? ': away from the NAS, the map then shows the downloaded regions alone' : ''}` : 'Download the World, zoomed out, to this Mac';
+    const off = h('span', { class: 'rg2s warn', title: 'Nothing is copied to this Mac unless it’s downloaded.' },
+      regions ? 'not downloaded: away from the NAS, the map shows the downloaded regions alone' : 'not downloaded: the map needs the NAS to show anything');
     this.worldRow.replaceChildren(
       h('div', { class: 'rg1' }, h('span', { class: 'rg-name rg-static', title: 'The worldwide files, every layer’s zooms 0–8, the landmark points and area details, and the basemap to zoom 10' }, 'World, zoomed out'),
         h('span', { class: 'rg-id faint' }, 'zooms 0–10'), btn),

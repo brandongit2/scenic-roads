@@ -69,15 +69,16 @@ pub fn terrain_stored(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Res
 
 /// The terrain's deep zooms (pipeline::terrain_deep's deep packs, z13 on; a deep z12, north of 67°,
 /// is in the hi packs): read from this Mac where a region's terrain detail is downloaded
-/// (crate::downloads), else from the NAS; away from it, a tile there that can't be read is made from
-/// its ancestor in the hi packs.
+/// (crate::downloads), else from the NAS; away from it, or where a read fails, a tile there is made
+/// from its ancestor in the hi packs.
 fn deep_zoom(z: u8) -> bool {
     z >= pipeline::terrain_deep::FIRST_Z
 }
 
 /// Terrain heights (m) of a tile, from its nearest stored ancestor when it isn't stored, or is a
-/// deep tile that can't be read now (`deep_zoom`): None outside the data, an error when a tile of
-/// z12 or coarser couldn't be read (the NAS away and no mirror of it).
+/// deep tile that can't be read now (`deep_zoom`): None outside the data (away from the NAS,
+/// outside the downloads: crate::data), an error when a tile of z12 or coarser couldn't be read (a
+/// read of the NAS that failed).
 pub fn terrain_f32(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<f32>>> {
     let failed = std::cell::RefCell::new(None);
     let got = tile_with_fallback_by(

@@ -222,8 +222,9 @@ impl Follower {
         if self.map.is_some() && self.nas_looked.is_some_and(|t| t.elapsed() < NAS_EVERY) {
             return;
         }
+        // (Read only while the NAS is: a mount left from home holds no thread, crate::data.)
+        let Some(root) = self.d.nas_root().filter(|_| self.d.online()) else { return };
         self.nas_looked = Some(Instant::now());
-        let Some(root) = self.d.nas_root() else { return };
         match store::map::newest_nas(&root) {
             Ok(Some(m)) if self.map.as_ref().is_none_or(|h| h.seq < m.seq) => {
                 eprintln!("maplog: the NAS's map at {} (the lead away)", m.seq);
@@ -321,7 +322,11 @@ impl Link {
         }
         if self.contact.is_none() {
             let kept = self.cache.as_ref().map(|d| d.join(LEAD_KEPT));
-            let from_nas = self.d.nas_root().and_then(|r| pipeline::coord::contact_path(&r).read().ok());
+            let from_nas = self
+                .d
+                .nas_root()
+                .filter(|_| self.d.online())
+                .and_then(|r| pipeline::coord::contact_path(&r).read().ok());
             let read = from_nas.as_deref().and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(b).ok());
             if let (Some(c), Some(k)) = (&read, &kept) {
                 // (Written only when it changed: this is read again each `retry` while the lead's away.)

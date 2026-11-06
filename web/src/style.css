@@ -656,7 +656,6 @@ dialog.credits details.flags a { color: var(--text); }
 #layers .rg-static:hover { color: var(--text); }
 #layers .dl-world { margin-top: 3px; }
 #layers .dl-world[hidden] { display: none; }
-#layers .dl-world.dl-lack { margin-left: -6px; padding-left: 4px; border-left: 2px solid #f3c77a; border-radius: 4px; background: rgba(243, 199, 122, 0.07); }
 #layers .rg2s.warn { color: #f3c77a; white-space: normal; }
 #layers .rg-rowmsg { margin-top: 2px; font-size: 10.5px; line-height: 1.45; color: var(--muted); }
 #layers .rg-rowmsg.warn { color: #f3c77a; }

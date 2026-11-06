@@ -2,11 +2,17 @@
 //! map's log followed: crate::maplog), every file it names read from this Mac's mirror when it's
 //! there (memory-mapped) or from the NAS (through the bounded I/O pool, never mapped), and the
 //! background work that keeps the NAS mounted.
+//!
+//! **Away from the NAS, the map is what's downloaded** (`Data::content_in`): while the NAS isn't
+//! read (not mounted, or its pool's breaker open), a file not on this Mac is none, as if the map had
+//! none there, so every feature answers from the downloads alone, at once, and is empty outside
+//! them. A share found mounted is read only once it has answered a probe (`find_nas`): a mount
+//! left from home never holds a request.
 
 use crate::cache::Lru;
 use crate::views::{BaseView, Blob, HiView, RoadUnits, SectView, Src};
 use anyhow::{anyhow, Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -49,9 +55,12 @@ pub struct Data {
     globals: Mutex<Lru<String, Arc<Vec<u8>>>>,
     /// The older files the downloads behind the catalogue keep, by logical name (`set_older`).
     older: RwLock<Arc<HashMap<String, String>>>,
-    /// Set when the catalogue changes, or what's read of the downloads behind it
-    /// (`set_older`), so caches built from what was read before are dropped.
-    pub generation: std::sync::atomic::AtomicU64,
+    /// Where the downloads reach (`set_reach`): the place search's, away from the NAS.
+    reach: RwLock<Reach>,
+    /// Set when the catalogue changes, what's read of the downloads behind it (`set_older`), where
+    /// they reach (`set_reach`), or whether the NAS is read (`online`), so caches built from what
+    /// was read before are dropped.
+    pub generation: Arc<std::sync::atomic::AtomicU64>,
     /// Set when the mirror has copied files, so archives opened from the NAS are opened again.
     pub mirror_gen: std::sync::atomic::AtomicU64,
     /// The last attempt to mount the share.
@@ -89,6 +98,7 @@ impl Data {
             mirror,
             cat: RwLock::new(Arc::new(Catalogue::default())),
             older: Default::default(),
+            reach: Default::default(),
             maps: Mutex::new(Lru::entries(4096)),
             remotes: Mutex::new(Lru::entries(128)),
             indexes: Mutex::new(Lru::entries(8192)),
@@ -107,7 +117,7 @@ impl Data {
         });
         match o.nas_root {
             Some(root) => {
-                d.set_nas(Some(root));
+                d.set_nas(Some(root), false);
                 // (A folder laid out as the NAS's, served as it is: its newest map snapshot, read
                 // once. This Mac's server follows the lead's log instead: crate::maplog::spawn.)
                 d.serve_root_map();
@@ -162,19 +172,38 @@ impl Data {
         self.pool.read().unwrap().clone()
     }
 
-    /// Whether the NAS is reachable now.
+    /// Whether the NAS is read now: mounted, and its pool's breaker closed. When it isn't, the map
+    /// is this Mac's downloads alone (`content_in`).
     pub fn online(&self) -> bool {
         self.pool().is_some_and(|p| p.is_online())
     }
 
-    fn set_nas(&self, root: Option<store::nasfs::NasRoot>) {
+    /// The NAS's project folder read from now on (None: not mounted). A share found mounted
+    /// (`probe_first`) is read once it answers a probe, made at once: until then, and whenever its
+    /// breaker is open, the map is the downloads alone. Each change of whether the NAS is read moves
+    /// the generation on (what's read changes with it).
+    fn set_nas(&self, root: Option<store::nasfs::NasRoot>, probe_first: bool) {
         let mut cur = self.nas.write().unwrap();
         if *cur == root {
             return;
         }
+        let was = self.online();
         // (The pool's probe: a stat of the root itself, on its own thread: tests/nas_access.rs.)
-        *self.pool.write().unwrap() = root.as_ref().map(|r| IoPool::for_root(r, 8, Duration::from_secs(8)));
+        let pool = root.as_ref().map(|r| IoPool::for_root(r, 8, Duration::from_secs(8)));
+        if let Some(p) = &pool {
+            let g = self.generation.clone();
+            p.set_listener(move |_| {
+                g.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+            if probe_first {
+                p.probe_first();
+            }
+        }
+        *self.pool.write().unwrap() = pool;
         *cur = root;
+        if self.online() != was {
+            self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Find the share (mounting it if it's missing: only when the NAS answers on the SMB port, so
@@ -189,7 +218,7 @@ impl Data {
         // (The server's reads retried briefly, never for minutes: an HTTP worker waits on them.)
         let found = mount.map(|m| store::nasfs::NasRoot::from_arg(m.point.join(PROJECT)).short_retry());
         if found.is_some() {
-            self.set_nas(found);
+            self.set_nas(found, true);
             return;
         }
         {
@@ -209,19 +238,53 @@ impl Data {
         self.set_nas(
             store::nas::find_mount(NAS_HOST, NAS_SHARE)
                 .map(|m| store::nasfs::NasRoot::from_arg(m.point.join(PROJECT)).short_retry()),
+            true,
         );
     }
 
-    /// The content name read for a logical name: a download behind the catalogue reads its own
-    /// older file while it's on this Mac (the region stays as it was downloaded, docs/macs.md,
-    /// "Mirror, per Mac"), else the current catalogue's file (here or on the NAS).
+    /// The content name read for a logical name of the catalogue served (`content_in`).
     pub fn content(&self, logical: &str) -> Option<String> {
-        let cur = self.catalogue().files.get(logical).map(|f| f.file.clone());
+        self.content_in(&self.catalogue(), logical)
+    }
+
+    /// The content name read for a logical name of `cat`: where the server chooses what it reads. A
+    /// download behind the catalogue reads its own older file while it's on this Mac (the region
+    /// stays as it was downloaded, docs/macs.md, "Mirror, per Mac"); else `cat`'s file, here or on
+    /// the NAS while it's read (`online`), else here alone: away from the NAS, what isn't
+    /// downloaded is none.
+    pub fn content_in(&self, cat: &Catalogue, logical: &str) -> Option<String> {
+        let cur = cat.files.get(logical).map(|f| f.file.clone());
         let older = self.older.read().unwrap().get(logical).cloned();
-        match (older, self.mirror.as_ref()) {
+        let m = self.mirror.as_deref();
+        match (older, m) {
             (Some(o), Some(m)) if m.has(&o) => Some(o),
-            _ => cur,
+            _ if self.online() => cur,
+            _ => cur.filter(|c| m.is_some_and(|m| m.has(c))),
         }
+    }
+
+    /// Where the downloads reach, away from the NAS: the place search keeps to it (crate::places).
+    /// None while the NAS is read, or with the World downloaded (zoomed out, everywhere).
+    pub fn reach(&self) -> Option<Arc<HashSet<(u32, u32)>>> {
+        if self.online() {
+            return None;
+        }
+        match &*self.reach.read().unwrap() {
+            Reach::World => None,
+            Reach::Tiles(t) => Some(t.clone()),
+        }
+    }
+
+    /// Sets where the downloads reach (crate::downloads); a change moves the generation on. Whether
+    /// it changed.
+    pub fn set_reach(&self, r: Reach) -> bool {
+        let mut g = self.reach.write().unwrap();
+        if *g == r {
+            return false;
+        }
+        *g = r;
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        true
     }
 
     /// A token of the older files read (`set_older`): "" when there are none; it changes with them,
@@ -577,16 +640,17 @@ impl Data {
     /// Where tile z/x/y of the basemap archive `archive` (a content name) is read from: the
     /// mirror's piece holding it when it's here (its path in the mirror, `.basemap/…`; a download
     /// behind the catalogue's piece of its older archive first, as `content`), else the archive itself
-    /// (on the NAS, or whole in the mirror).
-    pub fn basemap_key(&self, archive: &str, z: u8, x: u32, y: u32) -> String {
+    /// (on the NAS while it's read, or whole in the mirror); None away from the NAS with neither here.
+    pub fn basemap_key(&self, archive: &str, z: u8, x: u32, y: u32) -> Option<String> {
         let older =
             store::naming::parse_content_name(archive).and_then(|c| self.older.read().unwrap().get(c.logical).cloned());
         let piece = self.mirror.as_ref().zip(store::pieces::Piece::of(z, x, y)).and_then(|(m, p)| {
             older.iter().map(String::as_str).chain([archive]).find(|a| m.has_piece(a, p)).map(|a| (a, p))
         });
         match piece {
-            Some((archive, p)) => store::mirror::Mirror::piece_key(archive, p),
-            None => archive.to_string(),
+            Some((archive, p)) => Some(store::mirror::Mirror::piece_key(archive, p)),
+            None if self.online() || self.mirror.as_ref().is_some_and(|m| m.has(archive)) => Some(archive.to_string()),
+            None => None,
         }
     }
 
@@ -693,6 +757,21 @@ impl Data {
                 }
             })
             .ok();
+    }
+}
+
+/// Where the downloads reach (`Data::reach`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Reach {
+    /// The World is downloaded: everywhere, zoomed out.
+    World,
+    /// The z6 tiles of the regions downloaded (none: nothing downloaded).
+    Tiles(Arc<HashSet<(u32, u32)>>),
+}
+
+impl Default for Reach {
+    fn default() -> Self {
+        Reach::Tiles(Default::default())
     }
 }
 

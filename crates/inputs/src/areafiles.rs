@@ -66,8 +66,8 @@ pub fn outer_rings(r: &buildstore::coverage::DrawnRegion) -> Vec<Vec<[f64; 2]>> 
     r.shapes.values().flat_map(|polys| polys.iter().filter_map(|p| p.first().cloned())).collect()
 }
 
-/// The files an area (`rings`, each read as a filled area) needs of `cat`, the essentials and the
-/// basemap aside (module doc).
+/// The files an area (`rings`, each read as a filled area) needs of `cat` for the map to work over it
+/// at every zoom without the NAS (its basemap aside: the map server's downloads add its pieces).
 pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
     let mut out = BTreeMap::new();
     let mut add = |logical: &String| {
@@ -75,7 +75,8 @@ pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
             out.insert(f.file.clone(), f.size);
         }
     };
-    for (x, y) in tiles_meeting(rings, NEAR_KM) {
+    let near = tiles_meeting(rings, NEAR_KM);
+    for &(x, y) in &near {
         let key = format!("6/{x}/{y}");
         for l in cat.layers.values() {
             if let Some(h) = l.hi.get(&key) {
@@ -85,6 +86,20 @@ pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
         for m in [&cat.base, &cat.roads] {
             if let Some(l) = m.get(&key) {
                 add(l);
+            }
+        }
+    }
+    // Zoomed out over it: every layer's root (zooms 0–2) and its lo packs (3–8) of the z3 tiles
+    // over its tiles; what a terrain tile without its own is made from, and the place search's
+    // places that show by zoom 8. (A z3 tile reaches past the area: zoomed out, so does the map.)
+    let z3: BTreeSet<(u32, u32)> = near.iter().map(|&(x, y)| (x >> 3, y >> 3)).collect();
+    for l in cat.layers.values() {
+        if let Some(r) = &l.root {
+            add(r);
+        }
+        for &(x, y) in &z3 {
+            if let Some(p) = l.lo.get(&format!("3/{x}/{y}")) {
+                add(p);
             }
         }
     }
@@ -117,10 +132,10 @@ pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
             add(l);
         }
     }
-    // What the map reads zoomed in from the World's part too (store::mirror's essentials), so a
-    // region works away from the NAS without it: the worldwide files, those of a z6 tile
+    // What the map reads from the World's part too (store::mirror's essentials), so a region works
+    // away from the NAS without it: the worldwide files, those of a z6 tile
     // (`…/6-x-y.<hash>…`) only for its tiles; the Canadian lake fill only when it meets Canada.
-    let near: BTreeSet<String> = tiles_meeting(rings, NEAR_KM).iter().map(|(x, y)| format!("6-{x}-{y}")).collect();
+    let named: BTreeSet<String> = near.iter().map(|(x, y)| format!("6-{x}-{y}")).collect();
     let canada = rings.iter().flatten().any(|p| crate::lakefill::in_reach(p[0], p[1]));
     for l in cat.global.values() {
         if l.starts_with(crate::lakefill::PREFIX) {
@@ -135,7 +150,7 @@ pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
         let last = l.rsplit('/').next().unwrap_or("");
         let tile = last.split('.').next().unwrap_or("");
         let per_tile = tile.starts_with("6-") && tile.split('-').count() == 3;
-        if !per_tile || near.contains(tile) {
+        if !per_tile || named.contains(tile) {
             add(l);
         }
     }

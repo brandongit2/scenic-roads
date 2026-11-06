@@ -5,7 +5,9 @@
 //! place's own name and English, as typed: accents, case and punctuation aside, the words in order.
 //! Made on this Mac the first time a search asks after the labels or the translations change
 //! (`Index`), in the background on threads of its own: nothing more for the build to make or the
-//! mirror to copy.
+//! mirror to copy. Away from the NAS, made of the packs downloaded (crate::data reads nothing else),
+//! the places of the z6 tiles the downloads reach alone (`Data::reach`: a region's lo packs reach
+//! past it); with nothing downloaded, none.
 
 use crate::data::Data;
 use crate::names_live::{self, NamesState};
@@ -17,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use det::Det;
 use rayon::prelude::*;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -699,25 +701,44 @@ pub struct Found<'a> {
     pub zoom: f64,
 }
 
-/// The labels' packs to read in `cat`: the hi packs of the map's areas (zoom 12: every label), then
-/// each lo pack (zoom 8: what shows by then, worldwide), as content names (so they're the one
-/// catalogue's) and the zoom read. (The areas' first: a label in both is kept at zoom 12, its place
-/// the more exact.)
-fn sources(cat: &Catalogue) -> Vec<(String, u8)> {
-    let Some(layer) = cat.layers.get("labels") else { return Vec::new() };
-    let content = |l: &String| cat.files.get(l).map(|f| f.file.clone());
-    let hi =
-        layer.hi.iter().filter(|(t, _)| cat.hidata.contains_key(*t)).filter_map(|(_, l)| Some((content(l)?, 12u8)));
-    hi.chain(layer.lo.values().filter_map(|l| Some((content(l)?, 8u8)))).collect()
+/// What the places are made of: the labels' packs, and the z6 tiles whose places are kept (None:
+/// every one's).
+struct Sources {
+    /// The packs as content names (so they're the one catalogue's) and the zoom read.
+    packs: Vec<(String, u8)>,
+    reach: Option<Arc<HashSet<(u32, u32)>>>,
 }
 
-/// The places' key: the packs they're read from and the translations' version they're named with.
-/// A catalogue whose labels and areas are the same, with the same translations, keeps them.
-fn key_of(packs: &[(String, u8)], names_version: u64) -> u64 {
+/// The labels' packs to read in `cat` as `data` reads them (`Data::content_in`: away from the NAS,
+/// those downloaded): the hi packs of the map's areas (zoom 12: every label), then each lo pack
+/// (zoom 8: what shows by then, worldwide); kept to where the downloads reach away from the NAS.
+/// (The areas' first: a label in both is kept at zoom 12, its place the more exact.)
+fn sources(data: &Data, cat: &Catalogue) -> Sources {
+    let reach = data.reach();
+    let Some(layer) = cat.layers.get("labels") else { return Sources { packs: Vec::new(), reach } };
+    let content = |l: &String| data.content_in(cat, l);
+    let hi =
+        layer.hi.iter().filter(|(t, _)| cat.hidata.contains_key(*t)).filter_map(|(_, l)| Some((content(l)?, 12u8)));
+    let packs = hi.chain(layer.lo.values().filter_map(|l| Some((content(l)?, 8u8)))).collect();
+    Sources { packs, reach }
+}
+
+/// The places' key: what they're made of and the translations' version they're named with. A
+/// catalogue whose labels and areas are the same, with the same translations, keeps them.
+fn key_of(src: &Sources, names_version: u64) -> u64 {
     let mut h = blake3::Hasher::new();
-    for (c, z) in packs {
+    for (c, z) in &src.packs {
         h.update(c.as_bytes());
         h.update(&[0, *z]);
+    }
+    if let Some(r) = &src.reach {
+        let mut tiles: Vec<&(u32, u32)> = r.iter().collect();
+        tiles.sort();
+        h.update(b"reach");
+        for (x, y) in tiles {
+            h.update(&x.to_le_bytes());
+            h.update(&y.to_le_bytes());
+        }
     }
     h.update(&names_version.to_le_bytes());
     u64::from_le_bytes(h.finalize().as_bytes()[..8].try_into().unwrap_or_default())
@@ -735,17 +756,18 @@ struct Built {
     first: Option<String>,
 }
 
-/// The places in `packs` (`sources`), named with `names` (the translations; None before they've
+/// The places of `src` (`sources`), named with `names` (the translations; None before they've
 /// loaded), made on THREADS of their own. A pack or a tile that can't be read is passed over (and
 /// counted); a build that read none is a failure, with why.
-fn build(data: &Data, packs: &[(String, u8)], names: Option<&names::Namer>) -> Result<Built> {
+fn build(data: &Data, src: &Sources, names: Option<&names::Namer>) -> Result<Built> {
+    let packs = &src.packs;
     if packs.is_empty() {
         return Ok(Built::default());
     }
     let pool = rayon::ThreadPoolBuilder::new().num_threads(THREADS).thread_name(|i| format!("places-{i}")).build()?;
     pool.install(|| {
         let read: Vec<Result<Chunk>> =
-            packs.par_iter().map(|(content, z)| read_pack(data, content, *z, names)).collect();
+            packs.par_iter().map(|(content, z)| read_pack(data, content, *z, src.reach.as_deref(), names)).collect();
         let mut b = Built::default();
         let mut chunks = Vec::with_capacity(read.len());
         let mut first_bad = None;
@@ -776,14 +798,25 @@ fn build(data: &Data, packs: &[(String, u8)], names: Option<&names::Namer>) -> R
     })
 }
 
-/// The places in one pack's tiles at zoom `z`.
-fn read_pack(data: &Data, content: &str, z: u8, names: Option<&names::Namer>) -> Result<Chunk> {
+/// The places in one pack's tiles at zoom `z` (of the z6 tiles in `reach` alone, when given).
+fn read_pack(
+    data: &Data,
+    content: &str,
+    z: u8,
+    reach: Option<&HashSet<(u32, u32)>>,
+    names: Option<&names::Namer>,
+) -> Result<Chunk> {
     let mut c = Chunk::default();
-    data.pack_tiles(content, z, |x, y, b| match each_label(b, z, x, y, |l| c.add(l, names)) {
-        Ok(()) => c.tiles += 1,
-        Err(e) => {
-            c.bad += 1;
-            c.first_bad.get_or_insert_with(|| format!("{z}/{x}/{y} in {content}: {e:#}"));
+    data.pack_tiles(content, z, |x, y, b| {
+        if reach.is_some_and(|r| !r.contains(&(x >> (z - 6), y >> (z - 6)))) {
+            return;
+        }
+        match each_label(b, z, x, y, |l| c.add(l, names)) {
+            Ok(()) => c.tiles += 1,
+            Err(e) => {
+                c.bad += 1;
+                c.first_bad.get_or_insert_with(|| format!("{z}/{x}/{y} in {content}: {e:#}"));
+            }
         }
     })?;
     Ok(c)
@@ -883,7 +916,7 @@ impl Index {
         match *k {
             Some((at, key)) if at == now => key,
             _ => {
-                let key = key_of(&sources(&data.catalogue()), now.1);
+                let key = key_of(&sources(data, &data.catalogue()), now.1);
                 *k = Some((now, key));
                 key
             }
@@ -898,7 +931,7 @@ impl Index {
                 let _making = Making(&me);
                 // (One catalogue and one copy of the tables throughout: what its key says.)
                 let (cat, tables) = (data.catalogue(), names.snapshot());
-                let packs = sources(&cat);
+                let packs = sources(&data, &cat);
                 let key = key_of(&packs, names_live::version_all(tables.as_deref()));
                 let t = Instant::now();
                 match build(&data, &packs, tables.as_deref()) {
@@ -1363,10 +1396,10 @@ mod tests {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         catalogue(nas.path(), 1, &packs(), &[]);
         let on_nas = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
-        let b = build(&on_nas.data, &sources(&on_nas.data.catalogue()), None).unwrap();
+        let b = build(&on_nas.data, &sources(&on_nas.data, &on_nas.data.catalogue()), None).unwrap();
         // The same packs in this Mac's mirror.
         let home = tempfile::tempdir().unwrap();
-        for (c, _) in sources(&on_nas.data.catalogue()) {
+        for (c, _) in sources(&on_nas.data, &on_nas.data.catalogue()).packs {
             let p = home.path().join("mirror").join(&c);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::copy(nas.path().join(&c), p).unwrap();
@@ -1378,11 +1411,74 @@ mod tests {
             reserve: 0,
         })
         .unwrap();
-        assert!(sources(&data.catalogue()).iter().all(|(c, _)| data.mirror.as_ref().unwrap().local(c).is_some()));
-        let m = build(&data, &sources(&data.catalogue()), None).unwrap();
+        assert!(sources(&data, &data.catalogue()).packs.iter().all(|(c, _)| data
+            .mirror
+            .as_ref()
+            .unwrap()
+            .local(c)
+            .is_some()));
+        let m = build(&data, &sources(&data, &data.catalogue()), None).unwrap();
         let all = |p: &Places| (0..p.len()).map(|i| p.text_of(i).to_string()).collect::<Vec<_>>();
         assert_eq!((m.places.len(), m.unread, m.bad), (3, 0, 0));
         assert_eq!(all(&m.places), all(&b.places));
+    }
+
+    /// Asks `q` until it finds `n` places (the places made again meanwhile): their names.
+    async fn finds(s: &S, q: &str, n: usize) -> Vec<String> {
+        let end = Instant::now() + WATCHDOG;
+        loop {
+            let v = ask(s, q, None).await;
+            let hits: Vec<String> = v["hits"].as_array().unwrap().iter().map(|h| h["name"].to_string()).collect();
+            if hits.len() == n {
+                return hits;
+            }
+            assert!(Instant::now() < end, "never {n} places for {q:?}: {v}");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    /// Away from the NAS, the places are those of the packs on this Mac, kept to where the downloads
+    /// reach (crate::data::Reach): none with nothing downloaded; a region's z6 tiles (not its lo
+    /// pack's others); every place of the World's packs; and, with the packs not here, none, and
+    /// no failure.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn away_from_the_nas_the_places_are_the_downloads() {
+        let (nas, home, bare) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let dir = nas.path().join("project");
+        catalogue(&dir, 1, &packs(), &[]);
+        let root = store::nasfs::NasRoot::local_for_test(&dir);
+        let on_nas = crate::test_state(home.path(), &root);
+        for (c, _) in sources(&on_nas.data, &on_nas.data.catalogue()).packs {
+            let p = home.path().join("mirror").join(&c);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::copy(dir.join(&c), p).unwrap();
+        }
+        // This Mac with every pack, and one with none; then the NAS gone.
+        let s = crate::test_state_with(home.path(), &root, true);
+        let none = crate::test_state_with(bare.path(), &root, true);
+        std::fs::rename(&dir, nas.path().join("gone")).unwrap();
+        s.data.pool().unwrap().mark_offline("test");
+        assert_eq!(ready(&s).await["ready"], true);
+        assert!(ask(&s, "banff", None).await["hits"].as_array().unwrap().is_empty(), "nothing downloaded");
+
+        // A region over 6/32/21: its tile's places, not those of its lo pack's other tiles.
+        s.data.set_reach(crate::data::Reach::Tiles(Arc::new([(32, 21)].into())));
+        assert_eq!(finds(&s, "lake louise", 1).await, ["\"Lake Louise\""]);
+        assert_eq!(finds(&s, "banff", 1).await.len(), 1);
+        assert!(ask(&s, "yokohama", None).await["hits"].as_array().unwrap().is_empty(), "another tile's");
+        // The World: every place its packs hold.
+        s.data.set_reach(crate::data::Reach::World);
+        assert_eq!(finds(&s, "yokohama", 1).await.len(), 1);
+
+        // None of the packs here: nothing found, and nothing failed.
+        let s = none;
+        assert_eq!(s.data.catalogue().n, 1);
+        s.data.pool().unwrap().mark_offline("test");
+        s.data.set_reach(crate::data::Reach::World);
+        let v = ready(&s).await;
+        assert_eq!((v["ready"].clone(), v.get("failed")), (serde_json::json!(true), None), "{v}");
+        assert!(ask(&s, "banff", None).await["hits"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1432,7 +1528,7 @@ mod tests {
         let made = s.places.made.read().unwrap();
         assert!(made.as_ref().is_some_and(|m| m.partial.is_some()), "made again later");
         drop(made);
-        let b = build(&s.data, &sources(&s.data.catalogue()), None).unwrap();
+        let b = build(&s.data, &sources(&s.data, &s.data.catalogue()), None).unwrap();
         assert_eq!((b.places.len(), b.unread, b.bad), (2, 1, 1));
 
         // Nothing readable: not ready, and why, and when it's tried again.
@@ -1515,7 +1611,7 @@ mod tests {
         })
         .unwrap();
         let t = Instant::now();
-        let b = build(&data, &sources(&data.catalogue()), None).unwrap();
+        let b = build(&data, &sources(&data, &data.catalogue()), None).unwrap();
         let p = b.places;
         eprintln!(
             "{} places, {} words, {} MB, {:.1} s; passed over: {} packs, {} tiles",
