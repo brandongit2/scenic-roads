@@ -1071,7 +1071,7 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
     Ok(())
 }
 
-/// `scenic nas-room [<GB> | off]`: the NAS reserve (agent::room::NAS_RESERVE), set in the project
+/// `scenic nas-room [<GB> | off]`: the NAS reserve (buildstore::room::NAS_RESERVE), set in the project
 /// folder on the NAS, which every job reads; off: none; with none, how it stands.
 fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
     use agent::room::{nas_reserve, size};

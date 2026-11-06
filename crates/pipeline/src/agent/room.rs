@@ -782,18 +782,6 @@ fn clear_answers(cache: &Path, root: &store::nasfs::NasRoot, answering: bool) ->
     Ok((freed, vec![stay(lacking, "the NAS hasn't all of them yet (the step's next run sends them)")]))
 }
 
-/// The owner's disk room target on this Mac (`scenic room <GB>`, the build page's chart): the
-/// free space its agent keeps (the module's doc, The room target). In the agent's folder
-/// (`TARGET`): each Mac's disk is its own.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Target {
-    /// The free space to keep (bytes).
-    pub bytes: u64,
-    /// Who set it, in words ("scenic room on m4", "the menu bar on m4"), and when (unix seconds).
-    pub by: String,
-    pub at: u64,
-}
-
 /// The target's file, in the agent's folder.
 pub const TARGET: &str = "room-target.json";
 
@@ -831,56 +819,16 @@ fn read_target(p: &Path) -> Option<Target> {
     parse_target(&std::fs::read(p).ok()?)
 }
 
-/// A target's file's bytes (none: unreadable, or 0 bytes; at most `MAX_TARGET`).
-fn parse_target(b: &[u8]) -> Option<Target> {
-    serde_json::from_slice::<Target>(b)
-        .ok()
-        .filter(|t| t.bytes > 0)
-        .map(|t| Target { bytes: t.bytes.min(MAX_TARGET), ..t })
-}
-
-/// The owner's NAS reserve, pool-wide (`scenic nas-room`): the free space the NAS keeps past what the
-/// steps that check before writing there would write (bld-fetch). One file on the NAS, written by
-/// whichever Mac sets it, read by every job; none (the default): the NAS's free space alone.
-pub const NAS_RESERVE: &str = "state/pool/nas-room.json";
-
-/// Sets the NAS reserve under the project folder `root` to `bytes`, or clears it (None).
-pub fn set_nas_reserve(root: &store::nasfs::NasRoot, bytes: Option<u64>, by: &str) -> Result<Option<Target>> {
-    let p = root.join(NAS_RESERVE);
-    let Some(bytes) = bytes else {
-        match p.remove_file() {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        return Ok(None);
-    };
-    if let Some(d) = p.parent() {
-        d.create_dir_all()?;
-    }
-    let t = Target { bytes, by: by.to_string(), at: super::jobs::now_s() };
-    p.write_whole(serde_json::to_vec(&t)?)?;
-    Ok(Some(t))
-}
-
-/// The NAS reserve as set under `root`, when one is.
-pub fn nas_reserve(root: &store::nasfs::NasRoot) -> Option<Target> {
-    parse_target(&root.join(NAS_RESERVE).read().ok()?)
-}
-
-/// The NAS's free space a step may fill (bytes): what's free under `root` less the reserve.
-pub fn nas_room(root: &store::nasfs::NasRoot) -> std::io::Result<u64> {
-    Ok(free_past_of(nas_free(root)?, nas_reserve(root).map_or(0, |t| t.bytes)))
-}
-
-/// The NAS's free space: its mount's statfs (tests/nas_access.rs).
-pub fn nas_free(root: &store::nasfs::NasRoot) -> std::io::Result<u64> {
-    disk_free(&root.unchecked_path())
-}
+// The free space the steps check before they write (a disk's, the NAS's past the owner's
+// reserve) and the file a target is kept in: buildstore's (task #916 step 6e, docs/crates.md), kept
+// at these paths.
+use buildstore::room::parse_target;
+#[cfg(test)]
+pub use buildstore::room::testkit::TEST_FREE;
+pub use buildstore::room::{disk_free, nas_free, nas_reserve, nas_room, set_nas_reserve, Target};
 
 // A job's room target and the free space past it: the runtime crate's (task #916 step 3,
 // docs/crates.md), kept at these paths.
-use jobrt::room::free_past_of;
 pub use jobrt::room::{free_past, job_target, MAX_TARGET, TARGET_ENV};
 
 /// The disk room target as the agent's status says it (`Caches::room`): the target, the disk's
@@ -1486,7 +1434,8 @@ fn copy_there(p: &Path, dest: &NasPath, made: &mut HashSet<NasPath>) -> bool {
 }
 
 /// `make_room` with the disk's free space from `free_space`: nothing when it has `need`, else
-/// deleting until it has `target`.
+/// deleting until it has `target` (the tests').
+#[cfg(test)]
 fn make_room_with(
     cache: &Path,
     sources: &NasPath,
@@ -1668,62 +1617,9 @@ fn walk(dir: &Path, out: &mut Vec<(SystemTime, u64, PathBuf)>) {
     }
 }
 
-/// `walk`'s files' paths, for other modules' tests.
-#[cfg(test)]
-pub(crate) fn walk_for_test(dir: &Path, out: &mut Vec<PathBuf>) {
-    let mut v = Vec::new();
-    walk(dir, &mut v);
-    out.extend(v.into_iter().map(|f| f.2));
-}
-
-/// The free space on the disk holding `path` (a local disk).
-pub fn disk_free(path: &Path) -> std::io::Result<u64> {
-    // (A test's disk is its own, never this Mac's: what's free here, with other suites running,
-    // decides nothing. 1 TB unless the test says.)
-    #[cfg(test)]
-    {
-        let _ = path;
-        Ok(TEST_FREE.with(|c| c.get()).unwrap_or(1 << 40))
-    }
-    #[cfg(not(test))]
-    super::cond::free_bytes(path).ok_or_else(std::io::Error::last_os_error)
-}
-
-#[cfg(test)]
-thread_local! {
-    /// A test's disk, so what it asserts doesn't hang on this Mac's: its free bytes.
-    pub static TEST_FREE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The NAS reserve: kept on the NAS, read back, its room the free space past it; off, none.
-    #[test]
-    fn the_nas_reserve_is_kept_on_the_nas() {
-        let d = tempfile::tempdir().unwrap();
-        TEST_FREE.with(|c| c.set(Some(100 << 30)));
-        assert_eq!(nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path())), None);
-        assert_eq!(nas_room(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap(), 100 << 30);
-        let t = set_nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path()), Some(30 << 30), "a test")
-            .unwrap()
-            .unwrap();
-        assert!(d.path().join(NAS_RESERVE).is_file());
-        assert_eq!(nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path())), Some(t));
-        assert_eq!(nas_room(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap(), 70 << 30);
-        set_nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path()), Some(200 << 30), "a test").unwrap();
-        assert_eq!(nas_room(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap(), 0);
-        assert_eq!(set_nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path()), None, "a test").unwrap(), None);
-        assert_eq!(
-            (
-                nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path())),
-                nas_room(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap()
-            ),
-            (None, 100 << 30)
-        );
-        TEST_FREE.with(|c| c.set(None));
-    }
 
     /// Frees the cheap caches toward `goal` free, as room-making does, and says what stays short of it.
     fn trim_with(

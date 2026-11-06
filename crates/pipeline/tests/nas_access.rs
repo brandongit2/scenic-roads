@@ -71,7 +71,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     // A raw path for what isn't a file's read or write.
     ("crates/buildstore/src/out.rs", "file", 1, "a local lock file named after the root's real path"),
     ("crates/pipeline/src/agent/room.rs", "ours", 1, "a local cache file's real path against the root's"),
-    ("crates/pipeline/src/agent/room.rs", "nas_free", 1, "the share's free space: its mount's statfs"),
+    ("crates/buildstore/src/room.rs", "nas_free", 1, "the share's free space: its mount's statfs"),
     ("crates/pipeline/src/agent/cond.rs", "resources", 1, "the share's free space: its mount's statfs"),
     ("crates/pipeline/src/coord/mod.rs", "nas_prober", 1, "the share's mount: its statfs"),
     ("crates/jobrt/src/budget/nas.rs", "probe_dir", 1, "the NAS's speed probe measures raw calls, never counted as the build's NAS work"),

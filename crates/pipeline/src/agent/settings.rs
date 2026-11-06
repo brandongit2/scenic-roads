@@ -1,6 +1,6 @@
 //! The owner's settings (docs/workers.md §7): this Mac's in-use share (crate::agent::share), memory
 //! floor (crate::agent::memfloor) and disk room target (crate::agent::room::Target), the pool's
-//! NAS reserve (crate::agent::room::NAS_RESERVE), batch length and overdue factor (the lead's
+//! NAS reserve (buildstore::room::NAS_RESERVE), batch length and overdue factor (the lead's
 //! settings `batch-minutes` and `overdue-factor`, crate::coord::asks), and the dev sweep's margin
 //! (`SWEEP_MARGIN`). Each is set through one function here, whoever asks: `scenic in-use`, `scenic
 //! memory`, `scenic room`, `scenic nas-room`, `scenic pool set batch-minutes|overdue-factor`, and the
