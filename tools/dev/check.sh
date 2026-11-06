@@ -29,10 +29,11 @@
 # Prints PASS/FAIL/REUSE/skip per part, with its wall and CPU time on this Mac (tests: the test Mac's
 # too); each part's whole output is kept in ~/Library/Logs/scenic/check-<time>/. A clean checkout
 # whose tree and merge-base tree a pass already recorded passes at once (no part runs again).
-# A rebased branch (#950): on a clean checkout, clippy and the tests part are reused from an earlier
-# pass when tools/dev/check-reuse.py shows it holds (this tree is that pass's plus main's changes
-# since its base, and those touch none of the part's inputs); the tests reading main's changes at
-# run time run again. A REUSE line names the pass and says why; otherwise a line says why not.
+# A rebased branch (#950), or one edited since a pass (#969): on a clean checkout, clippy and the
+# tests part are reused from an earlier pass when tools/dev/check-reuse.py shows it holds (main's
+# changes since its base touch none of the part's inputs; clippy: nor the branch's own since); of
+# the tests, those the changes since that pass affect run again, and those it didn't run. A REUSE
+# line names the pass and says why; otherwise a line says why not.
 # Each run is recorded for the dev job dashboard (tools/dev/devjob.zsh): the run, each part with what
 # its output says of its compiles, a skipped or reused part as a mark; cargo and the test runs under
 # their part.
@@ -209,7 +210,13 @@ fi
 [[ -z $(git status --porcelain) && $treekey == "tree $(git rev-parse 'HEAD^{tree}') "* ]] || treekey=
 if [[ -n $treekey ]]; then
   treekey+=" at $base"
-  [[ -s $logs/tests-commands ]] && treekey+=" tests $(shasum $logs/tests-commands | cut -d' ' -f1)"
+  if [[ -s $logs/tests-commands ]]; then
+    th=$(shasum $logs/tests-commands | cut -d' ' -f1); treekey+=" tests $th"
+    # (The commands themselves, for a later check whose own differ: check-reuse.py runs only the
+    # tests these didn't, #969. A few KB each; older than 30 days go.)
+    mkdir -p ${passed:h}/check-tests && cp $logs/tests-commands ${passed:h}/check-tests/$th
+    find ${passed:h}/check-tests -type f -mtime +30 -delete 2>/dev/null
+  fi
   treekey+=$reused
 fi
 print -r -- "$(git rev-parse HEAD) $(date -u +%FT%TZ)${treekey:+ $treekey}" >> $passed

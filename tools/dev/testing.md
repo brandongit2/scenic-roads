@@ -79,35 +79,46 @@ merge-base's tree), `at` the merge-base, `tests` the hash of its test commands a
 the same tree key passes at once, recording its HEAD with that pass's fields and `reused
 all=<commit>` (an amend of the message, a cherry-pick onto the same base: nothing a part reads changed).
 
-A rebased branch (#950): on a clean checkout (nothing untracked), check.sh asks
-`tools/dev/check-reuse.py` whether an earlier pass P still holds for clippy and for the tests
-part, the two that take minutes (fmt, guards and the rest are never reused: each runs by its own rule, as without a pass). It holds
-only when HEAD's tree is P's plus main's changes since P's base (every file differing from P is
-one main changed, and each of those is main's version), and none of main's changes is:
-- of no known kind: a top-level entry outside the script's `KNOWN` (both parts run);
-- a Rust build input: `crates/`, Cargo.toml and Cargo.lock, rust-toolchain, mise.toml, clippy.toml,
-  rustfmt.toml, `.cargo/`, `.config/`; the package folders (Cargo.toml's members and exclude, and
-  the paths the manifests name: path dependencies, `[patch]`); any file a crate's source
-  `include_*!`s or `#[path]`s, names as a macro's or attribute's first `"../"` literal, or a build
-  script or proc macro reads; the scripts running the parts (`RUNNER`: check.sh, check-reuse.py,
-  affected-tests.sh, tools/dev/bin, tools/app/remote-tests.sh, and the recorder wrapping them,
-  tools/dev/devjob.zsh and devjob.py). Then both parts run.
-For the tests part, also: HEAD's affected tests are P's (the same hash), and the tests that read
-one of main's changes at run time run again, those of them HEAD's commands run: a scan test whose
-`//! scans:` line covers it (affected-tests.sh over main's changes; that line is trusted for
-what the test reads), a test without one naming a `CARGO_MANIFEST_DIR` path or a `".."` path
-over it, and a source's such path inside a `#[test]` function (that test). A path whose base
+A rebased branch (#950), or one edited since a pass (#969): on a clean checkout (nothing
+untracked), check.sh asks `tools/dev/check-reuse.py` whether an earlier pass P still holds for
+clippy and for the tests part, the two that take minutes (fmt, guards and the rest are never
+reused: each runs by its own rule, as without a pass). It weighs X, the files differing between
+P's tree and HEAD's: each is main's (changed by main since P's base, HEAD holding main's version)
+or the branch's own (edited since P: on 5 Nov, 56 of 61 passes reused nothing, every check after
+an agent's own edit running its whole set). Of the newest 60 passes recorded (any branch's), the
+one with the fewest own files, then the fewest in X. Neither part is reused when a file in X is:
+- of no known kind: a top-level entry outside the script's `KNOWN`;
+- for clippy, any Rust build input; for the tests, one of main's, or an own one other than a plain
+  source (a `.rs` file under `crates/<crate>/src` or `tests`, not the crate's root, whose own tests
+  no filter isolates, nor a build script or a proc macro's) or a file `include_str!`d or
+  `include_bytes!`d only inside `#[test]` functions (those tests run again: steps.rs's source
+  tests read agent/mod.rs, plan.rs and build.rs so); not one `include!`d, `#[path]`ed or named in
+  a macro. The inputs: `crates/`, Cargo.toml and Cargo.lock, rust-toolchain, mise.toml,
+  clippy.toml, rustfmt.toml, `.cargo/`, `.config/`; the package folders (Cargo.toml's members and
+  exclude, and the paths the manifests name: path dependencies, `[patch]`); any file a crate's
+  source `include_*!`s or `#[path]`s, names as a macro's or attribute's first `"../"` literal, or a
+  build script or proc macro reads; the scripts running the parts (`RUNNER`: check.sh,
+  check-reuse.py, affected-tests.sh, tools/dev/bin, tools/app/remote-tests.sh, and the recorder
+  wrapping them, tools/dev/devjob.zsh and devjob.py).
+For the tests part, what HEAD's commands run again: the tests P's commands didn't run (each pass
+keeps its commands in `.git/check-tests/<hash>`, 30 days), and of the rest, those X affects:
+`affected-tests.sh P..HEAD` (the own sources' modules traced as the branch's are, one level out;
+the scan tests whose `//! scans:` line covers a file in X, that line trusted for what the test
+reads), a test without one naming a `CARGO_MANIFEST_DIR` path or a `".."` path over a file in X,
+and a source's such path inside a `#[test]` function (that test). A path whose base
 can't be told (`join("..")`, `"{}/../x"`, a `CARGO_MANIFEST_DIR` whose parent is taken) is the
 whole repo; one leaving the repo from the crate's folder is its tail under any folder. Such a read
 outside a `#[test]` function, inside a `macro_rules!`, or in a crate whose targets aren't cargo's
 defaults for its folder (its name, no `[lib]`/`[[bin]]`/`[[test]]`, not both lib.rs and main.rs)
 runs the whole part. Both parts run on a doubt: a symlink anywhere in the repo, an `include!` or
 `#[path]` outside the package folders, `.cargo/config` naming paths. A part reused prints `REUSE`
-with P and why it holds (main's changed files, which tests ran again); a part run says why it
-wasn't reused (no such pass, a lookup failing, the file that is an input). Its test,
+with P and why it holds (main's changed files and the own ones, which tests ran again); a part
+run says why it wasn't reused (no such pass, a lookup failing, the file that is an input). Its test,
 `tools/dev/test/check-reuse.zsh`, runs the rule on toy repos (docs only, dev tools only, a file a
 test reads, a Rust change, a Cargo.lock change, an included file, the runner changed, an unknown
-file, the branch changed after the rebase, no earlier pass, an untracked file, and the reads above
+file, the branch changed after the rebase, its own edit of a module, of the crate's root, its
+manifest, an included file or an integration test, fewer or more tests than the pass ran, the pass
+with the fewest own changes, no earlier pass, an untracked file, and the reads above
 that need a further look: `join("..")`, a deeper base, a symlink, a `#[path]` outside, a macro's
 test, lib and main, a test folder, a renamed package, a `[patch]` path, a macro attribute's
 folder) and checks the lists: every top-level entry of the repo is in `KNOWN`, and the runner
@@ -365,7 +376,7 @@ checkout it runs in from the top level), so a worktree has its own copy and no p
 ```
 
 Generated state, all ignored: `.claude/health-stamp`, `.claude/sweep-targets.log`, `.claude/sweep-keep`
-(hand-made), `~/Library/Logs/scenic/`, `.git/check-passed`.
+(hand-made), `~/Library/Logs/scenic/`, `.git/check-passed`, `.git/check-tests/`.
 
 ## The build page on a phone: touch-test.mjs and safari-sim.sh (#614, 23 Oct)
 

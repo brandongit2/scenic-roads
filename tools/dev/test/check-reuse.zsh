@@ -40,6 +40,7 @@ w Cargo.lock 'v1'
 w crates/a/Cargo.toml '[package]
 name = "a"'
 w crates/a/src/lib.rs 'pub const X: &str = include_str!("../../../web/x.txt");
+mod m;
 #[cfg(test)]
 mod tests {
     #[test]
@@ -51,14 +52,23 @@ mod tests {
         let _ = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/helper");
     }
 }'
+w crates/a/src/m.rs '#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {}
+    #[test]
+    fn reads_c() {
+        let _ = include_str!("../../../docs/c.md");
+    }
+}'
 w crates/a/tests/scan.rs '//! scans: docs/a.md
 #[test]
 fn t() {}'
-for f in docs/a.md docs/b.md tools/dev/x.sh tools/data/y tools/helper/z web/x.txt README.md; do w $f 1; done
+for f in docs/a.md docs/b.md docs/c.md tools/dev/x.sh tools/data/y tools/helper/z web/x.txt README.md; do w $f 1; done
 g add -A; g commit -m b0; b0=$(git rev-parse HEAD)
 g checkout -q -b br
 print '// branch' >> crates/a/src/lib.rs; g commit -am branch; P=$(git rev-parse HEAD)
-print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- tests::' > $tmp/tests
+print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- m:: tests::' > $tmp/tests
 hash=$(shasum $tmp/tests | cut -d' ' -f1)
 rec="$P 2026-11-04T00:00:00Z tree $(git rev-parse 'HEAD^{tree}') base $(git rev-parse "$b0^{tree}") at $b0 tests $hash"
 
@@ -105,11 +115,34 @@ case_ "the script running the parts" run run
 edit() { w newthing/z 1 }
 case_ "a file of no known kind" run run
 edit() { print 2 >> docs/b.md }; after='print 3 >> docs/a.md'
-case_ "the branch changed after the rebase" run run
+case_ "the branch changed after the rebase: a file a scan test reads" reuse partial 'cargo test -p a --test scan'
+# (#969: the branch's own edits since the pass; the tests they affect run again.)
+edit() { print 2 >> docs/b.md }; after='print "// 2" >> crates/a/src/m.rs'
+case_ "the branch's own edit of a module since the pass" run partial 'cargo test -p a --lib -- m::'
+edit() { print 2 >> docs/b.md }; after='print "// 2" >> crates/a/src/lib.rs'
+case_ "the branch's own edit of the crate's root" run run
+edit() { print 2 >> docs/b.md }; after='print "# 2" >> crates/a/Cargo.toml'
+case_ "the branch's own manifest edit" run run
+edit() { print 2 >> docs/b.md }; after='print 2 >> web/x.txt'
+case_ "the branch's own edit of a file the build includes" run run
+edit() { print 2 >> docs/b.md }; after='print 2 >> docs/c.md'
+case_ "the branch's own edit of a file a #[test] function includes" run partial 'cargo test -p a --lib -- m::tests::reads_c'
+edit() { print 2 >> docs/b.md }; after='print 2 >> crates/a/tests/scan.rs'
+case_ "the branch's own edit of an integration test" run partial 'cargo test -p a --test scan'
 edit() { print 2 >> docs/b.md }
 print -l 'cargo test -p a --test scan' > $tmp/tests
-case_ "other tests to run here" reuse run
-print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- tests::' > $tmp/tests
+case_ "other tests to run here, the pass's not kept" reuse run
+mkdir -p $tmp/check-tests; print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- m:: tests::' > $tmp/check-tests/$hash
+case_ "fewer tests to run here than the pass ran" reuse reuse
+print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- m:: n:: tests::' 'cargo test -p a --bin x' > $tmp/tests
+case_ "more tests to run here than the pass ran" reuse partial $'cargo test -p a --bin x\ncargo test -p a --lib -- n::'
+rm -r $tmp/check-tests
+print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- m:: tests::' > $tmp/tests
+# (Another pass beside P, of main's tree before the branch: the branch's change its own since; P is weighed.)
+print -l -- $rec "$b0 2026-11-04T01:00:00Z tree $(git rev-parse "$b0^{tree}") base $(git rev-parse "$b0^{tree}") at $b0 tests $hash" > $tmp/passed
+edit() { print 2 >> docs/b.md }
+case_ "the pass with the fewest own changes since" reuse reuse
+print -r -- $rec > $tmp/passed
 : > $tmp/passed
 case_ "no earlier pass" run run
 print -r -- ${rec/ at $b0/} > $tmp/passed

@@ -13,20 +13,26 @@ tests part). Prints one line a part, tab-separated:
 The parts are clippy and tests (the others are never reused).
 
 The rule. A pass at P, recorded with its base (`at`, the merge-base it was checked against), its
-tree key and (tests) the hash of its test commands, holds for a part here only when
-  - HEAD's tree is P's tree plus main's changes since P's base: with D the files that differ
-    between P's base and HEAD's base, every file differing between P and HEAD is in D, and every
-    file in D is HEAD's base's version in HEAD;
-  - no file in D is unknown (its top-level entry outside KNOWN) and none is an input of the
-    part: the Rust build's (BUILD and the package folders: the workspace's members, excludes and
-    the paths its manifests name; the files their sources include_*!, #[path] or name as a
-    macro's first "../" literal; what build scripts and proc macros read; the scripts that run
-    the part, RUNNER);
-  - tests: HEAD's test commands are P's (the same hash), and the tests reading a file in D at run
-    time (a `//! scans:` line, or a source's CARGO_MANIFEST_DIR or ".." path inside a #[test]
-    function) are run again, those of them HEAD's commands run. A reading this can't place
-    (outside a #[test] function, in a macro, a crate whose targets aren't cargo's defaults) runs
-    the whole part; a path whose base can't be told is the whole repo.
+tree key and (tests) the hash of its test commands (the commands kept in check-tests/<hash> beside
+the record), is weighed against X, the files differing between P's tree and HEAD's. X's files
+are main's (main changed it since P's base and HEAD has main's version) or the branch's own (an
+edit since P, #969). Of the passes recorded, the one with the fewest own files (then the fewest
+in X) is weighed. It holds for a part here only when
+  - no file in X is unknown (its top-level entry outside KNOWN);
+  - clippy: none is an input of the Rust build (BUILD and the package folders: the workspace's
+    members, excludes and the paths its manifests name; the files their sources include_*!,
+    #[path] or name as a macro's first "../" literal; what build scripts and proc macros read; the
+    scripts that run the part, RUNNER);
+  - tests: none of main's is such an input, and each own one that is, is a module's source (a .rs
+    file under crates/<crate>/src or tests, not a crate's root, build script or proc macro) or a
+    file include_str!d or include_bytes!d only inside #[test] functions (those tests), nothing
+    include!ing it, naming it by #[path] or in a macro; then run again: the tests HEAD's commands run that P's didn't, and of those
+    both run, the tests affected-tests.sh gives for P..HEAD (the plain sources' modules traced
+    as for the branch, the scan tests whose `//! scans:` line covers a file in X) and the tests
+    reading a file in X at run time (a source's CARGO_MANIFEST_DIR or ".." path inside a #[test]
+    function). A reading this can't place (outside a #[test] function, in a macro, a crate whose
+    targets aren't cargo's defaults) runs the whole part; a path whose base can't be told is the
+    whole repo.
 Doubt runs both parts: a symlink in the repo, an include! or #[path] outside the package folders
 (whose own modules aren't followed), a path a manifest or .cargo names outside them.
 Anything not shown safe (no such pass, a git lookup failing) runs the part.
@@ -46,6 +52,10 @@ RUNNER = ["tools/dev/check.sh", "tools/dev/check-reuse.py", "tools/dev/affected-
 # tools/dev/test/check-reuse.zsh checks every tracked file's entry is here.
 KNOWN = set(BUILD) | {"docs", "web", "producers", "dem", "tools", "scripts", ".claude", "README.md",
                       ".gitignore", ".git-blame-ignore-revs"}
+
+
+# How many of the newest passes are weighed (each a tree diff against HEAD's).
+CANDIDATES = 60
 
 
 class Doubt(Exception):
@@ -142,11 +152,12 @@ MACROLIT = re.compile(r'#!?\[\s*\w+(?:::\w+)*\s*(?:=|\()\s*"(\.\./[^"\\]*)"|\b(?
 
 
 def build_inputs(files, pkgs):
-    """(prefix, why) for every repo path the build reads."""
+    """(prefix, why) for every repo path the build reads; the build scripts and proc-macro package
+    folders; and each file include_str!d or include_bytes!d: [(the source, the macro's offset)]."""
     ins = [(p, "the Rust build") for p in BUILD + pkgs] + [(p, "runs the part") for p in RUNNER]
     # Build scripts: a package's build.rs, or its manifest's `build = "…"`; and every source of a
     # proc-macro package (it runs as the crates using it compile).
-    scripts, macros = set(), []
+    scripts, macros, data = set(), [], {}
     for d in pkgs:
         toml = read(d + "/Cargo.toml")
         b = re.search(r'^build\s*=\s*"([^"]+)"', toml, re.M)
@@ -167,7 +178,11 @@ def build_inputs(files, pkgs):
                 raise Doubt("%s includes a file outside the repo: %s" % (f, m.group(3)))
             if m.group(1) is None and not any(under(p, k) for k in pkgs):
                 raise Doubt("%s include!s Rust outside the package folders: %s" % (f, p))
-            ins.append((p, "%s includes it" % f))
+            if m.group(1) is None:
+                ins.append((p, "%s includes it" % f))
+            else:
+                ins.append((p, "%s reads it as it compiles" % f))
+                data.setdefault(p, []).append((f, m.start()))
         for rel in PATHATTR.findall(src):
             p = norm(d, rel)
             if p is None or not any(under(p, k) for k in pkgs):
@@ -182,7 +197,36 @@ def build_inputs(files, pkgs):
         if f in scripts or any(under(f, k) for k in macros):
             for p, _ in reads(f, src):
                 ins.append((p, "%s (a build script or proc macro) reads it" % f))
-    return ins
+    return ins, scripts, macros, data
+
+
+PLAIN = "the Rust build"   # (the reason a file inside a package folder, and nothing more, gives)
+DATA = " reads it as it compiles"
+
+
+def traced(f, whys, scripts, macros, data, files):
+    """The test units an own change of f, a Rust build input, affects beyond what affected-tests.sh
+    traces for it ([] none more); None when they can't be told. Traced: a module's source (a .rs
+    file under crates/<crate>/src or tests, not the crate's root, whose own tests no filter
+    isolates nor its users are traced, nor a build script or a proc macro's), and a file
+    include_str!d or include_bytes!d inside #[test] functions (those tests: a source test reading
+    agent/build.rs). Not: one include!d, named by #[path] or in a macro, or read by a build script."""
+    p = f.split("/")
+    for w in set(whys):
+        if w == PLAIN:
+            if not (len(p) >= 4 and p[0] == "crates" and p[2] in ("src", "tests") and f.endswith(".rs")
+                    and f not in scripts and not any(under(f, k) for k in macros)
+                    and "/".join(p[2:]) not in ("src/lib.rs", "src/main.rs")):
+                return None
+        elif not w.endswith(DATA):
+            return None
+    units = []
+    for g, at in data.get(f, []):
+        try:
+            units += units_of(g, at, read(g), files)
+        except Doubt:
+            return None
+    return units
 
 
 # ---- the tests' reads at run time ----
@@ -404,78 +448,130 @@ def decide(passed, tests_file):
     cands = [r for r in records(passed) if r[0] != head and "at" in r[1] and "tree" in r[1]]
     if not cands:
         raise Doubt("no earlier pass recorded with its base")
-    pick, tried = None, 0
-    for p, kv in cands:
-        tried += 1
+    # (Each pass's tree against HEAD's: the one with the fewest own files since, then the fewest
+    # files in all; the newest of equals.)
+    branch, pick, seen = names(base, head), None, set()
+    for p, kv in cands[:CANDIDATES]:
+        if p in seen:
+            continue
+        seen.add(p)
         try:
-            if git("rev-parse", p + "^{tree}").strip() != kv["tree"]: continue
-            d = names(kv["at"], base)
-            if not names(p, head) <= d or names(base, head) & d: continue
+            if git("rev-parse", p + "^{tree}").strip() != kv["tree"]:
+                continue
+            d, x = names(kv["at"], base), names(p, head)
         except Doubt:
             continue
-        pick = (p, kv, d); break
+        mains = {f for f in x if f in d and f not in branch}
+        if pick is None or (len(x - mains), len(x)) < (len(pick[3]), len(pick[2])):
+            pick = (p, kv, x, x - mains, mains)
     if not pick:
-        raise Doubt("no earlier pass (of %d) whose tree plus main's changes since its base is this tree" % tried)
-    p, kv, d = pick
+        raise Doubt("no earlier pass (of %d) whose commit and tree can be found" % len(seen))
+    p, kv, x, own, mains = pick
     sp = p[:7]
     how = "this tree is %s's plus main's changes since its base %s (%s)" % (
-        sp, kv["at"][:7], "%d files: %s" % (len(d), short(d)) if d else "none")
-    unknown = [f for f in d if f.split("/")[0] not in KNOWN]
+        sp, kv["at"][:7], "%d files: %s" % (len(mains), short(mains)) if mains else "none")
+    if own:
+        how += " and the branch's own since (%d files: %s)" % (len(own), short(own))
+    unknown = [f for f in x if f.split("/")[0] not in KNOWN]
     if unknown:
-        raise Doubt("main changed files of no known kind: " + short(unknown))
+        raise Doubt("files of no known kind changed since %s: %s" % (sp, short(unknown)))
     files, links = [], []
     for e in filter(None, git("ls-files", "-s", "-z").split("\0")):
         mode, f = e.split(" ", 1)[0], e.split("\t", 1)[1]
         files.append(f)
         if mode == "120000": links.append(f)
-    if links:   # (a read through one names the link, not the file main changed)
+    if links:   # (a read through one names the link, not the file changed)
         raise Doubt("the repo holds symlinks, which a read can go through: " + short(links))
-    ins = build_inputs(files, packages(files))
-    hit = {f: why for f in d for pre, why in ins if under(f, pre)}
+    ins, scripts, macros, data = build_inputs(files, packages(files))
+    hit = {}
+    for f in x:
+        for pre, why in ins:
+            if under(f, pre):
+                hit.setdefault(f, []).append(why)
+    say = lambda fs: short("%s (%s)" % (f, ([w for w in hit[f] if w != PLAIN] + [PLAIN])[0]) for f in fs)
     out = []
     if hit:
-        why = "main changed Rust build inputs since %s: %s" % (sp, short("%s (%s)" % (f, w) for f, w in hit.items()))
-        out.append(("clippy", "run", "-", why))
-        if tests: out.append(("tests", "run", "-", why))
-        return out
-    out.append(("clippy", "reuse", p, how + "; none is a Rust build input"))
+        out.append(("clippy", "run", "-", "Rust build inputs changed since %s: %s" % (sp, say(hit))))
+    else:
+        out.append(("clippy", "reuse", p, how + "; none is a Rust build input"))
     if not tests:
         return out
-    if kv.get("tests") != th:
-        out.append(("tests", "run", "-", "the affected tests here aren't %s's" % sp))
+    hit_main = [f for f in hit if f in mains]
+    if hit_main:
+        out.append(("tests", "run", "-", "main changed Rust build inputs since %s: %s" % (sp, say(hit_main))))
         return out
+    extra, odd = [], []
+    for f in hit:
+        u = traced(f, hit[f], scripts, macros, data, files)
+        if u is None: odd.append(f)
+        else: extra += [(c, g, flt, f) for c, g, flt in u]
+    if odd:
+        out.append(("tests", "run", "-", "the branch changed Rust build inputs since %s that the "
+                    "test set doesn't trace: %s" % (sp, say(odd))))
+        return out
+    if kv.get("tests") == th:
+        theirs = tests
+    else:
+        kept = os.path.join(os.path.dirname(os.path.abspath(passed)), "check-tests", kv.get("tests", "-"))
+        if not os.path.isfile(kept):
+            out.append(("tests", "run", "-", "the affected tests here aren't %s's, and its aren't kept" % sp))
+            return out
+        theirs = [l for l in read(kept).splitlines() if l.strip()]
+    how += "; none is a Rust build input" if not hit else "; the Rust ones the branch's own modules"
     try:
-        out += tests_part(tests, d, files, dict(kv, commit=p), base, how + "; none is a Rust build input")
+        out += tests_part(tests, theirs, x, files, p, how, extra)
     except Doubt as e:
         out.append(("tests", "run", "-", str(e)))
     return out
 
 
-def tests_part(tests, d, files, kv, base, how):
-    p = kv["commit"]
+def tests_part(tests, theirs, x, files, p, how, extra):
     ours = parse_cmds(tests)
-    # Reads at run time: the scan tests' lines (affected-tests.sh over main's changes), then sources.
-    r = subprocess.run([HERE + "/affected-tests.sh", "%s..%s" % (kv["at"], base)], capture_output=True, text=True)
+    # HEAD's tests that P's commands didn't run (cargo's filters match by substring: a filter of
+    # P's inside one of HEAD's ran its tests).
+    old, new = parse_cmds(theirs), {}
+    for k, fs in ours.items():
+        if k not in old:
+            new[k] = fs
+        elif old[k] is None:
+            continue
+        elif fs is None:
+            new[k] = None
+        else:
+            left = [f for f in fs if not any(o in f for o in old[k])]
+            if left: new[k] = left
+    # The tests X affects: affected-tests.sh over P..HEAD (the own sources' modules traced as for
+    # the branch, the scan tests' lines), then the sources' reads at run time.
+    r = subprocess.run([HERE + "/affected-tests.sh", "%s..HEAD" % p], capture_output=True, text=True)
     if r.returncode:
-        raise Doubt("affected-tests.sh over main's changes failed: " + r.stderr.strip()[:200])
+        raise Doubt("affected-tests.sh over the changes since %s failed: %s" % (p[:7], r.stderr.strip()[:200]))
     hits = parse_cmds([l for l in r.stdout.splitlines() if l and not l.startswith("#")])
-    why = ["%s (scans)" % k[1] for k in hits]
+    why = ["%s%s (affected)" % (k[1], " -- " + short(v, 2) if v else "") for k, v in hits.items()]
+    for c, g, flt, f in extra:   # (the tests include_str!ing a changed file)
+        if (c, g) in hits and hits[(c, g)] is None: continue
+        hits[(c, g)] = None if flt is None else hits.get((c, g), []) + [flt]
+        why.append("%s (reads %s as it compiles)" % (flt or g, f))
     for f in files:
         if not (f.startswith("crates/") and f.endswith(".rs")):
             continue
         src = read(f)
         for pre, at in reads(f, src):
-            touched = [x for x in d if under(x, pre)]
+            touched = [y for y in x if under(y, pre)]
             if not touched: continue
             for c, g, flt in units_of(f, at, src, files):
                 if (c, g) in hits and hits[(c, g)] is None: continue
                 hits[(c, g)] = None if flt is None else hits.get((c, g), []) + [flt]
                 why.append("%s (%s reads %s)" % (flt or g, f, short(touched, 2)))
     run = intersect(hits, ours)
+    for k, fs in new.items():
+        run[k] = None if fs is None or run.get(k, []) is None else sorted(set(run.get(k, []) + fs))
+    if new:
+        why.append("not run at %s: %s" % (p[:7], short("%s%s" % (k[1], " -- " + " ".join(v) if v else "")
+                                                      for k, v in new.items())))
     if not run:
-        return [("tests", "reuse", p, how + ("; the tests reading them at run time (%s) aren't run here" % short(why)
-                                              if why else "; no test reads them at run time"))]
-    return [("tests", "partial", p, how + "; run again, reading them at run time: " + short(why, 6))] + \
+        return [("tests", "reuse", p, how + ("; the tests they affect (%s) aren't run here" % short(why)
+                                              if why else "; no test reads them"))]
+    return [("tests", "partial", p, how + "; run again: " + short(why, 6))] + \
         [("tests", "cmd", "-", c) for c in commands(run)]
 
 
