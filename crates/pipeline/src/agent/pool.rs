@@ -3368,7 +3368,7 @@ mod tests {
         assert!(home.join("outbox/1791328399375").exists() && !failed.exists());
         // Term 1's records written to today's files too, for their readers.
         assert_eq!(
-            crate::agent::build::Keys::load(&store::nasfs::NasRoot::local_for_test(&r)).recorded("unit", "6/2/2"),
+            crate::pool::records::Keys::load(&store::nasfs::NasRoot::local_for_test(&r)).recorded("unit", "6/2/2"),
             Some("k22")
         );
     }
@@ -3688,7 +3688,7 @@ mod tests {
         rec.keys.record("unit", &[("6/1/1".into(), "k1".into())]);
         write_today(&store::nasfs::NasRoot::local_for_test(&r), &rec).unwrap();
         assert_eq!(
-            crate::agent::build::Keys::load(&store::nasfs::NasRoot::local_for_test(r)).recorded("unit", "6/1/1"),
+            crate::pool::records::Keys::load(&store::nasfs::NasRoot::local_for_test(r)).recorded("unit", "6/1/1"),
             Some("k1")
         );
         let m: BTreeMap<String, String> =

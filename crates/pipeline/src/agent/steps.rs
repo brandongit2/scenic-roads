@@ -3,7 +3,8 @@
 //!
 //! - **id** (`name`): the step's stored name, in the records, the journal, the leases, the timings
 //!   and the floors, and the name every reader shows (task #659: no display names); renamed only
-//!   with `RENAMED` (a rename would re-key what's built: so a z6 tile's roads are still `unit`).
+//!   with crate::pool::records::RENAMED (a rename would re-key what's built: so a z6 tile's roads
+//!   are still `unit`).
 //! - **does**: one sentence of what it makes from what.
 //! - **kind**: where its output goes (`Kind`: a fetch from outside, a derived work file, a pack the
 //!   map serves, a publish, upkeep).
@@ -42,6 +43,7 @@
 //! crate::coord's check of a member's hand-off and the merge's check use) are checked beside it.
 
 use crate::legacy::TileId;
+pub use crate::pool::records::current;
 use serde::{Deserialize, Serialize};
 
 /// Where a step's output goes.
@@ -1620,16 +1622,6 @@ pub const TASKS: [Task; 4] = [
 pub fn row(step: &str) -> Option<&'static Step> {
     let step = current(step);
     TABLE.iter().find(|s| s.name == step)
-}
-
-/// The steps renamed (task #639: by the pack each makes), old name to new. What an older app
-/// recorded under an old name (the records' keys, a hand-off's done targets, a journal entry) is
-/// the step's under its new one (`current`), so nothing is built again for the name alone.
-pub const RENAMED: [(&str, &str); 2] = [("terrain", "terrain-hi"), ("slope", "slope-hi")];
-
-/// `step`'s name now: its new name where it was renamed (`RENAMED`), else itself.
-pub fn current(step: &str) -> &str {
-    RENAMED.iter().find(|(old, _)| *old == step).map_or(step, |(_, new)| new)
 }
 
 /// The task of kind `kind`.

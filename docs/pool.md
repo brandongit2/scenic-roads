@@ -179,7 +179,7 @@ of the lead's, between restarts and sleeps.
 - **A term not readable whole** (its bytes not landed) has no known lead. Its maker finishes it
   (`term::finish`; term 1's too, `term::Unfinished`) before it makes the next.
 - There is no app rule: the lead leads whatever app it runs (a development build, a rollback).
-  Records keep keys of steps an app doesn't know (`build::Keys::other`), so a downgrade loses
+  Records keep keys of steps an app doesn't know (`pool::records::Keys::other`), so a downgrade loses
   nothing it can avoid (docs/buildings3d.md §3.6).
 
 ### 6.2 Records per term
@@ -1624,7 +1624,7 @@ pool heartbeat) only while a member on an older app is in touch.
 The NAS's mount and probe are the agent's **nas** part's (crate::agent::nas, docs/agent-parts.md
 §4.3): on a thread of its own, each look (find, mount every 5 min at most, probe) on a worker
 waited for 30 s; past it the round says "the NAS is mounting (stuck since …)", only NAS work waits,
-and the loop, the beat and control go on. The planner's keys (`build::Keys::load_with`) are read
+and the loop, the beat and control go on. The planner's keys (`pool::records::Keys::load_with`) are read
 under a 5-min deadline (`nasread::with_big`).
 
 Still under no deadline (planned): the manifest read through `out::read_record` outside the

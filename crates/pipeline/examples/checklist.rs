@@ -7,8 +7,9 @@
 //! `<pack-idx copy>`: a copy of an agent's `pack-idx` folder (the terrain packs' indexes are read
 //! from and kept in it; never an agent's own).
 
-use pipeline::agent::build::{checklist, fold, KeyCtx, Keys};
+use pipeline::agent::build::{checklist, fold, KeyCtx};
 use pipeline::agent::tiles::TerrainTiles;
+use pipeline::pool::records::Keys;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

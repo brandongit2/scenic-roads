@@ -29,7 +29,7 @@ pub struct Handoff {
     /// files on the NAS. A hand-off from before them has none (the catalogue looks at those files once).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sizes: BTreeMap<String, u64>,
-    /// A job done: its step, and its targets with their keys (build::Keys::record).
+    /// A job done: its step, and its targets with their keys (pool::records::Keys::record).
     #[serde(default)]
     pub done: Option<(String, Vec<(String, String)>)>,
     /// AWS's raw terrain tiles the job fetched, packed into archives it put on the NAS (terrain,

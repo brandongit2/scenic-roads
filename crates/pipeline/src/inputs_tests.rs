@@ -383,7 +383,7 @@ mod lakefill {
         use crate::agent::build;
         let date = "2026-09-28";
         let mut m = std::collections::BTreeMap::new();
-        let done = build::Keys::default();
+        let done = crate::pool::records::Keys::default();
         // Without the pass's basemap and outlines, or the source: nothing.
         assert!(build::lakefill_work(date, &m, &done, Some("a.zip 1")).is_none());
         m.insert(format!("layers/basemap/world-{date}"), "layers/basemap/world-x.0123456789abcdef.pmtiles".to_string());
@@ -391,7 +391,7 @@ mod lakefill {
         assert!(build::lakefill_work(date, &m, &done, None).is_none());
         let w = build::lakefill_work(date, &m, &done, Some("a.zip 1")).unwrap();
         assert_eq!(w.step, "lakefill");
-        let mut done2 = build::Keys::default();
+        let mut done2 = crate::pool::records::Keys::default();
         done2.record("lakefill", &w.targets);
         assert!(build::lakefill_work(date, &m, &done2, Some("a.zip 1")).is_none(), "done");
         assert!(build::lakefill_work(date, &m, &done2, Some("a.zip 2")).is_some(), "a zip replaced");

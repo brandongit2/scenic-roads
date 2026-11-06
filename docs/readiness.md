@@ -382,7 +382,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      "redo rekey"), whose command reads nothing (`rekey-check --help`: the record is
      the plan's; a full rekey-check is 17 min and 5.75 GB); its done record (`rekey::record`) is a
      restore's per record, "<step> <target> <from>" with the scheme-2 key, or
-     with no key for a dropped one. The merge (`build::Keys::record`) records each only while its
+     with no key for a dropped one. The merge (`pool::records::Keys::record`) records each only while its
      record is still `from` (one built since keeps its own), a world step's in the lo keys; it's
      the one writer, the records' normal save. After it, every reader finds those records current
      and re-keys or drops nothing; scheme 1's keys (the reads' cost) are worked out for a step

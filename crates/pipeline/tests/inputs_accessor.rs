@@ -65,7 +65,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/terrain/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not an inputs folder"),
     ("crates/pipeline/src/agent/gc.rs", "NEVER", "\"translations\"", "GC's never-swept list (§4.9): the inputs folders, and the old translations/ and descriptions/ (#137), whose files the input check flags"),
     ("crates/pipeline/src/agent/steps.rs", "TABLE", "^\"inputs\",\"Checks an input", "the `inputs` step's row"),
-    ("crates/pipeline/src/agent/build.rs", "record", "^\"inputs\"| \"outlines\"", "the `inputs` step's name"),
+    ("crates/pipeline/src/pool/records.rs", "record", "^\"inputs\"| \"outlines\"", "the `inputs` step's name"),
     ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "[\"inputs\",", "the backups: every inputs folder and the acceptances, by design (§4.9)"),
     ("crates/pipeline/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/pipeline/src/agent/room.rs", "is_member_leftover", "\"inputs-listing\",", "the lead's inputs listing named as a leftover a member removes (docs/roles.md §3.5), never read"),

@@ -5,7 +5,7 @@
 //! again by the plan. The owner names the targets; `scenic redo` asks the lead's coordinator
 //! (`/work/redo`), whose agent keeps the ask in its folder (`ASKS`) and runs a job of the `redo` step
 //! for it, the lead's own. The job changes no file; its done record ("<step> <target>", no key)
-//! makes the merge forget those targets' keys (`build::Keys::record`), so the plan offers them again
+//! makes the merge forget those targets' keys (`crate::pool::records::Keys::record`), so the plan offers them again
 //! under the key it has, and what reads their outputs follows by content: the new packs' names
 //! change the keys of the steps after them. The old files leave the manifest as the new ones replace
 //! them, and GC removes them as any replaced file.
@@ -43,7 +43,7 @@ pub fn done_of(a: &Ask) -> Vec<(String, String)> {
 
 /// Whether `step`'s targets can be redone: a step whose records keep a key per target.
 pub fn redoable(step: &str) -> bool {
-    super::build::Keys::default().per_target(step).is_some()
+    crate::pool::records::Keys::default().per_target(step).is_some()
 }
 
 /// Whether `t` reads as a target: a tile ("z/x/y") or a polar block ("s/4/x/y").
@@ -56,7 +56,7 @@ pub fn valid_target(t: &str) -> bool {
 /// `step` and `targets` checked as an ask's: the step's current name, the targets deduplicated in
 /// order.
 pub fn checked(step: &str, targets: &[String]) -> Result<(String, Vec<String>)> {
-    let step = super::steps::current(step).to_string();
+    let step = crate::pool::records::current(step).to_string();
     if !redoable(&step) {
         bail!("{step} keeps no key per target, so its targets can't be redone");
     }
@@ -84,7 +84,11 @@ pub fn done_target(step: &str, target: &str) -> String {
 
 /// What a redo of `step`'s `targets` clears in `keys`: each target with the key recorded for it
 /// (None: none, nothing to clear).
-pub fn clears<'a>(keys: &'a super::build::Keys, step: &str, targets: &'a [String]) -> Vec<(&'a str, Option<&'a str>)> {
+pub fn clears<'a>(
+    keys: &'a crate::pool::records::Keys,
+    step: &str,
+    targets: &'a [String],
+) -> Vec<(&'a str, Option<&'a str>)> {
     targets.iter().map(|t| (t.as_str(), keys.recorded(step, t))).collect()
 }
 
@@ -184,7 +188,7 @@ pub fn ask_of(id: &str) -> Option<u64> {
 /// served until the targets are built again: what `scenic redo` prints (a dry run, and the job's
 /// log).
 pub fn said(
-    keys: &super::build::Keys,
+    keys: &crate::pool::records::Keys,
     manifest: &BTreeMap<String, String>,
     step: &str,
     targets: &[String],

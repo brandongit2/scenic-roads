@@ -1038,7 +1038,7 @@ impl Hints {
     /// squares; a terrain run's archives; an items or heritage job's pageview months; the map
     /// tiles' base packs.
     pub fn add_at(&mut self, step: &str, targets: &[String], at: u64) {
-        let step = super::steps::current(step);
+        let step = crate::pool::records::current(step);
         let tile = |t: &str| -> Option<(u8, u32, u32)> {
             let mut v = t.split(['/', '-']).map(|s| s.parse::<u32>().ok());
             Some((u8::try_from(v.next()??).ok()?, v.next()??, v.next()??))

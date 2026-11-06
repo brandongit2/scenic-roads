@@ -646,7 +646,7 @@ fn tile_of(s: &str) -> Option<(u32, u32, u32)> {
 /// none for any other step's.
 pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
     let j = JobId::parse(id);
-    let (s, Some(t)) = (steps::current(j.step), j.rest) else { return BTreeSet::new() };
+    let (s, Some(t)) = (crate::pool::records::current(j.step), j.rest) else { return BTreeSet::new() };
     let Some((z, x, y)) = tile_of(t) else { return BTreeSet::new() };
     match (s, z) {
         ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z as u32 => {
@@ -2056,7 +2056,7 @@ impl Agent {
     }
 
     /// The keys to plan with, as a start checks an offered step's targets against them.
-    fn planning_keys_here(&self, root: &NasRoot) -> Result<build::Keys> {
+    fn planning_keys_here(&self, root: &NasRoot) -> Result<crate::pool::records::Keys> {
         planning_keys(root, self.handoff_bases(root))
     }
 
@@ -3591,7 +3591,7 @@ impl Agent {
         }
         for r in self.slots.iter().filter_map(|s| s.running.as_ref()) {
             let j = JobId::parse(&r.spec.id);
-            if let Some(t) = j.rest.filter(|_| steps::current(j.step).starts_with("terrain-")) {
+            if let Some(t) = j.rest.filter(|_| crate::pool::records::current(j.step).starts_with("terrain-")) {
                 h.add(j.step, &[t.to_string()]);
             }
             if let Some(st) = step_of(&r.spec.id) {
@@ -5372,7 +5372,7 @@ impl Agent {
                     .unwrap_or_default(),
             );
             let j = JobId::parse(&id);
-            if let Some(t) = j.rest.filter(|_| steps::current(j.step).starts_with("terrain-")) {
+            if let Some(t) = j.rest.filter(|_| crate::pool::records::current(j.step).starts_with("terrain-")) {
                 hints.add(j.step, &[t.to_string()]);
             }
             // (Its own scratch, kept from a give-back, its own again before room is made: never
@@ -8909,10 +8909,10 @@ fn floor_words(floor: u64) -> String {
 /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
 /// on top (in `bases`: a worker's job built and handed back, not yet merged: not built again).
 /// (Under nasread's big-read deadline, docs/agent-parts.md §4.3: a hung share fails it.)
-fn planning_keys(root: &NasRoot, bases: Vec<PathBuf>) -> Result<build::Keys> {
+fn planning_keys(root: &NasRoot, bases: Vec<PathBuf>) -> Result<crate::pool::records::Keys> {
     let r = root.clone();
     let keys = nasread::with_big(&root.join("state/build"), move || {
-        build::Keys::load_with(&r, &bases).map_err(|e| std::io::Error::other(format!("{e:#}")))
+        crate::pool::records::Keys::load_with(&r, &bases).map_err(|e| std::io::Error::other(format!("{e:#}")))
     });
     keys.context("the build's keys")
 }
@@ -9487,7 +9487,7 @@ pub fn read_status(root: Option<&store::nasfs::NasRoot>, home: &Path) -> Option<
 /// have under the key they're built with, their mids made
 /// (build::TreeWork::backfill, build::TerrainWork::backfill, and those an assembly needs). Any
 /// other step's: none.
-fn expect_same(w: &jobs::Work, done: &build::Keys) -> Vec<String> {
+fn expect_same(w: &jobs::Work, done: &crate::pool::records::Keys) -> Vec<String> {
     if !matches!(w.step.as_str(), "trees" | "terrain-hi" | "slope-hi") {
         return Vec::new();
     }
@@ -10109,7 +10109,7 @@ mod tests {
         let (root, home) = (d.path().join("root"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let a = agent(&store::nasfs::NasRoot::local_for_test(&root), &home);
-        let mut keys = build::Keys::default();
+        let mut keys = crate::pool::records::Keys::default();
         keys.record("unit", &[("6/1/1".to_string(), "k1".to_string())]);
         keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         // Hand-offs the coordinator journaled here: they count as built until drained.
@@ -10143,7 +10143,7 @@ mod tests {
         );
         assert_eq!(k.handed.iter().collect::<Vec<_>>(), ["work/trees-mid/6-28-16"]);
         assert!(
-            build::Keys::load(&store::nasfs::NasRoot::local_for_test(&root)).handed.is_empty(),
+            crate::pool::records::Keys::load(&store::nasfs::NasRoot::local_for_test(&root)).handed.is_empty(),
             "never in the keys saved"
         );
     }
@@ -13426,7 +13426,7 @@ mod tests {
             m.insert(l.into(), c.into());
         }
         put(&root.unchecked_path().join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
-        let mut keys = build::Keys::default();
+        let mut keys = crate::pool::records::Keys::default();
         keys.lo
             .insert("reach".into(), build::reach_key(&crate::agent::build::PassCtx::default().ctx(date, &m)).unwrap());
         keys.record(
@@ -13509,7 +13509,7 @@ mod tests {
             .ok()
             .flatten()
             .expect("the reaches");
-        let mut keys = build::Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
+        let mut keys = crate::pool::records::Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
         let tiles = {
             let mut t = tiles::TerrainTiles::new(None);
             t.load(&store::nasfs::NasRoot::local_for_test(&root), &m);
@@ -13571,7 +13571,7 @@ mod tests {
         );
         assert!(w.iter().any(|x| x.why.contains("outlines job")), "{w:?}");
         // Made under its key: the rest comes back, and no outlines job.
-        let mut keys = build::Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
+        let mut keys = crate::pool::records::Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
         keys.record(
             "outlines",
             &build::outlines_work(&crate::agent::build::PassCtx::default().ctx(date, &m), &keys).unwrap().targets,
@@ -13728,7 +13728,7 @@ mod tests {
         let mut out =
             crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         crate::inputs::gate::run(&mut out, unit, true, None).unwrap();
-        let mut keys = build::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        let mut keys = crate::pool::records::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         keys.record("inputs", &work.targets);
         keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         // (The full check's time is the records', not this agent's: no daily full check due now,
@@ -13736,7 +13736,7 @@ mod tests {
         let plan = a.planner().plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w);
         assert_eq!(plan[0].id, format!("inputs {unit}"));
         let work = plan[0].record.clone().unwrap();
-        let mut keys = build::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        let mut keys = crate::pool::records::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         keys.record("inputs", &work.targets);
         keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         assert!(!a
@@ -14855,7 +14855,7 @@ mod tests {
     /// same, its z6 tile's earlier record or its own (a flap back) whatever: its job drops files.
     #[test]
     fn none_pieces_are_never_expected_the_same() {
-        let mut done = build::Keys::default();
+        let mut done = crate::pool::records::Keys::default();
         done.terrain_hi.insert("6/40/20".into(), "piece".into());
         done.slope_hi.insert("6/40/20".into(), "piece".into());
         done.terrain_hi.insert("6/41/20".into(), "earlier".into());
@@ -14873,7 +14873,7 @@ mod tests {
 
     #[test]
     fn tree_pieces_made_again_under_their_recorded_key_are_expected_the_same() {
-        let mut done = build::Keys::default();
+        let mut done = crate::pool::records::Keys::default();
         for (t, k) in [("6/28/16", "a"), ("6/28/17", "b"), ("3/3/2", "c")] {
             done.trees.insert(t.into(), k.into());
         }
@@ -15414,7 +15414,7 @@ mod pool_tests {
         // Its first job (the daily backup) runs under a lease of its term, its saves handed off; the
         // records it merges are today's files' too (term 1's saves write them).
         until(&mut a, |a| {
-            crate::agent::build::Keys::load(a.o.root.as_ref().unwrap()).lo.is_empty()
+            crate::pool::records::Keys::load(a.o.root.as_ref().unwrap()).lo.is_empty()
                 && a.pooled().is_some_and(|p| {
                     p.side
                         .driver()

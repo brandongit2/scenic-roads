@@ -849,7 +849,7 @@ impl Planner {
     pub(super) fn planning_records(
         &self,
         root: &store::nasfs::NasRoot,
-    ) -> Result<(BTreeMap<String, String>, build::Keys)> {
+    ) -> Result<(BTreeMap<String, String>, crate::pool::records::Keys)> {
         let r = crate::pool::records::Brief::now(root)?;
         Ok((r.manifest, r.keys.with_waiting(&self.handoff_bases(root))?))
     }
@@ -926,11 +926,11 @@ impl Planner {
                 // lead is fixed: the lead's memory or the step's is the owner's to see to).
                 let (s, v) = if n_all == 1 { ("", "s") } else { ("s", "") };
                 let remedy = "the lead's memory floor (`scenic memory`) or the step's memory, for the owner to see to";
-                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the {:.1} GB the lead's jobs could hold above its memory floor; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: crate::pool::records::current(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the {:.1} GB the lead's jobs could hold above its memory floor; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
             } else if n_all > 0 {
-                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_all} target{} need{} about {:.1} GB, more than any Mac in the pool has (the most: {:.1} GB): a step whose memory grows with its target, for the owner to see to (`scenic pool floors --clear` once it's fixed)", if n_all == 1 { "" } else { "s" }, if n_all == 1 { "s" } else { "" }, gb(need), gb(most)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: crate::pool::records::current(&w.step).into(), why: format!("{n_all} target{} need{} about {:.1} GB, more than any Mac in the pool has (the most: {:.1} GB): a step whose memory grows with its target, for the owner to see to (`scenic pool floors --clear` once it's fixed)", if n_all == 1 { "" } else { "s" }, if n_all == 1 { "s" } else { "" }, gb(need), gb(most)) });
             } else if n_here > 0 {
-                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past the {:.1} GB this Mac's jobs could hold above its memory floor: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: crate::pool::records::current(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past the {:.1} GB this Mac's jobs could hold above its memory floor: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
             }
         }
         h
@@ -952,7 +952,7 @@ impl Planner {
 
     /// The steps gated by time whose recorded keys in `done` changed: noted run now in the lead's
     /// record (build::LastCatalogue::observe).
-    pub(super) fn note_ran(&self, done: &build::Keys) {
+    pub(super) fn note_ran(&self, done: &crate::pool::records::Keys) {
         let mut r = self.catalogues.borrow_mut();
         if r.observe(done, now_s()) && self.keeps_publishing() {
             if let Err(e) = write_published(&self.o.home, &r) {
@@ -1391,7 +1391,8 @@ impl Planner {
             self.kept.borrow_mut().take();
         }
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
-        let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match self.planning_records(root) {
+        let (manifest, keys): (BTreeMap<String, String>, crate::pool::records::Keys) = match self.planning_records(root)
+        {
             Ok(r) => r,
             Err(e) => {
                 waiting.push(Waiting {
@@ -1454,7 +1455,7 @@ impl Planner {
                 s(&scratch),
             ];
             cmd.extend(extra);
-            let what = steps::current(step_of(&id).as_deref().unwrap_or(step)).to_string();
+            let what = crate::pool::records::current(step_of(&id).as_deref().unwrap_or(step)).to_string();
             // (Every job needs the NAS; none waits for power or home, the owner's choice: the pass's
             // whole-planet reads go over Tailscale when away, slowly.)
             JobSpec { id, what, cmd, needs: Needs { nas: true }, restart_after_sleep: true, record }
@@ -2037,7 +2038,7 @@ impl Planner {
             for w in plan.iter_mut().filter(|w| !w.targets.is_empty() && c.cold_under_way(&w.step)) {
                 waiting.push(Waiting {
                     step: Some(w.step.clone()),
-                    what: steps::current(&w.step).to_string(),
+                    what: crate::pool::records::current(&w.step).to_string(),
                     why: "its first job, never measured, runs on another member now: its others wait for its measure"
                         .into(),
                 });
@@ -2913,7 +2914,7 @@ impl Planner {
         String,
         BTreeMap<String, String>,
         std::sync::Arc<Coverages>,
-        build::Keys,
+        crate::pool::records::Keys,
         Option<std::sync::Arc<crate::reach::Reaches>>,
     )> {
         let date = self.latest_pass(root)?;
@@ -2949,7 +2950,7 @@ impl Planner {
         &self,
         root: &store::nasfs::NasRoot,
         manifest: &BTreeMap<String, String>,
-        keys: &build::Keys,
+        keys: &crate::pool::records::Keys,
         date: &str,
     ) -> Result<Option<std::sync::Arc<crate::reach::Reaches>>, crate::reach::LoadError> {
         let cx = build::PassCtx::default();
@@ -3329,7 +3330,7 @@ impl Planner {
         &self,
         root: &store::nasfs::NasRoot,
         manifest: &BTreeMap<String, String>,
-        keys: &build::Keys,
+        keys: &crate::pool::records::Keys,
         waiting: &mut Vec<Waiting>,
     ) -> Vec<JobSpec> {
         let units = crate::inputs::units(root);
@@ -3486,7 +3487,7 @@ impl Planner {
         &self,
         root: &store::nasfs::NasRoot,
         manifest: &BTreeMap<String, String>,
-        keys: &build::Keys,
+        keys: &crate::pool::records::Keys,
     ) -> Option<JobSpec> {
         use crate::inputs::regions::extract;
         let held = manifest.get(&crate::inputs::held_logical(crate::inputs::regions::UNIT))?;

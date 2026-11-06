@@ -65,7 +65,7 @@ Ids are the stored names, kept as they are: a rename would call every record of 
 (its records, journal entries, timings, floors and `work/` paths all carry it), for nothing people
 see. A test pins them (`steps::tests::the_ids_are_the_stored_names`). The one rename, task #639's
 (the terrain's and the slope's steps by the pack each makes: `terrain` → `terrain-hi`, `slope` →
-`slope-hi`), keeps the old names readable: `steps::RENAMED`, `steps::current` (a row looked up by
+`slope-hi`), keeps the old names readable: `pool::records::RENAMED` and `current` (a row looked up by
 either name, a hand-off's or journal entry's done targets recorded under the new one), and the
 records' `terrain` and `slope` keys read as `terrain_hi` and `slope_hi` (`jobs.json`); the `work/`
 paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. Place: any member

@@ -153,7 +153,7 @@ line before its thread runs (a single loop's, a dry run's, the tests'), each `ro
 the same deadline. The `nasread` pools (Switches, Records, Writes) stay nasread's, each call under
 its deadline.
 
-Moved under a deadline too: the planner's keys (`planning_keys`: `build::Keys::load_with` under
+Moved under a deadline too: the planner's keys (`planning_keys`: `pool::records::Keys::load_with` under
 `nasread::with_big`, 5 min). Still under none, for **plan** (step 6) and #878 (pool.md §7.8):
 `out::read_record` outside the keys, `inputs::read_report`, the helpers' listing, the coordinator's
 contact publish/unpublish, GC's reads, the caches' clears. Their callers are on **plan**'s or

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 /// What a lease is for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Work {
-    /// A job of the plan: its step, and its targets with their keys (build::Keys::record).
+    /// A job of the plan: its step, and its targets with their keys (pool::records::Keys::record).
     Job { step: String, targets: Vec<(String, String)> },
     /// A task a running job offered (its id in coord::task::Tasks).
     Task { id: u64 },
