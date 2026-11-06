@@ -306,7 +306,13 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   taken over.
 - The copy: the tree's tracked and untracked-not-ignored files and symlinks (uncommitted edits
   included) rsync into `~/scenic-check/<key>/src`; files and symlinks not in that list, then empty
-  folders, are deleted there. Build folder `~/scenic-check/<key>/target`, kept between runs, set by
+  folders, are deleted there. By content (`--checksum`), times not kept (#983): a file sent is
+  dated when it arrives, after every build of its key there, so cargo rebuilds it; one whose
+  content is there already is left alone, its crate not rebuilt. (Kept times let a file edited
+  during a run arrive at the next dated before that run's build: cargo took it for built and the
+  next run tested the old binary.) A copy without the `copy` stamp of this scheme has all its files
+  dated now once. Costs ~0.1-0.35 s a run over `-a` (the 46 MB tree, M1 to M4). Tested by
+  `tools/app/test/remote-tests.zsh` (a toy crate, an edit dated back). Build folder `~/scenic-check/<key>/target`, kept between runs, set by
   `~/scenic-check/<key>/.cargo/config.toml`, not CARGO_TARGET_DIR (sccache hashes every CARGO_*
   variable, so a per-key one missed the cache for every key: 0 % Rust hits on the mini, #887); rustc
   through the test Mac's sccache, third-party crates shared between keys.

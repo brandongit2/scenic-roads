@@ -13,7 +13,7 @@
 #   devtools  node --test tools/devtools/test/*.test.mjs (the task board's and the dev job dashboard's
 #             APIs), when tools/devtools or the build page's timeline modules it serves changed
 #   devjob    tools/dev/test/devjob.zsh (the dev jobs' recorder), when tools/dev/devjob* or its tests changed
-#   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh) and remote-tests.zsh (the test Mac's disk room), when tools/app changed
+#   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh) and remote-tests.zsh (the copy to the test Mac, its disk room), when tools/app changed
 #   testguard tools/dev/test/test-guard.zsh (the test guard's worktree lookup), when it or shellwords.py changed
 #   gitguard  tools/dev/test/git-guard.zsh (whose checkout a git write goes to), when the git guard,
 #             shell-guard.sh or shellwords.py changed
