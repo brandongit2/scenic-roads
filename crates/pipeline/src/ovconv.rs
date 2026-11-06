@@ -610,7 +610,7 @@ fn ferry_blocks(
 
 /// Drops from the manifest every pack of `layer` that a job making the whole layer didn't write this
 /// time: a tile it has nothing for any more (a pass without that ferry, a region removed). How many.
-fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
+pub fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
     let prefix = format!("layers/{layer}/");
     let stale: Vec<String> = out
         .manifest
@@ -774,33 +774,5 @@ mod tests {
         // Dots written before they named their heritage (a bare map): not taken either.
         out.put_bytes(markconv::HERITAGE_DOTS, "json", br#"{"210576":[7,-3.68,40.41]}"#).unwrap();
         assert!(marks_dots(&out, &src).unwrap().is_none());
-    }
-
-    /// A step's sweep of its stale packs removes only names its outputs function allows: a legacy
-    /// or malformed name under its prefix stays, and the save goes through, rather than fail every
-    /// run of the step for good.
-    #[test]
-    fn a_stale_sweep_removes_only_its_steps_outputs() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("root");
-        let mut seed = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s0")).unwrap();
-        for l in
-            ["layers/stations/hi/6-1-2", "layers/stations/hi/6-1-3", "layers/stations/hi/7-1-2", "layers/stations/old"]
-        {
-            seed.set(l, Some(format!("{l}.0123456789abcdef.pack")));
-        }
-        seed.save().unwrap();
-        let mut out =
-            crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s1"), "stations").unwrap();
-        assert_eq!(drop_stale(&mut out, "stations", &["layers/stations/hi/6-1-2".to_string()]), 1);
-        out.save().unwrap();
-        let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
-            &root.join("state/build/manifest.json"),
-        ))
-        .unwrap();
-        assert_eq!(
-            m.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["layers/stations/hi/6-1-2", "layers/stations/hi/7-1-2", "layers/stations/old"]
-        );
     }
 }

@@ -89,3 +89,6 @@ mod trees_tests;
 
 #[cfg(test)]
 mod roads_tests;
+
+#[cfg(test)]
+mod names_tests;
