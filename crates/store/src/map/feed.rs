@@ -19,6 +19,12 @@ pub const HELD_BYTES: usize = 64 << 20;
 pub const ANSWER_BYTES: usize = 4 << 20;
 /// The longest a `changes` request waits for a batch (`?wait=`).
 pub const WAIT_S: u64 = 30;
+/// A mirror's cursor's name, before its host (docs/maplog.md §6.2): a client that copies the files
+/// of the maps since its `seq` from the NAS. One behind the head that the lead didn't hold (never
+/// heard, or unheard `gc::CURSOR_TTL_S`: GC's due set didn't count it, so a file it copies may be
+/// gone) or held at one `seq` that long (an Update that never gets through holds GC no longer) is
+/// answered a reset, on which it moves its Updates on to the map served.
+pub const MIRROR: &str = "mirror/";
 
 #[derive(Default)]
 struct Inner {
@@ -136,15 +142,20 @@ impl Feed {
     pub fn changes(&self, since: u64, client: Option<&str>, now: u64) -> Changes {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let Some(head) = g.map.as_ref().map(|m| m.seq) else { return Changes::NotReady };
+        let mut unheld = false;
         if let Some(c) = client.filter(|c| !c.is_empty() && c.len() <= 120) {
-            // (When it was first heard at `since`: its adoption of it.)
             let k = g.cursors.entry(c.to_string()).or_default();
+            // (A mirror's cursor the lead didn't hold, or held at one seq too long: `MIRROR`.)
+            let ttl = super::gc::CURSOR_TTL_S;
+            let stuck = k.seq == since && k.at > 0 && now.saturating_sub(k.at) >= ttl;
+            unheld = c.starts_with(MIRROR) && (k.heard == 0 || now.saturating_sub(k.heard) >= ttl || stuck);
+            // (When it was first heard at `since`: its adoption of it.)
             if k.seq != since || k.at == 0 {
                 k.at = now;
             }
             (k.seq, k.heard) = (since, now);
         }
-        if since > head || since < g.base {
+        if since > head || since < g.base || (unheld && since < head) {
             return Changes::Reset(head);
         }
         let mut body = Vec::with_capacity(256);
@@ -269,10 +280,11 @@ mod tests {
         // (Heard again at the same seq: adopted when first heard there.)
         f.changes(3, Some("server/m4"), 80);
         assert_eq!(f.cursors()["server/m4"], Cursor { seq: 3, heard: 80, at: 77, ..Default::default() });
-        // A mirror's rounds: each seq said noted as first said, kept as its cursor moves.
-        f.changes(3, Some("mirror/m4"), 81);
+        // A mirror's rounds: each seq said noted as first said, kept as its cursor moves. Its
+        // cursor first heard behind the head: reset (GC didn't hold it); then held: batches.
+        assert_eq!(answer(f.changes(3, Some("mirror/m4"), 81)).reset, Some(5));
         f.said("mirror/m4", Some(5), None, 81);
-        f.changes(3, Some("mirror/m4"), 90);
+        assert_eq!(answer(f.changes(3, Some("mirror/m4"), 90)).batches.len(), 2);
         f.said("mirror/m4", Some(5), Some(5), 90);
         f.changes(5, Some("mirror/m4"), 95);
         f.said("mirror/m4", Some(5), Some(5), 95);
@@ -285,6 +297,18 @@ mod tests {
         assert!(answer(f.changes(5, None, 0)).batches.is_empty());
         assert_eq!(answer(f.changes(0, None, 0)).reset, Some(5));
         assert_eq!(answer(f.changes(9, None, 0)).reset, Some(5));
+        // A mirror unheard CURSOR_TTL_S behind the head (GC no longer held it), or held at one seq
+        // that long: reset. At the head: neither. A server's cursor alike: batches.
+        let ttl = super::super::gc::CURSOR_TTL_S;
+        assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000)).reset, Some(5), "never heard");
+        assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1001)).batches.len(), 1);
+        assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000 + ttl - 1)).batches.len(), 1);
+        assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000 + ttl)).reset, Some(5), "at 4 a week");
+        assert_eq!(answer(f.changes(5, Some("mirror/m1"), 1000 + ttl)).batches.len(), 0);
+        assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000 + 3 * ttl)).reset, Some(5), "unheard a week");
+        assert_eq!(answer(f.changes(5, Some("mirror/m2"), 9 * ttl)).batches.len(), 0, "at the head");
+        assert_eq!(answer(f.changes(4, Some("server/m1"), 0)).batches.len(), 1);
+        assert_eq!(answer(f.changes(4, Some("server/m1"), 9 * ttl)).batches.len(), 1);
         // The snapshot is the map.
         let (seq, b) = f.snapshot().unwrap().unwrap();
         assert_eq!((seq, Snapshot::decode(&b).unwrap().0), (5, m));

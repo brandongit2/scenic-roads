@@ -1025,7 +1025,7 @@ fn adopted(cursors: &BTreeMap<String, store::map::Cursor>) -> BTreeMap<String, C
 /// A map server's cursor's name in the map's log, before its host (crates/server's maplog).
 pub const SERVER_CURSOR: &str = "server/";
 /// A map server's mirror's, before its host (crates/server's maplog::MirrorLink).
-pub const MIRROR_CURSOR: &str = "mirror/";
+pub const MIRROR_CURSOR: &str = store::map::feed::MIRROR;
 
 /// Publishing's marks in the clients' cursors (docs/maplog.md §6.1, §6.2), for the history
 /// (crate::pubtimes): each Mac's map server's adoption of a `seq`, and its mirror's round begun at

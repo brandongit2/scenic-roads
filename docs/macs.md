@@ -417,9 +417,9 @@ installed by `tools/app/install.sh`, updated by the updater).
   still copies (the one served; an Update's older one until its files are here), so GC keeps them,
   and the map its round copies and the last it got through at, which the lead notes in the history
   (`mirror-start`, `mirror-end`, for `scenic timings publish`). The cursor is made each round from
-  `downloads.json` and the files here, so a restart says the same one. One older than the lead's
-  log (the Mac away a long time) moves each Update of an older map on to the one served, whose
-  files the NAS has.
+  `downloads.json` and the files here, so a restart says the same one. One the lead resets (older
+  than its log, or not held by GC: new, unheard a week, or a week at one map) moves each Update of
+  an older map on to the one served, whose files the NAS has.
 - **Room:** a per-Mac reserve ("Keep free", 30 GB unless set; `reserve.json`, `PUT
   /api/downloads/reserve`), applied at once. When this Mac's build agent's room target (`scenic
   room`, docs/building.md §2) is higher, the mirror keeps that instead (seen within 5 s). A

@@ -404,8 +404,9 @@ impl MirrorLink {
         }
     }
 
-    /// Says the cursor (`since`) and the map the round copies: the lead's head when the cursor is
-    /// outside the batches it holds (its answer a reset). The lead away, asked again next round.
+    /// Says the cursor (`since`) and the map the round copies: the lead's head when it answers a
+    /// reset (the cursor outside the batches it holds, or not held: store::map::feed::MIRROR). The
+    /// lead away, asked again next round.
     pub fn tell(&mut self, since: u64, copying: u64) -> Option<u64> {
         let mut path = format!("/map/changes?since={since}&client={}&copying={copying}", self.client);
         if let Some(s) = self.synced {

@@ -346,7 +346,15 @@ its snapshot, not `fsync`ed per request). The clients:
 A client unheard for `CURSOR_TTL` (7 days) is dropped from the set: a laptop away for a month
 doesn't hold GC. When it comes back its `since` is likely older than the log's oldest batch, and it
 resets from the snapshot; its own mirror holds its downloads' files whatever happened on the NAS
-(§6.2).
+(§6.2). A mirror (`mirror/<host>`) is reset too whenever the lead didn't hold its cursor, its
+`since` within the log or not (`store::map::feed::MIRROR`): one never heard (a new Mac, the switch,
+a cursor lost with a lead restart), unheard `CURSOR_TTL`, or held at one `seq` behind the head that
+long (an Update that never gets through, its files missing or no room, holds GC a week at most).
+
+The cursors are the lead's memory, saved with its snapshot (hourly, `SNAPSHOT_EVERY_S`) and
+restored at its start. A restart loses only what was heard since: a cursor that moved on is
+restored older (it holds more), and one first heard since is gone until it asks again (a server
+within its long poll, a mirror at its next round); a mirror that was gone is then reset, as above.
 
 The browser pages are not clients. A page holds logical names and versions (`?v=`) and asks its
 Mac's server, which resolves them in the map it holds now; a page with an older map gets current
@@ -398,11 +406,20 @@ files for its logical names, as today. The page's switch to a new map stays keye
     never newer than what the mirror lacks. A pin moves only once its files are all here (files
     content-named, each copied under a temporary name): a round cut short (a file missing, a new
     map, a kill) leaves the cursor where it was.
-  - **Older than the log** (`{"reset"}`, the Mac away long enough for the lead to hold no batch
-    from there, its cursor perhaps dropped by `CURSOR_TTL`): the mirror's sync is whole each round
-    (what's wanted against what's here), so it needs no snapshot; what a reset changes is that an
-    older map's files may be gone from the NAS, so each Update of a map older than the one served
-    goes on at the one served (`Downloads::resync`). What a download keeps is on the Mac and stays.
+  - **Reset** (`{"reset"}`: older than the log, the Mac away long enough for the lead to hold no
+    batch from there; or a cursor the lead didn't hold, §5.4: never heard, unheard `CURSOR_TTL`, or
+    a week at one `seq` behind the head): the mirror's sync is whole each round (what's wanted
+    against what's here), so it needs no snapshot; what a reset changes is that an older map's
+    files may be gone from the NAS, so each Update of a map older than the one served goes on at
+    the one served (`Downloads::resync`). What a download keeps is on the Mac and stays.
+  - **Away from the NAS or the lead:** with no NAS the mirror copies nothing and says nothing (it
+    lets go only what no download wants); with the lead away it copies as before, its cursor said
+    again next round. The map serves what's here either way.
+  - **Old servers:** a server from before 7b says no mirror cursor, and still appends its
+    `mirror-start`/`mirror-end` to `state/publish/`, which nothing reads; step 8b deletes by the
+    queue only once every Mac's server is a release past 7b. The mirror's lines from before the
+    switch stay in `state/publish/` (not read: `scenic timings publish` has no mirror times for
+    those catalogues) until it's deleted, once both Macs run 7b.
   - The batches answered are passed over: the downloads compare their own lists (above), and the
     server's own client holds the map.
 
@@ -614,7 +631,7 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 | 5 (built) | **Downloads by their own lists:** each download keeps its logical → content list (`downloads.json` fmt 5); "out of date" from its list against the map served (§6.2) | the Mac's old whole catalogues kept for downloads (`Mirror::keep_catalogues`, `prune`'s kept set) | `an_update_s_size_from_its_list_equals_the_two_catalogues_diff` (on recorded catalogues); `a_download_behind_the_log_compares_its_list`; `downloads_json_fmt4_migrates` |
 | 6 (built) | **Catalogues stop** (after the gate: every server on the log a day): the step only posts; `catalog-held/` → `map-held/` | the catalogue writer and reader (`write`, `write_delta*`, `Delta`, `delta.rs`, `chain`, `whole_due`, `MAX_CHAIN`, `keep_read_in`/`kept_dir`, `latest*`, `read_n*`, `list`, `prune`, `next_n`), `state/pool/delta-catalog` and `Switches::delta`, the `catalog-stats:` sizes' look-ups of the last catalogue | `the_step_publishes_with_no_catalog_folder`; `a_held_batch_is_appended_whole_when_the_hold_lifts`; `a_posted_map_is_appended_once`; `the_maps_keep_their_files_however_old` (GC); test roots (`lakefill catalog-add`, `coastcheck water-packs`, the server's tests, `store::testkit::map_root`) on snapshots |
 | 7 (built: shadow) | **GC's queue, shadow:** the lead queues freed names (batches and records saves), leases and clients as holders; the merge's refusal of names deleted under a lease; a dry-run report beside today's GC, which still deletes | — | `a_name_freed_and_taken_again_leaves_the_queue`; `due_waits_for_every_cursor_the_grace_and_older_leases`; `a_reuse_of_a_deleted_name_is_refused_and_redone`; the shadow's due set ⊆ today's GC's deletions on the same day (a check job) |
-| 7b (built) | **The mirror is a client** (§6.2): the server's mirror sync asks `/map/changes` as `mirror/<host>` each round with the oldest `seq` whose files it still copies (its cursor, made from the downloads' pins and the files here), the map its round copies and the last it got through at (`&copying=`, `&synced=`); the lead keeps them on the cursor and notes them in the history (`mirror-start`, `mirror-end`) for `pubtimes`, as it does the adoptions; a reset moves the Updates of older maps on to the one served | `data::publish_event`, the mirror's `MIRROR_MARKS`, `pubtimes::SERVERS`, `SERVERS_MAX`, `append_server`, `read_servers`, `ServerEvent`, `MirrorMarks`, `state/publish/` | `a_mirror_copying_an_older_seq_holds_its_cursor` (an Update of an older map holds it while the map served moves on, through rounds cut short and a restart; caught up once its files are here); `a_cursor_older_than_the_log_resyncs_the_updates`; `mirror_times_come_from_the_history` |
+| 7b (built) | **The mirror is a client** (§6.2): the server's mirror sync asks `/map/changes` as `mirror/<host>` each round with the oldest `seq` whose files it still copies (its cursor, made from the downloads' pins and the files here), the map its round copies and the last it got through at (`&copying=`, `&synced=`); the lead keeps them on the cursor and notes them in the history (`mirror-start`, `mirror-end`) for `pubtimes`, as it does the adoptions; a reset moves the Updates of older maps on to the one served | `data::publish_event`, the mirror's `MIRROR_MARKS`, `pubtimes::SERVERS`, `SERVERS_MAX`, `append_server`, `read_servers`, `ServerEvent`, `MirrorMarks`, `state/publish/` | `a_mirror_copying_an_older_seq_holds_its_cursor` (an Update of an older map holds it while the map served moves on, through rounds cut short and a restart; caught up once its files are here); `a_cursor_older_than_the_log_resyncs_the_updates`; `a_client_is_answered_what_follows_its_seq_and_its_cursor_noted` (a mirror the lead didn't hold is reset); `mirror_times_come_from_the_history` |
 | 8a | **The map's roots remove** (§11.4): every name the `gc` job removes is marked deleted in the queue before it's removed, not only its due set's and not after the job, so the merge refuses a hand-off reusing any of them; then `REPORT_ONLY` and its assert go. Today's daily `gc` job and its 14-day window stay. Not before 15 Nov 2026 07:12 (the last catalogue, 1066, written 1 Nov 07:11:48, plus 14 days) | `REPORT_ONLY`, `REPORTS_ONLY`, the assert, `report_only*` in the report, the check's `report-only` reason | `every_removal_is_marked_deleted_before_it_goes`; `a_hand_off_by_http_reusing_a_removed_name_is_redone`; `the_map_s_roots_remove_what_nothing_names` |
 | 8b | **GC runs by the queue:** chunks of 200 whenever quiet, resumable; the orphan sweep; today's other sweeps as chunked cursors | `run_once`'s catalogue reading and folder sweep, `remove_unless_touched` and `Out::put_file`'s touch, `TOMB` and `put_back`, the 14-day catalogue window, the `gc` job's daily schedule | `gc_resumes_mid_chunk_after_a_kill` (agent killed between two deletions; next chunk starts at the first not gone, nothing deleted twice or kept forever); `gc_yields_to_the_budget`; `an_orphan_is_queued_only_after_its_age`; `the_queue_rebuilds_after_a_lead_disk_restore` |
 | 9 | **The old catalogues go:** one GC pass removes `catalog/` and `catalog-held/` on the NAS (their files are held by the map and records already), and each Mac's server its `catalog/` | the folders | — |
@@ -622,7 +639,7 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 
 Order: 1, 2, 3 in turn; 4 and 5 after 3, in either order; 6 after 3, 4 and 5 and the gate; 7 after
 2 (it needs the batches' `freed`); 8a after 6 and 7 and 14 days after the last catalogue (§11.4);
-7b after 3, any time; 8b after 8a and 7b; 9 any time (nothing reads the old catalogues since 6);
+7b after 3, any time; 8b after 8a and 7b (on every Mac: an older server's mirror says no cursor); 9 any time (nothing reads the old catalogues since 6);
 10 with each. Steps 3 and 8b are what the owner sees: servers following each publish within a
 second, from home or away, and GC that keeps up; 8a frees the space held today (§11.4).
 
