@@ -713,9 +713,7 @@ pub fn load_history(root: Option<&store::nasfs::NasRoot>, local: Option<&Path>, 
             }
             // A day packed by GC (agent::histarchive); a folder and tar both there: duplicates once.
             let tar = dir.with_file_name("history-archive").join(format!("{d}.tar"));
-            if let Ok(members) =
-                tar.read().map_err(anyhow::Error::from).and_then(|t| codecs::tar::list_tar(&t))
-            {
+            if let Ok(members) = tar.read().map_err(anyhow::Error::from).and_then(|t| codecs::tar::list_tar(&t)) {
                 for (_, b) in members {
                     out.extend(
                         String::from_utf8_lossy(&b)

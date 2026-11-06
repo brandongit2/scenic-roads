@@ -5056,8 +5056,8 @@ pub fn catalogue_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, Str
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::depth::build::depth_hi_box_read;
     use crate::agent::recipes::Recipe;
+    use crate::depth::build::depth_hi_box_read;
     use crate::reach::{LongWay, Reach};
 
     /// The targets a target of `step` reads of other steps' (crate::agent::steps::read_targets),
