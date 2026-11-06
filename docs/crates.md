@@ -2,8 +2,8 @@
 
 **Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
 (`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a to 6d (§6, 6c
-`crates/coordwire`, 6d `crates/inputs`) are built;
-every later step below is planned, the next ones in §6.
+`crates/coordwire`, 6d `crates/inputs`) and 6e's first part (`crates/offload`, `crates/terrain`)
+are built; every later step below is planned, the next ones in §6.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -52,6 +52,13 @@ Rerun on 5 Nov 2026 on main at 9baf1315: one cycle of 47 modules, ~188k lines (p
 small one of their own). Steps 5a and 5b moved only modules outside it (heritage_layers ↔ interest,
 a small cycle, went whole into landmarks), so after them it is the same 47 modules.
 
+Rerun on 6 Nov 2026 for step 6e: on main at 8d97cc8e (after 6d), one cycle of 35 modules, 146.7k
+lines; after 6e's terrain, one of 21 modules, 127.9k lines (agent, answers, bld, buildtiles, coord,
+heritage, leaftype, needs, offload, out, ovconv, paces, pool, pubtimes, reach, stage, timetables,
+treepacks, trees, unit, uses): the terrain family's twelve modules and grant_tests moved out, and
+markconv, whose way back into it went through layers, left it. peaks ↔ summits is still a small
+cycle of its own.
+
 The cycle is held together by a few thin edges from low-level code up to `agent`, `pool`,
 `inputs` and `control`, not by the steps' logic. The ones that matter most:
 
@@ -78,8 +85,8 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | dem → terrain_deep, terrain_zoom | the terrain's zoom rule (7 references) | built (step 6d): `PACK_Z`, `CELL_FACTOR`, `DEEPEST`, `zoom_for`, `polar_zoom_for` and `Detail` are dem::zoom's (not codecs': `Detail::of` reads dem's declared datasets); terrain_zoom and terrain_deep re-export them |
 | inputs → lakefill, rail | 2 references to lakefill, 4 to rail, from the input checks | built (step 6d): all three in the inputs crate |
 | cli → polar | one reference to polar | cli stays in pipeline; what the steps below it run programs by, `program` and `TOOLS`, is jobrt::sys's (step 6d; cli re-exports both). #883's steps left edit only `scenic gc`'s flags (cli/scenic.rs), so the rest of cli and net can move any time |
-| layers → ovconv | one item | layers sits in the terrain family; the item moves down to codecs |
-| terrain_task, trees, offload → coord | offloading a step's parts to other Macs | a trait in the runtime crate (`Offload`), implemented by coord; the step names only the trait |
+| layers → ovconv | one item (`MAXZ`, in a test) | built (step 6e): `MAXZ` is codecs::vtgen's; ovconv re-exports it |
+| terrain_task, trees, offload → coord | offloading a step's parts to other Macs | built for terrain (step 6e): what the steps offering tasks name is the offload crate's (`Offload`, its waits, unit's `Run`; on coordwire's real client, not a trait); coord appears only in tests that start a coordinator, which move to pipeline with their family (terrain_task's: `terrain_tests`) |
 
 ## 2. Proposed crates
 
@@ -98,10 +105,10 @@ names, webpenc as now).
    agent::cond), `settings` (the pool's settings and the ask to set one, from coord::asks), the
    resume constants, `DRAIN_GRACE`; cli's `program` and `TOOLS` (step 6d). ~9.6k lines (1 Nov
    2026), no pipeline dependency. Planned: the rest of cli, and net (#883's steps left edit only
-   `scenic gc`'s flags, cli/scenic.rs), nasread's NAS reading (after #923, which edits
-   agent/nasread.rs), and
-   the `Offload` trait with the step families that use it (step 5: terrain_task, trees and offload
-   are its only users).
+   `scenic gc`'s flags, cli/scenic.rs), and nasread's NAS reading (after #923, which edits
+   agent/nasread.rs). Offloading a step's parts is no trait here but the **offload** crate (step
+   6e: `Offload` on coordwire's client, its waits, unit's `Run`), below the families that offer
+   tasks.
 4. **buildstore** (the build's files: the NAS/store layer above `store`; built, step 4): out,
    handoff, rawpack, localread, costin, coverage, outlines, fetch, geotiff, `recipes` (the
    `Recipe` type), `inputs_folder` (the inputs folders' predicate), `nasssh` (a bounded `ssh` to
@@ -116,13 +123,16 @@ names, webpenc as now).
 6. Step families. They are not independent today: modgraph.py shows trees → terrain (treepacks →
    layers), roads → trees and terrain (unit → trees, landcover, stage), names → terrain (heritage →
    stage, terrain_pack; gtfs → lakefill), bld → names and roads (bld → heritage, unit), offload →
-   bld, trees, unit. So they stack (terrain, then trees, roads, names, bld) unless those edges are
+   bld, trees, unit (since 6e only pipeline's `run_task` and `task_kind`: the offload crate the
+   families name is below them all). So they stack (terrain, then trees, roads, names, bld) unless those edges are
    cut too (moving the shared items, `layers`, `stage`'s tile helpers, down to codecs/buildstore);
    only the families with no edge between them compile in parallel. An edit in a family still
    rebuilds every family above it and pipeline.
-   - **terrain**: terrain_base, terrain_deep, terrain_pack, terrain_resume, terrain_task,
-     pyramids, stage, road_terrain, slope_pack, depth, polar, peaks, summits, layers. ~20k lines.
-     (terrain_pack ↔ terrain_deep ↔ stage stay one crate.)
+   - **terrain** (built, step 6e): terrain_base, terrain_deep, terrain_pack, terrain_resume,
+     terrain_task, terrain_zoom, pyramids, road_terrain, slope_pack, depth, polar, layers. ~17.6k
+     lines with their tests (6 Nov 2026), on det, roadcore, store, codecs, jobrt, buildstore,
+     inputs and offload. Not stage (→ reach), peaks and summits (→ candidates, through summits'
+     `parse_ele`): nothing in the family names them, and they go up with roads and names.
    - **roads**: unit, reach, candidates, buildtiles, elev, timetables. ~4k lines.
    - **trees**: trees, treepacks, leaftype, landcover. ~7k lines.
    - **names** (heritage, places, transit): heritage*, interest, items, labels, wikiask, pageviews,
@@ -148,7 +158,7 @@ pipeline's modules above the steps or its binaries name it there. The step modul
 crates directly since step 6b (`crate::pyjson` → `pyport::pyjson`), and the re-exports they alone
 used went with it; the rest go as their users move. The inputs crate (6d) they still name by
 pipeline's paths (`crate::dem`, ~210 mentions in 23 modules, the depth's among them): each family's
-are rewritten as it moves (6e), not in the files others are editing now. The list in lib.rs is the
+are rewritten as it moves (6e: the terrain family's), not in the files others are editing now. The list in lib.rs is the
 record of what still goes through them.
 
 ## 3. The binaries
@@ -228,8 +238,9 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
      re-exports them. Cut: terr's `z9_block` (no caller).
    Next: §6, breaking the 47-module cycle: 6a (built) made `Out` nameable below pipeline, 6b
    (built) has the step modules name the lower crates directly, 6c (built) moved the coordinator's
-   client side down (coordwire), 6d (built) the inputs family (`crates/inputs`); then (planned)
-   the step families, and the agent's plan split from its runtime.
+   client side down (coordwire), 6d (built) the inputs family (`crates/inputs`), 6e (terrain
+   built: `crates/offload`, `crates/terrain`) the step families; then (planned) the rest of the
+   families, and the agent's plan split from its runtime.
 6. **coordination**, after #882 lands.
 7. Path rewrites: the step modules' were step 6b's; the rest (the agent's, coord's, the
    binaries') per crate as it moves, `crate::x` → `<crate>::x`, and the re-exports dropped.
@@ -411,9 +422,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a-6d built; the rest planned)
+## 6. Breaking the big cycle (6a-6d and 6e's terrain built; the rest planned)
 
-**Status: 6a-6d built, 6e-6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6d and 6e's terrain built, the rest of 6e and 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -437,11 +448,13 @@ already live below), and the agent's plan ↔ its runtime (thin one way, 106 ref
 Final layering, bottom to top (each line depends only on lines above it):
 
 1. pyport, codecs, jobrt, buildstore (with the records' read side), landmarks' and mapview's
-   leaves, and **coordwire** (coord's client side);
+   leaves, **coordwire** (coord's client side), and **offload** (above coordwire: what the
+   families offering tasks name, built in 6e);
 2. **inputs**;
 3. the families **terrain**, then **trees**, **roads**, **names** (landmarks grows into it),
-   **bld**, **offload**; and, beside them, **agentcore** (the agent's runtime, coord, pool and
-   the rest of that row);
+   **bld**; and, beside them, **agentcore** (the agent's runtime, coord, pool and the rest of
+   that row, with pipeline's offload: a task run on a worker, `run_task`, and its kind,
+   `task_kind`, which name the families);
 4. **pipeline**: the agent's plan, the binaries, the re-exports. It names everything; nothing
    names it.
 
@@ -511,7 +524,9 @@ The choices, against the alternatives:
   (`answering`, `mute`, `dead`, `serve`) are `coordwire::testkit` (its `testkit` feature).
   Tests that start a coordinator (`coord::start_for_test` in terrain_task, trees::task, bld and
   offload) move to a pipeline test module when their family leaves (6e), as the write-set
-  tests do, since a family can't dev-depend on pipeline (its types would be two copies).
+  tests do, since a family can't dev-depend on pipeline (its types would be two copies):
+  terrain_task's are pipeline's `terrain_tests` (6e); offload's stay in pipeline's offload,
+  building their `Offload` by the offload crate's testkit (`Offload::for_test`).
 - **The agent's plan above its runtime, through a trait.** agentcore can't name the plan (the
   plan names every family and agentcore). The types the runtime reads (`Step`, `Kind`, `Read`,
   `Place`, `Keys`, `Work`) move into agentcore; the table and its functions stay in pipeline,
@@ -613,10 +628,50 @@ commit; re-exports at the old paths as before.
    literal, expression or format string of non-test code changed, so keys, outputs and on-disk
    formats are as before (no frozen-plan run, as 6b's: the diff leaves it nothing to find).
    Measured in §5.
-5. **6e, terrain**, after #965 lands (it edits terrain_deep). Then trees, roads, names (landmarks
-   takes heritage, ferries, gtfs, railfeeds, ovconv, markconv, marksjob, namestodo), bld,
-   offload. Cut the cross-family edges where one item is all (`layers → ovconv`, treepacks →
-   layers' names to codecs) so trees, roads and names compile side by side.
+5. **6e, the step families.** Terrain first (built, 6 Nov 2026), one move a commit:
+   - `tile_of` (a point's tile at a zoom) from bld to roadcore::geo, which terrain_zoom's test
+     helper `tile_at` named; `MAXZ` from ovconv to codecs::vtgen (layers' real-data test; ovconv
+     re-exports it): §1's `layers → ovconv`.
+   - **offload** (`crates/offload`): what the families offering tasks name, which terrain_pack
+     and terrain_task did (`Offload`, `Offered`, `Patience`, `Settled`, `Waiting`, `WaitNote`,
+     `owner`, `places`, `LEASE_WAIT`, `WAITING_ENV`, the files a task reads) and a task's step
+     (unit's `Run`). Not the family it was planned as, above the others: they all name it, so it
+     goes below them. Running a task on a worker (`run_task`, over unit's steps) and a task's kind
+     (`task_kind`, which names the families' `KIND`s) stay pipeline's offload, which re-exports
+     the rest; unit re-exports `Run`. The tests needing no coordinator went with the code; those
+     starting one stay, their `Offload` built by the crate's testkit (`for_test`, `client`).
+   - terrain_task's tests that start a coordinator, with their helpers, to pipeline's
+     `terrain_tests`; the helpers other modules' tests name out of the test modules into a
+     `testkit` module each (terrain_task's `north_piece`, terrain_pack's `synthetic_raw` and
+     `near_without_hi`).
+   - the family's paths: `crate::dem`, `crate::inputs`, `crate::lakefill` → the inputs crate's,
+     `crate::offload` and `crate::unit::Run` → the offload crate's, and grant_tests' re-exported
+     paths → jobrt's and buildstore's.
+   - the move: terrain_base, terrain_deep, terrain_pack, terrain_resume, terrain_task,
+     terrain_zoom, slope_pack, layers, pyramids, depth, polar and road_terrain, with grant_tests,
+     into `crates/terrain`; pipeline re-exports the twelve (`pub use terrain::{…}`). Their files
+     are renames, byte-identical but for the helpers' `cfg` lines (`TEST_BASE`, the testkit
+     modules, terrain_zoom's `test_world`, `test_world_ref`, `tile_at`, behind the crate's
+     `testkit`) and terrain_resume's `inputs` and `inputs_read` made `pub` (agent::build names
+     them). Unit tests start offline (lib.rs `TEST_START`, test_start.rs). GEOS went with
+     depth::lakes, webpenc with depth::fall.
+   Cut: pipeline's webpenc dependency (no other user); bld's `tile_of` (no re-export: its two
+   other callers name roadcore's). Nothing else was dead: every re-export left has users above.
+   modgraph.py (main at 8d97cc8e, after 6d): the family's mentions of the rest of pipeline, tests
+   included, 104 before (80 of the root's re-exports of the inputs crate and the lower ones;
+   terrain_task → coord 13, offload 5, unit 1; terrain_pack → offload 1; terrain_zoom → bld 1;
+   layers → ovconv 1; grant_tests → agent 1, out 1), none after (another crate: the compiler
+   holds it); the cycle 35 modules (146.7k lines) before, 21 (127.9k) after (§1). Pure moves and
+   paths: over the branch's Rust outside tests (`#[cfg(test)]` and testkit items, test files),
+   with comments, `use`/`mod`/attribute lines and visibility dropped and every path reduced to
+   its last name, the tokens removed: none; added: pipeline's `pub use terrain::{…}` alone. So
+   no literal, expression or format string changed, and keys (`TERRAIN_V`, `SLOPE_V`,
+   `SLOPE_LO_V` and the rest as they were), outputs and on-disk formats are as before (no
+   frozen-plan run, as 6b's and 6d's: the diff leaves it nothing to find). Measured in §5.
+   Then (planned) trees, roads, names (landmarks takes heritage, ferries, gtfs, railfeeds, ovconv,
+   markconv, marksjob, namestodo; stage, peaks and summits go up with roads and names), bld. Cut
+   the cross-family edges where one item is all (treepacks → layers' names to codecs) so trees,
+   roads and names compile side by side.
 6. **6f, agentcore and `Plan`**: the last and largest step, after #882's later steps (coord).
    Before it, pipeline still holds ~96k lines (plan 19.5k + runtime 56.8k + bins 12.9k + glue).
 
