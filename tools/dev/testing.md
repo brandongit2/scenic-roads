@@ -311,7 +311,10 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   content is there already is left alone, its crate not rebuilt. (Kept times let a file edited
   during a run arrive at the next dated before that run's build: cargo took it for built and the
   next run tested the old binary.) A copy without the `copy` stamp of this scheme has all its files
-  dated now once. Costs ~0.1-0.35 s a run over `-a` (the 46 MB tree, M1 to M4). Tested by
+  dated now once. Publish's two trees (`tree`, `tree-2`) share the key `publish`, so with kept times
+  a tree checked out before the other publish's build sent files dated before it (a stale build);
+  dated on arrival, that case is covered too. Costs ~0.1-0.5 s a run over `-a` (the 46 MB tree, M1
+  to M4), ~0.3-0.8 s on a cold copy (~4 s with `-a`). Tested by
   `tools/app/test/remote-tests.zsh` (a toy crate, an edit dated back). Build folder `~/scenic-check/<key>/target`, kept between runs, set by
   `~/scenic-check/<key>/.cargo/config.toml`, not CARGO_TARGET_DIR (sccache hashes every CARGO_*
   variable, so a per-key one missed the cache for every key: 0 % Rust hits on the mini, #887); rustc

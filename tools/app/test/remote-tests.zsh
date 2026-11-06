@@ -7,6 +7,9 @@
 #   zsh tools/app/test/remote-tests.zsh
 # Prints PASS or FAIL per test; exits non-zero when one failed.
 source ${0:A:h:h}/remote-tests.sh
+# (The repo's toolchain on the PATH, as check.sh has it: the toy crate is built outside the repo,
+# where mise's cargo shim finds no version and fails.)
+eval "$(cd ${0:A:h:h:h:h} && mise env -s zsh 2>/dev/null)" 2>/dev/null
 tmp=$(mktemp -d)
 trap 'rm -rf $tmp' EXIT
 failed=0
