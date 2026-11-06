@@ -106,7 +106,7 @@ pub(super) struct PlanView {
     pub published: Option<Published>,
     pub inputs: Vec<crate::inputs::view::InputView>,
     pub upcoming: Option<(u64, std::sync::Arc<room::Hints>)>,
-    pub queued: Vec<build::Work>,
+    pub queued: Vec<jobs::Work>,
     pub ready: Vec<String>,
     pub regions_view: Option<(RegionsKey, std::sync::Arc<serde_json::Value>)>,
     /// Whether the forecast's thread runs (a NAS user: the self-heal waits for it).
@@ -425,7 +425,7 @@ pub(super) struct Planner {
     pub(super) piece_sizes: std::cell::RefCell<std::collections::HashMap<String, u64>>,
     /// The work the last plan had left (its steps and targets): what room-making lets go last
     /// (`Agent::hints`).
-    pub(super) queued: std::cell::RefCell<Vec<build::Work>>,
+    pub(super) queued: std::cell::RefCell<Vec<jobs::Work>>,
     /// The last map's folder and number (the map's, or the newest held: `on_map`), its regions'
     /// outline entries by id and its time (unix seconds).
     #[allow(clippy::type_complexity)]
@@ -894,7 +894,7 @@ impl Planner {
     /// past every Mac's in the pool, as the lead knows them (`all`: a step only this Mac runs, this
     /// Mac's limit alone), with why for the status; and those whose floor past it was a batch's
     /// (`alone`: tried again in a job of their own before they're held).
-    pub(super) fn guard_holds(&self, works: &[build::Work]) -> GuardHolds {
+    pub(super) fn guard_holds(&self, works: &[jobs::Work]) -> GuardHolds {
         let mut h = GuardHolds::default();
         let limit = self.jobs_ceiling();
         let Some(c) = self.coord.as_ref().filter(|_| limit > 0) else { return h };
@@ -1325,7 +1325,7 @@ impl Planner {
                     cmd,
                     needs: Needs { nas: true },
                     restart_after_sleep: true,
-                    record: Some(build::Work { step: redo::STEP.into(), targets: redo::done_of(&a) }),
+                    record: Some(jobs::Work { step: redo::STEP.into(), targets: redo::done_of(&a) }),
                 }
             })
             .collect()
@@ -1443,7 +1443,7 @@ impl Planner {
         held.sources = !crate::inputs::sources::accepted(&manifest);
         // (A job's name is its step's title, from the steps table: `step` is the scenic-build
         // command, the step by its id's.)
-        let job = |id: String, step: &str, extra: Vec<String>, record: Option<build::Work>| {
+        let job = |id: String, step: &str, extra: Vec<String>, record: Option<jobs::Work>| {
             let scratch = self.o.home.join("scratch").join(step);
             let mut cmd = vec![
                 build_bin.clone(),
@@ -1503,7 +1503,7 @@ impl Planner {
             if let Some(w) = build::regions_land_work(&px, &keys) {
                 jobs.push(job(format!("regions-land {date}"), "regions-land", p.clone(), Some(w)));
             }
-            let reach_job = |w: build::Work| job(format!("reach {date}"), "reach", p.clone(), Some(w));
+            let reach_job = |w: jobs::Work| job(format!("reach {date}"), "reach", p.clone(), Some(w));
             if let Some(w) = build::reach_work(&px, &keys) {
                 jobs.push(reach_job(w));
             } else if let Err(why) = self.current_reach(root, &manifest, &keys, date) {
@@ -1516,7 +1516,7 @@ impl Planner {
                             why: format!("the pass's reaches don't read ({e}); making them again"),
                         });
                         if let Some(k) = build::reach_key(&px) {
-                            jobs.push(reach_job(build::Work {
+                            jobs.push(reach_job(jobs::Work {
                                 step: "reach".into(),
                                 targets: vec![("reach".into(), k)],
                             }));
@@ -2092,14 +2092,14 @@ impl Planner {
         *self.offered.borrow_mut() = (date.to_string(), merged);
         // (Held here: left to a Mac with room. A target whose floor past this Mac's jobs' ceiling was a
         // batch's: a job of its own, so a floor learned alone holds it, or its measure frees it.)
-        let mut alone: Vec<build::Work> = Vec::new();
+        let mut alone: Vec<jobs::Work> = Vec::new();
         for w in plan.iter_mut() {
             w.targets.retain(|t| !holds.here.contains(&(w.step.clone(), t.0.clone())));
             let (one, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut w.targets)
                 .into_iter()
                 .partition(|t| holds.alone.contains(&(w.step.clone(), t.0.clone())));
             w.targets = rest;
-            alone.extend(one.into_iter().map(|t| build::Work { step: w.step.clone(), targets: vec![t] }));
+            alone.extend(one.into_iter().map(|t| jobs::Work { step: w.step.clone(), targets: vec![t] }));
         }
         plan.extend(alone);
         // The forecast of the work left (crate::agent::forecast): the lead's, for the status (made
@@ -2189,7 +2189,7 @@ impl Planner {
                         "--building".into(),
                         building_arg.clone(),
                     ],
-                    Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }),
+                    Some(jobs::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }),
                 );
                 j.needs = Needs { nas: true };
                 jobs.push(j);
@@ -2337,8 +2337,8 @@ impl Planner {
         before: &[JobSpec],
         regions: &[build::RegionLeft],
         drops: &[(String, String)],
-        backfill: &[build::Work],
-        chains: [Vec<build::Work>; 5],
+        backfill: &[jobs::Work],
+        chains: [Vec<jobs::Work>; 5],
         blind: Option<String>,
         left: &steps::Left,
         peak: &dyn Fn(&str, &str) -> u64,
@@ -3432,7 +3432,7 @@ impl Planner {
                     cmd,
                     needs: Needs { nas: true },
                     restart_after_sleep: true,
-                    record: Some(build::Work { step: "inputs".into(), targets: vec![(target, key)] }),
+                    record: Some(jobs::Work { step: "inputs".into(), targets: vec![(target, key)] }),
                 });
             }
         }
@@ -3468,7 +3468,7 @@ impl Planner {
                 cmd,
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
-                record: Some(build::Work {
+                record: Some(jobs::Work {
                     step: "inputs".into(),
                     targets: vec![(format!("inputs/{unit}"), "forget".into())],
                 }),
@@ -3532,7 +3532,7 @@ impl Planner {
             cmd,
             needs: Needs { nas: true },
             restart_after_sleep: true,
-            record: Some(build::Work { step: "regions-extract".into(), targets: vec![(target, key)] }),
+            record: Some(jobs::Work { step: "regions-extract".into(), targets: vec![(target, key)] }),
         })
     }
 }

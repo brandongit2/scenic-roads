@@ -11,7 +11,7 @@ tasks for any worker, `docs/workers.md`.
 | Concept | What it is | Where |
 |---|---|---|
 | **step** | one kind of work, described by one row of the steps table | `crate::agent::steps::TABLE` |
-| **target** | what one run of a step is for: a z6 tile, a z3 tile, an input, the world (`scope`) | the plan (`agent::build::Work`) |
+| **target** | what one run of a step is for: a z6 tile, a z3 tile, an input, the world (`scope`) | the plan (`agent::jobs::Work`, a job's record) |
 | **z6 tile** | the build's working grid: most per-tile steps (terrain-hi, slope-hi, trees, `unit`, …) make a z6 tile's files at a time; `6/x/y`, named `6-x-y` in files | `Scope::Z6` |
 | **z10 tile** | 16 × 16 per z6 tile: a deep pack's (the terrain's and the slope's past z12: terrain-deep, slope-deep); `10/x/y`, `10-x-y` | `Scope::Z10` |
 | **z3 tile** | 8 × 8 z6 tiles: the zoomed-out levels (the `…-lo` steps) are assembled per z3 tile; `3/x/y`, `3-x-y` | `Scope::Z3` |

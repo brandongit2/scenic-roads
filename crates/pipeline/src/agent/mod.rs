@@ -2511,7 +2511,7 @@ impl Agent {
                         targets: if resumed { Vec::new() } else { targets.clone() },
                         lease: l,
                     }),
-                    None => serde_json::to_vec(&build::Work { step: step.clone(), targets: targets.clone() }),
+                    None => serde_json::to_vec(&jobs::Work { step: step.clone(), targets: targets.clone() }),
                 };
                 let kept = std::fs::create_dir_all(&dir)
                     .and_then(|()| std::fs::write(dir.join("work.json"), work.unwrap_or_default()));
@@ -2566,7 +2566,7 @@ impl Agent {
                         cmd,
                         needs,
                         restart_after_sleep: true,
-                        record: Some(build::Work { step, targets }),
+                        record: Some(jobs::Work { step, targets }),
                     },
                 ))
             }
@@ -2787,7 +2787,7 @@ impl Agent {
                     cmd: self.step_cmd(root, step, targets, pass),
                     needs: Needs { nas: true },
                     restart_after_sleep: true,
-                    record: Some(build::Work { step: step.clone(), targets: targets.clone() }),
+                    record: Some(jobs::Work { step: step.clone(), targets: targets.clone() }),
                 })
             }
             _ => None,
@@ -2862,7 +2862,7 @@ impl Agent {
         if matches!(step, "trees" | "terrain-hi" | "slope-hi") {
             // (Under the NAS's deadline: none read, nothing expected the same.)
             let same = expect_same(
-                &build::Work { step: step.to_string(), targets: targets.to_vec() },
+                &jobs::Work { step: step.to_string(), targets: targets.to_vec() },
                 &records_deadlined(root).keys,
             );
             if !same.is_empty() {
@@ -9110,10 +9110,10 @@ pub fn step_of(id: &str) -> Option<String> {
 
 /// What job `spec`'s own lease is held again for: its record, or for a job of none (buildings)
 /// its step from its id and no targets (#666: it was killed when its lease lapsed).
-fn held_work(spec: &JobSpec) -> build::Work {
+fn held_work(spec: &JobSpec) -> jobs::Work {
     spec.record
         .clone()
-        .unwrap_or_else(|| build::Work { step: step_of(&spec.id).unwrap_or_default(), targets: Vec::new() })
+        .unwrap_or_else(|| jobs::Work { step: step_of(&spec.id).unwrap_or_default(), targets: Vec::new() })
 }
 
 /// What holds the region work's jobs that read an input (`Agent::region_jobs`).
@@ -9487,7 +9487,7 @@ pub fn read_status(root: Option<&store::nasfs::NasRoot>, home: &Path) -> Option<
 /// have under the key they're built with, their mids made
 /// (build::TreeWork::backfill, build::TerrainWork::backfill, and those an assembly needs). Any
 /// other step's: none.
-fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
+fn expect_same(w: &jobs::Work, done: &build::Keys) -> Vec<String> {
     if !matches!(w.step.as_str(), "trees" | "terrain-hi" | "slope-hi") {
         return Vec::new();
     }
@@ -9726,7 +9726,7 @@ mod tests {
         };
         let w = held_work(&spec(None));
         assert_eq!((w.step.as_str(), w.targets.len()), ("buildings", 0));
-        let r = build::Work { step: "unit".into(), targets: vec![("6/1/1".into(), "k".into())] };
+        let r = jobs::Work { step: "unit".into(), targets: vec![("6/1/1".into(), "k".into())] };
         assert_eq!(held_work(&spec(Some(r.clone()))).targets, r.targets);
     }
 
@@ -10194,7 +10194,7 @@ mod tests {
         assert_eq!(j.id, "redo 7");
         assert_eq!(
             j.record,
-            Some(build::Work {
+            Some(jobs::Work {
                 step: "redo".into(),
                 targets: vec![
                     ("terrain-hi 6/18/22".into(), String::new()),
@@ -10630,7 +10630,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), format!("sleep {secs}")],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "unit".into(), targets: vec![(target.into(), "k".into())] }),
+            record: Some(jobs::Work { step: "unit".into(), targets: vec![(target.into(), "k".into())] }),
         };
         std::fs::create_dir_all(&a.o.home).unwrap();
         let log = a.o.home.join(format!("job-{k}.log"));
@@ -10883,7 +10883,7 @@ mod tests {
             Some(&store::nasfs::NasRoot::local_for_test(&root)),
         );
         let spec = JobSpec {
-            record: Some(build::Work { step: "unit".into(), targets: vec![("6/1/2".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "unit".into(), targets: vec![("6/1/2".into(), "k".into())] }),
             ..waiting_job("unit 6/1/2")
         };
         assert!(a.cancelled_since(&spec, n).is_some_and(|w| w.contains("6/1/2")));
@@ -11410,7 +11410,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "bldtiles".into(), targets: vec![("6/1/2".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "bldtiles".into(), targets: vec![("6/1/2".into(), "k".into())] }),
         };
         std::fs::create_dir_all(&a.o.home).unwrap();
         let r = Running::start(spec, 1, &[], a.o.home.join("job-0.log"), &a.record_path(0), None, None).unwrap();
@@ -11677,7 +11677,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "exit 1".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "rail".into(), targets: vec![("rail".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "rail".into(), targets: vec![("rail".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let mut w = Vec::new();
@@ -11813,7 +11813,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "rail".into(), targets: vec![("rail".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "rail".into(), targets: vec![("rail".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
@@ -11864,7 +11864,7 @@ mod tests {
             ],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: step.into(), targets: vec![(step.into(), "k".into())] }),
+            record: Some(jobs::Work { step: step.into(), targets: vec![(step.into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let stop = |a: &mut Agent| {
@@ -11989,7 +11989,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
+            record: Some(jobs::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let c = a.coord.as_ref().unwrap();
@@ -12139,7 +12139,7 @@ mod tests {
                 cmd: vec!["/bin/sh".into(), "-c".into(), script],
                 needs: Needs { nas: false },
                 restart_after_sleep: false,
-                record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
+                record: Some(jobs::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
             }
         };
         std::fs::create_dir_all(&seen).unwrap();
@@ -12220,7 +12220,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "terrain-hi".into(), targets: vec![(t.into(), "k".into())] }),
+            record: Some(jobs::Work { step: "terrain-hi".into(), targets: vec![(t.into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         a.free_set = Some(100 * g);
@@ -12361,7 +12361,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work {
+            record: Some(jobs::Work {
                 step: "slope-hi".into(),
                 targets: tiles.iter().map(|t| (t.clone(), "k".into())).collect(),
             }),
@@ -12386,7 +12386,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] }),
         };
         // 10 GB and 37 GB to come: past 45 GB free (its largest alone, 3 GB, would have let it be
         // granted beside, and the guard give it back an hour on, and again).
@@ -12477,7 +12477,7 @@ mod tests {
                 cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
                 needs: Needs { nas: false },
                 restart_after_sleep: false,
-                record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
+                record: Some(jobs::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
             }
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
@@ -12607,7 +12607,7 @@ mod tests {
         a.mem_set = Some((16 << 10, 14 << 10));
         let job = |id: &str, targets: &[&str]| {
             let step = id.split(' ').next().unwrap();
-            let record = Some(build::Work {
+            let record = Some(jobs::Work {
                 step: step.into(),
                 targets: targets.iter().map(|t| (t.to_string(), "k".to_string())).collect(),
             });
@@ -12728,7 +12728,7 @@ mod tests {
         a.sampler.tick();
         assert_eq!(a.sampler.reading().map(|r| r.cool_mb), Some(0));
         // A batch's floor past the limit: the target tried again in a job of its own, not held.
-        let works = vec![build::Work {
+        let works = vec![jobs::Work {
             step: "terrain-hi".into(),
             targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())],
         }];
@@ -12784,7 +12784,7 @@ mod tests {
         // A step only the lead runs (heritage), its floor past the lead's limit: judged against the
         // lead's limit, held, whatever a member's limit (the lead is fixed).
         let c = a.coord.clone().unwrap();
-        let lead_only = vec![build::Work { step: "heritage".into(), targets: vec![("heritage".into(), "k".into())] }];
+        let lead_only = vec![jobs::Work { step: "heritage".into(), targets: vec![("heritage".into(), "k".into())] }];
         let floor = |mb| {
             vec![(
                 crate::coord::cost_key("heritage", "heritage"),
@@ -14075,7 +14075,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "bldtiles".into(), targets: vec![("6/1/1".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "bldtiles".into(), targets: vec![("6/1/1".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.quit_ask().is_none() && a.quit_due());
@@ -14150,7 +14150,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "bldtiles".into(), targets: vec![(t.into(), "k".into())] }),
+            record: Some(jobs::Work { step: "bldtiles".into(), targets: vec![(t.into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         // (The two `sleep`s killed whatever the test's end, an assertion failing too.)
@@ -14262,7 +14262,7 @@ mod tests {
             ],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(
@@ -14374,7 +14374,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), script],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "items".into(), targets: vec![("items".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "items".into(), targets: vec![("items".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
@@ -14437,7 +14437,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
@@ -14528,7 +14528,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "sh".into(), "--scratch".into(), s(&scratch)],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(
@@ -14628,7 +14628,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
+            record: Some(jobs::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         struct Kill(i32);
@@ -14770,7 +14770,7 @@ mod tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "trees".into(), targets: vec![("6/1/1".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "trees".into(), targets: vec![("6/1/1".into(), "k".into())] }),
         };
         assert!(a.try_start(0, spec, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
@@ -14860,7 +14860,7 @@ mod tests {
         done.slope_hi.insert("6/40/20".into(), "piece".into());
         done.terrain_hi.insert("6/41/20".into(), "earlier".into());
         for step in ["terrain-hi", "slope-hi"] {
-            let w = build::Work {
+            let w = jobs::Work {
                 step: step.into(),
                 targets: vec![
                     ("6/40/20".into(), crate::agent::steps::none_key(step, "6/40/20").unwrap()),
@@ -14878,7 +14878,7 @@ mod tests {
             done.trees.insert(t.into(), k.into());
         }
         done.trees_lo.insert("3/3/2".into(), "d".into());
-        let w = |step: &str, ts: &[(&str, &str)]| build::Work {
+        let w = |step: &str, ts: &[(&str, &str)]| jobs::Work {
             step: step.into(),
             targets: ts.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect(),
         };
@@ -16609,7 +16609,7 @@ mod pool_tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }),
+            record: Some(jobs::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, catalogue, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
@@ -16652,7 +16652,7 @@ mod pool_tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "true".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }),
+            record: Some(jobs::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, catalogue, &cond, Some(&root), &mut Vec::new()));
@@ -16749,7 +16749,7 @@ mod pool_tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into())] }),
         };
         lead.round().unwrap();
         assert_eq!(lead.pending_app().as_deref(), Some("20261010-0200-bbbbbbb"));
@@ -16922,8 +16922,8 @@ mod pool_tests {
             };
             std::fs::write(r.join(format!("state/helpers/{host}.json")), serde_json::to_vec(&st).unwrap()).unwrap();
         }
-        let work: Vec<build::Work> = (0..40)
-            .map(|i| build::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
+        let work: Vec<jobs::Work> = (0..40)
+            .map(|i| jobs::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
         let rec = a.planner().forecast_record(
             &store::nasfs::NasRoot::local_for_test(&r),
@@ -16967,8 +16967,8 @@ mod pool_tests {
             let st = Status { host: host.clone(), beat: now_s(), ..Default::default() };
             std::fs::write(r.join(format!("state/helpers/{host}.json")), serde_json::to_vec(&st).unwrap()).unwrap();
         }
-        let work: Vec<build::Work> = (0..200)
-            .map(|i| build::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
+        let work: Vec<jobs::Work> = (0..200)
+            .map(|i| jobs::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
         let rec = a.planner().forecast_record(
             &store::nasfs::NasRoot::local_for_test(&r),
@@ -17001,8 +17001,8 @@ mod pool_tests {
         std::fs::create_dir_all(r.join("state/helpers")).unwrap();
         let st = Status { host: "busy-mac".into(), beat: now_s(), ..Default::default() };
         std::fs::write(r.join("state/helpers/busy-mac.json"), serde_json::to_vec(&st).unwrap()).unwrap();
-        let work: Vec<build::Work> = (0..40)
-            .map(|i| build::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
+        let work: Vec<jobs::Work> = (0..40)
+            .map(|i| jobs::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
         let rec = a.planner().forecast_record(
             &store::nasfs::NasRoot::local_for_test(&r),
@@ -17106,7 +17106,7 @@ mod pool_tests {
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "bldtiles".into(), targets: vec![("6/1/1".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "bldtiles".into(), targets: vec![("6/1/1".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(
@@ -17194,7 +17194,7 @@ mod pool_tests {
             cmd: vec!["/usr/bin/true".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "k".into())] }),
+            record: Some(jobs::Work { step: "catalog".into(), targets: vec![("catalog".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let jobs = std::slice::from_ref(&job);

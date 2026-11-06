@@ -8,6 +8,7 @@
 //! when it last succeeded (`state/build/jobs.json`) isn't run again; an unchanged output keeps its
 //! content name, so what depends on it keeps its key too.
 
+use super::jobs::Work;
 use super::nasread;
 use super::steps::{readiness, ready, Left, Ready, View};
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
@@ -343,14 +344,6 @@ impl Keys {
             m.insert(t.clone(), k.clone());
         }
     }
-}
-
-/// One step for some targets, with the key each target will be recorded under.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Work {
-    /// "terrain", "slope", "unit", "pack", "lo", "catalog".
-    pub step: String,
-    pub targets: Vec<(String, String)>,
 }
 
 /// The whole coverage, for the jobs that read all of it: its shapes by their geometry (buffer and

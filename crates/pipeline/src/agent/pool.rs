@@ -1983,7 +1983,7 @@ impl Run {
 
     /// The jobs a process of this agent ran out of the pool (its member's lock held by another
     /// process, or the NAS not reached as it started) and left in its outbox (`outbox/<lease>/`, a
-    /// `build::Work` kept with its saves): their hand-offs not told to the lead (the process ended
+    /// `jobs::Work` kept with its saves): their hand-offs not told to the lead (the process ended
     /// first, the lead refused it, or it was given back or failed), drained into this member's
     /// journal entries, once a process. Each folder is removed once a saved state holding its entry
     /// is on disk; until then send_outbox passes over it (it has `work.json`) and the member asks
@@ -2145,7 +2145,7 @@ fn outbox_entries(outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
         let Some(lease) = d.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()) else { continue };
         let Some(w) = std::fs::read(d.join("work.json"))
             .ok()
-            .and_then(|b| serde_json::from_slice::<crate::agent::build::Work>(&b).ok())
+            .and_then(|b| serde_json::from_slice::<crate::agent::jobs::Work>(&b).ok())
         else {
             continue;
         };
@@ -3303,7 +3303,7 @@ mod tests {
         std::fs::create_dir_all(&ob).unwrap();
         std::fs::write(
             ob.join("work.json"),
-            serde_json::to_vec(&crate::agent::build::Work {
+            serde_json::to_vec(&crate::agent::jobs::Work {
                 step: "unit".into(),
                 targets: vec![("6/2/3".into(), "k23".into())],
             })
@@ -3330,7 +3330,7 @@ mod tests {
         std::fs::create_dir_all(&failed).unwrap();
         std::fs::write(
             failed.join("work.json"),
-            serde_json::to_vec(&crate::agent::build::Work {
+            serde_json::to_vec(&crate::agent::jobs::Work {
                 step: "unit".into(),
                 targets: vec![("6/2/4".into(), "k24".into())],
             })

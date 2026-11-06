@@ -206,6 +206,14 @@ impl Live {
     }
 }
 
+/// One step for some targets, with the key each target will be recorded under.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Work {
+    /// "terrain", "slope", "unit", "pack", "lo", "catalog".
+    pub step: String,
+    pub targets: Vec<(String, String)>,
+}
+
 /// A job: one step for one unit or pack, or one worldwide step.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobSpec {
@@ -221,7 +229,7 @@ pub struct JobSpec {
     pub restart_after_sleep: bool,
     /// A build step's targets and keys, recorded in state/build/jobs.json when it succeeds.
     #[serde(default)]
-    pub record: Option<super::build::Work>,
+    pub record: Option<Work>,
 }
 
 /// A job running (or paused) under the agent.
@@ -283,7 +291,7 @@ struct Record {
     /// Its step's targets and keys, and where it notes those it finished (crate::control::done):
     /// what an agent started after a crash records of it.
     #[serde(default)]
-    work: Option<super::build::Work>,
+    work: Option<Work>,
     #[serde(default)]
     done_file: Option<PathBuf>,
     /// What an agent after this one needs to take it over (`adopt`): its spec, threads and log
@@ -631,7 +639,7 @@ fn stop_group(pgid: i32, grace: Duration, mut reap: impl FnMut()) {
 /// stopped (some of it outlived the kill): work still running here, until the group is gone.
 #[derive(Default)]
 pub struct Orphan {
-    pub done: Option<(super::build::Work, PathBuf)>,
+    pub done: Option<(Work, PathBuf)>,
     pub left: Option<Group>,
 }
 
