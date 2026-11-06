@@ -207,7 +207,7 @@ export function poolRows(s) {
     })),
     guarded("overdue_factor", "Overdue factor", () => ({
       now: `${o.factor}×`,
-      note: `a job whose work hasn't moved for this many times its usual still stretch is flagged stuck (Alerts, scenic status, the menu bar)${o.set ? by(o) : ` (the default, ${o.default}×)`}${o.had ? "" : "; the lead's setting not had yet"}; a change goes to the lead with ${s.mac || "this Mac"}'s next beat`,
+      note: `a job whose work hasn't moved for this many times its usual still stretch is flagged stuck, one whose progress goes on this many times slower than its step's slowest tenth of jobs slow (Alerts, scenic status, the menu bar)${o.set ? by(o) : ` (the default, ${o.default}×)`}${o.had ? "" : "; the lead's setting not had yet"}; a change goes to the lead with ${s.mac || "this Mac"}'s next beat`,
       input: { min: 1.1, max: 100, step: 0.5, placeholder: "times", offTitle: `Back to the default (${o.default}×)` },
     })),
   ];

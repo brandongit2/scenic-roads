@@ -2112,7 +2112,8 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
     when anything of it changed since the one before (`Lease::still`): its progress line, the
     target under way, its targets ended, its phase, its NAS bytes, files made, listed, statted or
     deleted (a whole file copied counts its bytes as each read comes, `store::nasfs`'s
-    `copy_counter`, not once copied: a big file copied from a slow NAS moves), its internet bytes.
+    `copy_counter`, not once copied: a big file copied from a slow NAS moves; an upload as each
+    write goes, `store::nasio::written`, not once it lands, task #990), its internet bytes.
     Its step's usual stillness is the 90th percentile, over its jobs kept in the history that ended
     well, of each one's longest stretch between two beats that saw its work move (`still_s` on its
     "done" or "end" event, `History::still_p90s`). A step none of whose jobs measured it (its first
@@ -2127,16 +2128,48 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
     not to how long its targets took before: on 6 Nov a first GSI fetch (pyramids-fill, 19-25
     min), bldprep and pack while the NAS was slow and terrain-hi copying GLO-30 at 4 MB/s were
     flagged by their targets' earlier times while their bytes moved. A job slow but moving isn't
-    flagged; one that stopped is (5 Nov: terrain-hi jobs at 0 tiles and no CPU, replayed from the
+    flagged stuck (it may be slow, below); one that stopped is (5 Nov: terrain-hi jobs at 0 tiles and no CPU, replayed from the
     records: found 16 min after their last move, terrain-hi's usual stillness 5 min). Beats not
     heard say nothing (a member out of touch is a warning of its own); a lead restarted counts
     each job's stillness from its first beat after.
+  - *slow*: a leased job whose progress went on, over its window, at less than its step's usual
+    rate divided by the overdue factor (task #990, `flags::slow`). Its progress is its progress
+    line's numbers alone, by its worker's beats (`coord::lease::Pace`): within its part under way
+    (one line's run on one target: the target under way, the line's unit, its total), the most the
+    line has said, so a line gone back on the same target (work done again) counts nothing until
+    it passes it, and bytes never count (a retry sending its bytes again moves no line). Its rate
+    is in that unit (tiles, z6 tiles, packs, zooms…: the unit the step's progress line says, a word
+    in brackets after it left out); no step's line counts bytes. Its window is the factor times
+    its step's usual longest wait for progress, back from its last beat, judged only once its part
+    under way is that old: a window that long holds a working job's progress however bursty its
+    line (terrain-hi says its tiles a few hundred at a time, after minutes of sampling), and one
+    with none in it is at a rate of nothing (a copy before its first tile, a retry loop). Its
+    step's usual rate in a unit is the 10th percentile, over its jobs kept that ended well, of each
+    one's progress in that unit over the time its parts in it took (`rates` on its "done" or "end"
+    event, units a second); its usual wait the 90th percentile of each one's longest stretch from
+    its grant or a beat that saw its progress go on to the next (`gap_s`); each from ten such jobs
+    at least (`history::ENOUGH`: fewer, and the tenth either percentile leaves out is no whole job,
+    the percentile just the one slowest or longest), `History::paces`. A step with fewer, a step
+    whose jobs never said their progress, and a part younger than its window are not judged; a
+    job flagged stuck isn't flagged slow too. The flag says its rate and its step's usual, a
+    minute, its window, where it is, its batch's targets done and its threads. Replayed on 5–6
+    Nov from the lead's records (its timings and the lead's and the M1's job logs; no record keeps
+    a job's progress beat by beat, so each job is judged by its rate over its whole run, one
+    shorter than three beats not at all): 14 of 2,014 jobs fall under it. Two depth jobs (6/33/3
+    on the M1 opening the basemap's water for 10 min), terrain-deep 10/246/339 at 0.45 raw tiles a
+    minute (its step's slowest tenth 33), four polar-terrain blocks at one thread taking 31–55 min
+    (the slowest tenth under 5), two trees jobs at one thread 7 and 17 times under theirs, and a
+    bldtiles job at one thread that failed; four more within 15% of the line (bldtiles, two packs,
+    the inputs check). The M1's terrain-hi job copying
+    GLO-30 at 4 MB/s (6/23/36, 67 min) is not: its 175 tiles a minute over its run sit above
+    terrain-hi's slowest tenth (66), its copy a stretch of a job otherwise fast, which only a
+    window inside it can show.
   - *stale*: the lead's catalogue due (held back, planned, or waiting out its minute:
     `PublishLine::due_since`) for more than the overdue factor times the most the plan holds one
     (`CATALOGUE_CAP_S` and `CATALOGUE_EVERY_S`, 11 min), counted from the last catalogue's going out
     where later, with no catalogue job leased (that one is stuck by its own stillness). A
     catalogue merely old, nothing new to list, isn't stale.
-  - The factor (stuck's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
+  - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
     overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
     set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).
   - `scenic status --flags [--since <unix s>]` prints what needs a look alone, a line each: the
@@ -2151,7 +2184,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
 - **Coordinator view**, written by the lead per term (`state/coord/term/<E>/view.json`,
   `Coordinator::view`, in its pool step: `pool_lead_files`): `{at, view}`, the view what the
   worker page's `/work/swarm` takes from the coordinator's memory: the pause, each lease (worker,
-  step, targets' count, progress, `frac`, when granted, its last beat and when it lapses), each
+  step, targets' count, progress, when granted, its last beat and when it lapses), each
   worker (label, kind, memory, cores, done/failed, `can`, `fit`, when last seen), the tasks by
   state. Times are unix seconds, so it is the
   same until something changes. Served by the lead's coordinator from memory (`POST /pool/view`,

@@ -227,7 +227,7 @@ The Jobs tab's stages are the one exception.
     tiles its id or words name: `sums.js` targetsOf), outlined, filled as far as done (`sums.js`
     runningTiles: from the job's `live`, its targets done taken as the first of its list and the
     one under way at its time so far against the step's `each_s`, under 95%; where `live` is
-    missing, the job's progress or the lease's beat `frac` spread over its tiles);
+    missing, the job's progress spread over its tiles);
   - **completed, not yet published** and **published**: the finished tiles (`sums.js`
     finishedTiles, #674: every tile the build's keys record as built, `/work/built`, and those the
     history's ends held finished in the Jobs tab's past window, not merged into the keys yet; its

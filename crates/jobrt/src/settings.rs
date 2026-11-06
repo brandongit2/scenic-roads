@@ -13,14 +13,15 @@ use std::collections::BTreeMap;
 /// NAS's load target (crate::budget::nas::Target's share, %); and, with no switch file (an older lead
 /// refuses them): the batch length (task #927: the minutes of measured time a job of a shared step is
 /// sized to, pipeline's coord::sched::Sched::batch_len) and the factor past which a job's
-/// stillness, or a catalogue's wait, is flagged (`OVERDUE`).
+/// stillness or slowness, or a catalogue's wait, is flagged (`OVERDUE`).
 pub const PLACEMENT: &str = "placement";
 pub const NAS_BUDGET: &str = "nas-budget";
 pub const NAS_TARGET: &str = "nas-target";
 pub const BATCH: &str = "batch-minutes";
 /// How many times its usual still stretch a job's work goes without moving before the status flags
-/// it stuck, and a catalogue due its most wait before it's stale (pipeline's agent::flags, tasks
-/// #953 and #986): a number in `OVERDUE_RANGE`; not set, `OVERDUE_DEFAULT`.
+/// it stuck, how many times slower than its step's slowest tenth of jobs its progress goes on
+/// before it's slow, and a catalogue due its most wait before it's stale (pipeline's agent::flags,
+/// tasks #953, #986 and #990): a number in `OVERDUE_RANGE`; not set, `OVERDUE_DEFAULT`.
 pub const OVERDUE: &str = "overdue-factor";
 pub const NAMES: [&str; 5] = [PLACEMENT, NAS_BUDGET, NAS_TARGET, BATCH, OVERDUE];
 /// The batch lengths the lead takes (minutes): a minute to a day.
