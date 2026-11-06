@@ -222,7 +222,7 @@ def build(check=False):
     n_scen = d.card('scen', 'd3', cy, 'scenic', 'Rust', ['samples every 100 m: horizons', 'to 300 m past trees, views to', '15 km, buildings, designations'],
                     [(['13 channels a point'], 'in the base pack')], kept='cache/scenic-units/', scope='z6', shared=True, task=True)
     n_tile = d.card('net', 'd4', cy, 'map tiles', 'Rust', ['per z6 tile: the tiles whose', 'ways come in, their road values;', 'tiles, query parts'],
-                    [(['layers/roads/ · rails/'], 'packs · RT v7 z4–14'), (['hidata/<z6>'], 'query parts · summaries')], scope='z6', shared=True,
+                    [(['layers/roads/ · rails/'], 'packs · RT v8 z4–14'), (['hidata/<z6>'], 'query parts · summaries')], scope='z6', shared=True,
                     fig='median 0 s a tile, p90 20 s; 0.4 GB p90')
     s_osm4 = d.src('osm', cy, 'OSM extracts', ['roads · rail lines'])
     s_dem = d.src('terr', s_osm4.b + 8, 'The finished terrain', ['base tiles z0–12, fine tiles', 'z13–16 under the vertices;', 'staged into the folder'])

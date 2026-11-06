@@ -57,7 +57,7 @@ scopes = [('z6', 'per z6 tile (300–600 km), near the coverage'), ('z3', 'per z
 runs = [('shared', 'any member of the pool may take its jobs; unmarked: the lead’s alone'), ('task', 'parts run as tasks: any worker, a device’s page too')]
 repro = list(diag.REPRO.items())
 formats = [('packs', 'a layer’s tiles under one root tile, with an index'), ('bundles', 'a small layer’s every tile in one pack (…/all)'), ('sectioned', 'named arrays: base packs, hidata, markdata'),
-           ('PMTiles', 'the worldwide basemap, read by byte range'), ('RT v7', 'columnar road tiles, 13 scenic channels a point'),
+           ('PMTiles', 'the worldwide basemap, read by byte range'), ('RT v8', 'columnar road tiles, 13 scenic channels a point'),
            ('Terrarium', 'height (or slope, cover…) as RGB'), ('MVT', 'vector tiles: labels, overlays, stations'),
            ('RDMT', 'landmark points in typed columns')]
 

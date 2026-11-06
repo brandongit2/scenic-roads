@@ -1,6 +1,6 @@
-//! Road and rail tile encoding ("RT" v7). Columnar, delta + zigzag varint, gzip'd by the archive.
+//! Road and rail tile encoding ("RT" v8). Columnar, delta + zigzag varint, gzip'd by the archive.
 //!
-//!   u8 'R', u8 'T', u8 version (7), u8 log2(extent)
+//!   u8 'R', u8 'T', u8 version (8), u8 log2(extent)
 //!   varint nlines, varint nverts
 //!   nlines × u8      style byte: class (bits 0-3) | UNPAVED<<4 | BRIDGE<<5 | TUNNEL<<6 | LINK<<7
 //!   nlines × u8      line flags (`lflag`)
@@ -8,8 +8,7 @@
 //!   nlines × varint  vertex count
 //!   nlines × varint  true (full-resolution) length of the piece, decimetres
 //!   nlines × varint  length of the whole road the way belongs to, metres (its road value: `pipeline::chain`)
-//!   nlines × 4 u8    attributes: route network (`crate::network`), maxspeed (km/h ÷ 2, 0 = unknown),
-//!                    lanes, surface (`surface`)
+//!   nlines × 3 u8    attributes: maxspeed (km/h ÷ 2, 0 = unknown), lanes, surface (`surface`)
 //!   nlines × varint  line colour: 0 = none, else 0xRRGGBB + 1 (rail)
 //!   nverts × 2 varint  zigzag delta x, y (delta chain runs across lines)
 //!   nverts × varint  zigzag delta elevation, decimetres
@@ -20,7 +19,7 @@
 //! Lines are stored minor → major so the client can draw a tile in one ordered pass, and by way id
 //! within a draw class.
 
-pub const VERSION: u8 = 7;
+pub const VERSION: u8 = 8;
 pub const NCH: usize = crate::scenic::ch::N;
 
 pub mod style {
@@ -41,7 +40,7 @@ pub mod lflag {
     pub const RAIL_SHIFT: u8 = 1;
 }
 
-/// Surface codes (per-line attribute 3).
+/// Surface codes (per-line attribute 2).
 pub mod surface {
     pub const UNKNOWN: u8 = 0;
     pub const ASPHALT: u8 = 1;
@@ -75,8 +74,8 @@ pub struct TileLine {
     pub true_len_dm: u32,
     /// Length of the whole road (chained ways) this line is part of, metres.
     pub road_m: u32,
-    /// Network, maxspeed ÷ 2, lanes, surface code.
-    pub attr: [u8; 4],
+    /// Maxspeed ÷ 2, lanes, surface code.
+    pub attr: [u8; 3],
     /// 0 = none, else 0xRRGGBB + 1.
     pub colour: u32,
     pub pts: Vec<[i32; 2]>,

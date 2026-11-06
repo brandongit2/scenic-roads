@@ -361,7 +361,7 @@ mod tests {
                 class: i as u8,
                 flags: 1,
                 lanes: 2,
-                network: 0,
+                _pad0: 0,
                 rail: 0,
                 _pad: 0,
                 route: 0,

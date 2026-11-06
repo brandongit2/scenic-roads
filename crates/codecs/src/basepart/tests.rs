@@ -40,7 +40,7 @@ fn make(dir: &Path, n: usize) -> (PathBuf, PathBuf) {
             class,
             flags: 0,
             lanes: 2,
-            network: 0,
+            _pad0: 0,
             rail: 0,
             _pad: 0,
             route: 0,

@@ -1,11 +1,11 @@
 // Layers → Roads → Colour → Map: the presets (mapschemes.ts MAP_SCHEMES), each setting the Map look
 // (AppState.roadMap) when clicked, and the look itself, edited freely: what colours the roads
-// (road class, signed route, or an attribute), per road class its fill colour and opacity, its
+// (road class or an attribute), per road class its fill colour and opacity, its
 // casing's colour and whether it is cased, and the attribute's category colours. Shown and applied
 // only while the roads are coloured by Map; the drawing settings every colour option shares are under
 // Style (ui/layers.ts).
 import { CLASS_LABELS, NROAD } from '../config';
-import { CAT_LABELS, MAP_KINDS, MAP_SCHEMES, lookLegend, presetLook, presetOfLook, type CatKind, type MapScheme, type RoadMapLook } from '../mapschemes';
+import { CAT_LABELS, MAP_KINDS, MAP_SCHEMES, presetLook, presetOfLook, type CatKind, type MapScheme, type RoadMapLook } from '../mapschemes';
 import type { Store } from '../state';
 import { h } from './dom';
 
@@ -23,7 +23,6 @@ export class RoadMapEditor {
   private kindSel: HTMLSelectElement;
   private classBox: HTMLDivElement;
   private catBox: HTMLDivElement;
-  private legend: HTMLDivElement;
   private rows: { fill: HTMLInputElement; op: HTMLInputElement; out: HTMLOutputElement; cas: HTMLInputElement; cased: HTMLInputElement }[] = [];
   private catRows: { col: HTMLInputElement; op: HTMLInputElement; label: HTMLSpanElement }[] = [];
 
@@ -43,7 +42,7 @@ export class RoadMapEditor {
       presets.append(h('div', { class: 'scheme-group muted' }, group), row);
     }
 
-    this.kindSel = h('select', { title: 'What colours the roads: their class, the signed route they carry, or one of their attributes (the classes’ colours stay for the roads it doesn’t cover)' });
+    this.kindSel = h('select', { title: 'What colours the roads: their class or one of their attributes (the classes’ colours stay for the roads it doesn’t cover)' });
     for (const [k, label] of MAP_KINDS) this.kindSel.append(h('option', { value: k }, label));
     this.kindSel.addEventListener('change', () => set({ kind: this.kindSel.value as RoadMapLook['kind'] }));
 
@@ -74,7 +73,7 @@ export class RoadMapEditor {
       const label = h('span', { class: 'muted' });
       const putCat = (v: string) => {
         const l = L();
-        if (l.kind === 'class' || l.kind === 'network') return;
+        if (l.kind === 'class') return;
         const k = l.kind as CatKind;
         set({ cats: { ...l.cats, [k]: l.cats[k].map((x, j) => (j === i ? v : x)) } });
       };
@@ -83,13 +82,11 @@ export class RoadMapEditor {
       this.catBox.append(h('div', { class: 'rm-cat' }, col, label, op));
       this.catRows.push({ col, op, label });
     }
-    this.legend = h('div', { class: 'scheme-legend' });
 
     this.el = h('div', { class: 'roadmap' },
       presets,
       h('div', { class: 'row rm-kind' }, h('span', { class: 'muted' }, 'Colour by'), this.kindSel),
       this.catBox,
-      this.legend,
       this.classBox,
     );
   }
@@ -107,7 +104,7 @@ export class RoadMapEditor {
       r.cas.value = l.casing[c];
       r.cased.checked = l.cased[c];
     }
-    const cat = l.kind !== 'class' && l.kind !== 'network' ? (l.kind as CatKind) : null;
+    const cat = l.kind !== 'class' ? (l.kind as CatKind) : null;
     this.catBox.hidden = !cat;
     this.catRows.forEach((r, i) => {
       const c = cat ? l.cats[cat][i] : undefined;
@@ -118,17 +115,12 @@ export class RoadMapEditor {
       r.label.textContent = CAT_LABELS[cat][i];
       r.col.title = r.op.title = `${CAT_LABELS[cat][i]}: colour and opacity`;
     });
-    // Signed routes: their colours by group (fixed); the other roads take their class's.
-    const lg = l.kind === 'network' ? lookLegend(l) : [];
-    this.legend.hidden = !lg.length;
-    this.legend.replaceChildren(...lg.map(([c, label]) => h('span', { class: 'lg' }, h('i', { style: `background:${c}` }), label)));
   }
 }
 
 /** A small stack of a preset's colours for its button. */
 function preview(m: MapScheme): HTMLElement {
   const cols = m.kind === 'class' ? [8, 7, 6, 5, 4, 2].map((c) => m.fill[c])
-    : m.kind === 'network' ? ['#2e6fd8', '#1f8a4c', '#d8342c', '#f2c500', '#f2f2f2']
     : (m.cats ?? []).slice(1).map(([c]) => c);
   const el = h('span', { class: 'sw' });
   for (const c of cols) el.append(h('i', { style: `background:${c}` }));

@@ -11,6 +11,8 @@ export const DRAPE_OFF = 500;
  * buildings, tiles v6+) in the spare byte 11. */
 export const NCH = 13;
 export const chOff = (q: number) => (q < 12 ? 20 + q : 11);
+/** Attribute bytes per line (roadcore::tile `attr`): maxspeed ÷ 2, lanes, surface. */
+export const ATTR = 3;
 
 export interface DecodedTile {
   extent: number;
@@ -28,7 +30,7 @@ export interface DecodedTile {
   lineFlags: Uint8Array;
   /** Per line: length of the whole road it belongs to, metres. */
   lineRoadLen: Float32Array;
-  /** Per line, 4 bytes: route network (see mapschemes.ts), maxspeed ÷ 2 (km/h), lanes, surface code. */
+  /** Per line, `ATTR` bytes: maxspeed ÷ 2 (km/h), lanes, surface code. */
   lineAttr: Uint8Array;
   /** Per line: 0 = no colour, else 0xRRGGBB + 1 (rail line colours). */
   lineColour: Uint32Array;

@@ -20,7 +20,7 @@ import {
 } from '../config';
 import { levelZero, lodCells, lodSig, pieceLists, type LodFilter } from './lod';
 import { legibleRgb } from '../linecolour';
-import { DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
+import { ATTR, DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
 
 const inflight = new Map<number, AbortController>();
 
@@ -60,8 +60,11 @@ function post(m: WorkerResponse, transfer: Transferable[] = []) {
 
 function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): DecodedTile {
   let pos = 4;
-  // RT v7: its way column holds OSM way ids, lines sorted by draw class then id.
-  if (b[0] !== 0x52 || b[1] !== 0x54 || b[2] !== 7) throw new Error(`bad tile header (expected RT v7, got v${b[2]})`);
+  // RT v8 (roadcore::tile): its way column holds OSM way ids, lines sorted by draw class then id.
+  // v7, the same with a fourth attribute byte first, until the units' rebuild of task #853 has
+  // made every pack again.
+  const v = b[2];
+  if (b[0] !== 0x52 || b[1] !== 0x54 || (v !== 8 && v !== 7)) throw new Error(`bad tile header (expected RT v8, got v${v})`);
   const extent = 1 << b[3];
   const rv = (): number => {
     let r = 0, s = 1, c: number;
@@ -90,10 +93,17 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
   for (let i = 0; i < nlines; i++) trueLen[i] = rv() / 10;
   const roadLen = new Float32Array(nlines);
   for (let i = 0; i < nlines; i++) roadLen[i] = rv();
-  // Per-line attributes (network, maxspeed ÷ 2, lanes, surface) and line colour (0xRRGGBB + 1),
-  // made legible on the dark map (linecolour.ts).
-  const lineAttr = b.slice(pos, pos + nlines * 4);
-  pos += nlines * 4;
+  // Per-line attributes (maxspeed ÷ 2, lanes, surface) and line colour (0xRRGGBB + 1), made
+  // legible on the dark map (linecolour.ts).
+  let lineAttr: Uint8Array;
+  if (v === 7) {
+    lineAttr = new Uint8Array(nlines * ATTR);
+    for (let i = 0; i < nlines; i++) lineAttr.set(b.subarray(pos + i * 4 + 1, pos + i * 4 + 4), i * ATTR);
+    pos += nlines * 4;
+  } else {
+    lineAttr = b.slice(pos, pos + nlines * ATTR);
+    pos += nlines * ATTR;
+  }
   const lineColour = new Uint32Array(nlines);
   for (let i = 0; i < nlines; i++) {
     const c = rv();
@@ -295,7 +305,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
   const nStyle = new Uint8Array(nlines);
   const nFlags = new Uint8Array(nlines);
   const nRoad = new Float32Array(nlines);
-  const nAttr = new Uint8Array(nlines * 4);
+  const nAttr = new Uint8Array(nlines * ATTR);
   const nColour = new Uint32Array(nlines);
   let at = 0;
   order.forEach((l, k) => {
@@ -308,7 +318,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
     nStyle[k] = lineStyle[l];
     nFlags[k] = lineFlags[l];
     nRoad[k] = roadLen[l];
-    nAttr.set(lineAttr.subarray(l * 4, l * 4 + 4), k * 4);
+    nAttr.set(lineAttr.subarray(l * ATTR, l * ATTR + ATTR), k * ATTR);
     nColour[k] = lineColour[l];
     at += bEnd - a;
   });

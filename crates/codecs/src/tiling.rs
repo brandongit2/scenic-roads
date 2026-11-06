@@ -210,7 +210,7 @@ pub fn draw_key(style: u8) -> u8 {
 /// per-vertex data (all slices the same length as `verts`).
 pub struct WayIn<'a> {
     pub rec: &'a WayRec,
-    /// The way column: the OSM way id (RT v7).
+    /// The way column: the OSM way id.
     pub id: u32,
     pub verts: &'a [[i32; 2]],
     /// Processed elevation (`roadcore::elev`).
@@ -282,7 +282,7 @@ pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), prog
                     lf |= lflag::TOLL;
                 }
             }
-            let attr = [r.network, (r.maxspeed / 2).min(255) as u8, r.lanes, surface::code(w.surface)];
+            let attr = [(r.maxspeed / 2).min(255) as u8, r.lanes, surface::code(w.surface)];
             let colour = if r.colour != 0 { (r.colour & 0xff_ffff) + 1 } else { 0 };
             let mut seq = 0u32;
             clip_to_grid(&pts, ext, |tx, ty, piece| {
@@ -368,7 +368,7 @@ struct Dot {
     best: u32,
     best_len: u32,
     road_m: u32,
-    attr: [u8; 4],
+    attr: [u8; 3],
     colour: u32,
 }
 

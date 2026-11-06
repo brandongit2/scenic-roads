@@ -52,7 +52,7 @@ export const MODES: ModeDef[] = [
   { key: 'fields', label: 'Open land', short: 'Fields', id: 13, unit: '%', range: [0, 100], auto: false, domain: [0, 100], thrDefault: 30, step: 1, help: 'Fields, meadows and bare land within 1 km (pastoral views).', fmt: (v) => `${n0(v)} %` },
   { key: 'built', label: 'Built-up', short: 'Built', id: 14, unit: '%', range: [0, 100], auto: false, domain: [0, 100], thrDefault: 20, step: 1, help: 'Built-up land within 500 m.', fmt: (v) => `${n0(v)} %` },
   { key: 'bldg', label: 'Roadside buildings', short: 'Buildings', id: 15, unit: '%', range: [0, 100], auto: false, domain: [0, 100], thrDefault: 25, step: 1, help: 'Share of the road frontage (both sides, ±50 m) lined with buildings within 30 m, fading out at 80 m. Heights are not counted.', fmt: (v) => `${n0(v)} %` },
-  { key: 'map', label: 'Street map', short: 'Map', id: 20, unit: '', range: [0, 1], auto: false, domain: [0, 1], thrDefault: 0, step: 1, help: 'Roads as on a street map: fixed colours by road size, route network or attribute.', fmt: () => '' },
+  { key: 'map', label: 'Street map', short: 'Map', id: 20, unit: '', range: [0, 1], auto: false, domain: [0, 1], thrDefault: 0, step: 1, help: 'Roads as on a street map: fixed colours by road size or attribute.', fmt: () => '' },
 ];
 /** Scenic metrics (the "Scenic" display type). */
 export const isScenic = (m: ModeDef) => m.id >= 3 && m.id < 20;

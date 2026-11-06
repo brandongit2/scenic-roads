@@ -36,7 +36,7 @@ import { CORE_K, CORE_MIN_CSS, TIE_MIN_Z } from '../raildraw';
 import { PickGrid, type PickHit } from './pick';
 import { NO_PERSP, perspWidth } from './persp';
 import { lodCells, lodSig, pieceLists, type LodFilter } from './lod';
-import { DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
+import { ATTR, DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
 
 // The projection of a piece (vertex i to i + 1): both ends on screen, their depths, its
 // perspective scale, whether it is drawn at all and where it stands against the terrain. Shared
@@ -246,13 +246,12 @@ float g_fq = -1.0;           // rail: trains a day each way on this line (-1 unk
 // Direct colours, bypassing the palette: 0 off · 1 street-map scheme · 2 rail line colour
 // (else by group) · 3 by class · 4 single colour.
 uniform int u_direct;
-uniform int u_mapKind;      // street-map scheme: 0 class · 1 network · 2 speed · 3 lanes · 4 surface · 5 one-way/toll
+uniform int u_mapKind;      // street-map scheme: 0 class · 1 speed · 2 lanes · 3 surface · 4 one-way/toll
 uniform vec4 u_classCol[15]; // direct colours with their opacity
 uniform vec3 u_classCas[15];
-uniform vec4 u_netCol[72];
 uniform vec4 u_catCol[8];
 uniform vec3 u_single;
-uniform highp sampler2D u_la; // per line (2 texels, 1024 wide): network, maxspeed ÷ 2, lanes, surface; has colour, r, g, b
+uniform highp sampler2D u_la; // per line (2 texels, 1024 wide): maxspeed ÷ 2, lanes, surface, 0; has colour, r, g, b
 
 #ifdef SPRITE
 // Point sprites (FS_SPRITE): the piece's start on screen and its direction, which the fragment
@@ -453,7 +452,7 @@ void main() {
   int li = int(a_line);
   uint ls = u_lsOn == 1 ? uint(texelFetch(u_ls, ivec2(li % 1024, li / 1024), 0).r * 255.0 + 0.5) : 0u;
   bool railOff = u_rail == 1 && ((int(a_gs0.z) >> 1) & u_railMask) == 0;
-  float fqCode = u_rail == 1 ? floor(texelFetch(u_la, ivec2((li * 2) % 1024, (li * 2) / 1024), 0).z * 255.0 + 0.5) : 0.0;
+  float fqCode = u_rail == 1 ? floor(texelFetch(u_la, ivec2((li * 2) % 1024, (li * 2) / 1024), 0).y * 255.0 + 0.5) : 0.0;
   g_fq = fqCode > 0.5 ? pow(10.0, (fqCode - 1.0) / 254.0 * 4.0 - 1.0) : -1.0;
   bool fqOff = u_rail == 1 && u_fqOn == 1 && (fqCode < 0.5 ? u_fqUnk == 0 : (fqCode < u_fqLo || fqCode > u_fqHi));
   if (railOff || fqOff || (ls & 2u) != 0u || (style & 128u) != 0u || ((u_classMask >> cls) & 1) == 0 || u_zoom < u_minz[cls] || (u_surfaceMask & surf) == 0
@@ -568,13 +567,12 @@ void main() {
     vec4 c = u_classCol[cls];
     if (u_direct == 1) {
       cas = u_classCas[cls];
-      if (u_mapKind == 1) c = la0.x > 0u && la0.x < 72u ? u_netCol[la0.x] : u_classCol[cls];
-      else if (u_mapKind == 2) {
-        uint sp = la0.y * 2u;
+      if (u_mapKind == 1) {
+        uint sp = la0.x * 2u;
         c = u_catCol[sp == 0u ? 0 : sp <= 30u ? 1 : sp <= 50u ? 2 : sp <= 70u ? 3 : sp <= 90u ? 4 : sp <= 110u ? 5 : 6];
-      } else if (u_mapKind == 3) c = u_catCol[min(int(la0.z), 6)];
-      else if (u_mapKind == 4) c = u_catCol[la0.w == 0u && (style & 16u) != 0u ? 7 : min(int(la0.w), 6)];
-      else if (u_mapKind == 5) c = u_catCol[(a_gs0.z & 4u) != 0u ? 2 : (a_gs0.z & 2u) != 0u ? 1 : 0];
+      } else if (u_mapKind == 2) c = u_catCol[min(int(la0.y), 6)];
+      else if (u_mapKind == 3) c = u_catCol[la0.z == 0u && (style & 16u) != 0u ? 7 : min(int(la0.z), 6)];
+      else if (u_mapKind == 4) c = u_catCol[(a_gs0.z & 4u) != 0u ? 2 : (a_gs0.z & 2u) != 0u ? 1 : 0];
     } else if (u_direct == 2) {
       if (la1.x > 0u) c = vec4(vec3(la1.yzw) / 255.0, 1.0);
     } else if (u_direct == 4) {
@@ -995,7 +993,6 @@ function casingPx(s: RoadStyle, z: number): number {
 export interface SchemeUniforms {
   classCol: Float32Array;
   classCas: Float32Array;
-  netCol: Float32Array;
   catCol: Float32Array;
   kind: number;
 }
@@ -1167,7 +1164,7 @@ export class RoadLayer implements CustomLayerInterface {
           'u_lut', 'u_cdf', 'u_eq', 'u_palRow', 'u_range', 'u_bg', 'u_dim', 'u_thr', 'u_lowFade', 'u_lowSpan',
           'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane',
           'u_projection_transition', 'u_projection_fallback_matrix', 'u_camDist', 'u_part', 'u_occluded', 'u_passVis', 'u_tunnelsOnly',
-        'u_rail', 'u_railMask', 'u_rw', 'u_rwsum', 'u_fqOn', 'u_fqLo', 'u_fqHi', 'u_fqUnk', 'u_direct', 'u_mapKind', 'u_classCol', 'u_classCas', 'u_netCol', 'u_catCol', 'u_single', 'u_la', 'u_pattern', 'u_ties',
+        'u_rail', 'u_railMask', 'u_rw', 'u_rwsum', 'u_fqOn', 'u_fqLo', 'u_fqHi', 'u_fqUnk', 'u_direct', 'u_mapKind', 'u_classCol', 'u_classCas', 'u_catCol', 'u_single', 'u_la', 'u_pattern', 'u_ties',
           'u_maxPt', 'u_p22', 'u_depth', 'u_depthOn', 'u_opacity', 'u_over', 'u_clipN', 'u_clip', ...FOG_UNIFORMS,
         ]));
       };
@@ -2185,7 +2182,6 @@ export class RoadLayer implements CustomLayerInterface {
         gl.uniform1i(u.u_mapKind, s.scheme.kind);
         gl.uniform4fv(u.u_classCol, s.scheme.classCol);
         gl.uniform3fv(u.u_classCas, s.scheme.classCas);
-        gl.uniform4fv(u.u_netCol, s.scheme.netCol);
         gl.uniform4fv(u.u_catCol, s.scheme.catCol);
         gl.uniform3fv(u.u_single, s.single);
       }
@@ -2863,8 +2859,8 @@ export class RoadLayer implements CustomLayerInterface {
     return (f.min > 0 && v < f.min) || (f.max > 0 && v > f.max);
   }
 
-  /** The tile's per-line attributes: texel 2l = (network, maxspeed ÷ 2, lanes, surface; rail:
-   * the frequency code in the lanes byte), texel 2l + 1 = (has colour, r, g, b). Built on first use. */
+  /** The tile's per-line attributes: texel 2l = (maxspeed ÷ 2, lanes, surface, 0; rail: the
+   * frequency code in the lanes byte), texel 2l + 1 = (has colour, r, g, b). Built on first use. */
   private lineAttrs(t: RoadTile): WebGLTexture {
     if (t.la) return t.la;
     const gl = this.gl;
@@ -2873,8 +2869,8 @@ export class RoadLayer implements CustomLayerInterface {
     const h = Math.max(1, Math.ceil((n * 2) / 1024));
     const px = new Uint8Array(1024 * h * 4);
     for (let l = 0; l < n; l++) {
-      px.set(d.lineAttr.subarray(l * 4, l * 4 + 4), l * 8);
-      if (this.rail) px[l * 8 + 2] = freqCode(this.lineFreq(d, l));
+      px.set(d.lineAttr.subarray(l * ATTR, l * ATTR + ATTR), l * 8);
+      if (this.rail) px[l * 8 + 1] = freqCode(this.lineFreq(d, l));
       const c = d.lineColour[l];
       if (c) {
         const v = c - 1;

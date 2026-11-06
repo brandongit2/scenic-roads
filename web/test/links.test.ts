@@ -173,6 +173,14 @@ for (const b of [base.s, defaults]) {
   for (const m of MAP_SCHEMES) assert.equal(lookUniforms(presetLook(m)).casedMask, 0x1ff, m.key);
   // An unknown preset or a malformed look leaves the defaults'.
   assert.deepEqual(fromHash('#ms=nope&rm=class,zz,zz,1,a,b,c,d').roadMap.fill, defaults.roadMap.fill);
+  // A look colouring by what the app no longer has (the signed routes, removed by #853), linked,
+  // saved or as a preset's name: the default look, whole.
+  const signed = toHash({ ...structuredClone(s), roadMap: { ...s.roadMap, kind: 'network' as never } }, true);
+  assert.match(signed, /rm=network,/);
+  assert.deepEqual(fromHash(signed, true).roadMap, defaults.roadMap);
+  assert.deepEqual(fromHash('#map=5/46/-71&ms=network').roadMap, defaults.roadMap);
+  assert.deepEqual(st.fromSaved({ roadMap: { ...s.roadMap, kind: 'network' } }).roadMap, defaults.roadMap);
+  assert.deepEqual(st.fromSaved({ mapScheme: 'network' }).roadMap, defaults.roadMap);
   assert.deepEqual(fromHash('#rx=1.2,3&wd=1,2').roadLook, defaults.roadLook);
   // Out-of-range values clamped.
   assert.equal(fromHash(`#rx=${new Array(10).fill(40).join('_')},99,-1,0,1,1`).roadLook.casingFrom, st.ROAD_LOOK_RANGE.casingFrom[1]);

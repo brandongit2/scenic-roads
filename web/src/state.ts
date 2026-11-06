@@ -674,12 +674,14 @@ export function cleanRoadLook(l: RoadLook): RoadLook {
   };
 }
 const HEX8 = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
-/** A Map look with every colour valid (else the default look's there). */
+/** A Map look with every colour valid (else the default look's there); one colouring by what the
+ * app doesn't offer (a kind not in MAP_KINDS: an old link's or save's "network"), the default look. */
 function cleanMapLook(l: RoadMapLook): RoadMapLook {
   const d = defaults.roadMap;
+  if (!MAP_KINDS.some(([k]) => k === l.kind)) return structuredClone(d);
   const col = (v: string[], dv: string[], re: RegExp) => dv.map((x, i) => (typeof v[i] === 'string' && re.test(v[i]) ? v[i].toLowerCase() : x));
   return {
-    kind: MAP_KINDS.some(([k]) => k === l.kind) ? l.kind : d.kind,
+    kind: l.kind,
     fill: col(l.fill, d.fill, HEX8),
     casing: col(l.casing, d.casing, HEX),
     cased: d.cased.map((x, i) => (typeof l.cased[i] === 'boolean' ? l.cased[i] : x)),

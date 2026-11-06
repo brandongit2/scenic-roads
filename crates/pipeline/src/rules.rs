@@ -3,10 +3,9 @@
 //! meet its reach, so a changed rule reruns only the units it applies to: change the rule, bump its
 //! version here (the code of each rule points back to this table).
 //!
-//! Areas are the boxes the rules' code tests (w, s, e, n, degrees). A rule that applies everywhere
-//! its more particular neighbours don't (the European road numbers) is listed with the world:
-//! changing it reruns every unit, as it may change any of them. (The roads' elevations aren't a rule
-//! here: the declared datasets' digests take their place in a unit's key, docs/inputs.md §6.8.)
+//! Areas are the boxes the rules' code tests (w, s, e, n, degrees); a rule listed with the world
+//! (none) reruns every unit when changed. (The roads' elevations aren't a rule here: the declared
+//! datasets' digests take their place in a unit's key, docs/inputs.md §6.8.)
 //!
 //! The data sources' credits are here too, another rule by location: each with the areas whose data
 //! comes from it, the boxes its source's code tests. A catalogue lists the credits whose areas meet
@@ -26,27 +25,11 @@ pub struct Rule {
 }
 
 const WORLD: &[[f64; 4]] = &[];
-const NORTH_AMERICA: &[[f64; 4]] = &[[-180.0, -90.0, -40.0, 90.0]];
-const JAPAN: &[[f64; 4]] = &[[122.5, 20.0, 154.0, 46.5]];
-const TAIWAN: &[[f64; 4]] = &[[118.0, 21.5, 122.5, 26.6]];
-const HONG_KONG: &[[f64; 4]] = &[[113.8, 22.1, 114.5, 22.6]];
-const SINGAPORE: &[[f64; 4]] = &[[103.5, 1.1, 104.2, 1.5]];
-const ANDORRA: &[[f64; 4]] = &[[1.40, 42.42, 1.79, 42.66]];
 
 pub const RULES: &[Rule] = &[
     // extract: densification's code (crate::dem::spacing; where it's fine is the declared datasets',
     // in the units' keys).
     Rule { name: "spacing", version: 1, areas: WORLD },
-    // extract::network_code: road numbers by area.
-    Rule { name: "networks-north-america", version: 1, areas: NORTH_AMERICA },
-    Rule { name: "networks-hong-kong", version: 1, areas: HONG_KONG },
-    Rule { name: "networks-singapore", version: 1, areas: SINGAPORE },
-    Rule { name: "networks-japan", version: 1, areas: JAPAN },
-    Rule { name: "networks-taiwan", version: 1, areas: TAIWAN },
-    Rule { name: "networks-andorra", version: 1, areas: ANDORRA },
-    // France's and Monaco's, Spain's, Portugal's, Ireland's and Britain's numbers, and E-roads: tested
-    // by their form and loose boxes, after the areas above.
-    Rule { name: "networks-europe", version: 1, areas: WORLD },
 ];
 
 /// The current version of the rule `name` (0 when there's no such rule).
@@ -83,7 +66,10 @@ fn anywhere(areas: &&'static [[f64; 4]]) -> bool {
     areas.is_empty()
 }
 
-/// crate::leaftype: the EEA's dominant leaf type within this box (NALCMS west of 40° W, as
+/// crate::leaftype: NALCMS's leaf type west of 40° W.
+const NORTH_AMERICA: &[[f64; 4]] = &[[-180.0, -90.0, -40.0, 90.0]];
+
+/// crate::leaftype: the EEA's dominant leaf type within this box (NALCMS west of 40° W,
 /// `NORTH_AMERICA`).
 const EEA_LEAF: &[[f64; 4]] = &[[-40.0, 20.0, 40.0, 75.0]];
 
@@ -238,11 +224,10 @@ mod tests {
     #[test]
     fn rules_by_area() {
         let tokyo = versions_meeting(e7(139.0, 35.0, 140.0, 36.0));
-        assert!(tokyo.contains("networks-japan=1") && !tokyo.contains("north-america"));
         let quebec = versions_meeting(e7(-72.0, 46.0, -71.0, 47.0));
-        assert!(quebec.contains("networks-north-america=1") && !quebec.contains("japan"));
         // The world's rules everywhere; no DEM rule (the declared datasets name the elevations).
-        assert!(tokyo.contains("networks-europe=1") && quebec.contains("spacing=1") && !tokyo.contains("dem-"));
+        assert_eq!(tokyo, "spacing=1");
+        assert_eq!(quebec, tokyo);
     }
 
     /// A region of one drawn box, as a catalogue records it.

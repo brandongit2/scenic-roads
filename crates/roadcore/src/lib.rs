@@ -76,50 +76,6 @@ pub mod class {
     }
 }
 
-/// Route networks by signage, for the street-map colourings (`WayRec::network`).
-pub mod network {
-    pub const NONE: u8 = 0;
-    pub const US_INTERSTATE: u8 = 1;
-    pub const US_HIGHWAY: u8 = 2;
-    pub const US_STATE: u8 = 3;
-    pub const US_COUNTY: u8 = 4;
-    pub const CA_AUTOROUTE: u8 = 5;
-    pub const CA_PROVINCIAL: u8 = 6;
-    pub const CA_REGIONAL: u8 = 7;
-    pub const FR_AUTOROUTE: u8 = 10;
-    pub const FR_NATIONALE: u8 = 11;
-    pub const FR_DEPARTEMENTALE: u8 = 12;
-    pub const FR_METROPOLE: u8 = 13;
-    pub const GB_MOTORWAY: u8 = 20;
-    pub const GB_A_PRIMARY: u8 = 21;
-    pub const GB_A: u8 = 22;
-    pub const GB_B: u8 = 23;
-    pub const IE_MOTORWAY: u8 = 24;
-    pub const IE_NATIONAL_PRIMARY: u8 = 25;
-    pub const IE_NATIONAL_SECONDARY: u8 = 26;
-    pub const IE_REGIONAL: u8 = 27;
-    pub const ES_AUTOVIA: u8 = 30;
-    pub const ES_NACIONAL: u8 = 31;
-    pub const ES_AUTONOMICA: u8 = 32;
-    pub const ES_LOCAL: u8 = 33;
-    pub const PT_AUTOESTRADA: u8 = 40;
-    pub const PT_IP: u8 = 41;
-    pub const PT_IC: u8 = 42;
-    pub const PT_NACIONAL: u8 = 43;
-    pub const PT_REGIONAL: u8 = 44;
-    pub const HK_ROUTE: u8 = 50;
-    pub const JP_EXPRESSWAY: u8 = 51;
-    pub const JP_NATIONAL: u8 = 52;
-    pub const JP_PREFECTURAL: u8 = 53;
-    pub const TW_FREEWAY: u8 = 54;
-    pub const TW_PROVINCIAL: u8 = 55;
-    pub const TW_COUNTY: u8 = 56;
-    pub const SG_EXPRESSWAY: u8 = 57;
-    pub const AD_GENERAL: u8 = 60;
-    pub const AD_SECUNDARIA: u8 = 61;
-    pub const E_ROAD: u8 = 70;
-}
-
 /// Per-way flag bits.
 pub mod flag {
     pub const LINK: u8 = 1 << 0;
@@ -153,8 +109,8 @@ pub struct WayRec {
     pub class: u8,
     pub flags: u8,
     pub lanes: u8,
-    /// Route network by signage (`network`), roads only.
-    pub network: u8,
+    /// Unused, zero.
+    pub _pad0: u8,
     /// Passenger rail: bit per service group using the track (bit k = class TRAM + k).
     pub rail: u8,
     pub _pad: u8,
