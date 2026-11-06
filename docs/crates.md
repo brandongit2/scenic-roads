@@ -355,6 +355,24 @@ tools/dev/check.sh on this branch (6 Nov, 07:41-07:59 UTC, the M4 at load 80-180
 files, so its affected set is most of the suite; nextest's run itself 263 s, the rest building).
 No before figure: a check's time follows its branch's affected set, not 6a-6b.
 
+Before and after step 6c, 6 Nov 2026 11:18-11:28 UTC, on the M4 (load 54-140: the pool's jobs and
+other agents' builds), rustc 1.98.1, through tools/dev/bin/cargo. Before: main at 6a706e07; after:
+this branch (d4df468f, before its rebase), each tree a folder of its own with its own target folder,
+built once first. Interleaved (before, after; after, before; before, after), 3 runs each. Peak: the
+largest process (`time -l`); CPU: user + system of the whole command. The edits: one comment line
+appended to marksjob.rs (a leaf step module), and to the client (coord/client.rs before,
+coordwire's client.rs after), each built at once:
+
+| run | before | after |
+|---|---|---|
+| dev (`build --workspace --bins`), marksjob edit | 11.5, 10.5, 7.0 s (CPU 13.2-14.6 s), 2.19-2.26 GB | 10.5, 7.0, 10.9 s (CPU 13.5-14.0 s), 1.94-2.27 GB |
+| unit-test build after the client's edit | pipeline --lib: 9.9, 7.5, 7.5 s (CPU 9.1-9.7 s), 3.25 GB | coordwire --lib: 0.6, 0.5, 0.6 s (CPU 0.7 s), 0.15 GB |
+| first builds, one each (not interleaved) | dev 119 s, 4.20 GB; pipeline's lib tests 172 s, 5.88 GB | dev 83 s, 4.27 GB; coordwire's lib tests 74 s, 0.72 GB |
+
+So 6c leaves a dev build after a step module's edit where it was (pipeline and server recompile
+either way), and the client's own test loop is 13-16 times faster, its largest rustc a twentieth of
+pipeline's. The first builds' walls are third-party crates from sccache under the load, not 6c.
+
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
 timings: an edit in a crate recompiles every crate that depends on it, so moving a *leaf* module
