@@ -28,6 +28,199 @@ pub mod task;
 #[cfg(test)]
 pub(crate) mod tests;
 
+/// Test helpers other modules' tests use (treepacks', pipeline's trees_tests): the staged sources,
+/// and square (50, 0)'s files.
+#[cfg(test)]
+pub mod testkit {
+    use super::*;
+    use std::io::Write;
+
+    /// The staged declarations' sources as a run reads them (crate::inputs::sources::staged).
+    pub(crate) fn run_sources() -> RunSources {
+        RunSources::of(&crate::inputs::sources::staged()).unwrap()
+    }
+
+    /// `run_sources` written into `dir` (`sources.json`), for a `Run`.
+    pub fn sources_file(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let p = dir.join("sources.json");
+        std::fs::write(&p, serde_json::to_vec(&run_sources()).unwrap()).unwrap();
+        p
+    }
+
+    /// An `n` × `n` one-band TIFF of `bits`-bit unsigned samples in 512-pixel tiles, Deflate: tile
+    /// (tx, ty)'s samples (row by row, little-endian) as `tile` gives them, or none (sparse: read as 0);
+    /// identical tiles stored once. With `meta`, GDAL's metadata items.
+    pub(crate) fn tiff(
+        n: u32,
+        bits: u16,
+        tile: &dyn Fn(u32, u32) -> Option<Vec<u8>>,
+        meta: &[(&str, &str)],
+    ) -> Vec<u8> {
+        tiff_nodata(n, bits, tile, meta, None)
+    }
+
+    /// `tiff` with GDAL's nodata tag: a sparse tile reads as it.
+    pub(crate) fn tiff_nodata(
+        n: u32,
+        bits: u16,
+        tile: &dyn Fn(u32, u32) -> Option<Vec<u8>>,
+        meta: &[(&str, &str)],
+        nodata: Option<&str>,
+    ) -> Vec<u8> {
+        const T: u32 = 512;
+        let across = n.div_ceil(T);
+        let mut blobs: Vec<Vec<u8>> = Vec::new();
+        let mut kept: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
+        let mut which: Vec<Option<usize>> = Vec::new();
+        for ty in 0..across {
+            for tx in 0..across {
+                which.push(tile(tx, ty).map(|raw| {
+                    *kept.entry(raw.clone()).or_insert_with(|| {
+                        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+                        z.write_all(&raw).unwrap();
+                        blobs.push(z.finish().unwrap());
+                        blobs.len() - 1
+                    })
+                }));
+            }
+        }
+        let xml = if meta.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<GDALMetadata>\n{}</GDALMetadata>\n\0",
+                meta.iter().map(|(k, v)| format!("  <Item name=\"{k}\">{v}</Item>\n")).collect::<String>()
+            )
+        };
+        let count = which.len() as u32;
+        // Header, directory, its arrays and the metadata, then the tiles.
+        let mut entries: Vec<(u16, u16, u32, u32)> = vec![
+            (256, 4, 1, n),
+            (257, 4, 1, n),
+            (258, 3, 1, bits as u32),
+            (259, 3, 1, 8),
+            (262, 3, 1, 1),
+            (277, 3, 1, 1),
+            (322, 3, 1, T),
+            (323, 3, 1, T),
+            (324, 4, count, 0),
+            (325, 4, count, 0),
+            (339, 3, 1, 1),
+        ];
+        if !xml.is_empty() {
+            entries.push((42112, 2, xml.len() as u32, 0));
+        }
+        let nd = nodata.map(|v| format!("{v}\0")).unwrap_or_default();
+        if !nd.is_empty() {
+            entries.push((42113, 2, nd.len() as u32, 0));
+        }
+        let ifd_len = 2 + 12 * entries.len() + 4;
+        let arrays = 8 + ifd_len;
+        let xml_at = arrays + 8 * count as usize;
+        let nd_at = xml_at + xml.len();
+        let data = nd_at + if nd.len() > 4 { nd.len() } else { 0 };
+        let mut at = data;
+        let mut blob_at = Vec::new();
+        for b in &blobs {
+            blob_at.push(at);
+            at += b.len();
+        }
+        let mut out = b"II*\0".to_vec();
+        out.extend_from_slice(&8u32.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for e in &entries {
+            let v = match e.0 {
+                324 => arrays as u32,
+                325 => (arrays + 4 * count as usize) as u32,
+                42112 => xml_at as u32,
+                42113 if nd.len() > 4 => nd_at as u32,
+                42113 => u32::from_le_bytes(
+                    nd.as_bytes().iter().copied().chain([0; 4]).take(4).collect::<Vec<u8>>().try_into().unwrap(),
+                ),
+                _ => e.3,
+            };
+            out.extend_from_slice(&e.0.to_le_bytes());
+            out.extend_from_slice(&e.1.to_le_bytes());
+            out.extend_from_slice(&e.2.to_le_bytes());
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&0u32.to_le_bytes());
+        for w in &which {
+            out.extend_from_slice(&(w.map_or(0, |k| blob_at[k]) as u32).to_le_bytes());
+        }
+        for w in &which {
+            out.extend_from_slice(&(w.map_or(0, |k| blobs[k].len()) as u32).to_le_bytes());
+        }
+        out.extend_from_slice(xml.as_bytes());
+        if nd.len() > 4 {
+            out.extend_from_slice(nd.as_bytes());
+        }
+        for b in &blobs {
+            out.extend_from_slice(b);
+        }
+        out
+    }
+
+    /// A tile's samples: value(row, col) of the square for each of its 512 × 512 pixels.
+    pub(crate) fn samples(tx: u32, ty: u32, bits: u16, value: &dyn Fn(u32, u32) -> u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        for r in ty * 512..(ty + 1) * 512 {
+            for c in tx * 512..(tx + 1) * 512 {
+                let x = value(r, c);
+                if bits == 16 {
+                    v.extend_from_slice(&(x as u16).to_le_bytes());
+                } else {
+                    v.push(x as u8);
+                }
+            }
+        }
+        v
+    }
+
+    pub(crate) fn cover_at(r: u32, c: u32) -> u32 {
+        (r * 7 + c * 3) % 1001
+    }
+
+    pub(crate) fn height_at(r: u32, c: u32) -> u32 {
+        (r * 13 + c * 5) % 4000
+    }
+
+    pub(crate) fn leaf_at(r: u32, c: u32) -> u32 {
+        [0, 1, 2, 3, 255][((r / 7 + c / 11) % 5) as usize]
+    }
+
+    /// Square (50, 0)'s files, with data in the tiles of block 8/132/88's first rows of zoom-12 tiles
+    /// (and the leaf type's), the rest none; the leaf-type square tagged complete.
+    pub fn squares_dir() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let chm = |tx: u32, ty: u32| (43..=45).contains(&tx) && ty == 8;
+        std::fs::write(
+            d.path().join(chm_name(50, 0, "cover5m")),
+            tiff(40000, 16, &|tx, ty| chm(tx, ty).then(|| samples(tx, ty, 16, &cover_at)), &[]),
+        )
+        .unwrap();
+        std::fs::write(
+            d.path().join(chm_name(50, 0, "p95")),
+            tiff(40000, 16, &|tx, ty| chm(tx, ty).then(|| samples(tx, ty, 16, &height_at)), &[]),
+        )
+        .unwrap();
+        let leaf = |tx: u32, ty: u32| (21..=22).contains(&tx) && ty == 4;
+        std::fs::write(
+            d.path().join(leaf_name(50, 0)),
+            tiff_nodata(
+                20000,
+                8,
+                &|tx, ty| leaf(tx, ty).then(|| samples(tx, ty, 8, &leaf_at)),
+                &[("complete", "1"), ("source", "test")],
+                Some("255"),
+            ),
+        )
+        .unwrap();
+        d
+    }
+}
+
 use anyhow::{bail, ensure, Context, Result};
 use buildstore::fetch::{Fetch, Noted};
 use pyramid::{Tile, Tops};
@@ -759,7 +952,7 @@ type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>, Source);
 
 /// Where a run keeps the canopy rows it read from the NAS (squares::rows_here), in its `out`;
 /// removed as the blocks are made.
-const ROWS_DIR: &str = "canopy-rows";
+pub const ROWS_DIR: &str = "canopy-rows";
 
 /// The canopy rows (first, last) of square (`top`, `left`) that `blocks` read; None when none.
 fn chm_rows(blocks: &[(u32, u32)], top: i32, left: i32) -> Option<(u32, u32)> {

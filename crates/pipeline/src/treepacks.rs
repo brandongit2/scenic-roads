@@ -626,7 +626,7 @@ mod tests {
     /// (as `build_piece` and `build_lo`), on the trees tests' squares: the same content names.
     #[test]
     fn pieces_and_their_assembly_make_the_z3_runs_packs() {
-        let sq = crate::trees::tests::squares_dir();
+        let sq = crate::trees::testkit::squares_dir();
         let d = tempfile::tempdir().unwrap();
         // Over z8 blocks 131–134, rows 87 and 88: z6 tiles 6/32/21, 6/32/22, 6/33/21 and 6/33/22 of
         // z3 tile 3/4/2, the squares' data in each.
@@ -646,7 +646,7 @@ mod tests {
                 coverage: dir.join("coverage.json"),
                 chm: sq.path().into(),
                 chm_store: d.path().join("store"),
-                sources: crate::trees::tests::sources_file(dir),
+                sources: crate::trees::testkit::sources_file(dir),
                 leaf: sq.path().into(),
                 out: dir.into(),
                 keep: None,

@@ -92,3 +92,6 @@ mod inputs_tests;
 
 #[cfg(test)]
 mod terrain_tests;
+
+#[cfg(test)]
+mod trees_tests;
