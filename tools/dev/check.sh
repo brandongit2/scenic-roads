@@ -14,7 +14,10 @@
 #             APIs), when tools/devtools or the build page's timeline modules it serves changed
 #   devjob    tools/dev/test/devjob.zsh (the dev jobs' recorder), when tools/dev/devjob* or its tests changed
 #   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh) and remote-tests.zsh (the test Mac's disk room), when tools/app changed
-#   testguard tools/dev/test/test-guard.zsh (the test guard's worktree lookup), when it changed
+#   testguard tools/dev/test/test-guard.zsh (the test guard's worktree lookup), when it or shellwords.py changed
+#   gitguard  tools/dev/test/git-guard.zsh (whose checkout a git write goes to), when the git guard,
+#             shell-guard.sh or shellwords.py changed
+#   record    tools/dev/test/check-record.zsh (this script on a toy repo: what it records), when it changed
 #   reuse     tools/dev/test/check-reuse.zsh (the reuse rule, below), when it or what it tests changed
 #   sharedtarget tools/dev/test/shared-target.zsh (tools/dev/bin/cargo on a toy workspace), when either changed
 #   sweep     tools/dev/test/sweep-targets.zsh (the sweep's room, on a fake disk), when the sweep, its
@@ -37,10 +40,11 @@
 # Each run is recorded for the dev job dashboard (tools/dev/devjob.zsh): the run, each part with what
 # its output says of its compiles, a skipped or reused part as a mark; cargo and the test runs under
 # their part.
-# When every part passes (or is reused) on a clean tree it records HEAD (and, nothing untracked,
-# its tree key, base, test set and what it reused) in $(git rev-parse --git-common-dir)/check-passed,
-# which the SubagentStop hook (tools/dev/report-guard.sh) and tools/dev/merge-ok.sh read. Exit 0 only
-# when all passed.
+# When every part passes (or is reused) on a clean checkout (nothing untracked either), and HEAD,
+# the checkout's state and its files are as they were at the start (#980), it records HEAD, its tree
+# key, base, test set and what it reused in $(git rev-parse --git-common-dir)/check-passed, which
+# the SubagentStop hook (tools/dev/report-guard.sh) and tools/dev/merge-ok.sh read; otherwise it
+# says why it records nothing. Exit 0 only when all passed and the pass is recorded.
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
@@ -54,7 +58,18 @@ path=($root/tools/dev/bin $path)  # (after mise's: its PATH puts rustup's cargo 
 exec {say}>&2; export SCENIC_CARGO_SAY=/dev/fd/$say  # (the parts' output goes to their logs; a wait comes here too)
 logs=~/Library/Logs/scenic/check-$(date +%Y%m%d-%H%M%S)-$$
 mkdir -p $logs
-base=$(git merge-base main HEAD)
+# What is checked, noted at the start (#980): HEAD, its tree key, and whether the checkout is clean
+# (nothing untracked either). A pass is recorded only when all three still hold at the end and no
+# file of the checkout (tracked, or untracked and not ignored) was written meanwhile ($logs/start's
+# time): an edit made and undone during the run, or a reset to another commit and back, was in
+# what the parts read. (A check ran on while another session reset its worktree, and recorded the
+# new HEAD as passed, 6 Nov.)
+: > $logs/start
+head0=$(git rev-parse HEAD) || exit 2
+base=$(git merge-base main $head0)
+treekey="tree $(git rev-parse "$head0^{tree}") base $(git rev-parse "$base^{tree}")"
+clean0=$(git status --porcelain)
+[[ -z $clean0 ]] || treekey=
 source ${0:A:h}/devjob.zsh
 dj_start check "check ${root:t}" log $logs base ${base:0:7}; djrun=$REPLY djstatus=stopped djwhy=
 export SCENIC_DEVJOB_PARENT=$djrun
@@ -66,13 +81,11 @@ changed=( ${(f)"$(git diff --name-only $base; git ls-files --others --exclude-st
 # whose tree and merge-base's tree a pass recorded passes at once, recording HEAD with that pass's
 # fields and `reused all=<its commit>`. (Every part reads only the tree and its diff against that base.)
 passed=$(git rev-parse --path-format=absolute --git-common-dir)/check-passed
-treekey="tree $(git rev-parse 'HEAD^{tree}') base $(git rev-parse "$base^{tree}")"
-# (Clean at the start: a file untracked or edited during the run and gone by its end was in the
-# check, so the end's state alone can't vouch for the tree.)
-[[ -z $(git status --porcelain) ]] || treekey=
-if [[ -n $treekey ]] && same=$(grep -F -- " $treekey" $passed 2>/dev/null | tail -1) && [[ -n $same ]]; then
-  print -r -- "$(git rev-parse HEAD) $(date -u +%FT%TZ) ${${same#* }#* } reused all=${same%% *}" >> $passed
-  print "PASS: this tree was already checked (against the same base) at ${same:0:7}: recorded $(git rev-parse --short HEAD) as checked"
+# (The pass's commit must have the tree it names: a record names the tree it checked.)
+if [[ -n $treekey ]] && same=$(grep -F -- " $treekey" $passed 2>/dev/null | tail -1) && [[ -n $same ]] &&
+    [[ $(git rev-parse -q --verify "${same%% *}^{tree}") == $(git rev-parse "$head0^{tree}") ]]; then
+  print -r -- "$head0 $(date -u +%FT%TZ) ${${same#* }#* } reused all=${same%% *}" >> $passed
+  print "PASS: this tree was already checked (against the same base) at ${same:0:7}: recorded ${head0:0:7} as checked"
   djstatus=reuse djwhy="this tree was checked at ${same:0:7}"
   exit 0
 fi
@@ -129,8 +142,12 @@ if has 'tools/dev/devjob*' || has 'tools/dev/test/(devjob.zsh|test_devjob.py)'; 
 else skip devjob "the dev jobs' recorder unchanged"; fi
 if has 'tools/app/*'; then part shell zsh -c 'zsh tools/app/test/shell.zsh && zsh tools/app/test/remote-tests.zsh'
 else skip shell "tools/app unchanged"; fi
-if has 'tools/dev/test-guard*' || has 'tools/dev/test/test-guard.zsh'; then part testguard zsh tools/dev/test/test-guard.zsh
+if has 'tools/dev/test-guard*' || has 'tools/dev/shellwords.py' || has 'tools/dev/test/test-guard.zsh'; then part testguard zsh tools/dev/test/test-guard.zsh
 else skip testguard "tools/dev/test-guard unchanged"; fi
+if has 'tools/dev/(git|shell)-guard*' || has 'tools/dev/shellwords.py' || has 'tools/dev/test/git-guard.zsh'; then part gitguard zsh tools/dev/test/git-guard.zsh
+else skip gitguard "the git guard unchanged"; fi
+if has 'tools/dev/check.sh' || has 'tools/dev/test/check-record.zsh'; then part record zsh tools/dev/test/check-record.zsh
+else skip record "check.sh unchanged"; fi
 if has 'tools/dev/check*' || has 'tools/dev/affected-tests.sh' || has 'tools/dev/merge-ok.sh' || has 'tools/dev/test/check-reuse.zsh'; then
   part reuse zsh tools/dev/test/check-reuse.zsh
 else skip reuse "the reuse rule unchanged"; fi
@@ -195,33 +212,43 @@ if (( ${#py} )); then
   part python pycheck
 else skip python "no producers/ or dem/ Python changed"; fi
 
-print "\n== check.sh summary ($(git rev-parse --short HEAD)) =="
+print "\n== check.sh summary (${head0:0:7}) =="
 print -l -- $summary
 djstatus=fail
 if (( failed )); then print "FAIL: fix the parts above before reporting"; exit 1; fi
-if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
-  print "PASS, but uncommitted changes: commit them and run again (the pass is recorded for a commit)"
-  djwhy="uncommitted changes"
-  exit 1
+# (Not recorded: a pass names the tree it checked, which must be HEAD's, the same at both ends.)
+notrec() { print -r -- "PASS, but NOT recorded: $1"; djwhy=$2; exit 1 }
+head1=$(git rev-parse HEAD)
+[[ $head1 == $head0 ]] ||
+  notrec "HEAD moved during the run, from ${head0:0:7} to ${head1:0:7} (a commit, reset or checkout here): what was checked isn't HEAD. Run check.sh again, changing nothing in this checkout while it runs." "HEAD moved"
+[[ -z $(git status --porcelain --untracked-files=no) ]] ||
+  notrec "uncommitted changes: commit them and run again (the pass is recorded for a commit)" "uncommitted changes"
+[[ -z $clean0 && -z $(git status --porcelain) ]] ||
+  notrec "untracked files at the start or the end (${${(f)clean0}[1]:-$(git status --porcelain | head -1)} …): commit, ignore or delete them and run again (a pass is recorded for a tree)" "untracked files"
+# (Nanoseconds: find -newer and zsh's -nt compare whole seconds, and a run can be shorter.)
+written=( ${(f)"$(git ls-files -z -co --exclude-standard | python3 -c '
+import os, sys
+t = os.stat(sys.argv[1]).st_mtime_ns
+for f in sys.stdin.read().split("\0"):
+    try:
+        if f and os.lstat(f).st_mtime_ns > t: print(f)
+    except OSError: pass
+' $logs/start | head -3)"} )
+(( ! ${#written} )) ||
+  notrec "files written during the run (${written[*]}): what was checked may not be what's committed. Run check.sh again, changing nothing in this checkout while it runs." "files written during the run"
+# The record: HEAD, its tree key, the base commit and the hash of the test commands, which a later
+# rebase's reuse compares (tools/dev/check-reuse.py), and what it reused.
+treekey+=" at $base"
+if [[ -s $logs/tests-commands ]]; then
+  th=$(shasum $logs/tests-commands | cut -d' ' -f1); treekey+=" tests $th"
+  # (The commands themselves, for a later check whose own differ: check-reuse.py runs only the
+  # tests these didn't, #969. A few KB each; older than 30 days go. Shared by the Mac's
+  # worktrees, so put in place whole by a rename: a check reading it meanwhile never sees it cut
+  # short, and check-reuse.py takes it only when its bytes are its name's hash.)
+  mkdir -p ${passed:h}/check-tests && cp $logs/tests-commands ${passed:h}/check-tests/$th.$$.tmp &&
+    mv -f ${passed:h}/check-tests/$th.$$.tmp ${passed:h}/check-tests/$th
+  find ${passed:h}/check-tests -type f -mtime +30 -delete 2>/dev/null
 fi
-# (The tree key only when the checkout was clean at the start, still is, and HEAD's tree is the one
-# checked: a commit made during the run gets no key, nor what it reused.) With it, the base commit
-# and the hash of the test commands, which a later rebase's reuse compares (tools/dev/check-reuse.py).
-[[ -z $(git status --porcelain) && $treekey == "tree $(git rev-parse 'HEAD^{tree}') "* ]] || treekey=
-if [[ -n $treekey ]]; then
-  treekey+=" at $base"
-  if [[ -s $logs/tests-commands ]]; then
-    th=$(shasum $logs/tests-commands | cut -d' ' -f1); treekey+=" tests $th"
-    # (The commands themselves, for a later check whose own differ: check-reuse.py runs only the
-    # tests these didn't, #969. A few KB each; older than 30 days go. Shared by the Mac's
-    # worktrees, so put in place whole by a rename: a check reading it meanwhile never sees it cut
-    # short, and check-reuse.py takes it only when its bytes are its name's hash.)
-    mkdir -p ${passed:h}/check-tests && cp $logs/tests-commands ${passed:h}/check-tests/$th.$$.tmp &&
-      mv -f ${passed:h}/check-tests/$th.$$.tmp ${passed:h}/check-tests/$th
-    find ${passed:h}/check-tests -type f -mtime +30 -delete 2>/dev/null
-  fi
-  treekey+=$reused
-fi
-print -r -- "$(git rev-parse HEAD) $(date -u +%FT%TZ)${treekey:+ $treekey}" >> $passed
+print -r -- "$head0 $(date -u +%FT%TZ) $treekey$reused" >> $passed
 djstatus=ok
-print "PASS: recorded $(git rev-parse --short HEAD) as checked"
+print "PASS: recorded ${head0:0:7} as checked"

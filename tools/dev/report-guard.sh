@@ -16,6 +16,7 @@ if [[ -n $(git -C $wt status --porcelain --untracked-files=no) ]]; then
   print -u2 "Uncommitted changes in $wt: commit them, run tools/dev/check.sh there, then report."
   exit 2
 fi
-grep -q "^$head " $repo/.git/check-passed 2>/dev/null && exit 0
+# (A pass naming HEAD's tree, #980: check.sh records nothing when the checkout changed during its run.)
+grep -q "^$head .* tree $(git -C $wt rev-parse "$head^{tree}") " $repo/.git/check-passed 2>/dev/null && exit 0
 print -u2 "tools/dev/check.sh hasn't passed on HEAD ${head:0:7} of $wt. Run it there (cd $wt && $repo/tools/dev/check.sh, which also works on a branch older than #548), fix what fails, commit, and report only after it prints PASS. See tools/dev/testing.md."
 exit 2

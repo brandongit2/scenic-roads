@@ -56,7 +56,7 @@ when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/tes
 `tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/devtools/test when
 tools/devtools or the build page's timeline modules it serves changed (#672), `tools/dev/test/devjob.zsh` when the
 dev jobs' recorder changed (#946), `tools/app/test/shell.zsh` (publish.sh's shell
-steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, the Swift build and self-test when tools/status changed,
+steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records) when check.sh changed, the Swift build and self-test when tools/status changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
 changed. The tests run as one `cargo nextest run` (#969; `affected-tests.sh --nextest <file>`
 turns the `cargo test` lines into it, saved in the log folder's `tests-nextest`): one build of
@@ -72,10 +72,16 @@ Tests build without debug info (`debug = false` in Cargo.toml's `[profile.test]`
 `tools/dev/test/check-reuse.zsh` runs when the reuse rule's files (check.sh, check-reuse.py,
 affected-tests.sh, merge-ok.sh) or the test changed.
 One PASS/FAIL/REUSE line per part with its wall and CPU time here (the tests part also the test Mac's);
-whole outputs in ~/Library/Logs/scenic/check-<time>/. A pass on a clean tree records HEAD in
-`.git/check-passed`; when nothing is untracked, also its tree key (`tree` HEAD's tree, `base` the
-merge-base's tree), `at` the merge-base, `tests` the hash of its test commands and a `reused
-<part>=<commit>` for each part it took from an earlier pass. A later run on a clean checkout with
+whole outputs in ~/Library/Logs/scenic/check-<time>/. A pass on a clean checkout (nothing
+untracked either) records HEAD in `.git/check-passed` with its tree key (`tree` HEAD's tree, `base`
+the merge-base's tree), `at` the merge-base, `tests` the hash of its test commands and a `reused
+<part>=<commit>` for each part it took from an earlier pass. A record names the tree it checked
+(#980): check.sh notes HEAD, the tree key and whether the checkout is clean when it starts, and
+records nothing (`PASS, but NOT recorded: …`, exit 1) when HEAD moved during the run (a commit, a
+reset, a checkout), the checkout has untracked files or uncommitted edits at the start or the end,
+or a file of the checkout (tracked, or untracked and not ignored) was written after it started (an
+edit undone before the end, a reset away and back): on 6 Nov a check ran on while another session
+reset its worktree, and recorded the new HEAD as passed. A later run on a clean checkout with
 the same tree key passes at once, recording its HEAD with that pass's fields and `reused
 all=<commit>` (an amend of the message, a cherry-pick onto the same base: nothing a part reads changed).
 
@@ -128,7 +134,35 @@ Enforced twice: `tools/dev/report-guard.sh` (a SubagentStop hook) keeps a worktr
 commits beyond main from finishing until its HEAD passed, and the PM runs
 `tools/dev/merge-ok.sh <commit>…` before cherry-picking: ok when a pass is recorded at the commit or
 a later commit of its branch and holds, saying what that pass reused and from which commit; a pass
-holds when every pass it reused from is recorded and holds in turn (the reason given when none does).
+holds when it names its commit's tree and every pass it reused from is recorded and holds in turn
+(the reason given when none does). report-guard.sh, check-reuse.py and check.sh's own reuse of a
+tree checked before likewise take only a pass naming its commit's tree; passes recorded before
+#980 without one (a dirty checkout's, or one whose HEAD moved) vouch for nothing.
+
+## Whose checkout: git writes (#980, 6 Nov)
+
+A session writes with git only in its own checkouts. `tools/dev/git-guard.py`, run by the
+PreToolUse hook `tools/dev/shell-guard.sh` (so no settings change), refuses a Bash command whose git
+write (reset, checkout, switch, restore, commit, rebase, merge, cherry-pick, revert, am, pull,
+clean, add, rm, mv, apply, stash but its list/show/drop/clear/create/store, worktree remove/move,
+read-tree, update-index, checkout-index) goes to another checkout of this repo. That checkout is
+the one `git -C`, `--work-tree`/`GIT_WORK_TREE` or `--git-dir`/`GIT_DIR` names, else where an
+earlier `cd` of the command line went, else the cwd; for `worktree remove|move`, its path. A
+session's own:
+- a subagent (the hook input's `agent_id`): its worktree `.claude/worktrees/agent-<agent_id>`, which
+  Claude Code made for it; an agent started without isolation has none (on 6 Nov one, started in
+  another agent's worktree, reset it while that worktree's check ran);
+- the main session (the PM): the main checkout and the checkout it started in (its transcript's
+  first `cwd`); it may also `git worktree remove` a subagent's worktree once Claude Code's
+  `subagents/agent-<id>.meta.json` (in the project's transcripts) says that agent finished;
+- either: the worktrees it made: a `git worktree add <path>` the guard saw, of a path not there
+  yet, recorded in `.git/worktree-owners/` (the session's and agent's ids, under the path's hash).
+  The PM's `int-*` worktrees are so.
+To look at or test another agent's commit, make a worktree of your own (`git worktree add <scratch
+folder> <commit>`). A write whose folder the guard can't tell (a variable not set on the line, a
+substitution, `cd -`) is refused: write the path out. Reads (log, diff, status, show, branch,
+worktree list), other repos and quoted or heredoc text pass. What a script the command runs does
+with git is not seen (publish.sh's snapshot worktree is its own). Test: `tools/dev/test/git-guard.zsh`.
 
 ## One build folder per Mac (#915, 31 Oct)
 

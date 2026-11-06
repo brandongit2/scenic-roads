@@ -244,10 +244,14 @@ merge() {  # merge <want status> <text it says> <check-passed lines...>
   out=$(zsh tools/dev/merge-ok.sh $N 2>&1); rc=$?
   if [[ $rc == $want && $out == *"$text"* ]]; then ok "merge-ok: $out"; else bad "merge-ok ($want, $text): $rc $out"; fi
 }
-merge 0 "ok (check.sh passed at ${N:0:7})" "$N t"
-merge 0 "reused: clippy from ${P:0:7}, tests from ${P:0:7} (partly run again)" "$P t" "$N t tree x reused clippy=$P reused tests=$P/partial"
-merge 1 "clippy reused from ${b0:0:7}, which has no pass recorded" "$N t reused clippy=$b0"
-merge 1 "never passed" "$P t"
-merge 1 "whose pass doesn't hold (clippy reused from ${b0:0:7}, which has no pass recorded)" "$P t reused clippy=$b0" "$N t reused all=$P"
-merge 0 "ok (check.sh passed at ${N:0:7})" "$N t" "$N t reused all=$N"   # (a tree checked twice: not a loop)
+n="$N t tree $(git rev-parse "$N^{tree}")" p="$P t tree $(git rev-parse "$P^{tree}")"   # (a pass names its tree, #980)
+merge 0 "ok (check.sh passed at ${N:0:7})" "$n"
+merge 0 "reused: clippy from ${P:0:7}, tests from ${P:0:7} (partly run again)" "$p" "$n reused clippy=$P reused tests=$P/partial"
+merge 1 "clippy reused from ${b0:0:7}, which has no pass recorded" "$n reused clippy=$b0"
+merge 1 "never passed" "$p"
+merge 1 "whose pass doesn't hold (clippy reused from ${b0:0:7}, which has no pass recorded)" "$p reused clippy=$b0" "$n reused all=$P"
+merge 0 "ok (check.sh passed at ${N:0:7})" "$n" "$n reused all=$N"   # (a tree checked twice: not a loop)
+merge 1 "doesn't name its tree" "$N t"   # (before #980, or a checkout changed during its run)
+merge 1 "doesn't name its tree" "$N t tree $(git rev-parse "$P^{tree}")"
+merge 1 "whose pass doesn't hold (${P:0:7}'s pass doesn't name its tree" "$P t" "$n reused clippy=$P"
 exit $fail

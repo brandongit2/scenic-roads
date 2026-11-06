@@ -1,5 +1,6 @@
 # tools/dev/test-guard.sh's checks (see there). Prints the reason to block, or nothing.
 import json, sys, os, re, shlex, subprocess
+from shellwords import strip_heredocs, segments, tokens, command   # (tools/dev/shellwords.py)
 d = json.load(sys.stdin)
 tool, ti, cwd, agent = d.get("tool_name"), d.get("tool_input") or {}, d.get("cwd") or "", d.get("agent_id")
 repo = os.path.dirname(subprocess.check_output(["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True).strip())   # the main checkout
@@ -16,79 +17,13 @@ if tool != "Bash" or not agent: sys.exit()
 cmd = ti.get("command") or ""
 repro, perf = "#repro" in cmd, "#perf" in cmd
 
-# --- Finding the test runs: commands, not text. A command starts at the start, after an unquoted
-# ; & | ( ) or newline, or after a prefix (env, time, nice, command, xargs, exec, nohup). Quoted
-# text is looked into only as the script of sh/bash/zsh -c, eval, or python -c.
-def strip_heredocs(t):
-    return re.sub(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2[ \t]*(?=\n|$)", "<<HEREDOC", t, flags=re.S)
-def segments(t):
-    out, cur, q, i = [], [], None, 0
-    while i < len(t):
-        ch = t[i]
-        if q:
-            cur.append(ch)
-            if ch == "\\" and q == '"' and i + 1 < len(t): cur.append(t[i + 1]); i += 1
-            elif ch == q: q = None
-        elif ch == "\\" and i + 1 < len(t): cur.append(ch); cur.append(t[i + 1]); i += 1
-        elif ch in "'\"": q = ch; cur.append(ch)
-        elif ch == "&" and ((cur and cur[-1] in "<>") or t[i + 1:i + 2] == ">"): cur.append(ch)   # 2>&1, &>
-        elif ch == "|" and cur and cur[-1] == ">": cur.append(ch)   # >|
-        elif ch in ";&|()\n": out.append("".join(cur)); cur = []
-        else: cur.append(ch)
-        i += 1
-    out.append("".join(cur))
-    return [s for s in out if s.strip()]
-def tokens(seg):
-    """The words of a command segment, as the shell reads them, minus its redirections: an unquoted
-    >, >>, <, <<, <<<, <>, >&, <&, &>, &>>, and zsh's >| >! >>| >>! &>| &>! &>>| &>>!, with an fd
-    number before it (2>, unquoted) and its target (a word, or the fd after >& when it's the whole
-    word: 2>&1, >&-), with or without a space before the target, are dropped; quoted text never is.
-    A backslash-newline joins lines, as in the shell."""
-    out, cur, has, lit, q, i, skip = [], [], False, True, None, 0, False   # lit: no quote or \ in the word
-    def end():
-        nonlocal cur, has, lit, skip
-        if has:
-            if skip: skip = False
-            else: out.append("".join(cur))
-        cur, has, lit = [], False, True
-    while i < len(seg):
-        ch = seg[i]
-        if q:
-            if ch == q: q = None
-            elif ch == "\\" and q == '"' and seg[i + 1:i + 2] == "\n": i += 1
-            elif ch == "\\" and q == '"' and seg[i + 1:i + 2] in ('"', "\\", "$", "`"): i += 1; cur.append(seg[i])
-            else: cur.append(ch)
-        elif ch == "\\" and seg[i + 1:i + 2] == "\n": i += 1   # a line continuation
-        elif ch == "\\" and i + 1 < len(seg): i += 1; cur.append(seg[i]); has, lit = True, False
-        elif ch in "'\"": q = ch; has, lit = True, False
-        elif ch.isspace(): end()
-        elif ch == "#" and not has: break   # a comment
-        elif ch in "<>" or (ch == "&" and seg[i + 1:i + 2] == ">"):
-            if has and lit and "".join(cur).isdigit(): cur, has = [], False   # the fd number: 2> ("2"> is a word)
-            else: end()
-            m = re.compile(r"&>>?[|!]?|>>[|!]?|<<<|<<-?|<>|[<>]&|>[|!]|[<>]").match(seg, i)
-            i = m.end() - 1
-            if m.group().endswith("&"):   # >&1, >&-: the target is an fd; >&file, >&1x: a word
-                f = re.compile(r"(\d+-?|-)(?=[\s;&|()<>]|$)").match(seg, i + 1)
-                if f: i = f.end() - 1
-                else: skip = True
-            else: skip = True
-        else: cur.append(ch); has = True
-        i += 1
-    end()
-    return out
-PREFIX_TAKES = {"nice": {"-n"}, "env": {"-u", "-C", "-S"}, "xargs": {"-I", "-n", "-L", "-P", "-d", "-E", "-s"}, "time": set(), "command": set(), "exec": set(), "nohup": set()}
+# --- Finding the test runs (shellwords.py: commands, not text).
 CARGO_TAKES = {"-C", "--config", "-Z", "--color", "--manifest-path", "--target-dir", "--explain"}
 found = []   # argument lists of cargo test / nextest runs
 def scan(text, depth=0):
     if depth > 4: block("Commands nested this deep can't be checked: write the cargo test command out plainly.")
     for seg in segments(strip_heredocs(text)):
-        toks = tokens(seg)
-        while toks and re.match(r"^\w+=", toks[0]): toks = toks[1:]
-        while toks and os.path.basename(toks[0]) in PREFIX_TAKES:
-            takes = PREFIX_TAKES[os.path.basename(toks[0])]; toks = toks[1:]
-            while toks and (toks[0].startswith("-") or re.match(r"^\w+=", toks[0])):
-                toks = toks[2:] if toks[0] in takes else toks[1:]
+        _, toks = command(tokens(seg))
         if not toks: continue
         c0, rest = os.path.basename(toks[0]), toks[1:]
         if c0 in ("sh", "bash", "zsh", "dash"):

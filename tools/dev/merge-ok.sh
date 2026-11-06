@@ -3,7 +3,8 @@
 # <commit> or on a later commit of the same branch (one that has <commit> as an ancestor);
 # otherwise says so and exits 1. A pass that reused parts of an earlier one (#950: clippy or the
 # tests, tools/dev/check-reuse.py) says which and from where, and holds only while each pass it
-# reused from is recorded and holds in turn.
+# reused from is recorded and holds in turn. A pass holds only when it names the commit's tree
+# (`tree <hash>`, #980): check.sh records nothing for a checkout that changed during its run.
 #   tools/dev/merge-ok.sh <commit>...
 case ${1:-} in
   -h|--help) print "usage: tools/dev/merge-ok.sh <commit>..."; exit 0 ;;
@@ -17,10 +18,15 @@ passed=( ${lines%% *} )
 # and holds in turn. REPLY: what it reused ("clippy from abc1234, tests from def5678 (partly run
 # again)"), or why none holds.
 holds() {
-  local c=$1 l i src what bad; local -a t said; shift
+  local c=$1 l i src what bad tree; local -a t said; shift
   REPLY="${c:0:7} has no pass recorded"
+  tree=$(git -C $repo rev-parse -q --verify "$c^{tree}")
   for l in ${(M)lines:#$c *}; do
     t=( ${=l} ) said=() bad=
+    # (A pass names the tree it checked, #980: one that doesn't, or names another, vouches for nothing.)
+    if [[ -z $tree || ${t[(ie)tree]} -ge ${#t} || ${t[${t[(ie)tree]}+1]} != $tree ]]; then
+      REPLY="${c:0:7}'s pass doesn't name its tree ${tree:0:7} (recorded by a check.sh before #980, or while its checkout changed)"; continue
+    fi
     for (( i = 3; i < ${#t}; i++ )); do
       [[ ${t[i]} == reused ]] || continue
       what=${t[i+1]%%=*} src=${${t[i+1]#*=}%/partial}
