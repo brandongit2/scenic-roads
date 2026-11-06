@@ -916,13 +916,15 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   one that would fit the Mac once its jobs end, has that room held, so small jobs later in the
   plan filling each slot as it opens don't starve it. While it waits, a later job still goes
   (backfilling, `Backfill`, task #973) when it fits beside it once the jobs it waits for end (the
-  Mac's oldest, as few as free its room, every younger job still running), or when, its time
-  measured, it ends by its runs' 90th percentile (`needs::Book::secs_p90`) before those are
-  expected to end by their measured times (`Sched::batch_secs`, less what they've run); none of
-  the second kind once they're past their time or not measured. So a hold never idles a Mac for
-  as long as its running jobs last (on 5 Nov the mini ran one terrain-hi job, 7 of its 12 cores
-  idle, while room was held for timetables-todo), and the big job waits only for the jobs it
-  waited for when first held and those granted to end before them: never starved. The refusal
+  Mac's jobs expected to end soonest by their measured times (`Sched::batch_secs`, less what
+  they've run), as few as free its room, any past its time or not measured first; every other job
+  still running), or when, its time measured, it ends by its runs' 90th percentile
+  (`needs::Book::secs_p90`) before those are expected to end; none of the second kind while one
+  of them is past its time or not measured. So a hold never idles a Mac for as long as its
+  running jobs last (on 5 Nov the mini ran one terrain-hi job, 7 of its 12 cores idle, while room
+  was held for timetables-todo), never waits for a long job while a shorter one frees its room,
+  and the big job waits only for jobs expected to end no later than those it first waited for,
+  until one overruns: never starved. The refusal
   names the jobs it waits for and when they're expected to end. The forecast packs by the same
   rule, its leases run as long as the record says (`Leased::granted_at`). With placement on, a member holding a job whose cores, as its last ask
   showed, are filled by load from outside the pool with its jobs' (`Shared::swamped`; its own

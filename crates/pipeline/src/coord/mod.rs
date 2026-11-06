@@ -8602,7 +8602,7 @@ mod tests {
         }
     }
 
-    /// Task #973: room held for a big job (terrain-lakes, 6 GB) on a member of 8 GB running one
+    /// Task #973: room held for a big job (terrain-deep, 6 GB) on a member of 8 GB running one
     /// long job (slope-hi, 4 GB, 10 hours by its run) doesn't idle the member while that job runs:
     /// small jobs after it in the plan (bldtiles, 1 GB, minutes) go, round after round, beside it
     /// (2 GB left beside it once slope-hi ends) and, ending before slope-hi is expected to, in the
@@ -8631,14 +8631,12 @@ mod tests {
         for overdue in [false, true] {
             let (_d, c, w, clock) = every((0, 0));
             let long = vec!["6/3/1".to_string()];
-            let lakes: Vec<String> = (1..=2).map(|i| format!("6/1/{i}")).collect();
+            let big: Vec<String> = (1..=2).map(|i| format!("6/1/{i}")).collect();
             let small: Vec<String> = (1..=400).map(|i| format!("6/2/{i}")).collect();
             let long_s = if overdue { 300 } else { 36_000 };
-            for (step, ts, mb, secs) in [
-                ("slope-hi", &long, 4000, long_s),
-                ("terrain-lakes", &lakes, 6000, 600),
-                ("bldtiles", &small, 1000, 60),
-            ] {
+            for (step, ts, mb, secs) in
+                [("slope-hi", &long, 4000, long_s), ("terrain-deep", &big, 6000, 600), ("bldtiles", &small, 1000, 60)]
+            {
                 for t in ts {
                     let sizes = [("threads".to_string(), 1)].into();
                     let cost =
@@ -8649,7 +8647,7 @@ mod tests {
             }
             let a = |want: usize| Ask {
                 want,
-                can: vec!["slope-hi".into(), "terrain-lakes".into(), "bldtiles".into()],
+                can: vec!["slope-hi".into(), "terrain-deep".into(), "bldtiles".into()],
                 ..every_ask("m1", "bldtiles", 8000, 100_000)
             };
             let why = |c: &Coordinator| c.refusals().get("m1").cloned().unwrap_or_default();
@@ -8660,15 +8658,15 @@ mod tests {
                 clock.advance(Duration::from_secs(400));
                 w.beat(l[0].0, None).unwrap();
             }
-            c.offer("p", vec![offer("terrain-lakes", &lakes), offer("bldtiles", &small)]);
-            // 4 GB left of 8, short of terrain-lakes' 6.
+            c.offer("p", vec![offer("terrain-deep", &big), offer("bldtiles", &small)]);
+            // 4 GB left of 8, short of terrain-deep' 6.
             if overdue {
                 // (Past its time: none goes to end before it, only beside the big job.)
                 assert_eq!(steps(&grants(&w, &a(8))), ["bldtiles"; 2], "{}", why(&c));
-                assert!(why(&c).contains("room held for a job of terrain-lakes"), "{}", why(&c));
-                assert!(why(&c).contains("its oldest job running past its measured time"), "{}", why(&c));
+                assert!(why(&c).contains("room held for a job of terrain-deep"), "{}", why(&c));
+                assert!(why(&c).contains("the job it waits for running past its measured time"), "{}", why(&c));
                 w.give_back(l[0].0, "the test").unwrap();
-                assert_eq!(steps(&grants(&w, &a(8)))[0], "terrain-lakes", "{}", why(&c));
+                assert_eq!(steps(&grants(&w, &a(8)))[0], "terrain-deep", "{}", why(&c));
                 continue;
             }
             // (Round after round while slope-hi runs: each as many as fit the room left.)
@@ -8684,13 +8682,76 @@ mod tests {
             // slope-hi ends: 4 GB left with the small ones running; nothing more goes until two end.
             w.give_back(l[0].0, "the test").unwrap();
             assert!(grants(&w, &a(8)).is_empty(), "{}", why(&c));
-            assert!(why(&c).contains("room held for a job of terrain-lakes"), "{}", why(&c));
-            assert!(why(&c).contains("its oldest job expected to end in "), "{}", why(&c));
+            assert!(why(&c).contains("room held for a job of terrain-deep"), "{}", why(&c));
+            // (Waiting for the two small ones that free its room soonest.)
+            assert!(why(&c).contains("the 2 jobs it waits for expected to end in "), "{}", why(&c));
             w.give_back(smalls.remove(0), "the test").unwrap();
             assert!(grants(&w, &a(8)).is_empty(), "{}", why(&c));
             w.give_back(smalls.remove(0), "the test").unwrap();
-            assert_eq!(steps(&grants(&w, &a(8)))[0], "terrain-lakes", "{}", why(&c));
+            assert_eq!(steps(&grants(&w, &a(8)))[0], "terrain-deep", "{}", why(&c));
         }
+    }
+
+    /// Task #973 review: the room held for a big job (terrain-deep, 5 GB) waits for the jobs that
+    /// free it soonest, not the oldest: on a member of 8 GB running a long job (slope-hi, 3 GB, 10
+    /// hours) and a short one since (bldtiles, 3 GB, 5 minutes), it waits for the short one alone,
+    /// so small jobs of 50 minutes don't go to end before slope-hi in the room the short one frees,
+    /// and the big job starts as soon as the short one ends.
+    #[test]
+    fn a_held_big_job_waits_for_the_jobs_ending_soonest_not_the_oldest() {
+        let offer = |step: &str, ts: &[String]| Offer {
+            step: step.into(),
+            targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+            job: None,
+        };
+        let grants = |w: &client::Client, a: &Ask| -> Vec<(u64, String)> {
+            let Some(mut g) = w.ask(a).unwrap() else { return Vec::new() };
+            let more = std::mem::take(&mut g.more);
+            std::iter::once(g)
+                .chain(more)
+                .filter_map(|g| match g.work {
+                    Granted::Job { step, .. } => Some((g.lease, step)),
+                    Granted::Task { .. } => None,
+                })
+                .collect()
+        };
+        let steps = |g: &[(u64, String)]| g.iter().map(|g| g.1.clone()).collect::<Vec<_>>();
+        let (_d, c, w, _clock) = every((0, 0));
+        let long = vec!["6/3/1".to_string()];
+        let short = vec!["6/4/1".to_string()];
+        let big: Vec<String> = (1..=2).map(|i| format!("10/1/{i}")).collect();
+        let small: Vec<String> = (1..=40).map(|i| format!("6/2/{i}")).collect();
+        for (step, ts, mb, secs) in [
+            ("slope-hi", &long, 3000, 36_000),
+            ("bldtiles", &short, 3000, 300),
+            ("terrain-deep", &big, 5000, 600),
+            ("bldtiles", &small, 1000, 3000),
+        ] {
+            for t in ts {
+                let sizes = [("threads".to_string(), 1)].into();
+                let cost = Cost { peak_mb: mb, secs, worker: None, v: cost_version(step), sizes, ..Default::default() };
+                c.add_costs_by(&[(cost_key(step, t), cost)], "m1");
+                c.add_disks(&[(cost_key(step, t), 100)]);
+            }
+        }
+        let a = |want: usize| Ask {
+            want,
+            can: vec!["slope-hi".into(), "terrain-deep".into(), "bldtiles".into()],
+            ..every_ask("m1", "bldtiles", 8000, 100_000)
+        };
+        let why = |c: &Coordinator| c.refusals().get("m1").cloned().unwrap_or_default();
+        c.offer("p", vec![offer("slope-hi", &long)]);
+        assert_eq!(steps(&grants(&w, &a(1))), ["slope-hi"]);
+        c.offer("p", vec![offer("bldtiles", &short)]);
+        let s = grants(&w, &a(1));
+        assert_eq!(steps(&s), ["bldtiles"]);
+        c.offer("p", vec![offer("terrain-deep", &big), offer("bldtiles", &small)]);
+        // 2 GB left of 8, short of terrain-deep's 5: the short job's 3 free it.
+        assert!(grants(&w, &a(8)).is_empty(), "{}", why(&c));
+        assert!(why(&c).contains("room held for a job of terrain-deep"), "{}", why(&c));
+        assert!(why(&c).contains("the job it waits for expected to end in 5 min"), "{}", why(&c));
+        w.give_back(s[0].0, "the test").unwrap();
+        assert_eq!(steps(&grants(&w, &a(8)))[0], "terrain-deep", "{}", why(&c));
     }
 
     /// Task #965: the lead's own measured job first in the plan (terrain-water, its floor 9 GB:

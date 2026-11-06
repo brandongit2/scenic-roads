@@ -256,67 +256,60 @@ struct RoomWait {
 }
 
 /// A job on the Mac an ask packs for, as the room held for a waiting job weighs it (`Backfill`):
-/// its memory, disk and cores (tenths), and in how long it's expected to end (s from now): by its
-/// measured time (`Sched::batch_secs`) and by its runs' 90th percentile (`Sched::batch_p90`), less
-/// what it has run (0: past it; None: not measured).
+/// its memory, disk and cores (tenths), and in how long it's expected to end (s from now) by its
+/// measured time (`Sched::batch_secs`) less what it has run (0: past it; None: not measured).
 #[derive(Clone, Copy, Debug)]
 struct Run {
     mem_mb: u64,
     disk_mb: u64,
     cores: u32,
     ends: Option<u64>,
-    ends_p90: Option<u64>,
 }
 
 /// The room held for a waiting job (`RoomWait`) and what may still go while it waits (`Sched::pack`,
 /// task #973: backfilling, so a hold never idles a Mac's cores for as long as its running jobs
-/// last). The jobs it waits for (`waits_on`) are its Mac's oldest, as few as free its room once
-/// they end (counting as freeing theirs too the younger ones expected, at their runs' 90th
-/// percentile, to end by then and not past it); `shadow` is when they're expected to have ended
-/// (s from now, by their measured times; 0 where one is past its time or not measured). A later
-/// job goes when it fits beside the waiting one once those end, every younger job still running
-/// (`beside`), or, its time measured, ends before `shadow` by its runs' 90th percentile. A job of
-/// the second kind keeps the jobs waited for as they were while it's within its time; once one
-/// of them overruns it's among them, and no more of that kind goes. So the waiting job waits
-/// only for a finite set of jobs, never for one granted after the second kind stopped.
+/// last). The jobs it waits for (`waits_on`) are those of its Mac expected to end soonest, as few
+/// as free its room once they end, any past its time or not measured first (it may end any
+/// moment); `shadow` is when they're expected to have ended (s from now, by their measured times;
+/// 0 where one is past its time or not measured). A later job goes when it fits beside the
+/// waiting one once those end, every other job still running (`beside`), or, its time measured,
+/// ends before `shadow` by its runs' 90th percentile. A job of the second kind ends before the
+/// jobs waited for, so it's among them next time without putting off when they end; once one of
+/// them overruns, no more of that kind goes. So the waiting job waits only for a finite set of
+/// jobs, ending no later than those it first waited for while none overruns, and never for a
+/// long job while a shorter one frees its room.
 struct Backfill {
     w: RoomWait,
     waits_on: usize,
     shadow: u64,
-    /// The room left beside it once the jobs it waits for end, every younger job still running:
+    /// The room left beside it once the jobs it waits for end, every other job still running:
     /// memory, disk (None: not said), cores (tenths); None: short of it even then.
     beside: Option<(u64, Option<u64>, u32)>,
 }
 
 impl Backfill {
-    /// The room held for `w` on a Mac of `room` and `cores` (tenths) left, running `runs` (oldest
-    /// first).
+    /// The room held for `w` on a Mac of `room` and `cores` (tenths) left, running `runs`.
     fn of(w: RoomWait, room: &Ask, cores: u32, runs: &[Run]) -> Backfill {
         let fits =
             |(m, d, c): (u64, u64, u32)| m >= w.mem_mb && room.disk_mb.is_none_or(|_| d >= w.disk_mb) && c >= w.cores;
-        let free = |rs: &mut dyn Iterator<Item = &Run>| {
-            rs.fold((room.mem_mb, room.disk_mb.unwrap_or(0), cores), |(m, d, c), r| {
+        let free = |rs: &[Run]| {
+            rs.iter().fold((room.mem_mb, room.disk_mb.unwrap_or(0), cores), |(m, d, c), r| {
                 (m + r.mem_mb, d + r.disk_mb, c + r.cores)
             })
         };
-        // (Any of them past its time or not measured: 0, so none goes to end before them.)
-        let shadow_of =
-            |e: &[Run]| e.iter().try_fold(0, |s, r| r.ends.filter(|&x| x > 0).map(|x| s.max(x))).unwrap_or(0);
-        let waits_on = (0..=runs.len())
-            .find(|&k| {
-                // (A younger job counts as freeing its room by then only while it's within its
-                // time: one past it is among those waited for, which stops the second kind.)
-                let shadow = shadow_of(&runs[..k]);
-                let ending = runs[k..].iter().filter(|r| r.ends_p90.is_some_and(|x| x > 0 && x <= shadow));
-                fits(free(&mut runs[..k].iter().chain(ending)))
-            })
-            .unwrap_or(runs.len());
-        let left = free(&mut runs[..waits_on].iter());
+        // (Soonest to end first: one past its time or not measured as ending now, so it's waited
+        // for, which stops the second kind.)
+        let mut runs = runs.to_vec();
+        runs.sort_by_key(|r| r.ends.unwrap_or(0));
+        let waits_on = (0..=runs.len()).find(|&k| fits(free(&runs[..k]))).unwrap_or(runs.len());
+        let waited = &runs[..waits_on];
+        let shadow = waited.iter().try_fold(0, |s, r| r.ends.filter(|&x| x > 0).map(|x| s.max(x))).unwrap_or(0);
+        let left = free(waited);
         let beside = fits(left).then(|| {
             let (m, d, c) = left;
             (m - w.mem_mb, room.disk_mb.map(|_| d - w.disk_mb), c - w.cores)
         });
-        Backfill { shadow: shadow_of(&runs[..waits_on]), waits_on, beside, w }
+        Backfill { shadow, waits_on, beside, w }
     }
 
     /// Whether a job of measure `m` (and `fill` of a shared cache's disk), counting for `busy`
@@ -343,8 +336,8 @@ impl Backfill {
             s += &format!("; {} cores, {} left", tenths(w.cores), tenths(cores));
         }
         let (jobs, its) = match self.waits_on {
-            1 => ("its oldest job".to_string(), "its"),
-            n => (format!("its {n} oldest jobs"), "their"),
+            1 => ("the job it waits for".to_string(), "its"),
+            n => (format!("the {n} jobs it waits for"), "their"),
         };
         let when = match self.shadow {
             0 => format!("{jobs} running past {its} measured time or not measured"),
@@ -1127,20 +1120,18 @@ impl Sched {
         let ours = tenths_to_cores((total * 10).saturating_sub(cores));
         let outside = outside_cores(a, ours);
         cores = cores.saturating_sub(outside * 10);
-        // (The jobs it holds as room held for a waiting job weighs them (`Backfill`), oldest first:
-        // how long each has run, the longer of its grant's wall clock (kept across leads and in a
-        // record, `Leased::granted_at`) and this coordinator's clock.)
-        let mut runs: Vec<(u64, Run)> = jobs
+        // (The jobs it holds as room held for a waiting job weighs them (`Backfill`): how long each
+        // has run, the longer of its grant's wall clock (kept across leads and in a record,
+        // `Leased::granted_at`) and this coordinator's clock.)
+        let mut runs: Vec<Run> = jobs
             .iter()
             .zip(&needs)
             .map(|((l, st, ts), n)| {
                 let by_wall = if l.granted_at > 0 { clock.unix.saturating_sub(l.granted_at) } else { 0 };
                 let ran = by_wall.max(now.saturating_duration_since(l.granted).as_secs());
-                (ran, self.run_of(st, ts, &a.worker, n.m, self.need_cores(st, n, total).1, ran))
+                self.run_of(st, ts, &a.worker, n.m, self.need_cores(st, n, total).1, ran)
             })
             .collect();
-        runs.sort_by_key(|r| std::cmp::Reverse(r.0));
-        let mut runs: Vec<Run> = runs.into_iter().map(|r| r.1).collect();
         // (The cores left were its jobs counted at their threads, as before task #688: a grant
         // past them is an overcommit, trusting its busy cores (task #688 review). At most one per
         // ask, and none while its Mac's load hasn't had `SETTLE` to show its last grant or shows
@@ -1710,13 +1701,11 @@ impl Sched {
     /// A job of `step` over `targets` on `worker`'s Mac, measured `m` and counting for `cores`
     /// (tenths), that has run `ran` s, as room held for a waiting job weighs it (`Run`).
     fn run_of(&self, step: &str, targets: &[String], worker: &str, m: Measured, cores: u32, ran: u64) -> Run {
-        let ts = || targets.iter().map(String::as_str);
         Run {
             mem_mb: m.mem_mb,
             disk_mb: m.disk_mb,
             cores,
-            ends: self.batch_secs(step, ts(), worker, 0).map(|s| s.0.saturating_sub(ran)),
-            ends_p90: self.batch_p90(step, ts(), worker).map(|s| s.saturating_sub(ran)),
+            ends: self.batch_secs(step, targets.iter().map(String::as_str), worker, 0).map(|s| s.0.saturating_sub(ran)),
         }
     }
 
