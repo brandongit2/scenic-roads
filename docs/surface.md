@@ -91,7 +91,7 @@
   their flags (Canada › Quebec), its state, land and water and download here.
   Regions change only as files in `inputs/regions/` (docs/inputs.md §6.1); the app writes none.
   - **The list**: folders (named by their `_group.toml`) sorted by name among the regions, collapsed
-    until opened (remembered); an open folder's entries indented along a line from its triangle, its
+    on every load (opened ones stay open for the session, not saved); an open folder's entries indented along a line from its triangle, its
     heading sticking under the section's header while they scroll. Each entry: a flag, its own only
     (a country's, territory's, province's or state's: from Wikimedia Commons as Wikidata names it for
     the region's first osm: relation, else its ISO 3166 code; where it has no flag, the symbol it

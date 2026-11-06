@@ -384,7 +384,7 @@ any water in two regions, or in none, is an error.
   so moving a file changes no id, coverage or key.
 - Custom shapes are `<name>.geojson`, anywhere, named by file name alone (unique across folders).
 - **Folders are the Regions panel's groups:** a collapsible tree nested as on disk, each group with
-  its count, open state remembered per browser. A group's name is its folder's, or the `name` of an
+  its count, all collapsed on every load (opened ones stay open for the session only). A group's name is its folder's, or the `name` of an
   optional `_group.toml`, with an optional integer `order` among siblings (those with one first,
   lower first; then by name). The check reads it (`rg-group`); the index carries it (`facts.group`)
   and the tree is made from the index alone (`regions::read::tree`). Empty folders aren't shown.
