@@ -87,7 +87,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the
     coverage as last read (`coverage/<hash16>.cov`, by the regions' accepted version).
   - Nothing is deleted through a link, nor anything in the NAS's project folder.
-- **No map server** (task #874): the map is the Mac mini's (Devices). An installed server started
+- **No installed map server** (task #874): the devices' map is the Mac mini's (Devices). An installed server started
   on any other Mac retires itself (`crates/server/src/retire.rs`): it removes its LaunchAgent
   (`local.scenic.server`) and its run file (`run/server`), and unloads itself. The Mac's offline map is left as it was (`mirror/`, `idx/`, `downloads.json`,
   `~/Library/Caches/scenic/map` and the rest of the server's files): nothing deletes it. It retires
@@ -95,6 +95,17 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   without one, or not there; one it can't read keeps it serving), and the pool's declared lead
   (`state/build/lead-member.json`) read and naming another member than this Mac's (`agent/member`,
   read). Without the NAS, or with either unread, it serves.
+- **The offline map, on demand** (#882 step 7a, docs/roles.md §8.3): the menu bar's Open the Map on
+  This Mac opens http://localhost:7311 in the browser; where no server answers there and none is
+  installed (a laptop), it first starts the app's `server --on-demand` (its output appended to
+  `~/Library/Logs/scenic/server.log`) and waits for it, up to two minutes. That server answers this
+  Mac's loopback alone (127.0.0.1 and `::1`), is never retired, follows the map's log and copies and
+  Updates the downloads while it runs (from the NAS's snapshot and its saved map with the Mac mini
+  away), and quits 30 minutes after its last use (a request, or a copy of the mirror's under way).
+  It keeps its map in `~/Library/Caches/scenic/map` each time the map moves (a resident server:
+  every 10 minutes at most), so a start away from the Mac mini and the NAS serves the map its
+  downloads were copied for. Nothing runs while it's closed, so the downloads are as current as
+  the last time it ran.
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to
   the SSD when there's room, else reads it from the NAS.
 - **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by every Mac: its canopy
@@ -278,8 +289,8 @@ installed by `tools/app/install.sh`, updated by the updater).
   one. Each map is handed to the server as one catalogue, swapped whole, never an older one than
   served. Its map is kept in `~/Library/Caches/scenic/map/current.json.zst` (at most every 10
   minutes) and read at a start, before the server answers: a start away from the lead and the NAS
-  serves it (the laptops' offline map, kept: owner's decision, 1 Nov; but no laptop runs a server
-  since #874, so none works today: docs/roles.md §8.3, planned in #882 step 7a). The lead's contact is kept
+  serves it (the laptops' offline map, kept: owner's decision, 1 Nov; their server runs on demand,
+  #882 step 7a: Mac apps, above). The lead's contact is kept
   beside it (`lead.json`, mode 600, the build's key in it, as on the NAS); losing the folder means a
   cold start (the NAS's snapshot). A server started on a folder laid out as the NAS's (`--root`)
   serves that folder's newest snapshot.
