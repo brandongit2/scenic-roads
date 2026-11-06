@@ -33,9 +33,9 @@ const GRID_CLASSES: [(&str, u8); 7] =
     [("trees", 1), ("shrub", 2), ("open", 3), ("built", 4), ("water", 5), ("wetland", 6), ("snow", 7)];
 
 impl Cover {
-    /// The declared land-cover source's (crate::inputs::sources: its `url`, and `params.legend`,
+    /// The declared land-cover source's (inputs::inputs::sources: its `url`, and `params.legend`,
     /// each grid class's source classes).
-    pub fn of(s: &crate::inputs::sources::Source) -> Result<Cover> {
+    pub fn of(s: &inputs::inputs::sources::Source) -> Result<Cover> {
         let legend =
             s.param("legend")?.as_object().with_context(|| format!("{}: `params.legend` isn't a table", s.id))?;
         let mut classes = vec![0u8; 256];
@@ -257,7 +257,7 @@ pub fn full(b: &Path, cover: &Cover, fetch: &dyn Fetch, workers: usize) -> Resul
 fn classify(wc: &WorldCover, tiles: &[[u32; 2]], slots: &[u32], out: &mut [u8], workers: usize) -> Result<()> {
     let want: std::collections::BTreeSet<u32> = slots.iter().copied().collect();
     let pool = rayon::ThreadPoolBuilder::new().num_threads(workers.max(1)).build().ok();
-    crate::dem::sample::within(pool.as_ref(), || {
+    inputs::dem::sample::within(pool.as_ref(), || {
         out.par_chunks_mut(CELLS).enumerate().filter(|(s, _)| want.contains(&(*s as u32))).try_for_each(
             |(s, cells)| -> Result<()> {
                 cells.copy_from_slice(&wc.classes(tiles[s][0], tiles[s][1])?);
@@ -274,7 +274,7 @@ mod tests {
     use buildstore::geotiff::testtiff::{make_images, Opts};
 
     fn cover() -> Cover {
-        Cover::of(crate::inputs::sources::staged().role(crate::inputs::sources::LAND_COVER).unwrap()).unwrap()
+        Cover::of(inputs::inputs::sources::staged().role(inputs::inputs::sources::LAND_COVER).unwrap()).unwrap()
     }
 
     /// The declared source (producers/sources/esa-worldcover.toml) names the tiles the code named

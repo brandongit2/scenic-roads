@@ -35,9 +35,9 @@ pub mod testkit {
     use super::*;
     use std::io::Write;
 
-    /// The staged declarations' sources as a run reads them (crate::inputs::sources::staged).
+    /// The staged declarations' sources as a run reads them (inputs::inputs::sources::staged).
     pub(crate) fn run_sources() -> RunSources {
-        RunSources::of(&crate::inputs::sources::staged()).unwrap()
+        RunSources::of(&inputs::inputs::sources::staged()).unwrap()
     }
 
     /// `run_sources` written into `dir` (`sources.json`), for a `Run`.
@@ -288,12 +288,12 @@ pub fn chm_name(top: i32, left: i32, kind: &str) -> String {
     format!("meta_chm_lat={top}.0_lon={left}.0_{kind}.tif")
 }
 
-/// Where the declared canopy source (crate::inputs::sources, the `canopy` role) has each file, by
+/// Where the declared canopy source (inputs::inputs::sources, the `canopy` role) has each file, by
 /// its name here (`chm_name`): its index's features, each a file's `url`, its `kind` and its 10°
 /// square (its north-west corner the name's). A file the index doesn't list is none there. (The
 /// source's own naming, the equator row's `lat=-0.0`, is its index producer's:
 /// producers/sources/canopy.py.)
-pub fn canopy_urls(s: &crate::inputs::sources::Source) -> Result<BTreeMap<String, String>> {
+pub fn canopy_urls(s: &inputs::inputs::sources::Source) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for f in &s.index {
         let kind = f
@@ -313,7 +313,7 @@ pub fn canopy_urls(s: &crate::inputs::sources::Source) -> Result<BTreeMap<String
     Ok(out)
 }
 
-/// The leaf-type sources as crate::leaftype reads them (crate::inputs::sources, the
+/// The leaf-type sources as crate::leaftype reads them (inputs::inputs::sources, the
 /// `leaf-type-europe` and `leaf-type-north-america` roles): Europe's image service and the box it
 /// covers; North America's GeoTIFF in a zip (its member's local header and compressed size, read by
 /// range) and its box. A square outside both boxes has no leaf type.
@@ -327,9 +327,9 @@ pub struct LeafSources {
 }
 
 impl LeafSources {
-    pub fn of(s: &crate::inputs::sources::Sources) -> Result<LeafSources> {
-        use crate::inputs::sources::{LEAF_EUROPE, LEAF_NORTH_AMERICA};
-        let bx = |src: &crate::inputs::sources::Source| -> Result<[f64; 4]> {
+    pub fn of(s: &inputs::inputs::sources::Sources) -> Result<LeafSources> {
+        use inputs::inputs::sources::{LEAF_EUROPE, LEAF_NORTH_AMERICA};
+        let bx = |src: &inputs::inputs::sources::Source| -> Result<[f64; 4]> {
             let v: Vec<f64> =
                 src.param("box")?.as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
             <[f64; 4]>::try_from(v)
@@ -355,8 +355,8 @@ pub struct RunSources {
 }
 
 impl RunSources {
-    pub fn of(s: &crate::inputs::sources::Sources) -> Result<RunSources> {
-        Ok(RunSources { canopy: canopy_urls(s.role(crate::inputs::sources::CANOPY)?)?, leaf: LeafSources::of(s)? })
+    pub fn of(s: &inputs::inputs::sources::Sources) -> Result<RunSources> {
+        Ok(RunSources { canopy: canopy_urls(s.role(inputs::inputs::sources::CANOPY)?)?, leaf: LeafSources::of(s)? })
     }
 }
 
@@ -653,14 +653,14 @@ struct Doing {
 /// one row (the same `by`) read the same canopy rows, read and decoded once for all of them
 /// (`Files`; a row's task, crate::trees::task). Each block's pyramid is fed the same bands in the
 /// same order as on its own, so its bytes are `block`'s. The blocks of a band on rayon's threads, each
-/// under a permit (crate::inputs::pace: the job's threads now, which its agent raises as cores idle).
+/// under a permit (inputs::inputs::pace: the job's threads now, which its agent raises as cores idle).
 pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Result<Vec<BlockOut>> {
     let px = |i: usize, b: u32| (i + b as usize * BS) as f64 + 0.5;
     let mut files = Files::new(inp, list.len());
     let mut doing = Vec::with_capacity(list.len());
     // (The strips read and decoded under a permit too: the rows a z6 run has under way at once
     // (`in_order_by`'s window) are as many as its pool's threads, not its grant's.)
-    let turn = crate::inputs::pace::permit_unless_held();
+    let turn = inputs::inputs::pace::permit_unless_held();
     for &(bx, by) in list {
         let lon: Vec<f64> = (0..BS).map(|j| lon_of(px(j, bx), ZMAX)).collect();
         let lat: Vec<f64> = (0..BS).map(|i| lat_of(px(i, by), ZMAX)).collect();
@@ -673,9 +673,9 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
     for band in 0..BS / BAND {
         let r0 = band * BAND;
         // (Each block's band under a permit: no more at once than the job's threads allow now,
-        // crate::inputs::pace.)
+        // inputs::inputs::pace.)
         let each: Vec<&mut Doing> = doing.iter_mut().collect();
-        crate::inputs::pace::par_map(each, |d| -> Result<()> {
+        inputs::inputs::pace::par_map(each, |d| -> Result<()> {
             let (mut cover, mut height, mut leaf) =
                 (vec![0u16; BAND * BS], vec![0u16; BAND * BS], vec![255u8; BAND * BS]);
             for (c, h, l) in &d.src.squares {
@@ -1115,15 +1115,15 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
 /// and values into its mid, `out/MID` (`write_mid`), from which its z3 tile's assembly
 /// (`assemble_lo`) makes zoom 8 to 4. A z3 run's tiles are its z6 tiles' runs' and their
 /// assembly's, the same bytes. With a coordinator to offer tasks through (the job's,
-/// crate::offload), some of its rows go to workers that take them (`task::Offers`), taken in
+/// the offload crate), some of its rows go to workers that take them (`task::Offers`), taken in
 /// their turn: the same bytes.
 pub fn z6(a: &Run) -> Result<[usize; 3]> {
-    let offload = crate::offload::Offload::from_env(&a.out.join("offload"));
+    let offload = offload::Offload::from_env(&a.out.join("offload"));
     z6_with(a, offload.as_ref())
 }
 
 /// `z6`, its rows offered through `offload` (none: all made here).
-pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[usize; 3]> {
+pub fn z6_with(a: &Run, offload: Option<&offload::Offload>) -> Result<[usize; 3]> {
     use jobrt::timings::phase;
     ensure!(a.tile.0 == 6, "a z6 run of a zoom-{} tile", a.tile.0);
     let t0 = std::time::Instant::now();

@@ -40,7 +40,7 @@ pub fn leaf_dir(root: &store::nasfs::NasRoot) -> store::nasfs::NasPath {
 
 /// Z6 tile (`x`, `y`)'s mid in the manifest (crate::trees::MID).
 pub fn mid_logical(x: u32, y: u32) -> String {
-    crate::layers::mid_logical("trees", x, y)
+    terrain::layers::mid_logical("trees", x, y)
 }
 
 /// Tree cover's targets, each with whether it's "none" (`listed`).
@@ -63,7 +63,7 @@ impl Listed {
     }
 }
 
-/// Tree cover's targets (`Listed`), each with its key (crate::agent::build::trees_targets), done or
+/// Tree cover's targets (`Listed`), each with its key (pipeline::agent::build::trees_targets), done or
 /// not.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Targets {
@@ -177,10 +177,10 @@ fn fresh(cov: &Coverage, t: TileId, scratch: &Path, always: bool) -> Result<Opti
     Ok(Some(dir))
 }
 
-/// The trees program (`trees`, of this program's app version: crate::cli::program), run with `args`.
+/// The trees program (`trees`, of this program's app version: jobrt::sys::program), run with `args`.
 fn run_trees(args: &[std::ffi::OsString]) -> Result<()> {
     let prog = "the trees program";
-    let mut c = crate::cli::program(std::env::current_exe()?.parent().context("the programs' folder")?, "trees");
+    let mut c = jobrt::sys::program(std::env::current_exe()?.parent().context("the programs' folder")?, "trees");
     // (Its phase, its own under it: jobrt::timings.)
     let _p = jobrt::timings::phase(prog);
     c.args(args);
@@ -212,7 +212,7 @@ fn run_args(out: &Out, t: TileId, dir: &Path, chm: &Path, workers: usize) -> Res
     let sources = dir.join("sources.json");
     std::fs::write(
         &sources,
-        serde_json::to_vec(&crate::trees::RunSources::of(&crate::inputs::sources::read(out.root(), &out.manifest)?)?)?,
+        serde_json::to_vec(&crate::trees::RunSources::of(&inputs::inputs::sources::read(out.root(), &out.manifest)?)?)?,
     )?;
     let mut a: Vec<std::ffi::OsString> = vec![
         format!("--z{}", t.z).into(),
@@ -255,7 +255,7 @@ pub fn build_with(
     writing: &dyn Fn(),
 ) -> Result<()> {
     let Some(dir) = fresh(cov, q, scratch, false)? else {
-        drop_packs(out, q, &crate::layers::LayerOut::default())?;
+        drop_packs(out, q, &terrain::layers::LayerOut::default())?;
         return Ok(());
     };
     // (Its scratch removed whatever the run's end: a failed run's canopy rows are hundreds of MB.)
@@ -275,7 +275,7 @@ pub fn put_z3(out: &mut Out, q: TileId, dir: &Path) -> Result<()> {
     for (i, layer) in LAYERS.iter().enumerate() {
         let arc = roadcore::archive::Archive::open(&dir.join(format!("{layer}.tiles")))?;
         let n = LAYERS.len() as u64;
-        let made = crate::layers::split_archive_with(out, &arc, layer, "terrarium-webp", false, 12, &|k, t| {
+        let made = terrain::layers::split_archive_with(out, &arc, layer, "terrarium-webp", false, 12, &|k, t| {
             jobrt::jobs::report_f(i as f64 + k as f64 / t.max(1) as f64, n, "layers' packs written")
         })?;
         let gone = drop_layer_packs(out, q, layer, &made)?;
@@ -285,7 +285,7 @@ pub fn put_z3(out: &mut Out, q: TileId, dir: &Path) -> Result<()> {
 }
 
 /// Drops z3 tile `q`'s packs of every tree layer that `made` doesn't have.
-fn drop_packs(out: &mut Out, q: TileId, made: &crate::layers::LayerOut) -> Result<()> {
+fn drop_packs(out: &mut Out, q: TileId, made: &terrain::layers::LayerOut) -> Result<()> {
     for layer in LAYERS {
         let n = drop_layer_packs(out, q, layer, made)?;
         eprintln!("trees {}: {layer}: the coverage has left; {n} packs dropped", q.slash());
@@ -295,15 +295,15 @@ fn drop_packs(out: &mut Out, q: TileId, made: &crate::layers::LayerOut) -> Resul
 
 /// Drops z3 tile `q`'s packs of `layer` (its lo pack, its z6 tiles' hi packs) that `made` doesn't
 /// have; how many.
-fn drop_layer_packs(out: &mut Out, q: TileId, layer: &str, made: &crate::layers::LayerOut) -> Result<usize> {
+fn drop_layer_packs(out: &mut Out, q: TileId, layer: &str, made: &terrain::layers::LayerOut) -> Result<usize> {
     let mut gone = Vec::new();
-    let lo = crate::layers::lo_logical(layer, q.x, q.y);
+    let lo = terrain::layers::lo_logical(layer, q.x, q.y);
     if !made.lo.contains_key(&q.slash()) && out.get(&lo).is_some() {
         gone.push(lo);
     }
     for x in q.x * 8..(q.x + 1) * 8 {
         for y in q.y * 8..(q.y + 1) * 8 {
-            let hi = crate::layers::hi_logical(layer, x, y);
+            let hi = terrain::layers::hi_logical(layer, x, y);
             if !made.hi.contains_key(&format!("6/{x}/{y}")) && out.get(&hi).is_some() {
                 gone.push(hi);
             }
@@ -415,7 +415,7 @@ pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Res
             t.x,
             t.y
         );
-        let p = crate::layers::write_pack_local(
+        let p = terrain::layers::write_pack_local(
             out,
             layer,
             "terrarium-webp",
@@ -424,7 +424,7 @@ pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Res
             (6, t.x, t.y),
             &mut tiles.into_iter(),
         )?;
-        made.push((crate::layers::hi_logical(layer, t.x, t.y), p.map(|p| p.local)));
+        made.push((terrain::layers::hi_logical(layer, t.x, t.y), p.map(|p| p.local)));
     }
     let mid = out.scratch_file(&format!("{}.sect", mid_logical(t.x, t.y)));
     std::fs::copy(dir.join(crate::trees::MID), &mid).with_context(|| format!("{}'s mid", t.slash()))?;
@@ -435,7 +435,7 @@ pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Res
     eprintln!(
         "trees {}: {} hi packs and its mid",
         t.slash(),
-        LAYERS.iter().filter(|l| out.get(&crate::layers::hi_logical(l, t.x, t.y)).is_some()).count()
+        LAYERS.iter().filter(|l| out.get(&terrain::layers::hi_logical(l, t.x, t.y)).is_some()).count()
     );
     Ok(())
 }
@@ -483,16 +483,16 @@ fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
 /// Drops z6 tile `t`'s hi packs and mid (a "none" z6 tile's run); how many.
 pub fn drop_piece(out: &mut Out, t: TileId) -> Result<usize> {
     let all: Vec<String> =
-        LAYERS.iter().map(|l| crate::layers::hi_logical(l, t.x, t.y)).chain([mid_logical(t.x, t.y)]).collect();
-    let n = crate::layers::drop(out, &all);
+        LAYERS.iter().map(|l| terrain::layers::hi_logical(l, t.x, t.y)).chain([mid_logical(t.x, t.y)]).collect();
+    let n = terrain::layers::drop(out, &all);
     out.save()?;
     Ok(n)
 }
 
 /// Drops z3 tile `q`'s tree lo packs (a "none" assembly's run); how many.
 pub fn drop_lo(out: &mut Out, q: TileId) -> Result<usize> {
-    let all: Vec<String> = LAYERS.iter().map(|l| crate::layers::lo_logical(l, q.x, q.y)).collect();
-    let n = crate::layers::drop(out, &all);
+    let all: Vec<String> = LAYERS.iter().map(|l| terrain::layers::lo_logical(l, q.x, q.y)).collect();
+    let n = terrain::layers::drop(out, &all);
     out.save()?;
     Ok(n)
 }
@@ -548,7 +548,7 @@ pub fn put_lo(out: &mut Out, q: TileId, dir: &Path, expect_same: bool) -> Result
             q.x,
             q.y
         );
-        let p = crate::layers::write_pack_local(
+        let p = terrain::layers::write_pack_local(
             out,
             layer,
             "terrarium-webp",
@@ -557,7 +557,7 @@ pub fn put_lo(out: &mut Out, q: TileId, dir: &Path, expect_same: bool) -> Result
             (3, q.x, q.y),
             &mut tiles.into_iter(),
         )?;
-        made.push((crate::layers::lo_logical(layer, q.x, q.y), p.map(|p| p.local)));
+        made.push((terrain::layers::lo_logical(layer, q.x, q.y), p.map(|p| p.local)));
     }
     let what = format!("assembly {}", q.slash());
     drop(p);
@@ -565,7 +565,7 @@ pub fn put_lo(out: &mut Out, q: TileId, dir: &Path, expect_same: bool) -> Result
     eprintln!(
         "trees-lo {}: {} lo packs",
         q.slash(),
-        LAYERS.iter().filter(|l| out.get(&crate::layers::lo_logical(l, q.x, q.y)).is_some()).count()
+        LAYERS.iter().filter(|l| out.get(&terrain::layers::lo_logical(l, q.x, q.y)).is_some()).count()
     );
     Ok(())
 }
@@ -702,7 +702,7 @@ mod tests {
         put_lo(&mut parts, q, &d.path().join("lo"), true).unwrap();
         // A pack that isn't what the manifest has: refused, nothing uploaded.
         run(t, &dir);
-        let hi = crate::layers::hi_logical("trees-cover", t.x, t.y);
+        let hi = terrain::layers::hi_logical("trees-cover", t.x, t.y);
         parts.manifest.insert(hi.clone(), "layers/trees-cover/hi/6-33-22.0000000000000000.pack".into());
         parts.remove(&mid);
         let e = put_piece(&mut parts, t, &dir, true).unwrap_err().to_string();
@@ -736,10 +736,10 @@ mod tests {
         for layer in LAYERS {
             let mut groups: BTreeMap<(&'static str, u8, u32, u32), Vec<PackTile>> = BTreeMap::new();
             for t in archive_tiles(&dir.join(format!("{layer}.tiles"))).unwrap() {
-                groups.entry(crate::layers::pack_of(t.0, t.1, t.2)).or_default().push(t);
+                groups.entry(terrain::layers::pack_of(t.0, t.1, t.2)).or_default().push(t);
             }
             for ((scope, z, x, y), tiles) in groups {
-                let p = crate::layers::write_pack_local(
+                let p = terrain::layers::write_pack_local(
                     out,
                     layer,
                     "terrarium-webp",
@@ -789,11 +789,11 @@ mod tests {
             &root.join("state/build/manifest.json"),
         ))
         .unwrap();
-        let date = crate::osmpass::latest_pass(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
-        let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
-        let recipes = crate::inputs::regions::read::recipes(&a).unwrap();
+        let date = inputs::osmpass::latest_pass(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        let a = inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
+        let recipes = inputs::inputs::regions::read::recipes(&a).unwrap();
         let cov =
-            crate::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(&root), &a, None)
+            inputs::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(&root), &a, None)
                 .unwrap();
         let tt = listed(&cov, &m);
         eprintln!(
@@ -821,7 +821,7 @@ mod tests {
                         &p,
                         serde_json::to_vec(
                             &crate::trees::RunSources::of(
-                                &crate::inputs::sources::read(&store::nasfs::NasRoot::local_for_test(&root), &m)
+                                &inputs::inputs::sources::read(&store::nasfs::NasRoot::local_for_test(&root), &m)
                                     .unwrap(),
                             )
                             .unwrap(),

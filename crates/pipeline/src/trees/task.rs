@@ -14,8 +14,8 @@
 //! takes into the z6 tile in the blocks' turn, as if made here: the same bytes (`trees::blocks`).
 
 use super::{block_dir, mask, Inputs, Tile, LAYERS, TOPS, ZBLOCK, ZMAX};
-use crate::offload::{Offered, Offload, Patience, Settled};
 use anyhow::{ensure, Context, Result};
+use offload::{Offered, Offload, Patience, Settled};
 use roadcore::archive::Archive;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -130,7 +130,7 @@ pub fn cut(coverage: &str, row: &[(u32, u32)], root: &Path) -> Result<BTreeMap<S
     Ok([(format!("u/{COVERAGE}"), c.len() as u64)].into())
 }
 
-/// A row's task spec (the shape of a tail's, crate::offload): the program `trees --blocks` over its
+/// A row's task spec (the shape of a tail's, the offload crate's): the program `trees --blocks` over its
 /// folder, the squares where they lie; `unit` its first block (what its cost is kept under), and
 /// its blocks.
 pub fn spec(
@@ -153,7 +153,7 @@ pub fn spec(
         "--out",
         "{dir}",
     ];
-    let run = crate::unit::Run {
+    let run = offload::Run {
         what: KIND.into(),
         prog: "trees".into(),
         args: args.iter().map(|a| a.to_string()).collect(),
@@ -163,7 +163,7 @@ pub fn spec(
     let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
     let first = row.first().map(|(x, y)| format!("{ZBLOCK}/{x}/{y}")).unwrap_or_default();
     // (`unit`: the task spec's key for its tile, kept: docs/workers.md §3.)
-    serde_json::json!({ "unit": first, "blocks": blocks_arg(row), "version": version, "runs": [run], "inputs": list, "places": crate::offload::places() })
+    serde_json::json!({ "unit": first, "blocks": blocks_arg(row), "version": version, "runs": [run], "inputs": list, "places": offload::places() })
 }
 
 /// A row's predicted memory on a worker (MB), until a worker measures it (the coordinator's
@@ -218,7 +218,7 @@ type Out = (Offered, Vec<(u32, u32)>);
 /// What the job runs a row with here: the row's blocks made into a folder (`trees::blocks_files`).
 pub type Here<'a> = &'a (dyn Fn(&[(u32, u32)], &Path) -> Result<()> + Sync);
 
-/// A z6 tile's rows out as tasks (crate::offload), as a `bldtiles` job's z8 tiles are: offered from
+/// A z6 tile's rows out as tasks (the offload crate), as a `bldtiles` job's z8 tiles are: offered from
 /// the far end (its last rows) when the run begins, one per worker that takes them around, at most
 /// `MOST`, never every row; each settled when the run comes to its first block, waiting for no
 /// worker longer than this Mac would take (`Patience`: its blocks at the pace of the blocks made
