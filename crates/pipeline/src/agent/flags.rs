@@ -308,7 +308,13 @@ fn per_min(x: f64) -> String {
     if m <= 0.0 || !m.is_finite() {
         return "0".into();
     }
-    let places = (2 - m.log10().floor() as i32).clamp(0, 4) as usize;
+    let places = match m {
+        m if m >= 100.0 => 0,
+        m if m >= 10.0 => 1,
+        m if m >= 1.0 => 2,
+        m if m >= 0.1 => 3,
+        _ => 4,
+    };
     let s = format!("{m:.places$}");
     if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
