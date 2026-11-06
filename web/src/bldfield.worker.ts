@@ -1,5 +1,5 @@
 // The buildings field's tiles fetched and decoded off the main thread (bldfield.ts; the format:
-// docs/formats.md `field5-webp`, crates/pipeline/src/bld/field.rs). A tile is a class mask byte, a
+// docs/formats.md `field5-webp`, crates/bld/src/bld/field.rs). A tile is a class mask byte, a
 // lossless WebP 512 wide and 2 × 512 × (the classes held) tall (a block a class: R √f, G log2(1 + w)
 // ÷ log2(4097), B the class's mean top in its class's range, × 255; then a block a class: R and G the
 // offset to its buildings' centroid + 128), and, on a level-8 tile, its heritage list after it.

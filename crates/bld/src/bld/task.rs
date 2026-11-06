@@ -495,7 +495,7 @@ impl<'a> Offers<'a> {
 
 /// Work files, a coverage and their tiles for tests (this module's, pipeline's bld_tests), and what
 /// an `Offers` holds, read (its fields and `here_s` stay private).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub mod testkit {
     use super::*;
     use crate::bld::prep::{

@@ -1,7 +1,7 @@
 // 3D buildings (docs/buildings3d.md §4): every building of the coverage extruded to its height on
 // the 3D terrain by MapLibre's fill-extrusion, from the z14 tiles of /tiles/buildings (wherever MapLibre's cover takes z14 tiles; elsewhere, the field: bldfield.ts) (layer `b`:
 // h top and m base in dm, s where the height comes from, f floors, c kind, k 1 a part / 2 an outline
-// with parts, o 1 a copy for the flat footprints; crates/pipeline/src/bld). A building is whole in
+// with parts, o 1 a copy for the flat footprints; crates/bld/src/bld). A building is whole in
 // its centroid's tile, and the z14 tiles stay whole at every zoom above (keepWhole). Its roof is
 // level, at the terrain under its centroid plus its height (MapLibre's); a base of 0 puts each
 // wall's foot on the terrain under its own corner, 2 m below it (our MapLibre's

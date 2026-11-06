@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/det", "crates/roadcore", "crates/pipeline", "crates/server", "crates/store", "crates/names", "crates/pyport", "crates/codecs", "crates/jobrt", "crates/buildstore", "crates/coordwire", "crates/offload", "crates/landmarks", "crates/mapview", "crates/inputs", "crates/terrain", "crates/trees", "crates/roads", "crates/webpenc"]
+members = ["crates/det", "crates/roadcore", "crates/pipeline", "crates/server", "crates/store", "crates/names", "crates/pyport", "crates/codecs", "crates/jobrt", "crates/buildstore", "crates/coordwire", "crates/offload", "crates/landmarks", "crates/mapview", "crates/inputs", "crates/terrain", "crates/trees", "crates/roads", "crates/bld", "crates/webpenc"]
 exclude = ["crates/geos-src"]
 
 [workspace.dependencies]

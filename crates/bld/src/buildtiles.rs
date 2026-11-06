@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use store::nasfs::NasPath;
 
 /// The release the tests' records name (the staged declaration's).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub const TEST_RELEASE: &str = "2026-09-23.1";
 /// The tiles' zoom.
 pub const ZOOM: u8 = 8;

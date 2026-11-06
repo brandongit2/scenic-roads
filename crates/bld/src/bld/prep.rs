@@ -917,7 +917,7 @@ pub fn run(out: &mut buildstore::out::Out, t: TileId) -> Result<Stats> {
 
 /// Buildings and parts as a row group's reading makes them, for tests (this module's, job's and
 /// task's, pipeline's bld_tests through task's testkit).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub mod testkit {
     use super::*;
 

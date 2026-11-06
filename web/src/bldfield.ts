@@ -1,6 +1,6 @@
 // The far buildings' field (task #102, docs/buildings3d.md §4.8). Where the buildings are smaller
 // than a pixel, what full detail shows of them is their aggregate. The field tiles (512 × 512 texels,
-// levels 4–14; crates/pipeline/src/bld/field.rs) hold three densities per texel, so a coarser level
+// levels 4–14; crates/bld/src/bld/field.rs) hold three densities per texel, so a coarser level
 // is the mean of its four children and the GPU's mipmaps stay exact:
 //   f  roof coverage (the share of the texel under a footprint standing on the ground),
 //   w  wall area per ground area (Σ wall length × wall height ÷ texel area),
@@ -2041,7 +2041,7 @@ export class FieldLayer implements CustomLayerInterface {
 }
 
 /** A 4 × 4 matrix's inverse (column-major), or the identity where it has none. */
-/** A level-8 tile's (8/ax/ay) heritage list (crates/pipeline/src/bld/field.rs `heritage`: u32 count;
+/** A level-8 tile's (8/ax/ay) heritage list (crates/bld/src/bld/field.rs `heritage`: u32 count;
  * each u16 top, u16 base (dm), u8 n, n points u16 x, y in the tile, 65,536 a side) as the buildings
  * holding a site's point shown (`points`), each its footprint in world coordinates (0–1), its box
  * and its group (the highest where sites share it: the meshes' rule). */

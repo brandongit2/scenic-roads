@@ -255,6 +255,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "bld"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "buildstore",
+ "bytemuck",
+ "bytes",
+ "codecs",
+ "crc32fast",
+ "det",
+ "flate2",
+ "geos",
+ "geos-src",
+ "geos-sys",
+ "image-webp",
+ "inputs",
+ "jobrt",
+ "landmarks",
+ "libz-sys",
+ "md-5",
+ "names",
+ "offload",
+ "parquet",
+ "pyport",
+ "rayon",
+ "roadcore",
+ "roads",
+ "serde",
+ "serde_json",
+ "store",
+ "tempfile",
+ "terrain",
+ "ureq",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1407,37 +1445,27 @@ name = "pipeline"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arrow-array",
  "axum",
+ "bld",
  "buildstore",
  "bytemuck",
- "bytes",
  "clap",
  "codecs",
  "coordwire",
- "crc32fast",
  "det",
  "flate2",
  "futures-util",
- "geos",
- "geos-src",
- "geos-sys",
  "hyper",
  "hyper-util",
- "image-webp",
  "inputs",
  "jobrt",
  "landmarks",
  "libc",
- "libz-sys",
  "mapview",
- "md-5",
  "names",
  "offload",
  "osmpbf",
- "parquet",
  "png",
- "pyport",
  "rayon",
  "roadcore",
  "roads",

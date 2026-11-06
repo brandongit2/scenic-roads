@@ -1,8 +1,6 @@
 pub mod agent;
 pub mod answers;
 pub mod appupdate;
-pub mod bld;
-pub mod buildtiles;
 pub mod cli;
 pub mod coord;
 pub mod menu;
@@ -49,6 +47,8 @@ pub use terrain::{
 pub use ::trees::{landcover, treepacks, trees};
 pub use landmarks::{gtfs, heritage, markconv, marksjob, namestodo, ovconv, railfeeds};
 pub use roads::{candidates, elev, peaks, reach, stage, summits, timetables, unit};
+// (`::bld`: the crate, not its module of the same name.)
+pub use ::bld::{bld, buildtiles};
 
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an
 /// `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs, as it was while

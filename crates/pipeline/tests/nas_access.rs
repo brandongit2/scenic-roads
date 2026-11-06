@@ -46,7 +46,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/landmarks/src/ovconv.rs", "ferries_job", 1, "osmium's input, read where it lies"),
     ("crates/trees/src/treepacks.rs", "run_args", 2, "the trees program's --chm-store and --leaf folders"),
     ("crates/trees/src/treepacks.rs", "build_lo", 1, "the trees program's mids, as its arguments"),
-    ("crates/pipeline/src/buildtiles.rs", "stage", 1, "a tile linked for the scenic program to read where it lies"),
+    ("crates/bld/src/buildtiles.rs", "stage", 1, "a tile linked for the scenic program to read where it lies"),
     ("crates/inputs/src/rail.rs", "cache_index", 1, "a zip's path in the counters' index, opened by the counting program"),
     ("crates/inputs/src/rail.rs", "feeds_for_counting", 1, "a zip's path in the feeds list, opened by the counting program"),
     ("crates/inputs/src/inputs/gtfs.rs", "zips", 1, "the counters' zip reader opens a member by its file's path, each time"),
