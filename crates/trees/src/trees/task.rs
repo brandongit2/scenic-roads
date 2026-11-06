@@ -396,7 +396,7 @@ pub fn here_run<'a>(
 }
 
 /// A coverage for tests (this module's, pipeline's trees_tests).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub mod testkit {
     /// Over blocks 8/132–133, rows 88 and 89: two rows of two in z6 tile 6/33/22, the squares'
     /// data in 8/132/88.

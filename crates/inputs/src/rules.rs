@@ -66,10 +66,10 @@ fn anywhere(areas: &&'static [[f64; 4]]) -> bool {
     areas.is_empty()
 }
 
-/// crate::leaftype: NALCMS's leaf type west of 40° W.
+/// trees::leaftype: NALCMS's leaf type west of 40° W.
 const NORTH_AMERICA: &[[f64; 4]] = &[[-180.0, -90.0, -40.0, 90.0]];
 
-/// crate::leaftype: the EEA's dominant leaf type within this box (NALCMS west of 40° W,
+/// trees::leaftype: the EEA's dominant leaf type within this box (NALCMS west of 40° W,
 /// `NORTH_AMERICA`).
 const EEA_LEAF: &[[f64; 4]] = &[[-40.0, 20.0, 40.0, 75.0]];
 

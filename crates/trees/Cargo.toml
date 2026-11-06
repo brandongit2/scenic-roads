@@ -1,0 +1,47 @@
+[package]
+name = "trees"
+version = "0.1.0"
+edition = "2021"
+description = "The tree cover step: a z6 tile's blocks from the canopy and leaf-type squares, its rows as tasks, the z3 tiles' assembly, the leaf-type squares made from their sources, the land cover on the analysis grid (docs/crates.md, step 6e)"
+
+[dependencies]
+det = { path = "../det" }
+roadcore = { path = "../roadcore" }
+store = { path = "../store" }
+pyport = { path = "../pyport" }
+codecs = { path = "../codecs" }
+jobrt = { path = "../jobrt" }
+buildstore = { path = "../buildstore" }
+inputs = { path = "../inputs" }
+offload = { path = "../offload" }
+terrain = { path = "../terrain" }
+serde = { version = "1", features = ["derive"] }
+zstd = "0.13"
+anyhow.workspace = true
+rayon.workspace = true
+bytemuck.workspace = true
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+crc32fast = "1"
+# Pinned as coordwire pins it (coordwire::client's idle transport uses ureq's unversioned::transport API).
+ureq = "=3.4.2"
+# zlib's own deflate (1.3, built from source and linked statically), for the leaf-type squares'
+# tiles as GDAL wrote them (leaftype: zlib-rs's deflate makes other bytes).
+libz-sys = { version = "=1.1.30", features = ["static"] }
+# (testkit's squares are written into a temporary folder.)
+tempfile = { version = "3", optional = true }
+
+[features]
+# Test helpers (trees' staged sources and squares, trees::task's coverage) for other crates' tests:
+# pipeline's dev-dependency on trees turns it on. Helpers only, never behaviour.
+testkit = ["dep:tempfile", "inputs/testkit", "store/testkit"]
+
+[dev-dependencies]
+buildstore = { path = "../buildstore", features = ["testkit"] }
+codecs = { path = "../codecs", features = ["testkit"] }
+jobrt = { path = "../jobrt", features = ["testkit"] }
+inputs = { path = "../inputs", features = ["testkit"] }
+store = { path = "../store", features = ["testkit"] }
+# The tree cover's tiles read back, as roadcore reads the terrain's.
+image-webp = "0.2"
+tempfile = "3"

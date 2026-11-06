@@ -39,13 +39,13 @@ const ORPHAN: &str = "src-orphan";
 /// The roles a source is read in, each with the formats it may be in and the placeholders its URL
 /// template may hold: the app's slots, each read by one step's generic code.
 pub const ROLES: [(&str, &[&str], &[&str]); 16] = [
-    // (Land cover on the analysis grid: crate::landcover. 3° tiles by their south-west corner.)
+    // (Land cover on the analysis grid: trees::landcover. 3° tiles by their south-west corner.)
     (LAND_COVER, &["geotiff"], &["{tile}"]),
-    // (Canopy height and cover: crate::trees, scenic-metrics' canopy step. By an index of 10° squares.)
+    // (Canopy height and cover: trees::trees, scenic-metrics' canopy step. By an index of 10° squares.)
     (CANOPY, &["geotiff"], &[]),
-    // (Forest leaf type, Europe: crate::leaftype, in the trees program.)
+    // (Forest leaf type, Europe: trees::leaftype, in the trees program.)
     (LEAF_EUROPE, &["image-service"], &[]),
-    // (Forest leaf type, North America: crate::leaftype, one GeoTIFF in a zip read by range.)
+    // (Forest leaf type, North America: trees::leaftype, one GeoTIFF in a zip read by range.)
     (LEAF_NORTH_AMERICA, &["zip-geotiff"], &[]),
     // (Building footprints, a release: crate::buildtiles, crate::bld.)
     (BUILDINGS, &["geoparquet"], &[]),

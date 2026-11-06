@@ -10,8 +10,6 @@ pub mod elev;
 pub mod ferries;
 pub mod gtfs;
 pub mod heritage;
-pub mod landcover;
-pub mod leaftype;
 pub mod markconv;
 pub mod marksjob;
 pub mod menu;
@@ -30,8 +28,6 @@ pub mod reach;
 pub mod stage;
 pub mod summits;
 pub mod timetables;
-pub mod treepacks;
-pub mod trees;
 pub mod unit;
 pub mod uses;
 
@@ -65,6 +61,8 @@ pub use terrain::{
     depth, layers, polar, pyramids, road_terrain, slope_pack, terrain_base, terrain_deep, terrain_pack, terrain_resume,
     terrain_task, terrain_zoom,
 };
+// (`::trees`: the crate, not its module of the same name.)
+pub use ::trees::{landcover, leaftype, treepacks, trees};
 
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an
 /// `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs, as it was while

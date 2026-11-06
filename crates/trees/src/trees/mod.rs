@@ -30,7 +30,7 @@ pub(crate) mod tests;
 
 /// Test helpers other modules' tests use (treepacks', pipeline's trees_tests): the staged sources,
 /// and square (50, 0)'s files.
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub mod testkit {
     use super::*;
     use std::io::Write;
