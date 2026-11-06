@@ -341,8 +341,13 @@ terms' reading (pool/term.rs before, buildstore's records/term.rs after: 6a's mo
 
 So 6a-6b leave a dev build after a step module's edit where it was (pipeline recompiles either way:
 the step modules are still pipeline's), and the moved code's own test loop is 5-9 times faster, its
-largest rustc a tenth of pipeline's. The first test build's larger peak after (one run each, under
-load) is not explained by the diff, which moves no code into pipeline; a re-measure would tell.
+largest rustc a tenth of pipeline's. The first test builds' peaks (4.88 against 5.61 GB, one run each)
+are noise, not 6a-6b: re-measured on the M4 (6 Nov, 08:37-09:07 UTC, load 45-190, its swap all but
+full), `cargo test -p pipeline --lib --no-run` from an empty target folder (third-party crates from
+sccache), interleaved, the largest rustc pipeline's lib tests each time: before 6a (the "before"
+tree above) 5.53, 5.42, 5.90 GB; after 6a (main at 11213648) 5.54, 5.70, 5.24, 5.65, 5.29 GB;
+after 6b 4.74, 4.82, 5.63 GB; CPU 745-760 s user in every run. Every crate compiled once a run,
+each lower crate's rustc within 0.05 GB of its before (codecs, with tar, 0.52 against 0.50 GB).
 tools/dev/check.sh on this branch (6 Nov, 07:41-07:59 UTC, the M4 at load 80-180): fmt 3 s, clippy
 38 s, guards 3 s, web 11 s, tests 986 s (1,858 tests of nearly every crate: the branch touches ~160
 files, so its affected set is most of the suite; nextest's run itself 263 s, the rest building).
