@@ -923,8 +923,9 @@ pub fn summits_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 }
 
 /// The peaks' version (crate::peaks::unit). (2: heights from the terrain packs alone, task #670.
-/// 3: the tiles a search reads by roadcore::geo's box-grower, task #862.)
-pub const PEAKS_V: u32 = 3;
+/// 3: the tiles a search reads by roadcore::geo's box-grower, task #862. 4: heights below 0 m to 0 m
+/// before despiking, task #975: the terrain keeps the source's bathymetry at sea.)
+pub const PEAKS_V: u32 = 4;
 
 /// What a step's targets held in `view` wait for (crate::agent::steps::readiness), each a held
 /// target's: the step's waiting note (`Plan::held`), None when none of them waits.

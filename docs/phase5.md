@@ -205,7 +205,8 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   - **Fine stage** (z12, a 600k-pixel flood, stopping at 28 km; isolation within 25 km), then the
     **coarse stage** over the lo packs' z8 with the overlay (40M pixels; tiles by great-circle lower
     bound; nothing higher within 5,000 km gives a lower bound).
-  - "Sea" is ≤ 0 m (negative values are clamped).
+  - "Sea" is ≤ 0 m: heights below 0 m are 0 m, before the tiles are despiked (the terrain keeps
+    its source's bathymetry at sea, so an islet's pixel would otherwise read as a spike over it).
   - **Output:** `work/peaks/<u>` by candidate key: e, p, pl, c, ce, iso, il, hi.
 - **`items`** (`pipeline::items`, then `pipeline::pageviews`, per pass): Wikidata facts for single-QID
   tags, and pageviews for the first QID: the mean of the last November, February, May and August ended 20 days before the pass.

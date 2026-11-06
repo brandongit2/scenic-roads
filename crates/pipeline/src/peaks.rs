@@ -87,8 +87,13 @@ impl Overlay {
     }
 }
 
-/// Clamp single-pixel spikes and pits (interior pixels) to their neighbours.
+/// Heights below 0 m to 0 m (the peaks' sea, docs/phase5.md), then single-pixel spikes and pits
+/// (interior pixels) clamped to their neighbours. Clamped first: the terrain keeps the source's
+/// bathymetry at sea (task #975), and an islet's pixel 80 m over −100 m water would read as a spike.
 pub(crate) fn despike(t: &mut [f32], z: u8, lat: f64) {
+    for v in t.iter_mut() {
+        *v = v.max(0.0);
+    }
     let px_m = roadcore::geo::merc_m(lat) / ((1u64 << z) as f64 * TS as f64);
     let thr = (1.2 * px_m).max(150.0) as f32;
     let src = t.to_vec();
@@ -585,4 +590,24 @@ pub fn run(peaks: &[Peak], z12: &dyn Tiles, z8: &HashMap<(u32, u32), Tile>) -> a
         o.iso = (o.iso * 100.0).round() / 100.0;
     }
     Ok(outs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An islet's pixel 80 m over water the terrain has at −100 m (the source's bathymetry, task
+    /// #975) is no spike: the sea is 0 m to the peaks, so it stands 80 m over it and stays; a
+    /// spike 400 m over the sea is still cut, and every height below 0 m is 0 m.
+    #[test]
+    fn the_sea_is_0_m_before_despiking() {
+        let w = TS as usize;
+        let mut t = vec![-100.0f32; w * w];
+        t[100 * w + 100] = 80.0;
+        t[50 * w + 50] = 400.0;
+        despike(&mut t, 12, 35.0);
+        assert_eq!(t[100 * w + 100], 80.0, "the islet kept");
+        assert_eq!(t[50 * w + 50], 0.0, "the spike cut to its neighbours");
+        assert!(t.iter().all(|&v| v >= 0.0));
+    }
 }
