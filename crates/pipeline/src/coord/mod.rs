@@ -1556,8 +1556,10 @@ impl Coordinator {
         };
         if !viewer {
             shared.save_leases();
+        }
+        if lead {
             // (Each step's use on each Mac, from the build's timings in the window: what a job is
-            // granted threads by, crate::uses.)
+            // granted threads by, crate::uses. A broker grants none, and keeps no timings here.)
             shared.set_use_runs(crate::uses::Run::read_log(&dir.join("timings.jsonl"), unix_now()));
         }
         let shared = Arc::new(Mutex::new(shared));
