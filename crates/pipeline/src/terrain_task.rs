@@ -592,8 +592,6 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
-        let subs = groups(&levels);
-        let _ = subs;
         // (Its packs and mid as saved, their content names the bytes' digests; None when stopped.)
         let run = |name: &str, src: &Sources, stop: Option<usize>| -> Option<Vec<(String, String)>> {
             let root = d.path().join(name);
