@@ -775,12 +775,38 @@ pub fn request_hold(home: &Path, member: Option<&str>, held: Option<Hold>) -> an
     Ok(r)
 }
 
-/// The hold ask waiting in `home`, taken (its file removed; one that doesn't parse: none).
-pub fn take_hold_request(home: &Path) -> Option<HoldRequest> {
+/// The hold ask waiting in `home`, taken when it's `mine`'s (its file removed); one that isn't is
+/// left in place for its own taker, and one that doesn't parse goes (none). Two take from the one
+/// file: control this Mac's own asks (`member` none), **jobs**' thread or the loop another
+/// member's. Only an ask read as its own is claimed, by renaming it away, and read again there: one
+/// written in between that isn't its own goes back by a link, which a later ask in its place wins
+/// (it replaces it, as a later write would). Until #969's review a taker read the file and removed
+/// it whatever it held, then kept it only when its own: the loop's `tend_hold` (the jobs part not
+/// spawned) took and dropped this Mac's pause before control saw it, never answered (2 of 61
+/// a_slow_plan_delays_no_grant_pause_or_heartbeat runs failed so, 5 of 312 on the M4).
+pub fn take_hold_request(home: &Path, mine: impl Fn(&HoldRequest) -> bool) -> Option<HoldRequest> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let p = home.join(HOLD_REQUEST);
-    let b = std::fs::read(&p).ok()?;
-    std::fs::remove_file(&p).ok();
-    serde_json::from_slice(&b).ok()
+    let read = |p: &Path| std::fs::read(p).ok().map(|b| serde_json::from_slice::<HoldRequest>(&b).ok());
+    // (Another's ask is never moved: its taker and the status may read it at any moment.)
+    if read(&p)?.is_some_and(|r| !mine(&r)) {
+        return None;
+    }
+    // (Named as a write's temporary file, `<…>.<digits>.tmp`: one a crash left is swept with them.)
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let claim = home.join(format!("{HOLD_REQUEST}.claim.{}{n:06}.tmp", std::process::id()));
+    std::fs::rename(&p, &claim).ok()?;
+    let taken = match read(&claim).flatten() {
+        Some(r) if mine(&r) => Some(r),
+        Some(_) => {
+            // (Written since it was read, and not its own: back in place, unless a later ask is.)
+            std::fs::hard_link(&claim, &p).ok();
+            None
+        }
+        None => None,
+    };
+    std::fs::remove_file(&claim).ok();
+    taken
 }
 
 /// The hold ask waiting in `home`, read only.
@@ -1188,7 +1214,7 @@ mod tests {
             ours.at = 1700000000;
             assert_eq!(serde_json::to_value(&ours).unwrap(), menu, "{f}");
             std::fs::copy(dir.join(f), d.path().join(HOLD_REQUEST)).unwrap();
-            assert_eq!(take_hold_request(d.path()), Some(ours), "{f}");
+            assert_eq!(take_hold_request(d.path(), |_| true), Some(ours), "{f}");
         }
     }
 
@@ -1198,12 +1224,48 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         assert_eq!(read_hold(d.path()), HoldState::default());
         let r = request_hold(d.path(), Some("m4"), Some(Hold::new("scenic pause on m1"))).unwrap();
-        assert_eq!(take_hold_request(d.path()), Some(r.clone()));
-        assert!(take_hold_request(d.path()).is_none());
+        assert_eq!(take_hold_request(d.path(), |_| true), Some(r.clone()));
+        assert!(take_hold_request(d.path(), |_| true).is_none());
         assert!(hold_answer(d.path(), &r).is_none());
         answer_hold(d.path(), &HoldAnswer { ask: r.clone(), said: "m4 is paused".into(), ok: true });
         assert!(hold_answer(d.path(), &r).is_some_and(|a| a.ok));
         assert_eq!(Hold::new("x").as_pause().mode, Mode::Drain);
+    }
+
+    /// A hold ask is taken only by its own taker (#969 review): this Mac's by control, another
+    /// member's by **jobs**' thread or the loop; the other's take leaves it in place, also one
+    /// written between a take's read and its claim.
+    #[test]
+    fn a_hold_ask_is_taken_only_by_its_own_taker() {
+        let d = tempfile::tempdir().unwrap();
+        let own = |r: &HoldRequest| r.member.is_none();
+        let member = |r: &HoldRequest| r.member.is_some();
+        let mine = request_hold(d.path(), None, Some(Hold::new("the menu bar on m1"))).unwrap();
+        assert!(take_hold_request(d.path(), member).is_none());
+        assert_eq!(peek_hold_request(d.path()), Some(mine.clone()), "left for control");
+        assert_eq!(take_hold_request(d.path(), own), Some(mine));
+        assert!(peek_hold_request(d.path()).is_none());
+        // Another member's ask written between the read and the claim of this Mac's: put back.
+        request_hold(d.path(), None, None).unwrap();
+        let wrote = std::cell::Cell::new(false);
+        let theirs = std::cell::RefCell::new(None);
+        let took = take_hold_request(d.path(), |r| {
+            if !wrote.replace(true) {
+                *theirs.borrow_mut() = Some(request_hold(d.path(), Some("m6"), None).unwrap());
+            }
+            own(r)
+        });
+        assert!(took.is_none());
+        assert_eq!(peek_hold_request(d.path()), theirs.into_inner(), "the member's ask, for its taker");
+        // One that doesn't parse goes.
+        std::fs::write(d.path().join(HOLD_REQUEST), b"{").unwrap();
+        assert!(take_hold_request(d.path(), own).is_none());
+        assert!(!d.path().join(HOLD_REQUEST).exists());
+        request_hold(d.path(), Some("m4"), None).unwrap();
+        // (No claim left behind.)
+        let names: Vec<String> =
+            std::fs::read_dir(d.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(names, [HOLD_REQUEST], "{names:?}");
     }
 
     /// This Mac's own pause's stages (task #846): asked, pausing with its jobs named, paused,

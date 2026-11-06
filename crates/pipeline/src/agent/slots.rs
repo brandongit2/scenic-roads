@@ -244,7 +244,7 @@ pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut
     if matches!(pooled, Some(None)) {
         return;
     }
-    let Some(req) = control::take_hold_request(home).filter(|r| r.member.is_some()) else { return };
+    let Some(req) = control::take_hold_request(home, |r| r.member.is_some()) else { return };
     let what = if req.held.is_some() { "paused" } else { "going on" };
     let me = pooled.as_ref().and_then(|p| p.as_ref()).map(|p| p.side.member().id.clone());
     let beats = pooled.as_ref().and_then(|p| p.as_ref()).map(|p| p.side.http_beats());

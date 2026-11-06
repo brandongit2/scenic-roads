@@ -78,19 +78,14 @@ impl Control {
     /// One look at the folder: this Mac's own hold ask taken up, the quit ask and the settings as
     /// they are now, the loop woken for what changed and what's its.
     pub fn look(&mut self) {
-        if let Some(req) = control::peek_hold_request(&self.home).filter(|r| r.member.is_none()) {
-            if let Some(req) = control::take_hold_request(&self.home).filter(|r| r.member.is_none() && *r == req) {
-                // (This Mac's own ask wins over any earlier setting, whatever another Mac's clock
-                // put on it.)
-                let st = HoldState { held: req.held.clone(), at: req.at.max(self.hold.get().at + 1) };
-                let what = if st.held.is_some() { "paused" } else { "going on" };
-                self.set_hold(st);
-                eprintln!("agent: this Mac is {what} (taken up at once)");
-                control::answer_hold(
-                    &self.home,
-                    &HoldAnswer { ask: req, said: format!("this Mac is {what}"), ok: true },
-                );
-            }
+        if let Some(req) = control::take_hold_request(&self.home, |r| r.member.is_none()) {
+            // (This Mac's own ask wins over any earlier setting, whatever another Mac's clock
+            // put on it.)
+            let st = HoldState { held: req.held.clone(), at: req.at.max(self.hold.get().at + 1) };
+            let what = if st.held.is_some() { "paused" } else { "going on" };
+            self.set_hold(st);
+            eprintln!("agent: this Mac is {what} (taken up at once)");
+            control::answer_hold(&self.home, &HoldAnswer { ask: req, said: format!("this Mac is {what}"), ok: true });
         }
         let quit = control::peek_quit(&self.home);
         if quit != *self.quit.get() {

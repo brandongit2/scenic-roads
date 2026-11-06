@@ -459,4 +459,5 @@ tests' run 658 → 343 s, CPU (with each build) 3,993 → 3,169 s. A re-check af
 terrain_task.rs since that pass ran 275 of the 1,261 again (its module's users,
 agent::tests among them, and the scan tests): the test Mac's CPU 3,169 → 2,283 s, its wall about
 the same, bound by the pipeline's compile after any Rust edit (11 min) and a flaky test's 300-s
-watchdog (a_slow_plan_delays_no_grant_pause_or_heartbeat: 2 of its last 61 runs failed so).
+watchdog (a_slow_plan_delays_no_grant_pause_or_heartbeat: 2 of its last 61 runs failed so; its
+cause, a hold ask taken and dropped by the taker it wasn't for, fixed since: `control::take_hold_request`).
