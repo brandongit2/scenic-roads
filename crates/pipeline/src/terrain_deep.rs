@@ -9,7 +9,7 @@
 //! - **Its tiles:** under the z10 tile, each of z13 to the deepest stored zoom near the coverage
 //!   (20 km) no finer than its place's finest zoom (`levels`). A z10 tile with none is no target.
 //! - **Packs:** by z10 tile (`PACK_Z`): `layers/terrain/deep/10-x-y` (docs/formats.md, Pack), z13 to
-//!   `MAX_Z`; optional in a region's download (crate::areafiles: "Terrain detail").
+//!   `MAX_Z`; optional in a region's download (inputs::areafiles: "Terrain detail").
 //! - **Its mid** (`mid_logical`, `work/terrain-deep-mid/10-x-y`): its z13 tiles' 2×2 means before
 //!   rounding, which its z6 tile's terrain-hi run takes in (its z12 tiles' quarters there:
 //!   crate::terrain_pack::build_piece): so the z6 tile's run waits for its z10 tiles' targets
@@ -23,8 +23,8 @@ use buildstore::out::Out;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-// The zoom of a deep pack's tile (a job's target): crate::dem::zoom's, kept at this path.
-pub use crate::dem::zoom::PACK_Z;
+// The zoom of a deep pack's tile (a job's target): inputs::dem::zoom's, kept at this path.
+pub use inputs::dem::zoom::PACK_Z;
 /// The band's first zoom: the hi packs' last (z12) and one.
 pub const FIRST_Z: u8 = 13;
 /// The band's last: the deepest zoom the map stores.
@@ -378,7 +378,7 @@ mod tests {
         Set {
             id: id.into(),
             line: id.into(),
-            cover: crate::dem::declared::Cover::of(cover.as_deref()),
+            cover: inputs::dem::declared::Cover::of(cover.as_deref()),
             detail: Detail::Raster { bands: Vec::new(), all: cell },
             cut: None,
             every_zoom: false,

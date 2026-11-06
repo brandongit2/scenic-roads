@@ -15,14 +15,14 @@
 //! built) no data (sea level, flat shading): no dataset is published at every zoom on this grid, so
 //! there's no relief to read there.
 //!
-//! The steps (crate::agent::build's polar chain): `polar-terrain` makes a z`BLOCK_Z` block's
+//! The steps (pipeline::agent::build's polar chain): `polar-terrain` makes a z`BLOCK_Z` block's
 //! terrain, z4 to the finest (`terrain_block`); `polar-slope` its shading from the terrain packs of
 //! it and its neighbours (`slope_block`); `polar-root` z0–3 of both from the blocks' z4 tiles
 //! (`root`). `scenic-polar` runs the same into a folder.
 
-use crate::dem::declared::{Plan, Source};
-use crate::dem::generic::Sampler;
 use anyhow::Result;
+use inputs::dem::declared::{Plan, Source};
+use inputs::dem::generic::Sampler;
 use roadcore::polar::{self, Pole, TS};
 use roadcore::shade::Px;
 use std::collections::HashMap;
@@ -37,7 +37,7 @@ pub fn finest(sets: &[crate::terrain_zoom::Set], pole: Pole) -> u8 {
 }
 
 // A block's zoom and a pole's blocks: roadcore::polar's (task #916 step 6d: the region downloads'
-// files, crate::areafiles, name them below pipeline), kept at these paths.
+// files, inputs::areafiles, name them below pipeline), kept at these paths.
 pub use roadcore::polar::{blocks, BLOCK_Z};
 
 /// The poles built: the south. The north cap has no land (sea level everywhere north of 85° N,
@@ -435,7 +435,7 @@ pub fn plans(plan: &Plan, max_z: u8) -> Vec<Plan> {
 }
 
 /// The levels' samplers of `plans` (`plans`), sharing one cache.
-pub fn samplers<'a>(plans: &'a [Plan], o: &'a crate::dem::generic::Opts<'a>) -> Result<Vec<Sampler<'a>>> {
+pub fn samplers<'a>(plans: &'a [Plan], o: &'a inputs::dem::generic::Opts<'a>) -> Result<Vec<Sampler<'a>>> {
     let first = Sampler::new(plans.last().expect("a level"), o)?;
     plans.iter().map(|p| Sampler::sharing(p, o, &first)).collect()
 }
@@ -633,7 +633,7 @@ pub fn root(
     Ok(())
 }
 
-// ---- The steps (crate::agent::build's polar chain) ----------------------------------------------
+// ---- The steps (pipeline::agent::build's polar chain) ----------------------------------------------
 
 /// The pool over latitudes `b` (crate::terrain_base::Pool), its levels' plans read to `max_z`.
 fn pool_plans(out: &buildstore::out::Out, b: [f64; 4], max_z: u8) -> Result<(Vec<Plan>, store::nasfs::NasPath)> {
@@ -704,7 +704,7 @@ pub fn terrain_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32)
         jobrt::jobs::report(k as u64, targets.len() as u64, "polar blocks");
         let max_z = finest_now(out, pole)?;
         let (plans, store) = pool_plans(out, polar::lat_box(pole, BLOCK_Z, b.0, b.1), max_z)?;
-        let o = crate::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
+        let o = inputs::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
         let ss = samplers(&plans, &o)?;
         let voids = Voids::default();
         let mut pieces = jobrt::resume_log::Pieces::open(
@@ -909,7 +909,7 @@ mod tests {
     /// pool's as sampled.
     #[test]
     fn voids_with_nothing_beneath_take_their_own_filled_values() {
-        use crate::dem::declared::{Dataset, Source};
+        use inputs::dem::declared::{Dataset, Source};
         let d = tempfile::tempdir().unwrap();
         let store = d.path().join("fetched");
         std::fs::create_dir_all(store.join("glo")).unwrap();
@@ -944,7 +944,7 @@ mod tests {
         };
         buildstore::fetch::go_offline();
         let net = buildstore::fetch::Fetcher::from_env();
-        let o = crate::dem::generic::Opts {
+        let o = inputs::dem::generic::Opts {
             fetch: &net,
             store: Some(store::nasfs::NasPath::local_for_test(store)),
             local: None,
@@ -1001,11 +1001,11 @@ mod tests {
                 boxes.push([x0, y0, x0 + 100_000.0, y0 + 100_000.0]);
             }
         }
-        let cells = crate::dem::declared::projected_cells(3031, &boxes).unwrap();
+        let cells = inputs::dem::declared::projected_cells(3031, &boxes).unwrap();
         assert_eq!(cells.iter().map(|c| c.1).max(), Some(-87), "to 86° S");
         let boxes: Vec<[f64; 4]> =
             cells.iter().map(|&(x, y)| [x as f64, y as f64, x as f64 + 1.0, y as f64 + 1.0]).collect();
-        let cover = crate::dem::declared::Cover::of(Some(&boxes));
+        let cover = inputs::dem::declared::Cover::of(Some(&boxes));
         for z in 0..=6u8 {
             let last = (1u32 << z) - 1;
             for x in 0..=last {

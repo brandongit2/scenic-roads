@@ -117,20 +117,20 @@ fn parse(p: &[u8]) -> Result<Vec<Finished>> {
 
 /// What a terrain run reads besides its own tiles, a line each: the accepted elevation datasets
 /// (the pool, the fine datasets, the Terrarium pyramid) by the index `manifest` names, and the
-/// geoid sources converting their heights (`geoid`: crate::inputs::sources::geoid, what the pool's
+/// geoid sources converting their heights (`geoid`: inputs::inputs::sources::geoid, what the pool's
 /// readers take of the declared sources), each by its own declaration (`Source::named`). Another
 /// source's declaration changed leaves it as it was (task #968).
-pub(crate) fn inputs(manifest: &BTreeMap<String, String>, geoid: &[crate::inputs::sources::Source]) -> Vec<String> {
-    let l = crate::inputs::logical(crate::inputs::elevation::UNIT);
+pub(crate) fn inputs(manifest: &BTreeMap<String, String>, geoid: &[inputs::inputs::sources::Source]) -> Vec<String> {
+    let l = inputs::inputs::logical(inputs::inputs::elevation::UNIT);
     std::iter::once(format!("{l}={}", manifest.get(&l).map(String::as_str).unwrap_or("-")))
-        .chain(geoid.iter().map(crate::inputs::sources::Source::named))
+        .chain(geoid.iter().map(inputs::inputs::sources::Source::named))
         .collect()
 }
 
 /// `inputs` of the records `manifest` names under `root`, as a run's resume log's identity names
 /// them (one string).
 pub(crate) fn inputs_read(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<String> {
-    Ok(inputs(manifest, &crate::inputs::sources::geoid(root, manifest)?).join("\n"))
+    Ok(inputs(manifest, &inputs::inputs::sources::geoid(root, manifest)?).join("\n"))
 }
 
 /// The tiles of `levels` at their place's finest zoom (`Sources::native`), as an identity names them.

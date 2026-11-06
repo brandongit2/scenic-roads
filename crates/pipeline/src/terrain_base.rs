@@ -1,7 +1,7 @@
 //! The terrain's sampled tiles from the elevation pool (docs/steps.md §2, Terrain; docs/inputs.md
 //! §6.8): a tile at its place's finest zoom (crate::terrain_zoom), and the relief outside every
 //! region (`Pool::relief`). Every tile sampled from the same datasets, in the same order and blended at their edges
-//! the same way, as the roads' elevations (crate::dem::generic), so the roads and the terrain use
+//! the same way, as the roads' elevations (inputs::dem::generic), so the roads and the terrain use
 //! one dataset at every point. Each pixel is the mean of 2 × 2 samples over it (`K`), each dataset
 //! read at the level's detail: a GeoTIFF at its overview nearest half a pixel, a Terrarium pyramid at the level's own zoom (AWS's publishes every zoom),
 //! another pyramid at its declared zoom, and only from z9 (`ROW_Z`) on: below, its next dataset serves
@@ -17,11 +17,11 @@
 //! them (the store, `sources/fetched/`, for a stored dataset, a file the job reads half or more of copied
 //! whole to this Mac first where it has room: buildstore::localread; else the network).
 
-use crate::dem::declared::{Plan, Source};
-use crate::dem::generic::{tile_resolution, Copies, Opts, Sampler};
 use crate::terrain_pack::{RawSource, RawTiles};
 use anyhow::{Context, Result};
 use buildstore::fetch::Fetch;
+use inputs::dem::declared::{Plan, Source};
+use inputs::dem::generic::{tile_resolution, Copies, Opts, Sampler};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -33,7 +33,7 @@ pub const K: usize = 2;
 const MAX_Z: u8 = crate::terrain_zoom::DEEPEST;
 /// Tiles in flight at once while a level is sampled (`Tiles::prefetch_counted`): the memory
 /// `sampling_mb` declares (in crate::terrain_pack::piece_peak_mb, and what terrain-hi 7's and
-/// terrain-lo 2's runs measured, crate::coord::cost_version), shared among the chunks sampled at
+/// terrain-lo 2's runs measured, pipeline::coord::cost_version), shared among the chunks sampled at
 /// once (`at_once`), each `chunk_tiles` of them.
 const IN_FLIGHT: usize = 64;
 
@@ -52,7 +52,7 @@ fn chunk_tiles(at_once: usize) -> usize {
 
 /// The memory (MB) a level's chunks in flight take at most (`Tiles::prefetch_counted`): `IN_FLIGHT`
 /// tiles' K × K points a pixel, each point's longitude and latitude
-/// (`points`), what the sampler gives it (crate::dem::generic::Sampled: its height, dataset and
+/// (`points`), what the sampler gives it (inputs::dem::generic::Sampled: its height, dataset and
 /// blend) and works it out with (its height, first dataset and file).
 pub const fn sampling_mb() -> u64 {
     use std::mem::size_of;
@@ -71,10 +71,10 @@ pub fn terrarium_template(
     root: &store::nasfs::NasRoot,
     m: &std::collections::BTreeMap<String, String>,
 ) -> Result<String> {
-    use crate::dem::declared::Data;
-    let a = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)?
+    use inputs::dem::declared::Data;
+    let a = inputs::inputs::open(root, m, inputs::inputs::elevation::UNIT)?
         .context("no version of the elevation datasets is accepted (docs/inputs.md §6.8)")?;
-    crate::dem::declared::accepted(&a)?
+    inputs::dem::declared::accepted(&a)?
         .iter()
         .rev()
         .find_map(|d| match &d.declaration.data {
@@ -96,7 +96,7 @@ pub fn tiles_box(z: u8, ts: &[(u32, u32)]) -> [f64; 4] {
 
 /// The pool over an area, as the base reads it.
 pub struct Pool {
-    /// The datasets meeting the area (crate::dem::declared::plan_converted), in their order.
+    /// The datasets meeting the area (inputs::dem::declared::plan_converted), in their order.
     pub plan: Plan,
     /// The Terrarium pyramid's URL template, where one is declared (read through `RawTiles`).
     pub terrarium: Option<String>,
@@ -105,7 +105,7 @@ pub struct Pool {
     /// The area (west, south, east, north): its middle latitude sets the detail each level reads.
     pub area: [f64; 4],
     /// This Mac's whole copies of the stores' files the area's jobs read much of (buildstore::localread:
-    /// crate::dem::generic::COPY_SHARE); None, the NAS's read in place.
+    /// inputs::dem::generic::COPY_SHARE); None, the NAS's read in place.
     pub local: Option<buildstore::localread::Local>,
     /// The stored pyramids' folder (crate::pyramids::DIR under the root): the pyramids read tile by
     /// tile (`by_tile`) read there before the network. None: fetched.
@@ -120,11 +120,11 @@ impl Pool {
         m: &std::collections::BTreeMap<String, String>,
         b: [f64; 4],
     ) -> Result<Pool> {
-        let a = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)?.context(
+        let a = inputs::inputs::open(root, m, inputs::inputs::elevation::UNIT)?.context(
             "no version of the elevation datasets is accepted: the terrain's are declared there (docs/inputs.md §6.8)",
         )?;
-        let geoid = crate::inputs::sources::geoid(root, m)?;
-        let mut pool = Pool::of(crate::dem::declared::plan_converted(&a, b, &geoid)?, root.join("sources/fetched"), b);
+        let geoid = inputs::inputs::sources::geoid(root, m)?;
+        let mut pool = Pool::of(inputs::dem::declared::plan_converted(&a, b, &geoid)?, root.join("sources/fetched"), b);
         pool.local = buildstore::localread::Local::from_env(root);
         pool.pyramids = Some(root.join(crate::pyramids::DIR));
         Ok(pool)
@@ -209,7 +209,7 @@ impl Pool {
 /// Whether dataset `d` is a tile pyramid read tile by tile over the network at its one zoom: one
 /// not declared published at every zoom (`every_zoom`). GSI's z15 layers: 64 requests a z12 tile
 /// each.
-pub(crate) fn by_tile(d: &crate::dem::declared::Dataset) -> bool {
+pub(crate) fn by_tile(d: &inputs::dem::declared::Dataset) -> bool {
     matches!(&d.source, Source::Tiles { every_zoom: false, .. })
 }
 
@@ -292,7 +292,7 @@ impl Fetch for RawFetch<'_> {
         }
     }
 
-    // (The other pyramids' tiles held to the limits their reader asks, crate::dem::generic::TILE_WITHIN:
+    // (The other pyramids' tiles held to the limits their reader asks, inputs::dem::generic::TILE_WITHIN:
     // a silent connection given up in 30 s, not the client's 90 s a try.)
     fn get_within(&self, url: &str, within: buildstore::fetch::Within) -> Result<Option<Vec<u8>>> {
         match self.tile(url) {
@@ -494,7 +494,7 @@ impl RawSource for Tiles<'_> {
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
         // (As many at once as the job's threads, each a task of a pool as wide as the target's
         // grant (jobrt::control::on_outside_pool), its sampler's passes there too
-        // (crate::dem::generic's, through jobrt::control::on_target_pool): the target's own thread
+        // (inputs::dem::generic's, through jobrt::control::on_target_pool): the target's own thread
         // waits, working on nothing, so the job is on its grant's threads, no more. Never threads of
         // their own whose passes go on a pool: the target's own one's thread is waiting for them
         // (task #961), and another's beside them is twice the grant. One task a thread of the pool
@@ -530,7 +530,7 @@ impl RawSource for Tiles<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dem::declared::Dataset;
+    use inputs::dem::declared::Dataset;
 
     /// A pool of two: a GLO-30-like 1° tile in the store (its west half filled from another DEM, by
     /// its mask), then a Terrarium pyramid in the cache; a z12 tile across the mask's edge.

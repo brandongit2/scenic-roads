@@ -8,22 +8,22 @@
 //!
 //! The unit job stages what this reads into the unit's folder: the terrain's tiles over its box to
 //! z12 and its deep tiles under its vertices and their neighbours across a near edge (`deep_tiles`),
-//! in one archive (`TERRAIN_FILE`, crate::stage), and the pool's datasets' codes by coverage
+//! in one archive (`TERRAIN_FILE`, pipeline::stage), and the pool's datasets' codes by coverage
 //! (`codes.json`: `Codes`), which name each vertex's source (`src.u8`): the first dataset in the
 //! order whose coverage (its measured 1° cells) holds it. That's a label, not the terrain's own
 //! record: in a cell a dataset covers only in part, it names that dataset where the terrain took the
 //! next one through its voids.
 
-use crate::dem::declared::Cover;
-use crate::dem::spacing::{cell, Fine};
 use anyhow::{Context, Result};
+use inputs::dem::declared::Cover;
+use inputs::dem::spacing::{cell, Fine};
 use roadcore::archive::Archive;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
-/// The staged terrain tiles in a unit's folder (crate::stage).
+/// The staged terrain tiles in a unit's folder (pipeline::stage).
 pub const TERRAIN_FILE: &str = "terrain.tiles";
 /// The datasets' codes by coverage (`Codes`).
 pub const CODES_FILE: &str = "codes.json";
@@ -68,7 +68,7 @@ pub struct Codes(pub Vec<(u8, Option<Vec<[f64; 4]>>)>);
 
 impl Codes {
     /// Of the accepted datasets (`declared::accepted`, in their order).
-    pub fn of(ds: &[crate::dem::declared::Accepted]) -> Codes {
+    pub fn of(ds: &[inputs::dem::declared::Accepted]) -> Codes {
         Codes(ds.iter().map(|d| (d.declaration.code, d.measured.cover.clone())).collect())
     }
 

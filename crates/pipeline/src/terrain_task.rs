@@ -12,9 +12,9 @@
 //! its mid's part (`u/mid.sect`, crate::terrain_pack::write_mid's), which the job takes into the
 //! z6 tile as if made here: the same bytes.
 
-use crate::offload::{Offered, Offload, Patience, Settled};
 use crate::terrain_pack::{Made, Mid, RawSource, Sources};
 use anyhow::{ensure, Context, Result};
+use offload::{Offered, Offload, Patience, Settled};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -33,7 +33,7 @@ pub const MOST: usize = 3;
 /// placement is on (jobrt::jobs::ahead_on). Each group then says its head start (the
 /// tiles the run makes before it needs the group, over the group's: `Offers::offer_after`), and the
 /// coordinator gives it to a worker slower than this Mac only while that covers it
-/// (crate::coord::task's `covered`). Off: the waiting rule gives a worker only what it would make
+/// (pipeline::coord::task's `covered`). Off: the waiting rule gives a worker only what it would make
 /// sooner than this Mac (`task::beats`), as before.
 pub fn offer_ahead() -> bool {
     jobrt::jobs::ahead_on()
@@ -291,11 +291,11 @@ fn same(a: &(Vec<Made>, Mid), b: &(Vec<Made>, Mid)) -> bool {
     a.0 == b.0 && bits(&a.1) == bits(&b.1)
 }
 
-/// A group's task spec (the shape of a tail's, crate::offload): the program `terrainsub` over its
+/// A group's task spec (the shape of a tail's, offload::Offload::offer): the program `terrainsub` over its
 /// folder; `unit` its first subtree (what its cost is kept under), and its subtrees.
 pub fn spec(group: &[(u32, u32)], version: &str, input: u64) -> serde_json::Value {
     let args = ["--in", &format!("{{dir}}/{INPUT}"), "--out", "{dir}"];
-    let run = crate::unit::Run {
+    let run = offload::Run {
         what: KIND.into(),
         prog: "terrainsub".into(),
         args: args.iter().map(|a| a.to_string()).collect(),
@@ -304,7 +304,7 @@ pub fn spec(group: &[(u32, u32)], version: &str, input: u64) -> serde_json::Valu
     };
     let first = group.first().map(|(x, y)| format!("8/{x}/{y}")).unwrap_or_default();
     // (`unit`: the task spec's key for its tile, kept: docs/workers.md §3.)
-    serde_json::json!({ "unit": first, "subtrees": subtrees_arg(group), "version": version, "runs": [run], "inputs": [[format!("u/{INPUT}"), input]], "places": crate::offload::places() })
+    serde_json::json!({ "unit": first, "subtrees": subtrees_arg(group), "version": version, "runs": [run], "inputs": [[format!("u/{INPUT}"), input]], "places": offload::places() })
 }
 
 /// A group's predicted memory on a worker (MB), until a worker measures it (the coordinator's
@@ -327,7 +327,7 @@ struct Out {
 /// What the job runs a group's levels with here (crate::terrain_pack::make_piece over them).
 pub type Here<'a> = &'a dyn Fn(Levels) -> Result<(Vec<Made>, Mid)>;
 
-/// A z6 tile's groups out as tasks (crate::offload), as tree cover's rows are: offered from the far
+/// A z6 tile's groups out as tasks (offload::Offload), as tree cover's rows are: offered from the far
 /// end (its last groups) when the run begins, one per worker
 /// that takes them around, at most `MOST`, never every group; the run makes the others (`rest`),
 /// then settles each, waiting for no worker longer than this Mac would take (`Patience`: its tiles

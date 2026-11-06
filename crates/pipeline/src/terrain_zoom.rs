@@ -5,23 +5,23 @@
 //! measured per file), else its resolution; a tile pyramid's, its declared zoom. A place's sources
 //! are the declared datasets meeting it in their order (rank, then resolution), up to the first that
 //! holds it whole: past that one no later dataset is read there but to fill voids
-//! (crate::dem::generic). A tile's finest zoom is the finest of its sources' at its poleward edge,
+//! (inputs::dem::generic). A tile's finest zoom is the finest of its sources' at its poleward edge,
 //! at most `DEEPEST`.
 //!
 //! The same rule sets the polar caps' finest zoom (crate::polar), on their grid's pixel.
 
-use crate::dem::declared::{self, Accepted, Cover, Data};
 use anyhow::{Context, Result};
+use inputs::dem::declared::{self, Accepted, Cover, Data};
 
-// The zoom rule's own parts, which the declared datasets' checks read too: crate::dem::zoom's
+// The zoom rule's own parts, which the declared datasets' checks read too: inputs::dem::zoom's
 // (task #916 step 6d), kept at these paths.
-pub use crate::dem::zoom::{polar_zoom_for, zoom_for, Detail, CELL_FACTOR, DEEPEST};
+pub use inputs::dem::zoom::{polar_zoom_for, zoom_for, Detail, CELL_FACTOR, DEEPEST};
 
 /// A declared dataset as the terrain's keys and runs read it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Set {
     pub id: String,
-    /// As the keys name it (crate::dem::declared::line: its `keyed` and its heights' conversion).
+    /// As the keys name it (inputs::dem::declared::line: its `keyed` and its heights' conversion).
     pub line: String,
     pub cover: Cover,
     pub detail: Detail,
@@ -87,8 +87,8 @@ pub fn sets(ds: &[Accepted], read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<V
 /// index), the declared geoid sources converting their heights, and the sets.
 #[derive(Clone, Debug)]
 pub struct Declared {
-    pub elevation: crate::inputs::Accepted,
-    pub geoid: Vec<crate::inputs::sources::Source>,
+    pub elevation: inputs::inputs::Accepted,
+    pub geoid: Vec<inputs::inputs::sources::Source>,
     pub sets: Vec<Set>,
 }
 
@@ -99,14 +99,14 @@ impl Declared {
         root: &store::nasfs::NasRoot,
         m: &std::collections::BTreeMap<String, String>,
     ) -> Result<Option<Declared>> {
-        let Some(a) = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)? else { return Ok(None) };
-        Ok(Some(Declared::of(a, crate::inputs::sources::geoid(root, m)?)?))
+        let Some(a) = inputs::inputs::open(root, m, inputs::inputs::elevation::UNIT)? else { return Ok(None) };
+        Ok(Some(Declared::of(a, inputs::inputs::sources::geoid(root, m)?)?))
     }
 
     /// Of accepted version `a`, converted by `geoid`.
-    pub fn of(a: crate::inputs::Accepted, geoid: Vec<crate::inputs::sources::Source>) -> Result<Declared> {
+    pub fn of(a: inputs::inputs::Accepted, geoid: Vec<inputs::inputs::sources::Source>) -> Result<Declared> {
         let mut ds = declared::accepted(&a)?;
-        // (Said by the roads' own plans: crate::dem::declared::plan_converted.)
+        // (Said by the roads' own plans: inputs::dem::declared::plan_converted.)
         let _ = declared::convert(&mut ds, &geoid);
         let sets = sets(&ds, &|n| Ok(a.root().join(n).read()?))?;
         Ok(Declared { elevation: a, geoid, sets })
@@ -224,7 +224,7 @@ mod tests {
             [(30.0, 0.0), (30.0, 50.0), (30.0, 70.0), (10.0, 40.0), (1.0, 45.0), (2.0, 60.0), (100.0, 10.0)]
         {
             let z = raster(cell).zoom_at(lat);
-            let px = |z: u8| crate::dem::generic::tile_resolution(z as u32, lat);
+            let px = |z: u8| inputs::dem::generic::tile_resolution(z as u32, lat);
             assert!(px(z) >= cell * CELL_FACTOR - 1e-9 || z == 0, "{cell} m at {lat}°: z{z}'s {} m", px(z));
             assert!(z == DEEPEST || px(z + 1) < cell * CELL_FACTOR, "{cell} m at {lat}°: z{} would do", z + 1);
         }

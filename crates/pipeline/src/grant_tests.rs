@@ -1,4 +1,4 @@
-//! Targets run on small grants (crate::control::on_grant) finish, the same bytes whatever the grant.
+//! Targets run on small grants (jobrt::control::on_grant) finish, the same bytes whatever the grant.
 //! 5 Nov: every terrain-hi job of the pool stalled at 0 tiles on a 1-thread grant. A target's
 //! sampling (crate::terrain_base's chunks, threads of the target's own, which it joins) put its
 //! passes on the target's own pool, whose one thread was the target waiting for them.
@@ -43,38 +43,38 @@ pub(crate) fn within<R>(what: &str, f: impl FnOnce() -> R) -> R {
 }
 
 /// `run` on each of `grants` as its job's grant (its threads file written as the agent does), each
-/// a target of its own (crate::control::on_grant), within `BOUND` all told. What each made.
+/// a target of its own (jobrt::control::on_grant), within `BOUND` all told. What each made.
 fn on_grants<R: Send>(what: &str, grants: &[usize], run: impl Fn() -> R + Sync) -> Vec<R> {
     let d = tempfile::tempdir().unwrap();
     let f = d.path().join("threads");
-    std::env::set_var(crate::control::THREADS_ENV, &f);
+    std::env::set_var(jobrt::control::THREADS_ENV, &f);
     let made = within(what, || {
         grants
             .iter()
             .map(|&n| {
-                crate::control::grant(&f, n).unwrap();
-                crate::control::on_grant(|| {
+                jobrt::control::grant(&f, n).unwrap();
+                jobrt::control::on_grant(|| {
                     assert_eq!(rayon::current_num_threads(), n);
                     run()
                 })
             })
             .collect()
     });
-    std::env::remove_var(crate::control::THREADS_ENV);
+    std::env::remove_var(jobrt::control::THREADS_ENV);
     made
 }
 
 /// A pool of one GeoTIFF over 9–12°E, 44–47°N (a slope east and north), `f` given it and the
 /// Terrarium tiles' folder (none there: the pool alone samples).
 fn with_pool<R>(f: impl FnOnce(&crate::terrain_base::Pool, &RawTiles) -> R) -> R {
-    use crate::dem::declared::{Dataset, Plan, Source};
+    use inputs::dem::declared::{Dataset, Plan, Source};
     let d = tempfile::tempdir().unwrap();
     let store = d.path().join("fetched");
     std::fs::create_dir_all(store.join("glo")).unwrap();
     let n = 1000usize;
     let gt = [9.0, 0.003, 0.0, 47.0, 0.0, -0.003];
     let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32 * 0.5 + (p / n) as f32 * 0.25).collect();
-    let tif = crate::geotiff::write_f32(n as u32, n as u32, &e, 256, gt, 4326, None).unwrap();
+    let tif = buildstore::geotiff::write_f32(n as u32, n as u32, &e, 256, gt, 4326, None).unwrap();
     std::fs::write(store.join("glo/T_DEM.tif"), tif).unwrap();
     let area = [9.0, 44.0, 12.0, 47.0];
     let plan = Plan {
@@ -99,7 +99,7 @@ fn with_pool<R>(f: impl FnOnce(&crate::terrain_base::Pool, &RawTiles) -> R) -> R
     };
     let pool = crate::terrain_base::Pool::of(plan, store::nasfs::NasPath::local_for_test(store), area);
     let raw = RawTiles::new(&d.path().join("local"), crate::terrain_pack::TEST_BASE);
-    crate::fetch::go_offline();
+    buildstore::fetch::go_offline();
     f(&pool, &raw)
 }
 
@@ -113,13 +113,9 @@ fn sets(z: u8) -> Vec<crate::terrain_zoom::Set> {
 }
 
 /// A place 5 km wide at 10.5°E, 45.5°N.
-fn coverage(d: &std::path::Path) -> crate::coverage::Coverage {
-    crate::coverage::Coverage::fixture(
-        &[crate::agent::recipes::Recipe {
-            id: "r".into(),
-            name: "R".into(),
-            outline: vec!["place:10.5,45.5,5".into()],
-        }],
+fn coverage(d: &std::path::Path) -> buildstore::coverage::Coverage {
+    buildstore::coverage::Coverage::fixture(
+        &[buildstore::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:10.5,45.5,5".into()] }],
         None,
         d,
     )
@@ -199,9 +195,11 @@ fn a_terrain_deep_target_on_one_or_two_threads_finishes_the_same() {
     let made = with_pool(|pool, raw| {
         on_grants("a terrain-deep target", &[1, 2], || {
             let r = d.path().join(k.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string());
-            let mut out =
-                crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&r.join("root")), &r.join("scratch"))
-                    .unwrap();
+            let mut out = buildstore::out::Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&r.join("root")),
+                &r.join("scratch"),
+            )
+            .unwrap();
             let rep = pool
                 .with_tiles(raw, |tiles| {
                     let fills = Fills::new(tiles, tiles, &fill, &reaching);

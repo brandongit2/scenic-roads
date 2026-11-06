@@ -7,7 +7,7 @@
 //! The z6 tiles' runs (`build_piece`), the z3 tiles' assemblies (`build_lo`) and the root
 //! (`build_root`) are here; a z10 tile's band past z12 is crate::terrain_deep's.
 
-use crate::lakefill::water_pin;
+use inputs::lakefill::water_pin;
 use roadcore::grid::decode_terrain;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -227,35 +227,35 @@ impl RawSource for Fills<'_> {
 /// The pin of the depth's water source as the jobs open it (`SourceFiles`: `WaterSource::pin`),
 /// from the manifest alone: the latest pass's basemap's content name, and the lakes filled from
 /// Canada's own data's after it when the manifest has them for that basemap
-/// (crate::lakefill::current, filled_pin); None
+/// (inputs::lakefill::current, filled_pin); None
 /// without a basemap. What the depth's keys name the water by (agent::build: its digests,
 /// codecs::terrain_water::WaterIdx).
 pub fn water_source_pin(m: &std::collections::BTreeMap<String, String>) -> Option<String> {
     let (_, c) = water_pin(m)?;
-    Some(crate::lakefill::filled_pin(c, crate::lakefill::current(m).map(|(_, f)| f)))
+    Some(inputs::lakefill::filled_pin(c, inputs::lakefill::current(m).map(|(_, f)| f)))
 }
 
 /// The depth's water source, open (its pin `water_source_pin`'s): the latest pass's basemap, with
 /// the fill's lakes when the manifest has a fill.
-pub fn open_water(out: &Out) -> anyhow::Result<crate::lakefill::FilledWater<codecs::terrain_water::BasemapWater>> {
+pub fn open_water(out: &Out) -> anyhow::Result<inputs::lakefill::FilledWater<codecs::terrain_water::BasemapWater>> {
     open_water_with(out, None)
 }
 
 /// `open_water`, the basemap read from `local`'s whole copy where it gives one (buildstore::localread:
-/// the steps reading it in thousands of ranges, its shared cache's, crate::needs::CACHES).
+/// the steps reading it in thousands of ranges, its shared cache's, pipeline::needs::CACHES).
 pub fn open_water_with(
     out: &Out,
     local: Option<&buildstore::localread::Local>,
-) -> anyhow::Result<crate::lakefill::FilledWater<codecs::terrain_water::BasemapWater>> {
+) -> anyhow::Result<inputs::lakefill::FilledWater<codecs::terrain_water::BasemapWater>> {
     use anyhow::Context;
     let (_, c) = water_pin(&out.manifest)
         .context("no basemap (layers/basemap/world-<date>): the depth's water is the latest pass's basemap's")?;
     let base = codecs::terrain_water::BasemapWater::open(&buildstore::localread::path(local, &out.path(c)), c)?;
-    let fill = match crate::lakefill::current(&out.manifest) {
-        Some((_, f)) => Some(crate::lakefill::Fill::open(&out.path(f), f)?),
+    let fill = match inputs::lakefill::current(&out.manifest) {
+        Some((_, f)) => Some(inputs::lakefill::Fill::open(&out.path(f), f)?),
         None => None,
     };
-    Ok(crate::lakefill::FilledWater { base, fill })
+    Ok(inputs::lakefill::FilledWater { base, fill })
 }
 
 /// Where a run reads AWS's raw tiles: this Mac's (`RawTiles`: its cache, the NAS's archives, else
@@ -1612,9 +1612,9 @@ pub fn make_piece_whole(
 /// bounds: its hi tiles held until written (z9–12, up to 5,440, ~270 KB each made), a level's tiles
 /// while the next coarser is made (up to 4,096 at 256 KB), its quarters (~20 MB), the pool's chunks
 /// being sampled (crate::terrain_base::sampling_mb) and the samplers' caches
-/// (crate::dem::generic::samplers_mb).
+/// (inputs::dem::generic::samplers_mb).
 pub const fn piece_peak_mb() -> u64 {
-    5440 * 270 / 1024 + 4096 / 4 + 20 + crate::terrain_base::sampling_mb() + crate::dem::generic::samplers_mb()
+    5440 * 270 / 1024 + 4096 / 4 + 20 + crate::terrain_base::sampling_mb() + inputs::dem::generic::samplers_mb()
 }
 
 /// The most memory (MB) a z6 tile's run holds of its z10 tiles' deep mids (crate::terrain_deep): a
@@ -1798,7 +1798,7 @@ pub fn build_piece_with(
     src: &Sources,
     expect_same: bool,
     progress: buildstore::rawpack::Progress,
-    offload: Option<&crate::offload::Offload>,
+    offload: Option<&offload::Offload>,
 ) -> anyhow::Result<PackReport> {
     let offers = crate::terrain_task::Offers::offer(offload, t, &piece_levels(cov, src.sets, t), raw, src);
     build_piece_offered(out, raw, t, cov, src, expect_same, progress, offers)

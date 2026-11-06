@@ -147,7 +147,7 @@ impl Source {
 
     /// Declaration `s` (of the depth role), its grids in `sources/fetched/<id>/` under `root` (none
     /// yet for one the lake-depth step makes: `with_estimates`).
-    pub fn from_declared(root: &store::nasfs::NasRoot, s: &crate::inputs::sources::Source) -> Result<Source> {
+    pub fn from_declared(root: &store::nasfs::NasRoot, s: &inputs::inputs::sources::Source) -> Result<Source> {
         let dir = root.join("sources/fetched").join(&s.id);
         let p = &s.data.params;
         let code = s.param_u64("code")?;
@@ -234,7 +234,7 @@ impl Source {
 
 /// Declaration `s`'s digest with its grids' packing (`PACK_PROPS`) and unread properties
 /// (`UNREAD_PROPS`) left out: the same packed or loose, so packing keeps every key.
-pub fn unpacked_digest(s: &crate::inputs::sources::Source) -> String {
+pub fn unpacked_digest(s: &inputs::inputs::sources::Source) -> String {
     let mut s = s.clone();
     for f in &mut s.index {
         for k in PACK_PROPS.iter().chain(&UNREAD_PROPS) {
@@ -258,9 +258,9 @@ pub fn declared_alone(
     root: &store::nasfs::NasRoot,
     manifest: &std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<Source>> {
-    let Some(s) = crate::inputs::sources::open(root, manifest)? else { return Ok(Vec::new()) };
+    let Some(s) = inputs::inputs::sources::open(root, manifest)? else { return Ok(Vec::new()) };
     let mut out: Vec<Source> =
-        s.many(crate::inputs::sources::DEPTH).iter().map(|d| Source::from_declared(root, d)).collect::<Result<_>>()?;
+        s.many(inputs::inputs::sources::DEPTH).iter().map(|d| Source::from_declared(root, d)).collect::<Result<_>>()?;
     out.sort_by_key(|s| s.code);
     Ok(out)
 }
@@ -611,7 +611,7 @@ pub static STRIP_CELLS: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 /// How many of a source's grids are opened, or sampled, at once.
 pub const GRIDS_AT_ONCE: usize = 8;
 
-/// A GeoTIFF opened, its header read. (Not on crate::agent::nasread's readers: their four
+/// A GeoTIFF opened, its header read. (Not on pipeline::agent::nasread's readers: their four
 /// threads, busy, fail a call at once, and the grids are opened `GRIDS_AT_ONCE` at once.)
 /// An I/O error in its header's read keeps its kind (a transient one is tried again); a header
 /// that isn't a GeoTIFF's is `InvalidData` (never tried again).
@@ -1592,9 +1592,9 @@ pub(crate) mod tests {
             )
         };
         let src = |extra: &str| {
-            let d = crate::inputs::sources::parse(decl.as_bytes()).unwrap();
-            let index = crate::inputs::sources::parse_index(idx(extra).as_bytes()).unwrap();
-            let s = crate::inputs::sources::Source { id: "s".into(), data: d.data, keyed: "k".into(), index };
+            let d = inputs::inputs::sources::parse(decl.as_bytes()).unwrap();
+            let index = inputs::inputs::sources::parse_index(idx(extra).as_bytes()).unwrap();
+            let s = inputs::inputs::sources::Source { id: "s".into(), data: d.data, keyed: "k".into(), index };
             Source::from_declared(&store::nasfs::NasRoot::local_for_test(Path::new("/r")), &s).unwrap()
         };
         let loose = src("");

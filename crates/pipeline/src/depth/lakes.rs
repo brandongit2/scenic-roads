@@ -22,9 +22,9 @@ use anyhow::{bail, ensure, Context, Result};
 use det::Det;
 use std::collections::{BTreeMap, HashMap};
 
-// The declarations' format and a source's method with its grids' zooms: crate::inputs::estimate's
+// The declarations' format and a source's method with its grids' zooms: inputs::inputs::estimate's
 // (task #916 step 6d: the input check reads them), kept at these paths.
-pub use crate::inputs::estimate::{Method, FORMAT, GLOBATHY_Z, SMALL_Z};
+pub use inputs::inputs::estimate::{Method, FORMAT, GLOBATHY_Z, SMALL_Z};
 
 /// Bumped with any change to the grids made from the same inputs.
 pub const V: u32 = 1;
@@ -448,7 +448,7 @@ pub fn read_dmax(r: impl std::io::Read, ids: &std::collections::HashSet<u64>) ->
 /// HydroLAKES' polygons meeting lon/lat box `b`, from its shapefile (`shp`, `dbf`): (Hylak_id, its
 /// rings in lon/lat).
 pub fn read_hydrolakes(shp: impl std::io::Read, dbf: impl std::io::Read, b: [f64; 4]) -> Result<Vec<(u64, Rings)>> {
-    use crate::lakefill::shp::{DbfReader, ShpReader};
+    use inputs::lakefill::shp::{DbfReader, ShpReader};
     let mut s = ShpReader::new(shp)?;
     let mut d = DbfReader::new(dbf)?;
     let col = d.col("Hylak_id").context("HydroLAKES' table has no Hylak_id")?;
@@ -486,9 +486,9 @@ impl Folder {
     /// GLOBathy's maximum depths of lakes `ids` (`read_dmax`).
     pub fn dmax(&self, ids: &std::collections::HashSet<u64>) -> Result<HashMap<u64, f64>> {
         for z in self.zips()? {
-            let ms = crate::lakefill::zip::members(&z)?;
+            let ms = inputs::lakefill::zip::members(&z)?;
             if let Some(m) = ms.iter().find(|m| m.name.ends_with("(ALL_LAKES).csv")) {
-                return read_dmax(crate::lakefill::zip::open(&z, m)?, ids)
+                return read_dmax(inputs::lakefill::zip::open(&z, m)?, ids)
                     .with_context(|| format!("{}:{}", z.display(), m.name));
             }
         }
@@ -499,7 +499,7 @@ impl Folder {
     pub fn hydrolakes(&self, b: [f64; 4]) -> Result<Vec<(u64, Rings)>> {
         for z in self.zips()? {
             if let Some((shp, dbf, _)) =
-                crate::lakefill::run::shapefiles(&z, "HydroLAKES_polys_v10")?.into_iter().next()
+                inputs::lakefill::run::shapefiles(&z, "HydroLAKES_polys_v10")?.into_iter().next()
             {
                 return read_hydrolakes(shp.open()?, dbf.open()?, b).with_context(|| shp.name());
             }
@@ -1062,7 +1062,7 @@ impl Tif {
     }
 }
 
-/// A pack of `grids`: a tar (ustar, its headers fixed: crate::agent::histarchive's) whose first
+/// A pack of `grids`: a tar (ustar, its headers fixed: pipeline::agent::histarchive's) whose first
 /// member, `INDEX`, lists them (`Packed`), each grid then its GeoTIFF, in order. (Taken, not
 /// copied: a dense tile's are a few hundred MB.)
 pub fn pack(grids: Vec<Tif>) -> Result<Vec<u8>> {

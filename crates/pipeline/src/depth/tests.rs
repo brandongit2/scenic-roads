@@ -823,10 +823,10 @@ fn measure_the_waters_reads() {
 /// set, the basemap and the packs are read from whole local copies there, as a job's are
 /// (buildstore::localread, task #551; the copies' time is the phase "making whole local copies").
 /// A packed index's feature as the build reads it (`Source::from_declared`'s, one grid).
-fn grid_of(root: &store::nasfs::NasRoot, id: &str, f: &crate::inputs::sources::Feature) -> grids::Grid {
+fn grid_of(root: &store::nasfs::NasRoot, id: &str, f: &inputs::inputs::sources::Feature) -> grids::Grid {
     let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\nkind = \"data\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 3\nwater = \"sea\"\nlabel = \"L\"\ndatum = \"D\"\n";
-    let d = crate::inputs::sources::parse(decl.as_bytes()).unwrap();
-    let s = crate::inputs::sources::Source { id: id.into(), data: d.data, keyed: "k".into(), index: vec![f.clone()] };
+    let d = inputs::inputs::sources::parse(decl.as_bytes()).unwrap();
+    let s = inputs::inputs::sources::Source { id: id.into(), data: d.data, keyed: "k".into(), index: vec![f.clone()] };
     grids::Source::from_declared(root, &s).unwrap().grids.remove(0)
 }
 
@@ -850,7 +850,7 @@ fn measure_a_real_assembly() {
         let v: Vec<&str> = o.split('=').collect();
         let (id, index, dir) = (v[0], Path::new(v[1]), Path::new(v[2]));
         let s = srcs.iter_mut().find(|s| s.id == id).expect("a declared depth source");
-        let feats = crate::inputs::sources::parse_index(&std::fs::read(index).unwrap()).unwrap();
+        let feats = inputs::inputs::sources::parse_index(&std::fs::read(index).unwrap()).unwrap();
         let mut pin = std::collections::HashMap::new();
         let mut packed: Vec<grids::Grid> = Vec::new();
         for f in &feats {

@@ -13,7 +13,7 @@
 //! them its blends' bands reach), fetched once each with the build's fetcher (its User-Agent, its per-host limit), then packed and their
 //! archives handed off as the store's (buildstore::rawpack::handed_place), the lead naming them in the
 //! store's index as it names AWS's; each z6 tile starts only while the NAS has more room past the
-//! owner's reserve than the most one has put there. Its key (its declared reads, crate::agent::steps)
+//! owner's reserve than the most one has put there. Its key (its declared reads, pipeline::agent::steps)
 //! follows what `want` reads, so a z6 tile is filled again when that changes (`V` with its code).
 //! A z6 tile's terrain-hi and terrain-deep targets wait for its fill (a declared read), which isn't
 //! done while a tile couldn't be fetched, so a job reads its pyramids' tiles from the store
@@ -21,9 +21,9 @@
 //! written back, and a store that can't be read fails the job rather than ask the network for
 //! every tile (task #975).
 
-use crate::dem::declared::{Plan, Source};
 use anyhow::{Context, Result};
 use buildstore::fetch::{Fetch, Within};
+use inputs::dem::declared::{Plan, Source};
 use roadcore::archive::{tile_key, Entry};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -258,7 +258,7 @@ pub fn want(
         add(z, x, y);
     }
     // (And the tiles round them a blend's band reaches: its distance scan reads a pyramid's pixels
-    // up to four of the coarsest dataset's pixels past a point, crate::dem::generic, so a job
+    // up to four of the coarsest dataset's pixels past a point, inputs::dem::generic, so a job
     // reads nothing the fill didn't fetch.)
     let band_m = 4.0 * plan.datasets.iter().map(|d| d.resolution).fold(0.0f64, f64::max);
     for (t, zn, _) in &pyr {
@@ -266,7 +266,7 @@ pub fn want(
         let n = 1u32 << *zn;
         let lat = |y: u32| roadcore::geo::merc_lat(f64::from(y) / f64::from(n)).abs();
         let pole = set.iter().map(|&(_, _, y)| lat(y).max(lat(y + 1))).fold(0.0f64, f64::max);
-        let k = ring_tiles(band_m, crate::dem::generic::tile_resolution(*zn, pole));
+        let k = ring_tiles(band_m, inputs::dem::generic::tile_resolution(*zn, pole));
         let ring: Vec<(u8, u32, u32)> = set
             .iter()
             .flat_map(|&(z, x, y)| {
@@ -290,7 +290,7 @@ pub fn want(
 }
 
 /// The tiles a band `band_m` wide reaches past a tile of pixels `px_m` wide (with the scan's own
-/// pixel each side, crate::dem::generic): at least one.
+/// pixel each side, inputs::dem::generic): at least one.
 fn ring_tiles(band_m: f64, px_m: f64) -> u32 {
     (((band_m / px_m).ceil() + 2.0) / 256.0).ceil().max(1.0) as u32
 }
@@ -405,7 +405,7 @@ pub fn fill(
                                 .replace("{z}", &z.to_string())
                                 .replace("{x}", &x.to_string())
                                 .replace("{y}", &y.to_string());
-                            let b = fetch.get_within(&url, crate::dem::generic::TILE_WITHIN)?;
+                            let b = fetch.get_within(&url, inputs::dem::generic::TILE_WITHIN)?;
                             match b {
                                 Some(b) if !codecs::whole::png_whole(&b) => {
                                     anyhow::bail!("{url}: not a whole PNG ({} bytes)", b.len())
@@ -497,7 +497,7 @@ mod tests {
             fmt: 0,
             version: String::new(),
             tag: String::new(),
-            datasets: vec![crate::dem::declared::Dataset {
+            datasets: vec![inputs::dem::declared::Dataset {
                 id: "g".into(),
                 code: 5,
                 resolution: 5.0,
