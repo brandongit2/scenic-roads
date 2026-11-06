@@ -172,7 +172,7 @@ from the first (`edit_held`).
     the target, the agent frees its caches toward it on a thread of its own, the cheapest to refill
     first (copies, base packs, the heritage clip last), measuring as it goes; short with
     nothing more to free, it says so (`caches.room.short`). It never deletes what a job holds.
-  - **The NAS reserve** (`room::NAS_RESERVE`, `room::nas_room`): `scenic nas-room <GB>` / `scenic
+  - **The NAS reserve** (`buildstore::room::NAS_RESERVE`, `nas_room`): `scenic nas-room <GB>` / `scenic
     nas-room off` on any Mac, one pool-wide value on the NAS (`state/pool/nas-room.json`), off by
     default; with no argument, how it stands. Apart from the Macs' targets (another disk). `bld-fetch`
     fails when what it still has to fetch is more than the NAS's free space past it; the other steps

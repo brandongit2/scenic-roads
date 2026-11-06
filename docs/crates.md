@@ -2,9 +2,9 @@
 
 **Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
 (`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a to 6d (§6, 6c
-`crates/coordwire`, 6d `crates/inputs`) and 6e's first part (`crates/offload`, `crates/terrain`),
-second part (`crates/trees`, `crates/roads`, the names family into `crates/landmarks`) are built;
-every later step below is planned (6e's bld, 6f: §6).
+`crates/coordwire`, 6d `crates/inputs`) and 6e (`crates/offload`, `crates/terrain`, `crates/trees`,
+`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built; every later
+step below is planned (6f: §6).
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -64,7 +64,12 @@ Rerun on 6 Nov 2026 for 6e's trees, roads and names: on main at dd7246c6, one cy
 128.3k lines; after them, one of 12 modules, 117.6k lines (agent, answers, bld, buildtiles, coord,
 needs, offload, out, paces, pool, pubtimes, uses): the trees family's four, the roads family's eight
 (peaks ↔ summits with them, a cycle inside the roads crate now) and the names family's eight moved
-out. What holds bld and buildtiles in it is §6.3's.
+out.
+
+Rerun on 6 Nov 2026 for 6e's bld: on main at f286dcc6, one cycle of 12 modules, 117.9k lines; after
+it, one of 10 modules, 108.1k lines (agent, answers, coord, needs, offload, out, paces, pool,
+pubtimes, uses): bld and buildtiles moved out. Every step family is out of pipeline; what is left
+in the cycle is the agent, its plan and its runtime (6f).
 
 The cycle is held together by a few thin edges from low-level code up to `agent`, `pool`,
 `inputs` and `control`, not by the steps' logic. The ones that matter most:
@@ -93,7 +98,7 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | inputs → lakefill, rail | 2 references to lakefill, 4 to rail, from the input checks | built (step 6d): all three in the inputs crate |
 | cli → polar | one reference to polar | cli stays in pipeline; what the steps below it run programs by, `program` and `TOOLS`, is jobrt::sys's (step 6d; cli re-exports both). #883's steps left edit only `scenic gc`'s flags (cli/scenic.rs), so the rest of cli and net can move any time |
 | layers → ovconv | one item (`MAXZ`, in a test) | built (step 6e): `MAXZ` is codecs::vtgen's; ovconv re-exports it |
-| terrain_task, trees, offload → coord | offloading a step's parts to other Macs | built for terrain and trees (step 6e): what the steps offering tasks name is the offload crate's (`Offload`, its waits, unit's `Run`; on coordwire's real client, not a trait); coord appears only in tests that start a coordinator, which move to pipeline with their family (terrain_task's: `terrain_tests`; trees::task's: `trees_tests`); bld's planned |
+| terrain_task, trees, bld, offload → coord | offloading a step's parts to other Macs | built (step 6e): what the steps offering tasks name is the offload crate's (`Offload`, its waits, unit's `Run`; on coordwire's real client, not a trait); coord appears only in tests that start a coordinator, which move to pipeline with their family (terrain_task's: `terrain_tests`; trees::task's: `trees_tests`; bld::task's: `bld_tests`) |
 
 ## 2. Proposed crates
 
@@ -134,7 +139,7 @@ names, webpenc as now).
    → names and roads (bld → heritage; buildtiles → reach, stage), and pipeline's offload → bld,
    trees, unit (only `run_task` and `task_kind`: the offload crate the families name is below
    them all). So the crates stack: inputs, then terrain, trees, roads, landmarks (its step 5a part
-   now with the names family, so above roads too) and bld (planned), one after another, none
+   now with the names family, so above roads too) and bld, one after another, none
    beside another. Treepacks' use of layers is eight functions (the packs' names, writing and
    dropping them), not one item to move down. An edit in a family still rebuilds every family
    above it and pipeline.
@@ -156,8 +161,11 @@ names, webpenc as now).
      (heritage, ferries, gtfs, railfeeds, ovconv, markconv, marksjob, namestodo). ~15.9k lines
      with their tests (6 Nov 2026), on det, roadcore, store, names, pyport, codecs, jobrt,
      buildstore, coordwire, inputs, terrain and roads.
-   - **bld** (planned): bld (3D buildings) and buildtiles. ~9.6k lines. What holds it in
-     pipeline: §6.3.
+   - **bld** (built, step 6e): bld (the 3D buildings) and buildtiles (the roadside buildings).
+     ~9.6k lines with their tests (6 Nov 2026), on det, roadcore, store, names, pyport, codecs,
+     jobrt, buildstore, offload, landmarks, inputs, terrain and roads. The free space its steps
+     check before writing (`disk_free`, the NAS reserve's `nas_room`) went first, from agent::room
+     to buildstore::room (§6.3).
 7. **coordination**: coord, pool, needs, pubtimes, answers, offload, menu, appupdate (coord ↔ pool
    ↔ agent are one cycle today; they split after the steps are out). ~33k lines.
 8. **pipeline** (the agent, kept under this name so `cargo run -p pipeline --bin …` and the
@@ -172,7 +180,7 @@ pipeline's modules above the steps or its binaries name it there. The step modul
 crates directly since step 6b (`crate::pyjson` → `pyport::pyjson`), and the re-exports they alone
 used went with it; the rest go as their users move. The inputs crate (6d) they still name by
 pipeline's paths (`crate::dem`, ~210 mentions in 23 modules, the depth's among them): each family's
-are rewritten as it moves (6e: the terrain, trees, roads and names families'), not in the files others are editing now. The list in lib.rs is the
+are rewritten as it moves (6e: the terrain, trees, roads, names and bld families'), not in the files others are editing now. The list in lib.rs is the
 record of what still goes through them.
 
 ## 3. The binaries
@@ -252,9 +260,9 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
      re-exports them. Cut: terr's `z9_block` (no caller).
    Next: §6, breaking the 47-module cycle: 6a (built) made `Out` nameable below pipeline, 6b
    (built) has the step modules name the lower crates directly, 6c (built) moved the coordinator's
-   client side down (coordwire), 6d (built) the inputs family (`crates/inputs`), 6e (terrain
-   built: `crates/offload`, `crates/terrain`) the step families; then (planned) the rest of the
-   families, and the agent's plan split from its runtime.
+   client side down (coordwire), 6d (built) the inputs family (`crates/inputs`), 6e (built:
+   `crates/offload`, `crates/terrain`, `crates/trees`, `crates/roads`, landmarks' names family,
+   `crates/bld`) the step families; then (planned) the agent's plan split from its runtime.
 6. **coordination**, after #882 lands.
 7. Path rewrites: the step modules' were step 6b's; the rest (the agent's, coord's, the
    binaries') per crate as it moves, `crate::x` → `<crate>::x`, and the re-exports dropped.
@@ -477,9 +485,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a-6d and 6e's terrain built; the rest planned)
+## 6. Breaking the big cycle (6a-6e built; 6f planned)
 
-**Status: 6a-6d and 6e's terrain, trees, roads and names built; 6e's bld and 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6e built; 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -555,10 +563,10 @@ The choices, against the alternatives:
   depth::lakes writes its grids with) to codecs::tar. `publish::map_now` (namestodo; it asks the
   lead's coordinator) went with the client to coordwire in 6c (`coordwire::map_now`; not to
   buildstore, as planned first: the client is all it needs beyond store, and buildstore needs no
-  client). `cli::program` (osmpass; with `TOOLS`) went to jobrt::sys in 6d. Still above:
-  `room::{disk_free, nas_room}` (buildtiles, bld::fetch: `disk_free` answers a test's own disk
-  under pipeline's `cfg(test)`, `TEST_FREE`, which must first become a process flag as
-  `out::testing` did in 6a; with their families, 6e). No step's code calls
+  client). `cli::program` (osmpass; with `TOOLS`) went to jobrt::sys in 6d, and
+  `room::{disk_free, nas_room}` (buildtiles, bld::fetch) to buildstore::room in 6e, `disk_free`
+  answering a test's own disk (`TEST_FREE`) by the process flag `out::testing` rather than
+  pipeline's `cfg(test)`. No step's code calls
   the plan's functions (`PassCtx`, `spoken_work`, `outlines_work`, `names_todo_work`,
   `trees_targets`) or `input_digests`: they stay the plan's. Tests in step modules that test the
   plan or the agent (lakefill's of `build::water_work` and `LAKEFILL_HOLDS`, inputs' of
@@ -582,8 +590,8 @@ The choices, against the alternatives:
   Tests that start a coordinator (`coord::start_for_test` in terrain_task, trees::task, bld and
   offload) move to a pipeline test module when their family leaves (6e), as the write-set
   tests do, since a family can't dev-depend on pipeline (its types would be two copies):
-  terrain_task's are pipeline's `terrain_tests` and trees::task's `trees_tests` (6e); bld::task's go with
-  bld (planned, §6.3); offload's stay in pipeline's offload,
+  terrain_task's are pipeline's `terrain_tests`, trees::task's `trees_tests` and bld::task's
+  `bld_tests` (6e); offload's stay in pipeline's offload,
   building their `Offload` by the offload crate's testkit (`Offload::for_test`).
 - **The agent's plan above its runtime, through a trait.** agentcore can't name the plan (the
   plan names every family and agentcore). The types the runtime reads (`Step`, `Kind`, `Read`,
@@ -755,8 +763,8 @@ commit; re-exports at the old paths as before.
    test_start.rs), the trees and landmarks crates' testkit modules behind their `testkit`
    features. Cut: pipeline's blake3 dependency (reach was its last user), and the re-exports of
    leaftype and ferries (nothing names them by pipeline's paths); every re-export left has users
-   above, and libz-sys and image-webp keep users in pipeline (bld::fetch's gzip, the fields'
-   tests). modgraph.py (main at dd7246c6): the families' mentions of the rest of pipeline, tests
+   above, and libz-sys and image-webp kept users in pipeline (bld::fetch's gzip, the fields'
+   tests; both went with bld, below). modgraph.py (main at dd7246c6): the families' mentions of the rest of pipeline, tests
    included, 58 for trees (39 of the root's re-exports of the lower crates; coord 11, offload 5,
    cli, agent and unit 1 each), 40 for roads (root 31, cli 4, out 2, trees and landcover 3), 41
    for names (root 34, stage 4, candidates, timetables and out 1 each); none after (other crates:
@@ -766,20 +774,46 @@ commit; re-exports at the old paths as before.
    ferries, gtfs::ferrycount, marksjob, ovconv), and the testkit modules and the moved tests
    (trees, trees::task, trees::tests, timetables, ovconv). So no literal, expression or format string changed, and keys, versions,
    outputs and on-disk formats are as before. Measured in §5.
-   - **bld** (planned, not moved): it reaches back into pipeline beyond its tests. buildtiles
-     (which goes with it) calls `agent::room::disk_free` and bld::fetch `agent::room::nas_room`
-     (its NAS reserve: `nas_reserve`, `nas_free`, the room `Target` file's parsing), and
-     `disk_free` answers a test's own disk only under pipeline's `cfg(test)` (`TEST_FREE`, 1 TB
-     unless a test sets it): from a crate below pipeline the agent's tests would read this Mac's
-     real disk. To untangle, in this order: `disk_free` and `TEST_FREE` to a crate below bld,
-     `TEST_FREE` answered when the process is a crate's unit tests (`buildstore::out::testing`,
-     the process flag of 6a, which every crate's `TEST_START` sets; buildstore owns it, so
-     buildstore is the place, or jobrt::room once the flag moves down to jobrt), and with it
-     `nas_room`, `nas_free`, `nas_reserve`, `NAS_RESERVE`, `Target` and its parsing, agent::room
-     re-exporting them; bld::task's tests that start a coordinator to a pipeline `bld_tests`, as
-     trees'; buildtiles' `TEST_RELEASE` (agent tests name it) into a testkit; then the paths
-     (`crate::heritage` → landmarks', `reach` and `stage` → roads', `unit::Run` and `offload` →
-     the offload crate's, `inputs`, `layers`) and the move of bld and buildtiles into `crates/bld`, on landmarks and roads.
+   - **bld** (built, 6 Nov 2026; `crates/bld`, on landmarks and roads): it reached back into
+     pipeline beyond its tests: buildtiles called `agent::room::disk_free` and bld::fetch
+     `agent::room::nas_room` (the NAS reserve: `nas_reserve`, `nas_free`, the `Target` file's
+     parsing), and `disk_free` answered a test's own disk only under pipeline's `cfg(test)`
+     (`TEST_FREE`, 1 TB unless a test sets it). Untangled first, one commit each:
+     - `disk_free`, `TEST_FREE` and the NAS reserve (`NAS_RESERVE`, `set_nas_reserve`,
+       `nas_reserve`, `nas_room`, `nas_free`, `Target`, `parse_target`) to buildstore::room, where
+       the process flag is: `disk_free` answers `TEST_FREE` when the process is a crate's unit tests
+       (`out::testing`, set by every crate's `TEST_START` and nothing else), the same processes
+       `cfg(test)` chose; `TEST_FREE` in a private module, offered to pipeline's tests by
+       `buildstore::room::testkit`. agent::room re-exports what pipeline names. `set_nas_reserve`
+       went too (not planned): the reserve's file is written and read in one place.
+     - bld::task's test that starts a coordinator to pipeline's `bld_tests`, the helpers it and the
+       family's other tests name into testkit modules (bld::prep's buildings and frames,
+       bld::task's work files and coverage), and what it reads of an `Offers` (its `out` and
+       `records`, `here_s`) through task::testkit's accessors, so they stay private.
+     - the paths (`crate::heritage` → landmarks', `reach` and `stage` → roads', `unit::Run` and
+       `offload` → the offload crate's, `inputs` → the inputs crate's, `layers` → terrain's,
+       `agent::room` → buildstore::room's), then the move of bld and buildtiles into `crates/bld`.
+     Pipeline re-exports the two (`pub use ::bld::{bld, buildtiles}`); the crate's unit tests start
+     offline (lib.rs `TEST_START`, test_start.rs); its testkit modules and buildtiles'
+     `TEST_RELEASE` (the agent's tests name it) behind its `testkit` feature. GEOS (with the
+     geos-sys and geos-src pins), libz-sys, parquet, arrow-array, md-5, bytes and crc32fast went
+     with it, image-webp to its dev-dependencies. Cut: those dependencies of pipeline (no other
+     user), pyport's (no user once bld left) and toml as a normal dependency (only
+     tests/source_names.rs reads TOML: a dev-dependency now); agent::room's `walk_for_test` (no
+     caller) and `make_room_with` outside tests (only tests call it). Every re-export left has
+     users above. modgraph.py (main at f286dcc6): the family's mentions of the rest of pipeline,
+     tests included, 58 (bld 48: the root's re-exports 27, coord 11, offload 9, agent 1;
+     buildtiles 10: root 9, agent 1), none after (another crate: the compiler holds it); the cycle
+     12 modules (117.9k lines) before, 10 (108.1k) after (§1). Pure moves and paths: each moved
+     module compared with main's token by token, comments dropped and every path reduced to its
+     last name: the same tokens in eleven of the fifteen files; job by a trailing comma (rustfmt's,
+     a signature now on one line), buildtiles by `use` order and `TEST_RELEASE`'s cfg, prep and
+     task by the testkit modules (their cfg, the helpers' `pub`, task's three accessors) and
+     task's coordinator test, now pipeline's. buildstore::room's bodies are agent::room's but for
+     `disk_free`'s test branch (`cfg(test)` → `testing()`) and the paths of `now_s`, `free_bytes`
+     and `MAX_TARGET` (jobrt's, which agent's re-exported). So no literal, expression or format
+     string changed, and keys (`BLDPREP_V`, `BUILDINGS_V`), outputs, on-disk and wire formats are
+     as before. Measured in §5.
 6. **6f, agentcore and `Plan`**: the last and largest step, after #882's later steps (coord).
    Before it, pipeline still holds ~96k lines (plan 19.5k + runtime 56.8k + bins 12.9k + glue).
 
