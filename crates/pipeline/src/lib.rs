@@ -100,3 +100,6 @@ mod test_start;
 
 #[cfg(test)]
 mod grant_tests;
+
+#[cfg(test)]
+mod inputs_tests;
