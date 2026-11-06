@@ -879,7 +879,9 @@ commit; re-exports at the old paths as before.
       pool::records (the records carry them: `Records::keys`), steps re-exporting `current` for
       the plan and scenic; the runtime names them there, as do pipeline's inputs_tests and the
       checklist example; and `terrain_deep::PACK_Z` by its home's path (`dem::zoom`). Cut: build's
-      imports of `TERRAIN_V`, `SLOPE_V` and `SLOPE_LO_V`, unused since 6b. The runtime's lines
+      imports of `TERRAIN_V`, `SLOPE_V` and `SLOPE_LO_V`, unused since 6b. The review cut `Keys::record`'s list of
+      25 steps and the roots whose keys go with the lo keys: its last branch does the same for every step without
+      a key per target. The runtime's lines
       naming the plan (`build::`, `steps::`, `idents::`, `tiles::`; tests included) 288 → 184; the
       pool's edge to agent::build gone. Pure moves: over the commits' Rust diff, comments and
       whitespace dropped and every path reduced to its last name, the tokens removed and added
@@ -891,15 +893,38 @@ commit; re-exports at the old paths as before.
       `Read`, `Along`; `Step`, `Kind`, `Place`), each to the runtime module holding it.
    2. **6f2, `Plan`** (planned): the trait, in the runtime, implemented by the plan; `&'static dyn
       Plan` held by the agent, the planner, the forecast, the simulator and coord's scheduler,
-      passed by their entry points. Every runtime call of the table and the plan goes through it,
-      and the family items above: `input_digests` and `key_inputs` (they name heritage and bld) and
-      `terrain_peak` move to the plan, called through it, as are the kinds, room's hints of a step's
-      targets and publish's watches. `timetables::View` (a field the heartbeat carries) is the open
-      one: a type below both, or the field carried as the plan made it; decided then.
-   3. **6f3, test time** (planned): the runtime's `cfg(test)` behaviours read the process flag
-      (`buildstore::out::testing`, set by each crate's `TEST_START`), as `disk_free` does since
-      6e; the runtime's tests that need the plan (the real table, the families) to a pipeline test
-      module, as the families' went.
+      passed by their entry points. Cut at the planner's questions, not at the plan's items: of
+      plan.rs's ~60, many are `Planner::region_jobs` (~900 lines) and `checklist` composing the
+      worldwide steps one by one (`outlines_work` … `names_todo_work`, `timetables_todo_work`, their
+      holds and waits), and `checklist` asks the same `*_work` calls again for its lines. That
+      composition is the plan's: it moves to build.rs first, as one function over what the
+      planner knows (the pass, the manifest, the keys, its failure counts and holds) answering the
+      worldwide jobs and the checklist's lines from one place, so `Plan` carries that, `plan_with`,
+      the regions' steps and the table's queries rather than ~60 items. Moving the planner up with
+      the plan instead was weighed and is the larger cut: its pass names ~150 of the runtime's
+      items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
+      API. The family items above go through `Plan` too: `input_digests` and `key_inputs` (they
+      name heritage and bld) and `terrain_peak` move to the plan, called through it, as are the
+      kinds, room's hints of a step's targets and publish's watches. `timetables::View` (a field
+      the heartbeat carries) is the open one: a type below both, or the field carried as the plan
+      made it; decided then. `Keys` (6f1) names every per-target step, as the records' format
+      `jobs.json` does; `per_target` and `recorded` are that format's table, so they stay with it.
+   3. **6f3, test time** (planned): the runtime's `cfg(test)` behaviours (the waits `JOIN_WAIT`
+      and `JOIN_TRY`, coord's `LISTEN` and loopback waits, the panics where a test wants one;
+      first the guards keeping a test off the real NAS and the pool's port, `find_root` with its
+      `TEST_ROOT` and `coord_port` with `test_port`, #906) read the process flag
+      (`buildstore::out::testing`), as `disk_free` does since 6e: what they read is then built
+      always. 6f3 lands before 6f4: a guard left on `cfg(test)` in agentcore is off in pipeline's
+      tests. Safe by the rule 6e's review set: `testing()` is true exactly in a crate's unit tests'
+      process (`TEST_START`), and the runtime's code runs under `cfg(test)` today only in
+      pipeline's, which keeps its `TEST_START`; agentcore gets its own for its own tests, and no
+      crate with a `TEST_START` below agentcore calls it. The rest are not behaviours and don't
+      switch: test-only items (`Options::member`, `test_agent`, `planner`, coord's
+      `start_for_test`, the `/work/test-block` route, `pool_state`) stay `cfg(test)`
+      where only agentcore's own tests use them, and go to pipeline's test side (accessors, as 6e's
+      `task::testkit`) where the tests needing the plan use them; a test route never ships behind
+      the flag. Those tests (the real table, the families) go to a pipeline test module, as the
+      families' went.
    4. **6f4, the move** (planned): the runtime (agent but build, steps, idents and tiles; coord, pool,
       needs, paces, uses, pubtimes, answers, menu, appupdate, cli, net) into `crates/agentcore`,
       on inputs and the crates below it, beside the families; pipeline keeps the plan, offload's
