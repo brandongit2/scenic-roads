@@ -3,8 +3,8 @@
 **Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
 (`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a to 6d (§6, 6c
 `crates/coordwire`, 6d `crates/inputs`) and 6e (`crates/offload`, `crates/terrain`, `crates/trees`,
-`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built; every later
-step below is planned (6f: §6).
+`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1's
+first part (§6.3); every later step below is planned (the rest of 6f: §6).
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -507,9 +507,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a-6e built; 6f planned)
+## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1's first built)
 
-**Status: 6a-6e built; 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6e and 6f1's first part built; the rest of 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -837,7 +837,7 @@ commit; re-exports at the old paths as before.
      and `MAX_TARGET` (jobrt's, which agent's re-exported). So no literal, expression or format
      string changed, and keys (`BLDPREP_V`, `BUILDINGS_V`), outputs, on-disk and wire formats are
      as before. Measured in §5.
-6. **6f, agentcore and `Plan`** (planned; its order decided 6 Nov 2026 on main at 34a47749): the
+6. **6f, agentcore and `Plan`** (in parts; its order decided 6 Nov 2026 on main at 34a47749): the
    last and largest step. It needn't wait for #882 (backgrounded): nothing left in it edits what
    #882's later steps would. modgraph.py then: one cycle of 10 modules, 108.0k lines (agent 70.2k,
    coord 21.0k, pool 9.6k, needs, answers, pubtimes, uses, paces, offload, out). What the runtime
@@ -872,26 +872,35 @@ commit; re-exports at the old paths as before.
      `JOIN_TRY`, `Options::member`, …: ~30 in agent/mod.rs, 19 in coord/mod.rs, more in tiles,
      nasread, jobs, room, gc, pool), which pipeline's tests stop seeing once the code is another
      crate's, as 6e found for `disk_free`.
-   So 6f goes in parts, each shipping alone (planned):
-   1. **6f1, the types the runtime holds go to their owners**: `Work` to agent::jobs (a
-      `JobSpec`'s `record`), `Keys` with the step renames (`RENAMED`, `current`, which
-      `Keys::per_target` reads) to pool::records (the records carry them: `Records::keys`); the
-      runtime names them there, the plan through build's and steps' re-exports; and
-      `terrain_deep::PACK_Z` by its home's path (`dem::zoom`). Then the rest of the data the
+   So 6f goes in parts, each shipping alone:
+   1. **6f1, the types the runtime holds go to their owners.** Built (6 Nov 2026), one move a
+      commit: `Work` to agent::jobs (a `JobSpec`'s `record`); `Keys` (with its loading, saving and
+      recording) and the step renames (`RENAMED`, `current`, which `Keys::per_target` reads) to
+      pool::records (the records carry them: `Records::keys`), steps re-exporting `current` for
+      the plan and scenic; the runtime names them there, as do pipeline's inputs_tests and the
+      checklist example; and `terrain_deep::PACK_Z` by its home's path (`dem::zoom`). Cut: build's
+      imports of `TERRAIN_V`, `SLOPE_V` and `SLOPE_LO_V`, unused since 6b. The runtime's lines
+      naming the plan (`build::`, `steps::`, `idents::`, `tiles::`; tests included) 288 → 184; the
+      pool's edge to agent::build gone. Pure moves: over the commits' Rust diff, comments and
+      whitespace dropped and every path reduced to its last name, the tokens removed and added
+      differ only by the imports (`use super::jobs::Work`, steps' `pub use … current`, the cut
+      ones) and inputs_accessor's exemption, whose file is now records.rs; so jobs.json, the
+      records, the keys and a job's record are as before. Not measured: nothing left pipeline, so
+      no crate's compile changed (§5's figures come with 6f4). Planned: the rest of the data the
       runtime reads (`Line`, `Item`, `PublishLine`, `RegionState`, `LastCatalogue`, `ReadTarget`,
       `Read`, `Along`; `Step`, `Kind`, `Place`), each to the runtime module holding it.
-   2. **6f2, `Plan`**: the trait, in the runtime, implemented by the plan; `&'static dyn Plan`
-      held by the agent, the planner, the forecast, the simulator and coord's scheduler, passed by
-      their entry points. Every runtime call of the table and the plan goes through it, and the
-      family items above: `input_digests` and `key_inputs` (they name heritage and bld) and
-      `terrain_peak` move to the plan, called through it, as are the kinds, room's hints of a
-      step's targets and publish's watches. `timetables::View` (a field the heartbeat carries) is
-      the open one: a type below both, or the field carried as the plan made it; decided then.
-   3. **6f3, test time**: the runtime's `cfg(test)` behaviours read the process flag
+   2. **6f2, `Plan`** (planned): the trait, in the runtime, implemented by the plan; `&'static dyn
+      Plan` held by the agent, the planner, the forecast, the simulator and coord's scheduler,
+      passed by their entry points. Every runtime call of the table and the plan goes through it,
+      and the family items above: `input_digests` and `key_inputs` (they name heritage and bld) and
+      `terrain_peak` move to the plan, called through it, as are the kinds, room's hints of a step's
+      targets and publish's watches. `timetables::View` (a field the heartbeat carries) is the open
+      one: a type below both, or the field carried as the plan made it; decided then.
+   3. **6f3, test time** (planned): the runtime's `cfg(test)` behaviours read the process flag
       (`buildstore::out::testing`, set by each crate's `TEST_START`), as `disk_free` does since
       6e; the runtime's tests that need the plan (the real table, the families) to a pipeline test
       module, as the families' went.
-   4. **6f4, the move**: the runtime (agent but build, steps, idents and tiles; coord, pool,
+   4. **6f4, the move** (planned): the runtime (agent but build, steps, idents and tiles; coord, pool,
       needs, paces, uses, pubtimes, answers, menu, appupdate, cli, net) into `crates/agentcore`,
       on inputs and the crates below it, beside the families; pipeline keeps the plan, offload's
       `run_task` and `task_kind` (through `Plan`), `out::open`, the binaries and the re-exports.
