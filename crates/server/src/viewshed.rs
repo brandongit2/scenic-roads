@@ -21,7 +21,7 @@ pub struct Q {
     lat: f64,
     /// Radius in km (default 15, max 25).
     r: Option<f64>,
-    /// Eye height above ground in metres (default 1.5).
+    /// Eye height above ground in metres (default a driver's, roadcore::scenic::EYE_M).
     eye: Option<f64>,
 }
 
@@ -135,7 +135,7 @@ fn compute(s: &crate::AppState, q: Q) -> Option<Out> {
     let (gx, gy) = cell_of(q.lng, q.lat);
     let cm = cell_m(q.lat);
     let ground = g.bilinear(gx, gy)?;
-    let eye = ground as f64 + q.eye.unwrap_or(1.5);
+    let eye = ground as f64 + q.eye.unwrap_or(roadcore::scenic::EYE_M as f64);
     let rc = (radius / cm).ceil() as i64;
     let n = (2 * rc + 1) as usize;
     let (ox, oy) = (gx.floor() as i64 - rc, gy.floor() as i64 - rc);

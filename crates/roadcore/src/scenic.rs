@@ -19,6 +19,7 @@ pub const NEAR_MAX_M: f64 = 300.0;
 pub const FAR_MAX_M: f64 = 15_000.0;
 /// The radius a sightline's drop is reckoned on: the Earth's, lengthened by refraction (k = 0.13).
 pub const SIGHT_R: f64 = crate::geo::EARTH_R / 0.87;
+/// Eye height above the road for a driver.
 pub const EYE_M: f32 = 1.5;
 /// Eye height above the rail for passengers (window of a standard carriage).
 pub const RAIL_EYE_M: f32 = 2.8;
@@ -31,7 +32,7 @@ pub struct Sample {
     pub dist: f32,
     pub lon: i32,
     pub lat: i32,
-    /// Observer eye elevation, metres.
+    /// Observer eye elevation, metres: its ground plus `eye_m`.
     pub eye: f32,
     /// `sflag::*`
     pub flags: u8,
@@ -43,6 +44,19 @@ const _: () = assert!(std::mem::size_of::<Sample>() == 24);
 pub mod sflag {
     pub const TUNNEL: u8 = 1;
     pub const BRIDGE: u8 = 2;
+    /// On a railway: its eye is a passenger's (`RAIL_EYE_M`).
+    pub const RAIL: u8 = 4;
+}
+
+impl Sample {
+    /// Its eye's height above its ground: a passenger's on a railway, else a driver's.
+    pub fn eye_m(&self) -> f32 {
+        if self.flags & sflag::RAIL != 0 {
+            RAIL_EYE_M
+        } else {
+            EYE_M
+        }
+    }
 }
 
 /// Channel indices (u8 each).

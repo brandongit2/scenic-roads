@@ -22,8 +22,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Bumped when what the canopy or view step computes changes: results kept from before are then
-/// not reused (`Carry`).
-pub const SCENIC_V: u32 = 1;
+/// not reused (`Carry`). (2, task #853: a sample's ground is its eye less its own mode's eye
+/// height, `Sample::eye_m`; the staged area reaches past every sample's far field.)
+pub const SCENIC_V: u32 = 2;
 
 /// The cache directory: `SCENIC_SCACHE` when set (the unit's steps set it), else the folder's own
 /// (`unit_dir`).

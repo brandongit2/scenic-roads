@@ -275,7 +275,7 @@ pub fn eye_height(s: &Sample, grid: &GridIndex, terr: &[i16]) -> f32 {
         return s.eye;
     }
     let (gx, gy) = cell_of(s.lon as f64 * E7, s.lat as f64 * E7);
-    roadcore::grid::terrain_bilinear(grid, terr, gx, gy).map_or(s.eye, |t| s.eye.max(t + 1.5))
+    roadcore::grid::terrain_bilinear(grid, terr, gx, gy).map_or(s.eye, |t| s.eye.max(t + s.eye_m()))
 }
 
 fn sample_metrics(g: &Grids, s: &Sample, near: &[i8], roadside: &[u8]) -> [u8; ch::NBASE] {
@@ -285,7 +285,7 @@ fn sample_metrics(g: &Grids, s: &Sample, near: &[i8], roadside: &[u8]) -> [u8; c
     let cm = cell_m(lat);
     let terr = g.terrain.data();
     let eye = eye_height(s, &g.idx, terr) as f64;
-    let ground = eye - 1.5;
+    let ground = eye - s.eye_m() as f64;
     let tunnel = s.flags & sflag::TUNNEL != 0;
     let can = g.canopy.as_ref().map(|l| l.data());
     let cls = g.class.as_ref().map(|l| l.data());
@@ -460,4 +460,71 @@ fn vertex_channels(w: &roadcore::WayRec, v: &[[i32; 2]], ss: &[Sample], cs: &[[u
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rail sample's eye is a passenger's above its ground (`Sample::eye_m`), a road's a driver's:
+    /// over flat ground at 400 m, a sample of a line on the level sees as before, its ground (the
+    /// topographic position's) the rail's, not 1.3 m above it; one in a 3 m cutting has its eye lifted
+    /// to a passenger's above the ground beside it, and sees further than a driver's would.
+    #[test]
+    fn a_rail_samples_eye_is_a_passengers() {
+        use roadcore::grid::{CELLS, TS};
+        use roadcore::scenic::{EYE_M, RAIL_EYE_M};
+        let d = tempfile::tempdir().unwrap();
+        let (lon, lat) = (6.0, 46.0);
+        let (gx, gy) = cell_of(lon, lat);
+        let (tx, ty) = ((gx as u32) / TS as u32, (gy as u32) / TS as u32);
+        let tiles: Vec<[u32; 2]> = (0..9).map(|k| [tx + k % 3 - 1, ty + k / 3 - 1]).collect();
+        GridIndex::new(tiles).save(&d.path().join("grid.idx")).unwrap();
+        std::fs::write(d.path().join("grid.terrain.i16"), bytemuck::cast_slice(&vec![400i16; 9 * CELLS])).unwrap();
+        let g = Grids {
+            idx: GridIndex::load(d.path()).unwrap(),
+            terrain: Layer::open(&d.path().join("grid.terrain.i16")).unwrap(),
+            canopy: None,
+            class: None,
+        };
+        let (near, roadside) = ([i8::MIN; NEAR_AZ], [0u8; 2]);
+        let at = |ground: f32, flags: u8| Sample {
+            way: 0,
+            dist: 0.0,
+            lon: (lon * 1e7) as i32,
+            lat: (lat * 1e7) as i32,
+            eye: ground + if flags & sflag::RAIL != 0 { RAIL_EYE_M } else { EYE_M },
+            flags,
+            _pad: [0; 3],
+        };
+        let metrics = |s: &Sample| sample_metrics(&g, s, &near, &roadside);
+        let eye = |s: &Sample| eye_height(s, &g.idx, g.terrain.data());
+        // What a rail sample had when its eye height was taken as a driver's: its eye, no flag.
+        let as_was = |s: Sample| Sample { flags: s.flags & !sflag::RAIL, ..s };
+        let level = at(400.0, sflag::RAIL);
+        let (now, was) = (metrics(&level), metrics(&as_was(level)));
+        eprintln!(
+            "rail on the level: view {} tpi {} (as was: view {} tpi {})",
+            now[ch::VIEW],
+            now[ch::TPI],
+            was[ch::VIEW],
+            was[ch::TPI]
+        );
+        assert_eq!(now[ch::VIEW], was[ch::VIEW]);
+        assert_eq!((now[ch::TPI], was[ch::TPI]), (128, 129), "its ground the rail's, not 1.3 m above");
+        let cut = at(397.0, sflag::RAIL);
+        let (now, was) = (metrics(&cut), metrics(&as_was(cut)));
+        eprintln!(
+            "rail in a 3 m cutting: eye {:.1} m, view {} vista {} (as was: eye {:.1} m, view {} vista {})",
+            eye(&cut),
+            now[ch::VIEW],
+            now[ch::VISTA],
+            eye(&as_was(cut)),
+            was[ch::VIEW],
+            was[ch::VISTA]
+        );
+        assert_eq!((eye(&cut), eye(&as_was(cut))), (400.0 + RAIL_EYE_M, 400.0 + EYE_M));
+        assert!(now[ch::VIEW] > was[ch::VIEW] && now[ch::VISTA] > was[ch::VISTA], "{now:?} {was:?}");
+        assert_eq!(now[ch::TPI], 128);
+    }
 }

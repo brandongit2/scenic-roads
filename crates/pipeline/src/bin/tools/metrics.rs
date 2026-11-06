@@ -26,7 +26,7 @@ use pipeline::view::eye_height;
 use rayon::prelude::*;
 use roadcore::archive::Archive;
 use roadcore::grid::{GridIndex, CELLS};
-use roadcore::scenic::{sflag, Sample, EYE_M, NEAR_AZ, NEAR_MAX_M, RAIL_EYE_M, SAMPLE_SPACING_M};
+use roadcore::scenic::{sflag, Sample, NEAR_AZ, NEAR_MAX_M, SAMPLE_SPACING_M};
 use roadcore::{class, dist_m, flag, geo::merc, Array, Ways, E7};
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
@@ -122,22 +122,24 @@ fn prep(dir: &Path) -> Result<()> {
                     let (mx, my) = merc(lon * E7, lat * E7);
                     let terrain = tc.at(mx, my);
                     let ground = if tunnel { e } else { terrain.max(e) };
-                    samples.push(Sample {
+                    let mut s = Sample {
                         way: wi,
                         dist: d as f32,
                         lon: lon.round() as i32,
                         lat: lat.round() as i32,
-                        // Rail: a carriage window is higher than a car's.
-                        eye: ground + if class::is_rail(w.class) { RAIL_EYE_M } else { EYE_M },
+                        eye: 0.0,
                         flags: if tunnel {
                             sflag::TUNNEL
                         } else if bridge {
                             sflag::BRIDGE
                         } else {
                             0
-                        },
+                        } | if class::is_rail(w.class) { sflag::RAIL } else { 0 },
                         _pad: [0; 3],
-                    });
+                    };
+                    // (Rail: a carriage window is higher than a car's.)
+                    s.eye = ground + s.eye_m();
+                    samples.push(s);
                 }
                 pb.inc(1);
             }
@@ -1043,7 +1045,7 @@ fn near_field(
             let (plon, plat) = (lon + sx * d / m_lon, lat + sy * d / m_lat);
             if let Some(i) = t.idx(plon, plat) {
                 let ground = roadcore::grid::terrain_bilinear(grid, terr, gx + sx * d / cm, gy - sy * d / cm)
-                    .unwrap_or(eye - EYE_M);
+                    .unwrap_or(eye - s.eye_m());
                 let h = ground + t.median[i] as f32;
                 best = best.max((h - eye) as f64 / d);
             }
