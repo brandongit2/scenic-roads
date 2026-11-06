@@ -29,6 +29,7 @@
 use super::compose::{compose, tiles, Block, Water, BLOCK, PAD};
 use super::fall::{self, Grid, Kind, Stored};
 use super::grids::{Reader, Source};
+use super::surface::Surface;
 
 /// This Mac's whole copies of the depth sources' packs a reader reads (buildstore::localread), if any.
 type Local = Option<std::sync::Arc<buildstore::localread::Local>>;
@@ -48,7 +49,8 @@ use std::sync::Arc;
 /// 9: the land's band the nearest water's own value (not 0), gaps filled through their own water, the estimates after every survey and the
 /// sources declared `lakes` drawn in lakes, task #963; 10: a source's edge with nothing beneath not
 /// feathered, its pixels its own rather than classed none, task #966). Its key names
-/// codecs::shade_codec::version too.
+/// codecs::shade_codec::version too. (An enclosed sea's depth below its own surface, task #982,
+/// changes only the tiles meeting one, whose keys name what it reads there: crate::depth::surface.)
 pub const DEPTH_V: u32 = 10;
 /// The depth assembly's (`build_lo`; 8: composed only at a grid's own zoom, z3–8 the means of the
 /// finer, its shading made here, task #804; 7: z3–8 from the z9 tiles, task #532; 6: lossless
@@ -123,13 +125,14 @@ pub const POLYS_BYTES: usize = 48 << 20;
 /// their rings), and the z14 polygons the finer levels are drawn from, kept across them: each
 /// z14 tile's are read from the basemap and decoded once for its 4 z15 and 16 z16 children. A
 /// block's tiles it lacks are read together (`prefetch`: the basemap reads them in runs) and
-/// rasterised on the job's threads.
+/// rasterised on the job's threads. With a `Surface`, an enclosed sea's surface too.
 pub struct WaterCache {
     tiles: HashMap<(u8, u32, u32), Option<Arc<WaterTile>>>,
     /// By (y, x): the z14 tile's polygons, shared, and their bytes.
     polys: BTreeMap<(u32, u32), (Arc<Vec<Poly>>, usize)>,
     polys_bytes: usize,
     bound: usize,
+    surface: Option<Surface>,
 }
 
 impl Default for WaterCache {
@@ -141,7 +144,13 @@ impl Default for WaterCache {
 impl WaterCache {
     /// A cache keeping at most `bound` bytes of z14 polygons (`POLYS_BYTES` by default).
     pub fn with_bound(bound: usize) -> Self {
-        WaterCache { tiles: HashMap::new(), polys: BTreeMap::new(), polys_bytes: 0, bound }
+        WaterCache { tiles: HashMap::new(), polys: BTreeMap::new(), polys_bytes: 0, bound, surface: None }
+    }
+
+    /// Blocks' water with the enclosed seas' surface `s` (`Water::surface`).
+    pub fn with_surface(mut self, s: Surface) -> Self {
+        self.surface = Some(s);
+        self
     }
 
     /// The bytes of z14 polygons it holds.
@@ -152,6 +161,9 @@ impl WaterCache {
     /// A level done: its tiles let go (the z14 polygons kept for the next).
     pub fn next_level(&mut self) {
         self.tiles.clear();
+        if let Some(s) = &mut self.surface {
+            s.next_level();
+        }
     }
 
     /// `polys_at`, a z14 tile's polygons read once for its z15–16 descendants and shared among
@@ -331,6 +343,9 @@ impl WaterCache {
         if if_data.iter().any(|&r| r) {
             out.if_data = if_data;
         }
+        if let Some(s) = &mut self.surface {
+            out.surface = s.block(b)?;
+        }
         Ok(out)
     }
 }
@@ -499,30 +514,52 @@ pub fn coarse_areas(t: (u32, u32), z: u8) -> Vec<Area> {
     v
 }
 
-/// What z6 tile `t`'s depth reads the sources over, as lon/lat boxes: its coarse levels' z6 areas
-/// (the tile and its ring, the column across the date line apart: `coarse_areas`) grown by the
-/// blocks' margin, the widest it composes (each finer zoom's blocks lie within them), so the
-/// sources meeting one are those it reads.
-pub fn depth_hi_box_read(t: (u32, u32)) -> Vec<[f64; 4]> {
+/// A window of a zoom's global pixels (256 a tile): zoom, first column and row, width, height.
+pub type Window = (u8, i64, i64, usize, usize);
+
+/// What z6 tile `t`'s depth reads: its coarse levels' z6 areas (the tile and its ring, the column
+/// across the date line apart: `coarse_areas`) grown by the blocks' margin, the widest it composes
+/// (each finer zoom's blocks lie within them).
+pub fn depth_hi_windows(t: (u32, u32)) -> Vec<Window> {
     coarse_areas(t, 6)
         .into_iter()
         .map(|a| {
-            super::grids::window_box(
-                6,
-                i64::from(a.x0) * 256 - PAD as i64,
-                i64::from(a.y0) * 256 - PAD as i64,
-                a.nx as usize * 256 + 2 * PAD,
-                a.ny as usize * 256 + 2 * PAD,
-            )
+            let (c0, r0) = (i64::from(a.x0) * 256 - PAD as i64, i64::from(a.y0) * 256 - PAD as i64);
+            (6, c0, r0, a.nx as usize * 256 + 2 * PAD, a.ny as usize * 256 + 2 * PAD)
         })
         .collect()
 }
 
-/// What a depth assembly of z3 tile `q` reads the sources over: the tile with its blocks' margin
-/// (an assembly composes its blocks with their margin past its z3 tile, the widest at z3).
-pub fn depth_lo_box(q: (u32, u32)) -> [f64; 4] {
+/// What a depth assembly of z3 tile `q` reads: the tile with its blocks' margin (an assembly
+/// composes its blocks with their margin past its z3 tile, the widest at z3).
+pub fn depth_lo_window(q: (u32, u32)) -> Window {
     let side = 256 + 2 * PAD;
-    super::grids::window_box(3, i64::from(q.0) * 256 - PAD as i64, i64::from(q.1) * 256 - PAD as i64, side, side)
+    (3, i64::from(q.0) * 256 - PAD as i64, i64::from(q.1) * 256 - PAD as i64, side, side)
+}
+
+/// What depth target `t` (a z6 tile's piece, a z3 tile's assembly) reads (`depth_hi_windows`,
+/// `depth_lo_window`); none for another zoom.
+pub fn windows(t: (u8, u32, u32)) -> Vec<Window> {
+    match t.0 {
+        6 => depth_hi_windows((t.1, t.2)),
+        3 => vec![depth_lo_window((t.1, t.2))],
+        _ => Vec::new(),
+    }
+}
+
+fn window_box(&(z, c0, r0, w, h): &Window) -> [f64; 4] {
+    super::grids::window_box(z, c0, r0, w, h)
+}
+
+/// What z6 tile `t`'s depth reads the sources over, as lon/lat boxes (`depth_hi_windows`), so the
+/// sources meeting one are those it reads.
+pub fn depth_hi_box_read(t: (u32, u32)) -> Vec<[f64; 4]> {
+    depth_hi_windows(t).iter().map(window_box).collect()
+}
+
+/// What a depth assembly of z3 tile `q` reads the sources over (`depth_lo_window`).
+pub fn depth_lo_box(q: (u32, u32)) -> [f64; 4] {
+    window_box(&depth_lo_window(q))
 }
 
 /// `level`'s blocks, in turn, counting those done in `blocks`; with `log`, those it holds skipped
@@ -908,10 +945,12 @@ pub fn compose_lo(
     // (The lake-depth step's grids meeting it read from their packs: grids::resolved.)
     let sources = &super::grids::resolved(sources, &[depth_lo_box(q)])?;
     let rd = Reader::default().with_local(local);
-    let mut wc = WaterCache::default();
+    let surface = Surface::read(out)?;
+    let pin = surface.pin(&out.manifest, (3, q.0, q.1));
+    let mut wc = WaterCache::default().with_surface(surface);
     let upto = upto.min(LO.1);
     let mut t = Tiles::new(out);
-    let mut log = resume_log(keep, &mut t, sources, water, (3, q.0, q.1), upto);
+    let mut log = resume_log(keep, &mut t, sources, water, &pin, (3, q.0, q.1), upto);
     let zooms = u64::from(upto.saturating_sub(LO.0) + 1);
     for z in LO.0..=upto {
         wc.next_level();
@@ -961,13 +1000,14 @@ fn from_hi(out: &Out, q: (u32, u32), made: &mut Made) -> Result<()> {
 
 /// With `keep`, target `t`'s log of blocks kept (crate::depth::resume), its tiles laid into `tl`,
 /// for a run to zoom `upto` whose identity is everything its composing reads: the depth's
-/// versions, the sources' pins and the water's (an assembly's z8 from the z9 tiles is made after,
-/// not logged).
+/// versions, the sources' pins, the water's and the enclosed seas' surface's (`surface`:
+/// Surface::pin; an assembly's z8 from the z9 tiles is made after, not logged).
 fn resume_log(
     keep: bool,
     tl: &mut Tiles,
     sources: &[Source],
     water: &dyn WaterSource,
+    surface: &str,
     t: (u8, u32, u32),
     upto: u8,
 ) -> Option<jobrt::resume_log::Log> {
@@ -980,6 +1020,7 @@ fn resume_log(
         &format!("{}/{}/{} to z{upto}", t.0, t.1, t.2),
         &pins.join("\n"),
         &water.pin(),
+        surface,
     ]);
     super::resume::open(&tl.out.scratch, t, &id, &mut tl.made)
 }
@@ -1152,8 +1193,10 @@ pub fn compose_hi(
     let rd = Reader::default().with_local(local);
     let upto = upto.min(HI.1);
     let mut tl = Tiles::new(out);
-    let mut log = resume_log(keep, &mut tl, sources, water, (6, t.0, t.1), upto);
-    let mut wc = WaterCache::default();
+    let surface = Surface::read(out)?;
+    let pin = surface.pin(&out.manifest, (6, t.0, t.1));
+    let mut log = resume_log(keep, &mut tl, sources, water, &pin, (6, t.0, t.1), upto);
+    let mut wc = WaterCache::default().with_surface(surface);
     for z in PIECE_Z..=LO.1 {
         wc.next_level();
         for area in coarse_areas(t, z) {

@@ -397,6 +397,16 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   where no source has a value, so a river no source is drawn in changes nothing. Narrow water a
   source has values in is new depth: the sea's slivers under a pixel wide change many coastal
   z6 tiles (intended).
+- **Enclosed seas** (`depth::surface`): on a sea closed off from the world ocean (the water step's
+  `global/water-enclosed`, §4: the Caspian) the sources' values are heights on their own datum
+  (GEBCO's above mean sea level), so a sea pixel's each is taken less that sea's surface: the
+  terrain's height there as the server takes the water's surface (The floor, below), the terrain
+  tile of the block's zoom from the terrain's lo packs, else its nearest stored ancestor there
+  scaled up (finer zooms from z8's). Nothing is typed in: the Caspian's −28 m is GLO-30's (§2), and
+  a shore pixel's the terrain's blend of water and shore, as the surface's. GEBCO above −28 m (much
+  of the north Caspian's shelf) is 0 m. Where the lo packs hold no terrain over it, the sources'
+  values as they are. A depth target's key names the enclosed seas' file and those lo packs only
+  where its tiles, ring and margin meet an enclosed sea, so only those targets re-key.
 - **Composing a block** (8 × 8 tiles and a 32-pixel margin; `depth::compose`), on that water:
   sources sampled (coarser grids
   interpolated, finer ones averaged from the overview that lines up) and painted coarse to fine,
@@ -422,12 +432,9 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   pixel or more, as the depth's water: server `water::sea_shares`) and the sea is the world
   ocean's (§4, The world ocean), whatever the
   terrain reads there (the source's bathymetry: §2, Terrain). An enclosed sea's surface is the
-  terrain's source there, as a lake's: the Caspian's GLO-30 heights, −28 m. Its floor stands on sea
-  level, as the depth's values there are GEBCO's heights above mean sea level (the depth's sea),
-  and never above the water's surface (GEBCO is above −28 m over much of the north Caspian: the
-  floor there is the surface). The depth's colour, contours and hover read
-  those values as depths below 0 m, not below the Caspian's surface: 28 m too deep there (planned:
-  an enclosed sea's depth below its own surface). A lake's is the terrain's source there
+  terrain's source there, as a lake's: the Caspian's GLO-30 heights, −28 m. The depth there is
+  below that surface (Enclosed seas, above), so its floor is the surface less the depth, never above
+  it. A lake's is the terrain's source there
   (not levelled), so a lake's floor follows its source's surface, artefacts too; so does a river's
   (3DEP's hydro-flattening, where its source has it). A pixel of narrow water is the terrain's
   blend of water and shore, so its floor is rough. The map's toggle (Layers → Depth, "3D sea and

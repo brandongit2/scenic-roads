@@ -1043,6 +1043,46 @@ impl Enclosed {
         self.runs[i..].iter().take_while(|r| r[0] < y1).any(|r| r[1] < x1 && r[2] > x0)
     }
 
+    /// Its pixels' columns or rows `a..b` (`a` past `b`: none) under pixels `p0..p0 + n` of zoom
+    /// `z` (256 a tile) within the world's: those holding the pixels' middles.
+    fn span(&self, z: u8, p0: i64, n: usize) -> (u32, u32) {
+        let (a, b) = (p0.max(0), (p0 + n as i64).min(256i64 << z));
+        let at = |p: f64| (p * self.scale(z)) as u32;
+        if a >= b {
+            return (1, 0);
+        }
+        (at(a as f64 + 0.5), at(b as f64 - 0.5) + 1)
+    }
+
+    /// Its pixels a pixel of zoom `z` (256 a tile) spans.
+    fn scale(&self, z: u8) -> f64 {
+        (SIZE as f64) * f64::from(1u32 << self.z) / (256.0 * f64::from(1u32 << z))
+    }
+
+    /// Whether a pixel's middle of zoom `z`'s window `w` × `h` from global pixel (`c0`, `r0`) (256
+    /// a tile) lies on an enclosed sea's pixel.
+    pub fn meets_window(&self, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> bool {
+        let ((x0, x1), (y0, y1)) = (self.span(z, c0, w), self.span(z, r0, h));
+        x0 < x1 && y0 < y1 && self.meets(x0, y0, x1, y1)
+    }
+
+    /// Which of zoom `z`'s window `w` × `h` from global pixel (`c0`, `r0`) (256 a tile; a terrain
+    /// tile's, a depth block's) lie on an enclosed sea, by their middles; empty when none does
+    /// (`meets_window`). Past the world's edge, none.
+    pub fn in_window(&self, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> Vec<bool> {
+        if !self.meets_window(z, c0, r0, w, h) {
+            return Vec::new();
+        }
+        let (k, n) = (self.scale(z), 256i64 << z);
+        let at = |p: i64| ((p as f64 + 0.5) * k) as u32;
+        (0..w * h)
+            .map(|i| {
+                let (x, y) = (c0 + (i % w) as i64, r0 + (i / w) as i64);
+                (0..n).contains(&x) && (0..n).contains(&y) && self.has(at(x), at(y))
+            })
+            .collect()
+    }
+
     /// As stored: its zoom (a u32), then its runs (three u32s each), then its bodies (a u64 and two
     /// u32s each) after their count, little-endian.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -1400,6 +1440,31 @@ mod tests {
         assert_eq!(Enclosed::from_bytes(&e.to_bytes()).unwrap(), e);
         // No sea: nothing enclosed.
         assert_eq!(Enclosed::of_sea(&grid(&["####"]), 0), Enclosed::default());
+    }
+
+    /// A window's pixels (a terrain tile's, a depth block's with its margin) on an enclosed sea are
+    /// those whose middles lie on its pixels, at any zoom; a window it doesn't reach has none, and
+    /// none lies past the world's edge.
+    #[test]
+    fn a_window_s_pixels_on_an_enclosed_sea() {
+        // Pixels 300–301 of row 5 of z0's 512, and 20–29 of row 11.
+        let e = Enclosed { z: 0, runs: vec![[5, 300, 302], [11, 20, 30]], bodies: Vec::new() };
+        let on = |m: Vec<bool>| (0..m.len()).filter(|&p| m[p]).collect::<Vec<_>>();
+        let tile = |z: u8, x: i64, y: i64| e.in_window(z, x * 256, y * 256, 256, 256);
+        // z1/0/0: a pixel an enclosed pixel.
+        assert_eq!(on(tile(1, 0, 0)), (11 * 256 + 20..11 * 256 + 30).collect::<Vec<_>>());
+        // z0: two a side to a pixel, its middle on the odd ones.
+        let mut want = vec![2 * 256 + 150];
+        want.extend(5 * 256 + 10..5 * 256 + 15);
+        assert_eq!(on(tile(0, 0, 0)), want);
+        // z2/2/0 (columns 256–383, rows 0–127): pixels 300–301 of row 5, each two a side.
+        let want: Vec<usize> = [10, 11].iter().flat_map(|r| (88..92).map(move |c| r * 256 + c)).collect();
+        assert_eq!(on(tile(2, 2, 0)), want);
+        assert!(tile(1, 1, 1).is_empty() && !e.meets_window(1, 256, 256, 256, 256));
+        // A window reaching past the world's west edge: z1/0/0 with a margin of 4.
+        let m = e.in_window(1, -4, -4, 264, 264);
+        assert_eq!(on(m), (15 * 264 + 24..15 * 264 + 34).collect::<Vec<_>>());
+        assert!(!e.meets_window(1, -8, 0, 8, 256) && e.in_window(1, -8, 0, 8, 256).is_empty());
     }
 
     /// The enclosed seas are read from the stored tiles at their zoom: a tile not stored is its

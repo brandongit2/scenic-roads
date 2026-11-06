@@ -5,7 +5,8 @@
 //! 1. Each source is sampled onto the block (crate::depth::grids): depth, the zoom of the grid each
 //!    pixel is from, its chart low water. A sea source is drawn on the sea (and in rivers and lakes
 //!    where declared so: its depths there below their own surface), a lake source in lakes
-//!    (`Source::drawn_in`).
+//!    (`Source::drawn_in`); on an enclosed sea, its values less that sea's surface
+//!    (crate::depth::surface: the Caspian's depths below its −28 m).
 //! 2. Surveys are painted coarse to fine, then the estimates, which only fill what no survey has (a
 //!    survey beats an estimate wherever both cover water). A pixel past its source's zoom shows the
 //!    stored tiles of that zoom scaled up, as the map's fallback makes them (crate::depth::fall);
@@ -62,12 +63,16 @@ pub struct Water {
     pub river: Vec<bool>,
     /// Water only where a source has a value (empty: none such).
     pub if_data: Vec<bool>,
+    /// The surface each sea pixel's depth is measured below where it isn't sea level: an enclosed
+    /// sea's, the terrain's height there (crate::depth::surface), 0 m elsewhere; empty: sea level
+    /// throughout.
+    pub surface: Vec<f32>,
 }
 
 impl Water {
     /// All land, `n` pixels.
     pub fn land(n: usize) -> Water {
-        Water { water: vec![false; n], lake: vec![0; n], river: Vec::new(), if_data: Vec::new() }
+        Water { water: vec![false; n], lake: vec![0; n], river: Vec::new(), if_data: Vec::new(), surface: Vec::new() }
     }
     pub fn is_river(&self, i: usize) -> bool {
         self.river.get(i).copied().unwrap_or(false)
@@ -173,6 +178,9 @@ pub fn compose(
         for i in 0..n {
             if !s.drawn_in(water.is_river(i), water.lake[i] > 0) {
                 smp.v[i] = f32::NAN;
+            } else if !water.surface.is_empty() && water.lake[i] == 0 && !water.is_river(i) {
+                // (On an enclosed sea: its depth below its own surface.)
+                smp.v[i] -= water.surface[i];
             }
         }
         let valid: Vec<bool> = smp.v.iter().map(|v| v.is_finite()).collect();

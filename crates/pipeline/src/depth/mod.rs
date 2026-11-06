@@ -2,10 +2,12 @@
 //! tile like the terrain, from the declared depth sources' grids.
 //!
 //! - **`depth`** (Terrarium RGB as lossless WebP, 256 px): depth below the water's surface in metres, negative (the
-//!   sea's mean level; a lake's mean surface), drying heights positive, `NODATA` where there's none;
+//!   sea's mean level; a lake's mean surface; an enclosed sea's own, `surface`), drying heights
+//!   positive, `NODATA` where there's none;
 //!   quantised to 0.1 m in the first 100 m and 1 m deeper (`quantise`). It lies on the basemap's
-//!   water (codecs::terrain_water), so the water's surface (sea level at sea, the terrain's heights
-//!   on a lake or a river: the terrain keeps the source's at sea) less the depth is the floor: the
+//!   water (codecs::terrain_water), so the water's surface (sea level on the world ocean, the
+//!   terrain's heights on a lake, a river or an enclosed sea: the terrain keeps the source's at sea)
+//!   less the depth is the floor: the
 //!   server serves it so (`?floor=1` on the terrain's tiles) with no second terrain stored.
 //! - **`depth-class`** (lossless WebP, the byte in all three channels): a byte a pixel: the class (bits 0–2: `C_NONE`, a grid at
 //!   the tile's zoom or finer, a coarser one scaled up, estimated, filled to the shore), dries at low tide (bit 3), the source's code
@@ -29,6 +31,7 @@ pub mod fall;
 pub mod grids;
 pub mod lakes;
 pub mod resume;
+pub mod surface;
 
 /// The depth layer's name (`layers/depth/…`).
 pub const LAYER: &str = "depth";

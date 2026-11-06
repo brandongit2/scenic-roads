@@ -564,6 +564,25 @@ pub fn lake_packs(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(v)
 }
 
+/// What depth target `t` reads for an enclosed sea's surface (crate::depth::surface::reads): None
+/// while the enclosed seas can't be read.
+fn depth_surface(t: &str, x: &KeyCtx) -> Option<crate::depth::surface::Reads> {
+    let u = TileId::parse(t)?;
+    let e = x.tiles.enclosed(x.m)?;
+    Some(crate::depth::surface::reads(x.m, e.as_deref(), (u.z, u.x, u.y)))
+}
+
+/// The enclosed seas' file a depth target reads, by content, where its tiles meet one; none else.
+pub fn depth_enclosed(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    Some(depth_surface(t, x)?.enclosed)
+}
+
+/// The terrain's lo packs a depth target reads an enclosed sea's surface from, by content, where its
+/// tiles meet one; none else.
+pub fn depth_surface_terrain(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    Some(depth_surface(t, x)?.terrain)
+}
+
 /// The water a depth target reads (`build::water_key` of "depth <target>": a z6 tile's from
 /// `build::DEPTH_WATER_FROM`, an assembly's `DEPTH_LO_WATER_FROM`); None without a water source or
 /// while its digest isn't there.

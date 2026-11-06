@@ -239,29 +239,11 @@ fn enclosed(s: &crate::AppState) -> Result<Option<Arc<wt::Enclosed>>> {
     Ok(Some(e))
 }
 
-/// Which of tile z/x/y's 256 × 256 pixels (their middles) lie on an enclosed sea's pixels; empty
-/// when none does.
-pub fn enclosed_in(e: &wt::Enclosed, z: u8, x: u32, y: u32) -> Vec<bool> {
-    let g = f64::from((wt::SIZE as u32) << e.z);
-    let n = f64::from(1u32 << z);
-    let at = |t: u32, p: f64| ((f64::from(t) + p) / n * g) as u32;
-    let (x0, y0, x1, y1) = (at(x, 0.0), at(y, 0.0), at(x, 1.0).max(at(x, 0.0) + 1), at(y, 1.0).max(at(y, 0.0) + 1));
-    if !e.meets(x0, y0, x1, y1) {
-        return Vec::new();
-    }
-    (0..256 * 256)
-        .map(|p| {
-            let (px, py) = ((p % 256) as f64 + 0.5, (p / 256) as f64 + 0.5);
-            e.has(at(x, px / 256.0), at(y, py / 256.0))
-        })
-        .collect()
-}
-
 /// A terrain tile's share of sea (`sea_shares`).
 pub struct Sea {
     /// Each of the terrain's 256 × 256 pixels' share, 0–1.
     pub share: Vec<f32>,
-    /// Whether each pixel's sea is a sea closed off from the world ocean (`enclosed_in`; empty:
+    /// Whether each pixel's sea is a sea closed off from the world ocean (wt::Enclosed::in_window; empty:
     /// none in the tile), whose surface isn't sea level.
     pub enclosed: Vec<bool>,
     /// As the water tiles have it (kept, stored or drawn), not their nearest stored ancestor's
@@ -309,7 +291,8 @@ pub fn sea_shares(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Sea>> {
             (at(i, j) + at(i + 1, j) + at(i, j + 1) + at(i + 1, j + 1)) * 0.25
         })
         .collect();
-    let enclosed = enclosed(s)?.map(|e| enclosed_in(&e, z, x, y)).unwrap_or_default();
+    let (c0, r0) = (i64::from(x) * 256, i64::from(y) * 256);
+    let enclosed = enclosed(s)?.map(|e| e.in_window(z, c0, r0, 256, 256)).unwrap_or_default();
     Ok(Some(Sea { share, enclosed, exact }))
 }
 
@@ -645,24 +628,5 @@ mod tests {
         // The map's own dark colours: barely changed.
         let (sea, land) = ([12.0, 22.0, 34.0], [11.0, 14.0, 19.0]);
         assert!((alpha_for(0.5, sea, land) - 127.5).abs() < 15.0);
-    }
-
-    /// A terrain tile's pixels on an enclosed sea are those whose middles lie on its pixels, at any
-    /// zoom; a tile it doesn't reach has none.
-    #[test]
-    fn a_terrain_tile_s_pixels_on_an_enclosed_sea() {
-        // Pixels 300–301 of row 5 of z0's 512, and 20–29 of row 11.
-        let e = wt::Enclosed { z: 0, runs: vec![[5, 300, 302], [11, 20, 30]], bodies: Vec::new() };
-        let on = |m: Vec<bool>| (0..m.len()).filter(|&p| m[p]).collect::<Vec<_>>();
-        // z1/0/0: a terrain pixel an enclosed pixel.
-        assert_eq!(on(enclosed_in(&e, 1, 0, 0)), (11 * 256 + 20..11 * 256 + 30).collect::<Vec<_>>());
-        // z0: two a side to a terrain pixel, its middle on the odd ones.
-        let mut want = vec![2 * 256 + 150];
-        want.extend(5 * 256 + 10..5 * 256 + 15);
-        assert_eq!(on(enclosed_in(&e, 0, 0, 0)), want);
-        // z2/2/0 (columns 256–383, rows 0–127): pixels 300–301 of row 5, each two a side.
-        let want: Vec<usize> = [10, 11].iter().flat_map(|r| (88..92).map(move |c| r * 256 + c)).collect();
-        assert_eq!(on(enclosed_in(&e, 2, 2, 0)), want);
-        assert!(enclosed_in(&e, 1, 1, 1).is_empty());
     }
 }

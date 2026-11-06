@@ -74,6 +74,10 @@ pub struct TerrainTiles {
     /// The same without the lake-depth packs (`grids::declared_alone`), by the accepted sources'
     /// index content name: read once, not again as the packs change.
     depth_alone: Option<(String, std::sync::Arc<Vec<crate::depth::grids::Source>>)>,
+    /// The seas closed off from the world ocean the water step wrote (crate::water::Enclosed), by
+    /// content name, which the depth's keys read where an enclosed sea's surface is (None: it can't
+    /// be read now; those keys wait).
+    enclosed: Option<(String, Option<std::sync::Arc<crate::water::Enclosed>>)>,
     /// The declared elevation datasets (crate::terrain_zoom), their heights
     /// conversions as the roads': what they're read from (`sets_from`), and
     /// the sets (None: they can't be read now; the terrain's z6 tiles wait: their keys name them).
@@ -126,6 +130,7 @@ impl TerrainTiles {
         self.load_elevation(root, m);
         self.load_buildings(root, m);
         self.load_depth(root, m);
+        self.load_enclosed(root, m);
         self.load_sets(root, m);
         self.held.retain(|c, _| want.contains(c.as_str()));
         let missing: Vec<&str> = want.iter().copied().filter(|c| !self.held.contains_key(*c)).collect();
@@ -279,6 +284,44 @@ impl TerrainTiles {
         let alone = self.depth_alone.as_ref().map(|(_, d)| d.as_ref().clone()).unwrap_or_default();
         let r = crate::depth::grids::with_estimates(alone, root, m);
         self.depth = Some((key, Some(std::sync::Arc::new(r))));
+    }
+
+    fn load_enclosed(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
+        let Some(c) = m.get(crate::water::ENCLOSED) else {
+            self.enclosed = None;
+            return;
+        };
+        if self.enclosed.as_ref().is_some_and(|(k, e)| k == c && e.is_some()) {
+            return;
+        }
+        let got = root.join(c).read().map_err(anyhow::Error::from).and_then(|b| crate::water::Enclosed::from_bytes(&b));
+        let e = match got {
+            Ok(e) => {
+                self.unread.remove(c);
+                Some(std::sync::Arc::new(e))
+            }
+            Err(e) => {
+                self.unread.insert(c.clone(), format!("{e:#}"));
+                None
+            }
+        };
+        self.enclosed = Some((c.clone(), e));
+    }
+
+    /// The seas closed off from the world ocean `m` names (Some(None): none written); None while
+    /// they can't be read now.
+    pub fn enclosed(&self, m: &BTreeMap<String, String>) -> Option<Option<std::sync::Arc<crate::water::Enclosed>>> {
+        let Some(c) = m.get(crate::water::ENCLOSED) else { return Some(None) };
+        match &self.enclosed {
+            Some((k, Some(e))) if k == c => Some(Some(e.clone())),
+            _ => None,
+        }
+    }
+
+    /// Holds `e` as the enclosed seas of content name `content` (tests).
+    #[cfg(test)]
+    pub fn hold_enclosed(&mut self, content: &str, e: crate::water::Enclosed) {
+        self.enclosed = Some((content.to_string(), Some(std::sync::Arc::new(e))));
     }
 
     /// What the depth sources are held by (`depth`): the accepted sources' index content name and the

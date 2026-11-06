@@ -300,7 +300,8 @@ sea's pixels at z6 (512 a tile) not joined to the world ocean (docs/steps.md §4
 the zoom (u32, 6); the runs' count (u64), then each run as row, first pixel and past the last (three
 u32s), by row and first; the bodies' count (u64), then each body's pixels (u64) and one pixel of it
 (x, y: u32s), largest first. The server reads it (the catalogue's `global`, `"water-enclosed"`) for
-the water's surface, sea level only on the world ocean; the water version (`w=`) names it.
+the water's surface, sea level only on the world ocean; the water version (`w=`) names it. The
+depth steps read it too: an enclosed sea's depth is below its own surface (Depth, below).
 
 ## Lakes filled from Canada's own data (`work/lakefill/<date>.<h>.sect`; pipeline::lakefill)
 
@@ -480,7 +481,7 @@ ancestor's neighbours' edges; nearest for classes).
 
 - **`depth`** (encoding `terrarium-webp`: Terrarium RGB as lossless WebP, as the terrain's, but
   rounded as below, not to the terrain's centimetre): metres below the water's surface (the sea's mean level, a
-  lake's mean surface), negative; drying heights positive (at most 20 m); +12,000 m where there's
+  lake's mean surface, an enclosed sea's own: the terrain's height there, the Caspian's −28 m), negative; drying heights positive (at most 20 m); +12,000 m where there's
   none (≥ 9,000 is none). Quantised: 0.1 m in the first 100 m, 1 m deeper. The basemap's water
   (`terrain_water`: half a pixel or more of sea or lake) is where it lies, and the land keeps a band
   of 3 pixels of the nearest water's value (class 0), so a finer shoreline scaled up from it never

@@ -511,6 +511,56 @@ fn a_source_ending_over_nothing_keeps_its_edge() {
     }
 }
 
+/// Task #982: on a sea closed off from the world ocean (crate::water::Enclosed: the Caspian), the
+/// depth is below that sea's own surface, the terrain's heights there (GLO-30's −28 m), not below
+/// sea level: the coarse source's −50 m a depth of −22 m, the patch's −10 m above the surface 0 m
+/// (the Caspian's northern shelf); the lake's survey as it was. Where the terrain has no tile over
+/// it, its sources' values as they are.
+#[test]
+fn an_enclosed_sea_s_depth_is_below_its_own_surface() {
+    let d = tempfile::tempdir().unwrap();
+    let srcs = sources(&d.path().join("s"));
+    let q = (T.0 >> 3, T.1 >> 3);
+    let run = |name: &str, terrain: bool| {
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join(name));
+        let mut out = Out::unbound(&root, &d.path().join(name).join("scratch")).unwrap();
+        // (The fixture's sea, T's west half, enclosed: z6's pixels, 512 a tile.)
+        let (x0, y0) = (T.0 * 512, T.1 * 512);
+        let runs = (y0..y0 + 512).map(|r| [r, x0, x0 + 256]).collect();
+        let e = crate::water::Enclosed { z: 6, runs, bodies: vec![(512 * 256, x0, y0)] };
+        out.put_bytes(crate::water::ENCLOSED, "bin", &e.to_bytes()).unwrap();
+        if terrain {
+            // (The terrain over T at −28 m, z6–8, as its lo pack holds it.)
+            let flat = roadcore::grid::encode_terrain_png(&vec![-28.0; 256 * 256], 256, 256).unwrap();
+            let mut it = (6..=8u8).flat_map(|z| {
+                let k = 1u32 << (z - 6);
+                let flat = flat.clone();
+                (0..k * k).map(move |i| (z, T.0 * k + i % k, T.1 * k + i / k, flat.clone(), 0u32))
+            });
+            let p = crate::layers::write_pack_local(&out, "terrain", "terrarium", false, "lo", (3, q.0, q.1), &mut it)
+                .unwrap()
+                .unwrap();
+            out.put_file(&p.logical, "pack", &p.local).unwrap();
+        }
+        build_hi(&mut out, &srcs, &Fixture, None, T).unwrap();
+        build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
+        out
+    };
+    let (out, plain) = (run("a", true), run("b", false));
+    let lo = (3, q.0, q.1);
+    let at = |out: &Out, scope: &str, root: (u8, u32, u32), z: u8, u: f64, v: f64| {
+        let (x, y, px, py) = where_(z, u, v);
+        depth_at(&tile(out, LAYER, scope, root, z, x, y).expect("its tile"), px, py)
+    };
+    let sea = at(&out, "lo", lo, 8, 0.3, 0.6);
+    assert!((sea + 22.0).abs() < 0.11, "the open sea: {sea}");
+    assert_eq!(at(&out, "hi", (6, T.0, T.1), 10, 0.17, 0.37), 0.0, "the patch, above the surface");
+    let lake = |o: &Out| at(o, "hi", (6, T.0, T.1), 11, 0.75, 0.25);
+    assert_eq!(lake(&out), lake(&plain), "the lake");
+    // No terrain under it: the sources' values.
+    assert!((at(&plain, "lo", lo, 8, 0.3, 0.6) + 50.0).abs() < 0.11);
+}
+
 /// Task #398: an assembly's and a piece's run are timed by stage (no hour of "(untimed)"): the
 /// sources' files opened and windows read, the water read, composing and within it feathering
 /// (and the gaps filled, which the fixture has none of), the tiles encoded, the coarser levels

@@ -715,6 +715,14 @@ fn d_lakes(t: &str) -> Vec<String> {
     TileId::parse(t).map_or_else(Vec::new, |u| named(6, crate::depth::lakes::read_by(u.z, u.x, u.y)))
 }
 
+/// depth 6/x/y and depth-lo 3/x/y: the terrain's lo packs under what they read
+/// (crate::depth::surface::lo_under), an enclosed sea's surface where one is.
+fn d_terrain(t: &str) -> Vec<String> {
+    TileId::parse(t).map_or_else(Vec::new, |u| {
+        named(3, crate::depth::surface::lo_under(&crate::depth::build::windows((u.z, u.x, u.y))))
+    })
+}
+
 /// slope-lo 3/x/y: the lo terrain of it and its edge neighbours.
 fn sl_lo(t: &str) -> Vec<String> {
     named(3, at(t, 3).into_iter().flat_map(|(x, y)| with_edges(3, x, y)))
@@ -1236,6 +1244,8 @@ pub const TABLE: [Step; 60] = [
             In { name: "depth-sources", of: idents::depth_sources },
             In { name: "water:depth", of: idents::water_depth },
             Of { step: "lake-depth", of: d_lakes, grain: Grain::Read(idents::lake_packs) },
+            All { step: "water", grain: Grain::Tiles(idents::depth_enclosed) },
+            Of { step: "terrain-lo", of: d_terrain, grain: Grain::Tiles(idents::depth_surface_terrain) },
         ],
         ..step(
             "depth",
@@ -1254,6 +1264,8 @@ pub const TABLE: [Step; 60] = [
             In { name: "depth-sources", of: idents::depth_sources },
             In { name: "water:depth", of: idents::water_depth },
             Of { step: "lake-depth", of: d_lakes, grain: Grain::Read(idents::lake_packs) },
+            All { step: "water", grain: Grain::Tiles(idents::depth_enclosed) },
+            Of { step: "terrain-lo", of: d_terrain, grain: Grain::Tiles(idents::depth_surface_terrain) },
         ],
         ..step(
             "depth",
