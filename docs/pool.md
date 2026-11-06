@@ -1425,8 +1425,14 @@ forecast takes each Mac's room at its sustained best instead (§7.2, task #951).
 for windows of 1 to 28 days and weights of 0 to 30 pairs: the mean |log error| was 0.932 with no
 pace, 0.834 at 5 days and 10 (the best of the windows the lead's history holds, 7 days; 0.833 at
 14), 1.018 at 3 days and none. The same test on each target's share of every job (21,705 pairs)
-gained less (1.000 to 0.920), and depends on the jobs' size. Pairs are few: on 4 Nov, over 5 days,
-the M4 had 19 (pack 8, unit 5, terrain-deep 5), its paces 1.11 to 1.46, the M1 3. The lead works
+gained less (1.000 to 0.920), and depends on the jobs' size. Pairs are few, and none at the steps
+run most: a pair needs a target run twice, and a target is built once unless its step changes. On
+6 Nov 16:08 UTC, over 5 days (the lead's history, `Paces::of`'s rule), the M4 had 87 (terrain-hi
+26, polar-terrain 25, bldtiles 15, depth 7, pois 4, trees 4, pack 3, depth-lo, terrain-lakes and
+unit 1 each) and the M1 48 (polar-terrain 22, bldtiles 10, terrain-hi 4, depth 3, lo, pack, pois
+and terrain-lakes 2 each, depth-lo 1); none at terrain-deep or slope-deep, though the M4 ran 543
+terrain-deep jobs of one target, the M1 340 and the lead 485, so those steps' paces are each Mac's
+pace over its steps. The lead works
 the paces out from its history's runs of one target (`paces::reads`, of the jobs done well the agent
 keeps, `paces::job`, only the new events read each loop; the jobs' starts from all of them, Batch
 length below) when one comes or every 10 minutes (`Coordinator::set_paces`, in the scheduler's
@@ -1435,6 +1441,17 @@ prior, its fits, `secs_p90`) and NAS rate at the lead's pace by its Mac's, and i
 worker is at that worker's Mac's pace (`Book::secs_for`, `nas_for`; the scheduler's `secs_of`: a
 job's targets counted to the batch length, a leased job's predicted time). A target's own run is
 read at the pace of the Mac it would run on (Batch length, below).
+
+**Planned, not built: a size-fit residual pace** (task #934). A second source for a step without
+pairs, from every run of it: each run of one target done well, its time against what the step's
+size fit (crate::needs' fits, `Fit`) predicts for its target, as a log residual; a Mac's pace at the
+step the median of its residuals less the lead's, drawn toward its pace over its steps as the
+pairs' are, and weighed against its pairs' by the same held-out test that picked `PACE_S` and
+`PRIOR_PAIRS`. The fit would be made from the lead's runs alone: one made from runs put at the
+lead's pace by the paces would feed the pace back into itself. A step with no good fit (`Fit::good`)
+keeps its pairs alone. Not built: the forecast error that asked for it (#926's backtest, the end
+under 15 min worse on train) didn't hold on the archived inputs (§7.9, code 4), so nothing measured
+yet shows the sparse pairs costing the forecast or the placement accuracy.
 
 **Batch length** (`Sched::batch_len`, `Sched::batch_secs`, task #927): a job of a shared step takes
 its targets in plan order (its first whatever its time) while their measured time on the Mac asking
@@ -1897,6 +1914,18 @@ median 36 min worse, and the near term (under an hour) and 4-12 h worse at the p
 moves them there isn't known). Paces from pairs are near the lead's where pairs are few
 (drawn toward 1), but code 4 moves every lane whose Mac's speed wasn't 1: with paces worked out, no
 lane runs at its speed any more, and a Mac of few or no pairs runs at about the lead's pace.
+
+**The near term, measured again (task #934, 6 Nov).** The p90 of the end error under 15 min, in
+minutes. Live (`forecast-check` over each code's own span, the forecasts as the lead made them):
+code 3 (2 Nov 07:00 to 4 Nov 10:50 UTC, 10,800 samples) 284, code 4 (to 5 Nov 23:34, 2,365) 76,
+code 5 (to 6 Nov 16:07, 4,299) 300. Replayed on the inputs' archive (`--replay --from 2026-11-04T22:00
+--split 2026-11-05T22:00`, release build on the M1, 2.3-2.8 GB): code 3 against 4, train 171 to
+172 (n 403 to 440), test 506 to 447 (n 893 to 847); code 4 against 5, train 172 to 138, test 449 to
+459. So no near-term loss from the paces since the archive began. Replayed on #926's own window
+(30 Oct to 1 Nov, split 31 Oct, the terms' inputs) it is still there, train 557 to 808, test 386
+to 520; with each Mac the paces don't know at its recorded lane speed instead of the lead's 1, 767
+and 520: the dropped speed fallback isn't its cause. What is isn't known; it doesn't recur on the
+inputs archived since.
 
 **What changed (code 5, task #951).** The owner's spec (4 Nov): on 4 Nov the schedule showed
 almost all of slope-deep left on the M1 while all three Macs ran it. The run had every Mac ask
