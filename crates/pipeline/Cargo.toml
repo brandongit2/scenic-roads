@@ -13,6 +13,7 @@ codecs = { path = "../codecs" }
 jobrt = { path = "../jobrt" }
 buildstore = { path = "../buildstore" }
 coordwire = { path = "../coordwire" }
+offload = { path = "../offload" }
 landmarks = { path = "../landmarks" }
 mapview = { path = "../mapview" }
 inputs = { path = "../inputs" }
@@ -68,6 +69,7 @@ md-5 = "0.10"
 bytes = "1"
 
 [dev-dependencies]
+offload = { path = "../offload", features = ["testkit"] }
 inputs = { path = "../inputs", features = ["testkit"] }
 buildstore = { path = "../buildstore", features = ["testkit"] }
 coordwire = { path = "../coordwire", features = ["testkit"] }

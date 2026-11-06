@@ -647,24 +647,8 @@ pub fn ahead_carry(dir: &Path) -> PathBuf {
     dir.with_file_name(format!("{name}-carry"))
 }
 
-/// One program a task runs (docs/workers.md §3): its name (the build's `bin/<prog>`), its arguments and environment, in which `{dir}` is the z6 tile's
-/// folder, `{cache}` the canopy cache, `{scache}` the folder's scenic cache, `{buildings}` its
-/// roadside buildings, `{store}` the NAS's canopy store to download into, and what's read where it
-/// lies: `{sources}` the NAS's sources, `{chm}` its canopy squares, `{net}`
-/// the DEM servers' files (crate::offload::places; an environment variable whose value names a
-/// place the worker doesn't have is left out).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Run {
-    pub what: String,
-    pub prog: String,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
-    /// The files it reads of the z6 tile's own (`{dir}/<name>`, `{buildings}/<name>`; a trailing `*`
-    /// for any name so begun), earlier steps' outputs too: a task sends those there when it
-    /// starts, so it may run on any worker (crate::offload). None: it stays here (`keep_here`).
-    #[serde(default)]
-    pub reads: Vec<String>,
-}
+/// One program a task runs (the offload crate's, which a task's spec carries).
+pub use ::offload::Run;
 
 /// The files a `unit` job saves for a z6 tile (its tile's dash name: `6-31-20`): its base pack, road
 /// values, roads' English and the grids its packs lacked (scenic-build's `commit_unit`). All a

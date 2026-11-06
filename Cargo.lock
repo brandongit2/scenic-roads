@@ -1321,6 +1321,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "offload"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "codecs",
+ "coordwire",
+ "jobrt",
+ "libc",
+ "serde",
+ "serde_json",
+ "store",
+ "tempfile",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1410,6 +1425,7 @@ dependencies = [
  "mapview",
  "md-5",
  "names",
+ "offload",
  "osmpbf",
  "parquet",
  "png",

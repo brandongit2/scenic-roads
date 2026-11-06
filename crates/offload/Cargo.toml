@@ -1,0 +1,23 @@
+[package]
+name = "offload"
+version = "0.1.0"
+edition = "2021"
+description = "A job's tasks offered to other Macs through the lead's coordinator, and its waits on them (docs/crates.md, step 6e)"
+
+[dependencies]
+store = { path = "../store" }
+codecs = { path = "../codecs" }
+jobrt = { path = "../jobrt" }
+coordwire = { path = "../coordwire" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+anyhow.workspace = true
+libc = "0.2"
+
+[features]
+# A test's offload (`Offload::for_test`, `client`) for pipeline's offload tests: its dev-dependency
+# on offload turns it on. Helpers only, never behaviour.
+testkit = []
+
+[dev-dependencies]
+tempfile = "3"
