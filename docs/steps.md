@@ -726,9 +726,12 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   with any change to which tiles it wants), the tile, and what `pyramids::want` reads for it: the
   coverage as its terrain-hi run reads it (`agent::build::piece_coverage`: the tiles of its levels), the declared pyramids meeting it (their lines as
   the terrain's keys name them) and its terrain-deep targets (every native tile under their
-  pixels, at sea as on land); until the declared datasets are read its key
-  is unknown and it waits (`agent::build::pyramids_key`). Nothing waits for it: a terrain job
-  fetches what the store lacks. Its time is weighed by the tiles it fetched (`needs::PER_WORK`):
+  pixels, at sea as on land; with the ring round them its blends' bands reach); until the declared
+  datasets are read its key is unknown and it waits (`agent::build::pyramids_key`). Its z6 tile's
+  terrain-hi and terrain-deep targets wait for it (a declared read keyed on nothing: the tiles are
+  the same from the store as from the server), and it isn't done while a tile couldn't be fetched,
+  so no job asks GSI for a tile the fill asked (task #975); a store that can't be read fails the
+  job. Its time is weighed by the tiles it fetched (`needs::PER_WORK`):
   a z6 tile whose tiles were stored already says nothing of the next one's.
 - **terrain-hi (a z6 tile):** `TERRAIN_V` and the codec (`terrain_codec::version`: the encoding,
   libwebp's version and level, the rounding), the coverage as it reads it
@@ -738,12 +741,13 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   regions' outlines read so `declared::cut_note` names the outlines inside the tile, never their
   files: task #832), each place's sources there with the zoom each reaches
   (`terrain_zoom::key_lines`), its z10 tiles' terrain-deep mids by content (`idents::terrain_deep_mids`, a declared read of terrain-deep:
-  it waits for those targets), and "no hi tiles" for a z6 tile making none. Until the datasets are
+  it waits for those targets), and "no hi tiles" for a z6 tile making none. It waits for its own
+  pyramids-fill too. Until the datasets are
   read its key is unknown and it waits. A "none" z6 tile is keyed on the version and the tile
   (`none_piece_key`).
 - **terrain-deep (a z10 tile):** `TERRAIN_DEEP_V` and the codec, the tile, its band's code and the
   sources meeting it with the zoom each reaches there (`terrain_deep::target_key_lines`), its
-  levels' tiles (`agent::build::deep_coverage`) and the pool's datasets meeting it. It reads no built tile: no target of it waits for another. A z10 tile no target any more
+  levels' tiles (`agent::build::deep_coverage`) and the pool's datasets meeting it. It reads no built tile: no target of it waits for another, only its z6 tile's pyramids-fill. A z10 tile no target any more
   is keyed on the version and the tile (`none_deep_key`).
 - **Drops:** a target under any of these "none" keys (`agent::build::is_none_key`) drops its packs
   and reads nothing; its run notes a `drops` measure (`needs::DROPS`, docs/pool.md §7.7) so it is

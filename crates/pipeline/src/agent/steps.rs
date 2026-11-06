@@ -611,6 +611,12 @@ fn z6_of_z3(t: &str) -> Vec<String> {
     named(6, at(t, 3).into_iter().flat_map(|(x, y)| z6_under(x, y)))
 }
 
+/// terrain-deep 10/x/y: its z6 tile (the pyramids-fill target that fetches its pyramids' tiles).
+fn z6_of_z10(t: &str) -> Vec<String> {
+    let pz = crate::terrain_deep::PACK_Z;
+    named(6, at(t, pz).into_iter().map(|(x, y)| (x >> (pz - 6), y >> (pz - 6))))
+}
+
 /// slope-deep 10/x/y: the deep packs of it and its edge neighbours (`slope_deep_from`).
 fn sd_deep(t: &str) -> Vec<String> {
     let pz = crate::terrain_deep::PACK_Z;
@@ -979,7 +985,7 @@ pub const TABLE: [Step; 60] = [
         cost_v: 8,
         shared: true,
         versions: &[("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
-        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "makes-hi", of: idents::makes_hi }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Read(idents::terrain_deep_mids) }],
+        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "makes-hi", of: idents::makes_hi }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Read(idents::terrain_deep_mids) }, Of { step: "pyramids-fill", of: own, grain: Grain::Read(idents::nothing) }],
         ..step(
             "terrain",
             Pack,
@@ -997,7 +1003,7 @@ pub const TABLE: [Step; 60] = [
         mem_mb: crate::terrain_deep::target_peak_mb(),
         shared: true,
         versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
-        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }],
+        reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, Of { step: "pyramids-fill", of: z6_of_z10, grain: Grain::Read(idents::nothing) }],
         ..step(
             "terrain",
             Pack,
@@ -2359,6 +2365,22 @@ mod tests {
         let b = crate::polar::target(Pole::South, south[0]);
         left.set("polar-slope", [b.clone()]);
         assert_eq!(readiness("polar-root", "s", &left), Ready::Waits(vec![("polar-slope", b)]));
+    }
+
+    /// Task #975: a z6 tile's terrain-hi and its z10 tiles' terrain-deep wait for that z6 tile's
+    /// pyramids-fill (they read its tiles from the store, asking GSI for none), not another's.
+    #[test]
+    fn the_terrain_waits_for_its_own_pyramids_fill() {
+        use super::{readiness, Left, Ready};
+        let mut left = Left::default();
+        left.set("pyramids-fill", ["6/56/24".to_string()]);
+        assert_eq!(readiness("terrain-hi", "6/56/25", &left), Ready::Yes, "another z6 tile's fill");
+        assert_eq!(readiness("terrain-hi", "6/56/24", &left), Ready::Waits(vec![("pyramids-fill", "6/56/24".into())]));
+        assert_eq!(
+            readiness("terrain-deep", "10/901/399", &left),
+            Ready::Waits(vec![("pyramids-fill", "6/56/24".into())])
+        );
+        assert_eq!(readiness("terrain-deep", "10/900/400", &left), Ready::Yes);
     }
 
     /// Task #701: no step makes a removed step's names (crate::agent::gc::RETIRED); the clean-up

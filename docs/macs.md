@@ -38,8 +38,10 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     process's `HOST_REQUESTS`, tasks #810 and #823; its cold start granted a thread, task #896): it fetches each tile
     a z6 tile's terrain-hi run reads (under its z9–12 pixels, the sea's too, and the whole of
     its terrain-deep targets' base tiles; inside the
-    dataset's cover) that the store lacks, once, and packs it (a 404 kept as an empty entry; any
-    other failure left out, fetched by the terrain's jobs). As every job's, its archives go onto
+    dataset's cover; and the ring round them its blends' bands reach) that the store lacks, once,
+    and packs it (a 404 kept as an empty entry; any other failure leaves the z6 tile not done, so
+    its next try fetches those). The z6 tile's terrain-hi and terrain-deep wait for it and read
+    the store (task #975). As every job's, its archives go onto
     the NAS unlisted and into its hand-off as its store's (`<host-path>/<shard>`), and the lead
     names them in that store's index. Each z6 tile starts only while the NAS has more room past
     the owner's reserve (`scenic nas-room`) than the most one z6 tile has put there (6/56/23:

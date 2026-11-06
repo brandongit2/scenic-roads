@@ -2575,6 +2575,14 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
             pipeline::control::safe_point("pyramids-fill");
             break;
         }
+        // (Not done while a tile couldn't be fetched: its terrain waits for the fill, and reads
+        // its pyramids' tiles from the store alone, so the next try fetches those few.)
+        anyhow::ensure!(
+            f.failed.is_empty(),
+            "{}: {} of its elevation tiles couldn't be fetched (packed the rest; tried again on the next run)",
+            u.slash(),
+            f.failed.len()
+        );
         pipeline::control::done("pyramids-fill", &u.slash());
         note_cost("pyramids-fill", &u.slash(), c);
     }

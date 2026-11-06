@@ -9,13 +9,17 @@
 //! host and path, so a layer moved to another URL is stored afresh). Filled by the pool's
 //! `pyramids-fill` step, the lead's (task #810), by z6 tile (`fill`): a z6 tile's tiles (`want`,
 //! those its terrain-hi run reads: the native tiles under the pixels of its z9–12 tiles, the sea's
-//! too; and its terrain-deep targets', all under their z12 tiles, `deep_bases`), fetched once
-//! each with the build's fetcher (its User-Agent, its per-host limit), then packed and their
+//! too; and its terrain-deep targets', all under their z12 tiles, `deep_bases`; and the ring round
+//! them its blends' bands reach), fetched once each with the build's fetcher (its User-Agent, its per-host limit), then packed and their
 //! archives handed off as the store's (crate::rawpack::handed_place), the lead naming them in the
 //! store's index as it names AWS's; each z6 tile starts only while the NAS has more room past the
 //! owner's reserve than the most one has put there. Its key (its declared reads, crate::agent::steps)
 //! follows what `want` reads, so a z6 tile is filled again when that changes (`V` with its code).
-//! Jobs only read the store (`Stored`): a tile it lacks is fetched as before, never written back.
+//! A z6 tile's terrain-hi and terrain-deep targets wait for its fill (a declared read), which isn't
+//! done while a tile couldn't be fetched, so a job reads its pyramids' tiles from the store
+//! (`Stored`), the server's 404s too; one the store lacks (none of `want`'s) is fetched, never
+//! written back, and a store that can't be read fails the job rather than ask the network for
+//! every tile (task #975).
 
 use crate::dem::declared::{Plan, Source};
 use crate::fetch::{Fetch, Within};
@@ -83,63 +87,59 @@ type Opened = Vec<(std::fs::File, Vec<Entry>)>;
 struct Layer {
     template: String,
     store: NasPath,
-    /// Its index, read when first wanted (None: none, or it couldn't be read: then every tile is
-    /// fetched).
-    index: OnceLock<Option<crate::rawpack::Index>>,
-    shards: Mutex<HashMap<String, Arc<OnceLock<Option<Opened>>>>>,
+    /// Its index, read when first wanted (None: none yet, every tile to fetch; an error: it
+    /// couldn't be read, so no tile is told either way).
+    index: OnceLock<Result<Option<crate::rawpack::Index>, String>>,
+    shards: Mutex<HashMap<String, Arc<OnceLock<Result<Opened, String>>>>>,
 }
 
 impl Layer {
-    fn index(&self) -> Option<&crate::rawpack::Index> {
+    fn index(&self) -> Result<Option<&crate::rawpack::Index>> {
         self.index
             .get_or_init(|| match crate::rawpack::Index::load(&self.store) {
-                Ok(ix) if ix.shards.is_empty() => None,
-                Ok(ix) => Some(ix),
-                Err(e) => {
-                    eprintln!("pyramids: {}: {e:#} (its tiles fetched)", self.store.display());
-                    None
-                }
+                Ok(ix) if ix.shards.is_empty() => Ok(None),
+                Ok(ix) => Ok(Some(ix)),
+                Err(e) => Err(format!("{}: {e:#}", self.store.display())),
             })
             .as_ref()
+            .map(Option::as_ref)
+            .map_err(|e| anyhow::anyhow!("pyramids: {e}"))
     }
 
     /// Tile z/x/y from the store: Some(None) when the server hasn't it, None when the store hasn't
-    /// it whole.
-    fn get(&self, z: u8, x: u32, y: u32) -> Option<Option<Vec<u8>>> {
+    /// it whole; an error when the store can't be read (its index, its archives: a run then asks
+    /// the network for none of its tiles, task #975: that was every tile of the store).
+    fn get(&self, z: u8, x: u32, y: u32) -> Result<Option<Option<Vec<u8>>>> {
         let shard = crate::rawpack::shard(z, x, y);
+        let Some(ix) = self.index()? else { return Ok(None) };
         let cell = self.shards.lock().unwrap().entry(shard.clone()).or_default().clone();
         let opened = cell.get_or_init(|| {
-            let ix = self.index()?;
             let mut v = Vec::new();
             for p in ix.of(&shard).iter().rev() {
-                match crate::rawpack::entries_of(&self.store.join("packs").join(&p.name)) {
-                    Ok(e) => v.push(e),
-                    Err(e) => {
-                        eprintln!("pyramids: {shard} of {}: {e:#} (its tiles fetched)", self.store.display());
-                        return None;
-                    }
-                }
+                v.push(
+                    crate::rawpack::entries_of(&self.store.join("packs").join(&p.name))
+                        .map_err(|e| format!("{shard} of {}: {e:#}", self.store.display()))?,
+                );
             }
-            Some(v)
+            Ok(v)
         });
+        let opened = opened.as_ref().map_err(|e| anyhow::anyhow!("pyramids: {e}"))?;
         let key = tile_key(z, x, y);
-        for (f, entries) in opened.as_ref()? {
+        for (f, entries) in opened {
             let Ok(i) = entries.binary_search_by_key(&key, |e| e.key) else { continue };
             let mut b = vec![0u8; entries[i].len as usize];
-            if let Err(e) = f.read_exact_at(&mut b, entries[i].offset) {
-                eprintln!("pyramids: {z}/{x}/{y} of {}: {e}", self.store.display());
-                return None;
-            }
+            f.read_exact_at(&mut b, entries[i].offset)
+                .with_context(|| format!("pyramids: {z}/{x}/{y} of {}", self.store.display()))?;
             if b.is_empty() {
-                return Some(None);
+                return Ok(Some(None));
             }
             if crate::whole::png_whole(&b) {
-                return Some(Some(b));
+                return Ok(Some(Some(b)));
             }
             eprintln!("pyramids: {z}/{x}/{y} of {} isn't whole: fetched", self.store.display());
-            return None;
+            return Ok(None);
         }
-        None
+        Ok(None)
     }
 }
 
@@ -169,12 +169,14 @@ impl<'a> Stored<'a> {
     }
 
     /// `url`'s tile from its store, when it's a stored pyramid's and the store has it.
-    fn stored(&self, url: &str) -> Option<Option<Vec<u8>>> {
-        let (l, (z, x, y)) = self.layers.iter().find_map(|l| tile_of(&l.template, url).map(|t| (l, t)))?;
-        let got = l.get(z, x, y);
+    fn stored(&self, url: &str) -> Result<Option<Option<Vec<u8>>>> {
+        let Some((l, (z, x, y))) = self.layers.iter().find_map(|l| tile_of(&l.template, url).map(|t| (l, t))) else {
+            return Ok(None);
+        };
+        let got = l.get(z, x, y)?;
         let n = if got.is_some() { &self.hits } else { &self.misses };
         n.fetch_add(1, Ordering::Relaxed);
-        got
+        Ok(got)
     }
 }
 
@@ -190,21 +192,21 @@ impl Drop for Stored<'_> {
 
 impl Fetch for Stored<'_> {
     fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
-        match self.stored(url) {
+        match self.stored(url)? {
             Some(b) => Ok(b.map(|b| Arc::new(b) as Arc<dyn RangeRead>)),
             None => self.inner.open(url),
         }
     }
 
     fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
-        match self.stored(url) {
+        match self.stored(url)? {
             Some(b) => Ok(b),
             None => self.inner.get(url),
         }
     }
 
     fn get_within(&self, url: &str, within: Within) -> Result<Option<Vec<u8>>> {
-        match self.stored(url) {
+        match self.stored(url)? {
             Some(b) => Ok(b),
             None => self.inner.get_within(url, within),
         }
@@ -255,6 +257,26 @@ pub fn want(
     for &(z, x, y) in deep {
         add(z, x, y);
     }
+    // (And the tiles round them a blend's band reaches: its distance scan reads a pyramid's pixels
+    // up to four of the coarsest dataset's pixels past a point, crate::dem::generic, so a job
+    // reads nothing the fill didn't fetch.)
+    let band_m = 4.0 * plan.datasets.iter().map(|d| d.resolution).fold(0.0f64, f64::max);
+    for (t, zn, _) in &pyr {
+        let Some(set) = out.get_mut(t) else { continue };
+        let n = 1u32 << *zn;
+        let lat = |y: u32| roadcore::geo::merc_lat(f64::from(y) / f64::from(n)).abs();
+        let pole = set.iter().map(|&(_, _, y)| lat(y).max(lat(y + 1))).fold(0.0f64, f64::max);
+        let k = ring_tiles(band_m, crate::dem::generic::tile_resolution(*zn, pole));
+        let ring: Vec<(u8, u32, u32)> = set
+            .iter()
+            .flat_map(|&(z, x, y)| {
+                let (x0, y0) = (x.saturating_sub(k), y.saturating_sub(k));
+                let (x1, y1) = ((x + k).min(n - 1), (y + k).min(n - 1));
+                (y0..=y1).flat_map(move |b| (x0..=x1).map(move |a| (z, a, b)))
+            })
+            .collect();
+        set.extend(ring);
+    }
     for (t, _, cover) in &pyr {
         if let (Some(cover), Some(set)) = (cover, out.get_mut(t)) {
             set.retain(|&(z, x, y)| {
@@ -265,6 +287,12 @@ pub fn want(
     }
     out.retain(|_, s| !s.is_empty());
     out
+}
+
+/// The tiles a band `band_m` wide reaches past a tile of pixels `px_m` wide (with the scan's own
+/// pixel each side, crate::dem::generic): at least one.
+fn ring_tiles(band_m: f64, px_m: f64) -> u32 {
+    (((band_m / px_m).ceil() + 2.0) / 256.0).ceil().max(1.0) as u32
 }
 
 /// Z6 tile `t`'s terrain-deep targets' z12 tiles (crate::terrain_deep::targets_in), each whole: the
@@ -340,7 +368,7 @@ pub fn fill(
         // (In shard order, as the packer packs a shard once that way.)
         let mut todo: Vec<(u8, u32, u32)> = Vec::new();
         for &(z, x, y) in tiles {
-            if layer.get(z, x, y).is_some() {
+            if layer.get(z, x, y)?.is_some() {
                 done.had += 1;
             } else {
                 todo.push((z, x, y));
@@ -481,17 +509,31 @@ mod tests {
         }
     }
 
-    /// A z12 tile reads the 8 × 8 z15 tiles under it, a z9 tile the 64 × 64, at sea as on land;
-    /// below ROW_Z none. A deep target's base tile reads the whole of it.
+    /// A z12 tile reads the 8 × 8 z15 tiles under it, a z9 tile the 64 × 64, at sea as on land,
+    /// with the ring round them its blends' bands reach (one tile for a 5 m dataset's 20 m; five
+    /// with a 1 km dataset after it, its 4 km band over 3.9 m pixels at 35° N); below ROW_Z none. A
+    /// deep target's base tile reads the whole of it.
     #[test]
     fn a_level_wants_the_native_tiles_under_its_pixels() {
         let w = want(&plan(), &[(12, vec![(3640, 1610)])], &[]);
         let s = &w[T];
-        assert_eq!(s.len(), 64);
+        assert_eq!(s.len(), 10 * 10);
         assert!(s.contains(&(15, 3640 * 8, 1610 * 8)) && s.contains(&(15, 3640 * 8 + 7, 1610 * 8 + 7)));
-        assert_eq!(want(&plan(), &[(9, vec![(455, 201)])], &[])[T].len(), 64 * 64);
+        assert!(s.contains(&(15, 3640 * 8 - 1, 1610 * 8 - 1)) && s.contains(&(15, 3640 * 8 + 8, 1610 * 8 + 8)));
+        assert_eq!(want(&plan(), &[(9, vec![(455, 201)])], &[])[T].len(), 66 * 66);
         assert!(want(&plan(), &[(8, vec![(227, 100)])], &[]).is_empty());
-        assert_eq!(want(&plan(), &[], &[(12, 3640, 1610)])[T].len(), 64);
+        assert_eq!(want(&plan(), &[], &[(12, 3640, 1610)])[T].len(), 10 * 10);
+        let mut coarse = plan();
+        let mut aws = coarse.datasets[0].clone();
+        (aws.id, aws.resolution) = ("aws".into(), 1000.0);
+        aws.source = Source::Tiles {
+            url: "https://aws.test/{z}/{x}/{y}.png".into(),
+            zoom: 12,
+            encoding: "terrarium".into(),
+            every_zoom: true,
+        };
+        coarse.datasets.push(aws);
+        assert_eq!(want(&coarse, &[(12, vec![(3640, 1610)])], &[])[T].len(), 18 * 18);
     }
 
     /// Filled once: every tile packed, the server's 404 as none; read back the same bytes without
