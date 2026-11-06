@@ -1,8 +1,9 @@
 # Incremental planning
 
 **Status: planned (task #880).** Built: step 0 (the plan's sections timed as the plan thread's
-phases, `nasread::PLAN`). Everything else here is planned; until a step lands, the code is what is
-true. Today every plan computes `agent::build::plan` (crates/pipeline/src/agent/build.rs) from
+phases, `nasread::PLAN`), step 1 (the regions' counts the plan's, its keys handed on in its round)
+and step 2's leases (a lease change filters the last plan's work again). Everything else here is
+planned; until a step lands, the code is what is true. Today every plan computes `agent::build::plan` (crates/pipeline/src/agent/build.rs) from
 scratch: every target's key, every target list, every region's work, from the whole records. This
 doc measures where that time goes, how much of it is recomputed though nothing it reads changed,
 and how the plan part (docs/agent-parts.md §4.4, #871) would keep its answers between plans and
@@ -39,7 +40,7 @@ The plan thread was planning 48 % of the window (25 711 s of 53 460 s).
 | build::plan: the checklist, the chains | 14 | 14 | 28 | 232 | 1 % |
 | phases under 10 s, unlogged (the records' read, the gate, the rest) | | | | ~5 300 | ~21 % |
 
-Beside the plan, on its own thread (`Planner::count`, `build::region_states`): the regions' states,
+Beside the plan, on its own thread (`Planner::count`, `build::region_states`, until step 1): the regions' states,
 counted every 5 min and again after every job's end, 440 times in the window, median 29 s, 12 341 s
 in all. It works out every z6 tile's key again (`unit_keys` with a fresh `KeyCtx`), keys the plan
 had just worked out.
@@ -164,7 +165,7 @@ publishing), which reads all of these and `Publish`'s times.
 After `build::plan`, "its jobs" turns the plan into job specs and offers, filtered by the memory
 guard's holds, the leases other workers hold (`held_by_others`, `held`) and the cold starts under
 way, and (each `forecast::EVERY`, 60 s) starts the forecast, whose `chains_left` works out the
-chains' keys again with a fresh `KeyCtx`.
+chains' keys with the plan's `KeyMemo` (step 1).
 
 ## 3. Fitting #871: the plan part keeps its state
 

@@ -30,7 +30,7 @@ cause, and with it the kept beat.
 
 Already off the loop *today*: the forecast (`forecast`), the phase sums, region sync, the members'
 upcoming hints, the memory sampler (`memguard`), the live measures (`live`), the pool driver's
-ticks (`pool::Ticker`), the caches' clears (`caches_task`), the built counts (`built_making`), and
+ticks (`pool::Ticker`), the caches' clears (`caches_task`), and
 this Mac's own hold asks (`asks`, #846). Each is a thread with its own ad-hoc sharing (an `Arc`
 of `Mutex`es, an atomic, a `JoinHandle` polled). The design gives them one shape.
 
@@ -167,7 +167,7 @@ Planned: the view on the page's machine card and the menu's NAS line (`up`, `slo
 
 **Owns** the plan (`planned`), offers to the coordinator (`offer_plan`), the grants
 (`lead_grants`), the gate (`tend_gate`), redos, the checklist with each plan (`checklist`: its regions' steps the plan's,
-`build::Plan::checklist`) and the counts (`built_making`), and its workers (forecast, phase sums, region sync, hints).
+`build::Plan::checklist`) and the regions' counts with each plan (`build::Plan::built`), and its workers (forecast, phase sums, region sync, hints).
 
 **Triggered by changes, not passes.** It runs when one of these arrives and coalesces bursts
 (at most one plan running, one queued):
@@ -177,6 +177,9 @@ Planned: the view on the page's machine card and the menu's NAS line (`up`, `slo
 - an input or region edit's hold ended (`edit_held`), a gate ask, a redo;
 - a timed wait in the plan ran out (`plan_due`'s timers become one deadline the part sleeps to);
 - a 5-min fallback.
+
+A lease's change (the coordinator's `lease_gen`) is not among them: it filters the last plan's
+work again ("its jobs", `plan::refilter_due`, #880 step 2), not `build::plan`.
 
 Granting is fast and separate from planning: a free slot's ask (from **jobs** here, or a member's
 by HTTP) is answered from the last `PlanView` at once, not after the next plan. Today's `may_pack`
