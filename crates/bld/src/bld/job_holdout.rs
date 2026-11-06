@@ -6,7 +6,7 @@
 //! unmeasured, and scored under footprint bounds on stage 2. Also the moves: the tiles' own
 //! buildings stage 2 fills that a bound sends to rules 4–5. By hand, over work files (bldprep's):
 //! WORK=<dir> TILES=6/32/22,… OUTLINES=<outlines.sect> REGIONS=<dir> [BOUNDS=20,40] cargo test
-//! --release -p pipeline --lib holdout -- --ignored --nocapture
+//! --release -p bld --lib holdout -- --ignored --nocapture
 
 use super::*;
 use std::path::Path;

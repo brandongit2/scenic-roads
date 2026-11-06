@@ -29,15 +29,16 @@ use store::nasfs::NasPath;
 pub type Writes = fn(step: &str, logical: &str, removal: bool) -> Option<bool>;
 
 /// Whether this process is a crate's unit tests (`go_testing`, from their start-up constructor;
-/// buildstore's own from the start): an `Out`'s retries wait 1 ms (`upload_waits`), and `verify`'s
-/// floor and grace are short (`verify_deadline`). Never a feature's: an example, a binary or another
+/// buildstore's own from the start): an `Out`'s retries wait 1 ms (`upload_waits`), `verify`'s
+/// floor and grace are short (`verify_deadline`), and a disk's free space is the test's own
+/// (`room::disk_free`). Never a feature's: an example, a binary or another
 /// crate's test built with the dev-dependencies is no test of it (pipeline's tests/test_mode.rs).
 pub fn testing() -> bool {
     TESTING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Makes this process a unit tests' (`testing`): called only by a crate's `#[cfg(test)]` start-up
-/// constructor (pipeline's and landmarks' lib.rs `TEST_START`).
+/// constructor (each crate's lib.rs `TEST_START`: pipeline's and its families').
 pub fn go_testing() {
     TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
 }
