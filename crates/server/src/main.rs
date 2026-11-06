@@ -704,8 +704,12 @@ async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next
     let mut res = next.run(req).await;
     if let Some(v) = v {
         // What is never cached for good keeps its handler's Cache-Control (`no-cache`, or water's
-        // fallback `no-store`).
-        if res.status().is_success() && res.extensions().get::<cache::NotForGood>().is_none() {
+        // fallback `no-store`). Nor is a 204 away from the NAS: it says "not downloaded" (crate::data),
+        // which a download changes under the same version.
+        let away_none = res.status() == StatusCode::NO_CONTENT && !s.data.online();
+        if away_none {
+            res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        } else if res.status().is_success() && res.extensions().get::<cache::NotForGood>().is_none() {
             let current = s.current_tokens().contains(&v);
             res.headers_mut().insert(header::CACHE_CONTROL, cache::cache_control(current, "no-cache"));
         }
@@ -845,9 +849,15 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     }
     let zooms: serde_json::Map<String, serde_json::Value> =
         cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!([l.minzoom, l.maxzoom]))).collect();
+    let (mut versions, mut packs) = (serde_json::Value::Object(versions), serde_json::Value::Object(packs));
+    // (Away from the NAS, kept to where the downloads reach: every token names it, Data::reach_token.)
+    if let Some(r) = s.data.reach_token() {
+        salt_tokens(&mut versions, &r);
+        salt_tokens(&mut packs, &r);
+    }
     if let Some(m) = meta.as_object_mut() {
-        m.insert("versions".into(), serde_json::Value::Object(versions));
-        m.insert("packs".into(), serde_json::Value::Object(packs));
+        m.insert("versions".into(), versions);
+        m.insert("packs".into(), packs);
         m.insert("layers".into(), serde_json::Value::Object(zooms));
         // Where the terrain goes past the base's finest zoom (pipeline::terrain_deep): its z10
         // tiles with deep packs and their native zoom, "x/y" (the map's zoom by area:
@@ -874,6 +884,25 @@ fn meta_json(s: &AppState) -> serde_json::Value {
 
 async fn meta_h(State(s): State<S>) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], Json(meta_json(&s))).into_response()
+}
+
+/// A version token with where the downloads reach after it, away from the NAS (Data::reach_token).
+fn salted(s: &AppState, v: String) -> String {
+    match s.data.reach_token() {
+        Some(r) => format!("{v}-{r}"),
+        None => v,
+    }
+}
+
+/// Every version token in `v` (a string or a number, in objects of them at any depth) with `salt`
+/// after it.
+fn salt_tokens(v: &mut serde_json::Value, salt: &str) {
+    match v {
+        serde_json::Value::Object(m) => m.values_mut().for_each(|x| salt_tokens(x, salt)),
+        serde_json::Value::String(t) => *t = format!("{t}-{salt}"),
+        serde_json::Value::Number(n) => *v = serde_json::Value::from(format!("{n}-{salt}")),
+        _ => {}
+    }
 }
 
 /// A pack's version token: its content name's hash, 12 hex digits.
@@ -988,7 +1017,7 @@ async fn catalogue_h(State(s): State<S>) -> Response {
         "n": cat.n,
         "created": cat.created,
         "units": cat.units.len(),
-        "layers": cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!({"encoding": l.encoding, "minzoom": l.minzoom, "maxzoom": l.maxzoom, "version": s.data.layer_version(k)}))).collect::<serde_json::Map<_, _>>(),
+        "layers": cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!({"encoding": l.encoding, "minzoom": l.minzoom, "maxzoom": l.maxzoom, "version": salted(&s, s.data.layer_version(k))}))).collect::<serde_json::Map<_, _>>(),
         // The regions it was built for; their outlines are /api/coverage's (this is asked every
         // minute).
         "coverage": {"regions": regions::recorded_list(&cat)},

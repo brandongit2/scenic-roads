@@ -613,8 +613,18 @@ fn extra_json(s: &S, views: &[Arc<MarkView>], list: &[&Cand]) -> anyhow::Result<
 }
 
 /// The points' version: their files' content names and the translations their names come from. It
-/// changes with new points or names, not with every catalogue (a roads-only one keeps it).
+/// changes with new points or names, not with every catalogue (a roads-only one keeps it); away from
+/// the NAS, with where the downloads reach too (`Data::reach_token`: what's read keeps to it).
 pub fn marks_version(s: &S) -> String {
+    let v = files_version(s);
+    match s.data.reach_token() {
+        Some(r) => format!("{v}-{r}"),
+        None => v,
+    }
+}
+
+/// `marks_version` at home: the points' files and names alone.
+fn files_version(s: &S) -> String {
     static LAST: LazyLock<Mutex<Option<((u64, u64), String)>>> = LazyLock::new(Default::default);
     let cat = s.data.catalogue();
     let key = (cat.n, s.names.version_all());

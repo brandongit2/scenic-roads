@@ -796,6 +796,28 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     assert_eq!(s.data.reach(), None);
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
+    let root_token = || crate::meta_json(&s)["packs"]["terrain"]["root"].as_str().unwrap().to_string();
+    let home_root = root_token();
+    // The basemap's tiles as the app asks for them (through the browser's caching): the status and
+    // Cache-Control.
+    let base = |z: u8, x: u32, y: u32| {
+        let s = s.clone();
+        async move {
+            let v = crate::meta_json(&s)["versions"]["basemap"].as_str().unwrap().to_string();
+            let app = axum::Router::new()
+                .route("/tiles/base/{z}/{x}/{y}", axum::routing::get(crate::tiles::base_tile))
+                .layer(axum::middleware::from_fn_with_state(s.clone(), crate::versioned_caching))
+                .with_state(s.clone());
+            let req = axum::http::Request::builder()
+                .uri(format!("/tiles/base/{z}/{x}/{y}?v={v}"))
+                .body(axum::body::Body::empty());
+            let r = tower::ServiceExt::oneshot(app, req.unwrap()).await.unwrap();
+            let cc = r.headers().get(axum::http::header::CACHE_CONTROL).map(|c| c.to_str().unwrap().to_string());
+            (r.status(), cc)
+        }
+    };
+    // (Made at home, from the NAS: kept in memory.)
+    assert_eq!(base(10, 0, 340).await.0, StatusCode::OK);
 
     // Away.
     std::fs::rename(&root, nas.path().join("gone")).unwrap();
@@ -820,6 +842,12 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     assert_eq!(s.data.pack_of("terrain", 5, 14, 10), None, "its lo pack, beside it");
     assert_eq!(s.data.pack_of("terrain", 2, 1, 1).as_deref(), Some("layers/terrain/root"));
     assert_eq!(s.data.pack_of("terrain", 2, 2, 1), None);
+    // Every version the app's URLs carry names the reach (Data::reach_token), so what's answered
+    // for it isn't reused at home or for another reach; and a 204 away isn't cached for good (it
+    // says "not downloaded"), nor is the tile made at home served.
+    let r = s.data.reach_token().expect("kept to the region");
+    assert_eq!(root_token(), format!("{home_root}-{r}"));
+    assert_eq!(base(10, 0, 340).await, (StatusCode::NO_CONTENT, Some("no-store".to_string())));
 
     // Nothing downloaded: nothing at all.
     assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
@@ -836,6 +864,7 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     assert_eq!(s.data.content(far).as_deref(), cat.content(far));
     assert_eq!(s.data.reach(), None);
     assert_eq!(basemap(10, 0, 340).unwrap(), [gz(b"far")]);
+    assert_eq!((s.data.reach_token(), root_token()), (None, home_root));
 }
 
 /// One way of the roads fixture: its id, owner (z6 x at y 21), and its two ends' longitudes (at

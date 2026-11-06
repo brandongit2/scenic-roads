@@ -14,7 +14,10 @@
 //!   Cache-Control;
 //! - a tile the layer hasn't, at an address that can hold one, is 204 (no body); 404 is for a URL
 //!   that names nothing (an unknown kind, a tile outside the grid or the layer's zooms);
-//! - a read that failed (the NAS away) is 503, so nothing is cached; a task that died, 500.
+//! - away from the NAS, a tile not downloaded is 204 too (crate::data), never cached for good
+//!   (`versioned_caching` in main.rs), and every version names where the downloads reach then
+//!   (`Data::reach_token`), so nothing answered away is reused at home or for another reach;
+//! - a read that failed is 503, so nothing is cached; a task that died, 500.
 //!
 //! The layer files are tens of MB of GeoJSON each. Each is read, given display names (`main`, `sub`
 //! on every named feature), gzipped once per content and translations version, kept in memory, and

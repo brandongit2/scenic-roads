@@ -57,7 +57,7 @@ pub struct Data {
     globals: Mutex<Lru<String, Arc<Vec<u8>>>>,
     /// The older files the downloads behind the catalogue keep, by logical name (`set_older`).
     older: RwLock<Arc<HashMap<String, String>>>,
-    /// Where the downloads reach (`set_reach`): the place search's, away from the NAS.
+    /// Where the downloads reach (`set_reach`): what's read away from the NAS keeps to it (`reaches`).
     reach: RwLock<Reach>,
     /// Set when the catalogue changes, what's read of the downloads behind it (`set_older`), where
     /// they reach (`set_reach`), or whether the NAS is read (`online`), so caches built from what
@@ -279,6 +279,24 @@ impl Data {
         }
     }
 
+    /// A token of `reach` while it keeps what's read (None while the NAS is read, or with the
+    /// World): every version the app's URLs carry has it after it then (main.rs `meta_json`), so
+    /// an answer made for one reach (a tile outside it, none) is neither reused for another nor
+    /// kept at home, by the browser's cache or an open page (which asks again for what a new
+    /// version names).
+    pub fn reach_token(&self) -> Option<String> {
+        let r = self.reach()?;
+        let mut tiles: Vec<&(u32, u32)> = r.iter().collect();
+        tiles.sort_unstable();
+        let mut h = blake3::Hasher::new();
+        h.update(b"reach");
+        for (x, y) in tiles {
+            h.update(&x.to_le_bytes());
+            h.update(&y.to_le_bytes());
+        }
+        Some(format!("r{}", &h.finalize().to_hex()[..8]))
+    }
+
     /// Whether tile z/x/y is where the downloads reach (`reach`): from z6 its z6 tile is one of
     /// theirs, coarser one of theirs is under it. A region's lo packs and the basemap's zooms 0–10
     /// cover far more than the region: away from the NAS, read only over it.
@@ -300,16 +318,13 @@ impl Data {
         }
     }
 
-    /// Sets where the downloads reach (crate::downloads); a change moves the generation on. Whether
-    /// it changed.
-    pub fn set_reach(&self, r: Reach) -> bool {
+    /// Sets where the downloads reach (crate::downloads); a change moves the generation on.
+    pub fn set_reach(&self, r: Reach) {
         let mut g = self.reach.write().unwrap();
-        if *g == r {
-            return false;
+        if *g != r {
+            *g = r;
+            self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        *g = r;
-        self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        true
     }
 
     /// A token of the older files read (`set_older`): "" when there are none; it changes with them,

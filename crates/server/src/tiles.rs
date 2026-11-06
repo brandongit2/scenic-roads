@@ -217,6 +217,11 @@ pub async fn base_tile(
     if archives.is_empty() {
         return none();
     }
+    // (Away from the NAS, a tile no archive of which is read here is none, before the ETag and
+    // the tiles made from the NAS's are looked at: crate::data.)
+    if !s.data.online() && archives.iter().all(|a| s.data.basemap_key(a, z, x, y).is_none()) {
+        return none();
+    }
     let nv = s.names.version_for_tile(z, x, y, 1.0);
     let h = base_hash(&archives, z, x, y);
     let etag = format!("\"{h:016x}-{nv:x}\"");
