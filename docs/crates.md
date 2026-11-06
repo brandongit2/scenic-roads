@@ -1,8 +1,8 @@
 # The pipeline's crates (task #916)
 
 **Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
-(`crates/buildstore`), 5a (`crates/landmarks`) and 5b (`crates/mapview`) are built; every later
-step below is planned, the next ones in §6.
+(`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a and 6b (§6) are built;
+every later step below is planned, the next ones in §6.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -138,10 +138,11 @@ names, webpenc as now).
    codecs, det, roadcore, store). crates/server names none of them; it uses pipeline's inputs,
    depth, water, coord and others, so it keeps its pipeline dependency.
 
-Each moved module stays reachable at its old path by a `pub use` in `pipeline`'s lib.rs until the
-paused branches touching its users have landed; a later step per crate rewrites the paths
-(`crate::pyjson` → `pyport::pyjson`) and drops the re-export. The re-exports are therefore
-temporary: the list in lib.rs is the record of what still goes through them.
+Each moved module stays reachable at its old path by a `pub use` in `pipeline`'s lib.rs while
+pipeline's modules above the steps or its binaries name it there. The step modules name the lower
+crates directly since step 6b (`crate::pyjson` → `pyport::pyjson`), and the re-exports they alone
+used went with it; the rest go as their users move. The list in lib.rs is the record of what still
+goes through them.
 
 ## 3. The binaries
 
@@ -188,10 +189,8 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
    them. The cuts are §1's table's (control → agent and coord, timings → fetch, resume_log →
    agent and out); the test hooks other modules' tests use (resume_log::STOP_AFTER,
    budget::TEST_RESOLVE, timings::reset) sit behind a `testkit` feature. cli and net are left
-   for after #883 (it edits both), nasread's reading for after #923. The step modules still name
-   the moved items through the agent's paths (`crate::agent::jobs::report`), so modgraph.py still
-   shows their edges to agent; those paths are rewritten as each moves (steps 4-5), several being
-   files #883 edits.
+   for after #883 (it edits both), nasread's reading for after #923. The step modules named the
+   moved items through the agent's paths (`crate::agent::jobs::report`) until step 6b.
 4. **buildstore** (built): out, handoff, rawpack, localread, costin, coverage, outlines, fetch,
    geotiff into `crates/buildstore`, with agent/recipes.rs (`recipes`), `inputs_folder` (from
    inputs) and `nasssh` (from osmpass); pipeline re-exports the modules at their old paths. The
@@ -218,10 +217,12 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
      them (pipeline had no other user).
    - 5b, **mapview** (built): scache, view, terr, buildings into `crates/mapview`; pipeline
      re-exports them. Cut: terr's `z9_block` (no caller).
-   Next: §6, breaking the 47-module cycle: 6a (built) made `Out` nameable below pipeline; then
-   (planned) inputs, the step families, and the agent's plan split from its runtime.
+   Next: §6, breaking the 47-module cycle: 6a (built) made `Out` nameable below pipeline, 6b
+   (built) has the step modules name the lower crates directly; then (planned) coordwire, inputs,
+   the step families, and the agent's plan split from its runtime.
 6. **coordination**, after #882 lands.
-7. Path rewrites: per crate, `crate::x` → `<crate>::x`, and the re-exports dropped.
+7. Path rewrites: the step modules' were step 6b's; the rest (the agent's, coord's, the
+   binaries') per crate as it moves, `crate::x` → `<crate>::x`, and the re-exports dropped.
 
 ## 5. Measurements
 
@@ -322,6 +323,27 @@ So steps 5a-5b leave dev builds where they were (clean, edits, within noise; the
 ~2-4 % smaller), cost an edit below pipeline nothing measurable, and make the moved modules' own
 test loop ~10 times faster. The gain on builds needs the big middle out of pipeline (§6).
 
+Before step 6a and after step 6b, 6 Nov 2026 07:03-07:13 UTC, on the M4 (load 139-221: the pool's
+jobs and other agents' builds), rustc 1.98.1, through tools/dev/bin/cargo. Before: main at bdb8bea1
+with 6a's two code commits (7caeb353, de76c1ba) reverted; after: this branch (6a and 6b), each tree a
+folder of its own with its own target folder, built once first. Interleaved (before, after; after,
+before; before, after), 3 runs each. Peak: the largest process (`time -l`); CPU: user + system of the
+whole command. The edits: one comment line appended to marksjob.rs (a leaf step module), to the
+terms' reading (pool/term.rs before, buildstore's records/term.rs after: 6a's move) and to the tars
+(agent/histarchive.rs before, codecs' tar.rs after: 6b's), each built at once:
+
+| run | before | after |
+|---|---|---|
+| dev (`build --workspace --bins`), marksjob edit | 10.6, 9.8, 9.1 s (CPU 13.0-13.8 s), 2.22-2.28 GB | 9.7, 10.0, 10.3 s (CPU 13.5-15.7 s), 2.22-2.28 GB |
+| unit-test build after the terms' edit | pipeline --lib: 9.5, 8.8, 8.9 s (CPU 9.1-9.2 s), 3.24-3.26 GB | buildstore --lib: 1.2, 1.7, 1.9 s (CPU 1.5-2.2 s), 0.34-0.35 GB |
+| unit-test build after the tars' edit | pipeline --lib: 6.9, 6.8, 6.9 s (CPU 8.5-8.6 s), 3.25-3.26 GB | codecs --lib: 0.8, 0.8, 0.8 s (CPU 1.2 s), 0.25 GB |
+| first builds, one each (not interleaved) | dev 82.8 s, 3.71 GB; pipeline's lib tests 145.5 s, 4.88 GB | dev 82.4 s, 3.72 GB; pipeline's lib tests 142.6 s, 5.61 GB |
+
+So 6a-6b leave a dev build after a step module's edit where it was (pipeline recompiles either way:
+the step modules are still pipeline's), and the moved code's own test loop is 5-9 times faster, its
+largest rustc a tenth of pipeline's. The first test build's larger peak after (one run each, under
+load) is not explained by the diff, which moves no code into pipeline; a re-measure would tell.
+
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
 timings: an edit in a crate recompiles every crate that depends on it, so moving a *leaf* module
@@ -329,9 +351,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a built; the rest planned)
+## 6. Breaking the big cycle (6a-6b built; the rest planned)
 
-**Status: 6a built, 6b-6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6b built, 6c-6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -393,14 +415,23 @@ The choices, against the alternatives:
   (`BriefOf`: pool's `Brief`, and `read_manifest`'s manifest alone). Pool re-exports all of it at
   its old paths; `Records::{load, newest, now}` and `Brief::now` are one-line calls of these. The
   writing (save, merge, take_up, making terms) stays in pool. No second copy of the choice.
-- **Items the steps name from the agent move to their owners**: the version constants
-  (`TERRAIN_V`, `SLOPE_V`, `SLOPE_LO_V`, …) to their family (agent::build re-exports them),
-  `grown_e7` to roadcore::geo, `coverage_tiles` to buildstore::coverage, `h` to jobrt,
-  `app_version`, `ahead_on` and `room::{disk_free, nas_room, make_room}` to jobrt,
-  `nasread::timed_out` and `publish::map_now` to buildstore, `input_digests` to inputs,
-  `bldtiles_peak` to bld, `cli::program` to jobrt (with cli, after #883). The plan functions
-  a step calls (`PassCtx`, `spoken_work`, `outlines_work`, `names_todo_work`, `trees_targets`)
-  go to the family whose work they describe; the plan calls them there.
+- **Items the steps name from the agent move to their owners** (built, 6b): the version
+  constants to their step (`TERRAIN_V` terrain_pack's, `SLOPE_V` and `SLOPE_LO_V` slope_pack's;
+  the plan and the steps table import them), `grown_e7` to roadcore::geo, `coverage_tiles` (with
+  `near_coverage`, from terrain_pack) to buildstore::coverage, `h`, `ahead_on` (with
+  `AHEAD_ENV`) to jobrt::jobs, `app_version` to jobrt::sys, `nasread::timed_out` to
+  buildstore::records::nas, `bldtiles_peak` to bld, the depth's read boxes (`depth_hi_box_read`,
+  `depth_lo_box`) to depth::build, and the in-memory tars (`histarchive::{build, list_tar}`, which
+  depth::lakes writes its grids with) to codecs::tar. Still above: `publish::map_now` (namestodo;
+  it asks the lead's coordinator through coord::client, so it goes to buildstore with coordwire,
+  6c), `room::{disk_free, nas_room}` (buildtiles, bld::fetch: `disk_free` answers a test's own
+  disk under pipeline's `cfg(test)`, `TEST_FREE`, which must first become a process flag as
+  `out::testing` did in 6a; with 6d), `cli::program` (with cli, after #883). No step's code calls
+  the plan's functions (`PassCtx`, `spoken_work`, `outlines_work`, `names_todo_work`,
+  `trees_targets`) or `input_digests`: they stay the plan's. Tests in step modules that test the
+  plan or the agent (lakefill's of `build::water_work` and `LAKEFILL_HOLDS`, inputs' of
+  `steps::row`, trees' of `room::make_room`) move to pipeline's tests with their family (6d, 6e),
+  as the write-set tests do.
 - **coordwire**: coord/client.rs, coord/task.rs's client half (`Offer`, `Output`, `clone`,
   `safe`, `beats`, `MARGIN`) and the wire types (`Ask`, `Granted`, `Done`, `Handed`,
   held's `Beat`/`Answer`); coord re-exports them. Not a trait object: offload needs the real
@@ -434,12 +465,27 @@ commit; re-exports at the old paths as before.
    Key check (`bench_plan_on_a_real_root` on a frozen copy of the lead's term 737, seq 65, the M1,
    5 Nov): before (main 7f1dc02c) and after, the same plan and keys, its 3,110 work targets' lines
    byte-identical; an `Out`'s and `read_manifest`'s records the pool's (`Records::now`,
-   `Brief::now`) on that state. Its measurements as §5 takes them (the M4, interleaved, 3 runs
-   each) are pending: the M4 is offline.
-2. **6b, the paths**: the step modules name jobrt's and buildstore's items directly
-   (`crate::agent::jobs::report` → `jobrt::jobs::report`, `agent::recipes::Recipe`,
-   `agent::room::{free_past, job_target}`), and the item moves of §6.2. Mechanical; modgraph.py
-   then shows the step modules' remaining edges up, which should be none but §6.2's.
+   `Brief::now`) on that state. Measured with 6b (§5).
+2. **6b, the paths** (built, 6 Nov 2026): the step modules name the lower crates' items
+   directly: the agent's, out's and the pool's re-exporting paths (`crate::agent::jobs::report` →
+   `jobrt::jobs::report`, `agent::recipes` → `buildstore::recipes`, `agent::room::{free_past,
+   job_target}` → `jobrt::room`, `out::Out` → `buildstore::out::Out`, `out::read_manifest` and
+   `pool::{term, is_member_id}` → `buildstore::records`) and pipeline's root re-exports
+   (`crate::timings` → `jobrt::timings`, `crate::fetch` → `buildstore::fetch`, `crate::hipack` →
+   `codecs::hipack`, …); and the item moves of §6.2. Cut: the re-exports only the step modules
+   used (the root's of pyport's four modules, of codecs' chain, stations, vtgen and webp, of
+   landmarks' wikiask; agent::jobs' each_line and fraction_of; inputs' in_inputs_folder and
+   DROP_ROOTS). modgraph.py's edges from the step modules up (to agent, out, pool, coord, cli and
+   the root; tests included): 1,210 mentions before (main at bdb8bea1, after 6a), 96 after, all
+   §6.2's: coord 64 (offload's client, terrain_task's, bld's and trees' coordinator tests: 6c),
+   out 15 (the family tests' `out::open`, the write-set tests), agent 11 (map_now, disk_free,
+   nas_room, and the plan's and agent's tests above), cli 6 (`cli::program`). None to the root
+   or the pool. The cycle is still 46 modules: those edges hold it. Pure paths and moves: over the
+   branch's Rust diff, with paths reduced to their last name and whitespace dropped, the tokens
+   removed and added differ only by imports (`use` lines of the moved items), `pub(crate)` made
+   `pub` (h, the depth boxes), the cut re-exports' names, and codecs::tar's `mod` lines; no
+   literal, expression or format string changed, so keys, outputs and on-disk formats are as
+   before (no frozen-plan run, as 6a's: the diff leaves it nothing to find).
 3. **6c, coordwire**.
 4. **6d, inputs** (inputs, dem, rules, osmpass, areafiles, rail, lakefill, water; dem's 7
    references to terrain's tile helpers move those helpers to codecs first). Needs cli out of
