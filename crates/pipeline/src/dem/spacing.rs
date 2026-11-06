@@ -65,11 +65,11 @@ impl Fine {
         let mut cells: BTreeMap<[i32; 2], u8> = BTreeMap::new();
         let mut rows: Vec<u8> = vec![0; 180];
         for (d, c) in ds {
-            let detail = crate::terrain_zoom::Detail::of(d);
+            let detail = crate::dem::zoom::Detail::of(d);
             let c_has = |cell: &(i32, i32)| c.cells.contains(cell);
             if c.world {
                 for (r, z) in rows.iter_mut().enumerate() {
-                    *z = detail.zoom_at(poleward(r as i32 - 90)).min(crate::terrain_zoom::DEEPEST);
+                    *z = detail.zoom_at(poleward(r as i32 - 90)).min(crate::dem::zoom::DEEPEST);
                 }
                 break;
             }
@@ -79,7 +79,7 @@ impl Fine {
                 Some(p) => p
                     .iter()
                     .flat_map(|t| {
-                        let b = roadcore::geo::tile_box(crate::terrain_deep::PACK_Z, t[0], t[1]);
+                        let b = roadcore::geo::tile_box(crate::dem::zoom::PACK_Z, t[0], t[1]);
                         let (x0, x1) = (b[0].floor() as i32, (b[2].ceil() as i32 - 1).max(b[0].floor() as i32));
                         let (y0, y1) = (b[1].floor() as i32, (b[3].ceil() as i32 - 1).max(b[1].floor() as i32));
                         (x0..=x1).flat_map(move |x| (y0..=y1).map(move |y| (x, y)))
@@ -89,7 +89,7 @@ impl Fine {
                 None => c.cells.iter().copied().collect(),
             };
             for &(x, y) in &mine {
-                let z = detail.zoom_at(poleward(y)).min(crate::terrain_zoom::DEEPEST);
+                let z = detail.zoom_at(poleward(y)).min(crate::dem::zoom::DEEPEST);
                 let e = cells.entry([x, y]).or_insert(z);
                 *e = (*e).max(z);
             }
@@ -249,7 +249,7 @@ mod tests {
             ds("glo30", 30.9, Some(1), None),
         ]);
         // (Each cell's zoom its dataset's by the one rule, at its poleward edge: crate::terrain_zoom.)
-        let z = |cell: f64, lat: f64| crate::terrain_zoom::zoom_for(cell, lat);
+        let z = |cell: f64, lat: f64| crate::dem::zoom::zoom_for(cell, lat);
         let (lidar, ned) = (z(2.0, 49.0), z(10.3, 41.0));
         assert_eq!(f.cells, vec![([-124, 48], lidar), ([-123, 48], lidar), ([-100, 40], ned)]);
         let e7 = |x: f64, y: f64| [(x * 1e7).round() as i32, (y * 1e7).round() as i32];

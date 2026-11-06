@@ -13,6 +13,7 @@ pub mod proj;
 pub mod sample;
 pub mod spacing;
 pub mod store_fetch;
+pub mod zoom;
 
 #[cfg(test)]
 mod tests;

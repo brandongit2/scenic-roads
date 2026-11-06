@@ -184,7 +184,7 @@ pub fn presence_of(
     cover: &[[f64; 4]],
     open: &dyn Fn(&str) -> std::result::Result<buildstore::geotiff::Tiff, String>,
 ) -> std::result::Result<Vec<[u32; 2]>, String> {
-    use crate::terrain_deep::PACK_Z;
+    use crate::dem::zoom::PACK_Z;
     let projected = crate::dem::proj::projected(crs);
     let atlas = if projected { crate::dem::proj::Projection::of(crs) } else { None };
     let native = |lon: f64, lat: f64| atlas.as_ref().map_or((lon, lat), |a| a.project(lon, lat));

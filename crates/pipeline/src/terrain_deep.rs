@@ -23,8 +23,8 @@ use buildstore::out::Out;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-/// The zoom of a deep pack's tile (a job's target).
-pub const PACK_Z: u8 = 10;
+// The zoom of a deep pack's tile (a job's target): crate::dem::zoom's, kept at this path.
+pub use crate::dem::zoom::PACK_Z;
 /// The band's first zoom: the hi packs' last (z12) and one.
 pub const FIRST_Z: u8 = 13;
 /// The band's last: the deepest zoom the map stores.

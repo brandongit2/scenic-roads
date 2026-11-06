@@ -151,7 +151,7 @@ pub fn detail_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
     let rings: Vec<&Vec<[f64; 2]>> =
         rings.iter().filter(|r| r.len() >= 3 && r.iter().all(|p| p[0].is_finite() && p[1].is_finite())).collect();
     // (Tiles of z10 per tile of z6, each way.) The rings in z10 tiles.
-    let k = f64::from(1u32 << (crate::terrain_deep::PACK_Z - 6));
+    let k = f64::from(1u32 << (crate::dem::zoom::PACK_Z - 6));
     let flat: Vec<Vec<[f64; 2]>> =
         rings.iter().map(|r| r.iter().map(|p| [lon_x(p[0]) * k, lat_y(p[1]) * k]).collect()).collect();
     let area: f64 = flat.iter().map(|r| ring_area(r)).sum();
