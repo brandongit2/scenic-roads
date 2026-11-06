@@ -1,6 +1,6 @@
 # The map and its log
 
-**Task #883: steps 1 to 6 of §8 built, step 7 in shadow; 7b, 8a, 8b, 9 and 10 planned (status and
+**Task #883: steps 1 to 6 and 7b of §8 built, step 7 in shadow; 8a, 8b, 9 and 10 planned (status and
 what's left: §11).** This doc says how catalogues and GC give way to one current map of the served
 files plus an append-only log of its changes, which clients follow by cursor, and a GC that runs all
 the time in small steps it can resume. No catalogue is written or read since step 6. Until steps 8a
@@ -82,9 +82,8 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
   The pre-#254 `map-update.json` migration goes with `low_at`.
 - **The adoptions** (§6.1, §6.6): a cursor keeps when it was first heard at its `seq`
   (`store::map::Cursor::at`); the status's `adopted` is the `server/<host>` cursors, and the lead
-  notes each one's move in the history (`adopt`, its `worker` the Mac) for `pubtimes`, which no
-  longer reads the servers' `adopt` lines in `state/publish/` (written still until step 6; their
-  mirrors' lines are still read there, until the mirror is a client).
+  notes each one's move in the history (`adopt`, its `worker` the Mac) for `pubtimes`; and the
+  `mirror/<host>` cursors' rounds (`mirror-start`, `mirror-end`) the same way (step 7b).
 - **The Catalogues map** (`cataloguesview`, docs/pool.md §10) follows the log, each loop and each
   ask (20 s apart at most): the lead's feed in process, on the lead alone (the build page is the
   lead's; a member's port sends `/work/catalogs` to it, `coord::memberpage::answer`). It keeps, in the agent's folder
@@ -132,9 +131,7 @@ job), besides the records; no map at all, nothing is removed. Until step 8a thos
 report (`gc::REPORT_ONLY`, docs/storage.md GC): the queue holds frees since 31 Oct alone, and
 the roots would have removed 2,575 files (144 GB) the last 14 days' catalogues name. Where it departs from §6.7: the map is
 posted as a file the job leaves for its agent, not a `POST /map/publish`: the job runs on the lead,
-and the agent takes it when the job ends, which a request would only make sooner. And from §6.1: the
-mirror's `mirror-start`/`mirror-end` lines in `state/publish/<host>.jsonl` stay (`publish_event`, for
-`pubtimes`), until the mirror is a client (§6.2); the server's `adopt` lines are gone.
+and the agent takes it when the job ends, which a request would only make sooner.
 
 
 Words: **the map** is the current name → file map (what a catalogue holds today); **the log** is
@@ -341,7 +338,7 @@ its snapshot, not `fsync`ed per request). The clients:
 | Client | Id | Holds files on the NAS? |
 | --- | --- | --- |
 | each Mac's map server | `server/<host>` | yes: it reads the NAS for what its mirror lacks |
-| each Mac's mirror sync (not built: before step 8b) | `mirror/<host>` | yes, while it copies a `seq`'s files |
+| each Mac's mirror sync (step 7b) | `mirror/<host>` | yes, while it copies a `seq`'s files |
 | the lead's agent (plan, status, page views) | in process | no: it reads names, not files |
 | a job leased with files of the map as inputs (names-todo, regions' checks) | its lease | yes, until it ends (§7.2) |
 | the NAS snapshot | `snapshot` | yes: a reader may start from it |
@@ -367,7 +364,8 @@ files for its logical names, as today. The page's switch to a new map stays keye
 - The local copies in `catalog/` (offline starts) → the client's saved map (§5.3).
 - `publish_event(.., "adopt", n)` to `state/publish/<host>.jsonl` → the cursor itself: the lead
   logs each client's first request past a `seq` as its adoption (§6.6). The mirror's
-  `mirror-start`/`mirror-end` events ride on its own client's requests (`&synced=<seq>`).
+  `mirror-start`/`mirror-end` events ride on its own client's requests (`&copying=<seq>`,
+  `&synced=<seq>`: §6.2).
 - `main.rs`'s start (read the newest local catalogue, else the NAS's) → the saved map, else the
   lead's snapshot, else the NAS snapshot.
 
@@ -386,9 +384,27 @@ files for its logical names, as today. The page's switch to a new map stays keye
   batch to meet; so the batches add nothing, and the server keeps none.)
 - `Data::set_older`/`content` (the download's older files read first) are unchanged: they read the
   download's list.
-- The mirror's sync is a client (`mirror/<host>`): while it copies files of `seq` s from the NAS
-  its cursor stays at s, so GC keeps them until it's done or moves on (today the 14-day window did
-  that, by accident of its length).
+- The mirror's sync is a client (`mirror/<host>`, step 7b: `crates/server/src/maplog.rs`'s
+  `MirrorLink`). Each round with the NAS, before it copies, it asks `GET /map/changes?since=<s>
+  &client=mirror/<host>&copying=<n>&synced=<y>` (no wait): `s` its cursor, the oldest `seq` whose
+  files it still copies from the NAS (`downloads::Plan::copies_from`: the map served; an Update's
+  older target while its files aren't all here; a download's own `seq` while what it keeps there
+  isn't, which the downloads' advance moves on), so GC keeps them until it's done or moves on
+  (today the 14-day window did that, by accident of its length); `n` the map its round copies and
+  `y` the last it got through at, kept on the cursor (`Cursor::copying`, `synced`, each with when
+  first said) for publishing's times (§6.6). A round through says it at once.
+  - **Durable:** the cursor is made each round from what's on the Mac's disk (`downloads.json`'s
+    pins, the files in the mirror), nothing of its own, so a restart says the same one, and it is
+    never newer than what the mirror lacks. A pin moves only once its files are all here (files
+    content-named, each copied under a temporary name): a round cut short (a file missing, a new
+    map, a kill) leaves the cursor where it was.
+  - **Older than the log** (`{"reset"}`, the Mac away long enough for the lead to hold no batch
+    from there, its cursor perhaps dropped by `CURSOR_TTL`): the mirror's sync is whole each round
+    (what's wanted against what's here), so it needs no snapshot; what a reset changes is that an
+    older map's files may be gone from the NAS, so each Update of a map older than the one served
+    goes on at the one served (`Downloads::resync`). What a download keeps is on the Mac and stays.
+  - The batches answered are passed over: the downloads compare their own lists (above), and the
+    server's own client holds the map.
 
 ### 6.3 The map app (`web/src/catalogue.ts`, `sw.js`)
 
@@ -440,7 +456,8 @@ map) as one.
   kept per tile by the view as it tails.
 - `pubtimes` (`scenic timings publish`): the catalogue events (`catalog` in `coord/history.jsonl`,
   the `catalog-stats:` line) stay as the step's; "the servers adopted it" comes from the cursors'
-  adoption times (§6.1) instead of `state/publish/<host>.jsonl`, which goes.
+  adoption times (§6.1), and the mirrors' rounds from their cursors (§6.2), instead of
+  `state/publish/<host>.jsonl`, which went with step 7b.
 
 ### 6.7 The catalogue step (`scenic-build catalog`)
 
@@ -532,9 +549,8 @@ check is expected to report due names today's GC keeps for its window every day 
 older catalogue of the window names it, "young", "not swept": a folder it doesn't sweep): those are
 counted only. A due name kept because the records, an unmerged hand-off ("records") or the newest
 catalogue ("map") name it is a holder the queue missed: only those make GC's report warn.
-Not built yet, needed before step 8b deletes by the queue: the mirror's client (`mirror/<host>`,
-§5.4, §6.2); until then a download copying an older `seq`'s list holds nothing (today's 14-day
-window keeps its files, step 8a too).
+The mirror's client (`mirror/<host>`, §5.4, §6.2, step 7b) holds the files of the oldest `seq` a
+download still copies, so step 8b's deletions by the queue keep them.
 
 ### 7.3 Running
 
@@ -593,12 +609,12 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 | --- | --- | --- | --- |
 | 1 (built) | `store::map`: entries ⇄ `Catalogue`, batches, the multiset digest, apply to a copy (in place with an undo while no reader holds the map); the log store's segments, snapshot and replay (`store::map::log`), no routes yet | — | `every_catalogue_round_trips` (each catalogue on a test root, and a recorded real one: entries → `Catalogue` → bytes identical); `each_batch_makes_the_next_catalogue` (for consecutive real catalogues, the batch applied gives the next); `incremental_digest_is_the_whole_digest`; `a_torn_last_line_is_dropped`; `replay_after_snapshot_skips_what_it_holds` |
 | 2 (built, routes moved to 3) | **Dual write, shadow:** the `catalog` step writes the catalogue as now and the lead's agent appends its batch after (the step posting its map is step 6's); the hourly NAS snapshot | — | `the_log_s_map_is_each_catalogue` (the recorded chain: the log's map at each `seq` is that catalogue); `a_map_the_lead_s_step_posts_is_appended_to_its_log` (the catalog job's end tended by a lead); `a_batch_of_a_catalogue_is_its_entries_batch` |
-| 3 (built: shadow, `map-serve` to serve; deletions in 6) | **Servers follow the log:** `GET /map/changes`, `/map/snapshot` on the coordinator (from step 2); `store::map::Client` (long poll, saved map, snapshot fallback) in the server and the CLI; the catalogue reader stays as the fallback while the lead doesn't answer `changes` (an older lead) | with step 6: `poll_every`, the server's `catalog/` listing and local `catalog/` copies, `/api/catalog/refresh` and `net::catalogue_written`, `state/publish/<host>.jsonl` and `publish_event` | built: `changes_answers_without_the_nas` (#871's slow-NAS fake blocks every call; the routes answer, a long poll at the batch); `an_old_since_resets`; `a_server_follows_publishes_and_serves_byte_identical_tiles` (within a second each, its NAS without catalogues); `a_lead_restart_mid_poll`; `the_nas_snapshot_is_used_while_the_lead_is_down`; `offline_the_map_kept_here_is_served` (step 6) |
+| 3 (built: shadow, `map-serve` to serve; deletions in 6) | **Servers follow the log:** `GET /map/changes`, `/map/snapshot` on the coordinator (from step 2); `store::map::Client` (long poll, saved map, snapshot fallback) in the server and the CLI; the catalogue reader stays as the fallback while the lead doesn't answer `changes` (an older lead) | with step 6: `poll_every`, the server's `catalog/` listing and local `catalog/` copies, `/api/catalog/refresh` and `net::catalogue_written` (`state/publish/<host>.jsonl` and `publish_event` with step 7b) | built: `changes_answers_without_the_nas` (#871's slow-NAS fake blocks every call; the routes answer, a long poll at the batch); `an_old_since_resets`; `a_server_follows_publishes_and_serves_byte_identical_tiles` (within a second each, its NAS without catalogues); `a_lead_restart_mid_poll`; `the_nas_snapshot_is_used_while_the_lead_is_down`; `offline_the_map_kept_here_is_served` (step 6) |
 | 4 (built) | **The agent and the page on the log:** `served()`, `LastCatalogue`, `regionsview`, `builtview`, `cataloguesview`, `pubtimes`, `namestodo::inputs_key` (by prefix `seq`) | `served`'s per-folder cache and `read_n_from` uses, `cataloguesview`'s catalogue reads and hashed names, `publishing.json`'s `at`/`low_at` | `catalogues_view_from_the_log_matches_from_catalogues` (same entries on a recorded run); `names_todo_reruns_exactly_when_its_prefixes_change`; `published_age_is_the_last_batch_touching_the_tile` |
 | 5 (built) | **Downloads by their own lists:** each download keeps its logical → content list (`downloads.json` fmt 5); "out of date" from its list against the map served (§6.2) | the Mac's old whole catalogues kept for downloads (`Mirror::keep_catalogues`, `prune`'s kept set) | `an_update_s_size_from_its_list_equals_the_two_catalogues_diff` (on recorded catalogues); `a_download_behind_the_log_compares_its_list`; `downloads_json_fmt4_migrates` |
 | 6 (built) | **Catalogues stop** (after the gate: every server on the log a day): the step only posts; `catalog-held/` → `map-held/` | the catalogue writer and reader (`write`, `write_delta*`, `Delta`, `delta.rs`, `chain`, `whole_due`, `MAX_CHAIN`, `keep_read_in`/`kept_dir`, `latest*`, `read_n*`, `list`, `prune`, `next_n`), `state/pool/delta-catalog` and `Switches::delta`, the `catalog-stats:` sizes' look-ups of the last catalogue | `the_step_publishes_with_no_catalog_folder`; `a_held_batch_is_appended_whole_when_the_hold_lifts`; `a_posted_map_is_appended_once`; `the_maps_keep_their_files_however_old` (GC); test roots (`lakefill catalog-add`, `coastcheck water-packs`, the server's tests, `store::testkit::map_root`) on snapshots |
 | 7 (built: shadow) | **GC's queue, shadow:** the lead queues freed names (batches and records saves), leases and clients as holders; the merge's refusal of names deleted under a lease; a dry-run report beside today's GC, which still deletes | — | `a_name_freed_and_taken_again_leaves_the_queue`; `due_waits_for_every_cursor_the_grace_and_older_leases`; `a_reuse_of_a_deleted_name_is_refused_and_redone`; the shadow's due set ⊆ today's GC's deletions on the same day (a check job) |
-| 7b | **The mirror is a client** (§6.2): the server's mirror sync asks `/map/changes` as `mirror/<host>` with the `seq` it copies, its cursor held there until its round is through; its `mirror-start`/`mirror-end` ride on those requests (`&synced=<seq>`) and the lead notes them in the history for `pubtimes`, as it does the adoptions | `data::publish_event`, `pubtimes::SERVERS`, `append_server`, `read_servers`, `ServerEvent`, `state/publish/` | `a_mirror_copying_an_older_seq_holds_its_cursor`; `mirror_times_come_from_the_history` |
+| 7b (built) | **The mirror is a client** (§6.2): the server's mirror sync asks `/map/changes` as `mirror/<host>` each round with the oldest `seq` whose files it still copies (its cursor, made from the downloads' pins and the files here), the map its round copies and the last it got through at (`&copying=`, `&synced=`); the lead keeps them on the cursor and notes them in the history (`mirror-start`, `mirror-end`) for `pubtimes`, as it does the adoptions; a reset moves the Updates of older maps on to the one served | `data::publish_event`, the mirror's `MIRROR_MARKS`, `pubtimes::SERVERS`, `SERVERS_MAX`, `append_server`, `read_servers`, `ServerEvent`, `MirrorMarks`, `state/publish/` | `a_mirror_copying_an_older_seq_holds_its_cursor` (an Update of an older map holds it while the map served moves on, through rounds cut short and a restart; caught up once its files are here); `a_cursor_older_than_the_log_resyncs_the_updates`; `mirror_times_come_from_the_history` |
 | 8a | **The map's roots remove** (§11.4): every name the `gc` job removes is marked deleted in the queue before it's removed, not only its due set's and not after the job, so the merge refuses a hand-off reusing any of them; then `REPORT_ONLY` and its assert go. Today's daily `gc` job and its 14-day window stay. Not before 15 Nov 2026 07:12 (the last catalogue, 1066, written 1 Nov 07:11:48, plus 14 days) | `REPORT_ONLY`, `REPORTS_ONLY`, the assert, `report_only*` in the report, the check's `report-only` reason | `every_removal_is_marked_deleted_before_it_goes`; `a_hand_off_by_http_reusing_a_removed_name_is_redone`; `the_map_s_roots_remove_what_nothing_names` |
 | 8b | **GC runs by the queue:** chunks of 200 whenever quiet, resumable; the orphan sweep; today's other sweeps as chunked cursors | `run_once`'s catalogue reading and folder sweep, `remove_unless_touched` and `Out::put_file`'s touch, `TOMB` and `put_back`, the 14-day catalogue window, the `gc` job's daily schedule | `gc_resumes_mid_chunk_after_a_kill` (agent killed between two deletions; next chunk starts at the first not gone, nothing deleted twice or kept forever); `gc_yields_to_the_budget`; `an_orphan_is_queued_only_after_its_age`; `the_queue_rebuilds_after_a_lead_disk_restore` |
 | 9 | **The old catalogues go:** one GC pass removes `catalog/` and `catalog-held/` on the NAS (their files are held by the map and records already), and each Mac's server its `catalog/` | the folders | — |
@@ -613,7 +629,7 @@ second, from home or away, and GC that keeps up; 8a frees the space held today (
 ## 9. What gets deleted
 
 The code of every item below but GC's went with step 6 (built), and the server's `publish_event`
-stays for its mirror's lines until the mirror is a client (§6.2); the folders and files on the NAS
+with step 7b (built); the folders and files on the NAS
 and the Macs go with step 9, GC's with steps 8a and 8b.
 
 - **On the NAS:** `catalog/`, `catalog-held/`, `state/pool/delta-catalog`, `state/pool/map-serve`, `state/publish/`.
@@ -656,7 +672,7 @@ and the Macs go with step 9, GC's with steps 8a and 8b.
 
 ## 11. Where it stands (6 Nov 2026), and what's left
 
-**Status: steps 7b, 8a, 8b, 9 and 10 planned.** The rest of this doc is the design; this section is
+**Status: step 7b built (6 Nov); 8a, 8b, 9 and 10 planned.** The rest of this doc is the design; this section is
 the walk of every reader and writer as the code is today (references at commit 36bb70a2), and the
 steps left.
 
@@ -665,10 +681,10 @@ steps left.
 | Who | Where | What it reads now | Left |
 | --- | --- | --- | --- |
 | The map server's sync | `crates/server/src/maplog.rs:73` (`spawn`), `:323` (the long poll), `:232` (`Map::catalogue` each batch); its start `crates/server/src/data.rs:128` (`store::map::newest_nas`) | the lead's `/map/changes`, its saved map, the NAS's snapshot | nothing |
-| The mirror and offline downloads | `crates/store/src/mirror.rs:643` (`Mirror::sync`, given the catalogue made of the map), `crates/server/src/downloads.rs:617` (`keep_lists`), `:1056` (`publish_event`, `crates/server/src/data.rs:709`) | each download's own list against the map served | its cursor (7b); `state/publish/<host>.jsonl` goes with it |
+| The mirror and offline downloads | `crates/store/src/mirror.rs:643` (`Mirror::sync`, given the catalogue made of the map), `crates/server/src/downloads.rs` (`keep_lists`; `once`, its cursor told each round: `Plan::copies_from`, `Downloads::resync`), `crates/server/src/maplog.rs` (`MirrorLink`) | each download's own list against the map served; its cursor `mirror/<host>` | nothing (7b built) |
 | The map app | `web/src/catalogue.ts:107` (`/api/catalog` each minute, its own Mac's server) | the server's map as a catalogue status | nothing |
 | Consistency of tile sets | the gate picks a batch's contents; `crates/pipeline/src/bin/scenic-build.rs:500` (the `catalog` step posts its map); `crates/pipeline/src/agent/publish.rs:67` (`MapLog`, one batch appended whole); clients swap a batch in whole | the batch | nothing |
-| Publish history and ages | `crates/pipeline/src/agent/cataloguesview.rs:322` (`CataloguesView`), built only on the lead (`crates/pipeline/src/agent/mod.rs:7728`, `tend_pageview`); adoptions noted at `:7752`; `crates/pipeline/src/pubtimes.rs:414` (the history's `catalog` events), `:545` (the mirror's lines) | the lead's feed in process | the mirror's lines (7b) |
+| Publish history and ages | `crates/pipeline/src/agent/cataloguesview.rs:322` (`CataloguesView`), built only on the lead (`crates/pipeline/src/agent/mod.rs:7728`, `tend_pageview`); adoptions and the mirrors' rounds noted there (`publish_marks`); `crates/pipeline/src/pubtimes.rs:414` (the history's `catalog` events), the mirrors' `mirror-start`/`mirror-end` events | the lead's feed in process | nothing |
 | `/work/catalogs` | `crates/pipeline/src/coord/mod.rs:4900`; a member's port sends it to the lead (`crates/pipeline/src/coord/memberpage.rs:56`) | the view above | nothing |
 | `scenic catalogs` | `crates/pipeline/src/cli/scenic.rs:274` | the view this Mac's agent kept (`cataloguesview::KEPT`) | nothing |
 | publish.rs and coordwire | `crates/coordwire/src/lib.rs:39` (`map_now`: `/map/snapshot`, else the NAS's newest), `publish.rs:67` (`MapLog`), `:95` (`Here`: the head's catalogue, made of the map while read) | the lead's log | nothing |
@@ -705,14 +721,13 @@ clients keep their map, and one with none reads the NAS's snapshot (§5.2).
 
 ### 11.3 What's left, each step alone
 
-1. **7b, the mirror's client** (§8's table): the cursor that makes 8b safe for offline downloads, and
-   the end of `state/publish/`. Any time.
-2. **8a, the map's roots remove** (§11.4): small, on or after 15 Nov 2026 07:12.
-3. **8b, GC by the queue**: chunks, the orphan sweep, the other sweeps as cursors; the daily job,
-   the folder sweep, the 14-day window and the touch go. After 8a and 7b.
-4. **9, the old catalogues go**: `catalog/` and `catalog-held/` on the NAS (479 MB), and any Mac's
+1. **8a, the map's roots remove** (§11.4): small, on or after 15 Nov 2026 07:12.
+2. **8b, GC by the queue**: chunks, the orphan sweep, the other sweeps as cursors; the daily job,
+   the folder sweep, the 14-day window and the touch go. After 8a (7b, the mirror's cursor that
+   makes it safe for offline downloads, is built).
+3. **9, the old catalogues go**: `catalog/` and `catalog-held/` on the NAS (479 MB), and any Mac's
    server's `catalog/`. Any time: nothing reads them since step 6.
-5. **10, docs**: formats.md, storage.md, macs.md, building.md, pool.md, and this doc folded in.
+4. **10, docs**: formats.md, storage.md, macs.md, building.md, pool.md, and this doc folded in.
 
 **With #916 step 6d** (docs/crates.md §6.3). #883's steps left touch one place in cli: `scenic
 gc`'s flags (`crates/pipeline/src/cli/scenic.rs:198`; 8b, where `--shadow-due` becomes the set the
