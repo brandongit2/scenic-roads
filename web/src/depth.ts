@@ -40,6 +40,7 @@ import { depthColour, hdepth, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthS
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
 import { mercX, mercY, tileY } from './merc';
 import { hexRgb } from './palettes';
+import { WorkerPool } from './workerpool';
 
 type RGB = [number, number, number];
 
@@ -69,9 +70,7 @@ export class Depth {
   private sources: DepthSource[] = [];
   /** The catalogue's depth zooms (depthgrid.ts). */
   private zooms: DepthZooms = { least: 0, tiles: 15, shade: 16 };
-  private workers: Worker[] = [];
-  private seq = 0;
-  private waiting = new Map<number, { resolve: (r: DepthReply) => void; reject: (e: Error) => void }>();
+  private pool: WorkerPool<DepthMsg & { id: number }, DepthReply> | null = null;
   private added = false;
   /** The 3D floor shown (setFloor). */
   private floorOn = false;
@@ -96,7 +95,7 @@ export class Depth {
       if (again) this.removeLayers();
       const least = zooms.least !== this.zooms.least;
       this.zooms = zooms;
-      if (least && this.workers.length) this.initWorkers();
+      if (least && this.pool) this.initWorkers();
       if (again) this.apply(this.s);
     }
     if (has !== this.has) {
@@ -130,7 +129,7 @@ export class Depth {
       cls: `${hostFor('layers')}/tiles/depth-class/{z}/{x}/{y}${ver('depth-class.tiles')}`,
       minzoom: this.zooms.least,
     };
-    for (const w of this.workers) w.postMessage(msg);
+    this.pool?.broadcast(msg);
     (this.map.getSource('depth-shade') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([this.shadeUrl()]);
     (this.map.getSource('dem-floor') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([floorTiles()]);
   }
@@ -141,46 +140,23 @@ export class Depth {
   }
 
   private setupProtocol() {
-    if (this.workers.length) return;
-    for (let i = 0; i < 2; i++) {
-      const w = new Worker(new URL('./depth.worker.ts', import.meta.url), { type: 'module' });
-      w.onmessage = (ev: MessageEvent<DepthReply>) => {
-        const p = this.waiting.get(ev.data.id);
-        if (!p) return;
-        this.waiting.delete(ev.data.id);
-        if (ev.data.error) p.reject(new Error(ev.data.error));
-        else p.resolve(ev.data);
-      };
-      this.workers.push(w);
-    }
+    if (this.pool) return;
+    const pool = (this.pool = new WorkerPool(() => new Worker(new URL('./depth.worker.ts', import.meta.url), { type: 'module' }), 2));
     this.initWorkers();
     maplibregl.addProtocol('depth', async (params, abort) => {
       const m = /^depth:\/\/(\w+)\/(\d+)\/(\d+)\/(\d+)\??(.*)$/.exec(params.url);
       if (!m) throw new Error(`depth: ${params.url}`);
       const [z, x, y] = [+m[2], +m[3], +m[4]];
       const q = Object.fromEntries(new URLSearchParams(m[5]));
-      const r = await this.ask({ type: 'tile', id: 0, kind: m[1] as 'relief', z, x, y, q }, abort.signal, this.workerFor(z, x, y));
+      const r = await pool.ask({ type: 'tile', id: 0, kind: m[1] as 'relief', z, x, y, q }, abort.signal, this.workerFor(z, x, y));
       return { data: r.data! };
     });
   }
 
   /** Each tile to one worker (its composite is reused by the tile's other variants there). */
   private workerFor(z: number, x: number, y: number) {
-    return this.workers[(x + y + z) % this.workers.length];
-  }
-
-  private ask(msg: DepthMsg, signal?: AbortSignal, w = this.workers[0]): Promise<DepthReply> {
-    const id = ++this.seq;
-    (msg as { id: number }).id = id;
-    return new Promise((resolve, reject) => {
-      this.waiting.set(id, { resolve, reject });
-      signal?.addEventListener('abort', () => {
-        w.postMessage({ type: 'cancel', id } satisfies DepthMsg);
-        this.waiting.delete(id);
-        reject(new DOMException('aborted', 'AbortError'));
-      });
-      w.postMessage(msg);
-    });
+    const ws = this.pool!.workers;
+    return ws[(x + y + z) % ws.length];
   }
 
   /** Drawn as the water tiles' water (depth.ts's head). */
@@ -377,12 +353,13 @@ export class Depth {
 
   /** With "fit to view", the scale's domain: the depths in view's 2nd to 98th percentile. */
   private async view() {
-    if (!this.workers.length || this.s.scale !== 'fit') return;
+    const pool = this.pool;
+    if (!pool || this.s.scale !== 'fit') return;
     const tiles = this.viewTiles();
     // (Too many to sample.)
     if (!tiles.length) return;
-    const halves = this.workers.map((w) => tiles.filter((t) => this.workerFor(...t) === w));
-    const rs = await Promise.all(halves.map((ts, i) => (ts.length ? this.ask({ type: 'hist', id: 0, tiles: ts }, undefined, this.workers[i]) : Promise.resolve({ id: 0, hist: new Array(HBINS).fill(0) } as DepthReply))));
+    const halves = pool.workers.map((w) => tiles.filter((t) => this.workerFor(...t) === w));
+    const rs = await Promise.all(halves.map((ts, i) => (ts.length ? pool.ask({ type: 'hist', id: 0, tiles: ts }, undefined, pool.workers[i]) : Promise.resolve({ id: 0, hist: new Array(HBINS).fill(0) } as DepthReply))));
     if (this.s.scale !== 'fit') return;
     const hst = new Array(HBINS).fill(0);
     for (const r of rs) r.hist?.forEach((v, i) => (hst[i] += v));
@@ -416,9 +393,10 @@ export class Depth {
 
   /** Depth, class and source at a point (null: no depth there, or no depth layer on). */
   private async at(ll: maplibregl.LngLat): Promise<Probe | null> {
-    if (!this.workers.length || !this.has || !(this.s.on || this.s.contours)) return null;
+    const pool = this.pool;
+    if (!pool || !this.has || !(this.s.on || this.s.contours)) return null;
     const t = this.tileAt(ll);
-    const r = await this.ask({ type: 'probe', id: 0, ...t }, undefined, this.workerFor(t.z, t.x, t.y));
+    const r = await pool.ask({ type: 'probe', id: 0, ...t }, undefined, this.workerFor(t.z, t.x, t.y));
     return r.probe ?? null;
   }
 

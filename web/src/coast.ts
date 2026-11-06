@@ -16,12 +16,10 @@ import type { CoastMessage, CoastResponse } from './coast.worker';
 import { COAST_ENCODING, COAST_LINEAR, coastElevation } from './coastdist';
 import { MERC_CIRC } from './merc';
 import { hexBytes } from './palettes';
+import { WorkerPool } from './workerpool';
 
 
-let workers: Worker[] = [];
-let next = 0;
-let seq = 0;
-const waiting = new Map<number, { resolve: (b: ArrayBuffer) => void; reject: (e: Error) => void }>();
+let pool: WorkerPool<CoastMessage & { type: 'tile' }, CoastResponse> | null = null;
 
 /** Where the shading measures the shore from: the water's shares (`cov`, the water tiles' raw
  * shares: the same water the map draws, at every zoom; every pixel holding any land is a shore,
@@ -38,40 +36,24 @@ const initMessage = (key: string, input: CoastInput): CoastMessage => ({ type: '
 
 /** The tiles' protocol and its workers (two: a tile is a burst of CPU, MapLibre asks for many). */
 function setupProtocol() {
-  if (workers.length) return;
-  for (let i = 0; i < 2; i++) {
-    const w = new Worker(new URL('./coast.worker.ts', import.meta.url), { type: 'module' });
+  if (pool) return;
+  pool = new WorkerPool(() => new Worker(new URL('./coast.worker.ts', import.meta.url), { type: 'module' }), 2, (w) => {
     for (const [key, input] of inputs) w.postMessage(initMessage(key, input));
-    w.onmessage = (ev: MessageEvent<CoastResponse>) => {
-      const p = waiting.get(ev.data.id);
-      if (!p) return;
-      waiting.delete(ev.data.id);
-      if (ev.data.data) p.resolve(ev.data.data);
-      else p.reject(new Error(ev.data.error ?? 'coast tile'));
-    };
-    workers.push(w);
-  }
+  });
+  const p = pool;
   maplibregl.addProtocol('coast', async (params, abort) => {
     const m = /^coast:\/\/(\d+)\/(\d+)\/(\d+)\?l=(\d)(?:&k=([\w-]+))?/.exec(params.url);
     if (!m) throw new Error(`coast: ${params.url}`);
-    const id = ++seq, w = workers[next++ % workers.length];
-    const data = await new Promise<ArrayBuffer>((resolve, reject) => {
-      waiting.set(id, { resolve, reject });
-      abort.signal.addEventListener('abort', () => {
-        w.postMessage({ type: 'cancel', id } satisfies CoastMessage);
-        waiting.delete(id);
-        reject(new DOMException('aborted', 'AbortError'));
-      });
-      w.postMessage({ type: 'tile', id, key: m[5] ?? 'app', z: +m[1], x: +m[2], y: +m[3], lakes: m[4] === '1' } satisfies CoastMessage);
-    });
-    return { data };
+    const r = await p.ask({ type: 'tile', id: 0, key: m[5] ?? 'app', z: +m[1], x: +m[2], y: +m[3], lakes: m[4] === '1' }, abort.signal);
+    if (!r.data) throw new Error('coast tile');
+    return { data: r.data };
   });
 }
 
 /** An input (again, when its URLs change), for the workers to measure from. */
 function setInput(key: string, input: CoastInput) {
   inputs.set(key, input);
-  for (const w of workers) w.postMessage(initMessage(key, input));
+  pool?.broadcast(initMessage(key, input));
 }
 
 const tilesUrl = (lakes: boolean, key = 'app') => `coast://{z}/{x}/{y}?l=${lakes ? 1 : 0}&k=${key}`;
@@ -181,7 +163,7 @@ export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, wa
 /** The water under new URLs (a new catalogue): the
  * workers measure the shore from it, and the shading's tiles are made again. */
 export function switchCoast(map: MLMap, input: CoastInput) {
-  if (!workers.length) return;
+  if (!pool) return;
   setInput('app', input);
   const src = map.getSource('coast') as maplibregl.RasterDEMTileSource | undefined;
   // (A fresh URL: MapLibre would keep the old tiles under the same one.)
