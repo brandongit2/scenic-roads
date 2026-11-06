@@ -691,8 +691,8 @@ pub fn station_props(s: &codecs::stations::Stop) -> serde_json::Map<String, Valu
     p.insert("n".into(), serde_json::json!(s.name));
     p.insert("g".into(), serde_json::json!(s.group));
     p.insert("m".into(), serde_json::json!(s.mask));
-    p.insert("sp".into(), serde_json::json!(landmarks::interest::py_round(s.spacing, 0) as i64));
-    p.insert("mz".into(), serde_json::json!(landmarks::interest::py_round(s.mz(), 2)));
+    p.insert("sp".into(), serde_json::json!(crate::interest::py_round(s.spacing, 0) as i64));
+    p.insert("mz".into(), serde_json::json!(crate::interest::py_round(s.mz(), 2)));
     if let Some(en) = &s.en {
         p.insert("en".into(), serde_json::json!(en));
     }
@@ -722,7 +722,7 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     if let Some(p) = geojson {
         let feats: Vec<Value> = kept
             .iter()
-            .map(|s| serde_json::json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [landmarks::interest::py_round(s.lon, 6), landmarks::interest::py_round(s.lat, 6)]}, "properties": station_props(s)}))
+            .map(|s| serde_json::json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [crate::interest::py_round(s.lon, 6), crate::interest::py_round(s.lat, 6)]}, "properties": station_props(s)}))
             .collect();
         std::fs::write(p, serde_json::to_vec(&serde_json::json!({"type": "FeatureCollection", "features": feats}))?)?;
     }

@@ -1,19 +1,29 @@
-//! The landmarks' Wikidata and heritage steps (docs/crates.md, task #916 step 5a): the asks of
-//! Wikidata and Wikipedia (wikiask), the heritage sites' Wikidata chain (heritagewd,
-//! heritage_layers, heritagedetails, filterprops), the landmarks' interest (interest), the items
-//! and their pageviews (items, pageviews), the labels (labels), the areas' details (areadetails) and
-//! the World Heritage Sites' shapes (whsshapes). Pipeline re-exports those its binaries name
-//! at their old paths (all but wikiask).
+//! The names family: the landmarks', places' and transit's steps (docs/crates.md, task #916 steps
+//! 5a and 6e): the asks of Wikidata and Wikipedia (wikiask), the heritage sites (heritage) and
+//! their Wikidata chain (heritagewd, heritage_layers, heritagedetails, filterprops), the landmarks'
+//! interest (interest), the items and their pageviews (items, pageviews), the labels (labels), the
+//! areas' details (areadetails), the World Heritage Sites' shapes (whsshapes), the marks and the
+//! overlays (markconv, marksjob, ovconv), the timetables (gtfs, railfeeds, ferries) and the
+//! descriptions to write (namestodo). Pipeline re-exports those its binaries and agent name at
+//! their old paths (all but wikiask).
 
 pub mod areadetails;
+pub mod ferries;
 pub mod filterprops;
+pub mod gtfs;
+pub mod heritage;
 pub mod heritage_layers;
 pub mod heritagedetails;
 pub mod heritagewd;
 pub mod interest;
 pub mod items;
 pub mod labels;
+pub mod markconv;
+pub mod marksjob;
+pub mod namestodo;
+pub mod ovconv;
 pub mod pageviews;
+pub mod railfeeds;
 pub mod whsshapes;
 pub mod wikiask;
 

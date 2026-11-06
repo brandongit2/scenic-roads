@@ -43,7 +43,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/inputs/src/osmpass.rs", "filtered_nas", 1, "osmium's input, streamed over SSH from its path on the NAS"),
     ("crates/inputs/src/osmpass.rs", "run_pass", 1, "the extract program's input, read where it lies"),
     ("crates/inputs/src/osmpass.rs", "patch_ferries", 1, "osmium's input, read where it lies"),
-    ("crates/pipeline/src/ovconv.rs", "ferries_job", 1, "osmium's input, read where it lies"),
+    ("crates/landmarks/src/ovconv.rs", "ferries_job", 1, "osmium's input, read where it lies"),
     ("crates/trees/src/treepacks.rs", "run_args", 2, "the trees program's --chm-store and --leaf folders"),
     ("crates/trees/src/treepacks.rs", "build_lo", 1, "the trees program's mids, as its arguments"),
     ("crates/pipeline/src/buildtiles.rs", "stage", 1, "a tile linked for the scenic program to read where it lies"),
@@ -67,7 +67,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "lakefill_step", 3, "lakefill's readers open the basemap, the outlines and the zips by path"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lake_folder", 1, "the lake-depth step's zip and shapefile readers open GLOBathy's and HydroLAKES' zips by path"),
     ("crates/inputs/src/inputs/regions/data.rs", "read", 1, "GDAL and the shapefile reader read the datasets by path"),
-    ("crates/pipeline/src/namestodo.rs", "translation_files", 1, "the names crate's tables read their files by path"),
+    ("crates/landmarks/src/namestodo.rs", "translation_files", 1, "the names crate's tables read their files by path"),
     // A raw path for what isn't a file's read or write.
     ("crates/buildstore/src/out.rs", "file", 1, "a local lock file named after the root's real path"),
     ("crates/pipeline/src/agent/room.rs", "ours", 1, "a local cache file's real path against the root's"),

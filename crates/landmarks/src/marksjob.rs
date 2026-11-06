@@ -1,12 +1,12 @@
 //! The `marks` job (docs/phase5.md "Build"): landmark points from their candidates, as the heritage
-//! chain's scripts make theirs (interest::poi_filter_props, landmarks::interest, landmarks::heritage_layers), for markdata and the
+//! chain's scripts make theirs (interest::poi_filter_props, crate::interest, crate::heritage_layers), for markdata and the
 //! thinned tiles (`markconv::write`). This part: the stops & sights.
 
-use crate::markconv::Point;
-use codecs::marks::{self, flag, MarkPt};
-use landmarks::interest::{
+use crate::interest::{
     fame, isolation, min_zoom, percentile, poi_base, poi_filter_props, py_round, same_names, view_item,
 };
+use crate::markconv::Point;
+use codecs::marks::{self, flag, MarkPt};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 

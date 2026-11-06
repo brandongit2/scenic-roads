@@ -40,7 +40,7 @@
 //! of the routes that match nothing on the map (docs/inputs.md §6.7.3).
 
 use super::{statics, Date, Kind, PyErr, Zip, R};
-use landmarks::interest::py_round;
+use crate::interest::py_round;
 use pyport::pyjson::Py;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;

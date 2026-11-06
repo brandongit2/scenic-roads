@@ -178,7 +178,7 @@ impl Num {
     pub fn round(self, n: usize) -> Num {
         match self {
             Num::Int(i) => Num::Int(i),
-            Num::Float(f) => Num::Float(landmarks::interest::py_round(f, n)),
+            Num::Float(f) => Num::Float(crate::interest::py_round(f, n)),
         }
     }
 }

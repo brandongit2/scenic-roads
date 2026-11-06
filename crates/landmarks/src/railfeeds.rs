@@ -367,7 +367,7 @@ impl Net {
 
 /// `round(x, 1)` as a float.
 fn round1(x: f64) -> f64 {
-    landmarks::interest::py_round(x, 1)
+    crate::interest::py_round(x, 1)
 }
 
 /// A catalogue feed's rail routes, from its routes.txt alone: `status` "ok" with `rail_routes` and
