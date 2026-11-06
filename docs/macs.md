@@ -349,8 +349,8 @@ installed by `tools/app/install.sh`, updated by the updater).
   (crates/server clip.rs): a raster's pixels outside take the value the layer has where it has
   nothing (the terrain 0 m, the depth's no data, the shading flat, the water and classes none), a
   vector tile's points outside go and its lines and areas are cut at their edges (the basemap,
-  labels, stations, areas, roads and rails, landmarks, ferries; a ferry cut in pieces keeps its
-  longest); its ETag names where the downloads reach. So a small region stays alone when zoomed
+  labels, stations, areas, roads and rails, landmarks, ferries; a ferry leaving and
+  entering them keeps its longest stretch inside); its ETag names where the downloads reach. So a small region stays alone when zoomed
   out, with nothing around it. The place search, a tile made from a coarser one (terrain,
   shading, water, depth), the lists of a view (drives, rides, rail lines: the hi data), the
   viewshed and the landmark points keep to them too, the area details (looked up by

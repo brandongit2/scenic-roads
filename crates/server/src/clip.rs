@@ -621,10 +621,25 @@ fn marks(raw: &[u8], z: u8, x: u32, y: u32, cells: &Cells) -> Result<Vec<u8>> {
     Ok(out.encode())
 }
 
+/// A line's pieces (`cut_line`'s, cut to several rectangles) in their order along it, those that
+/// meet joined: a line crossing from one rectangle into the next is one piece.
+fn joined(mut pieces: Vec<Vec<([f64; 2], usize, f64)>>) -> Vec<Vec<[f64; 2]>> {
+    pieces.sort_by(|a, b| (a[0].1, a[0].2).partial_cmp(&(b[0].1, b[0].2)).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out: Vec<Vec<[f64; 2]>> = Vec::new();
+    for p in pieces {
+        let pts = p.into_iter().map(|(q, _, _)| q);
+        match out.last_mut() {
+            Some(last) if last.last() == Some(&pts.clone().next().unwrap_or([f64::NAN; 2])) => last.extend(pts.skip(1)),
+            _ => out.push(pts.collect()),
+        }
+    }
+    out
+}
+
 /// A block of ferries (`geojson-gz`, pipeline::ovconv: lines and terminals, and their lines'
 /// records) clipped to the cells (all of them: a block reaches 30 km past its tile, and a way is
-/// the same in every block). A way cut in pieces keeps its longest (the map draws a way as one
-/// line); a terminal outside goes, and the records of no way kept.
+/// the same in every block). A way cut in pieces keeps its longest stretch inside them (the map
+/// draws a way as one line; one crossing between two of their rectangles is one stretch); a terminal outside goes, and the records of no way kept.
 fn ferries(raw: &[u8], z: u8, x: u32, y: u32, cells: &Cells) -> Result<Vec<u8>> {
     use serde_json::{json, Value};
     let mut fc: Value = serde_json::from_slice(raw).context("a ferry block")?;
@@ -648,11 +663,8 @@ fn ferries(raw: &[u8], z: u8, x: u32, y: u32, cells: &Cells) -> Result<Vec<u8>> 
             }
             Some("LineString") => {
                 let line: Vec<[f64; 2]> = g["coordinates"].as_array().into_iter().flatten().filter_map(pt).collect();
-                let longest = rects
-                    .iter()
-                    .flat_map(|r| cut_line(&line, r))
-                    .map(|p| p.into_iter().map(|(p, _, _)| p).collect::<Vec<_>>())
-                    .max_by(|a, b| {
+                let longest =
+                    joined(rects.iter().flat_map(|r| cut_line(&line, r)).collect()).into_iter().max_by(|a, b| {
                         let len = |v: &Vec<[f64; 2]>| {
                             v.windows(2).map(|w| (w[1][0] - w[0][0]).dhypot(w[1][1] - w[0][1])).sum::<f64>()
                         };
@@ -789,6 +801,29 @@ mod tests {
         let out = tile("water-png", "water", 5, 0, 0, &water, false, &cells(6, &[(1, 0)])).unwrap();
         let c = pipeline::water::Cov::from_png(&out).unwrap();
         assert_eq!((c.value_at(400, 10), c.value_at(10, 10), c.value_at(400, 400)), ((200, 30), (0, 0), (0, 0)));
+    }
+
+    /// A ferry crossing from one rectangle of the cells into the next (an L of three z6 tiles) is
+    /// kept whole, not its longest piece in one of them.
+    #[test]
+    fn a_ferry_across_the_cells_is_kept_whole() {
+        let c = cells(6, &[(0, 0), (0, 1), (1, 1)]);
+        // (z5 tile 0/0: from lon −180, 11.25° across; a line down its left half, over the middle,
+        // then east along its bottom half.)
+        let (top, bot) = (roadcore::geo::merc_lat(0.2 / 32.0), roadcore::geo::merc_lat(0.8 / 32.0));
+        let fc = serde_json::json!({"type": "FeatureCollection", "features": [{"type": "Feature",
+            "properties": {"lines": "7"},
+            "geometry": {"type": "LineString", "coordinates": [[-179.0, top], [-179.0, bot], [-170.0, bot]]}}],
+            "lines": {"7": {}, "8": {}}});
+        let out: serde_json::Value =
+            serde_json::from_slice(&ferries(&serde_json::to_vec(&fc).unwrap(), 5, 0, 0, &c).unwrap()).unwrap();
+        let coords = out["features"][0]["geometry"]["coordinates"].as_array().unwrap();
+        assert_eq!(coords.len(), 4, "{coords:?}");
+        assert!(
+            (coords[0][1].as_f64().unwrap() - top).abs() < 1e-9
+                && (coords[3][0].as_f64().unwrap() + 170.0).abs() < 1e-9
+        );
+        assert_eq!(out["lines"].as_object().unwrap().keys().collect::<Vec<_>>(), ["7"]);
     }
 
     /// A road tile's lines cut at the edge, the values at the cut between its points'.
