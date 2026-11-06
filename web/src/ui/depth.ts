@@ -62,7 +62,8 @@ export class DepthSection {
       fadeDefault: 0,
       spanDefault: DEPTH_DEFAULTS.colours.lowSpan,
       palettes: { items: DEPTH_PALETTES, css: (k) => this.gradient(k) },
-      colourAt: (v) => [rgba(depthColour(C().palette, this.position(v))), 1],
+      // (As 'rgb(…)': the scale's strip adds the alpha.)
+      colourAt: (v) => [`rgb(${depthColour(C().palette, this.position(v)).map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255)).join(',')})`, 1],
       onPreview: (k) => this.onPreview(k),
     });
     const scales = seg([['linear', 'Linear', 'Colour in proportion to depth'], ['log', 'Log', 'More colours in the shallows, where most of the detail is']],
