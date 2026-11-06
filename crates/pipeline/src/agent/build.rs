@@ -6406,24 +6406,41 @@ pub(crate) mod tests {
     }
 
     impl Fixture {
-        /// Every target of `step` whose key is known (`step_keys_all`) with its key lines, in this build with manifest
-        /// `m` and `inputs`.
-        fn keys(
+        /// For each of `steps`, every target whose key is known (`step_keys_all`) with its key
+        /// lines, in this build with manifest `m` and `inputs`: one context for them all, as a plan
+        /// has (its terrain tiles held once, its keys and the terrain's and slope's targets worked
+        /// out once, `KeyMemo`; #969: each step's own context and tiles made
+        /// a_key_names_exactly_its_reads 581 s on the test Mac).
+        fn keys<'s>(
             &self,
-            step: &str,
+            steps: &[&'s str],
             m: &BTreeMap<String, String>,
             inputs: &BTreeMap<String, String>,
-        ) -> BTreeMap<String, Option<Vec<String>>> {
+        ) -> BTreeMap<&'s str, BTreeMap<String, Option<Vec<String>>>> {
             let tiles = (self.tiles)(m);
-            let x =
-                KeyCtx { cov: &self.c, date: "d", m, inputs, reach: self.reach.as_ref(), tiles: &tiles, memo: None };
-            step_keys_all(step, &x)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|(_, k)| k != UNKNOWN)
-                .map(|(t, _)| {
-                    let lines = crate::agent::steps::key_lines(step, &t, &x);
-                    (t, lines)
+            let memo = KeyMemo::default();
+            let x = KeyCtx {
+                cov: &self.c,
+                date: "d",
+                m,
+                inputs,
+                reach: self.reach.as_ref(),
+                tiles: &tiles,
+                memo: Some(&memo),
+            };
+            steps
+                .iter()
+                .map(|&step| {
+                    let keys = step_keys_all(step, &x)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|(_, k)| k != UNKNOWN)
+                        .map(|(t, _)| {
+                            let lines = crate::agent::steps::key_lines(step, &t, &x);
+                            (t, lines)
+                        })
+                        .collect();
+                    (step, keys)
                 })
                 .collect()
         }
@@ -6637,18 +6654,20 @@ pub(crate) mod tests {
         let fixtures = fixtures();
         let mut keyed: BTreeSet<&str> = BTreeSet::new();
         for f in &fixtures {
-            for step in derived_steps() {
-                let base = f.keys(step, &f.m, &f.inputs);
-                if base.is_empty() {
-                    continue;
-                }
-                keyed.insert(step);
-                for (t, lines) in &base {
+            let mut all = f.keys(&derived_steps(), &f.m, &f.inputs);
+            all.retain(|_, base| !base.is_empty());
+            let steps: Vec<&str> = all.keys().copied().collect();
+            for (step, base) in &all {
+                keyed.insert(*step);
+                for (t, lines) in base {
                     assert!(lines.is_some(), "{} {step} {t}: its scheme-2 key is worked out", f.name);
                 }
-                for (l, m2, _) in f.one_changed().into_iter().filter(|c| !c.0.starts_with("input ")) {
-                    let after = f.keys(step, &m2, &f.inputs);
-                    for (t, lines) in &base {
+            }
+            for (l, m2, _) in f.one_changed().into_iter().filter(|c| !c.0.starts_with("input ")) {
+                let moved = f.keys(&steps, &m2, &f.inputs);
+                for (step, base) in &all {
+                    let after = &moved[step];
+                    for (t, lines) in base {
                         let lines = lines.as_ref().unwrap();
                         let named = lines.iter().any(|s| s.contains(&format!("{l}=")) || s.contains(&f.m[&l]));
                         // (A key that can't be worked out after the change, its input unread: no
