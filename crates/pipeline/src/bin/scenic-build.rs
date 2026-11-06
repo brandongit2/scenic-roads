@@ -2073,9 +2073,9 @@ fn catalogue(
     let units: Vec<String> = base.keys().cloned().collect();
     // The coverage it's built for, drawn from the outlines it lists, and the credits of the sources
     // its data comes from: where the coverage is, and where the z6 tiles' ways are.
-    // The map now, the lead's (pipeline::agent::publish::map_now); held, the last held one (the
+    // The map now, the lead's (coordwire::map_now); held, the last held one (the
     // first held one goes by the served one).
-    let map = pipeline::agent::publish::map_now(out.root()).context("the map now")?;
+    let map = coordwire::map_now(out.root()).context("the map now")?;
     let seq = map.as_ref().map_or(0, |m| m.seq);
     let held_last = if held {
         store::map::newest_in(&out.root().join(store::map::HELD_DIR)).context("the last held map")?
@@ -6912,7 +6912,7 @@ mod tests {
     }
 
     /// The map the step posted, published as a lead without its log would serve it (the NAS's
-    /// snapshot, what the next run reads with no coordinator: pipeline::agent::publish::map_now).
+    /// snapshot, what the next run reads with no coordinator: coordwire::map_now).
     fn publish_posted(root: &std::path::Path) -> store::catalogue::Catalogue {
         let p = root.join("posted.json.zst");
         let c = store::catalogue::Catalogue::decode(&std::fs::read(&p).unwrap()).unwrap();

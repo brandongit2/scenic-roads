@@ -1,8 +1,8 @@
 //! The coordinator's client side (docs/crates.md, task #916 step 6c): how a worker reaches the
 //! lead's coordinator (`Contact` on the NAS, the headers its answers carry), its client's transport
-//! (client) and a task's side shared by its job and its worker (task). The coordinator itself and
-//! the lease calls (they carry its own types) are pipeline's coord, which re-exports these at their
-//! old paths.
+//! (client), a task's side shared by its job and its worker (task), and the map now as a job or a
+//! command reads it from the lead (`map_now`). The coordinator itself and the lease calls (they
+//! carry its own types) are pipeline's coord, which re-exports these at their old paths.
 
 pub mod client;
 pub mod task;
@@ -30,3 +30,18 @@ pub fn contact_path(root: &store::nasfs::NasRoot) -> store::nasfs::NasPath {
 /// The headers every answer of a pool's lead's coordinator carries: its term and its member.
 pub const POOL_TERM: &str = "x-pool-term";
 pub const POOL_MEMBER: &str = "x-pool-member";
+
+/// The map now, for a job or a command (docs/maplog.md §6.7, §6.10): the lead's (`GET
+/// /map/snapshot` from its coordinator, as `state/coordinator.json` says to reach it); the NAS's
+/// newest snapshot (up to an hour behind) when there's no coordinator or it holds no map yet (503);
+/// None when there's no map at all. A coordinator that fails otherwise is an error: a job that
+/// publishes or lists from the map never goes by an older one than the lead's while the lead runs.
+pub fn map_now(root: &store::nasfs::NasRoot) -> anyhow::Result<Option<store::map::Map>> {
+    use anyhow::Context;
+    if let Some(c) = crate::client::Client::from_nas(root, &store::sys::host_name())? {
+        if let Some(b) = c.get_ready("/map/snapshot").context("the lead's map")? {
+            return Ok(Some(store::map::Snapshot::decode(&b).context("the lead's map")?.0));
+        }
+    }
+    store::map::newest_nas(root)
+}

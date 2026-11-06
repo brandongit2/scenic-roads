@@ -8,7 +8,7 @@
 //!   posts it whole to its agent (`POSTED`, a file in the agent's `maplog/`, `--post`); the agent's
 //!   writer (`MapLog`, on a thread of its own) diffs it against the map and appends the batch. The
 //!   servers follow the log through the coordinator's `/map/` routes (its `feed`), the agent reads
-//!   the map from it (`Here`), and a job or a command reads it from the lead (`map_now`). No
+//!   the map from it (`Here`), and a job or a command reads it from the lead (coordwire::map_now). No
 //!   catalogue file is written or read (§8, step 6).
 
 pub const NEAR_SLOPE: &str = "state/pool/near-slope";
@@ -28,21 +28,6 @@ impl Switches {
         };
         Switches { near }
     }
-}
-
-/// The map now, for a job or a command (docs/maplog.md §6.7, §6.10): the lead's (`GET
-/// /map/snapshot` from its coordinator, as `state/coordinator.json` says to reach it); the NAS's
-/// newest snapshot (up to an hour behind) when there's no coordinator or it holds no map yet (503);
-/// None when there's no map at all. A coordinator that fails otherwise is an error: a job that
-/// publishes or lists from the map never goes by an older one than the lead's while the lead runs.
-pub fn map_now(root: &store::nasfs::NasRoot) -> anyhow::Result<Option<store::map::Map>> {
-    use anyhow::Context;
-    if let Some(c) = crate::coord::client::Client::from_nas(root, &store::sys::host_name())? {
-        if let Some(b) = c.get_ready("/map/snapshot").context("the lead's map")? {
-            return Ok(Some(store::map::Snapshot::decode(&b).context("the lead's map")?.0));
-        }
-    }
-    store::map::newest_nas(root)
 }
 
 /// Whether hand-offs of the map tiles or the road index waiting to be merged (`unmerged`) hold the

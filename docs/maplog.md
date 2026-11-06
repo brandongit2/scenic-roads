@@ -118,7 +118,7 @@ temporary name renamed into place); at the job's end the agent's writer takes it
 `posted.taken.json.zst`), diffs it against the map, appends the batch and lets the file go (one
 taken and not appended when the agent stopped is appended when the log opens again). Its `seq` is
 the step's number, the map's next (the head's next if that's taken). The step reads the map from the
-lead (`agent::publish::map_now`: `GET /map/snapshot` from the coordinator; the NAS's newest snapshot
+lead (`coordwire::map_now`: `GET /map/snapshot` from the coordinator; the NAS's newest snapshot
 with no coordinator or none open yet), as names-todo and `scenic` status do; each file's size is the
 records' or the map's, the NAS looked at for the rest (the `catalog-stats:` line's `stated`). Held
 for review, the step writes the map it would publish whole to `map-held/<seq>.json.zst` (a snapshot,

@@ -934,7 +934,7 @@ fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
     path.write_whole(bytes)
 }
 
-/// Makes the lists from the map now (the lead's: crate::agent::publish::map_now) into `out` (the translations' and the
+/// Makes the lists from the map now (the lead's: coordwire::map_now) into `out` (the translations' and the
 /// descriptions' `todo/` under it: the root itself for the job, a scratch folder to look first),
 /// with the accepted versions of the translations and the descriptions the agent names.
 pub fn run(
@@ -947,7 +947,7 @@ pub fn run(
 ) -> Result<Report> {
     use jobrt::timings::phase;
     let p = phase("reading the catalog, the languages spoken and the translations");
-    let cat = crate::agent::publish::map_now(root)?.context("no map")?.catalogue()?;
+    let cat = coordwire::map_now(root)?.context("no map")?.catalogue()?;
     let spoken = spoken_for(root, &cat)?;
     let mut names = Names::from_files(&translation_files(translations));
     let failed = names.take_warnings();

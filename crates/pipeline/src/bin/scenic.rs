@@ -850,7 +850,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
         }
     }
     if let Some(r) = &root {
-        if let Ok(Some(cat)) = pipeline::agent::publish::map_now(r).and_then(|m| m.map(|m| m.catalogue()).transpose()) {
+        if let Ok(Some(cat)) = coordwire::map_now(r).and_then(|m| m.map(|m| m.catalogue()).transpose()) {
             println!("Map data: map {} of {}, {} units", cat.n, cat.created, cat.units.len());
         }
     }
