@@ -276,9 +276,22 @@ pub fn read(n: u64) {
     add(Count::ReadBytes, n);
 }
 
-/// File `path` of `n` bytes made on the NAS (its copy took `ms`): counted and noted.
+/// File `path` of `n` bytes made on the NAS in one write (it took `ms`): its bytes and the file
+/// counted, and noted.
 pub fn wrote(path: &Path, n: u64, ms: u64) {
+    written(n);
+    made(path, n, ms);
+}
+
+/// `n` bytes written to the NAS: an upload's as each write goes (crate::naming's, crate::nasfs's
+/// copies and files), so its job's beats see a long upload move (task #990).
+pub fn written(n: u64) {
     add(Count::WroteBytes, n);
+}
+
+/// File `path` made on the NAS, its `n` bytes counted as they were written (`written`; its copy
+/// took `ms`): counted as a file made, and noted.
+pub fn made(path: &Path, n: u64, ms: u64) {
     add(Count::Creates, 1);
     note(Kind::Wrote, path, n, ms);
 }

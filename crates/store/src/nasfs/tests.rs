@@ -233,3 +233,35 @@ fn a_listing_leaves_temporary_files_out_and_a_missing_folder_is_empty() {
     assert_eq!(e.len(), 2);
     assert!(e.iter().all(|e| e.is_file() && e.path.parent().unwrap() == r.join("m")));
 }
+
+/// Task #990: an upload's bytes count as each write goes, not once it lands, so a long upload's job
+/// is seen moving by its beats; the file counts made as it lands. A file written through `NasFile`,
+/// a whole copy to the NAS (each read told), a NAS-to-NAS copy, a content-named upload.
+#[test]
+fn an_uploads_bytes_count_as_they_go() {
+    let (_d, r) = root();
+    let at = nasio::own();
+    let d = |c: Count| nasio::own()[c as usize] - at[c as usize];
+    r.join("x").create_dir_all().unwrap();
+    let mut f = r.join("x/streamed.bin").create().unwrap();
+    f.write_all(&[7u8; 3000]).unwrap();
+    let creates = d(Count::Creates);
+    assert!(d(Count::WroteBytes) >= 3000, "counted as written, before the file is done");
+    drop(f);
+    assert!(d(Count::Creates) > creates, "the file counted made as it closes");
+    let local = tempfile::tempdir().unwrap();
+    let src = local.path().join("src.bin");
+    std::fs::write(&src, vec![1u8; 300_000]).unwrap();
+    let mut told = Vec::new();
+    crate::whole::copy_told(&src, &local.path().join("dst.bin"), &mut |k| told.push(k)).unwrap();
+    assert_eq!(told.iter().sum::<u64>(), 300_000, "every byte told");
+    assert!(told.len() > 1, "told a read at a time, not once");
+    let wrote = d(Count::WroteBytes);
+    r.join("x/copied.bin").copy_from_local(&src).unwrap();
+    r.join("x/copied.bin").copy_data_to(&r.join("x/again.bin")).unwrap();
+    assert!(d(Count::WroteBytes) >= wrote + 600_000);
+    let wrote = d(Count::WroteBytes);
+    let name = crate::naming::write_atomic(&r, "x/named", "bin", crate::naming::Source::File(&src)).unwrap();
+    assert!(r.join(&name).exists());
+    assert!(d(Count::WroteBytes) >= wrote + 300_000, "a content-named upload's bytes, as it writes them");
+}

@@ -73,7 +73,10 @@ it (store::nasio) and retries the reads, stats and listings the share fails for 
 - **The I/O pool** (store::iopool, the server's and the mirror's) takes `NasPath`s. Its reads are
   counted and retried on the root's schedule; its timeouts and its breaker stay its own.
 - **Counting.** Every method counts into store::nasio. Sites counted by hand before keep the same
-  totals: `Out`'s uploads (store::naming, raw) count once as they land (`NasPath::count_wrote`),
+  totals: `Out`'s uploads (store::naming, raw) count their bytes as each write goes
+  (`nasio::written`) and the file as it lands (`NasPath::count_made`), as every upload does (a
+  whole copy to the NAS, a NAS-to-NAS copy, a file written through `NasFile`: a job's beats see a
+  long upload move, task #990; a file written in one call counts at its end),
   pipeline::localread's whole copies (store::blobs) count their bytes as they're read, as every
   whole copy does (`nasfs::copy_counter`: a job's beats see a long copy move, task #986), and the
   file once made (`count_opened`). `costin::meta` and

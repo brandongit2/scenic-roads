@@ -185,8 +185,9 @@ fn write_atomic_as(
         }
     };
     let name = content_name(logical, &hash, ext);
-    // (Raw: its own temporary name, an exclusive rename, a read-back past the cache, counted once
-    // by its caller as the upload: tests/nas_access.rs.)
+    // (Raw: its own temporary name, an exclusive rename, a read-back past the cache; its bytes
+    // counted as they're written (`write_tmp`), the file by its caller as it lands:
+    // tests/nas_access.rs.)
     let dest = root.join(&name).unchecked_path();
     if present(&dest, size)? {
         return Ok(name);
@@ -234,8 +235,15 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
     // counted moved are the share's and the closing sync has no backlog to flush unseen: an
     // upload's progress is judged by them, pipeline's `Out::settle`.)
     no_cache(&out);
+    // (Each write's bytes counted the NAS's as it goes, so a long upload's job is seen moving by
+    // its beats, task #990; the file made is its caller's to count, as it lands.)
     match src {
-        Source::Bytes(b) => out.write_all(b)?,
+        Source::Bytes(b) => {
+            for c in b.chunks(CHUNK) {
+                out.write_all(c)?;
+                crate::nasio::written(c.len() as u64);
+            }
+        }
         Source::File(p) => {
             // A plain copy: fs::copy would also carry extended attributes over to the share.
             let mut inp = File::open(p)?;
@@ -248,6 +256,7 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
                     Err(e) => return Err(e),
                 };
                 out.write_all(&buf[..n])?;
+                crate::nasio::written(n as u64);
                 count_moved(n);
             }
         }

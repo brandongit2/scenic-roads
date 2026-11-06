@@ -577,10 +577,10 @@ impl NasPath {
         nasio::opened(&self.full(), n, ms);
     }
 
-    /// Counts a file of `n` bytes made here in `ms` by a writer of its own (crate::naming's
-    /// content-named upload, which counts once as the upload lands).
-    pub fn count_wrote(&self, n: u64, ms: u64) {
-        nasio::wrote(&self.full(), n, ms);
+    /// Counts a file of `n` bytes made here in `ms` by a writer of its own that counted its bytes as
+    /// it wrote them (crate::naming's content-named upload, `nasio::written`): the file, as it lands.
+    pub fn count_made(&self, n: u64, ms: u64) {
+        nasio::made(&self.full(), n, ms);
     }
 
     // ---- writes: counted, never retried ----
@@ -663,15 +663,15 @@ impl NasPath {
         })
     }
 
-    /// The file made for writing (`std::fs::File::create`): counted as a file made, with the
-    /// bytes written through it, when it is dropped.
+    /// The file made for writing (`std::fs::File::create`): the bytes written through it counted as
+    /// they go, the file counted made when it is dropped.
     pub fn create(&self) -> io::Result<NasFile> {
         self.open_with(std::fs::OpenOptions::new().write(true).create(true).truncate(true))
     }
 
     /// The file opened with `o` (append, create-new, write in place, read and write). A file it
-    /// may make is counted as made, with the bytes written through it, when it is dropped; one
-    /// opened only for reading as a file read. Never retried.
+    /// may make: the bytes written through it counted as they go, the file counted made when it is
+    /// dropped; one opened only for reading as a file read. Never retried.
     pub fn open_with(&self, o: &std::fs::OpenOptions) -> io::Result<NasFile> {
         let _w = crate::waits::nas();
         let p = self.full();
@@ -698,25 +698,31 @@ impl NasPath {
         }
     }
 
-    /// Copies local file `src` to it, whole (crate::whole::copy). The bytes, counted as made.
+    /// Copies local file `src` to it, whole (crate::whole::copy_told). Its bytes counted as they're
+    /// written (`nasio::written`: a job's beats see a long upload move, task #990), the file counted
+    /// made once copied.
     pub fn copy_from_local(&self, src: &Path) -> Result<u64> {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let n = crate::whole::copy(src, &p)?;
-        nasio::wrote(&p, n, ms_since(t));
+        let n = crate::whole::copy_told(src, &p, &mut nasio::written)?;
+        nasio::made(&p, n, ms_since(t));
         Ok(n)
     }
 
-    /// Copies it to `to` on the NAS (crate::sys::copy_data). Counted as it's read (`copy_counter`),
-    /// a file opened and a file made.
+    /// Copies it to `to` on the NAS (crate::sys::copy_data). Its bytes counted as they're read
+    /// (`copy_counter`) and written (`nasio::written`), the file counted opened and made once copied.
     pub fn copy_data_to(&self, to: &NasPath) -> io::Result<u64> {
         let _w = crate::waits::nas();
         let (p, q) = (self.full(), to.full());
         let t = Instant::now();
-        let (n, _) = crate::sys::copy_data_held(&p, &q, &mut copy_counter())?;
+        let mut read = copy_counter();
+        let (n, _) = crate::sys::copy_data_held(&p, &q, &mut |k, h| {
+            read(k, h);
+            nasio::written(k);
+        })?;
         nasio::opened(&p, n, ms_since(t));
-        nasio::wrote(&q, n, ms_since(t));
+        nasio::made(&q, n, ms_since(t));
         Ok(n)
     }
 
@@ -1044,8 +1050,8 @@ pub(crate) fn copy_counter() -> impl FnMut(u64, u64) {
     }
 }
 
-/// An open NAS file: reads through it are counted as they go; one written is counted as made, with
-/// its bytes, when it is dropped. Derefs to the `File` for its metadata, `sync_all`, `set_len`.
+/// An open NAS file: reads and writes through it are counted as they go; one written is counted as
+/// made when it is dropped. Derefs to the `File` for its metadata, `sync_all`, `set_len`.
 pub struct NasFile {
     /// (None only once `into_file` took it.)
     f: Option<std::fs::File>,
@@ -1087,6 +1093,7 @@ impl Write for NasFile {
         };
         if let Some(w) = &mut self.wrote {
             *w += n as u64;
+            nasio::written(n as u64);
         }
         Ok(n)
     }
@@ -1118,7 +1125,7 @@ impl Drop for NasFile {
             drop(f);
         }
         if let Some(n) = self.wrote {
-            nasio::wrote(&self.path, n, ms_since(self.t));
+            nasio::made(&self.path, n, ms_since(self.t));
         }
     }
 }

@@ -149,10 +149,10 @@ pub fn add(key: &str, n: u64) {
 }
 
 /// Counts file `path` of `bytes` made on the NAS in `ms` (crate::out's `put_file`, `store_bytes`): `wrote`
-/// and `creates`, and this process's NAS count (store::nasio). One already there (reused, touched)
-/// isn't counted.
+/// and `creates`, and the file made in this process's NAS count (store::nasio, whose bytes
+/// store::naming counted as it wrote them). One already there (reused, touched) isn't counted.
 pub fn wrote(path: &store::nasfs::NasPath, bytes: u64, ms: u64) {
-    path.count_wrote(bytes, ms);
+    path.count_made(bytes, ms);
     let mut s = state();
     *s.m.entry("wrote".into()).or_default() += bytes;
     *s.m.entry("creates".into()).or_default() += 1;

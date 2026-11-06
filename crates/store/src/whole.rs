@@ -418,7 +418,13 @@ pub fn copy_held(src: &Path, dst: &Path, each: &mut dyn FnMut(u64, u64)) -> Resu
     copy_as(src, dst, true, each)
 }
 
-/// A reader telling `each` of the bytes each read gives (`copy_held`'s).
+/// `copy`, `each` told the bytes as they're read (and written next): an upload to the NAS counts
+/// them as they go (crate::nasfs's `copy_from_local`, task #990).
+pub fn copy_told(src: &Path, dst: &Path, each: &mut dyn FnMut(u64)) -> Result<u64> {
+    copy_as(src, dst, false, &mut |k, _| each(k)).map(|c| c.0)
+}
+
+/// A reader telling `each` of the bytes each read gives (`copy_held`'s, `copy_told`'s).
 struct Told<'a, R> {
     r: R,
     held: u64,

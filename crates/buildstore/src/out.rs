@@ -601,8 +601,9 @@ impl Out {
             let seq = self.later.landed;
             self.later.landed += 1;
             if l.sha.is_some() {
-                // (Its NAS write counted as it lands; its cost line's as its target claims it.)
-                self.root.join(&l.name).count_wrote(l.size, l.ms);
+                // (Its NAS file counted made as it lands, its bytes as store::naming wrote them;
+                // its cost line's as its target claims it.)
+                self.root.join(&l.name).count_made(l.size, l.ms);
                 self.later.unclaimed.push((seq, l.size));
             }
             self.uploaded.insert(l.logical.clone(), l.name.clone());
