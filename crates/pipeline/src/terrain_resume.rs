@@ -9,8 +9,8 @@
 //!   level's end. A resumed run takes the blocks kept and makes the rest: a tile reads only its own
 //!   raw tile, its children's means and its water, so the same bytes. The identity (`hi_id`): the
 //!   terrain's versions and codec, the tile, the levels' tiles this run makes (the coverage's, less
-//!   the subtrees out to other workers), the accepted elevation datasets and sources (the pool and
-//!   its geoids), the water's pin, and which of its tiles are at their place's finest zoom.
+//!   the subtrees out to other workers), the accepted elevation datasets and the geoid sources (the
+//!   pool and its geoids: `inputs`), the water's pin, and which of its tiles are at their place's finest zoom.
 //!
 //! The steps not kept, measured from the history (21–25 Oct): slope-hi and slope-deep (the slope's
 //! z6 tiles took 37 s at the median and 2 minutes at the 90th percentile with their deep levels
@@ -115,17 +115,22 @@ fn parse(p: &[u8]) -> Result<Vec<Finished>> {
     Ok(done)
 }
 
-/// What a terrain run reads besides its own tiles, as `manifest` names it: the accepted elevation
-/// datasets (the pool, the fine datasets, the Terrarium pyramid) and sources (the geoids).
-pub(crate) fn inputs(manifest: &BTreeMap<String, String>) -> String {
-    [crate::inputs::elevation::UNIT, crate::inputs::sources::UNIT]
-        .iter()
-        .map(|u| {
-            let l = crate::inputs::logical(u);
-            format!("{l}={}", manifest.get(&l).map(String::as_str).unwrap_or("-"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// What a terrain run reads besides its own tiles, a line each: the accepted elevation datasets
+/// (the pool, the fine datasets, the Terrarium pyramid) by the index `manifest` names, and the
+/// geoid sources converting their heights (`geoid`: crate::inputs::sources::geoid, what the pool's
+/// readers take of the declared sources), each by its own declaration (`Source::named`). Another
+/// source's declaration changed leaves it as it was (task #968).
+pub(crate) fn inputs(manifest: &BTreeMap<String, String>, geoid: &[crate::inputs::sources::Source]) -> Vec<String> {
+    let l = crate::inputs::logical(crate::inputs::elevation::UNIT);
+    std::iter::once(format!("{l}={}", manifest.get(&l).map(String::as_str).unwrap_or("-")))
+        .chain(geoid.iter().map(crate::inputs::sources::Source::named))
+        .collect()
+}
+
+/// `inputs` of the records `manifest` names under `root`, as a run's resume log's identity names
+/// them (one string).
+pub(crate) fn inputs_read(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<String> {
+    Ok(inputs(manifest, &crate::inputs::sources::geoid(root, manifest)?).join("\n"))
 }
 
 /// The tiles of `levels` at their place's finest zoom (`Sources::native`), as an identity names them.
@@ -144,9 +149,9 @@ fn natives(src: &crate::terrain_pack::Sources, levels: &[(u8, Vec<(u32, u32)>)])
 }
 
 /// A terrain-hi run's identity: z6 tile `t`, the levels it makes here `levels` (their tiles), in
-/// blocks `up` levels up, from what `manifest` names (`inputs`) and sources `src`.
+/// blocks `up` levels up, from `inputs` (`inputs_read`) and sources `src`.
 pub fn hi_id(
-    manifest: &BTreeMap<String, String>,
+    inputs: &str,
     src: &crate::terrain_pack::Sources,
     t: (u8, u32, u32),
     levels: &[(u8, Vec<(u32, u32)>)],
@@ -166,7 +171,7 @@ pub fn hi_id(
         &crate::terrain_codec::version(),
         &format!("{}/{}/{}", t.0, t.1, t.2),
         &h.finalize().to_hex(),
-        &inputs(manifest),
+        inputs,
         &src.water.map(|w| w.pin()).unwrap_or_else(|| "-".into()),
         &natives(src, levels),
     ])

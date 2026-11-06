@@ -124,10 +124,7 @@ impl Pool {
         let a = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)?.context(
             "no version of the elevation datasets is accepted: the terrain's are declared there (docs/inputs.md §6.8)",
         )?;
-        let geoid = match crate::inputs::sources::open(root, m)? {
-            Some(s) => s.many(crate::inputs::sources::GEOID).to_vec(),
-            None => Vec::new(),
-        };
+        let geoid = crate::inputs::sources::geoid(root, m)?;
         let mut pool = Pool::of(crate::dem::declared::plan_converted(&a, b, &geoid)?, root.join("sources/fetched"), b);
         pool.local = crate::localread::Local::from_env(root);
         pool.pyramids = Some(root.join(crate::pyramids::DIR));

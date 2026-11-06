@@ -718,7 +718,7 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
                 "polar-terrain",
                 &format!("{} {} z{max_z}", TERRAIN_V, crate::terrain_codec::version()),
                 &t,
-                &[&crate::terrain_resume::inputs(&out.manifest), &format!("{plans:?}")],
+                &[&crate::terrain_resume::inputs_read(out.root(), &out.manifest)?, &format!("{plans:?}")],
             ),
             crate::resume_log::on(),
         );

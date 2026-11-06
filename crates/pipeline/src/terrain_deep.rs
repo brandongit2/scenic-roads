@@ -336,12 +336,13 @@ pub fn build_target(
 ) -> Result<Report> {
     let mut rep = Report::default();
     let p = crate::timings::phase("making its tiles, its finest zooms sampled, the coarser from them");
-    let mut log = keep
-        .then(|| {
-            let id = crate::terrain_resume::hi_id(&out.manifest, src, (PACK_Z, t.0, t.1), &levels, 4);
-            crate::terrain_resume::HiLog::open(&out.scratch, (PACK_Z, t.0, t.1), &id)
-        })
-        .flatten();
+    let mut log = if keep {
+        let inputs = crate::terrain_resume::inputs_read(out.root(), &out.manifest)?;
+        let id = crate::terrain_resume::hi_id(&inputs, src, (PACK_Z, t.0, t.1), &levels, 4);
+        crate::terrain_resume::HiLog::open(&out.scratch, (PACK_Z, t.0, t.1), &id)
+    } else {
+        None
+    };
     let (made, mid) = crate::terrain_pack::make_piece_logged(raw, src, levels, log.as_mut())?;
     drop(p);
     let _p = crate::timings::phase("writing and uploading its deep pack and mid");

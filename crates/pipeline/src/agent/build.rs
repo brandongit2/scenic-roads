@@ -1319,8 +1319,12 @@ fn terrain_slope_targets_kept(x: &KeyCtx) -> TerrainTargets {
         &named(crate::terrain_deep::MID_PREFIX),
         &named(crate::terrain_water::IDX_PREFIX),
         &crate::terrain_pack::water_source_pin(m).unwrap_or_default(),
-        m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT)).map_or("-", String::as_str),
-        m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)).map_or("-", String::as_str),
+        // (The elevation index, and of the sources only the geoids the terrain reads:
+        // crate::terrain_resume::inputs. The index named while the geoids can't be read too.)
+        &match tiles.geoid(m) {
+            Some(g) => crate::terrain_resume::inputs(m, &g).join("\n"),
+            None => format!("{}\ngeoid unread", crate::terrain_resume::inputs(m, &[]).join("\n")),
+        },
     ]);
     let made = std::cell::RefCell::new(None);
     let kept = tiles.memo("terrain-targets", &from, || {

@@ -712,8 +712,13 @@ impl Source {
         if self.digest() == before.1 {
             before.0.to_string()
         } else {
-            format!("source {} {}", self.id, self.keyed)
+            self.named()
         }
+    }
+
+    /// It as a key names it: its id and `keyed` digest (its declaration's own content).
+    pub fn named(&self) -> String {
+        format!("source {} {}", self.id, self.keyed)
     }
 
     /// `key_part` for a key that named nothing of it in code (`before`: the digest of what the code
@@ -831,6 +836,14 @@ pub fn read(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -
         .context("no version of the source declarations is accepted (inputs/sources/, docs/inputs.md §6.9)")
 }
 
+/// The geoid sources (`GEOID`) of the accepted version the records `manifest` name, in id order:
+/// none before one is accepted. What converts the elevation datasets' heights wherever the pool is
+/// read (crate::dem::declared::convert): all a terrain run reads of the declared sources, so all
+/// its resume identity names of them (crate::terrain_resume::inputs), never the whole unit.
+pub fn geoid(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<Source>> {
+    Ok(open(root, manifest)?.map(|s| s.many(GEOID).to_vec()).unwrap_or_default())
+}
+
 /// What the units' keys name of the declared sources they read (the land cover, the canopy): each
 /// one's id and `keyed` digest where it isn't as staged (`Source::key_extra` against
 /// inputs::sources::declared_before), together; None while all are, so the keys are as they were.
@@ -914,9 +927,15 @@ pub const STAGED: [(&str, &[u8]); 16] = [
 /// steps' tests read them as the build does.
 #[cfg(test)]
 pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, String>) {
+    accept_files(root, m, &STAGED);
+}
+
+/// An accepted version of declarations `decls` (path and bytes), its index named in records `m`.
+#[cfg(test)]
+pub fn accept_files(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, String>, decls: &[(&str, &[u8])]) {
     let mut files = BTreeMap::new();
     root.join(super::store_dir(UNIT)).create_dir_all().unwrap();
-    for (path, b) in STAGED {
+    for &(path, b) in decls {
         let c = SourcesCheck::default().file(path, b);
         assert!(c.findings.is_empty(), "{path}: {:?}", c.findings);
         let (stem, ext) = path.rsplit_once('.').unwrap();

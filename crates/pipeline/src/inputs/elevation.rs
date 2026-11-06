@@ -910,11 +910,7 @@ impl Checks for Elevation {
                 }
                 _ => (None, BTreeMap::new(), None),
             };
-        // (The accepted geoid sources: none accepted, none.)
-        let geoid = match manifest.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) {
-            Some(_) => crate::inputs::sources::read(root, manifest)?.many(crate::inputs::sources::GEOID).to_vec(),
-            None => Vec::new(),
-        };
+        let geoid = crate::inputs::sources::geoid(root, manifest)?;
         #[cfg(test)]
         if let Some((fetch, app)) = TEST_PREPARED.with(|t| t.borrow().clone()) {
             return Ok(Some(Box::new(Elevation {

@@ -1910,12 +1910,18 @@ pub(crate) fn build_piece_kept(
             t.1
         );
         let n = mine.iter().map(|(_, t)| t.len()).sum();
-        let mut log = keep
-            .then(|| {
-                let id = crate::terrain_resume::hi_id(&out.manifest, src, (6, t.0, t.1), &mine, mk.block_up);
-                crate::terrain_resume::HiLog::open(&out.scratch, (6, t.0, t.1), &id)
-            })
-            .flatten();
+        let mut log = if keep {
+            let id = crate::terrain_resume::hi_id(
+                &crate::terrain_resume::inputs_read(out.root(), &out.manifest)?,
+                src,
+                (6, t.0, t.1),
+                &mine,
+                mk.block_up,
+            );
+            crate::terrain_resume::HiLog::open(&out.scratch, (6, t.0, t.1), &id)
+        } else {
+            None
+        };
         let began = std::time::Instant::now();
         let (mut hi, mut mid) = mk.piece(mine, true, log.as_mut(), deep)?;
         offers.made_here(began.elapsed().as_secs_f64(), n);

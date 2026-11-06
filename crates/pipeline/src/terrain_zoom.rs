@@ -177,11 +177,7 @@ impl Declared {
         m: &std::collections::BTreeMap<String, String>,
     ) -> Result<Option<Declared>> {
         let Some(a) = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)? else { return Ok(None) };
-        let geoid = match crate::inputs::sources::open(root, m)? {
-            Some(s) => s.many(crate::inputs::sources::GEOID).to_vec(),
-            None => Vec::new(),
-        };
-        Ok(Some(Declared::of(a, geoid)?))
+        Ok(Some(Declared::of(a, crate::inputs::sources::geoid(root, m)?)?))
     }
 
     /// Of accepted version `a`, converted by `geoid`.
