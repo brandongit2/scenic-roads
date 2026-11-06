@@ -136,6 +136,10 @@ mkdir -p $tmp/check-tests; print -l 'cargo test -p a --test scan' 'cargo test -p
 case_ "fewer tests to run here than the pass ran" reuse reuse
 print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- m:: n:: tests::' 'cargo test -p a --bin x' > $tmp/tests
 case_ "more tests to run here than the pass ran" reuse partial $'cargo test -p a --bin x\ncargo test -p a --lib -- n::'
+# (Its file cut short, as a reader sees one half copied: its last filter, `n`, would match n::.)
+print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- m:: n' > $tmp/check-tests/$hash
+print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- m:: n::' > $tmp/tests
+case_ "the pass's kept commands not their hash" reuse run
 rm -r $tmp/check-tests
 print -l 'cargo test -p a --test scan' 'cargo test -p a --lib -- m:: tests::' > $tmp/tests
 # (Another pass beside P, of main's tree before the branch: the branch's change its own since; P is weighed.)

@@ -213,8 +213,11 @@ if [[ -n $treekey ]]; then
   if [[ -s $logs/tests-commands ]]; then
     th=$(shasum $logs/tests-commands | cut -d' ' -f1); treekey+=" tests $th"
     # (The commands themselves, for a later check whose own differ: check-reuse.py runs only the
-    # tests these didn't, #969. A few KB each; older than 30 days go.)
-    mkdir -p ${passed:h}/check-tests && cp $logs/tests-commands ${passed:h}/check-tests/$th
+    # tests these didn't, #969. A few KB each; older than 30 days go. Shared by the Mac's
+    # worktrees, so put in place whole by a rename: a check reading it meanwhile never sees it cut
+    # short, and check-reuse.py takes it only when its bytes are its name's hash.)
+    mkdir -p ${passed:h}/check-tests && cp $logs/tests-commands ${passed:h}/check-tests/$th.$$.tmp &&
+      mv -f ${passed:h}/check-tests/$th.$$.tmp ${passed:h}/check-tests/$th
     find ${passed:h}/check-tests -type f -mtime +30 -delete 2>/dev/null
   fi
   treekey+=$reused

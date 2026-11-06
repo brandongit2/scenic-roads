@@ -513,10 +513,19 @@ def decide(passed, tests_file):
         theirs = tests
     else:
         kept = os.path.join(os.path.dirname(os.path.abspath(passed)), "check-tests", kv.get("tests", "-"))
-        if not os.path.isfile(kept):
-            out.append(("tests", "run", "-", "the affected tests here aren't %s's, and its aren't kept" % sp))
+        try:
+            with open(kept, "rb") as fh:
+                b = fh.read()
+        except OSError:
+            b = None
+        # (Named by its hash: a file cut short or replaced, by a writer of another worktree's or
+        # anything else, isn't the pass's commands. A filter cut short would match tests by
+        # substring that it never ran.)
+        if b is None or hashlib.sha1(b).hexdigest() != kv.get("tests"):
+            out.append(("tests", "run", "-", "the affected tests here aren't %s's, and its aren't kept%s" % (
+                sp, "" if b is None else " whole (check-tests/%s isn't their hash)" % kv["tests"][:7])))
             return out
-        theirs = [l for l in read(kept).splitlines() if l.strip()]
+        theirs = [l for l in b.decode("utf-8", "replace").splitlines() if l.strip()]
     how += "; none is a Rust build input" if not hit else "; the Rust ones the branch's own modules"
     try:
         out += tests_part(tests, theirs, x, files, p, how, extra)
