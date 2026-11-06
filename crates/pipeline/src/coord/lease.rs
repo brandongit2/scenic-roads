@@ -54,8 +54,9 @@ pub struct Lease {
     pub live_at: Option<Instant>,
     #[serde(skip)]
     pub window: std::collections::VecDeque<(Instant, crate::agent::jobs::Live)>,
-    /// The first live view it heard, and when: what its job's mean NAS rate is reckoned from
-    /// (`Lease::mean`; in memory alone).
+    /// The first live view it heard that says all its job moved (`Live::nas_moved`), and when: what
+    /// its job's mean NAS rate is reckoned from (`Lease::mean`; in memory alone). One that doesn't
+    /// is replaced by the next, so a mean is had whenever a recent rate is (`Lease::lately`).
     #[serde(skip)]
     pub first: Option<(Instant, crate::agent::jobs::Live)>,
     /// Its job's stillness as its worker's beats show it (docs/pool.md §10, Flags; in memory
@@ -621,7 +622,7 @@ impl Leases {
                     while l.window.get(1).is_some_and(|(t, _)| now.saturating_duration_since(*t) >= WINDOW) {
                         l.window.pop_front();
                     }
-                    if l.first.is_none() {
+                    if l.first.as_ref().is_none_or(|(_, f)| f.nas_moved().is_none()) {
                         l.first = Some((now, v.clone()));
                     }
                     l.live = Some(v);
@@ -874,6 +875,16 @@ mod tests {
         assert!((lately - 100e6).abs() < 1.0 && (mean - 30e9 / 880.0).abs() < 1.0, "{lately} {mean}");
         let old = crate::agent::jobs::Live { nas_read: Some(b), nas_wrote: Some(0), ..Default::default() };
         assert!(old.nas_rate(&moved(0), 900.0).is_none() && moved(b).nas_rate(&old, 900.0).is_none());
+        // (Task #991 review: a first view not saying all it moved isn't the mean's base; the next
+        // that does is, so the mean is had once the recent rate is, never left at the targets'.)
+        let c = l.grant("m1", job(&[("6/1/2", "k")]), t0);
+        assert!(l.renew_frac(c, "m1", None, None, Some(old.clone()), t0 + Duration::from_secs(20)));
+        for s in (40..=120).step_by(20) {
+            assert!(l.renew_frac(c, "m1", None, None, Some(moved(s * 1_000_000)), t0 + Duration::from_secs(s)));
+        }
+        let y = l.get(c, "m1", t0 + Duration::from_secs(120)).unwrap();
+        assert_eq!(y.first.as_ref().map(|f| f.0), Some(t0 + Duration::from_secs(40)));
+        assert!((y.mean().unwrap().bytes_s - 1e6).abs() < 1.0 && y.lately().is_some());
     }
 
     fn job(ts: &[(&str, &str)]) -> Work {
