@@ -19,7 +19,9 @@
 //! - **Overdue** (`overdue`): a leased job running past `factor` times the time it was sized to on
 //!   its Mac (`Run::sized_s`: its targets' measured times there at its threads and its start,
 //!   crate::coord::sched's `Sched::batch_secs`, as `pick_every` sized it), with how far its batch
-//!   is; a job flagged stuck isn't flagged overdue too.
+//!   is; a job flagged stuck isn't flagged overdue too. Its "N of M targets done", the batch's percent
+//!   and its time left count one thing, the targets whose end line the step noted
+//!   (`memguard::targets`), however late the step noted it.
 //! - **Stale** (`stale`): the lead's catalogue due (`build::PublishLine::due_since`: held back,
 //!   planned or waiting out its minute) for longer than `factor` times the most the plan holds one
 //!   back and waits between two (build::CATALOGUE_CAP_S and CATALOGUE_EVERY_S), counted from the
@@ -409,6 +411,59 @@ mod tests {
         let unknown = Run { under_way: Some(UnderWay { usual_s: None, ..under("9/80/180", 1_030, 0) }), ..run };
         assert!(at(&unknown, 1_030 + 20 * 60).is_empty());
         assert_eq!(at(&unknown, 1_000 + 3 * 3_600)[0].kind, "overdue");
+    }
+
+    /// A batch of mixed target sizes (one big tile, twelve small) whose uploads land beside the next
+    /// target's work, as its costs file says (5 Nov: 9 of 13 tiles made, "0 of 13 targets done"):
+    /// its done count is the targets ended, each flag compares a target's time with that target's
+    /// usual time and the job's with the time its targets were sized to, so a healthy batch
+    /// (small targets quick, the big one long) is flagged by neither; one slow target is stuck.
+    #[test]
+    fn a_healthy_batch_of_mixed_sizes_is_not_flagged() {
+        let st = lead();
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("costs.jsonl");
+        let line = |k: u32, what: &str| format!("{{\"unit\":\"terrain-hi 6/1/{k}\",{what}}}\n");
+        // The big tile (6/1/0) first, then small ones, the cost lines one target behind.
+        let mut text = line(0, "\"started\":1000");
+        for k in 1..=9u32 {
+            text += &line(k, &format!("\"started\":{}", 1_600 + 30 * k));
+            text += &line(k - 1, "\"peak_mb\":9");
+        }
+        std::fs::write(&p, text).unwrap();
+        let t = crate::agent::memguard::targets(&p);
+        assert_eq!(t.ended, 9, "9 of 13 made: {t:?}");
+        let on = t.on.unwrap();
+        assert_eq!(on.0, "terrain-hi 6/1/9");
+        // Sized: the big tile 600 s, twelve small ones 30 s each, a start of 40 s: 1,000 s.
+        let run = Run {
+            worker: "mini".into(),
+            lease: 1,
+            step: "terrain-hi".into(),
+            targets: 13,
+            done: Some(t.ended),
+            threads: 4,
+            since: 1_000,
+            sized_s: Some(1_000),
+            under_way: Some(UnderWay { target: "6/1/9".into(), since: on.1, usual_s: Some(30) }),
+        };
+        let at = |r: &Run, now: u64| overdue(&st, std::slice::from_ref(r), 3.0, now);
+        // 9 targets in 880 s (the big one in 600): well within its sized time and 3x each one's.
+        assert!(at(&run, on.1 + 20).is_empty(), "{:?}", at(&run, on.1 + 20));
+        // The tenth small target stuck 2 min (past 3x its usual 30 s): stuck, saying 9 of 13 done.
+        let f = at(&run, on.1 + 120);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].kind, "stuck");
+        assert!(f[0].said.contains("9 of 13 targets done"), "{}", f[0].said);
+        // The same batch slow as a whole (3,100 s of a sized 1,000 s) with every target moving:
+        // overdue, with the same count.
+        let moving = Run {
+            under_way: Some(UnderWay { target: "6/1/9".into(), since: 1_000 + 3_090, usual_s: Some(30) }),
+            ..run
+        };
+        let f = at(&moving, 1_000 + 3_100);
+        assert_eq!((f.len(), f[0].kind.as_str()), (1, "overdue"), "{f:?}");
+        assert!(f[0].said.contains("9 of 13 targets done"), "{}", f[0].said);
     }
 
     /// A catalogue due past the factor times the plan's most hold (11 min) and not going out is

@@ -9709,6 +9709,12 @@ mod tests {
         assert!((d - 35.99).abs() < 1e-9 && eta == Some(1), "{d} {eta:?}");
         // 12 ended in 2 h, the next not said yet (its predecessor's line at 100 %): 12, 4 h left.
         assert_eq!(batch_progress(12, 36, Some(1.0), 7_200.0), (12.0, Some(14_400)));
+        // A batch of 13 whose packing comes at the end (terrain-hi's raw tiles): every target done,
+        // the packing under way says nothing of the targets: all done, none left.
+        assert_eq!(batch_progress(13, 13, Some(0.4), 1_300.0), (13.0, Some(0)));
+        // 9 of 13 ended and the tenth half through: 9.5 of 13 at the batch's pace.
+        let (d, eta) = batch_progress(9, 13, Some(0.5), 950.0);
+        assert_eq!((d, eta), (9.5, Some(350)));
         assert_eq!(batch_progress(0, 36, None, 60.0), (0.0, None), "nothing done: no pace");
         assert_eq!(batch_progress(0, 4, Some(f64::NAN), 60.0), (0.0, None));
         assert_eq!(batch_progress(9, 4, Some(0.5), 60.0).0, 4.0, "never past its targets");

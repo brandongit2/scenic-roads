@@ -257,9 +257,11 @@ pub fn current(costs: &Path) -> Option<String> {
 }
 
 /// A job's targets as its costs file says (`current`): the one under way and when it began (unix
-/// s), and how many ended (each a `peak_mb` line after its `started`); and the threads the last to
-/// begin runs on, where its `started` line says (a target run on its job's grant as it began,
-/// crate::control::on_grant: docs/pool.md §7.1, Threads re-granted).
+/// s), and how many ended (each a `peak_mb` line after the `started` line of its target: the
+/// step's own per-target completion, the one notion of a target done for the batch's percent, its
+/// time left and the flags' count); and the threads the last to begin runs on, where its `started`
+/// line says (a target run on its job's grant as it began, crate::control::on_grant: docs/pool.md
+/// §7.1, Threads re-granted).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Targets {
     pub on: Option<(String, u64)>,
@@ -267,20 +269,31 @@ pub struct Targets {
     pub threads: Option<u32>,
 }
 
-/// Costs file `costs`'s `Targets` (none when it can't be read).
+/// Costs file `costs`'s `Targets` (none when it can't be read). A target's `peak_mb` line ends it
+/// whichever target is under way: a step that lands a target's uploads beside the next target's
+/// work (scenic-build's `Landing`: terrain-hi, slope-hi, pack, bldtiles, terrain-deep) writes its
+/// line after the next's `started` one, and counted only against the target under way it never
+/// ended any (a batch of 13 tiles read 0 done with 9 made, 5 Nov).
 pub fn targets(costs: &Path) -> Targets {
     let mut t = Targets::default();
     let Ok(s) = std::fs::read_to_string(costs) else { return t };
+    let mut begun: Vec<String> = Vec::new();
     for l in s.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let Some(key) = v["unit"].as_str() else { continue };
         if let Some(at) = v.get("started") {
             t.on = Some((key.to_string(), at.as_u64().unwrap_or(0)));
+            begun.push(key.to_string());
             // (A drop's line, run outside its grant, says none: the last said stands.)
             t.threads = v["threads"].as_u64().map(|n| n as u32).or(t.threads);
-        } else if v.get("peak_mb").is_some() && t.on.as_ref().is_some_and(|o| o.0 == key) {
-            t.on = None;
-            t.ended += 1;
+        } else if v.get("peak_mb").is_some() {
+            if let Some(i) = begun.iter().position(|b| b == key) {
+                begun.swap_remove(i);
+                t.ended += 1;
+                if t.on.as_ref().is_some_and(|o| o.0 == key) {
+                    t.on = None;
+                }
+            }
         }
     }
     t
@@ -1553,6 +1566,13 @@ mod tests {
         // run outside its job's grant, says none and leaves them.)
         std::fs::write(&p, "{\"unit\":\"slope-deep 10/1/1\",\"started\":1,\"threads\":6}\n{\"unit\":\"slope-deep 10/1/1\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"slope-deep 10/1/2\",\"started\":4,\"threads\":2}\n{\"unit\":\"slope-deep 10/1/2\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"slope-deep 10/1/3\",\"started\":5}\n").unwrap();
         assert_eq!(targets(&p).threads, Some(2));
+        // (A step that lands a target's uploads beside the next target's work writes its end line
+        // after the next's start: each still ended, the next under way; the packing at the end
+        // after the last: all ended, none under way.)
+        std::fs::write(&p, "{\"unit\":\"terrain-hi 6/1/1\",\"started\":1}\n{\"unit\":\"terrain-hi 6/1/2\",\"started\":5}\n{\"unit\":\"terrain-hi 6/1/1\",\"peak_mb\":9}\n{\"unit\":\"terrain-hi 6/1/3\",\"started\":9}\n{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":9}\n").unwrap();
+        assert_eq!(targets(&p), Targets { on: Some(("terrain-hi 6/1/3".into(), 9)), ended: 2, threads: None });
+        std::fs::write(&p, "{\"unit\":\"terrain-hi 6/1/1\",\"started\":1}\n{\"unit\":\"terrain-hi 6/1/2\",\"started\":5}\n{\"unit\":\"terrain-hi 6/1/1\",\"peak_mb\":9}\n{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":9}\n{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":9}\n{\"unit\":\"never begun\",\"peak_mb\":9}\n").unwrap();
+        assert_eq!(targets(&p), Targets { on: None, ended: 2, threads: None }, "each ends once, only after its start");
         // Its fallbacks: between targets, or a step that notes no costs, the first target not
         // noted done; a job of no targets, its own key; else none.
         let done = d.path().join("done.txt");
