@@ -3812,9 +3812,10 @@ mod tests {
         // of the scale). CPU time, not wall: a loaded machine stretches the wall, not this. One
         // run, #969: `forecast_by`'s budget is each run's, and its three runs differ only in their
         // costs' scale; the three took 132 s of CPU, and 360 s once on the loaded test Mac, in two
-        // check.sh runs of three.)
+        // check.sh runs of three. The late one, the costliest: its costs scaled up the most, the
+        // longest timeline (M1, 5 Nov: 28.5 s of CPU against the expected's 25.7, the soon's 25.3).)
         let cpu0 = thread_cpu();
-        let r = run(&inp, &scaled(SCALINGS[0]), Duration::from_secs(600));
+        let r = run(&inp, &scaled(SCALINGS[2]), Duration::from_secs(600));
         let took = thread_cpu() - cpu0;
         eprintln!("live scale, {n} targets: {} ms of CPU", took.as_millis());
         assert!(r.done && !r.cut, "the run was cut or unfinished");
