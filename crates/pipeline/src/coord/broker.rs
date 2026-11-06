@@ -3,8 +3,10 @@
 //! asks of this Mac (`/work/live`, `/work/settings`). The page itself is the lead's: asked here, it
 //! is sent there, or this Mac's own is shown while the lead isn't reached (crate::coord::memberpage,
 //! docs/roles.md §3.3). Not a
-//! coordinator: it offers no plan, holds no job's lease (those of a term this Mac once led are
-//! left to the lead as it starts), keeps nothing in the pool's store and runs no phase sharer.
+//! coordinator: it offers no plan, holds no job's lease, reads none of the files a lead kept in
+//! the folder (the leases, measures and pause of a term this Mac once led are the lead's: a
+//! member's agent removes them, crate::agent::room::member_leftovers), keeps nothing in the pool's
+//! store and runs no phase sharer.
 //! Its answers say term 0 (`Shared::broker`), so a member that still asks this Mac as the lead
 //! after a change of lead reads the lead's contact again, whatever its app.
 //!

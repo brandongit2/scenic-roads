@@ -226,15 +226,23 @@ fn role_by(run: &pool::Run) -> Role {
 }
 
 /// What only the lead's parts keep in the agent's folder `home`, removed on a member (docs/roles.md
-/// §5 step 2): the terrain packs' indexes the plan reads (`pack-idx/`, agent::plan's
-/// `TerrainTiles`; no job reads them).
-fn drop_lead_caches(home: &Path) {
+/// §5 steps 2 and 6): the terrain packs' indexes the plan reads (`pack-idx/`, agent::plan's
+/// `TerrainTiles`; no job reads them), and a day after they were last written, the lead's other
+/// files and those no code writes any more (room::member_leftovers, §3.5).
+fn drop_lead_files(home: &Path) {
     let idx = home.join("pack-idx");
     if idx.exists() {
         match std::fs::remove_dir_all(&idx) {
             Ok(()) => eprintln!("agent: removed {} (a lead's, this Mac a member)", idx.display()),
             Err(e) => eprintln!("agent: removing {}: {e}", idx.display()),
         }
+    }
+    let freed = room::drop_member_leftovers(home);
+    if freed > 0 {
+        eprintln!(
+            "agent: removed {} of a lead's leftovers and files no code writes (this Mac a member)",
+            room::size(freed)
+        );
     }
 }
 
@@ -1932,7 +1940,7 @@ impl Agent {
             beat.watch_plan(plan.running());
         }
         if role == Role::Member && lock.is_some() && !o.dry_run {
-            drop_lead_caches(&o.home);
+            drop_lead_files(&o.home);
         }
         let mut a = Agent {
             role,
@@ -8549,7 +8557,7 @@ impl Agent {
             (Role::Unknown, Role::Member) => {
                 eprintln!("agent: the lead's declaration read: this Mac is a member");
                 self.role = Role::Member;
-                drop_lead_caches(&self.o.home);
+                drop_lead_files(&self.o.home);
             }
             (was, now) => self.restart_for_part(format!(
                 "the lead's declaration changed this Mac's role ({} → {}): restarting into it",
@@ -16388,6 +16396,106 @@ mod pool_tests {
         let st: Status = serde_json::from_slice(&std::fs::read(m.o.home.join("helper.json")).unwrap()).unwrap();
         assert!(st.regions.is_empty() && st.checklist.is_empty(), "{:?}", st.checklist);
         stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+    }
+
+    /// Task #882 step 6 (docs/roles.md §3.5): two agents, the lead and a member. Each entry the
+    /// lead writes in its folder (and its coordinator's, `coord/`) is a member's leftover
+    /// (room::is_member_leftover) or kept: one the member writes too, or §3.5's kept list (the
+    /// agent's own `timings.jsonl`, the broker's `coord/` files). Nothing a member writes is a
+    /// leftover. A member's agent removes, as it starts, the leftovers last written a day ago or
+    /// more, and keeps a newer one and every kept file.
+    #[test]
+    fn member_leftovers_names_every_lead_file() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let bin = app(d.path());
+        let o = |who: &str| Options {
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
+            home: d.path().join(who).join("agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            member: false,
+        };
+        let entries = |home: &Path| -> BTreeSet<String> {
+            let mut out = BTreeSet::new();
+            for (dir, pre) in [(home.to_path_buf(), ""), (home.join("coord"), "coord/")] {
+                for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                    out.insert(format!("{pre}{}", e.file_name().to_string_lossy()));
+                }
+            }
+            out
+        };
+        // §3.5's kept: the agent's own timings (every Mac's jobs') and memory (`state.json`, written
+        // when it changes: a member's within these rounds may not), the broker's folder and files.
+        let kept_list = [
+            "timings.jsonl",
+            "state.json",
+            "coord",
+            "coord/jobs-token",
+            "coord/page",
+            "coord/history.jsonl",
+            "coord/workers-token",
+            "coord/journal",
+        ];
+        for k in kept_list {
+            assert!(!room::is_member_leftover(k), "{k} is kept");
+        }
+        let mut lead = test_agent(o("l")).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        let mut m = test_agent(o("m")).unwrap();
+        for _ in 0..3 {
+            lead.round().unwrap();
+            m.round().unwrap();
+        }
+        assert_eq!((lead.role, m.role), (Role::Lead, Role::Member));
+        let (lead_has, member_has) = (entries(&lead.o.home), entries(&m.o.home));
+        let mine: Vec<&String> = member_has.iter().filter(|e| room::is_member_leftover(e)).collect();
+        assert!(mine.is_empty(), "a member's own files taken for leftovers: {mine:?}");
+        let unnamed: Vec<&String> = lead_has
+            .iter()
+            .filter(|e| !room::is_member_leftover(e) && !member_has.contains(*e) && !kept_list.contains(&e.as_str()))
+            .collect();
+        assert!(unnamed.is_empty(), "a lead's files neither leftovers nor kept: {unnamed:?}");
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+        drop(m);
+        // The member restarted: a lead's files written two days ago go, a newer one and the kept stay.
+        let home = d.path().join("m/agent");
+        let old = std::time::SystemTime::now() - Duration::from_secs(2 * 86400);
+        let aged = |p: &Path| {
+            std::fs::File::open(p).unwrap().set_modified(old).unwrap();
+        };
+        std::fs::create_dir_all(home.join("backups/blobs")).unwrap();
+        for f in [
+            "status.json",
+            "backups/blobs/x",
+            "coord/costs.json",
+            "loop-stall-sample-20261031-045712Z.txt",
+            "costs-2.jsonl",
+            "timings.jsonl",
+            "coord/workers-token",
+        ] {
+            std::fs::write(home.join(f), b"x").unwrap();
+            aged(&home.join(f));
+        }
+        for dir in ["backups/blobs", "backups"] {
+            aged(&home.join(dir));
+        }
+        std::fs::write(home.join(gc::DEPTH_KEEP_FILE), b"x").unwrap();
+        let mut m = test_agent(o("m")).unwrap();
+        assert_eq!(m.role, Role::Member);
+        for gone in
+            ["status.json", "backups", "coord/costs.json", "loop-stall-sample-20261031-045712Z.txt", "costs-2.jsonl"]
+        {
+            assert!(!home.join(gone).exists(), "{gone} removed");
+        }
+        for stays in [gc::DEPTH_KEEP_FILE, "timings.jsonl", "coord/workers-token", "coord/jobs-token", "coord/journal"]
+        {
+            assert!(home.join(stays).exists(), "{stays} kept");
+        }
         stop_jobs(&mut m);
     }
 

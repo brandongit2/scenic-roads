@@ -1423,8 +1423,12 @@ impl Coordinator {
         }
         let token = http::token(dir)?;
         let now = Instant::now();
-        // (A viewer's folder is its own scratch, emptied as it starts: no leases.)
-        let mut leases = Leases::load(&dir.join("leases.json"), TTL, now);
+        // The files of an agent before the store (crate::coord::kept), read by the lead's alone as
+        // its store's first fill: a member's broker keeps no store, and a viewer's folder is its own
+        // scratch (docs/roles.md §3.5: a member's agent removes them).
+        let lead = mode == Mode::Lead;
+        let first_fill = |f: &str| if lead { std::fs::read(dir.join(f)).ok() } else { None };
+        let mut leases = Leases::load(first_fill("leases.json"), TTL, now);
         // (What releases a target held for a newer app: this one, `Hold`.)
         leases.app = app.to_string();
         leases.me = me.to_string();
@@ -1432,39 +1436,21 @@ impl Coordinator {
         for l in leases.drop_where(|l| l.worker == me) {
             eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
         }
-        // (A broker's folder is its Mac's coordinator's: the jobs' leases of a term it led are the
-        // lead's now, taken up from the store there.)
-        if mode == Mode::Broker {
-            let gone = leases.drop_where(|l| matches!(l.work, Work::Job { .. }));
-            if !gone.is_empty() {
-                eprintln!("coordinator: a broker: {} job lease(s) of a term this Mac led left to the lead", gone.len());
-            }
-        }
-        let costs = std::fs::read(dir.join("costs.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        let floors = std::fs::read(dir.join("floors.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        let mut disks: BTreeMap<String, u64> = std::fs::read(dir.join("disks.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let costs = first_fill("costs.json").and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let floors = first_fill("floors.json").and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut disks: BTreeMap<String, u64> =
+            first_fill("disks.json").and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         // (Measures of an old step shape dropped, `old_shape`: written without them at the next save.)
         let mut costs: BTreeMap<String, Cost> = costs;
         let mut floors: BTreeMap<String, Floor> = floors;
         costs.retain(|k, _| !old_shape(k));
         floors.retain(|k, _| !old_shape(k));
         disks.retain(|k, _| !old_shape(k));
-        let (job_disks, fills) = job_disks_load(dir, &mut disks, !viewer);
+        let (job_disks, fills) = if lead { job_disks_load(dir, &mut disks) } else { Default::default() };
         // The build's pause, as it was when the agent before this one stopped (`{pause, at}`; an older
         // agent's, the pause alone).
-        let kept: serde_json::Value = std::fs::read(dir.join("pause.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let kept: serde_json::Value =
+            first_fill("pause.json").and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let (paused, pause_at): (Option<crate::control::Pause>, u64) = match kept.get("at") {
             Some(at) if kept.get("pause").is_some() => {
                 (serde_json::from_value(kept["pause"].clone()).ok().flatten(), at.as_u64().unwrap_or(0))
@@ -3574,12 +3560,11 @@ fn remeasured(job_disks: &mut BTreeMap<String, Vec<u64>>, disks: &mut BTreeMap<S
 /// without its stale and gone steps' and those far above their targets' measures (`stale_peak`,
 /// by `disks`); a step reading a shared cache's peak there (the most a job took: a cold run's) its
 /// cache's fill, less its targets' output (their 90th percentile), the most of its steps', and not
-/// a run of it. Taken so once (`JOB_DISKS`, `FILLS` and `disks.json` written at once; with `keep`
-/// alone: a viewer writes nothing).
+/// a run of it. Taken so once (`JOB_DISKS`, `FILLS` and `disks.json` written at once). The lead's
+/// alone (`Coordinator::start_with`).
 fn job_disks_load(
     dir: &std::path::Path,
     disks: &mut BTreeMap<String, u64>,
-    keep: bool,
 ) -> (BTreeMap<String, Vec<u64>>, BTreeMap<String, u64>) {
     // (Fills only of the caches there are: the base packs' went with task #396.)
     let fills: Option<BTreeMap<String, u64>> = std::fs::read(dir.join(FILLS))
@@ -3597,15 +3582,12 @@ fn job_disks_load(
     let (v4, gone) = JOB_DISKS_V4;
     let before = disks.len();
     disks.retain(|k, _| !gone.contains(&crate::agent::memguard::step_of_key(k)));
-    if keep && disks.len() < before {
+    if disks.len() < before {
         let _ = serde_json::to_vec(&*disks)
             .map_err(anyhow::Error::from)
             .and_then(|b| store::whole::write(&dir.join("disks.json"), &b));
     }
     let write = |m: &BTreeMap<String, Vec<u64>>, fills: &BTreeMap<String, u64>| {
-        if !keep {
-            return;
-        }
         for (f, v) in [(JOB_DISKS, serde_json::to_vec(m)), (FILLS, serde_json::to_vec(fills))] {
             let _ = v.map_err(anyhow::Error::from).and_then(|b| store::whole::write(&dir.join(f), &b));
         }
@@ -7401,15 +7383,15 @@ mod tests {
         // #396) and those far above their targets' measures (task #392) dropped.
         let fresh = tempfile::tempdir().unwrap();
         let mut d: BTreeMap<String, u64> = [(cost_key("pack", "6/1/1"), 300)].into();
-        assert_eq!(job_disks_load(fresh.path(), &mut d, true), Default::default());
+        assert_eq!(job_disks_load(fresh.path(), &mut d), Default::default());
         assert!(fresh.path().join(JOB_DISKS).exists(), "a fresh folder's v6 written: the drop done once");
         let mut d: BTreeMap<String, u64> = [(cost_key("pack", "6/1/1"), 300)].into();
-        job_disks_load(fresh.path(), &mut d, true);
+        job_disks_load(fresh.path(), &mut d);
         assert_eq!(d.len(), 1, "not dropped again");
         let old = tempfile::tempdir().unwrap();
         std::fs::write(old.path().join("job-disks.json"), r#"{"pack":146944,"lo":46000,"peaks":20000}"#).unwrap();
         assert_eq!(
-            job_disks_load(old.path(), &mut BTreeMap::new(), true),
+            job_disks_load(old.path(), &mut BTreeMap::new()),
             ([("peaks".to_string(), vec![20_000])].into(), BTreeMap::new())
         );
         std::fs::remove_file(old.path().join(JOB_DISKS)).unwrap();
@@ -7424,17 +7406,14 @@ mod tests {
                 .into();
         let fill = || -> BTreeMap<String, u64> { [(crate::localread::CACHE.to_string(), 30_000)].into() };
         assert_eq!(
-            job_disks_load(old.path(), &mut measured, true),
+            job_disks_load(old.path(), &mut measured),
             (BTreeMap::new(), fill()),
             "depth's 30.6 GB its cache's fill less its output, not a run; unit's (the deleted DEM cache's \
              fill) and pack's gone; 5 GB against 0.5 GB dropped"
         );
         assert!(!measured.contains_key(&cost_key("pack", "6/1/1")), "pack's targets' disks gone too");
         std::fs::write(old.path().join(JOB_DISKS), r#"{"peaks":[1300]}"#).unwrap();
-        assert_eq!(
-            job_disks_load(old.path(), &mut measured, true),
-            ([("peaks".to_string(), vec![1300])].into(), fill())
-        );
+        assert_eq!(job_disks_load(old.path(), &mut measured), ([("peaks".to_string(), vec![1300])].into(), fill()));
         // Cleared with the floors.
         c.floors(true, Some("peaks"), None);
         c.floors(true, Some("pack"), None);
@@ -7903,12 +7882,12 @@ mod tests {
             (cost_key("peaks", "6/1/1"), 900),
         ]
         .into();
-        let (m, _) = job_disks_load(dir.path(), &mut d, true);
+        let (m, _) = job_disks_load(dir.path(), &mut d);
         assert_eq!(m, [("pack".to_string(), vec![1915, 1892]), ("peaks".to_string(), vec![1300])].into());
         assert_eq!(d, [(cost_key("peaks", "6/1/1"), 900)].into());
         assert!(dir.path().join(JOB_DISKS).exists());
         let mut d: BTreeMap<String, u64> = [(cost_key("pack", "6/1/1"), 300)].into();
-        job_disks_load(dir.path(), &mut d, true);
+        job_disks_load(dir.path(), &mut d);
         assert_eq!(d.len(), 1, "not dropped again");
     }
 

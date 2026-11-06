@@ -11,7 +11,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// What a lease is for.
@@ -235,13 +234,14 @@ impl Leases {
         }
     }
 
-    /// The leases saved at `path` (none when there's no file), each live for a whole `ttl` from
-    /// `now`: their workers beat again once they reach this process. Ids go on from the last given,
-    /// and never from below the time in milliseconds, so none is given twice even if the file is lost.
-    pub fn load(path: &Path, ttl: Duration, now: Instant) -> Leases {
+    /// The leases `saved` (a `leases.json` read; none without one), each live for a whole `ttl`
+    /// from `now`: their workers beat again once they reach this process. Ids go on from the last
+    /// given, and never from below the time in milliseconds, so none is given twice even if the
+    /// file is lost.
+    pub fn load(saved: Option<Vec<u8>>, ttl: Duration, now: Instant) -> Leases {
         let mut l = Leases::new(ttl);
         l.next = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64);
-        if let Some(s) = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) {
+        if let Some(s) = saved.and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) {
             l.next = l.next.max(s.next);
             (l.holds, l.cancelled) = (s.holds, s.cancelled);
             for mut x in s.leases {

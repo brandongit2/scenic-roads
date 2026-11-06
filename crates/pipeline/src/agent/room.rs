@@ -295,6 +295,102 @@ pub fn retire(cache: &Path, root: Option<&store::nasfs::NasRoot>) -> BTreeMap<St
     freed
 }
 
+/// How long ago a leftover in a member's folder was last written before `member_leftovers` names
+/// it: a day, so nothing a process of this Mac still writes goes (a lead's process handing over as
+/// a member's starts, a broker's own).
+const LEFTOVER_AGE: std::time::Duration = std::time::Duration::from_secs(86400);
+
+/// The coordinator's files in its folder (`coord/`) that only the lead's reads, as a first fill of
+/// its store (crate::coord::kept), and that a member's broker neither reads nor writes.
+const LEAD_COORD_FILES: [&str; 8] = [
+    "costs.json",
+    "disks.json",
+    "floors.json",
+    "cache-fills.json",
+    "leases.json",
+    "pause.json",
+    "timings.jsonl",
+    "store",
+];
+
+/// Whether `rel`, an entry of the agent's folder (`<name>`, or `coord/<name>`), is what only a lead
+/// writes there or what no code writes any more (docs/roles.md §3.5): what a member's agent
+/// removes (`member_leftovers`).
+pub fn is_member_leftover(rel: &str) -> bool {
+    if let Some(name) = rel.strip_prefix("coord/") {
+        return LEAD_COORD_FILES.contains(&name) || (name.starts_with("job-disks") && name.ends_with(".json"));
+    }
+    let between =
+        |pre: &str, suf: &str| rel.len() > pre.len() + suf.len() && rel.starts_with(pre) && rel.ends_with(suf);
+    // The lead's: its status (crate::agent::LEAD_STATUS's copy), its backups' local copy
+    // (agent::plan's `backup` job), GC's depth keep, its catalogues' record, its pageview's waits,
+    // the inputs' listing (agent::plan), the map log (agent::publish), the plan's stall samples, and
+    // what its own jobs' targets cost (`Agent::costs_path`, a slot's: `costs.jsonl`,
+    // `costs-<n>.jsonl`; a member's jobs note theirs in their lease's folder).
+    [
+        "status.json",
+        "backups",
+        super::gc::DEPTH_KEEP_FILE,
+        super::PUBLISHED_FILE,
+        "pageview-waits.json",
+        "inputs-listing",
+        super::publish::MAPLOG,
+        "costs.jsonl",
+    ]
+    .contains(&rel)
+        || between(&format!("{}-", super::plan::STALL_SAMPLE), ".txt")
+        || between("costs-", ".jsonl") && rel["costs-".len()..rel.len() - ".jsonl".len()].bytes().all(|b| b.is_ascii_digit())
+        // Written by no code now: the loop watchdog's samples (#871 step 6), the map update's
+        // old name (#209) and the battery floor's move (#881).
+        || between("loop-stall-sample-", ".txt")
+        || ["round.json", "battery-floor.moved"].contains(&rel)
+}
+
+/// The leftovers (`is_member_leftover`) in the agent's folder `home` last written `LEFTOVER_AGE`
+/// ago or more (a folder by its newest entry), by `now`.
+pub fn member_leftovers(home: &Path, now: SystemTime) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for (dir, pre) in [(home.to_path_buf(), ""), (home.join("coord"), "coord/")] {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !is_member_leftover(&format!("{pre}{name}")) {
+                continue;
+            }
+            let p = e.path();
+            if newest_write(&p).is_some_and(|t| now.duration_since(t).unwrap_or_default() >= LEFTOVER_AGE) {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// When `p`, or anything in it, was last written (None: not read). Never through a link.
+fn newest_write(p: &Path) -> Option<SystemTime> {
+    let m = std::fs::symlink_metadata(p).ok()?;
+    let mut t = m.modified().ok()?;
+    if m.is_dir() {
+        for e in std::fs::read_dir(p).ok()?.flatten() {
+            t = t.max(newest_write(&e.path())?);
+        }
+    }
+    Some(t)
+}
+
+/// Removes `member_leftovers` from `home`, at a member's start: the bytes freed.
+pub fn drop_member_leftovers(home: &Path) -> u64 {
+    let mut freed = 0;
+    for p in member_leftovers(home, SystemTime::now()) {
+        let t = store::cachefile::remove_tree(&p);
+        freed += t.freed;
+        if p.exists() {
+            eprintln!("agent: a lead's leftover {} not removed", p.display());
+        }
+    }
+    freed
+}
+
 /// Whether cache `kind` is one of the cheap ones, which room-making empties too.
 fn cheap(kind: &str) -> bool {
     matches!(kind, "canopy" | "terrain" | "blobs" | "months")
@@ -1710,6 +1806,67 @@ mod tests {
         given_back_drop(home, &c);
         assert_eq!(room(0, 5_000, &[]), 0);
         assert!(c.exists() && given_back(home).is_empty());
+    }
+
+    /// Task #882 step 6 (docs/roles.md §3.5): a member's leftovers by name, and by age, a folder by
+    /// its newest entry; the agent's own files are none.
+    #[test]
+    fn member_leftovers_go_by_name_and_age() {
+        for l in [
+            "status.json",
+            "backups",
+            "gc-depth-keep.json",
+            "publishing.json",
+            "pageview-waits.json",
+            "inputs-listing",
+            "maplog",
+            "plan-stall-sample-20261106-000000Z.txt",
+            "loop-stall-sample-20261031-045712Z.txt",
+            "round.json",
+            "costs.jsonl",
+            "costs-2.jsonl",
+            "battery-floor.moved",
+            "coord/costs.json",
+            "coord/job-disks-v6.json",
+            "coord/store",
+            "coord/timings.jsonl",
+        ] {
+            assert!(is_member_leftover(l), "{l}");
+        }
+        for k in [
+            "helper.json",
+            "timings.jsonl",
+            "state.json",
+            "pause.json",
+            "costs-x.jsonl",
+            "costs-.jsonl",
+            "loop-stall-sample-",
+            "coord/journal",
+            "coord/workers-token",
+            "coord/jobs-token",
+            "coord/page",
+            "coord/history.jsonl",
+            "store",
+        ] {
+            assert!(!is_member_leftover(k), "{k}");
+        }
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path();
+        std::fs::create_dir_all(home.join("backups/blobs")).unwrap();
+        std::fs::create_dir_all(home.join("coord")).unwrap();
+        for f in ["status.json", "backups/blobs/a", "coord/floors.json", "coord/page", "helper.json"] {
+            std::fs::write(home.join(f), b"x").unwrap();
+        }
+        let now = SystemTime::now();
+        assert!(member_leftovers(home, now).is_empty(), "none a day old");
+        let later = now + std::time::Duration::from_secs(86400 + 60);
+        let want: Vec<PathBuf> = ["backups", "coord/floors.json", "status.json"].iter().map(|p| home.join(p)).collect();
+        assert_eq!(member_leftovers(home, later), want);
+        // A folder written within the day by its newest entry stays.
+        let old = now - std::time::Duration::from_secs(2 * 86400);
+        std::fs::File::open(home.join("backups")).unwrap().set_modified(old).unwrap();
+        assert!(member_leftovers(home, now + std::time::Duration::from_secs(3600)).is_empty());
+        assert!(drop_member_leftovers(home) == 0 && home.join("backups/blobs/a").exists());
     }
 
     /// The sweep of what no code reads (task #660): the retired caches always; a copy of a NAS file
