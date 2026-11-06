@@ -98,7 +98,8 @@ const changes: [string, (s: AppState) => void][] = [
   ['terrain', (s) => (s.terrain = { ...s.terrain, hillshade: !s.terrain.hillshade, light: 200 })],
   ['rail', (s) => (s.rail = { ...s.rail, on: !s.rail.on, ties: 1.5 })],
   ['ferry', (s) => (s.ferry = { ...s.ferry, opacity: 0.35 })],
-  ['depth', (s) => (s.depth = { ...s.depth, on: !s.depth.on, max: 900 })],
+  ['depth', (s) => (s.depth = { ...s.depth, on: !s.depth.on, scale: 'linear' })],
+  ['depth colours', (s) => (s.depth = { ...s.depth, colours: { ...s.depth.colours, palette: 'quiet', auto: false, range: [3, 900], fit: [5, 95], equalize: true } })],
   ['buildings', (s) => (s.buildings = { ...s.buildings, on: !s.buildings.on })],
   ['water', (s) => (s.water = { ...s.water, colour: '#123456' })],
   ['whitewater', (s) => (s.water = { ...s.water, foam: 0.5, foamFrom: 12, foamTo: 120, foamCover: 0.6, foamColour: '#e0f0ff' })],
@@ -139,6 +140,26 @@ for (const b of [base.s, defaults]) {
   for (const k of ['foam', 'foamFrom', 'foamTo', 'foamCover', 'foamColour'] as const) assert.equal(old.water[k], defaults.water[k]);
   const w = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0,0.8,30,10,0.75,cee0ec').water;
   assert.deepEqual([w.foamFrom, w.foamTo], [30, 31]);
+}
+
+// Older links' depth (#854): its palette, 'fit' (now Auto, the ramp log-spaced) and the ramp's end
+// (now the range from 0) in dp=; saved settings alike.
+{
+  const tail = '1,0.45,315,1,8fae7d,0,zoom,10,5,1,9ec3dc,1,0.55,0';
+  const fit = fromHash(`#map=5/46/-71&dp=1,quiet,fit,900,${tail}`).depth;
+  assert.deepEqual([fit.scale, fit.colours.palette, fit.colours.auto, fit.colours.range], ['log', 'quiet', true, [0, 900]]);
+  const lin = fromHash(`#map=5/46/-71&dp=1,nautical,linear,40,${tail}`).depth;
+  assert.deepEqual([lin.scale, lin.colours.auto, lin.colours.range], ['linear', false, [0, 40]]);
+  const saved = st.fromSaved({ depth: { ...defaults.depth, colours: undefined, palette: 'quiet', scale: 'fit', max: 120 } }).depth;
+  assert.deepEqual([saved.scale, saved.colours.palette, saved.colours.auto, saved.colours.range], ['log', 'quiet', true, [0, 120]]);
+  // A link over a profile carrying dp= alone keeps the profile's colour scale.
+  const p = structuredClone(defaults);
+  p.depth.colours = { ...p.depth.colours, auto: true, palette: 'quiet' };
+  const s = structuredClone(p);
+  s.depth = { ...s.depth, opacity: 0.5 };
+  const h = toHash(s, true, { id: 'k3f9', name: 'x', s: p });
+  assert.equal(params(h).get('ds'), null);
+  assert.deepEqual(fromHash(h, true, p).depth.colours, p.depth.colours);
 }
 
 // Older links: no profile, each setting where it differs from the defaults, the palette in p=.

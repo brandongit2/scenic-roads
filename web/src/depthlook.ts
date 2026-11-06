@@ -1,6 +1,7 @@
 // The depth layers' look (depth.ts; Layers → Depth, ui/depth.ts; `dp=` in links): their settings,
 // defaults and colour ramps, apart from the layers so the app's state can name them.
 import { PALETTE_ITEMS, baseKey, isRev, paletteFn, stopsFn } from './palettes';
+import type { ScaleFields } from './state';
 
 type RGB = [number, number, number];
 
@@ -8,10 +9,12 @@ type RGB = [number, number, number];
 export interface DepthState {
   /** Depth colour and floor shading. */
   on: boolean;
-  palette: string;
-  scale: 'linear' | 'log' | 'fit';
-  /** The depth at the ramp's end (m). */
-  max: number;
+  /** The ramp's spacing over its range: in proportion to depth, or more colours in the shallows. */
+  scale: 'linear' | 'log';
+  /** The colour scale (ui/scale.ts ScaleControls): the palette, the range (m of depth; `auto`:
+   * fitted to the depths in view, between the `fit` percentiles) and equalisation. The low-end
+   * fade and the highlight aren't offered for depth. */
+  colours: ScaleFields;
   opacity: number;
   /** Floor shading's strength (0 off). */
   shade: number;
@@ -36,7 +39,9 @@ export interface DepthState {
 }
 
 export const DEPTH_DEFAULTS: DepthState = {
-  on: true, palette: 'nautical', scale: 'log', max: 300, opacity: 0.85, shade: 0.45, light: 315, dry: true, dryColour: '#8fae7d',
+  on: true, scale: 'log',
+  colours: { palette: 'nautical', auto: false, range: [0, 300], fit: [2, 98], equalize: false, lowFade: 0, lowSpan: 0.6, threshold: { on: false, dir: 'above', value: 100 } },
+  opacity: 0.85, shade: 0.45, light: 315, dry: true, dryColour: '#8fae7d',
   contours: false, interval: 'zoom', fixed: 10, index: 5, labels: true, colour: '#9ec3dc', weight: 1, lineOpacity: 0.55,
   floor: false,
 };
@@ -71,6 +76,33 @@ export function scaleFns(kind: 'linear' | 'log', lo: number, hi: number): [(d: n
 }
 
 /** Histogram bins: depth (m) on a log scale from 0.1 to 12,000 m. */
+/** The depth's colour scale's whole range (m): the ramp's end goes no deeper. */
+export const DEPTH_DOMAIN: [number, number] = [0, 6000];
 export const HBINS = 120;
 export const hbin = (d: number) => Math.max(0, Math.min(HBINS - 1, Math.floor(((Math.log10(Math.max(0.1, d)) + 1) / 5.08) * HBINS)));
 export const hdepth = (b: number) => 10 ** ((b / HBINS) * 5.08 - 1);
+
+/** The workers' histogram (HBINS log bins) as linear bins over DEPTH_DOMAIN, 2 m each, for the
+ * colour scale's histogram and equalisation: each log bin's count spread evenly over its depths
+ * (deeper than the domain: its last bin). */
+export function depthBins(hist: number[]): Float64Array {
+  const [lo, hi] = DEPTH_DOMAIN, n = (hi - lo) / 2, w = (hi - lo) / n;
+  const out = new Float64Array(n);
+  for (let b = 0; b < hist.length; b++) {
+    if (!hist[b]) continue;
+    const a = Math.max(lo, hdepth(b)), e = Math.max(a, hdepth(b + 1));
+    if (a >= hi) {
+      out[n - 1] += hist[b];
+      continue;
+    }
+    const i0 = Math.floor((a - lo) / w), i1 = Math.min(n - 1, Math.floor((Math.min(e, hi) - lo) / w));
+    if (i0 === i1 || e <= a) {
+      out[i0] += hist[b];
+      continue;
+    }
+    // Over the bins it covers, by how much of it each holds (what lies past the domain: the last).
+    for (let i = i0; i <= i1; i++) out[i] += (hist[b] * (Math.min(e, lo + (i + 1) * w) - Math.max(a, lo + i * w))) / (e - a);
+    if (e > hi) out[n - 1] += (hist[b] * (e - hi)) / (e - a);
+  }
+  return out;
+}

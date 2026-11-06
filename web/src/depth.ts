@@ -36,11 +36,13 @@ import { onVersions, ver } from './api';
 import { SHADE_SHIFT, floorTiles, waterTilesOn, waterTop } from './basemap';
 import { hostFor } from './hosts';
 import { DRY_MIN, depthZooms, type DepthZooms } from './depthgrid';
-import { depthColour, hdepth, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
+import { DEPTH_DOMAIN, depthBins, depthColour, hdepth, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
 import { mercX, mercY, tileY } from './merc';
 import { hexRgb } from './palettes';
 import { WorkerPool } from './workerpool';
+import { cdfOf, scaleU } from './ui/scale';
+import { Dist } from './roads/stats';
 
 type RGB = [number, number, number];
 
@@ -74,10 +76,12 @@ export class Depth {
   private added = false;
   /** The 3D floor shown (setFloor). */
   private floorOn = false;
-  /** The fitted domain (m) of the "fit to view" scale. */
+  /** The auto-fitted range (m of depth). */
   private fit: [number, number] = [1, 100];
+  /** The depths in view (while the scale fits to them or equalises over them). */
+  dist: Dist | null = null;
   private viewTimer = 0;
-  /** Told when the fitted domain changes (the panel's legend). */
+  /** Told when the depths in view or the fitted range change (the panel's scale). */
   onFit: () => void = () => {};
 
   constructor(private map: MLMap) {
@@ -109,9 +113,22 @@ export class Depth {
     return this.has;
   }
 
-  /** The domain (m of depth) the colour ramp spans now. */
+  /** The range (m of depth) the colour ramp spans now. */
   domain(s = this.s): [number, number] {
-    return s.scale === 'fit' ? this.fit : [0, s.max];
+    const [lo, hi] = s.colours.auto ? this.fit : s.colours.range;
+    return [Math.max(0, lo), Math.max(Math.max(0, lo) + 0.5, hi)];
+  }
+
+  /** The equalisation lookup over the range, while it's on and the depths in view are known. */
+  cdf(s = this.s): Uint8Array | null {
+    return s.colours.equalize ? cdfOf(this.dist, this.domain(s)) : null;
+  }
+
+  /** Position on the ramp (0 … 1) of a depth (m, positive). */
+  private position(s: DepthState): (d: number) => number {
+    const r = this.domain(s), cdf = this.cdf(s);
+    const [fwd] = scaleFns(s.scale, ...r);
+    return cdf ? (d) => scaleU(d, r, cdf) : fwd;
   }
 
   /** The sources by code (the panel's notes). */
@@ -257,6 +274,9 @@ export class Depth {
       m.setPaintProperty('depth-contour-label', 'text-color', s.colour);
       m.setPaintProperty('depth-contour-label', 'text-opacity', Math.min(1, s.lineOpacity * 1.5));
     }
+    // (Measured only while the scale fits to them or equalises: none otherwise, not an old view's.)
+    if (!s.colours.auto && !s.colours.equalize) this.dist = null;
+    this.onFit();
     this.scheduleView();
   }
 
@@ -296,29 +316,31 @@ export class Depth {
   /** A palette shown on the map before it's chosen (the panel's ramp list); null: the chosen one. */
   preview(palette: string | null) {
     if (!this.added || !this.has || !this.s.on) return;
-    this.map.setPaintProperty('depth-relief', 'color-relief-color', this.ramp({ ...this.s, palette: palette ?? this.s.palette }), { validate: false });
+    this.map.setPaintProperty('depth-relief', 'color-relief-color', this.ramp({ ...this.s, colours: { ...this.s.colours, palette: palette ?? this.s.colours.palette } }), { validate: false });
   }
 
   // ---- the colour ramp --------------------------------------------------------------------------
 
   private ramp(s: DepthState): ExpressionSpecification {
-    const [lo, hi] = this.domain(s);
-    const [, inv] = scaleFns(s.scale === 'linear' ? 'linear' : 'log', Math.max(0, lo), Math.max(lo + 0.5, hi));
+    const pal = s.colours.palette;
+    const [, inv] = scaleFns(s.scale, ...this.domain(s));
+    const cdf = this.cdf(s), r = this.domain(s);
     const stops: [number, string][] = [];
-    // Deeper than the domain: its deepest colour; then the domain, 48 steps; then 0 m.
-    stops.push([-11500, rgba(depthColour(s.palette, 1))]);
+    // Deeper than the domain: its deepest colour; then the domain, 48 steps (equalised: each at its
+    // place among the depths in view); then 0 m.
+    stops.push([-11500, rgba(depthColour(pal, 1))]);
     const n = 48;
     for (let i = n; i >= 0; i--) {
-      const t = i / n;
-      stops.push([-inv(t), rgba(depthColour(s.palette, t))]);
+      const t = i / n, d = inv(t);
+      stops.push([-d, rgba(depthColour(pal, cdf ? scaleU(d, r, cdf) : t))]);
     }
-    stops.push([0, rgba(depthColour(s.palette, 0))]);
+    stops.push([0, rgba(depthColour(pal, 0))]);
     // Water marked drying (from DRY_MIN: depthgrid.ts reliefValues, no other water above 0), then
     // nothing (land, no data).
     if (s.dry) {
       const dc = hexRgb(s.dryColour);
       stops.push([DRY_MIN, rgba(dc, 0.85)], [3, rgba(dc.map((v) => Math.min(1, v * 1.15)) as RGB, 0.85)], [20, rgba(dc.map((v) => Math.min(1, v * 1.3)) as RGB, 0.85)]);
-    } else stops.push([20, rgba(depthColour(s.palette, 0))]);
+    } else stops.push([20, rgba(depthColour(pal, 0))]);
     stops.push([20.01, 'rgba(0,0,0,0)'], [13000, 'rgba(0,0,0,0)']);
     const seen = new Set<number>();
     const expr: unknown[] = ['interpolate', ['linear'], ['elevation']];
@@ -351,20 +373,24 @@ export class Depth {
     return tiles.length > 48 ? [] : tiles;
   }
 
-  /** With "fit to view", the scale's domain: the depths in view's 2nd to 98th percentile. */
+  /** The depths in view, while the scale fits to them (its range: their percentiles, `fit`) or
+   * equalises over them. */
   private async view() {
     const pool = this.pool;
-    if (!pool || this.s.scale !== 'fit') return;
+    const wanted = () => this.s.colours.auto || this.s.colours.equalize;
+    if (!pool || !wanted()) return;
     const tiles = this.viewTiles();
     // (Too many to sample.)
     if (!tiles.length) return;
     const halves = pool.workers.map((w) => tiles.filter((t) => this.workerFor(...t) === w));
     const rs = await Promise.all(halves.map((ts, i) => (ts.length ? pool.ask({ type: 'hist', id: 0, tiles: ts }, undefined, pool.workers[i]) : Promise.resolve({ id: 0, hist: new Array(HBINS).fill(0) } as DepthReply))));
-    if (this.s.scale !== 'fit') return;
+    if (!wanted()) return;
     const hst = new Array(HBINS).fill(0);
     for (const r of rs) r.hist?.forEach((v, i) => (hst[i] += v));
     const tot = hst.reduce((a, b2) => a + b2, 0);
     if (tot < 50) return;
+    this.dist = new Dist(...DEPTH_DOMAIN, depthBins(hst), tot);
+    const c = this.s.colours;
     const q = (p: number) => {
       let acc = 0;
       for (let i = 0; i < HBINS; i++) {
@@ -373,10 +399,10 @@ export class Depth {
       }
       return hdepth(HBINS);
     };
-    const lo = Math.max(0, q(0.02) * 0.9), hi = Math.max(lo + 1, q(0.98) * 1.05);
-    if (Math.abs(Math.log(hi / this.fit[1])) < 0.05 && Math.abs(lo - this.fit[0]) < 0.3) return;
-    this.fit = [lo, hi];
-    if (this.map.getLayer('depth-relief')) this.map.setPaintProperty('depth-relief', 'color-relief-color', this.ramp(this.s), { validate: false });
+    const lo = Math.max(0, q(c.fit[0] / 100) * 0.9), hi = Math.max(lo + 1, q(c.fit[1] / 100) * 1.05);
+    const moved = c.auto && !(Math.abs(Math.log(hi / this.fit[1])) < 0.05 && Math.abs(lo - this.fit[0]) < 0.3);
+    if (moved) this.fit = [lo, hi];
+    if ((moved || c.equalize) && this.map.getLayer('depth-relief')) this.map.setPaintProperty('depth-relief', 'color-relief-color', this.ramp(this.s), { validate: false });
     this.onFit();
   }
 
@@ -425,9 +451,7 @@ export class Depth {
   private colourOf(d: number, dries: boolean): string {
     const s = this.s;
     if (dries && s.dry) return s.dryColour;
-    const [lo, hi] = this.domain(s);
-    const [fwd] = scaleFns(s.scale === 'linear' ? 'linear' : 'log', Math.max(0, lo), Math.max(lo + 0.5, hi));
-    return rgba(depthColour(s.palette, fwd(Math.max(0, -d))));
+    return rgba(depthColour(s.colours.palette, this.position(s)(Math.max(0, -d))));
   }
 }
 

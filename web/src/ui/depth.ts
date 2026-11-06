@@ -1,11 +1,13 @@
 // The settings panel's Depth section (ui/layers.ts): the depth's two layers, each with its switch:
-// the depth colour and the floor's shading (its colour ramp chosen as the panel's other ramps are),
-// and the depth contours with their labels; and the 3D floor's switch (depth.ts).
-import { DEPTH_DEFAULTS, DEPTH_PALETTES, depthColour, rgba, scaleFns, type DepthState } from '../depthlook';
-import type { Store } from '../state';
+// the depth colour and the floor's shading (its colour scale the other layers' ScaleControls: the
+// depths in view, the range, auto-fit and equalisation, the ramp), and the depth contours with
+// their labels; and the 3D floor's switch (depth.ts).
+import type { Dist } from '../roads/stats';
+import { DEPTH_DEFAULTS, DEPTH_DOMAIN, DEPTH_PALETTES, depthColour, rgba, scaleFns, type DepthState } from '../depthlook';
+import type { ScaleFields, Store } from '../state';
 import { ColourPick, Slider, pct } from './controls';
 import { h } from './dom';
-import { RampSelect } from './rampselect';
+import { ScaleControls, scaleU } from './scale';
 
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 
@@ -15,12 +17,12 @@ export class DepthSection {
   readonly on: HTMLInputElement;
   /** Live preview of a palette while hovering the ramp list (null: back to the chosen one). */
   onPreview: (palette: string | null) => void = () => {};
-  /** The domain the colour ramp spans now (the fitted one for "fit to view"). */
-  domain: () => [number, number] = () => [0, this.store.s.depth.max];
   private body: HTMLDivElement;
-  private pal: RampSelect;
+  private scaleCtl: ScaleControls;
+  /** The range in use and the equalisation lookup (update). */
+  private range: [number, number] = [0, 300];
+  private cdf: Uint8Array | null = null;
   private scaleBtns: HTMLButtonElement[] = [];
-  private maxRow: Slider;
   private sliders: Slider[];
   private colours: ColourPick[];
   private dry: HTMLInputElement;
@@ -31,8 +33,6 @@ export class DepthSection {
   private index: HTMLSelectElement;
   private labels: HTMLInputElement;
   private floor: HTMLInputElement;
-  private legend: HTMLDivElement;
-  private ticks: HTMLDivElement;
   private note: HTMLDivElement;
   /** The note's text before the estimates (setEstimated). */
   private static readonly NOTE = 'Below the water\'s surface: mean sea level at sea, the lake\'s surface on lakes. Each source at the detail of its grids. Not for navigation.';
@@ -52,16 +52,22 @@ export class DepthSection {
       return el;
     };
     const row = (label: string, input: HTMLElement, out?: HTMLElement, title?: string) => h('div', { class: 'row', title }, h('span', { class: 'muted' }, label), input, out ?? h('span'));
-    this.pal = new RampSelect(DEPTH_PALETTES, (k) => this.gradient(k), (k) => D({ palette: k }), (k) => this.onPreview(k));
-    const scales = seg([['linear', 'Linear', 'Colour in proportion to depth'], ['log', 'Log', 'More colours in the shallows, where most of the detail is'], ['fit', 'Fit view', 'The ramp spans the depths in view (2nd to 98th percentile)']],
+    const C = () => S().colours;
+    this.scaleCtl = new ScaleControls({
+      get: C,
+      set: (patch: Partial<ScaleFields>) => D({ colours: { ...C(), ...patch } }),
+      metric: () => ({ domain: DEPTH_DOMAIN, step: 1, fmt: (v: number) => (v >= 1000 ? `${+(v / 1000).toFixed(2)} km` : `${Math.round(v)} m`), hiPlus: true }),
+      noun: 'water',
+      measure: 'water area',
+      fadeDefault: 0,
+      spanDefault: DEPTH_DEFAULTS.colours.lowSpan,
+      palettes: { items: DEPTH_PALETTES, css: (k) => this.gradient(k) },
+      colourAt: (v) => [rgba(depthColour(C().palette, this.position(v))), 1],
+      onPreview: (k) => this.onPreview(k),
+    });
+    const scales = seg([['linear', 'Linear', 'Colour in proportion to depth'], ['log', 'Log', 'More colours in the shallows, where most of the detail is']],
       (k) => D({ scale: k as DepthState['scale'] }), this.scaleBtns);
-    this.maxRow = new Slider({ label: 'Down to', min: 5, max: 6000, step: 1, reset: DEPTH_DEFAULTS.max, get: () => S().max, set: (max) => D({ max: Math.round(max) }), fmt: (v) => `${Math.round(v)} m`,
-      scale: { to: (v) => Math.log(v), from: (p) => Math.exp(p) }, title: 'The depth at the ramp\'s end' });
-    this.maxRow.input.min = String(Math.log(5));
-    this.maxRow.input.max = String(Math.log(6000));
-    this.maxRow.input.step = '0.01';
     this.sliders = [
-      this.maxRow,
       new Slider({ label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: DEPTH_DEFAULTS.opacity, get: () => S().opacity, set: (opacity) => D({ opacity }), fmt: pct }),
       new Slider({ label: 'Shading', min: 0, max: 1, step: 0.05, reset: DEPTH_DEFAULTS.shade, get: () => S().shade, set: (shade) => D({ shade }), fmt: (v) => (v ? pct(v) : 'off'), title: 'How strongly the floor is shaded' }),
       new Slider({ label: 'Light from', min: 0, max: 359, step: 1, reset: DEPTH_DEFAULTS.light, get: () => S().light, set: (light) => D({ light }), fmt: (v) => `${Math.round(v)}° ${COMPASS[Math.round(v / 45) % 8]}`, title: 'Where the light comes from (map north)' }),
@@ -69,8 +75,6 @@ export class DepthSection {
     this.dry = h('input', { type: 'checkbox' });
     this.dry.addEventListener('change', () => D({ dry: this.dry.checked }));
     const dryCol = new ColourPick({ label: 'Drying', get: () => S().dryColour, set: (dryColour) => D({ dryColour }), reset: DEPTH_DEFAULTS.dryColour, title: 'The colour of water that dries at low tide' });
-    this.legend = h('div', { class: 'tint-bar' });
-    this.ticks = h('div', { class: 'tint-ticks depth-ticks' });
     this.note = h('div', { class: 'faint note' }, DepthSection.NOTE);
     // Contours.
     this.contours = h('input', { type: 'checkbox' });
@@ -99,10 +103,9 @@ export class DepthSection {
       lineCol.el,
       ...lineSliders.map((s) => s.el));
     this.body = h('div', { class: 'depth-body' },
-      h('div', { class: 'tint-legend' }, this.legend, this.ticks),
-      row('Colours', this.pal.el),
-      row('Scale', scales),
-      ...this.sliders.slice(0, 4).map((s) => s.el),
+      h('div', { class: 'tint-scale' }, this.scaleCtl.legend, this.scaleCtl.palRow),
+      row('Spacing', scales),
+      ...this.sliders.slice(0, 3).map((s) => s.el),
       tog(this.dry, 'Tidal flats in their own colour', 'Water that dries at low tide (above the chart\'s low water)'),
       dryCol.el,
       tog(this.contours, 'Depth contours', 'Lines of equal depth, labelled'),
@@ -129,9 +132,8 @@ export class DepthSection {
   sync() {
     const d = this.store.s.depth;
     this.on.checked = d.on;
-    this.pal.set(d.palette);
-    this.scaleBtns.forEach((b, i) => b.classList.toggle('on', ['linear', 'log', 'fit'][i] === d.scale));
-    this.maxRow.el.hidden = d.scale === 'fit';
+    this.scaleBtns.forEach((b, i) => b.classList.toggle('on', ['linear', 'log'][i] === d.scale));
+    this.scaleCtl.sync();
     for (const s of this.sliders) s.sync();
     for (const c of this.colours) c.sync();
     this.dry.checked = d.dry;
@@ -144,12 +146,19 @@ export class DepthSection {
     this.index.value = String(d.index);
     this.labels.checked = d.labels;
     this.floor.checked = d.floor;
-    // The legend: the ramp over its domain, with round depths marked.
-    const [lo, hi] = this.domain();
-    const [fwd] = scaleFns(d.scale === 'linear' ? 'linear' : 'log', Math.max(0, lo), Math.max(lo + 0.5, hi));
-    this.legend.style.background = this.gradient(d.palette);
-    const nice = [0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
-    const ticks = nice.filter((v) => v >= lo && v <= hi).filter((v, i, a) => i === 0 || fwd(v) - fwd(a[i - 1]) > 0.09);
-    this.ticks.replaceChildren(...ticks.map((v) => h('span', { style: `left:${(fwd(v) * 100).toFixed(1)}%` }, v >= 1000 ? `${v / 1000} km` : `${v} m`)));
+  }
+
+  /** The depths in view (null: not measured: neither auto-fit nor equalised), the range the ramp
+   * spans now and the equalisation lookup (depth.ts). */
+  update(dist: Dist | null, range: [number, number], cdf: Uint8Array | null) {
+    this.range = range;
+    this.cdf = cdf;
+    this.scaleCtl.update(dist, range, cdf);
+  }
+
+  /** A depth's place on the ramp, as the map colours it (depth.ts position). */
+  private position(v: number): number {
+    if (this.cdf) return scaleU(v, this.range, this.cdf);
+    return scaleFns(this.store.s.depth.scale, ...this.range)[0](Math.max(0, v));
   }
 }

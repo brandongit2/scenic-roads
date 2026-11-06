@@ -243,6 +243,12 @@ function parseScaleTail(v: string[], d: ScaleFields): Pick<ScaleFields, 'fit' | 
   };
 }
 
+/** The depth's colour scale within bounds: a depth palette, a range within 0–6,000 m. */
+function cleanDepthColours(c: ScaleFields): ScaleFields {
+  const lo = Math.min(5995, Math.max(0, c.range[0])), hi = Math.min(6000, Math.max(lo + 5, c.range[1]));
+  return { ...c, palette: DEPTH_PALETTES.some((p) => p.key === baseKey(c.palette)) ? c.palette : DEPTH_DEFAULTS.colours.palette, range: [lo, hi] };
+}
+
 /** A colour scale's fields in a link: palette, auto, range, fit, equalise, fades, highlight. */
 function scaleStr(x: ScaleFields): string {
   return [x.palette, x.auto ? 1 : 0, +x.range[0].toFixed(3), +x.range[1].toFixed(3), +x.lowFade.toFixed(2),
@@ -729,7 +735,7 @@ export const defaults: AppState = {
     on: true, variable: 'cover', style: 'mask', opacity: 0.05, palette: 'greens',
     cutCover: 20, cutHeight: 5, maskCover: 20, maskHeight: 10, maskColour: '#03a300',
   },
-  depth: { ...DEPTH_DEFAULTS },
+  depth: structuredClone(DEPTH_DEFAULTS),
   // (Opaque on a touch screen: one pass instead of two, docs/buildings3d.md §4.6.)
   // By height: auto-fit to the buildings in view, the low ones faded toward the plain colour.
   buildings: {
@@ -1006,9 +1012,11 @@ export function linkFields(s: AppState, buildings: boolean): Map<string, string>
   p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   p.set('tc', tc(s.trees));
-  const dp = (d: DepthState) => [d.on ? 1 : 0, d.palette, d.scale, Math.round(d.max), +d.opacity.toFixed(2), +d.shade.toFixed(2), Math.round(d.light), d.dry ? 1 : 0, d.dryColour.slice(1),
+  // (Fields 2 and 4, empty: the palette and the ramp's end in older links, now in `ds`.)
+  const dp = (d: DepthState) => [d.on ? 1 : 0, '', d.scale, '', +d.opacity.toFixed(2), +d.shade.toFixed(2), Math.round(d.light), d.dry ? 1 : 0, d.dryColour.slice(1),
     d.contours ? 1 : 0, d.interval, d.fixed, d.index, d.labels ? 1 : 0, d.colour.slice(1), +d.weight.toFixed(2), +d.lineOpacity.toFixed(2), d.floor ? 1 : 0].join(',');
   p.set('dp', dp(s.depth));
+  p.set('ds', scaleStr(s.depth.colours));
   const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.heritage ? 1 : 0, b.plain.slice(1)].join(',');
   if (buildings) p.set('bd', bd(s.buildings));
   if (buildings) p.set('bh', scaleStr(s.buildings.height));
@@ -1287,11 +1295,18 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
     const d = s.depth;
     const n = (v: string, dflt: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : dflt);
     const col = (v: string, dflt: string) => (/^[0-9a-f]{6}$/i.test(v) ? `#${v}` : dflt);
+    // Older links (a palette in field 2): 'fit' as a third scale (now Auto) and the ramp's end in
+    // field 4 (now the range, 0 to it); their colour scale is then this, not ds='s.
+    const colours = { ...d.colours };
+    if (dpv[1] !== '') {
+      if (DEPTH_PALETTES.some((pp) => pp.key === baseKey(dpv[1]))) colours.palette = dpv[1];
+      colours.auto = dpv[2] === 'fit';
+      colours.range = [0, n(dpv[3], d.colours.range[1], 5, 6000)];
+    }
     s.depth = {
       on: dpv[0] === '1',
-      palette: DEPTH_PALETTES.some((pp) => pp.key === baseKey(dpv[1])) ? dpv[1] : d.palette,
-      scale: (['linear', 'log', 'fit'] as const).find((k) => k === dpv[2]) ?? d.scale,
-      max: n(dpv[3], d.max, 5, 6000),
+      scale: dpv[2] === 'linear' ? 'linear' : dpv[2] === 'log' || dpv[2] === 'fit' ? 'log' : d.scale,
+      colours,
       opacity: n(dpv[4], d.opacity, 0.1, 1),
       shade: n(dpv[5], d.shade, 0, 1),
       light: n(dpv[6], d.light, 0, 359),
@@ -1308,6 +1323,8 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
       floor: dpv[17] === '1',
     };
   }
+  const dsv = p.get('ds')?.split(',');
+  if (dsv && dsv.length >= 12) s.depth = { ...s.depth, colours: cleanDepthColours(parseScale(dsv, s.depth.colours)) };
   const bdv = buildings ? p.get('bd')?.split(',') : undefined;
   if (bdv && bdv.length >= 5) {
     const b = s.buildings;
@@ -1618,6 +1635,16 @@ export function fromSaved(o: unknown): AppState {
   }
   if (!HEX.test(s.buildings.plain)) s.buildings.plain = defaults.buildings.plain;
   if (!HEX.test(s.land)) s.land = defaults.land;
+  // Depth saved before its colour scale: the palette, 'fit' as a third scale (now Auto) and the
+  // ramp's end (now its range).
+  const sd = (rest.depth ?? {}) as { palette?: unknown; scale?: unknown; max?: unknown; colours?: unknown };
+  if (!sd.colours) {
+    if (typeof sd.palette === 'string') s.depth.colours.palette = sd.palette;
+    if (sd.scale === 'fit') s.depth.colours.auto = true;
+    if (typeof sd.max === 'number' && Number.isFinite(sd.max)) s.depth.colours.range = [0, sd.max];
+  }
+  if (s.depth.scale !== 'linear') s.depth.scale = 'log';
+  s.depth.colours = cleanDepthColours(s.depth.colours);
   if (typeof s.buildings.heritage !== 'boolean') s.buildings.heritage = defaults.buildings.heritage;
   if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = defaults.ferry.metric;
   // Stops & sights filters (merge() only keeps keys the defaults have).

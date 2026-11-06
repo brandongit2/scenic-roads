@@ -1809,8 +1809,7 @@ async function main() {
   // Depth under the water (depth.ts): its layers once the catalogue has them.
   const depth = new Depth(map);
   layers.depth.onPreview = (palette) => depth.preview(palette);
-  layers.depth.domain = () => depth.domain(store.s.depth);
-  depth.onFit = () => layers.depth.sync();
+  depth.onFit = () => layers.depth.update(depth.dist, depth.domain(), depth.cdf());
   viewshed.onActive = (on) => layers.setViewshedActive(on);
   viewshed.onMark = (ll) => {
     marks.viewshed = ll ? point(ll, 'viewshed') : null;
