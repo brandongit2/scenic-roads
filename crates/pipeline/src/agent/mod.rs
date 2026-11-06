@@ -9917,6 +9917,16 @@ mod tests {
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
+        // The test unit put on the gate, then taken off (its flag), with no plan between.
+        std::fs::create_dir_all(root.join("state/inputs")).unwrap();
+        std::fs::write(root.join(crate::inputs::TEST_FLAG), b"").unwrap();
+        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
+        assert_ne!(now, last, "on the gate");
+        last = now;
+        std::fs::remove_file(root.join(crate::inputs::TEST_FLAG)).unwrap();
+        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
+        assert_ne!(now, last, "off the gate");
+        last = now;
         // The coordinator's leases: this Mac's own taken and let go (a start that didn't go
         // through) changes nothing; another worker's taken, then given back, does.
         let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);

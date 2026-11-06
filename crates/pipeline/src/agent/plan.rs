@@ -964,7 +964,8 @@ impl Planner {
 
     /// The work there is, in order (docs/building.md §2, Order).
     /// A digest of what an idle agent's plan depends on, read cheaply: the build's records (the
-    /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs, the pool
+    /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs and the units
+    /// on it with their folders as last listed, the pool
     /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
     /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, planets newly on the NAS).
     pub(super) fn plan_seen(&self, root: &store::nasfs::NasRoot) -> u64 {
@@ -994,6 +995,17 @@ impl Planner {
             }
         }
         serde_json::to_string(&*self.inputs.view.borrow()).unwrap_or_default().hash(&mut h);
+        // (And what the gate's part of the plan reads now: the units on the gate (the test unit's
+        // flag) and each one's folder and acceptances as last listed. The view above is the last
+        // plan's, so a unit taken off the gate, or a drop box listed anew, went unseen until the
+        // fallback: #969 review, the gate's test failing on a loaded Mac.)
+        let units = crate::inputs::units(root);
+        units.hash(&mut h);
+        if let Some((_, w)) = &self.inputs.watch {
+            for u in &units {
+                w.get(u).map(|l| (serde_json::to_string(&l.listing).unwrap_or_default(), l.accepted)).hash(&mut h);
+            }
+        }
         if let Some(p) = &self.inp.pool_seen {
             (&p.member, p.role, &p.members).hash(&mut h);
             serde_json::to_string(&p.gates).unwrap_or_default().hash(&mut h);
