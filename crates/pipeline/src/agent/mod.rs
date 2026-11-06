@@ -417,6 +417,9 @@ struct Slot {
     pressure_frozen: Option<(Instant, String, String)>,
     /// The threads its lead granted the job given it (crate::coord::Grant::threads), for its start.
     granted: Option<u32>,
+    /// The memory its lead packed the job given it at (MB: crate::coord::Grant::mem_mb, its measured
+    /// peak): the job counts at the larger of this and what it holds (`Agent::peak_mb`).
+    peak_mb: Option<u64>,
     /// The disk its lead measured the job given it to take (MB: crate::coord::Grant::disk_mb),
     /// reserved while it holds the lease (`Agent::reservation`).
     reserve_mb: Option<u64>,
@@ -708,6 +711,8 @@ fn mac_cores() -> u32 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Hand {
     lease: Option<Held>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    peak_mb: Option<u64>,
     #[serde(default)]
     reserve_mb: Option<u64>,
     /// The budgets' proxy's port its job was told (the next agent's proxy listens there again).
@@ -2493,6 +2498,7 @@ impl Agent {
             return None;
         };
         self.slots[k].granted = Some(grant.threads).filter(|&t| t > 0);
+        self.slots[k].peak_mb = Some(grant.mem_mb).filter(|&m| m > 0);
         self.slots[k].reserve_mb = Some(grant.disk_mb).filter(|&d| d > 0);
         match grant {
             crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. }
@@ -2805,6 +2811,7 @@ impl Agent {
             return None;
         }
         self.slots[k].granted = Some(g.threads).filter(|&t| t > 0);
+        self.slots[k].peak_mb = Some(g.mem_mb).filter(|&m| m > 0);
         self.slots[k].reserve_mb = Some(g.disk_mb).filter(|&d| d > 0);
         Some((k, spec))
     }
@@ -2919,8 +2926,8 @@ impl Agent {
         if let (Some(b), Some(p)) = (&self.broker, pid) {
             b.close_tasks(p);
         }
-        // (Its reservation released with its lease: handed off or given back.)
-        self.slots[k].reserve_mb = None;
+        // (Its reservations released with its lease: handed off or given back.)
+        (self.slots[k].peak_mb, self.slots[k].reserve_mb) = (None, None);
         match self.slots[k].lease.take() {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
@@ -3826,7 +3833,12 @@ impl Agent {
     /// Slot `k`'s state an agent after this one needs to take its job over (`Hand`).
     fn hand_of(&self, k: usize) -> Hand {
         let s = &self.slots[k];
-        Hand { lease: s.lease.clone(), reserve_mb: s.reserve_mb, proxy_port: self.proxy.as_ref().map(|p| p.port()) }
+        Hand {
+            lease: s.lease.clone(),
+            peak_mb: s.peak_mb,
+            reserve_mb: s.reserve_mb,
+            proxy_port: self.proxy.as_ref().map(|p| p.port()),
+        }
     }
 
     /// Each running job's slot saved with its record (jobs::save_hand) when it changed since it
@@ -3923,7 +3935,7 @@ impl Agent {
             let pgid = r.pgid;
             let s = &mut self.slots[k];
             s.lease = lease;
-            s.reserve_mb = hand.reserve_mb;
+            (s.peak_mb, s.reserve_mb) = (hand.peak_mb, hand.reserve_mb);
             s.running = Some(r);
             // (One already ended, `pgid` 0, isn't watched: its end is seen at the next look.)
             if pgid > 0 {
@@ -5492,31 +5504,21 @@ impl Agent {
         true
     }
 
-    /// The memory a job of `spec` is expected to take (MB): its targets' largest, as measured or
-    /// offered (crate::coord::Coordinator::peak), else its step's first guess (`first_peak`).
-    fn spec_peak(&self, spec: &JobSpec) -> u64 {
-        let step = step_of(&spec.id).unwrap_or_default();
-        match (&self.coord, spec.record.as_ref()) {
-            (Some(c), Some(w)) => w
-                .targets
-                .iter()
-                .map(|(t, _)| {
-                    c.peak(&w.step, t)
-                        .unwrap_or_else(|| first_peak(&w.step))
-                        .max(c.floor(&w.step, t).map_or(0, |f| f.mb))
-                })
-                .max()
-                .unwrap_or(0),
-            _ => first_peak(&step),
-        }
+    /// The memory slot `k`'s job counts for (MB): what it holds, or the peak its lead packed it at
+    /// (`Slot::peak_mb`: crate::coord::Grant::mem_mb, its targets' measure), the larger; the same on
+    /// the lead and a member, the figure the lead's packing counts it at (task #970: a member had
+    /// counted its step's first guess, bldtiles' sized for Kantō's 30 M rows, 14 GB a job beside its
+    /// runs' 3.4 GB). A job of no such grant (an older lead's, or one taken over from an older
+    /// agent) counts at what it holds; the memory guard and brake hold either way.
+    fn need_mb(&self, k: usize) -> u64 {
+        self.held_mb(k).unwrap_or(0).max(self.slots[k].peak_mb.unwrap_or(0))
     }
 
     /// This Mac's whole capacity now (crate::coord::Capacity), for its asks and, leading, its own
     /// coordinator: its memory against its floor (`mem_reading`: what's available, the floor, the
     /// swap grown, the brake, a give-back's cool-down), the memory a job may start in (`build_room`: what the
-    /// jobs may hold together, `Reading::admit_mb`) and that less each running job's expected need
-    /// (the larger of what it holds and `spec_peak`: its targets' measured peak on the lead, the
-    /// step's first guess on a member), what of that is reserved for their growth to come, and the
+    /// jobs may hold together, `Reading::admit_mb`) and that less each running job's need
+    /// (`need_mb`: the larger of what it holds and the peak its grant was packed at), what of that is reserved for their growth to come, and the
     /// most its jobs could hold (`jobs_ceiling`); the cores the load leaves, the disk's free space
     /// less the owner's room target and its jobs' reservations (`reserved`), the owner's use, power
     /// and the NAS as `c` says, and its jobs' leases with what each holds.
@@ -5531,7 +5533,7 @@ impl Agent {
                 }
                 let held = self.held_mb(k).unwrap_or(0);
                 held_mb += held;
-                need += held.max(self.spec_peak(&r.spec));
+                need += self.need_mb(k);
             }
             if let Some(l) = &s.lease {
                 let n = match l {
@@ -5668,7 +5670,7 @@ impl Agent {
     /// larger) are available, for memguard::COOL_WAIT at most. A later give-back starts it again.
     fn cool_down(&mut self, k: usize) {
         let Some(r) = self.slots[k].running.as_ref() else { return };
-        let peak = self.held_mb(k).unwrap_or(0).max(self.spec_peak(&r.spec));
+        let peak = self.need_mb(k);
         let id = r.spec.id.clone();
         eprintln!(
             "agent: memory guard: no new job here for up to {} min, until {:.1} GB is available (the floor and {id}'s {:.1} GB peak)",
@@ -6196,17 +6198,11 @@ impl Agent {
     fn guard_view(&self) -> memguard::View {
         let r = self.mem_reading();
         let why_off = r.is_none().then(|| "this Mac's memory can't be read: nothing is stopped".to_string());
-        // (What the jobs hold, and what's expected of them: each one's predicted peak or what it
+        // (What the jobs hold, and what's expected of them: each one's grant's peak or what it
         // holds, the larger, as `capacity` counts it.)
-        let (held_mb, need) = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(k, s)| s.running.as_ref().map(|run| (k, run)))
-            .map(|(k, run)| {
-                let held = self.held_mb(k).unwrap_or(0);
-                (held, held.max(self.spec_peak(&run.spec)))
-            })
+        let (held_mb, need) = (0..self.slots.len())
+            .filter(|&k| self.slots[k].running.is_some())
+            .map(|k| (self.held_mb(k).unwrap_or(0), self.need_mb(k)))
             .fold((0, 0), |(h, n), (a, b)| (h + a, n + b));
         let mut v = memguard::View {
             on: why_off.is_none(),
@@ -11376,6 +11372,58 @@ mod tests {
             crate::coord::disk_words(&cap, cap.disk_mb),
             "49 GB free · 20 GB for jobs (20 GB room target, 9 GB reserved by its jobs)"
         );
+    }
+
+    /// Task #970: a member's running job counts at the peak its grant was packed at (`Slot::peak_mb`,
+    /// crate::coord::Grant::mem_mb) or what it holds, the larger: its growth to come reserved off
+    /// the room for a new job, kept across an agent's hand-over, gone with its lease. Never its
+    /// step's first guess (bldtiles': sized for Kantō's 30 M rows, 14 GB), which reserved 13 GB
+    /// beside a job holding 1 GB; a job of no such grant (an older lead's) counts at what it holds.
+    #[test]
+    fn a_running_job_counts_at_its_grants_peak_not_its_steps_first_guess() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("nas")).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: true,
+        })
+        .unwrap();
+        a.mem_set = Some((32 << 10, 30 << 10));
+        let spec = JobSpec {
+            id: "bldtiles 6/1/2".into(),
+            what: "bldtiles 6/1/2".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "bldtiles".into(), targets: vec![("6/1/2".into(), "k".into())] }),
+        };
+        std::fs::create_dir_all(&a.o.home).unwrap();
+        let r = Running::start(spec, 1, &[], a.o.home.join("job-0.log"), &a.record_path(0), None, None).unwrap();
+        a.slots[0].running = Some(r);
+        a.slots[0].lease = Some(Held::Leased { lease: 7, dir: d.path().join("out") });
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let room = a.build_room();
+        assert!(room > 4 << 10 && crate::agent::steps::mem_mb("bldtiles") > 13 << 10);
+        // (Granted at 3.4 GB, holding nothing sampled yet: all of it reserved for its growth.)
+        a.slots[0].peak_mb = Some(3400);
+        let cap = a.capacity(&cond);
+        assert_eq!((cap.mem_reserved_mb, cap.mem_mb), (3400, room - 3400));
+        assert_eq!(a.guard_view().reserved_mb, 3400);
+        assert_eq!(a.hand_of(0).peak_mb, Some(3400), "handed over with its lease");
+        // (An older lead's grant, no peak said: what it holds alone.)
+        a.slots[0].peak_mb = None;
+        let cap = a.capacity(&cond);
+        assert_eq!((cap.mem_reserved_mb, cap.mem_mb), (0, room));
+        a.slots[0].peak_mb = Some(3400);
+        a.end_lease(0, Outcome::Interrupted, &[], "the test");
+        assert_eq!(a.slots[0].peak_mb, None, "gone with its lease");
+        if let Some(mut r) = a.slots[0].running.take() {
+            r.stop(Duration::from_secs(1));
+        }
     }
 
     /// Packing (task #240): a member asks for its slots free and runs every job granted, each in a

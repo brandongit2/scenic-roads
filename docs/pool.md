@@ -355,8 +355,8 @@ most its jobs could hold (`limit_mb`: its memory less its memory floor), what th
 (together and each, `held_each`), its memory against its floor (§7.1, The memory floor: what's
 available and what compressing frees among it, the floor, the swap grown, what's reserved for its
 jobs' growth, and why no job may start, `mem_held_back`), what its jobs may hold for one to start (`build_mb`) and what's
-left of it less each running job's predicted need (the larger of what it holds and its predicted
-peak: its targets' measured peak on the lead, the step's first guess on a member), its
+left of it less each running job's need (the larger of what it holds and the peak its grant was
+packed at, `Grant::mem_mb`: the lead's measure of its targets, on the lead and a member alike), its
 cores and those the last minute's load leaves free, the disk free less the owner's room target
 and its jobs' reservations (`reserved_mb`, below), and the disk's free space and the target
 themselves (`free_mb`, `target_mb`: the build page, `scenic status` and a refusal say the disk as
@@ -751,7 +751,13 @@ counts as any other process).
   one at its expected peak (§7.2, `Sched::pack`), the same arithmetic for its own Mac and every
   member's, from their asks. A Mac held back is granted nothing, a cold start to an empty Mac
   among it, the refusal saying `memory: <why>`. Terrain-deep starts near 2 GB and grows past 7:
-  its growth is reserved before the next job starts.
+  its growth is reserved before the next job starts. A job's expected peak is the one figure the
+  lead packed it at, carried by its grant (`Grant::mem_mb`: its targets' measure, `pack_need`; a
+  cold start's provisional need; a task's predicted memory), which its agent counts it at in its
+  capacity (`Agent::need_mb`, `Capacity::mem_reserved_mb`) and its cool-down; no agent has a
+  figure of its own (task #970: a member counted its step's first guess, bldtiles' sized for
+  Kantō's 30 M rows, 14 GB a job beside its runs' 3.4 GB, and showed no room for a new job). A
+  grant of an older lead's says none: its job counts at what it holds.
 - **Give-back**: below the floor, at safe points, the work lost least first (§7.2, The memory
   guard).
 - **Cool-down** (`Reading::cooling`, the agent's `cool_down`): a job the memory guard gives back

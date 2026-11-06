@@ -34,14 +34,16 @@ pub struct Clock {
 }
 
 /// A job granted (`Sched::pack`): its lease (held in `Sched::leases` from then), step and targets
-/// (target, key), the threads it runs, the disk it reserves (its measure and its shared cache's
-/// fill), and the lead's planned job it is (`Offer::job`).
+/// (target, key), the threads it runs, the memory it was packed at (`pack_need`: its measure, else a
+/// cold start's provisional need), the disk it reserves (its measure and its shared cache's fill),
+/// and the lead's planned job it is (`Offer::job`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pick {
     pub lease: u64,
     pub step: String,
     pub targets: Vec<(String, String)>,
     pub threads: u32,
+    pub mem_mb: u64,
     pub disk_mb: u64,
     pub job: Option<String>,
     /// The time it was sized to (s), and whether by its Mac's own runs (`Sched::batch_secs`); None:
@@ -229,9 +231,9 @@ pub type Reserved = (Instant, (String, String));
 /// (crate::needs::Cores; None: not said), and whether it's a cold start (none of it measured, `m` its provisional need).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Need {
-    m: Measured,
+    pub(super) m: Measured,
     cores: Option<crate::needs::Cores>,
-    cold: bool,
+    pub(super) cold: bool,
     /// Only waiting on a worker (its Mac's `Capacity::waiting`): counted at the memory it holds
     /// now, within its measure, and none of its cores (docs/pool.md §7.2, A job waiting on a worker).
     waits: bool,
@@ -1373,7 +1375,7 @@ impl Sched {
             let fill = self.cache_fill(&o.step, &caches, a);
             let m = n.m;
             runs.push(self.run_of(&o.step, &ts, &a.worker, Measured { disk_mb: m.disk_mb + fill, ..m }, busy, 0));
-            grants.push(self.grant(a, o, pick, threads, fill, clock));
+            grants.push(self.grant(a, o, pick, threads, m.mem_mb, fill, clock));
             held += 1;
             caches.extend(crate::needs::cache_of(&o.step));
             cold_here |= n.cold;
@@ -1559,15 +1561,17 @@ impl Sched {
             .collect()
     }
 
-    /// A job of offer `o`'s step over `pick` granted to `a`'s worker with `threads` (`fill`: the disk
-    /// its shared cache is reserved, added to its own: `cache_fill`): its lease, the worker's last
-    /// target of the step, its targets' waits on the NAS budget let go.
+    /// A job of offer `o`'s step over `pick` granted to `a`'s worker with `threads`, packed at
+    /// `mem_mb` (`fill`: the disk its shared cache is reserved, added to its own: `cache_fill`): its
+    /// lease, the worker's last target of the step, its targets' waits on the NAS budget let go.
+    #[allow(clippy::too_many_arguments)]
     fn grant(
         &mut self,
         a: &Ask,
         o: &Offer,
         pick: Vec<(String, String)>,
         threads: u32,
+        mem_mb: u64,
         fill: u64,
         clock: Clock,
     ) -> Pick {
@@ -1633,7 +1637,7 @@ impl Sched {
             let at = self.sizing_threads(&a.worker, &o.step, first, ask_cores(a));
             self.batch_secs(&o.step, ts.iter().map(String::as_str), &a.worker, at)
         });
-        Pick { lease, step: o.step.clone(), targets: pick, threads, disk_mb, job: o.job.clone(), sized }
+        Pick { lease, step: o.step.clone(), targets: pick, threads, mem_mb, disk_mb, job: o.job.clone(), sized }
     }
 
     /// A member around on an older app (its last ask said no capacity, `Ask::cap`), the first by name; None when every one reports the new app. While there's

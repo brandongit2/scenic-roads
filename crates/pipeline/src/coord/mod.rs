@@ -653,6 +653,7 @@ impl Shared {
                 work: Granted::Job { step: p.step, targets: p.targets, pass: self.pass.clone() },
                 more: Vec::new(),
                 threads: p.threads,
+                mem_mb: p.mem_mb,
                 disk_mb: p.disk_mb,
                 job: p.job,
                 plan: self.plan,
@@ -993,9 +994,9 @@ pub struct Capacity {
     /// cool-down: crate::agent::memguard's `Reading::admit_mb`). 0: an older app's, which doesn't
     /// say.
     pub build_mb: u64,
-    /// `build_mb` less each running job's predicted need (the larger of what it holds and its
-    /// predicted peak: its targets' measured peak on the lead, the step's first guess on a member,
-    /// which has no coordinator's measures) (MB): what a new job's peak may be.
+    /// `build_mb` less each running job's need (the larger of what it holds and the peak its grant
+    /// was packed at, `Grant::mem_mb`: the lead's measure, on the lead and a member alike) (MB): what
+    /// a new job's peak may be.
     pub mem_mb: u64,
     /// Its memory against its floor (MB, docs/pool.md §7.1; memguard::Reading): what's available
     /// (crate::sys::memory_available) and what compressing frees among it, the floor, the swap
@@ -1205,6 +1206,12 @@ pub struct Grant {
     /// its Mac has left (`job_threads`). 0: not said (an older lead's), the agent's own rule.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub threads: u32,
+    /// The memory its job's peak was packed at (MB: `sched::Pick::mem_mb`, the lead's measure of its
+    /// targets, a cold start's provisional need; a task's, its predicted memory): its agent
+    /// counts the job at the larger of this and what it holds, the rest reserved for its growth
+    /// (`Capacity::mem_reserved_mb`; docs/pool.md §7.1). 0: an older lead's (what it holds alone).
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub mem_mb: u64,
     /// The disk its job is measured to take (MB: `Coordinator::measured_batch`'s), which its agent
     /// reserves until it hands the job off or gives it back (docs/pool.md §7.1). 0: a cold start,
     /// a task, or an older lead's.
@@ -2286,7 +2293,8 @@ impl Coordinator {
     }
 
     /// The floor of `target` of `step` (what it takes at least), when one was seen, of any way its
-    /// step ran.
+    /// step ran. (Tests': a job's grant carries what it's packed at, `Grant::mem_mb`.)
+    #[cfg(test)]
     pub fn floor(&self, step: &str, target: &str) -> Option<Floor> {
         self.shared.lock().unwrap().floors.get(&cost_key(step, target)).copied()
     }
@@ -2381,6 +2389,8 @@ impl Coordinator {
     /// The memory a job of `step` for `target` is expected to take (MB), as `pick` sizes it: its
     /// step's model's (crate::needs), its first guess what the plan offered it with (a z6 tile's extract,
     /// another step's guess); None when nothing of its step was measured and it isn't offered.
+    /// (Tests': a job's grant carries what it's packed at, `Grant::mem_mb`.)
+    #[cfg(test)]
     pub fn peak(&self, step: &str, target: &str) -> Option<u64> {
         let s = self.shared.lock().unwrap();
         match s.offered_size(step, target) {
@@ -4151,14 +4161,14 @@ fn route(
                         ..history::Event::new("lease")
                     });
                     let pass = pick.first().map(|t| t.0.clone()).unwrap_or_default();
+                    let n = s.pack_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>(), &a.worker);
                     let g = Grant {
                         lease,
                         term: s.leases.term,
                         ttl_s: TTL.as_secs(),
                         threads: ask_cores(&a),
-                        disk_mb: s
-                            .job_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
-                            .map_or(0, |m| m.disk_mb),
+                        mem_mb: n.m.mem_mb,
+                        disk_mb: if n.cold { 0 } else { n.m.disk_mb },
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         more: Vec::new(),
                         job: None,
@@ -4201,6 +4211,7 @@ fn route(
                     work: Granted::Task { id, task: t.spec.clone(), task_kind: t.kind.clone(), mem_mb: t.mem_mb },
                     more: Vec::new(),
                     threads: 0,
+                    mem_mb: t.mem_mb,
                     disk_mb: 0,
                     job: None,
                     plan,
@@ -10192,6 +10203,22 @@ mod tests {
         assert!(w.ask(&ask(150, vec![g1.lease])).unwrap().is_none());
     }
 
+    /// Task #970: a grant carries the memory its job was packed at (`Grant::mem_mb`: its targets'
+    /// measured peak, 2000 MB), the one figure its agent counts the job at as it runs; never its
+    /// step's first guess (slope-hi's steps-table figure).
+    #[test]
+    fn grants_carry_the_memory_their_job_was_packed_at() {
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope-hi", 6, Some(1));
+        let a = Ask {
+            cap: Some(Capacity { cores: 8, cores_free: 8, disk_mb: 250, ..Default::default() }),
+            ..every_ask("m1", "slope-hi", 64_000, 250)
+        };
+        let g = w.ask(&a).unwrap().unwrap();
+        assert_eq!(g.mem_mb, 2000);
+        assert_ne!(crate::agent::steps::mem_mb("slope-hi"), 2000, "the step's first guess is another figure");
+    }
+
     /// The disk in words (task #391): the free space, what's left of it for jobs, and what keeps
     /// the rest (the owner's room target, the jobs' reservations), on the refusal too. No fixed
     /// reserve (task #421); an older app's `reserve_mb` parses and is passed over.
@@ -12635,5 +12662,97 @@ mod tests {
         assert!(w.ask(&ask).unwrap().is_none());
         let a = w.answered().expect("answered");
         assert_eq!((a.term, a.member.as_deref()), (Some(0), Some("m-m4")));
+    }
+
+    /// A recorded forecast's pool (SCENIC_PACK_RECORD: a forecast-input.json) asked once by each Mac
+    /// as its last ask said, at the record's time (unset: nothing): each Mac's jobs' growth reserve as
+    /// its capacity said and as their grants' memory (`Pick::mem_mb`, the lead's `pack_need`) gives
+    /// it, and what each would be granted by each (its capacity's `mem_mb` the room other Macs' draws
+    /// read, `Sched::would_take_now`), printed. How task #970 showed the members' reserves on a
+    /// frozen copy of the lead's state.
+    #[test]
+    fn recorded_pool_pack() {
+        let Ok(p) = std::env::var("SCENIC_PACK_RECORD") else { return };
+        let r = crate::agent::forecast::Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
+        let st = r.input.sched.as_ref().expect("the lead's scheduler's state");
+        let clock = sched::Clock { now: Instant::now(), unix: r.input.now };
+        let fresh = || {
+            let mut s = sched::Sched::from_state(st, clock, Duration::from_secs(400 * 86_400));
+            s.set_offers(st.offers.clone());
+            s
+        };
+        let s = fresh();
+        let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+        // (Each step's first guess, the figure a member counted its running jobs at before, against
+        // its runs of the way it runs now: their median, 90th percentile and most.)
+        let mut peaks: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
+        for (k, c) in &st.costs {
+            let step = CostKey::parse(k).step;
+            if c.v >= cost_version(step) && !crate::needs::is_drop(c) {
+                peaks.entry(step).or_default().push(c.peak_mb);
+            }
+        }
+        for (step, mut v) in peaks {
+            v.sort_unstable();
+            let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
+            let table = crate::agent::steps::mem_mb(step);
+            eprintln!(
+                "step {step}: first guess {}, {} runs: median {}, p90 {}, most {} (guess / p90 {:.1})",
+                gb(table),
+                v.len(),
+                gb(at(0.5)),
+                gb(at(0.9)),
+                gb(at(1.0)),
+                table as f64 / at(0.9).max(1) as f64
+            );
+        }
+        // (Each Mac's capacity with its jobs counted at their grants' memory, what they hold
+        // together at least: the record's leases are granted again under new numbers, so what each
+        // held isn't matched to it.)
+        let mut by_grant = st.clone();
+        for w in &mut by_grant.workers {
+            let Some(c) = w.ask.cap.as_mut() else { continue };
+            let mine = s.job_leases(&w.ask.worker, clock.now);
+            let mut need = 0;
+            for l in &mine {
+                let Work::Job { step, targets } = &l.work else { continue };
+                let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
+                let m = s.pack_need(step, &ts, &w.ask.worker).m.mem_mb;
+                eprintln!(
+                    "{}: {step} ({} targets): its step's first guess {}, its grant's {}",
+                    w.ask.worker,
+                    ts.len(),
+                    gb(crate::agent::steps::mem_mb(step)),
+                    gb(m)
+                );
+                need += m;
+            }
+            let need = need.max(c.held_mb);
+            eprintln!(
+                "{}: reserved {} (capacity said), {} (grants'); for a new job {} -> {}",
+                w.ask.worker,
+                gb(c.mem_reserved_mb),
+                gb(need.saturating_sub(c.held_mb)),
+                gb(c.mem_mb),
+                gb(c.build_mb.saturating_sub(need))
+            );
+            (c.mem_reserved_mb, c.mem_mb) = (need.saturating_sub(c.held_mb), c.build_mb.saturating_sub(need));
+        }
+        for (said, state) in [("capacity said", st), ("grants'", &by_grant)] {
+            for w in &state.workers {
+                let mut s = sched::Sched::from_state(state, clock, Duration::from_secs(400 * 86_400));
+                s.set_offers(state.offers.clone());
+                let (picks, why) = s.pack(&w.ask, &state.offers, w.ask.worker == state.lead_name, clock);
+                let steps: Vec<String> = picks.iter().map(|p| format!("{} ({})", p.step, p.targets.len())).collect();
+                eprintln!(
+                    "reserves as {said}: {} granted {} of {} wanted: {}; why: {}",
+                    w.ask.worker,
+                    picks.len(),
+                    w.ask.want,
+                    steps.join(", "),
+                    why.unwrap_or_default()
+                );
+            }
+        }
     }
 }
