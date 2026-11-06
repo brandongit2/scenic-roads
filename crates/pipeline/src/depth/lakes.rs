@@ -1127,7 +1127,7 @@ pub fn pack(grids: Vec<Tif>) -> Result<Vec<u8>> {
         if index.len().div_ceil(512) == index_len.div_ceil(512) && index_len > 0 {
             let mut members = vec![(INDEX.to_string(), index)];
             members.extend(grids.into_iter().map(|g| (g.file, g.bytes)));
-            return crate::agent::histarchive::build(&members);
+            return codecs::tar::build(&members);
         }
         index_len = index.len();
     }

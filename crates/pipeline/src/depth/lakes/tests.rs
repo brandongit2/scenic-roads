@@ -179,7 +179,7 @@ fn a_pack_holds_its_grids_where_its_index_says() {
     assert_eq!(t.pixel(0, 7, 255).unwrap(), -1.25);
     assert!(t.pixel(0, 0, 0).unwrap().is_nan());
     // (Its tar's own members as a tar reads them.)
-    let m = crate::agent::histarchive::list_tar(&p).unwrap();
+    let m = codecs::tar::list_tar(&p).unwrap();
     assert_eq!(m[0].0, INDEX);
     assert_eq!(m[1].1, tiff);
 }

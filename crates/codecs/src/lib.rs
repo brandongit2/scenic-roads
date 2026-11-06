@@ -1,6 +1,6 @@
 //! The build's file formats with no build state: the terrain's and shading's tile codecs, the tree
 //! cover's WebP, whole files, packs (legacy, hipack, basepack, basepart), the tiling, vector tiles,
-//! marks, stations, extents. No dependency on the pipeline (docs/crates.md, step 2); the pipeline
+//! marks, stations, extents, tars. No dependency on the pipeline (docs/crates.md, step 2); the pipeline
 //! re-exports each module under its old path (`pipeline::tiling`, ...), and the root's progress
 //! bars and `morton` too.
 
@@ -17,6 +17,7 @@ pub mod stations;
 pub mod summary;
 pub mod terrain_codec;
 pub mod terrain_water;
+pub mod tar;
 pub mod tiling;
 pub mod trailends;
 pub mod vtgen;

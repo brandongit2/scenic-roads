@@ -714,7 +714,7 @@ pub fn load_history(root: Option<&store::nasfs::NasRoot>, local: Option<&Path>, 
             // A day packed by GC (agent::histarchive); a folder and tar both there: duplicates once.
             let tar = dir.with_file_name("history-archive").join(format!("{d}.tar"));
             if let Ok(members) =
-                tar.read().map_err(anyhow::Error::from).and_then(|t| crate::agent::histarchive::list_tar(&t))
+                tar.read().map_err(anyhow::Error::from).and_then(|t| codecs::tar::list_tar(&t))
             {
                 for (_, b) in members {
                     out.extend(
@@ -1144,7 +1144,7 @@ mod tests {
         let arch = d.path().join("state/coord/history-archive");
         std::fs::create_dir_all(&arch).unwrap();
         let members = vec![(format!("{day}/m-a.jsonl"), line(&a).into_bytes())];
-        std::fs::write(arch.join(format!("{day}.tar")), crate::agent::histarchive::build(&members).unwrap()).unwrap();
+        std::fs::write(arch.join(format!("{day}.tar")), codecs::tar::build(&members).unwrap()).unwrap();
         // The folder there too (a run stopped before the removals), with a later line: each once.
         let dir = d.path().join("state/coord/history").join(&day);
         std::fs::create_dir_all(&dir).unwrap();

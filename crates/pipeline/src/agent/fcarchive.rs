@@ -506,7 +506,7 @@ pub fn read(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Entry> {
     months.dedup();
     for m in months {
         let tar = root.join(ARCHIVE).join(format!("{m}.tar"));
-        if let Ok(members) = tar.read().map_err(anyhow::Error::from).and_then(|t| histarchive::list_tar(&t)) {
+        if let Ok(members) = tar.read().map_err(anyhow::Error::from).and_then(|t| codecs::tar::list_tar(&t)) {
             for (name, b) in members {
                 if days.iter().any(|d| name == format!("{d}.jsonl.zst")) {
                     out.extend(entries_of(&b, &name));
@@ -687,7 +687,7 @@ mod tests {
         assert!(rep.warnings.is_empty());
         assert!(day_path(&store::nasfs::NasRoot::local_for_test(r.path()), &d(0)).exists());
         assert!(!day_path(&store::nasfs::NasRoot::local_for_test(r.path()), &d(8)).exists());
-        let sep = histarchive::list_tar(&std::fs::read(r.path().join(ARCHIVE).join("2026-09.tar")).unwrap()).unwrap();
+        let sep = codecs::tar::list_tar(&std::fs::read(r.path().join(ARCHIVE).join("2026-09.tar")).unwrap()).unwrap();
         assert_eq!(sep.len(), 1);
         // All four read back, packed or not; again: nothing to do.
         assert_eq!(read(&store::nasfs::NasRoot::local_for_test(r.path()), NOW - 21 * 86_400, NOW + 60).len(), 4);
