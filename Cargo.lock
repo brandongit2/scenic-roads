@@ -1009,6 +1009,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "inputs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "buildstore",
+ "bytemuck",
+ "codecs",
+ "crc32fast",
+ "det",
+ "flate2",
+ "i_overlay",
+ "jobrt",
+ "libc",
+ "names",
+ "osmpbf",
+ "png",
+ "rayon",
+ "roadcore",
+ "serde",
+ "serde_json",
+ "store",
+ "tempfile",
+ "toml",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1373,8 +1401,8 @@ dependencies = [
  "geos-sys",
  "hyper",
  "hyper-util",
- "i_overlay",
  "image-webp",
+ "inputs",
  "jobrt",
  "landmarks",
  "libc",

@@ -1,20 +1,16 @@
 pub mod agent;
 pub mod answers;
 pub mod appupdate;
-pub mod areafiles;
 pub mod bld;
 pub mod buildtiles;
 pub mod candidates;
 pub mod cli;
 pub mod coord;
-pub mod dem;
 pub mod depth;
 pub mod elev;
 pub mod ferries;
 pub mod gtfs;
 pub mod heritage;
-pub mod inputs;
-pub mod lakefill;
 pub mod landcover;
 pub mod layers;
 pub mod leaftype;
@@ -25,7 +21,6 @@ pub mod namestodo;
 pub mod needs;
 pub mod net;
 pub mod offload;
-pub mod osmpass;
 pub mod out;
 pub mod ovconv;
 pub mod paces;
@@ -34,11 +29,9 @@ pub mod polar;
 pub mod pool;
 pub mod pubtimes;
 pub mod pyramids;
-pub mod rail;
 pub mod railfeeds;
 pub mod reach;
 pub mod road_terrain;
-pub mod rules;
 pub mod slope_pack;
 pub mod stage;
 pub mod summits;
@@ -53,7 +46,6 @@ pub mod treepacks;
 pub mod trees;
 pub mod unit;
 pub mod uses;
-pub mod water;
 
 // Moved to their own crates (task #916, docs/crates.md), kept at their old paths for the modules above
 // the steps and the binaries (the step modules name their crates: step 6b). Step 2's:
@@ -76,6 +68,9 @@ pub use landmarks::{
 
 // Step 5b's:
 pub use mapview::{buildings, scache, terr, view};
+
+// Step 6d's (`::inputs`: the crate, not its module of the same name):
+pub use ::inputs::{areafiles, dem, inputs, lakefill, osmpass, rail, rules, water};
 
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an
 /// `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs, as it was while

@@ -1041,7 +1041,7 @@ pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
 
 /// An accepted version of one dataset covering the world, its index named in records `m` and the
 /// switch recorded (the units' tests: they're built only from the declared datasets).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, String>) {
     let d = Declaration {
         surface: "ground".into(),

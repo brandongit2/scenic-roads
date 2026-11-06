@@ -314,7 +314,10 @@ mod tests {
     #[test]
     fn polar_blocks_an_area_meets() {
         let coast: Vec<[f64; 2]> = (0..=72).map(|k| [-180.0 + 5.0 * k as f64, -70.0]).collect();
-        assert_eq!(polar_blocks_meeting(&[coast], Pole::South, NEAR_KM).len(), roadcore::polar::blocks(Pole::South).len());
+        assert_eq!(
+            polar_blocks_meeting(&[coast], Pole::South, NEAR_KM).len(),
+            roadcore::polar::blocks(Pole::South).len()
+        );
         let station = vec![[-10.0, -89.99], [10.0, -89.99], [10.0, -89.98], [-10.0, -89.98]];
         let mut near = polar_blocks_meeting(&[station], Pole::South, NEAR_KM);
         near.sort();

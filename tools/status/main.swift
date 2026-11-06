@@ -218,7 +218,7 @@ struct Verdict: Decodable {
     let said: String
 }
 
-/// A gate unit (crates/pipeline/src/inputs/view.rs InputView).
+/// A gate unit (crates/inputs/src/inputs/view.rs InputView).
 struct InputUnit: Decodable {
     let unit: String
     /// "ok", "checking" or "held" (held while it's checked again too: `checking`).
@@ -228,7 +228,7 @@ struct InputUnit: Decodable {
     let findings: [InputFinding]?
 }
 
-/// A finding holding a gate unit's change (crates/pipeline/src/inputs/mod.rs Finding).
+/// A finding holding a gate unit's change (crates/inputs/src/inputs/mod.rs Finding).
 struct InputFinding: Decodable {
     let id: String
     let level: String
@@ -1930,7 +1930,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Accepts a held unit's warnings (the item's unit), once its owner says so, naming them: an ask
-    /// to this Mac's agent (crates/pipeline/src/inputs/mod.rs Ask, a file of its own in
+    /// to this Mac's agent (crates/inputs/src/inputs/mod.rs Ask, a file of its own in
     /// `inputs-asks/`), which writes the acceptances itself within seconds.
     @objc func acceptInputs(_ sender: NSMenuItem) {
         guard let unit = sender.representedObject as? String, let v = heldInputs(reply).first(where: { $0.unit == unit }) else { return }

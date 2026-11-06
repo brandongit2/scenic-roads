@@ -604,5 +604,4 @@ mod tests {
         // An outline of E alone: E's, and B's, whose code E's has (its feeds may be filed under it).
         assert_eq!(countries(&cov(vec![poly("e.poly", 15.1, 1.1, 15.9, 1.9)]), &o).unwrap(), vec!["BB", "EE"]);
     }
-
 }

@@ -127,7 +127,7 @@ fn scan() -> (Vec<String>, Vec<String>) {
     for f in rs {
         let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
         // (The accessor itself: the gate.)
-        if rel.starts_with("crates/pipeline/src/inputs/") {
+        if rel.starts_with("crates/inputs/src/inputs/") {
             continue;
         }
         let text = std::fs::read_to_string(&f).unwrap();

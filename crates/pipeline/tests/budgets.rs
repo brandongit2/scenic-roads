@@ -28,7 +28,7 @@ const ASKS: &[(&str, &str)] = &[
     ("crates/jobrt/src/budget/tests.rs", "the budget's tests"),
     ("crates/jobrt/src/budget/net.rs", "the page's limit words (limit_of), asking no one"),
     ("crates/pipeline/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
-    ("crates/pipeline/src/inputs/sources.rs", "its tests: the staged declarations' URLs, compared, asked of no one"),
+    ("crates/inputs/src/inputs/sources.rs", "its tests: the staged declarations' URLs, compared, asked of no one"),
     ("crates/landmarks/src/wikiask.rs", "ureq (honours HTTPS_PROXY: Proxy::try_from_env); a 429 told (budget::seen)"),
     (
         "crates/landmarks/src/heritagewd.rs",

@@ -408,7 +408,7 @@ Ranked by impact: bugs and real drift risk first (High), then likely future drif
   - `agent/mod.rs` holds per-step memory models, task-kind guessing, status types and write helpers,
     none of which is the agent loop.
   - `main()` in `web/src/main.ts` is one closure, so nothing in it can be imported or tested.
-- **F92:** `dem/` holds no DEM code, and is easily confused with `crates/pipeline/src/dem/`. The
+- **F92:** `dem/` holds no DEM code, and is easily confused with `crates/inputs/src/dem/`. The
   hard-coded NAS paths break on another mount.
 
 ## 5. The oldest code

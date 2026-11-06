@@ -897,7 +897,7 @@ pub mod declared_before {
     pub const BUILDING_HEIGHTS: &str = "909a01a4faed972e";
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub const STAGED: [(&str, &[u8]); 16] = [
     ("overture-buildings.toml", include_bytes!("../../../../producers/sources/overture-buildings.toml")),
     ("ghsl-built-h.toml", include_bytes!("../../../../producers/sources/ghsl-built-h.toml")),
@@ -925,13 +925,13 @@ pub const STAGED: [(&str, &[u8]); 16] = [
 
 /// An accepted version of the staged declarations (`STAGED`), its index named in records `m`: the
 /// steps' tests read them as the build does.
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, String>) {
     accept_files(root, m, &STAGED);
 }
 
 /// An accepted version of declarations `decls` (path and bytes), its index named in records `m`.
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub fn accept_files(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, String>, decls: &[(&str, &[u8])]) {
     let mut files = BTreeMap::new();
     root.join(super::store_dir(UNIT)).create_dir_all().unwrap();
@@ -966,7 +966,7 @@ pub fn accept_files(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Strin
 }
 
 /// The staged declarations, accepted (`accept_fixture`), read.
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub fn staged() -> Sources {
     let d = tempfile::tempdir().unwrap();
     let mut m = BTreeMap::new();

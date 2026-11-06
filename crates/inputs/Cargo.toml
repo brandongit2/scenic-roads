@@ -1,0 +1,44 @@
+[package]
+name = "inputs"
+version = "0.1.0"
+edition = "2021"
+description = "The declared inputs and the steps reading them first: the inputs folders' gate, the elevation datasets, the rules, the OSM pass, the region downloads' files, the rail feeds, the lake fill, the water (docs/crates.md, step 6d)"
+
+[dependencies]
+det = { path = "../det" }
+roadcore = { path = "../roadcore" }
+store = { path = "../store" }
+names = { path = "../names" }
+codecs = { path = "../codecs" }
+jobrt = { path = "../jobrt" }
+buildstore = { path = "../buildstore" }
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+anyhow.workspace = true
+rayon.workspace = true
+bytemuck.workspace = true
+osmpbf = "0.3"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+png = "0.18"
+crc32fast = "1"
+libc = "0.2"
+toml = "0.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# (The regions' set operations, in integer coordinates: docs/inputs.md §6.1.4.)
+i_overlay = { version = "=9.0.0", default-features = false }
+# (testkit's staged sources are read from a temporary folder.)
+tempfile = { version = "3", optional = true }
+
+[features]
+# Test helpers (the accepted fixtures of inputs::elevation, inputs::heritage and inputs::sources,
+# with the staged declarations) for other crates' tests: pipeline's dev-dependency on inputs turns
+# it on. Helpers only, never behaviour.
+testkit = ["dep:tempfile", "store/testkit"]
+
+[dev-dependencies]
+buildstore = { path = "../buildstore", features = ["testkit"] }
+codecs = { path = "../codecs", features = ["testkit"] }
+jobrt = { path = "../jobrt", features = ["testkit"] }
+store = { path = "../store", features = ["testkit"] }
+tempfile = "3"

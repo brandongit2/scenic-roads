@@ -107,7 +107,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 
 **Terrain.** The 3D terrain is sampled from the same elevation datasets as the roads, in the same order, so a road and the ground under it always come from one dataset: regional lidar and DEMs where declared, then Copernicus GLO-30 (its filled voids left out), then AWS's Terrain Tiles. Coarser zooms are the means of the finer tiles under them. It keeps the sources' heights at sea, over lakes and below 0 m, their artefacts included; only where no dataset has data is it sea level (`terrain_base`, `docs/steps.md`).
 
-The map's © Credits dialog lists each source as its catalogue serves it (`CREDITS` in `crates/pipeline/src/rules.rs`, plus the inputs' own descriptions).
+The map's © Credits dialog lists each source as its catalogue serves it (`CREDITS` in `crates/inputs/src/rules.rs`, plus the inputs' own descriptions).
 
 **Terms.** Portugal's atlas is non-commercial (CC BY-NC); the Ontario Heritage Trust register, Andorra's inventory and Guernsey's data are for personal or private use. **Do not publish or redistribute the built data or a hosted copy of this map.**
 

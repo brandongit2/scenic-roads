@@ -1223,5 +1223,4 @@ mod tests {
         let f = d.path().join("notes.txt");
         assert!(source_pin(&f).is_err());
     }
-
 }

@@ -753,7 +753,7 @@ pub fn registers(a: &super::Accepted) -> Vec<Register> {
 
 /// An accepted version of one register meeting everywhere (`fixture`), its index named in records
 /// `m`: the tests' (the agent's, whose plans read the registers).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, String>) {
     let mut files = BTreeMap::new();
     for (p, facts) in [

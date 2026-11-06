@@ -41,9 +41,10 @@ mod gate {
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
         gate::run(&mut out, TEST_UNIT, false, Some(planned)).unwrap();
-        let m: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         assert!(open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_UNIT).unwrap().is_none());
         // Once it has held still, the listing (and so the key) is another: it's checked, and taken.
         let later = settle(&raw, t + 11);
@@ -52,9 +53,10 @@ mod gate {
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
         gate::run(&mut out, TEST_UNIT, false, Some(Planned { listing: later, accepted: BTreeSet::new() })).unwrap();
-        let m: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         assert!(open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_UNIT)
             .unwrap()
             .unwrap()
@@ -70,9 +72,10 @@ mod gate {
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
         gate::run(&mut out, TEST_UNIT, false, Some(stale)).unwrap();
-        let m2: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m2: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         assert_eq!(m2.get(&logical(TEST_UNIT)), m.get(&logical(TEST_UNIT)));
         assert!(!m2.contains_key(&held_logical(TEST_UNIT)));
     }
@@ -100,9 +103,10 @@ mod gate {
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
         gate::run(&mut out, TEST_NESTED, false, None).unwrap();
-        let m: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         let a = open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_NESTED).unwrap().unwrap();
         assert!(
             a.version.starts_with("sources/inputs/_gate-nest/inner/@index.")
@@ -117,9 +121,10 @@ mod gate {
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
         gate::run(&mut out, TEST_NESTED, false, None).unwrap();
-        let m2: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m2: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         assert_eq!(
             read_listed(&store::nasfs::NasRoot::local_for_test(&root), &m2, TEST_NESTED).unwrap().replaced.as_deref(),
             Some(a.version.as_str())
@@ -153,9 +158,10 @@ mod gate {
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
         gate::run(&mut out, TEST_UNIT, false, None).unwrap();
-        let m: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         let a = open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_UNIT).unwrap().unwrap();
         assert!(a.version.starts_with("sources/inputs/_gate-test/@index.") && root.join(&a.version).exists());
         assert_eq!(a.read("a.jsonl").unwrap(), b"{\"k\": \"x\", \"v\": 1}\n");
@@ -165,9 +171,10 @@ mod gate {
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
         gate::run(&mut out, TEST_UNIT, false, None).unwrap();
-        let m2: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m2: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         assert_eq!(m2[&logical(TEST_UNIT)], a.version);
         let r = read_report(&store::nasfs::NasRoot::local_for_test(&root), &m2[&held_logical(TEST_UNIT)]).unwrap();
         assert_eq!(r.held, ["a.jsonl"]);
@@ -200,9 +207,10 @@ mod gate {
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
         gate::run(&mut out, TEST_UNIT, false, None).unwrap();
-        let m3: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m3: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         assert_ne!(m3[&logical(TEST_UNIT)], a.version);
         assert!(
             std::fs::metadata(root.join(&a.version)).unwrap().modified().unwrap()
@@ -211,7 +219,11 @@ mod gate {
         assert!(!m3.contains_key(&held_logical(TEST_UNIT)));
         assert!(m3.contains_key(&listed_logical(TEST_UNIT)));
         assert_eq!(
-            open(&store::nasfs::NasRoot::local_for_test(&root), &m3, TEST_UNIT).unwrap().unwrap().read("a.jsonl").unwrap(),
+            open(&store::nasfs::NasRoot::local_for_test(&root), &m3, TEST_UNIT)
+                .unwrap()
+                .unwrap()
+                .read("a.jsonl")
+                .unwrap(),
             b"{\"k\": \"x\", \"v\": -1}\n"
         );
         let v = view::of(
@@ -227,8 +239,8 @@ mod gate {
         // The NAS root a step gets refuses an inputs folder path, naming the caller.
         let out =
             buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
-        let e =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl"))).unwrap_err();
+        let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl")))
+            .unwrap_err();
         let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
         assert!(msg.contains("tests.rs") && msg.contains("inputs::open"), "{msg}");
         assert_eq!(out.path("sources/inputs/x"), store::nasfs::NasPath::local_for_test(root.join("sources/inputs/x")));
