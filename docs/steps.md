@@ -405,8 +405,11 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   scaled up (finer zooms from z8's). Nothing is typed in: the Caspian's −28 m is GLO-30's (§2), and
   a shore pixel's the terrain's blend of water and shore, as the surface's. GEBCO above −28 m (much
   of the north Caspian's shelf) is 0 m. Where the lo packs hold no terrain over it, the sources'
-  values as they are. A depth target's key names the enclosed seas' file and those lo packs only
-  where its tiles, ring and margin meet an enclosed sea, so only those targets re-key.
+  values as they are. A depth target's key names the enclosed seas' file and the terrain's tiles on
+  one under its tiles, ring and margin (z3–8 and their ancestors, by their XXH3 in the lo packs'
+  indexes: `surface::tiles_read`) only where those meet an enclosed sea, so only those targets
+  re-key, and only for a change there; only they wait for the water step and the lo packs holding
+  those tiles (`Read::Built`).
 - **Composing a block** (8 × 8 tiles and a 32-pixel margin; `depth::compose`), on that water:
   sources sampled (coarser grids
   interpolated, finer ones averaged from the overview that lines up) and painted coarse to fine,

@@ -39,6 +39,11 @@ pub enum Read {
     /// `Left::along`, the forecast's `Input::along`). Waited for as a `Targets` read with `Tiles`;
     /// keyed by that read's tiles (task #853).
     Along { step: &'static str, of: fn(&str, &Reach) -> Vec<String> },
+    /// Some targets of another step read where what's built says, not by the target's name (a
+    /// depth target's terrain lo packs, where it meets an enclosed sea the water step found: task
+    /// #982), which the caller works into its view from what it holds (`Along::add_built`, beside
+    /// the `Along`s in `Left::along`). Waited for as an `Along`; keyed by `grain`.
+    Built { step: &'static str, of: fn(&str, &KeyCtx) -> Vec<String>, grain: Grain },
 }
 
 pub enum Grain {
@@ -165,8 +170,8 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | bldprep | `BLDPREP_V`, release, row groups and GHSL tile | `Whole bld-fetch` (one world target), `in release` | same |
 | bldtiles | `BUILDINGS_V`, normalized files of tile + 8 neighbours, shapes | `Targets bldprep` (tile + 8), `in coverage:shapes` | changes: today `after: bldprep` waits on every bldprep; derived waits on 9 |
 | lake-depth | `depth::lakes::V`, the declarations it makes, the water, the terrain hi packs of its tile and ring | versions; `in lake-sources`, `in water-source`, `Targets terrain-hi` (its tile and the 8 around it) | task #959: the lakes' estimates follow the coverage |
-| depth | versions, tile, sources in margin, water, the lake-depth packs it reads, an enclosed sea's surface | versions; `in depth-sources`, `in water:depth`, `Targets lake-depth` (its tile and ring, `Grain::Read`: their packs by content), `Whole water` and `Targets terrain-lo` (the lo packs under its ring and margin), both `Grain::Tiles`: the enclosed seas' file and those packs by content, named only where its ring meets an enclosed sea | task #959: it waits for the lake-depth packs it reads; task #982: for the water step and those lo packs too |
-| depth-lo | versions, sources, water, z6 hi packs, the lake-depth packs it reads, an enclosed sea's surface | `Targets depth` (its z6 tiles), `in depth-sources`, `in water:depth`, `Targets lake-depth` (its z6 tiles and their ring, `Grain::Read`), `Whole water` and `Targets terrain-lo` (its tile and the 8 round it) as depth's | changes: today `after: depth` waits on every depth tile; derived on its 64 |
+| depth | versions, tile, sources in margin, water, the lake-depth packs it reads, an enclosed sea's surface | versions; `in depth-sources`, `in water:depth`, `Targets lake-depth` (its tile and ring, `Grain::Read`: their packs by content), `Built water` and `Built terrain-lo` (the lo packs holding the terrain's tiles on the sea under its ring and margin), both `Grain::Tiles` (the enclosed seas' file by content, those tiles by XXH3), only where its ring and margin meet an enclosed sea | task #959: it waits for the lake-depth packs it reads; task #982: one meeting an enclosed sea (the Caspian's) for the water step and those lo packs too, no other |
+| depth-lo | versions, sources, water, z6 hi packs, the lake-depth packs it reads, an enclosed sea's surface | `Targets depth` (its z6 tiles), `in depth-sources`, `in water:depth`, `Targets lake-depth` (its z6 tiles and their ring, `Grain::Read`), `Built water` and `Built terrain-lo` (under its tile and margin) as depth's | changes: today `after: depth` waits on every depth tile; derived on its 64 |
 | depth-root | versions, every depth lo pack | `Whole depth-lo` | same (`after: depth` was redundant) |
 | pois | extract spacing, trailends | `in extract`, `Whole trailends` | same |
 | summits | (pass) | `Input`s | same |

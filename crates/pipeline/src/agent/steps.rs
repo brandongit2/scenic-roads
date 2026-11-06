@@ -199,10 +199,17 @@ pub enum Read {
     /// `Targets` read with a `Grain::Tiles`, only for them and not what they wait for; keyed by
     /// that `Targets` read's tiles, which name what's read in them.
     Along { step: &'static str, of: fn(&str, &crate::reach::Reach) -> Vec<String> },
+    /// Some targets of another step that a target reads where what's built says, not its name (the
+    /// terrain's lo packs under an enclosed sea, which the water step finds: task #982): worked out
+    /// by the caller from what it holds into its view (`Along::add_built`: the planner's
+    /// `Left::along`, the forecast's input), none where it hasn't. Waited for as an `Along`; keyed
+    /// by `grain`, as a `Targets` read of the targets `of` names.
+    Built { step: &'static str, of: fn(&str, &super::build::KeyCtx) -> Vec<String>, grain: Grain },
 }
 
 /// What targets read along their long ways (`Read::Along`), as a caller with the pass's reaches
-/// works them out (`Along::add`): by step, target and step read, the targets read.
+/// works them out (`Along::add`), and where what's built says (`Read::Built`, `Along::add_built`):
+/// by step, target and step read, the targets read.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Along(
     std::collections::BTreeMap<
@@ -216,16 +223,24 @@ impl Along {
     pub fn add(&mut self, step: &str, t: &str, r: &crate::reach::Reach) {
         for x in row(step).map_or(&[][..], |r| r.reads) {
             if let Read::Along { step: s, of } = *x {
-                let v = of(t, r);
-                if !v.is_empty() {
-                    self.0
-                        .entry(step.to_string())
-                        .or_default()
-                        .entry(t.to_string())
-                        .or_default()
-                        .insert(s.to_string(), v);
-                }
+                self.put(step, t, s, of(t, r));
             }
+        }
+    }
+
+    /// Target `t` of `step`'s `Read::Built`s, by what `x` holds.
+    pub fn add_built(&mut self, step: &str, t: &str, x: &super::build::KeyCtx) {
+        for r in row(step).map_or(&[][..], |r| r.reads) {
+            if let Read::Built { step: s, of, .. } = *r {
+                self.put(step, t, s, of(t, x));
+            }
+        }
+    }
+
+    fn put(&mut self, step: &str, t: &str, read: &str, v: Vec<String>) {
+        if !v.is_empty() {
+            let at = self.0.entry(step.to_string()).or_default().entry(t.to_string()).or_default();
+            at.entry(read.to_string()).or_default().extend(v);
         }
     }
 
@@ -314,7 +329,7 @@ pub fn read_targets(step: &str, t: &str, along: Option<&Along>) -> Vec<ReadTarge
             Read::Targets { step, of, .. } | Read::Mids { step, of, .. } => {
                 v.extend(of(t).into_iter().map(|u| ReadTarget::One(step, u)))
             }
-            Read::Along { step: s, .. } => {
+            Read::Along { step: s, .. } | Read::Built { step: s, .. } => {
                 v.extend(along.map_or(&[][..], |a| a.get(step, t, s)).iter().map(|u| ReadTarget::One(s, u.clone())))
             }
             Read::Whole { step, .. } => v.push(ReadTarget::Whole(step)),
@@ -341,7 +356,7 @@ pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
             ),
             Read::Mids { step, of, .. } => waits
                 .extend(of(t).into_iter().filter(|u| view.mid_left(step, u) || held(step, u, view)).map(|u| (step, u))),
-            Read::Along { step: s, .. } => waits.extend(
+            Read::Along { step: s, .. } | Read::Built { step: s, .. } => waits.extend(
                 view.along()
                     .map_or(&[][..], |a| a.get(step, t, s))
                     .iter()
@@ -407,7 +422,7 @@ fn whole_left(step: &str, view: &dyn View) -> bool {
                 grain.passes_on() && whole_left(s, view)
             }
             Read::Mids { step: s, .. } => whole_left(s, view),
-            Read::Input { .. } | Read::Along { .. } => false,
+            Read::Input { .. } | Read::Along { .. } | Read::Built { .. } => false,
         })
 }
 
@@ -467,9 +482,14 @@ pub fn key_lines(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<Vec<St
     let mut reads: Vec<String> = Vec::new();
     for r in row(step)?.reads {
         match *r {
-            Read::Targets { step: s, of, grain } => match grain {
+            Read::Targets { step: s, grain, .. } | Read::Built { step: s, grain, .. } => match grain {
                 Grain::Outputs => {
-                    for u in of(t) {
+                    let of: Vec<String> = match *r {
+                        Read::Built { of, .. } => of(t, x),
+                        Read::Targets { of, .. } => of(t),
+                        _ => unreachable!(),
+                    };
+                    for u in of {
                         reads.extend(outputs_of(s, &u, x.m).map(|o| format!("t {s} {u} {o}")));
                     }
                 }
@@ -503,7 +523,8 @@ pub fn unknown_reads(step: &str, t: &str, x: &super::build::KeyCtx) -> Vec<Strin
     let mut out = Vec::new();
     for r in row(step).map_or(&[][..], |r| r.reads) {
         let (what, known) = match *r {
-            Read::Targets { step: s, grain: Grain::Read(f) | Grain::Tiles(f), .. } => {
+            Read::Targets { step: s, grain: Grain::Read(f) | Grain::Tiles(f), .. }
+            | Read::Built { step: s, grain: Grain::Read(f) | Grain::Tiles(f), .. } => {
                 (format!("t {s}"), f(t, x).is_some())
             }
             Read::Mids { step: s, named, .. } => (format!("mid {s}"), named(t, x).is_some()),
@@ -715,14 +736,6 @@ fn d_lakes(t: &str) -> Vec<String> {
     TileId::parse(t).map_or_else(Vec::new, |u| named(6, crate::depth::lakes::read_by(u.z, u.x, u.y)))
 }
 
-/// depth 6/x/y and depth-lo 3/x/y: the terrain's lo packs under what they read
-/// (crate::depth::surface::lo_under), an enclosed sea's surface where one is.
-fn d_terrain(t: &str) -> Vec<String> {
-    TileId::parse(t).map_or_else(Vec::new, |u| {
-        named(3, crate::depth::surface::lo_under(&crate::depth::build::windows((u.z, u.x, u.y))))
-    })
-}
-
 /// slope-lo 3/x/y: the lo terrain of it and its edge neighbours.
 fn sl_lo(t: &str) -> Vec<String> {
     named(3, at(t, 3).into_iter().flat_map(|(x, y)| with_edges(3, x, y)))
@@ -830,7 +843,7 @@ fn peaks_hi(t: &str) -> Vec<String> {
 
 use super::idents;
 use Grain::Outputs;
-use Read::{Along as OfAlong, Input as In, Mids, Targets as Of, Whole as All};
+use Read::{Along as OfAlong, Built, Input as In, Mids, Targets as Of, Whole as All};
 
 /// A row with what most steps have: 1.5 GB until measured, none of the sets.
 const fn step(
@@ -1244,8 +1257,8 @@ pub const TABLE: [Step; 60] = [
             In { name: "depth-sources", of: idents::depth_sources },
             In { name: "water:depth", of: idents::water_depth },
             Of { step: "lake-depth", of: d_lakes, grain: Grain::Read(idents::lake_packs) },
-            All { step: "water", grain: Grain::Tiles(idents::depth_enclosed) },
-            Of { step: "terrain-lo", of: d_terrain, grain: Grain::Tiles(idents::depth_surface_terrain) },
+            Built { step: "water", of: idents::depth_surface_water, grain: Grain::Tiles(idents::depth_enclosed) },
+            Built { step: "terrain-lo", of: idents::depth_surface_lo, grain: Grain::Tiles(idents::depth_surface_terrain) },
         ],
         ..step(
             "depth",
@@ -1264,8 +1277,8 @@ pub const TABLE: [Step; 60] = [
             In { name: "depth-sources", of: idents::depth_sources },
             In { name: "water:depth", of: idents::water_depth },
             Of { step: "lake-depth", of: d_lakes, grain: Grain::Read(idents::lake_packs) },
-            All { step: "water", grain: Grain::Tiles(idents::depth_enclosed) },
-            Of { step: "terrain-lo", of: d_terrain, grain: Grain::Tiles(idents::depth_surface_terrain) },
+            Built { step: "water", of: idents::depth_surface_water, grain: Grain::Tiles(idents::depth_enclosed) },
+            Built { step: "terrain-lo", of: idents::depth_surface_lo, grain: Grain::Tiles(idents::depth_surface_terrain) },
         ],
         ..step(
             "depth",
@@ -1802,7 +1815,8 @@ pub fn reads_from(reader: &str, step: &str) -> bool {
             Read::Targets { step: s, .. }
             | Read::Mids { step: s, .. }
             | Read::Whole { step: s, .. }
-            | Read::Along { step: s, .. } => s == step || go(s, step, seen),
+            | Read::Along { step: s, .. }
+            | Read::Built { step: s, .. } => s == step || go(s, step, seen),
             Read::Input { .. } => false,
         })
     }

@@ -4298,6 +4298,13 @@ fn depth_work_in(x: &KeyCtx, done: &Keys, left: &mut Left) -> Vec<Work> {
     // once it is. A target whose key can't be worked out now is left too: what reads it waits,
     // what doesn't runs.)
     left.set("depth", hi.iter().map(|t| t.0.clone()));
+    // (What a target reads where what's built says, past its name: the terrain under an enclosed
+    // sea, for those meeting one.)
+    for (step, list) in [("depth", &dt.hi), ("depth-lo", &dt.lo)] {
+        for (t, _) in list {
+            left.along.add_built(step, t, x);
+        }
+    }
     for (step, t) in &dt.unknown {
         left.set(*step, [t.clone()]);
     }
@@ -11077,6 +11084,47 @@ pub(crate) mod tests {
         let k = KeyCtx::new(&far, "d", &m2, &none, None, &tiles);
         let dt = depth_targets(&k).unwrap();
         assert_eq!(dt.lakes, vec![(t6.slash(), super::super::steps::none_key("lake-depth", &t6.slash()).unwrap())]);
+    }
+
+    /// Task #982: only a depth target whose tiles meet an enclosed sea waits for the water step and
+    /// the terrain's lo packs its surface is read from (steps::Read::Built, worked out by the
+    /// planner); the rest go on while those are made again (the depth layer rebuilding beside the
+    /// terrain's lo packs).
+    #[test]
+    fn only_a_depth_target_meeting_an_enclosed_sea_waits_for_its_surface() {
+        // An enclosed sea in z6 tile 40/23 (z6's pixels, 512 a tile), in z3 tile 5/2.
+        let e = crate::water::Enclosed {
+            z: 6,
+            runs: vec![[23 * 512 + 100, 40 * 512 + 10, 40 * 512 + 20]],
+            bodies: Vec::new(),
+        };
+        let mut tiles = TerrainTiles::new(None);
+        tiles.hold_enclosed("global/water-enclosed.e.bin", e);
+        let m: BTreeMap<String, String> =
+            [(crate::water::ENCLOSED.to_string(), "global/water-enclosed.e.bin".to_string())].into();
+        let (c, none) = (Coverage::default(), BTreeMap::new());
+        let x = KeyCtx::new(&c, "d", &m, &none, None, &tiles);
+        // Every lo pack and the water left.
+        let mut left = Left::default();
+        left.set("terrain-lo", (0..8).flat_map(|x| (0..8).map(move |y| format!("3/{x}/{y}"))));
+        left.world("water", true);
+        let ts = [("depth", "6/40/23"), ("depth", "6/30/23"), ("depth-lo", "3/5/2"), ("depth-lo", "3/1/1")];
+        // (Their surface's: the lo pack holding the terrain's tiles on it.)
+        let wanted = vec![("terrain-lo", "3/5/2".to_string()), ("water", "water".to_string())];
+        // (An assembly's z6 tiles aside: it waits for its tile 6/40/23 too.)
+        let waits = |left: &Left, step: &str, t: &str| match readiness(step, t, left) {
+            Ready::Waits(w) => w.into_iter().filter(|(s, _)| *s != "depth").collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        for (step, t) in ts {
+            left.along.add_built(step, t, &x);
+        }
+        assert_eq!(waits(&left, "depth", "6/40/23"), wanted);
+        assert_eq!(readiness("depth", "6/30/23", &left), Ready::Yes);
+        assert_eq!(waits(&left, "depth-lo", "3/5/2"), wanted);
+        assert_eq!(readiness("depth-lo", "3/1/1", &left), Ready::Yes);
+        // Not worked out into the view: nothing to wait for.
+        assert_eq!(readiness("depth", "6/40/23", &Left { along: Default::default(), ..left.clone() }), Ready::Yes);
     }
 
     /// The depth chain waits for its sources and its water's digests, then makes the z6 tiles

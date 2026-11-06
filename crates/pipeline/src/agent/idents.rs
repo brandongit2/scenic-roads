@@ -564,23 +564,49 @@ pub fn lake_packs(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(v)
 }
 
-/// What depth target `t` reads for an enclosed sea's surface (crate::depth::surface::reads): None
-/// while the enclosed seas can't be read.
-fn depth_surface(t: &str, x: &KeyCtx) -> Option<crate::depth::surface::Reads> {
+/// Depth target `t` and the enclosed seas the records name where its tiles meet one
+/// (crate::depth::surface::meets), Some(None) else; None while those can't be read (its key can't
+/// be worked out then: it waits).
+fn depth_on_enclosed(t: &str, x: &KeyCtx) -> Option<Option<((u8, u32, u32), std::sync::Arc<crate::water::Enclosed>)>> {
     let u = TileId::parse(t)?;
-    let e = x.tiles.enclosed(x.m)?;
-    Some(crate::depth::surface::reads(x.m, e.as_deref(), (u.z, u.x, u.y)))
+    let t = (u.z, u.x, u.y);
+    Some(x.tiles.enclosed(x.m)?.filter(|e| crate::depth::surface::meets(e, t)).map(|e| (t, e)))
 }
 
 /// The enclosed seas' file a depth target reads, by content, where its tiles meet one; none else.
 pub fn depth_enclosed(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(depth_surface(t, x)?.enclosed)
+    let Some((t, e)) = depth_on_enclosed(t, x)? else { return Some(Vec::new()) };
+    Some(crate::depth::surface::reads(x.m, Some(&e), t).enclosed)
 }
 
-/// The terrain's lo packs a depth target reads an enclosed sea's surface from, by content, where its
-/// tiles meet one; none else.
+/// The terrain tiles a depth target reads an enclosed sea's surface from where its tiles meet one
+/// (crate::depth::surface::tiles_read), by their XXH3 in the lo packs' indexes ("-": not stored);
+/// none else; None while an index can't be read.
 pub fn depth_surface_terrain(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(depth_surface(t, x)?.terrain)
+    let Some((t, e)) = depth_on_enclosed(t, x)? else { return Some(Vec::new()) };
+    let mut r = x.tiles.reader(x.m);
+    crate::depth::surface::tiles_read(&e, t)
+        .into_iter()
+        .map(|(z, a, b)| {
+            Ok(format!("{z}/{a}/{b} {}", r.hash(z, a, b)?.map_or("-".to_string(), |h| format!("{h:016x}"))))
+        })
+        .collect::<Result<_, super::tiles::Unread>>()
+        .ok()
+}
+
+/// The water step's target a depth target waits for where its tiles meet an enclosed sea (the
+/// enclosed seas' file it reads); none else (steps::Read::Built).
+pub fn depth_surface_water(t: &str, x: &KeyCtx) -> Vec<String> {
+    depth_on_enclosed(t, x).flatten().map(|_| vec!["water".to_string()]).unwrap_or_default()
+}
+
+/// The terrain-lo targets a depth target waits for where its tiles meet an enclosed sea: the lo
+/// packs holding the tiles its surface is read from (crate::depth::surface::lo_packs); none else
+/// (steps::Read::Built).
+pub fn depth_surface_lo(t: &str, x: &KeyCtx) -> Vec<String> {
+    depth_on_enclosed(t, x).flatten().map_or_else(Vec::new, |(t, e)| {
+        crate::depth::surface::lo_packs(&e, t).into_iter().map(|(a, b)| format!("3/{a}/{b}")).collect()
+    })
 }
 
 /// The water a depth target reads (`build::water_key` of "depth <target>": a z6 tile's from

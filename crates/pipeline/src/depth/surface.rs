@@ -112,15 +112,32 @@ impl Surface {
     }
 }
 
-/// The terrain's lo packs (their z3 tiles) under windows `windows` (crate::depth::build::Window).
-pub fn lo_under(windows: &[crate::depth::build::Window]) -> Vec<(u32, u32)> {
-    let mut v: Vec<(u32, u32)> = Vec::new();
-    for &(z, c0, r0, w, h) in windows {
-        let (k, n) = (256i64 << (z - ZOOMS.0), 1i64 << ZOOMS.0);
-        let span = |p: i64, len: usize| (p.max(0) / k)..=((p + len as i64 - 1).min((256 << z) - 1) / k).min(n - 1);
-        for y in span(r0, h) {
-            for x in span(c0, w) {
-                v.push((x as u32, y as u32));
+/// Whether depth target `t`'s windows (crate::depth::build::windows) meet an enclosed sea of `e`:
+/// it reads its surface.
+pub fn meets(e: &Enclosed, t: (u8, u32, u32)) -> bool {
+    crate::depth::build::windows(t).iter().any(|&(z, c0, r0, w, h)| e.meets_window(z, c0, r0, w, h))
+}
+
+/// The terrain tiles (the lo packs' zooms) depth target `t`'s surface may read (`Surface::block`):
+/// those under its windows on an enclosed sea of `e`, and their ancestors. A block reads a tile
+/// only where a pixel of it lies on one, else its nearest stored ancestor, and a zoom past them its
+/// z8 ancestor's; so a change to the terrain elsewhere changes nothing it reads.
+pub fn tiles_read(e: &Enclosed, t: (u8, u32, u32)) -> Vec<(u8, u32, u32)> {
+    let mut v = Vec::new();
+    for (wz, c0, r0, w, h) in crate::depth::build::windows(t) {
+        for z in ZOOMS.0..=ZOOMS.1 {
+            let n = 1i64 << z;
+            // (A global pixel of the window's zoom to its tile at zoom z.)
+            let at = |p: i64| if z >= wz { (p << (z - wz)).div_euclid(256) } else { (p >> (wz - z)).div_euclid(256) };
+            let (x0, x1) = (at(c0).max(0), at(c0 + w as i64 - 1).min(n - 1));
+            let (y0, y1) = (at(r0).max(0), at(r0 + h as i64 - 1).min(n - 1));
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    if e.meets_window(z, x * 256, y * 256, 256, 256) {
+                        // (With its ancestors, which it falls back to.)
+                        v.extend((0..=z - ZOOMS.0).map(|d| (z - d, (x >> d) as u32, (y >> d) as u32)));
+                    }
+                }
             }
         }
     }
@@ -129,17 +146,26 @@ pub fn lo_under(windows: &[crate::depth::build::Window]) -> Vec<(u32, u32)> {
     v
 }
 
-/// What depth target `t` (crate::depth::build::windows) reads for an enclosed sea's surface
-/// (`Surface`), as `<logical>=<content>` lines of the records `m`: the enclosed seas' file, and the
-/// terrain's lo packs under its windows that `m` names; none where its windows meet no enclosed sea
-/// (`e`, those `m` names: None, none written).
+/// The terrain's lo packs (their z3 tiles) holding the tiles depth target `t`'s surface may read
+/// (`tiles_read`).
+pub fn lo_packs(e: &Enclosed, t: (u8, u32, u32)) -> Vec<(u32, u32)> {
+    let mut v: Vec<(u32, u32)> =
+        tiles_read(e, t).into_iter().map(|(z, x, y)| (x >> (z - ZOOMS.0), y >> (z - ZOOMS.0))).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// What depth target `t` reads for an enclosed sea's surface (`Surface`), as `<logical>=<content>`
+/// lines of the records `m`: the enclosed seas' file, and the terrain's lo packs holding the tiles
+/// it may read (`lo_packs`) that `m` names; none where its windows meet no enclosed sea (`e`, those
+/// `m` names: None, none written).
 pub fn reads(m: &BTreeMap<String, String>, e: Option<&Enclosed>, t: (u8, u32, u32)) -> Reads {
-    let w = crate::depth::build::windows(t);
     let (Some(e), Some(c)) = (e, m.get(crate::water::ENCLOSED)) else { return Reads::default() };
-    if !w.iter().any(|&(z, c0, r0, ww, h)| e.meets_window(z, c0, r0, ww, h)) {
+    if !meets(e, t) {
         return Reads::default();
     }
-    let terrain = lo_under(&w)
+    let terrain = lo_packs(e, t)
         .into_iter()
         .map(|(x, y)| crate::layers::lo_logical("terrain", x, y))
         .filter_map(|l| m.get(&l).map(|c| format!("{l}={c}")))
@@ -168,9 +194,9 @@ impl Surface {
 mod tests {
     use super::*;
 
-    /// Task #982: a depth target reads an enclosed sea's surface (the enclosed seas' file and the
-    /// terrain's lo packs under its windows, those written) only where its windows meet one: the
-    /// Caspian's targets re-key, no other.
+    /// Task #982: a depth target reads an enclosed sea's surface (the enclosed seas' file, and the
+    /// terrain's tiles on it under its windows, from their lo packs) only where its windows meet one:
+    /// the Caspian's targets re-key, no other.
     #[test]
     fn only_a_target_meeting_an_enclosed_sea_reads_its_surface() {
         // An enclosed sea in z6 tile 40/23 (z6's pixels, 512 a tile), in z3 tile 5/2.
@@ -189,12 +215,18 @@ mod tests {
             (r.enclosed, r.terrain)
         };
         let enc = vec!["global/water-enclosed=global/water-enclosed.e.bin".to_string()];
-        // A z6 tile's piece reads its ring and margin: z3 tiles 4–5 by 2–3, two of them written.
-        assert_eq!(lo_under(&crate::depth::build::windows((6, 40, 23))), vec![(4, 2), (4, 3), (5, 2), (5, 3)]);
-        let t = vec!["layers/terrain/lo/3-4-3=t43".to_string(), "layers/terrain/lo/3-5-2=t52".to_string()];
+        // A z6 tile's piece reads its ring and margin (z3 tiles 4–5 by 2–3), of the terrain only
+        // the tiles on the sea, at each of the lo packs' zooms: in z3 tile 5/2's pack alone.
+        let on = vec![(3, 5, 2), (4, 10, 5), (5, 20, 11), (6, 40, 23), (7, 80, 46), (8, 160, 92)];
+        assert_eq!(tiles_read(&e, (6, 40, 23)), on);
+        assert_eq!(tiles_read(&e, (6, 41, 23)), on, "its neighbour's ring");
+        assert_eq!(lo_packs(&e, (6, 40, 23)), vec![(5, 2)]);
+        let t = vec!["layers/terrain/lo/3-5-2=t52".to_string()];
         assert_eq!(lines((6, 40, 23)), (enc.clone(), t.clone()));
-        // The assembly of 5/2 reads its neighbours' too (its blocks' margin).
-        assert_eq!(lines((3, 5, 2)), (enc, t));
+        // The assembly of 5/2 reads the same, and so does its neighbour 4/2's (its blocks' margin).
+        assert_eq!(lines((3, 5, 2)), (enc.clone(), t.clone()));
+        assert_eq!(lines((3, 4, 2)), (enc, t));
+        assert!(tiles_read(&e, (3, 1, 1)).is_empty() && tiles_read(&e, (6, 30, 23)).is_empty());
         // Away from it, or with no enclosed sea written: nothing.
         assert_eq!(lines((3, 1, 1)), (Vec::new(), Vec::new()));
         assert_eq!(lines((6, 30, 23)), (Vec::new(), Vec::new()));
