@@ -192,10 +192,12 @@ from the first (`edit_held`).
   #987: 56 groups in 12,600 killed as they started, the M4 under load). So the stop sends SIGKILL
   again every 10 ms while any of the group runs, for 2 s at most (`jobs::KILL_AGAIN`); a group with
   no running member stays so (a member mid-fork is running). The group's head, the agent's child,
-  is reaped only once none of it runs, so the group's id can't meanwhile be another process's. A
-  group still running after those 2 s (a member stuck in the kernel) is killed again at each
-  round until none of it runs (`jobs::Outlived`); so too a job an earlier agent left that outlived
-  its stop (known by `jobs::Group::is_the_jobs`).
+  is reaped only once none of it runs, so the group's id can't meanwhile be another process's; a
+  head already reaped (a cancel taken after its job's end was seen) holds nothing, and the group
+  is then known by `jobs::Group::is_the_jobs`. A group still running after those 2 s (a member
+  stuck in the kernel) is killed again at each round until none of it runs (`jobs::Outlived`); so
+  too a job an earlier agent left that outlived its stop, and a cancel's group on **jobs**'
+  thread (`agent::slots`), each tick past its 30 s: both known by `jobs::Group::is_the_jobs`.
 - **Pausing a job** (a pause, a guard's freeze): SIGSTOP to its group, and again at each round
   while it's frozen (`jobs::Running::keep_paused`, `memguard::Sampler::keep_frozen`). A SIGSTOP
   misses a member as a SIGKILL can, and a member in exec loses its stop as the new program starts

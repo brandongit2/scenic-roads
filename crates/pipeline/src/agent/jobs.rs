@@ -487,11 +487,18 @@ impl Running {
     /// be another process's, so the signals reach the job's processes alone. When some of it
     /// still runs after `KILL_AGAIN` (a member stuck in the kernel, an SMB call that hangs), it's
     /// left to the agent to kill again each round, its head with it (`Outlived::kill_again`).
+    /// A head a poll reaped already (it saw the job end: a cancel taken after its end,
+    /// `Agent::cancel_slots`) holds nothing: the group is then known as a taken-over job's is
+    /// (`Group::is_the_jobs`).
     pub fn stop(&mut self, grace: Duration) -> Option<Outlived> {
         let g = self.group();
-        let left = match self.child {
-            Some(_) => stop_group(self.pgid, grace, || !live_members(g.pgid).is_empty()),
-            None => stop_group(self.pgid, grace, || g.is_the_jobs()),
+        // (An unreaped head, running or ended, is still in its group; a reaped one isn't, and no
+        // other process can have its pid while the group has members.)
+        let held = self.child.is_some() && group_members(self.pgid).contains(&self.pgid);
+        let left = if held {
+            stop_group(self.pgid, grace, || !live_members(g.pgid).is_empty())
+        } else {
+            stop_group(self.pgid, grace, || g.is_the_jobs())
         };
         if let Some(c) = self.caffeinate.as_mut() {
             let _ = c.kill();
@@ -501,7 +508,7 @@ impl Running {
                 "agent: {}'s group {} still runs {KILL_AGAIN:?} after its SIGKILL: killed again each round until it's gone",
                 g.id, g.pgid
             );
-            return Some(Outlived { group: g, head: self.child.take() });
+            return Some(Outlived { group: g, head: if held { self.child.take() } else { None } });
         }
         if let Some(c) = self.child.as_mut() {
             let _ = c.wait();
@@ -724,7 +731,8 @@ impl Group {
     }
 
     /// SIGKILL to the group again while it's still the job's (an earlier agent's job whose stop
-    /// left some of it running: `stop_orphan`); whether any of it was left.
+    /// left some of it running: `stop_orphan`; a cancel's, from **jobs**' thread:
+    /// crate::agent::slots); whether any of it was left.
     pub fn kill_again(&self) -> bool {
         let left = self.is_the_jobs();
         if left {
@@ -735,7 +743,8 @@ impl Group {
 }
 
 /// A job's group that still ran when its stop gave up (`Running::stop`, `KILL_AGAIN`), with its
-/// head when this agent started it: held unreaped, so the group's id can't be another's.
+/// head when this agent started it and hadn't reaped it: held unreaped, so the group's id can't be
+/// another's.
 pub struct Outlived {
     pub group: Group,
     head: Option<Child>,
@@ -744,7 +753,8 @@ pub struct Outlived {
 impl Outlived {
     /// SIGKILL to the group again while any of it runs (the agent's loop, each round); whether it's
     /// still there. Once none of it runs, its head is reaped. A job taken over from an earlier
-    /// agent has no head here: its group is known by `Group::is_the_jobs`.
+    /// agent, or one whose head a poll had reaped, has no head here: its group is known by
+    /// `Group::is_the_jobs`.
     pub fn kill_again(&mut self) -> bool {
         let Some(c) = self.head.as_mut() else { return self.group.kill_again() };
         if !live_members(self.group.pgid).is_empty() {
@@ -1211,6 +1221,7 @@ mod tests {
         let group = Group { pgid, leader_start: 0, started: now_s() - 5, id: "left".into() };
         let mut o = Outlived { group, head: Some(head) };
         assert!(o.kill_again());
+        assert!(group_members(pgid).contains(&pgid), "its head held unreaped while some of it ran");
         store::testkit::eventually("the sleep gone", || live_members(pgid).is_empty());
         store::testkit::eventually("its head reaped", || !o.kill_again());
         assert!(matches!(o.head.as_mut().unwrap().try_wait(), Ok(Some(_))));
@@ -1230,7 +1241,58 @@ mod tests {
         assert!(!stopped(late.id()));
         r.keep_paused();
         store::testkit::eventually("the late member stopped", || stopped(late.id()));
+        // Resumed: every member goes on, the one stopped again too.
+        r.resume();
+        store::testkit::eventually("the late member going on", || !stopped(late.id()));
         assert!(r.stop(Duration::from_secs(1)).is_none());
         late.wait().unwrap();
+    }
+
+    /// Task #987: a job the memory guard froze is stopped again each round (`Sampler::keep_frozen`):
+    /// a member its SIGSTOP missed is stopped too; thawed, every member goes on.
+    #[test]
+    fn a_frozen_job_stopped_again_stops_what_its_sigstop_missed() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = sleeper(d.path(), "/bin/sleep 3600");
+        let pgid = r.pgid;
+        store::testkit::eventually("its sleep", || sleeps(pgid) == 1);
+        let s = crate::agent::memguard::Sampler::new(1);
+        s.watch(0, crate::agent::memguard::Watch { pgid, ..Default::default() });
+        assert!(s.freeze(0));
+        let mut late = late_member(pgid);
+        store::testkit::eventually("the late member running", || process_start(late.id() as i32).is_some());
+        assert!(!stopped(late.id()));
+        s.keep_frozen(0);
+        store::testkit::eventually("the late member stopped", || stopped(late.id()));
+        assert!(s.thaw(0));
+        store::testkit::eventually("the late member going on", || !stopped(late.id()));
+        assert!(r.stop(Duration::from_secs(1)).is_none());
+        late.wait().unwrap();
+    }
+
+    /// Task #987: a group known by `Group::is_the_jobs` (an earlier agent's job, a cancel's on
+    /// **jobs**' thread: crate::agent::slots) is killed again while any of it runs: a member the
+    /// last SIGKILL missed (started into the group after it) is killed by the next.
+    #[test]
+    fn a_group_killed_again_kills_what_its_last_sigkill_missed() {
+        let mut c = store::spawn::command("/bin/sh");
+        c.args(["-c", "/bin/sleep 3600 & exit 0"]);
+        crate::sys::own_group(&mut c);
+        // (Its head ended, held unreaped till the end: the group stays, so a member can join it
+        // after the SIGKILL.)
+        let mut head = store::spawn::spawn(&mut c).unwrap();
+        let pgid = head.id() as i32;
+        store::testkit::eventually("its head ended, the sleep left", || {
+            process_start(pgid).is_none() && live_members(pgid).len() == 1
+        });
+        let g = Group { pgid, leader_start: 0, started: now_s() - 5, id: "left".into() };
+        assert!(g.kill_again());
+        let mut late = late_member(pgid);
+        store::testkit::eventually("the late member running", || process_start(late.id() as i32).is_some());
+        assert!(g.kill_again());
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(late.wait().unwrap().signal(), Some(libc::SIGKILL));
+        store::testkit::eventually("none of it left", || !g.kill_again());
+        head.wait().unwrap();
     }
 }

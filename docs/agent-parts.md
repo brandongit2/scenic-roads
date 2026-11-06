@@ -255,7 +255,8 @@ targets; published each round and the moment a job starts, shared with control):
   cut short by control or this thread);
 - **cancels:** control tells this thread (not the loop) of a cancel ask; it takes the ask from
   `cancel-requests/`, passes it to the loop, then stops the jobs running its target at once
-  (SIGTERM, SIGKILL 30 s on). The thread holds no job's child, so before each signal it confirms
+  (SIGTERM, SIGKILL 30 s on, again each tick while any of it runs: a SIGKILL misses a child a
+  fork under way makes, task #987). The thread holds no job's child, so before each signal it confirms
   the group is still the job's (`jobs::Group::is_the_jobs`: its head the process the job started,
   by its start time, or every member started after the job): a group the loop has reaped since,
   its id maybe another's, is never signalled, and the loop's own stop (`cancel_slot`) sees to

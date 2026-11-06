@@ -91,8 +91,9 @@ struct Part {
     member_ask: Arc<AtomicBool>,
     /// Jobs seen ended (their status file and group), told once.
     told: Vec<(PathBuf, i32)>,
-    /// Groups signalled to stop, killed past their time if still the job's.
-    stopping: Vec<(super::jobs::Group, Instant)>,
+    /// Groups signalled to stop, killed past their time while any of it runs and it's still the
+    /// job's (whether it was said).
+    stopping: Vec<(super::jobs::Group, Instant, bool)>,
 }
 
 impl Part {
@@ -107,16 +108,21 @@ impl Part {
             }
         }
         let now = Instant::now();
-        self.stopping.retain(|(g, at)| {
+        // (Killed again each tick while any of it runs: a SIGKILL misses a child a fork under way
+        // makes after it, task #987. Gone, or its id another's since the loop reaped it: nothing
+        // signalled.)
+        self.stopping.retain_mut(|(g, at, said)| {
             if now < *at {
                 return true;
             }
-            // (Gone, or its id another's since the loop reaped it: nothing signalled.)
-            if g.is_the_jobs() {
-                eprintln!("agent: a cancelled job's group {} still runs {GRACE:?} on: killed", g.pgid);
-                crate::sys::signal_group(g.pgid, crate::sys::Signal::Kill);
+            if !g.kill_again() {
+                return false;
             }
-            false
+            if !*said {
+                eprintln!("agent: a cancelled job's group {} still runs {GRACE:?} on: killed", g.pgid);
+                *said = true;
+            }
+            true
         });
         if control::peek_hold_request(&self.home).is_some_and(|r| r.member.is_some())
             && !self.member_ask.swap(true, Ordering::SeqCst)
@@ -151,7 +157,7 @@ impl Part {
                 eprintln!("agent: {target} cancelled: stopping its job's group {} now", g.pgid);
                 crate::sys::signal_group(g.pgid, crate::sys::Signal::Cont);
                 crate::sys::signal_group(g.pgid, crate::sys::Signal::Term);
-                self.stopping.push((g, Instant::now() + GRACE));
+                self.stopping.push((g, Instant::now() + GRACE, false));
             }
         }
     }
