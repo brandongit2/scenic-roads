@@ -6,8 +6,8 @@
 //! - **The budget** (`POST /pool/budget/take {class}`, `POST /pool/budget/hold {s}`): each
 //!   window's tokens counted in memory (`Windows`), by the lead's clock alone, one a take, so a
 //!   429's hold stops every Mac at its next token; a token is spendable for what is left of its
-//!   window (crate::budget::Given). The one source: a Mac that can't reach
-//!   the lead takes nothing (crate::budget). Not durable: a restarted lead gives
+//!   window (crate::budget::Given). The one source: a Mac that can't reach the lead takes nothing
+//!   (crate::budget). Not durable: a restarted lead gives
 //!   nothing in the window it first hears an ask in (its process before may have given that
 //!   window's tokens), so a restart only slows. A 429's hold is kept in the store (`budget-hold`),
 //!   so a restarted lead keeps it.
@@ -47,7 +47,11 @@ pub const PROGRESS: &str = "progress/";
 
 /// Each class's window and the tokens given in it, by the lead's clock (ms since the epoch): one a
 /// take, so a Mac holds none it hasn't spent, and a hold stops every Mac at its next token (a
-/// batch of more would be spent on another Mac after a 429 told here).
+/// batch of more would be spent on another Mac after a 429 told here; the lead can't take back
+/// what it gave, as it reaches a member only in the answer to its next ask). The cost: a member's
+/// round trip to the lead for each metered connection, at most the pool's rate (`wiki` four a
+/// second), a kept connection's (a GET from the M1 over Wi-Fi to the M4's coordinator, 6 Nov:
+/// median 7 ms, 5-33 ms) against a Wikimedia request's hundreds; the lead's own in process.
 #[derive(Debug, Default)]
 pub struct Windows {
     given: BTreeMap<Class, (u64, u32)>,
@@ -57,7 +61,7 @@ pub struct Windows {
 }
 
 impl Windows {
-    /// A batch of `class` at `now` (ms), or how long to wait for one.
+    /// A token of `class` at `now` (ms), as a batch of one, or how long to wait for one.
     pub fn take(&mut self, class: Class, now: u64) -> Given {
         let r = class.rate();
         let w = now / r.window_ms;
@@ -65,7 +69,7 @@ impl Windows {
         if now < self.hold_until {
             return Given::Wait { ms: self.hold_until - now };
         }
-        // (A lead restarted mid-window: its process before may have given this window's slots.)
+        // (A lead restarted mid-window: its process before may have given this window's tokens.)
         if *self.first.entry(class).or_insert(w) == w {
             return Given::Wait { ms: end - now };
         }

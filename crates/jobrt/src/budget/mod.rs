@@ -16,8 +16,8 @@
 //!   `Rate::batch`): no Mac holds tokens it hasn't spent, so a 429's hold stops every Mac at its
 //!   next token. A batch is spendable until the lead's window ends, counted on this Mac from when
 //!   it asked (`Given::Batch::for_ms`), so it is never spent past its window whatever the Macs'
-//!   clocks say. The agent gives its proxy the lead
-//!   (`Budget::set_lead`) while its lead takes the budget and no member in touch takes it on the NAS.
+//!   clocks say. The agent gives its proxy the lead (`Budget::set_lead`) while its lead takes the
+//!   budget and no member in touch takes it on the NAS.
 //!   The lead is then the one source: out of reach, this Mac takes nothing, asking again each
 //!   window. (A share of its own meanwhile would add to what the lead gives the Macs that reach it:
 //!   a Mac away over Tailscale, or whose asks time out, while the others are answered.)
