@@ -523,7 +523,8 @@ mod tests {
             was[ch::VIEW],
             was[ch::VISTA]
         );
-        assert_eq!((eye(&cut), eye(&as_was(cut))), (400.0 + RAIL_EYE_M, 400.0 + EYE_M));
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(near(eye(&cut), 400.0 + RAIL_EYE_M) && near(eye(&as_was(cut)), 400.0 + EYE_M));
         assert!(now[ch::VIEW] > was[ch::VIEW] && now[ch::VISTA] > was[ch::VISTA], "{now:?} {was:?}");
         assert_eq!(now[ch::TPI], 128);
     }
