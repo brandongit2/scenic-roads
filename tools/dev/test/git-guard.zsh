@@ -16,8 +16,7 @@ print x > README.md; g add -A; g commit -m b0
 for a in aaa bbb ddd; do g worktree add -q $W/agent-$a -b br-$a; done
 mkdir -p $tmp/other; git -C $tmp/other init -q
 proj=$tmp/projects/p; mkdir -p $proj/s1/subagents
-print '{"type":"user","cwd":"'$r'"}' > $proj/s1.jsonl
-print '{"type":"user","cwd":"'$W/agent-ddd/tools'"}' > $proj/s2.jsonl
+print '{"finished":false}' > $proj/s1/subagents/agent-aaa.meta.json   # (Claude Code writes it as the agent starts)
 
 # check <want: ok | a text the refusal has> <agent id, or - for the main session> <session> <cwd> <command>
 check() {
@@ -26,7 +25,7 @@ check() {
 import json, sys
 a, s, cwd, cmd, proj = sys.argv[1:]
 d = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd, "session_id": s, "transcript_path": "%s/%s.jsonl" % (proj, s)}
-if a != "-": d["agent_id"] = a
+if a != "-": d["agent_id"] = a; d["transcript_path"] = "%s/%s/subagents/agent-%s.jsonl" % (proj, s, a)
 print(json.dumps(d))' $agent $s $cwd $cmd $proj | python3 $r/tools/dev/git-guard.py 2>&1)
   if [[ $want == ok && -z $out ]] || [[ $want != ok && -n $want && $out == *"$want"* ]]; then print "ok ($want): [$agent] $cmd"
   else print "FAIL ($want): [$agent in $cwd] $cmd\n  ${out:-(allowed)}"; fail=1; fi
@@ -47,7 +46,7 @@ check $no aaa s1 $own "GIT_WORK_TREE=$other git clean -fd"
 check $no aaa s1 $own "git --git-dir=$r/.git/worktrees/agent-bbb reset --hard"
 check $no aaa s1 $own "git -C $other stash"
 check $no aaa s1 $own "git -C $other stash pop"
-check $no aaa s1 $own "git worktree remove --force $other"
+check "removed or moved by the main session" aaa s1 $own "git worktree remove --force $other"
 check $no aaa s1 $own "zsh -c 'cd $other && git commit -am x'"
 check $no aaa s1 $own "w=$other; git -C \$w reset --hard"
 check "Can't tell" aaa s1 $own 'git -C $UNSET_WT reset --hard'
@@ -65,31 +64,59 @@ git -C $other reset --hard
 EOF"
 check ok aaa s1 $own "git -C $tmp/nowhere reset --hard"
 
-# The main session: the main checkout, the checkout it started in, the worktrees it made.
-check ok - s1 $r 'git cherry-pick br-aaa && git merge --ff-only br-bbb && git stash pop'
+# Ways to another folder on the line.
+check ok aaa s1 $own "cd $own/tools && git add -A && git commit -m x"   # (a subfolder of its own)
+check ok aaa s1 $own "pushd $other; popd; git reset --hard"
+check $no aaa s1 $other "pushd $own && popd && git reset --hard"
+check $no aaa s1 $own "env -C $other git reset --hard"
+check $no aaa s1 $own "env --chdir $other git reset --hard"
+check $no aaa s1 $own "export GIT_WORK_TREE=$other; git reset --hard"
+check ok aaa s1 $own 'git -C $(pwd) commit -m x && git -C "$PWD" commit -m y'
+check $no aaa s1 $own "cd $other && git -C \"\$(pwd)\" commit -m x"
+check "Can't tell" aaa s1 $own "git -C \$(echo $other)/tools reset --hard"
+check $no aaa s1 $own "echo \$(git -C $other reset --hard) \`git -C $other clean -fd\`"
+check ok aaa s1 $own "git -C $other rev-parse HEAD && git -C $other merge-base main HEAD && git -C $other show HEAD"
+
+# The main session (any: a resumed or forked one has a new session id): every checkout but a
+# subagent's.
+check ok - s1 $r 'git cherry-pick br-aaa && git merge --ff-only br-bbb && git stash pop && git push origin main'
 check ok - s1 $own "cd $r && git reset --hard main"
 check $no - s1 $r "git -C $other reset --hard"
-check $no - s1 $r "git -C $W/agent-ddd commit -m x"
-check ok - s2 $r "git -C $W/agent-ddd commit -m x"   # (s2 started in agent-ddd)
-check ok - s1 $r "git worktree add -b int-1 $W/int-1 main"
+check ok - s1 $r "git worktree add -b int-1 .claude/worktrees/int-1 main"
 g worktree add -q -b int-1 $W/int-1 main
-check ok - s1 $r "git -C $W/int-1 merge br-aaa && cd $W/int-1 && git reset --hard main"
-check $no - s2 $r "git -C $W/int-1 merge br-aaa"   # (another session's)
-check $no aaa s1 $own "git -C $W/int-1 merge br-aaa"   # (the session's agents aren't it)
+check ok - s1 $r "cd .claude/worktrees/int-1 && git checkout -b int-1b && git rebase main && tools/dev/check.sh"
+check ok - s1 $W/int-1 "git checkout -b int-1c && git rebase main"   # (a later call, the cwd carried)
+check ok - s1 $r "git -C .claude/worktrees/int-1 rebase main"
+check ok - s2 $r "git -C $W/int-1 merge br-aaa"   # (the session resumed: a new id)
+g worktree add -q -b int-2 $W/int-2 main   # (made before the guard: no record)
+check ok - s1 $r "git -C $W/int-2 rebase main"
+check $no aaa s1 $own "git -C $W/int-1 merge br-aaa"   # (subagents: their own only)
 check ok aaa s1 $own "git worktree add $tmp/mine HEAD"   # (an agent's own too)
 g worktree add -q $tmp/mine HEAD
 check ok aaa s1 $own "git -C $tmp/mine reset --hard HEAD~0"
 check $no bbb s1 $other "git -C $tmp/mine reset --hard"
-check ok - s1 $r "git worktree add $other"   # (there already: no claim, so still not the PM's)
+check $no - s1 $r "git -C $tmp/mine reset --hard"   # (its agent runs)
+check ok - s1 $r "git worktree add $other"   # (there already: no claim)
 check $no - s1 $r "git -C $other reset --hard"
-# Removing a subagent's worktree: once Claude Code says it finished.
-check $no - s1 $r "git worktree remove --force $other"
+# A finished agent's worktree: free to the next session writing there (a reviewer, the PM), not
+# while a running subagent works there; removed by the PM.
 print '{"finished":false}' > $proj/s1/subagents/agent-bbb.meta.json
 check $no - s1 $r "git worktree remove --force $other"
+check $no ccc s1 $r "git -C $other rebase main"
 print '{"agentType":"general-purpose","finished":true}' > $proj/s1/subagents/agent-bbb.meta.json
-check ok - s1 $r "git worktree remove --force $other"
-check $no - s1 $r "git -C $other reset --hard"   # (only its removal)
-check $no aaa s1 $own "git worktree remove --force $other"   # (the PM's to remove)
+print '{"finished":false}' > $proj/s1/subagents/agent-ccc.meta.json
+print '{"finished":false}' > $proj/s1/subagents/agent-eee.meta.json
+check ok ccc s1 $r "cd $other && git rebase main && git commit -m review"   # (the reviewer takes it)
+check "a running subagent (ccc)" eee s1 $r "git -C $other reset --hard"
+check "a running subagent (ccc)" - s1 $r "git worktree remove --force $other"
+check ok ccc s1 $r "git -C $other commit -m again"
+check "removed or moved by the main session" ccc s1 $r "git worktree remove --force $other"
+print '{"finished":true}' > $proj/s1/subagents/agent-ccc.meta.json
+check ok eee s1 $r "git -C $other reset --hard"   # (ccc finished: eee takes it)
+print '{"finished":true}' > $proj/s1/subagents/agent-eee.meta.json
+check ok - s1 $r "git -C $other reset --hard && git worktree remove --force $other"
+check ok - s1 $r "git worktree remove --force .claude/worktrees/int-1"
+check $no - s1 $r "git -C $own reset --hard"   # (aaa runs)
 
 # shell-guard.sh runs the check (exit 2, the reason on stderr).
 in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":"git -C %s reset --hard" % sys.argv[1]},"cwd":sys.argv[2],"agent_id":"aaa","session_id":"s1"}))' $other $own)

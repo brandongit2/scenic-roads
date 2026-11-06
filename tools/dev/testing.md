@@ -145,24 +145,31 @@ A session writes with git only in its own checkouts. `tools/dev/git-guard.py`, r
 PreToolUse hook `tools/dev/shell-guard.sh` (so no settings change), refuses a Bash command whose git
 write (reset, checkout, switch, restore, commit, rebase, merge, cherry-pick, revert, am, pull,
 clean, add, rm, mv, apply, stash but its list/show/drop/clear/create/store, worktree remove/move,
-read-tree, update-index, checkout-index) goes to another checkout of this repo. That checkout is
-the one `git -C`, `--work-tree`/`GIT_WORK_TREE` or `--git-dir`/`GIT_DIR` names, else where an
-earlier `cd` of the command line went, else the cwd; for `worktree remove|move`, its path. A
-session's own:
-- a subagent (the hook input's `agent_id`): its worktree `.claude/worktrees/agent-<agent_id>`, which
-  Claude Code made for it; an agent started without isolation has none (on 6 Nov one, started in
-  another agent's worktree, reset it while that worktree's check ran);
-- the main session (the PM): the main checkout and the checkout it started in (its transcript's
-  first `cwd`); it may also `git worktree remove` a subagent's worktree once Claude Code's
-  `subagents/agent-<id>.meta.json` (in the project's transcripts) says that agent finished;
-- either: the worktrees it made: a `git worktree add <path>` the guard saw, of a path not there
-  yet, recorded in `.git/worktree-owners/` (the session's and agent's ids, under the path's hash).
-  The PM's `int-*` worktrees are so.
-To look at or test another agent's commit, make a worktree of your own (`git worktree add <scratch
+read-tree, update-index, checkout-index) goes to a checkout of this repo that isn't the session's.
+That checkout is the one `git -C`, `--work-tree`/`GIT_WORK_TREE` or `--git-dir`/`GIT_DIR` names (on
+the command or `export`ed earlier on the line), else where an earlier `cd`, `pushd`/`popd` or
+`env -C` of the command line went, else the cwd; for `worktree remove|move`, its path. Whose:
+- a subagent's worktree `.claude/worktrees/agent-<id>` (Claude Code made it): agent `<id>`'s (the
+  hook input's `agent_id`) while it runs (on 6 Nov a reviewer started without isolation in another
+  agent's worktree reset it while that worktree's check ran). Once Claude Code's
+  `subagents/agent-<id>.meta.json` (in the project's transcripts) says the agent finished, it is
+  whoever's writes there next: a reviewer told to work on that branch, or the PM. A subagent's write
+  claims it (`.git/worktree-owners/`, under the path's hash) until that subagent finishes in turn;
+  meanwhile no other session writes there. Only the PM (or the agent itself) removes or moves one.
+- a worktree a subagent made (a `git worktree add <path>` the guard saw, of a path not there yet,
+  recorded in `.git/worktree-owners/`): that subagent's while it runs.
+- every other checkout of the repo (the main checkout, the PM's `int-*` worktrees, those made
+  before #980 too): the main session's. Main sessions are told from subagents only, not by session
+  id, so a resumed, forked or compacted PM keeps its worktrees.
+To look at or test a running agent's commit, make a worktree of your own (`git worktree add <scratch
 folder> <commit>`). A write whose folder the guard can't tell (a variable not set on the line, a
-substitution, `cd -`) is refused: write the path out. Reads (log, diff, status, show, branch,
-worktree list), other repos and quoted or heredoc text pass. What a script the command runs does
-with git is not seen (publish.sh's snapshot worktree is its own). Test: `tools/dev/test/git-guard.zsh`.
+substitution other than `$(pwd)`, `cd -`, a `popd` past the line's `pushd`s) is refused: write the
+path out. Git commands inside `$( … )` and backticks, `sh -c`/`bash -c`/`zsh -c` and `eval` are
+checked; reads (log, diff, status, show, rev-parse, merge-base, branch, worktree list), other repos
+and quoted or heredoc text pass. Not seen: what a script the command runs does with git
+(publish.sh's snapshot worktree is its own), git in `python -c`, and a `cd` inside a
+subshell `( … )`, which the guard takes the line's later commands to be in too. Test:
+`tools/dev/test/git-guard.zsh`.
 
 ## One build folder per Mac (#915, 31 Oct)
 
