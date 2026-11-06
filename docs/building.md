@@ -187,12 +187,20 @@ from the first (`edit_held`).
 - **Z6 tiles run in map order** (by 10° square, then tile), so what one fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours.
 - **Stopping a job** (a cancel, a lapsed lease, a guard, the Mac's sleep, a quit): SIGCONT and
-  SIGTERM to its process group, SIGKILL after the grace (`jobs::Running::stop`). A group can
-  outlive its SIGKILL: a member's fork under way as the signal goes out finishes after it, its
-  child never signalled (task #987: 56 groups in 12,600 killed as they started, the M4 under
-  load). So the agent sends the group SIGKILL again as the stop ends and at each round after,
-  while any of it runs (`jobs::Group::kill_again`); so too a job an earlier agent left that
-  outlived its stop.
+  SIGTERM to its process group, SIGKILL after the grace (`jobs::Running::stop`). A SIGKILL can
+  miss a member: a fork under way as it goes out makes a child after it, never signalled (task
+  #987: 56 groups in 12,600 killed as they started, the M4 under load). So the stop sends SIGKILL
+  again every 10 ms while any of the group runs, for 2 s at most (`jobs::KILL_AGAIN`); a group with
+  no running member stays so (a member mid-fork is running). The group's head, the agent's child,
+  is reaped only once none of it runs, so the group's id can't meanwhile be another process's. A
+  group still running after those 2 s (a member stuck in the kernel) is killed again at each
+  round until none of it runs (`jobs::Outlived`); so too a job an earlier agent left that outlived
+  its stop (known by `jobs::Group::is_the_jobs`).
+- **Pausing a job** (a pause, a guard's freeze): SIGSTOP to its group, and again at each round
+  while it's frozen (`jobs::Running::keep_paused`, `memguard::Sampler::keep_frozen`). A SIGSTOP
+  misses a member as a SIGKILL can, and a member in exec loses its stop as the new program starts
+  (task #987, the M4: 404 groups in 2,400 stopped as their shell started ran on; stopped again
+  300 ms later, none). A member it missed runs until the next round.
 - **Restarts** (task #393): a job outlives its agent. Its record (`job[-k].json` in the agent's
   folder) holds its spec, threads and log from its start, and the agent saves its slot there (its
   lease, its grant's disk and memory, the budgets' proxy's port) whenever that changes

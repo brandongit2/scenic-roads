@@ -786,6 +786,16 @@ impl Sampler {
         true
     }
 
+    /// While slot `k`'s job is frozen (for its memory or the disk), SIGSTOP to its group again (the
+    /// agent's loop, each round): what of it a SIGSTOP missed is stopped (jobs::Running::keep_paused).
+    pub fn keep_frozen(&self, k: usize) {
+        let Ok(g) = self.inner.lock() else { return };
+        let Some(w) = g.watches.get(k).and_then(Option::as_ref) else { return };
+        if (w.frozen && g.held_set.is_none()) || (w.disk_frozen && g.held_set.is_none() && g.disk_set.is_none()) {
+            crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
+        }
+    }
+
     /// Lets slot `k`'s job go on, if the thread froze it (the guard turned off since).
     pub fn thaw(&self, k: usize) -> bool {
         let Ok(mut g) = self.inner.lock() else { return false };

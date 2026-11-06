@@ -1646,9 +1646,9 @@ pub struct Agent {
     /// groups, running work while they're still the jobs' (jobs::Group::is_the_jobs), killed again
     /// each round until they're gone (jobs::Group::kill_again).
     orphans: Vec<jobs::Group>,
-    /// This agent's stopped jobs' process groups that outlived their SIGKILL (jobs::Running::stop):
-    /// killed again each round until they're gone (jobs::Group::kill_again).
-    outlived: Vec<jobs::Group>,
+    /// This agent's stopped jobs' process groups still running when their stop gave up
+    /// (jobs::Running::stop): killed again each round until they're gone (jobs::Outlived::kill_again).
+    outlived: Vec<jobs::Outlived>,
     /// The conditions the last loop saw: a change is noted in the history (crate::coord::history).
     last_cond: Option<Conditions>,
     fc_archiver: std::cell::OnceCell<Option<fcarchive::Archiver>>,
@@ -4265,8 +4265,8 @@ impl Agent {
     /// (**plan** does, on its thread: `tell_plan`) and never writes the status (**beat** does).
     /// True when a job just ended (look again at once).
     fn round(&mut self) -> Result<bool> {
-        // Stopped jobs' groups still there after their SIGKILL: killed again (task #987).
-        self.outlived.retain(jobs::Group::kill_again);
+        // Stopped jobs' groups still there after their stop: killed again (task #987).
+        self.outlived.retain_mut(jobs::Outlived::kill_again);
         self.orphans.retain(jobs::Group::kill_again);
         nasread::phase("the NAS's mount");
         let slept = self.sleep.slept();
@@ -5089,8 +5089,12 @@ impl Agent {
             let ts: Vec<String> = own_targets(&r.spec).into_iter().map(|t| t.0).collect();
             self.coord.as_ref()?.nas_yield(&step, &ts)
         });
+        // (Frozen, by a pause or a guard: stopped again, so what of it a SIGSTOP missed is stopped
+        // too: jobs::Running::keep_paused.)
+        self.sampler.keep_frozen(k);
         let slot = &mut self.slots[k];
         let r = slot.running.as_mut().unwrap();
+        r.keep_paused();
         // (The memory guard's drain holds whatever else stops it: asked through its channel, timed
         // from then, so a job frozen meanwhile, by a pause or a condition, is stopped once a pause
         // would have frozen it, `Agent::guard`.)

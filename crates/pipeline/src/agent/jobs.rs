@@ -429,6 +429,18 @@ impl Running {
         self.paused = Some(why.to_string());
     }
 
+    /// While it's paused, SIGSTOP to its group again (the agent's loop, each round): what of it
+    /// runs on is stopped. A SIGSTOP misses a member as a SIGKILL can (task #987): a child a fork
+    /// makes as the signal goes out, and a member in exec, whose stop is lost as the new program
+    /// starts, though it had read stopped (on the M4, load 30-60, a group stopped 0.5 to 3.5 ms
+    /// after its shell's fork: 404 of 2,400 ran on 300 ms later; stopped again then, none of 2,400;
+    /// stopped again at once until every member read stopped, 89 of 3,200 ran on).
+    pub fn keep_paused(&self) {
+        if self.paused.is_some() {
+            crate::sys::signal_group(self.pgid, Signal::Stop);
+        }
+    }
+
     pub fn resume(&mut self) {
         if self.paused.take().is_some() {
             crate::sys::signal_group(self.pgid, Signal::Cont);
@@ -470,30 +482,31 @@ impl Running {
     }
 
     /// Stops the whole group: SIGTERM (after SIGCONT, so a paused job can handle it), then SIGKILL
-    /// after `grace` to whatever of it is left. Its group when some of it outlived the SIGKILL, for
-    /// the agent to kill again each round until it's gone (`Group::kill_again`).
-    pub fn stop(&mut self, grace: Duration) -> Option<Group> {
-        let child = &mut self.child;
-        stop_group(self.pgid, grace, || {
-            if let Some(c) = child.as_mut() {
-                let _ = c.try_wait();
-            }
-        });
-        if let Some(c) = self.child.as_mut() {
-            let _ = c.wait();
-        }
+    /// after `grace` to whatever of it runs, sent again until none does (`stop_group`). Its head,
+    /// this process's child, is reaped only then: till then its pid, and so the group's id, can't
+    /// be another process's, so the signals reach the job's processes alone. When some of it
+    /// still runs after `KILL_AGAIN` (a member stuck in the kernel, an SMB call that hangs), it's
+    /// left to the agent to kill again each round, its head with it (`Outlived::kill_again`).
+    pub fn stop(&mut self, grace: Duration) -> Option<Outlived> {
+        let g = self.group();
+        let left = match self.child {
+            Some(_) => stop_group(self.pgid, grace, || !live_members(g.pgid).is_empty()),
+            None => stop_group(self.pgid, grace, || g.is_the_jobs()),
+        };
         if let Some(c) = self.caffeinate.as_mut() {
             let _ = c.kill();
         }
-        let g = self.group();
-        let left = g.kill_again();
         if left {
             eprintln!(
-                "agent: {}'s group {} outlived its SIGKILL: killed again each round until it's gone",
+                "agent: {}'s group {} still runs {KILL_AGAIN:?} after its SIGKILL: killed again each round until it's gone",
                 g.id, g.pgid
             );
+            return Some(Outlived { group: g, head: self.child.take() });
         }
-        left.then_some(g)
+        if let Some(c) = self.child.as_mut() {
+            let _ = c.wait();
+        }
+        None
     }
 
     /// Left running for the agent after this one (`adopt`): its record kept with `hand`, the
@@ -627,21 +640,53 @@ impl Drop for Running {
     }
 }
 
-/// Stops every process of a group: SIGTERM, then SIGKILL after `grace` if any is left. `reap`
-/// collects our own exited child, so it doesn't linger in the group as a zombie.
-fn stop_group(pgid: i32, grace: Duration, mut reap: impl FnMut()) {
+/// The members of group `pgid` that run: an ended one not yet reaped (whose start can't be read)
+/// is none.
+fn live_members(pgid: i32) -> Vec<i32> {
+    group_members(pgid).into_iter().filter(|&p| process_start(p).is_some()).collect()
+}
+
+/// How long a stop sends its SIGKILL again while any of the group runs, before leaving it to the
+/// agent's rounds (`Outlived`): what a SIGKILL missed (task #987) dies within milliseconds of the
+/// next; a member stuck in the kernel can take longer.
+pub const KILL_AGAIN: Duration = Duration::from_secs(2);
+
+/// Stops every process of a group: SIGTERM, then SIGKILL after `grace` if any runs, sent again
+/// while `still` (some of it runs, and it's still the job's) for `KILL_AGAIN` at most
+/// (`kill_until_gone`). Whether any of it still runs.
+fn stop_group(pgid: i32, grace: Duration, still: impl FnMut() -> bool) -> bool {
     crate::sys::signal_group(pgid, Signal::Cont);
     crate::sys::signal_group(pgid, Signal::Term);
     let t = Instant::now();
     while t.elapsed() < grace {
-        reap();
-        if group_members(pgid).is_empty() {
-            return;
+        if live_members(pgid).is_empty() {
+            return false;
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    crate::sys::signal_group(pgid, Signal::Kill);
-    reap();
+    kill_until_gone(pgid, still)
+}
+
+/// SIGKILL to group `pgid`, sent again while `still` (some of it runs, and it's still the job's),
+/// for `KILL_AGAIN` at most; whether any of it still runs then. A SIGKILL can miss a member: one
+/// a fork under way as it went out makes after it, never signalled (or signalled while still
+/// being made, the signal lost: task #987, 56 groups in 12,600 killed as they started, the M4
+/// under load). The forking member dies as its fork returns, and the next SIGKILL reaches its
+/// child. A group none of whose members runs stays so: a member mid-fork is running, so its
+/// child is in the group before it can end.
+fn kill_until_gone(pgid: i32, mut still: impl FnMut() -> bool) -> bool {
+    let t = Instant::now();
+    loop {
+        crate::sys::signal_group(pgid, Signal::Kill);
+        // (bound ok: what was signalled ends meanwhile; the loop's bound is KILL_AGAIN)
+        std::thread::sleep(Duration::from_millis(10));
+        if !still() {
+            return false;
+        }
+        if t.elapsed() >= KILL_AGAIN {
+            return true;
+        }
+    }
 }
 
 /// What `stop_orphan` found of a job an earlier agent left: its step's targets and keys and where
@@ -670,8 +715,7 @@ impl Group {
     /// (whose start can't be read) is none, so a group of those alone is gone, and one beside a
     /// running member doesn't hide it (task #987).
     pub fn is_the_jobs(&self) -> bool {
-        let members: Vec<i32> = if self.pgid > 1 { group_members(self.pgid) } else { Vec::new() };
-        let members: Vec<i32> = members.into_iter().filter(|&p| process_start(p).is_some()).collect();
+        let members = if self.pgid > 1 { live_members(self.pgid) } else { Vec::new() };
         !members.is_empty()
             && match process_start(self.pgid) {
                 Some(t) => self.leader_start != 0 && t == self.leader_start,
@@ -679,18 +723,35 @@ impl Group {
             }
     }
 
-    /// SIGKILL to the group again while it's still the job's; whether any of it was left. A killed
-    /// group can outlive its SIGKILL: a member's fork under way as the signal went out finishes
-    /// after it, its child in the group never signalled (or signalled while still being made, the
-    /// signal lost; task #987: 56 groups in 12,600 killed as they started, the M4 under load).
-    /// The forking member dies as its fork returns, and a SIGKILL sent after the fork reaches the
-    /// child: each round's reaches what the one before missed, until the group is gone.
+    /// SIGKILL to the group again while it's still the job's (an earlier agent's job whose stop
+    /// left some of it running: `stop_orphan`); whether any of it was left.
     pub fn kill_again(&self) -> bool {
         let left = self.is_the_jobs();
         if left {
             crate::sys::signal_group(self.pgid, Signal::Kill);
         }
         left
+    }
+}
+
+/// A job's group that still ran when its stop gave up (`Running::stop`, `KILL_AGAIN`), with its
+/// head when this agent started it: held unreaped, so the group's id can't be another's.
+pub struct Outlived {
+    pub group: Group,
+    head: Option<Child>,
+}
+
+impl Outlived {
+    /// SIGKILL to the group again while any of it runs (the agent's loop, each round); whether it's
+    /// still there. Once none of it runs, its head is reaped. A job taken over from an earlier
+    /// agent has no head here: its group is known by `Group::is_the_jobs`.
+    pub fn kill_again(&mut self) -> bool {
+        let Some(c) = self.head.as_mut() else { return self.group.kill_again() };
+        if !live_members(self.group.pgid).is_empty() {
+            crate::sys::signal_group(self.group.pgid, Signal::Kill);
+            return true;
+        }
+        matches!(c.try_wait(), Ok(None))
     }
 }
 
@@ -710,8 +771,7 @@ fn stop_orphan_within(record: &Path, grace: Duration) -> Orphan {
         let g = Group { pgid: r.pgid, leader_start: r.leader_start, started: r.started, id: r.id };
         if g.is_the_jobs() {
             eprintln!("agent: stopping {} left running by an earlier agent (group {})", g.id, g.pgid);
-            stop_group(g.pgid, grace, || {});
-            found.left = g.is_the_jobs().then_some(g);
+            found.left = stop_group(g.pgid, grace, || g.is_the_jobs()).then_some(g);
         }
     }
     std::fs::remove_file(record).ok();
@@ -1073,46 +1133,104 @@ mod tests {
         assert!(!rec.exists());
     }
 
-    /// Task #987: what of a group outlives its SIGKILL (a fork under way as it went out) is killed
-    /// again, its ended processes not yet reaped counting for nothing.
-    #[test]
-    fn a_group_left_after_its_kill_is_killed_again() {
-        let d = tempfile::tempdir().unwrap();
-        let live = |pgid: i32| group_members(pgid).into_iter().filter(|&p| process_start(p).is_some()).count();
-        // A job (its head's shell, the command's, two sleeps) stopped once all of it runs (no fork
-        // under way): nothing left.
-        let cmd = "/bin/sleep 3600 & /bin/sleep 3600; wait";
-        let mut r = Running::start(
-            spec(&["/bin/sh", "-c", cmd]),
-            1,
-            &[],
-            d.path().join("log"),
-            &d.path().join("job.json"),
-            None,
-            None,
-        )
-        .unwrap();
-        let pgid = r.pgid;
-        let sleeps = |pgid: i32| {
-            group_members(pgid).into_iter().filter_map(crate::sys::process).filter(|p| p.exe == "sleep").count()
+    /// A job (its head's shell running `cmd`) in a temporary folder, and the number of its group's
+    /// running members that are `sleep`.
+    fn sleeper(d: &Path, cmd: &str) -> Running {
+        Running::start(spec(&["/bin/sh", "-c", cmd]), 1, &[], d.join("log"), &d.join("job.json"), None, None).unwrap()
+    }
+
+    fn sleeps(pgid: i32) -> usize {
+        live_members(pgid).into_iter().filter_map(crate::sys::process).filter(|p| p.exe == "sleep").count()
+    }
+
+    /// A `sleep` started into group `pgid` after a signal to it: a member that signal missed, as a
+    /// fork under way as it went out makes one (task #987).
+    fn late_member(pgid: i32) -> Child {
+        use std::os::unix::process::CommandExt;
+        let mut c = store::spawn::command("/bin/sleep");
+        c.arg("3600").process_group(pgid);
+        store::spawn::spawn(&mut c).unwrap()
+    }
+
+    /// Whether process `pid` is stopped (SIGSTOP).
+    fn stopped(pid: u32) -> bool {
+        const SSTOP: u32 = 4;
+        // SAFETY: proc_bsdinfo is plain old data; proc_pidinfo fills at most `size` bytes of it.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let n = unsafe {
+            libc::proc_pidinfo(
+                pid as i32,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
         };
+        n == size && info.pbi_status == SSTOP
+    }
+
+    /// Task #987: a stop's SIGKILL is sent again while any of the group runs: a member the first
+    /// missed (started into the group after it) is killed by the next, the head held unreaped
+    /// meanwhile, so the group's id stays the job's.
+    #[test]
+    fn a_stop_kills_again_what_its_sigkill_missed() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = sleeper(d.path(), "/bin/sleep 3600 & /bin/sleep 3600; wait");
+        let pgid = r.pgid;
         store::testkit::eventually("its two sleeps", || sleeps(pgid) == 2);
-        assert_eq!(r.stop(Duration::from_secs(1)), None);
-        // A group whose head has ended (unreaped: not running, its start unreadable) beside a
-        // sleep it left: still the job's, killed again, then gone.
+        let (mut late, mut looks) = (None, 0);
+        let left = kill_until_gone(pgid, || {
+            looks += 1;
+            if looks == 1 {
+                late = Some(late_member(pgid));
+            }
+            !live_members(pgid).is_empty()
+        });
+        assert!(!left, "none of the group runs");
+        assert!(looks >= 2, "the SIGKILL sent again after the late member came");
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(late.unwrap().wait().unwrap().signal(), Some(libc::SIGKILL));
+        // Its head ended, not reaped until the stop: nothing left, its end the SIGKILL's.
+        assert!(r.stop(Duration::from_secs(1)).is_none());
+        assert!(r.poll().unwrap().is_some_and(|st| st.signal() == Some(libc::SIGKILL)));
+    }
+
+    /// Task #987: a group still running when its stop gave up is killed again each round while any
+    /// of it runs, its head (ended, held unreaped) reaped once none does.
+    #[test]
+    fn a_group_left_after_its_stop_is_killed_again() {
         let mut c = store::spawn::command("/bin/sh");
         c.args(["-c", "/bin/sleep 3600 & exit 0"]);
         crate::sys::own_group(&mut c);
-        let mut head = store::spawn::spawn(&mut c).unwrap();
+        let head = store::spawn::spawn(&mut c).unwrap();
         let pgid = head.id() as i32;
-        // (Its head's start not kept: it may have ended already.)
-        let g = Group { pgid, leader_start: 0, started: now_s() - 5, id: "left".into() };
         store::testkit::eventually("its head ended, the sleep left", || {
-            process_start(pgid).is_none() && live(pgid) == 1
+            process_start(pgid).is_none() && live_members(pgid).len() == 1
         });
-        assert!(g.kill_again());
-        store::testkit::eventually("the sleep gone", || live(pgid) == 0);
-        assert!(!g.kill_again());
-        head.wait().unwrap();
+        let group = Group { pgid, leader_start: 0, started: now_s() - 5, id: "left".into() };
+        let mut o = Outlived { group, head: Some(head) };
+        assert!(o.kill_again());
+        store::testkit::eventually("the sleep gone", || live_members(pgid).is_empty());
+        store::testkit::eventually("its head reaped", || !o.kill_again());
+        assert!(matches!(o.head.as_mut().unwrap().try_wait(), Ok(Some(_))));
+    }
+
+    /// Task #987: a paused job is stopped again each round: a member its SIGSTOP missed (started
+    /// into the group after it) is stopped too.
+    #[test]
+    fn a_paused_job_stopped_again_stops_what_its_sigstop_missed() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = sleeper(d.path(), "/bin/sleep 3600");
+        let pgid = r.pgid;
+        store::testkit::eventually("its sleep", || sleeps(pgid) == 1);
+        r.pause("test");
+        let mut late = late_member(pgid);
+        store::testkit::eventually("the late member running", || process_start(late.id() as i32).is_some());
+        assert!(!stopped(late.id()));
+        r.keep_paused();
+        store::testkit::eventually("the late member stopped", || stopped(late.id()));
+        assert!(r.stop(Duration::from_secs(1)).is_none());
+        late.wait().unwrap();
     }
 }
