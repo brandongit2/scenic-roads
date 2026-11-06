@@ -431,9 +431,11 @@ commit; re-exports at the old paths as before.
    records' formats are unchanged; an `Out` now parses only the snapshot's term, manifest,
    pending and sizes (the agent's keys were parsed and dropped), and before the pool reads
    today's manifest, pending and sizes, not jobs.json, and `read_manifest` today's manifest alone.
-   Its measurements as §5 takes them (the M4, interleaved, 3 runs each) and a key check on a
-   frozen plan (`bench_plan_on_a_real_root`, after against before) are pending: the M4 went
-   offline before they ran.
+   Key check (`bench_plan_on_a_real_root` on a frozen copy of the lead's term 737, seq 65, the M1,
+   5 Nov): before (main 7f1dc02c) and after, the same plan and keys, its 3,110 work targets' lines
+   byte-identical; an `Out`'s and `read_manifest`'s records the pool's (`Records::now`,
+   `Brief::now`) on that state. Its measurements as §5 takes them (the M4, interleaved, 3 runs
+   each) are pending: the M4 is offline.
 2. **6b, the paths**: the step modules name jobrt's and buildstore's items directly
    (`crate::agent::jobs::report` → `jobrt::jobs::report`, `agent::recipes::Recipe`,
    `agent::room::{free_past, job_target}`), and the item moves of §6.2. Mechanical; modgraph.py
