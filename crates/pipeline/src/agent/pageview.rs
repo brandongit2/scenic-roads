@@ -900,7 +900,7 @@ pub(crate) mod tests {
     pub(crate) fn fixture(root: &store::nasfs::NasRoot, now: u64) {
         let view = serde_json::json!({ "at": now, "view": {
             "pause": null,
-            "leases": [{ "id": 1, "worker": "m1", "what": "Roads", "step": "unit", "n": 2, "granted": now - 100, "progress": null, "frac": 0.5, "beat": now - 10, "lapses": now + 290 }],
+            "leases": [{ "id": 1, "worker": "m1", "what": "Roads", "step": "unit", "n": 2, "granted": now - 100, "progress": null, "beat": now - 10, "lapses": now + 290 }],
             "workers": [{ "name": "m1", "label": "M1", "kind": "native", "seen": now - 5, "fit": [] }],
             "tasks": { "done": 3 },
             "task_mb": { "tail": 400 } } });

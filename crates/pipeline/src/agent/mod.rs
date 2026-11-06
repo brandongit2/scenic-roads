@@ -947,7 +947,7 @@ pub struct Status {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<crate::inputs::view::InputView>,
     /// What needs a look (flags::of, task #953: a Mac idle while work it could take waits, a job
-    /// stuck, a catalogue stale): the lead's, worked out at each round.
+    /// stuck or slow, a catalogue stale): the lead's, worked out at each round.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<flags::Flag>,
 }
@@ -4669,7 +4669,8 @@ impl Agent {
         // (The build in a line, for the members' menu bars: in the lead's beat answers; and what
         // needs a look, flags::of, the same in both.)
         if let Some(c) = &self.coord {
-            status.flags = flags::of(&status, &c.open_work(), &c.runs(), c.overdue().0, status.beat);
+            let factor = c.overdue().0;
+            status.flags = flags::of(&status, &c.open_work(), &c.runs(factor), factor, status.beat);
             let build = status.build_said(status.beat);
             c.set_said(&status.host, build.clone(), status.flags.clone());
             status.build = Some(build);
@@ -6965,12 +6966,7 @@ impl Agent {
             .as_ref()
             .map_or((String::new(), String::new()), |r| (r.spec.id.clone(), r.spec.what.clone()));
         let step = if step.is_empty() { id.split(' ').next().unwrap_or("").to_string() } else { step.to_string() };
-        // (Its lease's stillness, as the lead heard its beats: noted before the lease ends.)
-        let still_s = match (&self.coord, &self.slots[k].lease) {
-            (Some(c), Some(Held::Own(l) | Held::Pooled { id: l, .. })) => c.still_most(*l),
-            _ => None,
-        };
-        self.note(crate::coord::history::Event {
+        let e = crate::coord::history::Event {
             worker: Some(self.worker_of(k)),
             step: (!step.is_empty()).then_some(step),
             targets: done.iter().map(|t| t.0.clone()).collect(),
@@ -6978,9 +6974,15 @@ impl Agent {
             ok: Some(ok),
             what,
             note: how.to_string(),
-            still_s,
             ..crate::coord::history::Event::new("end")
-        });
+        };
+        // (What its lease measured, as the lead heard its beats: its stillness and its pace, noted
+        // before the lease ends.)
+        let e = match (&self.coord, &self.slots[k].lease) {
+            (Some(c), Some(Held::Own(l) | Held::Pooled { id: l, .. })) => c.noted(*l, e),
+            _ => e,
+        };
+        self.note(e);
     }
 
     /// Notes the lead's conditions as they change (mains or battery, the NAS, home or away, a

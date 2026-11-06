@@ -83,6 +83,38 @@ pub struct Event {
     /// usual stillness (`History::still_p90s`). Events before task #986 have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub still_s: Option<u64>,
+    /// Its job's rate in each unit its progress line said (units a second over the time its parts
+    /// in that unit took: crate::coord::lease::Pace::rates), on an "end" or "done" of a leased job:
+    /// its step's usual rates (`History::paces`). Events before task #990 have none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rates: BTreeMap<String, f64>,
+    /// The longest its job's progress went without going on (s: Pace::gap_most; none when it never
+    /// said its progress), on the same events: its step's usual wait for progress (`History::paces`).
+    /// Events before task #990 have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_s: Option<u64>,
+}
+
+/// The fewest jobs a step's usual pace is taken from (`History::paces`): its 10th and 90th
+/// percentiles each leave out a tenth of its jobs, the slowest or the longest, and with fewer than
+/// ten that tenth is no whole job, the percentile its one slowest or longest job.
+pub const ENOUGH: usize = 10;
+
+/// A step's usual pace (`History::paces`): its 10th-percentile rate in each unit, by (step,
+/// unit), and its 90th-percentile longest wait for progress (s), by step.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Paces {
+    pub rates: BTreeMap<(String, String), f64>,
+    pub gaps: BTreeMap<String, u64>,
+}
+
+/// The 10th percentile (nearest rank) of `v`, with at least `ENOUGH` of them.
+fn p10(mut v: Vec<f64>) -> Option<f64> {
+    if v.len() < ENOUGH {
+        return None;
+    }
+    v.sort_by(f64::total_cmp);
+    Some(v[v.len().div_ceil(10) - 1])
 }
 
 impl Event {
@@ -470,6 +502,31 @@ impl History {
         by.into_iter().filter_map(|(step, v)| Some((step, crate::needs::p90(v)?))).collect()
     }
 
+    /// What a running job's pace is held to (crate::agent::flags' slow), from the jobs kept that
+    /// ended well, by step: the 10th percentile of their rate in each unit (`Event::rates`) and the
+    /// 90th of their longest wait for progress (`Event::gap_s`), each where `ENOUGH` of them say it.
+    pub fn paces(&self) -> Paces {
+        let (mut rates, mut gaps): (BTreeMap<(String, String), Vec<f64>>, BTreeMap<String, Vec<u64>>) =
+            Default::default();
+        for e in self.events.iter().filter(|e| matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true)) {
+            let Some(step) = &e.step else { continue };
+            for (unit, &r) in &e.rates {
+                rates.entry((step.clone(), unit.clone())).or_default().push(r);
+            }
+            if let Some(g) = e.gap_s {
+                gaps.entry(step.clone()).or_default().push(g);
+            }
+        }
+        Paces {
+            rates: rates.into_iter().filter_map(|(k, v)| Some((k, p10(v)?))).collect(),
+            gaps: gaps
+                .into_iter()
+                .filter(|(_, v)| v.len() >= ENOUGH)
+                .filter_map(|(k, v)| Some((k, crate::needs::p90(v)?)))
+                .collect(),
+        }
+    }
+
     /// Adds `e` (now, unless it says when), kept on disk at once; its number.
     pub fn add(&mut self, e: Event) -> u64 {
         self.add_at(e, now_s())
@@ -664,6 +721,38 @@ mod tests {
 
     fn ev(kind: &str, t: u64, worker: &str) -> Event {
         Event { kind: kind.into(), t, worker: Some(worker.into()), ..Default::default() }
+    }
+
+    /// Task #990: a step's usual pace, from its jobs that ended well: the 10th percentile of their
+    /// rate in each unit and the 90th of their longest wait for progress, each from `ENOUGH` jobs
+    /// (fewer: none, the percentile no more than its one slowest or longest job).
+    #[test]
+    fn a_steps_usual_pace_is_its_jobs_slowest_tenth_from_enough_of_them() {
+        let mut h = History::load(None);
+        let done = |rate: f64, gap: u64, ok: bool| Event {
+            step: Some("terrain-hi".into()),
+            ok: Some(ok),
+            rates: BTreeMap::from([("tiles".to_string(), rate)]),
+            gap_s: Some(gap),
+            ..Event::new("done")
+        };
+        for i in 1..ENOUGH {
+            h.add(done(i as f64, 60 * i as u64, true));
+        }
+        h.add(done(0.001, 99_999, false));
+        assert_eq!(h.paces(), Paces::default(), "nine that ended well: not enough");
+        h.add(done(10.0, 600, true));
+        let p = h.paces();
+        assert_eq!(p.rates.get(&("terrain-hi".into(), "tiles".into())), Some(&1.0), "the slowest of ten");
+        assert_eq!(p.gaps.get("terrain-hi"), Some(&540), "the 9th longest of ten");
+        for _ in 0..10 {
+            h.add(done(5.0, 60, true));
+        }
+        assert_eq!(
+            h.paces().rates.get(&("terrain-hi".into(), "tiles".into())),
+            Some(&2.0),
+            "the 2nd slowest of twenty"
+        );
     }
 
     #[test]

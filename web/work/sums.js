@@ -263,8 +263,8 @@ export function startOf(run, events) {
 // one under way), run}. From its live data (crate::agent::jobs::Live) where it has some: its
 // targets done (taken as the first of its list, its current one aside) whole, the one under way
 // at its time so far against the step's time a target (`each_s`, under 95% until it ends), the
-// rest none; else from the beat's `frac` of the whole job, spread over its tiles in order; else
-// none. A tile two runs hold keeps the further one. `runs`: [{step, targets, live, frac}].
+// rest none; else from its progress's share of the whole job (`frac`, a status job's), spread
+// over its tiles in order; else none. A tile two runs hold keeps the further one. `runs`: [{step, targets, live, frac}].
 export function runningTiles(runs, eachS, now) {
   const out = new Map();
   for (const r of runs) {

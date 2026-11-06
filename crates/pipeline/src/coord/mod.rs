@@ -1234,9 +1234,6 @@ pub struct Beat {
     pub lease: u64,
     #[serde(default)]
     pub progress: Option<String>,
-    /// How far it is (0–1), when it says.
-    #[serde(default)]
-    pub frac: Option<f64>,
     /// What its job is doing now (crate::agent::jobs::Live), when it says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<crate::agent::jobs::Live>,
@@ -1756,7 +1753,7 @@ impl Coordinator {
     pub fn renew_live(&self, id: u64, progress: Option<String>, live: Option<crate::agent::jobs::Live>) -> bool {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
-        s.leases.renew_frac(id, &self.me, progress, None, live, now)
+        s.leases.renew_live(id, &self.me, progress, live, now)
     }
 
     /// Ends this Mac's job's lease; `done`: the targets it recorded (not offered again until the plan
@@ -2353,12 +2350,16 @@ impl Coordinator {
             .max()
     }
 
-    /// The longest this Mac's job under lease `id` went with nothing moving, to now (s,
-    /// `Lease::still_most`): its "end" event's `still_s`. None when it isn't a lease held.
-    pub fn still_most(&self, id: u64) -> Option<u64> {
+    /// `e`, this Mac's job's "end" event, with what its run under lease `id` measured to now
+    /// (`Lease::noted`: its longest still stretch, its rates, its longest wait for progress); as it
+    /// is when `id` isn't a lease held.
+    pub fn noted(&self, id: u64, e: history::Event) -> history::Event {
         let s = self.shared.lock().unwrap();
         let now = s.now();
-        s.leases.of(id).map(|l| l.still_most(now))
+        match s.leases.of(id) {
+            Some(l) => l.noted(e, now),
+            None => e,
+        }
     }
 
     /// Notes what happened (`history`): this Mac's jobs started and ended, catalogues, its conditions.
@@ -2452,12 +2453,16 @@ impl Coordinator {
     /// usual stillness (history::History::still_p90s); a step none of whose jobs measured it yet
     /// (its first runs, every step as the stillness was first recorded), its target's time at most
     /// as measured (`Sched::target_most`, the target under way's, else its first's and its start);
-    /// a step never run the way it runs now, the longest usual stillness of any step.
-    pub fn runs(&self) -> Vec<crate::agent::flags::Run> {
-        use crate::agent::flags::{Still, Usual};
+    /// a step never run the way it runs now, the longest usual stillness of any step. And its pace
+    /// (`Pace`, None while its step has no usual: history::History::paces): its rate over the last
+    /// `factor` times its step's usual longest wait for progress, in the unit of its part under
+    /// way, with its step's usual rate in it.
+    pub fn runs(&self, factor: f64) -> Vec<crate::agent::flags::Run> {
+        use crate::agent::flags::{Pace, Still, Usual};
         let s = self.shared.lock().unwrap();
         let now = s.now();
         let usual = s.history.still_p90s();
+        let paces = s.history.paces();
         let longest = usual.values().max().copied();
         s.leases
             .live(now)
@@ -2487,6 +2492,12 @@ impl Coordinator {
                         phase: live.and_then(|v| v.phase.clone()),
                     }
                 });
+                let pace = paces.gaps.get(step).and_then(|&gap| {
+                    let window = Duration::from_secs_f64(gap as f64 * factor);
+                    let (unit, rate) = l.pace.lately(window)?;
+                    let usual = *paces.rates.get(&(step.clone(), unit.to_string()))?;
+                    Some(Pace { unit: unit.to_string(), rate, usual, window_s: window.as_secs() })
+                });
                 Some(crate::agent::flags::Run {
                     worker: l.worker.clone(),
                     lease: l.id,
@@ -2495,6 +2506,7 @@ impl Coordinator {
                     done: live.filter(|v| v.targets > 0).map(|v| v.targets_done),
                     threads: l.threads,
                     still,
+                    pace,
                 })
             })
             .collect()
@@ -3906,7 +3918,7 @@ fn view_of(s: &Shared) -> serde_json::Value {
                 Work::Task { id } => (s.tasks.kind_of(*id), 1),
             };
             let lapses = unix_of(l.deadline());
-            serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "granted": unix_of(l.granted), "progress": l.progress, "frac": l.frac, "live": l.live, "beat": lapses.saturating_sub(TTL.as_secs()), "lapses": lapses })
+            serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "granted": unix_of(l.granted), "progress": l.progress, "live": l.live, "beat": lapses.saturating_sub(TTL.as_secs()), "lapses": lapses })
         })
         .collect();
     let workers: Vec<serde_json::Value> = s
@@ -4189,7 +4201,7 @@ fn route(
                 }
             }
             let mut s = shared.lock().unwrap();
-            let alive = s.leases.renew_frac(b.lease, &b.worker, b.progress.clone(), b.frac, b.live.take(), now);
+            let alive = s.leases.renew_live(b.lease, &b.worker, b.progress.clone(), b.live.take(), now);
             if let Some(k) = b.slot.filter(|_| alive) {
                 s.leases.at_slot(b.lease, &b.worker, k);
             }
@@ -4640,16 +4652,16 @@ fn route(
                     s.save_leases();
                     s.save_costs();
                     let secs = now.duration_since(l.granted).as_secs_f64();
-                    s.history.add(history::Event {
+                    let e = history::Event {
                         worker: Some(d.worker.clone()),
                         lease: Some(d.lease),
                         step: Some(step.clone()),
                         targets: targets.iter().map(|t| t.0.clone()).collect(),
                         secs: Some(secs.round()),
                         ok: Some(!d.failed),
-                        still_s: Some(l.still_most(now)),
                         ..history::Event::new("done")
-                    });
+                    };
+                    s.history.add(l.noted(e, now));
                 }
                 Work::Task { id } => {
                     let kind = s.tasks.kind_of(*id);
@@ -5075,7 +5087,7 @@ fn route(
                         // job waits for it only while it'll be back sooner than its own run.)
                         task::State::Leased { worker, lease } => {
                             let l = s.leases.of(*lease);
-                            serde_json::json!({ "state": "leased", "worker": worker, "age_s": l.map(|l| now.duration_since(l.granted).as_secs_f64()), "frac": l.and_then(|l| l.frac), "pace": s.tasks.pace(worker, &t.kind) })
+                            serde_json::json!({ "state": "leased", "worker": worker, "age_s": l.map(|l| now.duration_since(l.granted).as_secs_f64()), "pace": s.tasks.pace(worker, &t.kind) })
                         }
                         task::State::Done { worker, outputs, removed, secs, peak_mb } => {
                             serde_json::json!({ "state": "done", "worker": worker, "out": t.out, "outputs": outputs, "removed": removed, "secs": secs, "peak_mb": peak_mb })
@@ -6983,7 +6995,7 @@ mod tests {
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
         let g = w.ask(&Ask { app: Some(app.into()), ..ask(4096) }).unwrap().unwrap();
-        assert_eq!(c.runs()[0].still, None, "no beat heard yet");
+        assert_eq!(c.runs(3.0)[0].still, None, "no beat heard yet");
         let live = crate::agent::jobs::Live {
             target: Some("unit 6/55/25".into()),
             phase: Some("copying the piece from the NAS".into()),
@@ -6992,8 +7004,8 @@ mod tests {
             ..Default::default()
         };
         assert!(w.beat_told(g.lease, None, Some(live), None).unwrap().0);
-        let usual = || c.runs()[0].still.as_ref().unwrap().usual;
-        let s = c.runs().remove(0).still.expect("a beat heard");
+        let usual = || c.runs(3.0)[0].still.as_ref().unwrap().usual;
+        let s = c.runs(3.0).remove(0).still.expect("a beat heard");
         assert_eq!((s.secs, s.usual), (0, None), "it moved at its first beat; nothing measured");
         assert_eq!((s.target.as_str(), s.phase.as_deref()), ("6/55/25", Some("copying the piece from the NAS")));
         let done = |step: &str, still: u64, ok: bool| {

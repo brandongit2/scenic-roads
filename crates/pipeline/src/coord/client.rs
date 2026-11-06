@@ -171,14 +171,7 @@ impl LeaseCalls for Client {
         live: Option<crate::agent::jobs::Live>,
         slot: Option<u32>,
     ) -> Result<(bool, Option<crate::control::Pause>, Option<crate::control::Cancel>)> {
-        let b = super::Beat {
-            worker: self.worker.clone(),
-            lease,
-            progress: progress.map(str::to_string),
-            frac: None,
-            live,
-            slot,
-        };
+        let b = super::Beat { worker: self.worker.clone(), lease, progress: progress.map(str::to_string), live, slot };
         let v = self.post_json("/work/beat", &serde_json::to_value(&b)?)?.1;
         Ok((
             v["ok"].as_bool().unwrap_or(false),

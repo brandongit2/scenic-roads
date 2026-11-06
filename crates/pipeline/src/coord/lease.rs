@@ -41,10 +41,8 @@ pub struct Lease {
     pub granted: Instant,
     #[serde(skip, default = "Instant::now")]
     deadline: Instant,
-    /// What the worker last said it was doing, and how far (0–1), when it says.
+    /// What the worker last said it was doing (its job's progress line), when it says.
     pub progress: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frac: Option<f64>,
     /// What its job is doing now, as its worker's last beat said (crate::agent::jobs::Live; in
     /// memory alone).
     #[serde(skip)]
@@ -66,6 +64,9 @@ pub struct Lease {
     pub moved: Option<Instant>,
     #[serde(skip)]
     pub still_most: u64,
+    /// Its job's progress as its worker's beats said it (`Pace`; in memory alone).
+    #[serde(skip)]
+    pub pace: Pace,
     /// The threads its job is counted for (0: not said): granted, then as re-granted (docs/pool.md
     /// §7.1, Threads re-granted: the most of what it runs on now, what its agent has told it and
     /// what it is still to be told), the cores the pool's own work takes on its Mac, apart from load
@@ -116,6 +117,18 @@ impl Lease {
     /// whole seconds: what its step's runs are held to (crate::coord::history::History::still_p90s).
     pub fn still_most(&self, end: Instant) -> u64 {
         self.still_most.max(end.saturating_duration_since(self.moved.unwrap_or(self.granted)).as_secs())
+    }
+
+    /// `e` (its job's "done" or "end" event) with what its run measured to `end`: its longest still
+    /// stretch (`still_most`), its rate in each unit its progress said and its longest wait for its
+    /// progress to go on (`Pace`): what its step's runs are held to (crate::coord::history::History).
+    pub fn noted(&self, e: crate::coord::history::Event, end: Instant) -> crate::coord::history::Event {
+        crate::coord::history::Event {
+            still_s: Some(self.still_most(end)),
+            gap_s: self.pace.gap_most(end),
+            rates: self.pace.rates(),
+            ..e
+        }
     }
 
     /// A job lease's targets (none for a task).
@@ -489,13 +502,13 @@ impl Leases {
                 granted: now,
                 deadline: now + self.ttl,
                 progress: None,
-                frac: None,
                 live: None,
                 live_at: None,
                 window: Default::default(),
                 heard: None,
                 moved: None,
                 still_most: 0,
+                pace: Pace::default(),
                 slot: None,
                 threads: 0,
                 start_threads: 0,
@@ -547,16 +560,15 @@ impl Leases {
     /// Renews `worker`'s lease `id`; false when it isn't that worker's live lease (lapsed, finished,
     /// or never granted: the worker should stop that work).
     pub fn renew(&mut self, id: u64, worker: &str, progress: Option<String>, now: Instant) -> bool {
-        self.renew_frac(id, worker, progress, None, None, now)
+        self.renew_live(id, worker, progress, None, now)
     }
 
-    /// `renew`, with how far the work is (0–1) and what its job is doing now, when the worker says.
-    pub fn renew_frac(
+    /// `renew`, with what its job is doing now, when the worker says.
+    pub fn renew_live(
         &mut self,
         id: u64,
         worker: &str,
         progress: Option<String>,
-        frac: Option<f64>,
         live: Option<crate::agent::jobs::Live>,
         now: Instant,
     ) -> bool {
@@ -565,20 +577,19 @@ impl Leases {
             Some(l) if l.worker == worker && lasts => {
                 l.deadline = now + self.ttl;
                 // (Its work moved: its progress line, or anything its job's view says, changed.)
-                let frac = frac.filter(|f| f.is_finite()).map(|f| f.clamp(0.0, 1.0));
                 let moved = (progress.is_some() && progress != l.progress)
-                    || (frac.is_some() && frac != l.frac)
                     || live.as_ref().is_some_and(|v| l.live.as_ref() != Some(v));
                 if moved {
                     l.still_most = l.still_most(now);
                     l.moved = Some(now);
                 }
+                if let Some(line) = &progress {
+                    let target = live.as_ref().or(l.live.as_ref()).and_then(|v| v.target.as_deref());
+                    l.pace.beat(line, target, l.heard.unwrap_or(l.granted), now, l.granted);
+                }
                 l.heard = Some(now);
                 if progress.is_some() {
                     l.progress = progress;
-                }
-                if frac.is_some() {
-                    l.frac = frac;
                 }
                 if let Some(v) = live {
                     // (Views older than the newest one `WINDOW` back are let go.)
@@ -652,6 +663,116 @@ impl Leases {
     }
 }
 
+/// A leased job's progress as its worker's beats said it (docs/pool.md §10, Flags: slow; task
+/// #990): what the slow flag judges it by (`lately`) and what its "done" or "end" event notes
+/// (`rates`, `gap_most`). Its progress line's numbers alone count, never its bytes: a retry sending
+/// its bytes again moves no line, and a line gone back on the same target (work done again)
+/// counts nothing until it passes the most it had said. A lead restarted counts from its first
+/// beat after.
+#[derive(Clone, Debug, Default)]
+pub struct Pace {
+    /// The part under way (`Part`).
+    part: Option<Part>,
+    /// Each unit's progress and seconds over the parts ended (units, s).
+    ran: BTreeMap<String, (f64, f64)>,
+    /// The last beat at which its progress went on (None: none yet), and the longest stretch from
+    /// its grant or one such to the next so far (s).
+    on: Option<Instant>,
+    gap_most: u64,
+}
+
+/// One run of a job's progress line: on one target (the target under way, as its view says), in one
+/// unit (jobrt::jobs::unit_key) and total. From the beat before the one that first said it
+/// (`since`: it began after that one), the most it has said (`best`), and each beat's most since.
+#[derive(Clone, Debug)]
+struct Part {
+    target: Option<String>,
+    unit: String,
+    total: f64,
+    since: Instant,
+    best: f64,
+    beats: std::collections::VecDeque<(Instant, f64)>,
+}
+
+impl Pace {
+    /// A beat at `now` saying progress line `line` ("<done>/<total> <unit>", as crate::agent's
+    /// beat sends it) on `target`, the beat before it heard at `prev` (its grant before one).
+    /// Its progress went on when its line passed the most it had said, or a new part began (the
+    /// last one's end).
+    fn beat(&mut self, line: &str, target: Option<&str>, prev: Instant, now: Instant, granted: Instant) {
+        let Some((done, total, unit)) = parse_line(line) else { return };
+        let went_on = match self.part.as_mut() {
+            Some(p) if p.target.as_deref() == target && p.unit == unit && p.total == total => {
+                let on = done > p.best;
+                p.best = p.best.max(done);
+                on
+            }
+            _ => {
+                self.end_part();
+                let target = target.map(str::to_string);
+                let unit = unit.to_string();
+                self.part = Some(Part { target, unit, total, since: prev, best: done, beats: Default::default() });
+                true
+            }
+        };
+        if went_on {
+            self.gap_most = self.gap_most.max(now.saturating_duration_since(self.on.unwrap_or(granted)).as_secs());
+            self.on = Some(now);
+        }
+        if let Some(p) = self.part.as_mut() {
+            p.beats.push_back((now, p.best));
+        }
+    }
+
+    /// The part under way taken into `ran`, to its last beat.
+    fn end_part(&mut self) {
+        if let Some(p) = self.part.take() {
+            let end = p.beats.back().map_or(p.since, |b| b.0);
+            let r = self.ran.entry(p.unit).or_default();
+            r.0 += p.best;
+            r.1 += end.saturating_duration_since(p.since).as_secs_f64();
+        }
+    }
+
+    /// The longest its progress went without going on, from its grant to `end` (its end: s); None
+    /// when it never said its progress.
+    pub fn gap_most(&self, end: Instant) -> Option<u64> {
+        Some(self.gap_most.max(end.saturating_duration_since(self.on?).as_secs()))
+    }
+
+    /// Its rate in each unit its progress said: what its parts in that unit reached over the time
+    /// they took (units a second).
+    pub fn rates(&self) -> BTreeMap<String, f64> {
+        let mut ran = self.ran.clone();
+        if let Some(p) = &self.part {
+            let end = p.beats.back().map_or(p.since, |b| b.0);
+            let r = ran.entry(p.unit.clone()).or_default();
+            r.0 += p.best;
+            r.1 += end.saturating_duration_since(p.since).as_secs_f64();
+        }
+        ran.into_iter().filter(|(_, (_, secs))| *secs > 0.0).map(|(u, (n, secs))| (u, n / secs)).collect()
+    }
+
+    /// Its rate over the last `window` of the part under way, to its last beat: its unit and what
+    /// it went on by a second; None until the part has run that long.
+    pub fn lately(&self, window: Duration) -> Option<(&str, f64)> {
+        let p = self.part.as_ref()?;
+        let &(last, best) = p.beats.back()?;
+        let from = last.checked_sub(window).filter(|f| *f >= p.since && !window.is_zero())?;
+        let base = p.beats.iter().rev().find(|b| b.0 <= from).map_or(0.0, |b| b.1);
+        Some((&p.unit, (best - base) / window.as_secs_f64()))
+    }
+}
+
+/// A beat's progress line ("<done>/<total> <unit>"): done, total (more than 0) and its unit
+/// (jobrt::jobs::unit_key: a word in brackets after it left out).
+fn parse_line(line: &str) -> Option<(f64, f64, &str)> {
+    let (frac, unit) = line.trim().split_once(' ')?;
+    let (d, t) = frac.split_once('/')?;
+    let (d, t) = (d.parse::<f64>().ok()?, t.parse::<f64>().ok()?);
+    (d.is_finite() && t.is_finite() && t > 0.0).then(|| (d.clamp(0.0, t), t, crate::agent::jobs::unit_key(unit.trim())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,7 +817,7 @@ mod tests {
             if s > 600 {
                 b += 2_000_000_000;
             }
-            assert!(l.renew_frac(a, "m1", None, None, Some(moved(b)), t0 + Duration::from_secs(s)));
+            assert!(l.renew_live(a, "m1", None, Some(moved(b)), t0 + Duration::from_secs(s)));
         }
         let x = l.get(a, "m1", t0 + Duration::from_secs(900)).unwrap();
         let span = x.live_at.unwrap().duration_since(x.window.front().unwrap().0);
@@ -825,18 +946,66 @@ mod tests {
         let id = ls.grant("m1", Work::Job { step: "unit".into(), targets: vec![] }, t0);
         assert_eq!(ls.of(id).unwrap().still(), None, "no beat yet");
         let view = |bytes: u64| crate::agent::jobs::Live { nas_read: Some(bytes), ..Default::default() };
-        assert!(ls.renew_frac(id, "m1", None, None, Some(view(1)), at(60)));
-        assert!(ls.renew_frac(id, "m1", None, None, Some(view(1)), at(120)));
-        assert!(ls.renew_frac(id, "m1", None, None, Some(view(1)), at(180)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(1)), at(60)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(1)), at(120)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(1)), at(180)));
         assert_eq!(ls.of(id).unwrap().still(), Some(Duration::from_secs(120)));
         // (Its bytes moved: still no more.)
-        assert!(ls.renew_frac(id, "m1", None, None, Some(view(2)), at(240)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(2)), at(240)));
         assert_eq!(ls.of(id).unwrap().still(), Some(Duration::ZERO));
         // (Its progress line moved, its view the same.)
-        assert!(ls.renew_frac(id, "m1", Some("1/4 tiles".into()), None, Some(view(2)), at(270)));
-        assert!(ls.renew_frac(id, "m1", Some("1/4 tiles".into()), None, Some(view(2)), at(330)));
+        assert!(ls.renew_live(id, "m1", Some("1/4 tiles".into()), Some(view(2)), at(270)));
+        assert!(ls.renew_live(id, "m1", Some("1/4 tiles".into()), Some(view(2)), at(330)));
         assert_eq!(ls.of(id).unwrap().still(), Some(Duration::from_secs(60)));
         assert_eq!(ls.of(id).unwrap().still_most(at(400)), 180, "60 s to 240 s; its end 130 s after its last move");
         assert_eq!(ls.of(id).unwrap().still_most(at(500)), 230);
+    }
+
+    /// A job's pace by its beats' progress lines (task #990): each target's run of a line is a part;
+    /// only the most a line has said counts (a retry gone back, its bytes sent again, counts
+    /// nothing until it passes it); its rate in each unit over its parts' time, its longest wait
+    /// for progress, and its rate lately over a window of its part under way, once the part is
+    /// that old.
+    #[test]
+    fn a_jobs_pace_is_its_progress_lines_most_over_time() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut ls = Leases::new(Duration::from_secs(6000));
+        let id = ls.grant("m1", Work::Job { step: "terrain-hi".into(), targets: vec![] }, t0);
+        let on = |target: &str, bytes: u64| crate::agent::jobs::Live {
+            target: Some(format!("terrain-hi {target}")),
+            nas_read: Some(bytes),
+            ..Default::default()
+        };
+        let beat = |ls: &mut Leases, s: u64, line: &str, target: &str, bytes: u64| {
+            assert!(ls.renew_live(id, "m1", Some(line.into()), Some(on(target, bytes)), at(s)));
+        };
+        beat(&mut ls, 60, "0/100 tiles", "6/1/1", 0);
+        beat(&mut ls, 120, "0/100 tiles", "6/1/1", 10);
+        beat(&mut ls, 180, "40/100 tiles", "6/1/1", 20);
+        // (A retry: its bytes sent again, its line gone back.)
+        beat(&mut ls, 240, "40/100 tiles", "6/1/1", 90);
+        beat(&mut ls, 300, "20/100 tiles", "6/1/1", 160);
+        beat(&mut ls, 360, "70/100 tiles", "6/1/1", 170);
+        beat(&mut ls, 420, "100/100 tiles", "6/1/1", 180);
+        // (The next target's part, of the same unit and total.)
+        beat(&mut ls, 480, "10/100 tiles", "6/1/2", 190);
+        let p = &ls.of(id).unwrap().pace;
+        assert_eq!(p.lately(Duration::from_secs(120)), None, "its part is 60 s old");
+        for (s, line) in [(540, "10/100 tiles"), (600, "10/100 tiles (blending)"), (660, "12/100 tiles")] {
+            beat(&mut ls, s, line, "6/1/2", 200);
+        }
+        let l = ls.of(id).unwrap();
+        assert_eq!(l.pace.rates(), BTreeMap::from([("tiles".to_string(), 112.0 / 660.0)]));
+        assert_eq!(l.pace.lately(Duration::from_secs(240)), Some(("tiles", 12.0 / 240.0)), "from its part's start");
+        assert_eq!(l.pace.lately(Duration::from_secs(120)), Some(("tiles", 2.0 / 120.0)));
+        assert_eq!(l.pace.gap_most(at(700)), Some(180), "180 s to 360 s, and 480 s to 660 s");
+        let e = l.noted(crate::coord::history::Event::new("done"), at(900));
+        assert_eq!((e.gap_s, e.still_s, e.rates.len()), (Some(240), Some(240), 1), "its end 240 s after its last");
+        // (A job that never said its progress: no rate, no wait for it.)
+        let quiet = ls.grant("m1", Work::Job { step: "pack".into(), targets: vec![] }, t0);
+        assert!(ls.renew_live(quiet, "m1", None, None, at(60)));
+        let e = ls.of(quiet).unwrap().noted(crate::coord::history::Event::new("done"), at(90));
+        assert_eq!((e.gap_s, e.rates.is_empty()), (None, true));
     }
 }

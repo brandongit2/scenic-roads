@@ -25,8 +25,21 @@
 //!   terrain-hi copying GLO-30 at 4 MB/s, all flagged by their targets' earlier times while
 //!   moving), and a job that stopped is found within a few of its step's still stretches (5 Nov:
 //!   terrain-hi jobs at 0 tiles and no CPU for 20 min and more). A job slow but moving isn't
-//!   flagged: there is no flag of a job's time as a whole. Beats a worker didn't send say nothing
-//!   (its being out of touch is a warning of its own, `look`).
+//!   flagged stuck (it may be slow): there is no flag of a job's time as a whole. Beats a worker
+//!   didn't send say nothing (its being out of touch is a warning of its own, `look`).
+//! - **Slow** (`slow`): a leased job whose progress, by its worker's beats, went on over the last
+//!   `factor` times its step's usual longest wait for progress (the window) at less than its
+//!   step's usual rate divided by `factor` (`Pace`). Its rate is in the unit its progress line says
+//!   (tiles, z6 tiles, packs…: crate::coord::lease::Pace), within its part under way (one line's
+//!   run on one target): the most the line has said, so a line gone back (work done again) counts
+//!   nothing until it passes it, and bytes never count (a retry sending its bytes again moves no
+//!   line). Its step's usual rate in that unit is the 10th percentile of its jobs' that ended well
+//!   (each one's progress in the unit over the time its parts in it took: `rates` on its "done" or
+//!   "end" event), its usual wait the 90th percentile of their longest stretch without progress
+//!   (`gap_s`), each from `ENOUGH` jobs at least (crate::coord::history::History::paces): a step
+//!   with fewer, a part younger than its window, isn't judged. A window that long holds a working
+//!   job's progress however bursty its line (terrain-hi says its tiles a few hundred at a time);
+//!   one with none in it is at a rate of nothing. A job flagged stuck isn't flagged slow too.
 //! - **Stale** (`stale`): the lead's catalogue due (`publish::PublishLine::due_since`: held back,
 //!   planned or waiting out its minute) for longer than `factor` times the most the plan holds one
 //!   back and waits between two (publish::CATALOGUE_CAP_S and CATALOGUE_EVERY_S), counted from the
@@ -35,8 +48,8 @@
 //!   never started: the lead's slots full, its plan held). A catalogue merely old, nothing new to
 //!   list, isn't stale.
 //!
-//! `factor` is the pool's setting (`overdue-factor`, `scenic pool set` or the build page;
-//! crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
+//! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
+//! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
 //! measured its stillness (its first runs; every step as the stillness was first recorded) is held
 //! to its target's time instead, which no still stretch of a working job outlasts, else to the
 //! longest usual stillness of any step (`Usual`); nothing measured at all flags nothing.
@@ -46,7 +59,7 @@
 use super::{Status, Waiting};
 use serde::{Deserialize, Serialize};
 
-/// A flag: its kind ("idle", "stuck", "stale"), the Mac it's about and what it says.
+/// A flag: its kind ("idle", "stuck", "slow", "stale"), the Mac it's about and what it says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
     pub kind: String,
@@ -55,7 +68,7 @@ pub struct Flag {
 }
 
 impl Flag {
-    /// Its line, as `scenic status` and the health check print it: "idle: …", "stuck: …", "stale: …".
+    /// Its line, as `scenic status` and the health check print it: "idle: …", "stuck: …", "slow: …", "stale: …".
     pub fn line(&self) -> String {
         format!("{}: {}", self.kind, self.said)
     }
@@ -71,8 +84,8 @@ pub struct Open {
 }
 
 /// A leased job as the lead's coordinator holds it (crate::coord's `Coordinator::runs`): its worker,
-/// lease, step, targets (and those done, as its worker's beat last said), threads, and how still
-/// it is (None: no beat heard yet).
+/// lease, step, targets (and those done, as its worker's beat last said), threads, how still it is
+/// (None: no beat heard yet) and its pace (None: not judged).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub worker: String,
@@ -82,6 +95,17 @@ pub struct Run {
     pub done: Option<usize>,
     pub threads: u32,
     pub still: Option<Still>,
+    pub pace: Option<Pace>,
+}
+
+/// A job's progress rate over its window (`window_s`) in its part under way's unit, and its step's
+/// usual rate in that unit (units a second: the module's doc, Slow).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pace {
+    pub unit: String,
+    pub rate: f64,
+    pub usual: f64,
+    pub window_s: u64,
 }
 
 /// How long a job's work hasn't moved by its worker's beats (s), the usual it is held to (s, and
@@ -125,6 +149,10 @@ pub fn of(st: &Status, open: &[Open], runs: &[Run], factor: f64, now: u64) -> Ve
     }
     let mut v = idle(st, open);
     v.extend(stuck(st, runs, factor));
+    // (A job stuck isn't slow too.)
+    let moving: Vec<Run> =
+        runs.iter().filter(|r| stuck(st, std::slice::from_ref(r), factor).is_empty()).cloned().collect();
+    v.extend(slow(st, &moving, factor));
     v.extend(stale(st, runs, factor, now));
     v
 }
@@ -227,25 +255,80 @@ pub fn stuck(st: &Status, runs: &[Run], factor: f64) -> Vec<Flag> {
             if held(st, &mac) || (s.secs as f64) <= usual as f64 * factor {
                 return None;
             }
-            let batch = match r.done {
-                Some(d) if r.targets > 1 => format!(", {d} of {} targets done", r.targets),
-                _ if r.targets > 1 => format!(", {} targets", r.targets),
-                _ => String::new(),
-            };
-            let threads = format!("{} thread{}", r.threads, if r.threads == 1 { "" } else { "s" });
             let at = if s.target.is_empty() { "its start".to_string() } else { s.target.clone() };
             let phase = s.phase.as_ref().map_or(String::new(), |p| format!(", {p}"));
             let said = format!(
-                "{} (lease {}) on {mac}: nothing moved for {} ({at}{phase}), past {factor}× {} of {}{batch}, {threads}",
+                "{} (lease {}) on {mac}: nothing moved for {} ({at}{phase}), past {factor}× {} of {}{}, {}",
                 r.step,
                 r.lease,
                 span(s.secs),
                 of.said(),
-                span(usual)
+                span(usual),
+                batch(r),
+                threads(r)
             );
             Some(Flag { kind: "stuck".into(), mac, said })
         })
         .collect()
+}
+
+/// The slow flags (the module's doc): one per job whose progress went on over its window at less
+/// than its step's usual rate divided by `factor`.
+pub fn slow(st: &Status, runs: &[Run], factor: f64) -> Vec<Flag> {
+    runs.iter()
+        .filter_map(|r| {
+            let mac = crate::paces::mac_of(&r.worker).to_string();
+            let p = r.pace.as_ref()?;
+            if held(st, &mac) || p.rate >= p.usual / factor {
+                return None;
+            }
+            let at = r.still.as_ref().map_or(String::new(), |s| {
+                let t = if s.target.is_empty() { "its start" } else { s.target.as_str() };
+                format!(" ({t}{})", s.phase.as_ref().map_or(String::new(), |p| format!(", {p}")))
+            });
+            let said = format!(
+                "{} (lease {}) on {mac}: {} {} a minute over the last {}{at}, under its step's usual {} a minute (its slowest tenth of jobs) ÷ {factor}{}, {}",
+                r.step,
+                r.lease,
+                per_min(p.rate),
+                p.unit,
+                span(p.window_s),
+                per_min(p.usual),
+                batch(r),
+                threads(r)
+            );
+            Some(Flag { kind: "slow".into(), mac, said })
+        })
+        .collect()
+}
+
+/// A rate a second as a number a minute, to three figures or so: "0", "0.042", "1.5", "37".
+fn per_min(x: f64) -> String {
+    let m = x * 60.0;
+    if m <= 0.0 || !m.is_finite() {
+        return "0".into();
+    }
+    let places = (2 - m.log10().floor() as i32).clamp(0, 4) as usize;
+    let s = format!("{m:.places$}");
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
+/// A job's batch as its flags say it: ", 2 of 8 targets done", ", 8 targets", nothing for one.
+fn batch(r: &Run) -> String {
+    match r.done {
+        Some(d) if r.targets > 1 => format!(", {d} of {} targets done", r.targets),
+        _ if r.targets > 1 => format!(", {} targets", r.targets),
+        _ => String::new(),
+    }
+}
+
+/// A job's threads in words: "4 threads".
+fn threads(r: &Run) -> String {
+    format!("{} thread{}", r.threads, if r.threads == 1 { "" } else { "s" })
 }
 
 /// What needs a look in the lead's status `st` at `now`, a line each (`scenic status --flags`,
@@ -379,7 +462,37 @@ mod tests {
                 target: "6/55/26".into(),
                 phase: Some("sampling glo30".into()),
             }),
+            pace: None,
         }
+    }
+
+    /// A job moving, at `rate` tiles a second over its window of 30 min, against its step's usual
+    /// `usual`.
+    fn paced(rate: f64, usual: f64) -> Run {
+        let pace = Pace { unit: "tiles".into(), rate, usual, window_s: 1800 };
+        Run { pace: Some(pace), ..run("terrain-hi", 60, Some(240)) }
+    }
+
+    /// Task #990: a job whose progress goes on at less than its step's usual rate (the slowest tenth
+    /// of its jobs) divided by the factor is slow, said in its unit a minute with where it is;
+    /// within it, or not judged (no pace), not; a job stuck is flagged stuck alone.
+    #[test]
+    fn a_job_moving_slower_than_its_steps_slowest_tenth_by_the_factor_is_slow() {
+        let st = lead();
+        // (A crawl: 0.05 tiles a second, its step's slowest tenth 1.1.)
+        let f = of(&st, &[], &[paced(0.05, 1.1)], 3.0, 0);
+        assert_eq!(
+            f.iter().map(Flag::line).collect::<Vec<_>>(),
+            ["slow: terrain-hi (lease 9) on m1: 3 tiles a minute over the last 30 min (6/55/26, sampling glo30), under its step's usual 66 a minute (its slowest tenth of jobs) ÷ 3, 2 of 8 targets done, 4 threads"]
+        );
+        assert!(of(&st, &[], &[paced(0.4, 1.1)], 3.0, 0).is_empty(), "within 3×");
+        assert!(of(&st, &[], &[paced(0.4, 1.1)], 2.5, 0).len() == 1, "a smaller factor set");
+        assert!(of(&st, &[], &[paced(0.0, 0.0)], 3.0, 0).is_empty(), "its step's slowest tenth said none either");
+        assert!(of(&st, &[], &[run("terrain-hi", 60, Some(240))], 3.0, 0).is_empty(), "not judged");
+        // (Nothing moved for 20 min against a usual 4: stuck, not slow as well.)
+        let still = Run { pace: paced(0.0, 1.1).pace, ..run("terrain-hi", 20 * 60, Some(240)) };
+        assert_eq!(of(&st, &[], &[still], 3.0, 0).iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(), ["stuck"]);
+        assert_eq!((per_min(0.0007), per_min(0.025), per_min(10.0)), ("0.042".into(), "1.5".into(), "600".into()));
     }
 
     /// A job whose work stopped is stuck past the factor times its step's usual stillness, said
@@ -463,6 +576,7 @@ mod tests {
             done: None,
             threads: 1,
             still: None,
+            pace: None,
         };
         assert!(stale(&st, &[job], 3.0, now).is_none(), "its job is under way");
         assert!(stale(&st, &[], 3.0, now).is_some());

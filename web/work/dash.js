@@ -391,11 +391,11 @@ function regionState(r) {
 }
 // Every running job, the lead's and its helpers' (their status's `jobs`) and the leased (the
 // coordinator's leases), with its targets (the history's word: sums.js targetsOf), where it runs,
-// its live data and, for where that's missing, its share done (a job's progress, a lease's beat).
+// its live data and, for where that's missing, its share done (a status job's progress).
 function mapRuns(m) {
   const runs = [
     ...m.macs.flatMap((x) => jobsOf(x.status).map((j) => ({ step: stepOf(j.id), id: j.id, started: j.started, live: j.live, frac: j.progress?.total ? j.progress.done / j.progress.total : null, what: j.what, mac: x.name }))),
-    ...(m.sw.leases || []).map((l) => ({ step: l.step, lease: l.id, what: l.what, live: l.live, frac: l.frac, mac: l.worker })),
+    ...(m.sw.leases || []).map((l) => ({ step: l.step, lease: l.id, what: l.what, live: l.live, mac: l.worker })),
   ];
   for (const r of runs) r.targets = areaTargets(r.step, targetsOf(r, events));
   return runs;
