@@ -1438,13 +1438,13 @@ dependencies = [
  "socket2",
  "store",
  "tempfile",
+ "terrain",
  "tokio",
  "tokio-util",
  "toml",
  "tower",
  "tower-http",
  "ureq",
- "webpenc",
  "weezl",
  "xxhash-rust",
  "zstd 0.13.3",
@@ -1965,6 +1965,33 @@ dependencies = [
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "terrain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "buildstore",
+ "codecs",
+ "det",
+ "geos",
+ "image-webp",
+ "inputs",
+ "jobrt",
+ "libc",
+ "offload",
+ "png",
+ "rayon",
+ "roadcore",
+ "serde",
+ "serde_json",
+ "sha2",
+ "store",
+ "tempfile",
+ "webpenc",
+ "zstd 0.13.3",
 ]
 
 [[package]]

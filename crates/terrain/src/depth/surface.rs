@@ -1,5 +1,5 @@
 //! An enclosed sea's surface (docs/steps.md §3): the depth over a sea closed off from the world
-//! ocean (crate::water::Enclosed, the water step's `global/water-enclosed`: the Caspian) is
+//! ocean (inputs::water::Enclosed, the water step's `global/water-enclosed`: the Caspian) is
 //! measured below that sea's own surface, not below sea level. Its sources' values there are
 //! heights on their own datum (GEBCO's above mean sea level), so each is taken less the surface.
 //! The surface is the terrain's heights there as the server takes them for the water's surface
@@ -12,8 +12,8 @@
 //! drawn in them below their own surface already (`Source::drawn_in`): neither is touched.
 
 use super::compose::{Block, PAD};
-use crate::water::Enclosed;
 use anyhow::Result;
+use inputs::water::Enclosed;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ impl Surface {
     /// The surface the records `out` name: the enclosed seas the water step wrote (none before it
     /// wrote them: every sea the world ocean's) over the terrain's packs.
     pub fn read(out: &buildstore::out::Out) -> Result<Surface> {
-        let enclosed = match out.manifest.get(crate::water::ENCLOSED) {
+        let enclosed = match out.manifest.get(inputs::water::ENCLOSED) {
             Some(c) => Some(Arc::new(Enclosed::from_bytes(&out.path(c).read()?)?)),
             None => None,
         };
@@ -161,7 +161,7 @@ pub fn lo_packs(e: &Enclosed, t: (u8, u32, u32)) -> Vec<(u32, u32)> {
 /// it may read (`lo_packs`) that `m` names; none where its windows meet no enclosed sea (`e`, those
 /// `m` names: None, none written).
 pub fn reads(m: &BTreeMap<String, String>, e: Option<&Enclosed>, t: (u8, u32, u32)) -> Reads {
-    let (Some(e), Some(c)) = (e, m.get(crate::water::ENCLOSED)) else { return Reads::default() };
+    let (Some(e), Some(c)) = (e, m.get(inputs::water::ENCLOSED)) else { return Reads::default() };
     if !meets(e, t) {
         return Reads::default();
     }
@@ -170,7 +170,7 @@ pub fn reads(m: &BTreeMap<String, String>, e: Option<&Enclosed>, t: (u8, u32, u3
         .map(|(x, y)| crate::layers::lo_logical("terrain", x, y))
         .filter_map(|l| m.get(&l).map(|c| format!("{l}={c}")))
         .collect();
-    Reads { enclosed: vec![format!("{}={c}", crate::water::ENCLOSED)], terrain }
+    Reads { enclosed: vec![format!("{}={c}", inputs::water::ENCLOSED)], terrain }
 }
 
 /// A depth target's reads for an enclosed sea's surface (`reads`): of the water step's, of the
@@ -202,7 +202,7 @@ mod tests {
         // An enclosed sea in z6 tile 40/23 (z6's pixels, 512 a tile), in z3 tile 5/2.
         let e = Enclosed { z: 6, runs: vec![[23 * 512 + 100, 40 * 512 + 10, 40 * 512 + 20]], bodies: Vec::new() };
         let m: BTreeMap<String, String> = [
-            (crate::water::ENCLOSED, "global/water-enclosed.e.bin"),
+            (inputs::water::ENCLOSED, "global/water-enclosed.e.bin"),
             ("layers/terrain/lo/3-5-2", "t52"),
             ("layers/terrain/lo/3-4-3", "t43"),
             ("layers/terrain/lo/3-1-1", "t11"),

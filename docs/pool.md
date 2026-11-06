@@ -620,7 +620,7 @@ whose passes go on a pool: on the target's own one, whose threads were waiting f
 never ran on a 1-thread grant, and every terrain-hi job stalled at 0 tiles (5 Nov, task #961); on
 another beside them the job would run on twice its grant. A thread the target starts of its own is
 in no pool, and rayon would send its parallel work to the process's global pool, as wide as the
-job's starting grant: such work goes on that second pool too (`control::on_target_pool`). Test: `pipeline::grant_tests` (terrain-hi and terrain-deep targets on
+job's starting grant: such work goes on that second pool too (`control::on_target_pool`). Test: `terrain::grant_tests` (terrain-hi and terrain-deep targets on
 1 and 2 threads, within a bound, the same bytes) and slope-deep's re-granted batch. Its started line in its costs file says the threads (`memguard::Targets::threads`):
 what the job runs on now. A paced job (an input check, tree cover: `inputs::pace`, one long target)
 reads the same file every second. Other steps keep their starting grant (they say no threads, so

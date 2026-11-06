@@ -31,7 +31,7 @@ const FETCH_THREADS: usize = 64;
 const MID_READERS: usize = 8;
 
 /// The base's template in tests (nothing fetched: a test goes offline, or has its tiles).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub const TEST_BASE: &str = "https://tiles.test/{z}/{x}/{y}.png";
 
 /// Tile `z/x/y`'s URL by template `url`.
@@ -2091,7 +2091,7 @@ pub fn make_root(out: &Out, raw: &dyn RawSource, src: &Sources) -> anyhow::Resul
     Ok(tiles)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub mod testkit {
     use super::*;
 

@@ -120,7 +120,7 @@ fn parse(p: &[u8]) -> Result<Vec<Finished>> {
 /// geoid sources converting their heights (`geoid`: inputs::inputs::sources::geoid, what the pool's
 /// readers take of the declared sources), each by its own declaration (`Source::named`). Another
 /// source's declaration changed leaves it as it was (task #968).
-pub(crate) fn inputs(manifest: &BTreeMap<String, String>, geoid: &[inputs::inputs::sources::Source]) -> Vec<String> {
+pub fn inputs(manifest: &BTreeMap<String, String>, geoid: &[inputs::inputs::sources::Source]) -> Vec<String> {
     let l = inputs::inputs::logical(inputs::inputs::elevation::UNIT);
     std::iter::once(format!("{l}={}", manifest.get(&l).map(String::as_str).unwrap_or("-")))
         .chain(geoid.iter().map(inputs::inputs::sources::Source::named))
@@ -129,7 +129,7 @@ pub(crate) fn inputs(manifest: &BTreeMap<String, String>, geoid: &[inputs::input
 
 /// `inputs` of the records `manifest` names under `root`, as a run's resume log's identity names
 /// them (one string).
-pub(crate) fn inputs_read(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<String> {
+pub fn inputs_read(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<String> {
     Ok(inputs(manifest, &inputs::inputs::sources::geoid(root, manifest)?).join("\n"))
 }
 

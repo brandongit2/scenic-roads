@@ -6,13 +6,11 @@ pub mod buildtiles;
 pub mod candidates;
 pub mod cli;
 pub mod coord;
-pub mod depth;
 pub mod elev;
 pub mod ferries;
 pub mod gtfs;
 pub mod heritage;
 pub mod landcover;
-pub mod layers;
 pub mod leaftype;
 pub mod markconv;
 pub mod marksjob;
@@ -25,22 +23,12 @@ pub mod out;
 pub mod ovconv;
 pub mod paces;
 pub mod peaks;
-pub mod polar;
 pub mod pool;
 pub mod pubtimes;
-pub mod pyramids;
 pub mod railfeeds;
 pub mod reach;
-pub mod road_terrain;
-pub mod slope_pack;
 pub mod stage;
 pub mod summits;
-pub mod terrain_base;
-pub mod terrain_deep;
-pub mod terrain_pack;
-pub mod terrain_resume;
-pub mod terrain_task;
-pub mod terrain_zoom;
 pub mod timetables;
 pub mod treepacks;
 pub mod trees;
@@ -72,6 +60,12 @@ pub use mapview::{buildings, scache, terr, view};
 // Step 6d's (`::inputs`: the crate, not its module of the same name):
 pub use ::inputs::{areafiles, dem, inputs, lakefill, osmpass, rail, rules, water};
 
+// Step 6e's:
+pub use terrain::{
+    depth, layers, polar, pyramids, road_terrain, slope_pack, terrain_base, terrain_deep, terrain_pack, terrain_resume,
+    terrain_task, terrain_zoom,
+};
+
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an
 /// `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs, as it was while
 /// fetch was pipeline's: run by the loader as the test binary starts (an initializer section's
@@ -92,9 +86,6 @@ static TEST_START: extern "C" fn() = {
 
 #[cfg(test)]
 mod test_start;
-
-#[cfg(test)]
-mod grant_tests;
 
 #[cfg(test)]
 mod inputs_tests;

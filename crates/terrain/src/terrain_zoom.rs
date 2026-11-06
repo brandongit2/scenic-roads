@@ -184,20 +184,20 @@ pub fn relief(sets: &[Set]) -> Vec<&Set> {
 }
 
 /// `test_world(12)`, held for the process (tests' `Sources`).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub fn test_world_ref() -> &'static [Set] {
     static W: std::sync::OnceLock<Vec<Set>> = std::sync::OnceLock::new();
     W.get_or_init(|| test_world(12))
 }
 
 /// A tile's column and row at zoom `z` of point `lon`, `lat` (tests).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub fn tile_at(lon: f64, lat: f64, z: u8) -> (u32, u32) {
     roadcore::geo::tile_of(roadcore::geo::merc(lon, lat), z)
 }
 
 /// One dataset holding the world, a pyramid of zoom `z` (tests: every place's finest zoom `z`).
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub fn test_world(z: u8) -> Vec<Set> {
     vec![Set {
         id: "world".into(),

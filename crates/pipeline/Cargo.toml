@@ -17,6 +17,7 @@ offload = { path = "../offload" }
 landmarks = { path = "../landmarks" }
 mapview = { path = "../mapview" }
 inputs = { path = "../inputs" }
+terrain = { path = "../terrain" }
 sha2 = "0.10"
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
@@ -28,9 +29,7 @@ osmpbf = "0.3"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
 png = "0.18"
-# The terrain's tiles (crate::terrain_codec): lossless WebP through libwebp (not codecs::webp, the tree cover's own encoder).
-webpenc = { path = "../webpenc" }
-# The depth's tiles read back (crate::depth::fall), as roadcore reads the terrain's.
+# WebP tiles read back in tests (the tree cover's, the fields'), as roadcore reads the terrain's.
 image-webp = "0.2"
 crc32fast = "1"
 weezl = "0.2"
@@ -69,6 +68,7 @@ md-5 = "0.10"
 bytes = "1"
 
 [dev-dependencies]
+terrain = { path = "../terrain", features = ["testkit"] }
 offload = { path = "../offload", features = ["testkit"] }
 inputs = { path = "../inputs", features = ["testkit"] }
 buildstore = { path = "../buildstore", features = ["testkit"] }

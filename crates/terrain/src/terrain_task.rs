@@ -505,7 +505,7 @@ impl<'a> Offers<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 pub mod testkit {
     use super::*;
     use crate::terrain_pack::RawTiles;

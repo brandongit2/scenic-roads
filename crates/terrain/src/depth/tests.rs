@@ -511,7 +511,7 @@ fn a_source_ending_over_nothing_keeps_its_edge() {
     }
 }
 
-/// Task #982: on a sea closed off from the world ocean (crate::water::Enclosed: the Caspian), the
+/// Task #982: on a sea closed off from the world ocean (inputs::water::Enclosed: the Caspian), the
 /// depth is below that sea's own surface, the terrain's heights there (GLO-30's −28 m), not below
 /// sea level: the coarse source's −50 m a depth of −22 m, the patch's −10 m above the surface 0 m
 /// (the Caspian's northern shelf); the lake's survey as it was. Where the terrain has no tile over
@@ -528,8 +528,8 @@ fn an_enclosed_sea_s_depth_is_below_its_own_surface() {
         // (The fixture's sea, T's west half, enclosed: z6's pixels, 512 a tile.)
         let (x0, y0) = (T.0 * 512, T.1 * 512);
         let runs = (y0..y0 + 512).map(|r| [r, x0, x0 + 256]).collect();
-        let e = crate::water::Enclosed { z: 6, runs, bodies: vec![(512 * 256, x0, y0)] };
-        out.put_bytes(crate::water::ENCLOSED, "bin", &e.to_bytes()).unwrap();
+        let e = inputs::water::Enclosed { z: 6, runs, bodies: vec![(512 * 256, x0, y0)] };
+        out.put_bytes(inputs::water::ENCLOSED, "bin", &e.to_bytes()).unwrap();
         if terrain {
             // (The terrain over T at −28 m, z6–8, as its lo pack holds it.)
             let flat = roadcore::grid::encode_terrain_png(&vec![-28.0; 256 * 256], 256, 256).unwrap();
