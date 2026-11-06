@@ -4203,26 +4203,6 @@ fn depth_hi_box(t: (u32, u32), z: u8) -> [f64; 4] {
     )
 }
 
-/// What z6 tile `t`'s depth reads the sources over, as lon/lat boxes: its coarse levels' z6 areas
-/// (the tile and its ring, the column across the date line apart: `coarse_areas`) grown by the
-/// blocks' margin, the widest it composes (each finer zoom's blocks lie within them), so the
-/// sources meeting one are those it reads.
-pub(crate) fn depth_hi_box_read(t: (u32, u32)) -> Vec<[f64; 4]> {
-    use crate::depth::compose::PAD;
-    crate::depth::build::coarse_areas(t, 6)
-        .into_iter()
-        .map(|a| {
-            crate::depth::grids::window_box(
-                6,
-                i64::from(a.x0) * 256 - PAD as i64,
-                i64::from(a.y0) * 256 - PAD as i64,
-                a.nx as usize * 256 + 2 * PAD,
-                a.ny as usize * 256 + 2 * PAD,
-            )
-        })
-        .collect()
-}
-
 /// The zooms of `HI` z6 tile `t`'s depth composes: those where a grid of that zoom meets the tile
 /// with the blocks' margin there (crate::depth::compose::composes_at), as `build`'s blocks test.
 fn depth_hi_zooms(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec<u8> {
@@ -4258,14 +4238,6 @@ fn depth_hi_water(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec
         }
     }
     out
-}
-
-/// What a depth assembly of z3 tile `q` reads the sources over: the tile with its blocks' margin
-/// (an assembly composes its blocks with their margin past its z3 tile, the widest at z3).
-pub(crate) fn depth_lo_box(q: (u32, u32)) -> [f64; 4] {
-    use crate::depth::compose::PAD;
-    let side = 256 + 2 * PAD;
-    crate::depth::grids::window_box(3, i64::from(q.0) * 256 - PAD as i64, i64::from(q.1) * 256 - PAD as i64, side, side)
 }
 
 /// The depth's targets with their keys (`steps::derived_key`; those whose key can't be worked out
@@ -5084,6 +5056,7 @@ pub fn catalogue_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, Str
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::depth::build::depth_hi_box_read;
     use crate::agent::recipes::Recipe;
     use crate::reach::{LongWay, Reach};
 

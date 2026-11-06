@@ -529,13 +529,13 @@ fn depth_pins(x: &KeyCtx, bs: &[[f64; 4]]) -> Option<Vec<String>> {
 }
 
 /// The depth sources a depth target reads: a z6 tile's over its coarse levels' areas
-/// (`build::depth_hi_box_read`), an assembly's over its z3 tile with its blocks' margin
-/// (`build::depth_lo_box`).
+/// (`crate::depth::build::depth_hi_box_read`), an assembly's over its z3 tile with its blocks' margin
+/// (`crate::depth::build::depth_lo_box`).
 pub fn depth_sources(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
     match u.z {
-        6 => depth_pins(x, &super::build::depth_hi_box_read((u.x, u.y))),
-        3 => depth_pins(x, &[super::build::depth_lo_box((u.x, u.y))]),
+        6 => depth_pins(x, &crate::depth::build::depth_hi_box_read((u.x, u.y))),
+        3 => depth_pins(x, &[crate::depth::build::depth_lo_box((u.x, u.y))]),
         _ => None,
     }
 }

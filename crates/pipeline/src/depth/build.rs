@@ -497,6 +497,32 @@ pub fn coarse_areas(t: (u32, u32), z: u8) -> Vec<Area> {
     v
 }
 
+/// What z6 tile `t`'s depth reads the sources over, as lon/lat boxes: its coarse levels' z6 areas
+/// (the tile and its ring, the column across the date line apart: `coarse_areas`) grown by the
+/// blocks' margin, the widest it composes (each finer zoom's blocks lie within them), so the
+/// sources meeting one are those it reads.
+pub fn depth_hi_box_read(t: (u32, u32)) -> Vec<[f64; 4]> {
+    coarse_areas(t, 6)
+        .into_iter()
+        .map(|a| {
+            super::grids::window_box(
+                6,
+                i64::from(a.x0) * 256 - PAD as i64,
+                i64::from(a.y0) * 256 - PAD as i64,
+                a.nx as usize * 256 + 2 * PAD,
+                a.ny as usize * 256 + 2 * PAD,
+            )
+        })
+        .collect()
+}
+
+/// What a depth assembly of z3 tile `q` reads the sources over: the tile with its blocks' margin
+/// (an assembly composes its blocks with their margin past its z3 tile, the widest at z3).
+pub fn depth_lo_box(q: (u32, u32)) -> [f64; 4] {
+    let side = 256 + 2 * PAD;
+    super::grids::window_box(3, i64::from(q.0) * 256 - PAD as i64, i64::from(q.1) * 256 - PAD as i64, side, side)
+}
+
 /// `level`'s blocks, in turn, counting those done in `blocks`; with `log`, those it holds skipped
 /// (their tiles laid in as it opened) and each other one kept as it ends (crate::depth::resume).
 fn level_blocks(
@@ -909,7 +935,7 @@ pub fn compose_lo(
     keep: bool,
 ) -> Result<Made> {
     // (The lake-depth step's grids meeting it read from their packs: grids::resolved.)
-    let sources = &super::grids::resolved(sources, &[crate::agent::build::depth_lo_box(q)])?;
+    let sources = &super::grids::resolved(sources, &[depth_lo_box(q)])?;
     let rd = Reader::default().with_local(local);
     let mut wc = WaterCache::default();
     let upto = upto.min(LO.1);
@@ -1151,7 +1177,7 @@ pub fn compose_hi(
     keep: bool,
 ) -> Result<Made> {
     // (The lake-depth step's grids meeting what it reads, from their packs: grids::resolved.)
-    let sources = &super::grids::resolved(sources, &crate::agent::build::depth_hi_box_read(t))?;
+    let sources = &super::grids::resolved(sources, &depth_hi_box_read(t))?;
     let rd = Reader::default().with_local(local);
     let upto = upto.min(HI.1);
     let mut tl = Tiles::new(out);
