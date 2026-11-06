@@ -2,7 +2,7 @@
 // from the NAS (the World, zoomed out; regions, and their terrain detail), and the mirror's state (/api/downloads,
 // crates/server/src/downloads.rs). Nothing else is copied to this Mac, and nothing downloaded goes
 // until it's removed. The Regions panel (ui/regions.ts) shows them.
-import { RegionsError } from './regions';
+import { call } from './regions';
 import { fmt } from './ui/dom';
 
 /** A download's size as far as it's known, how much of it is here, and how many of its basemap
@@ -82,17 +82,6 @@ export interface DlStatus {
   regions: Record<string, RegionDl>;
 }
 
-async function call<T>(url: string, init?: RequestInit): Promise<T> {
-  let r: Response;
-  try {
-    r = await fetch(url, { cache: 'no-store', ...init });
-  } catch {
-    throw new RegionsError(0, 'The map server isn’t answering');
-  }
-  const body = (await r.json().catch(() => null)) as { error?: string } | null;
-  if (!r.ok) throw new RegionsError(r.status, body?.error ?? `HTTP ${r.status}`);
-  return body as T;
-}
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 export const dlStatus = () => call<DlStatus>('/api/downloads');
