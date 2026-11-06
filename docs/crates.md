@@ -1,7 +1,8 @@
 # The pipeline's crates (task #916)
 
 **Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
-(`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a and 6b (§6) are built;
+(`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a, 6b and 6c (§6, 6c
+`crates/coordwire`) are built;
 every later step below is planned, the next ones in §6.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
@@ -218,8 +219,9 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
    - 5b, **mapview** (built): scache, view, terr, buildings into `crates/mapview`; pipeline
      re-exports them. Cut: terr's `z9_block` (no caller).
    Next: §6, breaking the 47-module cycle: 6a (built) made `Out` nameable below pipeline, 6b
-   (built) has the step modules name the lower crates directly; then (planned) coordwire, inputs,
-   the step families, and the agent's plan split from its runtime.
+   (built) has the step modules name the lower crates directly, 6c (built) moved the coordinator's
+   client side down (coordwire); then (planned) inputs, the step families, and the agent's plan
+   split from its runtime.
 6. **coordination**, after #882 lands.
 7. Path rewrites: the step modules' were step 6b's; the rest (the agent's, coord's, the
    binaries') per crate as it moves, `crate::x` → `<crate>::x`, and the re-exports dropped.
@@ -360,9 +362,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a-6b built; the rest planned)
+## 6. Breaking the big cycle (6a-6c built; the rest planned)
 
-**Status: 6a-6b built, 6c-6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6c built, 6d-6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -431,9 +433,10 @@ The choices, against the alternatives:
   `AHEAD_ENV`) to jobrt::jobs, `app_version` to jobrt::sys, `nasread::timed_out` to
   buildstore::records::nas, the depth's read boxes (`depth_hi_box_read`,
   `depth_lo_box`) to depth::build, and the in-memory tars (`histarchive::{build, list_tar}`, which
-  depth::lakes writes its grids with) to codecs::tar. Still above: `publish::map_now` (namestodo;
-  it asks the lead's coordinator through coord::client, so it goes to buildstore with coordwire,
-  6c), `room::{disk_free, nas_room}` (buildtiles, bld::fetch: `disk_free` answers a test's own
+  depth::lakes writes its grids with) to codecs::tar. `publish::map_now` (namestodo; it asks the
+  lead's coordinator) went with the client to coordwire in 6c (`coordwire::map_now`; not to
+  buildstore, as planned first: the client is all it needs beyond store, and buildstore needs no
+  client). Still above: `room::{disk_free, nas_room}` (buildtiles, bld::fetch: `disk_free` answers a test's own
   disk under pipeline's `cfg(test)`, `TEST_FREE`, which must first become a process flag as
   `out::testing` did in 6a; with 6d), `cli::program` (with cli, after #883). No step's code calls
   the plan's functions (`PassCtx`, `spoken_work`, `outlines_work`, `names_todo_work`,
@@ -441,12 +444,24 @@ The choices, against the alternatives:
   plan or the agent (lakefill's of `build::water_work` and `LAKEFILL_HOLDS`, inputs' of
   `steps::row`, trees' of `room::make_room`) move to pipeline's tests with their family (6d, 6e),
   as the write-set tests do.
-- **coordwire**: coord/client.rs, coord/task.rs's client half (`Offer`, `Output`, `clone`,
-  `safe`, `beats`, `MARGIN`) and the wire types (`Ask`, `Granted`, `Done`, `Handed`,
-  held's `Beat`/`Answer`); coord re-exports them. Not a trait object: offload needs the real
-  client, and the client is small. Tests that start a coordinator (`coord::start_for_test` in
-  terrain_task, trees::task, bld and offload) move to a pipeline test module, since a family
-  can't dev-depend on pipeline (its types would be two copies).
+- **coordwire** (built, 6c): the client's transport (coord/client.rs's `Client`: the contact
+  read from the NAS, the rounds, the kept connections, the files' transfers; `Answered`,
+  `Reply`, `Files`), coord/task.rs's client half (`Offer`, `Output`, `clone`, `safe`, `beats`,
+  `MARGIN`), the contact (`Contact`, `contact_path`, `POOL_TERM`, `POOL_MEMBER`) and `map_now`;
+  coord re-exports what it and the agent name. Not a trait object: offload needs the real client,
+  and the client is small. Not the wire types (`Ask`, `Grant`, `Granted`, `Done`, `Fail`, the
+  work beat, held's `Beat`/`Answer`), as planned first: they reach the agent's runtime (`Ask`'s
+  `Capacity` names `forecast::MacRoom`, `Done` and `Fail` `memguard::Floor`, the beat
+  `jobs::Live`, whose methods are in two agent modules, held's `agent::pool::Heartbeat`), and
+  below pipeline only the families' coordinator tests name them. So the lease calls that carry
+  them (`ask`, `beat`, `beat_paused`, `beat_told`, `pool_beat`, `cancel`, `set_pause`, `done`,
+  `fail`, `fail_with`, `give_back`, `give_back_with`, `end_with`) stay in coord, bodies
+  unchanged, as the trait `coord::client::LeaseCalls` on coordwire's `Client` (with `Refused`,
+  `Handed` and `probe`); they go with coord into agentcore (6f). The test coordinators
+  (`answering`, `mute`, `dead`, `serve`) are `coordwire::testkit` (its `testkit` feature).
+  Tests that start a coordinator (`coord::start_for_test` in terrain_task, trees::task, bld and
+  offload) move to a pipeline test module when their family leaves (6d, 6e), as the write-set
+  tests do, since a family can't dev-depend on pipeline (its types would be two copies).
 - **The agent's plan above its runtime, through a trait.** agentcore can't name the plan (the
   plan names every family and agentcore). The types the runtime reads (`Step`, `Kind`, `Read`,
   `Place`, `Keys`, `Work`) move into agentcore; the table and its functions stay in pipeline,
@@ -495,7 +510,22 @@ commit; re-exports at the old paths as before.
    `pub` (h, the depth boxes), the cut re-exports' names, and codecs::tar's `mod` lines; no
    literal, expression or format string changed, so keys, outputs and on-disk formats are as
    before (no frozen-plan run, as 6a's: the diff leaves it nothing to find).
-3. **6c, coordwire**.
+3. **6c, coordwire** (built, 6 Nov 2026): as §6.2 says. Offload names the client and the
+   tasks' shared side by coordwire; namestodo and the binaries name `coordwire::map_now`. Cut:
+   `agent::publish::map_now`, `coord::client::Files`, coord::task's re-exports of `clone`, `safe`
+   and `MARGIN`, `coord::client::tests` (its helpers coordwire's testkit). modgraph.py's edges
+   from the step modules up (as 6b counts them, tests included): 96 before (main at 6a706e07), 90
+   after: coord 59 (64; all coordinator tests now: offload 24, terrain_task 13, bld 11, trees 11,
+   each with the `LeaseCalls` import its test module gained; offload's code's 8 gone), agent 10
+   (map_now gone), out 15, cli 6. No step module's code names coord. The cycle is still 46 modules
+   (189.1k lines; 190.1k before): the tests' and out's, agent's and cli's edges hold it. Pure
+   moves and paths: over the branch's Rust diff, its lines with whitespace dropped, those removed
+   and added differ only by paths (`crate::coord::…`, `crate::agent::jobs::now_s` →
+   `jobrt::jobs::now_s`, `agent::publish::map_now` → `coordwire::map_now`), imports, `pub`
+   (`Client::request`, which `done` calls; the test helpers), the trait's frame (its
+   declarations, `impl LeaseCalls for Client`, the lease calls' `pub` dropped) and docs; no body,
+   literal or format string changed, so requests, keys and on-disk formats are as before.
+   Measured in §5.
 4. **6d, inputs** (inputs, dem, rules, osmpass, areafiles, rail, lakefill, water; dem's 7
    references to terrain's tile helpers move those helpers to codecs first). Needs cli out of
    pipeline, so after #883, or `cli::program` alone moved first. First, as the first step module
