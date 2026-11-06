@@ -165,3 +165,131 @@ pub fn encode(lines: &[TileLine], extent_log2: u8) -> Vec<u8> {
     }
     out
 }
+
+/// Reads a tile `encode` wrote (v8, and v7's attributes of four bytes), with its log2(extent): the
+/// server clips the lines of a tile only partly downloaded (crates/server clip.rs).
+pub fn decode(b: &[u8]) -> anyhow::Result<(Vec<TileLine>, u8)> {
+    use anyhow::{bail, ensure};
+    ensure!(b.len() >= 4 && b[0] == b'R' && b[1] == b'T', "not a road tile");
+    let (v, ext) = (b[2], b[3]);
+    ensure!(v == 7 || v == VERSION, "road tile version {v}");
+    let mut pos = 4;
+    let get = |b: &[u8], pos: &mut usize| -> anyhow::Result<u64> {
+        let (mut r, mut s) = (0u64, 0u32);
+        loop {
+            let Some(&c) = b.get(*pos) else { bail!("road tile cut short") };
+            *pos += 1;
+            ensure!(s < 64, "road tile: a varint too long");
+            r |= u64::from(c & 0x7f) << s;
+            s += 7;
+            if c & 0x80 == 0 {
+                return Ok(r);
+            }
+        }
+    };
+    let unzz = |v: u64| (v >> 1) as i64 ^ -((v & 1) as i64);
+    let take = |b: &[u8], pos: &mut usize, n: usize| -> anyhow::Result<Vec<u8>> {
+        ensure!(*pos + n <= b.len(), "road tile cut short");
+        *pos += n;
+        Ok(b[*pos - n..*pos].to_vec())
+    };
+    let nlines = get(b, &mut pos)? as usize;
+    let nverts = get(b, &mut pos)? as usize;
+    ensure!(nlines <= b.len() && nverts <= b.len(), "road tile: counts past its size");
+    let style = take(b, &mut pos, nlines)?;
+    let flags = take(b, &mut pos, nlines)?;
+    let mut lines: Vec<TileLine> =
+        (0..nlines).map(|i| TileLine { style: style[i], flags: flags[i], ..Default::default() }).collect();
+    let mut w = 0i64;
+    for l in &mut lines {
+        w += unzz(get(b, &mut pos)?);
+        l.way = w as u32;
+    }
+    let mut counts = Vec::with_capacity(nlines);
+    for _ in 0..nlines {
+        counts.push(get(b, &mut pos)? as usize);
+    }
+    ensure!(counts.iter().sum::<usize>() == nverts, "road tile: its lines' vertices aren't its count");
+    for l in &mut lines {
+        l.true_len_dm = get(b, &mut pos)? as u32;
+    }
+    for l in &mut lines {
+        l.road_m = get(b, &mut pos)? as u32;
+    }
+    let attr_len = if v == 7 { 4 } else { 3 };
+    for l in &mut lines {
+        let a = take(b, &mut pos, attr_len)?;
+        l.attr.copy_from_slice(&a[attr_len - 3..]);
+    }
+    for l in &mut lines {
+        l.colour = get(b, &mut pos)? as u32;
+    }
+    let (mut px, mut py) = (0i64, 0i64);
+    for (l, &n) in lines.iter_mut().zip(&counts) {
+        for _ in 0..n {
+            px += unzz(get(b, &mut pos)?);
+            py += unzz(get(b, &mut pos)?);
+            l.pts.push([px as i32, py as i32]);
+        }
+    }
+    let mut pe = 0i64;
+    for (l, &n) in lines.iter_mut().zip(&counts) {
+        for _ in 0..n {
+            pe += unzz(get(b, &mut pos)?);
+            l.elev.push(pe as i32);
+        }
+    }
+    for (l, &n) in lines.iter_mut().zip(&counts) {
+        l.grade = take(b, &mut pos, n)?;
+    }
+    let mut pd = 0i64;
+    for (l, &n) in lines.iter_mut().zip(&counts) {
+        for _ in 0..n {
+            pd += unzz(get(b, &mut pos)?);
+            l.drape.push(pd as i16);
+        }
+    }
+    for (l, &n) in lines.iter_mut().zip(&counts) {
+        l.sc = vec![[0; NCH]; n];
+    }
+    for c in 0..NCH {
+        let mut pv = 0i64;
+        for l in &mut lines {
+            for s in &mut l.sc {
+                pv += unzz(get(b, &mut pos)?);
+                s[c] = pv as u8;
+            }
+        }
+    }
+    Ok((lines, ext))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tile read back is the lines encoded.
+    #[test]
+    fn decode_reads_what_encode_wrote() {
+        let line = |way: u32, pts: Vec<[i32; 2]>| TileLine {
+            style: 3,
+            flags: lflag::ONEWAY,
+            way,
+            true_len_dm: 1234,
+            road_m: 99,
+            attr: [40, 2, surface::GRAVEL],
+            colour: 0x123456 + 1,
+            elev: (0..pts.len() as i32).map(|i| 100 - 7 * i).collect(),
+            grade: (0..pts.len() as u8).collect(),
+            drape: (0..pts.len() as i16).map(|i| -3 * i).collect(),
+            sc: (0..pts.len()).map(|i| [i as u8; NCH]).collect(),
+            pts,
+        };
+        let lines = vec![line(77, vec![[0, 0], [4096, 10], [-5, 300]]), line(12, vec![[1, 1], [2, 2]])];
+        let (back, ext) = decode(&encode(&lines, 12)).unwrap();
+        assert_eq!(ext, 12);
+        assert_eq!(encode(&back, 12), encode(&lines, 12));
+        assert_eq!(back[1].way, 12);
+        assert_eq!(back[0].sc[2], [2; NCH]);
+    }
+}
