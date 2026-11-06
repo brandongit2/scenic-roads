@@ -396,7 +396,9 @@ settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusi
 ## Where test time goes (#969, measured 5 Nov)
 
 From the dev job dashboard's 5 Nov records (48 check.sh runs, 4 publishes) and the last 9 publish
-suites' nextest times (M4, loaded: three runs at nice 20 beside builds):
+suites' nextest times (M4, loaded: three runs at nice 20 beside builds), all before #969's changes
+(the single nextest run above, the shorter agent timer tests, the one live-scale forecast run, the
+one source_names scan):
 - **check.sh**: p50 986-2100 s a run, nearly all of it the tests part (p50 1115 s, p90 2048 s); clippy
   p50 42 s, fmt/guards 3 s each, web 11 s when it runs. In the tests part: compiles 40-60 % (each
   `cargo test` line built under its own feature set, a server line recompiling store, codecs,
