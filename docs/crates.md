@@ -415,6 +415,25 @@ and its unit tests build 4-5 times faster, their rustc a quarter of pipeline's. 
 walls follow the load (215 at the end), not 6d; their peaks (3.90 → 3.08 GB dev, pipeline's lib
 the largest either way) are 6d's.
 
+Before and after step 6e's terrain, 6 Nov 2026 09:28-09:55 (local) on the M4 (load 70-145: the pool's
+jobs and three agents' checks), rustc 1.98.1, through tools/app/remote-tests.sh (nice 20, utility
+priority, sccache). Before: main at 8d97cc8e (after 6d); after: this branch (57f051c0), each tree a
+folder of its own on the M4 with its own target folder, built once first. Interleaved (before,
+after; after, before; before, after), 3 runs each. Peak: the largest process (`time -l`); CPU: user
++ system of the whole command. The edits: one comment line appended to marksjob.rs (a leaf step
+module) and to road_terrain.rs (a leaf of the family: crates/pipeline/src before, crates/terrain/src
+after), each built at once:
+
+| run | before | after |
+|---|---|---|
+| dev (`build --workspace --bins`), marksjob edit | 18.6, 16.2, 14.7 s (CPU 19.9-21.3 s), 1.67-1.74 GB | 15.2, 15.2, 26.5 s (CPU 19.8-22.1 s), 1.59-1.65 GB |
+| dev, road_terrain edit | 16.3, 13.8, 13.1 s (CPU 20.0-20.5 s), 1.74 GB: pipeline, server | 14.7, 16.7, 18.0 s (CPU 20.7-22.0 s), 1.59-1.60 GB: terrain, pipeline, server |
+| unit-test build after the road_terrain edit | pipeline --lib: 15.8, 13.6, 19.7 s (CPU 13.9-15.2 s), 2.56-2.57 GB | terrain --lib: 3.0, 2.8, 3.2 s (CPU 2.8-3.0 s), 0.43 GB |
+
+So 6e's terrain leaves a dev build after an edit where it was, within the load's noise (pipeline and
+server recompile either way; an edit in the family adds terrain's own ~1 s), with pipeline's rustc
+~0.1 GB smaller; the family's unit tests build 5 times faster, their rustc a sixth of pipeline's.
+
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
 timings: an edit in a crate recompiles every crate that depends on it, so moving a *leaf* module
