@@ -30,7 +30,6 @@ fn main() -> anyhow::Result<()> {
     let src = pipeline::inputs::regions::read::source(&nas, &m)?;
     let cov = pipeline::inputs::regions::read::accepted_coverage(&nas, &src, None)?;
     let sets = pipeline::terrain_zoom::Declared::read(&nas, &m)?.map(|d| d.sets).unwrap_or_default();
-    let water = pipeline::terrain_pack::open_water(&out)?;
     let url = pipeline::terrain_base::terrarium_template(&nas, &m)?;
     let rt = pipeline::terrain_pack::RawTiles::with_store(
         std::path::Path::new(raw),
@@ -46,10 +45,10 @@ fn main() -> anyhow::Result<()> {
         let none = |_: u32, _: u32| false;
         let fill = pipeline::terrain_pack::fill_of(&cov, &sets, &none);
         let native = |z: u8, x: u32, y: u32| pipeline::terrain_pack::native_of(&fill, z, x, y);
-        let s = pipeline::terrain_pack::Sources { water: Some(&water), native: Some(&native), sets: &sets };
+        let s = pipeline::terrain_pack::Sources { native: Some(&native), sets: &sets };
         let t0 = std::time::Instant::now();
-        let n = pool.with_tiles(&rt, s.water, |tiles| {
-            relief.with_tiles(&rt, s.water, |rel| -> anyhow::Result<usize> {
+        let n = pool.with_tiles(&rt, |tiles| {
+            relief.with_tiles(&rt, |rel| -> anyhow::Result<usize> {
                 let reaching = |z: u8, x: u32, y: u32| pipeline::terrain_zoom::reaching(&sets, z, x, y);
                 let fills = pipeline::terrain_pack::Fills::new(tiles, rel, &fill, &reaching);
                 Ok(match what {

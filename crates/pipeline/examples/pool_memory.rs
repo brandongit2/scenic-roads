@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
     println!("start: {} MB", mb());
     let all = std::time::Instant::now();
     let mut peak = 0;
-    pool.with_tiles(&raw, None, |tiles| -> anyhow::Result<()> {
+    pool.with_tiles(&raw, |tiles| -> anyhow::Result<()> {
         for &t in &xy {
             let t0 = std::time::Instant::now();
             tiles.prefetch_counted(z, &[t], 1, &AtomicU64::new(0))?;
