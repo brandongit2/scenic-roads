@@ -625,6 +625,23 @@ impl Sched {
         }
     }
 
+    /// How long `target` of `step` takes on `worker` at `threads`, at most as measured (s): its own
+    /// run's (`secs_on`, its Mac's pace and threads), a drop's its step's drops'; a target never run
+    /// itself, the larger of that and its step's runs' 90th percentile at the worker's pace
+    /// (crate::needs::Book::secs_p90: a long-tailed step's big target unmeasured runs past its
+    /// step's mean healthy, trees on 6 Nov, task #978). A job's stillness can't outlast its
+    /// target's time while it works (a target's start and end each move it): the stuck flag's
+    /// usual for a step none of whose jobs measured its stillness yet (`Coordinator::runs`). None
+    /// when none of its step's has run the way it runs now.
+    pub(super) fn target_most(&self, step: &str, target: &str, worker: &str, threads: u32) -> Option<u64> {
+        let (s, _) = self.secs_on(step, target, worker, threads)?;
+        let own = self.costs.get(&cost_key(step, target)).is_some_and(|c| c.v >= cost_version(step));
+        if own || self.drops.contains(&(step.to_string(), target.to_string())) {
+            return Some(s);
+        }
+        Some(s.max(self.book().secs_p90(step, target, threads, Some(worker)).unwrap_or(0)))
+    }
+
     /// The threads a job of `step` starting with `first` is sized at on `worker`'s Mac of `total`
     /// cores: the grant rule's (`lease_cores`) for it alone.
     pub fn sizing_threads(&self, worker: &str, step: &str, first: &str, total: u32) -> u32 {

@@ -15,9 +15,10 @@
 //!   than `factor` times its step's usual stillness (`Still`). Its work moved at a beat when
 //!   anything of it changed since the one before (crate::coord::lease::Lease::still): its progress
 //!   line, the target under way, its targets ended, its phase, its NAS bytes, files made, listed,
-//!   statted or deleted, its internet bytes. Its step's usual stillness is measured from its jobs
-//!   that ended well (crate::coord::history::History::still_p90): the 90th percentile of each one's
-//!   longest stretch between two beats that saw its work move. So a job judged is held to what it
+//!   statted or deleted (a whole file copied counts its bytes as they come, store::nasfs's
+//!   `copy_counter`), its internet bytes. Its step's usual stillness is measured from its jobs that
+//!   ended well (crate::coord::history::History::still_p90s): the 90th percentile of each one's
+//!   longest stretch between two beats that saw its work move (`Usual`). So a job judged is held to what it
 //!   is doing now, not to how long its targets took before: a target fetching for the first time,
 //!   copying from a cold cache or writing to a slow NAS moves bytes all the while (6 Nov:
 //!   pyramids-fill's first GSI fetches at 19-25 min, bldprep and pack while the NAS was slow,
@@ -36,7 +37,9 @@
 //!
 //! `factor` is the pool's setting (`overdue-factor`, `scenic pool set` or the build page;
 //! crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
-//! measured its stillness flags nothing.
+//! measured its stillness (its first runs; every step as the stillness was first recorded) is held
+//! to its target's time instead, which no still stretch of a working job outlasts, else to the
+//! longest usual stillness of any step (`Usual`); nothing measured at all flags nothing.
 //!
 //! Nothing is flagged while the build is paused, nor on a Mac paused alone.
 
@@ -81,15 +84,38 @@ pub struct Run {
     pub still: Option<Still>,
 }
 
-/// How long a job's work hasn't moved by its worker's beats (s), its step's usual stillness (s,
-/// crate::coord::history::History::still_p90; None: not measured), and where it is, as its last
-/// beat said: the target under way (empty: none, its start) and its phase.
+/// How long a job's work hasn't moved by its worker's beats (s), the usual it is held to (s, and
+/// whose; None: nothing measured), and where it is, as its last beat said: the target under way
+/// (empty: none, its start) and its phase.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Still {
     pub secs: u64,
-    pub usual_s: Option<u64>,
+    pub usual: Option<(u64, Usual)>,
     pub target: String,
     pub phase: Option<String>,
+}
+
+/// Whose usual a job's stillness is held to (crate::coord's `Coordinator::runs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Usual {
+    /// Its step's usual stillness (crate::coord::history::History::still_p90s).
+    Step,
+    /// Its step's not measured yet: its target's time at most as measured (its start's too before
+    /// its first target), crate::coord::sched's `Sched::target_most`.
+    Target,
+    /// Neither: the longest usual stillness of any step.
+    Pool,
+}
+
+impl Usual {
+    /// What the flag calls it.
+    fn said(self) -> &'static str {
+        match self {
+            Usual::Step => "its step's usual still stretch",
+            Usual::Target => "its target's usual time (its step's stillness not measured yet)",
+            Usual::Pool => "the longest usual still stretch of any step (its step not measured yet)",
+        }
+    }
 }
 
 /// Every flag of the lead's status `st`, at `now`.
@@ -191,13 +217,13 @@ fn names(text: &str, step: &str) -> bool {
     })
 }
 
-/// The stuck flags (the module's doc): one per job still past `factor` times its step's usual.
+/// The stuck flags (the module's doc): one per job still past `factor` times its usual.
 pub fn stuck(st: &Status, runs: &[Run], factor: f64) -> Vec<Flag> {
     runs.iter()
         .filter_map(|r| {
             let mac = crate::paces::mac_of(&r.worker).to_string();
             let s = r.still.as_ref()?;
-            let usual = s.usual_s?;
+            let (usual, of) = s.usual?;
             if held(st, &mac) || (s.secs as f64) <= usual as f64 * factor {
                 return None;
             }
@@ -210,10 +236,11 @@ pub fn stuck(st: &Status, runs: &[Run], factor: f64) -> Vec<Flag> {
             let at = if s.target.is_empty() { "its start".to_string() } else { s.target.clone() };
             let phase = s.phase.as_ref().map_or(String::new(), |p| format!(", {p}"));
             let said = format!(
-                "{} (lease {}) on {mac}: nothing moved for {} ({at}{phase}), past {factor}× its step's usual still stretch of {}{batch}, {threads}",
+                "{} (lease {}) on {mac}: nothing moved for {} ({at}{phase}), past {factor}× {} of {}{batch}, {threads}",
                 r.step,
                 r.lease,
                 span(s.secs),
+                of.said(),
                 span(usual)
             );
             Some(Flag { kind: "stuck".into(), mac, said })
@@ -346,7 +373,12 @@ mod tests {
             targets: 8,
             done: Some(2),
             threads: 4,
-            still: Some(Still { secs, usual_s: usual, target: "6/55/26".into(), phase: Some("sampling glo30".into()) }),
+            still: Some(Still {
+                secs,
+                usual: usual.map(|u| (u, Usual::Step)),
+                target: "6/55/26".into(),
+                phase: Some("sampling glo30".into()),
+            }),
         }
     }
 
@@ -367,12 +399,13 @@ mod tests {
         assert!(at(&run("terrain-hi", 20 * 60, Some(240)), 6.0).is_empty(), "a larger factor set");
         assert!(at(&run("terrain-hi", 50 * 3_600, None), 3.0).is_empty(), "its step not measured");
         assert!(at(&Run { still: None, ..run("terrain-hi", 0, Some(240)) }, 3.0).is_empty(), "no beat heard");
-        let start =
-            Run { still: Some(Still { secs: 900, usual_s: Some(60), ..Default::default() }), ..run("pack", 0, None) };
-        assert!(
-            at(&start, 3.0)[0].said.contains("nothing moved for 15 min (its start), past"),
-            "{:?}",
-            at(&start, 3.0)
+        let start = Run {
+            still: Some(Still { secs: 900, usual: Some((60, Usual::Target)), ..Default::default() }),
+            ..run("pack", 0, None)
+        };
+        assert_eq!(
+            at(&start, 3.0)[0].said,
+            "pack (lease 9) on m1: nothing moved for 15 min (its start), past 3× its target's usual time (its step's stillness not measured yet) of 1 min, 2 of 8 targets done, 4 threads"
         );
         // A Mac paused alone isn't flagged.
         let mut st = lead();
@@ -389,7 +422,7 @@ mod tests {
         // (pyramids-fill 6/55/26 under way 24 min, its targets' earlier runs 1 min: its last beat
         // saw its fetch's bytes move, so it is still 0 s.)
         let fill = Run {
-            still: Some(Still { secs: 0, usual_s: Some(120), ..Default::default() }),
+            still: Some(Still { secs: 0, usual: Some((120, Usual::Step)), ..Default::default() }),
             ..run("pyramids-fill", 0, None)
         };
         assert!(of(&st, &[], &[fill], 3.0, 0).is_empty());

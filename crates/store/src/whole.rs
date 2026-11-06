@@ -407,23 +407,42 @@ fn swept_hourly(name: &str, folder: bool) -> bool {
 
 /// Copies `src` to `dst`, whole; the bytes copied.
 pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
-    copy_as(src, dst, false).map(|c| c.0)
+    copy_as(src, dst, false, &mut |_, _| {}).map(|c| c.0)
 }
 
 /// `copy`, with how many of `src`'s bytes this Mac's page cache held as it was opened
-/// (crate::sys::resident): a NAS file's copy counts those as read here (crate::nasfs).
-pub fn copy_held(src: &Path, dst: &Path) -> Result<(u64, u64)> {
-    copy_as(src, dst, true)
+/// (crate::sys::resident), `each` told the bytes as they're read, with that count held (as
+/// crate::sys::copy_data_held's): a NAS file's copy counts them as they come (crate::nasfs's
+/// `copy_counter`).
+pub fn copy_held(src: &Path, dst: &Path, each: &mut dyn FnMut(u64, u64)) -> Result<(u64, u64)> {
+    copy_as(src, dst, true, each)
 }
 
-fn copy_as(src: &Path, dst: &Path, held: bool) -> Result<(u64, u64)> {
+/// A reader telling `each` of the bytes each read gives (`copy_held`'s).
+struct Told<'a, R> {
+    r: R,
+    held: u64,
+    each: &'a mut dyn FnMut(u64, u64),
+}
+
+impl<R: std::io::Read> std::io::Read for Told<'_, R> {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        let k = self.r.read(b)?;
+        if k > 0 {
+            (self.each)(k as u64, self.held);
+        }
+        Ok(k)
+    }
+}
+
+fn copy_as(src: &Path, dst: &Path, held: bool, each: &mut dyn FnMut(u64, u64)) -> Result<(u64, u64)> {
     let tmp = call_tmp_name(dst);
     let r = (|| -> Result<(u64, u64)> {
-        let mut from = std::fs::File::open(src)?;
+        let from = std::fs::File::open(src)?;
         let want = from.metadata()?.len();
         let h = if held { crate::sys::resident(&from, want) } else { 0 };
         let mut to = std::fs::File::create(&tmp)?;
-        let n = std::io::copy(&mut from, &mut to)?;
+        let n = std::io::copy(&mut Told { r: from, held: h, each }, &mut to)?;
         to.sync_all()?;
         drop(to);
         let got = std::fs::metadata(&tmp)?.len();

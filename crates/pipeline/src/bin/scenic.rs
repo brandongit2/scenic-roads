@@ -1068,7 +1068,7 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
         "Batch length: a job of a shared step is sized to {} min of its targets' measured time on its Mac",
         s.batch_s().unwrap_or(pipeline::coord::JOB_S) / 60
     );
-    println!("Overdue: the status flags a job past {}× the time it was sized to", s.overdue().0);
+    println!("Overdue: the status flags a job whose work hasn't moved for {}× its usual still stretch", s.overdue().0);
     Ok(())
 }
 

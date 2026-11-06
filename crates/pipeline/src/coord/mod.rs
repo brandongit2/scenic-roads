@@ -2446,13 +2446,19 @@ impl Coordinator {
     }
 
     /// Every job leased now (crate::agent::flags::Run): its worker, step, targets (and those its
-    /// worker's last beat said ended), threads, grant time, and how long its work has not moved
-    /// by its worker's beats (`Lease::still`; None before its first beat) with its step's usual
-    /// stillness (history::History::still_p90), the target and phase it is in as its last beat
-    /// said (`Lease::live`).
+    /// worker's last beat said ended), threads, and how long its work has not moved by its
+    /// worker's beats (`Lease::still`; None before its first beat), the target and phase it is in
+    /// as its last beat said (`Lease::live`), with the usual it is held to (`Usual`): its step's
+    /// usual stillness (history::History::still_p90s); a step none of whose jobs measured it yet
+    /// (its first runs, every step as the stillness was first recorded), its target's time at most
+    /// as measured (`Sched::target_most`, the target under way's, else its first's and its start);
+    /// a step never run the way it runs now, the longest usual stillness of any step.
     pub fn runs(&self) -> Vec<crate::agent::flags::Run> {
+        use crate::agent::flags::{Still, Usual};
         let s = self.shared.lock().unwrap();
         let now = s.now();
+        let usual = s.history.still_p90s();
+        let longest = usual.values().max().copied();
         s.leases
             .live(now)
             .filter_map(|l| {
@@ -2462,13 +2468,24 @@ impl Coordinator {
                     return None;
                 }
                 let live = l.live.as_ref();
-                let still = l.still().map(|d| crate::agent::flags::Still {
-                    secs: d.as_secs(),
-                    usual_s: s.history.still_p90(step),
-                    target: live
-                        .and_then(|v| v.target.as_deref())
-                        .map_or(String::new(), |k| CostKey::parse(k).target.to_string()),
-                    phase: live.and_then(|v| v.phase.clone()),
+                let on = live.and_then(|v| v.target.as_deref()).map(|k| CostKey::parse(k).target.to_string());
+                let still = l.still().map(|d| {
+                    let of_target = || {
+                        let start = on.is_none().then(|| s.paces.start(&l.worker, step).round() as u64);
+                        let first = targets.first().map_or("", |t| t.0.as_str());
+                        let t = on.as_deref().unwrap_or(first);
+                        s.target_most(step, t, &l.worker, l.threads).map(|x| x + start.unwrap_or(0))
+                    };
+                    let usual = match usual.get(step) {
+                        Some(&u) => Some((u, Usual::Step)),
+                        None => of_target().map(|u| (u, Usual::Target)).or(longest.map(|u| (u, Usual::Pool))),
+                    };
+                    Still {
+                        secs: d.as_secs(),
+                        usual,
+                        target: on.clone().unwrap_or_default(),
+                        phase: live.and_then(|v| v.phase.clone()),
+                    }
                 });
                 Some(crate::agent::flags::Run {
                     worker: l.worker.clone(),
@@ -6952,10 +6969,14 @@ mod tests {
 
     /// Task #986: a leased job is judged by how long its work hasn't moved, by its worker's
     /// beats, against its step's usual stillness from its jobs that ended well (their "done" and
-    /// "end" events' `still_s`), never by its targets' earlier times; nothing is said before its
-    /// first beat, and a step none of whose jobs measured it has no usual.
+    /// "end" events' `still_s`); nothing is said before its first beat. A step none of whose jobs
+    /// measured it (its first runs, every step as the stillness was first recorded) is held to its
+    /// target's time at most as measured (#978's rule: a target never run itself, its step's
+    /// runs' 90th percentile), else to the longest usual stillness of any step; nothing measured
+    /// at all, to nothing.
     #[test]
     fn a_job_is_judged_by_its_stillness_against_its_steps_jobs() {
+        use crate::agent::flags::Usual;
         let d = tempfile::tempdir().unwrap();
         let app = "20261018-0100-aaaaaaa";
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", app);
@@ -6971,19 +6992,36 @@ mod tests {
             ..Default::default()
         };
         assert!(w.beat_told(g.lease, None, Some(live), None).unwrap().0);
+        let usual = || c.runs()[0].still.as_ref().unwrap().usual;
         let s = c.runs().remove(0).still.expect("a beat heard");
-        assert_eq!((s.secs, s.usual_s), (0, None), "it moved at its first beat; its step not measured");
+        assert_eq!((s.secs, s.usual), (0, None), "it moved at its first beat; nothing measured");
         assert_eq!((s.target.as_str(), s.phase.as_deref()), ("6/55/25", Some("copying the piece from the NAS")));
-        // Its step's jobs that ended well, and one that failed (left out).
-        for (still, ok) in [(60, true), (120, true), (240, true), (9_000, false)] {
+        let done = |step: &str, still: u64, ok: bool| {
             c.note(history::Event {
-                step: Some("unit".into()),
+                step: Some(step.into()),
                 ok: Some(ok),
                 still_s: Some(still),
                 ..history::Event::new("done")
-            });
+            })
+        };
+        // Another step's stillness measured, none of its own and no target time: the longest.
+        done("other", 500, true);
+        done("other", 50, true);
+        assert_eq!(usual(), Some((500, Usual::Pool)));
+        // Its step's targets measured (eight small, two big: their 90th percentile 200 s), not its
+        // target: that percentile at most, never their mean.
+        let cost = |secs: u64| Cost { peak_mb: 500, secs, worker: None, v: cost_version("unit"), ..Default::default() };
+        let costs: Vec<_> =
+            (0..10).map(|i| (cost_key("unit", &format!("6/1/{i}")), cost(if i < 8 { 10 } else { 200 }))).collect();
+        c.add_costs_by(&costs, "m1");
+        assert_eq!(usual(), Some((200, Usual::Target)), "its step's runs' 90th percentile");
+        c.add_costs_by(&[(cost_key("unit", "6/55/25"), cost(20))], "m1");
+        assert_eq!(usual(), Some((20, Usual::Target)), "its own run's");
+        // Its step's jobs that ended well, and one that failed (left out).
+        for (still, ok) in [(60, true), (120, true), (240, true), (9_000, false)] {
+            done("unit", still, ok);
         }
-        assert_eq!(c.runs()[0].still.as_ref().unwrap().usual_s, Some(240), "their 90th percentile");
+        assert_eq!(usual(), Some((240, Usual::Step)), "their 90th percentile");
         c.stop();
     }
 

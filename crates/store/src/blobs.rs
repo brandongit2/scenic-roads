@@ -39,11 +39,12 @@ impl Blobs {
     /// marked used.
     pub fn get(&self, root: &crate::nasfs::NasRoot, content: &str) -> io::Result<PathBuf> {
         let local = self.path_of(content);
-        // (Raw: crate::sys::copy_data's copy, counted by its caller: tests/nas_access.rs.)
+        // (Raw: crate::sys::copy_data's copy, its bytes counted as they're read, crate::nasfs's
+        // `copy_counter`, the file opened by its caller: tests/nas_access.rs.)
         let src = root.join(content).unchecked_path();
         crate::cachefile::hold(&local, &mut |tmp| {
             let _w = crate::waits::nas();
-            let n = crate::sys::copy_data(&src, tmp)?;
+            let (n, _) = crate::sys::copy_data_held(&src, tmp, &mut crate::nasfs::copy_counter())?;
             let want = fs::metadata(&src)?.len();
             if n != want {
                 return Err(io::Error::other(format!("{}: copied {n} of {want} bytes", src.display())));

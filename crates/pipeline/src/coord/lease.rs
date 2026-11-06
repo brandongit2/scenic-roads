@@ -113,7 +113,7 @@ impl Lease {
     }
 
     /// The longest its job went with nothing moving, to `end` (its end: a move of its own), in
-    /// whole seconds: what its step's runs are held to (crate::coord::history::History::still_p90).
+    /// whole seconds: what its step's runs are held to (crate::coord::history::History::still_p90s).
     pub fn still_most(&self, end: Instant) -> u64 {
         self.still_most.max(end.saturating_duration_since(self.moved.unwrap_or(self.granted)).as_secs())
     }

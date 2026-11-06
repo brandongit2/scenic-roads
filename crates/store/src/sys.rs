@@ -233,19 +233,21 @@ pub fn set_mode(f: &File, mode: u32) -> io::Result<()> {
 /// writes, when it differs from the folder's: that fails the whole copy.) Within one APFS volume, to
 /// a `dst` not there yet, it's a clone instead (instant, the blocks shared, attributes and all).
 pub fn copy_data(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<u64> {
-    copy_data_as(src.as_ref(), dst.as_ref(), false).map(|c| c.0)
+    copy_data_as(src.as_ref(), dst.as_ref(), false, &mut |_, _| {}).map(|c| c.0)
 }
 
 /// `copy_data`, with how many of `src`'s bytes this Mac's page cache held as it was opened
-/// (`resident`): a NAS file's copy counts those as read here (crate::nasfs's copies).
-pub fn copy_data_held(src: &Path, dst: &Path) -> io::Result<(u64, u64)> {
-    copy_data_as(src, dst, true)
+/// (`resident`), `each` told the bytes as they're copied (each read's, with that count held; a
+/// clone's at once): a NAS file's copy counts them as they come, those held as read here
+/// (crate::nasfs's `copy_counter`), so a long copy's job is seen moving as it copies.
+pub fn copy_data_held(src: &Path, dst: &Path, each: &mut dyn FnMut(u64, u64)) -> io::Result<(u64, u64)> {
+    copy_data_as(src, dst, true, each)
 }
 
 /// Each copy's reads and writes (over SMB each is a round trip, so big ones).
 pub const COPY_BUF: usize = 1 << 20;
 
-fn copy_data_as(src: &Path, dst: &Path, held: bool) -> io::Result<(u64, u64)> {
+fn copy_data_as(src: &Path, dst: &Path, held: bool, each: &mut dyn FnMut(u64, u64)) -> io::Result<(u64, u64)> {
     use std::io::{Read, Write};
     // (A file alone, as std::fs::copy: a clone would take a folder whole.)
     let m = std::fs::metadata(src)?;
@@ -262,6 +264,7 @@ fn copy_data_as(src: &Path, dst: &Path, held: bool) -> io::Result<(u64, u64)> {
     };
     #[cfg(target_os = "macos")]
     if let Some(n) = clone(src, dst) {
+        each(n, h);
         return Ok((n, h));
     }
     let mut r = match r {
@@ -280,6 +283,7 @@ fn copy_data_as(src: &Path, dst: &Path, held: bool) -> io::Result<(u64, u64)> {
         };
         w.write_all(&buf[..k])?;
         n += k as u64;
+        each(k as u64, h);
     }
     if let Some(m) = mode(src) {
         set_mode(&w, m).ok();
@@ -429,7 +433,13 @@ mod tests {
         std::fs::write(&small, vec![7u8; COPY_BUF]).unwrap();
         std::fs::read(&small).unwrap();
         assert_eq!(resident(&File::open(&small).unwrap(), COPY_BUF as u64), 0);
-        assert_eq!(copy_data_held(&a, &d.path().join("b")).unwrap(), (n as u64, n as u64));
+        let mut told = Vec::new();
+        assert_eq!(
+            copy_data_held(&a, &d.path().join("b"), &mut |k, h| told.push((k, h))).unwrap(),
+            (n as u64, n as u64)
+        );
+        assert_eq!(told.iter().map(|t| t.0).sum::<u64>(), n as u64, "every byte told: {told:?}");
+        assert!(told.iter().all(|t| t.1 == n as u64));
         assert_eq!(copy_data(&a, d.path().join("c")).unwrap(), n as u64);
     }
 

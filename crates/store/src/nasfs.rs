@@ -548,31 +548,33 @@ impl NasPath {
     }
 
     /// Copies it to local file `dst`, whole (crate::whole::copy: a temporary name, renamed). The
-    /// bytes copied, counted as a file read (`counted_copy`: what this Mac's cache held, not the NAS's).
+    /// bytes copied, counted as they're read (`copy_counter`: what this Mac's cache held, not the
+    /// NAS's), and the file counted opened.
     pub fn copy_to_local(&self, dst: &Path) -> Result<u64> {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let (n, held) = crate::whole::copy_held(&p, dst)?;
-        counted_copy(&p, n, held, t);
+        let (n, _) = crate::whole::copy_held(&p, dst, &mut copy_counter())?;
+        nasio::opened(&p, n, ms_since(t));
         Ok(n)
     }
 
     /// Copies it to local file `dst` (crate::sys::copy_data: its bytes and mode, no temporary name).
-    /// Counted as a file read (`counted_copy`: what this Mac's cache held, not the NAS's).
+    /// Counted as it's read (`copy_counter`: what this Mac's cache held, not the NAS's), and the
+    /// file counted opened.
     pub fn copy_data_to_local(&self, dst: &Path) -> io::Result<u64> {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let (n, held) = crate::sys::copy_data_held(&p, dst)?;
-        counted_copy(&p, n, held, t);
+        let (n, _) = crate::sys::copy_data_held(&p, dst, &mut copy_counter())?;
+        nasio::opened(&p, n, ms_since(t));
         Ok(n)
     }
 
-    /// Counts this file read whole (`n` bytes in `ms`) by a reader of its own (crate::blobs' copy).
-    pub fn count_read(&self, n: u64, ms: u64) {
+    /// Counts this file opened, read whole (`n` bytes in `ms`) by a reader of its own that counted
+    /// its bytes as it read them (crate::blobs' copy, `copy_counter`).
+    pub fn count_opened(&self, n: u64, ms: u64) {
         nasio::opened(&self.full(), n, ms);
-        nasio::read(n);
     }
 
     /// Counts a file of `n` bytes made here in `ms` by a writer of its own (crate::naming's
@@ -706,14 +708,14 @@ impl NasPath {
         Ok(n)
     }
 
-    /// Copies it to `to` on the NAS (crate::sys::copy_data). Counted as a read (`counted_copy`)
-    /// and a file made.
+    /// Copies it to `to` on the NAS (crate::sys::copy_data). Counted as it's read (`copy_counter`),
+    /// a file opened and a file made.
     pub fn copy_data_to(&self, to: &NasPath) -> io::Result<u64> {
         let _w = crate::waits::nas();
         let (p, q) = (self.full(), to.full());
         let t = Instant::now();
-        let (n, held) = crate::sys::copy_data_held(&p, &q)?;
-        counted_copy(&p, n, held, t);
+        let (n, _) = crate::sys::copy_data_held(&p, &q, &mut copy_counter())?;
+        nasio::opened(&p, n, ms_since(t));
         nasio::wrote(&q, n, ms_since(t));
         Ok(n)
     }
@@ -1021,18 +1023,25 @@ fn counted_read(p: &Path, len: u64, t: Instant) {
     nasio::read(len);
 }
 
-/// `counted_read` for a file copied whole of which this Mac's page cache held `held` bytes as the
-/// copy began (crate::sys::resident, asked of the copy's own descriptor; a file of no more than
-/// one copy read isn't asked): those were read here, not from the NAS (nasio's `Local`, so
-/// not in a job's NAS weight, task #939: a slope-deep job copied its z6 tile's 200 MB terrain pack
-/// once a target, every copy after the first answered by the cache in a second or less, and each
-/// target weighed past the whole NAS). Reads into memory (`read` and the like) aren't asked: most
-/// are of small files, where asking would be a mapping, a round trip of its own.
-fn counted_copy(p: &Path, len: u64, held: u64, t: Instant) {
-    let here = held.min(len);
-    nasio::opened(p, len, ms_since(t));
-    nasio::read(len - here);
-    nasio::add(nasio::Count::Local, here);
+/// Counts a NAS file's copy's bytes as they come (crate::sys::copy_data_held's `each`: a read of
+/// `k` bytes of a file of which this Mac's page cache held `held` as the copy began, asked of the
+/// copy's own descriptor; a file of no more than one copy read isn't asked): the first `held`
+/// read here, not from the NAS (nasio's `Local`, so not in a job's NAS weight, task #939: a
+/// slope-deep job copied its z6 tile's 200 MB terrain pack once a target, every copy after the
+/// first answered by the cache in a second or less, and each target weighed past the whole NAS),
+/// the rest the NAS's, each as it's read: a job's beats see a long copy move (task #986: its
+/// bytes at its end alone left a job copying a big file from a slow NAS still all the while).
+/// Reads into memory (`read` and the like) aren't asked: most are of small files, where asking
+/// would be a mapping, a round trip of its own. The file is counted opened (`nasio::opened`) once
+/// copied.
+pub(crate) fn copy_counter() -> impl FnMut(u64, u64) {
+    let mut done = 0u64;
+    move |k, held| {
+        let here = held.saturating_sub(done).min(k);
+        nasio::read(k - here);
+        nasio::add(nasio::Count::Local, here);
+        done += k;
+    }
 }
 
 /// An open NAS file: reads through it are counted as they go; one written is counted as made, with

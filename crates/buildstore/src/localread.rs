@@ -120,7 +120,7 @@ impl Local {
         let t = std::time::Instant::now();
         match self.blobs.get(&self.root, &content) {
             Ok(l) => {
-                p.count_read(len, t.elapsed().as_millis() as u64);
+                p.count_opened(len, t.elapsed().as_millis() as u64);
                 jobrt::timings::count(len, 1);
                 eprintln!("{content}: copied here ({} MB in {:.1} s)", len >> 20, t.elapsed().as_secs_f64());
                 Place::Local(l)

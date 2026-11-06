@@ -12,14 +12,15 @@ use std::collections::BTreeMap;
 /// agent::placement; a boolean), the NAS's budget (crate::budget::nas's switch: its text) and the
 /// NAS's load target (crate::budget::nas::Target's share, %); and, with no switch file (an older lead
 /// refuses them): the batch length (task #927: the minutes of measured time a job of a shared step is
-/// sized to, pipeline's coord::sched::Sched::batch_len) and the factor past which a job's time is
-/// flagged (`OVERDUE`).
+/// sized to, pipeline's coord::sched::Sched::batch_len) and the factor past which a job's
+/// stillness, or a catalogue's wait, is flagged (`OVERDUE`).
 pub const PLACEMENT: &str = "placement";
 pub const NAS_BUDGET: &str = "nas-budget";
 pub const NAS_TARGET: &str = "nas-target";
 pub const BATCH: &str = "batch-minutes";
-/// How many times its sized time a job runs before the status flags it (pipeline's agent::flags,
-/// task #953): a number in `OVERDUE_RANGE`; not set, `OVERDUE_DEFAULT`.
+/// How many times its usual still stretch a job's work goes without moving before the status flags
+/// it stuck, and a catalogue due its most wait before it's stale (pipeline's agent::flags, tasks
+/// #953 and #986): a number in `OVERDUE_RANGE`; not set, `OVERDUE_DEFAULT`.
 pub const OVERDUE: &str = "overdue-factor";
 pub const NAMES: [&str; 5] = [PLACEMENT, NAS_BUDGET, NAS_TARGET, BATCH, OVERDUE];
 /// The batch lengths the lead takes (minutes): a minute to a day.

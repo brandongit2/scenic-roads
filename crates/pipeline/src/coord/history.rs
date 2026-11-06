@@ -80,7 +80,7 @@ pub struct Event {
     pub v: Option<u32>,
     /// The longest its job went with nothing of its work moving, as the lead heard its beats (s:
     /// crate::coord::lease::Lease::still_most), on an "end" or "done" of a leased job: its step's
-    /// usual stillness (`History::still_p90`). Events before task #986 have none.
+    /// usual stillness (`History::still_p90s`). Events before task #986 have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub still_s: Option<u64>,
 }
@@ -457,21 +457,20 @@ impl History {
         self.seq
     }
 
-    /// Adds `e` (now, unless it says when), kept on disk at once; its number.
-    /// How long `step`'s jobs go with nothing moving, as usual: the 90th percentile of the longest
-    /// still stretch of each of its jobs kept that ended well (`Event::still_s`); None while none
-    /// says (crate::agent::flags: a job of it isn't judged stuck).
-    pub fn still_p90(&self, step: &str) -> Option<u64> {
-        crate::needs::p90(
-            self.events
-                .iter()
-                .filter(|e| matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true))
-                .filter(|e| e.step.as_deref() == Some(step))
-                .filter_map(|e| e.still_s)
-                .collect(),
-        )
+    /// How long each step's jobs go with nothing moving, as usual: the 90th percentile of the
+    /// longest still stretch of each of its jobs kept that ended well (`Event::still_s`), by step;
+    /// a step none of whose says isn't in it (crate::coord's `Coordinator::runs`).
+    pub fn still_p90s(&self) -> std::collections::BTreeMap<String, u64> {
+        let mut by: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
+        for e in self.events.iter().filter(|e| matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true)) {
+            if let (Some(step), Some(s)) = (&e.step, e.still_s) {
+                by.entry(step.clone()).or_default().push(s);
+            }
+        }
+        by.into_iter().filter_map(|(step, v)| Some((step, crate::needs::p90(v)?))).collect()
     }
 
+    /// Adds `e` (now, unless it says when), kept on disk at once; its number.
     pub fn add(&mut self, e: Event) -> u64 {
         self.add_at(e, now_s())
     }
