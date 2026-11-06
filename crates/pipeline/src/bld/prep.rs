@@ -915,12 +915,14 @@ pub fn run(out: &mut buildstore::out::Out, t: TileId) -> Result<Stats> {
     Ok(st)
 }
 
+/// Buildings and parts as a row group's reading makes them, for tests (this module's, job's and
+/// task's, pipeline's bld_tests through task's testkit).
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod testkit {
     use super::*;
 
     /// A little-endian WKB polygon (rings closed).
-    pub(crate) fn wkb_polygon(rings: &[&[[f64; 2]]]) -> Vec<u8> {
+    pub fn wkb_polygon(rings: &[&[[f64; 2]]]) -> Vec<u8> {
         let mut b = vec![1u8];
         b.extend_from_slice(&3u32.to_le_bytes());
         b.extend_from_slice(&(rings.len() as u32).to_le_bytes());
@@ -935,12 +937,12 @@ pub(crate) mod tests {
     }
 
     /// A square of side `d` degrees at (lon, lat) (south-west corner).
-    pub(crate) fn square(lon: f64, lat: f64, d: f64) -> Vec<[f64; 2]> {
+    pub fn square(lon: f64, lat: f64, d: f64) -> Vec<[f64; 2]> {
         vec![[lon, lat], [lon + d, lat], [lon + d, lat + d], [lon, lat + d]]
     }
 
     /// One building for a stream: (id, rings, height, floors, class, subtype, dataset).
-    pub(crate) struct B<'a> {
+    pub struct B<'a> {
         pub id: u128,
         pub rings: Vec<Vec<[f64; 2]>>,
         pub height: f64,
@@ -976,7 +978,7 @@ pub(crate) mod tests {
     }
 
     /// A frame of buildings (or parts) as a row group's reading makes it.
-    pub(crate) fn frame(w: &mut Vec<Frame>, part: bool, bs: &[B]) {
+    pub fn frame(w: &mut Vec<Frame>, part: bool, bs: &[B]) {
         let n = bs.len();
         let mut ids = Vec::new();
         let mut parents = Vec::new();
@@ -1046,9 +1048,15 @@ pub(crate) mod tests {
         });
     }
 
-    pub(crate) fn end(w: &mut Vec<Frame>) {
+    pub fn end(w: &mut Vec<Frame>) {
         w.push(Frame { kind: kind::END, header: serde_json::json!({ "files": [] }), cols: HashMap::new() });
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testkit::*;
+    use super::*;
 
     /// Task #889: a z6 tile's row groups read in chunks, paused at every one of its safe points
     /// (each chunk kept), resumed each time, make the same normalized file as a read never paused.

@@ -85,3 +85,6 @@ mod roads_tests;
 
 #[cfg(test)]
 mod names_tests;
+
+#[cfg(test)]
+mod bld_tests;

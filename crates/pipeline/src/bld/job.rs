@@ -824,7 +824,7 @@ mod tests {
     use super::*;
     use crate::bld::prep::{
         self,
-        tests::{end, frame, square, B},
+        testkit::{end, frame, square, B},
     };
     use buildstore::recipes::Recipe;
 
