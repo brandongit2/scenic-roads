@@ -444,3 +444,19 @@ one source_names scan):
   rivers 50; trees' room making 49; depth's resumed z6 48; slope_pack's assembly 46; polar's block
   in progress 43; pool::sim's cache filled in parts 43. The top 10 are 45 % of the suite's test
   time, the top 30 70 %; the 1,909 tests under a second, 3 %.
+
+#969's second part, measured 5 Nov on the M4 under load 120-190 (each test alone, before and after
+interleaved, 3 runs each, median wall, CPU in brackets): the hung-NAS fake's short deadline, the
+reaped job 223 → 13 s, the pause on a hung NAS 61 → 11 s, the hung NAS while planning 61 → 8 s;
+the pause while planning (an 8-s plan) 31 → 9 s; depth's z6 tile paused at its safe points 80 → 5 s
+(75 → 7 s), its run stopped 220 → 6 s (a missing grid's open no longer waited out to the end of its
+retries), its resumed tile's test cut (11 s); a key names exactly its reads 57 → 20 s (50 → 20 s);
+terrain_task's z6 tile stopped and resumed 25 → 15 s (159 → 95 s); slope_pack's deep tile and its
+2-and-8-threads test merged (24 + 10 s, 19 + 7 s → 29 s, 22 s). The suites in the publish records
+above ran three at once beside builds, their tests' walls 3 to 15 times these. The same affected
+set as check.sh's (1,261 tests; 1,265 before), on main's code and on the branch's, at once: the
+tests' run 658 → 343 s, CPU (with each build) 3,993 → 3,169 s. A re-check after a one-line edit of
+terrain_task.rs since that pass ran 275 of the 1,261 again (its module's users,
+agent::tests among them, and the scan tests): the test Mac's CPU 3,169 → 2,283 s, its wall about
+the same, bound by the pipeline's compile after any Rust edit (11 min) and a flaky test's 300-s
+watchdog (a_slow_plan_delays_no_grant_pause_or_heartbeat: 2 of its last 61 runs failed so).
