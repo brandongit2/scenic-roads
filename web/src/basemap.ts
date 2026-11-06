@@ -283,11 +283,9 @@ export const HYPSO: [number, string][] = [
 /** The basemap's vector tiles (OpenMapTiles schema; the server merges its archives per tile and
  * attaches the display names), as its source and the coast worker (coast.worker.ts) read them. */
 export const basemapTiles = (): string => `${hostFor('base')}/tiles/base/{z}/{x}/{y}${ver('base.pmtiles')}`;
-/** The terrain tiles (Terrarium), as the terrain sources and the contours (terrain.ts) read them. */
-export const terrainTiles = (): string => `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`;
-
 /** Labels on the water stand on its surface: over the depth's 3D floor the terrain's surface
- * (depth.ts), without it the terrain (our MapLibre's anchor `surface`, not in the style spec's types). */
+ * (depth.ts), without it the 3D terrain, the same surface (surfaceTiles; our MapLibre's anchor `surface`, not in the
+ * style spec's types). */
 const ON_SURFACE = 'surface' as unknown as 'ground';
 
 /** The terrain with the sea and lake floor under its water (the server's `?floor=1`: the water's
@@ -297,9 +295,10 @@ const ON_SURFACE = 'surface' as unknown as 'ground';
 export const floorTiles = (): string =>
   `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}?floor=1&d=${version('depth.tiles')}.${version('depth-class.tiles')}&w=${version('water')}${ver('terrain.tiles').replace('?', '&')}`;
 
-/** The water's surface (the server's `?surface=1`: sea level at sea, the terrain elsewhere: the
- * terrain keeps the source's heights at sea), what the water and what's on it stand on over the
- * depth's floor (terrain.ts applyTerrain). */
+/** The terrain tiles (Terrarium) as the water's surface (the server's `?surface=1`: sea level where
+ * the water tiles say sea, the terrain elsewhere: the terrain keeps the source's heights at sea),
+ * as the map reads them: the 3D terrain, or what the water and what's on it stand on over the
+ * depth's floor (terrain.ts applyTerrain), the elevation tint and the contours. */
 export const surfaceTiles = (): string =>
   `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}?surface=1&w=${version('water')}${ver('terrain.tiles').replace('?', '&')}`;
 
@@ -310,7 +309,6 @@ export function versionedTiles(): { source: string; file: string; url: string }[
   return [
     { source: 'base', file: 'base.pmtiles', url: basemapTiles() },
     { source: 'lbl', file: 'labels.tiles', url: `${hostFor('base')}/tiles/labels/{z}/{x}/{y}${ver('labels.tiles')}` },
-    { source: 'dem', file: 'terrain.tiles', url: terrainTiles() },
     { source: 'dem-tint', file: 'terrain.tiles', url: surfaceTiles() },
     { source: 'dem-floor', file: 'terrain.tiles', url: floorTiles() },
     { source: 'dem-surface', file: 'terrain.tiles', url: surfaceTiles() },
@@ -502,9 +500,9 @@ export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDe
     };
   };
   const nm = labelTiles ? mainOf('n') : name;
+  // The terrain sources' common settings.
   const dem = {
     type: 'raster-dem' as const,
-    tiles: [tiles.dem],
     encoding: 'terrarium' as const,
     tileSize: 256,
     maxzoom: 12,
@@ -545,13 +543,12 @@ export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDe
         maxzoom: BASEMAP_MAXZOOM,
       },
       ...(labelTiles ? { lbl: { type: 'vector' as const, tiles: [tiles.lbl], maxzoom: 12, attribution: '' } } : {}),
-      dem,
       // The elevation tint's: the screen's own tiles (the 3D mesh's source loads its own), the
       // water's surface (surfaceTiles: the sea at sea level, as the tint and its histogram read it,
       // terrainstats.ts), the terrain elsewhere.
       'dem-tint': { ...dem, tiles: [tiles['dem-tint']] },
-      // The 3D terrain's with the depth's floor on (floorTiles), and the water's surface over it
-      // (surfaceTiles).
+      // The 3D terrain's: with the depth's floor on the floor (floorTiles) and the water's surface
+      // over it, else the water's surface (surfaceTiles).
       'dem-floor': { ...dem, tiles: [tiles['dem-floor']] },
       'dem-surface': { ...dem, tiles: [tiles['dem-surface']] },
       // The terrain's shading, as the build stores it to each place's finest zoom (the slope layer:

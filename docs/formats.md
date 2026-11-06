@@ -819,9 +819,11 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   catalogue meta's: its sources, Depth below). The map's meta: `/api/meta`.
 - **Depth:** `/tiles/depth/…` and `/tiles/depth-class/…`: the stored tile, else made from its nearest
   stored ancestor (`pipeline::depth::fall`), 204 where it has no ancestor, 404 past its zooms; versions `depth.tiles`,
-  `depth-class.tiles`. `/tiles/terrain/{z}/{x}/{y}?floor=1`: the terrain less the depth where the
-  class tile says water (the floor under the water, for a 3D floor); the terrain as it is without
-  depth in the catalogue.
+  `depth-class.tiles`. `/tiles/terrain/{z}/{x}/{y}?floor=1`: the water's surface less the depth where
+  the class tile says water (the floor under the water, for a 3D floor); the terrain as it is without
+  depth in the catalogue. `?surface=1`: the water's surface (sea level where the water tiles say
+  sea, the terrain elsewhere), the map's 3D terrain without the floor; a tile with no pixel at sea
+  is the stored terrain tile, with its ETag.
 - `/api/names?n=<name>&at=lon,lat` repeated (each optionally with `en=`, `k=road|settlement|other`,
   `l=` before its `at`): `[{main, sub}]`.
 - `/api/build`: the agent's status (this Mac's when it leads, else the lead's heartbeat, or this

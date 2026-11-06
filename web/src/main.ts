@@ -250,8 +250,8 @@ async function main() {
     terrain.exaggeration = ease(Math.max(0, riseF));
     const ready = () => {
       if (map.terrain !== terrain) return map.off('sourcedata', ready);
-      const dem = map.getTerrain()?.source ?? 'dem';
-      if (!map.getSource(dem) || !map.isSourceLoaded(dem)) return;
+      const dem = map.getTerrain()?.source;
+      if (!dem || !map.getSource(dem) || !map.isSourceLoaded(dem)) return;
       map.off('sourcedata', ready);
       const t0 = performance.now() - Math.max(0, riseF) * RISE_MS;
       const step = () => {
@@ -2337,7 +2337,7 @@ async function main() {
     if (!!m.labelTiles !== labelTilesOn() || !!m.water !== waterTilesOn()) watch?.wantReload('New map data');
     // The areas of terrain finer than its base, as they grow: the terrain sources' covers and the
     // contours follow in place.
-    for (const id of ['dem', 'dem-tint', 'dem-floor', 'dem-surface', 'slope']) (map.getSource(id) as maplibregl.RasterTileSource | undefined)?.setZoomByArea(m.terrainAreas);
+    for (const id of ['dem-tint', 'dem-floor', 'dem-surface', 'slope']) (map.getSource(id) as maplibregl.RasterTileSource | undefined)?.setZoomByArea(m.terrainAreas);
     setTerrainAreas(map, m.terrainAreas);
     markDirty();
   };

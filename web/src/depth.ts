@@ -16,7 +16,8 @@
 //    isolines), clipped to the water.
 // All go over the water fill and under the coast shading, the whitewater, the terrain's
 // hill-shading (basemap.ts waterTop) and everything else, draped on the 3D
-// terrain like the water (which lies on the terrain: the source's heights, at sea its bathymetry).
+// terrain like the water (which lies on the 3D terrain: without the floor the water's surface,
+// basemap.ts surfaceTiles: sea level at sea, a lake at its source's heights).
 // 3. The 3D floor (setFloor, its switch in the same section): the 3D terrain from the water's
 //    surface less the depth (the server's `?floor=1`, basemap.ts floorTiles), its surface the
 //    water's (`?surface=1`, surfaceTiles: sea level at sea, the terrain elsewhere; terrain.ts
@@ -24,7 +25,7 @@
 //    the floor (with the depth's colour over it), and a see-through copy of it is drawn at the
 //    surface (`water-surface`, the elevation reference `surface`); the ferries' lines are lifted to
 //    the surface, and the water's and ferries' names stand on it (basemap.ts: the anchor `surface`,
-//    the terrain itself without a floor). Roads and bridges keep their own heights (roads/). Depth is below the local water
+//    the 3D terrain, the same surface, without a floor). Roads and bridges keep their own heights (roads/). Depth is below the local water
 // surface: mean sea level at sea, the lake's surface on lakes; estimated depths look as measured
 // ones do (the footer says which they are, on hover: ui/strip.ts showWater; the Depth section's note names
 // the estimated sources, ui/depth.ts setEstimated). The depth's sources and the notices their licences ask

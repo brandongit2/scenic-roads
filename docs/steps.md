@@ -420,14 +420,23 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   map and the floor leave it out); dries where above the chart's low water.
 - **The floor:** the depth is below the water's surface, so that surface less the depth is the
   floor; the server serves it (`/tiles/terrain/…?floor=1`), and the surface (`?surface=1`), no
-  second terrain stored. The sea's surface is sea level, 0 m, where the water tiles say sea (half a
+  second terrain stored: a surface tile with no pixel at sea is the terrain tile itself, served as
+  stored (its ETag, cached for good under the current water version); one with sea is made (the
+  terrain decoded, levelled, encoded again) and kept in the server's made tiles, never cached for
+  good. The sea's surface is sea level, 0 m, where the water tiles say sea (half a
   pixel or more, as the depth's water: server `water::sea_shares`), whatever the
   terrain reads there (the source's bathymetry: §2, Terrain); a lake's is the terrain's source there
   (not levelled), so a lake's floor follows its source's surface, artefacts too; so does a river's
   (3DEP's hydro-flattening, where its source has it). A pixel of narrow water is the terrain's
   blend of water and shore, so its floor is rough. The map's toggle (Layers → Depth, "3D sea and
   lake floor"; web/src/depth.ts): the 3D terrain from the floor, the water's surface its surface
-  (our MapLibre's `Map#setTerrainSurface`);
+  (our MapLibre's `Map#setTerrainSurface`). Without the floor the 3D terrain is that surface (the
+  sea flat at sea level, the ferries on it; lakes and land below sea level at their source's
+  heights), display only: the terrain's data keeps its source's heights. The elevation tint and
+  its histogram, the contours, and whatever reads the ground's height on the map (the camera's
+  clamp, buildings, labels) read the same surface; the hill-shading is the slope layer's, made from
+  the terrain, so it shades the bathymetry at sea (Shaded by the terrain beneath, below); a road's
+  profile is its own heights (§2);
   the water draped on the floor under the depth's colour, a see-through copy of it drawn at the
   surface; the ferries' lines lifted to the surface and the water's and ferries' names standing on
   it (the elevation reference and anchor `surface`); roads and bridges keep their own heights.

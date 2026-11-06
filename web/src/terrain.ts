@@ -325,12 +325,16 @@ function setupContours(map: MLMap, density: number) {
   );
 }
 
-/** The terrain's settings on the map; `floor`: the 3D terrain from the sea and lake floor (the
- * depth's, depth.ts), its surface the water's (basemap.ts surfaceTiles: sea level at sea, the
- * terrain elsewhere), where the water and what's on it are drawn. */
+/** The terrain's settings on the map. The 3D terrain is the water's surface (basemap.ts
+ * surfaceTiles: sea level where the water tiles say sea, the terrain elsewhere, lakes and land
+ * below sea level at their source's heights): the terrain keeps the source's bathymetry at sea,
+ * which would sink the sea, and the ferries on it, by its depth. With `floor`, the sea and lake
+ * floor (the depth's, depth.ts), the water's surface its surface, where the water and what's on
+ * it are drawn. Whatever reads the ground's height (queryTerrainElevation: the camera's clamp,
+ * buildings, flights) reads the mesh, so the same surface. */
 export function applyTerrain(map: MLMap, t: Terrain, floor: boolean) {
   map.setTerrainSurface(t.on && floor ? 'dem-surface' : null);
-  map.setTerrain(t.on ? { source: floor ? 'dem-floor' : 'dem', exaggeration: t.exaggeration } : null);
+  map.setTerrain(t.on ? { source: floor ? 'dem-floor' : 'dem-surface', exaggeration: t.exaggeration } : null);
   finerTerrainMesh(map);
   // Hillshade.
   if (map.getLayer('hillshade')) {
