@@ -1,7 +1,9 @@
 //! The map server runs on the map's Mac alone (docs/macs.md, Devices; task #874): the Mac mini.
 //! Every Mac ran one until #874; an installed server started on another Mac retires itself: its
 //! LaunchAgent (`local.scenic.server`) and run file are removed and the job unloaded, which ends
-//! it. The Mac's offline map (its mirror, downloads and followed map) is left where it is.
+//! it. The Mac's offline map (its mirror, downloads and followed map) is left where it is, and
+//! served by a server started on demand (`--on-demand`, the menu bar's: docs/roles.md §8.3), which
+//! is never retired.
 //!
 //! The live map must never go down for a file gone missing, so a server retires only when it's
 //! sure it isn't the map's Mac (`retires`): no name in `~/.config/scenic/names` (the file there

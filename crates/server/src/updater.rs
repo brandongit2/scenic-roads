@@ -31,6 +31,37 @@ pub fn in_use(secs: u64) -> bool {
     t != 0 && now().saturating_sub(t) < secs
 }
 
+/// How long a server started on demand (`--on-demand`, a laptop's offline map: docs/roles.md
+/// §8.3) runs on unused.
+pub const ON_DEMAND_IDLE: Duration = Duration::from_secs(1800);
+
+/// Ends this server (one started on demand) once it has been unused for `idle`: no request
+/// (`touch`), and no copy of the mirror's under way (`copying`, asked every 10 s), since it last
+/// had one or since it started.
+pub fn quit_when_unused(idle: Duration, copying: impl Fn() -> bool + Send + 'static) {
+    let mut busy = now();
+    std::thread::Builder::new()
+        .name("on-demand".into())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(10));
+            let t = now();
+            if copying() {
+                busy = t;
+            }
+            if unused_for(t, busy, LAST_REQUEST.load(Ordering::Relaxed)) >= idle.as_secs() {
+                eprintln!("on demand: unused for {} min: quitting", idle.as_secs() / 60);
+                std::process::exit(0);
+            }
+        })
+        .ok();
+}
+
+/// Seconds since the last use at `now`: the later of the last busy moment (its start, a copy)
+/// and the last request (0: none).
+fn unused_for(now: u64, busy: u64, request: u64) -> u64 {
+    now.saturating_sub(busy.max(request))
+}
+
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }

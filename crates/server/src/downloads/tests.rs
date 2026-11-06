@@ -904,6 +904,7 @@ async fn away_a_regions_ways_have_their_info_and_its_roads_are_cut_at_its_edge()
             wait_s: 0,
             retry: std::time::Duration::from_millis(50),
             client: "server/test".into(),
+            save_every: crate::maplog::SAVE_EVERY,
             stop: Default::default(),
         },
     )

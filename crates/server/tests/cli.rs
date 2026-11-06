@@ -30,4 +30,7 @@ fn it_helps_and_refuses_without_starting() {
     assert!(out.is_empty(), "{out}");
     let (code, _, err) = run(&["--port"]);
     assert_eq!(code, 2, "{err}");
+    // (On demand it answers this Mac's loopback alone: no address of its own to listen on.)
+    let (code, _, err) = run(&["--on-demand", "--listen", "0.0.0.0"]);
+    assert!(code == 2 && err.contains("--on-demand"), "{err}");
 }

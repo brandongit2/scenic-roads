@@ -46,6 +46,7 @@ pub(crate) fn config(url: String, cache: &Path, wait_s: u64) -> Config {
         wait_s,
         retry: Duration::from_millis(50),
         client: "server/test".into(),
+        save_every: SAVE_EVERY,
         stop: Arc::new(AtomicBool::new(false)),
     }
 }
@@ -255,6 +256,30 @@ async fn the_nas_snapshot_is_used_while_the_lead_is_down() {
     let want = tile(&data(tempfile::tempdir().unwrap().path(), nas.path()), home.path()).await;
     assert_eq!(want.0, 200);
     assert_eq!(tile(&b, home.path()).await, want);
+}
+
+/// A server on demand (docs/roles.md §8.3, 7a) keeps the map each time it moves: started on the map
+/// this Mac kept, it takes the NAS's newer one with the lead away and keeps it at once, so a later
+/// start away from both serves the map its downloads were copied for. A resident one keeps the
+/// newer map only `SAVE_EVERY` after its start.
+#[test]
+fn a_server_on_demand_keeps_the_map_as_it_moves() {
+    let nas = tempfile::tempdir().unwrap();
+    let root = store::nasfs::NasRoot::local_for_test(nas.path().to_owned());
+    let dead = store::spawn::listen("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let kept = |cache: &Path| Snapshot::decode(&std::fs::read(cache.join(SAVED)).unwrap()).unwrap().0.seq;
+    let one = Map::of(&publish(&[nas.path()], 1)).unwrap();
+    for (save_every, want) in [(Duration::ZERO, 3), (SAVE_EVERY, 1)] {
+        let (home, cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(cache.path().join(SAVED), Snapshot::of(&one, &Default::default()).encode().unwrap()).unwrap();
+        store::map::write_nas_snapshot(&root, &Map::of(&publish(&[nas.path()], 3)).unwrap()).unwrap();
+        let cfg = Config { save_every, ..config(format!("http://127.0.0.1:{dead}"), cache.path(), 0) };
+        let mut f = Follower::new(data(home.path(), nas.path()), cfg);
+        f.start();
+        assert!(!f.round());
+        assert_eq!(f.seq(), Some(3));
+        assert_eq!(kept(cache.path()), want, "kept with save_every {save_every:?}");
+    }
 }
 
 /// The offline map (docs/maplog.md §5.3; kept on the laptops, owner's decision): a server started

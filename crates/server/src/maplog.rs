@@ -3,7 +3,8 @@
 //! to its own map (each checked by its digest; one that doesn't apply fetches the snapshot), and
 //! hands the result on as one catalogue, swapped whole (`Data::set_map`): a request never reads a
 //! torn set. Its requests say its cursor (`client=server/<host>`). It runs wherever the server runs:
-//! the Mac mini alone (#874; crate::retire). The map is all it serves: no catalogue is read
+//! the Mac mini's, and a laptop's on demand while it runs (#874, #882 step 7a; crate::retire). The
+//! map is all it serves: no catalogue is read
 //! (docs/maplog.md §8, step 6).
 //!
 //! The mirror is a client of the log too, with a cursor of its own (`MirrorLink`).
@@ -25,8 +26,8 @@ use store::map::{Map, Snapshot};
 /// The saved map, and the lead's contact kept for a start away from the NAS.
 const SAVED: &str = "current.json.zst";
 const LEAD_KEPT: &str = "lead.json";
-/// The saved map written at most this often.
-const SAVE_EVERY: Duration = Duration::from_secs(600);
+/// The saved map written at most this often by a resident server (`Config::save_every`).
+pub(crate) const SAVE_EVERY: Duration = Duration::from_secs(600);
 /// The NAS's snapshots looked at at most this often.
 const NAS_EVERY: Duration = Duration::from_secs(600);
 
@@ -51,6 +52,10 @@ pub struct Config {
     pub retry: Duration,
     /// This server's cursor's name.
     pub client: String,
+    /// The saved map written at most this often once the map moved: `SAVE_EVERY`; none for a
+    /// server on demand (`on_demand`), which may quit any time and whose downloads are of the map
+    /// it serves.
+    pub save_every: Duration,
     /// Set to stop following (tests).
     pub stop: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -65,8 +70,16 @@ impl Config {
             wait_s: store::map::feed::WAIT_S,
             retry: Duration::from_secs(10),
             client: format!("server/{}", crate::data::host()),
+            save_every: SAVE_EVERY,
             stop: Default::default(),
         }
+    }
+
+    /// `this_mac`, for a server started on demand (a laptop's offline map): the map kept each time
+    /// it moves, so the map a later start away from the lead and the NAS reads is the one its
+    /// downloads were copied for.
+    pub fn on_demand() -> Config {
+        Config { save_every: Duration::ZERO, ..Config::this_mac() }
     }
 }
 
@@ -241,10 +254,10 @@ impl Follower {
         }
     }
 
-    /// The map kept on this Mac, when it moved on and the last save is `SAVE_EVERY` old.
+    /// The map kept on this Mac, when it moved on and the last save is `save_every` old.
     fn save(&mut self) {
         let (Some(dir), Some(m)) = (&self.cfg.cache, &self.map) else { return };
-        if self.saved.is_some_and(|(s, t)| s == m.seq || t.elapsed() < SAVE_EVERY) {
+        if self.saved.is_some_and(|(s, t)| s == m.seq || t.elapsed() < self.cfg.save_every) {
             return;
         }
         let r = (|| -> Result<()> {

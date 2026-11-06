@@ -7,8 +7,10 @@
 //! (development, tests), without a mirror unless `--mirror` (then copied into `--home`'s as from
 //! the NAS: a `--home` of its own, never this Mac's app folder). The free space the mirror leaves on
 //! the disk is the owner's setting in the Regions panel (crate::reserve). `--listen`: the one address to answer on (a test
-//! server's 127.0.0.1), else every IPv4 address and IPv6's loopback. Nothing is loaded at start:
-//! the catalogue says where everything is, and files are opened on first use.
+//! server's 127.0.0.1), else every IPv4 address and IPv6's loopback. `--on-demand`: a laptop's
+//! offline map (docs/roles.md §8.3), started by the menu bar's Open the Map on This Mac: this Mac's
+//! loopback alone, never retired, quitting once unused (`updater::quit_when_unused`). Nothing is
+//! loaded at start: the catalogue says where everything is, and files are opened on first use.
 
 mod accepted;
 mod cache;
@@ -304,8 +306,13 @@ struct Cli {
     mirror: bool,
     /// The one address to answer on (a test server's 127.0.0.1), else every IPv4 address and IPv6's
     /// loopback
-    #[arg(long, value_name = "IPV4 ADDRESS")]
+    #[arg(long, value_name = "IPV4 ADDRESS", conflicts_with = "on_demand")]
     listen: Option<std::net::Ipv4Addr>,
+    /// This Mac's offline map, started on demand (the menu bar's Open the Map on This Mac, on a Mac
+    /// without the installed server): answers this Mac alone (127.0.0.1 and IPv6's loopback), is
+    /// never retired, and quits 30 min after its last use (a request, or a download's copy)
+    #[arg(long)]
+    on_demand: bool,
 }
 
 /// Raises the open-file limit (launchd starts us at 256): NAS handles, mapped files and
@@ -326,14 +333,21 @@ fn raise_open_files() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen } =
+    let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen, on_demand } =
         <Cli as clap::Parser>::parse();
     raise_open_files();
+    if on_demand {
+        // (A session of its own: the menu bar that started it may quit or be replaced meanwhile.)
+        // SAFETY: setsid has no preconditions; it fails only for a group leader, which is no harm.
+        unsafe { libc::setsid() };
+    }
     let home = home_arg.clone().unwrap_or_else(data::default_home);
     // (An installed server on a Mac that doesn't serve the map, as every Mac ran one until #874:
-    // retired when it's sure it isn't the map's Mac: its service removed, its offline map left.)
+    // retired when it's sure it isn't the map's Mac: its service removed, its offline map left. One
+    // started on demand is this Mac's offline map, never retired.)
     let user_home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    if home_arg.is_none()
+    if !on_demand
+        && home_arg.is_none()
         && pipeline::appupdate::running_version(&home).is_some()
         && retire::this_mac_retires(&home, &user_home)
     {
@@ -355,9 +369,10 @@ async fn main() -> Result<()> {
     })?;
     // (This Mac's server follows the lead's log, the map it kept served first: a `--root` one serves
     // that folder's map, read as it opened.)
+    let follow = if on_demand { maplog::Config::on_demand() } else { maplog::Config::this_mac() };
     if root.is_none() {
         d.spawn_background();
-        maplog::spawn(d.clone(), maplog::Config::this_mac());
+        maplog::spawn(d.clone(), follow.clone());
     }
     eprintln!(
         "map {} · NAS {}",
@@ -400,14 +415,21 @@ async fn main() -> Result<()> {
         });
     }
     // The mirror: what's downloaded (downloads.rs).
-    let lead = root.is_none().then(|| maplog::MirrorLink::new(state.data.clone(), &maplog::Config::this_mac()));
+    let lead = root.is_none().then(|| maplog::MirrorLink::new(state.data.clone(), &follow));
     downloads::spawn_mirror(state.clone(), lead);
+    if on_demand {
+        let d = state.data.clone();
+        updater::quit_when_unused(updater::ON_DEMAND_IDLE, move || {
+            d.mirror.as_ref().is_some_and(|m| m.copying().is_some())
+        });
+    }
     tokio::spawn(warm(state.clone()));
     regions::spawn_syncer(state.clone());
     // Other devices (remote.rs): the address to open there, kept current (tailscale serve may start
-    // proxying the server any time). (A `remote-key` an older server kept: unused, removed.)
+    // proxying the server any time); none for one on demand, which answers this Mac alone. (A
+    // `remote-key` an older server kept: unused, removed.)
     std::fs::remove_file(home.join("remote-key")).ok();
-    {
+    if !on_demand {
         let r = Arc::new(remote::Remote::new(&home));
         tokio::spawn(async move {
             loop {
@@ -509,9 +531,15 @@ async fn main() -> Result<()> {
         .layer(axum::middleware::from_fn(remote::gate))
         .with_state(state);
 
-    // This Mac, and devices on its LAN and the tailnet (the gate answers them alone).
-    let addr = std::net::SocketAddr::from((listen.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED), port));
-    eprintln!("listening on http://{addr} (devices: the map's address, <home>/map-page)");
+    // This Mac, and devices on its LAN and the tailnet (the gate answers them alone); on demand,
+    // this Mac alone.
+    let any = if on_demand { std::net::Ipv4Addr::LOCALHOST } else { std::net::Ipv4Addr::UNSPECIFIED };
+    let addr = std::net::SocketAddr::from((listen.unwrap_or(any), port));
+    if on_demand {
+        eprintln!("listening on http://{addr} and IPv6's loopback, on demand: this Mac alone");
+    } else {
+        eprintln!("listening on http://{addr} (devices: the map's address, <home>/map-page)");
+    }
     // (Made, and their connections taken, while no child is being started, store::spawn: a child
     // started between would hold the port.)
     use axum::serve::ListenerExt;
@@ -524,6 +552,8 @@ async fn main() -> Result<()> {
             let svc6 = svc.clone();
             tokio::spawn(async move { axum::serve(l6.tap_io(|_| ()), svc6).await });
         }
+    }
+    if listen.is_none() && !on_demand {
         // 127.0.0.1 held beside the wildcard socket, as the coordinator holds it (#906): otherwise
         // any process may bind it beside and take this Mac's own requests (the agent's catalogue
         // refresh, the status app, the dev proxy). Held by another (the server before a restart,

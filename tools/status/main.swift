@@ -17,8 +17,9 @@
 //
 // It's the menu bar item of Scenic.app, the app opened from Launchpad, Spotlight or /Applications
 // (and at login), never in the Dock: opening it starts this Mac's build service, quitting it stops that service
-// (service.swift). The map server is no part of it: it runs on the Mac mini alone, a service of its
-// own (docs/macs.md, Devices; task #874).
+// (service.swift). The map server is no part of it: the devices' map is the Mac mini's, a service of
+// its own (docs/macs.md, Devices; task #874). Its menu's Open the Map on This Mac opens this Mac's
+// own, starting a laptop's server on demand (`startMapHere`; docs/roles.md §8.3).
 //
 //   tools/status/bundle.sh <folder> [sandbox options]   builds Scenic.app (both files, its launcher
 //                                                        and its build service's launchd plist)
@@ -1892,6 +1893,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             m.addItem(it)
         }
         m.addItem(.separator())
+        // This Mac's map (docs/roles.md §8.3, 7a): its own server, started on demand where none is
+        // installed (a laptop), so the map, its downloads and search work with the Mac mini away.
+        do {
+            let it = NSMenuItem(title: mapStarting ? "Opening the Map on This Mac…" : "Open the Map on This Mac", action: mapStarting ? nil : #selector(openMapHere), keyEquivalent: "")
+            it.target = self
+            it.isEnabled = !mapStarting
+            it.toolTip = "The map served by this Mac at \(mapHere.absoluteString): its downloads and search work with the Mac mini away; started if it isn't running, it quits 30 minutes after its last use"
+            m.addItem(it)
+        }
         if let log = reply?.log {
             let it = NSMenuItem(title: "Open the Build Log", action: #selector(openLog), keyEquivalent: "")
             it.target = self
@@ -2065,6 +2075,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         asked()
     }
 
+    /// Whether this Mac's map is being started (`openMapHere`).
+    var mapStarting = false
+
+    /// Opens this Mac's map in the browser, its server started first when it doesn't answer
+    /// (`startMapHere`); what went wrong said as a failed action's is.
+    @objc func openMapHere(_ sender: NSMenuItem) {
+        guard !mapStarting else { return }
+        mapStarting = true
+        DispatchQueue.global().async {
+            let why = startMapHere()
+            DispatchQueue.main.async {
+                self.mapStarting = false
+                if let why {
+                    self.failed("Couldn't open the map on this Mac", NSError(domain: "scenic", code: 1, userInfo: [NSLocalizedDescriptionKey: why]))
+                } else {
+                    NSWorkspace.shared.open(mapHere)
+                }
+            }
+        }
+    }
+
     @objc func openLog(_ sender: NSMenuItem) {
         if let p = sender.representedObject as? String { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
     }
@@ -2075,6 +2106,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(u)
     }
 
+}
+
+// MARK: the map on this Mac (docs/roles.md §8.3, 7a)
+
+/// This Mac's map server's address (pipeline::net::DEFAULT_PORT).
+let mapHere = URL(string: "http://localhost:7311/")!
+
+/// The server's command line for this Mac's map on demand, from the installed app as
+/// tools/app/install.sh's run file names it, with `--on-demand` (crates/server: this Mac's
+/// loopback alone, never retired, quitting 30 min after its last use).
+func mapServerCommand(_ home: URL) -> [String] {
+    let app = home.appendingPathComponent("app/current")
+    return [app.appendingPathComponent("server").path, "--web", app.appendingPathComponent("web").path,
+            "--fonts", app.appendingPathComponent("fonts").path, "--on-demand"]
+}
+
+/// Whether this Mac's map server answers (`/api/ping`) within `timeout` seconds. Never on the main
+/// thread.
+func mapAnswers(timeout: TimeInterval = 2) -> Bool {
+    let req = URLRequest(url: mapHere.appendingPathComponent("api/ping"), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
+    let done = DispatchSemaphore(value: 0)
+    var ok = false
+    URLSession.shared.dataTask(with: req) { _, r, _ in
+        ok = (r as? HTTPURLResponse)?.statusCode == 200
+        done.signal()
+    }.resume()
+    done.wait()
+    return ok
+}
+
+/// This Mac's map answering: at once when its server runs (the installed one on the map's Mac, or
+/// one started before); else, where no server is installed (a laptop: tools/app/install.sh installs
+/// it on the map's Mac alone), its server started on demand (`mapServerCommand`, its output
+/// appended to ~/Library/Logs/scenic/server.log), waited for up to two minutes (it reads its map at
+/// its start). nil once it answers, else why not. Never on the main thread.
+func startMapHere() -> String? {
+    if mapAnswers() { return nil }
+    let user = FileManager.default.homeDirectoryForCurrentUser
+    let log = user.appendingPathComponent("Library/Logs/scenic/server.log")
+    let installed = FileManager.default.fileExists(atPath: user.appendingPathComponent("Library/LaunchAgents/local.scenic.server.plist").path)
+    var p: Process?
+    if !installed {
+        let cmd = mapServerCommand(home)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: cmd[0])
+        proc.arguments = Array(cmd.dropFirst())
+        try? FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil) }
+        guard let out = FileHandle(forWritingAtPath: log.path) else { return "can't write \(log.path)" }
+        out.seekToEndOfFile()
+        proc.standardOutput = out
+        proc.standardError = out
+        proc.standardInput = FileHandle.nullDevice
+        do { try proc.run() } catch { return "\(cmd[0]): \(error.localizedDescription)" }
+        p = proc
+    }
+    let end = Date().addingTimeInterval(120)
+    while Date() < end {
+        if mapAnswers() { return nil }
+        if let p, !p.isRunning { return "its server ended (\(log.path))" }
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+    return installed ? "this Mac's map service doesn't answer" : "no answer within two minutes (\(log.path))"
 }
 
 /// "17:04:05.123", for --menu-proof's log.
