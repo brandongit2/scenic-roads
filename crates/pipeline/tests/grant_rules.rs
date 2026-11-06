@@ -1,12 +1,12 @@
 //! Every rule that grants a job lives in the scheduler (crate::coord::sched, docs/pool.md §7.2):
 //! the live coordinator and the forecast both call `Sched::pack`, so neither can keep a second copy
-//! that drifts. Outside `#[cfg(test)]` code, no line of the crate's source (or of the runtime crate
-//! below it, crates/jobrt, where the budgets are) names a grant rule
-//! (`RULES`) but in the scheduler itself and where the budget's limits are defined
-//! (crate::budget::nas), or as listed in `EXEMPT` with why; an exemption that no longer matches
-//! fails too, so the list can't go stale.
+//! that drifts. Outside `#[cfg(test)]` code, no line of any crate's source (this one's, the runtime
+//! crate's, crates/jobrt, where the budgets are, and every crate split out of this one: task #916)
+//! names a grant rule (`RULES`) but in the scheduler itself and where the budget's limits are
+//! defined (crate::budget::nas), or as listed in `EXEMPT` with why; an exemption that no longer
+//! matches fails too, so the list can't go stale.
 //!
-//! scans: crates/pipeline/src crates/jobrt/src
+//! scans: crates
 
 use std::path::{Path, PathBuf};
 
@@ -75,11 +75,14 @@ fn code(text: &str) -> Vec<&str> {
 
 #[test]
 fn no_grant_rule_lives_outside_the_scheduler() {
-    // (Paths from crates/: this crate's and the runtime crate's sources.)
+    // (Paths from crates/: every crate's sources.)
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
-    sources(&root.join("pipeline/src"), &mut files);
-    sources(&root.join("jobrt/src"), &mut files);
+    for c in std::fs::read_dir(root).unwrap().flatten() {
+        if c.path().join("src").is_dir() {
+            sources(&c.path().join("src"), &mut files);
+        }
+    }
     let mut found = Vec::new();
     let mut used = vec![false; EXEMPT.len()];
     for f in files {
