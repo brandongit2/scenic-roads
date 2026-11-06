@@ -105,7 +105,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 | Heritage descriptions | English Wikipedia short descriptions; descriptions written by Claude from Wikipedia articles or register entries | CC BY-SA 4.0 (sources credited) |
 | Peak prominence & isolation | Computed from the terrain; OSM and Wikidata values preferred | Derived |
 
-**Terrain.** The 3D terrain is sampled from the same elevation datasets as the roads, in the same order, so a road and the ground under it always come from one dataset: regional lidar and DEMs where declared, then Copernicus GLO-30 (its filled voids left out), then AWS's Terrain Tiles. Coarser zooms are the means of the finer tiles under them; the sea goes to 0 m and each lake to its shore's level, from the basemap's water (`terrain_base`, `terrain_water`, `docs/steps.md`).
+**Terrain.** The 3D terrain is sampled from the same elevation datasets as the roads, in the same order, so a road and the ground under it always come from one dataset: regional lidar and DEMs where declared, then Copernicus GLO-30 (its filled voids left out), then AWS's Terrain Tiles. Coarser zooms are the means of the finer tiles under them. It keeps the sources' heights at sea, over lakes and below 0 m, their artefacts included; only where no dataset has data is it sea level (`terrain_base`, `docs/steps.md`).
 
 The map's © Credits dialog lists each source as its catalogue serves it (`CREDITS` in `crates/pipeline/src/rules.rs`, plus the inputs' own descriptions).
 

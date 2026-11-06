@@ -37,7 +37,7 @@ tiles, on the pole's polar stereographic grid.
 - **Terrain:** from the elevation pool, like the Mercator base (`terrain_base`): the same datasets
   in the same order, blended alike, each pixel the mean of 2 × 2 samples, GeoTIFFs read at the
   overview nearest half a pixel. The tile pyramids are left out: a Web Mercator pyramid has nothing
-  past 85.05°. Below zero is clamped to 0. Stored as Terrarium in lossless WebP (`terrain_codec`),
+  past 85.05°. Below 0 m kept, as the Mercator terrain's. Stored as Terrarium in lossless WebP (`terrain_codec`),
   rounded to 1 cm at the finest zoom and 10 cm coarser. No water mask past 85° (the Arctic is sea level, drawn
   in the water colour) and no lake or ice-shelf flattening.
 - **The datasets past the caps' edge:** GLO-30 everywhere south of 85° S (nothing north of 85° N,

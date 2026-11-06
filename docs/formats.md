@@ -474,7 +474,7 @@ ancestor's neighbours' edges; nearest for classes).
 - **`depth`** (encoding `terrarium-webp`: Terrarium RGB as lossless WebP, as the terrain's, but
   rounded as below, not to the terrain's centimetre): metres below the water's surface (the sea's mean level, a
   lake's mean surface), negative; drying heights positive (at most 20 m); +12,000 m where there's
-  none (≥ 9,000 is none). Quantised: 0.1 m in the first 100 m, 1 m deeper. The terrain's water
+  none (≥ 9,000 is none). Quantised: 0.1 m in the first 100 m, 1 m deeper. The basemap's water
   (`terrain_water`: half a pixel or more of sea or lake) is where it lies, and the land keeps a band
   of 3 pixels of the nearest water's value (class 0), so a finer shoreline scaled up from it never
   meets a gap; the map doesn't draw it (its relief reaches from the water's own data:
@@ -924,7 +924,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   none, Deflate with the floating-point predictor, overviews by averaging; one a source the
   lake-depth step makes and z6 tile with a lake of it; `pipeline::depth::lakes`);
   `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
-  "terrain-water", pin, digests: {target: [from, digest]}}`: per terrain target, what decides its
+  "terrain-water", pin, digests: {target: [from, digest]}}`: per depth target, what decides its
   tiles and a hash16 over its water tiles' polygons; `pipeline::terrain_water::WaterIdx`).
 - **Other sources:**
   - `sources/items/<date>/{facts,views,meta}.json`; `answers.tar.zst` (pipeline::answers: the

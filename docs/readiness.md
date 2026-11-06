@@ -139,11 +139,11 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 
 | Step | Today (docs/steps.md §12) | Derived reads | Change, and why |
 |---|---|---|---|
-| terrain-water | water pin + each target's reads | `in water-pin`, `in water-wants` | same inputs |
-| pyramids-fill | `pyramids::V`, tile, coverage 20 km fingerprint, pyramids' lines, water, deep targets | versions; `in coverage:piece`, `in pyramids`, `in water`, `Targets terrain-deep` (identity: the target list, `in deep-targets`) | changes: #832's `piece_coverage` |
-| terrain-hi | `TERRAIN_V`, codec, its built tiles, datasets, sources' zooms, water, "no hi tiles", its z10 tiles' deep mids | versions; `in coverage:piece`, `in datasets:terrain`, `in zoom-lines`, `in water`, `in makes-hi`, `Targets terrain-deep` (its 16 z10 tiles, `Grain::Read`: their deep mids) | task #929: the one pyramid's rule; its z12 tiles over a deep target are its deep mid's means, so it waits for those targets alone |
-| terrain-deep | versions, tile, its band's tiles, datasets, sources' zooms, water | versions (incl. `terrain-hi`: its code's); `in coverage:piece`, `in datasets:terrain`, `in zoom-lines`, `in water` | task #929: no base made from terrain-hi's inputs; it reads no built tile, so it waits for nothing |
-| terrain-lo | versions, codec, water, sources, z6 mids | `Targets terrain-hi` (mids), `in water`, `in datasets:terrain` | same inputs. The `sources` line is undocumented today; the doc table gains it |
+| terrain-water | water pin + each depth target's reads | `in water-pin`, `in water-wants` | same inputs |
+| pyramids-fill | `pyramids::V`, tile, coverage 20 km fingerprint, pyramids' lines, deep targets | versions; `in coverage:piece`, `in pyramids`, `Targets terrain-deep` (identity: the target list, `in deep-targets`) | changes: #832's `piece_coverage` |
+| terrain-hi | `TERRAIN_V`, codec, its built tiles, datasets, sources' zooms, "no hi tiles", its z10 tiles' deep mids | versions; `in coverage:piece`, `in datasets:terrain`, `in zoom-lines`, `in makes-hi`, `Targets terrain-deep` (its 16 z10 tiles, `Grain::Read`: their deep mids) | task #929: the one pyramid's rule; its z12 tiles over a deep target are its deep mid's means, so it waits for those targets alone |
+| terrain-deep | versions, tile, its band's tiles, datasets, sources' zooms | versions (incl. `terrain-hi`: its code's); `in coverage:piece`, `in datasets:terrain`, `in zoom-lines` | task #929: no base made from terrain-hi's inputs; it reads no built tile, so it waits for nothing |
+| terrain-lo | versions, codec, sources, z6 mids | `Targets terrain-hi` (mids), `in datasets:terrain` | same inputs. The `sources` line is undocumented today; the doc table gains it |
 | slope-hi | `SLOPE_V`, codec, hi pack, deep mids, tiles read | `Targets terrain-hi`, `terrain-lo` and `terrain-deep` `Grain::Tiles`, `Targets slope-deep` (mids), `terrain-root` (decision 2) | changes: the root becomes a declared read (today keyed, not waited) |
 | slope-deep | `SLOPE_V`, codec, tiles read | `Targets terrain-deep` `Grain::Tiles` (its own and its edge neighbours', task #952) | none |
 | slope-lo | versions, mids, terrain lo of it + edges + root | `Targets slope-hi` (mids), `Targets terrain-lo` (+ edges), `terrain-root` (decision 2) | changes: root a declared read; doc's "the z3 tile's lo pack" corrected to edges + root |

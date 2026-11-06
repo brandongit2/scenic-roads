@@ -121,9 +121,8 @@ makes the same bytes on every Mac.
     its own, the coarser: a GeoTIFF at its overview nearest half a pixel (at most its full
     resolution), a pyramid declared published at every zoom (`every_zoom`) at the tile's zoom up to its own, another pyramid at its own
     and only from z9 on (below, the next dataset serves: a z8 tile would read 16,384 of a z15
-    pyramid's tiles over the network, task #704), and never in the open sea: a pixel wholly sea in
-    the terrain's water, with those around it, is flattened to 0 m whatever it reads, so its points
-    skip such pyramids (task #706); a tile's detail at its own z6 row's middle latitude
+    pyramid's tiles over the network, task #704), at sea as on land (its tiles there read from the
+    NAS's store, a tile the server hasn't kept as none: crate::pyramids); a tile's detail at its own z6 row's middle latitude
     (`terrain_base::row_mid`), so its bytes are its own whichever tiles a job makes with it; heights
     brought to EGM2008 as the roads' are; where no dataset has data, sea level. The Terrarium tiles
     are read through this Mac's cache and the NAS's archives (fetched once, packed onto the NAS:
@@ -135,18 +134,15 @@ makes the same bytes on every Mac.
     least recently read let go first, so a run's memory is its working set's (task #929: kept for
     the run's length, a run over a continent's GLO-30 files grew by 1.3–2.7 GB a z3 tile, measured by
     `examples/pool_memory`). The sampling goes 16 tiles a chunk;
-    with the build pausing it stops before the next chunk (docs/pool.md §7.2, Resuming). Then the
-    water of the latest pass's basemap. Each is pinned in the key (`TERRAIN_V`, the datasets meeting
-    the target by their lines and zooms there, its tiles near the coverage, the digest of the water
-    the target reads), so a rebuild with the same key gives identical packs. The digests are worked
-    out once a basemap by the `terrain-water` job (z6 tiles, z10 targets' levels, assemblies), so a
-    new pass remakes only targets whose sea changed.
-  - **Water** (crate::terrain_water): the sea of the basemap's `water` layer at the tile's zoom,
-    4 × 4 samples a pixel (`terrain_polys`). The sea goes to 0, a partly-sea pixel blended by its
-    share. Lakes, ponds, reservoirs, docks and rivers keep the source's heights, its artefacts too
-    (the owner's, 5 Nov: the terrain follows its source over inland water): the terrain reads none
-    of them, so neither its bytes nor its keys change with them.
-  - **Below zero** is clamped to 0 after the water. Planned: polders keeping their depth.
+    with the build pausing it stops before the next chunk (docs/pool.md §7.2, Resuming). Each is
+    pinned in the key (`TERRAIN_V`, the datasets meeting the target by their lines and zooms there,
+    its tiles near the coverage), so a rebuild with the same key gives identical packs.
+  - **The source's heights, kept** (the owner's, 5 Nov): at sea (its bathymetry, its artefacts
+    too), over lakes, ponds, reservoirs, docks and rivers, and below 0 m (the Dead Sea, Death
+    Valley, polders). The terrain reads no water, so neither its bytes nor its keys change with
+    the basemap's. A tile pyramid's sea floor is data to the deepest trench
+    (`dem::generic::TILE_BELOW`, `roadcore::grid::MIN_ELEV`); only where no dataset has data is a
+    pixel sea level. The water's surface is the depth's and the map's (§3, The floor).
   - **Stored** (crate::terrain_codec; the owner's, 24 Oct): every terrain tile, at every zoom, is
     Terrarium RGB as lossless WebP (libwebp 1.6.0, `cwebp -lossless -z 6 -exact`, no metadata:
     crates/webpenc, the same bytes on every Mac, its golden hashes; libwebp's combined Shannon
@@ -224,7 +220,7 @@ makes the same bytes on every Mac.
   and waits for the depth). Each from the elevation pool as the Mercator terrain is, read at the
   level's detail, the tile pyramids left out (a Web Mercator pyramid has nothing past 85.05°); where
   no dataset has data, a fill mask's own filled value (`dem::generic::Sampler::fill_voids`); a gap
-  up to 3 pixels wide (GLO-30's file edges) its neighbours' (`polar::close_gaps`); else sea level; below zero to 0; no water flattened. **polar-terrain**, a run per block (a z4 tile of
+  up to 3 pixels wide (GLO-30's file edges) its neighbours' (`polar::close_gaps`); else sea level; below 0 m kept, as the Mercator terrain's. **polar-terrain**, a run per block (a z4 tile of
   the grid, "s/4/x/y", where the coverage meets its latitudes: `polar::built`): its cap tiles at the finest
   zoom sampled, each coarser level its children's means (a quarter with none, past the cap, sea
   level: no dataset is published at every zoom on this grid, so there is no relief to read), coded
@@ -395,7 +391,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   Each place's shading is worked out at its finest stored level alone and averaged above it, the
   depth's rule.
 - **The water** (`depth::build`, `terrain_water`'s `depth_polys`): the basemap's z6–14 (its z14
-  scaled at z15–16), the terrain's sea and lakes and also its rivers (class `river`). A pixel is
+  scaled at z15–16), its sea and lakes and also its rivers (class `river`). A pixel is
   water when they cover half of it or more, or when it's narrow water (some of it water and none of
   its eight neighbours half so: a channel under a pixel wide). A river's pixel takes only the
   sources declared `rivers` (their depths below the river's own surface: NONNA's mean water level
@@ -422,13 +418,16 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   across a dike or a spit; a lake without data of its own stays empty), the land a 3-pixel band of
   the nearest water's value (class none: a finer shoreline scaled up from it never meets a gap; the
   map and the floor leave it out); dries where above the chart's low water.
-- **The floor:** the depth lies on the terrain's own water, so the terrain less the depth is the
-  floor; the server serves it (`/tiles/terrain/…?floor=1`), no second terrain stored. The sea's
-  surface is 0 m; a lake's is the terrain's source there (§2, Water: not levelled), so a lake's floor
-  follows its source's surface, artefacts too; so does a river's (3DEP's hydro-flattening, where
-  its source has it). A pixel of narrow water is the terrain's blend of water and shore (§2, Terrain), so its floor is
-  rough. The map's toggle (Layers → Depth, "3D sea and lake floor"; web/src/depth.ts): the 3D
-  terrain from the floor, the terrain itself its surface (our MapLibre's `Map#setTerrainSurface`);
+- **The floor:** the depth is below the water's surface, so that surface less the depth is the
+  floor; the server serves it (`/tiles/terrain/…?floor=1`), and the surface (`?surface=1`), no
+  second terrain stored. The sea's surface is sea level, 0 m, where the water tiles say sea (their
+  share of sea, a pixel partly sea blended by its share: server `water::sea_shares`), whatever the
+  terrain reads there (the source's bathymetry: §2, Terrain); a lake's is the terrain's source there
+  (not levelled), so a lake's floor follows its source's surface, artefacts too; so does a river's
+  (3DEP's hydro-flattening, where its source has it). A pixel of narrow water is the terrain's
+  blend of water and shore, so its floor is rough. The map's toggle (Layers → Depth, "3D sea and
+  lake floor"; web/src/depth.ts): the 3D terrain from the floor, the water's surface its surface
+  (our MapLibre's `Map#setTerrainSurface`);
   the water draped on the floor under the depth's colour, a see-through copy of it drawn at the
   surface; the ferries' lines lifted to the surface and the water's and ferries' names standing on
   it (the elevation reference and anchor `surface`); roads and bridges keep their own heights.
@@ -497,11 +496,12 @@ drawn as a raster.
   metadata, read by our MapLibre's `draw_raster.ts`). Colours are in the URL (Settings → Map →
   Water), so a new colour needs no rebuild.
   - **Shaded by the terrain beneath:** the hill-shading is drawn over the water as over the land,
-    and the depth's colour and the coastal shading go under it. The sea is flat in the terrain, and
-    a lake where its source is (§2, Water), so under the shading methods that leave flat ground
-    clear (standard, combined, Igor: the default) they show their colour, and a lake its source
-    draws uneven shows that relief; basic and multidirectional light flat ground, and the water with
-    it. Water on a slope (falls, cascades, a river's steep reach) shows its relief.
+    and the depth's colour and the coastal shading go under it. The terrain keeps its source's
+    heights at sea and over lakes (§2, Terrain), so the shading shows the source's relief there: at
+    sea its bathymetry (AWS's, its artefacts too), a lake as its source draws it; where the source is
+    flat, under the shading methods that leave flat ground clear (standard, combined, Igor: the
+    default) the water shows its colour; basic and multidirectional light flat ground, and the water
+    with it. Water on a slope (falls, cascades, a river's steep reach) shows its relief.
     Where the terrain under a river steps (its source's survey lines, or two datasets meeting, as
     across the upper Niagara River), the step shows as a line across it.
   - **Whitewater** (`whitewater`, only with the water tiles; Settings → Map → Water, in the link's
@@ -549,7 +549,7 @@ drawn as a raster.
     (`lakefill::REACH`, Canada's box, which the step refuses a lake outside), so away from the NAS a
     region elsewhere draws its deeper zooms without it; the depth's water reads them as lakes
     (`lakefill::FilledWater`; `terrain_pack::water_source_pin` names the fill); the terrain reads
-    its sea alone (§2, Water).
+    none of it (§2, Terrain).
 
 ## 5. Worldwide road values (in the OSM pass)
 
@@ -717,18 +717,16 @@ What no job makes, kept on the NAS with how it was made. Scripts run in `dem/` (
 
 A job's key is its step version plus what it reads, mostly by content name. The ones that cascade:
 - **terrain-water (one):** the water source's pin (the latest basemap, and the lake fill) and what
-  each terrain and depth target reads of it; it fills the digests file (`work/water-idx/<hash16 of
-  the pin>`) when a target's digest is missing. A terrain target's digest
-  (`terrain_water::tiles_digest`) is over the polygons as the terrain reads them (`terrain_polys`:
-  the sea alone), so a lake's or a river's change changes none; a depth target's over all its
-  water, the rivers too (`depth_polys`). Until a target's digest exists its key is unknown and its
-  z3 tile waits.
+  each depth target reads of it; it fills the digests file (`work/water-idx/<hash16 of the pin>`)
+  when a target's digest is missing, keeping only the targets still wanted. A depth target's digest
+  (`terrain_water::tiles_digest`) is over all its water, the rivers too (`depth_polys`). Until a
+  target's digest exists its key is unknown and it waits. The terrain reads no water.
 - **pyramids-fill (a z6 tile a pyramid read tile by tile meets, making hi tiles or with terrain-deep
   targets; the lead's):** `pyramids::V` (bumped
   with any change to which tiles it wants), the tile, and what `pyramids::want` reads for it: the
   coverage as its terrain-hi run reads it (`agent::build::piece_coverage`: the tiles of its levels), the declared pyramids meeting it (their lines as
-  the terrain's keys name them), its water's digest (the open sea it spares) and its terrain-deep
-  targets; until the water or the declared datasets are read its key
+  the terrain's keys name them) and its terrain-deep targets (every native tile under their
+  pixels, at sea as on land); until the declared datasets are read its key
   is unknown and it waits (`agent::build::pyramids_key`). Nothing waits for it: a terrain job
   fetches what the store lacks. Its time is weighed by the tiles it fetched (`needs::PER_WORK`):
   a z6 tile whose tiles were stored already says nothing of the next one's.
@@ -739,15 +737,13 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   (`TerrainTiles::terrain_datasets`: their lines as the roads' keys name them, each dataset's
   regions' outlines read so `declared::cut_note` names the outlines inside the tile, never their
   files: task #832), each place's sources there with the zoom each reaches
-  (`terrain_zoom::key_lines`), the digest of its water (`agent::build::water_key`), its z10 tiles'
-  terrain-deep mids by content (`idents::terrain_deep_mids`, a declared read of terrain-deep:
+  (`terrain_zoom::key_lines`), its z10 tiles' terrain-deep mids by content (`idents::terrain_deep_mids`, a declared read of terrain-deep:
   it waits for those targets), and "no hi tiles" for a z6 tile making none. Until the datasets are
   read its key is unknown and it waits. A "none" z6 tile is keyed on the version and the tile
   (`none_piece_key`).
 - **terrain-deep (a z10 tile):** `TERRAIN_DEEP_V` and the codec, the tile, its band's code and the
   sources meeting it with the zoom each reaches there (`terrain_deep::target_key_lines`), its
-  levels' tiles (`agent::build::deep_coverage`), the pool's datasets meeting it and its water's
-  digest. It reads no built tile: no target of it waits for another. A z10 tile no target any more
+  levels' tiles (`agent::build::deep_coverage`) and the pool's datasets meeting it. It reads no built tile: no target of it waits for another. A z10 tile no target any more
   is keyed on the version and the tile (`none_deep_key`).
 - **Drops:** a target under any of these "none" keys (`agent::build::is_none_key`) drops its packs
   and reads nothing; its run notes a `drops` measure (`needs::DROPS`, docs/pool.md §7.7) so it is
@@ -755,7 +751,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   runs every step's drops first of the terrain, slope and tree cover work (`Plan::drops`), the
   forecast and build page showing them as drops.
 - **terrain-lo (an assembly):** its z6 tiles' mids by content ("-" for a z6 tile without one) and the
-  digest of its z6–8 water; `TERRAIN_LO_V` and the codec. "none" likewise (`none_lo_key`).
+  pool's datasets meeting it; `TERRAIN_LO_V` and the codec. "none" likewise (`none_lo_key`).
 - **slope-hi (a z6 tile):** `SLOPE_V` and the codec (`shade_codec::version`: the encoding, libwebp's
   version and level, the codes' constants), its z10 tiles' deep mids by content, and every terrain
   tile it reads itself (the z13 tiles taken in from those mids, with their tiles in the terrain deep

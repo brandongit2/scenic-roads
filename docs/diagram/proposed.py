@@ -161,8 +161,7 @@ def build(check=False):
     s_aws = d.src('terr', cy, 'AWS Terrain Tiles', ['Terrarium PNG · ~27 m at z12;', 'declared; kept raw, never edited'],
                   kept=['sources/aws-terrarium/', 'a z3 or z6 tile’s tiles packed'])
     s_glo = d.src('terr', s_aws.b + 8, 'Copernicus GLO-30', ['30 m, north of 59.5° N, where', 'AWS mixes datums; declared'], kept=['sources/fetched/glo30/'])
-    s_bw = d.src('base', s_glo.b + 8, 'The basemap’s water', ['the sea to 0 m, lakes as their', 'source has them; digests per', 'target (terrain-water, lead)'])
-    n_terr = d.card('terr', 'd1', cy, 'terrain', 'Rust', ['z9–12 within 20 km of the', 'coverage; repaired; GLO-30', 'north of 60° N; the sea', 'flattened; z8 subtrees', 'as tasks'],
+    n_terr = d.card('terr', 'd1', cy, 'terrain', 'Rust', ['z9–12 within 20 km of the', 'coverage; repaired; GLO-30', 'north of 60° N; the source’s', 'heights kept; z8 subtrees', 'as tasks'],
                     [(['layers/terrain/ hi'], 'packs · Terrarium PNG'), (['work/terrain-mid/'], 'z9 means')],
                     scope='z6', shared=True, task=True, fig='median 24 s a tile, p90 91 s; 6.8 GB p90')
     n_tlo = d.card('terr', 'd2', cy + 34, 'terrain, zoomed out', 'Rust', ['z3–8 from its z6 tiles’ mids;', 'the root (z0–2) once none', 'is left'],
@@ -177,9 +176,8 @@ def build(check=False):
     b_slope = d.layer('terr', max(b_cont.b + 8, n_slope.y), 'Slope tint', ['colour per quarter, averaged'])
     p_s = d.pill('terr', b_slope.my, ['/tiles/slope'], note='z12 made when asked')
     d.arrow('terr', (s_aws.r, n_terr.y + 18), (n_terr.l, n_terr.y + 18))
-    xt = n_terr.l - 12   # GLO-30 and the water join the terrain step on one trunk
-    for k, sb, yin in [('terr', s_glo, n_terr.y + 46), ('base', s_bw, n_terr.y + 74)]:
-        d.arrow(k, (sb.r, sb.y + 18), (xt, sb.y + 18), (xt, yin), (n_terr.l, yin))
+    xt = n_terr.l - 12   # GLO-30 joins the terrain step on a trunk of its own
+    d.arrow('terr', (s_glo.r, s_glo.y + 18), (xt, s_glo.y + 18), (xt, n_terr.y + 46), (n_terr.l, n_terr.y + 46))
     d.arrow('terr', (n_terr.r, n_tlo.y + 18), (n_tlo.l, n_tlo.y + 18))
     d.arrow('terr', (n_tlo.r, n_slope.y + 18), (n_slope.l, n_slope.y + 18))
     d.arrow('terr', (n_slope.l + 40, n_slope.b), (n_slope.l + 40, n_slo.t))
@@ -188,7 +186,7 @@ def build(check=False):
     d.to_layer('terr', p_t, b_terr)
     d.arrow('terr', (p_t.r, p_t.my + 8), (b_cont.l - 12, p_t.my + 8), (b_cont.l - 12, b_cont.my), (b_cont.l, b_cont.my))
     d.to_layer('terr', p_s, b_slope)
-    y1 = max(n_terr.b, n_tlo.b, n_slo.b, b_slope.b, s_bw.b) + PAD
+    y1 = max(n_terr.b, n_tlo.b, n_slo.b, b_slope.b, s_glo.b) + PAD
     d.lane('TERRAIN · SLOPE', y0, y1)
     l4_bottom = y1
 
@@ -202,7 +200,7 @@ def build(check=False):
                    [(['layers/depth/ hi'], 'packs')], scope='z6', shared=True, fig='median 45 s, p90 15 min; 2.7 GB p90')
     n_dlo = d.card('terr', 'd2', cy, 'depth, zoomed out', 'Rust', ['z3 tiles within 200 nmi of', 'the coverage a source meets:', 'z8 from z9, else composed;', 'z3–7 means'],
                    [(['layers/depth/ lo'], 'packs')], scope='z3', shared=True, fig='median 66 s, p90 22 min; 2.1 GB p90')
-    p_d = d.pill('terr', cy + 30, ['/tiles/depth', '/tiles/terrain?floor=1'], note=['the floor: terrain', 'less the depth'])
+    p_d = d.pill('terr', cy + 30, ['/tiles/depth', '/tiles/terrain?floor=1'], note=['the floor: the water’s', 'surface less the depth'])
     b_d = d.layer('terr', 0, 'Depth · contours', ['nautical blues on the floor’s', 'shading; sources named'], cy=p_d.my)
     d.arrow('terr', (c_dg.r, n_dep.y + 18), (n_dep.l, n_dep.y + 18))
     d.arrow('base', (s_dw.r, s_dw.y + 18), (n_dep.l - 12, s_dw.y + 18), (n_dep.l - 12, n_dep.y + 46), (n_dep.l, n_dep.y + 46))
