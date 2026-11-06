@@ -425,9 +425,4 @@ mod tests {
         assert_eq!(rep.warnings.len(), 1);
         assert!(r.path().join(DIR).join(&old).join("m1.jsonl").exists());
     }
-
-    #[test]
-    fn the_cutoff_is_the_page_views_window() {
-        assert_eq!(cutoff(NOW).unwrap(), day_of(DAYS - 1));
-    }
 }

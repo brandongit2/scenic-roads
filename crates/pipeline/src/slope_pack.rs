@@ -1542,19 +1542,38 @@ mod tests {
     /// mid; each pixel of a parent the mean of the four stored beneath it where its children cover it
     /// (the deep detail reaching z6), else its own terrain's shading; the same bytes as one run of the
     /// whole pyramid. Made again, the same packs; the deep terrain gone, its deep pack dropped.
+    /// Made on 8 threads, the same bytes as on 2 (task #948 review: a target's work runs on its
+    /// job's grant as it begins, crate::control::on_grant, a pool that wide, which a re-grant
+    /// changes between targets; its own test before #969, a third run of the two).
     #[test]
     fn a_z6_tile_stores_every_level_down_to_its_deep_terrain() {
+        // (Slope-deep's and slope-hi's outputs made on a pool of `threads`.)
+        let made = |root: &std::path::Path, threads: usize| {
+            let mut out =
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(&root.join("root")), &root.join("scratch"))
+                    .unwrap();
+            terrain(&mut out, true);
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let r = pool.install(|| {
+                let r = build_deep(&mut out, (448, 256), &|_, _, _| {}).unwrap();
+                out.save().unwrap();
+                build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
+                r
+            });
+            out.save().unwrap();
+            (out, r)
+        };
+        let bytes = |out: &Out| {
+            [deep_logical(448, 256), deep_mid_logical(448, 256), hi_logical(28, 16), mid_logical(28, 16)]
+                .map(|n| std::fs::read(out.path(out.get(&n).unwrap()).unchecked_path()).unwrap())
+        };
         let d = tempfile::tempdir().unwrap();
-        let mut out =
-            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
-                .unwrap();
-        terrain(&mut out, true);
-        let r = build_deep(&mut out, (448, 256), &|_, _, _| {}).unwrap();
+        let (mut out, r) = made(d.path(), 8);
         assert_eq!((r.deep_packs, r.deep_tiles, r.deep_dropped), (1, 6, 0), "{r:?}");
-        out.save().unwrap();
         assert!(out.get(&deep_mid_logical(448, 256)).is_some());
-        build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
         assert!(out.get(&deep_logical(448, 256)).is_some() && out.get(&hi_logical(28, 16)).is_some());
+        let two = tempfile::tempdir().unwrap();
+        assert!(bytes(&made(two.path(), 2).0) == bytes(&out), "the same bytes on 2 threads as on 8");
         let s = ManifestTiles::new(&out, "slope");
         let at = |z: u8, x: u32, y: u32| s.get(z, x, y).unwrap().map(|b| roadcore::shade::decode(&b).unwrap());
         for (z, x, y) in [(14, 7168, 4096), (13, 3585, 2049), (12, 1792, 1024), (12, 1799, 1031), (9, 224, 128)] {
@@ -1668,30 +1687,6 @@ mod tests {
         // No slope-deep target any more: its deep mid goes too.
         assert_eq!(drop_deep(&mut out, (448, 256)), 1);
         assert!(out.get(&deep_mid_logical(448, 256)).is_none());
-    }
-
-    /// Task #948 review: a target's work runs on its job's grant as it begins (crate::control::
-    /// on_grant: a pool that wide), which a re-grant changes between targets: slope-deep's and
-    /// slope-hi's outputs are the same bytes on 2 threads as on 8.
-    #[test]
-    fn a_z6_tiles_packs_are_the_same_bytes_at_2_threads_and_at_8() {
-        let made = |threads: usize| {
-            let d = tempfile::tempdir().unwrap();
-            let mut out =
-                Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
-                    .unwrap();
-            terrain(&mut out, true);
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-            pool.install(|| {
-                build_deep(&mut out, (448, 256), &|_, _, _| {}).unwrap();
-                out.save().unwrap();
-                build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
-            });
-            out.save().unwrap();
-            let names = [deep_logical(448, 256), deep_mid_logical(448, 256), hi_logical(28, 16), mid_logical(28, 16)];
-            names.map(|n| std::fs::read(out.path(out.get(&n).unwrap()).unchecked_path()).unwrap())
-        };
-        assert!(made(2) == made(8));
     }
 
     /// Task #928: a batch's targets (`DeepBatch`) come out as each made alone (`build_deep`); the

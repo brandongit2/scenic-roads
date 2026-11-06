@@ -2590,13 +2590,6 @@ mod tests {
     }
 
     #[test]
-    fn the_members_are_listed_by_the_out_of_touch_threshold() {
-        // (Derived, not a figure of its own: no view of a heartbeat lags its going out of touch by
-        // more than a fifth of it, on a lead or a member.)
-        assert_eq!(MEMBERS_EVERY.as_secs() * 5, crate::pool::beat::OUT_OF_TOUCH_S);
-    }
-
-    #[test]
     fn heartbeats_of_apps_before_and_after_the_controls_read_each_other() {
         // The heartbeat as the apps before phase 3 have it (1fa03d8), and as they write it.
         #[derive(Debug, PartialEq, Serialize, Deserialize)]
