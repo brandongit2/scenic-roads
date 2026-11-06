@@ -219,9 +219,9 @@ docs/formats.md has the bytes. In brief:
 - **Helper Macs** (docs/pool.md): `bldprep` and `bldtiles` are shared steps
   (`agent::steps::SHARED`); a hand-off saves only its tiles' files (`coord::saves`). `bldprep` needs
   the NAS (up to ~3 GB of parquet a tile). Memory is learned per target (`SCENIC_COSTS`, "bldprep
-  6/x/y", "bldtiles 6/x/y"); first guesses (`agent::bld_peak`): 0.3 GB + 160 B a row read for
-  `bldprep`, 0.25 GB + 280 B a building of the largest z8 tile (taken as two fifths of the rows) for
-  `bldtiles`.
+  6/x/y", "bldtiles 6/x/y"); a target is offered by the rows its tile's sources hold
+  (`needs::OFFERED_BY`), each run notes the rows it read, and a target not run yet is sized by its
+  step's fit over them, else its neighbours' or its step's runs (docs/pool.md §7.7).
 - **Tasks** (docs/workers.md §3, `pipeline::bld::task`): under the agent, a `bldtiles` job offers
   some of each tile's z8 tiles as tasks of kind `bldtile` while workers that take them are around
   (one per worker, three at once, from the far end of the tile's list). The task's files, cut on the
@@ -230,8 +230,10 @@ docs/formats.md has the bytes. In brief:
   `bldtile`, on a Mac via `scenic run-task`) writes the z8 tile's z14 tiles, field
   levels 14–9, level-8 planes and summary; the job puts them into the pack in the z8 tile's turn. In
   its turn, a z8 tile not taken waits 30 s for a faster worker, then is made here; one out is waited
-  for while the worker's pace says it'll beat the job, else raced. Memory first guessed from its
-  files and the model above; a worker's measure replaces it (`bldtile 8/x/y`).
+  for while the worker's pace says it'll beat the job, else raced. Memory: its z8 tile's last
+  measure (`bldtile 8/x/y`), else what the kind's measured runs say (its neighbours', a fit, their
+  90th percentile), never under its files (`task::Cut::files_mb`); a kind never measured goes at
+  its files, and a worker running out of memory says what it took.
 - `bldprep` isn't a task: it reads the NAS's parquet.
 - An app that predates these steps drops their records; `Keys` keeps records it doesn't know
   (`other`).

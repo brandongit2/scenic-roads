@@ -576,23 +576,7 @@ static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::n
 /// deleted, `meta`) over its time, its memory: the clean-up's NAS weight (crate::budget::nas) as the
 /// coordinator weighs it from then on, measured, never guessed (docs/pool.md §7.7, task #451).
 pub fn note_cost() {
-    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
-    let secs = STARTED.get().map_or(0, |t| t.elapsed().as_secs());
-    let line = serde_json::json!({
-        "unit": crate::coord::cost_key(STEP, STEP),
-        "peak_mb": crate::sys::group_peak() >> 20,
-        "secs": secs,
-        "v": crate::coord::cost_version(STEP),
-        "sizes": crate::costin::take(),
-    });
-    let r = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&p)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
-    if let Err(e) = r {
-        eprintln!("gc: noting what it cost: {e}");
-    }
+    crate::agent::jobs::note_cost(STEP, STEP, STARTED.get().map_or(0, |t| t.elapsed().as_secs()));
 }
 
 /// A safe point between folders: asked to stop (the build pausing, or the agent yielding the NAS

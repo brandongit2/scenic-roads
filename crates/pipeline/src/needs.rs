@@ -34,7 +34,13 @@
 //!   job's targets are counted to the batch length by and the forecast sums (task #433: by the 90th
 //!   percentile a z6 tile was 1151 s against a mean of 363, so every `unit` job carried one z6 tile and
 //!   paid the job's setup for it alone; depth 265 against 131).
-//! - **Table**: the caller's guess, when nothing of the step was measured.
+//! - **Table**: the caller's guess, when nothing of the step was measured (a cold start: the
+//!   coordinator sizes it from the step's runs of its latest earlier way, `Book::older_mem`, else
+//!   its offered guess; with neither it runs alone, crate::coord::sched).
+//!
+//! A step offered by an input measure (`OFFERED_BY`: the 3D buildings by their rows) has no memory
+//! guess: what its caller passes as the guess is that measure of the target, the size its fit over
+//! that measure reads for a target not run yet.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -55,6 +61,18 @@ pub const MAX_ERR: f64 = 0.5;
 /// The steps whose caller's guess scales with the target (a z6 tile's extract; candidates read the
 /// same extract) and so comes before the step's prior while no fit is good.
 pub const GUESS_FIRST: [&str; 2] = ["unit", "pois"];
+
+/// The steps whose plan offers each target by an input measure of it rather than a memory guess,
+/// with the measure (crate::costin): the 3D buildings by the rows their tile's sources hold
+/// (crate::bld::sources::Sources::rows_for, the plan's "bldprep-rows" input). Their runs note the
+/// rows they read (bldprep the sources' rows of its tile; bldtiles its normalized files', at most
+/// those), so the step's fit over them predicts a target from its offer before it runs.
+pub const OFFERED_BY: [(&str, &str); 2] = [("bldprep", "rows"), ("bldtiles", "rows")];
+
+/// The measure `step`'s targets are offered by (`OFFERED_BY`), if any.
+pub fn offered_by(step: &str) -> Option<&'static str> {
+    OFFERED_BY.iter().find(|(s, _)| *s == step).map(|(_, m)| *m)
+}
 
 /// The steps whose job opens one halo of base packs for all its targets (task #260: `pack`, a
 /// z6 tile's map tiles together; task #381: `lo`, a pass of the low zooms, its z3 tiles' owners'): the
@@ -223,6 +241,9 @@ impl Fit {
 struct Model {
     fits: Vec<Fit>,
     prior: Option<u64>,
+    /// (Memory alone.) The step's latest earlier way (`cost_version`) and its runs' 90th percentile
+    /// (`Book::older_mem`).
+    older: Option<(u32, u64)>,
     near: Option<std::sync::Arc<Near>>,
     /// (Time alone.) The step's runs by their source's time (`BySource`), and the Macs that have
     /// runs of it (`Book::secs_for`).
@@ -802,7 +823,8 @@ impl<'a> Book<'a> {
         let near = (m == Measure::Mem && !GUESS_FIRST.contains(&step))
             .then(|| std::sync::Arc::new(Near::of_measures(self.places(step))));
         let (by_source, macs) = if m == Measure::Secs { self.by_source(step) } else { Default::default() };
-        let md = Model { fits, prior: self.prior_of(step, m), near, by_source, macs };
+        let older = if m == Measure::Mem { self.older_of(step) } else { None };
+        let md = Model { fits, prior: self.prior_of(step, m), older, near, by_source, macs };
         cache.0.lock().unwrap_or_else(|e| e.into_inner()).1.insert(key, md.clone());
         md
     }
@@ -949,25 +971,55 @@ impl<'a> Book<'a> {
         p90(vals)
     }
 
-    /// The fitted `m` of `target` of `step` (None: no good fit over a size it has).
-    fn fitted(&self, md: &Model, key: &str, threads: u32) -> Option<u64> {
-        self.fitted_by(md, key, threads).map(|(p, _)| p)
+    /// What the latest earlier way of `step` (`cost_version`) measured `target` at (MB), for a cold
+    /// start after its way changed (task #979): that way's runs' 90th percentile, or the target's
+    /// own run of it, the larger; None when no run of an earlier way is kept. Floors of an earlier
+    /// way stay out (one held malloc's cached freed blocks, task #499), and so do drops.
+    pub fn older_mem(&self, step: &str, target: &str) -> Option<u64> {
+        let (way, p90) = self.model(step, Measure::Mem).older?;
+        let own =
+            self.costs.get(&cost_key(step, target)).filter(|c| c.v == way && !is_drop(c)).map_or(0, |c| c.peak_mb);
+        Some(p90.max(own))
     }
 
-    /// `fitted`, with the fit's held-out median error.
-    fn fitted_by(&self, md: &Model, key: &str, threads: u32) -> Option<(u64, f64)> {
+    /// `older_mem`'s way and its runs' 90th percentile.
+    fn older_of(&self, step: &str) -> Option<(u32, u64)> {
+        let v = cost_version(step);
+        let of = |k: &String, c: &Cost| step_of_key(k) == step && c.v < v && !is_drop(c) && c.peak_mb > 0;
+        let way = self.costs.iter().filter(|(k, c)| of(k, c)).map(|(_, c)| c.v).max()?;
+        p90(self.costs.iter().filter(|(k, c)| of(k, c) && c.v == way).map(|(_, c)| c.peak_mb).collect())
+            .map(|p| (way, p))
+    }
+
+    /// The fitted `m` of `target` of `step` (None: no good fit over a size it has).
+    fn fitted(&self, md: &Model, key: &str, threads: u32) -> Option<u64> {
+        self.fitted_by(md, key, threads, None).map(|(p, _)| p)
+    }
+
+    /// `fitted`, with the fit's held-out median error; `offered`, the measure the target was
+    /// offered by and its size (`OFFERED_BY`), where its own run doesn't say it.
+    fn fitted_by(&self, md: &Model, key: &str, threads: u32, offered: Option<(&str, u64)>) -> Option<(u64, f64)> {
         if !md.fits.iter().any(Fit::good) {
             return None;
         }
-        // (Its sizes: as its own earlier run measured them, else its area.)
-        let sizes = sizes_of(key, self.costs.get(key));
+        // (Its sizes: as its own earlier run measured them, else its area; the measure it was
+        // offered by where its run doesn't say it.)
+        let mut sizes = sizes_of(key, self.costs.get(key));
+        if let Some((m, x)) = offered.filter(|o| o.1 > 0) {
+            sizes.entry(m.to_string()).or_insert(x as f64);
+        }
         let t = (threads > 0).then_some(threads as f64);
         md.fits.iter().filter(|f| f.good()).find_map(|f| sizes.get(&f.size).map(|&x| (f.at(x, t).ceil() as u64, f.err)))
     }
 
     /// The memory (MB) a job of `step` for `target` needs, and where it came from: `need`'s, alone
-    /// (what the picks read).
+    /// (what the picks read). `guess`: the caller's first guess (MB); for a step offered by an input
+    /// measure (`OFFERED_BY`), that measure of the target, its memory guess none.
     pub fn mem(&self, step: &str, target: &str, threads: u32, guess: u64) -> (u64, From) {
+        let (guess, offered) = match offered_by(step) {
+            Some(m) => (0, Some((m, guess))),
+            None => (guess, None),
+        };
         let key = cost_key(step, target);
         let floor = self.current_floor(step, &key);
         if let Some(c) = self.costs.get(&key).filter(|c| c.v >= cost_version(step)) {
@@ -980,7 +1032,7 @@ impl<'a> Book<'a> {
         // (By its place where that's judged good, unless a good fit over a size it has erred less
         // on the runs held out.)
         let near = md.near.as_ref().filter(|n| n.good()).and_then(|n| Some((n.of(&key)?, n.err)));
-        let fit = self.fitted_by(&md, &key, threads);
+        let fit = self.fitted_by(&md, &key, threads, offered);
         match (near, fit, md.prior) {
             (Some((p, e)), f, _) if f.is_none_or(|f| e <= f.1) => (p, From::Near),
             (_, Some((p, _)), _) => (p, From::Fit),
@@ -2068,6 +2120,50 @@ mod tests {
         assert_eq!(b.need("pois", "6/40/1", 0, 777).secs, None);
         // (Terrain runs at v3: a v0 floor says nothing of it.)
         assert_eq!(b.mem("terrain", "6/50/1", 0, 1500), (1500, From::Table));
+    }
+
+    /// Task #979: a step offered by its rows (`OFFERED_BY`) is fitted by them, a target not run yet
+    /// by the rows it's offered with; its guess is no memory (none of the step measured: 0, a cold
+    /// start with nothing of its own).
+    #[test]
+    fn a_target_offered_by_its_rows_is_fitted_by_them() {
+        let v = cost_version("bldprep");
+        let mut costs = BTreeMap::new();
+        // (300 MB and 100 B a row; one row of z6 tiles, all of one area, the target asked far from
+        // them.)
+        for i in 1..=40u64 {
+            let rows = i * 1_000_000;
+            let c = Cost { v, ..cost(300 + rows * 100 / 1_000_000, 60, &[("rows", rows)]) };
+            costs.insert(cost_key("bldprep", &format!("6/{i}/0")), c);
+        }
+        let b = Book::new(&costs);
+        assert!(b.fits("bldprep", Measure::Mem).iter().any(|f| f.good() && f.size == "rows"));
+        let (small, from) = b.mem("bldprep", "6/63/63", 0, 2_000_000);
+        let (big, _) = b.mem("bldprep", "6/63/63", 0, 30_000_000);
+        assert_eq!(from, From::Fit);
+        assert!(small < big && (500..=700).contains(&small) && (3300..=3800).contains(&big), "{small} {big}");
+        // (The rows not memory: nothing of bldtiles measured, no guess.)
+        assert_eq!(b.mem("bldtiles", "6/63/63", 0, 30_000_000), (0, From::Table));
+    }
+
+    /// Task #979: a cold start after its step's way changed is sized by its runs of the latest
+    /// earlier way (their 90th percentile, or its own run of it, the larger), floors and older ways
+    /// left out; none without such a run.
+    #[test]
+    fn a_new_ways_cold_start_is_sized_by_its_earlier_ways_runs() {
+        let v = cost_version("terrain-hi");
+        let mut costs = BTreeMap::new();
+        for i in 1..=10u64 {
+            costs.insert(cost_key("terrain-hi", &format!("6/{i}/1")), Cost { v: v - 1, ..cost(i * 100, 60, &[]) });
+        }
+        costs.insert(cost_key("terrain-hi", "6/20/1"), Cost { v: v - 2, ..cost(50_000, 60, &[]) });
+        let floors = BTreeMap::from([(cost_key("terrain-hi", "6/30/1"), Floor { mb: 40_000, alone: true, v: v - 1 })]);
+        let b = Book::with(&costs, Some(&floors), None);
+        assert_eq!(b.older_mem("terrain-hi", "6/40/1"), Some(900), "the 90th percentile");
+        assert_eq!(b.older_mem("terrain-hi", "6/10/1"), Some(1000), "its own run");
+        assert_eq!(b.older_mem("terrain-hi", "6/20/1"), Some(900), "an older way's: nothing");
+        assert_eq!(b.mem("terrain-hi", "6/40/1", 0, 0).1, From::Table, "still a cold start");
+        assert_eq!(Book::new(&BTreeMap::new()).older_mem("terrain-hi", "6/1/1"), None);
     }
 
     /// One dense z6 tile measured doesn't set the others': with no good fit, a z6 tile's extract-size guess

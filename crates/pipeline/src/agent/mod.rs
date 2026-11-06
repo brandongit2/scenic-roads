@@ -650,31 +650,6 @@ pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
     }
 }
 
-/// The memory a step's job is expected to take (MB) before one has run for its target and said
-/// (`SCENIC_COSTS`): its row's in the steps table. (Z6 tiles and candidates are offered by their
-/// extract's size, crate::coord::job_peak; terrain by its z3 tile's size, `terrain_peak`; the 3D
-/// buildings by their rows, `bld_peak`.)
-fn first_peak(step: &str) -> u64 {
-    steps::mem_mb(step)
-}
-
-/// The memory a 3D buildings job of a z6 tile is expected to take (MB), before one has said, by the
-/// rows of the row groups its normalized file is read from (`rows`: crate::bld::sources):
-/// `bldprep_peak`, crate::bld::bldtiles_peak.
-fn bld_peak(step: &str, rows: u64) -> u64 {
-    match step {
-        "bldprep" => bldprep_peak(rows),
-        _ => crate::bld::bldtiles_peak(rows),
-    }
-}
-
-/// `bldprep`'s, read in Rust (task #579, the Mac mini, 23 Oct): peak footprints of 0.85 GB for
-/// 6/53/21's 55 k rows kept, 1.9 GB for 6/10/24's 5.8 M, 3.1 GB for Paris's 15.3 M and 5.6 GB for
-/// Kantō's 30.3 M: about 1.0 GB and 150 B a row, given a quarter more.
-pub const fn bldprep_peak(rows: u64) -> u64 {
-    1300 + rows * 190 / (1 << 20)
-}
-
 /// The memory a terrain-hi run of `z6` tiles is expected to take (MB), before one has said: a z6
 /// tile's levels at a time (crate::terrain_pack::piece_peak_mb), and each z6 tile's quarters (~20 MB)
 /// and its z10 tiles' deep mids taken in (`DEEP_MIDS_MB`); beside them, the z6 tile before's uploads
@@ -5497,10 +5472,9 @@ impl Agent {
 
     /// The memory slot `k`'s job counts for (MB): what it holds, or the peak its lead packed it at
     /// (`Slot::peak_mb`: crate::coord::Grant::peak_mb, its targets' measure), the larger; the same on
-    /// the lead and a member, the figure the lead's packing counts it at (task #970: a member had
-    /// counted its step's first guess, bldtiles' sized for Kantō's 30 M rows, 14 GB a job beside its
-    /// runs' 3.4 GB). A job of no such grant (an older lead's, or one taken over from an older
-    /// agent) counts at what it holds; the memory guard and brake hold either way.
+    /// the lead and a member, the figure the lead's packing counts it at (task #970). A job of no
+    /// such grant (an older lead's, or one taken over from an older agent) counts at what it holds;
+    /// the memory guard and brake hold either way.
     fn need_mb(&self, k: usize) -> u64 {
         self.held_mb(k).unwrap_or(0).max(self.slots[k].peak_mb.unwrap_or(0))
     }
@@ -11358,9 +11332,8 @@ mod tests {
 
     /// Task #970: a member's running job counts at the peak its grant was packed at (`Slot::peak_mb`,
     /// crate::coord::Grant::peak_mb) or what it holds, the larger: its growth to come reserved off
-    /// the room for a new job, kept across an agent's hand-over, gone with its lease. Never its
-    /// step's first guess (bldtiles': sized for Kantō's 30 M rows, 14 GB), which reserved 13 GB
-    /// beside a job holding 1 GB; a job of no such grant (an older lead's) counts at what it holds.
+    /// the room for a new job, kept across an agent's hand-over, gone with its lease; a job of no
+    /// such grant (an older lead's) counts at what it holds.
     #[test]
     fn a_running_job_counts_at_its_grants_peak_not_its_steps_first_guess() {
         let d = tempfile::tempdir().unwrap();
@@ -11389,7 +11362,7 @@ mod tests {
         a.slots[0].lease = Some(Held::Leased { lease: 7, dir: d.path().join("out") });
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let room = a.build_room();
-        assert!(room > 4 << 10 && crate::agent::steps::mem_mb("bldtiles") > 13 << 10);
+        assert!(room > 4 << 10);
         // (Granted at 3.4 GB, holding nothing sampled yet: all of it reserved for its growth.)
         a.slots[0].peak_mb = Some(3400);
         let cap = a.capacity(&cond);
@@ -11619,24 +11592,6 @@ mod tests {
         a.trim_slots();
         assert_eq!(a.slots.len(), SLOTS);
         assert!(a.slots.iter().all(|s| s.running.is_none() && s.lease.is_none()));
-    }
-
-    #[test]
-    fn a_3d_buildings_job_is_offered_by_the_rows_it_reads() {
-        // Task #579's reads on the Mac mini: Paris's 6/32/22 (15.3 M rows kept of its row groups'
-        // 16.5 M) peaked at 3.1 GB, Kantō's 6/56/25 (30.3 M) at 5.6 GB. B5's pilot raised New
-        // York's 14.6 M records with the field in 7.9 GB, Toronto's 9.5 M in 3.8 GB, Kantō's 30.3 M
-        // in 10.2 GB. Offered above each.
-        assert_eq!((bld_peak("bldprep", 16_505_246), bld_peak("bldtiles", 16_505_246)), (4290, 8725));
-        assert!(
-            bld_peak("bldprep", 15_288_533) > 2965
-                && bld_peak("bldprep", 30_321_333) > 5308
-                && bld_peak("bldtiles", 14_611_533) > 7889
-                && bld_peak("bldtiles", 9_496_532) > 3843
-                && bld_peak("bldtiles", 30_320_309) > 10200
-        );
-        // A tile reading nothing (a GHSL tile alone): its fixed part.
-        assert_eq!((bld_peak("bldprep", 0), bld_peak("bldtiles", 0)), (1300, 1800));
     }
 
     /// A job of the lead's own that fails ends its lease as failed (`finish_failed`): its target

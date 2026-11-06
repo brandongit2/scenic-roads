@@ -70,6 +70,13 @@ pub fn checked(step: &str, targets: &[String]) -> Result<(String, Vec<String>)> 
     Ok((step, targets.iter().filter(|t| seen.insert(t.as_str())).cloned().collect()))
 }
 
+/// Notes what a redo's run cost since `t0` (crate::agent::jobs::note_cost, in a job alone), under
+/// the step's own key ("redo redo", as GC's: each ask's targets are new, so its memory is its
+/// step's runs', crate::needs): a records-only step measured as any (task #979).
+pub fn note_cost(t0: std::time::Instant) {
+    super::jobs::note_cost(STEP, STEP, t0.elapsed().as_secs());
+}
+
 /// A redo job's done target for `step`'s `target`.
 pub fn done_target(step: &str, target: &str) -> String {
     format!("{step} {target}")

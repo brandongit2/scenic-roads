@@ -4906,9 +4906,11 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
         let sum = landing
             .after(out, |out| pipeline::bld::job::build_later(out, &cov, t, offload.as_ref()))
             .map_err(|e| pipeline::control::stop_if_paused("bldtiles", e))?;
-        // (Its inputs' measures: the buildings and parts read, drawn or not.)
+        // (Its inputs' measures: the buildings and parts read, drawn or not, and the rows they are
+        // together, the measure its targets are offered by: pipeline::needs::OFFERED_BY.)
         pipeline::costin::set("buildings", sum.buildings + sum.outside);
         pipeline::costin::set("parts", sum.parts);
+        pipeline::costin::set("rows", sum.buildings + sum.outside + sum.parts);
         let said = format!("bldtiles {}: {}", t.slash(), serde_json::to_string(&sum)?);
         landing.then(out, "bldtiles", &t.slash(), said, c)?;
     }
@@ -5180,7 +5182,7 @@ fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
     let c = pipeline::bld::task::cut(&files, &cov, t, a, &sites, &dir)?;
     println!(
         "{}",
-        serde_json::json!({ "tile": format!("8/{}/{}", a.0, a.1), "bytes": c.bytes, "records": c.records, "mem_mb": c.mem_mb(), "secs": t0.elapsed().as_secs_f64() })
+        serde_json::json!({ "tile": format!("8/{}/{}", a.0, a.1), "bytes": c.bytes, "records": c.records, "files_mb": c.files_mb(), "secs": t0.elapsed().as_secs_f64() })
     );
     Ok(())
 }

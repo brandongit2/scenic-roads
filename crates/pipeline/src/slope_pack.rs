@@ -283,7 +283,7 @@ pub type Made = (u8, u32, u32, Vec<u8>);
 /// `done` gives a quadrant for (Some: none or one) isn't made: its quadrant as made before, asked
 /// for once.
 ///
-/// Its parallelism, which its memory bound counts (`working_bytes`): the children of the tiles
+/// Its parallelism: the children of the tiles
 /// within `PAR_LEVELS` of the call's tile are made in parallel (on `pool`'s threads), each tile
 /// below those levels' subtree on one thread alone, depth first, with no parallel call inside it,
 /// so a thread works on one subtree's chain at a time. Its values don't depend on the threads: a
@@ -361,33 +361,6 @@ impl Pyramid<'_> {
         (z > 0).then_some(q)
     }
 }
-
-/// The most memory (bytes) a pyramid's build holds working, beyond the tiles it stores (`out`) and
-/// what `own` keeps, from its bounds: a call's tile `top`, its tiles to `bottom`. Each thread of
-/// `on_pool` (at most `THREADS`) works on one chain at a time below the parallel
-/// levels (`PAR_LEVELS`), each tile of it holding its children's quadrants (4), and one tile's
-/// making (`MAKING`); the tiles of the parallel levels are each made once, each holding its
-/// children's quadrants while it waits.
-pub const fn working_bytes(top: u8, bottom: u8) -> u64 {
-    chains_bytes(top + PAR_LEVELS, bottom) + tiles_below(0, PAR_LEVELS - 1) * 4 * QUADRANT
-}
-
-/// The most memory (bytes) `pool`'s threads hold working on subtrees from zoom `from` to
-/// `bottom`, one each, one after another (`working_bytes` below its parallel levels, `tops`):
-/// each tile of a thread's chain its children's quadrants (4), and one tile's making (`MAKING`).
-const fn chains_bytes(from: u8, bottom: u8) -> u64 {
-    let chain = if bottom + 1 > from { (bottom + 1 - from) as u64 } else { 0 };
-    THREADS as u64 * (chain * 4 * QUADRANT + MAKING)
-}
-
-/// A tile's making at most (bytes): `compose`'s values, coverage and own level's pixels and the
-/// pixels it returns; `own`'s Horn border (`horn`) and the five terrain tiles it reads (its own
-/// and its edge neighbours', in metres); the codes `encode` takes. (libwebp's own working memory
-/// isn't counted.)
-const MAKING: u64 = 3 * PX_TILE + (TS * TS) as u64 + ((TS + 2) * (TS + 2) * 4) as u64 + 5 * (TS * TS * 4) as u64 + RAW;
-
-/// A tile's pixels (256 × 256), in bytes.
-const PX_TILE: u64 = (TS * TS * std::mem::size_of::<Px>()) as u64;
 
 /// A tile as stored and its quadrant for its parent, from its pixels at full precision: inside a
 /// job a parent is the mean of its children's values, coded once, as itself; only where a job hands
@@ -544,56 +517,6 @@ fn read_whole(path: store::nasfs::Loc<'_>) -> std::io::Result<Vec<u8>> {
         store::nasfs::Loc::Local(p) => open_retrying(p, &|p| within(p, MID_DEADLINE, read_file), &mid_waits()),
         store::nasfs::Loc::Nas(p) => open_retrying(p, &|p| within(p, MID_DEADLINE, read_nas), &mid_waits()),
     }
-}
-
-/// The raw bytes of a tile's codes (RGB): the most its stored WebP is counted at.
-const RAW: u64 = (TS * TS * 3) as u64;
-
-/// How many tiles lie under one tile from `d0` to `d1` levels down.
-const fn tiles_below(d0: u8, d1: u8) -> u64 {
-    let (mut n, mut d) = (0u64, d0);
-    while d <= d1 {
-        n += 1 << (2 * d);
-        d += 1;
-    }
-    n
-}
-
-/// The decoded terrain a job keeps (`KEEP` tiles of 256 × 256 f32), in bytes.
-const KEPT: u64 = KEEP as u64 * (TS * TS * 4) as u64;
-
-/// A quadrant's values kept for its parent (128 × 128 pixels).
-const QUADRANT: u64 = (128 * 128 * std::mem::size_of::<Px>()) as u64;
-
-/// A deep mid's z13 quadrants at most (a z10 tile's z13 tiles).
-const MID_QUADRANTS: u64 = 1 << (2 * (FIRST_Z - PACK_Z));
-
-/// The most memory (MB) a slope-hi z6 tile's run takes, from its bounds: its hi tiles held until
-/// written (z9–12), each at most its raw codes; its z6–8 tiles; the deep mids open
-/// (`DeepQuadrants`: one a thread of the pyramid's, each its quadrants and, as it's read, its
-/// bytes); the pyramid's working memory (`working_bytes`); the decoded terrain kept; the z6 tile
-/// before's uploads in flight beside it (buildstore::out::UPLOAD_HELD).
-pub const fn peak_mb() -> u64 {
-    let held = tiles_below(9 - 6, HI_MAX - 6) + tiles_below(0, 2);
-    let mids = THREADS as u64 * 2 * MID_QUADRANTS * QUADRANT;
-    (held * RAW + mids + working_bytes(6, HI_MAX) + KEPT + buildstore::out::UPLOAD_HELD) >> 20
-}
-
-/// The most memory (MB) a slope-deep z10 tile's run takes, from its bounds: its deep pack's tiles
-/// (z13–16) held until written, each at most its raw codes; its z13 tiles' quadrants; the
-/// pyramid's working memory (`chains_bytes`: a z13 subtree a thread); the decoded terrain kept;
-/// beside it, the target before's uploads in flight (buildstore::out::UPLOAD_HELD) and the next one's
-/// pack being copied ahead (`DeepBatch`: a copy's buffer, store::sys::COPY_BUF).
-pub const fn deep_peak_mb() -> u64 {
-    let held = tiles_below(FIRST_Z - PACK_Z, MAX_Z - PACK_Z);
-    let beside = buildstore::out::UPLOAD_HELD + store::sys::COPY_BUF as u64;
-    (held * RAW + MID_QUADRANTS * QUADRANT + chains_bytes(FIRST_Z, MAX_Z) + KEPT + beside) >> 20
-}
-
-/// The most memory (MB) an assembly takes, from its bounds: its z6 tiles' mids (64 of z6–8) and
-/// the lo tiles it makes (z3–8), each at most its raw codes; the decoded terrain kept.
-pub const fn lo_peak_mb() -> u64 {
-    ((64 * tiles_below(0, 2) + tiles_below(0, 5)) * RAW + KEPT) >> 20
 }
 
 /// The terrain's deep tiles under z10 tile `t` (its deep pack: crate::terrain_deep).
@@ -1886,27 +1809,6 @@ mod tests {
         let mut above = out.into_inner().unwrap();
         above.sort_by_key(|m| (m.0, m.1, m.2));
         assert!(above == first.iter().filter(|m| m.0 < 2).cloned().collect::<Vec<_>>());
-    }
-
-    /// The memory bounds are those of the tiles a run holds.
-    #[test]
-    fn the_memory_bounds_count_the_tiles_held() {
-        assert_eq!(tiles_below(3, 6), 64 + 256 + 1024 + 4096);
-        // (The pyramid's working memory: 16 threads, each a chain of four tiles' children's
-        // quadrants and one tile's making (3 tiles' pixels, the coverage, Horn's border, five terrain
-        // tiles, the codes); the 21 tiles of the parallel levels' children's quadrants.)
-        let making = 3 * 786_432 + 65_536 + 258 * 258 * 4 + 5 * 262_144 + 196_608;
-        let chains = 16 * (4 * 4 * 196_608 + making);
-        let working = chains + 21 * 4 * 196_608;
-        assert_eq!(working_bytes(6, HI_MAX), working);
-        assert_eq!(chains_bytes(FIRST_Z, MAX_Z), chains, "a z13 subtree a thread");
-        // (Beside a target: the one before's uploads in flight, an 8 MB read at a time; slope-deep's
-        // next target's copy ahead, 1 MB at a time. Slope-hi: a deep mid open a thread, its 64
-        // quadrants and its bytes as read.)
-        let (upload, copy) = (8 << 20, 1 << 20);
-        assert_eq!(peak_mb(), ((5440 + 21) * 196_608 + 16 * 2 * 64 * 196_608 + working + 512 * 262_144 + upload) >> 20);
-        assert_eq!(deep_peak_mb(), (5440 * 196_608 + 64 * 196_608 + chains + 512 * 262_144 + upload + copy) >> 20);
-        assert_eq!(lo_peak_mb(), ((64 * 21 + 1365) * 196_608 + 512 * 262_144) >> 20);
     }
 
     /// With terrain: an assembly over a lo pack an earlier run stored, holding tiles of a z6 tile

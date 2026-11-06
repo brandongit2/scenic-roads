@@ -201,17 +201,10 @@ makes the same bytes on every Mac.
   the forecast's waits and the page's notes derive each target's from it (`steps::readiness`); `declared_reads_cover_the_keys` checks
   each against its key's inputs. The terrain root is built in the terrain stage once every terrain-lo
   assembly is done; slope-lo waits for it, and a slope-hi target only when its pyramid reads a
-  root tile (an edge neighbour past the lo packs), docs/readiness.md §6 3c.) Memory from the
-  tiles a run holds (`slope_pack::peak_mb`: a z6 tile's hi tiles, each counted at its raw RGB, the
-  deep mids open (one a thread, twice its quadrants while read), the pyramid's working memory and
-  the decoded terrain kept; `deep_peak_mb` a z10 tile's deep tiles, its z13 quadrants, a z13
-  subtree a thread, the terrain kept and the next target's copy ahead; both with the target
-  before's uploads in flight, `out::UPLOAD_HELD`; `lo_peak_mb` an assembly's); slope-hi's and
-  slope-deep's with the coverage the process reads (`coverage::Coverage::read_peak_mb`). The
+  root tile (an edge neighbour past the lo packs), docs/readiness.md §6 3c.) Memory as measured (docs/pool.md §7.7). The
   pyramid (`slope_pack::Pyramid`, the depth's shading's too) makes the children of the tiles within
   three levels of its top in parallel and each subtree below them on one thread, on at most 16 of
-  the job's threads, so its working memory has a bound (`working_bytes`: per thread a chain of
-  tiles' children's quadrants and one tile's making); its tiles don't depend on the threads (each
+  the job's threads; its tiles don't depend on the threads (each
   pixel the mean of its four children's in a fixed order, nothing summed across tiles).
 - **The polar caps** (`pipeline::polar`; docs/polar.md): the terrain and shading past the Web
   Mercator tiles' 85.05°, on each pole's polar stereographic grid (EPSG:3031 south, 3413 north;

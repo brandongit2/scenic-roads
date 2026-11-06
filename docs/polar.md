@@ -203,7 +203,7 @@ from the pole, 600–1,230 s for the pole's four (GLO-30's files are densest in 
 the voids are filled in a second pass); shading 75–125 s; the root 77 min, but most of that sampled
 the pool where the 51 unbuilt blocks were missing; with every block built it reads their z4 tiles
 instead. So the cap is about 76 × ~6 min ≈ 7–8 h of one job, half that at two at a time.
-Memory: 0.3–0.9 GB a terrain job as measured (its `mem_mb`, 4,096, is the first guess).
+Memory: 0.3–0.9 GB a terrain job as measured.
 
 ## 8. What remains
 

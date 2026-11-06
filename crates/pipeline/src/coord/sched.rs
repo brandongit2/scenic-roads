@@ -361,8 +361,9 @@ impl Backfill {
 /// counted as the whole Mac, its first job held 6 of the mini's 12 cores).
 pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrain-deep", "bld-fetch", "pyramids-fill"];
 
-/// A cold start's provisional memory (MB) from the most its step declares or it was offered with,
-/// `mb`: times 3/2 (task #499; `Shared::provisional`, the forecast's packing too).
+/// A cold start's provisional memory (MB) from `mb`, the most its step's runs of its latest earlier
+/// way measured or it was offered with: times 3/2 (task #499; `Sched::provisional`, the forecast's
+/// packing too).
 pub(super) fn provisional_mb(mb: u64) -> u64 {
     mb.saturating_mul(3) / 2
 }
@@ -513,9 +514,19 @@ impl Sched {
     }
 
     /// The first guess of offered `target` of `step` (`first_guess` by the size it was offered
-    /// with), 0 when it isn't offered.
+    /// with), 0 when it isn't offered: for a step offered by an input measure
+    /// (crate::needs::OFFERED_BY), that measure, which crate::needs::Book::mem reads as such.
     pub(super) fn offered_guess(&self, step: &str, target: &str) -> u64 {
         self.offered_size(step, target).map_or(0, |size| first_guess(&self.costs, step, target, size))
+    }
+
+    /// The memory (MB) offered `target` of `step` was guessed at (`offered_guess`): none for a step
+    /// offered by an input measure (crate::needs::OFFERED_BY) or not offered.
+    fn offered_mb(&self, step: &str, target: &str) -> u64 {
+        if crate::needs::offered_by(step).is_some() {
+            return 0;
+        }
+        self.offered_guess(step, target)
     }
 
     /// The size `target` of `step` was first offered with; None when it isn't offered.
@@ -558,7 +569,7 @@ impl Sched {
         self.measures(step, target).1
     }
 
-    /// `target` of `step`'s memory by the book (a step never measured: its first guess, `lease_mem`)
+    /// `target` of `step`'s memory by the book (a step never measured: its offered guess, `lease_mem`)
     /// and `measured`; kept while the measures stand (`measured_of`).
     fn measures(&self, step: &str, target: &str) -> (u64, Option<Measured>) {
         let rev = self.rev();
@@ -912,12 +923,17 @@ impl Sched {
     /// cores its step's use on the Mac (crate::uses, task #947), else, measured, the cost book's
     /// (`book_cores`).
     pub(super) fn pack_need(&self, step: &str, targets: &[String], worker: &str) -> Need {
-        // (A step whose jobs only change build records (task #838): never cold, one thread counted for no
-        // cores (it waits on the NAS), its declared memory, no disk: it goes beside any jobs, a long one's included.)
+        // (A step whose jobs only change build records (task #838): one thread counted for no cores
+        // (it waits on the NAS), no disk; its memory measured as any step's (task #979), so once
+        // measured it goes beside any jobs, a long one's included.)
         if crate::agent::steps::records_only(step) {
-            let m = Measured { mem_mb: crate::agent::steps::mem_mb(step), disk_mb: 0, own: false };
             let cores = Some(crate::needs::Cores { grant: 1, busy_tenths: Some(0) });
-            return Need { m, cores, cold: false, waits: false, idle: false, by_use: false, held: 0 };
+            let (m, cold) = match self.job_need(step, targets) {
+                Some(m) => (m, false),
+                None => (self.provisional(step, targets).unwrap_or_default(), true),
+            };
+            let m = Measured { disk_mb: 0, ..m };
+            return Need { m, cores, cold, waits: false, idle: false, by_use: false, held: 0 };
         }
         let used = self.uses.cores(step, crate::paces::mac_of(worker));
         let by_use = used.is_some();
@@ -926,8 +942,9 @@ impl Sched {
                 let cores = used.or_else(|| book_cores(&self.book(), step, targets));
                 Need { m, cores, cold: false, waits: false, idle: false, by_use, held: 0 }
             }
+            // (No figure (`no_figure`): it runs alone, so it's counted at none.)
             None => Need {
-                m: self.provisional(step, targets),
+                m: self.provisional(step, targets).unwrap_or_default(),
                 cores: used,
                 cold: true,
                 waits: false,
@@ -1028,27 +1045,40 @@ impl Sched {
         !g.1.contains(step)
     }
 
-    /// A cold start's provisional need (task #499): `provisional_mb` of the most its step declares
-    /// (crate::agent::steps' `mem_mb`) or it was offered with (`offered_guess`), the disk its step's
-    /// measures say (none: 0). It goes beside other jobs when that fits; the memory guard
+    /// A cold start's provisional need (task #499): `provisional_mb` of the most, over its targets,
+    /// its step's runs of its latest earlier way measured (crate::needs::Book::older_mem: a cost
+    /// version raised, task #979) or it was offered with (`offered_mb`), the disk its step's
+    /// measures say (none: 0). None when neither says anything: no figure, so it runs alone
+    /// (`no_figure`). It goes beside other jobs when that fits; the memory guard
     /// (crate::agent::memguard) stops one that overruns, and its floor is learned.
-    pub(super) fn provisional(&self, step: &str, targets: &[String]) -> Measured {
+    pub(super) fn provisional(&self, step: &str, targets: &[String]) -> Option<Measured> {
         let b = self.book();
-        let declared = crate::agent::steps::mem_mb(step);
-        let each = targets.iter().map(|t| self.offered_guess(step, t).max(declared)).max().unwrap_or(declared);
-        Measured {
+        let each = targets
+            .iter()
+            .map(|t| b.older_mem(step, t).unwrap_or(0).max(self.offered_mb(step, t)))
+            .max()
+            .filter(|&mb| mb > 0)?;
+        Some(Measured {
             mem_mb: provisional_mb(each),
             disk_mb: targets.iter().filter_map(|t| b.disk(step, t, 0)).max().unwrap_or(0),
             own: false,
-        }
+        })
+    }
+
+    /// Whether a cold start of `step` over `targets` has no figure to go beside other jobs by: its
+    /// step never measured in any way (`never_measured`), or no provisional need (`provisional`).
+    /// Such a job runs alone, nothing beside it, as before task #499.
+    pub(super) fn no_figure(&self, step: &str, targets: &[String]) -> bool {
+        self.never_measured(step) || self.provisional(step, targets).is_none()
     }
 
     /// Whether a cold start of `step` over `targets` may go to `a`'s worker (task #499): its
     /// provisional need fits the room `a` spares, or the worker holds no job (one bigger than its
-    /// whole room goes alone, as every cold start did before: the guard learns its floor).
+    /// whole room, or with no figure, goes alone, as every cold start did before: the guard learns
+    /// its floor).
     pub(super) fn cold_fits(&self, step: &str, targets: &[String], a: &Ask, now: Instant) -> bool {
-        let m = self.provisional(step, targets);
-        (m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d)) || self.job_leases(&a.worker, now).is_empty()
+        let fits = |m: Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d);
+        self.provisional(step, targets).is_some_and(fits) || self.job_leases(&a.worker, now).is_empty()
     }
 
     /// The disk a job of `step` reserves for its shared cache (crate::needs::CACHES) on the Mac
@@ -1116,12 +1146,12 @@ impl Sched {
             })
             .collect();
         let held_steps: Vec<(String, Vec<String>)> = jobs.iter().map(|(_, st, ts)| (st.clone(), ts.clone())).collect();
-        // (A cold start of a step never measured in any way: nothing beside it, as before task
-        // #499.)
+        // (A cold start with no figure, its step never measured in any way or nothing to size it
+        // by (`no_figure`): nothing beside it, as before task #499.)
         if let Some((st, _)) =
-            needs.iter().zip(&held_steps).find(|(n, (st, _))| n.cold && self.never_measured(st)).map(|(_, s)| s.clone())
+            needs.iter().zip(&held_steps).find(|(n, (st, ts))| n.cold && self.no_figure(st, ts)).map(|(_, s)| s.clone())
         {
-            return (Vec::new(), Some(format!("{st} was never measured: nothing goes beside its first job")));
+            return (Vec::new(), Some(format!("{st} has no measure to size it by: nothing goes beside its first job")));
         }
         // (At most one cold start on a Mac (task #499 review): two unknown needs never meet.)
         let mut cold_here = needs.iter().any(|n| n.cold);
@@ -1286,12 +1316,15 @@ impl Sched {
                 }
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
                 let n = self.pack_need(&o.step, &ts, &a.worker);
-                if beside && n.cold && (cold_here || self.never_measured(&o.step)) {
+                if beside && n.cold && (cold_here || self.no_figure(&o.step, &ts)) {
                     cold_why.get_or_insert_with(|| {
                         if cold_here {
                             format!("{} isn't measured: one cold start on a Mac at a time", o.step)
                         } else {
-                            format!("{} was never measured: its first job goes only to a Mac running nothing", o.step)
+                            format!(
+                                "{} has no measure to size it by: its first job goes only to a Mac running nothing",
+                                o.step
+                            )
                         }
                     });
                     continue;
@@ -1732,19 +1765,19 @@ impl Sched {
 
     /// Whether the lead's own planned job of offer `o` waits for room: open (`own_open`), a cold
     /// start (none of it measured) that can't go beside the lead's jobs: its provisional need past
-    /// the room `left`, its step never measured, a cold start held there already (`cold_held`), or
-    /// its cores the whole Mac (`need_cores`). The lead's ask is then granted nothing more until
-    /// its jobs end enough for it, or all of them (`pack`, `pick_own`), so the offered work it would
-    /// otherwise keep taking doesn't starve it.
+    /// the room `left` or none (`no_figure`), a cold start held there already (`cold_held`), or its
+    /// cores the whole Mac (`need_cores`; never a records-only step's, one thread counted for none).
+    /// The lead's ask is then granted nothing more until its jobs end enough for it, or all of them
+    /// (`pack`, `pick_own`), so the offered work it would otherwise keep taking doesn't starve it.
     pub(super) fn own_cold_waits(&self, o: &Offer, a: &Ask, left: u64, cold_held: bool, now: Instant) -> bool {
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
         o.job.is_some()
-            && !crate::agent::steps::records_only(&o.step)
             && self.job_need(&o.step, &ts).is_none()
-            && (self.provisional(&o.step, &ts).mem_mb > left
+            && (self.provisional(&o.step, &ts).is_none_or(|m| m.mem_mb > left)
                 || cold_held
-                || self.never_measured(&o.step)
-                || (!THREADS_HONOURED.contains(&o.step.as_str())
+                || self.no_figure(&o.step, &ts)
+                || (!crate::agent::steps::records_only(&o.step)
+                    && !THREADS_HONOURED.contains(&o.step.as_str())
                     && self.uses.cores(&o.step, crate::paces::mac_of(&a.worker)).is_none()))
             && self.own_open(o, a, now)
             && self.own_nas_fits(o, now, true)
@@ -2085,7 +2118,7 @@ impl Sched {
     }
 
     /// The memory (MB) a job under lease `l` takes: its heaviest target's, by the book's estimate
-    /// (a step never measured: its table's or the offer's guess, not 0).
+    /// (a step never measured: the guess it was offered with, else 0).
     pub(super) fn lease_mem(&self, l: &Lease) -> u64 {
         let Work::Job { step, targets } = &l.work else { return 0 };
         targets.iter().map(|t| self.measures(step, &t.0).0).max().unwrap_or(0)

@@ -833,11 +833,11 @@ impl Planner {
                     }
                 }
                 None => {
+                    // (No memory guessed: its measures size it, task #979.)
                     let step =
                         spec.record.as_ref().map(|w| w.step.clone()).or_else(|| step_of(&spec.id)).unwrap_or_default();
-                    let mb = steps::mem_mb(&step);
                     offers.push(crate::coord::Offer {
-                        targets: own_targets(spec).into_iter().map(|(t, k)| (t, k, mb)).collect(),
+                        targets: own_targets(spec).into_iter().map(|(t, k)| (t, k, 0)).collect(),
                         step,
                         job: Some(spec.id.clone()),
                     });
@@ -1978,8 +1978,8 @@ impl Planner {
         }
         // (Every step to every member: the plan's every step offered but the lead's own,
         // crate::agent::every.)
-        // (What a terrain or slope job's process holds of the coverage it reads, `coverage_of`:
-        // added to its step's bound, crate::coverage::Coverage::read_peak_mb.)
+        // (What a terrain-hi job's process holds of the coverage it reads, `coverage_of`: added to
+        // its bound, crate::coverage::Coverage::read_peak_mb.)
         let cov_read = cov.read_peak_mb();
         for w in plan.iter_mut().filter(|w| every::offered(&w.step)) {
             // What another worker builds now isn't planned here: what it leased from this Mac's
@@ -1990,16 +1990,17 @@ impl Planner {
             }
             w.targets.retain(|t| !others.contains(&t.0));
             // The rest, offered to the workers that mount the NAS: z6 tiles with their extracts' sizes,
-            // the others with the memory their jobs are expected to take (until one's run says);
-            // each worker takes what fits its memory.
+            // the 3D buildings by their rows (crate::needs::OFFERED_BY), terrain-hi with the memory
+            // its code bounds its jobs at, the others with none (task #979: their measures size
+            // them, a cold start its step's runs of an earlier way, else alone); each worker takes
+            // what fits its memory.
             let guess = |t: &str| match w.step.as_str() {
                 "unit" | "pois" => size(t),
                 "terrain-hi" => {
                     terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }) + cov_read
                 }
-                s @ ("terrain-deep" | "slope-deep" | "slope-hi") => first_peak(s) + cov_read,
-                s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
-                s => first_peak(s),
+                "bldprep" | "bldtiles" => bld_rows(t).unwrap_or(0),
+                _ => 0,
             };
             offers.push(crate::coord::Offer {
                 step: w.step.clone(),
@@ -2051,14 +2052,14 @@ impl Planner {
                 .into_iter()
                 .map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len()))
                 .collect();
+            // (As the offers have it: the 3D buildings by their rows, crate::needs::OFFERED_BY.)
             let peak = |step: &str, t: &str| match step {
                 "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
                 "terrain-hi" => {
                     terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }) + cov_read
                 }
-                s @ ("terrain-deep" | "slope-deep" | "slope-hi") => first_peak(s) + cov_read,
-                s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
-                s => first_peak(s),
+                "bldprep" | "bldtiles" => bld_rows(t).unwrap_or(0),
+                _ => 0,
             };
             // (And the elevation pyramids' fill, the lead's, its z6 tiles at its measured time each.)
             let mut before = before;

@@ -271,7 +271,8 @@ pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: 
 /// The memory a job of `step` for `target` is guessed to take (MB) when none of its step has been
 /// measured (crate::needs' last resort): a z6 tile's by `unit_peak` (`size` its extract's bytes);
 /// candidates' as the z6 tile's (they read the same extract, with one of the z6 tile's programs: `size` its
-/// bytes too); another step's `size`, the estimate it was offered with.
+/// bytes too); another step's `size`, the estimate it was offered with (a step offered by an input
+/// measure, crate::needs::OFFERED_BY: that measure, read by crate::needs::Book::mem as such).
 pub fn first_guess(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
     match step {
         "unit" | "pois" => unit_peak(costs, target, size),
@@ -280,7 +281,8 @@ pub fn first_guess(costs: &BTreeMap<String, Cost>, step: &str, target: &str, siz
 }
 
 /// A step's work offered to the workers that mount the NAS: its targets in plan order (target, key,
-/// size: a z6 tile's or candidates' extract bytes, another step's predicted peak memory in MB). A job
+/// size: a z6 tile's or candidates' extract bytes, the 3D buildings' rows (crate::needs::OFFERED_BY),
+/// another step's predicted peak memory in MB where its plan derives one, else 0). A job
 /// takes as many as fit the batch length by their measured times (`pick_every`), but the lead's own planned
 /// job (`job`: its id), granted whole and to the lead alone (crate::agent::every::grants).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -5041,11 +5043,20 @@ fn route(
             let mut o: task::Offer = serde_json::from_slice(body)?;
             let s = shared.lock().unwrap();
             // What its z6 tile's task took last time (a worker's measure, with some room), in place of
-            // the guess.
+            // the job's figure; else what its kind's measured runs say of it (crate::needs: its
+            // neighbours', a fit, its kind's 90th percentile; task #979), never under the job's
+            // figure (a bldtile task's its files). A kind never measured: the job's figure, and a
+            // worker running out of memory says what it took (`fail_how`).
+            let unit = o.spec["unit"].as_str().map(str::to_string);
             if let Some(c) =
-                o.spec["unit"].as_str().and_then(|u| s.costs.get(&task_cost_key(&o.kind, u))).filter(|c| c.peak_mb > 0)
+                unit.as_ref().and_then(|u| s.costs.get(&task_cost_key(&o.kind, u))).filter(|c| c.peak_mb > 0)
             {
                 o.mem_mb = c.peak_mb + c.peak_mb / 10;
+            } else if let Some(u) = &unit {
+                let (mb, from) = s.book().mem(&o.kind, u, 0, 0);
+                if from != crate::needs::From::Table {
+                    o.mem_mb = o.mem_mb.max(mb);
+                }
             }
             // (Its inputs cloned outside the lock: off APFS, a copy, which takes time.)
             let dir = s.tasks.dir().to_path_buf();
@@ -8527,13 +8538,13 @@ mod tests {
     }
 
     /// Task #499: a cold job of the lead's own (bld-fetch, run before but not measured the way it
-    /// runs now) goes beside the lead's jobs when its provisional need (its declared memory times
-    /// 3/2) fits the room left; one that doesn't, or a step never measured (the catalogue), isn't
+    /// runs now) goes beside the lead's jobs when its provisional need (its runs of its earlier way
+    /// times 3/2) fits the room left; one that doesn't, or a step never measured (the catalogue), isn't
     /// starved: the lead's asks get nothing more until it can go. A member with more room, asking
     /// for the step it may never be granted, isn't its asker.
     #[test]
     fn a_cold_job_of_the_leads_own_goes_by_its_provisional_need() {
-        let provisional = crate::agent::steps::mem_mb("bld-fetch") * 3 / 2;
+        let provisional = OLDER_MB * 3 / 2;
         for (step, room, beside) in
             [("bld-fetch", 64_000, true), ("bld-fetch", 2000 + provisional - 1, false), ("catalog", 64_000, false)]
         {
@@ -10243,8 +10254,7 @@ mod tests {
     }
 
     /// Task #970: a grant carries the memory its job was packed at (`Grant::peak_mb`: its targets'
-    /// measured peak, 2000 MB), the one figure its agent counts the job at as it runs; never its
-    /// step's first guess (slope-hi's steps-table figure).
+    /// measured peak, 2000 MB), the one figure its agent counts the job at as it runs.
     #[test]
     fn grants_carry_the_memory_their_job_was_packed_at() {
         let (_d, c, w, _clock) = every((0, 0));
@@ -10255,7 +10265,6 @@ mod tests {
         };
         let g = w.ask(&a).unwrap().unwrap();
         assert_eq!(g.peak_mb, 2000);
-        assert_ne!(crate::agent::steps::mem_mb("slope-hi"), 2000, "the step's first guess is another figure");
     }
 
     /// The disk in words (task #391): the free space, what's left of it for jobs, and what keeps
@@ -10369,9 +10378,17 @@ mod tests {
         }
     }
 
-    /// A step that has run before (a disk floor noted), its memory not measured the way it runs
-    /// now: a cold start, but not one never measured.
+    /// The memory a step's runs of its earlier way took (`ran_before`).
+    const OLDER_MB: u64 = 1000;
+
+    /// A step that has run before, its memory not measured the way it runs now: a cold start, but
+    /// not one never measured. A run of its earlier way (`OLDER_MB`, a target not offered: task
+    /// #979, its cold starts sized by it) where it has one, and a disk floor.
     fn ran_before(c: &Coordinator, step: &str) {
+        if let Some(v) = cost_version(step).checked_sub(1) {
+            let cost = Cost { peak_mb: OLDER_MB, secs: 600, v, ..Default::default() };
+            c.add_costs_by(&[(cost_key(step, "6/63/63"), cost)], "m1");
+        }
         c.add_disks(&[(cost_key(step, "6/63/63"), 10)]);
     }
 
@@ -10388,12 +10405,13 @@ mod tests {
         c.offer("p", offers);
     }
 
-    /// Task #499: a cold start is packed by its provisional need (its step's declared memory times
-    /// 3/2): beside measured jobs when that fits the room left, and measured jobs beside it; past the
-    /// room left, not beside (alone once its worker holds nothing, whatever its size).
+    /// Task #499: a cold start is packed by its provisional need (its step's runs of its earlier way
+    /// times 3/2, task #979): beside measured jobs when that fits the room left, and measured jobs
+    /// beside it; past the room left, not beside (alone once its worker holds nothing, whatever its
+    /// size).
     #[test]
     fn packing_takes_a_cold_start_by_its_provisional_need() {
-        let provisional = crate::agent::steps::mem_mb("slope-hi") * 3 / 2;
+        let provisional = OLDER_MB * 3 / 2;
         let a = |mem: u64| Ask {
             want: 3,
             can: vec!["trees".into(), "slope-hi".into()],
@@ -10445,7 +10463,7 @@ mod tests {
         packable(&c, "trees", 2, Some(2));
         assert!(all_granted(&w, &a).is_empty(), "beside a step never measured: nothing");
         let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
-        assert!(why.contains("lo was never measured"), "{why}");
+        assert!(why.contains("lo has no measure to size it by"), "{why}");
         // Two cold steps (both run before), one Mac: one of them.
         let (_d, c, w, _clock) = every((0, 0));
         ran_before(&c, "slope-hi");
@@ -10492,7 +10510,8 @@ mod tests {
 
     /// Task #823: the lead's own cold pyramids-fill job (a fetch waiting on GSI, its fetches its own
     /// threads) is granted one thread (task #896: a cold start's, measured from there), not the
-    /// whole Mac (the mini's first held 6 of 12 cores), so a measured job goes beside it.
+    /// whole Mac (the mini's first held 6 of 12 cores), so a measured job goes beside it. (Its step
+    /// has no earlier way: the cold start's figure is the one it's offered with.)
     #[test]
     fn a_cold_pyramids_fill_takes_a_thread() {
         assert!(sched::THREADS_HONOURED.contains(&"pyramids-fill"));
@@ -10501,7 +10520,7 @@ mod tests {
         packable(&c, "trees", 1, Some(2));
         let mut offers = vec![Offer {
             step: "pyramids-fill".into(),
-            targets: vec![("6/55/23".into(), "k 6/55/23".into(), 0)],
+            targets: vec![("6/55/23".into(), "k 6/55/23".into(), OLDER_MB)],
             job: Some("pyramids-fill 6/55/23".into()),
         }];
         offers.extend(c.shared.lock().unwrap().offers.clone());
@@ -10517,9 +10536,10 @@ mod tests {
         assert_eq!(g.more.len(), 1, "a measured job beside it");
     }
 
-    /// Task #838: a redo (its jobs only change build records, `steps::records_only`) is never a
-    /// cold start held for the lead's jobs: a cold one goes beside a long cold job holding the
-    /// whole Mac, at one thread.
+    /// Task #838: a redo (its jobs only change build records, `steps::records_only`) goes beside a
+    /// long cold job holding the whole Mac, at one thread, by its runs' memory (task #979: measured
+    /// as any step, under its step's own key, `redo::note_cost`). Never measured, its first job
+    /// waits for the lead's jobs to end, as any step never measured.
     #[test]
     fn a_cold_redo_goes_beside_a_long_lead_job() {
         let (_d, c, _w, _clock) = every((0, 0));
@@ -10539,9 +10559,12 @@ mod tests {
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "terrain-hi"), "{:?}", g.work);
         assert_eq!(g.threads, 8, "a cold terrain job: the whole Mac");
         c.offer("p", vec![own("redo", "redo 1")]);
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "never measured: it waits");
+        let cost = Cost { peak_mb: 300, secs: 2, v: cost_version("redo"), ..Default::default() };
+        c.add_costs_by(&[(cost_key("redo", "redo"), cost)], "m4");
         let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "redo"), "{:?}", g.work);
-        assert_eq!(g.threads, 1);
+        assert_eq!((g.threads, g.peak_mb), (1, 300), "by its step's runs");
     }
 
     /// Task #932: the lead packs a Mac by the memory floor's arithmetic, from what its ask says: a
@@ -12722,29 +12745,6 @@ mod tests {
         };
         let s = fresh();
         let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
-        // (Each step's first guess, the figure a member counted its running jobs at before, against
-        // its runs of the way it runs now: their median, 90th percentile and most.)
-        let mut peaks: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
-        for (k, c) in &st.costs {
-            let step = CostKey::parse(k).step;
-            if c.v >= cost_version(step) && !crate::needs::is_drop(c) {
-                peaks.entry(step).or_default().push(c.peak_mb);
-            }
-        }
-        for (step, mut v) in peaks {
-            v.sort_unstable();
-            let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
-            let table = crate::agent::steps::mem_mb(step);
-            eprintln!(
-                "step {step}: first guess {}, {} runs: median {}, p90 {}, most {} (guess / p90 {:.1})",
-                gb(table),
-                v.len(),
-                gb(at(0.5)),
-                gb(at(0.9)),
-                gb(at(1.0)),
-                table as f64 / at(0.9).max(1) as f64
-            );
-        }
         // (Each Mac's capacity with its jobs counted at their grants' memory, what they hold
         // together at least: the record's leases are granted again under new numbers, so what each
         // held isn't matched to it.)
@@ -12757,13 +12757,7 @@ mod tests {
                 let Work::Job { step, targets } = &l.work else { continue };
                 let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
                 let m = s.pack_need(step, &ts, &w.ask.worker).m.mem_mb;
-                eprintln!(
-                    "{}: {step} ({} targets): its step's first guess {}, its grant's {}",
-                    w.ask.worker,
-                    ts.len(),
-                    gb(crate::agent::steps::mem_mb(step)),
-                    gb(m)
-                );
+                eprintln!("{}: {step} ({} targets): its grant's {}", w.ask.worker, ts.len(), gb(m));
                 need += m;
             }
             let need = need.max(c.held_mb);
@@ -12792,6 +12786,96 @@ mod tests {
                     why.unwrap_or_default()
                 );
             }
+        }
+    }
+
+    /// A recorded forecast's pool (SCENIC_PACK_RECORD: a forecast-input.json): each step's cold
+    /// start as the lead would size it (`Sched::provisional` over its first offered target, else a
+    /// target of none), whether it is one there now (its first offered target unmeasured), and each
+    /// Mac asked once as its last ask said, at the record's time, with its jobs counted at their
+    /// grants' memory (as members count them since task #970): what each is granted, printed (unset:
+    /// nothing). How task #979 showed its cold starts sized from measures on a frozen lead state.
+    #[test]
+    fn recorded_cold_starts() {
+        let Ok(p) = std::env::var("SCENIC_PACK_RECORD") else { return };
+        let r = crate::agent::forecast::Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
+        let mut st = r.input.sched.clone().expect("the lead's scheduler's state");
+        // (Its offers as the plan makes them now (crate::agent's offers): a size only for unit's and
+        // pois' extracts and terrain-hi's bound; a record of an older plan's carries the steps
+        // table's figures, and the 3D buildings' rows aren't in it.)
+        for o in &mut st.offers {
+            if !matches!(o.step.as_str(), "unit" | "pois" | "terrain-hi") {
+                o.targets.iter_mut().for_each(|t| t.2 = 0);
+            }
+        }
+        let st = &st;
+        let clock = sched::Clock { now: Instant::now(), unix: r.input.now };
+        let fresh = |st: &sched::State| {
+            let mut s = sched::Sched::from_state(st, clock, Duration::from_secs(400 * 86_400));
+            s.set_offers(st.offers.clone());
+            s
+        };
+        let s = fresh(st);
+        let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+        for row in crate::agent::steps::TABLE.iter() {
+            let first =
+                st.offers.iter().find(|o| o.step == row.name).and_then(|o| o.targets.first()).map(|t| t.0.clone());
+            let cold = first.as_ref().is_some_and(|t| s.measured(row.name, t).is_none());
+            let ts = vec![first.clone().unwrap_or_else(|| "6/0/0".into())];
+            eprintln!(
+                "cold start {}: {} ({}{}{})",
+                row.name,
+                cold_words(&s, row.name, &ts, &gb),
+                if first.is_some() { "offered" } else { "not offered" },
+                if cold { ", a cold start now" } else { "" },
+                if s.never_measured(row.name) { ", never measured: alone" } else { "" },
+            );
+        }
+        // (Each Mac's jobs at their grants' memory, what they hold together at least, as
+        // recorded_pool_pack has it.)
+        let mut by_grant = st.clone();
+        for w in &mut by_grant.workers {
+            let Some(c) = w.ask.cap.as_mut() else { continue };
+            let need: u64 = s
+                .job_leases(&w.ask.worker, clock.now)
+                .iter()
+                .filter_map(|l| match &l.work {
+                    Work::Job { step, targets } => {
+                        let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
+                        Some(s.pack_need(step, &ts, &w.ask.worker).m.mem_mb)
+                    }
+                    Work::Task { .. } => None,
+                })
+                .sum();
+            let need = need.max(c.held_mb);
+            (c.mem_reserved_mb, c.mem_mb) = (need.saturating_sub(c.held_mb), c.build_mb.saturating_sub(need));
+        }
+        for w in &by_grant.workers {
+            let mut s = fresh(&by_grant);
+            let (picks, why) = s.pack(&w.ask, &by_grant.offers, w.ask.worker == by_grant.lead_name, clock);
+            let steps: Vec<String> =
+                picks.iter().map(|p| format!("{} ({}, {})", p.step, p.targets.len(), gb(p.mem_mb))).collect();
+            eprintln!(
+                "pack {}: granted {} of {} wanted, {} free for a new job: {}; why: {}",
+                w.ask.worker,
+                picks.len(),
+                w.ask.want,
+                gb(w.ask.cap.as_ref().map_or(0, |c| c.mem_mb)),
+                steps.join(", "),
+                why.unwrap_or_default()
+            );
+        }
+    }
+
+    /// A cold start of `step` over `ts` as `recorded_cold_starts` prints it: its provisional need,
+    /// or none (it runs alone), and where that came from.
+    fn cold_words(s: &sched::Sched, step: &str, ts: &[String], gb: &dyn Fn(u64) -> String) -> String {
+        let b = s.book();
+        let older = ts.iter().filter_map(|t| b.older_mem(step, t)).max();
+        match (s.provisional(step, ts), older) {
+            (Some(m), Some(o)) => format!("{} (its earlier way's runs: {})", gb(m.mem_mb), gb(o)),
+            (Some(m), None) => format!("{} (as offered)", gb(m.mem_mb)),
+            (None, _) => "none: it runs alone".to_string(),
         }
     }
 }

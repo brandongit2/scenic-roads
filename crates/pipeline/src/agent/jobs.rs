@@ -65,6 +65,30 @@ pub fn root_arg(root: &store::nasfs::NasRoot) -> String {
     root.unchecked_path().to_string_lossy().into_owned()
 }
 
+/// Notes what a job's run of `target` of `step` cost in its costs file (`SCENIC_COSTS`, as
+/// scenic-build's steps do; nothing outside a job): the most memory its processes held (sampled,
+/// crate::sys::group_peak), `secs`, its step's way (crate::coord::cost_version) and its inputs'
+/// measures (crate::costin). The clean-up's (crate::agent::gc) and a redo's (crate::agent::redo),
+/// run by the `scenic` program.
+pub fn note_cost(step: &str, target: &str, secs: u64) {
+    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
+    let line = serde_json::json!({
+        "unit": crate::coord::cost_key(step, target),
+        "peak_mb": crate::sys::group_peak() >> 20,
+        "secs": secs,
+        "v": crate::coord::cost_version(step),
+        "sizes": crate::costin::take(),
+    });
+    let r = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
+    if let Err(e) = r {
+        eprintln!("{step}: noting what it cost: {e}");
+    }
+}
+
 /// What a job needs to run: the NAS (every job's: a test's may not). It runs at any charge, at home
 /// or away (the owner's choice: docs/pool.md §7.7); a record an older app wrote, with its power and
 /// home, reads as this.

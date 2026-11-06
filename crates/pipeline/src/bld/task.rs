@@ -59,11 +59,10 @@ pub struct Cut {
 }
 
 impl Cut {
-    /// A task's predicted memory (MB): its files three times over (the worker holds them, the
-    /// program reads them in, and room as much again), and the model of `bldtiles` for a z8 tile of its
-    /// records (`super::bldtiles_peak`, the field's cells in flight with it).
-    pub fn mem_mb(&self) -> u64 {
-        (self.bytes >> 20) * 3 + super::bldtiles_peak(self.records * 5 / 2)
+    /// What a task of it is offered at (MB): its files, what its worker holds at least. The
+    /// coordinator sizes it by its kind's measured runs (crate::coord's `/task/offer`, task #979).
+    pub fn files_mb(&self) -> u64 {
+        self.bytes.div_ceil(1 << 20)
     }
 }
 
@@ -404,7 +403,7 @@ impl<'a> Offers<'a> {
                 let root = o.task_root(&format!("bldtile-{}", a.dash()));
                 let c = cut(files, cov, self.t, (a.x, a.y), &self.sites, &root.join("u"))?;
                 let inputs = inputs_of(&root)?;
-                o.offer_spec(KIND, spec(a, o.version(), &inputs), &root, inputs, c.mem_mb()).map(|t| (t, c.records))
+                o.offer_spec(KIND, spec(a, o.version(), &inputs), &root, inputs, c.files_mb()).map(|t| (t, c.records))
             })();
             match offered {
                 Ok((task, records)) => {
@@ -651,7 +650,7 @@ mod tests {
                 assert_eq!(countries, ["GB"]);
                 assert!(!dir.join("6-33-22.sect").exists());
             }
-            assert!(c.mem_mb() >= 256);
+            assert!(c.files_mb() >= 1 && c.files_mb() == c.bytes.div_ceil(1 << 20));
             // On one thread: the same bytes.
             let one = d.path().join(format!("{}-1", a8.dash()));
             cut(&files, &cov, t, a, &sites, &one).unwrap();

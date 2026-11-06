@@ -867,37 +867,6 @@ fn root_of(
 /// The depth tiles in metres the floor's shading keeps decoded (`shading_over`), at most.
 const SHADE_CACHED: usize = 2048;
 
-/// The most memory (MB) a z3 tile's assembly (`build_lo`) takes: its composing's first guess (2 GB:
-/// a block's arrays and distance fields, the sources' blocks read, its water; let go before its
-/// shading) or its floor's shading's (`shade_lo_peak_mb`), the more.
-pub const fn lo_peak_mb() -> u64 {
-    const COMPOSING_MB: u64 = 2000;
-    let s = shade_lo_peak_mb();
-    if s > COMPOSING_MB {
-        s
-    } else {
-        COMPOSING_MB
-    }
-}
-
-/// The most memory (MB) the floor's shading of a z3 tile's assembly takes (`shading_lo`), from
-/// its bounds: its z6 tiles' z9 quadrants (64 × 64); its depth lo tiles (z3–8) as stored, each
-/// taken at its raw RGBA and a margin for the container's headers (lossless WebP of a 256-px tile
-/// is smaller); its depth
-/// tiles kept decoded (`SHADE_CACHED`, and one more); the shading's tiles made, each at most its raw
-/// codes; the pyramid's working memory (crate::slope_pack::working_bytes, z3 to z8).
-const fn shade_lo_peak_mb() -> u64 {
-    const TS: u64 = 256;
-    let px = std::mem::size_of::<roadcore::shade::Px>() as u64;
-    let quadrant = 128 * 128 * px;
-    let lo_tiles = 1 + 4 + 16 + 64 + 256 + 1024;
-    let stored = TS * (TS * 4 + 1) + (TS * TS * 4 / 16_384 + 1) * 5 + 1024;
-    let decoded = (SHADE_CACHED as u64 + 1) * TS * TS * 4;
-    let made = lo_tiles * TS * TS * 3;
-    let bytes = 64 * 64 * quadrant + lo_tiles * stored + decoded + made + crate::slope_pack::working_bytes(LO.0, LO.1);
-    bytes >> 20
-}
-
 /// The floor's shading of z3 tile `q`'s assembly (its `depth-shade` lo pack, z3–8): the pyramid of
 /// `shading` over its depth tiles `made`, each z8 pixel under a z6 tile's z9 shading the mean of
 /// those four as the hi packs store them (the fine sources' detail), else its own depth's.

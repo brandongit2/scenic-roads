@@ -755,9 +755,8 @@ counts as any other process).
   lead packed it at, carried by its grant (`Grant::peak_mb`: its targets' measure, `pack_need`; a
   cold start's provisional need; a task's predicted memory), which its agent counts it at in its
   capacity (`Agent::need_mb`, `Capacity::mem_reserved_mb`) and its cool-down; no agent has a
-  figure of its own (task #970: a member counted its step's first guess, bldtiles' sized for
-  Kantō's 30 M rows, 14 GB a job beside its runs' 3.4 GB, and showed no room for a new job). A
-  grant of an older lead's says none: its job counts at what it holds.
+  figure of its own (task #970). A grant of an older lead's says none: its job counts at what it
+  holds.
 - **Give-back**: below the floor, at safe points, the work lost least first (§7.2, The memory
   guard).
 - **Cool-down** (`Reading::cooling`, the agent's `cool_down`): a job the memory guard gives back
@@ -808,11 +807,11 @@ counts as any other process).
 
 `crate::agent::steps` has a row per step the agent runs as a job (docs/pipeline.md: its id, title,
 what it does, kind, scope and stage, and these resources); the step sets (`SHARED`, `ANSWERED`) are
-generated from it at build time.
+generated from it at build time. It holds no memory figure: a step's memory is measured (§7.7, task
+#979).
 
 | Column | Meaning |
 | --- | --- |
-| memory | a first guess until a target's run is measured (`crate::coord::Cost`) |
 | shared | whether members take it (no rank: which ready job goes first is derived from the reads, §7.2) |
 | alone | a whole-build run kept to the lead (`crate::agent::every`) |
 | answered | keeps the pass's answers (the lead's alone) |
@@ -1397,8 +1396,11 @@ offered (`Sched::drops`); the plan puts every step's drops first of the terrain,
 with a build's run), shown "drop to come" on the build page. A drop never runs under a job that
 reads what it drops: what reads its tile waits for it as before (the z3 tiles with a none target
 left are terrain or slope left), it has one key per target so it is never leased beside a build of
-the same target, and its tiles are no build target's input. Else the caller's first guess (the steps table's, or the size
-the plan offered): a cold start. A fit is judged on runs held out of it
+the same target, and its tiles are no build target's input. Else the caller's first guess (the size
+the plan offered, where it derives one): a cold start. The 3D buildings (`needs::OFFERED_BY`) are
+offered by the rows their tile's sources hold (`bld::sources::Sources::rows_for`), not a memory
+guess: their runs note the rows they read (bldprep its sources', bldtiles its normalized files',
+at most those), and a target not run yet is fitted by its offered rows like a size of its own. A fit is judged on runs held out of it
 (5 folds) and not used when it predicts under on more than 5% of them, is off by more than 50% on
 the median one, or has fewer than 10 runs. The models are kept until a cost, floor or disk floor
 changes. The coordinator's picks (`pick`, `pick_every`, `measured`, `secs_of`, `peak`), its floors
@@ -1510,9 +1512,12 @@ sizing measured what the runs held; their work had moved under them within one v
 (slope-hi makes every z10 tile's z10-12 itself) raised slope-hi to version 5 in #929's merge, so
 none of those runs counts now; the replay above was run on the code before that merge.
 
-**A cold start** (no target of its step measured; task #499) is packed by its *provisional need*:
-the most its step declares (the steps table's `mem_mb`) or it was offered with, times 3/2
-(`coord::sched::provisional_mb`), its disk its step's measures' (else none); its cores its step's
+**A cold start** (no target of its step measured the way it runs now; task #499) is packed by its
+*provisional need*: the most its step's runs of its latest earlier way measured (`cost_version`
+raised; their 90th percentile, or the target's own run of it, the larger: `needs::Book::older_mem`,
+task #979; floors of that way stay out) or it was offered with (unit's and pois' extract-size guess,
+terrain-hi's bound), times 3/2 (`coord::sched::provisional_mb`), its disk its step's measures'
+(else none); with neither, it has no figure and runs alone (`Sched::no_figure`); its cores its step's
 use on the Mac where its timings have any (§7.1, task #947), else one thread (task #896)
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
 `slope-deep` and `terrain-deep`, on the rayon pool the agent sizes, terrain-deep's
@@ -1521,8 +1526,8 @@ flight, `fetch::HOST_REQUESTS`), else the whole
 Mac. It goes beside other jobs when that fits the room left, and other jobs go beside it by the
 same figures; one bigger than a Mac's whole room goes only to a Mac holding no job. At most one
 cold start runs on a Mac (two unknown needs never meet), and a step never measured in any way (no
-cost, floor or disk of any way it ran: `never_measured`) runs alone, nothing beside it, as every
-cold start did before task #499. A cold job of the lead's own that can't go beside its jobs
+cost, floor or disk of any way it ran: `never_measured`), or one with no provisional need, runs
+alone, nothing beside it, as every cold start did before task #499. A cold job of the lead's own that can't go beside its jobs
 holds the lead's asks until they end, then goes before any other work (`own_cold_waits`). One job of the step
 runs in the pool at a time (`pick_every`, the lead's `cold_under_way`), so the step is measured
 before it fans out. Its Mac's room left is never more than what its jobs hold now leaves (§7.2,
@@ -1530,9 +1535,11 @@ before it fans out. Its Mac's room left is never more than what its jobs hold no
 as the guard samples it; one that grows until its Mac is below its memory floor is the memory
 guard's (§7.2), which learns its floor. After one run, the step's other targets are offered by its model (above).
 **A records-only step** (the steps table's `records_only`: `redo`, whose jobs only change build
-records; task #838) is never a cold start: its job is packed at its declared memory, no disk, one
-thread counted for no cores, so it goes beside any jobs (a long one holding the whole Mac
-included) and never holds the lead's asks. A floor never stalls the build: the first slot starts once
+records; task #838) is packed at one thread counted for no cores and no disk, its memory measured
+as any step's (task #979: a redo job notes its run under "redo redo", `agent::redo::note_cost`, so
+each new ask's job is sized by its step's runs): measured, it goes beside any jobs (a long one
+holding the whole Mac included); never measured, its first job waits for the lead's jobs to end, as
+any step's (`own_cold_waits`). A floor never stalls the build: the first slot starts once
 room-making has done what it can, the disk guard as backstop.
 
 Planned: `cost_version` derived from the step's key version (`crate::agent::build`'s `*_V`) rather

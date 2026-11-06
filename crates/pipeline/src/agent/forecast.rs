@@ -1743,9 +1743,12 @@ fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
                 break;
             }
             // (Its size as offered: a z6 tile's or candidates' extract bytes, sizing their first
-            // guess at the memory its cost says; another step's its memory.)
+            // guess at the memory its cost says; another step's its memory; none for a step offered
+            // by an input measure (crate::needs::OFFERED_BY), which its item doesn't carry: its
+            // step's measures size it.)
             let size = match it.step.as_str() {
                 "unit" | "pois" => (it.cost.peak_mb << 20) / 10,
+                s if crate::needs::offered_by(s).is_some() => 0,
                 _ => it.cost.peak_mb,
             };
             let target = (it.target.clone(), KEY.to_string(), size);

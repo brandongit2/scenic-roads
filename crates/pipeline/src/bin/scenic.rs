@@ -1290,6 +1290,7 @@ fn job_cancel(target: &str, step: Option<&str>, rerun_after_update: bool, home: 
 fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> Result<()> {
     use pipeline::agent::redo;
     use pipeline::pool::{records::Records, term};
+    let t0 = std::time::Instant::now();
     let (step, targets) = redo::checked(step, targets)?;
     let r = root(root_, false)?;
     let mut records = || -> Result<Records> {
@@ -1305,12 +1306,15 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
         .filter(|(_, k)| k.is_some())
         .map(|(t, _)| t.to_string())
         .collect();
+    // (A job's run, the lead's redo job, ends here: its cost noted, redo::note_cost.)
     if todo.is_empty() {
         println!("nothing to clear");
+        redo::note_cost(t0);
         return Ok(());
     }
     if !run {
         println!("a dry run: `scenic redo {step} {} --run` asks the lead to clear them", todo.join(" "));
+        redo::note_cost(t0);
         return Ok(());
     }
     let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?

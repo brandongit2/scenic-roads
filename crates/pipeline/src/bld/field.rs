@@ -55,12 +55,6 @@ pub const LAYER: &str = "buildings-field";
 pub const ENCODING: &str = "field5-webp";
 /// Bumped when the lo step's output changes (every `bldfield-lo` target runs again).
 pub const LO_V: u32 = 1;
-/// A tile's planes, every class (MB).
-const PLANES_MB: u64 = ((K * 3 * T * T * 4) >> 20) as u64;
-/// What `bldfield-lo` holds at most (MB): one z6 tile's mid at a time, its 16 z8 tiles' planes both
-/// decompressed and read (`read_mid`), the four level-7 tiles and the parent, the levels above's
-/// four children each (levels 4 and 5), and 256 MB for the program.
-pub const LO_PEAK_MB: u64 = 256 + 16 * PLANES_MB * 2 + (5 + 4 * 2) * PLANES_MB;
 
 /// Fixed-point scales: coverage, coverage × top (m), wall area (m²).
 const SF: f64 = (1u64 << 32) as f64;
@@ -877,7 +871,7 @@ pub fn lo(
             let p = pieces.piece((6, x, y), || Ok(out_piece(&z6(x, y, mid)?)))?;
             return out_unpiece(&p);
         }
-        // (One z6 tile's mid at a time: `LO_PEAK_MB`.)
+        // (One z6 tile's mid at a time.)
         let kids: Vec<Out> =
             (0..4u32).map(|q| node(z + 1, x * 2 + q % 2, y * 2 + q / 2, mid, pieces)).collect::<Result<_>>()?;
         Ok(up(z, x, y, kids))

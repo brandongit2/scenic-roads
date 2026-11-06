@@ -336,12 +336,12 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   any member may take with ⇄ (`agent::steps::place`).
 - **What fits a member:** each target is offered with its expected memory: a `unit` job's from its extract;
   another's what its last run took (sampled four times a second, `SCENIC_COSTS`), else a related
-  measure, else a first guess per step (terrain-hi z6 tile 3.3 GB, its assembly 1.2, terrain-deep z10
-  tile from the code's bounds, `terrain_deep::target_peak_mb`, tree cover z6 tile 1, peaks 2.5;
-  slope's from the tiles it holds, `slope_pack::peak_mb`, `deep_peak_mb` and `lo_peak_mb`; the 3D
-  buildings' by the rows they read, `agent::bld_peak`); terrain-hi's, terrain-deep's, slope-deep's and
-  slope-hi's with what their process holds of the coverage it reads added
-  (`coverage::Coverage::read_peak_mb`: its rings, grids, edge trees, kept bytes and the memos' cap). Measures
+  measure (its neighbours', its step's fit or runs: `needs::Book`; the 3D buildings fitted by the
+  rows they read). Nothing is a hand-kept figure: before its step has run the way it runs now, a
+  target is a cold start (docs/pool.md §7.7), sized by its step's runs of an earlier way, terrain-hi's
+  by its code's bound (`agent::terrain_peak`, with what its process holds of the coverage it reads,
+  `coverage::Coverage::read_peak_mb`: its rings, grids, edge trees, kept bytes and the memos' cap),
+  else run alone. Measures
   of older `coord::cost_version`s count for nothing. A member asks only for steps its disk has room
   for, never while a newer app waits, and takes the earliest step with a fitting target, from the
   front of the plan (the coordinator's `pick_every`; after its own last target of the step when

@@ -1548,7 +1548,6 @@ function stepCard(m, it) {
     ["Makes", row?.does],
     ["Kind", row ? `${row.kind} · ${row.of ? `tasks of ${row.of}` : row.scope}` : null],
     ["Runs on", row ? (row.place === "any" ? "any Mac of the pool with room for it" : "the lead only") : null],
-    ["Memory", row?.mem_mb ? `about ${(row.mem_mb / 1024).toFixed(1)} GB a job until measured` : null],
     ["Work left", !done && f?.work_s ? dur(f.work_s) : null],
     ["Done ≈", !done && f?.done_at ? clock(f.done_at) : null],
     ["A target", each ? `≈ ${dur(each)}` : null],

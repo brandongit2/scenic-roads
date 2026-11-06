@@ -429,7 +429,7 @@ The choices, against the alternatives:
   the plan and the steps table import them), `grown_e7` to roadcore::geo, `coverage_tiles` (with
   `near_coverage`, from terrain_pack) to buildstore::coverage, `h`, `ahead_on` (with
   `AHEAD_ENV`) to jobrt::jobs, `app_version` to jobrt::sys, `nasread::timed_out` to
-  buildstore::records::nas, `bldtiles_peak` to bld, the depth's read boxes (`depth_hi_box_read`,
+  buildstore::records::nas, the depth's read boxes (`depth_hi_box_read`,
   `depth_lo_box`) to depth::build, and the in-memory tars (`histarchive::{build, list_tar}`, which
   depth::lakes writes its grids with) to codecs::tar. Still above: `publish::map_now` (namestodo;
   it asks the lead's coordinator through coord::client, so it goes to buildstore with coordwire,

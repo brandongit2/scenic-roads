@@ -231,24 +231,6 @@ pub fn target_key_lines(sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> Str
     out.join("\n")
 }
 
-/// The most memory (MB) a target's run takes, from its bounds: its tiles as a z6 tile's run holds
-/// its levels (crate::terrain_pack::piece_peak_mb's parts: its tiles held until written, z13 to
-/// `MAX_Z` under a z10 tile, ~270 KB each made; a level's quarters; the pool's chunks being
-/// sampled, crate::terrain_base::sampling_mb, and the samplers' caches,
-/// crate::dem::generic::samplers_mb).
-pub const fn target_peak_mb() -> u64 {
-    let mut tiles = 0u64;
-    let mut z = FIRST_Z;
-    while z <= MAX_Z {
-        tiles += 1 << (2 * (z - PACK_Z));
-        z += 1;
-    }
-    tiles * 270 / 1024
-        + (1 << (2 * (MAX_Z - PACK_Z))) / 4
-        + crate::terrain_base::sampling_mb()
-        + crate::dem::generic::samplers_mb()
-}
-
 /// Deep pack `x`, `y`'s logical name (a z10 tile).
 pub fn pack_logical(x: u32, y: u32) -> String {
     format!("{PREFIX}{PACK_Z}-{x}-{y}")

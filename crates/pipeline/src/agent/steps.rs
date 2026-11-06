@@ -13,8 +13,7 @@
 //!   groups and colours.
 //! - **place**: which Mac runs it (`Place`: the lead alone, or any member), derived from the pool's
 //!   rules (crate::agent::every), never kept by hand.
-//! - **resources**: the memory a job of it is first guessed to take until a target's own run says,
-//!   whether members take it (the shared steps; which ready job goes first is derived from the
+//! - **resources**: whether members take it (the shared steps; which ready job goes first is derived from the
 //!   reads, `readers_first`, never kept by hand), whether it's the lead's alone (a
 //!   run alone of the whole build, or one that keeps the pass's answers: crate::agent::every), and
 //!   what it may write (its write-set: the logical names its jobs may add, change or remove in the
@@ -29,11 +28,11 @@
 //! behind it), groups of steps never run at once on one Mac (the raw tiles' accessor, the budgets'
 //! proxy and the answers' lease guard what they share where it's used), and which jobs run beside
 //! which (the coordinator packs a Mac's jobs by their measures; a cold start by its provisional
-//! need, `mem_mb` times 3/2: docs/pool.md §7.7).
+//! need, from its step's runs of an earlier way: docs/pool.md §7.7), nor any memory figure (a
+//! step's memory is measured, task #979: one never measured runs alone).
 //!
 //! The step sets (`SHARED`, `ANSWERED`) are made from the table at compile time (a set whose size
-//! isn't what the table gives fails the build), and a step's first guess of memory is read from its
-//! row (`row`).
+//! isn't what the table gives fails the build).
 //!
 //! The write-sets: one outputs function per step (`writes`, its row's), which both ends use, so
 //! they can't disagree (docs/pool.md §7.3, §12 phase 4's sixth batch): a job's `Out`, bound to its
@@ -145,11 +144,6 @@ pub struct Step {
     pub scope: Scope,
     /// Its stage's id (`STAGES`).
     pub stage: &'static str,
-    /// The memory a job of it is expected to take (MB) before a target's own run has said
-    /// (`SCENIC_COSTS`, crate::coord::Cost): offered so to the members, and a cold start packed
-    /// beside other jobs at 3/2 of it (crate::coord::sched::provisional_mb). (Z6 tiles and candidates are offered by their extract's size, terrain by its z3 tile's,
-    /// the 3D buildings by their rows: crate::agent's offers.)
-    pub mem_mb: u64,
     /// Other members take its jobs (the shared steps). No preference among them is kept here:
     /// which ready job goes first is derived from the reads (`readers_first`).
     pub shared: bool,
@@ -161,8 +155,8 @@ pub struct Step {
     /// Its write-set: whether a job of it may write `logical` (`removal`: removes it), for some
     /// target of its own.
     pub writes: fn(&str, bool) -> bool,
-    /// Its jobs only change build records (no file made, read or removed): never a cold start,
-    /// packed beside any jobs at one thread and little memory (task #838, crate::coord::sched).
+    /// Its jobs only change build records (no file made, read or removed): packed beside any jobs at
+    /// one thread counted for no cores, at its measured memory (task #838, crate::coord::sched).
     pub records_only: bool,
     /// Everything one target of it reads, and so waits for (`Read`, docs/readiness.md §2): the
     /// planner, the forecast, the page and `scenic status` all answer readiness per target from it
@@ -845,7 +839,6 @@ const fn step(
         kind,
         scope,
         stage,
-        mem_mb: 1500,
         shared: false,
         alone: false,
         answered: false,
@@ -885,10 +878,7 @@ pub const TABLE: [Step; 60] = [
             w_pass_sets,
         )
     },
-    // (osmium's export of the outline set and the assembly: 8.3 GB at most measured, the
-    // 2026-09-28 set, 5 min 20 s on the M4, 2026-10-15.)
     Step {
-        mem_mb: 9216,
         alone: true,
         versions: &[("outlines", || super::build::OUTLINES_V.to_string())],
         reads: &[
@@ -924,10 +914,7 @@ pub const TABLE: [Step; 60] = [
         reads: &[In { name: "pieces", of: idents::pieces }],
         ..step("pass", Derive, World, "reach", "Works out how far each tile's roads reach.", w_reach)
     },
-    // (`buildtiles::WORKERS` files read at once: 2.1 GB at the peak on the Mac mini, 23 Oct, task
-    // #579.)
     Step {
-        mem_mb: 2600,
         alone: true,
         ..step(
             "pass",
@@ -943,11 +930,7 @@ pub const TABLE: [Step; 60] = [
         versions: &[("summits", || super::build::SUMMITS_V.to_string())],
         reads: &[In { name: "set:summits", of: idents::set_summits }, All { step: "terrain-lo", grain: Outputs }],
         ..step("pass", Derive, World, "summits", "Finds the world's summits.", w_summits) },
-    // (The labels' 6.7M rows held with their tiles: the process peaked at 2.6 GB on the 2026-09-28
-    // pass, 23 Oct, measured by sampling its RSS; osmium's own processes, run beside it, are
-    // not in that.)
     Step {
-        mem_mb: 3072,
         alone: true,
         versions: &[("labels", || super::build::LABELS_V.to_string())],
         reads: &[In { name: "set:labels", of: idents::set_labels }],
@@ -960,10 +943,7 @@ pub const TABLE: [Step; 60] = [
             w_labels,
         )
     },
-    // (The lakes filled from Canada's own data: a band's lakes and their pieces held, and the
-    // merged fill's, 10.4 GB at most measured, 2026-10-15.)
     Step {
-        mem_mb: 12288,
         alone: true,
         ..step(
             "pass",
@@ -974,10 +954,7 @@ pub const TABLE: [Step; 60] = [
             w_lakefill,
         )
     },
-    // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
-    // 2026-10-08.)
     Step {
-        mem_mb: 8192,
         alone: true,
         versions: &[("water", || crate::water::VERSION.to_string())],
         reads: &[In { name: "basemap", of: idents::basemap }, In { name: "lakefill", of: idents::lakefill }],
@@ -1011,7 +988,6 @@ pub const TABLE: [Step; 60] = [
     // The coastline's land (crate::inputs::regions::land): the pass's coastline set assembled and
     // cut by 2° cell, every node and ring held at once.
     Step {
-        mem_mb: 8192,
         alone: true,
         versions: &[("regions-land", || crate::inputs::regions::land::LAND_V.to_string())],
         reads: &[In { name: "pass", of: idents::pass }, In { name: "set:coastline", of: idents::set_coastline }],
@@ -1087,12 +1063,8 @@ pub const TABLE: [Step; 60] = [
             w_terrain_hi,
         )
     },
-    // (Its memory from the code's bounds, crate::terrain_deep::target_peak_mb; the agent adds the
-    // coverage its process reads, crate::coverage::Coverage::read_peak_mb. Until a target's own run
-    // says.)
     Step {
         cost_v: 1,
-        mem_mb: crate::terrain_deep::target_peak_mb(),
         shared: true,
         versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || crate::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, Of { step: "pyramids-fill", of: z6_of_z10, grain: Grain::Read(idents::nothing) }],
@@ -1105,11 +1077,8 @@ pub const TABLE: [Step; 60] = [
             w_terrain_deep,
         )
     },
-    // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its z6 tiles' z9 means, up to 4 MB a
-    // z6 tile, and half a GB besides.)
     Step {
         cost_v: 3,
-        mem_mb: 1200,
         versions: &[("terrain-lo", || super::build::TERRAIN_LO_V.to_string()), ("terrain-hi", || crate::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[Mids { step: "terrain-hi", of: z6_of_z3, named: idents::terrain_mids }, In { name: "datasets:terrain", of: idents::datasets_terrain }],
         ..step(
@@ -1136,12 +1105,8 @@ pub const TABLE: [Step; 60] = [
             w_terrain_root,
         )
     },
-    // (Slope's memory from the tiles each job holds: crate::slope_pack::deep_peak_mb, peak_mb,
-    // lo_peak_mb; slope-deep's and slope-hi's with the coverage their process reads added by the
-    // agent, crate::coverage::Coverage::read_peak_mb.)
     Step {
         cost_v: 1,
-        mem_mb: crate::slope_pack::deep_peak_mb(),
         shared: true,
         versions: &[("slope-deep", || crate::slope_pack::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
         reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }],
@@ -1156,7 +1121,6 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         cost_v: 5,
-        mem_mb: crate::slope_pack::peak_mb(),
         shared: true,
         versions: &[("slope-hi", || crate::slope_pack::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
         reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }, In { name: "root-tiles", of: idents::root_tiles }],
@@ -1171,7 +1135,6 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         cost_v: 1,
-        mem_mb: crate::slope_pack::lo_peak_mb(),
         versions: &[("slope-lo", || crate::slope_pack::SLOPE_LO_V.to_string()), ("slope", || crate::slope_pack::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
         reads: &[Of { step: "slope-hi", of: z6_of_z3, grain: Grain::Read(idents::slope_mids) }, Of { step: "terrain-lo", of: sl_lo, grain: Outputs }, All { step: "terrain-root", grain: Grain::Read(idents::terrain_root) }],
         ..step(
@@ -1184,11 +1147,9 @@ pub const TABLE: [Step; 60] = [
         )
     },
     // The polar caps past the Web Mercator tiles' 85.05° (crate::polar; docs/polar.md): a block's
-    // terrain, then its shading, then a pole's root of both. (A block's z9 tiles held whole: its
-    // heights and shading, 1 GB, and the pool's cache: 3.4 GB at most measured on the M4, 25 Oct.)
+    // terrain, then its shading, then a pole's root of both.
     Step {
         cost_v: 1,
-        mem_mb: 4096,
         versions: &[("polar-terrain", || crate::polar::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[In { name: "datasets:polar", of: idents::datasets_polar }],
         ..step(
@@ -1201,7 +1162,6 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        mem_mb: 2048,
         versions: &[("polar-slope", || crate::polar::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
         reads: &[Of { step: "polar-terrain", of: ps_terrain, grain: Grain::Read(idents::polar_neighbours) }],
         ..step(
@@ -1226,17 +1186,10 @@ pub const TABLE: [Step; 60] = [
             w_polar_root,
         )
     },
-    // (Tree cover's program holds a band of a block's rows on each thread and the blocks made but
-    // not yet written: 1.05 GB on 14 threads for 3/2/2's 792 blocks, 2026-10-05; a z6 tile has 16
-    // blocks at most. Its assembly its z3 tile's blocks' zoom-8 values, compressed. A job that makes
-    // a leaf-type square holds it whole and four chunks' source windows: 2.3 GB at most for six
-    // NALCMS squares, 0.8 GB for two of the EEA's, task #580, 2026-10-23. A first guess only: each
-    // target's measured peak replaces it.)
     // (Cost version 3: the canopy rows read where they lie and counted, its blocks paced, task #606:
     // 2's copied whole squares uncounted, so its NAS weight was its uploads alone.)
     Step {
         cost_v: 3,
-        mem_mb: 2500,
         shared: true,
         versions: &[("trees", || crate::treepacks::TREES_V.to_string())],
         reads: &[In { name: "coverage:inside", of: idents::coverage_inside }, In { name: "trees-sources", of: idents::trees_sources }],
@@ -1244,7 +1197,6 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         cost_v: 1,
-        mem_mb: 500,
         versions: &[("trees-lo", || crate::treepacks::TREES_LO_V.to_string()), ("trees", || crate::treepacks::TREES_V.to_string())],
         reads: &[Mids { step: "trees", of: z6_of_z3, named: idents::trees_mids }],
         ..step(
@@ -1256,13 +1208,7 @@ pub const TABLE: [Step; 60] = [
             w_trees_lo,
         )
     },
-    // (The lakes' estimated depth, a z6 tile's sources made by it (crate::depth::lakes): HydroLAKES'
-    // and GLOBathy's files streamed, a z10 tile's basemap water and grid (64 MB) at a time, each
-    // grid kept encoded: 2.0 GB footprint measured for Minnesota's and Québec's lake-dense tiles
-    // (6/15/22, 6/18/22: their small lakes' packs 240 and 370 MB, held twice as packed). The depth
-    // waits for it. Until a target's own run says.)
     Step {
-        mem_mb: 2000,
         shared: true,
         versions: &[("lake-depth", || crate::depth::lakes::V.to_string())],
         reads: &[
@@ -1279,15 +1225,11 @@ pub const TABLE: [Step; 60] = [
             w_lake_depth,
         )
     },
-    // (Depth: a block's arrays and distance fields, ~0.3 GB; the sources' blocks read, 0.5 GB at
-    // most; the tiles made, kept as PNG; the water of a level's tiles, 0.13 GB at most. Until a
-    // target's own run says.)
     // (Cost version 2: composed only at a grid's own zoom, the coarser levels the means of the finer,
     // and the floor's shading's assembly made in depth-lo, task #804; 1: a grid lined up with no
     // overview sampled from one askew, task #433.)
     Step {
         cost_v: 2,
-        mem_mb: 2500,
         shared: true,
         versions: &[("depth", || super::build::depth_versions("depth"))],
         reads: &[
@@ -1304,11 +1246,8 @@ pub const TABLE: [Step; 60] = [
             w_depth,
         )
     },
-    // (A z3 tile's assembly: its composing, ~2 GB, then its floor's shading, from what that holds
-    // (crate::depth::build::lo_peak_mb).)
     Step {
         cost_v: 2,
-        mem_mb: crate::depth::build::lo_peak_mb(),
         versions: &[("depth-lo", || super::build::depth_versions("depth-lo"))],
         reads: &[
             Of { step: "depth", of: z6_of_z3, grain: Outputs },
@@ -1338,7 +1277,6 @@ pub const TABLE: [Step; 60] = [
             w_depth_root,
         )
     },
-    // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
     // (Cost version: a z6 tile's measure its job's processes together, as the memory guard measures a
     // job; 0 was its programs' most, one at a time; 2: its processes started without malloc's large
     // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks; 3: its
@@ -1346,7 +1284,6 @@ pub const TABLE: [Step; 60] = [
     // vertices at once: 16 GB for the densest.)
     Step {
         cost_v: 3,
-        mem_mb: 8600,
         shared: true,
         versions: &[("unit", || super::build::UNIT_V.to_string())],
         reads: &[In { name: "extract", of: idents::extract }, In { name: "roads", of: idents::roads }, In { name: "ways", of: idents::ways }, In { name: "elevation", of: idents::elevation }, In { name: "unit-sources", of: idents::unit_sources }, Of { step: "terrain-lo", of: u_lo, grain: Grain::Tiles(idents::unit_tiles) }, Of { step: "terrain-hi", of: u_hi, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-deep", of: u_deep, grain: Grain::Tiles(idents::unit_deep_tiles) }, OfAlong { step: "terrain-lo", of: ua_lo }, OfAlong { step: "terrain-hi", of: ua_hi }, OfAlong { step: "terrain-deep", of: ua_deep }, All { step: "heritage-sites", grain: Grain::Read(idents::heritage_slices) }, All { step: "reach", grain: Grain::Read(idents::nothing) }, All { step: "buildings", grain: Grain::Read(idents::roadside) }],
@@ -1410,7 +1347,6 @@ pub const TABLE: [Step; 60] = [
         // (The coverage read from the regions, the pass's outlines for its countries, then the
         // feeds' checks, in one process: 4.46 GB at its peak on the Mac mini, 23 Oct, task #578;
         // the coverage itself, shared with every step, is most of it.)
-        mem_mb: 5632,
         versions: &[("rail-feeds", || super::build::RAIL_FEEDS_V.to_string())],
         reads: &[In { name: "feeds", of: idents::feeds_declared }, In { name: "feed-keys", of: idents::feed_keys }, In { name: "feeds-reads", of: idents::feeds_reads }, In { name: "coverage:all", of: idents::coverage_all }],
         ..step(
@@ -1423,27 +1359,23 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        mem_mb: 6144,
         versions: &[("rail", || super::build::RAIL_V.to_string())],
         reads: &[All { step: "rail-feeds", grain: Grain::Read(idents::rail_feeds) }, In { name: "rail-reads", of: idents::rail_reads }, In { name: "coverage:all", of: idents::coverage_all }, In { name: "spacing", of: idents::spacing }],
         ..step("trains", Derive, World, "rail", "Counts trains a day on the regions' rail.", w_rail)
     },
     Step {
-        mem_mb: 2048,
         shared: true,
         versions: &[("pois", || super::build::POIS_V.to_string())],
         reads: &[In { name: "extract", of: idents::extract }, In { name: "coverage:clip", of: idents::coverage_clip }, All { step: "trailends", grain: Grain::Read(idents::pass_trailends) }, In { name: "spacing", of: idents::spacing }],
         ..step("landmarks", Derive, Z6, "pois", "Finds a tile's landmark candidates.", w_pois)
     },
     Step {
-        mem_mb: 2500,
         shared: true,
         versions: &[("peaks", || super::build::PEAKS_V.to_string())],
         reads: &[Of { step: "pois", of: own, grain: Outputs }, All { step: "summits", grain: Grain::Read(idents::pass_summits) }, All { step: "terrain-lo", grain: Outputs }, Of { step: "terrain-hi", of: peaks_hi, grain: Outputs }],
         ..step("landmarks", Derive, Z6, "peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {
-        mem_mb: 3072,
         answered: true,
         versions: &[("items", || super::build::ITEMS_V.to_string())],
         reads: &[In { name: "pass", of: idents::pass }, All { step: "pois", grain: Grain::Read(idents::pois_now) }],
@@ -1460,7 +1392,6 @@ pub const TABLE: [Step; 60] = [
     // planet; 0's floor, 21.9 GB, no run with its memory timed came near: 6.4 GB, the clip's 4 GB.)
     Step {
         cost_v: 1,
-        mem_mb: 6144,
         answered: true,
         versions: &[("heritage", || super::build::HERITAGE_V.to_string())],
         reads: &[In { name: "pass", of: idents::pass }, All { step: "heritage-sites", grain: Grain::Read(idents::heritage_sites_out) }, In { name: "heritage-sets", of: idents::heritage_sets }, In { name: "coverage:all", of: idents::coverage_all }],
@@ -1474,7 +1405,6 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        mem_mb: 4096,
         versions: &[("marks", || super::build::MARKS_V.to_string())],
         reads: &[All { step: "items", grain: Grain::Read(idents::items_out) }, All { step: "heritage", grain: Grain::Read(idents::heritage_marks) }, All { step: "pois", grain: Grain::Read(idents::units_pois) }, All { step: "peaks", grain: Grain::Read(idents::units_peaks) }],
         ..step(
@@ -1487,19 +1417,14 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        mem_mb: 4096,
         versions: &[("overlays", || super::build::OVERLAYS_V.to_string())],
         reads: &[In { name: "heritage-dots", of: idents::heritage_dots }, All { step: "heritage", grain: Grain::Read(idents::heritage_areas) }, In { name: "base-tiles", of: idents::base_tiles }, All { step: "items", grain: Grain::Read(idents::nothing) }, All { step: "pois", grain: Grain::Read(idents::nothing) }, All { step: "peaks", grain: Grain::Read(idents::nothing) }],
         ..step("landmarks", Pack, World, "overlays", "Draws the area overlays.", w_overlays)
     },
-    // (The coverage read, its outlines indexed (GEOS), the release's footers read, in one process:
-    // 4.7 GB at its peak on the Mac mini, 23 Oct, task #579, the coverage most of it; the downloads
-    // stream.)
     // (Cost version 1: the coverage asked by distance, never grown, task #493: 0's floors, 43 GB from
     // buffering the regions' outlines, no run since came near: 0.2 GB.)
     Step {
         cost_v: 1,
-        mem_mb: 5632,
         versions: &[("bld-fetch", || super::build::BLD_FETCH_V.to_string())],
         reads: &[In { name: "bld-key", of: idents::bld_key }, In { name: "coverage:all", of: idents::coverage_all }],
         ..step(
@@ -1511,10 +1436,8 @@ pub const TABLE: [Step; 60] = [
             w_none,
         )
     },
-    // (The 3D buildings, until a target's own run says: the densest tile's, Kantō's 6/56/25 and its
-    // 30.3 M rows, by the models of task #579's reads and B5's pilot. Offered by the rows they read.)
+    // (The 3D buildings: offered by the rows they read, crate::needs::OFFERED_BY.)
     Step {
-        mem_mb: super::bldprep_peak(30_300_000),
         shared: true,
         versions: &[("bldprep", || crate::bld::BLDPREP_V.to_string())],
         reads: &[In { name: "bld-key", of: idents::bld_key }, In { name: "bld-rows", of: idents::bld_rows }],
@@ -1528,7 +1451,6 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        mem_mb: crate::bld::bldtiles_peak(30_300_000),
         shared: true,
         versions: &[("bldtiles", || crate::bld::BUILDINGS_V.to_string())],
         reads: &[Of { step: "bldprep", of: bt_prep, grain: Grain::Read(idents::bld_prepared) }, In { name: "bld-sources", of: idents::bld_sources }, In { name: "coverage:shapes", of: idents::coverage_shapes }, In { name: "bld-heritage", of: idents::bld_heritage }],
@@ -1541,9 +1463,7 @@ pub const TABLE: [Step; 60] = [
             w_bldtiles,
         )
     },
-    // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
     Step {
-        mem_mb: crate::bld::field::LO_PEAK_MB,
         versions: &[("bldfield-lo", || crate::bld::field::LO_V.to_string())],
         reads: &[Of { step: "bldtiles", of: z6_of_z3, grain: Grain::Read(idents::bld_mids) }, In { name: "bld-sources", of: idents::bld_sources }],
         ..step(
@@ -1616,7 +1536,6 @@ pub const TABLE: [Step; 60] = [
     Step {
         alone: true,
         records_only: true,
-        mem_mb: 256,
         ..step(
             "upkeep",
             Keep,
@@ -1752,8 +1671,6 @@ pub struct Info {
     pub noun: String,
     pub stage: String,
     pub place: Place,
-    /// The memory a job of it is first guessed to take (MB).
-    pub mem_mb: u64,
     /// A task's: the step whose jobs offer it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub of: Option<String>,
@@ -1769,7 +1686,6 @@ pub fn table() -> Vec<Info> {
         noun: s.scope.noun().into(),
         stage: s.stage.into(),
         place: place(s.name),
-        mem_mb: s.mem_mb,
         of: None,
     });
     let tasks = TASKS.iter().map(|t| {
@@ -1782,17 +1698,10 @@ pub fn table() -> Vec<Info> {
             noun: Scope::Task.noun().into(),
             stage: s.stage.into(),
             place: Place::Any,
-            mem_mb: 0,
             of: Some(t.step.into()),
         }
     });
     steps.chain(tasks).collect()
-}
-
-/// The memory a job of `step` is expected to take before its own run has said (MB; 1.5 GB for a
-/// step the table doesn't know).
-pub fn mem_mb(step: &str) -> u64 {
-    row(step).map_or(1500, |s| s.mem_mb)
 }
 
 /// Whether `step`'s jobs only change build records (`Step::records_only`).
@@ -2678,38 +2587,6 @@ mod tests {
 
     #[test]
     fn the_rows_are_todays() {
-        // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
-        // where they differed: the network steps', a z6 tile's and candidates', which nothing offered
-        // by the former).
-        let mem: [(&str, u64); 22] = [
-            ("lakefill", 12288),
-            ("outlines", 9216),
-            ("heritage", 6144),
-            ("rail", 6144),
-            ("items", 3072),
-            ("rail-feeds", 5632),
-            ("buildings", 2600),
-            ("bld-fetch", 5632),
-            ("marks", 4096),
-            ("overlays", 4096),
-            ("unit", 8600),
-            ("pois", 2048),
-            ("trees", 2500),
-            ("trees-lo", 500),
-            ("terrain-lo", 1200),
-            ("slope", crate::slope_pack::peak_mb()),
-            ("slope-lo", crate::slope_pack::lo_peak_mb()),
-            ("depth-lo", crate::depth::build::lo_peak_mb()),
-            ("peaks", 2500),
-            ("water", 8192),
-            ("bldprep", super::super::bldprep_peak(30_300_000)),
-            ("bldtiles", crate::bld::bldtiles_peak(30_300_000)),
-        ];
-        for (s, mb) in mem {
-            assert_eq!(mem_mb(s), mb, "{s}");
-        }
-        assert_eq!(mem_mb("labels"), 3072);
-        assert_eq!(mem_mb("not a step"), 1500);
         // No row twice.
         for s in TABLE.iter().map(|s| s.name) {
             assert_eq!(TABLE.iter().filter(|r| r.name == s).count(), 1, "{s}");
