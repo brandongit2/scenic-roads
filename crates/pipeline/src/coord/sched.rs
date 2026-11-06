@@ -106,7 +106,8 @@ pub struct Sched {
     /// Placement by how crucial a job is (docs/pool.md §12, phase 4's eleventh batch:
     /// crate::agent::placement), while the lead's switch has it on, and when it was first told (its
     /// draws' windows are reckoned from then): the offers tried by their steps' slack, a member's
-    /// targets and the tasks drawn among those asking by measured speed, a task offered ahead given
+    /// targets drawn among those asking by their paces (crate::paces), the tasks by their measured
+    /// pace at the kind, a task offered ahead given
     /// to a slower worker its head start covers. None: as before.
     pub placement: Option<(crate::agent::placement::Placement, Instant)>,
     /// The NAS budget's limits (docs/pool.md §7.7, crate::budget::nas): the NAS's as probed, and the
@@ -1946,7 +1947,7 @@ impl Sched {
             .map(|i| i + 1);
         let start = match &self.placement {
             // (Placement on: from the target measured to take longest that's drawn to this worker.)
-            Some((p, since)) => self.placed_start(o, a, p, *since, now, &held, after, &takeable),
+            Some((_, since)) => self.placed_start(o, a, *since, now, &held, after, &takeable),
             None => after
                 .filter(|&i| i < o.targets.len() && takeable(i))
                 .or_else(|| (0..o.targets.len()).find(|&i| takeable(i))),
@@ -2062,7 +2063,6 @@ impl Sched {
         &self,
         o: &Offer,
         a: &Ask,
-        p: &crate::agent::placement::Placement,
         since: Instant,
         now: Instant,
         held: &BTreeSet<String>,
@@ -2109,10 +2109,10 @@ impl Sched {
                         && self.may_take_measured(o, x, t, k, &m, held, now)
                         && !self.swamped(n, x, now)
                         && self.would_take_now(n, w.asked?, x, &m, now);
-                    takes.then(|| (n.clone(), self.draw_weight(p, &o.step, n, x)))
+                    takes.then(|| (n.clone(), self.draw_weight(&o.step, n, x)))
                 })
                 .collect();
-            who.push((a.worker.clone(), self.draw_weight(p, &o.step, &a.worker, a)));
+            who.push((a.worker.clone(), self.draw_weight(&o.step, &a.worker, a)));
             placement::draw(&placement::key(&format!("{} {t}", o.step), window), &who) == Some(a.worker.as_str())
         })
     }
@@ -2136,11 +2136,12 @@ impl Sched {
     }
 
     /// Worker `n`'s weight in placement's draw for a target of `step`, as its last ask `x` says:
-    /// its measured speed at the step (`Placement::weight`), `CACHE_PREFER` times that where its
-    /// Mac holds the step's shared cache whole (`holds_cache`).
-    pub(super) fn draw_weight(&self, p: &crate::agent::placement::Placement, step: &str, n: &str, x: &Ask) -> f64 {
+    /// its Mac's speed at the step, the inverse of its pace there (`paces`, crate::paces::Paces::get:
+    /// at the step, else over its steps, else the lead's), `CACHE_PREFER` times that where its Mac
+    /// holds the step's shared cache whole (`holds_cache`).
+    pub(super) fn draw_weight(&self, step: &str, n: &str, x: &Ask) -> f64 {
         let cache = if self.holds_cache(step, x) { crate::agent::placement::CACHE_PREFER } else { 1.0 };
-        p.weight(n, step) * cache
+        cache / self.paces.get(n, step)
     }
 
     /// Whether the Mac asking `a` holds the shared cache a job of `step` reads whole (its ask's

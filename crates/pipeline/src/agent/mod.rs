@@ -1573,9 +1573,6 @@ pub struct Agent {
     heal_seen: u64,
     /// Who this agent is ("<host> <pid>").
     me: String,
-    /// The placement's per-step speeds last worked out and what from (`placement::step_speeds_key`):
-    /// the history is read again only when it changed.
-    step_speeds: std::cell::RefCell<placement::StepSpeedsKept>,
     /// What the coordinator's paces (crate::paces) are worked out from: the history's last event
     /// read, the ten minutes they were last worked out for, and the runs they read
     /// (crate::paces::reads) of their window.
@@ -2001,7 +1998,6 @@ impl Agent {
             _lock: lock,
             o,
             me,
-            step_speeds: Default::default(),
             paces_from: Default::default(),
             coord,
             published: None,
@@ -7603,28 +7599,13 @@ impl Agent {
     }
 
     /// What this Mac's coordinator and broker place by, placement on: the forecast's slack (none
-    /// yet: no slack), and each worker its coordinator knows measured against this Mac by the
-    /// build's history (`forecast::speeds`, under the names they ask with: the forecast's own
-    /// machines are the helpers' status files', not the pool's members), one not measured the
-    /// lead's.
+    /// yet: no slack). A draw weighs each worker by its coordinator's paces (crate::paces).
     fn placement_now(&self) -> Option<placement::Placement> {
         if !self.placement_on() {
             return None;
         }
         let view = self.plan.view.get();
-        let mut p = view.forecast.as_ref().map(placement::Placement::from_forecast).unwrap_or_default();
-        if let Some(c) = &self.coord {
-            let names: Vec<String> = c.workers().into_iter().map(|(n, _)| n).filter(|n| *n != self.host).collect();
-            let events = c.history();
-            p.speed = placement::measured_speeds(&events, &self.host, &names);
-            let key = placement::step_speeds_key(&events, &self.host, &names);
-            let mut kept = self.step_speeds.borrow_mut();
-            if kept.as_ref().is_none_or(|(k, _)| *k != key) {
-                *kept = Some((key, placement::step_speeds(&events, &self.host, &names)));
-            }
-            p.step_speed = kept.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
-        }
-        Some(p)
+        Some(view.forecast.as_ref().map(placement::Placement::from_forecast).unwrap_or_default())
     }
 
     /// Tasks brokered by every member (crate::agent::brokers) act in the pool; out of it, a member
@@ -8189,7 +8170,6 @@ impl Agent {
         self.tend_brokers();
         self.tend_pageview(r);
         // (The lead's coordinator told this Mac's capacity each loop.)
-        // (Placement worked out once a loop: the history read once.)
         let placed = self.placement_now();
         if let Some(c) = &self.coord {
             c.set_capacity(self.last_cond.map(|cond| self.capacity(&cond)));
@@ -8217,8 +8197,8 @@ impl Agent {
         }
         // (A member's broker draws its pages' tasks the same way: by their paces at the kind as
         // that broker measured them, its own jobs' tasks against this Mac's runs. It has no
-        // history and no forecast, so no member speeds nor slack: those only order the plan's
-        // targets, which a broker doesn't offer.)
+        // history and no forecast, so no Macs' paces nor slack: those only weigh and order the
+        // plan's targets, which a broker doesn't offer.)
         if let Some(b) = &self.broker {
             b.set_placement(placed);
         }
@@ -15747,7 +15727,7 @@ mod pool_tests {
 
     /// Placement (`state/pool/placement`, crate::agent::placement), with every step to every
     /// member: off, the lead's coordinator places as before and no job is told to offer ahead; on,
-    /// the lead's coordinator is told (the forecast's slack and measured speeds), the member alone
+    /// the lead's coordinator is told (the forecast's slack), the member alone
     /// asking is drawn its target and takes it, its job told to offer its tasks ahead
     /// (`jobrt::jobs::AHEAD_ENV`); off again, as before.
     #[test]

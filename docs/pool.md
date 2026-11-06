@@ -969,13 +969,11 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   a slot free and their free memory fitting it; a busy Mac is never drawn a target it would leave
   untaken), the lead's own agent among them (`placement::draw`, stable per minute window); an
   asker passed by goes on down the offer to the next target drawn to it. A worker's weight
-  (`Sched::draw_weight`) is its Mac's measured speed at the step against the lead's
-  (`placement::step_speeds`: the history's median time a target, three runs or more each, its
-  slots' runs its Mac's, held to 0.33–3 (`STEP_SPEED`); worked out again only as the history
-  grows), else its speed over the shared steps, else the lead's; times `CACHE_PREFER` (4) where its
+  (`Sched::draw_weight`) is its Mac's speed at the step against the lead's, the inverse of its
+  pace (§7.7, Each Mac's pace; task #934: the coordinator's one measure, from the same targets on
+  both Macs: at the step, else over its steps, else the lead's); times `CACHE_PREFER` (4) where its
   ask's capacity says it holds the step's shared cache (`needs::CACHES`: the whole copies) whole. Trade-offs: weights only, so a Mac asking alone takes what it can and the
-  weights act only where Macs ask together (no Mac idles for a draw); medians of different
-  targets' times read a Mac given a step's large targets as slower, which the clamp bounds; a
+  weights act only where Macs ask together (no Mac idles for a draw); a
   minute's window keeps a target drawn to one Mac until the next window. The forecast runs the
   same draws (the placement is in the scheduler's state it's given), its lanes asking as its
   model has them. A task offered

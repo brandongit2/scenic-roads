@@ -8,10 +8,9 @@
 //!   The lead's coordinator tries a member's ask on the offers in that order, and within a step
 //!   from its target measured to take longest (crate::coord's `pick_every`).
 //! - **Who takes it** (`draw`): of the members asking lately that would take a target now (its
-//!   room fits it by their last ask, with a slot free), one drawn with a weight of its measured
-//!   speed at the target's step (`step_speeds`: its Mac's median time a target against the lead's
-//!   at that step, held to `STEP_SPEED`, task #552; a step not measured on both, its speed over the
-//!   shared steps, the forecast's; neither, the lead's own), times `CACHE_PREFER` where its Mac
+//!   room fits it by their last ask, with a slot free), one drawn with a weight of its Mac's speed
+//!   at the target's step, the inverse of its pace there (crate::paces, task #934: the same
+//!   targets' runs on it and on the lead; a Mac with no pair the lead's), times `CACHE_PREFER` where its Mac
 //!   holds the step's shared cache whole (crate::needs::CACHES: no copy, no NAS read in place), as
 //!   a function of the target and the time (a minute's window, `DRAW_S`, from when the coordinator
 //!   was told): the same inputs, the same draw. A member asking for a target drawn to another
@@ -44,17 +43,12 @@ pub fn on(root: &store::nasfs::NasRoot) -> Option<bool> {
     }
 }
 
-/// What the lead's coordinator places by (`crate::coord::Coordinator::set_placement`).
+/// What the lead's coordinator places by (`crate::coord::Coordinator::set_placement`); a draw's
+/// weights are the coordinator's paces (crate::paces, `Sched::draw_weight`).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Placement {
     /// Each step's slack in the forecast (s); a step the forecast gives no end is last.
     pub slack: BTreeMap<String, u64>,
-    /// Each worker's measured speed against the lead's (a worker not in it: 1).
-    pub speed: BTreeMap<String, f64>,
-    /// Each worker's measured speed against the lead's at each step (worker → step → speed:
-    /// `step_speeds`); a step not in it: `speed`'s.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub step_speed: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
 /// The weight a Mac holding a step's shared cache whole has in a draw, against one that would copy
@@ -63,102 +57,15 @@ pub struct Placement {
 pub const CACHE_PREFER: f64 = 4.0;
 
 impl Placement {
-    /// From the forecast: its steps' slack, and the speeds it measured (not those it guessed).
+    /// From the forecast: its steps' slack.
     pub fn from_forecast(f: &super::forecast::Forecast) -> Placement {
-        Placement {
-            slack: slack(f),
-            speed: f
-                .speed
-                .iter()
-                .filter(|(w, s)| !f.guessed.contains(w) && s.is_finite() && **s > 0.0)
-                .map(|(w, s)| (w.clone(), *s))
-                .collect(),
-            step_speed: BTreeMap::new(),
-        }
+        Placement { slack: slack(f) }
     }
 
     /// Step `step`'s slack (u64::MAX: none known).
     pub fn slack_of(&self, step: &str) -> u64 {
         self.slack.get(step).copied().unwrap_or(u64::MAX)
     }
-
-    /// Worker `w`'s weight in a draw for a target of `step`: its measured speed at the step, else
-    /// over the shared steps, else the lead's (1).
-    pub fn weight(&self, w: &str, step: &str) -> f64 {
-        self.step_speed.get(w).and_then(|m| m.get(step)).or_else(|| self.speed.get(w)).copied().unwrap_or(1.0)
-    }
-}
-
-/// The workers `names` measured against the lead (`lead`) by the build's history
-/// (super::forecast::speeds: the shared steps both did), those measured alone.
-pub fn measured_speeds(events: &[crate::coord::history::Event], lead: &str, names: &[String]) -> BTreeMap<String, f64> {
-    super::forecast::speeds(events, lead, names, 1.0)
-        .into_iter()
-        .filter(|(_, (_, m))| *m)
-        .map(|(n, (s, _))| (n, s))
-        .collect()
-}
-
-/// The range a Mac's speed at a step is held to (`step_speeds`): its weight against another's at
-/// most 3:1 before the cache's `CACHE_PREFER`, so a few odd runs never take a step off a Mac.
-pub const STEP_SPEED: (f64, f64) = (0.33, 3.0);
-
-/// What a worked-out `step_speeds` answer was made from: the history's length and its last event
-/// (number and time: a rewrite of the same length changes them), the lead and the names.
-pub type StepSpeedsKey = (usize, Option<(u64, u64)>, String, Vec<String>);
-
-/// A kept `step_speeds` answer (the agent's, `StepSpeedsKey`).
-pub type StepSpeedsKept = Option<(StepSpeedsKey, BTreeMap<String, BTreeMap<String, f64>>)>;
-
-/// `step_speeds`' key for these arguments.
-pub fn step_speeds_key(events: &[crate::coord::history::Event], lead: &str, names: &[String]) -> StepSpeedsKey {
-    (events.len(), events.last().map(|e| (e.seq, e.t)), lead.to_string(), names.to_vec())
-}
-
-/// Each of the workers `names` measured against the lead (`lead`) at each step by the build's
-/// history: its Mac's (crate::agent::host_of: its slots' runs together) median time a target of
-/// the step over the lead's, three runs or more each, held to `STEP_SPEED`; a step one of them
-/// hasn't run that often left out. Every step, not only the shared ones: a step bound by the NAS's
-/// seeks runs faster on the wired Mac than its speed elsewhere says (task #552). Medians of
-/// different targets' times: a Mac given a step's large targets reads slower than it is, which
-/// the clamp bounds. (Not kept here: the agent asks each loop, and keeps the
-/// answer itself (`StepSpeedsKept`) while the history is the same.)
-pub fn step_speeds(
-    events: &[crate::coord::history::Event],
-    lead: &str,
-    names: &[String],
-) -> BTreeMap<String, BTreeMap<String, f64>> {
-    // ((host, step) → seconds a target, each run's.)
-    let mut per: BTreeMap<(&str, &str), Vec<f64>> = BTreeMap::new();
-    for e in events {
-        let (Some(w), Some(step), Some(secs)) = (&e.worker, &e.step, e.secs) else { continue };
-        if matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true) && !e.targets.is_empty() {
-            per.entry((super::host_of(w), step)).or_default().push(secs / e.targets.len() as f64);
-        }
-    }
-    for v in per.values_mut() {
-        v.sort_by(f64::total_cmp);
-    }
-    let median = |v: &Vec<f64>| (v.len() >= 3).then(|| v[v.len() / 2]);
-    let lead = super::host_of(lead);
-    let out: BTreeMap<String, BTreeMap<String, f64>> = names
-        .iter()
-        .map(|n| {
-            let host = super::host_of(n);
-            let m: BTreeMap<String, f64> = per
-                .iter()
-                .filter(|((h, _), _)| *h == host)
-                .filter_map(|((_, step), v)| {
-                    let theirs = median(per.get(&(lead, *step))?)?;
-                    let mine = median(v).filter(|m| *m > 0.0)?;
-                    Some((step.to_string(), (theirs / mine).clamp(STEP_SPEED.0, STEP_SPEED.1)))
-                })
-                .collect();
-            (n.clone(), m)
-        })
-        .filter(|(_, m)| !m.is_empty())
-        .collect();
-    out
 }
 
 /// A target's neighbourhood (task #552): a z6 tile's z3 tile (`6/x/y` → `3/(x/8)/(y/8)`); any
@@ -261,66 +168,6 @@ mod tests {
         assert_eq!(key("t", 0), key("t", DRAW_S - 1));
     }
 
-    /// A member's speed under the name it asks with, from the history's runs of a shared step by
-    /// it and by the lead; one with too few runs, unmeasured (left out: weighed as the lead).
-    #[test]
-    fn a_members_speed_is_measured_under_its_own_name() {
-        use crate::coord::history::Event;
-        let run = |w: &str, secs: f64| Event {
-            worker: Some(w.into()),
-            step: Some("peaks".into()),
-            targets: vec!["6/1/1".into()],
-            secs: Some(secs),
-            ok: Some(true),
-            ..Event::new("done")
-        };
-        let mut ev: Vec<Event> = (0..3).map(|_| run("MacBook-Pro-de-Brandon", 300.0)).collect();
-        ev.extend((0..3).map(|_| run("m4", 100.0)));
-        ev.push(run("ipad", 50.0));
-        let s = measured_speeds(&ev, "m4", &["MacBook-Pro-de-Brandon".into(), "ipad".into()]);
-        assert_eq!(s.len(), 1);
-        assert!((s["MacBook-Pro-de-Brandon"] - 1.0 / 3.0).abs() < 1e-9);
-    }
-
-    /// Task #552: a member measured at each step against the lead by medians, its slots' runs its
-    /// Mac's, held to `STEP_SPEED`; a step either ran fewer than three times left out; a member
-    /// with none, absent.
-    #[test]
-    fn step_speeds_are_measured_by_mac_and_step() {
-        use crate::coord::history::Event;
-        let run = |w: &str, step: &str, secs: f64, n: usize| Event {
-            worker: Some(w.into()),
-            step: Some(step.into()),
-            targets: (0..n).map(|i| format!("6/1/{i}")).collect(),
-            secs: Some(secs),
-            ok: Some(true),
-            ..Event::new("done")
-        };
-        let mut ev = Vec::new();
-        for _ in 0..3 {
-            ev.push(run("mini", "depth", 100.0, 1));
-            ev.push(run("mini #2", "terrain", 300.0, 1));
-            // (Its slots' runs together; a target's time a run's over its targets.)
-            ev.push(run("m1", "depth", 800.0, 2));
-            ev.push(run("m1 #2", "terrain", 150.0, 1));
-            ev.push(run("m1", "unit", 10.0, 1));
-        }
-        let s = step_speeds(&ev, "mini", &["m1 #3".into(), "m4".into()]);
-        assert_eq!(s.len(), 1, "{s:?}");
-        assert_eq!(s["m1 #3"], [("depth".to_string(), STEP_SPEED.0), ("terrain".to_string(), 2.0)].into());
-    }
-
-    /// Task #560: the kept answer's key changes with a rewritten history of the same length.
-    #[test]
-    fn step_speeds_key_follows_the_last_event() {
-        use crate::coord::history::Event;
-        let ev = |seq| Event { seq, t: seq, ..Event::new("done") };
-        let names = ["m1".to_string()];
-        let (a, b) = (vec![ev(1), ev(2)], vec![ev(1), ev(3)]);
-        assert_eq!(step_speeds_key(&a, "m", &names), step_speeds_key(&a.clone(), "m", &names));
-        assert_ne!(step_speeds_key(&a, "m", &names), step_speeds_key(&b, "m", &names));
-    }
-
     #[test]
     fn a_z6_tiles_group_is_its_z3_tile() {
         assert_eq!(group("6/17/22"), "3/2/2");
@@ -340,12 +187,9 @@ mod tests {
                 StepFc { step: "pack".into(), done_at: Some(400), ..Default::default() },
                 StepFc { step: "x".into(), done_at: None, ..Default::default() },
             ],
-            speed: [("m1".to_string(), 0.5), ("ipad".to_string(), 0.2)].into(),
-            guessed: vec!["ipad".into()],
             ..Default::default()
         };
         let p = Placement::from_forecast(&f);
         assert_eq!((p.slack_of("terrain"), p.slack_of("pack"), p.slack_of("x")), (0, 600, u64::MAX));
-        assert_eq!((p.weight("m1", "pack"), p.weight("ipad", "pack"), p.weight("m4", "pack")), (0.5, 1.0, 1.0));
     }
 }

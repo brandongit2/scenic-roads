@@ -2085,7 +2085,8 @@ impl Coordinator {
         self.shared.lock().unwrap().sched.paces.clone()
     }
 
-    /// Placement by how crucial a job is on (`Some`: the forecast's slack and measured speeds) or
+    /// Placement by how crucial a job is on (`Some`: the forecast's slack; its draws weigh the paces,
+    /// `set_paces`) or
     /// off (docs/pool.md §12, phase 4's eleventh batch; crate::agent::placement). Its draws' windows
     /// run from when it was first turned on.
     pub fn set_placement(&self, p: Option<crate::agent::placement::Placement>) {
@@ -9100,21 +9101,22 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some(), "the first ended: the second goes");
     }
 
-    /// Task #552: placement's draw weighs a worker by its measured speed at the target's step
-    /// (else over the shared steps, else the lead's), `CACHE_PREFER` times where its Mac holds the
-    /// step's shared cache whole by its ask (its fill measured); short of it, or a step reading
-    /// none, no more.
+    /// Task #552, #934: placement's draw weighs a worker by its Mac's speed at the target's step,
+    /// the inverse of its pace (crate::paces: at the step, else over its steps, else the lead's),
+    /// `CACHE_PREFER` times where its Mac holds the step's shared cache whole by its ask (its fill
+    /// measured); short of it, or a step reading none, no more.
     #[test]
-    fn the_draw_weighs_the_step_speed_and_the_cache_held() {
-        use crate::agent::placement::{Placement, CACHE_PREFER};
+    fn the_draw_weighs_the_pace_and_the_cache_held() {
+        use crate::agent::placement::CACHE_PREFER;
         let cache = crate::localread::CACHE;
         let mut s = sched::Sched::default();
         s.fills.insert(cache.to_string(), 20_000);
-        let p = Placement {
-            speed: [("m1".to_string(), 0.5)].into(),
-            step_speed: [("mini".to_string(), [("depth".to_string(), 3.0)].into())].into(),
+        s.set_paces(crate::paces::Paces {
+            lead: "m4".into(),
+            steps: [("mini".to_string(), [("depth".to_string(), 0.25)].into())].into(),
+            macs: [("m1".to_string(), 2.0), ("mini".to_string(), 1.0)].into(),
             ..Default::default()
-        };
+        });
         let holding = |mb: u64| Ask {
             cap: Some(Capacity {
                 caches: [(cache.to_string(), CacheHere { have_mb: mb })].into(),
@@ -9122,13 +9124,15 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(s.draw_weight(&p, "depth", "mini", &holding(0)), 3.0, "its speed at the step");
-        assert_eq!(s.draw_weight(&p, "slope-hi", "mini", &holding(0)), 1.0, "unmeasured: the lead's");
-        assert_eq!(s.draw_weight(&p, "depth", "m1", &holding(20_000)), 0.5 * CACHE_PREFER, "holds it whole");
-        assert_eq!(s.draw_weight(&p, "depth", "m1", &holding(19_000)), 0.5, "short of it");
-        assert_eq!(s.draw_weight(&p, "slope-hi", "m1", &holding(20_000)), 0.5, "a step reading none");
+        assert_eq!(s.draw_weight("depth", "mini #2", &holding(0)), 4.0, "its pace at the step, its slots' alike");
+        assert_eq!(s.draw_weight("slope-hi", "mini", &holding(0)), 1.0, "a step without a pair: over its steps");
+        assert_eq!(s.draw_weight("depth", "m4 #3", &holding(0)), 1.0, "the lead's");
+        assert_eq!(s.draw_weight("depth", "ipad", &holding(0)), 1.0, "no pair of it: the lead's");
+        assert_eq!(s.draw_weight("depth", "m1", &holding(20_000)), 0.5 * CACHE_PREFER, "holds it whole");
+        assert_eq!(s.draw_weight("depth", "m1", &holding(19_000)), 0.5, "short of it");
+        assert_eq!(s.draw_weight("slope-hi", "m1", &holding(20_000)), 0.5, "a step reading none");
         s.fills.clear();
-        assert_eq!(s.draw_weight(&p, "depth", "m1", &holding(20_000)), 0.5, "no fill measured");
+        assert_eq!(s.draw_weight("depth", "m1", &holding(20_000)), 0.5, "no fill measured");
     }
 
     /// Task #552 review: a draw's winner is a member that would take the target now. One whose
@@ -9147,7 +9151,7 @@ mod tests {
         let (a1, a2) =
             (every_ask("m1", "pack", 4096, 10_000), Ask { want: 1, ..every_ask("m2", "pack", 4096, 10_000) });
         assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
-        c.set_placement(Some(placement(&[], &[("m1", 1.0), ("m2", 1.0)])));
+        c.set_placement(Some(placement(&[])));
         let all =
             Offer { step: "pack".into(), targets: ts.iter().map(|t| (t.clone(), "k".into(), 0)).collect(), job: None };
         let one = |t: &str| Offer { step: "pack".into(), targets: vec![(t.to_string(), "k".into(), 0)], job: None };
@@ -10652,12 +10656,8 @@ mod tests {
         assert!(matches!(&g.work, Granted::Job { step, .. } if step == "slope-hi"));
     }
 
-    fn placement(slack: &[(&str, u64)], speed: &[(&str, f64)]) -> crate::agent::placement::Placement {
-        crate::agent::placement::Placement {
-            slack: slack.iter().map(|(s, v)| (s.to_string(), *v)).collect(),
-            speed: speed.iter().map(|(w, v)| (w.to_string(), *v)).collect(),
-            ..Default::default()
-        }
+    fn placement(slack: &[(&str, u64)]) -> crate::agent::placement::Placement {
+        crate::agent::placement::Placement { slack: slack.iter().map(|(s, v)| (s.to_string(), *v)).collect() }
     }
 
     /// Placement on (crate::agent::placement): a member's ask tried on the long poles' step first
@@ -10699,7 +10699,7 @@ mod tests {
         w.give_back(g.lease, "the test").unwrap();
         // On: slope has no slack (it ends with the build), pack ten minutes': slope first, from its
         // longest, then the next longest.
-        c.set_placement(Some(placement(&[("slope-hi", 0), ("pack", 600)], &[])));
+        c.set_placement(Some(placement(&[("slope-hi", 0), ("pack", 600)])));
         c.offer("p", offers());
         assert_eq!(granted(&w, &a), ["3/1/2"]);
         assert_eq!(granted(&w, &a), ["3/1/1"]);
@@ -10718,7 +10718,7 @@ mod tests {
     fn placement_leaves_out_only_a_member_swamped_outside_the_pool() {
         let (_d, c, _w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 40, Some(1));
-        c.set_placement(Some(placement(&[], &[("m1", 1.0), ("m2", 1.0)])));
+        c.set_placement(Some(placement(&[])));
         let offer = c.shared.lock().unwrap().offers[0].clone();
         let one = |i: usize| Offer { targets: vec![offer.targets[i].clone()], ..offer.clone() };
         let a1 = every_ask("m1", "slope-hi", 64_000, 100_000);
@@ -10967,11 +10967,11 @@ mod tests {
     }
 
     /// Placement on: of two members asking whose room fits a target, it's drawn to one by their
-    /// measured speeds, the other passing it by: exactly one of them gets each, the faster about
-    /// three in four at three times the speed, the same draw in the same window, and a new window a
+    /// paces, the other passing it by: exactly one of them gets each, the faster about
+    /// three in four at a third of the other's time, the same draw in the same window, and a new window a
     /// new draw. Off: either may take any.
     #[test]
-    fn placement_draws_each_target_to_one_member_by_measured_speed() {
+    fn placement_draws_each_target_to_one_member_by_pace() {
         let (_d, c, w1, clock) = every((0, 0));
         let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
         let ts: Vec<String> = (0..400).map(|i| format!("6/{}/{}", i % 20, i / 20)).collect();
@@ -10992,7 +10992,11 @@ mod tests {
         };
         // Off: both may take every one.
         assert!(picks(&c).iter().all(|&(x, y)| x && y));
-        c.set_placement(Some(placement(&[], &[("m1", 3.0), ("m2", 1.0)])));
+        c.set_placement(Some(placement(&[])));
+        // (m2 at three times m1's time a target: m1 at the lead's pace, unpaired.)
+        let paces =
+            crate::paces::Paces { lead: "mini".into(), macs: [("m2".to_string(), 3.0)].into(), ..Default::default() };
+        c.set_paces(paces, &[], 0);
         let first = picks(&c);
         assert!(first.iter().all(|&(x, y)| x != y), "each to exactly one");
         let share = first.iter().filter(|p| p.0).count() as f64 / ts.len() as f64;
@@ -11080,7 +11084,7 @@ mod tests {
         let ahead = offer(Some(6.0));
         // Off: neither (it's slower).
         assert_eq!(took(&c), None);
-        c.set_placement(Some(placement(&[], &[])));
+        c.set_placement(Some(placement(&[])));
         // On: 4 × 1.25 × 10 s = 50 s within the 60 s head start: the one offered ahead.
         assert_eq!(took(&c), Some(ahead));
         // 15 s on, 45 s left: not enough.
