@@ -336,10 +336,18 @@ async fn main() -> Result<()> {
     let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen, on_demand } =
         <Cli as clap::Parser>::parse();
     raise_open_files();
+    // On demand, this Mac's loopback is taken first of all: a second server (another click, one
+    // installed) holds it, and this one ends before it reads the map or touches the mirror.
+    let mut on_demand_v4 = None;
     if on_demand {
         // (A session of its own: the menu bar that started it may quit or be replaced meanwhile.)
         // SAFETY: setsid has no preconditions; it fails only for a group leader, which is no harm.
         unsafe { libc::setsid() };
+        let at = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+        on_demand_v4 = Some(
+            store::spawn::listen(at)
+                .map_err(|e| anyhow::anyhow!("{at}: {e} (this Mac's map already runs: nothing started)"))?,
+        );
     }
     let home = home_arg.clone().unwrap_or_else(data::default_home);
     // (An installed server on a Mac that doesn't serve the map, as every Mac ran one until #874:
@@ -385,7 +393,12 @@ async fn main() -> Result<()> {
     descs.spawn(d.clone());
     let up = updater::Updater::new(&home);
     eprintln!("app: {}", up.running().unwrap_or("development (not from the published app)"));
-    up.spawn(d.clone());
+    // (Not on demand: no launcher starts it again after an exit for a new app, so an open page
+    // would lose its map a minute into a pause. It quits once unused, and the next start runs
+    // the newest app.)
+    if !on_demand {
+        up.spawn(d.clone());
+    }
     let state = Arc::new(AppState {
         updater: up,
         data: d,
@@ -533,17 +546,21 @@ async fn main() -> Result<()> {
 
     // This Mac, and devices on its LAN and the tailnet (the gate answers them alone); on demand,
     // this Mac alone.
-    let any = if on_demand { std::net::Ipv4Addr::LOCALHOST } else { std::net::Ipv4Addr::UNSPECIFIED };
-    let addr = std::net::SocketAddr::from((listen.unwrap_or(any), port));
-    if on_demand {
-        eprintln!("listening on http://{addr} and IPv6's loopback, on demand: this Mac alone");
-    } else {
-        eprintln!("listening on http://{addr} (devices: the map's address, <home>/map-page)");
-    }
     // (Made, and their connections taken, while no child is being started, store::spawn: a child
     // started between would hold the port.)
     use axum::serve::ListenerExt;
-    let listener = pipeline::net::Listener::new(store::spawn::listen(addr)?)?.tap_io(|_| ());
+    let v4 = match on_demand_v4 {
+        Some(l) => {
+            eprintln!("listening on http://127.0.0.1:{port} and IPv6's loopback, on demand: this Mac alone");
+            l
+        }
+        None => {
+            let addr = std::net::SocketAddr::from((listen.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED), port));
+            eprintln!("listening on http://{addr} (devices: the map's address, <home>/map-page)");
+            store::spawn::listen(addr)?
+        }
+    };
+    let listener = pipeline::net::Listener::new(v4)?.tap_io(|_| ());
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     if listen.is_none() {
         if let Ok(l6) = store::spawn::listen(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)))

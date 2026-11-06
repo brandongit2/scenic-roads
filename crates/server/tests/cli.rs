@@ -1,7 +1,7 @@
 //! The map server's command line, run as the built program (as crates/pipeline/tests/cli.rs runs
 //! every other binary): `--help` prints its usage and exits 0, a flag it doesn't take is refused
 //! with its usage (exit 2), and neither starts it: its home (HOME, the working folder) is left
-//! empty, no port taken, no NAS reached.
+//! empty, no port taken, no NAS reached. A server on demand whose port another holds ends so too.
 
 fn run(args: &[&str]) -> (i32, String, String) {
     let home = tempfile::tempdir().unwrap();
@@ -33,4 +33,15 @@ fn it_helps_and_refuses_without_starting() {
     // (On demand it answers this Mac's loopback alone: no address of its own to listen on.)
     let (code, _, err) = run(&["--on-demand", "--listen", "0.0.0.0"]);
     assert!(code == 2 && err.contains("--on-demand"), "{err}");
+}
+
+/// A server on demand (docs/roles.md §8.3, #882 step 7a) takes this Mac's loopback first of all:
+/// with another server holding it (a second click, the installed one), it ends at once, before it
+/// reads a map or touches a mirror (its home left empty).
+#[test]
+fn a_server_on_demand_ends_at_once_when_its_port_is_held() {
+    let held = store::spawn::listen("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port().to_string();
+    let (code, _, err) = run(&["--on-demand", "--port", &port]);
+    assert!(code == 1 && err.contains("this Mac's map already runs"), "{code}: {err}");
 }

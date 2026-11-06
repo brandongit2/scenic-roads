@@ -2,7 +2,9 @@
 //! app (`<home>/app/<version>/`, through `<home>/app/current`, which the launcher runs). Every five
 //! minutes it checks for a newer one (pipeline::appupdate, which the agent runs too, one check at a
 //! time); once `current` names another version than its own, it exits when the map has been idle
-//! a minute, and the launcher starts the new one. Pruning keeps its version meanwhile (it runs
+//! a minute, and the launcher starts the new one. A server on demand runs none of this (no launcher
+//! would start it again): it quits once unused (`quit_when_unused`), and its next start runs the
+//! newest app. Pruning keeps its version meanwhile (it runs
 //! from it: pipeline::appupdate::running_versions).
 
 use crate::data::Data;
