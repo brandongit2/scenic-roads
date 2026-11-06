@@ -9938,6 +9938,53 @@ mod tests {
         assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), now);
     }
 
+    /// Another worker's lease filters the last plan's work again (task #880 step 2) under a plan
+    /// number of its own, told to the coordinator: a grant of a job by its id is of the offers that
+    /// number names, never the last plan's job of that id with other targets (task #923). Nothing
+    /// changed, nothing filtered again.
+    #[test]
+    fn a_lease_change_offers_the_last_plans_work_under_a_new_number() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
+        let mut a = test_agent(Options {
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
+            home,
+            bin: PathBuf::from("/app"),
+            dry_run: true,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
+        a.coord = Some(co.clone());
+        let p = a.planner();
+        // (A plan made: its result kept, its digest and the leases as it read them.)
+        p.n = 5;
+        *p.kept.borrow_mut() = Some((build::Plan::default(), build::KeyMemo::default()));
+        p.leases = Some(co.lease_gen());
+        let seen = p.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
+        let ago = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        p.last = Some((ago, Duration::ZERO, seen, None));
+        p.look();
+        assert_eq!(p.n, 5, "the leases as they were");
+        {
+            let mut s = co.shared.lock().unwrap();
+            let t = s.now();
+            s.leases.grant(
+                "other-mac",
+                crate::coord::lease::Work::Job { step: "gc".into(), targets: vec![("t".into(), "k".into())] },
+                t,
+            );
+        }
+        p.look();
+        assert!(p.n > 5, "a number of its own");
+        assert_eq!(co.shared.lock().unwrap().plan, p.n, "told to the coordinator");
+        assert_eq!(p.last.map(|l| l.2), Some(seen), "no plan made");
+        assert!(p.refiltered.is_some() && p.kept.borrow().is_some());
+    }
+
     /// Every scenic-build command line the agent makes, by its own code (step_args, the targets as
     /// named, the OSM pass's), passes its command line (crate::cli): none refused at its start.
     #[test]
@@ -16301,7 +16348,7 @@ mod pool_tests {
     }
 
     /// Task #882 step 2 (docs/roles.md §5): two agents, the lead and a member. The member counts
-    /// no region: it has no plan (so no `start_as_built`, no regions' states or steps, no
+    /// no region: it has no plan (so no `start_region_steps`, no regions' counts or steps, no
     /// checklist), opens no pack index, and the indexes a lead's process left in its folder go as it
     /// starts; its status carries none of the build's regions or checklist.
     #[test]

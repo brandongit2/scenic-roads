@@ -2393,11 +2393,15 @@ pub struct KeyCtx<'a> {
 /// run ahead (`remaining`) reuse the keys the plan already worked out instead of deriving each
 /// again (task #924); and the terrain's and slope's targets (`terrain_slope_targets`), which
 /// `TerrainTiles` keeps only once every key is told (mid-rebuild, the checklist had worked them out
-/// again: task #965). The plan's own, on its thread: never shared.
+/// again: task #965). The plan's own, on its thread: never shared. It serves only the context it was
+/// first given with (`KeyCtx::stamp`, kept as its third part): a context made again from what was read
+/// again (the Planner's later readers in the round, a lease change's `refilter`) takes it only while
+/// that reads the same; otherwise its keys are worked out afresh, never one of another context.
 #[derive(Default)]
 pub struct KeyMemo(
     std::cell::RefCell<std::collections::HashMap<(String, String), Option<String>>>,
     std::cell::OnceCell<TerrainTargets>,
+    std::cell::Cell<Option<u64>>,
 );
 
 impl KeyMemo {
@@ -2411,6 +2415,12 @@ impl KeyMemo {
         let k = derive();
         self.0.borrow_mut().insert(id, k.clone());
         k
+    }
+
+    /// Whether its keys are `x`'s: it was first given with a context reading what `x` reads, or
+    /// not given yet.
+    pub fn serves(&self, x: &KeyCtx) -> bool {
+        self.2.get().is_none_or(|s| s == x.stamp())
     }
 }
 
@@ -2426,9 +2436,29 @@ impl<'a> KeyCtx<'a> {
         KeyCtx { cov, date, m, inputs, reach, tiles, memo: None }
     }
 
-    /// This context with its keys kept in `memo` (one memo per context: `KeyMemo`).
+    /// This context with its keys kept in `memo`, when the memo is this context's (one memo per
+    /// context: `KeyMemo`, the first context it's given with); another's: none, each key worked out.
     pub fn memo(self, memo: &'a KeyMemo) -> KeyCtx<'a> {
-        KeyCtx { memo: Some(memo), ..self }
+        let s = self.stamp();
+        let ours = memo.2.get().is_none_or(|t| t == s);
+        memo.2.set(Some(memo.2.get().unwrap_or(s)));
+        KeyCtx { memo: ours.then_some(memo), ..self }
+    }
+
+    /// A digest of everything a key reads of this context (`KeyMemo`): the coverage's version, the
+    /// pass, the manifest, the planner's inputs, the reaches (their pass and format, how many z6
+    /// tiles, the base packs' extents) and what the terrain packs' indexes hold now
+    /// (`TerrainTiles::state`).
+    pub fn stamp(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.cov.version().hash(&mut h);
+        self.date.hash(&mut h);
+        self.m.hash(&mut h);
+        self.inputs.hash(&mut h);
+        self.reach.map(|r| (r.fmt, &r.date, r.units.len(), &r.extents)).hash(&mut h);
+        self.tiles.state().hash(&mut h);
+        h.finish()
     }
 }
 
@@ -6197,6 +6227,27 @@ pub(crate) mod tests {
             seen.insert(w.step.clone());
         }
         seen
+    }
+
+    /// A key memo serves only the context it was first given with (task #880 step 2): a context
+    /// read again the same takes it; one of another pass or manifest doesn't, its keys worked out
+    /// afresh. (The terrain's state: tiles::tests::a_damaged_kept_index_is_read_again_and_one_unread_is_said.)
+    #[test]
+    fn a_key_memo_serves_only_its_own_context() {
+        let (c, inputs, tiles) = (Coverage::default(), BTreeMap::new(), TerrainTiles::new(None));
+        let m: BTreeMap<String, String> = BTreeMap::new();
+        let other_m = BTreeMap::from([("a".to_string(), "b".to_string())]);
+        let memo = KeyMemo::default();
+        assert!(KeyCtx::new(&c, "d", &m, &inputs, None, &tiles).memo(&memo).memo.is_some());
+        assert_eq!(memo.get_or("unit", "6/1/1", || Some("k".into())), Some("k".into()));
+        let again = KeyCtx::new(&c, "d", &m, &inputs, None, &tiles);
+        assert!(memo.serves(&again) && again.memo(&memo).memo.is_some());
+        for other in
+            [KeyCtx::new(&c, "e", &m, &inputs, None, &tiles), KeyCtx::new(&c, "d", &other_m, &inputs, None, &tiles)]
+        {
+            assert!(!memo.serves(&other) && other.memo(&memo).memo.is_none());
+        }
+        assert!(memo.serves(&again), "still its first context's");
     }
 
     /// The pass's steps (`PASS_STEPS`) are keyed alike in `PassCtx`'s context and with the coverage,

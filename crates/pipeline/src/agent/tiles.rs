@@ -36,7 +36,7 @@ type Held = std::sync::Arc<[(u64, u64)]>;
 type Found<'a> = Result<Option<&'a [(u64, u64)]>, Unread>;
 
 /// The terrain packs' indexes the agent holds, by content name. (Cloned for a count off the
-/// agent's loop, the regions' steps, plan::Planner::start_as_built: the indexes and the
+/// agent's loop, the regions' steps, plan::Planner::start_region_steps: the indexes and the
 /// memo shared by the copies, not copied: task #930.)
 #[derive(Clone, Default)]
 pub struct TerrainTiles {
@@ -48,7 +48,7 @@ pub struct TerrainTiles {
     dir: Option<PathBuf>,
     /// Values worked out from the tiles, each kept with what it was worked out from (`memo`): a
     /// z6 tile's terrain digest (build::unit_terrain), by z6 tile. Shared by the copies, so a count
-    /// off the loop (Agent::start_as_built) and the loop fill and read one.
+    /// off the loop (plan::Planner::start_region_steps) and the loop fill and read one.
     memo: std::sync::Arc<std::sync::Mutex<HashMap<String, (String, Kept)>>>,
     /// The depth's water digests the manifest names (crate::terrain_water::WaterIdx), by content
     /// name: read as the indexes are (kept beside them as `<hash16>.water`), a few KB each.
@@ -90,7 +90,7 @@ pub struct TerrainTiles {
 /// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
 /// release (the roadside buildings' index), and the land-cover, canopy and leaf-type declarations
 /// where they aren't as staged (crate::inputs::sources::unit_extra, trees_extra).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
 pub struct KeyedSources {
     pub release: String,
     pub unit: Option<String>,
@@ -109,6 +109,33 @@ impl TerrainTiles {
     /// None held yet; `dir`: where indexes are kept (the agent's `pack-idx/`).
     pub fn new(dir: Option<PathBuf>) -> TerrainTiles {
         TerrainTiles { dir, ..Default::default() }
+    }
+
+    /// A digest of what the keys read of it now: the packs whose indexes it holds and those it
+    /// couldn't read, the water digests, and each declaration it read by content name, read or not
+    /// (each content-named: the same name, the same contents). A load can change it with the same
+    /// manifest (an index or a declaration that couldn't be read now read): build::KeyMemo serves
+    /// only the state it was filled with. (Its own memos, `memo` and `deep`, keep what each answer
+    /// was worked out from: not in it.)
+    pub fn state(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        fn sorted<'a>(k: impl Iterator<Item = &'a String>) -> Vec<&'a String> {
+            let mut k: Vec<&String> = k.collect();
+            k.sort_unstable();
+            k
+        }
+        sorted(self.held.keys()).hash(&mut h);
+        self.unread.hash(&mut h);
+        sorted(self.water.keys()).hash(&mut h);
+        self.elevation.as_ref().map(|e| &e.0).hash(&mut h);
+        self.elevation_geoid.hash(&mut h);
+        self.geoid.as_ref().map(|g| (&g.0, g.1.is_some())).hash(&mut h);
+        self.buildings.hash(&mut h);
+        self.depth.as_ref().map(|d| (&d.0, d.1.is_some())).hash(&mut h);
+        self.depth_alone.as_ref().map(|d| &d.0).hash(&mut h);
+        self.sets.as_ref().map(|d| (&d.0, d.1.is_some())).hash(&mut h);
+        h.finish()
     }
 
     /// The terrain packs `m` names: (logical, content name).
@@ -1011,6 +1038,7 @@ mod tests {
         let e = t.hash(&m, 12, 1856, 1024).unwrap_err();
         assert!(e.0.starts_with("layers/terrain/hi/6-29-16.4444444444444444.pack: "), "{e}");
         assert_eq!(t.hash(&m, 12, 1920, 1024).unwrap(), None);
+        let (unread_state, named) = (t.state(), m.clone());
         let made = pack(
             &store::nasfs::NasRoot::local_for_test(&root),
             &mut m,
@@ -1022,6 +1050,10 @@ mod tests {
         assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 1);
         assert_eq!(t.unread().count(), 0);
         assert_eq!(t.hash(&m, 12, 1856, 1024).unwrap(), Some(made[&(12, 1856, 1024)]));
+        // (The same manifest, read now: another state, the keys' memo not served across it,
+        // build::KeyMemo.)
+        assert_eq!(m, named);
+        assert_ne!(t.state(), unread_state);
         // A water digest that can't be read: its reason stays said after the load.
         let water = format!("{}0-0-0", crate::terrain_water::IDX_PREFIX);
         m.insert(water.clone(), "work/water-idx/0-0-0.5555555555555555.idx".into());

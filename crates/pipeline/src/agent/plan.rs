@@ -678,22 +678,29 @@ impl Planner {
             let regions = self.regions.0.clone();
             self.progress = self.checklist(&root, &regions);
         } else if refilter_due(leases != self.leases, self.kept.borrow().is_some(), last, refiltered) {
-            // (The leases changed alone: the last plan's work filtered again and offered, its number
-            // and its digest kept.)
+            // (The leases changed alone: the last plan's work filtered again and offered, its digest
+            // kept. Numbered as a plan is: its jobs are new specs, and a grant of one by its id must
+            // find the spec of the offer it was granted from, never the last plan's of the same id
+            // with other targets (task #923); a cancel taken meanwhile drops its grants too.)
             self.leases = leases;
             self.phase("its jobs again");
             let t = Instant::now();
             let mut waiting = Vec::new();
             let c = self.inp.conditions;
+            let n = next_n(self.n, std::time::SystemTime::now());
+            self.running_n.store(n, Ordering::SeqCst);
+            if let Some(c) = &self.coord {
+                c.plan_started(n);
+            }
             self.refilter.set(true);
             let plan = self.plan(&root, &c, &mut waiting);
             self.refilter.set(false);
             nasread::PLAN.enter("");
+            self.n = n;
             self.offer_plan(&plan);
             self.refiltered = Some((Instant::now(), t.elapsed()));
             eprintln!(
-                "agent: plan {}'s jobs filtered again (the leases changed) in {} ms",
-                self.n,
+                "agent: plan {n}: the last plan's work filtered again (the leases changed) in {} ms",
                 t.elapsed().as_millis()
             );
             self.jobs = plan;
@@ -723,7 +730,7 @@ impl Planner {
             && self.steps_counted.is_none_or(|t| t.elapsed() >= STEPS_EVERY)
         {
             self.steps_counted = Some(Instant::now());
-            self.steps_making = self.start_as_built(root, "region-steps", build::region_steps);
+            self.steps_making = self.start_region_steps(root);
         }
     }
 
@@ -1756,9 +1763,21 @@ impl Planner {
         // z6 tile that changed.)
         let served = self.planned_tiles.borrow_mut().served(map.as_deref());
         drop(map);
-        // (The plan's keys, handed on to what derives keys of the same context below, this round only.)
-        // (Filtered again on a lease change: the last result and its keys, `build::plan` not made.)
+        // (The plan's keys, handed on to what derives keys of the same context below, and kept for a
+        // lease change's filtering again: the last result and its keys, `build::plan` not made. Each
+        // reader takes them only while its context reads the same, `KeyMemo::serves`: a pass newly on
+        // the NAS, or an index read that couldn't be before, and `build::plan` is made again.)
         let reused = if self.refilter.get() { self.kept.borrow_mut().take() } else { None };
+        let reused = reused.filter(|(_, memo)| {
+            memo.serves(&build::KeyCtx::new(
+                cov,
+                date,
+                &manifest,
+                &inputs,
+                reach.as_deref(),
+                &self.terrain_tiles(root, &manifest),
+            ))
+        });
         *self.depth_keep.borrow_mut() =
             build::depth_kept(cov, &manifest, &self.terrain_tiles(root, &manifest), &done, now_s());
         let (mut planned, memo) = match reused {
@@ -2858,18 +2877,16 @@ impl Planner {
         build::fold(&items, &next, &notes)
     }
 
-    /// `f` (build::region_steps) over the keying context (the coverage, the
-    /// pass, the manifest, the planner's inputs, the reaches, the terrain packs' indexes), the regions' and
-    /// the records, on a thread of its own named `name` (the loop gives it what it holds
-    /// already, and a copy of the indexes), with how long it took. None before the first pass or
-    /// while the coverage can't be read.
+    /// Each region's steps (build::region_steps) over the keying context (the coverage, the pass, the
+    /// manifest, the planner's inputs, the reaches, the terrain packs' indexes), the regions and the
+    /// records, on a thread of its own (the loop gives it what it holds already, and a copy of the
+    /// indexes), with how long it took. None before the first pass or while the coverage can't be
+    /// read.
     #[allow(clippy::type_complexity)]
-    pub(super) fn start_as_built<T: Send + 'static>(
+    pub(super) fn start_region_steps(
         &self,
         root: &store::nasfs::NasRoot,
-        name: &str,
-        f: fn(&build::KeyCtx, &[(String, crate::coverage::Coverage)], &build::Keys) -> T,
-    ) -> Option<std::thread::JoinHandle<(T, Duration)>> {
+    ) -> Option<std::thread::JoinHandle<(BTreeMap<String, BTreeMap<&'static str, [usize; 2]>>, Duration)>> {
         let (date, manifest, covs, keys, reach) = self.as_built_parts(root)?;
         let tiles = self.terrain_tiles(root, &manifest).clone();
         let root = root.clone();
@@ -2877,17 +2894,16 @@ impl Planner {
             let t = Instant::now();
             let inputs = key_inputs(&root, &manifest);
             let x = build::KeyCtx::new(&covs.all, &date, &manifest, &inputs, reach.as_deref(), &tiles);
-            (f(&x, &covs.each, &keys), t.elapsed())
+            (build::region_steps(&x, &covs.each, &keys), t.elapsed())
         };
-
         std::thread::Builder::new()
-            .name(name.into())
+            .name("region-steps".into())
             .spawn(run)
-            .inspect_err(|e| eprintln!("agent: the {name} thread: {e}"))
+            .inspect_err(|e| eprintln!("agent: the region-steps thread: {e}"))
             .ok()
     }
 
-    /// What `start_as_built` reads: the pass, the manifest, the coverages, the records as written and the
+    /// What `start_region_steps` reads: the pass, the manifest, the coverages, the records as written and the
     /// reaches (the last two held: read again only when they change).
     #[allow(clippy::type_complexity)]
     pub(super) fn as_built_parts(
