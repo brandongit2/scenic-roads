@@ -56,8 +56,7 @@ use std::time::{Duration, Instant};
 // docs/crates.md), kept at these paths.
 use jobrt::jobs::RUN_START;
 pub use jobrt::jobs::{
-    each_line, error_of, fraction_of, now_s, part, parts, progress, report, report_f, run_watched, said, stage, tail,
-    unit_key, within, Said,
+    error_of, now_s, part, parts, progress, report, report_f, run_watched, said, stage, tail, unit_key, within, Said,
 };
 
 /// The NAS project folder as a child process's `--root` argument (its spec's): the spawners' one

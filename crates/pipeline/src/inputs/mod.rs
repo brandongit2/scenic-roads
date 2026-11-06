@@ -76,10 +76,6 @@ pub const TEST_FLAG: &str = "state/inputs/gate-test";
 /// Where the owner's acceptances are kept, a folder per unit, a file per finding id.
 pub const ACCEPTED: &str = "state/inputs/accepted";
 
-// The inputs folders and the predicate `Out::path` refuses by: the build's files' crate's (task
-// #916 step 4, docs/crates.md), kept at these paths.
-pub use buildstore::inputs_folder::{in_inputs_folder, DROP_ROOTS};
-
 /// A file is taken only once its size and time have held this long (seconds): one being written
 /// isn't checked half-written.
 pub const QUIET_S: u64 = 10;

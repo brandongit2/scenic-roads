@@ -7,7 +7,7 @@
 //!   nlines × varint  zigzag delta of the OSM way id (v6: index into ways.bin)
 //!   nlines × varint  vertex count
 //!   nlines × varint  true (full-resolution) length of the piece, decimetres
-//!   nlines × varint  length of the whole road the way belongs to, metres (its road value: `pipeline::chain`)
+//!   nlines × varint  length of the whole road the way belongs to, metres (its road value: `codecs::chain`)
 //!   nlines × 3 u8    attributes: maxspeed (km/h ÷ 2, 0 = unknown), lanes, surface (`surface`)
 //!   nlines × varint  line colour: 0 = none, else 0xRRGGBB + 1 (rail)
 //!   nverts × 2 varint  zigzag delta x, y (delta chain runs across lines)

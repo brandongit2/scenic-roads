@@ -25,7 +25,7 @@ osmpbf = "0.3"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
 png = "0.18"
-# The terrain's tiles (crate::terrain_codec): lossless WebP through libwebp (not crate::webp, the tree cover's own encoder).
+# The terrain's tiles (crate::terrain_codec): lossless WebP through libwebp (not codecs::webp, the tree cover's own encoder).
 webpenc = { path = "../webpenc" }
 # The depth's tiles read back (crate::depth::fall), as roadcore reads the terrain's.
 image-webp = "0.2"

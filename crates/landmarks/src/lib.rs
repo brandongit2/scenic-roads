@@ -2,8 +2,8 @@
 //! Wikidata and Wikipedia (wikiask), the heritage sites' Wikidata chain (heritagewd,
 //! heritage_layers, heritagedetails, filterprops), the landmarks' interest (interest), the items
 //! and their pageviews (items, pageviews), the labels (labels), the areas' details (areadetails) and
-//! the World Heritage Sites' shapes (whsshapes). Pipeline re-exports these modules at their old
-//! paths.
+//! the World Heritage Sites' shapes (whsshapes). Pipeline re-exports those its binaries name
+//! at their old paths (all but wikiask).
 
 pub mod areadetails;
 pub mod filterprops;

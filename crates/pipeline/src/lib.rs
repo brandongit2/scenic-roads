@@ -55,29 +55,26 @@ pub mod unit;
 pub mod uses;
 pub mod water;
 
-// Moved to their own crate (task #916 step 1, docs/crates.md), kept at their old paths.
-pub use pyport::{pyjson, pynumpy, pytext, tpsimplify};
-
-// Moved to their own crate (task #916 step 2, docs/crates.md), kept at their old paths.
+// Moved to their own crates (task #916, docs/crates.md), kept at their old paths for the modules above
+// the steps and the binaries (the step modules name their crates: step 6b). Step 2's:
 pub use codecs::{
-    areaflags, basepack, basepart, bytes_bar, chain, count_bar, extents, hipack, legacy, marks, morton, shade_codec,
-    stations, summary, terrain_codec, terrain_water, tiling, trailends, vtgen, watercov, webp, whole, ProgressRead,
+    areaflags, basepack, basepart, bytes_bar, count_bar, extents, hipack, legacy, marks, morton, shade_codec, summary,
+    terrain_codec, terrain_water, tiling, trailends, watercov, whole, ProgressRead,
 };
 
-// Moved to their own crate (task #916 step 3, docs/crates.md), kept at their old paths.
+// Step 3's:
 pub use jobrt::{budget, control, phase_names, pyenv, resume_log, sys, timings};
 
-// Moved to their own crate (task #916 step 4, docs/crates.md), kept at their old paths. (out is
-// pipeline's own: its `Out` gives buildstore's the records and write sets from above.)
+// Step 4's (out is pipeline's own: its `open` gives buildstore's `Out` the steps' write sets):
 pub use buildstore::{costin, coverage, fetch, geotiff, handoff, localread, outlines, rawpack};
 
-// Moved to their own crate (task #916 step 5a, docs/crates.md), kept at their old paths.
+// Step 5a's:
 pub use landmarks::{
     areadetails, filterprops, heritage_layers, heritagedetails, heritagewd, interest, items, labels, pageviews,
-    whsshapes, wikiask,
+    whsshapes,
 };
 
-// Moved to their own crate (task #916 step 5b, docs/crates.md), kept at their old paths.
+// Step 5b's:
 pub use mapview::{buildings, scache, terr, view};
 
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an

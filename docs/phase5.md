@@ -254,7 +254,7 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   §6.9); pipeline::areadetails asks Wikidata for parks the answers lack; pipeline::pageviews takes the
   pass's months. The map's layers are written last, in Rust (`pipeline::heritage_layers`: the lean
   layer files, the sites' popup records, the areas simplified by a port of GEOS's topology-preserving
-  simplifier, `pipeline::tpsimplify`). The layers' `en` is the things' own; the server adds
+  simplifier, `pyport::tpsimplify`). The layers' `en` is the things' own; the server adds
   translations. Outputs:
   `work/heritage/<d>/<stem>`.
 - **Its readers:** marks (`markconv::heritage_source`, waiting for it), which saves the World Heritage

@@ -254,7 +254,7 @@ makes the same bytes on every Mac.
     band under a permit: a trees job is paced like an input check (docs/inputs.md §4.3, Threads),
     its threads as its lead re-grants them (docs/pool.md §7.1, Threads re-granted). The trees program's NAS reads count in the
     target's NAS weight (`bytes`; `coord::cost_version` 3).
-  - Lossless WebP by `pipeline::webp`.
+  - Lossless WebP by `codecs::webp`.
   - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a
     task (`treeblock`, docs/workers.md §3), the same bytes at any thread count.
 - **Area overlays** (the heritage and designated areas' outlines): `docs/phase5.md`. The `overlays` job runs after marks (it needs the World
