@@ -163,8 +163,6 @@ struct Status: Decodable {
 
     /// Its running jobs, every slot's in order (`jobs`, else the old fields).
     var allJobs: [Job] { jobs ?? ([job, beside].compactMap { $0 } + (more ?? [])) }
-    /// Its first running job.
-    var firstJob: Job? { allJobs.first }
     /// The gate's units (docs/inputs.md §4.7; agents from #134 on): a held one badges the icon.
     let inputs: [InputUnit]?
     /// Its Mac's own pause's stage, its state in a word and a line, and the out-of-touch threshold,
@@ -356,7 +354,6 @@ struct LeadOf: Decodable {
     let host: String
     let app: String
     let since: Int
-    let how: String
 }
 
 struct PoolMember: Decodable {
@@ -482,7 +479,7 @@ struct PauseInfo: Decodable {
 struct Helper: Decodable {
     let host: String
     let beat: Int
-    /// Its running jobs (a newer agent's), else its first slot's (`job`): `firstJob`.
+    /// Its running jobs (a newer agent's), else its first slot's (`job`).
     let jobs: [Job]?
     let job: Job?
     /// Its running jobs, every slot's (an older agent's: its first).
@@ -618,7 +615,6 @@ struct Done: Decodable {
     let ok: Bool
     let ended: Int
     let secs: Int
-    let note: String?
 }
 
 struct PublishingInfo: Decodable {
@@ -1728,8 +1724,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: the icon and the menu
 
+    /// A menu action whose ask to this Mac's agent couldn't be written (Accept, Cancel, Pause,
+    /// Resume, Clear): said in place of the state (the icon a problem, its tooltip, the panel's
+    /// line, the menu's first line) until an action's ask is written or a minute has passed.
+    var failure: (said: String, at: Int)?
+
+    func failed(_ what: String, _ error: Error) {
+        failure = ("\(what): \(error.localizedDescription)", Int(Date().timeIntervalSince1970))
+        NSLog("scenic-status: %@", failure!.said)
+        show()
+    }
+
+    /// An action's ask written: any earlier failure said no more, and the answer read now.
+    func asked() {
+        failure = nil
+        poll()
+    }
+
+    /// The state as shown: an action's failure while it's said, else the agent's.
+    func shownState() -> (Kind, String) {
+        if let f = failure, Int(Date().timeIntervalSince1970) - f.at < 60 { return (.problem, f.said) }
+        failure = nil
+        return state(reply, own: own)
+    }
+
     func show() {
-        let (kind, line) = state(reply, own: own)
+        let (kind, line) = shownState()
         if let b = item.button {
             let held = heldInputs(reply)
             b.image = iconImage(kind, held: !held.isEmpty, line: line)
@@ -1761,7 +1781,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func currentMenu() -> NSMenu {
         recheckSwitchOver()
-        let (kind, line) = state(reply, own: own)
+        let (kind, line) = shownState()
         return menu(kind, line)
     }
 
@@ -1934,10 +1954,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try JSONSerialization.data(withJSONObject: ["unit": unit, "accept": warns.map(\.id), "by": "the menu bar on \(name)", "at": now] as [String: Any]).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            NSLog("scenic-status: %@: %@", "Couldn't accept \(unit)'s warnings", error.localizedDescription)
+            failed("Couldn't accept \(unit)'s warnings", error)
             return
         }
-        poll()
+        asked()
     }
 
     /// Asks this Mac's agent to cancel a running job (its step, target, and "update" to hold it
@@ -1964,10 +1984,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try JSONSerialization.data(withJSONObject: ask).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            NSLog("scenic-status: %@: %@", "Couldn't cancel the job", error.localizedDescription)
+            failed("Couldn't cancel the job", error)
             return
         }
-        poll()
+        asked()
     }
 
     @objc func pauseBuild(_ sender: NSMenuItem) { ask("drain") }
@@ -1988,10 +2008,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try holdRequestJSON(held, by: "the menu bar on \(name)", at: now).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            NSLog("scenic-status: %@: %@", "Couldn't ask this Mac to \(held ? "pause" : "go on")", error.localizedDescription)
+            failed("Couldn't ask this Mac to \(held ? "pause" : "go on")", error)
             return
         }
-        poll()
+        asked()
     }
 
     /// Asks this Mac's agent to pause the build (`mode`: "drain" or "freeze") or let it go on (nil):
@@ -2010,10 +2030,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try JSONSerialization.data(withJSONObject: ["pause": pause, "at": now]).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            NSLog("scenic-status: %@: %@", "Couldn't ask the build to \(mode == nil ? "go on" : "pause")", error.localizedDescription)
+            failed("Couldn't ask the build to \(mode == nil ? "go on" : "pause")", error)
             return
         }
-        poll()
+        asked()
     }
 
     /// Asks this Mac's agent to clear its build caches to the item's level (its tag: 1 deeply),
@@ -2039,10 +2059,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try clearRequestJSON(by: "the menu bar on \(name)", at: Int(Date().timeIntervalSince1970), deep: deep).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            NSLog("scenic-status: %@: %@", "Couldn't ask to clear the build's caches", error.localizedDescription)
+            failed("Couldn't ask to clear the build's caches", error)
             return
         }
-        poll()
+        asked()
     }
 
     @objc func openLog(_ sender: NSMenuItem) {
