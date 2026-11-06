@@ -27,7 +27,7 @@ pub fn manifest(read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<BTreeMap<Strin
         Err(e) if not_found(&e) => Ok(None),
         Err(e) => Err(e),
     };
-    crate::out::read_manifest(&buildstore::records::nas::ReadOnly(&read))
+    buildstore::records::read_manifest(&buildstore::records::nas::ReadOnly(&read))
 }
 
 /// Whether `e` is a file not found (through a pool's read, or the file system's).

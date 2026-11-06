@@ -776,7 +776,7 @@ pub fn accept(root: &store::nasfs::NasRoot, unit: &str, f: &Finding, member: &st
         id: f.id.clone(),
         member: member.to_string(),
         host: store::sys::host_name(),
-        at: crate::agent::jobs::now_s(),
+        at: jobrt::jobs::now_s(),
         by: by.to_string(),
         message: f.message.clone(),
     };
@@ -815,7 +815,7 @@ pub fn read_acceptance(root: &store::nasfs::NasRoot, unit: &str, id: &str) -> Re
 pub fn member_of(agent_home: &Path) -> String {
     std::fs::read_to_string(agent_home.join("member"))
         .ok()
-        .and_then(|s| s.lines().next().map(str::trim).filter(|id| crate::pool::is_member_id(id)).map(str::to_string))
+        .and_then(|s| s.lines().next().map(str::trim).filter(|id| buildstore::records::is_member_id(id)).map(str::to_string))
         .unwrap_or_else(|| "-".into())
 }
 

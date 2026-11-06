@@ -33,7 +33,7 @@
 //! declaration's URL when there's no copy.
 
 use crate::coverage::{Coverage, Shape};
-use crate::out::Out;
+use buildstore::out::Out;
 use crate::outlines::{flag, Outlines};
 use anyhow::{Context, Result};
 use jobrt::timings::day_of;
@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(c("RS-KM"), vec!["XK", "RS"], "not Comoros");
         assert_eq!(c("ES-ML"), vec!["ES"], "not Mali");
     }
-    use crate::agent::recipes::Recipe;
+    use buildstore::recipes::Recipe;
 
     fn pair(a: (f32, f32), b: (f32, f32), mode: u8, n: f32) -> Vec<u8> {
         let mut v = Vec::new();

@@ -4,7 +4,7 @@
 //! drawn regions from their drawn files, and the Regions list's tree from the index's paths.
 
 use super::stored::{Drawn, Geometry};
-use crate::agent::recipes::Recipe;
+use buildstore::recipes::Recipe;
 use crate::coverage::{Coverage, DrawnRegion, Shape};
 use crate::inputs::Accepted;
 use anyhow::{Context, Result};
@@ -48,7 +48,7 @@ pub fn switch_app(
             .and_then(|a| a.as_str())
             .filter(|a| !a.is_empty())
             .with_context(|| format!("{name} names no app"))?;
-        if newest.as_deref().is_none_or(|n| !crate::pool::term::app_at_least(n, app)) {
+        if newest.as_deref().is_none_or(|n| !buildstore::records::term::app_at_least(n, app)) {
             newest = Some(app.to_string());
         }
     }
@@ -60,7 +60,7 @@ pub fn switch_app(
 pub fn may_lead(app: &str, regions: &std::result::Result<Option<String>, String>) -> std::result::Result<(), String> {
     match regions {
         Err(e) => Err(format!("the app the newer readers' switch (the regions', the elevation datasets') was recorded on can't be read now ({e})")),
-        Ok(Some(min)) if !crate::pool::term::app_at_least(app, min) => Err(format!("its app {app} is older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on ({min})")),
+        Ok(Some(min)) if !buildstore::records::term::app_at_least(app, min) => Err(format!("its app {app} is older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on ({min})")),
         Ok(_) => Ok(()),
     }
 }
@@ -69,14 +69,14 @@ pub fn may_lead(app: &str, regions: &std::result::Result<Option<String>, String>
 /// whichever is newer.
 pub fn needed_app(term: Option<&str>, regions: Option<&str>) -> Option<String> {
     match (term, regions) {
-        (Some(t), Some(r)) => Some(if crate::pool::term::app_at_least(t, r) { t } else { r }.to_string()),
+        (Some(t), Some(r)) => Some(if buildstore::records::term::app_at_least(t, r) { t } else { r }.to_string()),
         (t, r) => t.or(r).map(str::to_string),
     }
 }
 
 /// `source`, the records read from the NAS.
 pub fn source_now(root: &store::nasfs::NasRoot) -> Result<Accepted> {
-    let m = crate::out::read_manifest(root)?;
+    let m = buildstore::records::read_manifest(root)?;
     source(root, &m)
 }
 

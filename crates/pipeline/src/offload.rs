@@ -545,11 +545,11 @@ pub fn run_task(
     // How far it is, for the status: its files fetched, each of its steps (as far as each says),
     // what they wrote sent back.
     let steps = runs.len() as u64 + 2;
-    crate::agent::jobs::stage(0, steps, "steps (fetching its files)");
+    jobrt::jobs::stage(0, steps, "steps (fetching its files)");
     let names: Vec<String> = runs.iter().map(|r| r.what.clone()).collect();
     crate::unit::on_stage(Some(Box::new(move |what, frac, _| {
         if let Some(i) = names.iter().position(|n| n == what) {
-            crate::agent::jobs::report_f((1 + i) as f64 + frac, steps, &format!("steps ({what})"));
+            jobrt::jobs::report_f((1 + i) as f64 + frac, steps, &format!("steps ({what})"));
         }
     })));
     // (Each input's hash: what's written back unchanged isn't sent, the z6 tile's folder has it.)
@@ -605,7 +605,7 @@ pub fn run_task(
     crate::unit::run_tail(&runs, &dir.join("u"), &tools)?;
     let (secs, peak_mb) = (t.elapsed().as_secs_f64(), crate::unit::take_peak() >> 20);
     crate::unit::on_stage(None);
-    crate::agent::jobs::stage(steps - 1, steps, "steps (sending what they wrote)");
+    jobrt::jobs::stage(steps - 1, steps, "steps (sending what they wrote)");
     let had: std::collections::BTreeSet<&str> = inputs.iter().map(|(p, _)| p.as_str()).collect();
     let sending = crate::timings::phase("sending back what they wrote");
     let mut outputs = Vec::new();
@@ -623,7 +623,7 @@ pub fn run_task(
         outputs.push(crate::coord::task::Output { path: rel, size: b.len() as u64 });
     }
     let removed: Vec<&str> = had.iter().filter(|p| p.starts_with("u/") && !dir.join(p).exists()).copied().collect();
-    crate::agent::jobs::report(steps, steps, "steps");
+    jobrt::jobs::report(steps, steps, "steps");
     Ok(serde_json::json!({ "outputs": outputs, "removed": removed, "secs": secs, "peak_mb": peak_mb }))
 }
 

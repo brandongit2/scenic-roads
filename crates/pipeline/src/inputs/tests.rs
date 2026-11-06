@@ -381,7 +381,7 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
     let inputs_dir = root.join("inputs").join(TEST_UNIT);
     std::fs::create_dir_all(&inputs_dir).unwrap();
     std::fs::create_dir_all(root.join("state/build")).unwrap();
-    let now = crate::agent::jobs::now_s();
+    let now = jobrt::jobs::now_s();
     let t = now - 6;
     let p = inputs_dir.join("a.jsonl");
     std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n").unwrap();
@@ -402,7 +402,7 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
         crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(planned)).unwrap();
     let m: BTreeMap<String, String> =
-        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
             .unwrap();
     assert!(open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_UNIT).unwrap().is_none());
     // Once it has held still, the listing (and so the key) is another: it's checked, and taken.
@@ -413,7 +413,7 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
         crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(Planned { listing: later, accepted: BTreeSet::new() })).unwrap();
     let m: BTreeMap<String, String> =
-        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
             .unwrap();
     assert!(open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_UNIT)
         .unwrap()
@@ -431,7 +431,7 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
         crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(stale)).unwrap();
     let m2: BTreeMap<String, String> =
-        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
             .unwrap();
     assert_eq!(m2.get(&logical(TEST_UNIT)), m.get(&logical(TEST_UNIT)));
     assert!(!m2.contains_key(&held_logical(TEST_UNIT)));
@@ -469,7 +469,7 @@ fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
         TEST_UNIT,
         false,
         Some(planned),
-        crate::agent::jobs::now_s(),
+        jobrt::jobs::now_s(),
     )
     .unwrap();
     assert_eq!(unsettled, ["a.jsonl".to_string(), "b.jsonl".to_string()].into());
@@ -518,7 +518,7 @@ fn a_nested_units_check_keeps_its_records_in_its_folder() {
         crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_NESTED, false, None).unwrap();
     let m: BTreeMap<String, String> =
-        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
             .unwrap();
     let a = open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_NESTED).unwrap().unwrap();
     assert!(
@@ -535,7 +535,7 @@ fn a_nested_units_check_keeps_its_records_in_its_folder() {
         crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_NESTED, false, None).unwrap();
     let m2: BTreeMap<String, String> =
-        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
             .unwrap();
     assert_eq!(
         read_listed(&store::nasfs::NasRoot::local_for_test(&root), &m2, TEST_NESTED).unwrap().replaced.as_deref(),
@@ -718,7 +718,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
         crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m: BTreeMap<String, String> =
-        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
             .unwrap();
     let a = open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_UNIT).unwrap().unwrap();
     assert!(a.version.starts_with("sources/inputs/_gate-test/@index.") && root.join(&a.version).exists());
@@ -730,7 +730,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
         crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m2: BTreeMap<String, String> =
-        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
             .unwrap();
     assert_eq!(m2[&logical(TEST_UNIT)], a.version);
     let r = read_report(&store::nasfs::NasRoot::local_for_test(&root), &m2[&held_logical(TEST_UNIT)]).unwrap();
@@ -765,7 +765,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
         crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m3: BTreeMap<String, String> =
-        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
             .unwrap();
     assert_ne!(m3[&logical(TEST_UNIT)], a.version);
     assert!(
@@ -789,7 +789,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     assert_eq!(v[0].state, view::State::Ok);
     assert!(v[0].stale.is_empty(), "the acceptance is the version's: {:?}", v[0].stale);
     // The NAS root a step gets refuses an inputs folder path, naming the caller.
-    let out = crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
+    let out = buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
     let e =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl"))).unwrap_err();
     let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();

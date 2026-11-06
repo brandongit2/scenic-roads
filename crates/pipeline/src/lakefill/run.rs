@@ -991,7 +991,7 @@ mod tests {
         let a: Vec<&str> = m.split_whitespace().collect();
         let scratch = tempfile::tempdir().unwrap();
         let out =
-            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
+            buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
         let basemap = out.path(out.get(&format!("layers/basemap/world-{}", a[1])).unwrap());
         let outlines = out.path(out.get(&format!("sources/osm/{}/outlines", a[1])).unwrap());
         let decl = crate::inputs::sources::read(out.root(), &out.manifest).unwrap();

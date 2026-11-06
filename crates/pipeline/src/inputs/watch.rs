@@ -57,7 +57,7 @@ impl Watch {
                     let Some(checks) = super::checks(unit) else { continue };
                     let raw = super::list(&root, unit, checks.recursive());
                     let acc = super::acceptances(&root, unit);
-                    let at = crate::agent::jobs::now_s();
+                    let at = jobrt::jobs::now_s();
                     let (lock, _) = &*s;
                     let mut g = lock.lock().unwrap();
                     match (raw, acc) {

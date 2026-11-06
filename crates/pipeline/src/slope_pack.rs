@@ -11,7 +11,7 @@
 //! z6 tile's slope-hi run makes z10–12 from them and its hi terrain, taking each in as made: the
 //! same bytes as one run of the whole.
 
-use crate::out::Out;
+use buildstore::out::Out;
 use crate::terrain_deep::{FIRST_Z, MAX_Z, PACK_Z};
 use crate::terrain_pack::ManifestTiles;
 use anyhow::Result;
@@ -557,21 +557,21 @@ const MID_QUADRANTS: u64 = 1 << (2 * (FIRST_Z - PACK_Z));
 /// written (z9–12), each at most its raw codes; its z6–8 tiles; the deep mids open
 /// (`DeepQuadrants`: one a thread of the pyramid's, each its quadrants and, as it's read, its
 /// bytes); the pyramid's working memory (`working_bytes`); the decoded terrain kept; the z6 tile
-/// before's uploads in flight beside it (crate::out::UPLOAD_HELD).
+/// before's uploads in flight beside it (buildstore::out::UPLOAD_HELD).
 pub const fn peak_mb() -> u64 {
     let held = tiles_below(9 - 6, HI_MAX - 6) + tiles_below(0, 2);
     let mids = THREADS as u64 * 2 * MID_QUADRANTS * QUADRANT;
-    (held * RAW + mids + working_bytes(6, HI_MAX) + KEPT + crate::out::UPLOAD_HELD) >> 20
+    (held * RAW + mids + working_bytes(6, HI_MAX) + KEPT + buildstore::out::UPLOAD_HELD) >> 20
 }
 
 /// The most memory (MB) a slope-deep z10 tile's run takes, from its bounds: its deep pack's tiles
 /// (z13–16) held until written, each at most its raw codes; its z13 tiles' quadrants; the
 /// pyramid's working memory (`chains_bytes`: a z13 subtree a thread); the decoded terrain kept;
-/// beside it, the target before's uploads in flight (crate::out::UPLOAD_HELD) and the next one's
+/// beside it, the target before's uploads in flight (buildstore::out::UPLOAD_HELD) and the next one's
 /// pack being copied ahead (`DeepBatch`: a copy's buffer, store::sys::COPY_BUF).
 pub const fn deep_peak_mb() -> u64 {
     let held = tiles_below(FIRST_Z - PACK_Z, MAX_Z - PACK_Z);
-    let beside = crate::out::UPLOAD_HELD + store::sys::COPY_BUF as u64;
+    let beside = buildstore::out::UPLOAD_HELD + store::sys::COPY_BUF as u64;
     (held * RAW + MID_QUADRANTS * QUADRANT + chains_bytes(FIRST_Z, MAX_Z) + KEPT + beside) >> 20
 }
 
@@ -867,7 +867,7 @@ pub fn build_piece(
     Ok(rep)
 }
 
-/// `build_piece`, its uploads put off (crate::out::Out::put_file_later): they go on beside what the
+/// `build_piece`, its uploads put off (buildstore::out::Out::put_file_later): they go on beside what the
 /// job does next, and the z6 tile is saved (and noted done) by a later save (`Out::save_upto` the
 /// mark after it).
 pub fn build_piece_later(
@@ -1007,7 +1007,7 @@ impl DeepBatch {
         DeepBatch { terr: Arc::new(terr), targets: targets.to_vec(), ahead: None }
     }
 
-    /// Makes z10 tile `t` (`build_deep`), its uploads put off (crate::out::Out::put_file_later):
+    /// Makes z10 tile `t` (`build_deep`), its uploads put off (buildstore::out::Out::put_file_later):
     /// they go on beside what the job does next, and the target is saved (and noted done) by a later
     /// save (`Out::save_upto` the mark after it). Its pack copied first, or waited for where it's
     /// being copied ahead; then the next target's copying ahead begins.
@@ -1794,7 +1794,7 @@ mod tests {
         std::env::set_var(crate::control::THREADS_ENV, &f);
         let mut batch = DeepBatch::new(&out, &ts);
         // (The mark after the target uploading's uploads, and the targets landed: saved and named.)
-        let mut up: Option<(crate::out::Mark, (u32, u32))> = None;
+        let mut up: Option<(buildstore::out::Mark, (u32, u32))> = None;
         let mut landed = Vec::new();
         for (k, &t) in ts.iter().enumerate() {
             let ran = crate::control::on_grant(|| {
@@ -2331,7 +2331,7 @@ mod tests {
         let threads = rayon::current_num_threads();
         let (t0, c0) = (std::time::Instant::now(), cpu());
         let mut batch = (!alone).then(|| DeepBatch::new(&read, &ts));
-        let mut before: Option<crate::out::Mark> = None;
+        let mut before: Option<buildstore::out::Mark> = None;
         for &t in &ts {
             let (s, c) = (std::time::Instant::now(), cpu());
             let r = match &mut batch {

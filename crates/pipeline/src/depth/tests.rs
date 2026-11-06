@@ -5,7 +5,7 @@ use super::build::{build_hi, build_lo, hi_logical, lo_logical, square};
 use super::fall::{self, Grid, Kind};
 use super::grids::{tests::grid_file, window_box, Grid as SGrid, Source};
 use super::*;
-use crate::out::Out;
+use buildstore::out::Out;
 use crate::terrain_water::{Kind as WKind, Poly, WaterSource};
 use det::Det;
 use std::path::Path;

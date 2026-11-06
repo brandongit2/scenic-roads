@@ -747,7 +747,7 @@ impl Progress {
 
     fn file_done(&self) {
         let d = self.done_files.fetch_add(1, Ordering::Relaxed) + 1;
-        crate::agent::jobs::report(d, self.files as u64, "files");
+        jobrt::jobs::report(d, self.files as u64, "files");
     }
 
     fn line(&self) -> String {

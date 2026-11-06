@@ -18,7 +18,7 @@
 //! version, acceptances): the tests' subject. `run` is the job.
 
 use super::{Checks, FileEntry, Finding, Index, Level, Listing, Report, Version};
-use crate::agent::jobs;
+use jobrt::jobs;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -465,7 +465,7 @@ pub fn candidate(
 /// the lead's key was made from), its outcome handed off with `out`.
 /// The records of unit `unit`, off the gate, removed (`scenic inputs test off --forget`); GC sweeps
 /// their files once they're old.
-pub fn forget(out: &mut crate::out::Out, unit: &str) -> Result<String> {
+pub fn forget(out: &mut buildstore::out::Out, unit: &str) -> Result<String> {
     anyhow::ensure!(!super::units(out.root()).contains(&unit), "{unit} is on the gate: take it off first");
     let mut gone = Vec::new();
     for l in [super::logical(unit), super::held_logical(unit), super::listed_logical(unit)] {
@@ -478,7 +478,7 @@ pub fn forget(out: &mut crate::out::Out, unit: &str) -> Result<String> {
     Ok(format!("{unit}: {} record{} forgotten", gone.len(), if gone.len() == 1 { "" } else { "s" }))
 }
 
-pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<super::Planned>) -> Result<String> {
+pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Option<super::Planned>) -> Result<String> {
     use crate::timings::phase;
     let checks = super::checks(unit).with_context(|| format!("{unit} isn't a gate unit this app knows"))?;
     let root = out.root().clone();
@@ -497,7 +497,7 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     let state = super::read_listed(&root, &out.manifest, unit)?;
     let prev_listed = state.listed.clone();
     let (listing, accepted, unsettled) =
-        candidate(&root, unit, checks.recursive(), planned, crate::agent::jobs::now_s())?;
+        candidate(&root, unit, checks.recursive(), planned, jobrt::jobs::now_s())?;
     drop(p);
     let p = phase("reading and checking the changes");
     let dir = super::inputs_folder(&root, unit);
@@ -544,7 +544,7 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
         said += &format!("; taken in: {name}");
     }
     // (A full check's time kept with it: the lead's next is a day after, whichever Mac leads.)
-    let full_at = if full { Some(crate::agent::jobs::now_s()) } else { state.full_at };
+    let full_at = if full { Some(jobrt::jobs::now_s()) } else { state.full_at };
     if d.listed_changed || replaced != state.replaced || full_at != state.full_at {
         let l = super::Listed { fmt: 1, unit: unit.into(), listed: d.listed.clone(), replaced, full_at };
         let name = out.store_bytes(&super::listed_logical(unit), "json", &serde_json::to_vec_pretty(&l)?)?;

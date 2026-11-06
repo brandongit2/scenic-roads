@@ -2,7 +2,7 @@
 //! the gate holding and taking in region files (docs/inputs.md §6.1.10's list of tests).
 
 use super::*;
-use crate::agent::recipes::Recipe;
+use buildstore::recipes::Recipe;
 use crate::coverage::Coverage;
 use crate::inputs::gate::{decide, Given};
 use crate::inputs::{FileEntry, Index, Listing};
@@ -613,7 +613,7 @@ fn job_root(f: &Fx, outlines: bool) -> tempfile::TempDir {
 }
 
 fn manifest(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
-    crate::out::read_record(&root.join("state/build/manifest.json")).unwrap()
+    buildstore::out::read_record(&root.join("state/build/manifest.json")).unwrap()
 }
 
 #[test]
@@ -622,7 +622,7 @@ fn without_the_pass_s_outline_set_the_check_does_nothing() {
     let d = job_root(&f, false);
     let before = manifest(&store::nasfs::NasRoot::local_for_test(d.path()));
     let mut out =
-        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
     let said = crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap();
     assert!(said.contains("not checked now") && said.contains("outline set"), "{said}");
     assert_eq!(
@@ -636,7 +636,7 @@ fn without_the_pass_s_outline_set_the_check_does_nothing() {
     // With it, the region is taken in.
     let d = job_root(&f, true);
     let mut out =
-        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
     let said = crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap();
     assert!(said.contains("taken in"), "{said}");
 }
@@ -647,7 +647,7 @@ fn a_region_missing_a_fact_is_an_error() {
     let d = job_root(&f, true);
     let root = d.path();
     let mut out =
-        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
     crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
     // (Not switched in these records: the readers refuse, naming the runbook.)
     assert!(format!(
@@ -819,7 +819,7 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     let root = d.path();
     drop_files(&store::nasfs::NasRoot::local_for_test(root), &[("b.toml", &b_off), ("c.toml", &c)]);
     let mut out =
-        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
     let said = crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
     assert!(said.contains("taken in"), "{said}");
     let a = crate::inputs::open(
@@ -889,7 +889,7 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     // Enabled: a new version, b in the regions and the coverage, and the jobs over its box keyed anew.
     drop_files(&store::nasfs::NasRoot::local_for_test(root), &[("b.toml", &region("b", "outline = [\"osm:2\"]\n"))]);
     let mut out =
-        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
     crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
     let a2 = crate::inputs::open(
         &store::nasfs::NasRoot::local_for_test(root),
@@ -912,7 +912,7 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     // Disabled again: out of the coverage once more, as when it was first disabled.
     drop_files(&store::nasfs::NasRoot::local_for_test(root), &[("b.toml", &b_off)]);
     let mut out =
-        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
     crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
     let a3 = crate::inputs::open(
         &store::nasfs::NasRoot::local_for_test(root),

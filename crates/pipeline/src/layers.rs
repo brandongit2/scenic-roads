@@ -5,7 +5,7 @@
 //! (`layers/<layer>/all`, docs/formats.md "Bundles"): every tile in one pack, which the catalogue
 //! names for each pack key its tiles fall in (`bundle_keys`).
 
-use crate::out::Out;
+use buildstore::out::Out;
 use anyhow::Result;
 use roadcore::archive::Archive;
 use std::collections::BTreeMap;
@@ -183,7 +183,7 @@ pub fn bundle_keys(idx: &store::pack::PackIndex) -> BundleKeys {
 }
 
 /// Writes a whole layer's tiles (z, x, y, blob, raw_len; any order) as its bundle and uploads it,
-/// put off (crate::out::Out::put_file_later: named once landed); its logical name and zoom range,
+/// put off (buildstore::out::Out::put_file_later: named once landed); its logical name and zoom range,
 /// None when there are no tiles. One file where a pack per tile key made hundreds (task #449: each
 /// file made on the NAS is a second or so).
 pub fn write_layer_bundle(
@@ -213,7 +213,7 @@ pub fn write_layer_bundle(
 }
 
 /// Writes files made per tile (z, x, y, local path; any order) as one bundle under `logical` and
-/// uploads it, put off (crate::out::Out::put_file_later): an RDPACK whose blobs are the files' bytes
+/// uploads it, put off (buildstore::out::Out::put_file_later): an RDPACK whose blobs are the files' bytes
 /// as they are, not gzip'd, each starting on a 64-byte boundary, so a sectioned file in it maps and
 /// casts in place as on its own (docs/formats.md "Bundles"). The local files are removed. False
 /// when there were none.
@@ -267,7 +267,7 @@ pub struct LocalPack {
 }
 
 impl LocalPack {
-    /// The content name it would be uploaded under (crate::out::Out::put_file).
+    /// The content name it would be uploaded under (buildstore::out::Out::put_file).
     pub fn content_name(&self) -> Result<String> {
         Ok(store::naming::content_name(&self.logical, &store::naming::hash16_file(&self.local)?, "pack"))
     }
@@ -303,7 +303,7 @@ pub fn write_pack_local(
 }
 
 /// Split a tile archive into packs, keeping zooms up to `max_z`, saying how far it is as
-/// `packs written` (crate::agent::jobs::report).
+/// `packs written` (jobrt::jobs::report).
 pub fn split_archive(
     out: &mut Out,
     arc: &Archive,
@@ -313,7 +313,7 @@ pub fn split_archive(
     max_z: u8,
 ) -> Result<LayerOut> {
     split_archive_with(out, arc, layer, encoding, gzip, max_z, &|k, n| {
-        crate::agent::jobs::report(k, n, "writing packs")
+        jobrt::jobs::report(k, n, "writing packs")
     })
 }
 

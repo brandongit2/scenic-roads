@@ -743,7 +743,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     // 1. Land, in waves by what outlines name.
     let mut left: Vec<String> = ids.clone();
     while !left.is_empty() {
-        crate::agent::jobs::within((ids.len() - left.len()) as f64 / ids.len() as f64);
+        jobrt::jobs::within((ids.len() - left.len()) as f64 / ids.len() as f64);
         let (wave, rest): (Vec<String>, Vec<String>) = left.into_iter().partition(|id| {
             folder.deps(&folder.regions[id].1).iter().all(|d| {
                 // (One with water is ready once made; its placeholder in `out` isn't it.)

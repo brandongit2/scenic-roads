@@ -835,7 +835,7 @@ fn take_chunks(
             rows += f.header["n"].as_u64().unwrap_or(0);
             prepped.take(&f, t)?;
         }
-        crate::agent::jobs::report((c + 1) as u64, n as u64, "chunks of row groups read");
+        jobrt::jobs::report((c + 1) as u64, n as u64, "chunks of row groups read");
     }
     Ok(rows)
 }
@@ -886,7 +886,7 @@ fn frames_unpiece(p: &[u8]) -> Result<Vec<Option<Frame>>> {
 /// Runs `bldprep T`: tile `t`'s records read (`read`: the declared sources' release and GHSL's
 /// folder, crate::inputs::sources), the normalized file written and uploaded as `work/bld/6-x-y`
 /// (or, when T has no building, the one it had dropped). Its counts.
-pub fn run(out: &mut crate::out::Out, t: TileId) -> Result<Stats> {
+pub fn run(out: &mut buildstore::out::Out, t: TileId) -> Result<Stats> {
     use crate::timings::phase;
     let (release, ghsl, _) = super::sources::declared(&crate::inputs::sources::read(out.root(), &out.manifest)?)?;
     let t0 = std::time::Instant::now();

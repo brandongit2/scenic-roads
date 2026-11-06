@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(raw.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), [place.as_str()]);
         assert!(crate::rawpack::is_shard(&raw[0].0) && crate::rawpack::named_for(&raw[0].1.name, &raw[0].0));
         assert!(!crate::rawpack::is_shard("../x/6-0-0") && !crate::rawpack::is_shard("a/b/6-0-0"));
-        let lock = crate::out::BuildLock::take(&root).unwrap();
+        let lock = buildstore::out::BuildLock::take(&root).unwrap();
         let (settled, new) = crate::rawpack::name_handed_places(&root, &raw, &lock);
         assert_eq!((settled, new), (vec![raw[0].1.name.clone()], 1));
         assert!(crate::rawpack::Index::load(&root.join("sources/aws-terrarium")).unwrap().shards.is_empty());

@@ -497,7 +497,7 @@ impl<'a> Offers<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::recipes::Recipe;
+    use buildstore::recipes::Recipe;
     use crate::bld::prep::{
         self,
         tests::{end, frame, square, B},

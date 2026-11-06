@@ -11,7 +11,7 @@
 //! spans, unless it's here already: `copied_whole`), or a published catalogue's (`Source::Catalogue`,
 //! another root's for a pilot).
 
-use crate::out::Out;
+use buildstore::out::Out;
 use crate::terrain_pack::ManifestTiles;
 use anyhow::{Context, Result};
 use roadcore::archive::ArchiveWriter;

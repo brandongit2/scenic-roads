@@ -339,7 +339,7 @@ pub fn of_piece(piece: &Path, u: TileId) -> Result<Option<Reach>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::recipes::Recipe;
+    use buildstore::recipes::Recipe;
     use crate::dem::spacing::{Fine, Uniform, FLOOR_M};
     use det::Det;
 

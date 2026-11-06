@@ -663,7 +663,7 @@ pub fn run(feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)
     let mut c = Counted::default();
     let mut used: Vec<Py> = Vec::new();
     for (k, feed) in feeds.iter().enumerate() {
-        crate::agent::jobs::report(k as u64, feeds.len() as u64, "feeds");
+        jobrt::jobs::report(k as u64, feeds.len() as u64, "feeds");
         let mut facts: Vec<(String, Py)> = ["id", "provider", "url", "licence", "fetched"]
             .iter()
             .filter_map(|&key| feed.get(key).map(|v| (key.to_string(), crate::pyjson::from_serde(v))))
@@ -700,7 +700,7 @@ pub fn run(feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)
         facts.extend(res);
         used.push(Py::Dict(facts));
     }
-    crate::agent::jobs::report(feeds.len() as u64, feeds.len() as u64, "feeds");
+    jobrt::jobs::report(feeds.len() as u64, feeds.len() as u64, "feeds");
     let mut counts = Vec::new();
     for (name, path) in statics_ {
         let mut entry = vec![("static".to_string(), Py::Str(name.clone()))];

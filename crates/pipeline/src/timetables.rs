@@ -273,7 +273,7 @@ fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
 /// scratch one; `todo/` is never read as an input, crate::inputs::list), the report put as
 /// [`REPORT`].
 pub fn run(
-    out: &mut crate::out::Out,
+    out: &mut buildstore::out::Out,
     cov: &crate::coverage::Coverage,
     todo_root: &store::nasfs::NasRoot,
 ) -> Result<Report> {
@@ -478,7 +478,7 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
         .unwrap();
         std::fs::write(d.path().join("sq.poly"), "sq\n1\n 0 0\n 1 0\n 1 1\n 0 1\nEND\nEND\n").unwrap();
         let cov = crate::coverage::Coverage::fixture(
-            &[crate::agent::recipes::Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }],
+            &[buildstore::recipes::Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }],
             None,
             d.path(),
         )

@@ -10,7 +10,7 @@
 //! reads the tiles near its roads (`tiles_for`, `stage`).
 
 use crate::legacy::TileId;
-use crate::out::Out;
+use buildstore::out::Out;
 use crate::reach::Reach;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -292,7 +292,7 @@ pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3
             let total = n.fetch_add(k as u64, std::sync::atomic::Ordering::Relaxed) + k as u64;
             let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             eprintln!("buildings: {total} so far ({:.0} s)", t0.elapsed().as_secs_f64());
-            crate::agent::jobs::report(d, files.len() as u64, "files");
+            jobrt::jobs::report(d, files.len() as u64, "files");
             Ok(())
         })
     })
@@ -375,7 +375,7 @@ pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
         }
         drop(p);
         index.tiles.insert(t.slash(), v.len() as u64);
-        crate::agent::jobs::report(k as u64 + 1, total, "tiles");
+        jobrt::jobs::report(k as u64 + 1, total, "tiles");
     }
     let n: u64 = index.tiles.values().sum();
     anyhow::ensure!(n > 0, "no buildings in the release's {} files", files.len());

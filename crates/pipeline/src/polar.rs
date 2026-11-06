@@ -641,13 +641,13 @@ pub fn root(
 // ---- The steps (crate::agent::build's polar chain) ----------------------------------------------
 
 /// The pool over latitudes `b` (crate::terrain_base::Pool), its levels' plans read to `max_z`.
-fn pool_plans(out: &crate::out::Out, b: [f64; 4], max_z: u8) -> Result<(Vec<Plan>, store::nasfs::NasPath)> {
+fn pool_plans(out: &buildstore::out::Out, b: [f64; 4], max_z: u8) -> Result<(Vec<Plan>, store::nasfs::NasPath)> {
     let pool = crate::terrain_base::Pool::read(out.root(), &out.manifest, b)?;
     Ok((plans(&pool.plan, max_z), pool.store.clone()))
 }
 
 /// The cap's finest zoom (`finest`) of the declared datasets the build's records name.
-pub fn finest_now(out: &crate::out::Out, pole: Pole) -> Result<u8> {
+pub fn finest_now(out: &buildstore::out::Out, pole: Pole) -> Result<u8> {
     let sets = crate::terrain_zoom::Declared::read(out.root(), &out.manifest)?.map(|d| d.sets).unwrap_or_default();
     Ok(finest(&sets, pole))
 }
@@ -659,7 +659,7 @@ struct Pack {
 }
 
 impl Pack {
-    fn open(out: &crate::out::Out, logical: &str, whole: bool) -> Result<Option<Pack>> {
+    fn open(out: &buildstore::out::Out, logical: &str, whole: bool) -> Result<Option<Pack>> {
         use anyhow::Context;
         let Some(c) = out.get(logical) else { return Ok(None) };
         let p = out.path(c);
@@ -679,7 +679,7 @@ impl Pack {
 
 /// Writes a polar layer's pack (crate::layers::write_pack: `layers/<layer>/<scope>/<z>-<x>-<y>`).
 fn write(
-    out: &mut crate::out::Out,
+    out: &mut buildstore::out::Out,
     kind: &str,
     pole: Pole,
     scope: &str,
@@ -701,12 +701,12 @@ fn resume_target(pole: Pole, b: (u32, u32)) -> (u8, u32, u32) {
 }
 
 /// `polar-terrain`: each block's terrain pack (`terrain_block`), from the pool over its latitudes.
-pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
+pub fn terrain_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
     let net = crate::fetch::Fetcher::from_env();
     for (k, &(pole, b)) in targets.iter().enumerate() {
         let t = target(pole, b);
         crate::control::safe_point("polar-terrain");
-        crate::agent::jobs::report(k as u64, targets.len() as u64, "polar blocks");
+        jobrt::jobs::report(k as u64, targets.len() as u64, "polar blocks");
         let max_z = finest_now(out, pole)?;
         let (plans, store) = pool_plans(out, polar::lat_box(pole, BLOCK_Z, b.0, b.1), max_z)?;
         let o = crate::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
@@ -737,7 +737,7 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
                 Ok(())
             },
             &mut |d, n| {
-                crate::agent::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
+                jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
             },
         )
         // (Paused at a chunk kept: the block's pieces kept, the run resumed there.)
@@ -751,18 +751,18 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
         pieces.finish();
         crate::control::done("polar-terrain", &t);
     }
-    crate::agent::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
+    jobrt::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
     Ok(())
 }
 
 /// `polar-slope`: each block's shading pack (`slope_block`), from the terrain packs of it (read
 /// whole) and its neighbours (their tiles read as wanted).
-pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
+pub fn slope_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
     for (k, &(pole, b)) in targets.iter().enumerate() {
         let t = target(pole, b);
         let max_z = finest_now(out, pole)?;
         crate::control::safe_point("polar-slope");
-        crate::agent::jobs::report(k as u64, targets.len() as u64, "polar blocks");
+        jobrt::jobs::report(k as u64, targets.len() as u64, "polar blocks");
         let mut packs: HashMap<(u32, u32), Pack> = HashMap::new();
         for n in around(pole, b) {
             if let Some(p) = Pack::open(out, &block_logical("terrain", pole, n), n == b)? {
@@ -801,7 +801,7 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
                 Ok(())
             },
             &mut |d, n| {
-                crate::agent::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
+                jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
             },
         )
         .map_err(|e| crate::control::stop_if_paused("polar-slope", e))?;
@@ -810,13 +810,13 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
         pieces.finish();
         crate::control::done("polar-slope", &t);
     }
-    crate::agent::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
+    jobrt::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
     Ok(())
 }
 
 /// `polar-root`: a pole's root packs of both layers (`root`) from its blocks' packs (`blocks`, the
 /// targets); the packs of blocks no longer built removed.
-pub fn root_step(out: &mut crate::out::Out, pole: Pole, built: &[(u32, u32)]) -> Result<()> {
+pub fn root_step(out: &mut buildstore::out::Out, pole: Pole, built: &[(u32, u32)]) -> Result<()> {
     let max_z = finest_now(out, pole)?;
     let open = |kind: &str| -> Result<HashMap<(u32, u32), Pack>> {
         let mut m = HashMap::new();

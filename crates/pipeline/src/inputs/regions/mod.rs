@@ -451,7 +451,7 @@ pub fn prepare(
 pub fn accept_fixture(
     root: &store::nasfs::NasRoot,
     dir: store::nasfs::Loc<'_>,
-    recipes: &[crate::agent::recipes::Recipe],
+    recipes: &[buildstore::recipes::Recipe],
     manifest: &mut BTreeMap<String, String>,
 ) -> String {
     use crate::inputs::{FileEntry, Index};

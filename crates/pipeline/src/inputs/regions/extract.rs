@@ -341,7 +341,7 @@ pub fn assemble(
 
 /// The job: pass `date`'s extract of `ids` and every id its current one has (never shrinking within
 /// a pass), stored and named in the records.
-pub fn run(out: &mut crate::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<String> {
+pub fn run(out: &mut buildstore::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<String> {
     use crate::timings::phase;
     let mut all = ids.clone();
     if let Some(name) = out.get(&logical(date)).map(str::to_string) {

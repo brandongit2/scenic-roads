@@ -1262,7 +1262,7 @@ pub(crate) mod tests {
         let zoom: u8 = a[2].parse().unwrap();
         let sample: usize = a[3].parse().unwrap();
         let scratch = tempfile::tempdir().unwrap();
-        let out = crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch.path()).unwrap();
+        let out = buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch.path()).unwrap();
         let srcs = declared(out.root(), &out.manifest).unwrap();
         let n = 1u32 << (zoom - 3);
         let b = window_box(zoom, i64::from(x * n) * 256, i64::from(y * n) * 256, n as usize * 256, n as usize * 256);

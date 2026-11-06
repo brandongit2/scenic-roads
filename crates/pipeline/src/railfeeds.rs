@@ -1171,7 +1171,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
                     }
                     *results[k].lock().unwrap() = Some(check(&net, todo[k].clone()));
                     let d = n_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    crate::agent::jobs::report(d as u64, todo.len() as u64, "feeds checked");
+                    jobrt::jobs::report(d as u64, todo.len() as u64, "feeds checked");
                 });
             }
         });
@@ -1263,7 +1263,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
     let p = phase("placing the feeds' zips");
     let mut feeds = Vec::new();
     for (k, f) in order.iter().enumerate() {
-        crate::agent::jobs::report(k as u64, order.len() as u64, "feeds' zips");
+        jobrt::jobs::report(k as u64, order.len() as u64, "feeds' zips");
         let (state, mut rec) = run.place(f);
         if state == State::Zip && mine.contains(&f.at("id").py_str()) {
             if let Some(why) = run.beyond(f, &rec, a.coverage)? {
@@ -1276,7 +1276,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
             feeds.push(rec);
         }
     }
-    crate::agent::jobs::report(order.len() as u64, order.len() as u64, "feeds' zips");
+    jobrt::jobs::report(order.len() as u64, order.len() as u64, "feeds' zips");
     // The ferry list: the declared feeds that serve ferries, wherever they are (zips already placed
     // for the rail list are named as the NAS's: they're uploaded with it).
     let new_in_rail: HashSet<String> =

@@ -368,7 +368,7 @@ impl Region {
 
 /// A region's id: `[a-z0-9-]`, 1–64 characters, not starting with a dash (as recipes' ids).
 pub fn valid_id(id: &str) -> bool {
-    crate::agent::recipes::valid_id(id)
+    buildstore::recipes::valid_id(id)
 }
 
 /// A shape file's name: `<name>.geojson`, no path.

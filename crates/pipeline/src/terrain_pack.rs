@@ -403,7 +403,7 @@ pub fn tile_lat(z: u8, ty: u32) -> f64 {
 // ---- per pack ----------------------------------------------------------------------------------
 
 use crate::coverage::Coverage;
-use crate::out::Out;
+use buildstore::out::Out;
 use rayon::prelude::*;
 use std::sync::Mutex;
 
@@ -1829,7 +1829,7 @@ pub fn build_piece_offered(
     Ok(rep)
 }
 
-/// `build_piece_offered`, its uploads put off (crate::out::Out::put_file_later): they go on beside
+/// `build_piece_offered`, its uploads put off (buildstore::out::Out::put_file_later): they go on beside
 /// what the job does next, and the z6 tile is saved (and noted done) by a later save
 /// (`Out::save_upto` the mark after it). `deep`: its z10 tiles' deep mids (crate::terrain_deep::read_mids),
 /// its z12 tiles' quarters there; a z6 tile with some offers none of its subtrees.
@@ -2426,7 +2426,7 @@ pub(crate) mod tests {
         let dx = |lat: f64| roadcore::geo::lon_span(roadcore::geo::NEAR_COVERAGE_KM, lat);
         let (lat, lon) = (b[1] + 0.05, b[2] + (dx(b[3]) + dx(b[1] + 0.5)) / 2.0);
         let c = Coverage::fixture(
-            &[crate::agent::recipes::Recipe {
+            &[buildstore::recipes::Recipe {
                 id: "r".into(),
                 name: "R".into(),
                 outline: vec![format!("place:{lon},{lat},0.5")],
@@ -2488,7 +2488,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         // (A place 5 km wide: its z6 tile's z11 tiles near it, and quarters past its 20 km.)
         let cov = Coverage::fixture(
-            &[crate::agent::recipes::Recipe {
+            &[buildstore::recipes::Recipe {
                 id: "r".into(),
                 name: "R".into(),
                 outline: vec!["place:10.5,45.5,5".into()],

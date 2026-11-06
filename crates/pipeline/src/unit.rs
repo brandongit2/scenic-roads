@@ -322,14 +322,14 @@ impl TileProgress {
         (self.finished.len() as f64 + self.under_way.values().sum::<f64>()).min(self.n as f64)
     }
 
-    /// The progress line (`crate::agent::jobs::report_f`): at once at a stage's end, else at most
+    /// The progress line (`jobrt::jobs::report_f`): at once at a stage's end, else at most
     /// once a second.
     pub fn say(&mut self, now: bool) {
         if !now && self.said_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
             return;
         }
         self.said_at = Some(std::time::Instant::now());
-        crate::agent::jobs::report_f(self.done(), self.n as u64, "z6 tiles");
+        jobrt::jobs::report_f(self.done(), self.n as u64, "z6 tiles");
     }
 
     /// The stages' times learned, kept for this Mac's next job (a cache: not keeping them costs
@@ -454,8 +454,8 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     let read = std::thread::spawn(move || {
         let mut f = f;
         if let Some(err) = err {
-            crate::agent::jobs::each_line(err, |l| {
-                let frac = crate::agent::jobs::fraction_of(l);
+            jobrt::jobs::each_line(err, |l| {
+                let frac = jobrt::jobs::fraction_of(l);
                 if let Some(x) = frac {
                     stage_said(&name, x, None);
                 }

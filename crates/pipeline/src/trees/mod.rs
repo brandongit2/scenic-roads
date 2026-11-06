@@ -799,9 +799,9 @@ fn begin(a: &Run) -> Result<Begun> {
     let mut files: Vec<(String, squares::Here, (i32, i32))> = Vec::new();
     let p = phase("finding the canopy squares (on the NAS, else downloading them)");
     for (i, &(top, left)) in want.iter().enumerate() {
-        crate::agent::jobs::report(i as u64, want.len() as u64, "canopy squares");
+        jobrt::jobs::report(i as u64, want.len() as u64, "canopy squares");
         // (And within the square, as its files come.)
-        let said = |f: f64| crate::agent::jobs::report_f(i as f64 + f, want.len() as u64, "canopy squares");
+        let said = |f: f64| jobrt::jobs::report_f(i as f64 + f, want.len() as u64, "canopy squares");
         if let Some(here) = squares::canopy(&a.chm, &a.chm_store, top, left, &said, &sources.canopy)? {
             sqs.push((top, left));
             for (kind, h) in ["cover5m", "p95"].into_iter().zip(here) {
@@ -809,7 +809,7 @@ fn begin(a: &Run) -> Result<Begun> {
             }
         }
     }
-    crate::agent::jobs::report(want.len() as u64, want.len() as u64, "canopy squares");
+    jobrt::jobs::report(want.len() as u64, want.len() as u64, "canopy squares");
     drop(p);
     let p = phase("reading canopy rows from the NAS");
     let rows_dir = a.out.join(ROWS_DIR);
@@ -819,7 +819,7 @@ fn begin(a: &Run) -> Result<Begun> {
         let f: Arc<dyn RangeRead> = match (here, chm_rows(&blocks, *top, *left)) {
             (squares::Here::Nas(p), Some(rows)) => {
                 let said = |done: u64, of: u64| {
-                    crate::agent::jobs::report_f(
+                    jobrt::jobs::report_f(
                         k as f64 + done as f64 / of.max(1) as f64,
                         files.len() as u64,
                         "canopy rows",
@@ -870,14 +870,14 @@ fn each_block(
     let fetch = crate::fetch::MapFetch::default();
     let inp = Inputs { chm, leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
     // (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)
-    crate::agent::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
+    jobrt::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
     let finished = std::sync::atomic::AtomicUsize::new(0);
     in_order(
         blocks.len(),
         |i| block(shapes, &inp, blocks[i].0, blocks[i].1),
         |_| {
             let k = finished.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            crate::agent::jobs::report(k as u64, blocks.len() as u64, "zoom-8 blocks");
+            jobrt::jobs::report(k as u64, blocks.len() as u64, "zoom-8 blocks");
         },
         |i, b| sink(blocks[i], b),
     )
@@ -913,7 +913,7 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
     std::fs::remove_dir_all(a.out.join(ROWS_DIR)).ok();
     drop(p);
     let _p = crate::timings::phase("making zoom 7 to 4 and writing the archives");
-    for t in pyramid::lower(&tops, &|done, total| crate::agent::jobs::report(done, total, "zoom 7–4 tiles"))? {
+    for t in pyramid::lower(&tops, &|done, total| jobrt::jobs::report(done, total, "zoom 7–4 tiles"))? {
         w.add(&t)?;
     }
     Ok(end(a, w.finish()?, t0))
@@ -977,7 +977,7 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
     let here = task::here_run(shapes, &inp);
     let mut w = Writers::create(&a.out)?;
     let mut mid: MidBlocks = BTreeMap::new();
-    crate::agent::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
+    jobrt::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
     let finished = std::sync::atomic::AtomicUsize::new(0);
     let (offers_ref, rows_ref) = (&offers, &rows);
     // (As many rows under way as keep the threads busy, a row as wide as its blocks, and one
@@ -1002,7 +1002,7 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
         },
         |i| {
             let k = finished.fetch_add(rows_ref[i].len(), std::sync::atomic::Ordering::Relaxed) + rows_ref[i].len();
-            crate::agent::jobs::report(k as u64, blocks.len() as u64, "zoom-8 blocks");
+            jobrt::jobs::report(k as u64, blocks.len() as u64, "zoom-8 blocks");
         },
         |i, made| {
             let row = &rows[i];

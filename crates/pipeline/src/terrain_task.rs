@@ -510,7 +510,7 @@ mod tests {
     use super::*;
     use crate::coord::client::Client;
     use crate::coverage::Coverage;
-    use crate::out::Out;
+    use buildstore::out::Out;
     use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles};
     use std::path::PathBuf;
 
@@ -518,7 +518,7 @@ mod tests {
     /// tile 6/34/14), and its raw tiles under `d`: the z6 tile, its coverage, its raw tiles' cache.
     fn north_piece(d: &Path) -> ((u32, u32), Coverage, RawTiles) {
         let cov = Coverage::fixture(
-            &[crate::agent::recipes::Recipe {
+            &[buildstore::recipes::Recipe {
                 id: "r".into(),
                 name: "R".into(),
                 outline: vec!["place:12.656,70.10,1".into()],

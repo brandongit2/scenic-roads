@@ -16,7 +16,7 @@
 
 use crate::coverage::Coverage;
 use crate::legacy::TileId;
-use crate::out::Out;
+use buildstore::out::Out;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -276,7 +276,7 @@ pub fn put_z3(out: &mut Out, q: TileId, dir: &Path) -> Result<()> {
         let arc = roadcore::archive::Archive::open(&dir.join(format!("{layer}.tiles")))?;
         let n = LAYERS.len() as u64;
         let made = crate::layers::split_archive_with(out, &arc, layer, "terrarium-webp", false, 12, &|k, t| {
-            crate::agent::jobs::report_f(i as f64 + k as f64 / t.max(1) as f64, n, "layers' packs written")
+            jobrt::jobs::report_f(i as f64 + k as f64 / t.max(1) as f64, n, "layers' packs written")
         })?;
         let gone = drop_layer_packs(out, q, layer, &made)?;
         eprintln!("trees {}: {layer}: {} lo and {} hi packs, {gone} dropped", q.slash(), made.lo.len(), made.hi.len());
@@ -573,7 +573,7 @@ pub fn put_lo(out: &mut Out, q: TileId, dir: &Path, expect_same: bool) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::recipes::Recipe;
+    use buildstore::recipes::Recipe;
 
     fn cov(outline: &str) -> Coverage {
         let d = tempfile::tempdir().unwrap();
@@ -786,7 +786,7 @@ mod tests {
             env("P5T_AREAS").split(',').map(|a| TileId::parse(a).filter(|u| u.z == 3).unwrap()).collect();
         let t0 = std::time::Instant::now();
         let m: BTreeMap<String, String> =
-            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
                 .unwrap();
         let date = crate::osmpass::latest_pass(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();

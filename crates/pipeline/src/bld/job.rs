@@ -24,7 +24,7 @@ use super::work::{flag, Block, IndexEntry, Meta, WorkFile};
 use super::{key_zxy, world7};
 use crate::coverage::Coverage;
 use crate::legacy::TileId;
-use crate::out::Out;
+use buildstore::out::Out;
 use anyhow::{ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
@@ -232,10 +232,10 @@ pub fn tiles_of(
     let mut sum = Summary::default();
     let z8s = z8_tiles_of(files);
     for (k, &a) in z8s.iter().enumerate() {
-        crate::agent::jobs::report(k as u64, z8s.len() as u64, "z8 tiles done");
+        jobrt::jobs::report(k as u64, z8s.len() as u64, "z8 tiles done");
         sum.merge(&z8_tiles(files, cov, t, a, sites, add)?.0);
     }
-    crate::agent::jobs::report(z8s.len() as u64, z8s.len() as u64, "z8 tiles done");
+    jobrt::jobs::report(z8s.len() as u64, z8s.len() as u64, "z8 tiles done");
     Ok(sum)
 }
 
@@ -662,7 +662,7 @@ pub fn build(out: &mut Out, cov: &Coverage, t: TileId, offload: Option<&crate::o
     Ok(sum)
 }
 
-/// `build`, its uploads put off (crate::out::Out::put_file_later): they go on beside what the job
+/// `build`, its uploads put off (buildstore::out::Out::put_file_later): they go on beside what the job
 /// does next, and the tile is saved (and noted done) by a later save (`Out::save_upto` the mark
 /// after it). Its summary names the files as they'll land (their content names, made here).
 pub fn build_later(
@@ -721,7 +721,7 @@ pub fn build_later_keeping(
     let mut sum = Summary::default();
     let mut j = 0;
     for (k, &a) in z8s.iter().enumerate() {
-        crate::agent::jobs::report(k as u64, z8s.len() as u64, "z8 tiles done");
+        jobrt::jobs::report(k as u64, z8s.len() as u64, "z8 tiles done");
         let made = (todo.get(j) == Some(&a)).then(|| {
             j += 1;
             j - 1
@@ -767,7 +767,7 @@ pub fn build_later_keeping(
             mids.insert(a, m);
         }
     }
-    crate::agent::jobs::report(z8s.len() as u64, z8s.len() as u64, "z8 tiles done");
+    jobrt::jobs::report(z8s.len() as u64, z8s.len() as u64, "z8 tiles done");
     w.finish()?;
     fw.finish()?;
     pieces.finish();
@@ -822,7 +822,7 @@ pub fn build_later_keeping(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::recipes::Recipe;
+    use buildstore::recipes::Recipe;
     use crate::bld::prep::{
         self,
         tests::{end, frame, square, B},

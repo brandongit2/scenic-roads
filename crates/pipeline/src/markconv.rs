@@ -4,7 +4,7 @@
 //! and the app loads points by view. A kind's order is its rank (the app's tie-break).
 
 use crate::marks::{self, flag, Cell, IdSource, KeepPt, MarkPt, MarkTile, Row, SummitRec, KINDS};
-use crate::out::Out;
+use buildstore::out::Out;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use serde_json::{Map, Value};
@@ -309,14 +309,14 @@ pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec,
     )? {
         wrote.insert(marks::MARKDATA_BUNDLE.to_string());
     }
-    crate::agent::jobs::within(0.5);
+    jobrt::jobs::within(0.5);
     eprintln!("marks: {ntiles} markdata tiles in {:.1?}", t0.elapsed());
     drop(p);
 
     // Thinned tiles per kind, z0–5: root (z0–2) and lo per z3 (z3–5).
     let mut thinned = 0;
     for (n, (&k, idx)) in by_kind.iter().enumerate() {
-        crate::agent::jobs::within(0.5 + 0.5 * n as f64 / kinds);
+        jobrt::jobs::within(0.5 + 0.5 * n as f64 / kinds);
         let kind = KINDS[k];
         let made_p = phase("making thinned tiles");
         let kp: Vec<KeepPt> = idx

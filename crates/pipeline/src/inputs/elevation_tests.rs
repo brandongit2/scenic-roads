@@ -159,7 +159,7 @@ fn excluded_cells_are_cut_from_a_coverage() {
 fn regions_cut_a_coverage_to_their_outlines() {
     let dir = tempfile::tempdir().unwrap();
     let r =
-        crate::agent::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec!["place:10.5,45.5,20".into()] };
+        buildstore::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec!["place:10.5,45.5,20".into()] };
     let cov = crate::coverage::Coverage::fixture(&[r], None, dir.path()).unwrap();
     let d2 = Declaration {
         regions: Some(vec!["a".into()]),
@@ -458,12 +458,12 @@ fn the_check_job_records_the_switch_once_with_the_first_accepted_index() {
         std::fs::File::options().write(true).open(dir.join(p)).unwrap().set_modified(old).unwrap();
     };
     let manifest = || -> BTreeMap<String, String> {
-        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
             .unwrap()
     };
     let run = || {
         let mut out =
-            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
+            buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap()
     };
     add("single.toml", &decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\""));
@@ -647,7 +647,7 @@ fn decide_with(
 fn a_regions_change_cuts_the_datasets_again_and_no_change_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let checks = |place: &str, index: &str, fetch: MapFetch| {
-        let r = crate::agent::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec![place.into()] };
+        let r = buildstore::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec![place.into()] };
         Elevation {
             regions: Some(crate::coverage::Coverage::fixture(&[r], None, dir.path()).unwrap()),
             regions_index: Some(index.into()),
@@ -705,7 +705,7 @@ fn regional_checks(dir: &Path, place: &str, index: &str, grid: [f64; 4]) -> Elev
     )
     .unwrap();
     fetch.0.insert("https://g.org/w.tif".into(), Some(g));
-    let r = crate::agent::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec![place.into()] };
+    let r = buildstore::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec![place.into()] };
     Elevation {
         regions: Some(crate::coverage::Coverage::fixture(&[r], None, dir).unwrap()),
         regions_index: Some(index.into()),

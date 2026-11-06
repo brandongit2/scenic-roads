@@ -133,7 +133,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // Iceland around Reykjavik: unit 6/28/17 holds -21.9, 64.13.
         let cov = Coverage::fixture(
-            &[crate::agent::recipes::Recipe {
+            &[buildstore::recipes::Recipe {
                 id: "r".into(),
                 name: "R".into(),
                 outline: vec!["place:-21.9,64.13,20".into()],

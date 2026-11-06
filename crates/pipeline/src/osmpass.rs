@@ -8,7 +8,7 @@
 use crate::chain::{self, Interner, Link, RoadVal};
 use crate::hipack::{grow, tile_bounds};
 use crate::legacy::TileId;
-use crate::out::Out;
+use buildstore::out::Out;
 use anyhow::{bail, ensure, Context, Result};
 use buildstore::nasssh::{proxy_addr, ssh_stalled, watched, SSH_START};
 use rayon::prelude::*;
@@ -122,7 +122,7 @@ pub fn missing_sets(out: &Out, date: &str) -> Vec<&'static (&'static str, u32, &
 pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path) -> Result<usize> {
     let missing = missing_sets(out, date);
     for (k, (name, _, exprs)) in missing.iter().enumerate() {
-        crate::agent::jobs::stage(k as u64, missing.len() as u64, &format!("sets made ({name} now)"));
+        jobrt::jobs::stage(k as u64, missing.len() as u64, &format!("sets made ({name} now)"));
         let o = scratch.join(format!("set-{name}.osm.pbf"));
         tags_filter(src, &o, exprs, scratch, &format!("osmium tags-filter (set {name})"), Some("filtering sets"))?;
         let p = crate::timings::phase("uploading sets");
@@ -134,7 +134,7 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path)
         // `missing_sets`, so it makes only the rest, each the same bytes as ever.)
         crate::control::piece_saved()?;
     }
-    crate::agent::jobs::report(missing.len() as u64, missing.len() as u64, "sets made");
+    jobrt::jobs::report(missing.len() as u64, missing.len() as u64, "sets made");
     Ok(missing.len())
 }
 
@@ -306,7 +306,7 @@ pub fn streamed(
                         // (Said each 0.1 %.)
                         let f = (total as f64 / (u64::from(reads.max(1)) * len.max(1)) as f64).min(0.99);
                         if reads > 0 && f - said >= 0.001 {
-                            crate::agent::jobs::within(f);
+                            jobrt::jobs::within(f);
                             said = f;
                         }
                     }
@@ -383,12 +383,12 @@ fn run(mut c: Command, what: &str) -> Result<()> {
 }
 
 /// Runs an osmium command (`run`), how far it is (its `--progress`) said as the stage's under way
-/// (crate::agent::jobs::within).
+/// (jobrt::jobs::within).
 fn run_osmium(mut c: Command, what: &str) -> Result<()> {
     eprintln!("$ {what}");
     c.arg("--progress");
     let st =
-        crate::agent::jobs::run_watched(&mut c, crate::agent::jobs::within).with_context(|| format!("run {what}"))?;
+        jobrt::jobs::run_watched(&mut c, jobrt::jobs::within).with_context(|| format!("run {what}"))?;
     ensure!(st.success(), "{what} failed: {st}");
     Ok(())
 }
@@ -405,11 +405,11 @@ fn run_planetiler(mut c: Command, what: &str) -> Result<()> {
         store::spawn::spawn(&mut c.stdout(std::process::Stdio::piped())).with_context(|| format!("run {what}"))?;
     let mut far = 0.0f64;
     if let Some(o) = child.stdout.take() {
-        crate::agent::jobs::each_line(o, |l| {
+        jobrt::jobs::each_line(o, |l| {
             eprintln!("{l}");
             if let Some(f) = planetiler_fraction(l).filter(|f| *f > far) {
                 far = f;
-                crate::agent::jobs::within(f);
+                jobrt::jobs::within(f);
             }
         });
     }
@@ -769,7 +769,7 @@ pub fn walk_all(units: &mut [UnitLinks]) -> (Vec<(u64, f32)>, Vec<RoadVal>) {
 /// Stage list, in order.
 pub const STAGES: &[&str] = &["copy", "filter", "sets", "basemap", "cut", "roads"];
 
-/// The pass's parts, for the status (crate::agent::jobs::part): each says how far it is.
+/// The pass's parts, for the status (jobrt::jobs::part): each says how far it is.
 const PARTS: [&str; 9] = [
     "Copying the planet here from the NAS",
     "Filtering the planet to the build's tags (osmium)",
@@ -790,8 +790,8 @@ static PART: std::sync::Mutex<Option<crate::timings::Phase>> = std::sync::Mutex:
 fn part(i: usize, one: &str) {
     end_part();
     *PART.lock().unwrap() = Some(crate::timings::phase(one));
-    crate::agent::jobs::part(i, &PARTS);
-    crate::agent::jobs::stage(0, 1, one);
+    jobrt::jobs::part(i, &PARTS);
+    jobrt::jobs::stage(0, 1, one);
 }
 
 /// The part under way's phase ended.
@@ -865,7 +865,7 @@ pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate:
 
 /// Run (or resume) the pass for `date` from `planet` (on the NAS).
 pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &Path, planetiler: &Path) -> Result<()> {
-    use crate::agent::jobs::{report, stage};
+    use jobrt::jobs::{report, stage};
     std::fs::create_dir_all(scratch)?;
     let local_planet = scratch.join("planet.osm.pbf");
     let filtered = scratch.join("filtered.osm.pbf");
@@ -874,8 +874,8 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
     let planet_len = std::fs::metadata(planet).map(|m| m.len()).unwrap_or(u64::MAX);
     // (Every room it reckons is past the owner's room target, which stays free: the agent tells
     // it, room::TARGET_ENV; run by hand, none.)
-    let target = crate::agent::room::job_target();
-    let room = crate::agent::room::free_past(scratch, target);
+    let target = jobrt::room::job_target();
+    let room = jobrt::room::free_past(scratch, target);
     let copy_first = done(scratch, "copy").exists() || room > copy_room(planet_len);
     if copy_first && !done(scratch, "copy").exists() && !done(scratch, "filter").exists() {
         part(0, "the planet copied");
@@ -930,7 +930,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
     // crate::agent::build::outlines_work.)
     // From here the filtered file is read twice more (the basemap's filter, the first cut): from
     // the local copy while there's room, else from the NAS's.
-    let free = |p: &Path| crate::agent::room::free_past(p, target);
+    let free = |p: &Path| jobrt::room::free_past(p, target);
     if !done(scratch, "basemap").exists() {
         check_planetiler(planetiler)?;
         part(4, "the basemap's input filtered (osmium)");
@@ -1207,7 +1207,7 @@ pub fn latest_pass(root: &store::nasfs::NasRoot) -> Option<String> {
 /// none when they can't be read now; else the newest with a `pass.*.json` file on the NAS.
 pub fn latest_pass_by(root: &store::nasfs::NasRoot, records: bool) -> Option<String> {
     if records {
-        let m = crate::out::read_manifest(root).ok()?;
+        let m = buildstore::records::read_manifest(root).ok()?;
         return latest_pass_in(&m);
     }
     latest_pass_on_nas(root)
@@ -1300,7 +1300,7 @@ pub fn patch_ferries(
         .collect();
     let (mut changed, mut gained) = (0, 0);
     for (k, (u, logical, content)) in pieces.iter().enumerate() {
-        crate::agent::jobs::report(k as u64, pieces.len() as u64, "pieces checked for ferries");
+        jobrt::jobs::report(k as u64, pieces.len() as u64, "pieces checked for ferries");
         let near = work.join("near.osm.pbf");
         let b = grow(tile_bounds(u.z, u.x, u.y), BUFFER_KM);
         let d = |v: i32| v as f64 * 1e-7;
@@ -1422,7 +1422,7 @@ mod tests {
         let a: Vec<&str> = m.split_whitespace().collect();
         let scratch = tempfile::tempdir().unwrap();
         let out =
-            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
+            buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
         let set = out.path(out.get(&set_name(a[1], "outlines")).unwrap());
         let previous = previous_outlines(&out.manifest, a[1]).map(|(d, c)| (out.path(c), d.to_string()));
         crate::timings::start("outlines");

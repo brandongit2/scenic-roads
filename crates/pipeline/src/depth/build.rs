@@ -33,7 +33,7 @@ use super::grids::{Reader, Source};
 /// This Mac's whole copies of the depth sources' packs a reader reads (crate::localread), if any.
 type Local = Option<std::sync::Arc<crate::localread::Local>>;
 use super::{CLASS_ENCODING, CLASS_LAYER, ENCODING, LAYER, NODATA, NODATA_MIN};
-use crate::out::Out;
+use buildstore::out::Out;
 use crate::terrain_water::{water_tile, Poly, WaterSource, WaterTile};
 use anyhow::{Context, Result};
 use std::cell::RefCell;
@@ -919,10 +919,10 @@ pub fn compose_lo(
     for z in LO.0..=upto {
         wc.next_level();
         let at = f64::from(z - LO.0);
-        let done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
+        let done = |f: f64| jobrt::jobs::report_f(at + f, zooms, "zooms");
         let area = Area::under(3, q.0, q.1, z);
         let k = level(&mut t, sources, &rd, water, &mut wc, z, area, LO.0, log.as_mut(), &done)?;
-        crate::agent::jobs::report(u64::from(z - LO.0 + 1), zooms, "zooms");
+        jobrt::jobs::report(u64::from(z - LO.0 + 1), zooms, "zooms");
         eprintln!("depth-lo 3/{}/{}: z{z}, {k} tiles", q.0, q.1);
     }
     let mut made = std::mem::take(&mut t.made);
@@ -1167,10 +1167,10 @@ pub fn compose_hi(
     for z in HI.0..=upto {
         wc.next_level();
         let at = f64::from(z - HI.0);
-        let done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
+        let done = |f: f64| jobrt::jobs::report_f(at + f, zooms, "zooms");
         let area = Area::under(6, t.0, t.1, z);
         let k = level(&mut tl, sources, &rd, water, &mut wc, z, area, LO.0, log.as_mut(), &done)?;
-        crate::agent::jobs::report(u64::from(z - HI.0 + 1), zooms, "zooms");
+        jobrt::jobs::report(u64::from(z - HI.0 + 1), zooms, "zooms");
         eprintln!("depth 6/{}/{}: z{z}, {k} tiles", t.0, t.1);
     }
     // (Its coarse levels kept through the means: a level not composed takes them scaled up where

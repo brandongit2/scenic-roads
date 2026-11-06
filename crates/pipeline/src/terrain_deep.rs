@@ -18,7 +18,7 @@
 //! The band's edges are where its packs are (the hi packs end at z12, `FIRST_Z` − 1), a storage
 //! layout the server and the downloads read; no dataset or zoom of the data is named here.
 
-use crate::out::Out;
+use buildstore::out::Out;
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -406,7 +406,7 @@ mod tests {
     fn a_targets_levels_follow_each_places_finest_zoom() {
         let d = tempfile::tempdir().unwrap();
         let cov = crate::coverage::Coverage::fixture(
-            &[crate::agent::recipes::Recipe {
+            &[buildstore::recipes::Recipe {
                 id: "r".into(),
                 name: "R".into(),
                 outline: vec!["place:10.5,45.5,5".into()],

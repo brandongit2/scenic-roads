@@ -9,7 +9,7 @@
 //! its content so an unchanged polygon keeps its place).
 
 use crate::coverage::Coverage;
-use crate::out::Out;
+use buildstore::out::Out;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -80,7 +80,7 @@ pub fn parse_registers(s: &str) -> Vec<(String, String, Option<[f64; 4]>)> {
 /// The accepted registers as the records now name them (`registers_line`), for the agent's plan
 /// (crate::agent::input_digests): None without an accepted version.
 pub fn registers_now(root: &store::nasfs::NasRoot) -> Result<Option<String>> {
-    let m = crate::out::read_manifest(root)?;
+    let m = buildstore::records::read_manifest(root)?;
     Ok(crate::inputs::open(root, &m, crate::inputs::heritage::UNIT)?
         .map(|a| registers_line(&crate::inputs::heritage::registers(&a))))
 }

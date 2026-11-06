@@ -20,7 +20,7 @@ use crate::layers::{pack_of, write_pack};
 use crate::legacy::TileId;
 use crate::markconv::{self, src_bytes};
 use crate::marks::{self, IdSource};
-use crate::out::Out;
+use buildstore::out::Out;
 use crate::vtgen::{self, Feature, Geom};
 use anyhow::{bail, Context, Result};
 use det::Det;
@@ -224,7 +224,7 @@ fn areas_and_parks(
     let mut areas = 0usize;
     for (k, a) in AREAS.iter().enumerate() {
         // (Each layer a stage: its packs' progress within it.)
-        crate::agent::jobs::stage(k as u64, AREAS.len() as u64, &format!("layers made ({})", a.layer));
+        jobrt::jobs::stage(k as u64, AREAS.len() as u64, &format!("layers made ({})", a.layer));
         let fc: Value = serde_json::from_slice(&src_bytes(out, src, a.file)?)?;
         let feats = fc["features"].as_array().with_context(|| format!("{}: no features", a.file))?;
         let details = match a.details {
@@ -658,7 +658,7 @@ fn write_tiles(
         let tiles: Vec<_> = packs.into_values().flatten().collect();
         *ntiles += tiles.len();
         wrote.extend(crate::layers::write_layer_bundle(out, layer, "mvt", true, tiles)?.map(|b| b.0));
-        crate::agent::jobs::within(1.0);
+        jobrt::jobs::within(1.0);
         return Ok(wrote);
     }
     let n = packs.len().max(1) as f64;
@@ -668,8 +668,8 @@ fn write_tiles(
         if let Some((l, _)) = write_pack(out, layer, "mvt", true, scope, (rz, rx, ry), &mut tiles.into_iter())? {
             wrote.push(l);
         }
-        // (Its packs written, as the stage's under way: crate::agent::jobs::within.)
-        crate::agent::jobs::within((k + 1) as f64 / n);
+        // (Its packs written, as the stage's under way: jobrt::jobs::within.)
+        jobrt::jobs::within((k + 1) as f64 / n);
     }
     Ok(wrote)
 }
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(drop_stale(&mut out, "stations", &["layers/stations/hi/6-1-2".to_string()]), 1);
         out.save().unwrap();
         let m: BTreeMap<String, String> =
-            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
                 .unwrap();
         assert_eq!(
             m.keys().map(String::as_str).collect::<Vec<_>>(),

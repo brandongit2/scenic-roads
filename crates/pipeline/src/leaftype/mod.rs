@@ -82,7 +82,7 @@ fn name(top: i32, left: i32) -> String {
 /// The leaf-type squares among `sqs` (top, left) that `out` lacks whole: inside the European
 /// source's box from it, inside the North American's from it (its GeoTIFF kept in `out`'s parent,
 /// downloaded once); none elsewhere (no source). How many of the squares to make are done, of how
-/// many, is said as they come (crate::agent::jobs::report_f; an EEA square counted by its chunks).
+/// many, is said as they come (jobrt::jobs::report_f; an EEA square counted by its chunks).
 pub fn make(sqs: &[(i32, i32)], out: &Path, src: &LeafSources) -> Result<()> {
     let missing: Vec<(i32, i32)> = {
         let _p = phase("checking the squares made");
@@ -103,7 +103,7 @@ pub fn make(sqs: &[(i32, i32)], out: &Path, src: &LeafSources) -> Result<()> {
     let total = (eea.len() + na.len()) as u64;
     let said = |done: f64| {
         if total > 0 {
-            crate::agent::jobs::report_f(done, total, "leaf-type squares");
+            jobrt::jobs::report_f(done, total, "leaf-type squares");
         }
     };
     for (k, &(top, left)) in eea.iter().enumerate() {

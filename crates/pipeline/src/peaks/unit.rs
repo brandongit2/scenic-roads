@@ -120,7 +120,7 @@ pub struct UnitZ12 {
 }
 
 impl UnitZ12 {
-    pub fn load(out: &crate::out::Out, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
+    pub fn load(out: &buildstore::out::Out, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
         Self::load_from(&crate::terrain_pack::ManifestTiles::new(out, "terrain"), want)
     }
 
@@ -977,7 +977,7 @@ mod tests {
     fn read_ahead_in_spans_gives_the_same_bytes_as_tile_by_tile() {
         use crate::terrain_pack::ManifestTiles;
         let d = tempfile::tempdir().unwrap();
-        let mut out = crate::out::Out::unbound(
+        let mut out = buildstore::out::Out::unbound(
             &store::nasfs::NasRoot::local_for_test(&d.path().join("root")),
             &d.path().join("scratch"),
         )

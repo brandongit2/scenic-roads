@@ -770,7 +770,7 @@ impl Checks for Elevation {
                 std::env::current_exe()?.parent().ok_or_else(|| anyhow::anyhow!("the program's folder"))?,
             ),
         };
-        if !crate::pool::term::is_version(&app) {
+        if !buildstore::records::term::is_version(&app) {
             return Ok(None);
         }
         Ok(Some(serde_json::to_vec_pretty(&serde_json::json!({ "index": index, "app": app }))?))

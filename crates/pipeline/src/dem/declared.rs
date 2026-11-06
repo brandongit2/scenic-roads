@@ -1309,7 +1309,7 @@ mod tests {
     #[test]
     fn a_coverage_is_cut_to_the_cells_meeting_its_regions() {
         let d = tempfile::tempdir().unwrap();
-        let r = |id: &str, place: &str| crate::agent::recipes::Recipe {
+        let r = |id: &str, place: &str| buildstore::recipes::Recipe {
             id: id.into(),
             name: id.into(),
             outline: vec![format!("place:{place}")],

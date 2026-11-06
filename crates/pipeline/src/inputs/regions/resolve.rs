@@ -314,7 +314,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
     }
     let regions = pending.len().max(1);
     while !pending.is_empty() {
-        crate::agent::jobs::within((regions - pending.len()) as f64 / regions as f64);
+        jobrt::jobs::within((regions - pending.len()) as f64 / regions as f64);
         let (wave, rest): (Vec<(String, String)>, Vec<(String, String)>) = pending.into_iter().partition(|(id, _)| {
             folder.deps(&folder.regions[id].1).iter().all(|d| out.resolved.contains_key(d) || held.contains(d))
         });
