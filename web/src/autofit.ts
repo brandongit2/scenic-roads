@@ -1,7 +1,6 @@
 // Auto-fitting a colour range to the lines in view (roads, rail, ferries): by screen widths of
 // line (a fixed amount of line at the view centre's scale) or by percentiles of line length (a
 // share of what's in view). Pure; main.ts feeds it the distributions and the view's scale.
-import { MERC_CIRC } from './merc';
 
 /** The unit a colour range auto-fits in: screen widths of line, or percentiles of its length. */
 export type FitUnit = 'widths' | 'pct';
@@ -158,9 +157,11 @@ export function spread(lo: number, hi: number, min: number): [number, number] {
   return [lo, hi];
 }
 
-/** Km of ground a view `px` CSS pixels wide spans at latitude `lat` and zoom `zoom` (512-px tiles). */
+/** Km of ground a view `px` CSS pixels wide spans at latitude `lat` and zoom `zoom` (512-px tiles).
+ * (40075.016686: merc.ts's MERC_CIRC in km, written out so this module imports nothing: plain node
+ * loads it, tools/check/autofit.test.mjs.) */
 export const screenWidthKm = (lat: number, zoom: number, px: number) =>
-  (((MERC_CIRC / 1000) * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** zoom)) * px;
+  ((40075.016686 * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** zoom)) * px;
 
 /** The best `widths[0]` screen widths of line in view to the best `widths[1]`: the low end where
  * the top-ranked lines reach that length, full colour from the second. `km`: the length in view;
