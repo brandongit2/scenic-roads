@@ -131,7 +131,8 @@ export class MarksView {
   private dirty = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Fetches failed in a row (none since one succeeded). */
+  /** Rounds of retries in a row that still failed (none since a fetch succeeded): the backoff's
+   * count, one per round, however many tiles a round lost. */
   private fails = 0;
   private z6: Set<string>;
   /** Per kind: its filters (the dots' flags), the speck query they want, and the one asked for
@@ -255,7 +256,6 @@ export class MarksView {
           },
           () => {
             e.state = 'error';
-            this.fails++;
             this.retrySoon();
           },
         )
@@ -273,10 +273,11 @@ export class MarksView {
   }
 
   /** Tiles that failed are asked for again (the view as it stands) after a pause that grows with
-   * the failures in a row (retry.ts backoffMs). */
+   * the rounds failed in a row (retry.ts backoffMs; a round's many tiles count once, so a view
+   * losing 30 tiles to a busy NAS asks again in 2 s, not a minute). */
   private retrySoon() {
     if (this.retryTimer || this.disposed) return;
-    this.retryTimer = setTimeout(() => this.retryNow(), backoffMs(Math.max(1, this.fails)));
+    this.retryTimer = setTimeout(() => this.retryNow(), backoffMs(++this.fails));
   }
 
   /** The tiles that failed, asked for again now (the NAS back: overlays.ts). */
