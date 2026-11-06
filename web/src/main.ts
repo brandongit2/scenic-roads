@@ -1006,10 +1006,12 @@ async function main() {
     approxLists = approxLists === null ? km > 1050 : approxLists ? km > 900 : km > 1200;
     return approxLists;
   };
-  // Landmarks and ferries "in view" use the same outline (the bounding box of a globe or tilted
-  // view takes in far more: Toronto from northern British Columbia).
+  // Landmarks, ferries and the roads' and rail's statistics "in view" use the same outline (the
+  // bounding box of a globe or tilted view takes in far more: Toronto from northern British
+  // Columbia).
   overlays.viewOutline = () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]);
   ferries.viewOutline = overlays.viewOutline;
+  roads.viewOutline = rails.viewOutline = overlays.viewOutline;
 
   // A scenic drive or ride picked from a list is a stretch of the selected road (store.s.stretch,
   // so links carry it). Its line on the map: the list's geometry, or, when it came from a link,

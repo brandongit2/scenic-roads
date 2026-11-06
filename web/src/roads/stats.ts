@@ -145,7 +145,7 @@ function lenIn(d: DecodedTile, k: number, lenRange: [number, number] | null): nu
 export function* viewStatsGen(layer: RoadLayer, groupMask: number, classMask: number, surfaceMask = 3, unnamedHide = 0,
                               lenRange: [number, number] | null = null, tollMask = 3): Generator<void, ViewStats> {
   const tiles = layer.viewTiles();
-  const b = layer.viewBounds();
+  const area = layer.inView();
   const classKm = new Array(NCLASS).fill(0);
   const unnamedKm = new Array(NGROUP).fill(0);
   const surfaceKm: [number, number] = [0, 0];
@@ -162,12 +162,18 @@ export function* viewStatsGen(layer: RoadLayer, groupMask: number, classMask: nu
   for (const t of tiles) {
     const d = t.data;
     if (!d) continue;
-    const [x0, y0, x1, y1] = layer.viewRectIn(t, b);
+    const { x0, y0, x1, y1, inside } = layer.viewIn(t, area);
     const c = (v: number) => Math.max(0, Math.min(CELLS - 1, Math.floor((v / d.extent) * CELLS)));
     if (x1 < 0 || y1 < 0 || x0 > d.extent || y0 > d.extent) continue;
     yield;
+    // A cell counts whole when its centre is in view, and the cell under the view's centre (zoomed
+    // in past the tiles' zoom, a cell can be wider than the view).
+    const cw = d.extent / CELLS;
+    const [mx, my] = layer.centreIn(t);
     for (let cy = c(y0); cy <= c(y1); cy++) {
       for (let cx = c(x0); cx <= c(x1); cx++) {
+        const under = mx >= cx * cw && mx < (cx + 1) * cw && my >= cy * cw && my < (cy + 1) * cw;
+        if (!under && !inside((cx + 0.5) * cw, (cy + 0.5) * cw)) continue;
         const cell = cy * CELLS + cx;
         cells++;
         for (let k = 0; k < NCLASS; k++) {

@@ -38,6 +38,7 @@ import { PickGrid, type PickHit } from './pick';
 import { NO_PERSP, perspWidth } from './persp';
 import { lodCells, lodSig, pieceLists, type LodFilter } from './lod';
 import { ATTR, DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
+import { viewArea, type ViewArea } from '../inview';
 
 // The projection of a piece (vertex i to i + 1): both ends on screen, their depths, its
 // perspective scale, whether it is drawn at all and where it stands against the terrain. Shared
@@ -1063,6 +1064,8 @@ export class RoadLayer implements CustomLayerInterface {
   private version = '';
   /** Terrain-aware ground points for the tilted tile cover (camera3d.coverSamples); null: flat unprojection. */
   groundSamples: ((pts: { x: number; y: number }[]) => { lng: number; lat: number; mpp: number }[] | null) | null = null;
+  /** The ground in view's outline (lng, lat), for inView; unset: the map's bounds. */
+  viewOutline: (() => [number, number][]) | null = null;
   onChange: () => void = () => {};
 
   private map!: MLMap;
@@ -2825,9 +2828,10 @@ export class RoadLayer implements CustomLayerInterface {
   /** Rail: the line in view with the most trains a day, its way (OSM id) and a point on it. */
   busiestInView(): { perDay: number; way: number; lngLat: [number, number] } | null {
     let best: { perDay: number; way: number; lngLat: [number, number] } | null = null;
+    const area = this.inView();
     for (const t of this.viewTiles()) {
       const d = t.data!;
-      const [x0, y0, x1, y1] = this.viewRectIn(t);
+      const { x0, y0, x1, y1, inside } = this.viewIn(t, area);
       const i16 = new Int16Array(d.verts);
       for (let l = 0; l < d.nlines; l++) {
         const f = this.lineFreq(d, l);
@@ -2835,7 +2839,7 @@ export class RoadLayer implements CustomLayerInterface {
         const a = d.lineStart[l], b = d.lineStart[l + 1];
         const m = (a + b) >> 1;
         const x = i16[m * S2], y = i16[m * S2 + 1];
-        if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        if (x < x0 || x > x1 || y < y0 || y > y1 || !inside(x, y)) continue;
         best = { perDay: f, way: d.lineWay[l], lngLat: RoadLayer.tileToLngLat(t, x, y) };
       }
     }
@@ -3049,7 +3053,7 @@ export class RoadLayer implements CustomLayerInterface {
   /** sampleWith a tile at a time (yields between tiles: stats spread over frames, main.ts). */
   *sampleWithGen(fns: SampleFn[], maxSamples = 90_000): Generator<void, { v: Float32Array[]; w: Float32Array }> {
     const tiles = this.viewTiles();
-    const b = this.map.getBounds();
+    const area = this.inView();
     let total = 0;
     for (const t of tiles) total += t.data!.nverts;
     const step = Math.max(1, Math.floor(total / maxSamples));
@@ -3060,7 +3064,7 @@ export class RoadLayer implements CustomLayerInterface {
     for (const t of tiles) {
       const d = t.data;
       if (!d) continue;
-      const [x0, y0, x1, y1] = this.viewRectIn(t, b);
+      const { x0, y0, x1, y1, inside } = this.viewIn(t, area);
       const i16 = new Int16Array(d.verts), u16 = new Uint16Array(d.verts);
       const u8 = new Uint8Array(d.verts);
       const u32s = new Uint32Array(d.verts);
@@ -3070,7 +3074,7 @@ export class RoadLayer implements CustomLayerInterface {
         if (this.rail && !((u8[i * STRIDE + 10] >> LF_RAIL_SHIFT) & rm)) continue;
         if (this.freqHidden(d, u32s[i * S4 + 4])) continue;
         const x = i16[i * S2], y = i16[i * S2 + 1];
-        if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        if (x < x0 || x > x1 || y < y0 || y > y1 || !inside(x, y)) continue;
         const len = Math.hypot(i16[(i + 1) * S2] - x, i16[(i + 1) * S2 + 1] - y) * d.mpu + 1;
         for (let k = 0; k < NCH; k++) ch[k] = u8[i * STRIDE + chOff(k)];
         const e = (u16[i * S2 + 2] - ELEV_OFF) / 10, g = u8[i * STRIDE + 8] / 2, gr = u16[i * S2 + 3] - DRAPE_OFF;
@@ -3091,7 +3095,7 @@ export class RoadLayer implements CustomLayerInterface {
   /** metricSamples a tile at a time (yields between tiles). */
   *metricSamplesGen(modes: Mode[], weights: number[], maxSamples = 250_000): Generator<void, { v: Float32Array[]; w: Float32Array }> {
     const tiles = this.viewTiles();
-    const b = this.map.getBounds();
+    const area = this.inView();
     let total = 0;
     for (const t of tiles) total += t.data!.nverts;
     const step = Math.max(1, Math.floor(total / maxSamples));
@@ -3102,14 +3106,14 @@ export class RoadLayer implements CustomLayerInterface {
     for (const t of tiles) {
       const d = t.data;
       if (!d) continue;
-      const [x0, y0, x1, y1] = this.viewRectIn(t, b);
+      const { x0, y0, x1, y1, inside } = this.viewIn(t, area);
       const i16 = new Int16Array(d.verts), u16 = new Uint16Array(d.verts);
       const u8 = new Uint8Array(d.verts);
       for (let i = 0; i + 1 < d.nverts; i += step) {
         const st = u8[i * STRIDE + 9];
         if (st & 128 || !((cm >> (st & 15)) & 1) || !((sm >> (st & 16 ? 1 : 0)) & 1) || !((tm >> (u8[i * STRIDE + 10] & LF_TOLL ? 1 : 0)) & 1)) continue;
         const x = i16[i * S2], y = i16[i * S2 + 1];
-        if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        if (x < x0 || x > x1 || y < y0 || y > y1 || !inside(x, y)) continue;
         const len = Math.hypot(i16[(i + 1) * S2] - x, i16[(i + 1) * S2 + 1] - y) * d.mpu + 1;
         for (let k = 0; k < NCH; k++) ch[k] = u8[i * STRIDE + chOff(k)];
         const e = (u16[i * S2 + 2] - ELEV_OFF) / 10, g = u8[i * STRIDE + 8] / 2;
@@ -3127,21 +3131,32 @@ export class RoadLayer implements CustomLayerInterface {
     return [mercLon((t.x + ux / e) / n), mercLat((t.y + uy / e) / n)];
   }
 
-  /** The map's bounds (for viewRectIn over many tiles). */
-  viewBounds() {
-    return this.map.getBounds();
+  /** The ground in view (inview.ts), as the other in-view lists and histograms take it: inside
+   * `viewOutline` (main.ts groundOutline), else the map's bounds. */
+  inView(): ViewArea {
+    const b = this.map.getBounds();
+    return viewArea(this.viewOutline?.() ?? [], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
   }
 
-  /** Viewport (`b`: the map's bounds) in tile-local units for tile t. */
-  viewRectIn(t: RoadTile, b = this.map.getBounds()): [number, number, number, number] {
-    const n = 2 ** t.z;
-    const e = t.data!.extent;
-    return [
-      (mercX(b.getWest()) * n - t.x) * e,
-      (mercYClamped(b.getNorth()) * n - t.y) * e,
-      (mercX(b.getEast()) * n - t.x) * e,
-      (mercYClamped(b.getSouth()) * n - t.y) * e,
-    ];
+  /** The view's centre in tile t's units. */
+  centreIn(t: RoadTile): [number, number] {
+    const c = this.map.getCenter(), n = 2 ** t.z, e = t.data!.extent;
+    return [(mercX(c.lng) * n - t.x) * e, (mercYClamped(c.lat) * n - t.y) * e];
+  }
+
+  /** A tile's points in view: a rectangle in tile units holding the area's box (the whole plane
+   * where the box crosses 180° or rounds a pole), for a quick test before `inside`'s exact one. */
+  viewIn(t: RoadTile, a: ViewArea): { x0: number; y0: number; x1: number; y1: number; inside: (ux: number, uy: number) => boolean } {
+    const n = 2 ** t.z, e = t.data!.extent;
+    const [w, s, ea, no] = a.box;
+    const plain = !a.pole && w <= ea;
+    return {
+      x0: plain ? (mercX(w) * n - t.x) * e : -Infinity,
+      y0: plain ? (mercYClamped(no) * n - t.y) * e : -Infinity,
+      x1: plain ? (mercX(ea) * n - t.x) * e : Infinity,
+      y1: plain ? (mercYClamped(s) * n - t.y) * e : Infinity,
+      inside: (ux, uy) => a.test(...RoadLayer.tileToLngLat(t, ux, uy)),
+    };
   }
 }
 
