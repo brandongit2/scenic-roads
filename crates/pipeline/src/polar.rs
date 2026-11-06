@@ -736,9 +736,7 @@ pub fn terrain_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32)
                 tiles.push((z, x, y, t));
                 Ok(())
             },
-            &mut |d, n| {
-                jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
-            },
+            &mut |d, n| jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks"),
         )
         // (Paused at a chunk kept: the block's pieces kept, the run resumed there.)
         .map_err(|e| jobrt::control::stop_if_paused("polar-terrain", e))?;
@@ -800,9 +798,7 @@ pub fn slope_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32))]
                 tiles.push((z, x, y, s));
                 Ok(())
             },
-            &mut |d, n| {
-                jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
-            },
+            &mut |d, n| jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks"),
         )
         .map_err(|e| jobrt::control::stop_if_paused("polar-slope", e))?;
         eprintln!("polar-slope {t}: {} tiles", tiles.len());

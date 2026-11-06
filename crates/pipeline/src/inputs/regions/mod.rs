@@ -28,8 +28,8 @@ pub mod stored;
 pub mod tiles;
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
-use buildstore::outlines::Outlines;
 use anyhow::{Context, Result};
+use buildstore::outlines::Outlines;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 

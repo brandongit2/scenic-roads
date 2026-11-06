@@ -34,9 +34,9 @@ use super::proj::{mercator_tile, projected, Projection};
 use super::sample::{
     bilinear_above, blocks_read, sample_raster_noting, window_clean, Clean, Seen, BLOCK, NODATA_BELOW,
 };
+use anyhow::{bail, ensure, Context, Result};
 use buildstore::fetch::Fetch;
 use buildstore::geotiff::{BlockCache, Tiff};
-use anyhow::{bail, ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
 use roadcore::geo::MERC_M_PER_DEG;
@@ -1907,8 +1907,9 @@ impl<'a> Sampler<'a> {
         let mut file = vec![u32::MAX; n];
         let mut readers = Vec::new();
         // (What each phase fetches over the network: its count.)
-        let fetched =
-            |p: &jobrt::timings::Phase, since: u64| p.count(buildstore::fetch::fetched_bytes().saturating_sub(since), 0);
+        let fetched = |p: &jobrt::timings::Phase, since: u64| {
+            p.count(buildstore::fetch::fetched_bytes().saturating_sub(since), 0)
+        };
         for (k, ds) in plan.datasets.iter().enumerate() {
             let p = phase(&format!("sampling {}", ds.id));
             let since = buildstore::fetch::fetched_bytes();

@@ -9,10 +9,10 @@
 //! files in parallel, into local parts by tile, which are then merged per tile onto the NAS. A unit
 //! reads the tiles near its roads (`tiles_for`, `stage`).
 
-use codecs::legacy::TileId;
-use buildstore::out::Out;
 use crate::reach::Reach;
 use anyhow::{Context, Result};
+use buildstore::out::Out;
+use codecs::legacy::TileId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -253,8 +253,8 @@ pub fn scan_file(http: &crate::bld::fetch::Http, url: &str, size: u64, out: &Pat
 /// (folders done are skipped), and the release's files in `parts/files.json`. An empty listing is a
 /// release Overture no longer serves, or a failed listing: never an empty world.
 pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3: &str) -> Result<()> {
-    use pyport::pyjson::Py;
     use jobrt::timings::phase;
+    use pyport::pyjson::Py;
     use rayon::prelude::*;
     std::fs::create_dir_all(parts)?;
     let http = crate::bld::fetch::Http::new();

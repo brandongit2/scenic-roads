@@ -19,8 +19,8 @@
 //! what the code's was, so nothing is built again when a source moves into its declaration.
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
-use buildstore::outlines::Outlines;
 use anyhow::{Context, Result};
+use buildstore::outlines::Outlines;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

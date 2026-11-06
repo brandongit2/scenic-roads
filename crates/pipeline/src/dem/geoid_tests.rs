@@ -1,6 +1,6 @@
 use super::*;
-use buildstore::fetch::MapFetch;
 use crate::inputs::sources::{parse, Source};
+use buildstore::fetch::MapFetch;
 
 /// A geoid source from its `[data]` lines.
 fn src(id: &str, data: &str) -> Source {

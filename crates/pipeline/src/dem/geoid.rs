@@ -16,9 +16,9 @@
 //! counted (`Stats::unconverted`). No reference, grid or parameter is named in code but the target.
 
 use super::generic::{open_url, stored, Opts};
-use buildstore::geotiff::Tiff;
 use crate::inputs::sources::{Data, Source};
 use anyhow::{bail, Context, Result};
+use buildstore::geotiff::Tiff;
 use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

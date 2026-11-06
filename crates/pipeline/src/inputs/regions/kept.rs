@@ -11,8 +11,8 @@
 
 use super::geom::Area;
 use super::resolve::{Problem, Resolved};
-use jobrt::resume_log::{BlockId, Get, Pieces, Put};
 use anyhow::Result;
+use jobrt::resume_log::{BlockId, Get, Pieces, Put};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

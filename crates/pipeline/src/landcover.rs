@@ -9,9 +9,9 @@
 //! lack), the rest of grid.class.u8 kept as staged. Without: every tile, those of the last run
 //! copied from its grid.class.u8 (its tile order in `<build>/../cache/steps/landcover.tiles`).
 
+use anyhow::{bail, Context, Result};
 use buildstore::fetch::Fetch;
 use buildstore::geotiff::Tiff;
-use anyhow::{bail, Context, Result};
 use det::Det;
 use rayon::prelude::*;
 use roadcore::grid::{CELLS, TS, WORLD};

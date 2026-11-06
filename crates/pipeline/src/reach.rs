@@ -17,10 +17,10 @@
 //! `extract` keeps, so nothing a z6 tile builds is missed (an extra way only costs a run that keeps
 //! nothing).
 
-use buildstore::coverage::Coverage;
 use crate::dem::spacing::Spacing;
-use codecs::legacy::TileId;
 use anyhow::{Context, Result};
+use buildstore::coverage::Coverage;
+use codecs::legacy::TileId;
 use osmpbf::{Element, ElementReader};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -339,8 +339,8 @@ pub fn of_piece(piece: &Path, u: TileId) -> Result<Option<Reach>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buildstore::recipes::Recipe;
     use crate::dem::spacing::{Fine, Uniform, FLOOR_M};
+    use buildstore::recipes::Recipe;
     use det::Det;
 
     fn e7(x: f64, y: f64) -> [i32; 2] {

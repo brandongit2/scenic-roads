@@ -33,9 +33,9 @@ use super::grids::{Reader, Source};
 /// This Mac's whole copies of the depth sources' packs a reader reads (buildstore::localread), if any.
 type Local = Option<std::sync::Arc<buildstore::localread::Local>>;
 use super::{CLASS_ENCODING, CLASS_LAYER, ENCODING, LAYER, NODATA, NODATA_MIN};
+use anyhow::{Context, Result};
 use buildstore::out::Out;
 use codecs::terrain_water::{water_tile, Poly, WaterSource, WaterTile};
-use anyhow::{Context, Result};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;

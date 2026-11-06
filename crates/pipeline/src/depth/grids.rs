@@ -8,8 +8,8 @@
 //! as the map's fallback does). Every cell shows at its grid's zoom; its chart low water
 //! (`low_file`) is averaged like the depth.
 
-use buildstore::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
+use buildstore::geotiff::{BlockCache, Tiff};
 use det::Det;
 use std::collections::HashMap;
 use std::path::Path;
@@ -1556,8 +1556,11 @@ pub(crate) mod tests {
         }
         // Task #551: read from whole local copies of the packs, the same, the copies made once.
         let cache = tempfile::tempdir().unwrap();
-        let local =
-            Arc::new(buildstore::localread::Local::new(&store::nasfs::NasRoot::local_for_test(d.path()), cache.path(), 0));
+        let local = Arc::new(buildstore::localread::Local::new(
+            &store::nasfs::NasRoot::local_for_test(d.path()),
+            cache.path(),
+            0,
+        ));
         let (ra, rl) = (Reader::keeping(100), Reader::keeping(100).with_local(Some(local)));
         let sa = sample(&ra, &a, zoom, c, r, 320, 64).unwrap().unwrap();
         let sl = sample(&rl, &b, zoom, c, r, 320, 64).unwrap().unwrap();

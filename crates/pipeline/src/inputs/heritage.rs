@@ -27,8 +27,8 @@
 //! (crate::inputs::credits).
 
 use super::{Checks, Derived, FileCheck, FileEntry, Finding, Level, Version};
-use buildstore::outlines::{OutlineRec, Outlines};
 use anyhow::Result;
+use buildstore::outlines::{OutlineRec, Outlines};
 use det::Det;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};

@@ -16,8 +16,8 @@
 //!   shading (`shading`).
 //! - **Gone** once the target's packs are saved (crate::depth::build's `build_hi`, `build_lo`).
 
-use jobrt::resume_log::{BlockId, Get, Log, Put};
 use anyhow::Result;
+use jobrt::resume_log::{BlockId, Get, Log, Put};
 use std::collections::BTreeMap;
 use std::path::Path;
 

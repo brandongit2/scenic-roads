@@ -32,10 +32,10 @@
 //! file then counts from that run's day (crate::railfeeds). The catalogue is fetched from its
 //! declaration's URL when there's no copy.
 
+use anyhow::{Context, Result};
 use buildstore::coverage::{Coverage, Shape};
 use buildstore::out::Out;
 use buildstore::outlines::{flag, Outlines};
-use anyhow::{Context, Result};
 use jobrt::timings::day_of;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};

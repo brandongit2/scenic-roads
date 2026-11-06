@@ -19,9 +19,9 @@
 
 use crate::dem::declared::{Plan, Source};
 use crate::dem::generic::{tile_resolution, Copies, Opts, Sampler};
-use buildstore::fetch::Fetch;
 use crate::terrain_pack::{RawSource, RawTiles};
 use anyhow::{Context, Result};
+use buildstore::fetch::Fetch;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};

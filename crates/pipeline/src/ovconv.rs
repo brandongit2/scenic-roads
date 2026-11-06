@@ -15,14 +15,14 @@
 //!   it, its ways' lines' records; each way with its whole length (`km`) and an id, so the app
 //!   merges blocks by id and measures what's in view on the geometry it has.
 
-use codecs::hipack::{grow, meets, tile_bounds};
 use crate::layers::{pack_of, write_pack};
-use codecs::legacy::TileId;
 use crate::markconv::{self, src_bytes};
-use codecs::marks::{self, IdSource};
-use buildstore::out::Out;
-use codecs::vtgen::{self, Feature, Geom};
 use anyhow::{bail, Context, Result};
+use buildstore::out::Out;
+use codecs::hipack::{grow, meets, tile_bounds};
+use codecs::legacy::TileId;
+use codecs::marks::{self, IdSource};
+use codecs::vtgen::{self, Feature, Geom};
 use det::Det;
 use names::mvt::Value as MvtValue;
 use serde_json::Value;
@@ -793,9 +793,10 @@ mod tests {
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s1"), "stations").unwrap();
         assert_eq!(drop_stale(&mut out, "stations", &["layers/stations/hi/6-1-2".to_string()]), 1);
         out.save().unwrap();
-        let m: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         assert_eq!(
             m.keys().map(String::as_str).collect::<Vec<_>>(),
             ["layers/stations/hi/6-1-2", "layers/stations/hi/7-1-2", "layers/stations/old"]

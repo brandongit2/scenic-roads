@@ -5,12 +5,12 @@
 //! Each stage leaves a marker in the scratch folder, so a pass interrupted by sleep, a reboot or a
 //! full disk resumes at the stage it was in; a stage that touched the NAS is redone from its inputs.
 
+use anyhow::{bail, ensure, Context, Result};
+use buildstore::nasssh::{proxy_addr, ssh_stalled, watched, SSH_START};
+use buildstore::out::Out;
 use codecs::chain::{self, Interner, Link, RoadVal};
 use codecs::hipack::{grow, tile_bounds};
 use codecs::legacy::TileId;
-use buildstore::out::Out;
-use anyhow::{bail, ensure, Context, Result};
-use buildstore::nasssh::{proxy_addr, ssh_stalled, watched, SSH_START};
 use rayon::prelude::*;
 use roadcore::{class, flag, Ways};
 use std::collections::BTreeMap;
@@ -387,8 +387,7 @@ fn run(mut c: Command, what: &str) -> Result<()> {
 fn run_osmium(mut c: Command, what: &str) -> Result<()> {
     eprintln!("$ {what}");
     c.arg("--progress");
-    let st =
-        jobrt::jobs::run_watched(&mut c, jobrt::jobs::within).with_context(|| format!("run {what}"))?;
+    let st = jobrt::jobs::run_watched(&mut c, jobrt::jobs::within).with_context(|| format!("run {what}"))?;
     ensure!(st.success(), "{what} failed: {st}");
     Ok(())
 }
@@ -1422,7 +1421,8 @@ mod tests {
         let a: Vec<&str> = m.split_whitespace().collect();
         let scratch = tempfile::tempdir().unwrap();
         let out =
-            buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
+            buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path())
+                .unwrap();
         let set = out.path(out.get(&set_name(a[1], "outlines")).unwrap());
         let previous = previous_outlines(&out.manifest, a[1]).map(|(d, c)| (out.path(c), d.to_string()));
         jobrt::timings::start("outlines");

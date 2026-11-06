@@ -815,7 +815,9 @@ pub fn read_acceptance(root: &store::nasfs::NasRoot, unit: &str, id: &str) -> Re
 pub fn member_of(agent_home: &Path) -> String {
     std::fs::read_to_string(agent_home.join("member"))
         .ok()
-        .and_then(|s| s.lines().next().map(str::trim).filter(|id| buildstore::records::is_member_id(id)).map(str::to_string))
+        .and_then(|s| {
+            s.lines().next().map(str::trim).filter(|id| buildstore::records::is_member_id(id)).map(str::to_string)
+        })
         .unwrap_or_else(|| "-".into())
 }
 

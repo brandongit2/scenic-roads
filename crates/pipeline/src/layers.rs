@@ -5,8 +5,8 @@
 //! (`layers/<layer>/all`, docs/formats.md "Bundles"): every tile in one pack, which the catalogue
 //! names for each pack key its tiles fall in (`bundle_keys`).
 
-use buildstore::out::Out;
 use anyhow::Result;
+use buildstore::out::Out;
 use roadcore::archive::Archive;
 use std::collections::BTreeMap;
 
@@ -312,9 +312,7 @@ pub fn split_archive(
     gzip: bool,
     max_z: u8,
 ) -> Result<LayerOut> {
-    split_archive_with(out, arc, layer, encoding, gzip, max_z, &|k, n| {
-        jobrt::jobs::report(k, n, "writing packs")
-    })
+    split_archive_with(out, arc, layer, encoding, gzip, max_z, &|k, n| jobrt::jobs::report(k, n, "writing packs"))
 }
 
 /// `split_archive`, telling `on` the packs written and how many there are, at most once a second.

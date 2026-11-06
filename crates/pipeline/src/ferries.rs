@@ -29,11 +29,11 @@
 
 use crate::gtfs::ferrycount;
 use crate::gtfs::{statics, Date, Num, Zip};
+use anyhow::{Context, Result};
+use det::Det;
 use landmarks::interest::py_round;
 use pyport::pyjson::{dumps, loads, Py};
 use pyport::pytext::{decimal, space, strip, word_char};
-use anyhow::{Context, Result};
-use det::Det;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 

@@ -22,10 +22,10 @@ use super::fill::{self, src, Near, Point};
 use super::tiles::{self, Feat};
 use super::work::{flag, Block, IndexEntry, Meta, WorkFile};
 use super::{key_zxy, world7};
-use buildstore::coverage::Coverage;
-use codecs::legacy::TileId;
-use buildstore::out::Out;
 use anyhow::{ensure, Context, Result};
+use buildstore::coverage::Coverage;
+use buildstore::out::Out;
+use codecs::legacy::TileId;
 use det::Det;
 use rayon::prelude::*;
 use roadcore::geo::MERC_C;
@@ -822,11 +822,11 @@ pub fn build_later_keeping(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buildstore::recipes::Recipe;
     use crate::bld::prep::{
         self,
         tests::{end, frame, square, B},
     };
+    use buildstore::recipes::Recipe;
 
     fn cov(outline: &str, country: &str) -> Coverage {
         let d = tempfile::tempdir().unwrap();

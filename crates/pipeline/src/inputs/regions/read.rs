@@ -4,10 +4,10 @@
 //! drawn regions from their drawn files, and the Regions list's tree from the index's paths.
 
 use super::stored::{Drawn, Geometry};
-use buildstore::recipes::Recipe;
-use buildstore::coverage::{Coverage, DrawnRegion, Shape};
 use crate::inputs::Accepted;
 use anyhow::{Context, Result};
+use buildstore::coverage::{Coverage, DrawnRegion, Shape};
+use buildstore::recipes::Recipe;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;

@@ -2,11 +2,11 @@
 //! chain's scripts make theirs (interest::poi_filter_props, landmarks::interest, landmarks::heritage_layers), for markdata and the
 //! thinned tiles (`markconv::write`). This part: the stops & sights.
 
+use crate::markconv::Point;
+use codecs::marks::{self, flag, MarkPt};
 use landmarks::interest::{
     fame, isolation, min_zoom, percentile, poi_base, poi_filter_props, py_round, same_names, view_item,
 };
-use crate::markconv::Point;
-use codecs::marks::{self, flag, MarkPt};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 

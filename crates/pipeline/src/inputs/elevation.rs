@@ -22,9 +22,9 @@
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
 use crate::dem::declared::{self, Data, Declaration, Measured};
+use anyhow::Result;
 use buildstore::fetch::Fetch;
 use buildstore::outlines::Outlines;
-use anyhow::Result;
 use det::Det;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};

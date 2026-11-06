@@ -14,10 +14,10 @@
 //!
 //! Together the same packs, byte for byte, as a z3 tile's whole run (`build`, by hand).
 
-use buildstore::coverage::Coverage;
-use codecs::legacy::TileId;
-use buildstore::out::Out;
 use anyhow::{Context, Result};
+use buildstore::coverage::Coverage;
+use buildstore::out::Out;
+use codecs::legacy::TileId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -785,9 +785,10 @@ mod tests {
         let z3s: Vec<TileId> =
             env("P5T_AREAS").split(',').map(|a| TileId::parse(a).filter(|u| u.z == 3).unwrap()).collect();
         let t0 = std::time::Instant::now();
-        let m: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         let date = crate::osmpass::latest_pass(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
         let recipes = crate::inputs::regions::read::recipes(&a).unwrap();

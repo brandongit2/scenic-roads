@@ -407,8 +407,11 @@ impl OutlineCut {
         for n in &o.geometry {
             let g = crate::inputs::regions::stored::Geometry::decode(&read(n)?).with_context(|| n.clone())?;
             shapes.extend(g.shapes.iter().map(|s| {
-                let mut shape =
-                    buildstore::coverage::Shape::new(format!("{}: {}", g.id, s.from), s.rings.clone(), s.tolerance_m as f64);
+                let mut shape = buildstore::coverage::Shape::new(
+                    format!("{}: {}", g.id, s.from),
+                    s.rings.clone(),
+                    s.tolerance_m as f64,
+                );
                 shape.water = s.water;
                 shape
             }));
@@ -420,7 +423,11 @@ impl OutlineCut {
 
     /// Of shapes `shapes` in edge cells `edges`, named `geometry` (the tests').
     #[cfg(test)]
-    pub fn of_shapes(geometry: &str, edges: HashSet<(i32, i32)>, shapes: Vec<buildstore::coverage::Shape>) -> OutlineCut {
+    pub fn of_shapes(
+        geometry: &str,
+        edges: HashSet<(i32, i32)>,
+        shapes: Vec<buildstore::coverage::Shape>,
+    ) -> OutlineCut {
         OutlineCut {
             geometry: vec![geometry.into()],
             edges,
@@ -1314,8 +1321,9 @@ mod tests {
             name: id.into(),
             outline: vec![format!("place:{place}")],
         };
-        let cov = buildstore::coverage::Coverage::fixture(&[r("a", "10.5,45.5,20"), r("b", "20.5,45.5,20")], None, d.path())
-            .unwrap();
+        let cov =
+            buildstore::coverage::Coverage::fixture(&[r("a", "10.5,45.5,20"), r("b", "20.5,45.5,20")], None, d.path())
+                .unwrap();
         // (A circle of 20 km inside its cell: that cell alone, of the data's.)
         let had = vec![[10.0, 45.0, 12.0, 46.0], [20.0, 45.0, 21.0, 46.0]];
         let (cut, missing) = scope_cover(Some(&had), &["a".into(), "c".into()], &cov);

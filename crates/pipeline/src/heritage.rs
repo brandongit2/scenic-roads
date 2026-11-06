@@ -8,9 +8,9 @@
 //! (`work/heritage/<d>/areas/6-x-y`, those whose bounding box meets the tile, each line keyed by
 //! its content so an unchanged polygon keeps its place).
 
+use anyhow::{Context, Result};
 use buildstore::coverage::Coverage;
 use buildstore::out::Out;
-use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

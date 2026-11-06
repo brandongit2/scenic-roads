@@ -22,8 +22,8 @@
 //! every tile (task #975).
 
 use crate::dem::declared::{Plan, Source};
-use buildstore::fetch::{Fetch, Within};
 use anyhow::{Context, Result};
+use buildstore::fetch::{Fetch, Within};
 use roadcore::archive::{tile_key, Entry};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};

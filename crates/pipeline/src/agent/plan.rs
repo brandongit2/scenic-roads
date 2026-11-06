@@ -1941,7 +1941,10 @@ impl Planner {
         // (A terrain z3 tile's z6 tiles near the coverage, for its run's expected memory: only when
         // there's terrain to offer.)
         let z6: BTreeMap<String, usize> = if plan.iter().any(|w| w.step == "terrain-hi") {
-            buildstore::coverage::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect()
+            buildstore::coverage::coverage_tiles(cov)
+                .into_iter()
+                .map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len()))
+                .collect()
         } else {
             BTreeMap::new()
         };

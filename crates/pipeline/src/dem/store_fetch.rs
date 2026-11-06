@@ -9,8 +9,8 @@
 //! `<name>.none`, as the sampler reads it. A file the store has under its name is skipped, so a run
 //! stopped anywhere is started again as it is.
 
-use buildstore::fetch::Fetch;
 use anyhow::{bail, Context, Result};
+use buildstore::fetch::Fetch;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 

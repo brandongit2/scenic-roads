@@ -11,9 +11,9 @@
 //! spans, unless it's here already: `copied_whole`), or a published catalogue's (`Source::Catalogue`,
 //! another root's for a pilot).
 
-use buildstore::out::Out;
 use crate::terrain_pack::ManifestTiles;
 use anyhow::{Context, Result};
+use buildstore::out::Out;
 use roadcore::archive::ArchiveWriter;
 use roadcore::grid::{decode_terrain, CELLS};
 use std::collections::HashMap;
@@ -442,8 +442,8 @@ mod tests {
     /// way's along it, at every node and between; a ferry's and a neighbour's long ways not.
     #[test]
     fn the_area_holds_every_owned_samples_far_field() {
-        use codecs::legacy::TileId;
         use crate::reach::{LongWay, Reach};
+        use codecs::legacy::TileId;
         let inside = |a: [f64; 4], b: [f64; 4]| a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3];
         for (x, y) in [(31, 19), (20, 22), (10, 5), (60, 58), (33, 31)] {
             let u = TileId { z: 6, x, y };

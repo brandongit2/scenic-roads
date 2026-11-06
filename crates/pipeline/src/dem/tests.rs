@@ -5,12 +5,12 @@
 //! alone.
 
 use super::*;
+use anyhow::bail;
+use anyhow::Result;
 use buildstore::fetch::{Fetch, MapFetch};
 use buildstore::geotiff::key;
 use buildstore::geotiff::testtiff::{make_images, Opts};
 use buildstore::geotiff::write_f32;
-use anyhow::bail;
-use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;

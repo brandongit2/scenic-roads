@@ -789,7 +789,8 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     assert_eq!(v[0].state, view::State::Ok);
     assert!(v[0].stale.is_empty(), "the acceptance is the version's: {:?}", v[0].stale);
     // The NAS root a step gets refuses an inputs folder path, naming the caller.
-    let out = buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
+    let out =
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
     let e =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl"))).unwrap_err();
     let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();

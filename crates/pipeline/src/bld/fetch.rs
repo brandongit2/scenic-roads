@@ -35,9 +35,9 @@
 //! `footers.json.gz` on one line, gzip'd at level 9 with no time), so files the Python made read on.
 
 use super::ghsl::zip_bad;
+use anyhow::{bail, ensure, Context, Result};
 use buildstore::coverage::Coverage;
 use pyport::pyjson::{self, Py};
-use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

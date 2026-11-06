@@ -13,8 +13,8 @@
 
 use super::work::{self, flag, osm, Block, Meta};
 use super::{e7, z14_key};
-use codecs::legacy::TileId;
 use anyhow::{bail, ensure, Context, Result};
+use codecs::legacy::TileId;
 use det::Det;
 use rayon::prelude::*;
 use roadcore::geo::M_PER_DEG;

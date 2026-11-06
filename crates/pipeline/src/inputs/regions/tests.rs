@@ -2,10 +2,10 @@
 //! the gate holding and taking in region files (docs/inputs.md §6.1.10's list of tests).
 
 use super::*;
-use buildstore::recipes::Recipe;
-use buildstore::coverage::Coverage;
 use crate::inputs::gate::{decide, Given};
 use crate::inputs::{FileEntry, Index, Listing};
+use buildstore::coverage::Coverage;
+use buildstore::recipes::Recipe;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -622,7 +622,8 @@ fn without_the_pass_s_outline_set_the_check_does_nothing() {
     let d = job_root(&f, false);
     let before = manifest(&store::nasfs::NasRoot::local_for_test(d.path()));
     let mut out =
-        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch"))
+            .unwrap();
     let said = crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap();
     assert!(said.contains("not checked now") && said.contains("outline set"), "{said}");
     assert_eq!(
@@ -636,7 +637,8 @@ fn without_the_pass_s_outline_set_the_check_does_nothing() {
     // With it, the region is taken in.
     let d = job_root(&f, true);
     let mut out =
-        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch"))
+            .unwrap();
     let said = crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap();
     assert!(said.contains("taken in"), "{said}");
 }

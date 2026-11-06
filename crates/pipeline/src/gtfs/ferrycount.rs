@@ -28,9 +28,9 @@
 //! Distances: `math.hypot` as CPython computes it (`hypot`), `cos` det's.
 
 use super::{statics, Cell, Date, OwnedRow, PyErr, Zip, R};
+use det::Det;
 use landmarks::interest::py_round;
 use pyport::pyjson::Py;
-use det::Det;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 

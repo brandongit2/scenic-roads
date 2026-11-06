@@ -58,10 +58,10 @@
 //! answers, its bytes the Python's: pyport::pyjson). Each is written by a temporary name, then
 //! renamed.
 
-use buildstore::coverage::Coverage;
 use crate::gtfs::{self, ferrycount, railcount, Date, Kind, Lines};
-use pyport::pyjson::{self, Py};
 use anyhow::{Context, Result};
+use buildstore::coverage::Coverage;
+use pyport::pyjson::{self, Py};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -166,7 +166,10 @@ impl Net {
             return none;
         }
         let mut args: Vec<std::ffi::OsString> =
-            ["-sS", "-L", "-m", "90", "-A", buildstore::fetch::USER_AGENT, "-D", "-", "-o", "-"].iter().map(os).collect();
+            ["-sS", "-L", "-m", "90", "-A", buildstore::fetch::USER_AGENT, "-D", "-", "-o", "-"]
+                .iter()
+                .map(os)
+                .collect();
         if let Some((a, z)) = rng {
             args.extend([os("-r"), os(format!("{a}-{z}")), os("--max-filesize"), os((z - a + 1).to_string())]);
         }

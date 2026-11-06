@@ -28,8 +28,8 @@ pub mod task;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use buildstore::fetch::{Fetch, Noted};
 use anyhow::{bail, ensure, Context, Result};
+use buildstore::fetch::{Fetch, Noted};
 use pyramid::{Tile, Tops};
 use roadcore::archive::{Archive, ArchiveWriter};
 use std::collections::BTreeMap;
@@ -339,7 +339,8 @@ impl<'a> Files<'a> {
         let tiff = match self.tiffs.get(what) {
             Some(t) => t.clone(),
             None => {
-                let t = Arc::new(buildstore::geotiff::Tiff::open(f).with_context(|| what.to_string())?.with_cache(cache));
+                let t =
+                    Arc::new(buildstore::geotiff::Tiff::open(f).with_context(|| what.to_string())?.with_cache(cache));
                 self.tiffs.insert(what.to_string(), t.clone());
                 t
             }
@@ -819,11 +820,7 @@ fn begin(a: &Run) -> Result<Begun> {
         let f: Arc<dyn RangeRead> = match (here, chm_rows(&blocks, *top, *left)) {
             (squares::Here::Nas(p), Some(rows)) => {
                 let said = |done: u64, of: u64| {
-                    jobrt::jobs::report_f(
-                        k as f64 + done as f64 / of.max(1) as f64,
-                        files.len() as u64,
-                        "canopy rows",
-                    )
+                    jobrt::jobs::report_f(k as f64 + done as f64 / of.max(1) as f64, files.len() as u64, "canopy rows")
                 };
                 squares::rows_here(p, rows, &rows_dir.join(name), &said)?
             }

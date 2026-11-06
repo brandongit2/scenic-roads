@@ -2,8 +2,8 @@
 //! nodata marked, and a bilinear sample in 32-bit floats in numpy's order of operations, edges
 //! clamping to the block's, falling back to the nearest pixel where a neighbour has no data.
 
-use buildstore::geotiff::Tiff;
 use anyhow::Result;
+use buildstore::geotiff::Tiff;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;

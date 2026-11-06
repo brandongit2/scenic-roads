@@ -3,9 +3,9 @@
 //! the unit owns that are in the coverage, with their kept tags and covered bridges' lengths, written
 //! sorted by key as `work/pois/<u>` (zstd JSON lines).
 
+use anyhow::{Context, Result};
 use buildstore::coverage::Coverage;
 use codecs::legacy::TileId;
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};

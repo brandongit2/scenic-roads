@@ -18,8 +18,8 @@
 //! The band's edges are where its packs are (the hi packs end at z12, `FIRST_Z` − 1), a storage
 //! layout the server and the downloads read; no dataset or zoom of the data is named here.
 
-use buildstore::out::Out;
 use anyhow::Result;
+use buildstore::out::Out;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -196,7 +196,11 @@ pub struct Kept(Mutex<Vec<(String, Arc<Vec<crate::terrain_zoom::Set>>, Arc<Memo>
 impl Kept {
     /// The answers of coverage `cov` and the declared sets `sets`, kept: the same memo for every
     /// asker while neither changes.
-    pub fn get<'a>(&self, cov: &'a buildstore::coverage::Coverage, sets: Arc<Vec<crate::terrain_zoom::Set>>) -> Deep<'a> {
+    pub fn get<'a>(
+        &self,
+        cov: &'a buildstore::coverage::Coverage,
+        sets: Arc<Vec<crate::terrain_zoom::Set>>,
+    ) -> Deep<'a> {
         let v = cov.version();
         let mut all = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let memo = match all.iter().position(|(c, s, _)| *c == v && Arc::ptr_eq(s, &sets)) {

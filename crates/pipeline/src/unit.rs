@@ -8,9 +8,9 @@
 //! The global-source layers come from the catalogue's packs (`stage`), and the roads' heights from the
 //! finished terrain staged with them (crate::road_terrain).
 
+use anyhow::{bail, Context, Result};
 use buildstore::coverage::Coverage;
 use codecs::legacy::TileId;
-use anyhow::{bail, Context, Result};
 use roadcore::WayRec;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

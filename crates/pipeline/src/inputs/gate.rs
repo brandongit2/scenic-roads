@@ -18,8 +18,8 @@
 //! version, acceptances): the tests' subject. `run` is the job.
 
 use super::{Checks, FileEntry, Finding, Index, Level, Listing, Report, Version};
-use jobrt::jobs;
 use anyhow::{Context, Result};
+use jobrt::jobs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -496,8 +496,7 @@ pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Opti
     let prev = prev_name.as_ref().map(|n| super::read_index(&root, n)).transpose()?;
     let state = super::read_listed(&root, &out.manifest, unit)?;
     let prev_listed = state.listed.clone();
-    let (listing, accepted, unsettled) =
-        candidate(&root, unit, checks.recursive(), planned, jobrt::jobs::now_s())?;
+    let (listing, accepted, unsettled) = candidate(&root, unit, checks.recursive(), planned, jobrt::jobs::now_s())?;
     drop(p);
     let p = phase("reading and checking the changes");
     let dir = super::inputs_folder(&root, unit);

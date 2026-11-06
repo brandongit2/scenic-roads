@@ -26,9 +26,9 @@
 mod tiff;
 mod warp;
 
-use jobrt::timings::phase;
 use crate::trees::LeafSources;
 use anyhow::{bail, ensure, Context, Result};
+use jobrt::timings::phase;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -597,8 +597,12 @@ fn nalcms_centre(t: &buildstore::geotiff::Tiff) -> Result<(f64, f64)> {
     let d = |key: u16| k.double(key);
     // ProjCoordTransGeoKey 10 (CT_LambertAzimEqualArea); ProjCenterLatGeoKey, ProjCenterLongGeoKey
     // (or the natural origin's); no false origin; WGS 84's ellipsoid.
-    ensure!(k.short(buildstore::geotiff::key::PROJ_COORD_TRANS) == Some(10), "NALCMS: not Lambert azimuthal equal-area");
-    let lat = d(3089).or_else(|| d(buildstore::geotiff::key::PROJ_NAT_ORIGIN_LAT)).context("NALCMS: no centre latitude")?;
+    ensure!(
+        k.short(buildstore::geotiff::key::PROJ_COORD_TRANS) == Some(10),
+        "NALCMS: not Lambert azimuthal equal-area"
+    );
+    let lat =
+        d(3089).or_else(|| d(buildstore::geotiff::key::PROJ_NAT_ORIGIN_LAT)).context("NALCMS: no centre latitude")?;
     let lon =
         d(3088).or_else(|| d(buildstore::geotiff::key::PROJ_NAT_ORIGIN_LONG)).context("NALCMS: no centre longitude")?;
     for key in [buildstore::geotiff::key::PROJ_FALSE_EASTING, buildstore::geotiff::key::PROJ_FALSE_NORTHING] {

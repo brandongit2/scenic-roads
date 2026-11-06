@@ -3,9 +3,9 @@
 //! markdata per z6 tile and thinned tiles per kind, so the server answers the In view statistics
 //! and the app loads points by view. A kind's order is its rank (the app's tie-break).
 
-use codecs::marks::{self, flag, Cell, IdSource, KeepPt, MarkPt, MarkTile, Row, SummitRec, KINDS};
-use buildstore::out::Out;
 use anyhow::{Context, Result};
+use buildstore::out::Out;
+use codecs::marks::{self, flag, Cell, IdSource, KeepPt, MarkPt, MarkTile, Row, SummitRec, KINDS};
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};

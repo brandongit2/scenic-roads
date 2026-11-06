@@ -23,9 +23,9 @@
 use super::field;
 use super::job::{self, AddTile, Summary};
 use super::work::{self, WorkFile};
+use anyhow::{ensure, Context, Result};
 use buildstore::coverage::{Coverage, Shape};
 use codecs::legacy::TileId;
-use anyhow::{ensure, Context, Result};
 use roadcore::archive::{Archive, ArchiveWriter};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -497,11 +497,11 @@ impl<'a> Offers<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buildstore::recipes::Recipe;
     use crate::bld::prep::{
         self,
         tests::{end, frame, square, B},
     };
+    use buildstore::recipes::Recipe;
 
     /// Tile `t`'s work file in `dir`, from buildings and parts.
     fn work(dir: &Path, t: TileId, bs: &[B], parts: &[B]) -> WorkFile {

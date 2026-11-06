@@ -25,8 +25,8 @@
 //! - Deeper zooms are made when asked (`cover`: the server), from the z14 tiles under the tile or
 //!   over it.
 
-use codecs::watercov::Raster;
 use anyhow::{bail, Context, Result};
+use codecs::watercov::Raster;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

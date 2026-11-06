@@ -520,8 +520,9 @@ fn heights_are_converted_before_the_blend() {
     use super::super::geoid::conversion;
     let z = 10;
     // (A grid of one value over 4° around the tiles.)
-    let grid =
-        |v: f32| buildstore::geotiff::write_f32(4, 4, &[v; 16], 16, [-2.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap();
+    let grid = |v: f32| {
+        buildstore::geotiff::write_f32(4, 4, &[v; 16], 16, [-2.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap()
+    };
     let decl = |id: &str, from: &str| {
         let t = format!(
             "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\nkind = \"data\"\n\
@@ -578,7 +579,9 @@ fn heights_are_converted_before_the_blend() {
     f.0.insert("https://g.org/up.tif".into(), Some(grid(2.0)));
     f.0.insert(
         "https://g.org/far.tif".into(),
-        Some(buildstore::geotiff::write_f32(4, 4, &[1.0; 16], 16, [40.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap()),
+        Some(
+            buildstore::geotiff::write_f32(4, 4, &[1.0; 16], 16, [40.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap(),
+        ),
     );
     let fetch = NoneElse(f);
     let o = Opts { fetch: &fetch, store: None, local: None };

@@ -18,9 +18,9 @@
 //! coordinator to finish, to measure it).
 
 use crate::coord::client::Client;
-use codecs::legacy::TileId;
 use crate::unit::Run;
 use anyhow::{Context, Result};
+use codecs::legacy::TileId;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -1111,8 +1111,8 @@ mod tests {
     /// them gone; once the job has closed the task, its lease is gone (410), not an input missing.
     #[test]
     fn a_tail_offered_after_a_pause_and_resume_runs_to_the_same_folder_as_here() {
-        use jobrt::resume_log::{Pieces, STOP_AFTER};
         use crate::unit::{run_tail_kept, split_kept, PREPARE};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let bin = d.path().join("bin");

@@ -2259,7 +2259,9 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, data: &super::data::Datasets
         .iter()
         .map(|p| {
             p.iter()
-                .map(|r| buildstore::coverage::ring_degrees(&buildstore::outlines::simplify(&super::shapes::to_i32(r), tol)))
+                .map(|r| {
+                    buildstore::coverage::ring_degrees(&buildstore::outlines::simplify(&super::shapes::to_i32(r), tol))
+                })
                 .collect()
         })
         .collect();
