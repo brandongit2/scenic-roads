@@ -478,6 +478,28 @@ So the three families' moves leave a dev build after an edit in them where it wa
 pipeline's rustc, the build's largest, 1.59 → 1.36 GB; their unit tests build 5-8 times faster,
 their rustc a seventh of pipeline's.
 
+Before and after 6e's bld, 6 Nov 2026 13:05-13:14 (local) on the M4 (load 50-105: the pool's jobs, a
+publish's tests and other agents' checks), rustc 1.98.1, through tools/app/remote-tests.sh (nice 20,
+utility priority, sccache). Before: main at f286dcc6; after: this branch (a26815a6), each tree a
+folder of its own on the M4 with its own target folder, built once first, and each run's two
+builds made fresh before its edits. Interleaved (after, before; before, after; after, before), 3
+runs each. Peak: the largest process (`time -l`); CPU: user + system of the whole command. The
+edits: one comment line appended to pubtimes.rs (a pipeline module, in both) and to bld/work.rs (a
+leaf of the family: crates/pipeline/src before, crates/bld/src after), each built at once:
+
+| run | before | after |
+|---|---|---|
+| dev (`build --workspace --bins`), pubtimes edit | 30.2, 14.2, 7.7 s (CPU 15.5-21.8 s), 1.36-1.37 GB: pipeline, server | 13.1, 10.8, 9.0 s (CPU 16.7-18.3 s), 1.31 GB: pipeline, server |
+| dev, work edit | 26.4, 13.1, 7.3 s (CPU 15.7-20.3 s), 1.36-1.37 GB: pipeline, server | 14.3, 10.8, 10.6 s (CPU 18.3-19.4 s), 1.31-1.32 GB: bld, pipeline, server |
+| unit-test build after the work edit | pipeline --lib: 23.6, 12.8, 6.8 s (CPU 8.5-12.3 s), 2.03-2.04 GB | bld --lib: 2.5, 1.9, 1.8 s (CPU 2.3-2.4 s), 0.34-0.35 GB |
+| first builds, one each (not interleaved) | dev 266 s, 2.27 GB; pipeline's lib tests 647 s, 3.90 GB | dev 260 s, 2.12 GB; bld's lib tests 436 s, 1.89 GB |
+
+So bld's move leaves a dev build after an edit where it was within the load's noise (pipeline and
+server recompile either way; an edit in the family adds bld's own ~1-2 s of CPU), with pipeline's
+rustc 1.36 → 1.31 GB; the family's unit tests build 4-7 times faster on ~a fifth of the CPU, their
+rustc a sixth of pipeline's. The first builds' walls are third-party crates from sccache under the
+load, not 6e.
+
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
 timings: an edit in a crate recompiles every crate that depends on it, so moving a *leaf* module
