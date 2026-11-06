@@ -275,43 +275,6 @@ impl Keys {
             self.catalogue_held = done.first().map(|d| d.1.clone());
             return;
         }
-        // (The polar roots are kept by pole, `polar_root`.)
-        if (step.ends_with("-root") && step != "polar-root")
-            || matches!(
-                step,
-                "inputs"
-                    | "outlines"
-                    | "regions-extract"
-                    | "regions-land"
-                    | "labels"
-                    | "spoken"
-                    | "names-todo"
-                    | "timetables-todo"
-                    | "lakefill"
-                    | "water"
-                    | "trailends"
-                    | "reach"
-                    | "summits"
-                    | "items"
-                    | "marks"
-                    | "roadunits"
-                    | "stations"
-                    | "ferries"
-                    | "heritage-sites"
-                    | "heritage"
-                    | "overlays"
-                    | "rail-feeds"
-                    | "rail"
-                    | "bld-fetch"
-                    | "terrain-water"
-            )
-        {
-            // Kept with the lo keys, under the step's own name.
-            for (t, k) in done {
-                self.lo.insert(t.clone(), k.clone());
-            }
-            return;
-        }
         if step == crate::agent::redo::STEP {
             // ("<step> <target>": a redo, its key forgotten. A third word is a restore's or 4a's
             // scheme-2 save, "<step> <target> <from>", done before step 4b (docs/readiness.md §4):
@@ -325,6 +288,8 @@ impl Keys {
             }
             return;
         }
+        // (A step keeping no key per target, the worldwide steps', the roots' and the lo's: kept with
+        // the lo keys, under the step's own name.)
         let m = if self.per_target(step).is_some() { self.per_target(step).unwrap() } else { &mut self.lo };
         for (t, k) in done {
             m.insert(t.clone(), k.clone());
