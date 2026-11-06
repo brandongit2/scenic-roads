@@ -3303,7 +3303,7 @@ impl Planner {
                     || full_at.is_none_or(|t| now_s().saturating_sub(t) >= 86400);
                 let mut key = crate::inputs::check_key(checks, &l.listing, &l.accepted, manifest);
                 if full {
-                    key = build::h(&[&key, "full"]);
+                    key = jobrt::jobs::h(&[&key, "full"]);
                 }
                 let target = format!("inputs/{unit}");
                 if keys.lo.get(&target) == Some(&key) {

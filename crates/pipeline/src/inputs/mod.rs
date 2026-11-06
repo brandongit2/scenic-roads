@@ -838,7 +838,7 @@ pub fn check_key(
     parts.push(format!("index {}", manifest.get(&logical(checks.unit())).map(String::as_str).unwrap_or("-")));
     parts.extend(checks.context(manifest));
     let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-    crate::agent::build::h(&refs)
+    jobrt::jobs::h(&refs)
 }
 
 /// The asks of the gate the agent takes up (`inputs-request.json` in its folder): from the menu bar,

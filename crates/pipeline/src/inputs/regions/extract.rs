@@ -116,7 +116,7 @@ pub fn key(date: &str, ids: &BTreeSet<Id>) -> String {
     let mut parts = vec![format!("regions-extract 1 {date}")];
     parts.extend(ids.iter().map(|i| i.to_string()));
     let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-    crate::agent::build::h(&refs)
+    jobrt::jobs::h(&refs)
 }
 
 /// How much of a scanned file a piece is (task #897): the blobs whose headers start in each

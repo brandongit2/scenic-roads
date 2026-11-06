@@ -420,7 +420,7 @@ pub fn inputs_key(cat: &store::catalogue::Catalogue) -> String {
         parts.push(format!("{l} {}", cat.content(l).unwrap_or("")));
     }
     let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-    crate::agent::build::h(&refs)
+    jobrt::jobs::h(&refs)
 }
 
 /// The units' z6 tiles.

@@ -113,6 +113,11 @@ pub fn within(frac: f64) {
     }
 }
 
+/// A key of `parts`: the hash (store::naming::hash16) of them one a line.
+pub fn h(parts: &[&str]) -> String {
+    store::naming::hash16(parts.join("\n").as_bytes())
+}
+
 /// What a unit of progress is, for measuring its pace: the unit without a word in brackets after it
 /// (`steps (clipping…)` and `steps (filtering…)` are both steps).
 pub fn unit_key(unit: &str) -> &str {

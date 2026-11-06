@@ -16,6 +16,7 @@ use crate::coverage::Coverage;
 use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
+use jobrt::jobs::h;
 use roadcore::geo::grown_e7;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -365,10 +366,6 @@ pub struct Work {
     /// "terrain", "slope", "unit", "pack", "lo", "catalog".
     pub step: String,
     pub targets: Vec<(String, String)>,
-}
-
-pub(crate) fn h(parts: &[&str]) -> String {
-    store::naming::hash16(parts.join("\n").as_bytes())
 }
 
 /// The whole coverage, for the jobs that read all of it: its shapes by their geometry (buffer and
