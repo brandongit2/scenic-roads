@@ -1528,7 +1528,7 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        mem_mb: super::bldtiles_peak(30_300_000),
+        mem_mb: crate::bld::bldtiles_peak(30_300_000),
         shared: true,
         versions: &[("bldtiles", || crate::bld::BUILDINGS_V.to_string())],
         reads: &[Of { step: "bldprep", of: bt_prep, grain: Grain::Read(idents::bld_prepared) }, In { name: "bld-sources", of: idents::bld_sources }, In { name: "coverage:shapes", of: idents::coverage_shapes }, In { name: "bld-heritage", of: idents::bld_heritage }],
@@ -2703,7 +2703,7 @@ mod tests {
             ("peaks", 2500),
             ("water", 8192),
             ("bldprep", super::super::bldprep_peak(30_300_000)),
-            ("bldtiles", super::super::bldtiles_peak(30_300_000)),
+            ("bldtiles", crate::bld::bldtiles_peak(30_300_000)),
         ];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");

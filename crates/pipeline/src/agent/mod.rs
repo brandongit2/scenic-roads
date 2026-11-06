@@ -660,11 +660,11 @@ fn first_peak(step: &str) -> u64 {
 
 /// The memory a 3D buildings job of a z6 tile is expected to take (MB), before one has said, by the
 /// rows of the row groups its normalized file is read from (`rows`: crate::bld::sources):
-/// `bldprep_peak`, `bldtiles_peak`.
+/// `bldprep_peak`, crate::bld::bldtiles_peak.
 fn bld_peak(step: &str, rows: u64) -> u64 {
     match step {
         "bldprep" => bldprep_peak(rows),
-        _ => bldtiles_peak(rows),
+        _ => crate::bld::bldtiles_peak(rows),
     }
 }
 
@@ -673,15 +673,6 @@ fn bld_peak(step: &str, rows: u64) -> u64 {
 /// Kantō's 30.3 M: about 1.0 GB and 150 B a row, given a quarter more.
 pub const fn bldprep_peak(rows: u64) -> u64 {
     1300 + rows * 190 / (1 << 20)
-}
-
-/// `bldtiles`' (B5's pilot with the field and its centroids' offsets, 2026-10-15, on the
-/// M4's 14 threads): 1.8 GB and 1,100 B a record of its largest z8 tile (taken as two fifths of
-/// the rows), the field's cells in flight the fixed part. Measured 1.3–2.9 GB for tiles of up to
-/// 52 k records, 3.8 GB for Toronto's 9.5 M, 4.5 GB for Annecy's 10.0 M, 7.9 GB for New York's
-/// 14.6 M and 10.2 GB for Kantō's 30.3 M.
-pub const fn bldtiles_peak(rows: u64) -> u64 {
-    1800 + rows * 2 / 5 * 1100 / (1 << 20)
 }
 
 /// The memory a terrain-hi run of `z6` tiles is expected to take (MB), before one has said: a z6

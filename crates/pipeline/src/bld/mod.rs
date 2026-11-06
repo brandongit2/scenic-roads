@@ -30,6 +30,15 @@ pub mod task;
 pub mod tiles;
 pub mod work;
 
+/// `bldtiles`' (B5's pilot with the field and its centroids' offsets, 2026-10-15, on the
+/// M4's 14 threads): 1.8 GB and 1,100 B a record of its largest z8 tile (taken as two fifths of
+/// the rows), the field's cells in flight the fixed part. Measured 1.3–2.9 GB for tiles of up to
+/// 52 k records, 3.8 GB for Toronto's 9.5 M, 4.5 GB for Annecy's 10.0 M, 7.9 GB for New York's
+/// 14.6 M and 10.2 GB for Kantō's 30.3 M.
+pub const fn bldtiles_peak(rows: u64) -> u64 {
+    1800 + rows * 2 / 5 * 1100 / (1 << 20)
+}
+
 /// Bumped when the normalized files change (every `bldprep` target runs again).
 pub const BLDPREP_V: u32 = 2;
 /// Bumped when the fill (its rules, fits and defaults: [`fill`]) or the tiles change (every
