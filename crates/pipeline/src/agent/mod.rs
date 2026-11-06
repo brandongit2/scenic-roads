@@ -9960,6 +9960,8 @@ mod tests {
         let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.coord = Some(co.clone());
         let p = a.planner();
+        // (A first look: the gate's view taken in and a plan made, what the digest reads settled.)
+        p.look();
         // (A plan made: its result kept, its digest and the leases as it read them.)
         p.n = 5;
         *p.kept.borrow_mut() = Some((build::Plan::default(), build::KeyMemo::default()));
