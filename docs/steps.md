@@ -422,8 +422,10 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   floor; the server serves it (`/tiles/terrain/…?floor=1`), and the surface (`?surface=1`), no
   second terrain stored: a surface tile with no pixel at sea is the terrain tile itself, served as
   stored (its ETag, cached for good under the current water version); one with sea is made (the
-  terrain decoded, levelled, encoded again) and kept in the server's made tiles, never cached for
-  good. The sea's surface is sea level, 0 m, where the water tiles say sea (half a
+  terrain decoded, levelled, encoded again) and kept in the server's made tiles, with an ETag of
+  its own (the terrain tile's and the water's version: cached for good as a stored tile is); one
+  made from the terrain's ancestor or from the water's stand-in (the basemap unreadable) as made
+  tiles are (the stand-in's not kept: made again when asked for again). The sea's surface is sea level, 0 m, where the water tiles say sea (half a
   pixel or more, as the depth's water: server `water::sea_shares`), whatever the
   terrain reads there (the source's bathymetry: §2, Terrain); a lake's is the terrain's source there
   (not levelled), so a lake's floor follows its source's surface, artefacts too; so does a river's

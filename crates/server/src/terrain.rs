@@ -13,6 +13,7 @@
 //! nearest stored ancestor, scaled up, as the terrain's are; outside the layer, a flat one.
 
 use crate::cache::{self, not_modified, Lru};
+use crate::depth::Surface;
 use crate::S;
 use axum::{
     extract::{Path, RawQuery, State},
@@ -30,6 +31,8 @@ static FLAT_SHADE: OnceLock<Vec<u8>> = OnceLock::new();
 pub(crate) const TERRAIN: &str = "terrain";
 pub(crate) const FLOOR: &str = "terrain-floor";
 pub(crate) const SURFACE: &str = "terrain-surface";
+/// The water's surface over a terrain tile made from its ancestor.
+pub(crate) const SURFACE_UP: &str = "terrain-surface-up";
 
 /// Tiles made here (from ancestors, neighbours, or flat), by (what, z, x, y, catalogue generation),
 /// under a byte budget: the terrain's, the shading's and the depth's.
@@ -169,14 +172,30 @@ pub(crate) fn made(
     y: u32,
     make: impl FnOnce() -> anyhow::Result<Option<Vec<u8>>>,
 ) -> Option<Got> {
+    made_keep(what, g, z, x, y, || Ok(make()?.map(|b| (b, true))))
+}
+
+/// As `made`, `make` also saying whether what it made may be kept: not what's made from a
+/// stand-in (the water's shares when the basemap is unreadable, crate::water::Sea::exact), made
+/// again when asked for again.
+pub(crate) fn made_keep(
+    what: &'static str,
+    g: u64,
+    z: u8,
+    x: u32,
+    y: u32,
+    make: impl FnOnce() -> anyhow::Result<Option<(Vec<u8>, bool)>>,
+) -> Option<Got> {
     let key = (what, z, x, y, g);
     if let Some(b) = MADE.lock().unwrap().get(&key) {
         return Some(Got::Made(b));
     }
     match make() {
-        Ok(Some(b)) => {
+        Ok(Some((b, keep))) => {
             let b = bytes::Bytes::from(b);
-            MADE.lock().unwrap().put(key, b.clone(), b.len() as u64);
+            if keep {
+                MADE.lock().unwrap().put(key, b.clone(), b.len() as u64);
+            }
             Some(Got::Made(b))
         }
         Ok(None) => None,
@@ -187,12 +206,52 @@ pub(crate) fn made(
     }
 }
 
+/// A surface tile over the sea (crate::depth::Surface::Sea, StandIn). From a stored terrain tile
+/// and the water tiles' own shares it is those two's alone: an ETag of its own (the terrain's
+/// hash and the water's version), cached as a stored tile is (for good under current versions,
+/// else a 304 while unchanged). Else made from the terrain's ancestor (not stored there, or a deep
+/// tile that can't be read now) or from the water's stand-in, as made tiles are.
+fn sea_surface(s: &S, z: u8, x: u32, y: u32, headers: &HeaderMap, exact: bool) -> Option<Got> {
+    let hash = match s.data.tile_hash("terrain", z, x, y) {
+        Ok(h) => h.filter(|_| exact),
+        Err(_) if deep_zoom(z) => None,
+        Err(e) => {
+            eprintln!("terrain {z}/{x}/{y}: {e:#}");
+            return Some(Got::Failed);
+        }
+    };
+    let Some(h) = hash else {
+        return made_keep(SURFACE_UP, gen(s), z, x, y, || {
+            let Some(mut e) = terrain_f32(s, z, x, y)? else { return Ok(Some((flat(), true))) };
+            let exact = crate::depth::surface_over(s, z, x, y, &mut e)?;
+            Ok(Some((encode(e)?, exact)))
+        });
+    };
+    let etag = format!("\"{h:016x}w{}\"", crate::water::version(s));
+    if cache::etag_match(headers, &etag) {
+        return Some(Got::Same(etag));
+    }
+    let got = made(SURFACE, gen(s), z, x, y, || {
+        let b = terrain_stored(s, z, x, y)?.ok_or_else(|| anyhow::anyhow!("no longer stored"))?;
+        let mut e = roadcore::grid::decode_terrain(&b)?;
+        if !crate::depth::surface_over(s, z, x, y, &mut e)? {
+            anyhow::bail!("the water can't be read now");
+        }
+        Ok(Some(encode(e)?))
+    });
+    match got {
+        Some(Got::Made(b)) => Some(Got::Stored(b.to_vec(), etag)),
+        g => g,
+    }
+}
+
 /// A terrain tile; `?floor=1`: with the floor under the water (crate::depth::terrain_floor),
 /// where the catalogue has depth (else the terrain as it is); `?surface=1`: as the water's surface
-/// (crate::depth::terrain_surface), sea level at sea. A surface tile with no pixel at sea (by
+/// (crate::depth::surface_over), sea level at sea. A surface tile with no pixel at sea (by
 /// exact shares: not an ancestor's stand-in) is the terrain tile itself, served as it is (a stored
-/// one with its ETag, cached for good while the URL's water version `w=` is the current one): most
-/// tiles of the map's 3D terrain, its tint and its contours, which all read the surface.
+/// one with its ETag); one with sea, made from a stored terrain tile, has an ETag of its own
+/// (`sea_surface`). Either is cached for good while the URL's water version `w=` is the current
+/// one: most tiles of the map's 3D terrain, its tint and its contours, which all read the surface.
 pub async fn terrain_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
@@ -205,18 +264,14 @@ pub async fn terrain_tile(
     let s2 = s.clone();
     let got = tokio::task::spawn_blocking(move || {
         if floor && s.data.catalogue().layers.contains_key(pipeline::depth::LAYER) {
-            return made(FLOOR, gen(&s), z, x, y, || {
-                Ok(Some(crate::depth::terrain_floor(&s, z, x, y)?.unwrap_or_else(flat)))
+            return made_keep(FLOOR, gen(&s), z, x, y, || {
+                Ok(Some(crate::depth::terrain_floor(&s, z, x, y)?.unwrap_or_else(|| (flat(), true))))
             });
         }
         if surface {
-            match crate::water::sea_shares(&s, z, x, y) {
-                Ok(Some(sea)) if crate::depth::surface_made(Some(&sea)) => {
-                    return made(SURFACE, gen(&s), z, x, y, || {
-                        Ok(Some(crate::depth::terrain_surface(&s, z, x, y, &sea.share)?.unwrap_or_else(flat)))
-                    });
-                }
-                Ok(_) => {}
+            match crate::depth::surface_of(&s, z, x, y) {
+                Ok(Surface::Terrain) => {}
+                Ok(k) => return sea_surface(&s, z, x, y, &headers, k == Surface::Sea),
                 Err(e) => {
                     eprintln!("{SURFACE} {z}/{x}/{y}: {e:#}");
                     return Some(Got::Failed);
@@ -235,8 +290,8 @@ pub async fn terrain_tile(
     })
     .await
     .unwrap_or(Some(Got::Failed));
-    // A surface tile served as the terrain's, under another water version than the current one, is
-    // not cached for good: that water may say sea there.
+    // A surface tile under another water version than the current one is not cached for good: it
+    // is the current water's (that one may say sea elsewhere).
     if surface && !floor && !has(&format!("w={}", crate::water::version(&s2))) {
         let mut r = respond(got, false);
         r.extensions_mut().insert(cache::NotForGood);

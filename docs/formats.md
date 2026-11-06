@@ -823,7 +823,9 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   the class tile says water (the floor under the water, for a 3D floor); the terrain as it is without
   depth in the catalogue. `?surface=1`: the water's surface (sea level where the water tiles say
   sea, the terrain elsewhere), the map's 3D terrain without the floor; a tile with no pixel at sea
-  is the stored terrain tile, with its ETag.
+  is the stored terrain tile, with its ETag; one with sea, made from a stored terrain tile, has its
+  own (that tile's and the water version's). Under the current water version (`w=`), either is
+  cached for good.
 - `/api/names?n=<name>&at=lon,lat` repeated (each optionally with `en=`, `k=road|settlement|other`,
   `l=` before its `at`): `[{main, sub}]`.
 - `/api/build`: the agent's status (this Mac's when it leads, else the lead's heartbeat, or this

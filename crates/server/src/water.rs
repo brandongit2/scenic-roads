@@ -228,16 +228,22 @@ pub struct Sea {
     pub exact: bool,
 }
 
+/// Tile z/x/y's key among the water tiles kept (by what they're made from: it changes with the
+/// URLs' water version); None where the water has no tile (no water layer, past its zooms).
+pub fn shares_key(s: &S, z: u8, x: u32, y: u32) -> Option<(u8, u32, u32, u64)> {
+    if !s.data.catalogue().layers.contains_key(wt::LAYER) || z > wt::MAXZ {
+        return None;
+    }
+    Some((z, x, y, made_from(s, &s.data.basemap_names())))
+}
+
 /// Tile z/x/y's share of sea at the terrain's 256 px (0–1, each the mean of the water tile's 2 × 2
 /// pixels over it), as the map's water tiles have it (kept, stored, drawn from the basemap, else
 /// the nearest stored ancestor's): where the water's surface is sea level, under the depth's floor
 /// and the 3D terrain (crate::depth). None without the water layer, or past its zooms.
 pub fn sea_shares(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Sea>> {
-    if !s.data.catalogue().layers.contains_key(wt::LAYER) || z > wt::MAXZ {
-        return Ok(None);
-    }
+    let Some(key) = shares_key(s, z, x, y) else { return Ok(None) };
     let archives = s.data.basemap_names();
-    let key = (z, x, y, made_from(s, &archives));
     let hit = KEPT_TILES.lock().unwrap().get(&key);
     let (sh, exact) = match hit {
         Some(sh) => (sh, true),
