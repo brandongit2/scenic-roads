@@ -36,9 +36,9 @@ pub fn finest(sets: &[crate::terrain_zoom::Set], pole: Pole) -> u8 {
     s.iter().map(|s| s.detail.polar_zoom(polar::CAP_LAT)).max().unwrap_or(BLOCK_Z).max(BLOCK_Z)
 }
 
-/// The zoom of a block: a `polar-terrain` and `polar-slope` target, its subtree z4 to the finest
-/// one pack (131 km a side; 76 make the south cap).
-pub const BLOCK_Z: u8 = 4;
+// A block's zoom and a pole's blocks: roadcore::polar's (task #916 step 6d: the region downloads'
+// files, crate::areafiles, name them below pipeline), kept at these paths.
+pub use roadcore::polar::{blocks, BLOCK_Z};
 
 /// The poles built: the south. The north cap has no land (sea level everywhere north of 85° N,
 /// GLO-30 having nothing there), so it waits for the depth (docs/polar.md §2).
@@ -80,11 +80,6 @@ pub fn parse_target(t: &str) -> Option<(Pole, (u32, u32))> {
     let (x, y) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?);
     let n = 1u32 << BLOCK_Z;
     (it.next().is_none() && x < n && y < n).then_some((pole, (x, y)))
-}
-
-/// A pole's blocks: the z`BLOCK_Z` tiles meeting its cap.
-pub fn blocks(pole: Pole) -> Vec<(u32, u32)> {
-    polar::cap_tiles(pole, BLOCK_Z)
 }
 
 /// A pole's blocks the coverage builds: those whose latitudes it meets (`roadcore::polar::lat_box`).

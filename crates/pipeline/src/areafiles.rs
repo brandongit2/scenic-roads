@@ -36,7 +36,7 @@ impl Files {
     }
 }
 
-/// The polar blocks (crate::polar::BLOCK_Z tiles of `pole`'s grid) an area may meet: those meeting
+/// The polar blocks (roadcore::polar::BLOCK_Z tiles of `pole`'s grid) an area may meet: those meeting
 /// the box of its rings' points in that hemisphere, projected onto the grid and grown by `km` (the
 /// stereographic grid is conformal: a ring round the pole, as Antarctica's, boxes the pole in). A
 /// superset where an area isn't box-like; never misses one it meets.
@@ -51,10 +51,10 @@ pub fn polar_blocks_meeting(rings: &[Vec<[f64; 2]>], pole: roadcore::polar::Pole
         return Vec::new();
     }
     let g = km * 1000.0;
-    crate::polar::blocks(pole)
+    roadcore::polar::blocks(pole)
         .into_iter()
         .filter(|&(x, y)| {
-            let t = roadcore::polar::tile_box(crate::polar::BLOCK_Z, x, y);
+            let t = roadcore::polar::tile_box(roadcore::polar::BLOCK_Z, x, y);
             t[0] <= b[2] + g && t[2] >= b[0] - g && t[1] <= b[3] + g && t[3] >= b[1] - g
         })
         .collect()
@@ -92,7 +92,7 @@ pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
     for (name, l) in cat.layers.iter().filter(|(_, l)| !l.polar.is_empty()) {
         let Some(pole) = name.rsplit('-').next().and_then(roadcore::polar::Pole::of_letter) else { continue };
         for (x, y) in polar_blocks_meeting(rings, pole, NEAR_KM) {
-            if let Some(b) = l.polar.get(&format!("{}/{x}/{y}", crate::polar::BLOCK_Z)) {
+            if let Some(b) = l.polar.get(&format!("{}/{x}/{y}", roadcore::polar::BLOCK_Z)) {
                 add(b);
             }
         }
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn polar_blocks_an_area_meets() {
         let coast: Vec<[f64; 2]> = (0..=72).map(|k| [-180.0 + 5.0 * k as f64, -70.0]).collect();
-        assert_eq!(polar_blocks_meeting(&[coast], Pole::South, NEAR_KM).len(), crate::polar::blocks(Pole::South).len());
+        assert_eq!(polar_blocks_meeting(&[coast], Pole::South, NEAR_KM).len(), roadcore::polar::blocks(Pole::South).len());
         let station = vec![[-10.0, -89.99], [10.0, -89.99], [10.0, -89.98], [-10.0, -89.98]];
         let mut near = polar_blocks_meeting(&[station], Pole::South, NEAR_KM);
         near.sort();

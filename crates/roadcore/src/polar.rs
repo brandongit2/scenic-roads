@@ -232,6 +232,16 @@ pub fn cap_tiles(pole: Pole, z: u8) -> Vec<(u32, u32)> {
     v
 }
 
+/// The zoom of a block: a `polar-terrain` and `polar-slope` target, its subtree z4 to the finest
+/// one pack (131 km a side; 76 make the south cap). (Task #916 step 6d: from pipeline::polar,
+/// which re-exports it and `blocks`.)
+pub const BLOCK_Z: u8 = 4;
+
+/// A pole's blocks: the z`BLOCK_Z` tiles meeting its cap.
+pub fn blocks(pole: Pole) -> Vec<(u32, u32)> {
+    cap_tiles(pole, BLOCK_Z)
+}
+
 /// The directions of geographic east and north at longitude `lon` on the grid, as (x, y) unit
 /// vectors (the grid's y up): the shading's directions are stored on the grid and turned to the
 /// ground's by these (docs/polar.md, Shading).
