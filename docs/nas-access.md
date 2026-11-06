@@ -74,7 +74,9 @@ it (store::nasio) and retries the reads, stats and listings the share fails for 
   counted and retried on the root's schedule; its timeouts and its breaker stay its own.
 - **Counting.** Every method counts into store::nasio. Sites counted by hand before keep the same
   totals: `Out`'s uploads (store::naming, raw) count once as they land (`NasPath::count_wrote`),
-  pipeline::localread's whole copies once as they're made (`count_read`). `costin::meta` and
+  pipeline::localread's whole copies (store::blobs) count their bytes as they're read, as every
+  whole copy does (`nasfs::copy_counter`: a job's beats see a long copy move, task #986), and the
+  file once made (`count_opened`). `costin::meta` and
   `costin::wrote` keep a target's own measures and no longer add to nasio, which the layer does.
   What the layer counts that was never counted is new: the agent's and the coordinator's records,
   GC's and the archives' walks, the gate's listings, the heritage and depth readers' opens.

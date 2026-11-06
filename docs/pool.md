@@ -2111,11 +2111,19 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
     than the overdue factor times its step's usual stillness (task #986). Its work moved at a beat
     when anything of it changed since the one before (`Lease::still`): its progress line, the
     target under way, its targets ended, its phase, its NAS bytes, files made, listed, statted or
-    deleted, its internet bytes. Its step's usual stillness is the 90th percentile, over its jobs
-    kept in the history that ended well, of each one's longest stretch between two beats that saw
-    its work move (`still_s` on its "done" or "end" event, `History::still_p90`); a step none of
-    whose jobs measured it flags nothing. The flag says how long it has been still, the target and
-    phase it is in, its batch's targets done and its threads. A job is held to what it is doing,
+    deleted (a whole file copied counts its bytes as each read comes, `store::nasfs`'s
+    `copy_counter`, not once copied: a big file copied from a slow NAS moves), its internet bytes.
+    Its step's usual stillness is the 90th percentile, over its jobs kept in the history that ended
+    well, of each one's longest stretch between two beats that saw its work move (`still_s` on its
+    "done" or "end" event, `History::still_p90s`). A step none of whose jobs measured it (its first
+    runs; every step as the stillness was first recorded, older events having none) is held to its
+    target's time instead, as measured on that Mac at its threads: its own run's, a target never
+    run itself the larger of that and its step's runs' 90th percentile (#978's rule), its start's
+    added before its first target (`Sched::target_most`): a target's start and end each move a job,
+    so no still stretch of a working one outlasts its target. A step never run the way it runs now
+    is held to the longest usual stillness of any step; with nothing measured at all, nothing is
+    flagged. The flag says how long it has been still, the target and phase it is in, which usual
+    it is held to, its batch's targets done and its threads. A job is held to what it is doing,
     not to how long its targets took before: on 6 Nov a first GSI fetch (pyramids-fill, 19-25
     min), bldprep and pack while the NAS was slow and terrain-hi copying GLO-30 at 4 MB/s were
     flagged by their targets' earlier times while their bytes moved. A job slow but moving isn't
