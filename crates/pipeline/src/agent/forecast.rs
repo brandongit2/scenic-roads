@@ -657,11 +657,6 @@ pub struct Forecast {
     pub why: Option<String>,
     /// The share of the time left that was measured (the rest guessed).
     pub measured: f64,
-    /// Each machine's speed against the lead's, as used, and the machines whose speed is a
-    /// guess (not yet measured).
-    pub speed: BTreeMap<String, f64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub guessed: Vec<String>,
     pub steps: Vec<StepFc>,
     /// Each step's time for a target at the lead's pace (seconds), as the forecast takes it: its
     /// targets' measured mean, else what its jobs here took a target, else a first guess. The
@@ -1917,8 +1912,6 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
             })
         })
         .collect();
-    f.speed = inp.machines.iter().map(|m| (m.name.clone(), (m.speed * 100.0).round() / 100.0)).collect();
-    f.guessed = inp.machines.iter().filter(|m| !m.measured).map(|m| m.name.clone()).collect();
     // (From 0, not the empty sum's -0.)
     let total: f64 = expected.items.iter().map(|i| i.cost.secs).fold(0.0, |a, b| a + b);
     let known: f64 = expected.items.iter().filter(|i| i.cost.known).map(|i| i.cost.secs).fold(0.0, |a, b| a + b);
