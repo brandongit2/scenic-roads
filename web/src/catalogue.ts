@@ -1,5 +1,6 @@
 // The catalogue the map is drawn from (server /api/catalog), asked for
-// every minute while the page is shown and again when it comes back. A new catalogue (its number
+// every minute while the page is shown (every 5 s while the server is away from the NAS) and again
+// when it comes back. A new catalogue (its number
 // changes) is switched to in place: its versions (/api/meta) reach every URL built from them
 // (api.ts onVersions), and what can't follow asks for a reload instead (the status bar shows it).
 import { setPacks, setVersions, type Meta } from './api';
@@ -40,6 +41,10 @@ export interface CatalogueStatus {
 }
 
 const POLL_MS = 60_000;
+/** While the server is away from the NAS (`online` false): what it serves is the downloads alone,
+ * empty elsewhere, so the NAS back (a slow first answer at home, or home again) is noticed soon and
+ * the map asked for again under the new versions. */
+const AWAY_POLL_MS = 5_000;
 /** Back on the page within this long of the last answer: not asked again yet. */
 const FRESH_MS = 5_000;
 
@@ -97,7 +102,7 @@ export class CatalogueWatch {
 
   private schedule() {
     clearTimeout(this.timer);
-    if (!document.hidden) this.timer = window.setTimeout(() => void this.poll(), POLL_MS);
+    if (!document.hidden) this.timer = window.setTimeout(() => void this.poll(), this.status?.online === false ? AWAY_POLL_MS : POLL_MS);
   }
 
   private async ask() {

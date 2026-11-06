@@ -312,8 +312,12 @@ installed by `tools/app/install.sh`, updated by the updater).
   place the server chooses its sources), so every feature answers from the downloads, empty at
   once outside them, with no NAS read and no timeout. A share found mounted is read only once it
   has answered a probe, made at once (`IoPool::probe_first`): a mount left from home never holds
-  a request. Each change of whether the NAS is read drops what was made from the other side's
-  reads (the catalogue generation). What's downloaded is this Mac's alone (`downloads.json` in its
+  a request; at home the map is the downloads until it answers (milliseconds; seconds while the
+  NAS wakes), and an open page, asking for the catalogue every 5 s while the server says it's away
+  (every minute else), takes the NAS's map within 5 s of it. Each change of whether the NAS is read
+  drops what was made from the other side's reads (the catalogue generation); away, every version
+  the app's URLs carry names where the downloads reach (`Data::reach_token`) and a 204 ("not
+  downloaded") is never cached for good, so nothing answered away is reused at home. What's downloaded is this Mac's alone (`downloads.json` in its
   home).
 - **The World, zoomed out:** the build's worldwide files (`global/`: only those a step makes, the
   catalogue lists no other), the Canadian lake fill

@@ -875,4 +875,5 @@ keeps its content name, so jobs keyed on it stop there.
 
 **Browser:** the map is drawn by our own MapLibre, `web/maplibre/` (MapLibre GL JS 6.11.2's source,
 changed where needed: `web/maplibre/FORK.md`), compiled with the app. English comes from the server.
-The page switches to a new catalogue in place (it polls `/api/catalog` every minute).
+The page switches to a new catalogue in place (it polls `/api/catalog` every minute, every 5 s
+while the server is away from the NAS).
