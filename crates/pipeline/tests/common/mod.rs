@@ -111,10 +111,15 @@ pub fn block_end(code: &[String], at: usize) -> usize {
 /// other crates' tests reach by its `testkit` feature, which only dev-dependencies turn on
 /// (tests/test_mode.rs: never a release build's). Only that spelling, as written or with its
 /// string blanked (`code_of`, as the scans read a line): an `any(test, …)` of anything else
-/// (`debug_assertions`, a target) is code a build runs, and is scanned.
+/// (`debug_assertions`, a target) is code a build runs, and is scanned. A file whose first code
+/// line is `#![cfg(test)]` (a test module of its own file, as pipeline's terrain_tests) is test
+/// code whole.
 pub fn test_lines(code: &[String]) -> Vec<bool> {
     const TESTKIT: &str = "#[cfg(any(test, feature = \"testkit\"))]";
     let blanked = code_of(TESTKIT);
+    if code.iter().map(|l| l.trim()).find(|l| !l.is_empty()) == Some("#![cfg(test)]") {
+        return vec![true; code.len()];
+    }
     let mut mask = vec![false; code.len()];
     let mut k = 0;
     while k < code.len() {

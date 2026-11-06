@@ -1,6 +1,7 @@
 //! terrain_task's tests that start a coordinator (crate::coord): the terrain crate's own tests
 //! can't (a family doesn't depend on pipeline; docs/crates.md §6.2), so they're pipeline's, as the
 //! write-set tests are (crate::inputs_tests).
+#![cfg(test)]
 
 use crate::coord::client::{Client, LeaseCalls};
 use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles, Sources};
