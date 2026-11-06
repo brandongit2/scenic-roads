@@ -6,6 +6,7 @@
 //! One function per stored encoding (the catalogue's `encoding`).
 
 use anyhow::{bail, Context, Result};
+use det::Det;
 use std::collections::{BTreeMap, HashSet};
 
 /// Cells of one grid that the downloads hold: Web Mercator's tiles at zoom `z` (6), or a polar
@@ -535,7 +536,7 @@ fn roads(raw: &[u8], z: u8, x: u32, y: u32, cells: &Cells) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     for l in &lines {
         let pts: Vec<[f64; 2]> = l.pts.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
-        let full: f64 = pts.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+        let full: f64 = pts.windows(2).map(|w| (w[1][0] - w[0][0]).dhypot(w[1][1] - w[0][1])).sum();
         for r in &rects {
             for piece in cut_line(&pts, r) {
                 let mut nl = roadcore::tile::TileLine {
@@ -564,7 +565,7 @@ fn roads(raw: &[u8], z: u8, x: u32, y: u32, cells: &Cells) -> Result<Vec<u8>> {
                     continue;
                 }
                 let kept: f64 =
-                    nl.pts.windows(2).map(|w| f64::from(w[1][0] - w[0][0]).hypot(f64::from(w[1][1] - w[0][1]))).sum();
+                    nl.pts.windows(2).map(|w| f64::from(w[1][0] - w[0][0]).dhypot(f64::from(w[1][1] - w[0][1]))).sum();
                 if full > 0.0 {
                     nl.true_len_dm = (f64::from(l.true_len_dm) * kept / full).round() as u32;
                 }
@@ -653,7 +654,7 @@ fn ferries(raw: &[u8], z: u8, x: u32, y: u32, cells: &Cells) -> Result<Vec<u8>> 
                     .map(|p| p.into_iter().map(|(p, _, _)| p).collect::<Vec<_>>())
                     .max_by(|a, b| {
                         let len = |v: &Vec<[f64; 2]>| {
-                            v.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum::<f64>()
+                            v.windows(2).map(|w| (w[1][0] - w[0][0]).dhypot(w[1][1] - w[0][1])).sum::<f64>()
                         };
                         len(a).total_cmp(&len(b))
                     });
