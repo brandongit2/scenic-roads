@@ -521,7 +521,7 @@ available. Until work is done, the map serves the last catalogue.
   - Its timers run in the run loop's common modes, so it updates while a menu is open
     (`scenic-status --menu-proof`).
   - **The input check** (docs/inputs.md §4.7): a held input badges the icon, its menu has a line per
-    held unit (Accept its warnings; Show on the Build Page), and it notifies. `scenic status` and
+    held unit (Accept its warnings; Show on the Build Page). `scenic status` and
     `scenic inputs` print the units' states; the build page shows a banner
     per held unit.
 

@@ -2,8 +2,8 @@
 // the state (building, paused, waiting, nothing to do, a problem, the lead out of touch); a
 // click opens the panel, the build page in a popover (`Panel`: this Mac's own agent's `/work/?view`, a viewer
 // only), and a right-click, or the panel's "⋯", the menu: the state in a line, this Mac's downloads
-// and build caches, and the controls below; and a notification for every change. Its timers run in
-// the run loop's common modes, so the polls, the icon and the notifications go on while a menu is
+// and build caches, and the controls below. Its timers run in
+// the run loop's common modes, so the polls and the icon go on while a menu is
 // open. It asks `scenic menu` (crates/pipeline/src/menu.rs, the installed app's), which answers
 // from this Mac's disk alone, never the NAS (docs/roles.md §3.4): this Mac's own agent's status,
 // and on a member the lead's line as the lead's last beat answer carried it. This Mac's own agent's status, read
@@ -30,9 +30,7 @@
 // dark) the system's appearance.
 
 import AppKit
-import CoreServices
 import SystemConfiguration
-import UserNotifications
 import ServiceManagement
 import WebKit
 
@@ -124,13 +122,6 @@ func buildFlags(_ r: Reply?) -> [Flag] {
 func buildPause(_ r: Reply?) -> PauseInfo? {
     if let l = r?.lead?.lead { return l.pause }
     return r?.status?.pause
-}
-
-/// Who leads and when it was last heard from: on a member its lead's last answer (host unknown
-/// before one), else this Mac (the lead) and its own beat.
-func leadHeard(_ r: Reply) -> (host: String?, at: Int)? {
-    if let l = r.lead { return (l.lead?.host, l.at) }
-    return r.status.map { ($0.host, $0.beat) }
 }
 
 /// One Mac paused alone (crates/jobrt/src/control.rs Hold): who asked, since when.
@@ -416,7 +407,7 @@ func poolLines(_ v: PoolView, now: Int) -> [Line] {
 
 /// This Mac's build caches (crates/pipeline/src/agent/room.rs Caches): what a clear and a deep
 /// clear would free (bytes, and cache by cache with how each comes back), why they can't be cleared
-/// now (none: they can), and the last clear of each level and the last ask declined.
+/// now (none: they can), and the last clear of each level.
 struct Caches: Decodable {
     let clearable: Int?
     let clearable_deep: Int?
@@ -424,7 +415,6 @@ struct Caches: Decodable {
     let why_not: String?
     let cleared: Freed?
     let cleared_deep: Freed?
-    let declined: Freed?
 
     /// What a clear of that level would free.
     func clearable(deep: Bool) -> Int? { deep ? clearable_deep : clearable }
@@ -439,21 +429,11 @@ struct Gone: Decodable {
     let deep: Bool?
 }
 
-/// What a clear kept of what its level empties (room.rs Stayed): which cache, its bytes, why.
-struct Stayed: Decodable {
-    let cache: String
-    let bytes: Int
-    let why: String
-}
-
-/// What a clear did (room.rs Freed): when, the bytes freed by cache, what stays and why, and for
-/// a clear asked for when it couldn't be, why not.
+/// What a clear did (room.rs Freed): when, the bytes freed by cache, and for a clear asked for when
+/// it couldn't be, why not.
 struct Freed: Decodable {
     let at: Int
-    let by: String?
     let freed: [String: Int]?
-    let left: Int?
-    let stayed: [Stayed]?
     let why_not: String?
 
     var bytes: Int { (freed ?? [:]).values.reduce(0, +) }
@@ -1441,17 +1421,6 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     }
 }
 
-/// What notifications compare: the job, whether it's paused, the last finished job, out of touch.
-struct Seen {
-    var job: String?
-    var paused: Bool
-    var lastEnded: Int
-    var outOfTouch: Bool
-    var buildPaused: Bool
-    /// The gate's units held.
-    var held: Set<String> = []
-}
-
 /// This Mac's ask to its agent (crates/jobrt/src/control.rs), while it waits to be taken up: to
 /// pause (true) or go on (false).
 let askFile = "pause-request.json"
@@ -1492,17 +1461,6 @@ func gb(_ b: Int) -> String {
     b >= 1 << 30 ? String(format: "%.1f\u{00A0}GB", Double(b) / Double(1 << 30)) : "\(b >> 20)\u{00A0}MB"
 }
 
-/// What a clear freed, by cache, the most first: "canopy squares 45.0 GB, raw terrain
-/// tiles 24.1 GB", and what stays.
-func freedText(_ f: Freed) -> String {
-    let words = ["canopy": "canopy squares", "terrain": "raw terrain tiles", "blobs": "copies of the records' files", "months": "pageview months", "base": "base packs", "retired": "caches no code reads any more", "copies": "copies of the NAS's files", "heritage": "the heritage jobs' planet clip", "answers": "the Wikidata and Wikipedia answers"]
-    var t = (f.freed ?? [:]).filter { $0.value > 0 }.sorted { $0.value > $1.value }.map { "\(words[$0.key] ?? $0.key) \(gb($0.value))" }.joined(separator: ", ")
-    if t.isEmpty { t = "nothing" }
-    if let l = f.left, l > 0 { t += "; \(gb(l)) kept (a job uses it, or the NAS hasn't it yet)" }
-    for s in f.stayed ?? [] { t += "; \(words[s.cache] ?? s.cache) \(gb(s.bytes)) kept: \(s.why)" }
-    return t
-}
-
 /// What a clear of that level keeps, in words (room.rs kept_words, the same).
 func keptWords(deep: Bool) -> String {
     deep
@@ -1536,14 +1494,11 @@ func clearRequestJSON(by: String, at: Int, deep: Bool) -> Data {
     (try? JSONSerialization.data(withJSONObject: ["by": by, "at": at, "level": deep ? "deep" : "caches"] as [String: Any], options: [.sortedKeys])) ?? Data()
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     var reply: Reply?
-    var seen: Seen?
-    /// This Mac's agent's own status (its caches), read with each answer, and its last clear's
-    /// and declined ask's times as last told.
+    /// This Mac's agent's own status (its caches), read with each answer.
     var own: Own?
-    var seenCaches: (cleared: Int, deep: Int, declined: Int)?
     var polling = false
     /// The app's build service and the window (service.swift).
     let build = BuildService()
@@ -1553,35 +1508,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var mayQuit = false
     /// Whether this run manages the services (the app opened, not a --show or --menu-proof run).
     var managing = false
-    /// `--menu-proof`: its polls and notifications printed with the time, a menu held open between.
+    /// `--menu-proof`: its polls printed with the time, a menu held open between.
     var proof = false
     /// `--show panel|menu`: opened once the first answer is in, the panel closed 20 s later (for
     /// screenshots, and what the panel costs open and closed).
     var showAtStart: String?
-    /// Whether notifications are posted (not printed, as --replay's are).
-    var sinkIsCenter = true
-    /// Where notifications go: posted, or printed (--replay).
-    var sink: (String, String) -> Void = { title, body in
-        let c = UNMutableNotificationContent()
-        c.title = title
-        c.body = body
-        c.threadIdentifier = "build"
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
-    }
-
     func applicationDidFinishLaunching(_ n: Notification) {
-        // Known to Launch Services by its bundle (notifications need it), also when its executable
-        // is started directly (--show, --menu-proof).
-        LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
         if !proof && showAtStart == nil { openApp() }
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-        // (A device's asks to help, from before pages helped with no key: taken away.)
-        center.getDeliveredNotifications { ns in
-            let asks = ns.map(\.request.identifier).filter { $0.hasPrefix("ask-") }
-            if !asks.isEmpty { center.removeDeliveredNotifications(withIdentifiers: asks) }
-        }
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         // (SCENIC_STATUS_APPEARANCE: light or dark whatever the system's, for screenshots.)
         switch ProcessInfo.processInfo.environment["SCENIC_STATUS_APPEARANCE"] {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
@@ -1614,12 +1547,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// `--menu-proof`: after a few seconds the menu opens and stays open 25 s (closed by a timer of
-    /// its own), then it quits 12 s later; each poll and notification printed with the time. With
-    /// the timers in the common modes the polls go on every 5 s while the menu is open, and each
-    /// notification comes as its answer does, not all at once as the menu closes.
+    /// its own), then it quits 12 s later; each poll printed with the time. With the timers in the
+    /// common modes the polls go on every 5 s while the menu is open.
     func menuProof() {
-        sink = { title, body in print("\(stamp()) notify: \(title) — \(body)") }
-        sinkIsCenter = false
         after(6) {
             print("\(stamp()) menu opens")
             let menu = self.currentMenu()
@@ -1791,7 +1721,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.reply = r
                 self.own = ownStatus()
                 self.panel.setOwn(self.own)
-                self.notifyChanges()
                 self.show()
             }
         }
@@ -1980,10 +1909,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return m
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
-        done([.banner, .sound])
-    }
-
     /// Accepts a held unit's warnings (the item's unit), once its owner says so, naming them: an ask
     /// to this Mac's agent (crates/pipeline/src/inputs/mod.rs Ask, a file of its own in
     /// `inputs-asks/`), which writes the acceptances itself within seconds.
@@ -2009,7 +1934,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             try JSONSerialization.data(withJSONObject: ["unit": unit, "accept": warns.map(\.id), "by": "the menu bar on \(name)", "at": now] as [String: Any]).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            post("Couldn't accept \(unit)'s warnings", "\(error.localizedDescription)")
+            NSLog("scenic-status: %@: %@", "Couldn't accept \(unit)'s warnings", error.localizedDescription)
             return
         }
         poll()
@@ -2039,7 +1964,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             try JSONSerialization.data(withJSONObject: ask).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            post("Couldn't cancel the job", "\(error.localizedDescription)")
+            NSLog("scenic-status: %@: %@", "Couldn't cancel the job", error.localizedDescription)
             return
         }
         poll()
@@ -2063,7 +1988,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             try holdRequestJSON(held, by: "the menu bar on \(name)", at: now).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            post("Couldn't ask this Mac to \(held ? "pause" : "go on")", "\(error.localizedDescription)")
+            NSLog("scenic-status: %@: %@", "Couldn't ask this Mac to \(held ? "pause" : "go on")", error.localizedDescription)
             return
         }
         poll()
@@ -2085,7 +2010,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             try JSONSerialization.data(withJSONObject: ["pause": pause, "at": now]).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            post("Couldn't ask the build to \(mode == nil ? "go on" : "pause")", "\(error.localizedDescription)")
+            NSLog("scenic-status: %@: %@", "Couldn't ask the build to \(mode == nil ? "go on" : "pause")", error.localizedDescription)
             return
         }
         poll()
@@ -2114,7 +2039,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             try clearRequestJSON(by: "the menu bar on \(name)", at: Int(Date().timeIntervalSince1970), deep: deep).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
-            post("Couldn't ask to clear the build's caches", "\(error.localizedDescription)")
+            NSLog("scenic-status: %@: %@", "Couldn't ask to clear the build's caches", error.localizedDescription)
             return
         }
         poll()
@@ -2128,99 +2053,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let p = sender.representedObject as? String, let u = URL(string: p) else { return }
         panel.close()
         NSWorkspace.shared.open(u)
-    }
-
-    // MARK: notifications, for every change
-
-    func notifyChanges() {
-        tellCaches()
-        tellLead()
-        guard let r = reply, let s = r.status else { return }
-        let held = heldInputs(r)
-        // (A unit held stays so for the notifications while it's checked again, its report gone
-        // but the check not over: taken in only once its state is ok.)
-        let rechecking = Set((s.inputs ?? []).filter { $0.state == "checking" }.map(\.unit)).intersection(seen?.held ?? [])
-        // (The lead heard from: a member's lead by its last answer, none yet counting as heard; the
-        // lead, this Mac's own agent.)
-        let lead = leadHeard(r)
-        let pause = buildPause(r)
-        let now = Seen(job: s.firstJob?.id, paused: s.firstJob?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: lead.map { $0.at > 0 && r.now - $0.at > outOfTouch(r) } ?? false, buildPaused: pause != nil, held: Set(held.map(\.unit)).union(rechecking))
-        defer { seen = now }
-        // The first answer only sets what changes are measured from.
-        guard let was = seen else { return }
-        // The gate: a unit held, or taken in (its held change accepted or fixed, its check over).
-        for v in held where !was.held.contains(v.unit) {
-            post("Input held: \(v.unit)", "\(inputLine(v)). The map goes on with the last good version.")
-        }
-        for u in was.held.subtracting(now.held).sorted() {
-            post("Input taken in: \(u)", "Its held change passed the gate")
-        }
-        if now.buildPaused != was.buildPaused {
-            post(now.buildPaused ? "Build paused" : "Build going on", pause.map { "From \($0.by)" } ?? "Picking up where it stopped")
-        }
-        if now.outOfTouch != was.outOfTouch, let l = lead {
-            post(now.outOfTouch ? "Lead out of touch" : "Lead back", now.outOfTouch ? "Not heard from since \(clock(l.at))" : l.host ?? "")
-        }
-        for d in s.recent.filter({ $0.ended > was.lastEnded }).sorted(by: { $0.ended < $1.ended }) {
-            if d.ok {
-                post("Done", "\(d.what) (\(duration(d.secs)))")
-            } else {
-                // The error's own line (the note is the exit status, then the log's last lines).
-                let notes = (d.note ?? "").split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-                let why = notes.last(where: { $0.hasPrefix("Error") }) ?? notes.last ?? ""
-                post("Failed: \(d.what)", why.isEmpty ? "after \(duration(d.secs))" : clip(why, 160))
-            }
-        }
-        if let j = s.firstJob {
-            if j.id != was.job {
-                post("Building", j.what)
-            } else if now.paused && !was.paused {
-                post("Building paused", j.paused ?? j.what)
-            } else if !now.paused && was.paused {
-                post("Building resumed", j.what)
-            }
-        }
-    }
-
-    func post(_ title: String, _ body: String) {
-        sink(title, body)
-    }
-
-    /// The pool's term changing, and its alert, each told once (the first look only sets where
-    /// they're told from).
-    var seenLead: (term: Int, alert: Bool)?
-    func tellLead() {
-        guard let v = own?.pool?.lead else { return }
-        defer { seenLead = (v.term, v.alert != nil) }
-        // (The alert told on the first look too: a menu bar started while it's on says it once.)
-        guard let was = seenLead else {
-            if let a = v.alert { post("The build has no lead", a) }
-            return
-        }
-        if v.term > was.term, let l = v.lead {
-            post("\(l.host) leads the build", "Term \(l.term): \(l.how)")
-        }
-        if !was.alert, let a = v.alert {
-            post("The build has no lead", a)
-        }
-    }
-
-    /// This Mac's caches cleared, or not cleared and why, each told once
-    /// (the first look at its agent's status only sets where they're told from).
-    func tellCaches() {
-        guard let c = own?.caches else { return }
-        let now = (cleared: c.cleared?.at ?? 0, deep: c.cleared_deep?.at ?? 0, declined: c.declined?.at ?? 0)
-        defer { seenCaches = now }
-        guard let was = seenCaches else { return }
-        if let f = c.cleared, f.at != was.cleared {
-            post("Freed \(gb(f.bytes))", "This Mac's build caches: \(freedText(f)). Later jobs copy back from the NAS what they need.")
-        }
-        if let f = c.cleared_deep, f.at != was.deep {
-            post("Freed \(gb(f.bytes)), deeply", "This Mac's build caches: \(freedText(f)). Later jobs copy back from the NAS, or make again, what they need.")
-        }
-        if let f = c.declined, f.at != was.declined {
-            post("Build caches not cleared", f.why_not ?? "")
-        }
     }
 
 }
@@ -2240,13 +2072,13 @@ usage: scenic-status [option]
   --services                 the build service's state
   --unregister               the build service and the app off the login items
   --print                    the icon, the status's lines and the menu's items now, as text
-  --replay a.json b.json …   the notifications a sequence of answers would send (each file
-                             `scenic menu`'s answer, with this Mac's agent's own status beside it as
-                             "own", and "clear_asked" while an ask to clear its caches waits), and
-                             the caches' item
+  --replay a.json b.json …   the state, badge and caches' items a sequence of answers would show
+                             (each file `scenic menu`'s answer, with this Mac's agent's own status
+                             beside it as "own", and "clear_asked" while an ask to clear its caches
+                             waits)
   --render lines.png         the status's lines drawn as they lay out (dark), for checking
   --show panel|menu          runs, and opens the panel (closed 20 s later) or the menu
-  --menu-proof               runs, its polls and notifications printed with the time, a menu held
+  --menu-proof               runs, its polls printed with the time, a menu held
                              open 25 s between: they go on while it's open
   --reopen <pid> <app>       an update's helper: opens <app> once <pid> has ended
   --test <dir>               its self-tests: arguments, the reopen helper, launchd's state read from
@@ -2368,10 +2200,8 @@ if let i = args.firstIndex(of: "--reopen") {
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: args[i + 1]))
     print("drew \(views.count) lines, \(Int(height)) pt high")
 } else if let i = args.firstIndex(of: "--replay") {
-    // The notifications a sequence of answers would send.
+    // The state and items a sequence of answers would show.
     let d = AppDelegate()
-    d.sink = { title, body in print("notify: \(title) — \(body)") }
-    d.sinkIsCenter = false
     for f in args[(i + 1)...] {
         let data = (try? Data(contentsOf: URL(fileURLWithPath: f))) ?? Data()
         d.reply = try? JSONDecoder().decode(Reply.self, from: data)
@@ -2384,7 +2214,6 @@ if let i = args.firstIndex(of: "--reopen") {
             // (What its confirmation lists.)
             for g in ((c.enabled ? d.own?.caches?.each : nil) ?? []).filter({ c.deep || $0.deep != true }) { print("    \(g.what) \(gb(g.bytes)): \(g.back)") }
         }
-        d.notifyChanges()
     }
 } else {
     let app = NSApplication.shared

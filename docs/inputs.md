@@ -245,8 +245,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   `state` is `ok`, `checking` or `held` (with `checking: true` while re-checked); a finding carries
   its first 50 `lines` and `more`; `together` and `unread` appear when they apply.
 - **The menu bar item** (`tools/status`): a warning badge on whatever icon the build has, a line per
-  held unit with Accept (warnings, after confirming) and Show on the Build Page; notifies when a unit
-  is held and when it's taken in.
+  held unit with Accept (warnings, after confirming) and Show on the Build Page.
 - **The build page** (`web/work/dash.js`): a banner per held unit with its files, findings, places,
   Accept and Accept All; a quiet line while checking.
 - **The Regions panel** marks a held region (§6.1.9).

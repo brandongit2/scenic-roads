@@ -2515,7 +2515,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   (`lead::own_status`): the lead and its term, the declared lead when another term's lead
   is current, each member's state, "no lead" and why, the last change of term.
 - **The alert** (`lead::alert`, `ALERT_S`: an hour with no lead) says the members finish their jobs
-  and wait, and to see to the lead's Mac; the menu bar notifies once.
+  and wait, and to see to the lead's Mac; the menu bar's status line shows it.
 - **History:** terms made and step-downs are `term` events in the member's
   history file (`crate::agent::lead::notes`). Members joining and leaving are the lead's `member`
   events (`lead::membership`): at each read of the heartbeats, a member whose beat came into
