@@ -166,7 +166,6 @@ export const CELLS = 8;
 export const EQ = 33; // elevation quantiles per (cell, group): q = 0, 1/32 … 1
 export const GQ = 17; // grade quantiles per (cell, group)
 
-export const BG = [0x0b / 255, 0x0e / 255, 0x13 / 255];
 export const DIM_GREY = [0.2, 0.22, 0.26];
 
 // Classes that get a dark casing when zoomed in (tertiary and up; bridges always).

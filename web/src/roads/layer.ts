@@ -28,7 +28,7 @@ import { packVersion } from '../api';
 import { FOG_UNIFORMS, fogUniforms, setFogUniforms } from '../fog';
 import { MercatorCoordinate, Point, type CustomLayerInterface, type CustomRenderMethodInput, type LngLat, type Map as MLMap } from 'maplibre-gl';
 import {
-  BG, LF_UNNAMED, LF_RAIL_SHIFT, LF_TOLL, CASING_W, CASING_Z, DIM_GREY, FADES, FADE_Z, GLOW_W, GLOW_Z, LOD_CELL_PX, MINOR_MAX_CLASS, NCLASS, SPRITE_MAX_CSS, TILE_MAXZOOM, TILE_MINZOOM, WIDTHS, WIDTH_Z, interp, widthsRev,
+  LF_UNNAMED, LF_RAIL_SHIFT, LF_TOLL, CASING_W, CASING_Z, DIM_GREY, FADES, FADE_Z, GLOW_W, GLOW_Z, LOD_CELL_PX, MINOR_MAX_CLASS, NCLASS, SPRITE_MAX_CSS, TILE_MAXZOOM, TILE_MINZOOM, WIDTHS, WIDTH_Z, interp, widthsRev,
 } from '../config';
 import { LUT_ROWS, LUT_W, buildLut, paletteRow } from '../palettes';
 import { metricOf, modeDef, NCOMP, type Mode } from '../scenic';
@@ -974,8 +974,11 @@ export interface RoadStyle {
   /** Casings: the zoom they start at (config.ts CASING_Z, shifted) and their width (× CASING_W). */
   casingFrom: number;
   casingWidth: number;
-  /** Tunnels' colour strength (mixed toward the background). */
+  /** Tunnels' colour strength (mixed toward the land colour). */
   tunnelFade: number;
+  /** The map's land colour (AppState.land, 0-1): faded lines and casings without a colour go toward
+   * it. */
+  land: [number, number, number];
   /** Unpaved roads dashed. */
   dashUnpaved: boolean;
   /** Widths with distance in tilted views (state.ts RoadPersp); absent: the style curve's alone. */
@@ -2185,7 +2188,7 @@ export class RoadLayer implements CustomLayerInterface {
       gl.uniform2f(u.u_range, s.range[0], s.range[1]);
       gl.uniform1f(u.u_lowFade, s.lowFade);
       gl.uniform1f(u.u_lowSpan, s.lowSpan);
-      gl.uniform3fv(u.u_bg, BG);
+      gl.uniform3fv(u.u_bg, s.land);
       gl.uniform3fv(u.u_dim, DIM_GREY);
       gl.uniform2f(u.u_thr, s.threshold.on ? (s.threshold.dir === 'below' ? 2 : 1) : 0, thresholdValue(s));
       gl.uniform1f(u.u_zmul, three ? s.exaggeration : 0);

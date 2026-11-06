@@ -15,7 +15,7 @@ import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, setRegisterCredits, s
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
 import { hexRgb, paletteRgb } from './palettes';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from './roads/layer';
-import { BG, CASING_CLASSES_MASK, DIM_GREY, FADES, FADE_Z, RAIL0, RAIL_GROUPS, interp, setWidths } from './config';
+import { CASING_CLASSES_MASK, DIM_GREY, FADES, FADE_Z, RAIL0, RAIL_GROUPS, interp, setWidths } from './config';
 import { MAP_SCHEMES, lookUniforms, presetLook, type RoadMapLook } from './mapschemes';
 import { RAIL_GROUP_COLOURS, railMetricDef, railMetricOf } from './rail';
 import type { FeatureSummary } from './overlays';
@@ -363,6 +363,7 @@ async function main() {
     railMask: 0,
     railWeights: [],
     casingMask: CASING_CLASSES_MASK,
+    land: hexRgb(s0.land),
     ...roadLookStyle(s0),
     persp: { ...s0.roadPersp },
   });
@@ -1423,11 +1424,12 @@ async function main() {
   let pickAt: { x: number; y: number } | null = null;
   const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
   const cssOfRgb = (c: number[]) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
-  /** A CSS colour ('#rrggbb' or 'rgb(r,g,b)') mixed toward the map's background, `k` of it kept. */
+  /** A CSS colour ('#rrggbb' or 'rgb(r,g,b)') mixed toward the land colour, `k` of it kept (as the
+   * rail layer's u_bg). */
   const mixBg = (css: string, k: number) => {
-    const m = /^#([0-9a-f]{6})$/i.exec(css);
-    const c = m ? [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16) / 255) : (css.match(/[\d.]+/g) ?? ['0', '0', '0']).slice(0, 3).map((v) => Number(v) / 255);
-    return cssOfRgb(c.map((v, i) => BG[i] + (v - BG[i]) * k));
+    const c = /^#[0-9a-f]{6}$/i.test(css) ? hexRgb(css) : (css.match(/[\d.]+/g) ?? ['0', '0', '0']).slice(0, 3).map((v) => Number(v) / 255);
+    const bg = hexRgb(store.s.land);
+    return cssOfRgb(c.map((v, i) => bg[i] + (v - bg[i]) * k));
   };
   /** A rail line's colour and opacity at a point as the rail layer draws it (roads/layer.ts
    * endColour), for the stop dot there: its colour (by line, service, single or the metric's
@@ -2071,6 +2073,7 @@ async function main() {
    * tiles, mixed over the land, follow in applyWater. */
   const applyLand = (c: string) => {
     setLandColour(c);
+    roads.style.land = rails.style.land = hexRgb(c);
     if (map.getLayer('bg')) map.setPaintProperty('bg', 'background-color', c);
   };
   /** The buildings' settings applied (the terrain's exaggeration and light are theirs too). */
