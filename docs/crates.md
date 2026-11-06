@@ -381,6 +381,29 @@ So 6c leaves a dev build after a step module's edit where it was (pipeline and s
 either way), and the client's own test loop is 13-16 times faster, its largest rustc a twentieth of
 pipeline's. The first builds' walls are third-party crates from sccache under the load, not 6c.
 
+Before and after step 6d, 6 Nov 2026 07:42-08:50 UTC, on the M4 (load 100-215: the pool's jobs,
+other agents' builds and this branch's own check), rustc 1.98.1, cargo through sccache at utility
+priority (`taskpolicy -c utility`, as the pool's jobs: so the walls are longer than 6c's). Before:
+main at 0875f150 (after 6c); after: this branch, each tree a folder of its own with its own target
+folder, built once first. Interleaved (before, after; after, before; before, after), 3 runs each.
+Peak: the largest process (`time -l`); CPU: user + system of the whole command. The edits: one
+comment line appended to marksjob.rs (a leaf step module) and to rules.rs (a leaf of the family
+moved: crates/pipeline/src before, crates/inputs/src after), each built at once:
+
+| run | before | after |
+|---|---|---|
+| dev (`build --workspace --bins`), marksjob edit | 20.6, 25.2, 20.9 s (CPU 23.4-24.6 s), 2.05-2.11 GB | 18.1, 16.4, 17.4 s (CPU 20.9-21.3 s), 1.60-1.67 GB |
+| dev, rules edit | 19.9, 25.2, 19.8 s (CPU 22.6-24.4 s), 1.87-2.05 GB | 15.4, 17.3, 19.3 s (CPU 22.5-23.4 s), 1.60-1.62 GB: inputs, pipeline, server |
+| unit-test build after the rules edit | pipeline --lib: 20.4, 23.0, 20.3 s (CPU 17.3-18.7 s), 2.74-3.02 GB | inputs --lib: 4.7, 4.1, 5.9 s (CPU 4.3-4.7 s), 0.76-0.78 GB |
+| first builds, one each (not interleaved) | dev 235 s, 3.90 GB; pipeline's lib tests 662 s, 4.48 GB | dev 316 s, 3.08 GB; inputs' lib tests 198 s, 1.86 GB |
+
+So 6d is the first step to shrink pipeline's own compile: a step module's edit rebuilds a smaller
+pipeline (CPU ~12 % less, its rustc 0.4 GB smaller, the dev build's largest process 2.1 → 1.6 GB);
+an edit in the family costs a dev build what it did (inputs, then pipeline and server, recompile),
+and its unit tests build 4-5 times faster, their rustc a quarter of pipeline's. The first builds'
+walls follow the load (215 at the end), not 6d; their peaks (3.90 → 3.08 GB dev, pipeline's lib
+the largest either way) are 6d's.
+
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
 timings: an edit in a crate recompiles every crate that depends on it, so moving a *leaf* module
