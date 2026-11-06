@@ -1941,7 +1941,7 @@ impl Planner {
         // (A terrain z3 tile's z6 tiles near the coverage, for its run's expected memory: only when
         // there's terrain to offer.)
         let z6: BTreeMap<String, usize> = if plan.iter().any(|w| w.step == "terrain-hi") {
-            build::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect()
+            buildstore::coverage::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect()
         } else {
             BTreeMap::new()
         };
@@ -2044,7 +2044,7 @@ impl Planner {
                 None if planned.regions.is_empty() => Some("the z6 tiles wait for the pass's heritage sites, reaches and roadside buildings; what the regions need is known once they're made".to_string()),
                 None => None,
             };
-            let z6: BTreeMap<String, usize> = build::coverage_tiles(cov)
+            let z6: BTreeMap<String, usize> = buildstore::coverage::coverage_tiles(cov)
                 .into_iter()
                 .map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len()))
                 .collect();

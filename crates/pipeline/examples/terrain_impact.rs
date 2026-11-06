@@ -6,7 +6,7 @@
 //!
 //! usage: cargo run -p pipeline --example terrain_impact -- <root>
 
-use pipeline::terrain_pack::near_coverage;
+use buildstore::coverage::near_coverage;
 use pipeline::terrain_zoom::{finest, Set};
 use std::collections::BTreeMap;
 
@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<()> {
     println!("polar finest after: z{} (before z9)", pipeline::polar::finest(sets, roadcore::polar::Pole::South));
 
     // The z6 tiles near the coverage and their levels.
-    let z6: Vec<(u32, u32)> = pipeline::agent::build::coverage_tiles(&cov).into_values().flatten().collect();
+    let z6: Vec<(u32, u32)> = buildstore::coverage::coverage_tiles(&cov).into_values().flatten().collect();
     let z3: std::collections::BTreeSet<(u32, u32)> = z6.iter().map(|t| (t.0 >> 3, t.1 >> 3)).collect();
     let (mut before, mut after, mut deep_avg, mut deep_before, mut deep_after, mut makes) =
         (BTreeMap::<u8, usize>::new(), BTreeMap::<u8, usize>::new(), 0usize, 0usize, 0usize, 0usize);

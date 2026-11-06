@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
     }
     let read = |n: &str| Ok(declared.elevation.root().join(n).read()?);
     let with = pipeline::terrain_zoom::sets(&ds, &read)?;
-    let z6: Vec<(u32, u32)> = pipeline::agent::build::coverage_tiles(&cov).into_values().flatten().collect();
+    let z6: Vec<(u32, u32)> = buildstore::coverage::coverage_tiles(&cov).into_values().flatten().collect();
     let count = |sets: &[pipeline::terrain_zoom::Set]| -> (usize, usize) {
         let (mut targets, mut tiles) = (0, 0);
         for &t in &z6 {

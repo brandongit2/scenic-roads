@@ -11,6 +11,7 @@
 use super::nasread;
 use super::steps::{readiness, ready, Left, Ready, View};
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
+use buildstore::coverage::coverage_tiles;
 use crate::coverage::Coverage;
 use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
@@ -379,24 +380,6 @@ pub(crate) fn coverage_all(cov: &Coverage) -> String {
     v.sort();
     v.dedup();
     v.join(",")
-}
-
-/// The z6 tiles near the coverage (`roadcore::geo::NEAR_COVERAGE_KM`), by z3 pack; once per coverage version (`Coverage::kept`).
-pub fn coverage_tiles(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
-    cov.kept().tiles.get_or_init(|| coverage_tiles_made(cov)).clone()
-}
-
-/// `coverage_tiles`, worked out.
-fn coverage_tiles_made(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
-    let mut by_q: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
-    for x in 0..64u32 {
-        for y in 0..64u32 {
-            if crate::terrain_pack::near_coverage(cov, 6, x, y) {
-                by_q.entry((x >> 3, y >> 3)).or_default().push((x, y));
-            }
-        }
-    }
-    by_q
 }
 
 /// The outlines step's version (crate::osmpass::make_outlines, crate::outlines::assemble): bumped

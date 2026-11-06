@@ -16,19 +16,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// What heritage.py counts as covered: the z12 tiles near the coverage
-/// (crate::terrain_pack::near_coverage).
+/// (buildstore::coverage::near_coverage).
 pub const COVER_Z: u8 = 12;
 
 /// The cover's tiles, sorted by (x, y).
 pub fn cover_tiles(cov: &Coverage) -> Vec<(u32, u32)> {
     let s = 1u32 << (COVER_Z - 6);
-    let parents: Vec<(u32, u32)> = crate::agent::build::coverage_tiles(cov).into_values().flatten().collect();
+    let parents: Vec<(u32, u32)> = buildstore::coverage::coverage_tiles(cov).into_values().flatten().collect();
     let mut out: Vec<(u32, u32)> = parents
         .par_iter()
         .flat_map_iter(|&(x6, y6)| {
             (x6 * s..(x6 + 1) * s)
                 .flat_map(move |x| (y6 * s..(y6 + 1) * s).map(move |y| (x, y)))
-                .filter(|&(x, y)| crate::terrain_pack::near_coverage(cov, COVER_Z, x, y))
+                .filter(|&(x, y)| buildstore::coverage::near_coverage(cov, COVER_Z, x, y))
         })
         .collect();
     out.sort_unstable();
@@ -37,7 +37,7 @@ pub fn cover_tiles(cov: &Coverage) -> Vec<(u32, u32)> {
 
 /// The boxes (degrees) of the z6 tiles holding the cover (`cover_tiles`' parents).
 pub fn cover_boxes(cov: &Coverage) -> Vec<[f64; 4]> {
-    crate::agent::build::coverage_tiles(cov)
+    buildstore::coverage::coverage_tiles(cov)
         .into_values()
         .flatten()
         .map(|(x, y)| roadcore::geo::tile_box(6, x, y))

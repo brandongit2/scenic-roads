@@ -443,11 +443,11 @@ pub fn water_source(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(vec![crate::terrain_pack::water_source_pin(x.m).unwrap_or_else(|| "-".into())])
 }
 
-/// The mids of a z3 tile's z6 tiles near the coverage (`build::coverage_tiles`) of the terrain or
+/// The mids of a z3 tile's z6 tiles near the coverage (`buildstore::coverage::coverage_tiles`) of the terrain or
 /// slope (`mid`: its mid's logical name), "6/x/y=<content>" ("-" for one not made).
 fn near_mids(t: &str, x: &KeyCtx, mid: fn(u32, u32) -> String) -> Option<Vec<String>> {
     let q = TileId::parse(t).filter(|q| q.z == 3)?;
-    let ts = super::build::coverage_tiles(x.cov).get(&(q.x, q.y)).cloned().unwrap_or_default();
+    let ts = buildstore::coverage::coverage_tiles(x.cov).get(&(q.x, q.y)).cloned().unwrap_or_default();
     Some(
         ts.into_iter().map(|(a, b)| format!("6/{a}/{b}={}", x.m.get(&mid(a, b)).map_or("-", String::as_str))).collect(),
     )

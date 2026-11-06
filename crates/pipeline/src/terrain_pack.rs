@@ -402,17 +402,10 @@ pub fn tile_lat(z: u8, ty: u32) -> f64 {
 
 // ---- per pack ----------------------------------------------------------------------------------
 
-use buildstore::coverage::Coverage;
+use buildstore::coverage::{near_coverage, Coverage};
 use buildstore::out::Out;
 use rayon::prelude::*;
 use std::sync::Mutex;
-
-/// Whether the coverage comes within `roadcore::geo::NEAR_COVERAGE_KM` of the tile: the tile grown by
-/// it meets it (exactly, so a small region between sample points isn't missed: Singapore in its z6
-/// tile).
-pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32) -> bool {
-    cov.meets_rect(roadcore::geo::grown_e7(z, x, y, roadcore::geo::NEAR_COVERAGE_KM))
-}
 
 /// A layer's tiles as the build manifest has them now (its latest uploads).
 pub struct ManifestTiles {

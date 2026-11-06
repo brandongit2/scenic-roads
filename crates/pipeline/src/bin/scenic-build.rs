@@ -5186,14 +5186,14 @@ fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
 }
 
 /// The z6 tiles a z3 tile's whole terrain or slope run makes, by z3 pack: those near the coverage (as
-/// the agent's keys list them, `build::coverage_tiles`) of each z3 pack named (`3/x/y`), or with
+/// the agent's keys list them, `buildstore::coverage::coverage_tiles`) of each z3 pack named (`3/x/y`), or with
 /// none named every z6 tile near the coverage. (Z6 tiles named are extracts: `pieces_named`.)
 fn terrain_targets(
     cov: &pipeline::coverage::Coverage,
     args: &[String],
 ) -> Result<BTreeMap<(u32, u32), Vec<(u32, u32)>>> {
     let _p = phase("working out the z3 tiles' pieces near the coverage");
-    let near = pipeline::agent::build::coverage_tiles(cov);
+    let near = buildstore::coverage::coverage_tiles(cov);
     let named: Vec<TileId> = positional(args)
         .iter()
         .map(|s| TileId::parse(s).with_context(|| format!("not a tile: {s}")))
@@ -5235,7 +5235,7 @@ fn pieces_named(
         .collect::<Result<_>>()?;
     // (`--pieces-of Q,…`: every z6 tile of those z3 tiles, by hand.)
     if let Some(qs) = opt(args, "--pieces-of") {
-        let near = pipeline::agent::build::coverage_tiles(cov);
+        let near = buildstore::coverage::coverage_tiles(cov);
         for q in qs.split(',').filter(|q| !q.is_empty()) {
             let u = TileId::parse(q).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {q}"))?;
             let ts = near.get(&(u.x, u.y)).with_context(|| format!("{q}: no tile of it is near the coverage"))?;
@@ -5250,7 +5250,7 @@ fn pieces_named(
         return Ok(None);
     }
     anyhow::ensure!(named.iter().all(|u| u.z == 6), "z6 tiles (pieces) or z3 tiles (z3 tiles' whole runs), not both");
-    let near = pipeline::agent::build::coverage_tiles(cov);
+    let near = buildstore::coverage::coverage_tiles(cov);
     for u in &named {
         if near.get(&(u.x >> 3, u.y >> 3)).is_some_and(|ts| ts.contains(&(u.x, u.y))) {
             continue;
@@ -5279,7 +5279,7 @@ fn z3s_named(
     step: &str,
 ) -> Result<Vec<(TileId, Vec<(u32, u32)>)>> {
     let _p = phase("working out the z3 tiles' pieces near the coverage");
-    let near = pipeline::agent::build::coverage_tiles(cov);
+    let near = buildstore::coverage::coverage_tiles(cov);
     let qs: Vec<TileId> = positional(args)
         .iter()
         .map(|t| TileId::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
@@ -5323,7 +5323,7 @@ fn terrain_pieces(
     // ("None" z6 tiles, z6 tiles the coverage has left, first: their hi packs and mids dropped, nothing
     // read, their cost a drop's (`run_drop`); a job of them alone opens no sources and packs nothing.)
     let (ts, gone): (Vec<TileId>, Vec<TileId>) =
-        ts.iter().partition(|t| pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y));
+        ts.iter().partition(|t| buildstore::coverage::near_coverage(cov, 6, t.x, t.y));
     for t in &gone {
         let n = run_drop("terrain-hi", &t.slash(), || pipeline::terrain_pack::drop_piece(out, (t.x, t.y)))?;
         eprintln!("terrain-hi {}: the coverage has left it; {n} files dropped", t.slash());
@@ -5605,7 +5605,7 @@ fn slope_pieces(
         landing.safe_point(out, "slope-hi", || ())?;
         pipeline::agent::jobs::part(k, &names);
         // (A "none" z6 tile first: nothing read, its cost a drop's, `run_drop`.)
-        if !pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y) {
+        if !buildstore::coverage::near_coverage(cov, 6, t.x, t.y) {
             landing.land(out)?;
             let n = run_drop("slope-hi", &t.slash(), || pipeline::slope_pack::drop_piece(out, (t.x, t.y)))?;
             eprintln!("slope-hi {}: the coverage has left it; {n} files dropped", t.slash());

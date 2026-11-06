@@ -789,7 +789,7 @@ pub struct Coverage {
 /// checklist's minutes). Kept for the last `KEPT_VERSIONS` versions (a region's coverage is one).
 #[derive(Default)]
 pub struct Kept {
-    /// pipeline::agent::build::coverage_tiles.
+    /// `coverage_tiles`.
     pub tiles: std::sync::OnceLock<BTreeMap<(u32, u32), Vec<(u32, u32)>>>,
     /// pipeline::terrain_pack::makes_hi, by z6 tile.
     pub makes_hi: std::sync::Mutex<std::collections::HashMap<(u32, u32), bool>>,
@@ -1324,6 +1324,31 @@ pub fn ring_degrees(r: &[[i32; 2]]) -> Vec<[f64; 2]> {
 pub fn inside_plain(rings: &[Vec<[i32; 2]>], p: [i32; 2]) -> bool {
     let r: Vec<&[[i32; 2]]> = rings.iter().map(Vec::as_slice).collect();
     roadcore::geo::inside(&r, p)
+}
+
+/// Whether the coverage comes within `roadcore::geo::NEAR_COVERAGE_KM` of the tile: the tile grown by
+/// it meets it (exactly, so a small region between sample points isn't missed: Singapore in its z6
+/// tile).
+pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32) -> bool {
+    cov.meets_rect(roadcore::geo::grown_e7(z, x, y, roadcore::geo::NEAR_COVERAGE_KM))
+}
+
+/// The z6 tiles near the coverage (`roadcore::geo::NEAR_COVERAGE_KM`), by z3 pack; once per coverage version (`Coverage::kept`).
+pub fn coverage_tiles(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
+    cov.kept().tiles.get_or_init(|| coverage_tiles_made(cov)).clone()
+}
+
+/// `coverage_tiles`, worked out.
+fn coverage_tiles_made(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
+    let mut by_q: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
+    for x in 0..64u32 {
+        for y in 0..64u32 {
+            if near_coverage(cov, 6, x, y) {
+                by_q.entry((x >> 3, y >> 3)).or_default().push((x, y));
+            }
+        }
+    }
+    by_q
 }
 
 /// The edge tree's check against the grid's cells, for tests here and in other crates (pipeline's

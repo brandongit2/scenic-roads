@@ -527,7 +527,7 @@ mod tests {
             d,
         )
         .unwrap();
-        let by_q = crate::agent::build::coverage_tiles(&cov);
+        let by_q = buildstore::coverage::coverage_tiles(&cov);
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.contains(&(34, 14)), "{ts:?}");
         crate::terrain_pack::tests::synthetic_raw(&d.join("local"), &cov, q, &[(34, 14)]);
