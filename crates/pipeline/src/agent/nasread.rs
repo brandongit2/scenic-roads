@@ -346,11 +346,6 @@ impl Drop for InFlight {
     }
 }
 
-/// Whether `e` is a call past its deadline (or refused, every thread for it stuck).
-pub fn timed_out(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<io::Error>().is_some_and(|e| e.kind() == io::ErrorKind::TimedOut)
-}
-
 /// A NAS whose every call runs under a deadline: its reads, stats and listings on the records'
 /// readers, its writes, creates and removes on the writers. The pool's driver and its member's
 /// opening go through it (crate::agent::pool).
@@ -740,7 +735,7 @@ pub(crate) mod tests {
         assert_eq!(writes.busy(), 1);
         let t = Instant::now();
         let e = n.write_whole("state/pool/members/m.json", b"{}").unwrap_err();
-        assert!(timed_out(&e) && format!("{e}").contains("still runs"), "{e:#}");
+        assert!(buildstore::records::nas::timed_out(&e) && format!("{e}").contains("still runs"), "{e:#}");
         store::testkit::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
         assert_eq!(writes.busy(), 1, "no second thread on it");
         // Another path's write takes the other writer; then every writer is stuck: at once.
@@ -802,7 +797,7 @@ pub(crate) mod tests {
             &[Duration::from_millis(10), Duration::from_millis(20)],
         )
         .unwrap_err();
-        assert!(timed_out(&e), "{e:#}");
+        assert!(buildstore::records::nas::timed_out(&e), "{e:#}");
         store::testkit::ended_before(t, Duration::from_secs(60), "tried three times, never hung");
         assert_eq!(reads.busy(), 3, "one stuck reader a try");
         drop(hold);

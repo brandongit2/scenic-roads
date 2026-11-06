@@ -24,7 +24,7 @@
 //! the answer says the lead lacks are posted next (`send_handoffs`, crate::coord::handoffs).
 
 use super::bus::{BeatMsg, Snap};
-use super::{nasread, now_s, write_beat, write_replace, Status};
+use super::{now_s, write_beat, write_replace, Status};
 use crate::control::HoldState;
 use crate::coord::beats::Beats;
 use std::collections::BTreeSet;
@@ -311,7 +311,7 @@ fn said(r: anyhow::Result<()>, failing: bool) -> bool {
     match r {
         Ok(()) => false,
         Err(e) => {
-            if !failing && !nasread::timed_out(&e) {
+            if !failing && !buildstore::records::nas::timed_out(&e) {
                 eprintln!("agent: heartbeat: {e:#}");
             }
             true

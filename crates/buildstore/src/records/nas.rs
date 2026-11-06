@@ -10,6 +10,12 @@ use store::nasfs::NasRoot;
 
 pub use store::nasfs::Created;
 
+/// Whether `e` is a call past its deadline (or refused, every thread for it stuck): pipeline's
+/// agent::nasread's deadlines, buildstore::nasssh's.
+pub fn timed_out(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::TimedOut)
+}
+
 /// The operations the pool's protocol makes on the NAS.
 pub trait Nas {
     /// Makes `path` holding `bytes` unless something has that name. The create is atomic on the
