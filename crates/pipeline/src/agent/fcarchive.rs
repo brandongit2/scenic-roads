@@ -749,6 +749,7 @@ mod tests {
             step_pace: Default::default(),
             unknown: Vec::new(),
             paused: false,
+            along: Default::default(),
         };
         let rec = Record { input: inp, each_s: [("unit".to_string(), 191.23)].into(), waiting: Default::default() };
         let f = Forecast {

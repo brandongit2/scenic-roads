@@ -198,6 +198,51 @@ pub enum Read {
     /// identity: the lines the run's own code reads it by, crate::agent::idents), None while it
     /// can't be worked out.
     Input { name: &'static str, of: Ident },
+    /// Some targets of another step that a target reads along its own long ways (z6 tiles':
+    /// crate::stage::Area), past those its name gives (its step's `Targets` read of the same step):
+    /// from the pass's reaches, which the caller has worked out into its view (`View::along`: the
+    /// planner's `Left::along`, the forecast's input), none where it hasn't. Waited for as a
+    /// `Targets` read with a `Grain::Tiles`, only for them and not what they wait for; keyed by
+    /// that `Targets` read's tiles, which name what's read in them.
+    Along { step: &'static str, of: fn(&str, &crate::reach::Reach) -> Vec<String> },
+}
+
+/// What targets read along their long ways (`Read::Along`), as a caller with the pass's reaches
+/// works them out (`Along::add`): by step, target and step read, the targets read.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Along(
+    std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
+    >,
+);
+
+impl Along {
+    /// Target `t` of `step`'s `Read::Along`s, with its reach `r`.
+    pub fn add(&mut self, step: &str, t: &str, r: &crate::reach::Reach) {
+        for x in row(step).map_or(&[][..], |r| r.reads) {
+            if let Read::Along { step: s, of } = *x {
+                let v = of(t, r);
+                if !v.is_empty() {
+                    self.0
+                        .entry(step.to_string())
+                        .or_default()
+                        .entry(t.to_string())
+                        .or_default()
+                        .insert(s.to_string(), v);
+                }
+            }
+        }
+    }
+
+    /// The targets of `read` that target `t` of `step` reads along its long ways.
+    pub fn get(&self, step: &str, t: &str, read: &str) -> &[String] {
+        self.0.get(step).and_then(|m| m.get(t)).and_then(|m| m.get(read)).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 /// An input's identity for a target (`Read::Input`), or what a target reads of another step's
@@ -251,6 +296,11 @@ pub trait View {
     fn known(&self, _name: &str, _t: &str) -> bool {
         true
     }
+    /// What targets read along their long ways (`Read::Along`), as worked out for this view; none
+    /// unless it says.
+    fn along(&self) -> Option<&Along> {
+        None
+    }
 }
 
 /// A read target (`read_targets`): one target of a step, or a step's every target.
@@ -260,14 +310,18 @@ pub enum ReadTarget {
     Whole(&'static str),
 }
 
-/// What target `t` of `step` waits for, its row's declaration (`Step::reads`): the one list the
-/// planner and the forecast both wait on. Sorted, no repeats; inputs aren't targets.
-pub fn read_targets(step: &str, t: &str) -> Vec<ReadTarget> {
+/// What target `t` of `step` waits for, its row's declaration (`Step::reads`), its reads along its
+/// long ways from `along`: the one list the planner and the forecast both wait on. Sorted, no
+/// repeats; inputs aren't targets.
+pub fn read_targets(step: &str, t: &str, along: Option<&Along>) -> Vec<ReadTarget> {
     let mut v: Vec<ReadTarget> = Vec::new();
     for r in row(step).map_or(&[][..], |r| r.reads) {
         match *r {
             Read::Targets { step, of, .. } | Read::Mids { step, of, .. } => {
                 v.extend(of(t).into_iter().map(|u| ReadTarget::One(step, u)))
+            }
+            Read::Along { step: s, .. } => {
+                v.extend(along.map_or(&[][..], |a| a.get(step, t, s)).iter().map(|u| ReadTarget::One(s, u.clone())))
             }
             Read::Whole { step, .. } => v.push(ReadTarget::Whole(step)),
             Read::Input { .. } => {}
@@ -293,6 +347,13 @@ pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
             ),
             Read::Mids { step, of, .. } => waits
                 .extend(of(t).into_iter().filter(|u| view.mid_left(step, u) || held(step, u, view)).map(|u| (step, u))),
+            Read::Along { step: s, .. } => waits.extend(
+                view.along()
+                    .map_or(&[][..], |a| a.get(step, t, s))
+                    .iter()
+                    .filter(|u| view.left(s, u))
+                    .map(|u| (s, u.clone())),
+            ),
             Read::Whole { step, grain } => waits.extend(
                 (view.any_left(step) || (grain.passes_on() && whole_left(step, view)))
                     .then(|| (step, step.to_string())),
@@ -336,6 +397,9 @@ fn held(step: &str, u: &str, view: &dyn View) -> bool {
         fn known(&self, name: &str, t: &str) -> bool {
             self.0.known(name, t)
         }
+        fn along(&self) -> Option<&Along> {
+            self.0.along()
+        }
     }
     matches!(readiness(step, u, &Stale(view)), Ready::Waits(_))
 }
@@ -349,7 +413,7 @@ fn whole_left(step: &str, view: &dyn View) -> bool {
                 grain.passes_on() && whole_left(s, view)
             }
             Read::Mids { step: s, .. } => whole_left(s, view),
-            Read::Input { .. } => false,
+            Read::Input { .. } | Read::Along { .. } => false,
         })
 }
 
@@ -430,6 +494,7 @@ pub fn key_lines(step: &str, t: &str, x: &super::build::KeyCtx) -> Option<Vec<St
                 Grain::Read(f) | Grain::Tiles(f) => reads.extend(f(t, x)?.into_iter().map(|l| format!("w {s} {l}"))),
             },
             Read::Input { name, of } => reads.extend(of(t, x)?.into_iter().map(|l| format!("in {name} {l}"))),
+            Read::Along { .. } => {}
         }
     }
     reads.sort_unstable();
@@ -535,6 +600,8 @@ pub struct Left {
     /// By input, the targets it can't be worked out for now (an input some targets read only), and
     /// the target whose making works it out.
     pub unknown_for: std::collections::BTreeMap<&'static str, UnknownFor>,
+    /// What targets read along their long ways (`Read::Along`), from the pass's reaches.
+    pub along: Along,
 }
 
 /// An input's targets that can't be worked out now (`Left::unknown_for`), and the target (step,
@@ -582,6 +649,10 @@ impl View for Left {
 
     fn known(&self, name: &str, t: &str) -> bool {
         !self.unknown.contains(name) && !self.unknown_for.get(name).is_some_and(|u| u.targets.contains(t))
+    }
+
+    fn along(&self) -> Option<&Along> {
+        Some(&self.along)
     }
 }
 
@@ -657,20 +728,21 @@ fn sl_lo(t: &str) -> Vec<String> {
 
 /// unit 6/x/y: the terrain packs over its tile + crate::stage::MARGIN_KM its staged tiles and its
 /// roads' heights read (`build::unit_terrain_from`, `build::unit_deep_tiles`): the lo packs of z4–8's
-/// z3 tiles, the hi packs of its box's z6 tiles (z9–12's), its box's deep packs. (Those along its own
-/// long ways, which it stages too, aren't waited for: its key names their tiles, so it's built
-/// again once they change: crate::stage::Area.)
+/// z3 tiles, the hi packs of its box's z6 tiles (z9–12's), its box's deep packs. Those along its own
+/// long ways, which it stages too (crate::stage::Area), are its `Read::Along`s (`ua_*`).
 fn unit_reads(t: &str, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
     let b = roadcore::geo::tile_box_grown(6, x, y, crate::stage::MARGIN_KM);
-    let mut v: Vec<(u32, u32)> = Vec::new();
+    named(z, packs_over(z, |zz| crate::stage::tiles_in(zz, b)))
+}
+
+/// The packs at zoom `z` (3: lo, 6: hi, `terrain_deep::PACK_Z`: deep) holding the tiles a z6 tile
+/// stages, `tiles` by zoom: z4–8's for lo, z6's and z9–12's for hi, the deep zoom's own.
+fn packs_over(z: u8, tiles: impl Fn(u8) -> Vec<(u32, u32)>) -> std::collections::BTreeSet<(u32, u32)> {
+    let mut v = std::collections::BTreeSet::new();
     let mut under = |zs: std::ops::RangeInclusive<u8>, to: u8| {
-        for z in zs {
-            let [x0, x1, y0, y1] = crate::stage::tile_range(z, b);
-            let s = z - to;
-            for a in x0 >> s..=x1 >> s {
-                v.extend((y0 >> s..=y1 >> s).map(|c| (a, c)));
-            }
+        for zz in zs {
+            v.extend(tiles(zz).into_iter().map(|(a, c)| (a >> (zz - to), c >> (zz - to))));
         }
     };
     match z {
@@ -679,11 +751,20 @@ fn unit_reads(t: &str, z: u8) -> Vec<String> {
         _ => {}
     }
     if z == 6 || z == crate::terrain_deep::PACK_Z {
-        v.extend(crate::stage::tiles_in(z, b));
+        v.extend(tiles(z));
     }
-    v.sort_unstable();
-    v.dedup();
-    named(z, v)
+    v
+}
+
+/// unit 6/x/y's packs at zoom `z` along its own long ways (crate::stage::Area, its reach `r`) past
+/// those of its box (`unit_reads`: the packs at `z` meeting it, give or take one on its edge, which
+/// would be read twice over).
+fn unit_reads_along(t: &str, r: &crate::reach::Reach, z: u8) -> Vec<String> {
+    let Some((x, y)) = at(t, 6) else { return Vec::new() };
+    let area = crate::stage::Area::of(TileId { z: 6, x, y }, Some(r));
+    let [x0, x1, y0, y1] = crate::stage::tile_range(z, area.b);
+    let boxed = |&(a, c): &(u32, u32)| (x0..=x1).contains(&a) && (y0..=y1).contains(&c);
+    named(z, packs_over(z, |zz| area.along_tiles(zz)).into_iter().filter(|p| !boxed(p)))
 }
 fn u_lo(t: &str) -> Vec<String> {
     unit_reads(t, 3)
@@ -693,6 +774,15 @@ fn u_hi(t: &str) -> Vec<String> {
 }
 fn u_deep(t: &str) -> Vec<String> {
     unit_reads(t, crate::terrain_deep::PACK_Z)
+}
+fn ua_lo(t: &str, r: &crate::reach::Reach) -> Vec<String> {
+    unit_reads_along(t, r, 3)
+}
+fn ua_hi(t: &str, r: &crate::reach::Reach) -> Vec<String> {
+    unit_reads_along(t, r, 6)
+}
+fn ua_deep(t: &str, r: &crate::reach::Reach) -> Vec<String> {
+    unit_reads_along(t, r, crate::terrain_deep::PACK_Z)
 }
 
 /// polar-slope s/4/x/y: its block's terrain and its neighbours' (crate::polar::around).
@@ -738,7 +828,7 @@ fn peaks_hi(t: &str) -> Vec<String> {
 
 use super::idents;
 use Grain::Outputs;
-use Read::{Input as In, Mids, Targets as Of, Whole as All};
+use Read::{Along as OfAlong, Input as In, Mids, Targets as Of, Whole as All};
 
 /// A row with what most steps have: 1.5 GB until measured, none of the sets.
 const fn step(
@@ -1259,7 +1349,7 @@ pub const TABLE: [Step; 60] = [
         mem_mb: 8600,
         shared: true,
         versions: &[("unit", || super::build::UNIT_V.to_string())],
-        reads: &[In { name: "extract", of: idents::extract }, In { name: "roads", of: idents::roads }, In { name: "ways", of: idents::ways }, In { name: "elevation", of: idents::elevation }, In { name: "unit-sources", of: idents::unit_sources }, Of { step: "terrain-lo", of: u_lo, grain: Grain::Tiles(idents::unit_tiles) }, Of { step: "terrain-hi", of: u_hi, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-deep", of: u_deep, grain: Grain::Tiles(idents::unit_deep_tiles) }, All { step: "heritage-sites", grain: Grain::Read(idents::heritage_slices) }, All { step: "reach", grain: Grain::Read(idents::nothing) }, All { step: "buildings", grain: Grain::Read(idents::roadside) }],
+        reads: &[In { name: "extract", of: idents::extract }, In { name: "roads", of: idents::roads }, In { name: "ways", of: idents::ways }, In { name: "elevation", of: idents::elevation }, In { name: "unit-sources", of: idents::unit_sources }, Of { step: "terrain-lo", of: u_lo, grain: Grain::Tiles(idents::unit_tiles) }, Of { step: "terrain-hi", of: u_hi, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-deep", of: u_deep, grain: Grain::Tiles(idents::unit_deep_tiles) }, OfAlong { step: "terrain-lo", of: ua_lo }, OfAlong { step: "terrain-hi", of: ua_hi }, OfAlong { step: "terrain-deep", of: ua_deep }, All { step: "heritage-sites", grain: Grain::Read(idents::heritage_slices) }, All { step: "reach", grain: Grain::Read(idents::nothing) }, All { step: "buildings", grain: Grain::Read(idents::roadside) }],
         ..step(
             "roads",
             Pack,
@@ -1788,9 +1878,10 @@ pub fn reads_from(reader: &str, step: &str) -> bool {
         }
         seen.push(row.name);
         row.reads.iter().any(|x| match *x {
-            Read::Targets { step: s, .. } | Read::Mids { step: s, .. } | Read::Whole { step: s, .. } => {
-                s == step || go(s, step, seen)
-            }
+            Read::Targets { step: s, .. }
+            | Read::Mids { step: s, .. }
+            | Read::Whole { step: s, .. }
+            | Read::Along { step: s, .. } => s == step || go(s, step, seen),
             Read::Input { .. } => false,
         })
     }
@@ -2351,13 +2442,63 @@ fn w_prune(l: &str, removal: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A z6 tile waits for the terrain packs along its own long ways, which it stages (task #853,
+    /// crate::stage::Area), not only for its box's: they're its `Read::Along`s, worked out from its
+    /// reach into the view (the planner's `Left::along`, the forecast's input). Without them it
+    /// would build, then build again once they're made.
+    #[test]
+    fn a_unit_waits_for_the_terrain_along_its_long_ways() {
+        use super::{read_targets, readiness, Along, Left, ReadTarget, Ready};
+        use crate::reach::{LongWay, Reach};
+        // 6/31/19 (its tile reaches 55.8° N; its box, 35 km further) owns a way running 300 km
+        // south from 55° N, a node every 2 km.
+        let t = "6/31/19";
+        let e7 = |lon: f64, lat: f64| [(lon * 1e7) as i32, (lat * 1e7) as i32];
+        let verts: Vec<[i32; 2]> = (0..150).map(|k| e7(-1.6 + 0.004 * k as f64, 55.0 - 0.018 * k as f64)).collect();
+        let reach = Reach { long: vec![LongWay { owned: true, ferry: false, verts }], ..Default::default() };
+        let mut left = Left::default();
+        left.along.add("unit", t, &reach);
+        // Along it, past its box: the hi pack of 6/31/21 (52.5° N on) and the deep packs at its far end.
+        let (hi, deep) = (left.along.get("unit", t, "terrain-hi"), left.along.get("unit", t, "terrain-deep"));
+        let far = crate::legacy::TileId::of_point(crate::terrain_deep::PACK_Z, e7(-1.0, 52.4)).slash();
+        assert_eq!(hi, ["6/31/21"]);
+        assert!(deep.contains(&far), "{deep:?}");
+        assert!(left.along.get("unit", t, "terrain-lo").is_empty(), "its box's z3 tile holds the rest");
+        assert!(hi.iter().chain(deep).all(|p| !super::u_hi(t).contains(p) && !super::u_deep(t).contains(p)));
+        let reads = read_targets("unit", t, Some(&left.along));
+        assert!(reads.contains(&ReadTarget::One("terrain-deep", far.clone())));
+        assert!(!read_targets("unit", t, None).contains(&ReadTarget::One("terrain-deep", far.clone())));
+        // Left, they hold it; made, it's ready. A neighbour's long ways and a ferry aren't its.
+        left.set("terrain-deep", [far.clone()]);
+        left.set("terrain-hi", ["6/31/21".to_string()]);
+        assert_eq!(
+            readiness("unit", t, &left),
+            Ready::Waits(vec![("terrain-deep", far.clone()), ("terrain-hi", "6/31/21".into())])
+        );
+        assert_eq!(readiness("unit", t, &Left { along: Along::default(), ..left.clone() }), Ready::Yes);
+        let theirs = Reach {
+            long: reach.long.iter().map(|w| LongWay { owned: false, ..w.clone() }).collect(),
+            ..Default::default()
+        };
+        let ferry = Reach {
+            long: reach.long.iter().map(|w| LongWay { ferry: true, ..w.clone() }).collect(),
+            ..Default::default()
+        };
+        for r in [theirs, ferry] {
+            let mut l = Left { along: Along::default(), ..left.clone() };
+            l.along.add("unit", t, &r);
+            assert!(l.along.is_empty());
+            assert_eq!(readiness("unit", t, &l), Ready::Yes);
+        }
+    }
+
     /// A pole's root waits for its own pole's blocks only, both of their steps; a block's slope for
     /// its own and its neighbours' terrain (task #879).
     #[test]
     fn a_poles_root_waits_for_its_own_blocks() {
         use super::{read_targets, readiness, Left, ReadTarget, Ready};
         use roadcore::polar::Pole;
-        let reads = read_targets("polar-root", "s");
+        let reads = read_targets("polar-root", "s", None);
         let south = crate::polar::blocks(Pole::South);
         assert_eq!(reads.len(), 2 * south.len());
         assert!(reads.iter().all(|r| matches!(r, ReadTarget::One(_, t) if t.starts_with("s/"))), "{reads:?}");

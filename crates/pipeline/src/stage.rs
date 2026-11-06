@@ -81,10 +81,14 @@ impl Area {
 
     /// Its tiles at zoom `z`, sorted.
     pub fn tiles(&self, z: u8) -> Vec<(u32, u32)> {
-        let mut t: std::collections::BTreeSet<(u32, u32)> = tiles_in(z, self.b).into_iter().collect();
-        for &a in &self.along {
-            t.extend(tiles_in(z, a));
-        }
+        let t: std::collections::BTreeSet<(u32, u32)> =
+            tiles_in(z, self.b).into_iter().chain(self.along_tiles(z)).collect();
+        t.into_iter().collect()
+    }
+
+    /// Its tiles at zoom `z` along its long ways, sorted (some may be in `b` too).
+    pub fn along_tiles(&self, z: u8) -> Vec<(u32, u32)> {
+        let t: std::collections::BTreeSet<(u32, u32)> = self.along.iter().flat_map(|&a| tiles_in(z, a)).collect();
         t.into_iter().collect()
     }
 }

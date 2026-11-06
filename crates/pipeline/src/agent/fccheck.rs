@@ -1022,6 +1022,7 @@ mod tests {
                     step_pace: Default::default(),
                     unknown: Vec::new(),
                     paused: false,
+                    along: Default::default(),
                 },
                 each_s: BTreeMap::new(),
                 waiting: BTreeMap::new(),
@@ -1099,6 +1100,7 @@ mod tests {
             step_pace: Default::default(),
             unknown: Vec::new(),
             paused: false,
+            along: Default::default(),
         };
         let mut inp = input(vec![lane("lead", "lead", 300.0), lane("m1", "m1", 0.0)], 3);
         unhold(&mut inp);

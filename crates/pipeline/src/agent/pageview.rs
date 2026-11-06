@@ -887,6 +887,7 @@ pub(crate) mod tests {
                 step_pace: Default::default(),
                 unknown: Vec::new(),
                 paused: false,
+                along: Default::default(),
             },
             each_s: BTreeMap::new(),
             waiting: BTreeMap::new(),

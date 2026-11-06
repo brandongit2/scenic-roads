@@ -329,6 +329,7 @@ mod tests {
                 step_pace: Default::default(),
                 unknown: Vec::new(),
                 paused: false,
+                along: Default::default(),
             },
             each_s: [("unit".to_string(), now as f64)].into(),
             waiting: BTreeMap::new(),

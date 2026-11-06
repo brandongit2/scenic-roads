@@ -34,6 +34,11 @@ pub enum Read {
     /// An input that is no step's target: the coverage as the run cuts it, a dataset pool's lines,
     /// a pass set, an inputs folder's accepted index, the water digests, a release.
     Input { name: &'static str, of: fn(&str, &Ctx) -> Option<String> },
+    /// Some targets of another step read along the target's long ways (a z6 tile's: stage::Area),
+    /// from the pass's reaches, which the caller works into its view (`View::along`: the planner's
+    /// `Left::along`, the forecast's `Input::along`). Waited for as a `Targets` read with `Tiles`;
+    /// keyed by that read's tiles (task #853).
+    Along { step: &'static str, of: fn(&str, &Reach) -> Vec<String> },
 }
 
 pub enum Grain {
@@ -78,7 +83,7 @@ Callers, each supplying only its `View`:
 | Caller | Its `View::left` | Replaces |
 |---|---|---|
 | the planner (`build::plan`, every `*_work`) | the target's recorded key isn't its key now (`Keys`, `TerrainWork::is_left` generalised to every step) | `build::waits`, the chain functions' hand orderings, `HERITAGE_WAIT` and the other wait strings (the note is `Read`-derived: "wait for {step} {targets}") |
-| the forecast (`forecast::items`) | not given its own `View`: it calls `read_targets` and maps each to an item index (a `Whole` read to one shared group per step, as #867's `shared_waits`) | `chain_deps`, `UNITS_NEED`, `reads_terrain`, the held-chain guard |
+| the forecast (`forecast::items`) | not given its own `View`: it calls `read_targets` (with its input's `along`, the plan's) and maps each to an item index (a `Whole` read to one shared group per step, as #867's `shared_waits`) | `chain_deps`, `UNITS_NEED`, `reads_terrain`, the held-chain guard |
 | the page and `scenic status` | the planner's | `wait_note`'s fallbacks |
 
 The planner and the forecast agree by construction: both enumerate `read_targets`; the forecast's
@@ -154,7 +159,7 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | trees | coverage inside the tile, `TREES_V` | `in coverage:inside` | same |
 | trees-lo | z6 mids, `TREES_LO_V` | `Targets trees` | same |
 | heritage-sites | pass, areas set, registers, matches' version, coverage | `in pass:areas`, `in registers`, `in matches`, `in coverage:all` | same |
-| unit | extract, road values, coverage as ways meet it, rules, heritage slices, roadside index, elevation plan, terrain tiles by content | `in extract`, `in road-values`, `in coverage:ways`, `in rules`, `Whole heritage-sites` (its slices), `Whole buildings` (roadside index), `Whole reach`, `in datasets:plan`, `Targets terrain-*` `Grain::Tiles` | same inputs; the waits on heritage-sites, reach, buildings move from `UNITS_NEED` and the planner's code into the row |
+| unit | extract, road values, coverage as ways meet it, rules, heritage slices, roadside index, elevation plan, terrain tiles by content | `in extract`, `in road-values`, `in coverage:ways`, `in rules`, `Whole heritage-sites` (its slices), `Whole buildings` (roadside index), `Whole reach`, `in datasets:plan`, `Targets terrain-*` `Grain::Tiles`, `Along terrain-*` (the packs along its long ways) | same inputs; the waits on heritage-sites, reach, buildings move from `UNITS_NEED` and the planner's code into the row |
 | pack(T) / lo | owners' base packs and road values | `Targets unit` | same |
 | rail-feeds, rail, water, bld-fetch | as §12 | `Input`s, and rail: `Whole rail-feeds` | same |
 | bldprep | `BLDPREP_V`, release, row groups and GHSL tile | `Whole bld-fetch` (one world target), `in release` | same |

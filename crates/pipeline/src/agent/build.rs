@@ -2712,13 +2712,23 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     // (One whose key can't be worked out now is left, and isn't built: `unknown`.)
     let unit_stale: Vec<bool> =
         units.iter().map(|(u, k)| k.as_ref().is_none_or(|k| stale(&done.unit, &u.slash(), k))).collect();
-    // A z6 tile's terrain z3 tiles: those of the z6 tiles near it, whose packs hold the tiles its key
-    // reads (every tile it stages is in the lo or hi pack of a z3 tile it meets).
+    // What each reads along its own long ways (crate::stage::Area: the terrain packs there, past its
+    // box's), from its reach: waited for as its other reads (steps::Read::Along).
+    for (u, _) in &units {
+        if let Some(r) = reach.get(*u) {
+            left.along.add("unit", &u.slash(), r);
+        }
+    }
+    // A z6 tile's terrain z3 tiles: those of the z6 tiles near it and along its long ways, whose packs
+    // hold the tiles its key reads (every tile it stages is in the lo or hi pack of a z3 tile it meets).
     let reads: Vec<BTreeSet<String>> = units
         .iter()
         .map(|(u, _)| {
+            let t = u.slash();
+            let along = ["terrain-lo", "terrain-hi"].into_iter().flat_map(|s| left.along.get("unit", &t, s));
             crate::stage::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM))
                 .into_iter()
+                .chain(along.filter_map(|p| TileId::parse(p)).map(|p| (p.x << (6 - p.z), p.y << (6 - p.z))))
                 .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
                 .collect()
         })
@@ -5125,7 +5135,7 @@ pub(crate) mod tests {
     /// The targets a target of `step` reads of other steps' (crate::agent::steps::read_targets),
     /// its whole reads aside.
     fn reads_of(step: &str, t: &str) -> Vec<(&'static str, String)> {
-        crate::agent::steps::read_targets(step, t)
+        crate::agent::steps::read_targets(step, t, None)
             .into_iter()
             .filter_map(|r| match r {
                 crate::agent::steps::ReadTarget::One(s, u) => Some((s, u)),

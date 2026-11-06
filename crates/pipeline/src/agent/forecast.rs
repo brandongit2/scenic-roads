@@ -185,6 +185,10 @@ pub struct Input<'a> {
     /// resumed, when no one can say, so the forecast places nothing (`PAUSED`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paused: bool,
+    /// What the regions' targets read along their long ways (crate::agent::steps::Read::Along), the
+    /// plan's (`Left::along`): waited for as their other reads (`waits_of`).
+    #[serde(default, skip_serializing_if = "crate::agent::steps::Along::is_empty")]
+    pub along: crate::agent::steps::Along,
 }
 
 /// Targets of `step` the plan holds until `until` is made (crate::agent::steps::UnknownFor: an
@@ -912,6 +916,7 @@ enum Phase {
 /// when made and its index; task #867: 1,328 peaks each listing the 568 candidates were 0.75M of
 /// the kept waits' 1.07M deps).
 fn waits_of(
+    along: &crate::agent::steps::Along,
     by: &Index,
     groups: &mut Vec<Vec<usize>>,
     whole: &mut BTreeMap<&'static str, (usize, usize)>,
@@ -920,7 +925,7 @@ fn waits_of(
 ) -> (Vec<usize>, Vec<usize>) {
     use crate::agent::steps::ReadTarget;
     let (mut deps, mut gs) = (Vec::new(), Vec::new());
-    for r in crate::agent::steps::read_targets(step, t) {
+    for r in crate::agent::steps::read_targets(step, t, Some(along)) {
         match r {
             ReadTarget::One(s, u) => deps.extend(by.of.get(&(s.to_string(), u)).copied()),
             ReadTarget::Whole(s) => {
@@ -1077,8 +1082,9 @@ fn items(inp: &Input) -> Items {
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
     let item_of = |by: &Index, step: &str, t: &str| by.of.get(&(step.to_string(), t.to_string())).copied();
     let mut whole: BTreeMap<&'static str, (usize, usize)> = BTreeMap::new();
-    let mut reads =
-        |by: &Index, groups: &mut Vec<Vec<usize>>, step: &str, t: &str| waits_of(by, groups, &mut whole, step, t);
+    let mut reads = |by: &Index, groups: &mut Vec<Vec<usize>>, step: &str, t: &str| {
+        waits_of(&inp.along, by, groups, &mut whole, step, t)
+    };
     // (A set many wait for, listed once: its index in `groups`.)
     let group = |groups: &mut Vec<Vec<usize>>, mut v: Vec<usize>| -> usize {
         v.sort_unstable();
@@ -2501,6 +2507,7 @@ mod tests {
             step_pace: Default::default(),
             unknown: Vec::new(),
             paused: false,
+            along: Default::default(),
         }
     }
 
@@ -3748,6 +3755,7 @@ mod tests {
             step_pace: Default::default(),
             unknown: Vec::new(),
             paused: false,
+            along: Default::default(),
         }
     }
 
@@ -3860,10 +3868,10 @@ mod tests {
     /// What an item of `inp`'s regions and chains waits on by its declared reads
     /// (crate::agent::steps::read_targets), of the items listed before it: a target read, every
     /// item of a step read whole.
-    fn declared_waits(its: &Items, i: usize) -> BTreeSet<(String, String)> {
+    fn declared_waits(its: &Items, along: &crate::agent::steps::Along, i: usize) -> BTreeSet<(String, String)> {
         use crate::agent::steps::ReadTarget;
         let it = &its.items[i];
-        let reads = crate::agent::steps::read_targets(&it.step, &it.target);
+        let reads = crate::agent::steps::read_targets(&it.step, &it.target, Some(along));
         its.items[..i]
             .iter()
             .filter(|d| {
@@ -3895,7 +3903,7 @@ mod tests {
                 if matches!(it.phase, Phase::Before | Phase::After | Phase::Publish) {
                     continue;
                 }
-                assert_eq!(listed[i], declared_waits(&its, i), "{} {}", it.step, it.target);
+                assert_eq!(listed[i], declared_waits(&its, &inp.along, i), "{} {}", it.step, it.target);
             }
             let f = forecast(inp);
             let at =
