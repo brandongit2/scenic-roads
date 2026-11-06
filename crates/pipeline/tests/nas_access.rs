@@ -307,3 +307,35 @@ fn the_scan_counts_calls_in_code_alone() {
         code.iter().zip(&tests).filter(|(_, t)| !**t).map(|(c, _)| c.matches(".unchecked_path()").count()).sum();
     assert_eq!(n, 1);
 }
+
+/// A file is test code whole only when its first code line is exactly `#![cfg(test)]` (rustc
+/// leaves such a file out of every other build, a crate root too): a conditional or wider `cfg`,
+/// a `cfg_attr`, the attribute in a comment or after code leave the file scanned.
+#[test]
+fn only_a_leading_cfg_test_makes_a_file_test_code() {
+    let call = "fn t(p: &NasPath) { p.unchecked_path(); }";
+    let counted = |head: &str| {
+        let src = format!("{head}\n{call}");
+        let code: Vec<String> = src.lines().map(code_of).collect();
+        let tests = test_lines(&code);
+        code.iter()
+            .zip(&tests)
+            .filter(|(_, t)| !**t)
+            .map(|(c, _)| c.matches(".unchecked_path()").count())
+            .sum::<usize>()
+    };
+    assert_eq!(counted("//! A test module.\n\n#![cfg(test)]"), 0);
+    assert_eq!(counted("  #![cfg(test)]  // (its own file)"), 0);
+    for head in [
+        "#![cfg(any(test, debug_assertions))]",
+        "#![cfg(not(test))]",
+        "#![cfg_attr(test, cfg(test))]",
+        "#![cfg_attr(feature = \"x\", cfg(test))]",
+        "// #![cfg(test)]",
+        "/* #![cfg(test)] */",
+        "#![allow(dead_code)] #![cfg(test)]",
+        "fn a() {}\n#![cfg(test)]",
+    ] {
+        assert_eq!(counted(head), 1, "{head}");
+    }
+}
