@@ -22,6 +22,7 @@ import type { LayersCard } from './ui/layers';
 import type { Credit } from './catalogue';
 import { viewArea, type Box, type ViewArea } from './inview';
 import { clampLat } from './merc';
+import { onNasBack } from './retry';
 
 const POI_LABEL: Record<string, string> = {
   viewpoint: 'Viewpoint', peak: 'Peak', waterfall: 'Waterfall', lighthouse: 'Lighthouse', covered_bridge: 'Covered bridge',
@@ -207,6 +208,7 @@ export class Overlays {
     for (const r of tileQueue.splice(0)) this.worker.postMessage(r);
     layers.onFiltersOpen = () => this.prominence();
     onVersions((f) => f.endsWith('.json'), (files) => this.reload(files));
+    onNasBack(() => this.worker.postMessage({ type: 'back' } satisfies LandmarkRequest));
   }
 
   /** The catalogue's points by view (/api/catalog `marks`, null: none): the point sources whose kind

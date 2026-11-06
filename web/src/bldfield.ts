@@ -56,6 +56,7 @@ import type { FieldIn, FieldOut } from './bldfield.worker';
 import type { DrawnTalls } from './camera3d';
 import { heritageFor, heritageTint, insideRings } from './buildings';
 import { MERC_CIRC, mercLat, mercLon, mercPhi, mercX, mercYClamped } from './merc';
+import { backoffMs, onNasBack } from './retry';
 
 const G = 32;
 /** The elevation grid's margin around a tile (grid cells): a roof's ground is taken at its building's
@@ -647,7 +648,7 @@ interface FTile {
   y: number;
   key: string;
   /** 'empty': the server has no such tile (no building there, nor under it); 'failed': asked again
-   * at `retryAt`. */
+   * at `retryAt`, or when the NAS is back. */
   state: 'loading' | 'ready' | 'empty' | 'failed' | 'queued';
   /** Each height class present: an RGBA16F texture (f, w, v); null where absent. */
   tex: (WebGLTexture | null)[] | null;
@@ -920,7 +921,12 @@ export class FieldLayer implements CustomLayerInterface {
   private timer: { ext: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null; q: WebGLQuery[] } = { ext: null, q: [] };
 
   /** `url`: the tiles' template ({z}/{x}/{y}), else the server's. */
-  constructor(private url: string | null = null) {}
+  constructor(private url: string | null = null) {
+    onNasBack(() => {
+      for (const t of this.tiles.values()) if (t.state === 'failed') t.retryAt = 0;
+      this.map?.triggerRepaint();
+    });
+  }
 
   private tileUrl(z: number, x: number, y: number) {
     const t = this.url && this.url !== '1' ? (this.url.includes('{z}') ? this.url : `${this.url}/{z}/{x}/{y}`) : `${hostFor('buildings')}/tiles/buildings-field/{z}/{x}/{y}`;
@@ -1281,7 +1287,7 @@ export class FieldLayer implements CustomLayerInterface {
         else {
           t.fails++;
           t.state = 'failed';
-          t.retryAt = performance.now() + Math.min(60, 2 ** t.fails) * 1000;
+          t.retryAt = performance.now() + backoffMs(t.fails);
           console.warn(`bldfield: ${m.key}: ${m.error}`);
         }
       } else if (m.empty) t.state = 'empty';

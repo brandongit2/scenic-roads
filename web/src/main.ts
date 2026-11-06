@@ -46,7 +46,7 @@ import { CatalogueWatch } from './catalogue';
 import { PolarCaps } from './polarcaps';
 import { boxKm, viewArea } from './inview';
 import { capGround, globeProjection } from './polarglobe';
-import { TileRetry } from './retry';
+import { nasBack, TileRetry } from './retry';
 import { RegionLayers, regionAt } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
 import { terrainDist } from './terrainstats';
@@ -225,7 +225,7 @@ async function main() {
   // Debug: ?checks hands the map to automated checks (window.__map: its camera, after gestures).
   if (new URLSearchParams(location.search).has('checks')) (window as unknown as { __map: maplibregl.Map }).__map = map;
   // Tiles the NAS couldn't answer are asked for again (retry.ts).
-  const tileRetry = new TileRetry(map);
+  new TileRetry(map);
   unlinkCameraFromTerrain(map);
   cacheTerrainRays(map);
   cheaperCovers(map);
@@ -2464,11 +2464,7 @@ async function main() {
     let reachable = true;
     w.on(() => {
       const now = !w.unreachable && w.status?.online !== false;
-      if (now && !reachable) {
-        tileRetry.now();
-        roads.retryNow();
-        rails.retryNow();
-      }
+      if (now && !reachable) nasBack();
       reachable = now;
     });
     if (store.s.selected !== null) {

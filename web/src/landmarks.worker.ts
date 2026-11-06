@@ -37,6 +37,8 @@ export interface KindQuery {
 export type LandmarkRequest =
   /** Points by view (docs/phase5.md) from the server at `base` (null: the catalogue has none). */
   | { type: 'marks'; cfg: MarksCfg | null; base: string }
+  /** The NAS is back: the tiles that failed, asked for again now. */
+  | { type: 'back' }
   /** By view: the map's zoom, the ground in view (lon/lat box), in a tilted view the visible area
    * beyond it, and the point sources shown. */
   | { type: 'view'; zoom: number; dpr: number; box: [number, number, number, number]; far: [number, number, number, number] | null; srcs: string[] }
@@ -136,6 +138,10 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
       : null;
     // The name tiles asked for meanwhile are answered now.
     for (const t of tileWaits.splice(0)) tile(t);
+    return;
+  }
+  if (m.type === 'back') {
+    mv?.retryNow();
     return;
   }
   if (m.type === 'view') {

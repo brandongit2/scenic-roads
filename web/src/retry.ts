@@ -1,7 +1,21 @@
-// Tiles the server couldn't answer (503: the NAS busy or away, or no answer at all) are asked for
-// again, each after a pause that grows with its failures (2 s, doubling to a minute), and all at
-// once when the NAS is back. MapLibre would otherwise keep them missing until they leave the view.
+// What couldn't be had (503: the NAS busy or away, or no answer at all) is asked for again, each
+// after a pause that grows with its failures (backoffMs: 2 s, doubling to a minute), and all at once
+// when the NAS is back (onNasBack): MapLibre's raster and vector tiles here (TileRetry), and the
+// roads', rail's, buildings' and landmarks' own tiles. MapLibre would otherwise keep its tiles
+// missing until they leave the view.
 import type * as maplibregl from 'maplibre-gl';
+
+const FIRST_MS = 2_000;
+const MAX_MS = 60_000;
+
+/** The pause (ms) before asking again after `fails` failures in a row (1 and up). */
+export const backoffMs = (fails: number) => Math.min(MAX_MS, FIRST_MS * 2 ** (fails - 1));
+
+const backs = new Set<() => void>();
+/** `f` runs when the NAS (or the map server) is reachable again: what failed is asked for now. */
+export const onNasBack = (f: () => void) => void backs.add(f);
+/** The NAS is back (main.ts, from the catalogue's status). */
+export const nasBack = () => backs.forEach((f) => f());
 
 type Failed = {
   x: number;
@@ -14,8 +28,6 @@ type Failed = {
   asked: number;
 };
 
-const FIRST_MS = 2_000;
-const MAX_MS = 60_000;
 /** A tile asked for again that neither loads nor fails (it left the view) is forgotten. */
 const FORGET_MS = 300_000;
 
@@ -36,7 +48,7 @@ export class TileRetry {
       let m = this.failed.get(ev.sourceId);
       if (!m) this.failed.set(ev.sourceId, (m = new Map()));
       const fails = (m.get(key)?.fails ?? 0) + 1;
-      m.set(key, { x: c.x, y: c.y, z: c.z, fails, at: performance.now() + Math.min(MAX_MS, FIRST_MS * 2 ** (fails - 1)), asked: 0 });
+      m.set(key, { x: c.x, y: c.y, z: c.z, fails, at: performance.now() + backoffMs(fails), asked: 0 });
       this.schedule();
     });
     // A tile that loads is done with.
@@ -45,10 +57,11 @@ export class TileRetry {
       const c = ev.tile?.tileID?.canonical;
       if (ev.sourceId && c) this.failed.get(ev.sourceId)?.delete(`${c.z}/${c.x}/${c.y}`);
     });
+    onNasBack(() => this.now());
   }
 
   /** The NAS is reachable again: what failed is asked for now. */
-  now() {
+  private now() {
     for (const m of this.failed.values()) for (const f of m.values()) if (f.at !== Infinity) f.at = 0;
     this.run();
   }

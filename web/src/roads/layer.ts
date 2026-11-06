@@ -39,6 +39,7 @@ import { NO_PERSP, perspWidth } from './persp';
 import { lodCells, lodSig, pieceLists, type LodFilter } from './lod';
 import { ATTR, DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
 import { viewArea, type ViewArea } from '../inview';
+import { backoffMs, onNasBack } from '../retry';
 
 // The projection of a piece (vertex i to i + 1): both ends on screen, their depths, its
 // perspective scale, whether it is drawn at all and where it stands against the terrain. Shared
@@ -1121,6 +1122,7 @@ export class RoadLayer implements CustomLayerInterface {
     this.id = opts.id;
     this.rail = opts.rail;
     this.cpuMetric = opts.metric ?? ((st, e, g, ch) => metricOf(st.mode, e, g, ch, st.weights));
+    onNasBack(() => this.retryNow());
   }
 
   onAdd(map: MLMap, gl: WebGL2RenderingContext) {
@@ -1455,9 +1457,9 @@ export class RoadLayer implements CustomLayerInterface {
   }
 
   /** The server is reachable again: failed tiles are asked for at once. */
-  retryNow() {
+  private retryNow() {
     for (const t of this.tiles.values()) if (t.state === 'error') t.retryAt = 0;
-    this.map.triggerRepaint();
+    this.map?.triggerRepaint();
   }
 
   /** A tile's version: its pack's (meta.packs), so a new catalogue fetches again only the tiles of
@@ -1479,9 +1481,9 @@ export class RoadLayer implements CustomLayerInterface {
     t.ver = t.want;
     if (m.type === 'error') {
       t.state = 'error';
-      // Asked again after a pause that grows with its failures (2 s, doubling to a minute).
+      // Asked again after a pause that grows with its failures, or when the NAS is back.
       t.fails = (t.fails ?? 0) + 1;
-      const wait = Math.min(60_000, 2_000 * 2 ** (t.fails - 1));
+      const wait = backoffMs(t.fails);
       t.retryAt = performance.now() + wait;
       setTimeout(() => this.map.triggerRepaint(), wait + 50);
       console.warn('tile', t.key, m.message);

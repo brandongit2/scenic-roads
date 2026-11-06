@@ -8,6 +8,7 @@ import { LOD_LEVELS, LOD_Z0, layoutDots, lodZoom, tileRun, visWords, type DotAux
 import { CELL_DZ, F_COMPONENT, F_NAMED, cellCentre, decodeMarkTile, extraTile, type MarkTile } from './marktile';
 import { stopFilterPass, type StopFilter } from './stopfilters';
 import { MERCATOR_LAT, mercXIn, mercYIn } from './merc';
+import { backoffMs } from './retry';
 
 /** The catalogue's points (/api/catalog `marks`). */
 export interface MarksCfg {
@@ -32,8 +33,6 @@ const FAR_DZ = 2;
 const FETCHES = 6;
 /** A filter being dragged: its speck cells are asked for once it rests this long. */
 const SPECKS_IDLE_MS = 250;
-/** Tiles that couldn't be had are asked for again after this. */
-const RETRY_MS = 5000;
 /** Heritage tiers (basemap.ts HERITAGE_TIERS), the order the server's tier numbers index. */
 export const TIERS = ['w.c', 'w.n', 'n.top', 'n.second', 'n.lower', 'n.mon', 'n.land', 'n.hist', 'n.fed', 'p.des', 'p.reg', 'p.area', 'm.des', 'm.reg', 'm.area', 'm.agr'];
 const GROUPS = ['w', 'n', 'p', 'm'];
@@ -132,6 +131,8 @@ export class MarksView {
   private dirty = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Fetches failed in a row (none since one succeeded). */
+  private fails = 0;
   private z6: Set<string>;
   /** Per kind: its filters (the dots' flags), the speck query they want, and the one asked for
    * (after SPECKS_IDLE_MS: a dragged filter doesn't ask for every value it passes). */
@@ -249,10 +250,12 @@ export class MarksView {
           (t) => {
             e.t = t;
             e.state = t ? 'ok' : 'none';
+            this.fails = 0;
             if (this.entries.get(k) === e) this.bytes += t?.bytes ?? 0;
           },
           () => {
             e.state = 'error';
+            this.fails++;
             this.retrySoon();
           },
         )
@@ -269,15 +272,21 @@ export class MarksView {
     }
   }
 
-  /** Tiles that failed are asked for again (the view as it stands) a little later. */
+  /** Tiles that failed are asked for again (the view as it stands) after a pause that grows with
+   * the failures in a row (retry.ts backoffMs). */
   private retrySoon() {
     if (this.retryTimer || this.disposed) return;
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = null;
-      // (Failed speck tiles too: compose leaves them alone, so they don't loop.)
-      for (const [k, e] of [...this.entries]) if (e.state === 'error' && k.split('|').length > 2) this.entries.delete(k);
-      this.view(this.zoom, this.dpr, this.box, this.far, this.kinds);
-    }, RETRY_MS);
+    this.retryTimer = setTimeout(() => this.retryNow(), backoffMs(Math.max(1, this.fails)));
+  }
+
+  /** The tiles that failed, asked for again now (the NAS back: overlays.ts). */
+  retryNow() {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    if (this.disposed) return;
+    // (Failed speck tiles too: compose leaves them alone, so they don't loop.)
+    for (const [k, e] of [...this.entries]) if (e.state === 'error' && k.split('|').length > 2) this.entries.delete(k);
+    this.view(this.zoom, this.dpr, this.box, this.far, this.kinds);
   }
 
   /** The least recently used tiles go past the budget (never one in the sets drawn). */
