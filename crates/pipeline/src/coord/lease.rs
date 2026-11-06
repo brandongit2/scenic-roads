@@ -878,9 +878,9 @@ mod tests {
         // (Task #991 review: a first view not saying all it moved isn't the mean's base; the next
         // that does is, so the mean is had once the recent rate is, never left at the targets'.)
         let c = l.grant("m1", job(&[("6/1/2", "k")]), t0);
-        assert!(l.renew_frac(c, "m1", None, None, Some(old.clone()), t0 + Duration::from_secs(20)));
+        assert!(l.renew_live(c, "m1", None, Some(old.clone()), t0 + Duration::from_secs(20)));
         for s in (40..=120).step_by(20) {
-            assert!(l.renew_frac(c, "m1", None, None, Some(moved(s * 1_000_000)), t0 + Duration::from_secs(s)));
+            assert!(l.renew_live(c, "m1", None, Some(moved(s * 1_000_000)), t0 + Duration::from_secs(s)));
         }
         let y = l.get(c, "m1", t0 + Duration::from_secs(120)).unwrap();
         assert_eq!(y.first.as_ref().map(|f| f.0), Some(t0 + Duration::from_secs(40)));
