@@ -2137,9 +2137,11 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
     line's numbers alone, by its worker's beats (`coord::lease::Pace`): within its part under way
     (one line's run on one target: the target under way, the line's unit, its total), the most the
     line has said, so a line gone back on the same target (work done again) counts nothing until
-    it passes it, and bytes never count (a retry sending its bytes again moves no line). Its rate
-    is in that unit (tiles, z6 tiles, packs, zooms…: the unit the step's progress line says, a word
-    in brackets after it left out); no step's line counts bytes. Its window is the factor times
+    it passes it, and its job view's NAS and internet bytes never count (a retry sending its bytes
+    again moves no line). Its rate is in that unit (tiles, z6 tiles, packs, zooms…: the unit the
+    step's progress line says, a word in brackets after it left out); a line that counts bytes
+    itself (unit's "MB of the DEM cache copied here", lakefill's "bytes uploaded") is held to its
+    most said the same way. Its window is the factor times
     its step's usual longest wait for progress, back from its last beat, judged only once its part
     under way is that old: a window that long holds a working job's progress however bursty its
     line (terrain-hi says its tiles a few hundred at a time, after minutes of sampling), and one
@@ -2147,22 +2149,29 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
     step's usual rate in a unit is the 10th percentile, over its jobs kept that ended well, of each
     one's progress in that unit over the time its parts in it took (`rates` on its "done" or "end"
     event, units a second); its usual wait the 90th percentile of each one's longest stretch from
-    its grant or a beat that saw its progress go on to the next (`gap_s`); each from ten such jobs
-    at least (`history::ENOUGH`: fewer, and the tenth either percentile leaves out is no whole job,
-    the percentile just the one slowest or longest), `History::paces`. A step with fewer, a step
-    whose jobs never said their progress, and a part younger than its window are not judged; a
-    job flagged stuck isn't flagged slow too. The flag says its rate and its step's usual, a
-    minute, its window, where it is, its batch's targets done and its threads. Replayed on 5–6
-    Nov from the lead's records (its timings and the lead's and the M1's job logs; no record keeps
-    a job's progress beat by beat, so each job is judged by its rate over its whole run, one
-    shorter than three beats not at all): 14 of 2,014 jobs fall under it. Two depth jobs (6/33/3
-    on the M1 opening the basemap's water for 10 min), terrain-deep 10/246/339 at 0.45 raw tiles a
-    minute (its step's slowest tenth 33), four polar-terrain blocks at one thread taking 31–55 min
-    (the slowest tenth under 5), two trees jobs at one thread 7 and 17 times under theirs, and a
-    bldtiles job at one thread that failed; four more within 15% of the line (bldtiles, two packs,
-    the inputs check). The M1's terrain-hi job copying
-    GLO-30 at 4 MB/s (6/23/36, 67 min) is not: its 175 tiles a minute over its run sit above
-    terrain-hi's slowest tenth (66), its copy a stretch of a job otherwise fast, which only a
+    its grant or a beat that saw its progress go on to the next (`gap_s`). Both are taken from its
+    jobs that had no more threads than the job judged has had over its part under way at its
+    fewest (`threads` on the event, the most its job had: `History::paces`, `Paces::usual`): more
+    threads may make a job faster, never slower, so a job on one thread isn't held to runs on
+    three (six 2-thread packs were 3.1–4.4 times under the slowest tenth of packs on 2 and 3
+    threads, within 3 times that of packs on 2). Each from ten such jobs at least (`history::ENOUGH`: fewer,
+    and the tenth either percentile leaves out is no whole job, the percentile just the one
+    slowest or longest). A step with fewer, a step whose jobs never said their progress, a job
+    whose threads aren't said and a part younger than its window are not judged; a job flagged
+    stuck isn't flagged slow too. The flag says its rate and its step's usual, a minute, the
+    threads that usual is of, its window, where it is, its batch's targets done and its threads.
+    Replayed on 5–6 Nov from the lead's timings (each run's threads and time) and the lead's and
+    the M1's job logs (2,009 runs with three progress lines or more; the M4's logs not read). No
+    record keeps a job's progress beat by beat, so each run is judged by its rate in each unit
+    over its whole run's time (lower than over its parts in the unit, so this flags more than the
+    rule would), against all runs of its step in the timings: 40 runs fall under it, 47 without
+    the threads rule (six 2-thread packs and terrain-deep 10/246/339 on 3 threads, whose step
+    has fewer than ten runs on 3 threads or fewer, drop out). Most are slow outright: polar-terrain
+    blocks on one thread (all but 7 of its 154 runs had one) at 0.02–0.04 polar blocks a minute
+    against a slowest tenth of 0.22, trees jobs at one thread (every trees run had one) 3 to 8
+    times under theirs, terrain-hi 6/14/26 at no tiles in its run. The M1's terrain-hi job
+    copying GLO-30 at 4 MB/s (6/23/36, 67 min) is not: its 175 tiles a minute over its run sit
+    above terrain-hi's slowest tenth, its copy a stretch of a job otherwise fast, which only a
     window inside it can show.
   - *stale*: the lead's catalogue due (held back, planned, or waiting out its minute:
     `PublishLine::due_since`) for more than the overdue factor times the most the plan holds one
