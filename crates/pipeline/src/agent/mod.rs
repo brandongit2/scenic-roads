@@ -9905,17 +9905,17 @@ mod tests {
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last, "off the gate");
         last = now;
-        // The coordinator's leases: this Mac's own taken and let go (a start that didn't go
-        // through) changes nothing; another worker's taken, then given back, does.
+        // The coordinator's leases leave it (task #880 step 2: their change filters the last plan's
+        // work again, plan::refilter_due, by their generation): this Mac's own taken and let go (a
+        // start that didn't go through) moves neither; another worker's taken, then given back,
+        // moves the generation alone.
         let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.coord = Some(co.clone());
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last);
-        last = now;
+        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
+        let gen = co.lease_gen();
         let id = co.hold("gc", &[("t".into(), "k".into())]).unwrap();
-        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
         co.finish(id, &[]);
-        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
+        assert_eq!(co.lease_gen(), gen);
         let id = {
             let mut s = co.shared.lock().unwrap();
             let t = s.now();
@@ -9925,13 +9925,12 @@ mod tests {
                 t,
             )
         };
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last);
-        last = now;
+        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
+        assert_ne!(co.lease_gen(), gen);
+        let gen = co.lease_gen();
         co.shared.lock().unwrap().leases.cancel(id).unwrap();
-        let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-        assert_ne!(now, last);
-        last = now;
+        assert_eq!(a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
+        assert_ne!(co.lease_gen(), gen);
         // The pool's switches the agent holds.
         a.placement = true;
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));

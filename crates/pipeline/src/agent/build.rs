@@ -1023,7 +1023,10 @@ pub struct RegionState {
     pub total: usize,
 }
 
-pub fn region_states(x: &KeyCtx, regions: &[(String, Coverage)], done: &Keys) -> BTreeMap<String, RegionState> {
+/// Each region's `RegionState` worked out alone, for the plan's return before its regions (the
+/// pass's heritage sites, reaches or roadside buildings awaited: without reaches, every region at 0
+/// of 0). Past it, `Plan::built` counts its `Region`s' z6 tiles and those stale: the same counts.
+fn region_states_alone(x: &KeyCtx, regions: &[(String, Coverage)], done: &Keys) -> BTreeMap<String, RegionState> {
     let (m, reach, tiles) = (x.m, x.reach, x.tiles);
     let keys = unit_keys(x);
     let fine = spacing_now(m, tiles);
@@ -2317,6 +2320,8 @@ pub struct Plan {
     pub held: Vec<(String, String)>,
     /// The regions' steps' checklist as this plan finds them (`checklist`, with the plan's keys).
     pub checklist: Checklist,
+    /// How far each region is built, by id: the build page's and `scenic status`'s counts.
+    pub built: BTreeMap<String, RegionState>,
 }
 
 /// A region's work left (`Plan::regions`), as targets.
@@ -2507,9 +2512,25 @@ pub fn plan(
     tiles: &TerrainTiles,
     updates: Publish,
 ) -> Plan {
-    // (One memo for the plan and its checklist: the checklist's keys are the plan's, worked out once.)
-    let memo = KeyMemo::default();
-    let x = &KeyCtx::new(cov, date, m, inputs, reach, tiles).memo(&memo);
+    plan_with(&KeyMemo::default(), cov, date, m, done, inputs, reach, tiles, updates)
+}
+
+/// `plan` with its keys kept in `memo`: one memo for the plan and its checklist (the checklist's keys
+/// are the plan's, worked out once), and for what else the Planner derives with the same context in
+/// that round (`heritage_awaits_acceptance`, `timetables_todo_work`, `chains_left`).
+#[allow(clippy::too_many_arguments)]
+pub fn plan_with(
+    memo: &KeyMemo,
+    cov: &Coverage,
+    date: &str,
+    m: &BTreeMap<String, String>,
+    done: &Keys,
+    inputs: &BTreeMap<String, String>,
+    reach: Option<&Reaches>,
+    tiles: &TerrainTiles,
+    updates: Publish,
+) -> Plan {
+    let x = &KeyCtx::new(cov, date, m, inputs, reach, tiles).memo(memo);
     let held = updates.held;
     // (Its sections timed as the plan's phases, `nasread::PLAN`: docs/incremental-planning.md §1.)
     let mut p = plan_in(x, done, updates);
@@ -2655,7 +2676,8 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
             None => "the regions' z6 tiles wait for the pass's heritage sites, reaches or roadside buildings".into(),
         };
         let publishing = PublishLine { why, ..Default::default() };
-        return Plan { work, backfill, publishing, left, held: held_steps, drops, ..Default::default() };
+        let built = region_states_alone(x, updates.each, done);
+        return Plan { work, backfill, publishing, left, held: held_steps, drops, built, ..Default::default() };
     };
 
     // base(U): the z6 tiles the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -2821,6 +2843,10 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         .iter()
         .filter(|r| !ready.iter().any(|id| id == r.id))
         .map(|r| (r.id.to_string(), r.all.len() - r.stale.len(), r.all.len()))
+        .collect();
+    let built: BTreeMap<String, RegionState> = regions
+        .iter()
+        .map(|r| (r.id.to_string(), RegionState { built: r.all.len() - r.stale.len(), total: r.all.len() }))
         .collect();
 
     // A region at a time: those the map hasn't at all first, then those it has (redrawn, or their
@@ -3231,6 +3257,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         left,
         held: held_steps,
         checklist: Default::default(),
+        built,
     }
 }
 
@@ -8616,23 +8643,17 @@ pub(crate) mod tests {
         assert!(!p.work.iter().any(|w| matches!(w.step.as_str(), "unit" | "prune")), "{:?}", p.work);
         assert_eq!(p.unknown, ["6/28/16", "6/29/16", "6/30/16", "6/31/16"]);
         assert!(p.ready.is_empty());
+        assert_eq!(p.built["a"], RegionState { built: 0, total: 1 });
         // Read: they're built.
-        let p = plan(&tiles_for(&m));
+        let t = tiles_for(&m);
+        let p = plan(&t);
         assert!(p.unknown.is_empty());
         assert_eq!(p.work.iter().filter(|w| w.step == "unit").map(|w| w.targets.len()).sum::<usize>(), 4);
-        let states = region_states(
-            &crate::agent::build::KeyCtx::new(
-                &c,
-                "d",
-                &m,
-                &std::collections::BTreeMap::new(),
-                Some(&reach),
-                &TerrainTiles::new(None),
-            ),
-            &each,
-            &done,
-        );
-        assert_eq!(states["a"], RegionState { built: 0, total: 1 });
+        // (The plan's counts, from its regions, are those worked out alone.)
+        let inputs = BTreeMap::new();
+        let x = KeyCtx::new(&c, "d", &m, &inputs, Some(&reach), &t);
+        assert_eq!(p.built, region_states_alone(&x, &each, &done));
+        assert_eq!(p.built.len(), each.len());
     }
 
     /// Each region's targets by step, built of all (task #636): its z6 tiles counted as the plan
@@ -8667,6 +8688,12 @@ pub(crate) mod tests {
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let s = steps(&m, &done);
         assert_eq!(s["a"]["unit"][0], 1, "{s:?}");
+        // The plan's counts (`Plan::built`) say the same of its z6 tiles, as worked out alone.
+        let p = hplan(&c, &reach, &m, &done, None, None);
+        assert_eq!(p.built["a"], RegionState { built: 1, total: s["a"]["unit"][1] });
+        let (inputs, t) = (BTreeMap::new(), tiles_for(&m));
+        let x = KeyCtx::new(&c, "d", &m, &inputs, Some(&reach), &t);
+        assert_eq!(p.built, region_states_alone(&x, &each, &done));
     }
 
     #[test]
@@ -12078,11 +12105,10 @@ pub(crate) mod tests {
             *t = std::time::Instant::now();
         };
         let mut t = t;
-        let m: BTreeMap<String, String> =
-            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        // (The records as the agent reads them: the current term's brief.)
+        let crate::pool::records::Brief { manifest: m, keys, .. } =
+            crate::pool::records::Brief::now(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         let date = crate::osmpass::latest_pass_by(&store::nasfs::NasRoot::local_for_test(&root), false).unwrap();
-        let keys = Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
         let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
         lap("reading records", &mut t);
         let cov =
@@ -12094,7 +12120,7 @@ pub(crate) mod tests {
             crate::reach::Reaches::load(&store::nasfs::NasRoot::local_for_test(&root), &m, &date).ok().flatten();
         let mut tiles = TerrainTiles::new(std::env::var("SCENIC_BENCH_IDX").ok().map(std::path::PathBuf::from));
         tiles.load(&store::nasfs::NasRoot::local_for_test(&root), &m);
-        let inputs = crate::agent::input_digests(&store::nasfs::NasRoot::local_for_test(&root));
+        let inputs = crate::agent::key_inputs(&store::nasfs::NasRoot::local_for_test(&root), &m);
         lap("reading reaches, terrain indexes and input digests", &mut t);
         for round in 1..=2 {
             let k = keys.clone();
@@ -12113,22 +12139,10 @@ pub(crate) mod tests {
                 ))
             ));
             lap(&format!("[{round}] unit_keys ({n})"), &mut t);
-            let n = dg(format!(
-                "{:?}",
-                region_states(
-                    &crate::agent::build::KeyCtx::new(
-                        &cov,
-                        &date,
-                        &m,
-                        &std::collections::BTreeMap::new(),
-                        reach.as_ref(),
-                        &tiles
-                    ),
-                    &each,
-                    &k
-                )
-            ));
-            lap(&format!("[{round}] region_states ({n})"), &mut t);
+            // (The regions' counts worked out alone, as the counts' thread did before task #880:
+            // the plan's below are the same.)
+            let alone = region_states_alone(&KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles), &each, &k);
+            lap(&format!("[{round}] region_states_alone ({})", dg(format!("{alone:?}"))), &mut t);
             // (The terrain's and slope's targets, as the checklist reads them: the same before and
             // after task #894's edge tree and kept answers.)
             let n = dg(format!("{:?}", coverage_tiles(&cov)));
@@ -12158,7 +12172,9 @@ pub(crate) mod tests {
             let n = dg(format!("{:?}", super::checklist(&x, &k, false, &[])));
             lap(&format!("[{round}] checklist ({n})"), &mut t);
             let on_map = BTreeMap::new();
-            let p = super::plan(
+            let memo = KeyMemo::default();
+            let p = super::plan_with(
+                &memo,
                 &cov,
                 &date,
                 &m,
@@ -12177,6 +12193,22 @@ pub(crate) mod tests {
                 },
             );
             lap(&format!("[{round}] plan ({}; keys {})", dg(format!("{p:?}")), dg(format!("{k:?}"))), &mut t);
+            let total =
+                |s: &BTreeMap<String, RegionState>| s.values().fold((0, 0), |a, r| (a.0 + r.built, a.1 + r.total));
+            eprintln!(
+                "bench: [{round}] the plan's counts {:?} of {} regions, alone {:?}",
+                total(&p.built),
+                p.built.len(),
+                total(&alone)
+            );
+            assert_eq!(p.built, alone, "the plan's regions' counts are those worked out alone");
+            // (The chains' work as the forecast takes it, from a fresh context and from the plan's
+            // memo, as the Planner hands it on: the same.)
+            let fresh = chains_left(&x, &k);
+            lap(&format!("[{round}] chains_left, a fresh context ({})", dg(format!("{fresh:?}"))), &mut t);
+            let kept = chains_left(&x.memo(&memo), &k);
+            lap(&format!("[{round}] chains_left, the plan's memo ({})", dg(format!("{kept:?}"))), &mut t);
+            assert_eq!(fresh, kept);
             // (Every work's step, target and key, a line each, to `SCENIC_BENCH_PLAN_OUT`.<round>: two
             // builds' plans diffed.)
             if let Ok(out) = std::env::var("SCENIC_BENCH_PLAN_OUT") {

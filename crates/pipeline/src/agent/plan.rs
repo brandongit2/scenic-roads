@@ -18,13 +18,11 @@ use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
 
 /// How often the plan's thread looks at what it depends on (the records' digest, the gate's asks,
-/// the forecast's and counts' threads), when nothing wakes it sooner.
+/// the forecast's and the regions' steps' threads), when nothing wakes it sooner.
 pub(super) const LOOK: Duration = Duration::from_secs(5);
 /// The plan made again at least this often, whatever changed: the fallback for what the digest
 /// doesn't cover (time, disk room, planets newly on the NAS).
 pub(super) const FALLBACK: Duration = Duration::from_secs(300);
-/// The regions' states counted again at least this often (a job's end sooner).
-const COUNT_EVERY: Duration = Duration::from_secs(300);
 /// The regions' steps counted again, while a page asks, at least this often.
 const STEPS_EVERY: Duration = Duration::from_secs(60);
 
@@ -67,7 +65,7 @@ pub(super) struct Inputs {
     pub ramp_trouble: Option<String>,
     /// This Mac's coordinator as the round has it (made or stopped as its part changes).
     pub coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
-    /// Whether a job ended since the last round (a plan, and the regions' states counted, again).
+    /// Whether a job ended since the last round (a plan again, the regions' counts with it).
     pub ended: bool,
     /// The lead's map, its log's (crate::agent::publish::Here): None until its thread starts.
     pub map: Option<std::sync::Arc<publish::Here>>,
@@ -321,6 +319,24 @@ pub(super) fn why_plan(
     at.is_some_and(|t| now >= t).then_some("a timed wait ended")
 }
 
+/// Whether the last plan's work is filtered again ("its jobs", not `build::plan`: docs/incremental-
+/// planning.md step 2), when no plan is due (`why_plan`): the coordinator's leases changed (a grant,
+/// a lapse, a lease given back: they change what is offered, not what is stale, so they are not in
+/// the plan's digest) and a `build::plan` result is kept (`kept`); no sooner after the last plan, or
+/// the last such filtering, ended (`last`, `refiltered`: their age and how long they took) than it
+/// took, as `why_plan` holds plans to half a core.
+pub(super) fn refilter_due(
+    leases_changed: bool,
+    kept: bool,
+    last: Option<(Duration, Duration, u64, Option<u64>)>,
+    refiltered: Option<(Duration, Duration)>,
+) -> bool {
+    leases_changed
+        && kept
+        && last.is_some_and(|(age, took, ..)| age >= took)
+        && refiltered.is_none_or(|(age, took)| age >= took)
+}
+
 /// The earliest of `at` from `now` on (one at `now` kept: due at once).
 fn earliest_after(at: impl IntoIterator<Item = u64>, now: u64) -> Option<u64> {
     at.into_iter().filter(|t| *t >= now).min()
@@ -358,18 +374,25 @@ pub(super) struct Planner {
     pub(super) running_n: std::sync::Arc<AtomicU64>,
     /// (When it ended, how long it took, its digest and its timed waits' end.)
     pub(super) last: Option<(Instant, Duration, u64, Option<u64>)>,
+    /// The coordinator's leases' generation as the last plan, or its jobs filtered again, read
+    /// it; when its jobs were last filtered again and how long that took (`refilter_due`).
+    pub(super) leases: Option<u64>,
+    pub(super) refiltered: Option<(Instant, Duration)>,
+    /// The last `build::plan` result as it came, with its keys: what "its jobs" filters again on a
+    /// lease change (`refilter`, set meanwhile), instead of planning (docs/incremental-planning.md
+    /// step 2). Dropped as a plan starts.
+    pub(super) kept: std::cell::RefCell<Option<(build::Plan, build::KeyMemo)>>,
+    pub(super) refilter: std::cell::Cell<bool>,
     pub(super) jobs: Vec<JobSpec>,
     pub(super) waiting: Vec<Waiting>,
     pub(super) regions: (Vec<recipes::Recipe>, Vec<(String, String)>),
     /// The checklist, made with each plan (`checklist`); the regions' steps' part of it as the plan
     /// found them (build::Plan::checklist: None while no plan got that far); how far each region
-    /// is built, when that count was last started and the count under way; the same of the
-    /// regions' steps for the page.
+    /// is built, as the last plan that got that far counted (build::Plan::built); the regions'
+    /// steps for the page, when that count was last started and the count under way.
     pub(super) progress: Vec<build::Line>,
     pub(super) regions_checklist: std::cell::RefCell<Option<build::Checklist>>,
-    pub(super) built: BTreeMap<String, build::RegionState>,
-    pub(super) built_counted: Option<Instant>,
-    pub(super) built_making: Option<std::thread::JoinHandle<(BTreeMap<String, build::RegionState>, Duration)>>,
+    pub(super) built: std::cell::RefCell<BTreeMap<String, build::RegionState>>,
     pub(super) steps_counted: Option<Instant>,
     #[allow(clippy::type_complexity)]
     pub(super) steps_making:
@@ -498,9 +521,11 @@ impl Planner {
             regions: Default::default(),
             progress: Vec::new(),
             regions_checklist: Default::default(),
-            built: BTreeMap::new(),
-            built_counted: None,
-            built_making: None,
+            built: Default::default(),
+            leases: None,
+            refiltered: None,
+            kept: Default::default(),
+            refilter: Default::default(),
             steps_counted: None,
             steps_making: None,
             #[cfg(test)]
@@ -571,8 +596,8 @@ impl Planner {
             Msg::Inputs(i) => {
                 if i.ended {
                     self.kicked.get_or_insert("a job ended");
-                    // (Counted again once the count under way is in: the job's targets weren't in it.)
-                    self.built_counted = None;
+                    // (The regions' steps counted again once the count under way is in: the job's
+                    // targets weren't in it.)
                     self.steps_counted = None;
                 }
                 self.coord = i.coord.clone();
@@ -599,8 +624,8 @@ impl Planner {
     }
 
     /// A look: the forecast and the build page's regions taken in when done, the gate and the redo
-    /// asks taken up, a plan made when due (`why_plan`) and the checklist with it, the counts when due, and
-    /// the view published.
+    /// asks taken up, a plan made when due (`why_plan`) and the checklist and the regions' counts
+    /// with it, the regions' steps when due, and the view published.
     pub(super) fn look(&mut self) {
         let Some(root) = self.inp.root.clone() else {
             // (The NAS back: planned at once, whatever the digest.)
@@ -618,10 +643,13 @@ impl Planner {
         self.tend_redo();
         self.phase("the records' digest");
         let seen = self.plan_seen(&root);
+        let leases = self.coord.as_ref().map(|c| c.lease_gen());
         let now = now_s();
         let last = self.last.map(|(at, took, s, t)| (at.elapsed(), took, s, t));
+        let refiltered = self.refiltered.map(|(at, took)| (at.elapsed(), took));
         if let Some(why) = why_plan(self.kicked, last, seen, now) {
             self.kicked = None;
+            self.leases = leases;
             self.phase("the plan");
             let t = Instant::now();
             let mut waiting = Vec::new();
@@ -649,31 +677,37 @@ impl Planner {
             self.phase("the checklist");
             let regions = self.regions.0.clone();
             self.progress = self.checklist(&root, &regions);
+        } else if refilter_due(leases != self.leases, self.kept.borrow().is_some(), last, refiltered) {
+            // (The leases changed alone: the last plan's work filtered again and offered, its number
+            // and its digest kept.)
+            self.leases = leases;
+            self.phase("its jobs again");
+            let t = Instant::now();
+            let mut waiting = Vec::new();
+            let c = self.inp.conditions;
+            self.refilter.set(true);
+            let plan = self.plan(&root, &c, &mut waiting);
+            self.refilter.set(false);
+            nasread::PLAN.enter("");
+            self.offer_plan(&plan);
+            self.refiltered = Some((Instant::now(), t.elapsed()));
+            eprintln!(
+                "agent: plan {}'s jobs filtered again (the leases changed) in {} ms",
+                self.n,
+                t.elapsed().as_millis()
+            );
+            self.jobs = plan;
+            self.waiting = waiting;
         }
-        self.phase("the counts");
-        self.count(&root);
+        self.phase("the regions' steps");
+        self.count_steps(&root);
         self.publish();
         self.phase("");
     }
 
-    /// How far each region is built (every `COUNT_EVERY`, a job's end sooner, on a thread of its
-    /// own), and each region's steps for the build page (while a page asks, every `STEPS_EVERY`).
-    pub(super) fn count(&mut self, root: &NasRoot) {
-        if self.built_making.is_none() && self.built_counted.is_none_or(|t| t.elapsed() >= COUNT_EVERY) {
-            self.built_counted = Some(Instant::now());
-            self.built_making = self.start_as_built(root, "region-states", build::region_states);
-        }
-        // (In line, waited for: a single loop's status has them.)
-        let wait = self.o.once;
-        if self.built_making.as_ref().is_some_and(|h| wait || h.is_finished()) {
-            match self.built_making.take().map(|h| h.join()) {
-                Some(Ok((b, took))) => {
-                    eprintln!("agent: the regions' states took {} ms", took.as_millis());
-                    self.built = b;
-                }
-                _ => eprintln!("agent: counting the regions' states failed"),
-            }
-        }
+    /// Each region's steps for the build page (while a page asks, every `STEPS_EVERY`, on a thread of
+    /// its own). (How far each region is built is the plan's: build::Plan::built.)
+    pub(super) fn count_steps(&mut self, root: &NasRoot) {
         let Some(c) = self.coord.clone() else { return };
         if self.steps_making.as_ref().is_some_and(|h| h.is_finished()) {
             match self.steps_making.take().map(|h| h.join()) {
@@ -703,7 +737,7 @@ impl Planner {
             regions: self.regions.0.clone(),
             bad: self.regions.1.clone(),
             checklist: self.progress.clone(),
-            built: self.built.clone(),
+            built: self.built.borrow().clone(),
             forecast: self.forecast.borrow().clone(),
             publishing: self.publish_line.borrow().clone(),
             timetables: self.timetables.borrow().as_ref().map(|t| t.1.clone()),
@@ -967,7 +1001,8 @@ impl Planner {
     /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs and the units
     /// on it with their folders as last listed, the pool
     /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
-    /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, planets newly on the NAS).
+    /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, planets newly on the NAS)
+    /// and the leases, whose change filters its work again (`refilter_due`).
     pub(super) fn plan_seen(&self, root: &store::nasfs::NasRoot) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1018,8 +1053,7 @@ impl Planner {
         self.inp.map.as_ref().and_then(|m| m.feed.head()).hash(&mut h);
         // (The owner's redo asks: one taken or done.)
         stat(&mut h, (&self.o.home.join(redo::ASKS)).into());
-        // (The coordinator's leases: one lapsed, given back or taken frees or holds targets.)
-        self.coord.as_ref().map(|c| c.lease_gen()).hash(&mut h);
+        // (Not the coordinator's leases: they filter the last plan's work again, `refilter_due`.)
         self.newer_app().hash(&mut h);
         // (The pool's switches as this agent holds them.)
         self.inp.placement.hash(&mut h);
@@ -1344,6 +1378,11 @@ impl Planner {
         // (The depth's targets for GC, and the regions' checklist: none until this plan finds them.)
         self.depth_keep.borrow_mut().take();
         self.regions_checklist.borrow_mut().take();
+        // (A plan's `build::plan` result made again: the last one let go before, not held beside it.
+        // Filtered again, taken below.)
+        if !self.refilter.get() {
+            self.kept.borrow_mut().take();
+        }
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match self.planning_records(root) {
             Ok(r) => r,
@@ -1717,31 +1756,44 @@ impl Planner {
         // z6 tile that changed.)
         let served = self.planned_tiles.borrow_mut().served(map.as_deref());
         drop(map);
-        let mut planned = {
-            let tiles = self.terrain_tiles(root, &manifest);
-            *self.depth_keep.borrow_mut() = build::depth_kept(cov, &manifest, &tiles, &done, now_s());
-            nasread::PLAN.enter("build::plan");
-            build::plan(
-                &cov,
-                date,
-                &manifest,
-                &done,
-                &inputs,
-                reach.as_deref(),
-                &tiles,
-                build::Publish {
-                    each: &covs.each,
-                    on_map: &on_map,
-                    served: &served,
-                    since_catalogue: since_publish,
-                    held_for: self.catalogues.borrow().held_at.map(|t| now_s().saturating_sub(t)),
-                    held,
-                    way,
-                },
-            )
+        // (The plan's keys, handed on to what derives keys of the same context below, this round only.)
+        // (Filtered again on a lease change: the last result and its keys, `build::plan` not made.)
+        let reused = if self.refilter.get() { self.kept.borrow_mut().take() } else { None };
+        *self.depth_keep.borrow_mut() =
+            build::depth_kept(cov, &manifest, &self.terrain_tiles(root, &manifest), &done, now_s());
+        let (mut planned, memo) = match reused {
+            Some(k) => k,
+            None => {
+                let memo = build::KeyMemo::default();
+                let tiles = self.terrain_tiles(root, &manifest);
+                nasread::PLAN.enter("build::plan");
+                let p = build::plan_with(
+                    &memo,
+                    &cov,
+                    date,
+                    &manifest,
+                    &done,
+                    &inputs,
+                    reach.as_deref(),
+                    &tiles,
+                    build::Publish {
+                        each: &covs.each,
+                        on_map: &on_map,
+                        served: &served,
+                        since_catalogue: since_publish,
+                        held_for: self.catalogues.borrow().held_at.map(|t| now_s().saturating_sub(t)),
+                        held,
+                        way,
+                    },
+                );
+                drop(tiles);
+                (p, memo)
+            }
         };
+        let kept = planned.clone();
         nasread::PLAN.enter("its jobs");
         *self.regions_checklist.borrow_mut() = Some(std::mem::take(&mut planned.checklist));
+        *self.built.borrow_mut() = std::mem::take(&mut planned.built);
         self.catalogues.borrow_mut().idle = planned.idle;
         // The steps held for other steps' targets: said, never a silent stall (the summits' own note,
         // below, is the same).
@@ -1749,14 +1801,10 @@ impl Planner {
             waiting.push(Waiting { what: step.clone(), why, step: Some(step) });
         }
         // The z6 tiles held until the heritage registers are first accepted: said, not a silent stall.
-        if let Some(why) = build::heritage_awaits_acceptance(&build::KeyCtx::new(
-            cov,
-            date,
-            &manifest,
-            &inputs,
-            reach.as_deref(),
-            &self.terrain_tiles(root, &manifest),
-        )) {
+        if let Some(why) = build::heritage_awaits_acceptance(
+            &build::KeyCtx::new(cov, date, &manifest, &inputs, reach.as_deref(), &self.terrain_tiles(root, &manifest))
+                .memo(&memo),
+        ) {
             waiting.push(Waiting {
                 step: Some("heritage-sites".into()),
                 what: "sites".into(),
@@ -1768,7 +1816,8 @@ impl Planner {
         // The timetables' to-do list and report, after each rail and ferries run (lead-only: it
         // writes into the static timetables' inputs folder's todo/, never read as an input).
         if let Some(w) = build::timetables_todo_work(
-            &build::KeyCtx::new(cov, date, &manifest, &inputs, reach.as_deref(), &self.terrain_tiles(root, &manifest)),
+            &build::KeyCtx::new(cov, date, &manifest, &inputs, reach.as_deref(), &self.terrain_tiles(root, &manifest))
+                .memo(&memo),
             &done,
         ) {
             jobs.push(job(
@@ -2076,7 +2125,8 @@ impl Planner {
                     &inputs,
                     reach.as_deref(),
                     &self.terrain_tiles(root, &manifest),
-                ),
+                )
+                .memo(&memo),
                 &done,
             );
 
@@ -2190,6 +2240,7 @@ impl Planner {
             j.what = what;
             jobs.push(j);
         }
+        *self.kept.borrow_mut() = Some((kept, memo));
         jobs
     }
 
@@ -2807,7 +2858,7 @@ impl Planner {
         build::fold(&items, &next, &notes)
     }
 
-    /// `f` (build::region_states, build::region_steps) over the keying context (the coverage, the
+    /// `f` (build::region_steps) over the keying context (the coverage, the
     /// pass, the manifest, the planner's inputs, the reaches, the terrain packs' indexes), the regions' and
     /// the records, on a thread of its own named `name` (the loop gives it what it holds
     /// already, and a copy of the indexes), with how long it took. None before the first pass or
@@ -3612,6 +3663,26 @@ mod tests {
         assert_eq!(ends_in(1000, Duration::from_millis(1400)), 1002);
         assert_eq!(ends_in(1000, Duration::ZERO), 1000);
         assert_eq!(earliest_after([1000, 1200], 1000), Some(1000));
+    }
+
+    /// A lease change alone filters the last plan's work again (task #880 step 2), never a plan:
+    /// only with a `build::plan` result kept, and no sooner after the last plan or filtering than
+    /// it took. (Times passed in: no clock.)
+    #[test]
+    fn a_lease_change_filters_the_last_plans_work_again() {
+        let s = Duration::from_secs;
+        let last = |age: u64, took: u64| Some((s(age), s(took), 7, None));
+        // (The leases aren't in the digest: no plan for them.)
+        assert_eq!(why_plan(None, last(20, 0), 7, 1000), None);
+        assert!(refilter_due(true, true, last(20, 0), None));
+        assert!(!refilter_due(false, true, last(20, 0), None), "the leases as they were");
+        assert!(!refilter_due(true, false, last(20, 0), None), "no plan's work kept");
+        assert!(!refilter_due(true, true, None, None), "no plan yet");
+        // A plan of 60 s: not filtered again sooner than 60 s after it; a filtering of 5 s, likewise.
+        assert!(!refilter_due(true, true, last(59, 60), None));
+        assert!(refilter_due(true, true, last(60, 60), None));
+        assert!(!refilter_due(true, true, last(60, 60), Some((s(4), s(5)))));
+        assert!(refilter_due(true, true, last(60, 60), Some((s(5), s(5)))));
     }
 
     fn samples(d: &Path) -> Vec<String> {

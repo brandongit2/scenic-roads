@@ -36,7 +36,7 @@ type Held = std::sync::Arc<[(u64, u64)]>;
 type Found<'a> = Result<Option<&'a [(u64, u64)]>, Unread>;
 
 /// The terrain packs' indexes the agent holds, by content name. (Cloned for a count off the
-/// agent's loop, the regions' states and steps, plan::Planner::start_as_built: the indexes and the
+/// agent's loop, the regions' steps, plan::Planner::start_as_built: the indexes and the
 /// memo shared by the copies, not copied: task #930.)
 #[derive(Clone, Default)]
 pub struct TerrainTiles {
