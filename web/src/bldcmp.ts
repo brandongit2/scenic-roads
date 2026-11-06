@@ -13,7 +13,7 @@ import type { AppState } from './state';
 import type { FieldLayer } from './bldfield';
 import { paletteFn } from './palettes';
 import { keepWhole } from './buildings';
-import { mercLon, mercX } from './merc';
+import { clampLat, mercLon, mercX } from './merc';
 
 const q = new URLSearchParams(location.search);
 export const CMP = q.has('bldcmp') ? { dpr: Number(q.get('dpr')) || 0, colour: q.get('bc') ?? '#b9c4d4', byHeight: q.get('bcol') === 'height' } : null;
@@ -238,7 +238,7 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
         const t0 = xa + s * per, t1 = Math.min(xb, t0 + per - 1);
         if (t0 > t1) break;
         const eps = 1e-7;
-        resource(o.k, [mercLon(t0 / n14) + eps, Math.max(-85, b.getSouth() - dy), mercLon((t1 + 1) / n14) - eps, Math.min(85, b.getNorth() + dy)]);
+        resource(o.k, [mercLon(t0 / n14) + eps, clampLat(b.getSouth() - dy), mercLon((t1 + 1) / n14) - eps, clampLat(b.getNorth() + dy)]);
         vis(true);
         map.setPaintProperty('buildings', 'fill-extrusion-opacity', op);
         await api.ready();
