@@ -10546,9 +10546,11 @@ mod tests {
         a.beat.never_tick();
         a.control.spawn();
         a.beat.spawn();
-        let hung = nasread::fake::hang(&root);
+        // (Each hung call given up after HUNG_DEADLINE: the answer is the watcher's however long
+        // the loop is stuck, and the last round ends soon after the pause's.)
+        let hung = nasread::fake::hang(&root).deadline(HUNG_DEADLINE);
         a_job_running(&mut a);
-        // (Asked 2 s in, inside the first round's hung calls, as the other pauses here.)
+        // (Asked 2 s in, the rounds going on in the hung calls, as the other pauses here.)
         pause_while(&mut a, Duration::from_secs(2), Duration::from_secs(8), |a| {
             a.round().ok();
             // (The loop's own view has no job: the job said running again, as a long job's.)
@@ -10602,6 +10604,10 @@ mod tests {
         store::testkit::eventually("the root back", || a.root().is_some());
     }
 
+    /// The hung-NAS fake's deadline in the tests whose claim isn't how long the loop is stuck on
+    /// it (`nasread::fake::Hung::deadline`; the real one, `nasread::DEADLINE`, is 20 s a call).
+    const HUNG_DEADLINE: Duration = Duration::from_secs(1);
+
     /// A job of `secs` seconds started in slot `k` (a unit job of target `target`), published.
     fn a_real_job(a: &mut Agent, k: usize, target: &str, secs: u64) -> i32 {
         let spec = JobSpec {
@@ -10630,7 +10636,8 @@ mod tests {
         let (mut a, root) = parts_agent(d.path());
         a.spawn_jobs_part();
         a.control.spawn();
-        let hung = nasread::fake::hang(&root);
+        // (Each hung call given up after HUNG_DEADLINE: the wake is the reaper's, no round running.)
+        let hung = nasread::fake::hang(&root).deadline(HUNG_DEADLINE);
         a_real_job(&mut a, 0, "6/1/2", 2);
         let t = Instant::now();
         // (No round runs meanwhile: woken for the end at all is the reaper's telling: #910.)
@@ -10643,7 +10650,8 @@ mod tests {
         let r = Instant::now();
         while a.slots[0].running.is_some() {
             a.round().unwrap();
-            // (A round on a hung NAS waits out each NAS call's deadline, 20 s: about 100 s.)
+            // (A round on the hung NAS waits out each NAS call's deadline: HUNG_DEADLINE here, a
+            // few seconds a round; 20 s a call, about 100 s, with the real one.)
             assert!(r.elapsed() < Duration::from_secs(400), "the slot never freed");
         }
         eprintln!("recorded and its slot freed in {:?} on the hung NAS", r.elapsed());
@@ -10809,14 +10817,17 @@ mod tests {
         let (mut a, root) = parts_agent(d.path());
         a.round().unwrap();
         let n = plan_running_long(&mut a, &root, vec![own_job("a-test one")]);
-        let hung = nasread::fake::hang(&root);
+        // (Each hung call given up after HUNG_DEADLINE: the grant made none, by its count, and the
+        // pause's answer is the watcher's however long the loop is stuck.)
+        let hung = nasread::fake::hang(&root).deadline(HUNG_DEADLINE);
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let r = store::nasfs::NasRoot::local_for_test(&root);
         let view = a.plan.view.get();
-        let t = Instant::now();
+        let (t, held) = (Instant::now(), nasread::fake::held_here());
         let mut w = Vec::new();
         let got = a.lead_grants(&view.jobs, view.n, &c, &r, &mut w);
         store::testkit::ended_before(t, nasread::DEADLINE, "a grant on a hung NAS");
+        assert_eq!(nasread::fake::held_here(), held, "the grant waited on no NAS call");
         assert_eq!(got.iter().map(|g| g.2).collect::<Vec<_>>(), [n], "{w:?}");
         for (k, _, _) in got {
             a.end_lease(k, Outcome::Interrupted, &[], "the test");
@@ -10885,7 +10896,8 @@ mod tests {
         assert_eq!(serde_json::to_value(&g).unwrap()["plan"], 4);
     }
 
-    /// Task #871 step 3: a pause during a plan (the slow-plan fake, 30 s): the same.
+    /// Task #871 step 3: a pause during a plan (the slow-plan fake, 8 s; 30 s, asked 5 s in, before
+    /// #969: the answer is the watcher's however long the plan, as on a hung NAS): the same.
     #[test]
     fn pause_shows_within_a_second_while_planning() {
         let d = tempfile::tempdir().unwrap();
@@ -10898,10 +10910,10 @@ mod tests {
         a.control.spawn();
         a.beat.spawn();
         a_job_running(&mut a);
-        a.planner().slow_plan = Some(Duration::from_secs(30));
+        a.planner().slow_plan = Some(Duration::from_secs(8));
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let r = store::nasfs::NasRoot::local_for_test(&root);
-        pause_while(&mut a, Duration::from_secs(5), Duration::from_secs(30), |a| {
+        pause_while(&mut a, Duration::from_secs(2), Duration::from_secs(8), |a| {
             a.planner().plan(&r, &c, &mut Vec::new());
         });
     }

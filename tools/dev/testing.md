@@ -321,6 +321,12 @@ through their dev-dependency on store, `features = ["testkit"]`):
 - **"It came from the event, not a timer": switch the timer off** (`#[cfg(test)]` hooks such as
   control's `never_sweep()` and the beat's `never_tick()`), so anything that happens at all was the
   event's doing and the test needs no "within a second".
+- **A hung NAS: the agent's `nasread::fake::hang(prefix)`**, every call under it held, each given
+  up at its real deadline (`nasread::DEADLINE`, 20 s). Where the claim isn't how long the loop is
+  stuck (a pause answered by control's watcher with its sweep off, a job's end woken by the
+  reaper), `.deadline(d)` gives the held calls a short one, test builds only (#969:
+  `a_job_is_reaped_while_the_nas_hangs` waited out 225 s of them); "it made no NAS call" is
+  `fake::held_here()` unchanged across it, not a time.
 - **"It measured at least this much": make the thing measured last that long by construction.**
   A sleep inside a wait is at least the sleep; two waits at once are held open by events (one
   begins, signals, and ends only when the other has ended), never two sleeps hoped to overlap; CPU

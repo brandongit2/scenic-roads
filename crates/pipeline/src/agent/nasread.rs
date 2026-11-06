@@ -93,18 +93,21 @@ impl Calls {
                 format!("{}: every NAS thread for it is stuck in an earlier call", what.display()),
             ));
         }
-        // (The slow-NAS fake's: a test's hung share holds the call, `fake::hang`.)
+        // (The slow-NAS fake's: a test's hung share holds the call, `fake::hang`; past the fake's
+        // own deadline when it has one, `Hung::deadline`.)
         #[cfg(test)]
-        let f = {
-            let gate = fake::gate(what);
-            move || {
+        let (f, deadline) = {
+            let (gate, short) = fake::gate(what).unzip();
+            let deadline = short.flatten().map_or(deadline, |d| d.min(deadline));
+            let f = move || {
                 if let Some(g) = gate {
                     while !g.load(Ordering::SeqCst) {
                         std::thread::sleep(Duration::from_millis(20));
                     }
                 }
                 f()
-            }
+            };
+            (f, deadline)
         };
         let (rtx, rrx) = mpsc::sync_channel(1);
         let busy = self.busy.clone();
@@ -146,8 +149,15 @@ pub(crate) mod fake {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    type Gate = (PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>);
+    use std::time::Duration;
+
+    type Gate = (PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>, Option<Duration>);
     static HUNG: Mutex<Vec<Gate>> = Mutex::new(Vec::new());
+
+    thread_local! {
+        /// The calls this thread made that a hung share held (`held_here`).
+        static HELD_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
 
     /// The share hung under `prefix` while this lives; it counts the calls it held (`held`).
     pub struct Hung(PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>);
@@ -157,6 +167,25 @@ pub(crate) mod fake {
         pub fn held(&self) -> usize {
             self.2.load(Ordering::SeqCst)
         }
+
+        /// Its calls given up after `d` at most, not their own deadline (`DEADLINE`, 20 s): a
+        /// test whose loop goes round on the hung share needn't wait out minutes of real deadlines
+        /// (a_job_is_reaped_while_the_nas_hangs took 225 s, #969). Only where the claim isn't how
+        /// long the loop is stuck: an answer from control's watcher (its sweep off), the reaper.
+        pub fn deadline(self, d: Duration) -> Hung {
+            let mut h = HUNG.lock().unwrap_or_else(|e| e.into_inner());
+            for g in h.iter_mut().filter(|g| g.0 == self.0 && Arc::ptr_eq(&g.1, &self.1)) {
+                g.3 = Some(d);
+            }
+            drop(h);
+            self
+        }
+    }
+
+    /// The calls this thread made that a hung share held, so far: a test's "it made no NAS
+    /// call", whatever the deadline.
+    pub fn held_here() -> usize {
+        HELD_HERE.with(|c| c.get())
     }
 
     impl Drop for Hung {
@@ -164,23 +193,24 @@ pub(crate) mod fake {
             self.1.store(true, Ordering::SeqCst);
             HUNG.lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .retain(|(p, g, _)| !(p == &self.0 && Arc::ptr_eq(g, &self.1)));
+                .retain(|(p, g, _, _)| !(p == &self.0 && Arc::ptr_eq(g, &self.1)));
         }
     }
 
     /// Every NAS call on a path under `prefix` hangs until the answer is dropped.
     pub fn hang(prefix: &Path) -> Hung {
         let (g, n) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
-        HUNG.lock().unwrap_or_else(|e| e.into_inner()).push((prefix.to_path_buf(), g.clone(), n.clone()));
+        HUNG.lock().unwrap_or_else(|e| e.into_inner()).push((prefix.to_path_buf(), g.clone(), n.clone(), None));
         Hung(prefix.to_path_buf(), g, n)
     }
 
-    /// The gate a call on `what` waits on, if it's hung.
-    pub(super) fn gate(what: &Path) -> Option<Arc<AtomicBool>> {
+    /// The gate a call on `what` waits on, if it's hung, and the fake's deadline for it if set.
+    pub(super) fn gate(what: &Path) -> Option<(Arc<AtomicBool>, Option<Duration>)> {
         let h = HUNG.lock().unwrap_or_else(|e| e.into_inner());
-        let (_, g, n) = h.iter().find(|(p, _, _)| what.starts_with(p))?;
+        let (_, g, n, d) = h.iter().find(|(p, _, _, _)| what.starts_with(p))?;
         n.fetch_add(1, Ordering::SeqCst);
-        Some(g.clone())
+        HELD_HERE.with(|c| c.set(c.get() + 1));
+        Some((g.clone(), *d))
     }
 }
 
