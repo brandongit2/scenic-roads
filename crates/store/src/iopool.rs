@@ -174,6 +174,8 @@ struct Inner {
     online: AtomicBool,
     closed: AtomicBool,
     prober_running: AtomicBool,
+    /// The prober's next probe is made at once (`probe_first`), not after `probe_interval`.
+    probe_now: AtomicBool,
     /// The liveness probe after an overrun: when the one in flight started, and the last answer
     /// (when it came, and whether the share answered). Overruns arriving meanwhile wait for it.
     alive: Mutex<Alive>,
@@ -215,6 +217,7 @@ impl IoPool {
             online: AtomicBool::new(true),
             closed: AtomicBool::new(false),
             prober_running: AtomicBool::new(false),
+            probe_now: AtomicBool::new(false),
             alive: Mutex::new(Alive::default()),
             alive_cv: std::sync::Condvar::new(),
             counts: Mutex::new(Counts::default()),
@@ -254,6 +257,16 @@ impl IoPool {
     /// prober closes it again once the probe path answers.
     pub fn mark_offline(&self, why: &str) {
         self.inner.trip(why);
+    }
+
+    /// For a new pool over a share that may not answer (a mount left from home): calls are refused
+    /// (`Offline`) until the share answers a probe, made at once, so none waits on it first.
+    pub fn probe_first(&self) {
+        if self.inner.online.swap(false, SeqCst) {
+            lock(&self.inner.counts).offline_since = Some(SystemTime::now());
+        }
+        self.inner.probe_now.store(true, SeqCst);
+        self.inner.start_prober();
     }
 
     /// Runs `f` on a worker. The caller waits up to the pool's timeout for a worker to take it
@@ -710,8 +723,9 @@ fn prober(inner: Arc<Inner>) {
     }
     let mut in_flight = false;
     loop {
-        // First wait, so the client's attribute cache from before the stall has a chance to expire.
-        if !inner.sleep(inner.cfg.probe_interval) {
+        // First wait, so the client's attribute cache from before the stall has a chance to expire
+        // (none for a new pool's first probe: `probe_first`).
+        if !inner.probe_now.swap(false, SeqCst) && !inner.sleep(inner.cfg.probe_interval) {
             break;
         }
         if !in_flight {
@@ -1014,6 +1028,29 @@ mod tests {
         assert!(pool.status().timeouts >= 1);
         assert!(!pool.is_online());
         gate.release();
+    }
+
+    /// A pool probed first (a share that may be away) refuses calls until its share answers the
+    /// probe, made at once: the interval here is one no test waits out, so only that probe can
+    /// bring it online. A share that doesn't answer leaves it refusing every call at once.
+    #[test]
+    fn a_pool_probed_first_is_read_once_its_share_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let never = Duration::from_secs(24 * 3600);
+        let pool = IoPool::with_config(PoolConfig { probe_interval: never, ..cfg(dir.path().to_owned(), 1, 60_000) });
+        pool.probe_first();
+        eventually("the first probe answered", || pool.is_online());
+        assert!(pool.call(|| Ok(())).is_ok());
+        let away = IoPool::with_config(PoolConfig { probe_interval: never, ..cfg(dir.path().join("away"), 1, 60_000) });
+        away.probe_first();
+        let ran = Arc::new(AtomicBool::new(false));
+        let r2 = ran.clone();
+        let r = away.call(move || {
+            r2.store(true, SeqCst);
+            Ok(())
+        });
+        assert!(matches!(r, Err(IoError::Offline)), "{r:?}");
+        assert!(!ran.load(SeqCst) && !away.is_online());
     }
 
     #[test]
