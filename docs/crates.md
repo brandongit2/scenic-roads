@@ -591,8 +591,12 @@ commit; re-exports at the old paths as before.
    lakefill's two of the plan) moved verbatim to pipeline's `inputs_tests`. The crate's unit tests
    start offline (lib.rs `TEST_START`, test_start.rs); the fixtures pipeline's tests use
    (inputs::elevation's, inputs::heritage's and inputs::sources' `accept_fixture`, sources'
-   `STAGED`, `accept_files`, `staged`) sit behind its `testkit` feature. i_overlay went with the
-   regions. tests/grant_rules.rs now scans every crate's src. Cut: terrain_pack's `water_pin` path
+   `STAGED`, `accept_files`, `staged`) sit behind its `testkit` feature. The scan tests
+   (tests/common's `test_lines`) take an item under exactly `#[cfg(any(test, feature =
+   "testkit"))]` as test code, as a `#[cfg(test)]` one (any other `any(test, …)` is scanned), and
+   tests/test_mode.rs checks that only dev-dependencies turn a `testkit` on, so no release build
+   has one. i_overlay went with the regions. tests/grant_rules.rs, and guards.sh's list of the
+   Python steps, now read every crate's src. Cut: terrain_pack's `water_pin` path
    (no other user); nothing else was dead: every re-export left has users above. modgraph.py
    (main at 0875f150, after 6c): the family's mentions of the rest of pipeline, tests included,
    39 before (inputs → out 8, depth 4, agent 1, terrain_deep 1; lakefill → agent 6, terrain_pack
