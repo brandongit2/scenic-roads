@@ -7,7 +7,7 @@
 //!         [--workers n]
 //!       z3 tile x,y: its canopy squares read from this Mac's whole copies in `chm`, else the
 //!       rows it needs of the NAS's `chm-store` (pipeline::trees::squares::rows_here), its
-//!       leaf-type squares in `leaf` (made where missing: pipeline::leaftype),
+//!       leaf-type squares in `leaf` (made where missing: trees::leaftype),
 //!       out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles;
 //!       `sources.json`: where the declared canopy and leaf-type sources are
 //!       (pipeline::trees::RunSources, written by the trees job)

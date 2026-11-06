@@ -111,7 +111,7 @@
 //!                                tiles; `--archive`: into that local file, the NAS untouched)
 //!   stations --pass d [--geojson f]  the rail stops of the pass's rail set within the coverage,
 //!                                as the stations' tiles
-//!   ferries --pass d [--gtfs-index i]  the pass's ferries set (pipeline::ferries, with the ferry
+//!   ferries --pass d [--gtfs-index i]  the pass's ferries set (landmarks::ferries, with the ferry
 //!                                feeds and the static timetables of index i, else the records'
 //!                                accepted one), as the ferries' blocks
 //!   rail-feeds [--pass d] [--feeds-index i]  the timetable feeds (the declarations of index i,
@@ -1091,7 +1091,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             eprintln!("stations: {n} stops in {tiles} tiles");
         }
         "ferries" => {
-            // ferries --pass <date> [--gtfs-index <index>]: the pass's ferries set (pipeline::ferries),
+            // ferries --pass <date> [--gtfs-index <index>]: the pass's ferries set (landmarks::ferries),
             // as blocks.
             let date = opt(&args, "--pass").context("--pass <date>")?;
             let statics = static_timetables(&out, &args)?;

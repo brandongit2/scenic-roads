@@ -389,7 +389,7 @@ pub fn stage(
     }
     write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
     st.grids.push("terrain".into());
-    // (The area flags are rasterised per z6 tile: pipeline::heritage, codecs::areaflags.)
+    // (The area flags are rasterised per z6 tile: landmarks::heritage, codecs::areaflags.)
     for var in ["class", "canopy", "cover"] {
         let mut l = LayerReader::new(src, &format!("grid-{var}"));
         let mut data = vec![0u8; tiles.len() * CELLS];

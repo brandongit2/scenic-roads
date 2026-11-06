@@ -9,7 +9,7 @@
 //!
 //! The pieces come from the jobs that match timetables to the map: `rail` (`work/rail/lines`:
 //! [`rail_lines`] and [`rail_unmatched`], from railfreq's misses) and `ferries`
-//! (`work/ferries/lines`, pipeline::ferries' `timetables.json`). The lead-only `timetables-todo` job
+//! (`work/ferries/lines`, landmarks::ferries' `timetables.json`). The lead-only `timetables-todo` job
 //! ([`run`]) merges them.
 
 use anyhow::{Context, Result};
@@ -144,10 +144,10 @@ pub fn miss_keys(miss: &[u8]) -> HashSet<Key> {
     miss.chunks_exact(16).map(|r| [0, 4, 8, 12].map(|i| u32::from_le_bytes(r[i..i + 4].try_into().unwrap()))).collect()
 }
 
-/// The rail routes that match nothing on the map, from pipeline::gtfs::railcount's routes (`routes`): a route
+/// The rail routes that match nothing on the map, from landmarks::gtfs::railcount's routes (`routes`): a route
 /// with stop pairs in the coverage (`kept`: the pairs railfreq was given), none of which found a
 /// track (`missed`), "a line OSM lacks"; a static route whose `osm` pin names neither a relation
-/// (`rels`) nor a way (`ways`) of the pass's rail in the coverage. Each as pipeline::ferries writes its
+/// (`rels`) nor a way (`ways`) of the pass's rail in the coverage. Each as landmarks::ferries writes its
 /// own: `{mode, source, static, route, name, agency, osm, why}`.
 pub fn rail_unmatched(
     routes: &Value,

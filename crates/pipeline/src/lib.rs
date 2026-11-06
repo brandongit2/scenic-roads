@@ -46,8 +46,8 @@ pub use terrain::{
     terrain_task, terrain_zoom,
 };
 // (`::trees`: the crate, not its module of the same name.)
-pub use ::trees::{landcover, leaftype, treepacks, trees};
-pub use landmarks::{ferries, gtfs, heritage, markconv, marksjob, namestodo, ovconv, railfeeds};
+pub use ::trees::{landcover, treepacks, trees};
+pub use landmarks::{gtfs, heritage, markconv, marksjob, namestodo, ovconv, railfeeds};
 pub use roads::{candidates, elev, peaks, reach, stage, summits, timetables, unit};
 
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an

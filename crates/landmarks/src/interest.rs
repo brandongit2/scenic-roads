@@ -332,7 +332,7 @@ pub fn poi_base(fame: f64, named: bool, rich: usize, size_rank: f64) -> f64 {
 }
 
 /// A repeated name waits until the nearest more interesting place of its kind and name is 2^NAME_GAP
-/// times the label spacing away on screen (crate::heritage_layers, pipeline::marksjob).
+/// times the label spacing away on screen (crate::heritage_layers, crate::marksjob).
 pub const NAME_GAP: f64 = 3.0;
 
 /// Each named place's mz at least NAME_GAP after the zoom where the nearest

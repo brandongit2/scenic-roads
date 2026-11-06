@@ -520,7 +520,7 @@ pub struct Report {
 }
 
 /// Writes a z6 tile's heritage inputs for its box (degrees) into its folder: `heritage.json` and
-/// `area-shapes.geojsonseq` (pipeline::heritage::unit_inputs); the sites and polygons written.
+/// `area-shapes.geojsonseq` (landmarks::heritage::unit_inputs); the sites and polygons written.
 pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usize)>;
 
 /// Runs the z6 tile's programs for z6 tile `u` in `dir` from `piece`, with the coverage and the global-source
