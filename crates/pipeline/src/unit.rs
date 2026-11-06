@@ -6,7 +6,7 @@
 //! Before the expensive steps the folder is cut down to the ways that touch the coverage (whoever
 //! owns them: a way just outside still gives the clean-up its junction context at shared nodes).
 //! The global-source layers come from the catalogue's packs (`stage`), and the roads' heights from the
-//! finished terrain staged with them (crate::road_terrain).
+//! finished terrain staged with them (terrain::road_terrain).
 
 use anyhow::{bail, Context, Result};
 use buildstore::coverage::Coverage;
@@ -92,14 +92,14 @@ pub fn owns(tb: [i32; 4], p: [i32; 2]) -> bool {
     p[0] >= tb[0] && p[0] < tb[2] && p[1] >= tb[1] && p[1] < tb[3]
 }
 
-/// What a z6 tile's programs read of the declared sources (crate::inputs::sources), in its folder
+/// What a z6 tile's programs read of the declared sources (inputs::inputs::sources), in its folder
 /// (`UnitSources::FILE`), written as the folder is prepared (`prepare_folder`).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UnitSources {
     /// The land-cover source (`landcover`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub land_cover: Option<crate::landcover::Cover>,
-    /// Each canopy file's URL by its name (scenic-metrics' canopy step: crate::trees::canopy_urls).
+    pub land_cover: Option<trees::landcover::Cover>,
+    /// Each canopy file's URL by its name (scenic-metrics' canopy step: trees::trees::canopy_urls).
     #[serde(default)]
     pub canopy: BTreeMap<String, String>,
 }
@@ -108,11 +108,11 @@ impl UnitSources {
     pub const FILE: &'static str = "sources.json";
 
     /// What the z6 tile's programs read of `s`.
-    pub fn of(s: &crate::inputs::sources::Sources) -> Result<UnitSources> {
-        use crate::inputs::sources::{CANOPY, LAND_COVER};
+    pub fn of(s: &inputs::inputs::sources::Sources) -> Result<UnitSources> {
+        use inputs::inputs::sources::{CANOPY, LAND_COVER};
         Ok(UnitSources {
-            land_cover: Some(crate::landcover::Cover::of(s.role(LAND_COVER)?)?),
-            canopy: crate::trees::canopy_urls(s.role(CANOPY)?)?,
+            land_cover: Some(trees::landcover::Cover::of(s.role(LAND_COVER)?)?),
+            canopy: trees::trees::canopy_urls(s.role(CANOPY)?)?,
         })
     }
 
@@ -151,13 +151,13 @@ pub struct Tools {
     /// neither downloads into them nor removes from them (docs/workers.md §2); its programs are
     /// told so (`SCENIC_STORES_READ_ONLY`).
     pub stores_read_only: bool,
-    /// The declared elevation datasets' accepted version (crate::inputs::elevation): a z6 tile's
+    /// The declared elevation datasets' accepted version (inputs::inputs::elevation): a z6 tile's
     /// folder is prepared only with one (None: a task's worker, which runs the tail alone).
-    pub elevation: Option<crate::inputs::Accepted>,
-    /// The declared sources' accepted version (crate::inputs::sources): what a z6 tile's programs read
+    pub elevation: Option<inputs::inputs::Accepted>,
+    /// The declared sources' accepted version (inputs::inputs::sources): what a z6 tile's programs read
     /// of them is written into its folder (`UnitSources`); a folder is prepared only with them (None:
     /// a task's worker, which runs the tail alone).
-    pub declared: Option<crate::inputs::sources::Sources>,
+    pub declared: Option<inputs::inputs::sources::Sources>,
     /// Where to keep a copy of the folder before and after each of the steps' programs, with the
     /// command that ran it (`<n> <step> before|after` and `….cmd`): `scenic-build unit-snap`, for
     /// running the steps again elsewhere (natively at other thread counts) and comparing bytes (tools/check/same.py). Copies are APFS clones: no space until they differ.
@@ -520,7 +520,7 @@ pub struct Report {
 }
 
 /// Writes a z6 tile's heritage inputs for its box (degrees) into its folder: `heritage.json` and
-/// `area-shapes.geojsonseq` (crate::heritage::unit_inputs); the sites and polygons written.
+/// `area-shapes.geojsonseq` (pipeline::heritage::unit_inputs); the sites and polygons written.
 pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usize)>;
 
 /// Runs the z6 tile's programs for z6 tile `u` in `dir` from `piece`, with the coverage and the global-source
@@ -548,7 +548,7 @@ pub fn build_folder(
 
 /// A z6 tile's build up to its tail (docs/workers.md: what needs the NAS): its ways from the extract,
 /// those touching the coverage, the global-source layers staged from the packs over `area` with the deep terrain
-/// under its vertices and the datasets' codes (what its elevations read: crate::road_terrain), the
+/// under its vertices and the datasets' codes (what its elevations read: terrain::road_terrain), the
 /// heritage inputs, area flags and land cover; then its scenic results from its last run restored
 /// (`carry`), as the tail's canopy and view steps read them.
 #[allow(clippy::too_many_arguments)]
@@ -566,13 +566,13 @@ pub fn prepare_folder(
     std::fs::create_dir_all(dir)?;
     let log = dir.join("steps.log");
     let mut rep = Report { unit: u.slash(), ..Default::default() };
-    // 1. Every way of the extract, densified by the declared elevation datasets (crate::dem::spacing).
+    // 1. Every way of the extract, densified by the declared elevation datasets (inputs::dem::spacing).
     let a = tools.elevation.as_ref().context("the unit's elevations: the declared elevation datasets' accepted version isn't given (the build reads them once their switch is recorded: docs/inputs.md §6.8)")?;
-    let spacing = dir.join(crate::dem::spacing::FILE);
-    let accepted = crate::dem::declared::accepted(a)?;
-    let fine = crate::dem::spacing::Fine::of_accepted(&accepted);
+    let spacing = dir.join(inputs::dem::spacing::FILE);
+    let accepted = inputs::dem::declared::accepted(a)?;
+    let fine = inputs::dem::spacing::Fine::of_accepted(&accepted);
     fine.write(&spacing)?;
-    let mut c = crate::cli::program(&tools.bin, "extract");
+    let mut c = jobrt::sys::program(&tools.bin, "extract");
     c.arg(dir).arg(&spacing).arg(piece);
     run_in(c, "extracting the ways (extract)", &log, dir, tools)?;
     let s = stage("cutting to the coverage");
@@ -601,22 +601,22 @@ pub fn prepare_folder(
     let b = area.b;
     // (With the terrain the roads' heights read: the deep tiles under the vertices; and the
     // datasets' codes.)
-    let deep = crate::road_terrain::deep_tiles(roadcore::Ways::open(dir)?.verts(), &fine);
+    let deep = terrain::road_terrain::deep_tiles(roadcore::Ways::open(dir)?.verts(), &fine);
     rep.staged = crate::stage::stage(src, area, &deep, dir)?;
-    crate::road_terrain::Codes::of(&accepted).write(&dir.join(crate::road_terrain::CODES_FILE))?;
+    terrain::road_terrain::Codes::of(&accepted).write(&dir.join(terrain::road_terrain::CODES_FILE))?;
     s.end();
     // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated
     // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
     let s = stage("staging the heritage inputs");
     (rep.heritage, rep.areas) = heritage(b, dir)?;
     s.end();
-    let mut c = crate::cli::program(&tools.bin, "areaflags");
+    let mut c = jobrt::sys::program(&tools.bin, "areaflags");
     c.arg(dir).arg(dir.join("area-shapes.geojsonseq"));
     run_in(c, "flagging the areas (areaflags)", &log, dir, tools)?;
     // Land cover the packs lack (new coverage): the declared land-cover source for those grid tiles
     // only; the rest stays as staged.
     if rep.staged.missing.get("class").copied().unwrap_or(0) > 0 {
-        let mut c = crate::cli::program(&tools.bin, "landcover");
+        let mut c = jobrt::sys::program(&tools.bin, "landcover");
         c.arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));
         run_in(c, "classifying the land cover (landcover)", &log, dir, tools)?;
     }
@@ -652,7 +652,7 @@ pub use ::offload::Run;
 
 /// The files a `unit` job saves for a z6 tile (its tile's dash name: `6-31-20`): its base pack, road
 /// values, roads' English and the grids its packs lacked (scenic-build's `commit_unit`). All a
-/// helper's hand-off may change (crate::coord).
+/// helper's hand-off may change (pipeline::coord).
 pub fn saved_files(dash: &str) -> [String; 7] {
     [
         "base",
@@ -898,7 +898,7 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
         (!v.contains("{net}")).then_some(v)
     };
     for r in runs {
-        let mut c = crate::cli::program(&tools.bin, &r.prog);
+        let mut c = jobrt::sys::program(&tools.bin, &r.prog);
         for a in &r.args {
             c.arg(fill(a).with_context(|| format!("{}: no place for {a}", r.what))?);
         }

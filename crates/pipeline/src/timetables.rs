@@ -3,13 +3,13 @@
 //! OSM decides what's drawn; timetables only add counts. Two things the owner can't see otherwise:
 //! - **The to-do:** OSM's rail and ferry lines in the coverage that no timetable covers, by
 //!   priority, as `inputs/timetables/gtfs/todo/lines.jsonl` beside a brief (`todo/README.md`). The
-//!   owner answers with static GTFS zips in the inputs folder (crate::inputs::gtfs).
+//!   owner answers with static GTFS zips in the inputs folder (inputs::inputs::gtfs).
 //! - **The report:** timetable routes that match nothing on the map, as `work/timetables/report`,
 //!   which the lead shows on the build page and in `scenic status`. Never drawn, never held.
 //!
 //! The pieces come from the jobs that match timetables to the map: `rail` (`work/rail/lines`:
 //! [`rail_lines`] and [`rail_unmatched`], from railfreq's misses) and `ferries`
-//! (`work/ferries/lines`, crate::ferries' `timetables.json`). The lead-only `timetables-todo` job
+//! (`work/ferries/lines`, pipeline::ferries' `timetables.json`). The lead-only `timetables-todo` job
 //! ([`run`]) merges them.
 
 use anyhow::{Context, Result};
@@ -136,7 +136,7 @@ type Key = [u32; 4];
 
 /// The positions of a pairs file's records (rail::PAIR bytes each).
 pub fn pair_keys(pairs: &[u8]) -> HashSet<Key> {
-    crate::rail::Pair::all(pairs).map(|r| [r.a[0], r.a[1], r.b[0], r.b[1]].map(f32::to_bits)).collect()
+    inputs::rail::Pair::all(pairs).map(|r| [r.a[0], r.a[1], r.b[0], r.b[1]].map(f32::to_bits)).collect()
 }
 
 /// railfreq's `rail-miss.bin`.
@@ -144,10 +144,10 @@ pub fn miss_keys(miss: &[u8]) -> HashSet<Key> {
     miss.chunks_exact(16).map(|r| [0, 4, 8, 12].map(|i| u32::from_le_bytes(r[i..i + 4].try_into().unwrap()))).collect()
 }
 
-/// The rail routes that match nothing on the map, from crate::gtfs::railcount's routes (`routes`): a route
+/// The rail routes that match nothing on the map, from pipeline::gtfs::railcount's routes (`routes`): a route
 /// with stop pairs in the coverage (`kept`: the pairs railfreq was given), none of which found a
 /// track (`missed`), "a line OSM lacks"; a static route whose `osm` pin names neither a relation
-/// (`rels`) nor a way (`ways`) of the pass's rail in the coverage. Each as crate::ferries writes its
+/// (`rels`) nor a way (`ways`) of the pass's rail in the coverage. Each as pipeline::ferries writes its
 /// own: `{mode, source, static, route, name, agency, osm, why}`.
 pub fn rail_unmatched(
     routes: &Value,
@@ -259,7 +259,7 @@ pub fn merge(rail: &Value, ferries: &Value, inside: &dyn Fn([i32; 2]) -> bool) -
         km: round1(todo.iter().filter_map(|l| l["km"].as_f64()).sum()),
         unmatched: unmatched.len(),
     };
-    let report = json!({"to_do": todo.len(), "to_do_km": r.km, "by_kind": {"rail": r.rail, "ferry": r.ferry}, "file": format!("{}/{TODO_FILE}", crate::inputs::todo_rel(crate::inputs::gtfs::UNIT)), "unmatched": unmatched});
+    let report = json!({"to_do": todo.len(), "to_do_km": r.km, "by_kind": {"rail": r.rail, "ferry": r.ferry}, "file": format!("{}/{TODO_FILE}", inputs::inputs::todo_rel(inputs::inputs::gtfs::UNIT)), "unmatched": unmatched});
     (todo, report, r)
 }
 
@@ -270,7 +270,7 @@ fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
 
 /// The job: the two pieces read from `out`'s records, the to-do list and its brief written whole
 /// into the static timetables' inputs folder's `todo/` (under `todo_root`: the project folder, or a
-/// scratch one; `todo/` is never read as an input, crate::inputs::list), the report put as
+/// scratch one; `todo/` is never read as an input, inputs::inputs::list), the report put as
 /// [`REPORT`].
 pub fn run(
     out: &mut buildstore::out::Out,
@@ -289,7 +289,7 @@ pub fn run(
     let (todo, report, r) = merge(&rail, &ferries, &|p| cov.contains(p));
     drop(p);
     let _p = phase("writing the to-do list and the report");
-    let dir = crate::inputs::todo_dir(todo_root, crate::inputs::gtfs::UNIT);
+    let dir = inputs::inputs::todo_dir(todo_root, inputs::inputs::gtfs::UNIT);
     dir.create_dir_all()?;
     let text: String = todo.iter().map(|l| l.to_string() + "\n").collect();
     put(&dir.join(TODO_FILE), text.as_bytes())?;

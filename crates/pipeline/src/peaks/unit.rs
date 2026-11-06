@@ -121,11 +121,11 @@ pub struct UnitZ12 {
 
 impl UnitZ12 {
     pub fn load(out: &buildstore::out::Out, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
-        Self::load_from(&crate::terrain_pack::ManifestTiles::new(out, "terrain"), want)
+        Self::load_from(&terrain::terrain_pack::ManifestTiles::new(out, "terrain"), want)
     }
 
     /// `load`, from the terrain packs `packs` reads (a job's several z6 tiles', each pack opened once).
-    pub fn load_from(packs: &crate::terrain_pack::ManifestTiles, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
+    pub fn load_from(packs: &terrain::terrain_pack::ManifestTiles, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
         // (In one phase, its tiles' bytes counted.)
         let p = jobrt::timings::phase("loading z12 terrain tiles from the packs");
         // (The packs' tiles read in spans, a pack's at once: `get_many`.)
@@ -975,7 +975,7 @@ mod tests {
     /// measured from the same packs read a tile at a time, each z6 tile in turn.
     #[test]
     fn read_ahead_in_spans_gives_the_same_bytes_as_tile_by_tile() {
-        use crate::terrain_pack::ManifestTiles;
+        use terrain::terrain_pack::ManifestTiles;
         let d = tempfile::tempdir().unwrap();
         let mut out = buildstore::out::Out::unbound(
             &store::nasfs::NasRoot::local_for_test(&d.path().join("root")),
@@ -1021,7 +1021,7 @@ mod tests {
             by_pack.entry((x >> 6, y >> 6)).or_default().push((Z12, x, y, png, 1));
         }
         for ((x, y), tiles) in by_pack {
-            crate::layers::write_pack(
+            terrain::layers::write_pack(
                 &mut out,
                 "terrain",
                 "terrarium-png",
@@ -1034,7 +1034,7 @@ mod tests {
         }
         // The z8: one flat tile elsewhere in a lo pack (nothing built elsewhere).
         let flat = roadcore::grid::encode_terrain_png(&vec![0f32; 256 * 256], 256, 256).unwrap();
-        let z8p = crate::layers::write_pack_local(
+        let z8p = terrain::layers::write_pack_local(
             &out,
             "z8t",
             "terrarium-png",

@@ -17,10 +17,10 @@
 //! `extract` keeps, so nothing a z6 tile builds is missed (an extra way only costs a run that keeps
 //! nothing).
 
-use crate::dem::spacing::Spacing;
 use anyhow::{Context, Result};
 use buildstore::coverage::Coverage;
 use codecs::legacy::TileId;
+use inputs::dem::spacing::Spacing;
 use osmpbf::{Element, ElementReader};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -47,7 +47,7 @@ pub struct LongWay {
 
 impl LongWay {
     /// Whether the way touches the coverage as the `unit` step tests it: on the points `extract` puts
-    /// along it (its nodes, and between them every `sp.at` its first node apart: crate::dem::spacing;
+    /// along it (its nodes, and between them every `sp.at` its first node apart: inputs::dem::spacing;
     /// ferries not), so a straight stretch cutting a corner of an outline between two nodes counts
     /// as it will there.
     pub fn touches(&self, cov: &Coverage, sp: &dyn Spacing) -> bool {
@@ -106,7 +106,7 @@ pub struct Reach {
     /// The box (w, s, e, n, E7) of the ordinary ways the z6 tile owns; None when it owns none.
     pub owned: Option<[i32; 4]>,
     pub long: Vec<LongWay>,
-    /// The 1° cells (crate::dem::spacing::cell) of the first nodes of its extract's ways, ferries
+    /// The 1° cells (inputs::dem::spacing::cell) of the first nodes of its extract's ways, ferries
     /// left out, sorted: where `extract`'s spacing is decided for them (owned or not: the `unit` step
     /// keeps every way touching the coverage). Required, never `serde(default)`: a reach from
     /// before it would read as no cells, which every spacing agrees on, and its key
@@ -315,7 +315,7 @@ pub fn of_piece(piece: &Path, u: TileId) -> Result<Option<Reach>> {
         let verts: Vec<[i32; 2]> = w.refs[s..s + n].iter().filter_map(|&id| at(id)).collect();
         let Some(&first) = verts.first() else { continue };
         if !ferry {
-            cells.insert(crate::dem::spacing::cell(first));
+            cells.insert(inputs::dem::spacing::cell(first));
         }
         // Owned by its first node the extract has, as `extract` (which drops missing nodes) and the
         // `unit` step see it.
@@ -339,9 +339,9 @@ pub fn of_piece(piece: &Path, u: TileId) -> Result<Option<Reach>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dem::spacing::{Fine, Uniform, FLOOR_M};
     use buildstore::recipes::Recipe;
     use det::Det;
+    use inputs::dem::spacing::{Fine, Uniform, FLOOR_M};
 
     fn e7(x: f64, y: f64) -> [i32; 2] {
         [(x * 1e7) as i32, (y * 1e7) as i32]
@@ -408,7 +408,7 @@ mod tests {
         let sp = &Uniform(15.0);
         // The sea between, a region with no land resolved as the regions are (cell by cell, its
         // land and the coastline's land none here): kept apart for the depth alone.
-        use crate::inputs::regions::{data::Datasets, read, resolve};
+        use inputs::inputs::regions::{data::Datasets, read, resolve};
         let files: std::collections::BTreeMap<String, Vec<u8>> = [
             ("_pins.toml", "osm = \"2026-09-28\"\n"),
             ("sea.toml", "id = \"sea\"\nname = \"Sea\"\nwater = [\"box:-16,58,-4,66\"]\n"),

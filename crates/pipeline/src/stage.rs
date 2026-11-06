@@ -11,7 +11,6 @@
 //! spans, unless it's here already: `copied_whole`), or a published catalogue's (`Source::Catalogue`,
 //! another root's for a pilot).
 
-use crate::terrain_pack::ManifestTiles;
 use anyhow::{Context, Result};
 use buildstore::out::Out;
 use roadcore::archive::ArchiveWriter;
@@ -22,6 +21,7 @@ use store::catalogue::Catalogue;
 use store::nasfs::Place;
 use store::pack::PackIndex;
 use store::range::PlainFile;
+use terrain::terrain_pack::ManifestTiles;
 
 /// How far a sample sees, km: its far field (roadcore::scenic::FAR_MAX_M).
 pub const FAR_KM: f64 = roadcore::scenic::FAR_MAX_M / 1000.0;
@@ -34,7 +34,7 @@ pub const MARGIN_KM: f64 = crate::reach::LONG_KM + FAR_KM;
 /// What a z6 tile stages: its tile grown by `MARGIN_KM` (`b`), and along each long way it owns
 /// (crate::reach::LongWay; ferries have no samples) its nodes in runs, each run's box grown by
 /// `FAR_KM`: every sample of a way the z6 tile owns sees staged terrain and canopy to its far
-/// field's end. Its key reads the same (crate::agent::build::unit_terrain_tiles).
+/// field's end. Its key reads the same (pipeline::agent::build::unit_terrain_tiles).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Area {
     /// Its tile grown by `MARGIN_KM` (w, s, e, n, degrees).
@@ -105,17 +105,17 @@ pub enum Source<'a> {
 
 impl Source<'_> {
     /// The pack (logical name) holding a tile of `layer`: root z0–2, lo z3–8 by z3 tile, hi z9–14
-    /// by z6 tile; the terrain's deep levels, z13–16, by z10 tile (crate::terrain_deep).
+    /// by z6 tile; the terrain's deep levels, z13–16, by z10 tile (terrain::terrain_deep).
     fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         match self {
             Source::Manifest(..) => Some(ManifestTiles::logical(layer, z, x, y)),
             Source::Catalogue(_, cat) => {
                 let l = cat.layers.get(layer)?;
-                let d = crate::terrain_deep::PACK_Z;
+                let d = terrain::terrain_deep::PACK_Z;
                 match z {
                     0..=2 => l.root.clone(),
                     3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
-                    _ if z >= crate::terrain_deep::FIRST_Z => {
+                    _ if z >= terrain::terrain_deep::FIRST_Z => {
                         l.deep.get(&format!("{d}/{}/{}", x >> (z - d), y >> (z - d))).cloned()
                     }
                     _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),
@@ -340,8 +340,8 @@ fn read_tiles(pf: &PlainFile, idx: &PackIndex, tiles: &[(u8, u32, u32)]) -> Resu
 
 /// Writes `terrain.tiles` and the grids for `area` into `dir`: the terrain's z0–12 over it, and
 /// its deep tiles `deep` (z13–16, those the roads' heights read:
-/// crate::road_terrain::deep_tiles) where it has them, as stored (lossless WebP,
-/// codecs::terrain_codec) in one archive (crate::road_terrain::TERRAIN_FILE).
+/// terrain::road_terrain::deep_tiles) where it has them, as stored (lossless WebP,
+/// codecs::terrain_codec) in one archive (terrain::road_terrain::TERRAIN_FILE).
 pub fn stage(
     src: &Source,
     area: &Area,
@@ -357,7 +357,7 @@ pub fn stage(
     let mut got = terrain_tiles(src, b, &want)?;
     want.sort_unstable_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
     want.dedup();
-    let file = crate::road_terrain::TERRAIN_FILE;
+    let file = terrain::road_terrain::TERRAIN_FILE;
     let tmp = dir.join(format!("{file}.tmp"));
     let mut w = ArchiveWriter::create(&tmp, r#"{"format":"webp","encoding":"terrarium"}"#)?;
     let mut z11: HashMap<(u32, u32), Vec<u8>> = HashMap::new();
@@ -389,7 +389,7 @@ pub fn stage(
     }
     write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
     st.grids.push("terrain".into());
-    // (The area flags are rasterised per z6 tile: crate::heritage, codecs::areaflags.)
+    // (The area flags are rasterised per z6 tile: pipeline::heritage, codecs::areaflags.)
     for var in ["class", "canopy", "cover"] {
         let mut l = LayerReader::new(src, &format!("grid-{var}"));
         let mut data = vec![0u8; tiles.len() * CELLS];
@@ -513,7 +513,7 @@ mod tests {
                     }
                 }
             }
-            crate::layers::write_pack(
+            terrain::layers::write_pack(
                 &mut out,
                 "terrain",
                 codecs::terrain_codec::ENCODING,
