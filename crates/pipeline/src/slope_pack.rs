@@ -11,16 +11,30 @@
 //! z6 tile's slope-hi run makes z10–12 from them and its hi terrain, taking each in as made: the
 //! same bytes as one run of the whole.
 
-use buildstore::out::Out;
 use crate::terrain_deep::{FIRST_Z, MAX_Z, PACK_Z};
 use crate::terrain_pack::ManifestTiles;
 use anyhow::Result;
+use buildstore::out::Out;
 use det::Det;
 use rayon::prelude::*;
 use roadcore::grid::{decode_terrain, upsampled};
 use roadcore::shade::{quadrant, Px};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
+
+/// Slope 4 (task #952): a missing deep terrain tile (z13 on) is made from its nearest ancestor
+/// within the deep levels alone, past them its own edge repeated (crate::slope_pack::fallback_floor),
+/// and z10–12 are made by slope-hi from its z10 tiles' z13 quadrants (their deep mids, format 2) and
+/// its hi terrain; the terrain it shades follows the one pyramid's rule (terrain_pack::TERRAIN_V 8); lossless
+/// WebP (crate::shade_codec: its version in the key). 5 (task #862): a pixel's metres from
+/// roadcore::geo's Mercator (`MERC_C`).
+pub const SLOPE_V: u32 = 5;
+
+/// Slope's 3: the shading pyramid (`SLOPE_V` 2), lossless WebP (crate::shade_codec, its version in
+/// the key). 2: an assembly's z6 tiles that aren't its z6 tiles' made from their terrain, never kept
+/// from the lo pack as an earlier run stored them, and their z7–8 tiles not kept
+/// (crate::slope_pack::assemble).
+pub const SLOPE_LO_V: u32 = 3;
 
 const TS: usize = 256;
 /// The hi packs' last zoom (their band's: the deep packs hold z13 on, crate::terrain_deep).
@@ -442,7 +456,8 @@ const MID_FMT: u64 = 1;
 /// "slope", "tile": "6/x/y", "v": SLOPE_V}`, a section `<z>-<x>-<y>` for each of its z6–8 tiles (its
 /// bytes as stored), in (z, x, y) order.
 pub fn write_mid(path: &std::path::Path, t: (u32, u32), tiles: &[Made]) -> Result<()> {
-    let meta = serde_json::json!({ "fmt": MID_FMT, "step": "slope", "tile": format!("6/{}/{}", t.0, t.1), "v": crate::agent::build::SLOPE_V });
+    let meta =
+        serde_json::json!({ "fmt": MID_FMT, "step": "slope", "tile": format!("6/{}/{}", t.0, t.1), "v": SLOPE_V });
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -475,11 +490,11 @@ pub fn read_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<((u32, u32
     let m = r.meta();
     anyhow::ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "slope", "{}: not a slope mid", what());
     anyhow::ensure!(
-        m["v"].as_u64() == Some(crate::agent::build::SLOPE_V as u64),
+        m["v"].as_u64() == Some(SLOPE_V as u64),
         "{}: a mid of slope version {}, not {}",
         what(),
         m["v"],
-        crate::agent::build::SLOPE_V
+        SLOPE_V
     );
     let t = m["tile"]
         .as_str()
@@ -1151,7 +1166,7 @@ const QUADRANT_BYTES: usize = 128 * 128 * 12;
 /// "step": "slope-deep", "tile": "10/x/y", "v": SLOPE_V}` and a section `13-<x>-<y>` for each of
 /// its z13 tiles, in (x, y) order: its quadrant (`QUADRANT_BYTES`), empty where it shades nothing.
 pub fn write_deep_mid(path: &std::path::Path, t: (u32, u32), mid: &DeepMid) -> Result<()> {
-    let meta = serde_json::json!({ "fmt": DEEP_MID_FMT, "step": "slope-deep", "tile": format!("{PACK_Z}/{}/{}", t.0, t.1), "v": crate::agent::build::SLOPE_V });
+    let meta = serde_json::json!({ "fmt": DEEP_MID_FMT, "step": "slope-deep", "tile": format!("{PACK_Z}/{}/{}", t.0, t.1), "v": SLOPE_V });
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -1189,11 +1204,11 @@ pub fn read_deep_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<((u32
         what()
     );
     anyhow::ensure!(
-        m["v"].as_u64() == Some(crate::agent::build::SLOPE_V as u64),
+        m["v"].as_u64() == Some(SLOPE_V as u64),
         "{}: a deep mid of slope version {}, not {}",
         what(),
         m["v"],
-        crate::agent::build::SLOPE_V
+        SLOPE_V
     );
     let t = m["tile"]
         .as_str()
@@ -1281,12 +1296,7 @@ pub fn build_lo_keeping(
     let target = format!("3/{}/{}", q.0, q.1);
     let id = jobrt::resume_log::job_id(
         "slope-lo",
-        &format!(
-            "slope-lo {} slope {} {}",
-            crate::agent::build::SLOPE_LO_V,
-            crate::agent::build::SLOPE_V,
-            codecs::shade_codec::version()
-        ),
+        &format!("slope-lo {} slope {} {}", SLOPE_LO_V, SLOPE_V, codecs::shade_codec::version()),
         &target,
         &[&lo_inputs(out, q, ts)],
     );

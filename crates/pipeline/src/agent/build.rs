@@ -11,40 +11,25 @@
 use super::nasread;
 use super::steps::{readiness, ready, Left, Ready, View};
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
-use buildstore::coverage::coverage_tiles;
 use crate::coverage::Coverage;
 use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
+use buildstore::coverage::coverage_tiles;
 use jobrt::jobs::h;
 use roadcore::geo::grown_e7;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-/// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
-/// Terrain-hi 8 (task #929): the one pyramid's rule (docs/steps.md §2, Terrain): a tile is sampled
-/// only at its place's finest zoom (crate::terrain_zoom, derived from the declared datasets), each
-/// coarser one its children's means of their heights before rounding (rounded ties to even, as
-/// stored), its z12 tiles' quarters from its z10 tiles' deep mids, outside every region the relief.
-/// 9 (task #862): roadcore::geo's one Mercator, box-grower and Earth ("near the coverage" its
-/// `NEAR_COVERAGE_KM`), `det`'s maths in the sampling (the geoid's too). 10 (task #942, the
-/// owner's of 5 Nov): lakes and rivers keep the source's heights, artefacts too (none levelled;
-/// mids of format 3, no lakes' levels; the water's digests of the sea alone). 11 (task #975, the
-/// owner's of 5 Nov): the sea and below 0 m keep the source's heights too (no water read, no clamp
-/// at 0 m; every dataset read at sea).
-pub const TERRAIN_V: u32 = 11;
+// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle). Terrain-hi's
+// and slope's are their steps' own (terrain_pack::TERRAIN_V, slope_pack::{SLOPE_V, SLOPE_LO_V}).
+use crate::slope_pack::{SLOPE_LO_V, SLOPE_V};
+use crate::terrain_pack::TERRAIN_V;
 /// Terrain-deep 2 (task #929): a z10 tile's band past z12 by the same rule, its mid for its z6 tile.
 /// 3 (task #862): as terrain-hi's 9. 5 (task #942): its lakes and rivers keep the source's
 /// heights, as terrain-hi's 10 (4 had lakes at levels a terrain-lakes step decided). 6 (task #975):
 /// the sea and below 0 m too, as terrain-hi's 11.
 pub const TERRAIN_DEEP_V: u32 = 6;
-/// Slope 4 (task #952): a missing deep terrain tile (z13 on) is made from its nearest ancestor
-/// within the deep levels alone, past them its own edge repeated (crate::slope_pack::fallback_floor),
-/// and z10–12 are made by slope-hi from its z10 tiles' z13 quadrants (their deep mids, format 2) and
-/// its hi terrain; the terrain it shades follows the one pyramid's rule (`TERRAIN_V` 8); lossless
-/// WebP (crate::shade_codec: its version in the key). 5 (task #862): a pixel's metres from
-/// roadcore::geo's Mercator (`MERC_C`).
-pub const SLOPE_V: u32 = 5;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
 /// flags rasterised per z6 tile.
@@ -1209,12 +1194,6 @@ pub fn region_steps(
 /// a quarter outside every region the relief's (crate::terrain_pack::Fill). 4 (task #975): the sea
 /// and below 0 m keep the source's heights.
 pub const TERRAIN_LO_V: u32 = 4;
-/// Slope's 3: the shading pyramid (`SLOPE_V` 2), lossless WebP (crate::shade_codec, its version in
-/// the key). 2: an assembly's z6 tiles that aren't its z6 tiles' made from their terrain, never kept
-/// from the lo pack as an earlier run stored them, and their z7–8 tiles not kept
-/// (crate::slope_pack::assemble).
-pub const SLOPE_LO_V: u32 = 3;
-
 /// Terrain's and slope's targets, each with its key (`key_now`: what its declared reads name,
 /// crate::agent::steps), done or not (docs/steps.md §2, Terrain): a z6 tile per z6 tile near the
 /// coverage (`coverage_tiles`), an assembly per z3 tile with z6 tiles. `UNKNOWN` (None for slope's)

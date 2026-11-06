@@ -11,6 +11,18 @@ use roadcore::grid::decode_terrain;
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// Terrain-hi 8 (task #929): the one pyramid's rule (docs/steps.md §2, Terrain): a tile is sampled
+/// only at its place's finest zoom (crate::terrain_zoom, derived from the declared datasets), each
+/// coarser one its children's means of their heights before rounding (rounded ties to even, as
+/// stored), its z12 tiles' quarters from its z10 tiles' deep mids, outside every region the relief.
+/// 9 (task #862): roadcore::geo's one Mercator, box-grower and Earth ("near the coverage" its
+/// `NEAR_COVERAGE_KM`), `det`'s maths in the sampling (the geoid's too). 10 (task #942, the
+/// owner's of 5 Nov): lakes and rivers keep the source's heights, artefacts too (none levelled;
+/// mids of format 3, no lakes' levels; the water's digests of the sea alone). 11 (task #975, the
+/// owner's of 5 Nov): the sea and below 0 m keep the source's heights too (no water read, no clamp
+/// at 0 m; every dataset read at sea).
+pub const TERRAIN_V: u32 = 11;
+
 /// Raw tiles got at once (each mostly waits on the NAS or S3; S3's requests themselves held to
 /// buildstore::fetch::HOST_REQUESTS a host).
 const FETCH_THREADS: usize = 64;
@@ -959,8 +971,8 @@ impl RawTiles {
         let mut v = Vec::new();
         for p in packs.iter().rev() {
             // (Held, and marked used: rawpack::local_copy, store::cachefile.)
-            let opened =
-                buildstore::rawpack::local_copy(&self.dir, st, &p.name).and_then(|l| roadcore::archive::Archive::open(&l));
+            let opened = buildstore::rawpack::local_copy(&self.dir, st, &p.name)
+                .and_then(|l| roadcore::archive::Archive::open(&l));
             match opened {
                 Ok(a) => v.push(a),
                 Err(e) => {
@@ -1292,7 +1304,8 @@ pub fn write_mid(path: &std::path::Path, t: (u32, u32), mid: &Mid) -> anyhow::Re
 /// tiles three zooms down with its 2×2 means (f32, little-endian, row by row), by column then row.
 pub fn write_mid_of(path: &std::path::Path, t: (u8, u32, u32), mid: &Mid) -> anyhow::Result<()> {
     let (tz, tx, ty) = t;
-    let meta = serde_json::json!({ "fmt": MID_FMT, "step": "terrain", "tile": format!("{tz}/{tx}/{ty}"), "v": crate::agent::build::TERRAIN_V });
+    let meta =
+        serde_json::json!({ "fmt": MID_FMT, "step": "terrain", "tile": format!("{tz}/{tx}/{ty}"), "v": TERRAIN_V });
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -1326,11 +1339,11 @@ pub fn read_mid_of<'a>(path: impl Into<store::nasfs::Loc<'a>>, tz: u8) -> anyhow
     let m = r.meta();
     anyhow::ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "terrain", "{}: not a terrain mid", what());
     anyhow::ensure!(
-        m["v"].as_u64() == Some(crate::agent::build::TERRAIN_V as u64),
+        m["v"].as_u64() == Some(TERRAIN_V as u64),
         "{}: a mid of terrain version {}, not {}",
         what(),
         m["v"],
-        crate::agent::build::TERRAIN_V
+        TERRAIN_V
     );
     let t = m["tile"]
         .as_str()

@@ -16,8 +16,8 @@
 //! z6 tiles took 37 s at the median and 2 minutes at the 90th percentile with their deep levels
 //! in them, before #639 split those out a z10 tile a target); a stop costs them little.
 
-use jobrt::resume_log::{Get, Log, Put};
 use anyhow::Result;
+use jobrt::resume_log::{Get, Log, Put};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -167,7 +167,7 @@ pub fn hi_id(
         }
     }
     jobrt::resume_log::id(&[
-        &format!("terrain-hi {} blocks {up}", crate::agent::build::TERRAIN_V),
+        &format!("terrain-hi {} blocks {up}", crate::terrain_pack::TERRAIN_V),
         &codecs::terrain_codec::version(),
         &format!("{}/{}/{}", t.0, t.1, t.2),
         &h.finalize().to_hex(),

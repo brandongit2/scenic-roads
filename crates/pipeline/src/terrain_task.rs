@@ -104,7 +104,7 @@ fn name(prefix: &str, z: u8, x: u32, y: u32) -> String {
 pub struct Meta {
     pub fmt: u64,
     pub step: String,
-    /// The terrain's version (crate::agent::build::TERRAIN_V): a task of another isn't run.
+    /// The terrain's version (crate::terrain_pack::TERRAIN_V): a task of another isn't run.
     pub v: u64,
     pub piece: String,
     pub subtrees: String,
@@ -143,7 +143,7 @@ pub fn cut(
     let meta = Meta {
         fmt: FMT,
         step: KIND.into(),
-        v: crate::agent::build::TERRAIN_V as u64,
+        v: crate::terrain_pack::TERRAIN_V as u64,
         piece: format!("6/{}/{}", piece.0, piece.1),
         subtrees: subtrees_arg(group),
         levels: levels.clone(),
@@ -193,11 +193,11 @@ impl Inputs {
             serde_json::from_value(r.meta().clone()).with_context(|| format!("{}: not a terrain task", what()))?;
         ensure!(meta.fmt == FMT && meta.step == KIND, "{}: not a terrain task of format {FMT}", what());
         ensure!(
-            meta.v == crate::agent::build::TERRAIN_V as u64,
+            meta.v == crate::terrain_pack::TERRAIN_V as u64,
             "{}: a task of terrain version {}, not {}",
             what(),
             meta.v,
-            crate::agent::build::TERRAIN_V
+            crate::terrain_pack::TERRAIN_V
         );
         let reads = raw_read(&meta.levels);
         Ok(Inputs { r, meta, reads })
@@ -509,9 +509,9 @@ impl<'a> Offers<'a> {
 mod tests {
     use super::*;
     use crate::coord::client::Client;
+    use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles};
     use buildstore::coverage::Coverage;
     use buildstore::out::Out;
-    use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles};
     use std::path::PathBuf;
 
     /// A z6 tile in the far north, the coverage at a corner of four of its subtrees (12.656°E, 70.10°N: z8 columns 136–137, rows 56–57, in z6

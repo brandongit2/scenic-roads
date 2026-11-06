@@ -1076,7 +1076,7 @@ pub const TABLE: [Step; 60] = [
     Step {
         cost_v: 8,
         shared: true,
-        versions: &[("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        versions: &[("terrain-hi", || crate::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "makes-hi", of: idents::makes_hi }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Read(idents::terrain_deep_mids) }, Of { step: "pyramids-fill", of: own, grain: Grain::Read(idents::nothing) }],
         ..step(
             "terrain",
@@ -1094,7 +1094,7 @@ pub const TABLE: [Step; 60] = [
         cost_v: 1,
         mem_mb: crate::terrain_deep::target_peak_mb(),
         shared: true,
-        versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || crate::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, Of { step: "pyramids-fill", of: z6_of_z10, grain: Grain::Read(idents::nothing) }],
         ..step(
             "terrain",
@@ -1110,7 +1110,7 @@ pub const TABLE: [Step; 60] = [
     Step {
         cost_v: 3,
         mem_mb: 1200,
-        versions: &[("terrain-lo", || super::build::TERRAIN_LO_V.to_string()), ("terrain-hi", || super::build::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        versions: &[("terrain-lo", || super::build::TERRAIN_LO_V.to_string()), ("terrain-hi", || crate::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
         reads: &[Mids { step: "terrain-hi", of: z6_of_z3, named: idents::terrain_mids }, In { name: "datasets:terrain", of: idents::datasets_terrain }],
         ..step(
             "terrain",
@@ -1143,7 +1143,7 @@ pub const TABLE: [Step; 60] = [
         cost_v: 1,
         mem_mb: crate::slope_pack::deep_peak_mb(),
         shared: true,
-        versions: &[("slope-deep", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
+        versions: &[("slope-deep", || crate::slope_pack::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
         reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }],
         ..step(
             "slope",
@@ -1158,7 +1158,7 @@ pub const TABLE: [Step; 60] = [
         cost_v: 5,
         mem_mb: crate::slope_pack::peak_mb(),
         shared: true,
-        versions: &[("slope-hi", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
+        versions: &[("slope-hi", || crate::slope_pack::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
         reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }, In { name: "root-tiles", of: idents::root_tiles }],
         ..step(
             "slope",
@@ -1172,7 +1172,7 @@ pub const TABLE: [Step; 60] = [
     Step {
         cost_v: 1,
         mem_mb: crate::slope_pack::lo_peak_mb(),
-        versions: &[("slope-lo", || super::build::SLOPE_LO_V.to_string()), ("slope", || super::build::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
+        versions: &[("slope-lo", || crate::slope_pack::SLOPE_LO_V.to_string()), ("slope", || crate::slope_pack::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
         reads: &[Of { step: "slope-hi", of: z6_of_z3, grain: Grain::Read(idents::slope_mids) }, Of { step: "terrain-lo", of: sl_lo, grain: Outputs }, All { step: "terrain-root", grain: Grain::Read(idents::terrain_root) }],
         ..step(
             "slope",

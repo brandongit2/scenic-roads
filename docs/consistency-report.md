@@ -326,7 +326,7 @@ Ranked by impact: bugs and real drift risk first (High), then likely future drif
   - Some drops save the manifest and some don't, so a crash between leaves different states.
 - **F37:**
   - The stored names `layers/<layer>/{hi,lo,root,deep}/z-x-y` are hand-formatted at about 15 sites.
-  - `polar::TERRAIN_V` and `agent::build::TERRAIN_V` are two constants with one name.
+  - `polar::TERRAIN_V` and `terrain_pack::TERRAIN_V` are two constants with one name.
   - Data writers import the scheduler to learn their own version.
 - **F38:** the server mmaps without the `ensure_local` guard against SIGBUS on NAS files, and keeps
   its own copy of the mirror's folder layout.
