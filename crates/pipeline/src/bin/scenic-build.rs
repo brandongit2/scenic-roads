@@ -3807,6 +3807,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     let blobs = store::blobs::Blobs::new(tools.cache.join("blobs"));
     let rep = build_folder(
         u,
+        &pipeline::stage::Area::of(u, reach.get(u)),
         &local,
         &folder,
         &cov,
@@ -3860,6 +3861,7 @@ fn unit_resume_id(
     blobs: &store::blobs::Blobs,
     date: &str,
     u: TileId,
+    reach: &pipeline::reach::Reaches,
     tools: &pipeline::unit::Tools,
 ) -> String {
     let get = |l: &str| format!("{l}={}", out.get(l).unwrap_or("-"));
@@ -3872,8 +3874,9 @@ fn unit_resume_id(
             lines.push(get(&pipeline::buildtiles::index_logical(&r)));
         }
     }
-    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, pipeline::stage::MARGIN_KM);
-    lines.extend(layers_source(out, pilot, Some(blobs)).pack_contents(b));
+    let area = pipeline::stage::Area::of(u, reach.get(u));
+    let b = area.b;
+    lines.extend(layers_source(out, pilot, Some(blobs)).pack_contents(&area));
     lines.extend(pipeline::heritage::unit_contents(out, date, b));
     let parts: Vec<&str> = lines.iter().map(String::as_str).collect();
     pipeline::resume_log::job_id("unit", &pipeline::agent::build::UNIT_V.to_string(), &u.slash(), &parts)
@@ -3945,17 +3948,11 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 .context("the roadside buildings aren't made (the buildings step)")?,
         ),
     };
-    let reach = if units.is_empty() || tools.buildings.is_none() {
-        Some(
-            pipeline::reach::Reaches::load(out.root(), &out.manifest, &date)
-                .map_err(|e| anyhow::anyhow!("the pass's reaches: {e:?}"))?
-                .context("no reaches for the pass (the reach step)")?,
-        )
-    } else {
-        None
-    };
+    let reach = pipeline::reach::Reaches::load(out.root(), &out.manifest, &date)
+        .map_err(|e| anyhow::anyhow!("the pass's reaches: {e:?}"))?
+        .context("no reaches for the pass (the reach step)")?;
     if units.is_empty() {
-        let reach = reach.as_ref().context("the pass's reaches")?;
+        let reach = &reach;
         let a = tools.elevation.as_ref().context("the declared elevation datasets' accepted version")?;
         let fine = pipeline::dem::spacing::Fine::of_accepted(&pipeline::dem::declared::accepted(a)?);
         for k in pieces["pieces"].as_object().context("pieces")?.keys() {
@@ -4035,8 +4032,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         if let Some(&next) = units.get(k + 1) {
             let o: &Out = out;
-            let b = roadcore::geo::tile_box_grown(next.z, next.x, next.y, pipeline::stage::MARGIN_KM);
-            let mut packs = layers_source(o, &pilot, Some(&blobs)).pack_contents(b);
+            let area = pipeline::stage::Area::of(next, reach.get(next));
+            let b = area.b;
+            let mut packs = layers_source(o, &pilot, Some(&blobs)).pack_contents(&area);
             // (Its heritage slices too: pipeline::heritage::unit_inputs_with.)
             packs.extend(pipeline::heritage::unit_contents(o, &date, b));
             let piece = o
@@ -4053,7 +4051,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             };
             // Its roadside buildings' tiles, into this Mac's copies of them.
             let tiles: Vec<(store::nasfs::NasPath, PathBuf, u64)> = match &buildings {
-                Some(index) => pipeline::buildtiles::tiles_for(next, reach.as_ref().and_then(|r| r.get(next)))
+                Some(index) => pipeline::buildtiles::tiles_for(next, reach.get(next))
                     .into_iter()
                     .filter_map(|t| pipeline::buildtiles::tile_copy(o.root(), index, t, &tools.cache))
                     .collect(),
@@ -4140,7 +4138,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         // Its pieces (task #889: pipeline::unit::PREPARE, tail_piece), taken while its folders are
         // as its last piece left them; else afresh.
         let dirs = [dir.as_path(), bdir.as_path()];
-        let id = unit_resume_id(out, args, &pilot, &blobs, &date, u, &tools);
+        let id = unit_resume_id(out, args, &pilot, &blobs, &date, u, &reach, &tools);
         let open =
             || pipeline::resume_log::Pieces::open(scratch, (6, u.x, u.y), "unit", &id, pipeline::resume_log::on());
         let mut pieces = open();
@@ -4174,19 +4172,13 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             if let Some(index) = &buildings {
                 let s = unit_stage("staging the buildings");
                 // (From this Mac's copies of the tiles: copied ahead, or now.)
-                let n = pipeline::buildtiles::stage(
-                    o.root(),
-                    index,
-                    u,
-                    reach.as_ref().and_then(|r| r.get(u)),
-                    &bdir,
-                    Some(&tools.cache),
-                )?;
+                let n = pipeline::buildtiles::stage(o.root(), index, u, reach.get(u), &bdir, Some(&tools.cache))?;
                 eprintln!("unit {}: buildings from {n} tiles", u.slash());
                 s.end();
             }
             let rep = prepare_folder(
                 u,
+                &pipeline::stage::Area::of(u, reach.get(u)),
                 &local_piece,
                 &dir,
                 &cov,
@@ -7110,7 +7102,7 @@ mod tests {
 
     #[test]
     fn a_boxs_canopy_files() {
-        // Z6 tile 6/20/22 grown by 30 km (New Brunswick): one 10° square, its three files.
+        // Z6 tile 6/20/22 grown by its margin (New Brunswick): one 10° square, its three files.
         let b = roadcore::geo::tile_box_grown(6, 20, 22, pipeline::stage::MARGIN_KM);
         assert_eq!(
             super::canopy_files(b),

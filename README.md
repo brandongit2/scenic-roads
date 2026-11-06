@@ -30,7 +30,7 @@ The map runs on each Mac at http://localhost:7311, installed by `tools/app/insta
 | Unblocked views | Share of directions not walled in within 300 m. |
 | Roadside trees, Forest cover, Open land, Built-up | Tree height and cover, fields, built-up land nearby. |
 | Roadside buildings | Share of frontage lined with buildings within 30–80 m. |
-| Map | A street map's look, set by presets (classic atlases, dark-map palettes, signed route networks, an attribute: speed, lanes, surface, toll) and then edited: colour by, per road class fill colour and opacity, casing colour, cased. |
+| Map | A street map's look, set by presets (classic atlases, dark-map palettes, an attribute: speed, lanes, surface, toll) and then edited: colour by, per road class fill colour and opacity, casing colour, cased. |
 
 ## How the scenic metrics are computed
 
@@ -113,7 +113,7 @@ The map's © Credits dialog lists each source as its catalogue serves it (`CREDI
 
 ## Known limitations
 
-- The analysis grid is ~55 m, so narrow gorges and summit domes are smoothed; a viewshed from a rounded summit at 1.7 m is pessimistic.
+- The analysis grid is ~55 m, so narrow gorges and summit domes are smoothed; a viewshed from a rounded summit at 1.5 m (2.8 m by rail) is pessimistic.
 - Canopy heights are 2019–2020 medians over ~28 m cells.
 - Bridge decks are interpolated between abutments; grade reflects DEM and OSM accuracy.
 - A passenger line with no OSM route relation (and not a tram, metro, funicular or heritage line by its tags) is missing.

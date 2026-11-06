@@ -577,23 +577,28 @@ a scratch folder, wiped at each run:
    (docs/inputs.md §6.8, The roads' heights), bilinear between pixel centres at the finest zoom stored
    there, its place's finest (crate::terrain_zoom: a deep tile, z13–16, where it is past z12),
    else coarser. It reads `verts.bin` and what step 4 stages alone: `terrain.tiles`
-   (the terrain's z0–12 over U's box and its deep tiles under U's vertices, one archive) and
+   (the terrain's z0–12 over U's staged area, step 4, and its deep tiles under U's vertices, one archive) and
    `codes.json` (the datasets' codes by coverage, giving `src.u8`); no NAS, no
    server. It writes `elev.f32`, `src.u8` and `dem-stats.json` (vertices, missing, seconds). The
    ways were densified by `extract` at the terrain's pixel there, never closer than 4 m
-   (crate::dem::spacing, `FLOOR_M`). U waits for the stale terrain targets under its box, and its key
-   names the terrain packs it reads (hi and deep).
-3. **Heritage:** the heritage-sites job's slices within U + 30 km; `areaflags` rasterises the heritage and designated areas
+   (crate::dem::spacing, `FLOOR_M`). U waits for the stale terrain targets under its box (U +
+   `stage::MARGIN_KM`), and its key names the terrain tiles it reads (hi and deep), along its long
+   ways too.
+3. **Heritage:** the heritage-sites job's slices within U + `stage::MARGIN_KM`; `areaflags` rasterises the heritage and designated areas
    onto U's grid.
-4. **Terrain and grids:** terrain z11 and the grids, staged from the packs the manifest names,
-   with the terrain tiles step 2 reads.
-   Missing grid tiles are made.
+4. **Terrain and grids:** terrain z0–12 and the z11 grids, staged from the packs the manifest names,
+   with the deep tiles step 2 reads, over U's staged area (crate::stage::Area): U grown by
+   `MARGIN_KM` (35 km: `reach::LONG_KM`, 20 km, where the ordinary ways U owns lie, plus a sample's
+   far field, `scenic::FAR_MAX_M`, 15 km), and along each long way U owns (ferries aside) its nodes
+   in runs of about 15 km, each grown by 15 km. Every sample U makes sees staged terrain and canopy
+   to its far field's end. Missing grid tiles are made.
 5. **`tile elev`:** clean-up and grade, with junction context from the extract. Causeways and
    embankments (the ways `extract` lists in `causeways.i64`: `embankment=yes`, `causeway=yes`,
    `man_made=causeway`) and ways whose every vertex lies on the staged land cover's water class are
    structures (crate::elev::raised): straight between their ends, as bridges are.
 6. **scenic:** `scenic-metrics` prep, canopy, view, buildings and flags for every sample of the ways
-   U owns. Buildings come from the roadside buildings' z8 tiles within 1 km of U's tile + 20 km and
+   U owns, each sample's eye its ground plus a driver's 1.5 m (`scenic::EYE_M`), on a railway a
+   passenger's 2.8 m (`RAIL_EYE_M`, the sample's `sflag::RAIL`). Buildings come from the roadside buildings' z8 tiles within 1 km of U's tile + 20 km and
    its long roads. Canopy and view results are kept in `cache/scenic-units/` (`scache::Carry`), so a
    later run redoes only new samples and those near grid tiles whose terrain or land cover changed;
    a change of `scache::SCENIC_V` redoes all.

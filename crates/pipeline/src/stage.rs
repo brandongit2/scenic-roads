@@ -1,7 +1,7 @@
 //! A z6 tile's local copies of the global-source layers, in the files the z6 tile's programs read
 //! (docs/steps.md §6): `terrain.tiles` (z0–12) and the z11 grids (`grid.idx`,
 //! `grid.terrain.i16`, `grid.class.u8`, `grid.areas.u8`, and canopy and cover when the catalogue has
-//! them), over the z6 tile grown by a margin (viewsheds see 15 km past the z6 tile's buffer ways).
+//! them), over what the z6 tile's own ways' samples see (`Area`).
 //!
 //! Read from the packs with plain reads (never mmapped), each pack's index once: the ones this
 //! build's manifest names now (`Source::Manifest`, what the z6 tile keys hash), through this Mac's
@@ -23,8 +23,71 @@ use store::nasfs::Place;
 use store::pack::PackIndex;
 use store::range::PlainFile;
 
-/// How far past the z6 tile the copies reach, km (10 km of buffer ways, then 15 km of view, rounded up).
-pub const MARGIN_KM: f64 = 30.0;
+/// How far a sample sees, km: its far field (roadcore::scenic::FAR_MAX_M).
+pub const FAR_KM: f64 = roadcore::scenic::FAR_MAX_M / 1000.0;
+
+/// How far past the z6 tile the copies reach, km: the ordinary ways it owns lie within its tile
+/// grown by `reach::LONG_KM` (crate::reach), and each of their samples sees `FAR_KM` past that. (The
+/// long ways it owns, which go further, are staged along: `Area`.)
+pub const MARGIN_KM: f64 = crate::reach::LONG_KM + FAR_KM;
+
+/// What a z6 tile stages: its tile grown by `MARGIN_KM` (`b`), and along each long way it owns
+/// (crate::reach::LongWay; ferries have no samples) its nodes in runs, each run's box grown by
+/// `FAR_KM`: every sample of a way the z6 tile owns sees staged terrain and canopy to its far
+/// field's end. Its key reads the same (crate::agent::build::unit_terrain_tiles).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Area {
+    /// Its tile grown by `MARGIN_KM` (w, s, e, n, degrees).
+    pub b: [f64; 4],
+    /// The boxes along its long ways (degrees).
+    along: Vec<[f64; 4]>,
+}
+
+impl Area {
+    /// The most a run of a long way's nodes spans, degrees each way: a run's box grown by `FAR_KM`
+    /// stays within about twice the far field, and a long way of 600 km makes some 40 boxes.
+    const RUN_DEG: f64 = FAR_KM / roadcore::geo::KM_PER_DEG;
+
+    /// Z6 tile `u`'s, its long ways from its reach (none: its tile grown by `MARGIN_KM` alone).
+    pub fn of(u: crate::legacy::TileId, reach: Option<&crate::reach::Reach>) -> Area {
+        let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, MARGIN_KM);
+        let mut along = Vec::new();
+        for w in reach.into_iter().flat_map(|r| &r.long).filter(|w| w.owned && !w.ferry) {
+            let deg = |p: [i32; 2]| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7];
+            let grown = |r: [f64; 4], p: [f64; 2]| [r[0].min(p[0]), r[1].min(p[1]), r[2].max(p[0]), r[3].max(p[1])];
+            let point = |p: [f64; 2]| [p[0], p[1], p[0], p[1]];
+            let (mut run, mut last): (Option<[f64; 4]>, Option<[f64; 2]>) = (None, None);
+            for p in w.verts.iter().map(|&p| deg(p)) {
+                run = Some(match (run, last) {
+                    (Some(r), Some(q)) => {
+                        let g = grown(r, p);
+                        if g[2] - g[0] <= Self::RUN_DEG && g[3] - g[1] <= Self::RUN_DEG {
+                            g
+                        } else {
+                            // (The next run starts at this run's last node: the stretch between
+                            // them is in it.)
+                            along.push(roadcore::geo::within_tiles(roadcore::geo::grow(r, FAR_KM)));
+                            grown(point(q), p)
+                        }
+                    }
+                    _ => point(p),
+                });
+                last = Some(p);
+            }
+            along.extend(run.map(|r| roadcore::geo::within_tiles(roadcore::geo::grow(r, FAR_KM))));
+        }
+        Area { b, along }
+    }
+
+    /// Its tiles at zoom `z`, sorted.
+    pub fn tiles(&self, z: u8) -> Vec<(u32, u32)> {
+        let mut t: std::collections::BTreeSet<(u32, u32)> = tiles_in(z, self.b).into_iter().collect();
+        for &a in &self.along {
+            t.extend(tiles_in(z, a));
+        }
+        t.into_iter().collect()
+    }
+}
 
 /// Where the global-source layers are read from.
 pub enum Source<'a> {
@@ -84,19 +147,21 @@ impl Source<'_> {
         }
     }
 
-    /// The content names of the packs `stage` reads for box `b` (manifest sources only): what to
-    /// copy ahead, while the z6 tile before it builds. A neighbour's terrain hi pack that the box only
-    /// clips isn't (`copied_whole`): its strip is read where it is.
-    pub fn pack_contents(&self, b: [f64; 4]) -> Vec<String> {
+    /// The content names of the packs `stage` reads for `area` (manifest sources only): what to
+    /// copy ahead, while the z6 tile before it builds. A neighbour's terrain hi pack that its box only
+    /// clips isn't (`copied_whole`), nor one along its long ways: its strip is read where it is.
+    pub fn pack_contents(&self, area: &Area) -> Vec<String> {
         let Source::Manifest(out, _) = self else { return Vec::new() };
+        let b = area.b;
         let mut logical: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for z in 0..=12u8 {
-            for (x, y) in tiles_in(z, b) {
+            for (x, y) in area.tiles(z) {
                 logical.extend(self.pack_of("terrain", z, x, y).filter(|_| copied_whole(z, x, y, b)));
             }
         }
+        let z11 = area.tiles(11);
         for var in ["class", "canopy", "cover"] {
-            for (x, y) in tiles_in(11, b) {
+            for &(x, y) in &z11 {
                 logical.extend(self.pack_of(&format!("grid-{var}"), 11, x, y));
             }
         }
@@ -269,20 +334,21 @@ fn read_tiles(pf: &PlainFile, idx: &PackIndex, tiles: &[(u8, u32, u32)]) -> Resu
     Ok(out)
 }
 
-/// Writes `terrain.tiles` and the grids for the box `b` (degrees) into `dir`: the terrain's z0–12
-/// over the box, and its deep tiles `deep` (z13–16, those the roads' heights read:
+/// Writes `terrain.tiles` and the grids for `area` into `dir`: the terrain's z0–12 over it, and
+/// its deep tiles `deep` (z13–16, those the roads' heights read:
 /// crate::road_terrain::deep_tiles) where it has them, as stored (lossless WebP,
 /// crate::terrain_codec) in one archive (crate::road_terrain::TERRAIN_FILE).
 pub fn stage(
     src: &Source,
-    b: [f64; 4],
+    area: &Area,
     deep: &std::collections::BTreeSet<(u8, u32, u32)>,
     dir: &Path,
 ) -> Result<Staged> {
     std::fs::create_dir_all(dir)?;
+    let b = area.b;
     let mut st = Staged::default();
     let mut want: Vec<(u8, u32, u32)> =
-        (0..=12u8).flat_map(|z| tiles_in(z, b).into_iter().map(move |(x, y)| (z, x, y))).collect();
+        (0..=12u8).flat_map(|z| area.tiles(z).into_iter().map(move |(x, y)| (z, x, y))).collect();
     want.extend(deep.iter().copied().filter(|t| t.0 > 12));
     let mut got = terrain_tiles(src, b, &want)?;
     want.sort_unstable_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
@@ -303,8 +369,8 @@ pub fn stage(
     w.finish()?;
     std::fs::rename(&tmp, dir.join(file))?;
 
-    // The grids over the z11 tiles of the box.
-    let mut tiles: Vec<[u32; 2]> = tiles_in(11, b).into_iter().map(|(x, y)| [x, y]).collect();
+    // The grids over its z11 tiles.
+    let mut tiles: Vec<[u32; 2]> = area.tiles(11).into_iter().map(|(x, y)| [x, y]).collect();
     tiles.sort_unstable_by_key(|t| (t[1], t[0]));
     let idx = roadcore::grid::GridIndex::new(tiles);
     let tiles = idx.tiles.clone();
@@ -367,6 +433,53 @@ mod tests {
         assert_eq!(tiles_in(11, roadcore::geo::tile_box(6, 31, 19)).len(), 33 * 33);
     }
 
+    /// Every sample of a way a z6 tile owns has its far field staged: an ordinary way's (within the
+    /// tile grown by `reach::LONG_KM`) inside the tile grown by `MARGIN_KM`, at every latitude; a long
+    /// way's along it, at every node and between; a ferry's and a neighbour's long ways not.
+    #[test]
+    fn the_area_holds_every_owned_samples_far_field() {
+        use crate::legacy::TileId;
+        use crate::reach::{LongWay, Reach};
+        let inside = |a: [f64; 4], b: [f64; 4]| a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3];
+        for (x, y) in [(31, 19), (20, 22), (10, 5), (60, 58), (33, 31)] {
+            let u = TileId { z: 6, x, y };
+            let tile = roadcore::geo::tile_box(6, x, y);
+            let seen = roadcore::geo::within_tiles(roadcore::geo::grow(
+                roadcore::geo::grow(tile, crate::reach::LONG_KM),
+                FAR_KM,
+            ));
+            assert!(inside(seen, Area::of(u, None).b), "{x}/{y}: {seen:?} past {:?}", Area::of(u, None).b);
+        }
+        assert_eq!(MARGIN_KM, 35.0);
+        // A long way from 6/31/19 (Newcastle) 300 km south, with a node every 2 km, and two not
+        // staged: a ferry's, a neighbour's.
+        let u = TileId { z: 6, x: 31, y: 19 };
+        let e7 = |lon: f64, lat: f64| [(lon * 1e7) as i32, (lat * 1e7) as i32];
+        let verts: Vec<[i32; 2]> = (0..150).map(|k| e7(-1.6 + 0.004 * k as f64, 55.0 - 0.018 * k as f64)).collect();
+        let far = vec![e7(10.0, 40.0), e7(11.0, 41.0)];
+        let reach = Reach {
+            long: vec![
+                LongWay { owned: true, ferry: false, verts: verts.clone() },
+                LongWay { owned: true, ferry: true, verts: far.clone() },
+                LongWay { owned: false, ferry: false, verts: far.clone() },
+            ],
+            ..Default::default()
+        };
+        let area = Area::of(u, Some(&reach));
+        let z11: std::collections::BTreeSet<(u32, u32)> = area.tiles(11).into_iter().collect();
+        for w in verts.windows(2) {
+            let (a, b) = (w[0].map(|v| v as f64 * 1e-7), w[1].map(|v| v as f64 * 1e-7));
+            let seg = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])];
+            for t in tiles_in(11, roadcore::geo::grow(seg, FAR_KM)) {
+                assert!(z11.contains(&t), "{t:?} along {seg:?}");
+            }
+        }
+        assert!(tiles_in(11, [10.0, 40.0, 11.0, 41.0]).iter().all(|t| !z11.contains(t)));
+        assert!(area.tiles(11).len() > Area::of(u, None).tiles(11).len());
+        // (In runs: a box every 15 km or so of the way's 300, not one a node.)
+        assert!(area.along.len() < 40, "{}", area.along.len());
+    }
+
     /// A z6 tile's own terrain pack is copied here whole, its neighbours' that its margin only clips
     /// aren't (their strips read in spans where they are, or from a copy here if there's one), and
     /// what's staged is the same as reading every tile from the NAS's packs.
@@ -377,7 +490,8 @@ mod tests {
             Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
                 .unwrap();
         let (x6, y6) = (31u32, 19u32);
-        let b = roadcore::geo::tile_box_grown(6, x6, y6, MARGIN_KM);
+        let area = Area::of(crate::legacy::TileId { z: 6, x: x6, y: y6 }, None);
+        let b = area.b;
         assert!(
             copied_whole(12, x6 << 6, y6 << 6, b) && copied_whole(9, x6 << 3, y6 << 3, b) && copied_whole(8, 0, 0, b)
         );
@@ -409,7 +523,7 @@ mod tests {
         let blobs = store::blobs::Blobs::new(d.path().join("blobs"));
         let staged = |src: &Source, to: &str| {
             let dir = d.path().join(to);
-            stage(src, b, &Default::default(), &dir).unwrap();
+            stage(src, &area, &Default::default(), &dir).unwrap();
             ["terrain.tiles", "grid.terrain.i16", "grid.idx"].map(|f| std::fs::read(dir.join(f)).unwrap())
         };
         let plain = staged(&Source::Manifest(&out, None), "plain");
@@ -421,7 +535,7 @@ mod tests {
         assert!(copies[0].starts_with(&format!("6-{x6}-{y6}.")), "its own pack alone: {copies:?}");
         let src = Source::Manifest(&out, Some(&blobs));
         let ahead: Vec<&str> = src
-            .pack_contents(b)
+            .pack_contents(&area)
             .iter()
             .map(|c| c.rsplit('/').next().unwrap().split('.').next().unwrap())
             .map(|n| if n == format!("6-{x6}-{y6}") { "own" } else { "other" })

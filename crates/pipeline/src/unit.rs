@@ -524,11 +524,13 @@ pub struct Report {
 pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usize)>;
 
 /// Runs the z6 tile's programs for z6 tile `u` in `dir` from `piece`, with the coverage and the global-source
-/// layers on the NAS (`src`), and its scenic results from its last run (`carry`): `prepare_folder`,
-/// then its `tail`. Leaves the z6 tile folder ready for its base pack.
+/// layers on the NAS (`src`) staged over `area` (crate::stage::Area: its reach's), and its scenic
+/// results from its last run (`carry`): `prepare_folder`, then its `tail`. Leaves the z6 tile folder
+/// ready for its base pack.
 #[allow(clippy::too_many_arguments)]
 pub fn build_folder(
     u: TileId,
+    area: &crate::stage::Area,
     piece: &Path,
     dir: &Path,
     cov: &Coverage,
@@ -537,7 +539,7 @@ pub fn build_folder(
     heritage: HeritageInputs,
     carry: Option<&crate::scache::Carry>,
 ) -> Result<Report> {
-    let rep = prepare_folder(u, piece, dir, cov, src, tools, heritage, carry)?;
+    let rep = prepare_folder(u, area, piece, dir, cov, src, tools, heritage, carry)?;
     if rep.kept_ways > 0 {
         run_tail(&tail(u, tools.buildings.is_some(), tools.sources.is_some()), dir, tools)?;
     }
@@ -545,13 +547,14 @@ pub fn build_folder(
 }
 
 /// A z6 tile's build up to its tail (docs/workers.md: what needs the NAS): its ways from the extract,
-/// those touching the coverage, the global-source layers staged from the packs with the deep terrain
+/// those touching the coverage, the global-source layers staged from the packs over `area` with the deep terrain
 /// under its vertices and the datasets' codes (what its elevations read: crate::road_terrain), the
 /// heritage inputs, area flags and land cover; then its scenic results from its last run restored
 /// (`carry`), as the tail's canopy and view steps read them.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_folder(
     u: TileId,
+    area: &crate::stage::Area,
     piece: &Path,
     dir: &Path,
     cov: &Coverage,
@@ -595,11 +598,11 @@ pub fn prepare_folder(
     std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
     // 4. The global-source layers the steps read, from the packs.
     let s = stage("staging layers from the packs");
-    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
+    let b = area.b;
     // (With the terrain the roads' heights read: the deep tiles under the vertices; and the
     // datasets' codes.)
     let deep = crate::road_terrain::deep_tiles(roadcore::Ways::open(dir)?.verts(), &fine);
-    rep.staged = crate::stage::stage(src, b, &deep, dir)?;
+    rep.staged = crate::stage::stage(src, area, &deep, dir)?;
     crate::road_terrain::Codes::of(&accepted).write(&dir.join(crate::road_terrain::CODES_FILE))?;
     s.end();
     // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated

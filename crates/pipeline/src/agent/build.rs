@@ -16,7 +16,7 @@ use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
 /// Terrain-hi 8 (task #929): the one pyramid's rule (docs/steps.md §2, Terrain): a tile is sampled
@@ -51,13 +51,17 @@ pub const SLOPE_V: u32 = 5;
 /// 6: the roads' heights from the finished terrain (crate::road_terrain), spaced at its pixel.
 /// 7 (task #862): roadcore::geo's one Mercator, box-grower and Earth in the staging, the heights, the
 /// lengths, the views and the area flags; `det`'s maths throughout.
-pub const UNIT_V: u32 = 7;
+/// 8 (task #853): no route networks (a way's byte for it zero); staged over its `stage::Area`
+/// (its tile + `stage::MARGIN_KM`, 35 km, and along its own long ways); a rail sample's ground its
+/// eye less a passenger's eye height (`Sample::eye_m`).
+pub const UNIT_V: u32 = 8;
 /// 3: keyed on the tile's owners alone; hidata of the tile's own ways (here, query parts, rail
-/// lines, zoomed-out summaries). 4 (task #862): a tile's ways by roadcore::geo's box-grower.
-pub const PACK_V: u32 = 4;
+/// lines, zoomed-out summaries). 4 (task #862): a tile's ways by roadcore::geo's box-grower. 5 (task
+/// #853): road tiles RT v8 (no route network: three attribute bytes a line).
+pub const PACK_V: u32 = 5;
 /// lo's own version: lo isn't keyed on pack's, so a change in what they share (hipack's tiling)
-/// bumps both. (2: task #862's, as pack's 4.)
-pub const LO_V: u32 = 2;
+/// bumps both. (2: task #862's, as pack's 4. 3: task #853's, as pack's 5.)
+pub const LO_V: u32 = 3;
 
 /// The keys of the jobs that last succeeded, by step and target ("3/4/2", "6/31/20").
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -621,19 +625,16 @@ pub fn unit_keys(x: &KeyCtx) -> Vec<(TileId, Option<String>)> {
     units
 }
 
-/// The content names of the packs z6 tile `u`'s staged terrain tiles are in (z0–12 over its tile +
-/// 30 km: z4–8's lo packs, z9–12's hi packs; the root aside), for `unit_terrain`'s memo.
-pub fn unit_terrain_from(u: TileId, m: &BTreeMap<String, String>) -> String {
-    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
+/// The content names of the packs z6 tile `u`'s staged terrain tiles are in (z0–12 over its
+/// `stage::Area`: z4–8's lo packs, z9–12's hi packs; the root aside), for `unit_terrain`'s memo.
+pub fn unit_terrain_from(area: &crate::stage::Area, m: &BTreeMap<String, String>) -> String {
     let mut packs: BTreeSet<String> = BTreeSet::new();
     for z in 4..=12u8 {
-        let [x0, x1, y0, y1] = crate::stage::tile_range(z, b);
         let (scope, s) = if z <= 8 { ("lo", z - 3) } else { ("hi", z - 6) };
-        for x in x0 >> s..=x1 >> s {
-            for y in y0 >> s..=y1 >> s {
-                let l = format!("layers/terrain/{scope}/{}-{x}-{y}", z - s);
-                packs.insert(format!("{l}={}", m.get(&l).map(String::as_str).unwrap_or("-")));
-            }
+        let at: BTreeSet<(u32, u32)> = area.tiles(z).into_iter().map(|(x, y)| (x >> s, y >> s)).collect();
+        for (x, y) in at {
+            let l = format!("layers/terrain/{scope}/{}-{x}-{y}", z - s);
+            packs.insert(format!("{l}={}", m.get(&l).map(String::as_str).unwrap_or("-")));
         }
     }
     packs.into_iter().collect::<Vec<_>>().join(",")
@@ -648,7 +649,8 @@ pub fn unit_terrain(
     m: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
 ) -> Result<String, Unread> {
-    let from = [serde_json::to_string(r).unwrap_or_default(), unit_terrain_from(u, m)].join("\n");
+    let area = crate::stage::Area::of(u, Some(r));
+    let from = [serde_json::to_string(r).unwrap_or_default(), unit_terrain_from(&area, m)].join("\n");
     tiles.memo(&u.slash(), &store::naming::hash16(from.as_bytes()), || {
         Ok(terrain_digest(&unit_terrain_tiles(u, r, m, tiles)?))
     })
@@ -662,8 +664,8 @@ pub fn terrain_digest(tiles: &[Tile]) -> String {
 }
 
 /// The terrain tiles z6 tile `u` reads, by their contents (from the packs' indexes: agent::tiles),
-/// sorted. A z6 tile stages terrain z0–12 over its tile + 30 km, `b` (crate::stage), which two steps
-/// read:
+/// sorted. A z6 tile stages terrain z0–12 over its `stage::Area` (its tile + `stage::MARGIN_KM`, and
+/// along its own long ways), which two steps read:
 /// - its grid (canopy, view and flags: `grid.terrain.i16`), every z11 tile staged, as it is (a
 ///   missing one reads as zeros);
 /// - `prep` (scenic-metrics), at each point of the ways it owns (the drape at every vertex, a
@@ -683,15 +685,21 @@ pub fn unit_terrain_tiles(
     m: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
 ) -> Result<Vec<Tile>, Unread> {
-    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
-    let staged: Vec<[u32; 4]> = (0..=12u8).map(|z| crate::stage::tile_range(z, b)).collect();
-    let mut walk = Walk { staged: &staged, read: tiles.reader(m), out: BTreeSet::new() };
-    let [x0, x1, y0, y1] = staged[11];
-    for x in x0..=x1 {
-        for y in y0..=y1 {
-            if let Some(t) = walk.read.hash(11, x, y)? {
-                walk.out.insert((11, x, y, t));
+    let area = crate::stage::Area::of(u, Some(r));
+    let staged: Vec<HashSet<(u32, u32)>> = (0..=12u8).map(|z| area.tiles(z).into_iter().collect()).collect();
+    // Each zoom's tiles with a staged tile at or under them (to z12).
+    let mut under: Vec<HashSet<(u32, u32)>> = vec![HashSet::new(); 13];
+    for (z, tiles) in staged.iter().enumerate() {
+        for &(x, y) in tiles {
+            for d in 0..=z {
+                under[z - d].insert((x >> d, y >> d));
             }
+        }
+    }
+    let mut walk = Walk { staged: &staged, under: &under, read: tiles.reader(m), out: BTreeSet::new() };
+    for &(x, y) in &area.tiles(11) {
+        if let Some(t) = walk.read.hash(11, x, y)? {
+            walk.out.insert((11, x, y, t));
         }
     }
     for s in &reached_of(r) {
@@ -735,9 +743,9 @@ pub fn unit_deep_tiles(
     m: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
 ) -> Result<Vec<String>, Unread> {
-    let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     let pz = crate::terrain_deep::PACK_Z;
-    let packs: Vec<(u32, u32)> = crate::stage::tiles_in(pz, b)
+    let packs: Vec<(u32, u32)> = crate::stage::Area::of(u, Some(r))
+        .tiles(pz)
         .into_iter()
         .filter(|&(x, y)| m.contains_key(&crate::terrain_deep::pack_logical(x, y)))
         .collect();
@@ -827,24 +835,22 @@ impl Reached {
 /// A walk down the tiles a z6 tile's points are in (`unit_terrain_tiles`), each point's z12 tile at the
 /// end with the tile it reads.
 struct Walk<'a> {
-    /// The tiles staged, by zoom: [x0, x1, y0, y1].
-    staged: &'a [[u32; 4]],
+    /// The tiles staged, by zoom.
+    staged: &'a [HashSet<(u32, u32)>],
+    /// By zoom, the tiles with one staged at or under them.
+    under: &'a [HashSet<(u32, u32)>],
     read: Reader<'a>,
     out: BTreeSet<Tile>,
 }
 
 impl Walk<'_> {
     fn staged(&self, z: u8, x: u32, y: u32) -> bool {
-        let r = self.staged[z as usize];
-        (r[0]..=r[1]).contains(&x) && (r[2]..=r[3]).contains(&y)
+        self.staged[z as usize].contains(&(x, y))
     }
 
     /// Whether (z, x, y) or a tile under it, down to z12, is staged.
     fn staged_under(&self, z: u8, x: u32, y: u32) -> bool {
-        (z..=12).any(|zz| {
-            let (d, r) = (zz - z, self.staged[zz as usize]);
-            x << d <= r[1] && ((x + 1) << d) > r[0] && y << d <= r[3] && ((y + 1) << d) > r[2]
-        })
+        self.under[z as usize].contains(&(x, y))
     }
 
     /// Tile (z, x, y), which `s` meets, its points reading `best` (the finest tile staged and there
@@ -8524,7 +8530,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_units_terrain_names_the_tiles_its_ways_read() {
-        // 6/28/16 (west Iceland; its tile + 30 km reaches 16.2° W): its owned box at (-20, 65), and a
+        // 6/28/16 (west Iceland; its tile + 35 km reaches 16.1° W): its owned box at (-20, 65), and a
         // road it owns from there east along 65° N to 10° W.
         let u = TileId { z: 6, x: 28, y: 16 };
         let r = Reach {
@@ -8540,7 +8546,7 @@ pub(crate) mod tests {
             let t = TileId::of_point(z, [(lon * 1e7) as i32, (lat * 1e7) as i32]);
             (z, t.x, t.y)
         };
-        // Its z3 tile's lo pack, its tile's hi pack, and a hi pack past its tile + 30 km (6/30/16).
+        // Its z3 tile's lo pack, its tile's hi pack, and a hi pack past its tile + 35 km (6/30/16).
         let names = [
             ("layers/terrain/lo/3-3-2", "1111111111111111"),
             ("layers/terrain/hi/6-28-16", "2222222222222222"),
@@ -8569,19 +8575,19 @@ pub(crate) mod tests {
         // one appearing, the other way round).
         assert_ne!(with(1, at(12, -20.0, 65.0), Some(7)), d0);
         assert_ne!(with(1, at(12, -20.0, 65.0), None), d0);
-        // Any z11 tile in its tile + 30 km (its grid), though no way of its is there; not a z12 tile
+        // Any z11 tile in its tile + 35 km (its grid), though no way of its is there; not a z12 tile
         // there, nor a z11 tile past it.
         assert_ne!(with(1, at(11, -17.5, 66.4), Some(7)), d0);
         assert_eq!(with(1, at(12, -17.5, 66.4), Some(7)), d0);
         assert_eq!(with(2, at(11, -8.0, 66.0), Some(7)), d0);
-        // Under its long road past its tile + 30 km, where no hi pack is: the z8 tile its points read
-        // there; not one beside the road. Further on, the z6 tile, then the z4 tile (the finest
-        // staged there); not the z5 tile under the far end, which isn't staged.
+        // Along its long road past its tile + its margin, staged too (crate::stage::Area): where no
+        // hi pack is, the z8 tile its points read there, not one beside the road nor the z6 tile
+        // above it; under its far end, the z12 tile of the hi pack there, not the z4 tile above.
         assert_ne!(with(0, at(8, -15.5, 65.0), Some(7)), d0);
         assert_eq!(with(0, at(8, -15.5, 66.0), Some(7)), d0);
-        assert_ne!(with(0, at(6, -12.0, 65.0), Some(7)), d0);
-        assert_ne!(with(0, at(4, -10.5, 65.0), Some(7)), d0);
-        assert_eq!(with(0, at(5, -10.5, 65.0), Some(7)), d0);
+        assert_eq!(with(0, at(6, -12.0, 65.0), Some(7)), d0);
+        assert_ne!(with(2, at(12, -10.5, 65.0), Some(7)), d0);
+        assert_eq!(with(0, at(4, -10.5, 65.0), Some(7)), d0);
         // Without the long road, only its grid and the z12 tiles under its owned box (all in its
         // tile's hi pack).
         let near = Reach { long: vec![], ..r.clone() };

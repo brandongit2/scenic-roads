@@ -655,9 +655,11 @@ fn sl_lo(t: &str) -> Vec<String> {
     named(3, at(t, 3).into_iter().flat_map(|(x, y)| with_edges(3, x, y)))
 }
 
-/// unit 6/x/y: the terrain packs over its tile + 30 km (crate::stage::MARGIN_KM) its staged tiles
-/// and its roads' heights read (`build::unit_terrain_from`, `build::unit_deep_tiles`): the lo packs
-/// of z4–8's z3 tiles, the hi packs of its box's z6 tiles (z9–12's), its box's deep packs.
+/// unit 6/x/y: the terrain packs over its tile + crate::stage::MARGIN_KM its staged tiles and its
+/// roads' heights read (`build::unit_terrain_from`, `build::unit_deep_tiles`): the lo packs of z4–8's
+/// z3 tiles, the hi packs of its box's z6 tiles (z9–12's), its box's deep packs. (Those along its own
+/// long ways, which it stages too, aren't waited for: its key names their tiles, so it's built
+/// again once they change: crate::stage::Area.)
 fn unit_reads(t: &str, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
     let b = roadcore::geo::tile_box_grown(6, x, y, crate::stage::MARGIN_KM);
