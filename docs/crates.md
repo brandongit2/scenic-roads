@@ -451,7 +451,7 @@ The choices, against the alternatives:
   plan names every family and agentcore). The types the runtime reads (`Step`, `Kind`, `Read`,
   `Place`, `Keys`, `Work`) move into agentcore; the table and its functions stay in pipeline,
   which implements `agentcore::Plan` (the ~49 items as methods: `row`, `shared`, `outside`,
-  `saves`, `records_only`, `output_names`, `mem_mb`, `read_targets`, `renamed`, `made`, …) and
+  `saves`, `records_only`, `output_names`, `read_targets`, `renamed`, `made`, …) and
   passes `&PLAN` to the agent's entry points (`agent::run`, the forecast, the simulator, scenic
   menu). Passed, not installed: no link-time constructor (a static in an rlib may be dropped by
   the linker) and no registry to fill in every test. The family constants agentcore names

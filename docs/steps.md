@@ -226,8 +226,7 @@ makes the same bytes on every Mac.
   Progress (polar-terrain, polar-slope): `progress: <k + tiles done / tiles in the block>/<blocks> polar
   blocks` on stderr (`jobs::report_f`), a line per 16 tiles within a block (a tile counts when sampled or shaded at
   the finest zoom, and again when written out at each level), so a busy block moves the build page's "hasn't moved" check.
-  Memory: a block's finest tiles held whole (heights and shading) and the pool's cache, `mem_mb` 4,096
-  for the terrain.
+  Memory: a block's finest tiles held whole (heights and shading) and the pool's cache.
 - **Grids (z11):** land cover, canopy and cover, for analysis only. Each `unit` job makes the grid tiles
   its packs lack and uploads them as its z6 tile's `grid-*` hi packs; they aren't in those jobs' keys
   (made from fixed datasets, the same whether read or made).
