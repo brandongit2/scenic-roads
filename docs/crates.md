@@ -448,6 +448,28 @@ So 6e's terrain leaves a dev build after an edit where it was, within the load's
 server recompile either way; an edit in the family adds terrain's own ~1 s), with pipeline's rustc
 ~0.1 GB smaller; the family's unit tests build 5 times faster, their rustc a sixth of pipeline's.
 
+Before and after 6e's trees, roads and names, 6 Nov 2026 11:36-11:42 (local) on the M4 (load 14-40),
+rustc 1.98.1, through tools/app/remote-tests.sh (nice 20, utility priority, sccache). Before: main at
+dd7246c6 (after 6e's terrain); after: this branch, each tree a folder of its own on the M4 with its
+own target folder, built once first. Interleaved (before, after; after, before; before, after), 3
+runs each. Peak: the largest process (`time -l`); CPU: user + system of the whole command. The
+edits: one comment line appended to a leaf of each family (landcover.rs, elev.rs, markconv.rs:
+crates/pipeline/src before; crates/trees, crates/roads, crates/landmarks after), each built at once:
+
+| run | before | after |
+|---|---|---|
+| dev (`build --workspace --bins`), landcover edit | 9.7, 7.5, 4.5 s (CPU 11.0-14.1 s), 1.59-1.65 GB: pipeline, server | 10.2, 4.8, 4.9 s (CPU 12.3-17.0 s), 1.36-1.39 GB: trees, roads, landmarks, pipeline, server |
+| dev, elev edit | 4.5, 4.7, 4.7 s (CPU 11.0-11.2 s), 1.59 GB | 4.8, 4.6, 5.5 s (CPU 12.1-13.1 s), 1.36 GB: roads, landmarks, pipeline, server |
+| dev, markconv edit | 4.6, 4.8, 5.6 s (CPU 11.0-12.6 s), 1.59-1.60 GB | 5.1, 5.5, 5.4 s (CPU 12.6-13.2 s), 1.36 GB: landmarks, pipeline, server |
+| unit-test build after the landcover edit | pipeline --lib: 7.9, 5.8, 4.6 s (CPU 6.0-7.7 s), 2.32-2.35 GB | trees --lib: 1.1, 0.6, 0.6 s (CPU 1.1-1.3 s), 0.27 GB |
+| … after the elev edit | pipeline --lib: 4.6, 4.6, 4.9 s (CPU 6.0-6.2 s), 2.33 GB | roads --lib: 1.1, 0.6, 0.6 s (CPU 1.1-1.6 s), 0.27 GB |
+| … after the markconv edit | pipeline --lib: 4.7, 4.9, 5.3 s (CPU 6.1-6.8 s), 2.32 GB | landmarks --lib: 1.8, 0.8, 0.7 s (CPU 1.3-2.5 s), 0.35 GB |
+
+So the three families' moves leave a dev build after an edit in them where it was in wall time
+(the families stack, so an edit recompiles the crates above it, ~1-2 s of CPU more), with
+pipeline's rustc, the build's largest, 1.59 → 1.36 GB; their unit tests build 5-8 times faster,
+their rustc a seventh of pipeline's.
+
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
 timings: an edit in a crate recompiles every crate that depends on it, so moving a *leaf* module
