@@ -314,6 +314,8 @@ export function versionedTiles(): { source: string; file: string; url: string }[
     { source: 'dem-tint', file: 'terrain.tiles', url: surfaceTiles() },
     { source: 'dem-floor', file: 'terrain.tiles', url: floorTiles() },
     { source: 'dem-surface', file: 'terrain.tiles', url: surfaceTiles() },
+    // (The water's surface follows the water tiles too: a new basemap asks for them again.)
+    ...(['dem-tint', 'dem-floor', 'dem-surface'] as const).map((source) => ({ source, file: 'water', url: source === 'dem-floor' ? floorTiles() : surfaceTiles() })),
     { source: 'slope', file: 'slope.tiles', url: `${hostFor('terrain')}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}` },
     trees('cover'), trees('height'), trees('leaf'),
     ...Object.entries(OV_SOURCES).map(([source, name]) => ({ source, file: `ov-${name}.tiles`, url: `${hostFor('layers')}/tiles/ov/${name}/{z}/{x}/{y}${ver(`ov-${name}.tiles`)}` })),
