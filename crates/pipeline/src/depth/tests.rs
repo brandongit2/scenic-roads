@@ -1025,8 +1025,9 @@ fn measure_the_floors_shading() {
 }
 
 /// A depth run stopped after some blocks (crate::depth::resume) resumes at the next: those kept
-/// not composed again (the sources' grids not read for them), and the tiles the same bytes as a
-/// run never stopped, an assembly's and a z6 tile's alike.
+/// not composed again (the sources' grids not read for them), and an assembly's tiles the same
+/// bytes as a run never stopped (a z6 tile's: a_z6_tile_paused_at_its_safe_points_resumes_to_the_same_bytes,
+/// which since #969 also covers the z6 tile's stops this test made, after 1, 5 and 40 blocks).
 #[test]
 fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes() {
     use super::build::{compose_hi, compose_lo};
@@ -1042,24 +1043,23 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
     let fresh_lo = compose_lo(&out, &srcs, &Fixture, None, q, 8, false).unwrap();
     let fresh_hi = compose_hi(&out, &srcs, &Fixture, None, T, 12, false).unwrap();
     assert!(!crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
-    for stop in [1, 5, 40] {
+    // (An assembly's blocks are few: z6 one, z7 one, z8 four.)
+    for stop in [1, 4] {
         let scratch = d.path().join(format!("scratch-{stop}"));
         let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &scratch).unwrap();
         STOP_AFTER.set(Some(stop));
-        assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).is_err(), "stopped after {stop} blocks");
-        let log = std::fs::read(crate::resume_log::path(&scratch, (6, T.0, T.1))).unwrap();
+        assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).is_err(), "stopped after {stop} blocks");
+        let log = std::fs::read(crate::resume_log::path(&scratch, (3, q.0, q.1))).unwrap();
         assert!(!log.is_empty());
-        let resumed = compose_hi(&out, &srcs, &Fixture, None, T, 12, true).unwrap();
-        assert!(resumed == fresh_hi, "the same tiles, stopped after {stop} blocks");
-        // (An assembly's blocks are few: z6 one, z7 one, z8 four.)
-        STOP_AFTER.set(Some(stop.min(4)));
-        assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).is_err());
         assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).unwrap() == fresh_lo);
     }
     // A run again with every block kept composes none (its coarse levels' neither): the log alone,
     // the sources' grids gone; though lo packs were saved since (its own z3 tile's depth, shading
     // and class: the rebuild goes on beside it), which it never reads.
-    let scratch = d.path().join("scratch-5");
+    let scratch = d.path().join("scratch-all");
+    let kept = Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &scratch).unwrap();
+    assert!(compose_hi(&kept, &srcs, &Fixture, None, T, 12, true).unwrap() == fresh_hi, "every block kept");
+    drop(kept);
     let lo_pack = |out: &mut Out, layer: &str, enc: &str, at: (u32, u32), v: f32| {
         let b = fall::encode(&Grid::F(vec![v; 65536])).unwrap();
         let mut it = vec![(3u8, at.0, at.1, b, 0u32)].into_iter();
@@ -1073,53 +1073,28 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
     for c in 1..=3 {
         std::fs::remove_file(d.path().join(format!("{c}.tif"))).unwrap();
     }
+    // (Every grid the sources name gone, so a composing that read one would fail. Before #969
+    // a run made afresh showed it, failing only once each open's retries ran out: 211 s of
+    // store::retry::WAITS, nearly all of this test's time.)
+    assert!(srcs
+        .iter()
+        .flat_map(|s| &s.grids)
+        .all(|g| { g.low_file.is_none() && g.packed.is_none() && !g.file.unchecked_path().exists() }));
     assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).unwrap() == fresh_hi);
-    let fresh =
-        Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch-none"))
-            .unwrap();
-    assert!(compose_hi(&fresh, &srcs, &Fixture, None, T, 12, true).is_err(), "made afresh, it reads them");
 }
 
-/// A z6 tile's whole job (`build_hi`) stopped and resumed stores the same packs as one never
-/// stopped: its depth, class and floor's shading (`depth-shade`, made from the tiles once all are,
-/// not logged), the same bytes; its log gone once they're saved.
+/// Task #885: a z6 tile's whole job (`build_hi`) paused again and again at its safe points (each
+/// block kept in its resume log): after its first block, resumed and paused after the next, then
+/// midway, before its last block and after it (all kept, nothing left but the shading and the
+/// packs), each stop the pause's own error (crate::control::Paused) with nothing of the tile put
+/// and its log kept, stores the same packs as one never paused nor keeping its blocks: its depth,
+/// class and floor's shading (`depth-shade`, made from the tiles once all are, not logged), the
+/// same bytes; its log gone once they're saved. (#969: it paused at every safe point, one by one,
+/// 718 s on the test Mac, a resume's setup each; and a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes
+/// stopped once after 1, 7 or 30 blocks, a_depth_run_stopped_after_some_blocks_resumes_there… the
+/// tile's composing after 1, 5 or 40: this covers both.)
 #[test]
-fn a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes() {
-    use super::build::build_hi_keeping;
-    use crate::resume_log::STOP_AFTER;
-    let d = tempfile::tempdir().unwrap();
-    let srcs = sources(d.path());
-    let packs = |name: &str, stop: Option<usize>| {
-        let mut out = Out::unbound(
-            &store::nasfs::NasRoot::local_for_test(&d.path().join(name)),
-            &d.path().join(format!("{name}-scratch")),
-        )
-        .unwrap();
-        if let Some(n) = stop {
-            STOP_AFTER.set(Some(n));
-            assert!(build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).is_err());
-            assert!(crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists());
-        }
-        build_hi_keeping(&mut out, &srcs, &Fixture, None, T, stop.is_some()).unwrap();
-        assert!(!crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists(), "the log gone once saved");
-        [LAYER, CLASS_LAYER, SHADE_LAYER].map(|l| {
-            let c = out.get(&hi_logical(l, T.0, T.1)).unwrap_or_else(|| panic!("{l}'s hi pack")).to_string();
-            out.path(&c).read().unwrap()
-        })
-    };
-    let fresh = packs("fresh", None);
-    assert!(fresh.iter().all(|b| !b.is_empty()));
-    for stop in [1, 7, 30] {
-        assert!(packs(&format!("stop-{stop}"), Some(stop)) == fresh, "stopped after {stop} blocks");
-    }
-}
-
-/// Task #885: a z6 tile's job paused at every one of its safe points (each block kept in its
-/// resume log): paused after its first block, resumed and paused after the next, and so on to its
-/// end, each stop the pause's own error (crate::control::Paused) with nothing of the tile put,
-/// stores the same packs as one never paused.
-#[test]
-fn a_z6_tile_paused_at_every_safe_point_resumes_to_the_same_bytes() {
+fn a_z6_tile_paused_at_its_safe_points_resumes_to_the_same_bytes() {
     use super::build::build_hi_keeping;
     use crate::resume_log::STOP_AFTER;
     let d = tempfile::tempdir().unwrap();
@@ -1134,27 +1109,35 @@ fn a_z6_tile_paused_at_every_safe_point_resumes_to_the_same_bytes() {
         Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join(name)), &d.path().join(format!("{name}-s")))
             .unwrap()
     };
+    let log = |out: &Out| crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists();
     let mut out = open("fresh");
-    build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).unwrap();
+    build_hi_keeping(&mut out, &srcs, &Fixture, None, T, false).unwrap();
     let fresh = packs(&out);
+    assert!(fresh.iter().all(|b| !b.is_empty()));
+    // Never paused, its blocks kept: the same; its blocks counted as it keeps them (a stop never
+    // reached).
+    let mut out = open("kept");
+    STOP_AFTER.set(Some(usize::MAX));
+    build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).unwrap();
+    let blocks = usize::MAX - STOP_AFTER.take().unwrap();
+    assert!(blocks > 4, "a z6 tile has several safe points: {blocks}");
+    assert!(packs(&out) == fresh && !log(&out), "kept as it went, the same; the log gone once saved");
     let mut out = open("paused");
-    let mut stops = 0;
-    loop {
-        STOP_AFTER.set(Some(1));
-        let r = build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true);
+    // (The blocks kept by each stop: the first, the second, midway, the last but one, the last.)
+    let mut at = 0;
+    for stop in std::collections::BTreeSet::from([1, 2, blocks / 2, blocks - 1, blocks]) {
+        STOP_AFTER.set(Some(stop - at));
+        let e = build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).unwrap_err();
         STOP_AFTER.set(None);
-        match r {
-            Err(e) => {
-                assert!(crate::control::is_paused(&e), "{e:#}");
-                assert!(out.get(&hi_logical(LAYER, T.0, T.1)).is_none(), "nothing of the tile put");
-                stops += 1;
-            }
-            // (Past its last block: put whole.)
-            Ok(_) => break,
-        }
+        assert!(crate::control::is_paused(&e), "after {stop} of {blocks}: {e:#}");
+        assert!(out.get(&hi_logical(LAYER, T.0, T.1)).is_none(), "nothing of the tile put");
+        assert!(log(&out), "its blocks kept, after {stop}");
+        at = stop;
     }
-    assert!(stops > 2, "a z6 tile has several safe points: {stops}");
-    assert!(packs(&out) == fresh, "paused at each of its {stops} safe points");
+    // (Past its last block: put whole, from its log alone.)
+    build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).unwrap();
+    assert!(packs(&out) == fresh, "paused after blocks 1, 2, {}, {} and {blocks}", blocks / 2, blocks - 1);
+    assert!(!log(&out), "the log gone once saved");
 }
 
 /// Task #804: a new fine source dropped in the open sea, of any zoom, gets tiles up to its zoom

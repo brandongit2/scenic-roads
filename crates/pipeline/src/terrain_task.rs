@@ -586,24 +586,32 @@ mod tests {
         assert!(paused >= 3 && logged >= 1, "{paused} paused, {logged} with blocks kept");
     }
 
+    /// A z6 tile stopped after its first safe point (a block kept, or a level's end), its
+    /// second, midway, before its last and after it, each resumed: the same packs as a run never
+    /// stopped. (After each one in turn before #969, 143 s on the test Mac, a whole run each.)
     #[test]
     fn a_z6_tile_stopped_and_resumed_makes_the_same_packs() {
         use crate::resume_log::STOP_AFTER;
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
-        // (Its packs and mid as saved, their content names the bytes' digests; None when stopped.)
+        // (Its packs and mid as saved, their content names the bytes' digests; None when stopped.
+        // Not stopped, also the safe points it passed: a stop never reached counts them.)
+        let counted = std::cell::Cell::new(0);
         let run = |name: &str, src: &Sources, stop: Option<usize>| -> Option<Vec<(String, String)>> {
             let root = d.path().join(name);
             let scratch = d.path().join(format!("{name}-scratch"));
             let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
-            STOP_AFTER.set(stop);
+            STOP_AFTER.set(Some(stop.unwrap_or(usize::MAX)));
             let r = crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, src);
-            STOP_AFTER.set(None);
+            let left = STOP_AFTER.take();
             let log = crate::resume_log::path(&scratch, (6, t.0, t.1));
             if let Err(e) = r {
                 assert!(crate::control::is_paused(&e) && log.exists(), "{e:#}");
                 return None;
+            }
+            if stop.is_none() {
+                counted.set(usize::MAX - left.unwrap());
             }
             assert!(!log.exists(), "the log gone once written");
             let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
@@ -619,17 +627,15 @@ mod tests {
         let without = Sources { native: Some(every), sets: crate::terrain_zoom::test_world_ref() };
         let fresh = run("fresh", &with, None).unwrap();
         assert_eq!(fresh.len(), 2, "{fresh:?}");
-        // Stopped after each of its blocks and level ends in turn, then resumed: the same bytes.
-        let mut kept = 0;
-        for stop in 1.. {
-            let name = format!("stop-{stop}");
-            if run(&name, &with, Some(stop)).is_some() {
-                break;
-            }
-            assert_eq!(run(&name, &with, None).as_ref(), Some(&fresh), "stopped after {stop}");
-            kept = stop;
-        }
+        let kept = counted.get();
         assert_eq!(kept, 11, "its blocks and level ends (z12–9), but the last");
+        // Stopped after its first safe point, its second, midway, before its last and after it,
+        // then resumed: the same bytes.
+        for stop in std::collections::BTreeSet::from([1, 2, kept / 2, kept - 1, kept]) {
+            let name = format!("stop-{stop}");
+            assert!(run(&name, &with, Some(stop)).is_none(), "stopped after {stop}");
+            assert_eq!(run(&name, &with, None).as_ref(), Some(&fresh), "stopped after {stop}");
+        }
         // Stopped twice, the second time further on.
         assert!(run("twice", &with, Some(2)).is_none() && run("twice", &with, Some(3)).is_none());
         assert_eq!(run("twice", &with, None).as_ref(), Some(&fresh), "stopped twice");
