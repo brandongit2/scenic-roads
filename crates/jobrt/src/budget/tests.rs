@@ -205,7 +205,8 @@ fn old_leases_are_removed() {
     assert!(!f.exists(), "removed once KEEP windows behind");
 }
 
-/// A lead as a test sets it: answering from `give` (a window's slots counted by the clock), or
+/// A lead as a test sets it: answering batches of `Rate::batch` (an older lead's: the budget spends
+/// whatever a batch holds) from a window's slots counted by the clock, or
 /// down (`up` false).
 struct FakeLead {
     clock: Arc<StepClock>,

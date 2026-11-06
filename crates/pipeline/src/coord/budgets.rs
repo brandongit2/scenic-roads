@@ -4,11 +4,12 @@
 //! `state/pool/progress/`).
 //!
 //! - **The budget** (`POST /pool/budget/take {class}`, `POST /pool/budget/hold {s}`): each
-//!   window's slots counted in memory (`Windows`), by the lead's clock alone; a batch is spendable
-//!   for what is left of its window (crate::budget::Given). The one source: a Mac that can't reach
+//!   window's tokens counted in memory (`Windows`), by the lead's clock alone, one a take, so a
+//!   429's hold stops every Mac at its next token; a token is spendable for what is left of its
+//!   window (crate::budget::Given). The one source: a Mac that can't reach
 //!   the lead takes nothing (crate::budget). Not durable: a restarted lead gives
 //!   nothing in the window it first hears an ask in (its process before may have given that
-//!   window's slots), so a restart only slows. A 429's hold is kept in the store (`budget-hold`),
+//!   window's tokens), so a restart only slows. A 429's hold is kept in the store (`budget-hold`),
 //!   so a restarted lead keeps it.
 //! - **The answers' lease** (`POST /pool/lease/answers {op, by, token}`, crate::answers): one
 //!   holder at a time, lapsing `answers::LEASE_S` after it was last taken or renewed, by the lead's
@@ -44,7 +45,9 @@ pub const HOLD: &str = "budget-hold";
 /// The members' progress's documents in the store (`progress/<member id>`).
 pub const PROGRESS: &str = "progress/";
 
-/// Each class's window and the slots given in it, by the lead's clock (ms since the epoch).
+/// Each class's window and the tokens given in it, by the lead's clock (ms since the epoch): one a
+/// take, so a Mac holds none it hasn't spent, and a hold stops every Mac at its next token (a
+/// batch of more would be spent on another Mac after a 429 told here).
 #[derive(Debug, Default)]
 pub struct Windows {
     given: BTreeMap<Class, (u64, u32)>,
@@ -74,11 +77,11 @@ impl Windows {
         if g.0 != w {
             *g = (w, 0);
         }
-        if g.1 >= r.slots() {
+        if g.1 >= r.tokens {
             return Given::Wait { ms: end - now };
         }
         g.1 += 1;
-        Given::Batch { n: r.batch, window: w, for_ms: end - now }
+        Given::Batch { n: 1, window: w, for_ms: end - now }
     }
 
     /// Every class held `secs` from `now` (capped at crate::budget::HOLD_MAX_S): until when (ms).
@@ -380,8 +383,10 @@ mod tests {
         let back = lead.lock().unwrap().take(Class::Wiki, (last - 1) * 10_000);
         assert_eq!(back, Given::Wait { ms: 20_000 });
         assert!(!d.path().join(crate::budget::DIR).exists(), "nothing on the NAS");
-        // (A hold: none given till it ends.)
+        // (Another Mac's 429 held the lead just after this Mac took a token: no Mac spends one
+        // till the hold ends, this one neither.)
         use crate::budget::Clock;
+        macs[0].take(Class::Wiki);
         let now = clock.now_ms();
         let until = lead.lock().unwrap().hold(25, now);
         // (A restarted lead keeps a 429's hold: the store's.)

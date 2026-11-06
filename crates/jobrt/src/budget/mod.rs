@@ -8,13 +8,15 @@
 //! profile that denies it every outbound connection but to the Mac itself, `SANDBOX`), which takes a
 //! token for each connection to a metered host before it opens it.
 //!
-//! The tokens are taken in batches (`Rate::batch`): time is cut into windows (`Rate::window_ms`)
-//! and a window's tokens into slots of a batch each, from one of two places:
+//! Time is cut into windows (`Rate::window_ms`), each with its tokens (`Rate::tokens`), taken in
+//! batches (`Given::Batch`) from one of two places:
 //!
 //! - **The lead** (`Lead`, docs/coordination.md step 7: `POST /pool/budget/take`), which counts
-//!   each window's slots in memory by its own clock alone: a batch is spendable until the lead's
-//!   window ends, counted on this Mac from when it asked (`Given::Batch::for_ms`), so a batch is
-//!   never spent past its window whatever the Macs' clocks say. The agent gives its proxy the lead
+//!   each window's tokens in memory by its own clock alone, giving one a take (an older lead gave
+//!   `Rate::batch`): no Mac holds tokens it hasn't spent, so a 429's hold stops every Mac at its
+//!   next token. A batch is spendable until the lead's window ends, counted on this Mac from when
+//!   it asked (`Given::Batch::for_ms`), so it is never spent past its window whatever the Macs'
+//!   clocks say. The agent gives its proxy the lead
 //!   (`Budget::set_lead`) while its lead takes the budget and no member in touch takes it on the NAS.
 //!   The lead is then the one source: out of reach, this Mac takes nothing, asking again each
 //!   window. (A share of its own meanwhile would add to what the lead gives the Macs that reach it:
@@ -34,8 +36,9 @@
 //! (`Budget::charge`).
 //!
 //! A 429 or a `Retry-After` seen by any process holds every process and Mac: the process tells its
-//! proxy (`/hold`: `seen`), which tells the lead (every class's slots given to none till it ends)
-//! or, on the NAS, takes every slot of the windows the wait spans (`Budget::hold`). With the NAS
+//! proxy (`/hold`: `seen`), which tells the lead (every class's tokens given to none till it ends)
+//! or, on the NAS, takes every slot of the windows the wait spans (`Budget::hold`; there a batch
+//! another process leased before the hold may still be spent within its window). With the NAS
 //! out of reach (the gate's path), each Mac takes the rate divided by the members it knows
 //! (`Budget::members`), in memory; with the lead out of reach, none.
 //!
@@ -189,7 +192,7 @@ pub struct Rate {
     pub window_ms: u64,
     /// The tokens a window has, the pool's whole.
     pub tokens: u32,
-    /// The tokens a lease takes (a window has `tokens / batch` slots).
+    /// The tokens a lease on the NAS takes (a window has `tokens / batch` slots there).
     pub batch: u32,
     /// A connection's time a token pays for (ms; 0: count alone): one lasting longer owes the rest.
     pub per_token_ms: u64,
@@ -328,7 +331,7 @@ pub enum Given {
     /// what is left of that window on the lead's clock, so counted from the ask the batch's time
     /// ends no later than the window does, however late the answer came.
     Batch { n: u32, window: u64, for_ms: u64 },
-    /// None now (the window's slots all given, or the pool held by a 429): ask again in `ms`.
+    /// None now (the window's tokens all given, or the pool held by a 429): ask again in `ms`.
     Wait { ms: u64 },
 }
 
