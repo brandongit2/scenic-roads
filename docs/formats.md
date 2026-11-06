@@ -593,8 +593,12 @@ pyenv/.lock-<key>       flock'd by the one making of that key (kept: removing a 
 app/current.json, previous.json   {version, files, sha256}
 mirror/<content name>   downloads, named as on the NAS (docs/macs.md, Mirror; .partial/: in progress)
 mirror/.basemap/<hash16>/  the basemap's pieces (store::pieces): lo.pmtiles (zooms 0–10),
-                        6-<x>-<y>.pmtiles (a z6 tile's 11–14), PMTiles v3 (clustered, gzip'd
-                        directories, tiles as stored); sizes.json {piece: bytes}
+                        <z>-<x>-<y>.pmtiles (the one tile, z 0–5), mid-6-<x>-<y>.pmtiles (a z6
+                        tile's 6–10), 6-<x>-<y>.pmtiles (a z6 tile's 11–14), PMTiles v3 (clustered,
+                        gzip'd directories, tiles as stored); sizes.json {piece: bytes}
+mirror/.packs/<hash16>/ the pieces of a root or lo pack (store::pieces::plan_pack): <z>-<x>-<y>.pack,
+                        mid-6-<x>-<y>.pack, each an RDPACK of those tiles alone (the pack's flags
+                        and meta, each blob once, its index); sizes.json {piece: bytes}
 idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)
 accepted/<unit>/        accepted inputs copied from the NAS: @index.json ({"version", "index"}) and
                         each file by content name (pipeline::inputs::served); a sync leaves the

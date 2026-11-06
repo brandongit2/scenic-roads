@@ -335,20 +335,30 @@ installed by `tools/app/install.sh`, updated by the updater).
   within 25 km (the viewshed's reach); the hi data, landmark points (markdata) and area details
   (ovdata, by z3 tile) within 50 km; the worldwide `global/` files (those by z6 tile, such as the
   roads' English names and ids, only for its tiles); the Canadian lake fill when it meets Canada.
-  Zoomed out (#985): every layer's root (z0–2, 11 MB in all) and its lo packs (z3–8) of the z3
-  tiles over its z6 tiles (what a terrain or shading tile without its own is made from, and the
-  labels the place search reads there), and the basemap's zooms 0–10 (its one worldwide piece).
-  These reach past the region, to their z3 tile and the world, as does the landmark points' one
-  bundle: away from the NAS, what's read of them keeps to the downloaded regions' z6 tiles
-  (`Data::reaches`; the World's reach everywhere), as do the place search, a tile made from a
-  coarser one (terrain, shading, water, depth) and the landmarks and area details; outside them
-  every layer is none (the terrain and its shading flat), and zoomed out a tile shows where it
-  meets them. On map 1658 they add 2.6 GB to
-  Jamaica (1.9 → 4.6 GB: lo packs 1.0 GB, basemap 1.6 GB), 2.4 GB to Prince Edward Island
-  (3.5 → 6.0 GB), and 5.3 GB to Canada's 14 regions together (their 9 z3 tiles' lo packs 3.7 GB,
-  the basemap 1.6 GB); one shared with the World or another region is copied once. A region
-  downloaded before (its list without them) takes them at the catalogue served at its next round
-  with the NAS, without an Update; the rest stays at its catalogue. Away from the NAS, a
+  Zoomed out (#985), only what lies over its z6 tiles of the files that cover far more, as pieces
+  (below): of every layer's root (z0–2) and lo packs (z3–8), each tile of zooms 0–5 over its z6
+  tiles and their zooms 6–8; of a polar layer's root, its tiles over the region's blocks; and of
+  the basemap, the same at zooms 0–10. What a terrain or shading tile without its own is made
+  from, and the labels the place search reads there. On map 1668 they add 28 MB to Jamaica (25 MB
+  of the packs, 2.8 MB of the basemap; the whole root and lo packs over it and the basemap's
+  zooms 0–10 were 2.6 GB), 29 MB to Prince Edward Island, and 2.4 GB to Canada's 14 regions
+  together (9,592 pieces: 2.0 GB of the packs, 0.4 GB of the basemap); a piece shared with
+  another region is copied once. A tile of zooms 0–5 still reaches past the region, as do the
+  landmark points' one bundle and the area details' z3 files: away from the NAS, every tile shows
+  only what lies inside the downloaded regions' z6 tiles (`Data::reaches`, `Data::cut`; the
+  World's reach everywhere). One only partly over them is cut to them as it's served
+  (crates/server clip.rs): a raster's pixels outside take the value the layer has where it has
+  nothing (the terrain 0 m, the depth's no data, the shading flat, the water and classes none), a
+  vector tile's points outside go and its lines and areas are cut at their edges (the basemap,
+  labels, stations, areas, roads and rails, landmarks, ferries; a ferry cut in pieces keeps its
+  longest); its ETag names where the downloads reach. So a small region stays alone when zoomed
+  out, with nothing around it. The place search, a tile made from a coarser one (terrain,
+  shading, water, depth) and the landmark points keep to them too, the area details (looked up by
+  id, a z3 tile's file) to the z3 tiles meeting them; outside them every layer is none (the
+  terrain and its shading flat). A region downloaded before its pieces (its
+  list naming the whole root and lo packs over it, or the basemap's worldwide zooms 0–10) takes
+  them at the catalogue served at its next round with the NAS, without an Update, and the whole
+  files go; the rest stays at its catalogue. Away from the NAS, a
   whole road (hover, profile) leaving it is cut where this Mac's files end: the ways joined end to
   end through the one asked for, the profile marked cut short. While a downloaded region's hi data
   can't be read for its owners, no base pack or road values here go (a hi data that stays
@@ -358,12 +368,19 @@ installed by `tools/app/install.sh`, updated by the updater).
   z12; the panel says
   the share of the region they cover and their size first. Downloaded only while the region is;
   copied after everything else.
-- **The basemap's pieces** (`mirror/.basemap/<archive hash>/`): each a PMTiles archive of its own,
-  `lo` (zooms 0–10) and `6-x-y` (a z6 tile's zooms 11–14, shared by every download meeting it). On
-  PMTiles' Hilbert curve a z6 tile's tiles at each zoom are one run, so a piece is four directory
-  runs and mostly sequential reads. Sizes are known ahead (`sizes.json`); a piece cut short resumes;
-  each tile's gzip checksum is checked. Pieces rather than a sparse copy: removed by deleting, sized
-  as packs are, shared, opened as any archive.
+- **Pieces** (`store::pieces`): the parts of a worldwide file a download takes, each a file of the
+  same kind of its own, shared by every download naming it. The basemap's
+  (`mirror/.basemap/<archive hash>/`), each a PMTiles archive: `lo` (zooms 0–10, the World's),
+  `z-x-y` (one tile of zooms 0–5), `mid-6-x-y` (a z6 tile's zooms 6–10) and `6-x-y` (its 11–14). On
+  PMTiles' Hilbert curve a z6 tile's tiles at each zoom are one run, so a piece is a few directory
+  runs and mostly sequential reads. A root or lo pack's (`mirror/.packs/<pack hash>/`), each an
+  RDPACK of its tiles alone, as the server reads any pack: `z-x-y` and `mid-6-x-y` (a z6 tile's
+  zooms 6–8). The server reads a pack's tile from the pack when it's here whole, else from its
+  piece here (`Data::pack_key`), and the app's URLs version it by what it's read from. Sizes are
+  known ahead from the archive's directory or the pack's index (`sizes.json`); a piece cut short
+  resumes; each tile's gzip checksum (the basemap's) or XXH3 (a pack's) is checked. Pieces rather
+  than a sparse copy: removed by deleting, sized as packs are, shared, opened as any archive or
+  pack.
 - **Updated only when asked:** each download (the World, a region, a region's terrain detail) stays
   at the catalogue it was downloaded or last updated at (`downloads.json`); a new catalogue copies
   nothing. Its row in the Regions panel then says it's out of date, with what changed and the size

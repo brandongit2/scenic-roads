@@ -406,8 +406,8 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   - the app's `server`, `web/` and fonts (in every app copy already);
   - its followed map: `~/Library/Caches/scenic/map/current.json.zst` (~20 MB) and `lead.json`;
   - its downloads: `mirror/`, `downloads.json`, `reserve.json`, `idx/` (the World 19.3 GB on map
-    1658, 6 Nov; regions as chosen, each with what's read over it zoomed out since #985, e.g.
-    Alberta 20.7 GB, British Columbia 27.5 GB; docs/macs.md, Mirror);
+    1658, 6 Nov; regions as chosen, each with its pieces of what's read over it zoomed out since
+    #985; docs/macs.md, Mirror);
   - what the server keeps for offline use: `accepted/` (0.9 GB, the translations' and descriptions'
     accepted versions), `names/` (3 MB), `profiles.json`, `region-areas.json`, `map-page`.
   Not needed by anything: `catalog/`, `~/Library/Caches/scenic/catalogue` (no catalogue read since
@@ -451,14 +451,16 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
     found mounted is read only once it answers a probe, made at once (`IoPool::probe_first`); the
     map log reads the NAS only while it's read.
   - **A region holds what the map reads over it at every zoom** (docs/macs.md, Mirror): to its
-    hi packs, base packs, lists and basemap pieces were added every layer's root, its lo packs of
-    the z3 tiles over the region and the basemap's zooms 0–10. On map 1658: Jamaica +2.6 GB
-    (1.9 → 4.6 GB), Canada's 14 regions together +5.3 GB. A region downloaded before takes them
-    at its next round with the NAS, without an Update.
-  - **Kept to the downloads:** those files cover more than the region (a z3 tile, the world, the
-    landmarks' one bundle), so away from the NAS what's read of them, the place search, and a
-    tile made from a coarser one keep to the downloaded regions' z6 tiles (`Data::reaches`;
-    with the World, everywhere).
+    hi packs, base packs, lists and basemap pieces were added its pieces over its z6 tiles of every
+    layer's root and lo packs and of the basemap's zooms 0–10 (`store::pieces`), not the whole
+    files. On map 1668: Jamaica +28 MB, Prince Edward Island +29 MB, Canada's 14 regions together
+    +2.4 GB (the whole files had been +2.6 GB, +2.5 GB and +5.3 GB). A region downloaded before
+    takes its pieces at its next round with the NAS, without an Update, and the whole files go.
+  - **Kept to the downloads:** away from the NAS every tile shows only what lies inside the
+    downloaded regions' z6 tiles (`Data::reaches`, `Data::cut`; with the World, everywhere): one
+    coarser than them only partly over them is cut to them as it's served (crates/server
+    clip.rs, per stored encoding), the polar caps' roots to the regions' blocks; the place search
+    and a tile made from a coarser one keep to them too.
   Tested on the M1, 6 Nov (a debug build, `--home` and `HOME` scratch folders, `--on-demand` on
   port 7399, sandboxed with `sandbox-exec`): with the coordinator's port 8090 blocked it took the
   NAS's map (1658), and Jamaica (4.55 GB) was downloaded into its mirror; restarted with port
@@ -467,7 +469,15 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   inside Jamaica the terrain, shading, basemap, water, roads and labels at z4, z7, z10 and z12
   (1–450 ms each, a debug build); outside it (Banff, Zurich) each answered at once (≤ 6 ms): the terrain and
   shading flat, every other layer 204. With nothing downloaded, the search was ready with no
-  place and every tile empty, with no error and no 503. Neither laptop has a download (no
+  place and every tile empty, with no error and no 503. Tested again with the pieces and the cut
+  (the same sandbox, map 1668): at home, before and after Jamaica was downloaded (2.0 GB, its
+  zoomed-out part 271 pack pieces and 15 basemap pieces, 65 MB with its basemap zooms 11–14), its
+  meta and 1,820 then 1,300 sampled tiles of every layer at z0–12 were byte for byte the installed
+  server's. Away: at z0–5 the basemap's, labels', stations' and areas' features all lay inside
+  Jamaica's four z6 tiles (84.4–73.1° W, 11.2–21.9° N; no Colombia), the rasters cut to them, the
+  polar caps' tiles 204, and the search found Kingston, Negril and Santiago de Cuba (inside those
+  tiles), not Bogotá or Havana; the globe zoomed out showed that square alone. Removed away from
+  the NAS, its files and pieces went, every tile was empty and the search found nothing. Neither laptop has a download (no
   `mirror/`, 6 Nov), and the downloads move on only while the server on demand runs.
   **7b (the alternative, if
   the owner overrules 7a):** the offline map is dropped: the agent deletes those files on a
