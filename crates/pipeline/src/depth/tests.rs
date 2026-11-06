@@ -519,6 +519,7 @@ fn a_source_ending_over_nothing_keeps_its_edge() {
 #[test]
 fn an_enclosed_sea_s_depth_is_below_its_own_surface() {
     let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("s")).unwrap();
     let srcs = sources(&d.path().join("s"));
     let q = (T.0 >> 3, T.1 >> 3);
     let run = |name: &str, terrain: bool| {

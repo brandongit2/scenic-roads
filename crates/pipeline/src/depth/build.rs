@@ -538,8 +538,11 @@ pub fn depth_lo_window(q: (u32, u32)) -> Window {
 }
 
 /// What depth target `t` (a z6 tile's piece, a z3 tile's assembly) reads (`depth_hi_windows`,
-/// `depth_lo_window`); none for another zoom.
+/// `depth_lo_window`); none for another zoom or a tile outside the world.
 pub fn windows(t: (u8, u32, u32)) -> Vec<Window> {
+    if t.0 >= 32 || t.1.max(t.2) >= 1 << t.0 {
+        return Vec::new();
+    }
     match t.0 {
         6 => depth_hi_windows((t.1, t.2)),
         3 => vec![depth_lo_window((t.1, t.2))],
