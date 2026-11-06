@@ -971,13 +971,13 @@ pub fn lo(
 
 /// The logical names: z6 tile T's hi pack and mid, z3 tile Q's lo pack.
 pub fn hi_logical(x: u32, y: u32) -> String {
-    crate::layers::hi_logical(LAYER, x, y)
+    terrain::layers::hi_logical(LAYER, x, y)
 }
 pub fn mid_logical(x: u32, y: u32) -> String {
-    crate::layers::mid_logical("bldfield", x, y)
+    terrain::layers::mid_logical("bldfield", x, y)
 }
 pub fn lo_logical(x: u32, y: u32) -> String {
-    crate::layers::lo_logical(LAYER, x, y)
+    terrain::layers::lo_logical(LAYER, x, y)
 }
 
 #[cfg(test)]

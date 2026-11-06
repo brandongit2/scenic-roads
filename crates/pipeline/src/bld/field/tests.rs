@@ -260,8 +260,8 @@ fn heritage_slices_against_markdata() {
     let root = std::path::Path::new(&root);
     let m: BTreeMap<String, String> =
         serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
-    let base = m[&format!("work/heritage/{}/base/heritage", crate::heritage::latest_date(&m).unwrap())].clone();
-    let parts_all = crate::heritage::slice_parts(&std::fs::read(root.join(base)).unwrap()).unwrap();
+    let base = m[&format!("work/heritage/{}/base/heritage", landmarks::heritage::latest_date(&m).unwrap())].clone();
+    let parts_all = landmarks::heritage::slice_parts(&std::fs::read(root.join(base)).unwrap()).unwrap();
     let date = m
         .keys()
         .filter_map(|k| k.strip_prefix("work/heritage/"))

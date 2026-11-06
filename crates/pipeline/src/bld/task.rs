@@ -60,7 +60,7 @@ pub struct Cut {
 
 impl Cut {
     /// What a task of it is offered at (MB): its files, what its worker holds at least. The
-    /// coordinator sizes it by its kind's measured runs (crate::coord's `/task/offer`, task #979).
+    /// coordinator sizes it by its kind's measured runs (pipeline::coord's `/task/offer`, task #979).
     pub fn files_mb(&self) -> u64 {
         self.bytes.div_ceil(1 << 20)
     }
@@ -280,10 +280,10 @@ pub fn take_z8(dir: &Path, a: TileId, add: &mut AddTile) -> Result<(Summary, fie
     Ok((sum, f))
 }
 
-/// A task's spec (the shape of a tail's: crate::offload) for z8 tile `a`: the program `bldtile` over
+/// A task's spec (the shape of a tail's: the offload crate's) for z8 tile `a`: the program `bldtile` over
 /// its folder.
 pub fn spec(a: TileId, version: &str, inputs: &BTreeMap<String, u64>) -> serde_json::Value {
-    let run = crate::unit::Run {
+    let run = offload::Run {
         what: KIND.into(),
         prog: KIND.into(),
         args: vec!["{dir}".into(), a.slash()],
@@ -291,7 +291,7 @@ pub fn spec(a: TileId, version: &str, inputs: &BTreeMap<String, u64>) -> serde_j
         reads: vec!["{dir}/*".into()],
     };
     let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
-    serde_json::json!({ "unit": a.slash(), "version": version, "runs": [run], "inputs": list, "places": crate::offload::places() })
+    serde_json::json!({ "unit": a.slash(), "version": version, "runs": [run], "inputs": list, "places": offload::places() })
 }
 
 /// The files of a task's folder `root` (its `u/`): (path in it, size).
@@ -320,19 +320,19 @@ pub fn results_dir(scratch: &Path, a: TileId) -> PathBuf {
     scratch.join("bldtile-results").join(a.dash())
 }
 
-/// A `bldtiles` job's z8 tiles out as tasks (crate::offload), as a unit job's tails are: offered from
+/// A `bldtiles` job's z8 tiles out as tasks (the offload crate), as a unit job's tails are: offered from
 /// the far end of T's list while workers that take them are around (at most three out at once),
 /// settled in their turn. Nothing waits on a worker longer than this Mac would take: a z8 tile no one
 /// took is given a moment, then taken back and run here; one a worker holds is waited on while the
-/// worker will be back with it before this Mac's run would end (crate::offload::Patience: its
+/// worker will be back with it before this Mac's run would end (offload::Patience: its
 /// buildings at the pace of the z8 tiles made here), then raced here; a worker's result is taken.
 pub struct Offers<'a> {
-    offload: Option<&'a crate::offload::Offload>,
+    offload: Option<&'a offload::Offload>,
     t: TileId,
     /// Where results wait for their turn (`results_dir`).
     scratch: PathBuf,
     /// The z8 tiles out (by their place in T's list), and those settled before their turn.
-    out: BTreeMap<usize, crate::offload::Offered>,
+    out: BTreeMap<usize, offload::Offered>,
     ready: BTreeMap<usize, PathBuf>,
     /// The z8 tiles from here to the end were offered (or kept here).
     far: usize,
@@ -348,7 +348,7 @@ pub struct Offers<'a> {
 
 impl<'a> Offers<'a> {
     pub fn new(
-        offload: Option<&'a crate::offload::Offload>,
+        offload: Option<&'a offload::Offload>,
         scratch: &Path,
         t: TileId,
         z8s: usize,
@@ -481,7 +481,7 @@ impl<'a> Offers<'a> {
             Ok(())
         };
         let Some(how) =
-            o.settle_with(task, wait, crate::offload::Patience { here_s: self.here_s(i) }, &mut || here(), &mut take)?
+            o.settle_with(task, wait, offload::Patience { here_s: self.here_s(i) }, &mut || here(), &mut take)?
         else {
             return Ok(());
         };
@@ -607,7 +607,7 @@ pub mod testkit {
     }
 
     /// The z8 tiles out (`Offers::out`).
-    pub fn out<'b>(o: &'b Offers) -> &'b BTreeMap<usize, crate::offload::Offered> {
+    pub fn out<'b>(o: &'b Offers) -> &'b BTreeMap<usize, offload::Offered> {
         &o.out
     }
 

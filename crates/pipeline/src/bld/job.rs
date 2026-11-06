@@ -568,7 +568,7 @@ pub fn build_lo_keeping(out: &mut Out, q: TileId, keep: bool) -> Result<usize> {
 }
 
 /// T's heritage sites for the field's heritage lists: the newest pass's slice of T's sites
-/// (`crate::heritage::pos_logical`) less its World Heritage components (`parts_logical`), as the
+/// (`landmarks::heritage::pos_logical`) less its World Heritage components (`parts_logical`), as the
 /// map's dots are; none without a slice.
 /// What the manifest names of T's work files and its neighbours' (`work_files`'), for a run's
 /// identity.
@@ -635,7 +635,7 @@ fn z8_unpiece(a: (u32, u32), p: &[u8]) -> Result<Z8Piece> {
 }
 
 pub fn sites(out: &Out, t: TileId) -> Result<Vec<[i32; 2]>> {
-    let Some(d) = crate::heritage::latest_date(&out.manifest) else { return Ok(Vec::new()) };
+    let Some(d) = landmarks::heritage::latest_date(&out.manifest) else { return Ok(Vec::new()) };
     let read = |l: String| -> Result<Vec<[i32; 2]>> {
         match out.get(&l) {
             Some(c) => Ok(serde_json::from_slice(&out.path(c).read()?).with_context(|| format!("{l}"))?),
@@ -643,9 +643,9 @@ pub fn sites(out: &Out, t: TileId) -> Result<Vec<[i32; 2]>> {
         }
     };
     let parts: std::collections::BTreeSet<[i32; 2]> =
-        read(crate::heritage::parts_logical(&d, t.x, t.y))?.into_iter().collect();
+        read(landmarks::heritage::parts_logical(&d, t.x, t.y))?.into_iter().collect();
     let mut s: Vec<[i32; 2]> =
-        read(crate::heritage::pos_logical(&d, t.x, t.y))?.into_iter().filter(|p| !parts.contains(p)).collect();
+        read(landmarks::heritage::pos_logical(&d, t.x, t.y))?.into_iter().filter(|p| !parts.contains(p)).collect();
     s.sort_unstable();
     s.dedup();
     Ok(s)
@@ -655,7 +655,7 @@ pub fn sites(out: &Out, t: TileId) -> Result<Vec<[i32; 2]>> {
 /// with no building touching the coverage, those it had dropped). With `offload` (the lead's coordinator), some of its z8 tiles are
 /// offered to workers as tasks (`super::task::Offers`) while the others are made here, in order;
 /// every z8 tile's tiles go into the pack in its turn, the same bytes wherever it was made.
-pub fn build(out: &mut Out, cov: &Coverage, t: TileId, offload: Option<&crate::offload::Offload>) -> Result<Summary> {
+pub fn build(out: &mut Out, cov: &Coverage, t: TileId, offload: Option<&offload::Offload>) -> Result<Summary> {
     let sum = build_later(out, cov, t, offload)?;
     out.save()?;
     out.claim_into_costin();
@@ -665,12 +665,7 @@ pub fn build(out: &mut Out, cov: &Coverage, t: TileId, offload: Option<&crate::o
 /// `build`, its uploads put off (buildstore::out::Out::put_file_later): they go on beside what the job
 /// does next, and the tile is saved (and noted done) by a later save (`Out::save_upto` the mark
 /// after it). Its summary names the files as they'll land (their content names, made here).
-pub fn build_later(
-    out: &mut Out,
-    cov: &Coverage,
-    t: TileId,
-    offload: Option<&crate::offload::Offload>,
-) -> Result<Summary> {
+pub fn build_later(out: &mut Out, cov: &Coverage, t: TileId, offload: Option<&offload::Offload>) -> Result<Summary> {
     build_later_keeping(out, cov, t, offload, jobrt::resume_log::on())
 }
 
@@ -679,7 +674,7 @@ pub fn build_later_keeping(
     out: &mut Out,
     cov: &Coverage,
     t: TileId,
-    offload: Option<&crate::offload::Offload>,
+    offload: Option<&offload::Offload>,
     keep: bool,
 ) -> Result<Summary> {
     ensure!(t.z == 6, "bldtiles takes z6 tiles ({} isn't one)", t.slash());

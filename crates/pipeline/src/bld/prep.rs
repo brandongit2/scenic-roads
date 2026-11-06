@@ -884,11 +884,11 @@ fn frames_unpiece(p: &[u8]) -> Result<Vec<Option<Frame>>> {
 }
 
 /// Runs `bldprep T`: tile `t`'s records read (`read`: the declared sources' release and GHSL's
-/// folder, crate::inputs::sources), the normalized file written and uploaded as `work/bld/6-x-y`
+/// folder, inputs::inputs::sources), the normalized file written and uploaded as `work/bld/6-x-y`
 /// (or, when T has no building, the one it had dropped). Its counts.
 pub fn run(out: &mut buildstore::out::Out, t: TileId) -> Result<Stats> {
     use jobrt::timings::phase;
-    let (release, ghsl, _) = super::sources::declared(&crate::inputs::sources::read(out.root(), &out.manifest)?)?;
+    let (release, ghsl, _) = super::sources::declared(&inputs::inputs::sources::read(out.root(), &out.manifest)?)?;
     let t0 = std::time::Instant::now();
     let (p, pieces) = read(out.root(), &release, &ghsl, t, &out.scratch, jobrt::resume_log::on())
         .with_context(|| format!("bldprep {}", t.slash()))?;

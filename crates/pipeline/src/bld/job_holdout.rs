@@ -203,9 +203,9 @@ fn holdout() {
     let dir = std::env::var("WORK").unwrap();
     // (The regions' accepted version the records of the NAS project folder `ROOT` name.)
     let root = std::path::PathBuf::from(std::env::var("ROOT").unwrap());
-    let cov = crate::inputs::regions::read::accepted_coverage(
+    let cov = inputs::inputs::regions::read::accepted_coverage(
         &store::nasfs::NasRoot::local_for_test(&root),
-        &crate::inputs::regions::read::source_now(&store::nasfs::NasRoot::local_for_test(&root)).unwrap(),
+        &inputs::inputs::regions::read::source_now(&store::nasfs::NasRoot::local_for_test(&root)).unwrap(),
         None,
     )
     .unwrap();

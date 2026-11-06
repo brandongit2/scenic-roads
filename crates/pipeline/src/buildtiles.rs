@@ -1,5 +1,5 @@
 //! Roadside buildings (docs/steps.md §6): the declared buildings source's release (its
-//! `version`: crate::inputs::sources, the `buildings` role, Overture's), as bounding boxes, in z8
+//! `version`: inputs::inputs::sources, the `buildings` role, Overture's), as bounding boxes, in z8
 //! tiles by their centre: `sources/buildings/<release>/8/<x>-<y>.f32` (the release's dot a dash: logical names have none), f32 `[xmin, ymin, xmax, ymax]` per building,
 //! degrees, sorted, each once (no file for a tile without any), with their index
 //! `sources/buildings/<release>/index`, written last.
@@ -9,10 +9,10 @@
 //! files in parallel, into local parts by tile, which are then merged per tile onto the NAS. A unit
 //! reads the tiles near its roads (`tiles_for`, `stage`).
 
-use crate::reach::Reach;
 use anyhow::{Context, Result};
 use buildstore::out::Out;
 use codecs::legacy::TileId;
+use roads::reach::Reach;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -53,9 +53,9 @@ pub fn tile_path(root: &store::nasfs::NasRoot, release: &str, t: TileId) -> NasP
 }
 
 /// The declared buildings source's release (its `version`) in the accepted sources the records `m`
-/// name (crate::inputs::sources), or why there's none.
+/// name (inputs::inputs::sources), or why there's none.
 pub fn release_of(root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) -> Result<String> {
-    Ok(crate::inputs::sources::read(root, m)?.role(crate::inputs::sources::BUILDINGS)?.version()?.to_string())
+    Ok(inputs::inputs::sources::read(root, m)?.role(inputs::inputs::sources::BUILDINGS)?.version()?.to_string())
 }
 
 /// The tiles made, with their buildings ("8/x/y": count; a tile without any isn't listed).
@@ -137,7 +137,7 @@ pub fn fetch_tile(src: &NasPath, local: &Path, want: u64) -> Result<()> {
 /// however far they go (`reach`; ferries have no roadside buildings).
 pub fn tiles_for(u: TileId, reach: Option<&Reach>) -> Vec<TileId> {
     let mut tiles = BTreeSet::new();
-    add_tiles(&mut tiles, crate::reach::near_box(u));
+    add_tiles(&mut tiles, roads::reach::near_box(u));
     for w in reach.into_iter().flat_map(|r| &r.long).filter(|w| w.owned && !w.ferry) {
         // Each stretch between two nodes: one cutting a tile's corner reads that tile too.
         let mut last: Option<[i32; 2]> = None;
@@ -304,12 +304,12 @@ pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3
 /// merged onto the NAS (a tile already there whole from a run cut short is left), and the index
 /// written last.
 pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
-    let sources = crate::inputs::sources::read(out.root(), &out.manifest)?;
-    let b = sources.role(crate::inputs::sources::BUILDINGS)?;
+    let sources = inputs::inputs::sources::read(out.root(), &out.manifest)?;
+    let b = sources.role(inputs::inputs::sources::BUILDINGS)?;
     let release = b.version()?.to_string();
     let parts = scratch.join(format!("parts-{release}"));
     std::fs::create_dir_all(&parts)?;
-    let free = crate::agent::room::disk_free(&parts)?;
+    let free = buildstore::room::disk_free(&parts)?;
     let started = std::fs::read_dir(&parts)?.flatten().filter(|e| e.path().join(".done").exists()).count();
     anyhow::ensure!(
         free >= PARTS_ROOM || started > 0,
@@ -437,16 +437,16 @@ pub fn stage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reach::LongWay;
+    use roads::reach::LongWay;
 
     #[test]
     fn a_unit_reads_the_tiles_near_its_roads() {
         let u = TileId { z: 6, x: 32, y: 21 };
         let near = tiles_for(u, None);
         // Its tile's z8 tiles and those within 20 km (+ 1 km): the same as the tiles meeting that box.
-        let b = codecs::hipack::grow(crate::reach::near_box(u), MARGIN_KM);
+        let b = codecs::hipack::grow(roads::reach::near_box(u), MARGIN_KM);
         let deg = |v: i32| v as f64 * 1e-7;
-        let want: Vec<TileId> = crate::stage::tiles_in(ZOOM, [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])])
+        let want: Vec<TileId> = roads::stage::tiles_in(ZOOM, [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])])
             .into_iter()
             .map(|(x, y)| TileId { z: ZOOM, x, y })
             .collect();

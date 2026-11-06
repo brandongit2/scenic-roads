@@ -671,7 +671,7 @@ fn overture_jobs(
 fn ghsl_jobs(
     http: &Http,
     root: &store::nasfs::NasRoot,
-    src: &crate::inputs::sources::Source,
+    src: &inputs::inputs::sources::Source,
     near: &Near,
 ) -> Result<(Vec<Job>, NasPath)> {
     use jobrt::timings::phase;
@@ -679,7 +679,7 @@ fn ghsl_jobs(
     base.create_dir_all()?;
     ensure!(!src.index.is_empty(), "GHSL: its declaration's index lists no tiles");
     let p = phase("picking the files meeting the coverage");
-    let mut index: Vec<&crate::inputs::sources::Feature> = src.index.iter().collect();
+    let mut index: Vec<&inputs::inputs::sources::Feature> = src.index.iter().collect();
     index.sort_by(|a, b| a.url.cmp(&b.url));
     let mut jobs = Vec::new();
     for f in index {
@@ -1053,9 +1053,9 @@ fn fetch(http: &Http, job: &Job, root: &store::nasfs::NasRoot, prog: &Progress) 
 pub struct Args<'a> {
     /// The NAS's project folder (the sources' home).
     pub root: &'a store::nasfs::NasRoot,
-    /// The declared sources (crate::inputs::sources): `buildings` (its release, bucket and
+    /// The declared sources (inputs::inputs::sources): `buildings` (its release, bucket and
     /// types) and `building-heights` (its version and index).
-    pub sources: &'a crate::inputs::sources::Sources,
+    pub sources: &'a inputs::inputs::sources::Sources,
     pub cov: &'a Coverage,
 }
 
@@ -1073,7 +1073,7 @@ fn regions(cov: &Coverage) -> Vec<String> {
 
 /// Fetches what the coverage needs and writes the indexes (see the module's docs).
 pub fn run(a: Args<'_>) -> Result<()> {
-    use crate::inputs::sources::{BUILDINGS, BUILDING_HEIGHTS};
+    use inputs::inputs::sources::{BUILDINGS, BUILDING_HEIGHTS};
     use jobrt::timings::phase;
     let root = a.root;
     ensure!(root.join("sources").is_dir(), "{}: not the NAS's project folder (no sources/)", root.display());
@@ -1117,7 +1117,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
     );
     drop(p);
     // (What's to fetch must fit in the NAS's free space past the owner's reserve, `scenic nas-room`.)
-    let room = crate::agent::room::nas_room(root)?;
+    let room = buildstore::room::nas_room(root)?;
     ensure!(left <= room, "the NAS has {} free past its reserve: too little for {}", gb(room as f64), gb(left as f64));
     let prog = Progress {
         files: jobs.len(),
@@ -1214,7 +1214,7 @@ fn save_indexes(
     gh_base: &NasPath,
     release: &str,
     bucket: &str,
-    ghsl: &crate::inputs::sources::Source,
+    ghsl: &inputs::inputs::sources::Source,
     what: &[String],
     checked: &BTreeMap<String, &'static str>,
 ) -> Result<()> {
