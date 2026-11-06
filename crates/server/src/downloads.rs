@@ -43,7 +43,9 @@
 //! as one whose catalogue is lost (`Plan::eff`). A region behind whose list lacks some file of no z6
 //! tile it now holds (one listed before a region held what's read over it zoomed out) takes it at
 //! the served catalogue, at the mirror's next round with the NAS (`unlisted`): no Update, and the
-//! rest stays at its own catalogue.
+//! rest stays at its own catalogue. What a download holds here in the form it had then (a whole
+//! pack, the basemap's zooms 0–10) stays, and is what's read, until all that replaces it is here
+//! (`bridge`): cut off at any point, away from the NAS it's one form or the other, whole.
 //!
 //! **Whole tiles.** No z6 tile is read from two catalogues (a list's ways index their owner's base
 //! pack). A download at the served catalogue moves every tile it has files of there (`Plan::moved`):
@@ -148,7 +150,7 @@ pub struct AskedRegion {
 }
 
 /// A download: the World, a region, or a region's terrain detail.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Which {
     World,
     Region(String),
@@ -409,6 +411,12 @@ pub struct Plan {
     /// The z6 tiles a download at the catalogue served has files of: a download behind it takes
     /// those tiles' files at the served one too (`own`), so no tile mixes catalogues.
     moved: HashSet<(u32, u32)>,
+    /// By download, what it held here in a form it no longer has, kept while what replaces it isn't
+    /// all here (`bridge`).
+    bridges: HashMap<Which, Vec<Item>>,
+    /// With bridges, what was here when it was made (Mirror::usage): it's made again once that
+    /// changes, so they go as soon as what replaces them is here, whatever else changed.
+    here: Option<(usize, u64)>,
 }
 
 impl Plan {
@@ -440,8 +448,9 @@ impl Plan {
     fn own(&self, w: &Which, pin: Pin) -> Option<Own<'_>> {
         let c = self.eff(pin.cat);
         let old = self.part(w, c)?;
+        let bridge = self.bridges.get(w).map_or(Vec::new(), |b| b.iter().collect());
         if c == self.current || !w.tiled() {
-            return Some(Own { kept: old.items.iter().collect(), taken: Vec::new() });
+            return Some(Own { kept: old.items.iter().collect(), taken: Vec::new(), bridge });
         }
         let moved = |i: &&Item| tile_of(i).is_some_and(|t| self.moved.contains(&t));
         let now = self.part(w, self.current);
@@ -458,7 +467,7 @@ impl Plan {
         if let (Which::Region(_), Some(now)) = (w, now) {
             taken.extend(unlisted(old, now));
         }
-        Some(Own { kept, taken })
+        Some(Own { kept, taken, bridge })
     }
 
     /// What an Update of `w` to catalogue `n` copies: its files there, and every other download's
@@ -516,11 +525,69 @@ impl Plan {
 struct Own<'a> {
     kept: Vec<&'a Item>,
     taken: Vec<&'a Item>,
+    /// What it held in a form it no longer has, kept until what replaces it is all here
+    /// (`bridge`): not its own (`all`), but wanted, and read while it's kept.
+    bridge: Vec<&'a Item>,
 }
 
 impl<'a> Own<'a> {
+    /// What it is now: at its catalogue, and at the served one.
     fn all(&self) -> impl Iterator<Item = &'a Item> + '_ {
         self.kept.iter().chain(&self.taken).copied()
+    }
+}
+
+/// What download `w` (`own`, without a bridge) held here in a form it no longer has, while what
+/// replaces it isn't all here: a whole pack or the basemap's zooms 0–10 (`Piece::Lo`) where it now
+/// takes their pieces (a region downloaded before it held pieces, its list naming them whole, or
+/// this Mac's files from then). Of what's here (`here`), its list's items and the served
+/// catalogue's whole files of its pieces, those holding a piece of its that isn't here, all of
+/// them until every such piece is: so away from the NAS it reads its old form whole until the new
+/// one is, then the new one, and the old goes in one step (Mirror::let_go), never half of each.
+fn bridge(plan: &Plan, w: &Which, pin: Pin, own: &Own, here: &dyn Fn(&Item) -> bool) -> Vec<Item> {
+    let logical = |n: &str| store::naming::parse_content_name(n).map(|c| c.logical.to_string());
+    // Its pieces (but the World's zooms 0–10), by their file's logical name: each, and whether here.
+    let mut pieces: HashMap<String, Vec<(Piece, bool)>> = HashMap::new();
+    let mut archives: BTreeSet<&str> = BTreeSet::new();
+    for i in own.all() {
+        if let Some((a, p)) = piece_of(i).filter(|(_, p)| *p != Piece::Lo) {
+            let Some(l) = logical(a) else { continue };
+            pieces.entry(l).or_default().push((p, here(i)));
+            archives.insert(a);
+        }
+    }
+    if pieces.is_empty() {
+        return Vec::new();
+    }
+    let ours: HashSet<&Item> = own.all().collect();
+    let sizes: HashMap<&str, u64> = plan.served().files.values().map(|f| (f.file.as_str(), f.size)).collect();
+    let list = plan.part(w, plan.eff(pin.cat)).map_or(&[][..], |p| &p.items[..]);
+    let cands = list.iter().cloned().chain(archives.iter().flat_map(|&a| {
+        let whole = sizes.get(a).map(|&size| Item::File { name: a.to_string(), size });
+        whole.into_iter().chain([Item::Piece { archive: a.to_string(), piece: Piece::Lo }])
+    }));
+    let (mut old, mut seen, mut waiting) = (Vec::new(), HashSet::new(), false);
+    for c in cands {
+        // (A whole file holds every piece of its pack; zooms 0–10 the pieces of zooms 0–10.)
+        let (name, lo) = match &c {
+            Item::File { name, .. } => (name, false),
+            Item::Piece { archive, piece: Piece::Lo } => (archive, true),
+            Item::Piece { .. } => continue,
+        };
+        let Some(held) = logical(name).and_then(|l| pieces.get(&l)) else { continue };
+        let held = held.iter().filter(|(p, _)| !lo || matches!(p, Piece::Over(..) | Piece::Mid(..)));
+        let mut held = held.peekable();
+        if held.peek().is_none() || ours.contains(&c) || seen.contains(&c) || !here(&c) {
+            continue;
+        }
+        waiting |= held.any(|(_, h)| !h);
+        seen.insert(c.clone());
+        old.push(c);
+    }
+    if waiting {
+        old
+    } else {
+        Vec::new()
     }
 }
 
@@ -722,8 +789,9 @@ impl Downloads {
     pub fn plan(&self, data: &Data) -> Arc<Plan> {
         let generation = data.generation.load(Ordering::SeqCst);
         let version = self.version();
+        let usage = data.mirror.as_ref().map(|m| m.usage());
         if let Some(p) = self.plan.lock().unwrap().as_ref() {
-            if p.generation == generation && p.version == version {
+            if p.generation == generation && p.version == version && p.here.is_none_or(|h| Some(h) == usage) {
                 return p.clone();
             }
         }
@@ -762,7 +830,11 @@ impl Downloads {
                 })
                 .collect()
         };
-        let mut plan = make_plan(generation, version, asked, cur.n, at);
+        let here = |i: &Item| data.mirror.as_ref().is_some_and(|m| m.is_here(i));
+        let mut plan = make_plan(generation, version, asked, cur.n, at, &here);
+        if !plan.bridges.is_empty() {
+            plan.here = usage;
+        }
         // (A change moves the generation on: the plan is for the one it leaves.)
         let older = data.mirror.as_ref().map(|m| older(&plan, m)).unwrap_or_default();
         if data.set_older(older) {
@@ -833,7 +905,7 @@ fn older(plan: &Plan, m: &Mirror) -> HashMap<String, String> {
         let Some(own) = plan.own(&w, p).filter(|o| o.kept.iter().all(|i| m.is_here(i))) else {
             continue;
         };
-        for i in own.kept {
+        for i in own.kept.into_iter().chain(own.bridge) {
             let name = match i {
                 Item::File { name, .. } => name,
                 Item::Piece { archive, .. } => archive,
@@ -955,8 +1027,9 @@ impl Downloads {
             }
             // (Nothing to copy: its catalogue had none of it, or each file an Update would copy is
             // here, through another download, or one it keeps already (the same file, or one of a
-            // tile another download moved, being copied): what the panel says is behind.)
-            if p.to.is_none() && p.cat != cur {
+            // tile another download moved, being copied): what the panel says is behind. Not while
+            // it holds an older form (`bridge`), read at its own catalogue until the new is here.)
+            if p.to.is_none() && p.cat != cur && !plan.bridges.contains_key(&w) {
                 let none = plan.part(&w, p.cat).is_none();
                 let had: HashSet<&Item> = plan.own(&w, p).iter().flat_map(Own::all).collect();
                 let left = |items: Vec<&Item>| items.into_iter().any(|i| !had.contains(i) && !m.is_here(i));
@@ -1022,8 +1095,27 @@ fn units_of(owners: &Owners, cat: &Catalogue, region: &str, rings: &[Vec<[f64; 2
         .collect()
 }
 
-fn make_plan(generation: u64, version: u64, asked: Asked, current: u64, at: BTreeMap<u64, Arc<At>>) -> Plan {
-    let mut plan = Plan { generation, version, wanted: Wanted::default(), current, at, asked, moved: HashSet::new() };
+/// The plan for `asked` at the catalogues `at` (`current` served), with what's here (`here`, for
+/// what a download held in an older form: `bridge`).
+fn make_plan(
+    generation: u64,
+    version: u64,
+    asked: Asked,
+    current: u64,
+    at: BTreeMap<u64, Arc<At>>,
+    here: &dyn Fn(&Item) -> bool,
+) -> Plan {
+    let mut plan = Plan {
+        generation,
+        version,
+        wanted: Wanted::default(),
+        current,
+        at,
+        asked,
+        moved: HashSet::new(),
+        bridges: HashMap::new(),
+        here: None,
+    };
     let moved: HashSet<(u32, u32)> = plan
         .asked
         .pins()
@@ -1033,12 +1125,21 @@ fn make_plan(generation: u64, version: u64, asked: Asked, current: u64, at: BTre
         .flat_map(|p| p.items.iter().filter_map(tile_of))
         .collect();
     plan.moved = moved;
+    let bridges: HashMap<Which, Vec<Item>> = plan
+        .asked
+        .pins()
+        .into_iter()
+        .filter_map(|(w, p)| Some((w.clone(), bridge(&plan, &w, p, &plan.own(&w, p)?, here))))
+        .filter(|(_, b)| !b.is_empty())
+        .collect();
+    plan.bridges = bridges;
     let mut wanted = Wanted::default();
     let mut seen = HashSet::new();
     for (w, p) in plan.asked.pins() {
         let own = plan.own(&w, p);
         let to = p.to.and_then(|t| plan.target(&w, t));
-        for i in own.iter().flat_map(Own::all).chain(to.into_iter().flatten()) {
+        let bridge = own.iter().flat_map(|o| o.bridge.iter().copied());
+        for i in own.iter().flat_map(Own::all).chain(bridge).chain(to.into_iter().flatten()) {
             wanted.push(i.clone(), &mut seen);
         }
     }
@@ -1116,6 +1217,35 @@ pub fn spawn_mirror(s: S, mut lead: Option<crate::maplog::MirrorLink>) {
     }
 }
 
+/// A round's start, at catalogue `cat`: where the downloads reach, the owners of their ways learned,
+/// their lists kept, their pins moved on (None: one moved, plan again); the plan, and what the round
+/// keeps here.
+fn round_plan(s: &crate::AppState, m: &Mirror, cat: &Catalogue) -> Option<(Arc<Plan>, Wanted)> {
+    s.data.set_reach(reach(&s.downloads.asked(), cat));
+    let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
+    s.downloads.keep_lists(&s.downloads.plan(&s.data), owners_known);
+    // (A partial list read, its map gone: its owners are as unknown.)
+    let owners_known = owners_known && s.downloads.plan(&s.data).at.values().all(|a| !a.partial);
+    if s.downloads.advance(&s.downloads.plan(&s.data), m) {
+        return None;
+    }
+    let plan = s.downloads.plan(&s.data);
+    // While a downloaded region's hidata is unread, its owners can't be told: every base pack and
+    // road values here stay (a NAS hiccup mustn't let them go).
+    let mut wanted = plan.wanted.clone();
+    if !owners_known {
+        let mut seen: HashSet<Item> = wanted.items.iter().cloned().collect();
+        for c in plan.at.values().filter_map(|a| a.cat.as_ref()) {
+            for f in c.base.values().chain(c.roads.values()).filter_map(|l| c.files.get(l)) {
+                if m.has(&f.file) {
+                    wanted.push(Item::File { name: f.file.clone(), size: f.size }, &mut seen);
+                }
+            }
+        }
+    }
+    Some((plan, wanted))
+}
+
 /// One round of the mirror; whether to go again at once (the catalogue or the downloads changed
 /// meanwhile).
 fn once(s: &crate::AppState, m: &Mirror, mut lead: Option<&mut crate::maplog::MirrorLink>) -> bool {
@@ -1124,35 +1254,10 @@ fn once(s: &crate::AppState, m: &Mirror, mut lead: Option<&mut crate::maplog::Mi
     if cat.n == 0 {
         return false;
     }
-    s.data.set_reach(reach(&s.downloads.asked(), &cat));
-    let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
-    s.downloads.keep_lists(&s.downloads.plan(&s.data), owners_known);
-    // (A partial list read, its map gone: its owners are as unknown.)
-    let owners_known = owners_known && s.downloads.plan(&s.data).at.values().all(|a| !a.partial);
-    if s.downloads.advance(&s.downloads.plan(&s.data), m) {
-        return true;
-    }
-    let plan = s.downloads.plan(&s.data);
+    let Some((plan, wanted)) = round_plan(s, m, &cat) else { return true };
+    let wanted = &wanted;
     let changed =
         || s.data.generation.load(Ordering::SeqCst) != plan.generation || s.downloads.version() != plan.version;
-    // While a downloaded region's hidata is unread, its owners can't be told: every base pack and
-    // road values here stay (a NAS hiccup mustn't let them go).
-    let keep;
-    let wanted = if owners_known {
-        &plan.wanted
-    } else {
-        let mut w = plan.wanted.clone();
-        let mut seen: HashSet<Item> = w.items.iter().cloned().collect();
-        for c in plan.at.values().filter_map(|a| a.cat.as_ref()) {
-            for f in c.base.values().chain(c.roads.values()).filter_map(|l| c.files.get(l)) {
-                if m.has(&f.file) {
-                    w.push(Item::File { name: f.file.clone(), size: f.size }, &mut seen);
-                }
-            }
-        }
-        keep = w;
-        &keep
-    };
     let Some((root, pool)) = s.data.nas_root().zip(s.data.pool()) else {
         // No NAS mounted: what no download wants goes all the same; nothing can be copied.
         match m.let_go(&cat, wanted) {
@@ -1178,6 +1283,7 @@ fn once(s: &crate::AppState, m: &Mirror, mut lead: Option<&mut crate::maplog::Mi
             }
         }
     }
+    let mut bridged = false;
     match m.sync(&cat, wanted, &root, &pool, &Control { stop: &changed, slow: &slow }) {
         Ok(st) => {
             let through = st.end == SyncEnd::Done && st.waiting == 0 && st.failed == 0 && st.pending == 0;
@@ -1190,11 +1296,14 @@ fn once(s: &crate::AppState, m: &Mirror, mut lead: Option<&mut crate::maplog::Mi
             if st.copied > 0 {
                 s.data.forget_remote();
             }
+            // (What replaces a download's older form came: planned again at once, so the old
+            // form goes as soon as the new one is all here, `bridge`.)
+            bridged = st.copied > 0 && !plan.bridges.is_empty();
         }
         Err(e) => eprintln!("mirror: {e:#}"),
     }
     // (An update all here now moves on at once.)
-    if changed() || s.downloads.advance(&plan, m) {
+    if bridged || changed() || s.downloads.advance(&plan, m) {
         return true;
     }
     if pool.is_online() {
@@ -1458,7 +1567,7 @@ fn size(b: u64) -> String {
 /// the NAS first where they aren't known.
 fn need(s: &crate::AppState, m: &Mirror, next: &Asked) -> Result<(u64, u64)> {
     let cur = s.downloads.plan(&s.data);
-    let plan = make_plan(cur.generation, cur.version, next.clone(), cur.current, cur.at.clone());
+    let plan = make_plan(cur.generation, cur.version, next.clone(), cur.current, cur.at.clone(), &|i| m.is_here(i));
     if plan.wanted.items.iter().any(|i| m.item_size(i).is_none()) {
         let (Some(root), Some(pool)) = (s.data.nas_root(), s.data.pool().filter(|p| p.is_online())) else {
             bail!("The NAS isn't reachable, so this Mac can't download from it now")

@@ -625,6 +625,195 @@ async fn a_region_listed_in_an_older_form_takes_its_pieces_and_stays_behind() {
     assert_eq!(Downloads::load(home.path()).asked().regions[0].pin, Pin { cat: 1, to: None }, "behind, as it was");
 }
 
+/// Copies folder `from` into `to`, as it is.
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let t = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &t);
+        } else {
+            std::fs::copy(e.path(), t).unwrap();
+        }
+    }
+}
+
+/// The NAS away: its folder `root` moved to `gone`, the pool told.
+fn nas_away(s: &S, root: &std::path::Path, gone: &std::path::Path) {
+    std::fs::rename(root, gone).unwrap();
+    s.data.pool().unwrap().mark_offline("test");
+}
+
+/// London downloaded in the form a region had before its pieces, in `home`, over the NAS at
+/// `root`: the whole terrain root and lo pack, the basemap's zooms 0–10 piece (the World's,
+/// downloaded with it, then removed before the mirror's next round), its tiles' files and
+/// pieces; none of its pieces of zooms 0–10. `listed`: its list says so too (one written then),
+/// and catalogue 2 makes the terrain's root and lo pack again (200 m), London behind it at 1;
+/// else it's at the served catalogue, the files on this Mac all that's of the old form. The
+/// catalogue it was downloaded at.
+async fn old_form(home: &std::path::Path, root: &std::path::Path, listed: bool) -> Catalogue {
+    let r = store::nasfs::NasRoot::local_for_test(root);
+    let cat = catalogue(&r);
+    let s = crate::test_state_with(home, &r, true);
+    assert_eq!(call(put_world(State(s.clone()), Json(On { on: true })).await).await.0, StatusCode::OK);
+    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    assert_eq!(call(put_world(State(s.clone()), Json(On { on: false })).await).await.0, StatusCode::OK);
+    drop(s);
+    let zoomed_out = |p: Option<Piece>| p.is_some_and(|p| matches!(p, Piece::Over(..) | Piece::Mid(..)));
+    for d in [".packs", ".basemap"] {
+        for e in std::fs::read_dir(home.join("mirror").join(d)).unwrap().flatten() {
+            for f in std::fs::read_dir(e.path()).unwrap().flatten() {
+                let name = f.file_name().into_string().unwrap();
+                if zoomed_out(name.split('.').next().and_then(Piece::parse)) {
+                    std::fs::remove_file(f.path()).unwrap();
+                }
+            }
+        }
+    }
+    if !listed {
+        return cat;
+    }
+    let path = home.join(FILE);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let coarse = v["lists"]["1"]["regions"]["london"]["coarse"].as_array_mut().unwrap();
+    coarse.retain(|i| !zoomed_out(i["piece"].as_str().and_then(Piece::parse)));
+    for l in ["layers/terrain/root", "layers/terrain/lo/3-3-2"] {
+        let f = &cat.files[l];
+        coarse.push(json!({"file": f.file, "size": f.size}));
+    }
+    coarse.push(json!({"archive": cat.content("layers/basemap/world").unwrap(), "piece": "lo"}));
+    std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+    let s = crate::test_state_with(home, &r, true);
+    next_catalogue(&s, root, &cat, 2, &["layers/terrain/root", "layers/terrain/lo/3-3-2"]);
+    cat
+}
+
+/// What's served of London zoomed out, away from the NAS: its terrain (the root's and lo pack's
+/// tiles over it, each at one height, the old form's or the new's) and the basemap's zooms 0–10
+/// over it.
+fn zoomed_out_heights(s: &S, world: &str) -> BTreeSet<u32> {
+    let mut heights = BTreeSet::new();
+    for (z, x, y) in [(0, 0, 0), (1, 0, 0), (2, 1, 1), (3, 3, 2), (4, 7, 5), (5, 15, 10), (6, 31, 21), (7, 62, 42)] {
+        // (A pixel inside London's z6 tile 31/21.)
+        let at = |t: u32| {
+            if z <= 6 {
+                (((t as f64 + 0.5) / f64::from(1u32 << (6 - z))).fract() * 256.0) as usize
+            } else {
+                128
+            }
+        };
+        let (b, _) = s.data.tile("terrain", z, x, y).unwrap().unwrap_or_else(|| panic!("terrain {z}/{x}/{y}: none"));
+        let t = roadcore::grid::decode_terrain(b.bytes()).unwrap();
+        heights.insert(t[at(21) * 256 + at(31)] as u32);
+    }
+    let basemap = |z: u8, x: u32, y: u32| s.basemap.tiles(&s.data, &[world.to_string()], z, x, y).unwrap();
+    assert_eq!(basemap(0, 0, 0), [gz(b"world")]);
+    assert_eq!(basemap(10, 510, 340), [gz(b"z10")]);
+    assert_eq!(basemap(12, 31 << 6, 21 << 6), [gz(b"12/31")]);
+    heights
+}
+
+/// Switching a download made before its pieces (task #985) to them: the new pieces are copied and
+/// checked first, the old whole files and zooms 0–10 piece kept; once they're all here the old form
+/// goes in one step. Interrupted at each point (the NAS blocked between two pieces and in the middle
+/// of one, then the server stopped and started again away from it), London away from the NAS is
+/// its old form or its new one, whole: every tile zoomed out over it there, from one or the other.
+/// Both ways a region had it: its list made before (behind the catalogue, whose root and lo pack
+/// differ), and a list of the new form with the old files here (at the served catalogue).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_region_switches_to_its_pieces_whole_whenever_its_interrupted() {
+    for listed in [true, false] {
+        let (tpl, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (root, gone) = (nas.path().join("project"), nas.path().join("gone"));
+        std::fs::create_dir_all(&root).unwrap();
+        let r = store::nasfs::NasRoot::local_for_test(&root);
+        let cat = old_form(tpl.path(), &root, listed).await;
+        let world = cat.content("layers/basemap/world").unwrap().to_string();
+        let old: Vec<Item> = ["layers/terrain/root", "layers/terrain/lo/3-3-2"]
+            .iter()
+            .map(|l| Item::File { name: cat.files[*l].file.clone(), size: cat.files[*l].size })
+            .chain([Item::Piece { archive: world.clone(), piece: Piece::Lo }])
+            .collect();
+        let (h_old, h_new) = (100, if listed { 200 } else { 100 });
+        let new: Vec<Item> = {
+            let s = crate::test_state_with(tpl.path(), &r, true);
+            let m = s.data.mirror.clone().unwrap();
+            assert!(
+                old.iter().all(|i| m.is_here(i)),
+                "the old form here: {:?}",
+                old.iter().filter(|i| !m.is_here(i)).collect::<Vec<_>>()
+            );
+            let w = s.downloads.plan(&s.data).wanted.items.clone();
+            w.into_iter().filter(|i| !m.is_here(i)).collect()
+        };
+        assert!(new.len() >= 10 && new.iter().all(|i| piece_of(i).is_some()), "{new:?}");
+        let check = |s: &S, at: &str| {
+            let m = s.data.mirror.clone().unwrap();
+            let (o, n) = (old.iter().all(|i| m.is_here(i)), new.iter().all(|i| m.is_here(i)));
+            assert!(o != n, "{at}: the old form here {o}, the new {n}");
+            assert!(o || old.iter().all(|i| !m.is_here(i)), "{at}: the old form gone whole");
+            assert_eq!(zoomed_out_heights(s, &world), [if o { h_old } else { h_new }].into(), "{at}");
+        };
+        for k in 0..=new.len() {
+            for mid in [false, true].into_iter().filter(|&mid| !mid || k < new.len()) {
+                let at =
+                    format!("listed {listed}, {k} of {} pieces{}", new.len(), if mid { ", in the next" } else { "" });
+                let home = tempfile::tempdir().unwrap();
+                copy_dir(tpl.path(), home.path());
+                // One round with the NAS, blocked once `k` of the new pieces are here.
+                let s = crate::test_state_with(home.path(), &r, true);
+                let m = s.data.mirror.clone().unwrap();
+                let cat = s.data.catalogue();
+                // (Planned again while a pin moves, as a round goes again.)
+                let wanted = std::iter::repeat_with(|| round_plan(&s, &m, &cat)).take(5).flatten().next().unwrap().1;
+                let pin = s.downloads.asked().regions[0].pin;
+                assert_eq!(pin, Pin { cat: 1, to: None }, "{at}: at its own catalogue");
+                let block = || {
+                    let n = new.iter().filter(|i| m.is_here(i)).count();
+                    // (In the middle of a piece: as it's made, before its first read; one with
+                    // nothing to read is made whole, and the NAS goes before the next.)
+                    if root.exists() && n >= k && (!mid || n > k || m.copying().is_some()) {
+                        nas_away(&s, &root, &gone);
+                    }
+                };
+                let stop = || {
+                    block();
+                    false
+                };
+                let ctl = Control { stop: &stop, slow: &|| false };
+                m.sync(&cat, &wanted, &r, &s.data.pool().unwrap(), &ctl).unwrap();
+                if root.exists() {
+                    nas_away(&s, &root, &gone);
+                }
+                let n = new.iter().filter(|i| m.is_here(i)).count();
+                assert!(n == k || mid && n == k + 1, "{at}: {n} here");
+                tokio::task::block_in_place(|| settle(&s));
+                check(&s, &format!("{at}, the NAS blocked"));
+                // The server stopped, and started again away.
+                drop((s, m));
+                std::fs::rename(&gone, &root).unwrap();
+                let s = crate::test_state_with(home.path(), &r, true);
+                nas_away(&s, &root, &gone);
+                tokio::task::block_in_place(|| settle(&s));
+                check(&s, &format!("{at}, started again away"));
+                // Started again at home: the rest copied, the old form gone; away again, the new
+                // form.
+                drop(s);
+                std::fs::rename(&gone, &root).unwrap();
+                let s = crate::test_state_with(home.path(), &r, true);
+                tokio::task::block_in_place(|| settle(&s));
+                let m = s.data.mirror.clone().unwrap();
+                assert!(new.iter().all(|i| m.is_here(i)) && !old.iter().any(|i| m.is_here(i)), "{at}, home");
+                nas_away(&s, &root, &gone);
+                tokio::task::block_in_place(|| settle(&s));
+                check(&s, &format!("{at}, home then away"));
+                std::fs::rename(&gone, &root).unwrap();
+            }
+        }
+    }
+}
+
 /// A download whose catalogue's files for it are the same as the served one's moves on by itself
 /// (nothing to copy), as does one its catalogue didn't have yet (nothing to keep).
 #[tokio::test(flavor = "multi_thread")]

@@ -357,8 +357,11 @@ installed by `tools/app/install.sh`, updated by the updater).
   id, a z3 tile's file) to the z3 tiles meeting them; outside them every layer is none (the
   terrain and its shading flat). A region downloaded before its pieces (its
   list naming the whole root and lo packs over it, or the basemap's worldwide zooms 0–10) takes
-  them at the catalogue served at its next round with the NAS, without an Update, and the whole
-  files go; the rest stays at its catalogue. Away from the NAS, a
+  them at the catalogue served at its next round with the NAS, without an Update; the rest stays
+  at its catalogue. Its whole files and zooms 0–10 piece here stay, and are what's read, until
+  every piece replacing them is here (copied and checked); then they go at once (`bridge` in
+  crates/server downloads.rs). Cut off at any point (the NAS gone mid-copy, the server stopped),
+  away from the NAS it's its old form or its new one, whole. Away from the NAS, a
   whole road (hover, profile) leaving it is cut where this Mac's files end: the ways joined end to
   end through the one asked for, the profile marked cut short. While a downloaded region's hi data
   can't be read for its owners, no base pack or road values here go (a hi data that stays
