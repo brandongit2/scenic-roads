@@ -20,17 +20,19 @@ export function niceStep(span: number, target: number): number {
 /** A tick: its value, its x (px), and the left edge of its label (none: no room for it). */
 export interface Tick { v: number; x: number; lx?: number }
 
-/** The ticks of an axis `width` px wide over [a, b] (in spaced units). Linear: at a nice step.
- * Log: 0 and 1, 2 and 5 times the powers of ten from `step` up (mirrored below 0). Labels go to
- * powers of ten first, then fives, then twos, left to right, each kept inside the axis and where
- * it stays `gap` px from the others and from the `taken` spans (the range handles' labels). */
+/** The ticks of an axis `width` px wide over [a, b] (in spaced units). Linear: at a nice step, no
+ * finer than `step` (the metric's own). Log: 0 and 1, 2 and 5 times the powers of ten from `step`
+ * up (mirrored below 0). Labels go to powers of ten first, then fives, then twos, left to right,
+ * each kept inside the axis and where it stays `gap` px from the others and from the `taken` spans
+ * (the range handles' labels). A tick is labelled only when its text is its own: not one already
+ * shown, and not a rounding of a value between two (0.5 m read "1 m" beside 1 m's "1 m"). */
 export function axisTicks(sp: Spacing, a: number, b: number, width: number, step: number,
-  labelWidth: (v: number) => number, taken: [number, number][] = [], gap = 4): Tick[] {
+  label: (v: number) => string, measure: (text: string) => number, taken: [number, number][] = [], gap = 4): Tick[] {
   // (The ends a hair wider, so a round end comes back from its log as itself.)
   const lo = unspaced(sp, a), hi = unspaced(sp, b), eps = 1e-9 * Math.max(Math.abs(lo), Math.abs(hi), step);
   const vals: [number, number][] = [];
   if (sp === 'linear') {
-    const s = niceStep(hi - lo, 5);
+    const s = Math.max(niceStep(hi - lo, 5), step);
     for (let v = Math.ceil((lo - eps) / s) * s; v <= hi + eps; v += s) vals.push([Number(v.toPrecision(12)), 0]);
   } else {
     if (lo <= eps && hi >= -eps) vals.push([0, 0]);
@@ -44,11 +46,15 @@ export function axisTicks(sp: Spacing, a: number, b: number, width: number, step
   }
   const ticks = vals.map(([v, rank]) => ({ v, rank, x: ((spaced(sp, v) - a) / (b - a)) * width, lx: undefined as number | undefined }));
   ticks.sort((p, q) => p.x - q.x);
-  const boxes = [...taken];
+  const boxes = [...taken], shown = new Set<string>();
   for (const t of [...ticks].sort((p, q) => p.rank - q.rank || p.x - q.x)) {
-    const w = labelWidth(t.v), l = Math.max(0, Math.min(width - w, t.x - w / 2));
+    const text = label(t.v), d = 1e-3 * Math.max(Math.abs(t.v), step);
+    // (0 is never a rounding of anything, and a hair below it may read "-0".)
+    if (shown.has(text) || (t.v !== 0 && (label(t.v - d) !== text || label(t.v + d) !== text))) continue;
+    const w = measure(text), l = Math.max(0, Math.min(width - w, t.x - w / 2));
     if (boxes.some(([s, e]) => l < e + gap && l + w > s - gap)) continue;
     boxes.push([l, l + w]);
+    shown.add(text);
     t.lx = l;
   }
   return ticks.map(({ v, x, lx }) => (lx === undefined ? { v, x } : { v, x, lx }));

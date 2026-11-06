@@ -490,7 +490,7 @@ export class ScaleControls {
     }
     // Axis ticks at round values, faint, labelled where there's room beside the handles' labels.
     ctx.font = TF;
-    const ticks = axisTicks(sp, axis[0], axis[1], W, d.step, (v) => ctx.measureText(lab(v)).width, taken);
+    const ticks = axisTicks(sp, axis[0], axis[1], W, d.step, lab, (t) => ctx.measureText(t).width, taken);
     for (const t of ticks) {
       ctx.fillStyle = 'rgba(255,255,255,0.28)';
       ctx.fillRect(t.x, HB + 1, 1, 2);
