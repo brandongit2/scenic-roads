@@ -6974,6 +6974,45 @@ mod tests {
         assert_eq!(serde_json::from_value::<Lease>(v).unwrap().slot, None);
     }
 
+    /// Task #978: a leased job's target under way is compared (`flags::overdue`) with its time on
+    /// the threads the job runs with, not the threads of the run its time was measured in: a unit
+    /// last run on 12 threads (a z6 tile's rows made by other Macs then) takes the longer on the
+    /// job's fewer by the step's curve, so the job is not stuck at the first minutes past it.
+    #[test]
+    fn a_target_under_way_is_timed_on_the_threads_the_job_runs_with() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "20261018-0100-aaaaaaa");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
+        let g = w.ask(&ask(4096)).unwrap().unwrap();
+        let threads = c.runs()[0].threads;
+        assert!(threads > 0 && threads < 12, "{threads}");
+        let cost = |secs: u64, on: u64| Cost {
+            peak_mb: 500,
+            secs,
+            worker: None,
+            v: cost_version("unit"),
+            sizes: [("threads".to_string(), on), ("cpu_ms".to_string(), 1000)].into(),
+            ..Default::default()
+        };
+        let mut costs = vec![(cost_key("unit", "6/55/25"), cost(60, 12))];
+        for i in 0..3 {
+            costs.push((cost_key("unit", &format!("6/1/{i}")), cost(60, 12)));
+            costs.push((cost_key("unit", &format!("6/2/{i}")), cost(600, u64::from(threads))));
+        }
+        c.add_costs_by(&costs, "m1");
+        let live = crate::agent::jobs::Live {
+            target: Some("unit 6/55/25".into()),
+            target_since: Some(unix_now()),
+            targets: 1,
+            ..Default::default()
+        };
+        assert!(w.beat_told(g.lease, None, Some(live), None).unwrap().0);
+        let usual = c.runs()[0].under_way.clone().unwrap().usual_s;
+        assert_eq!(usual, Some(600), "10 times its 12-thread run, as the curve says");
+        c.stop();
+    }
+
     /// The owner's cancel (task #373, `scenic job cancel`): a member's lease told in its beat's
     /// answer; given back, nothing kept from it (no failure, no backoff); with --rerun-after-update
     /// its target held from every worker, the lead's own jobs too, until the lead runs a newer app,
