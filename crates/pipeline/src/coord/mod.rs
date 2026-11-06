@@ -6981,10 +6981,11 @@ mod tests {
     #[test]
     fn a_target_under_way_is_timed_on_the_threads_the_job_runs_with() {
         let d = tempfile::tempdir().unwrap();
-        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "20261018-0100-aaaaaaa");
+        let app = "20261018-0100-aaaaaaa";
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", app);
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
-        let g = w.ask(&ask(4096)).unwrap().unwrap();
+        let g = w.ask(&Ask { app: Some(app.into()), ..ask(4096) }).unwrap().unwrap();
         let threads = c.runs()[0].threads;
         assert!(threads > 0 && threads < 12, "{threads}");
         let cost = |secs: u64, on: u64| Cost {
