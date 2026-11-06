@@ -171,7 +171,7 @@ fn every_exemption_names_a_function_there() {
 #[test]
 fn every_internet_request_asks_first() {
     const ASKED_ELSEWHERE: &[(&str, &str, &str)] = &[
-        ("crates/coordwire/src/client.rs", "*", "the lead's coordinator, on the LAN"),
+        ("crates/coordwire/src/client.rs", "send", "the lead's coordinator, on the LAN (the client's every request)"),
         ("crates/pipeline/src/coord/client.rs", "probe", "the lead's coordinator and the brokers, on the LAN"),
         ("crates/server/src/maplog.rs", "get", "the lead's coordinator (the map's log), on the LAN"),
         ("crates/pipeline/src/bin/tools/metrics.rs", "meta_get", "fetch_file asks before its first"),

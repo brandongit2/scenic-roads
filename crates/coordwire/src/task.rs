@@ -2,7 +2,7 @@
 //! (`Offer`), the outputs a worker hands back (`Output`), the paths a worker may name (`safe`), a
 //! task's files cloned (`clone`), and whether a worker's pace beats the job's own run (`beats`,
 //! `MARGIN`). The coordinator's own side (the tasks it holds, their leases and paces) is pipeline's
-//! coord::task, which re-exports these.
+//! coord::task, which re-exports `Offer`, `Output` and `beats`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
