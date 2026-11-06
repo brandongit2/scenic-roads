@@ -356,9 +356,18 @@ impl Data {
         true
     }
 
-    /// A content-named file: mapped from the mirror, else on the NAS.
-    fn src(&self, content: &str) -> Result<Src> {
+    /// A content-named file: mapped from the mirror, else on the NAS; or a piece by its key in the
+    /// mirror (store::mirror::Mirror::piece_key: `pack_key`, `basemap_key`), mapped.
+    pub(crate) fn src(&self, content: &str) -> Result<Src> {
         if let Some(m) = self.maps.lock().unwrap().get(content) {
+            return Ok(Src::Local(m));
+        }
+        if is_piece(content) {
+            let mirror = self.mirror.as_ref().context("no mirror")?;
+            // (A piece is never modified once in place; removal unlinks it, and `forget_removed`
+            // drops the map.)
+            let m = Arc::new(MmapFile::open(&mirror.path(content))?);
+            self.maps.lock().unwrap().put(content.to_string(), m.clone(), 0);
             return Ok(Src::Local(m));
         }
         if let Some((mi, p)) = self.mirror.as_ref().and_then(|mi| Some((mi, mi.local(content)?))) {
@@ -564,23 +573,77 @@ impl Data {
         }
     }
 
-    /// A pack's index (cached in memory, and on this Mac's disk so it survives restarts).
-    fn index(&self, content: &str) -> Result<Arc<PackIndex>> {
-        if let Some(i) = self.indexes.lock().unwrap().get(content) {
+    /// What tile z/x/y of pack `logical` is read from: the pack (`content`) when it's here whole,
+    /// else the piece of it holding the tile when that's here (a region's: store::pieces; a
+    /// download behind the catalogue's piece of its older pack first, as `content`), else the pack
+    /// on the NAS while it's read; None away from the NAS with neither here.
+    fn pack_key(&self, logical: &str, z: u8, x: u32, y: u32) -> Option<String> {
+        let cat = self.catalogue();
+        let whole = self.content_in(&cat, logical);
+        let Some(m) = self.mirror.as_deref() else { return whole };
+        if whole.as_deref().is_some_and(|c| m.has(c)) {
+            return whole;
+        }
+        let piece = store::pieces::Piece::of(z, x, y)?;
+        match self.pieces_here(&cat, logical) {
+            Some(a) if m.has_piece(&a, piece) => Some(store::mirror::Mirror::piece_key(&a, piece)),
+            _ => whole,
+        }
+    }
+
+    /// The file of pack `logical` this Mac has pieces of, when it isn't here whole: a download behind
+    /// the catalogue's older one first (`set_older`), else the catalogue's.
+    fn pieces_here(&self, cat: &Catalogue, logical: &str) -> Option<String> {
+        let m = self.mirror.as_deref()?;
+        let older = self.older.read().unwrap().get(logical).cloned();
+        let cur = cat.files.get(logical).map(|f| f.file.clone());
+        older.into_iter().chain(cur).find(|a| !m.pieces_of(a).is_empty())
+    }
+
+    /// What pack `logical`'s tiles are read from (`pack_key`), named for its version in the app's
+    /// URLs (main.rs `meta_json`): the pack read whole (`content`), or the file of its pieces here,
+    /// with the NAS's pack while it's read (a tile they don't hold); None where nothing of it is.
+    pub fn pack_from(&self, logical: &str) -> Option<String> {
+        let cat = self.catalogue();
+        let whole = self.content_in(&cat, logical);
+        if whole.as_deref().is_some_and(|c| self.mirror.as_ref().is_some_and(|m| m.has(c))) {
+            return whole;
+        }
+        match (self.pieces_here(&cat, logical), whole) {
+            (Some(p), Some(w)) if p != w => Some(format!("{p}+{w}")),
+            (p, w) => p.or(w),
+        }
+    }
+
+    /// What pack `logical`'s tiles of zoom `z` are read from, every one (the place search's): the
+    /// pack when it's read whole (here, or on the NAS while it's read), else its pieces here holding
+    /// that zoom (their keys in the mirror).
+    pub fn pack_keys(&self, cat: &Catalogue, logical: &str, z: u8) -> Vec<String> {
+        if let Some(c) = self.content_in(cat, logical) {
+            return vec![c];
+        }
+        let (Some(m), Some(a)) = (self.mirror.as_deref(), self.pieces_here(cat, logical)) else { return Vec::new() };
+        m.pieces_of(&a).into_iter().filter(|p| p.has_zoom(z)).map(|p| store::mirror::Mirror::piece_key(&a, p)).collect()
+    }
+
+    /// A pack's index (cached in memory, and a whole pack's on this Mac's disk so it survives
+    /// restarts), by `pack_key`.
+    fn index(&self, key: &str) -> Result<Arc<PackIndex>> {
+        if let Some(i) = self.indexes.lock().unwrap().get(key) {
             return Ok(i);
         }
         let load = || -> Result<PackIndex> {
-            match self.src(content)? {
+            match self.src(key)? {
                 Src::Local(m) => PackIndex::parse_bytes(m.bytes()),
                 Src::Remote(r) => PackIndex::read_from(&*r),
             }
         };
         let idx = match &self.mirror {
-            Some(m) => m.index(content, load)?,
-            None => load()?,
+            Some(m) if !is_piece(key) => m.index(key, load)?,
+            _ => load()?,
         };
         let idx = Arc::new(idx);
-        self.indexes.lock().unwrap().put(content.to_string(), idx.clone(), 0);
+        self.indexes.lock().unwrap().put(key.to_string(), idx.clone(), 0);
         Ok(idx)
     }
 
@@ -588,10 +651,10 @@ impl Data {
     /// `PackIndex::gzip`).
     pub fn tile(&self, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<(Blob, bool)>> {
         let Some(logical) = self.pack_of(layer, z, x, y) else { return Ok(None) };
-        let Some(content) = self.content(&logical) else { return Ok(None) };
-        let idx = self.index(&content)?;
+        let Some(key) = self.pack_key(&logical, z, x, y) else { return Ok(None) };
+        let idx = self.index(&key)?;
         let Some(e) = idx.find(z, x, y) else { return Ok(None) };
-        let blob = match self.src(&content)? {
+        let blob = match self.src(&key)? {
             Src::Local(m) => Blob::Map(m, e.offset as usize, e.len as usize),
             Src::Remote(r) => Blob::from_vec(r.read_at(e.offset, e.len as usize)?),
         };
@@ -602,20 +665,20 @@ impl Data {
     /// an error when its pack's index can't be read.
     pub fn tile_hash(&self, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<u64>> {
         let Some(logical) = self.pack_of(layer, z, x, y) else { return Ok(None) };
-        let Some(content) = self.content(&logical) else { return Ok(None) };
+        let Some(key) = self.pack_key(&logical, z, x, y) else { return Ok(None) };
         // (A 304 is a use too: the area is in view.)
-        Ok(self.index(&content)?.find(z, x, y).map(|e| e.hash))
+        Ok(self.index(&key)?.find(z, x, y).map(|e| e.hash))
     }
 
-    /// Each tile at zoom `z` of the pack named `content` (a content name, so of whichever catalogue
-    /// named it): its x, y and bytes as stored, in the order they're stored. Read a MB or so at a
-    /// time, several tiles a read, from this Mac's mirror, else the NAS: not through a map, as a
-    /// tile served is (a whole layer read so would stay in the server's memory as long as its maps
-    /// are kept), nor whole (a big block, which macOS's allocator keeps once freed). Fails when the
-    /// pack can't be read, after the tiles before.
-    pub fn pack_tiles(&self, content: &str, z: u8, mut each: impl FnMut(u32, u32, &[u8])) -> Result<()> {
+    /// Each tile at zoom `z` of the pack `key` (a content name, so of whichever catalogue named it,
+    /// or a piece of one here: `pack_keys`): its x, y and bytes as stored, in the order they're
+    /// stored. Read a MB or so at a time, several tiles a read, from this Mac's mirror, else the NAS:
+    /// not through a map, as a tile served is (a whole layer read so would stay in the server's
+    /// memory as long as its maps are kept), nor whole (a big block, which macOS's allocator keeps
+    /// once freed). Fails when the pack can't be read, after the tiles before.
+    pub fn pack_tiles(&self, key: &str, z: u8, mut each: impl FnMut(u32, u32, &[u8])) -> Result<()> {
         use std::os::unix::fs::FileExt;
-        let idx = self.index(content)?;
+        let idx = self.index(key)?;
         // (Sorted by key: a zoom's tiles are together.)
         let first = idx.entries.partition_point(|e| e.key >> 58 < u64::from(z));
         let mut es: Vec<store::pack::Entry> =
@@ -629,13 +692,19 @@ impl Data {
             Src(Src),
         }
         // (Not a use of the pack: the server reads it on its own, for the place search.)
-        let local = self.mirror.as_ref().and_then(|m| m.local(content)).map(|p| (std::fs::File::open(&p), p));
+        let local = self
+            .mirror
+            .as_ref()
+            .and_then(|m| if is_piece(key) { Some(m.path(key)) } else { m.local(key) })
+            .map(|p| (std::fs::File::open(&p), p));
         let from = match local {
             Some((Ok(f), _)) => From::Mirror(f),
             // Let go just now: the NAS's copy.
-            Some((Err(e), _)) if e.kind() == std::io::ErrorKind::NotFound => From::Src(self.src(content)?),
+            Some((Err(e), _)) if e.kind() == std::io::ErrorKind::NotFound && !is_piece(key) => {
+                From::Src(self.src(key)?)
+            }
             Some((Err(e), p)) => return Err(e).with_context(|| format!("open {}", p.display())),
-            None => From::Src(self.src(content)?),
+            None => From::Src(self.src(key)?),
         };
         let mut buf = Vec::new();
         let mut i = 0;
@@ -646,15 +715,15 @@ impl Data {
             let b: &[u8] = match &from {
                 From::Mirror(f) => {
                     buf.resize((hi - lo) as usize, 0);
-                    f.read_exact_at(&mut buf, lo).with_context(|| format!("read {content}"))?;
+                    f.read_exact_at(&mut buf, lo).with_context(|| format!("read {key}"))?;
                     &buf
                 }
                 From::Src(Src::Local(m)) => m
                     .bytes()
                     .get(lo as usize..hi as usize)
-                    .ok_or_else(|| anyhow!("{content}: its index points past its end"))?,
+                    .ok_or_else(|| anyhow!("{key}: its index points past its end"))?,
                 From::Src(Src::Remote(r)) => {
-                    buf = r.read_at(lo, (hi - lo) as usize).with_context(|| format!("read {content}"))?;
+                    buf = r.read_at(lo, (hi - lo) as usize).with_context(|| format!("read {key}"))?;
                     &buf
                 }
             };
@@ -675,7 +744,7 @@ impl Data {
         for logical in
             l.root.iter().chain(l.lo.values()).chain(l.hi.values()).chain(l.deep.values()).chain(l.polar.values())
         {
-            if let Some(c) = self.content(logical) {
+            if let Some(c) = self.pack_from(logical) {
                 h.update(c.as_bytes());
             }
         }
@@ -689,40 +758,29 @@ impl Data {
     }
 
     /// Where tile z/x/y of the basemap archive `archive` (a content name) is read from: the
-    /// mirror's piece holding it when it's here (its path in the mirror, `.basemap/…`; a download
-    /// behind the catalogue's piece of its older archive first, as `content`), else the archive itself
-    /// (on the NAS while it's read, or whole in the mirror); None away from the NAS with neither here,
-    /// or where the downloads don't reach (`reaches`: the zooms 0–10 piece is worldwide).
+    /// mirror's piece holding it when it's here (its key in the mirror, `.basemap/…`: the World's
+    /// zooms 0–10, or a region's; a download behind the catalogue's piece of its older archive
+    /// first, as `content`), else the archive itself (on the NAS while it's read, or whole in the
+    /// mirror); None away from the NAS with neither here, or where the downloads don't reach
+    /// (`reaches`: the World's zooms 0–10 piece is worldwide).
     pub fn basemap_key(&self, archive: &str, z: u8, x: u32, y: u32) -> Option<String> {
         if !self.reaches(z, x, y) {
             return None;
         }
         let older =
             store::naming::parse_content_name(archive).and_then(|c| self.older.read().unwrap().get(c.logical).cloned());
-        let piece = self.mirror.as_ref().zip(store::pieces::Piece::of(z, x, y)).and_then(|(m, p)| {
-            older.iter().map(String::as_str).chain([archive]).find(|a| m.has_piece(a, p)).map(|a| (a, p))
+        let piece = self.mirror.as_ref().and_then(|m| {
+            older
+                .iter()
+                .map(String::as_str)
+                .chain([archive])
+                .find_map(|a| store::pieces::Piece::holding(z, x, y).find(|&p| m.has_piece(a, p)).map(|p| (a, p)))
         });
         match piece {
             Some((archive, p)) => Some(store::mirror::Mirror::piece_key(archive, p)),
             None if self.online() || self.mirror.as_ref().is_some_and(|m| m.has(archive)) => Some(archive.to_string()),
             None => None,
         }
-    }
-
-    /// A basemap source by `basemap_key`: a piece mapped from the mirror, or the archive.
-    pub fn basemap_src(&self, key: &str) -> Result<Src> {
-        if !key.starts_with(".basemap/") {
-            return self.src(key);
-        }
-        if let Some(m) = self.maps.lock().unwrap().get(key) {
-            return Ok(Src::Local(m));
-        }
-        let mirror = self.mirror.as_ref().context("no mirror")?;
-        // (A piece is never modified once in place; removal unlinks it, and `forget_removed` drops
-        // the map.)
-        let m = Arc::new(MmapFile::open(&mirror.path(key))?);
-        self.maps.lock().unwrap().put(key.to_string(), m.clone(), 0);
-        Ok(Src::Local(m))
     }
 
     /// The lead's heartbeat (pipeline::agent::LEAD_STATUS on the NAS), as it wrote it: Null when
@@ -1027,6 +1085,12 @@ impl store::RangeRead for Whole {
 /// Whether opening a file failed because it isn't there (store::range::MmapFile's error).
 fn not_found(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound))
+}
+
+/// Whether a key read is a piece's in the mirror (store::mirror::Mirror::piece_key), not a content
+/// name.
+fn is_piece(key: &str) -> bool {
+    key.starts_with('.')
 }
 
 /// Whether a content name is a bundle of files (an RDPACK whose members are files: docs/formats.md

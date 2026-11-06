@@ -28,7 +28,8 @@ pub const MIN_VERSION: u32 = 1;
 /// Flag bit 0: the blobs are gzip'd (served as is, with `Content-Encoding: gzip`).
 pub const FLAG_GZIP: u32 = 1;
 
-const HEADER_LEN: usize = 36;
+/// The header's bytes: magic, version, flags, the index's offset and count, the meta's length.
+pub const HEADER_LEN: usize = 36;
 const ENTRY_LEN: usize = 32;
 /// The first read of a pack: the header and meta, and the index too when the pack is small.
 const FIRST_READ: u64 = 64 << 10;

@@ -704,23 +704,25 @@ pub struct Found<'a> {
 /// What the places are made of: the labels' packs, and the z6 tiles whose places are kept (None:
 /// every one's).
 struct Sources {
-    /// The packs as content names (so they're the one catalogue's) and the zoom read.
+    /// The packs as content names (so they're the one catalogue's), or keys of their pieces in the
+    /// mirror, and the zoom read.
     packs: Vec<(String, u8)>,
     reach: Option<Arc<HashSet<(u32, u32)>>>,
 }
 
-/// The labels' packs to read in `cat` as `data` reads them (`Data::content_in`: away from the NAS,
-/// those downloaded): the hi packs of the map's areas (zoom 12: every label), then each lo pack
-/// (zoom 8: what shows by then, worldwide); kept to where the downloads reach away from the NAS.
-/// (The areas' first: a label in both is kept at zoom 12, its place the more exact.)
+/// The labels' packs to read in `cat` as `data` reads them (`Data::content_in`, `Data::pack_keys`:
+/// away from the NAS, those downloaded, a lo pack's pieces of the regions downloaded): the hi packs
+/// of the map's areas (zoom 12: every label), then each lo pack (zoom 8: what shows by then,
+/// worldwide); kept to where the downloads reach away from the NAS. (The areas' first: a label in
+/// both is kept at zoom 12, its place the more exact.)
 fn sources(data: &Data, cat: &Catalogue) -> Sources {
     let reach = data.reach();
     let Some(layer) = cat.layers.get("labels") else { return Sources { packs: Vec::new(), reach } };
     let content = |l: &String| data.content_in(cat, l);
     let hi =
         layer.hi.iter().filter(|(t, _)| cat.hidata.contains_key(*t)).filter_map(|(_, l)| Some((content(l)?, 12u8)));
-    let packs = hi.chain(layer.lo.values().filter_map(|l| Some((content(l)?, 8u8)))).collect();
-    Sources { packs, reach }
+    let lo = layer.lo.values().flat_map(|l| data.pack_keys(cat, l, 8)).map(|k| (k, 8u8));
+    Sources { packs: hi.chain(lo).collect(), reach }
 }
 
 /// The places' key: what they're made of and the translations' version they're named with. A

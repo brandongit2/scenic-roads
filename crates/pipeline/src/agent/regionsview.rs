@@ -12,8 +12,9 @@
 //! - **Crumbs**: the names of the folders it's in, from the top (their `_group.toml` names), then
 //!   its own (crate::inputs::regions::read::tree).
 //! - **Bytes**: the catalogue's files a download of it copies (crate::areafiles::files_of over the
-//!   outlines the catalogue records), summed once per catalogue; the basemap's pieces, worked out
-//!   by each Mac's map server from the archives, and its terrain detail aren't counted. None for a
+//!   outlines the catalogue records), summed once per catalogue; its pieces of the basemap and of
+//!   the layers' roots and lo packs (store::pieces), worked out by each Mac's map server from their
+//!   directories and indexes, and its terrain detail aren't counted. None for a
 //!   region the catalogue doesn't have yet.
 
 use crate::coverage::DrawnRegion;

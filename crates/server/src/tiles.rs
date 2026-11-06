@@ -275,7 +275,7 @@ impl Basemap {
                 return Ok(a.clone());
             }
         }
-        let pm = match data.basemap_src(key)? {
+        let pm = match data.src(key)? {
             crate::views::Src::Local(m) => store::pmtiles::PmTiles::open(Box::new(m)),
             crate::views::Src::Remote(r) => store::pmtiles::PmTiles::open(Box::new(r)),
         };

@@ -820,7 +820,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     for (k, l) in &cat.layers {
         let names = tiles::has_names(k);
         let tok = |logical: &String| {
-            s.data.content(logical).map(|f| {
+            s.data.pack_from(logical).map(|f| {
                 let v = pack_token(&f);
                 if names {
                     named(v)

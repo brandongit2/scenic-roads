@@ -1,32 +1,40 @@
-//! The basemap's pieces (docs/macs.md, "Mirror, per Mac"): the parts of Planetiler's worldwide
-//! PMTiles archive a Mac downloads, each a PMTiles archive of its own.
+//! Pieces (docs/macs.md, "Mirror, per Mac"): the parts of a worldwide file a Mac downloads, each a
+//! file of the same kind of its own: of the basemap's PMTiles archive (Planetiler's), and of the
+//! layers' root and lo packs (RDPACK, crate::pack), which cover far more than a region.
 //!
-//! - **lo**: zooms 0–10 of the whole world (the World download's; ~1.7 GB of the 28.5 GB).
-//! - **6-x-y**: zooms 11–14 under the z6 tile x/y (a region's download takes those of the z6 tiles
-//!   it meets).
+//! - **lo**: zooms 0–10 of the whole world (the World download's basemap; ~1.7 GB of the 28.5 GB).
+//! - **z-x-y** (z 0–5): the one tile z/x/y (a region's download takes those over its z6 tiles).
+//! - **mid-6-x-y**: zooms 6–10 under the z6 tile x/y (a region's, of the z6 tiles it meets).
+//! - **6-x-y**: zooms 11–14 under the z6 tile x/y (a region's basemap, of the z6 tiles it meets).
 //!
 //! On PMTiles' Hilbert curve the tiles under a z6 tile, at each zoom, are one run of tile ids, and
 //! the archive is clustered (tile data in tile id order, repeated bytes pointing back), so a piece
-//! is four runs of the directory and mostly sequential reads of the data: large ranged reads from
-//! the NAS, never the whole file. Each piece is a whole archive: the header, a root directory
-//! (and leaves when it'd be over 16 kB), the source's metadata, and the tiles' bytes as stored. Its
-//! layout is fixed by the source's directory before any data is read (`plan`), so its size is
-//! known ahead, a build cut short resumes where it stopped (`write`), and the same source gives
-//! the same bytes. A gzipped tile's checksum is checked as it's copied.
+//! is a few runs of the directory and mostly sequential reads of the data: large ranged reads from
+//! the NAS, never the whole file. Each piece is a whole file: an archive's has the header, a root
+//! directory (and leaves when it'd be over 16 kB), the source's metadata, and the tiles' bytes as
+//! stored; a pack's (`plan_pack`) the source's flags and meta, the blobs and their index. Its layout
+//! is fixed by the source's directory or index before any data is read (`plan`), so its size is
+//! known ahead, a build cut short resumes where it stopped (`write`), and the same source gives the
+//! same bytes. A tile's bytes are checked as they're copied: a gzipped tile's checksum, a pack's
+//! blob's XXH3.
 
 use crate::iopool::IoError;
+use crate::pack::{Entry, PackIndex};
 use crate::pmtiles::{encode_directory, zxy_to_tile_id, Compression, DirEntry, Header, PmTiles, HEADER_LEN};
 use anyhow::{bail, ensure, Context, Result};
 use flate2::{read::GzDecoder, write::GzEncoder};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::ops::RangeInclusive;
 use std::path::Path;
 
 /// The World download's piece: zooms 0 to this.
 pub const LO_MAX_ZOOM: u8 = 10;
-/// A z6 tile's piece: these zooms.
-pub const HI_ZOOMS: std::ops::RangeInclusive<u8> = 11..=14;
+/// A z6 tile's piece of the basemap: these zooms.
+pub const HI_ZOOMS: RangeInclusive<u8> = 11..=14;
+/// The grid regions are made of: z6 tiles.
+const GRID_Z: u8 = 6;
 /// The header and root directory fit in the first 16 kB (the spec's rule: readers fetch that much
 /// first).
 const ROOT_ROOM: usize = 16384 - HEADER_LEN;
@@ -35,13 +43,17 @@ const SPAN: u64 = 4 << 20;
 /// Bytes between two tiles' data read over rather than read apart.
 const GAP: u64 = 256 << 10;
 
-/// A piece of the basemap.
+/// A piece of a worldwide file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Piece {
     /// Zooms 0–10, worldwide.
     Lo,
     /// Zooms 11–14 under the z6 tile (x, y).
     Tile(u32, u32),
+    /// The one tile (z, x, y), of zoom 0–5.
+    Over(u8, u32, u32),
+    /// Zooms 6–10 under the z6 tile (x, y).
+    Mid(u32, u32),
 }
 
 /// The first tile id of zoom `z`.
@@ -50,11 +62,13 @@ fn zoom_base(z: u8) -> u64 {
 }
 
 impl Piece {
-    /// Its file's stem: `lo`, `6-x-y`.
+    /// Its file's stem: `lo`, `6-x-y`, `z-x-y` (z 0–5), `mid-6-x-y`.
     pub fn name(&self) -> String {
         match self {
             Piece::Lo => "lo".into(),
             Piece::Tile(x, y) => format!("6-{x}-{y}"),
+            Piece::Over(z, x, y) => format!("{z}-{x}-{y}"),
+            Piece::Mid(x, y) => format!("mid-6-{x}-{y}"),
         }
     }
 
@@ -62,49 +76,119 @@ impl Piece {
         if s == "lo" {
             return Some(Piece::Lo);
         }
-        let mut it = s.strip_prefix("6-")?.split('-');
-        let (x, y) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?);
-        (it.next().is_none() && x < 64 && y < 64).then_some(Piece::Tile(x, y))
+        let (mid, s) = s.strip_prefix("mid-").map_or((false, s), |r| (true, r));
+        let mut it = s.split('-');
+        let (z, x, y): (u8, u32, u32) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?);
+        if it.next().is_some() || z > GRID_Z || u64::from(x) >= 1 << z || u64::from(y) >= 1 << z {
+            return None;
+        }
+        match (mid, z == GRID_Z) {
+            (true, true) => Some(Piece::Mid(x, y)),
+            (false, true) => Some(Piece::Tile(x, y)),
+            (false, false) => Some(Piece::Over(z, x, y)),
+            (true, false) => None,
+        }
     }
 
-    /// The piece holding tile z/x/y; None past zoom 14.
+    /// The regional piece holding tile z/x/y (`Over`, `Mid` or `Tile`); None past zoom 14.
     pub fn of(z: u8, x: u32, y: u32) -> Option<Piece> {
         match z {
-            0..=LO_MAX_ZOOM => Some(Piece::Lo),
-            _ if HI_ZOOMS.contains(&z) => Some(Piece::Tile(x >> (z - 6), y >> (z - 6))),
+            0..GRID_Z => Some(Piece::Over(z, x, y)),
+            GRID_Z..=LO_MAX_ZOOM => Some(Piece::Mid(x >> (z - GRID_Z), y >> (z - GRID_Z))),
+            _ if HI_ZOOMS.contains(&z) => Some(Piece::Tile(x >> (z - GRID_Z), y >> (z - GRID_Z))),
             _ => None,
+        }
+    }
+
+    /// The pieces holding tile z/x/y: the World's (`Lo`, zooms 0–10), then the regional one (`of`).
+    pub fn holding(z: u8, x: u32, y: u32) -> impl Iterator<Item = Piece> {
+        (z <= LO_MAX_ZOOM).then_some(Piece::Lo).into_iter().chain(Piece::of(z, x, y))
+    }
+
+    /// The regional pieces over the z6 tiles `tiles` holding zooms `zooms`: each tile of zooms 0–5
+    /// over them (`Over`), and per z6 tile its zooms 6–10 (`Mid`) and 11–14 (`Tile`).
+    pub fn over(tiles: &BTreeSet<(u32, u32)>, zooms: RangeInclusive<u8>) -> Vec<Piece> {
+        let up: BTreeSet<Piece> = tiles
+            .iter()
+            .flat_map(|&(x, y)| (0..GRID_Z).map(move |z| Piece::Over(z, x >> (GRID_Z - z), y >> (GRID_Z - z))))
+            .collect();
+        let meets = |a: u8, b: u8| *zooms.start() <= b && a <= *zooms.end();
+        let mut out: Vec<Piece> =
+            up.into_iter().filter(|p| matches!(p, Piece::Over(z, ..) if zooms.contains(z))).collect();
+        if meets(GRID_Z, LO_MAX_ZOOM) {
+            out.extend(tiles.iter().map(|&(x, y)| Piece::Mid(x, y)));
+        }
+        if meets(*HI_ZOOMS.start(), *HI_ZOOMS.end()) {
+            out.extend(tiles.iter().map(|&(x, y)| Piece::Tile(x, y)));
+        }
+        out
+    }
+
+    /// Whether it holds tiles of zoom `z`.
+    pub fn has_zoom(&self, z: u8) -> bool {
+        match *self {
+            Piece::Lo => z <= LO_MAX_ZOOM,
+            Piece::Tile(..) => HI_ZOOMS.contains(&z),
+            Piece::Mid(..) => (GRID_Z..=LO_MAX_ZOOM).contains(&z),
+            Piece::Over(pz, ..) => pz == z,
+        }
+    }
+
+    /// Whether it holds tile z/x/y.
+    pub fn holds(&self, z: u8, x: u32, y: u32) -> bool {
+        match *self {
+            Piece::Lo => z <= LO_MAX_ZOOM,
+            p => Piece::of(z, x, y) == Some(p),
         }
     }
 
     /// Its tiles, as runs of tile ids (half open, ascending).
     pub fn ranges(&self) -> Vec<(u64, u64)> {
+        // (A z6 tile's position along its zoom's curve: the leading digits of its descendants' at
+        // every deeper zoom.)
+        let under = |x: u32, y: u32, zooms: RangeInclusive<u8>| {
+            let d6 = zxy_to_tile_id(GRID_Z, x, y).map_or(0, |id| id - zoom_base(GRID_Z));
+            zooms
+                .map(|z| {
+                    let n = 1u64 << (2 * u32::from(z - GRID_Z));
+                    let start = zoom_base(z) + d6 * n;
+                    (start, start + n)
+                })
+                .collect()
+        };
         match *self {
             Piece::Lo => vec![(0, zoom_base(LO_MAX_ZOOM + 1))],
-            Piece::Tile(x, y) => {
-                // (A z6 tile's position along its zoom's curve: the leading digits of its
-                // descendants' at every deeper zoom.)
-                let d6 = zxy_to_tile_id(6, x, y).map_or(0, |id| id - zoom_base(6));
-                HI_ZOOMS
-                    .map(|z| {
-                        let n = 1u64 << (2 * u32::from(z - 6));
-                        let start = zoom_base(z) + d6 * n;
-                        (start, start + n)
-                    })
-                    .collect()
-            }
+            Piece::Tile(x, y) => under(x, y, HI_ZOOMS),
+            Piece::Mid(x, y) => under(x, y, GRID_Z..=LO_MAX_ZOOM),
+            Piece::Over(z, x, y) => zxy_to_tile_id(z, x, y).map(|id| vec![(id, id + 1)]).unwrap_or_default(),
+        }
+    }
+
+    /// Its zooms and bounds (lon, lat × 1e7), of the source's (`whole`, `bounds`).
+    fn extent(&self, whole: (u8, u8), bounds: [i32; 4]) -> ((u8, u8), [i32; 4]) {
+        let tile = |z: u8, x: u32, y: u32| roadcore::geo::e7_box(roadcore::geo::tile_box(z, x, y));
+        match *self {
+            Piece::Lo => ((whole.0, whole.1.min(LO_MAX_ZOOM)), bounds),
+            Piece::Tile(x, y) => ((*HI_ZOOMS.start(), *HI_ZOOMS.end()), tile(GRID_Z, x, y)),
+            Piece::Mid(x, y) => ((GRID_Z, LO_MAX_ZOOM), tile(GRID_Z, x, y)),
+            Piece::Over(z, x, y) => ((z, z), tile(z, x, y)),
         }
     }
 }
 
-/// How a piece is laid out, worked out from the source's directory alone.
+/// How a piece is laid out, worked out from the source's directory (or index) alone.
 #[derive(Clone, Debug)]
 pub struct Plan {
-    /// Everything before the tile data: header, root directory, metadata, leaf directories.
+    /// Everything before the tile data: an archive's header, root directory, metadata, leaf
+    /// directories; a pack's header and meta.
     prefix: Vec<u8>,
     /// The tiles' bytes to copy, in the order they're written: (offset in the source file,
     /// length).
     reads: Vec<(u64, u32)>,
-    gzipped: bool,
+    /// Everything after the tile data: a pack's index.
+    suffix: Vec<u8>,
+    /// How each tile read is checked: its gzip (an archive's gzipped tiles), its XXH3 (a pack's).
+    check: Check,
     /// The piece's size in bytes.
     pub size: u64,
     /// Its tile entries and distinct tiles.
@@ -199,6 +283,17 @@ fn prefix(
     out
 }
 
+/// How a piece's tiles are checked as they're copied.
+#[derive(Clone, Debug)]
+enum Check {
+    /// As they are.
+    None,
+    /// Each decompresses whole (an archive's gzipped tiles).
+    Gzip,
+    /// Each read's XXH3, as the source's index has it (a pack's blobs).
+    Xxh3(Vec<u64>),
+}
+
 /// How `piece` of the archive `pm` is laid out: its directory's runs are read (the leaves that
 /// reach into them), none of its tiles.
 pub fn plan(pm: &PmTiles, piece: Piece) -> Result<Plan> {
@@ -230,14 +325,8 @@ pub fn plan(pm: &PmTiles, piece: Piece) -> Result<Plan> {
         e.offset = new;
     }
     let meta = serde_json::to_vec(&pm.metadata()?)?;
-    let (zooms, bounds) = match piece {
-        Piece::Lo => {
-            ((h.min_zoom, h.max_zoom.min(LO_MAX_ZOOM)), [h.min_lon_e7, h.min_lat_e7, h.max_lon_e7, h.max_lat_e7])
-        }
-        Piece::Tile(x, y) => {
-            ((*HI_ZOOMS.start(), *HI_ZOOMS.end()), roadcore::geo::e7_box(roadcore::geo::tile_box(6, x, y)))
-        }
-    };
+    let (zooms, bounds) =
+        piece.extent((h.min_zoom, h.max_zoom), [h.min_lon_e7, h.min_lat_e7, h.max_lon_e7, h.max_lat_e7]);
     let prefix = prefix(h, &entries, at.len() as u64, data_len, &meta, zooms, bounds);
     Ok(Plan {
         size: prefix.len() as u64 + data_len,
@@ -245,7 +334,58 @@ pub fn plan(pm: &PmTiles, piece: Piece) -> Result<Plan> {
         contents: at.len() as u64,
         prefix,
         reads,
-        gzipped: h.tile_compression == Compression::Gzip,
+        suffix: Vec::new(),
+        check: if h.tile_compression == Compression::Gzip { Check::Gzip } else { Check::None },
+    })
+}
+
+/// How `piece` of a pack (`ix`, its index: crate::pack, RDPACK v1) is laid out: a pack of its tiles
+/// alone, with the source's flags and meta, each distinct blob once in the source's order, then
+/// their index. None of its blobs is read.
+pub fn plan_pack(ix: &PackIndex, piece: Piece) -> Result<Plan> {
+    let picked: Vec<Entry> = ix
+        .entries
+        .iter()
+        .filter(|e| {
+            let (z, x, y) = e.zxy();
+            piece.holds(z, x, y)
+        })
+        .copied()
+        .collect();
+    let meta = serde_json::to_vec(&ix.meta)?;
+    let data_start = crate::pack::HEADER_LEN as u64 + meta.len() as u64;
+    let mut at: BTreeMap<u64, (u32, u64, u64)> = BTreeMap::new();
+    for e in &picked {
+        at.entry(e.offset).or_insert((e.len, e.hash, 0));
+    }
+    let mut data_len = 0u64;
+    let (mut reads, mut hashes) = (Vec::with_capacity(at.len()), Vec::with_capacity(at.len()));
+    for (off, (len, hash, new)) in at.iter_mut() {
+        *new = data_start + data_len;
+        data_len += u64::from(*len);
+        reads.push((*off, *len));
+        hashes.push(*hash);
+    }
+    let index: Vec<Entry> = picked.iter().map(|e| Entry { offset: at[&e.offset].2, ..*e }).collect();
+    let pad = (8 - (data_start + data_len) % 8) % 8;
+    let index_offset = data_start + data_len + pad;
+    let mut prefix = crate::pack::MAGIC.to_vec();
+    prefix.extend_from_slice(&ix.version.to_le_bytes());
+    prefix.extend_from_slice(&ix.flags.to_le_bytes());
+    prefix.extend_from_slice(&index_offset.to_le_bytes());
+    prefix.extend_from_slice(&(index.len() as u64).to_le_bytes());
+    prefix.extend_from_slice(&u32::try_from(meta.len()).context("meta too large")?.to_le_bytes());
+    prefix.extend_from_slice(&meta);
+    let mut suffix = vec![0u8; pad as usize];
+    suffix.extend_from_slice(bytemuck::cast_slice(&index));
+    Ok(Plan {
+        size: index_offset + suffix.len() as u64 - pad,
+        entries: index.len() as u64,
+        contents: at.len() as u64,
+        prefix,
+        reads,
+        suffix,
+        check: Check::Xxh3(hashes),
     })
 }
 
@@ -261,8 +401,8 @@ pub enum Wrote {
 /// Writes the piece `plan` lays out to `part`, resuming what's there (when its prefix is this
 /// plan's: else from the start), reading the source's tile bytes with `read` (offset, length),
 /// in reads of up to 4 MB. `stop()` is asked before each read; `progress` told the bytes written
-/// after each. A gzipped tile whose checksum fails is an error (the NAS's copy is damaged, or the
-/// read was).
+/// after each. A tile that fails its check is an error (the NAS's copy is damaged, or the read
+/// was).
 pub fn write(
     plan: &Plan,
     part: &Path,
@@ -319,13 +459,17 @@ pub fn write(
             j += 1;
         }
         let span = read(first, (end - first) as usize).map_err(anyhow::Error::from)?;
-        ensure!(span.len() as u64 == end - first, "a short read of the basemap");
-        for &(o, l) in &plan.reads[i..j] {
+        ensure!(span.len() as u64 == end - first, "a short read of the source");
+        for (k, &(o, l)) in plan.reads[i..j].iter().enumerate() {
             let tile = &span[(o - first) as usize..(o - first) as usize + l as usize];
-            if plan.gzipped {
-                check_gzip(tile).with_context(|| {
-                    format!("the basemap's tile at byte {o} doesn't read: the NAS's copy is damaged")
-                })?;
+            match &plan.check {
+                Check::None => {}
+                Check::Gzip => check_gzip(tile)
+                    .with_context(|| format!("the tile at byte {o} doesn't read: the NAS's copy is damaged"))?,
+                Check::Xxh3(h) => ensure!(
+                    crate::naming::xxh3(tile) == h[i + k],
+                    "the tile at byte {o} isn't its index's (XXH3): the NAS's copy is damaged"
+                ),
             }
             // (Resuming inside a tile: its first bytes are here already.)
             let skip = have.saturating_sub(out).min(u64::from(l)) as usize;
@@ -336,6 +480,9 @@ pub fn write(
         progress(have);
         i = j;
     }
+    // (Resuming inside the suffix: its first bytes are here already.)
+    let skip = have.saturating_sub(out).min(plan.suffix.len() as u64) as usize;
+    f.write_all(&plan.suffix[skip..])?;
     f.sync_all()?;
     let len = f.metadata()?.len();
     if len != plan.size {
@@ -446,13 +593,90 @@ mod tests {
                 assert_eq!(hi - lo, 1 << (2 * (z - 6)));
             }
         }
-        assert_eq!(Piece::of(10, 1000, 3), Some(Piece::Lo));
+        assert_eq!(Piece::of(10, 1000, 3), Some(Piece::Mid(62, 0)));
+        assert_eq!(Piece::holding(10, 1000, 3).collect::<Vec<_>>(), vec![Piece::Lo, Piece::Mid(62, 0)]);
+        assert_eq!(Piece::of(3, 4, 2), Some(Piece::Over(3, 4, 2)));
         assert_eq!(Piece::of(14, 12917, 8130), Some(Piece::Tile(50, 31)));
+        assert_eq!(Piece::holding(14, 12917, 8130).collect::<Vec<_>>(), vec![Piece::Tile(50, 31)]);
         assert_eq!(Piece::of(15, 0, 0), None);
-        for p in [Piece::Lo, Piece::Tile(50, 31)] {
+        for p in [Piece::Lo, Piece::Tile(50, 31), Piece::Over(0, 0, 0), Piece::Over(5, 31, 3), Piece::Mid(63, 0)] {
             assert_eq!(Piece::parse(&p.name()), Some(p));
         }
-        assert_eq!(Piece::parse("6-64-0"), None);
+        for bad in ["6-64-0", "3-8-0", "mid-5-1-1", "7-1-1"] {
+            assert_eq!(Piece::parse(bad), None, "{bad}");
+        }
+        // Zooms 6–10 under a z6 tile: a run a zoom.
+        let ranges = Piece::Mid(31, 21).ranges();
+        assert_eq!(ranges.len(), 5);
+        for (k, (lo, hi)) in ranges.into_iter().enumerate() {
+            let z = 6 + k as u8;
+            let (tz, tx, ty) = tile_id_to_zxy(hi - 1).unwrap();
+            assert_eq!((tz, tx >> (z - 6), ty >> (z - 6)), (z, 31, 21));
+            assert_eq!(hi - lo, 1 << (2 * (z - 6)));
+        }
+        // Over two z6 tiles side by side: their ancestors once each, by the zooms asked.
+        let two: BTreeSet<(u32, u32)> = [(32, 21), (33, 21)].into();
+        assert_eq!(
+            Piece::over(&two, 3..=8),
+            vec![
+                Piece::Over(3, 4, 2),
+                Piece::Over(4, 8, 5),
+                Piece::Over(5, 16, 10),
+                Piece::Mid(32, 21),
+                Piece::Mid(33, 21)
+            ]
+        );
+        assert_eq!(Piece::over(&two, 0..=2), vec![Piece::Over(0, 0, 0), Piece::Over(1, 1, 0), Piece::Over(2, 2, 1)]);
+        assert_eq!(Piece::over(&two, 11..=14), vec![Piece::Tile(32, 21), Piece::Tile(33, 21)]);
+    }
+
+    /// A pack's piece holds its tiles as the pack does (the same blobs, flags and meta), the blob
+    /// two tiles share once; its size known ahead; a damaged blob is caught.
+    #[test]
+    fn a_packs_piece_holds_its_tiles() {
+        let d = tempfile::tempdir().unwrap();
+        let src_path = d.path().join("lo.pack");
+        let meta = serde_json::json!({"layer": "roads", "scope": "lo", "root": "3/4/2", "encoding": "rt7"});
+        let mut w = crate::pack::PackWriter::create(&src_path, meta.clone(), true).unwrap();
+        let mut tiles = Vec::new();
+        for (z, x, y) in [(3, 4, 2), (4, 8, 5), (5, 16, 10), (5, 17, 10), (6, 32, 21), (8, 129, 86), (8, 140, 86)] {
+            let b = gz(format!("{z}/{x}/{y}").as_bytes());
+            w.add(z, x, y, &b, 0).unwrap();
+            tiles.push((z, x, y, b));
+        }
+        w.add(7, 64, 42, &tiles[4].3, 0).unwrap();
+        w.finish().unwrap();
+        let src = std::fs::read(&src_path).unwrap();
+        let ix = PackIndex::parse_bytes(&src).unwrap();
+        let read = |o: u64, l: usize| Ok(src[o as usize..o as usize + l].to_vec());
+        for (p, want) in [
+            (Piece::Over(5, 16, 10), vec![(5, 16, 10)]),
+            (Piece::Mid(32, 21), vec![(6, 32, 21), (7, 64, 42), (8, 129, 86)]),
+            (Piece::Over(2, 2, 1), vec![]),
+        ] {
+            let plan = plan_pack(&ix, p).unwrap();
+            let part = d.path().join(p.name());
+            assert_eq!(write(&plan, &part, &read, &|| false, &mut |_| {}).unwrap(), Wrote::Done);
+            let b = std::fs::read(&part).unwrap();
+            assert_eq!(b.len() as u64, plan.size, "{p:?}: its size known ahead");
+            let pi = PackIndex::parse_bytes(&b).unwrap();
+            assert_eq!((pi.meta.clone(), pi.gzip()), (meta.clone(), true));
+            let got: Vec<(u8, u32, u32)> = pi.entries.iter().map(|e| e.zxy()).collect();
+            assert_eq!(got, want, "{p:?}");
+            for e in &pi.entries {
+                let s = ix.find_key(e.key).unwrap();
+                assert_eq!(pi.read_blob(&b, e).unwrap(), ix.read_blob(&src, &s).unwrap());
+            }
+        }
+        // (6/32/21 and 7/64/42 share a blob: stored once.)
+        assert_eq!(plan_pack(&ix, Piece::Mid(32, 21)).unwrap().contents, 2);
+        let mut bad = src.clone();
+        let e = ix.find(8, 129, 86).unwrap();
+        bad[e.offset as usize] ^= 1;
+        let read = |o: u64, l: usize| Ok(bad[o as usize..o as usize + l].to_vec());
+        let plan = plan_pack(&ix, Piece::Mid(32, 21)).unwrap();
+        let err = write(&plan, &d.path().join("bad"), &read, &|| false, &mut |_| {}).unwrap_err();
+        assert!(format!("{err:#}").contains("damaged"), "{err:#}");
     }
 
     /// A world of tiles: z0–10 a few, and under the z6 tiles 32/21 and 33/21 some of z11–14; the
@@ -478,7 +702,7 @@ mod tests {
     type Tiles = Vec<(u8, u32, u32, Vec<u8>)>;
 
     fn pieces_of(tiles: &[(u8, u32, u32, Vec<u8>)], p: Piece) -> Vec<&(u8, u32, u32, Vec<u8>)> {
-        tiles.iter().filter(|t| Piece::of(t.0, t.1, t.2) == Some(p)).collect()
+        tiles.iter().filter(|t| p.holds(t.0, t.1, t.2)).collect()
     }
 
     fn build(src: &[u8], p: Piece, dir: &Path) -> (Plan, std::path::PathBuf) {
@@ -494,13 +718,21 @@ mod tests {
     fn a_piece_holds_its_tiles_and_no_others() {
         let (src, tiles) = world();
         let d = tempfile::tempdir().unwrap();
-        for p in [Piece::Lo, Piece::Tile(32, 21), Piece::Tile(33, 21), Piece::Tile(0, 0)] {
+        for p in [
+            Piece::Lo,
+            Piece::Tile(32, 21),
+            Piece::Tile(33, 21),
+            Piece::Tile(0, 0),
+            Piece::Over(5, 16, 10),
+            Piece::Mid(32, 21),
+            Piece::Mid(33, 21),
+        ] {
             let (plan, path) = build(&src, p, d.path());
             assert_eq!(std::fs::metadata(&path).unwrap().len(), plan.size, "its size known ahead");
             let a = open_file(&path).unwrap();
             for t in &tiles {
                 let got = a.get(t.0, t.1, t.2).unwrap();
-                if Piece::of(t.0, t.1, t.2) == Some(p) {
+                if p.holds(t.0, t.1, t.2) {
                     assert_eq!(got.as_ref(), Some(&t.3), "{p:?} {}/{}/{}", t.0, t.1, t.2);
                 } else {
                     assert_eq!(got, None, "{p:?} has {}/{}/{}", t.0, t.1, t.2);

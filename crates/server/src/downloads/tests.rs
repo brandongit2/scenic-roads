@@ -50,16 +50,44 @@ fn gz(b: &[u8]) -> Vec<u8> {
     e.finish().unwrap()
 }
 
+/// A terrain tile as stored (lossless WebP), `h` m throughout.
+fn terrain_tile(h: f32) -> Vec<u8> {
+    pipeline::terrain_codec::encode(&mut vec![h; 65536], pipeline::terrain_codec::COARSER_M).unwrap()
+}
+
+/// The terrain's root (`root`) or lo pack's tiles (zooms 0–2 and 2/3/1 far east; the z3 tile 3/2's
+/// over London's z6 tile and beside it), `h` m throughout.
+fn terrain_tiles(root: bool, h: f32) -> Vec<(u8, u32, u32, Vec<u8>)> {
+    let zxy: &[(u8, u32, u32)] = if root {
+        &[(0, 0, 0), (1, 0, 0), (2, 1, 1), (2, 3, 1)]
+    } else {
+        &[(3, 3, 2), (4, 7, 5), (5, 15, 10), (5, 14, 10), (6, 31, 21), (6, 30, 21), (7, 62, 42), (8, 124, 84)]
+    };
+    zxy.iter().map(|&(z, x, y)| (z, x, y, terrain_tile(h))).collect()
+}
+
+/// Puts a pack of `tiles` (not gzip'd) on the "NAS" and lists it in `cat`.
+fn put_pack(root: &store::nasfs::NasRoot, cat: &mut Catalogue, logical: &str, tiles: &[(u8, u32, u32, Vec<u8>)]) {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("p");
+    let mut w = store::pack::PackWriter::create(&p, json!({"layer": "terrain"}), false).unwrap();
+    for (z, x, y, b) in tiles {
+        w.add(*z, *x, *y, b, 0).unwrap();
+    }
+    w.finish().unwrap();
+    put_bytes(root, cat, logical, "pack", &std::fs::read(&p).unwrap());
+}
+
 /// A catalogue of three z6 tiles' files (30/21, 31/21 and 32/21: the Atlantic off Ireland,
 /// England, the Low Countries), a terrain layer's root and lo packs, a worldwide file, a basemap
 /// (a tile at z0 and z10, and z11–14 tiles under each of the three), and one region, London,
 /// recorded in its coverage.
 fn catalogue(root: &store::nasfs::NasRoot) -> Catalogue {
     let mut c = Catalogue::new(1);
-    let mut terrain = Layer { encoding: "terrarium-png".into(), maxzoom: 12, ..Default::default() };
+    let mut terrain = Layer { encoding: "terrarium-webp".into(), maxzoom: 12, ..Default::default() };
     let mut roads = Layer { encoding: "rt7".into(), minzoom: 4, maxzoom: 14, ..Default::default() };
-    put(root, &mut c, "layers/terrain/root", 1_000);
-    put(root, &mut c, "layers/terrain/lo/3-3-2", 2_000);
+    put_pack(root, &mut c, "layers/terrain/root", &terrain_tiles(true, 100.0));
+    put_pack(root, &mut c, "layers/terrain/lo/3-3-2", &terrain_tiles(false, 100.0));
     terrain.root = Some("layers/terrain/root".into());
     terrain.lo.insert("3/3/2".into(), "layers/terrain/lo/3-3-2".into());
     let mut tiles: Vec<(u8, u32, u32, Vec<u8>)> =
@@ -109,8 +137,7 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
     let cat = catalogue(&store::nasfs::NasRoot::local_for_test(nas.path()));
     let f = files_of(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
     // Its tile's packs, the terrain of the tile within 25 km across the meridian (for the
-    // viewshed), the hi data within 50 km, the worldwide file (read zoomed in too), and zoomed out
-    // over it, the terrain's root and its lo pack of the z3 tile over its tile.
+    // viewshed), the hi data within 50 km, the worldwide file (read zoomed in too).
     assert_eq!(
         logicals(&f),
         [
@@ -121,23 +148,29 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
             "hidata/6-32-21",
             "layers/roads/hi/6-31-21",
             "layers/terrain/hi/6-31-21",
-            "layers/terrain/hi/6-32-21",
-            "layers/terrain/lo/3-3-2",
-            "layers/terrain/root"
+            "layers/terrain/hi/6-32-21"
         ]
     );
-    assert_eq!(f.bytes, 30_031 + 300 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032 + 2_000 + 1_000);
-    // And after its files, the basemap's zooms 0–10, then 11–14 over its tile.
+    assert_eq!(f.bytes, 30_031 + 300 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032);
+    // And after its files, its pieces of the worldwide files, over its tile alone: of the terrain's
+    // root (zooms 0–2) and its lo pack (3–8), and of the basemap (0–14).
     let p = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)], &BTreeSet::new());
-    let archive = cat.content("layers/basemap/world").unwrap().to_string();
-    assert_eq!(
-        p.items[p.items.len() - 2..],
-        [
-            Item::Piece { archive: archive.clone(), piece: Piece::Lo },
-            Item::Piece { archive, piece: Piece::Tile(31, 21) }
-        ]
-    );
-    assert_eq!(p.items.len(), 12);
+    let c = |l: &str| cat.content(l).unwrap().to_string();
+    let (root, lo, world) = (c("layers/terrain/root"), c("layers/terrain/lo/3-3-2"), c("layers/basemap/world"));
+    let piece = |a: &String, piece| Item::Piece { archive: a.clone(), piece };
+    let mut want = vec![
+        piece(&root, Piece::Over(0, 0, 0)),
+        piece(&root, Piece::Over(1, 0, 0)),
+        piece(&root, Piece::Over(2, 1, 1)),
+        piece(&lo, Piece::Over(3, 3, 2)),
+        piece(&lo, Piece::Over(4, 7, 5)),
+        piece(&lo, Piece::Over(5, 15, 10)),
+        piece(&lo, Piece::Mid(31, 21)),
+    ];
+    want.extend((0..6).map(|z| piece(&world, Piece::Over(z, 31 >> (6 - z), 21 >> (6 - z)))));
+    want.extend([piece(&world, Piece::Mid(31, 21)), piece(&world, Piece::Tile(31, 21))]);
+    assert_eq!(p.items[8..], want);
+    assert_eq!(p.items.len(), 8 + 15);
 }
 
 async fn call(r: Response) -> (StatusCode, Value) {
@@ -183,14 +216,22 @@ async fn downloading_the_world_and_regions() {
     let m = s.data.mirror.clone().unwrap();
     assert_eq!(m.usage(), (0, 0), "nothing downloaded, nothing copied");
     let lo = m.piece_size(cat.content("layers/basemap/world").unwrap(), Piece::Lo).unwrap();
-    let piece = m.piece_size(cat.content("layers/basemap/world").unwrap(), Piece::Tile(31, 21)).unwrap();
+    let packs: u64 = ["layers/terrain/root", "layers/terrain/lo/3-3-2"].iter().map(|l| cat.files[*l].size).sum();
+    let pieces: u64 = london
+        .items
+        .iter()
+        .map(|i| match i {
+            Item::Piece { archive, piece } => m.piece_size(archive, *piece).unwrap(),
+            Item::File { .. } => 0,
+        })
+        .sum();
     assert_eq!(
         v["world"],
-        json!({"bytes": 300 + 1_000 + 2_000 + lo, "here": 0, "unknown": 0, "on": false, "at": null, "state": null})
+        json!({"bytes": 300 + packs + lo, "here": 0, "unknown": 0, "on": false, "at": null, "state": null})
     );
     assert_eq!(
         v["regions"]["london"],
-        json!({"name": "London", "bytes": file_bytes(&london) + lo + piece, "here": 0, "unknown": 0, "on": false, "state": null})
+        json!({"name": "London", "bytes": file_bytes(&london) + pieces, "here": 0, "unknown": 0, "on": false, "state": null})
     );
 
     // London downloaded: not the World with it; written to downloads.json; copied by the thread.
@@ -218,8 +259,8 @@ async fn downloading_the_world_and_regions() {
     let v = get(&s).await;
     assert_eq!(
         (v["regions"]["london"]["state"].as_str(), v["world"]["here"].as_u64()),
-        (Some("done"), Some(300 + 1_000 + 2_000 + lo)),
-        "London keeps the worldwide file, the terrain's root and lo pack and the basemap's zooms 0–10"
+        (Some("done"), Some(300)),
+        "London keeps the worldwide file (its own pieces of the root and lo packs and the basemap)"
     );
     assert_eq!(v["here"].as_u64(), v["regions"]["london"]["bytes"].as_u64(), "the rest of the World went");
     assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
@@ -525,11 +566,12 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
     assert_eq!(m.usage(), (0, 0));
 }
 
-/// A region downloaded before it held what's read over it zoomed out (its list without its root and
-/// lo packs or the basemap's zooms 0–10), behind the catalogue served: at its next round with the
-/// NAS it takes them at the served catalogue, and stays at its own for the rest (no Update).
+/// A region downloaded before it held its pieces of the worldwide files (its list naming the root
+/// and lo packs over it whole and the basemap's worldwide zooms 0–10, and those here), behind the
+/// catalogue served: at its next round with the NAS it takes its pieces at the served catalogue and
+/// lets the whole files go, and stays at its own for the rest (no Update).
 #[tokio::test(flavor = "multi_thread")]
-async fn a_region_listed_without_its_zoomed_out_files_gains_them_and_stays_behind() {
+async fn a_region_listed_in_an_older_form_takes_its_pieces_and_stays_behind() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let root = store::nasfs::NasRoot::local_for_test(nas.path());
     let cat = catalogue(&root);
@@ -537,26 +579,50 @@ async fn a_region_listed_without_its_zoomed_out_files_gains_them_and_stays_behin
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     let (lo, roads) = ("layers/terrain/lo/3-3-2", "layers/roads/hi/6-31-21");
-    // Its list as one made before: without them.
+    // Its list as one made before: the whole root and lo pack, the basemap's lo piece; and the
+    // root and lo pack here.
     let path = home.path().join(FILE);
     let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let coarse = v["lists"]["1"]["regions"]["london"]["coarse"].as_array_mut().unwrap();
-    let n = coarse.len();
-    let zoomed_out = |i: &Value| {
-        i["piece"] == "lo" || ["layers/terrain/root", lo].iter().any(|l| i["file"].as_str() == cat.content(l))
-    };
-    coarse.retain(|i| !zoomed_out(i));
-    assert_eq!(coarse.len(), n - 3, "{v}");
+    coarse.retain(|i| {
+        !i["piece"].as_str().and_then(Piece::parse).is_some_and(|p| matches!(p, Piece::Over(..) | Piece::Mid(..)))
+    });
+    let whole = ["layers/terrain/root", lo];
+    for l in whole {
+        let f = &cat.files[l];
+        coarse.push(json!({"file": f.file, "size": f.size}));
+        let p = home.path().join("mirror").join(&f.file);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::copy(nas.path().join(&f.file), p).unwrap();
+    }
+    coarse.push(json!({"archive": cat.content("layers/basemap/world").unwrap(), "piece": "lo"}));
     std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+    // (Its pieces of zooms 0–10 not here, as then.)
+    for d in [".packs", ".basemap"] {
+        for e in std::fs::read_dir(home.path().join("mirror").join(d)).unwrap().flatten() {
+            for f in std::fs::read_dir(e.path()).unwrap().flatten() {
+                if f.file_name().to_str().is_some_and(|n| !n.starts_with("6-") && n != "sizes.json") {
+                    std::fs::remove_file(f.path()).unwrap();
+                }
+            }
+        }
+    }
     // Catalogue 2: London's roads and the lo pack made again.
     drop(s);
     let s = crate::test_state_with(home.path(), &root, true);
+    let m = s.data.mirror.clone().unwrap();
+    assert!(whole.iter().all(|l| m.has(cat.content(l).unwrap())));
     let two = next_catalogue(&s, nas.path(), &cat, 2, &[roads, lo]);
     tokio::task::block_in_place(|| settle(&s));
-    let m = s.data.mirror.clone().unwrap();
-    assert!(m.has(two.content(lo).unwrap()), "the lo pack taken at the served catalogue");
-    assert!(m.has(two.content("layers/terrain/root").unwrap()));
-    assert!(m.has_piece(two.content("layers/basemap/world").unwrap(), Piece::Lo));
+    let world = two.content("layers/basemap/world").unwrap();
+    assert!(
+        m.has_piece(two.content(lo).unwrap(), Piece::Mid(31, 21)),
+        "the lo pack's pieces taken at the served catalogue"
+    );
+    assert!(m.has_piece(two.content("layers/terrain/root").unwrap(), Piece::Over(2, 1, 1)));
+    assert!(m.has_piece(world, Piece::Over(0, 0, 0)) && m.has_piece(world, Piece::Mid(31, 21)));
+    assert!(!whole.iter().any(|l| m.has(cat.content(l).unwrap())), "the whole files gone");
+    assert!(!m.has_piece(world, Piece::Lo));
     assert!(m.has(cat.content(roads).unwrap()) && !m.has(two.content(roads).unwrap()), "its roads as they were");
     assert_eq!(Downloads::load(home.path()).asked().regions[0].pin, Pin { cat: 1, to: None }, "behind, as it was");
 }
@@ -769,11 +835,12 @@ async fn a_region_alone_has_what_the_map_reads_zoomed_in() {
         assert!(m.has(cat.content(l).unwrap()), "{l} here with London alone");
     }
     assert!(!m.has(cat.content("global/roaden/6-10-10").unwrap()), "not a far tile's");
-    // Zoomed out over it too: the root and lo packs over its tile, the basemap's zooms 0–10.
-    for l in ["layers/terrain/root", "layers/terrain/lo/3-3-2"] {
-        assert!(m.has(cat.content(l).unwrap()), "{l} here with London alone");
-    }
-    assert!(m.has_piece(cat.content("layers/basemap/world").unwrap(), Piece::Lo));
+    // Zoomed out over it too: the pieces over its tile of the root and lo packs and the basemap.
+    let c = |l: &str| cat.content(l).unwrap();
+    assert!(m.has_piece(c("layers/terrain/root"), Piece::Over(2, 1, 1)));
+    assert!(m.has_piece(c("layers/terrain/lo/3-3-2"), Piece::Mid(31, 21)));
+    assert!(m.has_piece(c("layers/basemap/world"), Piece::Over(0, 0, 0)));
+    assert!(!m.has(c("layers/terrain/lo/3-3-2")) && !m.has_piece(c("layers/basemap/world"), Piece::Lo), "not whole");
     let v = get(&s).await;
     assert_eq!(v["regions"]["london"]["here"], v["regions"]["london"]["bytes"], "counted in its size");
 }
@@ -824,7 +891,7 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     let g = s.data.generation.load(Ordering::SeqCst);
     s.data.pool().unwrap().mark_offline("test");
     assert!(s.data.generation.load(Ordering::SeqCst) > g, "what's read changed");
-    for l in [here, "layers/terrain/lo/3-3-2", "layers/terrain/root", "base/6-31-21"] {
+    for l in [here, "base/6-31-21"] {
         assert_eq!(s.data.content(l).as_deref(), cat.content(l), "{l}: downloaded, read here");
     }
     for l in [far, "base/6-30-21", "layers/roads/hi/6-30-21"] {
@@ -836,12 +903,17 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     assert_eq!(basemap(12, 31 << 6, 21 << 6).unwrap(), [gz(b"12/31")]);
     assert!(basemap(12, 30 << 6, 21 << 6).unwrap().is_empty(), "outside it: none, not an error");
     assert_eq!(s.data.reach(), Some(Arc::new([(31, 21)].into())));
-    // What reaches past it (the basemap's zooms 0–10, the lo and root packs) is read over it alone.
+    // What reaches past it (the basemap's zooms 0–10, the lo and root packs) is read over it alone:
+    // their pieces over it (the packs not here whole).
     assert!(basemap(10, 0, 340).unwrap().is_empty(), "the zooms 0–10 piece, far from it");
-    assert_eq!(s.data.pack_of("terrain", 5, 15, 10).as_deref(), Some("layers/terrain/lo/3-3-2"), "over it");
-    assert_eq!(s.data.pack_of("terrain", 5, 14, 10), None, "its lo pack, beside it");
-    assert_eq!(s.data.pack_of("terrain", 2, 1, 1).as_deref(), Some("layers/terrain/root"));
-    assert_eq!(s.data.pack_of("terrain", 2, 2, 1), None);
+    assert_eq!(s.data.content("layers/terrain/lo/3-3-2"), None, "not here whole");
+    let terrain = |z: u8, x: u32, y: u32| {
+        s.data.tile("terrain", z, x, y).unwrap().map(|(b, _)| roadcore::grid::decode_terrain(b.bytes()).unwrap())
+    };
+    assert_eq!(terrain(6, 31, 21).unwrap()[0], 100.0, "its tile, from its piece");
+    assert_eq!(terrain(5, 15, 10).unwrap()[0], 100.0, "over it, from its piece");
+    assert!(terrain(6, 30, 21).is_none() && terrain(5, 14, 10).is_none(), "its lo pack, beside it");
+    assert!(terrain(2, 3, 1).is_none());
     // Every version the app's URLs carry names the reach (Data::reach_token), so what's answered
     // for it isn't reused at home or for another reach; and a 204 away isn't cached for good (it
     // says "not downloaded"), nor is the tile made at home served.
@@ -857,6 +929,7 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     }
     assert!(basemap(0, 0, 0).unwrap().is_empty());
     assert_eq!(s.data.reach(), Some(Arc::new(HashSet::new())));
+    assert!(s.data.tile("terrain", 0, 0, 0).unwrap().is_none(), "no pieces, none");
 
     // Home again: the NAS's.
     std::fs::rename(nas.path().join("gone"), &root).unwrap();
@@ -1150,8 +1223,16 @@ async fn two_regions(home: &std::path::Path, nas: &std::path::Path) -> (std::pat
 fn next_catalogue(s: &S, root: &std::path::Path, cat: &Catalogue, n: u64, remade: &[&str]) -> Catalogue {
     let mut c = cat.clone();
     c.n = n;
+    let at = store::nasfs::NasRoot::local_for_test(root);
     for l in remade {
-        put(&store::nasfs::NasRoot::local_for_test(root), &mut c, l, 1_234);
+        match l.strip_prefix("layers/terrain/") {
+            Some(p) if p == "root" || p.starts_with("lo/") => {
+                put_pack(&at, &mut c, l, &terrain_tiles(p == "root", 200.0))
+            }
+            _ => {
+                put(&at, &mut c, l, 1_234);
+            }
+        }
     }
     c.validate().unwrap();
     store::testkit::map_root(&root, &c);

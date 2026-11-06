@@ -10,14 +10,16 @@
 //! mirror/<content name>             complete copies, each moved here only after its hash checked out
 //! mirror/.partial/<content name>    copies in progress, resumed where they stopped
 //! mirror/.basemap/<hash16>/<piece>.pmtiles        the basemap's pieces (crate::pieces) of the
-//!                                                 archive whose content hash that is: lo, 6-x-y
-//! mirror/.basemap/<hash16>/<piece>.pmtiles.part   a piece being made, resumed where it stopped
-//! mirror/.basemap/<hash16>/sizes.json             each piece's size, worked out from the archive
+//!                                                 archive whose content hash that is: lo, 6-x-y,
+//!                                                 z-x-y, mid-6-x-y
+//! mirror/.packs/<hash16>/<piece>.pack             the pieces of a root or lo pack: z-x-y, mid-6-x-y
+//! mirror/.basemap|.packs/<hash16>/<piece>.….part  a piece being made, resumed where it stopped
+//! mirror/.basemap|.packs/<hash16>/sizes.json      each piece's size, worked out from its source
 //! idx/<hash16>.idx                  pack indexes (PackIndex::to_bytes), cached as they're read
 //! ```
 //!
 //! **What's wanted** (`Wanted`, from the caller: the server's downloads) is a list of files and
-//! basemap pieces, in the order they're copied: each download's, of the catalogue it's at (and, while
+//! pieces, in the order they're copied: each download's, of the catalogue it's at (and, while
 //! it's updating, of the one it's updating to). A sync first lets go of everything else here (what a
 //! removed download had, what an updated one no longer needs), then
 //! copies what's wanted and missing, one at a time, in large sequential reads through the I/O pool.
@@ -51,6 +53,7 @@ const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
 const STALE_TMP: Duration = Duration::from_secs(3600);
 const PARTIAL: &str = ".partial";
 const BASEMAP: &str = ".basemap";
+const PACKS: &str = ".packs";
 const PART: &str = ".part";
 const SIZES: &str = "sizes.json";
 /// The use times the mirror kept before downloads (no longer: deleted when found).
@@ -59,11 +62,12 @@ const OLD_USES: &str = ".uses";
 pub const SLOW_RATE: u64 = 20_000_000;
 
 type FreeSpace = dyn Fn(&Path) -> io::Result<u64> + Send + Sync;
-/// Told what a sync deleted (content names, and pieces as `.basemap/<hash16>/<piece>.pmtiles`), as
+/// Told what a sync deleted (content names, and pieces by `Mirror::piece_key`), as
 /// each goes: the server drops its maps of them, so the disk gets their room back.
 type OnRemove = dyn Fn(&[String]) + Send + Sync;
 
-/// Something to copy: a file of the catalogue, or a piece of one of its basemap archives.
+/// Something to copy: a file of the catalogue, or a piece of one of its basemap archives or packs
+/// (crate::pieces: `archive` its content name).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Item {
     File { name: String, size: u64 },
@@ -284,7 +288,7 @@ impl Mirror {
         scan(&root.join("mirror"), "", &mut files).context("list the mirror")?;
         // (The use times of the mirror before downloads: nothing reads them now.)
         let _ = fs::remove_file(root.join("mirror").join(OLD_USES));
-        let (pieces, sizes) = scan_pieces(&root.join("mirror").join(BASEMAP));
+        let (pieces, sizes) = scan_pieces(&root.join("mirror"));
         Ok(Mirror {
             root,
             reserve: std::sync::atomic::AtomicU64::new(reserve_bytes),
@@ -345,8 +349,9 @@ impl Mirror {
         self.root.join("mirror").join(PARTIAL).join(content_name)
     }
 
-    fn pieces_dir(&self, hash: &str) -> PathBuf {
-        self.root.join("mirror").join(BASEMAP).join(hash)
+    /// The folder of `archive`'s pieces (a content name: the basemap's archive, or a pack).
+    fn pieces_dir(&self, archive: &str) -> PathBuf {
+        self.root.join("mirror").join(kind_of(archive).0).join(hash_of(archive).unwrap_or("none"))
     }
 
     /// Where a piece of `archive` (a content name) lives, whether or not it's there.
@@ -354,14 +359,24 @@ impl Mirror {
         self.path(&Self::piece_key(archive, piece))
     }
 
-    /// A piece's name in the mirror (`.basemap/<hash16>/<piece>.pmtiles`: as `on_remove` tells it,
-    /// and `path` takes it).
+    /// A piece's name in the mirror (`.basemap/<hash16>/<piece>.pmtiles`, `.packs/<hash16>/<piece>.pack`:
+    /// as `on_remove` tells it, and `path` takes it).
     pub fn piece_key(archive: &str, piece: Piece) -> String {
-        format!("{BASEMAP}/{}/{}.pmtiles", hash_of(archive).unwrap_or("none"), piece.name())
+        let (dir, ext) = kind_of(archive);
+        format!("{dir}/{}/{}.{ext}", hash_of(archive).unwrap_or("none"), piece.name())
     }
 
     fn piece_part(&self, archive: &str, piece: Piece) -> PathBuf {
-        self.pieces_dir(hash_of(archive).unwrap_or("none")).join(format!("{}.pmtiles{PART}", piece.name()))
+        self.pieces_dir(archive).join(format!("{}.{}{PART}", piece.name(), kind_of(archive).1))
+    }
+
+    /// The pieces of `archive` here.
+    pub fn pieces_of(&self, archive: &str) -> Vec<Piece> {
+        let Some(h) = hash_of(archive) else { return Vec::new() };
+        let mut out: Vec<Piece> =
+            self.state().pieces.keys().filter(|(k, _)| k == h).filter_map(|(_, n)| Piece::parse(n)).collect();
+        out.sort();
+        out
     }
 
     /// The local copy of `content_name`, when it's here and complete.
@@ -490,9 +505,15 @@ impl Mirror {
     }
 
     /// Works out the sizes of `wanted` pieces of `archive` (a content name) not known yet, from
-    /// `pm` (the archive, opened: only its directory is read), and keeps them (`sizes.json`),
-    /// until `stop()`. How many it worked out.
-    pub fn size_pieces(&self, archive: &str, wanted: &[Piece], pm: &PmTiles, stop: &dyn Fn() -> bool) -> Result<u32> {
+    /// `source` (the archive or pack, opened: only its directory or index is read: `PieceSource::plan`),
+    /// and keeps them (`sizes.json`), until `stop()`. How many it worked out.
+    pub fn size_pieces(
+        &self,
+        archive: &str,
+        wanted: &[Piece],
+        source: &PieceSource,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<u32> {
         let h = hash_of(archive).with_context(|| format!("{archive:?} isn't a content name"))?.to_string();
         let mut n = 0;
         let mut saved = Instant::now();
@@ -503,26 +524,27 @@ impl Mirror {
             if stop() {
                 break;
             }
-            let size = pieces::plan(pm, p)?.size;
+            let size = source.plan(p)?.size;
             self.state().sizes.entry(h.clone()).or_default().insert(p.name(), size);
             n += 1;
             if saved.elapsed() > Duration::from_secs(10) {
-                self.save_sizes(&h);
+                self.save_sizes(archive);
                 saved = Instant::now();
             }
         }
         if n > 0 {
-            self.save_sizes(&h);
+            self.save_sizes(archive);
         }
         Ok(n)
     }
 
-    fn save_sizes(&self, hash: &str) {
-        let body = match self.state().sizes.get(hash) {
-            Some(m) => serde_json::to_vec(m).unwrap_or_default(),
+    /// Keeps the sizes of `archive`'s pieces (`sizes.json`).
+    fn save_sizes(&self, archive: &str) {
+        let body = match hash_of(archive).and_then(|h| self.state().sizes.get(h).cloned()) {
+            Some(m) => serde_json::to_vec(&m).unwrap_or_default(),
             None => return,
         };
-        let dir = self.pieces_dir(hash);
+        let dir = self.pieces_dir(archive);
         if let Err(e) =
             fs::create_dir_all(&dir).and_then(|_| replace_file(&dir.join(SIZES), &body, None).map_err(io::Error::other))
         {
@@ -585,46 +607,46 @@ impl Mirror {
                 }
             }
         }
-        // Pieces: those of archives the catalogue no longer has go with their folder.
+        // Pieces: those not wanted go; those of files the catalogue no longer has, with their folder.
         let pieces = wanted.pieces();
-        // (The sizes of a wanted archive's pieces stay: an older catalogue's, for a download at it.)
+        // (The sizes of a wanted file's pieces stay: an older catalogue's, for a download at it.)
         let current: HashSet<String> = cat
-            .basemap
-            .iter()
-            .filter_map(|l| cat.content(l))
-            .filter_map(hash_of)
+            .files
+            .values()
+            .filter_map(|f| hash_of(&f.file))
             .map(str::to_string)
             .chain(pieces.iter().map(|(h, _)| h.clone()))
             .collect();
-        let base = self.root.join("mirror").join(BASEMAP);
-        for e in fs::read_dir(&base).into_iter().flatten().flatten() {
-            let Ok(hash) = e.file_name().into_string() else { continue };
-            let dir = e.path();
-            for f in fs::read_dir(&dir).into_iter().flatten().flatten() {
-                let Ok(fname) = f.file_name().into_string() else { continue };
-                if fname == SIZES && current.contains(&hash) {
-                    continue;
-                }
-                let stem = fname.strip_suffix(PART).unwrap_or(&fname).strip_suffix(".pmtiles");
-                if stem.is_some_and(|s| pieces.contains(&(hash.clone(), s.to_string()))) {
-                    continue;
-                }
-                let size = f.metadata().map_or(0, |m| m.len());
-                if fs::remove_file(f.path()).is_ok() {
-                    if let Some(s) = stem.filter(|_| !fname.ends_with(PART)) {
-                        self.state().pieces.remove(&(hash.clone(), s.to_string()));
-                        self.told(&format!("{BASEMAP}/{hash}/{fname}"));
+        for (top, ext) in [(BASEMAP, ".pmtiles"), (PACKS, ".pack")] {
+            for e in fs::read_dir(self.root.join("mirror").join(top)).into_iter().flatten().flatten() {
+                let Ok(hash) = e.file_name().into_string() else { continue };
+                let dir = e.path();
+                for f in fs::read_dir(&dir).into_iter().flatten().flatten() {
+                    let Ok(fname) = f.file_name().into_string() else { continue };
+                    if fname == SIZES && current.contains(&hash) {
+                        continue;
                     }
-                    if fname != SIZES {
-                        stats.removed += 1;
-                        stats.removed_bytes += size;
+                    let stem = fname.strip_suffix(PART).unwrap_or(&fname).strip_suffix(ext);
+                    if stem.is_some_and(|s| pieces.contains(&(hash.clone(), s.to_string()))) {
+                        continue;
+                    }
+                    let size = f.metadata().map_or(0, |m| m.len());
+                    if fs::remove_file(f.path()).is_ok() {
+                        if let Some(s) = stem.filter(|_| !fname.ends_with(PART)) {
+                            self.state().pieces.remove(&(hash.clone(), s.to_string()));
+                            self.told(&format!("{top}/{hash}/{fname}"));
+                        }
+                        if fname != SIZES {
+                            stats.removed += 1;
+                            stats.removed_bytes += size;
+                        }
                     }
                 }
+                if !current.contains(&hash) {
+                    self.state().sizes.remove(&hash);
+                }
+                let _ = fs::remove_dir(&dir);
             }
-            if !current.contains(&hash) {
-                self.state().sizes.remove(&hash);
-            }
-            let _ = fs::remove_dir(&dir);
         }
         Ok(stats)
     }
@@ -651,7 +673,7 @@ impl Mirror {
         self.drop_mismatched(cat);
         let mut stats = self.let_go(cat, wanted)?;
         let mut pace = Pace { slow: ctl.slow, since: Instant::now(), bytes: 0 };
-        let mut archives: HashMap<String, Arc<PmTiles>> = HashMap::new();
+        let mut archives: HashMap<String, Arc<PieceSource>> = HashMap::new();
         let mut left = wanted.items.iter().filter(|i| !self.is_here(i)).count() as u32;
         for item in &wanted.items {
             if self.is_here(item) {
@@ -846,25 +868,36 @@ impl Mirror {
         Ok(Some(Copy::Done(size)))
     }
 
-    /// The archive `name` on the NAS, opened (once a sync).
-    fn archive(
+    /// The archive or pack `name` on the NAS, opened (once a sync).
+    fn source(
         &self,
         name: &str,
         nas_root: &crate::nasfs::NasRoot,
         pool: &Arc<IoPool>,
-        open: &mut HashMap<String, Arc<PmTiles>>,
-    ) -> Result<Arc<PmTiles>> {
+        open: &mut HashMap<String, Arc<PieceSource>>,
+    ) -> Result<Arc<PieceSource>> {
         if let Some(a) = open.get(name) {
             return Ok(a.clone());
         }
         let (file, len) = pool.open_len(&nas_root.join(name))?;
         let timeout = pool.config().op_timeout.max(CHUNK_TIMEOUT);
-        let a = Arc::new(PmTiles::with_leaf_cache(Box::new(NasFile { file, len, pool: pool.clone(), timeout }), 512)?);
+        let a = Arc::new(self.piece_source(name, Box::new(NasFile { file, len, pool: pool.clone(), timeout }))?);
         open.insert(name.to_string(), a.clone());
         Ok(a)
     }
 
-    /// Makes a piece of a basemap archive (None: it waits for room).
+    /// `name` (an archive's or a pack's content name) as pieces are made of it, read through `f`: an
+    /// archive's directory, a pack's index (cached here: `index`).
+    pub fn piece_source(&self, name: &str, f: Box<dyn RangeRead>) -> Result<PieceSource> {
+        Ok(if kind_of(name).0 == PACKS {
+            let ix = self.index(name, || PackIndex::read_from(&*f))?;
+            PieceSource::Pack(Arc::new(ix), f)
+        } else {
+            PieceSource::Archive(Box::new(PmTiles::with_leaf_cache(f, 512)?))
+        })
+    }
+
+    /// Makes a piece of a basemap archive or a pack (None: it waits for room).
     #[allow(clippy::too_many_arguments)]
     fn copy_piece(
         &self,
@@ -874,37 +907,37 @@ impl Mirror {
         pool: &Arc<IoPool>,
         ctl: &Control,
         pace: &mut Pace,
-        open: &mut HashMap<String, Arc<PmTiles>>,
+        open: &mut HashMap<String, Arc<PieceSource>>,
         stats: &mut SyncStats,
     ) -> Result<Option<Copy>> {
         let Some(hash) = hash_of(archive).map(str::to_string) else {
             return Ok(Some(Copy::Failed("not a content name".into())));
         };
         let fail = |e: anyhow::Error| if unreachable(&e) { Copy::Offline } else { Copy::Failed(format!("{e:#}")) };
-        let pm = match self.archive(archive, nas_root, pool, open) {
+        let src = match self.source(archive, nas_root, pool, open) {
             Ok(a) => a,
             Err(e) => return Ok(Some(fail(e))),
         };
-        let plan = match pieces::plan(&pm, piece) {
+        let plan = match src.plan(piece) {
             Ok(p) => p,
             Err(e) => return Ok(Some(fail(e))),
         };
         if self.piece_size(archive, piece) != Some(plan.size) {
             self.state().sizes.entry(hash.clone()).or_default().insert(piece.name(), plan.size);
-            self.save_sizes(&hash);
+            self.save_sizes(archive);
         }
         let part = self.piece_part(archive, piece);
         let have = fs::metadata(&part).map_or(0, |m| m.len()).min(plan.size);
         if !self.fits(plan.size - have, stats)? {
             return Ok(None);
         }
-        fs::create_dir_all(self.pieces_dir(&hash))?;
+        fs::create_dir_all(self.pieces_dir(archive))?;
         let name = copy_name(&Item::Piece { archive: archive.to_string(), piece });
         self.state().copying = Some(Copying { name, size: plan.size, have, slow: (ctl.slow)() });
         let _clear = CopyingGuard(self);
         let pace = std::cell::RefCell::new(pace);
         let read = |off: u64, len: usize| {
-            let b = pm.source().read_at(off, len)?;
+            let b = src.read_at(off, len)?;
             pace.borrow_mut().after(len as u64, ctl.stop);
             Ok(b)
         };
@@ -970,7 +1003,43 @@ impl Mirror {
 pub fn copy_name(item: &Item) -> String {
     match item {
         Item::File { name, .. } => name.clone(),
-        Item::Piece { archive, piece } => format!("basemap {} {}", hash_of(archive).unwrap_or("none"), piece.name()),
+        Item::Piece { archive, piece } => {
+            let kind = if kind_of(archive).0 == PACKS { "pack" } else { "basemap" };
+            format!("{kind} {} {}", hash_of(archive).unwrap_or("none"), piece.name())
+        }
+    }
+}
+
+/// The folder a file's pieces go in, and their extension: a pack's, else the basemap archive's.
+fn kind_of(archive: &str) -> (&'static str, &'static str) {
+    if archive.ends_with(".pack") {
+        (PACKS, "pack")
+    } else {
+        (BASEMAP, "pmtiles")
+    }
+}
+
+/// A file pieces are made of (crate::pieces), opened: the basemap's archive, or a pack and its
+/// index.
+pub enum PieceSource {
+    Archive(Box<PmTiles>),
+    Pack(Arc<PackIndex>, Box<dyn RangeRead>),
+}
+
+impl PieceSource {
+    /// How `piece` of it is laid out: its directory or index alone is read.
+    pub fn plan(&self, piece: Piece) -> Result<pieces::Plan> {
+        match self {
+            PieceSource::Archive(pm) => pieces::plan(pm, piece),
+            PieceSource::Pack(ix, _) => pieces::plan_pack(ix, piece),
+        }
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
+        match self {
+            PieceSource::Archive(pm) => pm.source().read_at(off, len),
+            PieceSource::Pack(_, f) => f.read_at(off, len),
+        }
     }
 }
 
@@ -1086,20 +1155,22 @@ fn scan(dir: &Path, prefix: &str, out: &mut HashMap<String, u64>) -> io::Result<
 
 type PieceSizes = (HashMap<(String, String), u64>, HashMap<String, BTreeMap<String, u64>>);
 
-/// The complete pieces under `dir` (`.basemap/`), and the sizes kept for each archive.
-fn scan_pieces(dir: &Path) -> PieceSizes {
+/// The complete pieces under `mirror` (`.basemap/`, `.packs/`), and the sizes kept for each file.
+fn scan_pieces(mirror: &Path) -> PieceSizes {
     let (mut pieces, mut sizes) = (HashMap::new(), HashMap::new());
-    for e in fs::read_dir(dir).into_iter().flatten().flatten() {
-        let Ok(hash) = e.file_name().into_string() else { continue };
-        if let Ok(b) = fs::read(e.path().join(SIZES)) {
-            if let Ok(m) = serde_json::from_slice::<BTreeMap<String, u64>>(&b) {
-                sizes.insert(hash.clone(), m);
+    for (top, ext) in [(BASEMAP, ".pmtiles"), (PACKS, ".pack")] {
+        for e in fs::read_dir(mirror.join(top)).into_iter().flatten().flatten() {
+            let Ok(hash) = e.file_name().into_string() else { continue };
+            if let Ok(b) = fs::read(e.path().join(SIZES)) {
+                if let Ok(m) = serde_json::from_slice::<BTreeMap<String, u64>>(&b) {
+                    sizes.insert(hash.clone(), m);
+                }
             }
-        }
-        for f in fs::read_dir(e.path()).into_iter().flatten().flatten() {
-            let Ok(name) = f.file_name().into_string() else { continue };
-            if let Some(stem) = name.strip_suffix(".pmtiles").filter(|s| Piece::parse(s).is_some()) {
-                pieces.insert((hash.clone(), stem.to_string()), f.metadata().map_or(0, |m| m.len()));
+            for f in fs::read_dir(e.path()).into_iter().flatten().flatten() {
+                let Ok(name) = f.file_name().into_string() else { continue };
+                if let Some(stem) = name.strip_suffix(ext).filter(|s| Piece::parse(s).is_some()) {
+                    pieces.insert((hash.clone(), stem.to_string()), f.metadata().map_or(0, |m| m.len()));
+                }
             }
         }
     }

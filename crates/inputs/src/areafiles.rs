@@ -6,6 +6,7 @@
 use roadcore::geo;
 use std::collections::{BTreeMap, BTreeSet};
 use store::catalogue::Catalogue;
+use store::pieces::Piece;
 
 /// How far around an area its tiles are kept: its outlines are simplified (60 m to 1 km), and the
 /// build reaches 1 km past coasts.
@@ -66,8 +67,51 @@ pub fn outer_rings(r: &buildstore::coverage::DrawnRegion) -> Vec<Vec<[f64; 2]>> 
     r.shapes.values().flat_map(|polys| polys.iter().filter_map(|p| p.first().cloned())).collect()
 }
 
+/// The pieces (store::pieces) of the layers' worldwide packs an area (`rings`, each read as a filled
+/// area) reads zoomed out, as (content name, piece): of every layer's root (zooms 0–2) and lo packs
+/// (3–8), the tiles over its z6 tiles (`Piece::over`); of a polar layer's root (zooms 0–3 of its
+/// grid), those over its blocks. What a terrain tile without its own is made from, and the place
+/// search's places that show by zoom 8; nothing past the area.
+pub fn pieces_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Vec<(String, Piece)> {
+    let near: BTreeSet<(u32, u32)> = tiles_meeting(rings, NEAR_KM).into_iter().collect();
+    let mut by_z3: BTreeMap<(u32, u32), BTreeSet<(u32, u32)>> = BTreeMap::new();
+    for &(x, y) in &near {
+        by_z3.entry((x >> 3, y >> 3)).or_default().insert((x, y));
+    }
+    let mut out = Vec::new();
+    let mut add = |logical: &String, pieces: Vec<Piece>| {
+        if let Some(f) = cat.files.get(logical) {
+            out.extend(pieces.into_iter().map(|p| (f.file.clone(), p)));
+        }
+    };
+    for (name, l) in &cat.layers {
+        if !l.polar.is_empty() {
+            let Some(pole) = name.rsplit('-').next().and_then(roadcore::polar::Pole::of_letter) else { continue };
+            let b = roadcore::polar::BLOCK_Z;
+            let over: BTreeSet<Piece> = polar_blocks_meeting(rings, pole, NEAR_KM)
+                .into_iter()
+                .flat_map(|(x, y)| (0..b).map(move |z| Piece::Over(z, x >> (b - z), y >> (b - z))))
+                .collect();
+            if let Some(r) = &l.root {
+                add(r, over.into_iter().collect());
+            }
+            continue;
+        }
+        if let Some(r) = &l.root {
+            add(r, Piece::over(&near, 0..=2));
+        }
+        for ((x, y), tiles) in &by_z3 {
+            if let Some(p) = l.lo.get(&format!("3/{x}/{y}")) {
+                add(p, Piece::over(tiles, 3..=8));
+            }
+        }
+    }
+    out
+}
+
 /// The files an area (`rings`, each read as a filled area) needs of `cat` for the map to work over it
-/// at every zoom without the NAS (its basemap aside: the map server's downloads add its pieces).
+/// at every zoom without the NAS (its pieces of worldwide files aside: the layers' roots and lo
+/// packs, `pieces_of`, and the basemap's, which the map server's downloads add).
 pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
     let mut out = BTreeMap::new();
     let mut add = |logical: &String| {
@@ -89,21 +133,8 @@ pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
             }
         }
     }
-    // Zoomed out over it: every layer's root (zooms 0–2) and its lo packs (3–8) of the z3 tiles
-    // over its tiles; what a terrain tile without its own is made from, and the place search's
-    // places that show by zoom 8. (A z3 tile reaches past the area: zoomed out, so does the map.)
-    let z3: BTreeSet<(u32, u32)> = near.iter().map(|&(x, y)| (x >> 3, y >> 3)).collect();
-    for l in cat.layers.values() {
-        if let Some(r) = &l.root {
-            add(r);
-        }
-        for &(x, y) in &z3 {
-            if let Some(p) = l.lo.get(&format!("3/{x}/{y}")) {
-                add(p);
-            }
-        }
-    }
-    // (The polar caps' blocks the area meets, its pole's layers: `polar_blocks_meeting`.)
+    // (Zoomed out, the layers' roots and lo packs: their pieces over it, `pieces_of`. The polar
+    // caps' blocks the area meets, its pole's layers: `polar_blocks_meeting`.)
     for (name, l) in cat.layers.iter().filter(|(_, l)| !l.polar.is_empty()) {
         let Some(pole) = name.rsplit('-').next().and_then(roadcore::polar::Pole::of_letter) else { continue };
         for (x, y) in polar_blocks_meeting(rings, pole, NEAR_KM) {

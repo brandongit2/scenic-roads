@@ -247,7 +247,7 @@ fn the_world_and_an_area_are_copied_in_order_and_verified() {
     for p in [Piece::Lo, Piece::Tile(32, 21)] {
         let a = pieces::open_file(&m.piece_local(&basemap(&cat), p).unwrap()).unwrap();
         for (z, x, y, _) in basemap_tiles(6) {
-            let want = if Piece::of(z, x, y) == Some(p) { src.get(z, x, y).unwrap() } else { None };
+            let want = if p.holds(z, x, y) { src.get(z, x, y).unwrap() } else { None };
             assert_eq!(a.get(z, x, y).unwrap(), want, "{p:?} {z}/{x}/{y}");
         }
     }
@@ -551,7 +551,7 @@ fn pieces_are_sized_from_the_directory_alone() {
     let m = big(home.path());
     let cat = two_areas(&nas, 1, 0, 1);
     let a = basemap(&cat);
-    let pm = pieces::open_file(&nas.dir().join(&a)).unwrap();
+    let pm = PieceSource::Archive(Box::new(pieces::open_file(&nas.dir().join(&a)).unwrap()));
     let all = [Piece::Lo, Piece::Tile(32, 21), Piece::Tile(33, 21)];
     assert_eq!(m.size_pieces(&a, &all, &pm, &|| false).unwrap(), 3);
     assert_eq!(m.size_pieces(&a, &all, &pm, &|| false).unwrap(), 0, "kept");

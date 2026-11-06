@@ -86,7 +86,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use pipeline::areafiles::{box_meets, detail_of, files_of, outer_rings, tiles_meeting, Files, NEAR_KM};
+use pipeline::areafiles::{box_meets, detail_of, files_of, outer_rings, pieces_of, tiles_meeting, Files, NEAR_KM};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -203,15 +203,17 @@ fn upgrade(mut v: Value) -> Value {
     v
 }
 
-/// What a download copies: files of a catalogue and pieces of its basemap's archives, in copy order.
+/// What a download copies: files of a catalogue and pieces of its basemap's archives and of its
+/// layers' packs (store::pieces), in copy order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Part {
     pub items: Vec<Item>,
 }
 
 impl Part {
-    /// The files (`names`, content names; put in copy order) and the pieces of each of `archives`.
-    fn new(cat: &Catalogue, files: Files, archives: &[String], pieces: &[Piece]) -> Part {
+    /// The files (`names`, content names; put in copy order), then the pieces (of the files whose
+    /// content names they give).
+    fn new(cat: &Catalogue, files: Files, pieces: impl IntoIterator<Item = (String, Piece)>) -> Part {
         let by_content: HashMap<&str, &str> = cat.files.iter().map(|(l, f)| (f.file.as_str(), l.as_str())).collect();
         let mut logicals: Vec<&str> =
             files.names.iter().filter_map(|(n, _)| by_content.get(n.as_str()).copied()).collect();
@@ -221,9 +223,7 @@ impl Part {
             .filter_map(|l| cat.files.get(*l))
             .map(|f| Item::File { name: f.file.clone(), size: f.size })
             .collect();
-        for a in archives {
-            items.extend(pieces.iter().map(|&p| Item::Piece { archive: a.clone(), piece: p }));
-        }
+        items.extend(pieces.into_iter().map(|(archive, piece)| Item::Piece { archive, piece }));
         Part { items }
     }
 
@@ -434,7 +434,8 @@ impl Plan {
     }
 
     /// What `w`, pinned at `pin`, keeps: at its own catalogue, its files there of tiles no download
-    /// at the served one has (`kept`, with every file of no tile), and at the served one (`taken`)
+    /// at the served one has (`kept`, with every item of no tile, a region's that its part at the
+    /// served one still names), and at the served one (`taken`)
     /// its files of the tiles one has (moved, with that download's, by its download or Update)
     /// and, a region's, the items of no tile its list doesn't name at all (`unlisted`).
     fn own(&self, w: &Which, pin: Pin) -> Option<Own<'_>> {
@@ -444,8 +445,16 @@ impl Plan {
             return Some(Own { kept: old.items.iter().collect(), taken: Vec::new() });
         }
         let moved = |i: &&Item| tile_of(i).is_some_and(|t| self.moved.contains(&t));
-        let kept = old.items.iter().filter(|i| !moved(i)).collect();
         let now = self.part(w, self.current);
+        // (A region's items of no tile are what its part at the served catalogue names: one its
+        // list has that the region no longer holds goes, as a whole lo pack or the basemap's
+        // worldwide zooms 0–10 where it now holds their pieces over it, `unlisted`.)
+        let named: Option<HashSet<String>> = match (w, now) {
+            (Which::Region(_), Some(now)) => Some(now.items.iter().map(logical_of).collect()),
+            _ => None,
+        };
+        let held = |i: &&Item| tile_of(i).is_some() || named.as_ref().is_none_or(|n| n.contains(&logical_of(i)));
+        let kept = old.items.iter().filter(|i| !moved(i) && held(i)).collect();
         let mut taken: Vec<&Item> = now.map_or(Vec::new(), |p| p.items.iter().filter(moved).collect());
         if let (Which::Region(_), Some(now)) = (w, now) {
             taken.extend(unlisted(old, now));
@@ -767,7 +776,7 @@ impl Downloads {
 }
 
 /// Where the downloads of `asked` reach (Data::reach): everywhere with the World, else the z6 tiles
-/// of the regions downloaded as `cat` records them (their basemap pieces', `area_part`). Only those
+/// of the regions downloaded as `cat` records them (their pieces', `area_part`). Only those
 /// regions' outlines are read: known at once, not after a plan of every region.
 fn reach(asked: &Asked, cat: &Catalogue) -> Reach {
     if asked.world.is_some() {
@@ -1035,12 +1044,13 @@ fn make_plan(generation: u64, version: u64, asked: Asked, current: u64, at: BTre
 fn world_part(cat: &Catalogue) -> Part {
     let ess = store::mirror::essentials(cat);
     let files = of_contents(cat, ess.iter().map(String::as_str));
-    Part::new(cat, files, &basemap_archives(cat), &[Piece::Lo])
+    Part::new(cat, files, basemap_archives(cat).into_iter().map(|a| (a, Piece::Lo)))
 }
 
 /// A region's download (`rings`, each read as a filled area): its files, with the base packs and
-/// road values of `units` (the owners of its ways, `Downloads::learn_owners`), then its basemap
-/// pieces: zooms 0–10 (one piece, worldwide) and 11–14 over its tiles.
+/// road values of `units` (the owners of its ways, `Downloads::learn_owners`), then its pieces of
+/// worldwide files, those over its z6 tiles alone (store::pieces): of the layers' roots and lo packs
+/// (pipeline::areafiles::pieces_of), and of the basemap at every zoom.
 fn area_part(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> Part {
     let tiles = tiles_meeting(rings, NEAR_KM);
     let mut files: BTreeMap<String, u64> = files_of(cat, rings).names.into_iter().collect();
@@ -1052,16 +1062,18 @@ fn area_part(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) ->
             }
         }
     }
-    let pieces: Vec<Piece> =
-        std::iter::once(Piece::Lo).chain(tiles.into_iter().map(|(x, y)| Piece::Tile(x, y))).collect();
-    Part::new(cat, Files::from_map(files), &basemap_archives(cat), &pieces)
+    let basemap = Piece::over(&tiles, 0..=*store::pieces::HI_ZOOMS.end());
+    let pieces = pieces_of(cat, rings)
+        .into_iter()
+        .chain(basemap_archives(cat).into_iter().flat_map(|a| basemap.iter().map(move |&p| (a.clone(), p))));
+    Part::new(cat, Files::from_map(files), pieces)
 }
 
 /// A region's downloads (`id`, `rings` its outer rings): the region, and its terrain detail.
 fn region_parts(cat: &Catalogue, id: &str, rings: &[Vec<[f64; 2]>], owners: &Owners) -> RegionParts {
     let (files, cover) = detail_of(cat, rings);
     let units = units_of(owners, cat, id, rings);
-    RegionParts { coarse: area_part(cat, rings, &units), detail: Part::new(cat, files, &[], &[]), cover }
+    RegionParts { coarse: area_part(cat, rings, &units), detail: Part::new(cat, files, []), cover }
 }
 
 fn basemap_archives(cat: &Catalogue) -> Vec<String> {
@@ -1081,7 +1093,7 @@ fn of_contents<'a>(cat: &Catalogue, contents: impl IntoIterator<Item = &'a str>)
 /// (from home or not); a new catalogue or a change of the downloads has it plan again at once. A new
 /// catalogue copies nothing by itself (module doc). While the build runs (the lead's heartbeat on the
 /// NAS says a job runs), copies keep to 20 MB/s; a file this Mac's pack or lo job holds isn't
-/// deleted (store::mirror). Between copies it works out the basemap pieces' sizes (for the panel's
+/// deleted (store::mirror). Between copies it works out the pieces' sizes (for the panel's
 /// sizes), those of what's downloaded first. Each round with the NAS it tells the lead its cursor
 /// (`lead`, crate::maplog::MirrorLink: none for a server of a `--root`).
 pub fn spawn_mirror(s: S, mut lead: Option<crate::maplog::MirrorLink>) {
@@ -1146,7 +1158,7 @@ fn once(s: &crate::AppState, m: &Mirror, mut lead: Option<&mut crate::maplog::Mi
     };
     if pool.is_online() {
         if let Err(e) = size_pieces(m, plan.wanted.items.iter().filter_map(piece_of), &root, &pool, &changed) {
-            eprintln!("mirror: sizing the basemap's pieces: {e:#}");
+            eprintln!("mirror: sizing the pieces: {e:#}");
         }
     }
     let slow = || s.data.agent_busy();
@@ -1187,7 +1199,7 @@ fn once(s: &crate::AppState, m: &Mirror, mut lead: Option<&mut crate::maplog::Mi
             .flat_map(Part::pieces)
             .chain(plan.now().regions.values().flat_map(|r| r.coarse.pieces()));
         if let Err(e) = size_pieces(m, all, &root, &pool, &changed) {
-            eprintln!("mirror: sizing the basemap's pieces: {e:#}");
+            eprintln!("mirror: sizing the pieces: {e:#}");
         }
     }
     changed()
@@ -1200,8 +1212,8 @@ fn piece_of(i: &Item) -> Option<(&str, Piece)> {
     }
 }
 
-/// Works out the sizes of these pieces not known yet, from their archives on the NAS (their
-/// directories alone), until `stop()`.
+/// Works out the sizes of these pieces not known yet, from their archives and packs on the NAS (their
+/// directories and indexes alone), until `stop()`.
 fn size_pieces<'a>(
     m: &Mirror,
     pieces: impl Iterator<Item = (&'a str, Piece)>,
@@ -1214,11 +1226,14 @@ fn size_pieces<'a>(
         by.entry(a).or_default().insert(p);
     }
     for (archive, ps) in by {
+        if stop() {
+            break;
+        }
         let f = store::PooledFile::open(pool, &root.join(archive)).with_context(|| format!("open {archive}"))?;
-        let pm = store::pmtiles::PmTiles::with_leaf_cache(Box::new(f), 512)?;
+        let src = m.piece_source(archive, Box::new(f))?;
         let ps: Vec<Piece> = ps.into_iter().collect();
         let t = Instant::now();
-        let n = m.size_pieces(archive, &ps, &pm, stop)?;
+        let n = m.size_pieces(archive, &ps, &src, stop)?;
         if n > 10 {
             eprintln!("mirror: sized {n} pieces of {archive} in {:.1} s", t.elapsed().as_secs_f64());
         }
@@ -1248,7 +1263,7 @@ fn items_state(items: &[&Item], m: &Mirror, copying: Option<&str>, more: u64, on
 /// What a file or piece is of, in a word, for what changed: a layer's name, "basemap", "road data",
 /// "lists" (hidata), or a worldwide file's kind.
 fn kind(i: &Item) -> String {
-    let Item::File { name, .. } = i else { return "basemap".into() };
+    let (Item::File { name, .. } | Item::Piece { archive: name, .. }) = i;
     let logical = store::naming::parse_content_name(name).map_or("", |c| c.logical);
     let mut parts = logical.split('/');
     match (parts.next(), parts.next()) {
