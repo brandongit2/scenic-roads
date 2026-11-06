@@ -51,17 +51,10 @@ pub fn world7(p: [i32; 2]) -> (f64, f64) {
     roadcore::geo::merc_clamped(p[0] as f64 * 1e-7, p[1] as f64 * 1e-7)
 }
 
-/// The zoom-`z` tile holding a point in world coordinates.
-pub fn tile_of(w: (f64, f64), z: u8) -> (u32, u32) {
-    let n = (1u64 << z) as f64;
-    let c = |v: f64| ((v * n).floor().max(0.0) as u64).min((1u64 << z) - 1) as u32;
-    (c(w.0), c(w.1))
-}
-
 /// The z14 tile key (roadcore::archive::tile_key) of an E7 point: the block a building's record
 /// is in.
 pub fn z14_key(p: [i32; 2]) -> u64 {
-    let (x, y) = tile_of(world7(p), 14);
+    let (x, y) = roadcore::geo::tile_of(world7(p), 14);
     roadcore::archive::tile_key(14, x, y)
 }
 

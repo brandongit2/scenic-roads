@@ -193,7 +193,7 @@ pub fn test_world_ref() -> &'static [Set] {
 /// A tile's column and row at zoom `z` of point `lon`, `lat` (tests).
 #[cfg(test)]
 pub fn tile_at(lon: f64, lat: f64, z: u8) -> (u32, u32) {
-    crate::bld::tile_of(roadcore::geo::merc(lon, lat), z)
+    roadcore::geo::tile_of(roadcore::geo::merc(lon, lat), z)
 }
 
 /// One dataset holding the world, a pyramid of zoom `z` (tests: every place's finest zoom `z`).

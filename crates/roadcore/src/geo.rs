@@ -107,6 +107,13 @@ pub fn tile_box(z: u8, x: u32, y: u32) -> [f64; 4] {
     [merc_lon(x / n), merc_lat((y + 1.0) / n), merc_lon((x + 1.0) / n), merc_lat(y / n)]
 }
 
+/// The zoom-`z` tile holding a point in world coordinates.
+pub fn tile_of(w: (f64, f64), z: u8) -> (u32, u32) {
+    let n = (1u64 << z) as f64;
+    let c = |v: f64| ((v * n).floor().max(0.0) as u64).min((1u64 << z) - 1) as u32;
+    (c(w.0), c(w.1))
+}
+
 /// A box ([west, south, east, north], degrees) grown by `km` on every side: `km` of latitude each
 /// way (stopping at the poles), and of longitude at the grown box's latitude farthest from the
 /// equator (`lon_span`), taken as `GROW_LAT` past it: a box reaching a pole would otherwise take in

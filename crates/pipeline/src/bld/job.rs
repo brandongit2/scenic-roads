@@ -1064,12 +1064,12 @@ mod tests {
         .unwrap();
         // A copy of each.
         assert_eq!(sum.copies, 2, "{got:?}");
-        let (x0, y0) = crate::bld::tile_of(roadcore::geo::merc_clamped(line + 0.00005, lat + 0.00015), 14);
+        let (x0, y0) = roadcore::geo::tile_of(roadcore::geo::merc_clamped(line + 0.00005, lat + 0.00015), 14);
         let own = &got[&(14, x0, y0)];
         let copy = &got[&(14, x0 - 1, y0)];
         assert!(own.contains(&(120, 3, 0)), "{own:?}");
         assert_eq!(copy, &vec![(120, 3, 1)]);
-        let (x1, y1) = crate::bld::tile_of(roadcore::geo::merc_clamped(edge + 0.00005, lat + 0.00015), 14);
+        let (x1, y1) = roadcore::geo::tile_of(roadcore::geo::merc_clamped(edge + 0.00005, lat + 0.00015), 14);
         assert_eq!(got[&(14, x1, y1)], vec![(300, 0, 0)]);
         assert_eq!(got[&(14, x1 - 1, y1)], vec![(300, 0, 1)], "copied across the z8 tiles' edge");
         assert!(got.keys().all(|k| k.0 == 14));
