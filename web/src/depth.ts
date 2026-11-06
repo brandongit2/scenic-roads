@@ -16,11 +16,11 @@
 //    isolines), clipped to the water.
 // All go over the water fill and under the coast shading, the whitewater, the terrain's
 // hill-shading (basemap.ts waterTop) and everything else, draped on the 3D
-// terrain like the water (which lies on the terrain's surface: the sea's 0 m, a lake's or a river's
-// source's heights).
-// 3. The 3D floor (setFloor, its switch in the same section): the 3D terrain from the terrain less
-//    the depth (the server's `?floor=1`, basemap.ts floorTiles), the terrain itself its surface
-//    (terrain.ts applyTerrain; our MapLibre's Map#setTerrainSurface). The water stays draped, now on
+// terrain like the water (which lies on the terrain: the source's heights, at sea its bathymetry).
+// 3. The 3D floor (setFloor, its switch in the same section): the 3D terrain from the water's
+//    surface less the depth (the server's `?floor=1`, basemap.ts floorTiles), its surface the
+//    water's (`?surface=1`, surfaceTiles: sea level at sea, the terrain elsewhere; terrain.ts
+//    applyTerrain; our MapLibre's Map#setTerrainSurface). The water stays draped, now on
 //    the floor (with the depth's colour over it), and a see-through copy of it is drawn at the
 //    surface (`water-surface`, the elevation reference `surface`); the ferries' lines are lifted to
 //    the surface, and the water's and ferries' names stand on it (basemap.ts: the anchor `surface`,

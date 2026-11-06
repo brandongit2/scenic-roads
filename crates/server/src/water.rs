@@ -219,6 +219,43 @@ fn draw(s: &S, archives: &[String], z: u8, x: u32, y: u32) -> Result<Vec<u8>> {
     Ok(shares(&pool().install(|| wt::cover(z, x, y, &get, blocks()))?))
 }
 
+/// Tile z/x/y's share of sea at the terrain's 256 px (0–1, each the mean of the water tile's 2 × 2
+/// pixels over it), as the map's water tiles have it (kept, stored, drawn from the basemap, else
+/// the nearest stored ancestor's): where the water's surface is sea level, under the depth's floor
+/// and the 3D water (crate::depth). None without the water layer, or past its zooms.
+pub fn sea_shares(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Vec<f32>>> {
+    if !s.data.catalogue().layers.contains_key(wt::LAYER) || z > wt::MAXZ {
+        return Ok(None);
+    }
+    let archives = s.data.basemap_names();
+    let key = (z, x, y, made_from(s, &archives));
+    let hit = KEPT_TILES.lock().unwrap().get(&key);
+    let sh = match hit {
+        Some(sh) => sh,
+        None => match from_store(s, z, x, y).and_then(|b| b.map_or_else(|| draw(s, &archives, z, x, y), Ok)) {
+            Ok(b) => {
+                let sh = Arc::new(b);
+                keep(key, sh.clone());
+                sh
+            }
+            Err(e) => match fallback(s, z, x, y)? {
+                Some(b) => Arc::new(b),
+                None => return Err(e),
+            },
+        },
+    };
+    let n = wt::SIZE;
+    let at = |px: usize, py: usize| f32::from(sh[(py * n + px) * 2]) / 255.0;
+    Ok(Some(
+        (0..256 * 256)
+            .map(|p| {
+                let (i, j) = (2 * (p % 256), 2 * (p / 256));
+                (at(i, j) + at(i + 1, j) + at(i, j + 1) + at(i + 1, j + 1)) * 0.25
+            })
+            .collect(),
+    ))
+}
+
 fn png(px: &[u8], w: usize, color: png::ColorType) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut e = png::Encoder::new(&mut out, w as u32, w as u32);

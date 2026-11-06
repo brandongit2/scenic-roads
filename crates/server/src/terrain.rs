@@ -2,7 +2,8 @@
 //! terrain layer's packs: lossless WebP as stored (pipeline::terrain_codec), down to each place's
 //! native zoom (its deep packs past z12: pipeline::terrain_deep). Tiles absent from the layer are
 //! made from their nearest ancestor, encoded the same way, so the terrain surface never has holes;
-//! outside the data, a flat sea-level tile is returned.
+//! outside the data, a flat sea-level tile is returned. `?floor=1` and `?surface=1`: the depth's
+//! floor under the water and the water's surface over it (crate::depth).
 //!
 //!
 //! Shading tiles (the slope layer's, the terrain's shading, and `depth-shade`, the depth's:
@@ -24,10 +25,11 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 static FLAT: OnceLock<Vec<u8>> = OnceLock::new();
 static FLAT_SHADE: OnceLock<Vec<u8>> = OnceLock::new();
 
-/// What a made tile is (`Made`'s keys): the terrain's from its ancestors, with the floor, or a
-/// shading or depth layer's (its layer name).
+/// What a made tile is (`Made`'s keys): the terrain's from its ancestors, with the floor, as the
+/// water's surface, or a shading or depth layer's (its layer name).
 pub(crate) const TERRAIN: &str = "terrain";
 pub(crate) const FLOOR: &str = "terrain-floor";
+pub(crate) const SURFACE: &str = "terrain-surface";
 
 /// Tiles made here (from ancestors, neighbours, or flat), by (what, z, x, y, catalogue generation),
 /// under a byte budget: the terrain's, the shading's and the depth's.
@@ -186,7 +188,8 @@ pub(crate) fn made(
 }
 
 /// A terrain tile; `?floor=1`: with the floor under the water (crate::depth::terrain_floor),
-/// where the catalogue has depth (else the terrain as it is).
+/// where the catalogue has depth (else the terrain as it is); `?surface=1`: as the water's surface
+/// (crate::depth::terrain_surface), sea level at sea.
 pub async fn terrain_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
@@ -194,11 +197,17 @@ pub async fn terrain_tile(
     headers: HeaderMap,
 ) -> Response {
     let v = cache::versioned(q.as_deref());
-    let floor = q.as_deref().is_some_and(|q| q.split('&').any(|kv| kv == "floor=1"));
+    let has = |k: &str| q.as_deref().is_some_and(|q| q.split('&').any(|kv| kv == k));
+    let (floor, surface) = (has("floor=1"), has("surface=1"));
     let got = tokio::task::spawn_blocking(move || {
         if floor && s.data.catalogue().layers.contains_key(pipeline::depth::LAYER) {
             return made(FLOOR, gen(&s), z, x, y, || {
                 Ok(Some(crate::depth::terrain_floor(&s, z, x, y)?.unwrap_or_else(flat)))
+            });
+        }
+        if surface {
+            return made(SURFACE, gen(&s), z, x, y, || {
+                Ok(Some(crate::depth::terrain_surface(&s, z, x, y)?.unwrap_or_else(flat)))
             });
         }
         match stored(&s, "terrain", z, x, y, &headers, "") {

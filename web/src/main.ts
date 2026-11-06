@@ -2337,7 +2337,7 @@ async function main() {
     if (!!m.labelTiles !== labelTilesOn() || !!m.water !== waterTilesOn()) watch?.wantReload('New map data');
     // The areas of terrain finer than its base, as they grow: the terrain sources' covers and the
     // contours follow in place.
-    for (const id of ['dem', 'dem-tint', 'dem-floor', 'slope']) (map.getSource(id) as maplibregl.RasterTileSource | undefined)?.setZoomByArea(m.terrainAreas);
+    for (const id of ['dem', 'dem-tint', 'dem-floor', 'dem-surface', 'slope']) (map.getSource(id) as maplibregl.RasterTileSource | undefined)?.setZoomByArea(m.terrainAreas);
     setTerrainAreas(map, m.terrainAreas);
     markDirty();
   };

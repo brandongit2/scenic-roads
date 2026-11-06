@@ -290,11 +290,18 @@ export const terrainTiles = (): string => `${hostFor('terrain')}/tiles/terrain/{
  * (depth.ts), without it the terrain (our MapLibre's anchor `surface`, not in the style spec's types). */
 const ON_SURFACE = 'surface' as unknown as 'ground';
 
-/** The terrain with the sea and lake floor under its water (the server's `?floor=1`: the terrain
- * less the depth, made from the nearest stored depth tile past the depth's own zooms), the 3D
- * terrain's source with the depth's floor on (depth.ts): its URL carries the depth's versions too. */
+/** The terrain with the sea and lake floor under its water (the server's `?floor=1`: the water's
+ * surface less the depth, made from the nearest stored depth tile past the depth's own zooms), the
+ * 3D terrain's source with the depth's floor on (depth.ts): its URL carries the depth's and the
+ * water's versions too (the sea's surface is sea level where the water tiles say sea). */
 export const floorTiles = (): string =>
-  `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}?floor=1&d=${version('depth.tiles')}.${version('depth-class.tiles')}${ver('terrain.tiles').replace('?', '&')}`;
+  `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}?floor=1&d=${version('depth.tiles')}.${version('depth-class.tiles')}&w=${version('water')}${ver('terrain.tiles').replace('?', '&')}`;
+
+/** The water's surface (the server's `?surface=1`: sea level at sea, the terrain elsewhere: the
+ * terrain keeps the source's heights at sea), what the water and what's on it stand on over the
+ * depth's floor (terrain.ts applyTerrain). */
+export const surfaceTiles = (): string =>
+  `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}?surface=1&w=${version('water')}${ver('terrain.tiles').replace('?', '&')}`;
 
 /** The style's tile sources whose URLs carry a data file's version, with that file: baseStyle
  * builds them from here, and a new catalogue switches them in place (main.ts). */
@@ -304,8 +311,9 @@ export function versionedTiles(): { source: string; file: string; url: string }[
     { source: 'base', file: 'base.pmtiles', url: basemapTiles() },
     { source: 'lbl', file: 'labels.tiles', url: `${hostFor('base')}/tiles/labels/{z}/{x}/{y}${ver('labels.tiles')}` },
     { source: 'dem', file: 'terrain.tiles', url: terrainTiles() },
-    { source: 'dem-tint', file: 'terrain.tiles', url: terrainTiles() },
+    { source: 'dem-tint', file: 'terrain.tiles', url: surfaceTiles() },
     { source: 'dem-floor', file: 'terrain.tiles', url: floorTiles() },
+    { source: 'dem-surface', file: 'terrain.tiles', url: surfaceTiles() },
     { source: 'slope', file: 'slope.tiles', url: `${hostFor('terrain')}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}` },
     trees('cover'), trees('height'), trees('leaf'),
     ...Object.entries(OV_SOURCES).map(([source, name]) => ({ source, file: `ov-${name}.tiles`, url: `${hostFor('layers')}/tiles/ov/${name}/{z}/{x}/{y}${ver(`ov-${name}.tiles`)}` })),
@@ -536,10 +544,14 @@ export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDe
       },
       ...(labelTiles ? { lbl: { type: 'vector' as const, tiles: [tiles.lbl], maxzoom: 12, attribution: '' } } : {}),
       dem,
-      // The elevation tint's: the screen's own tiles (the 3D mesh's source loads its own).
-      'dem-tint': { ...dem },
-      // The 3D terrain's with the depth's floor on (floorTiles).
+      // The elevation tint's: the screen's own tiles (the 3D mesh's source loads its own), the
+      // water's surface (surfaceTiles: the sea at sea level, as the tint and its histogram read it,
+      // terrainstats.ts), the terrain elsewhere.
+      'dem-tint': { ...dem, tiles: [tiles['dem-tint']] },
+      // The 3D terrain's with the depth's floor on (floorTiles), and the water's surface over it
+      // (surfaceTiles).
       'dem-floor': { ...dem, tiles: [tiles['dem-floor']] },
+      'dem-surface': { ...dem, tiles: [tiles['dem-surface']] },
       // The terrain's shading, as the build stores it to each place's finest zoom (the slope layer:
       // pipeline::slope_pack): each pixel's mean steepness and direction, which the slope tint
       // colours and the hill-shading shades (web/maplibre's color_relief and hillshade shaders). The

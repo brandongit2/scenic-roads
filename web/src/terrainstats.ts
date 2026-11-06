@@ -2,7 +2,8 @@
 // sampled from the DEM tiles MapLibre is drawing, over the ground in view (the outline the in-view
 // lists use), each sample weighted by the ground area it stands for. Tiles at several zooms (a
 // tilted view) each count by area, so a far coarse tile counts as much ground as it covers.
-// Water is left out: the sea (0 m) is perfectly flat in the elevation tiles, as are lakes where
+// Water is left out: the sea (0 m) is perfectly flat in the tint's tiles (the water's surface,
+// basemap.ts surfaceTiles: the terrain itself keeps its source's bathymetry), as are lakes where
 // their source flattened them (the terrain keeps a lake's source heights), where ground practically
 // never is, so a sample equal to its four neighbours (or with no steepness at all) is water. With it, an island zoomed out to a speck in the sea had the sea's 0 m take over the
 // percentiles and the equalisation.
