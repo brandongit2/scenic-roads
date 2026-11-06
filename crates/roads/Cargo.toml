@@ -1,0 +1,33 @@
+[package]
+name = "roads"
+version = "0.1.0"
+edition = "2021"
+description = "The roads' steps: a z6 tile's unit (its staged inputs and its runs), the roads' reach, the points of interest, the roads' elevations, the peaks and summits, the timetables' to-do (docs/crates.md, step 6e)"
+
+[dependencies]
+det = { path = "../det" }
+roadcore = { path = "../roadcore" }
+store = { path = "../store" }
+codecs = { path = "../codecs" }
+jobrt = { path = "../jobrt" }
+buildstore = { path = "../buildstore" }
+mapview = { path = "../mapview" }
+inputs = { path = "../inputs" }
+offload = { path = "../offload" }
+terrain = { path = "../terrain" }
+trees = { path = "../trees" }
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+zstd = "0.13"
+anyhow.workspace = true
+rayon.workspace = true
+bytemuck.workspace = true
+osmpbf = "0.3"
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+
+[dev-dependencies]
+buildstore = { path = "../buildstore", features = ["testkit"] }
+codecs = { path = "../codecs", features = ["testkit"] }
+jobrt = { path = "../jobrt", features = ["testkit"] }
+store = { path = "../store", features = ["testkit"] }
+tempfile = "3"

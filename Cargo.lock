@@ -1400,7 +1400,6 @@ dependencies = [
  "anyhow",
  "arrow-array",
  "axum",
- "blake3",
  "buildstore",
  "bytemuck",
  "bytes",
@@ -1432,6 +1431,7 @@ dependencies = [
  "pyport",
  "rayon",
  "roadcore",
+ "roads",
  "serde",
  "serde_json",
  "sha2",
@@ -1645,6 +1645,32 @@ dependencies = [
  "image-webp",
  "memmap2 0.9.11",
  "png",
+]
+
+[[package]]
+name = "roads"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "buildstore",
+ "bytemuck",
+ "codecs",
+ "det",
+ "inputs",
+ "jobrt",
+ "mapview",
+ "offload",
+ "osmpbf",
+ "rayon",
+ "roadcore",
+ "serde",
+ "serde_json",
+ "store",
+ "tempfile",
+ "terrain",
+ "trees",
+ "zstd 0.13.3",
 ]
 
 [[package]]

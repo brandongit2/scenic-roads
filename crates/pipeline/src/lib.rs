@@ -3,10 +3,8 @@ pub mod answers;
 pub mod appupdate;
 pub mod bld;
 pub mod buildtiles;
-pub mod candidates;
 pub mod cli;
 pub mod coord;
-pub mod elev;
 pub mod ferries;
 pub mod gtfs;
 pub mod heritage;
@@ -20,15 +18,9 @@ pub mod offload;
 pub mod out;
 pub mod ovconv;
 pub mod paces;
-pub mod peaks;
 pub mod pool;
 pub mod pubtimes;
 pub mod railfeeds;
-pub mod reach;
-pub mod stage;
-pub mod summits;
-pub mod timetables;
-pub mod unit;
 pub mod uses;
 
 // Moved to their own crates (task #916, docs/crates.md), kept at their old paths for the modules above
@@ -63,6 +55,7 @@ pub use terrain::{
 };
 // (`::trees`: the crate, not its module of the same name.)
 pub use ::trees::{landcover, leaftype, treepacks, trees};
+pub use roads::{candidates, elev, peaks, reach, stage, summits, timetables, unit};
 
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an
 /// `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs, as it was while

@@ -19,8 +19,8 @@ mapview = { path = "../mapview" }
 inputs = { path = "../inputs" }
 terrain = { path = "../terrain" }
 trees = { path = "../trees" }
+roads = { path = "../roads" }
 sha2 = "0.10"
-blake3 = "1"
 serde = { version = "1", features = ["derive"] }
 zstd = "0.13"
 anyhow.workspace = true
