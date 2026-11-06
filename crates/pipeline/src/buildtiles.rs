@@ -9,7 +9,7 @@
 //! files in parallel, into local parts by tile, which are then merged per tile onto the NAS. A unit
 //! reads the tiles near its roads (`tiles_for`, `stage`).
 
-use crate::legacy::TileId;
+use codecs::legacy::TileId;
 use buildstore::out::Out;
 use crate::reach::Reach;
 use anyhow::{Context, Result};
@@ -117,7 +117,7 @@ pub fn tile_copy(
 pub fn fetch_tile(src: &NasPath, local: &Path, want: u64) -> Result<()> {
     let copy = &mut |tmp: &Path| -> std::io::Result<()> {
         let n = src.copy_data_to_local(tmp)?;
-        crate::timings::count(n, 1);
+        jobrt::timings::count(n, 1);
         if n != want {
             return Err(std::io::Error::other(format!("{}: {n} bytes, not the index's {want}", src.display())));
         }
@@ -152,7 +152,7 @@ pub fn tiles_for(u: TileId, reach: Option<&Reach>) -> Vec<TileId> {
 
 /// Adds the tiles within `MARGIN_KM` of box `b` (E7) to `out`.
 fn add_tiles(out: &mut BTreeSet<TileId>, b: [i32; 4]) {
-    let b = crate::hipack::grow(b, MARGIN_KM);
+    let b = codecs::hipack::grow(b, MARGIN_KM);
     let n = 1i64 << ZOOM;
     let col = |lon: i32| ((lon as i64 + 1_800_000_000) * n / 3_600_000_000).clamp(0, n - 1) as u32;
     // The row holding latitude `lat` (E7): the edges run north to south.
@@ -253,8 +253,8 @@ pub fn scan_file(http: &crate::bld::fetch::Http, url: &str, size: u64, out: &Pat
 /// (folders done are skipped), and the release's files in `parts/files.json`. An empty listing is a
 /// release Overture no longer serves, or a failed listing: never an empty world.
 pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3: &str) -> Result<()> {
-    use crate::pyjson::Py;
-    use crate::timings::phase;
+    use pyport::pyjson::Py;
+    use jobrt::timings::phase;
     use rayon::prelude::*;
     std::fs::create_dir_all(parts)?;
     let http = crate::bld::fetch::Http::new();
@@ -275,7 +275,7 @@ pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3
         );
     }
     let list = Py::List(files.iter().map(|f| Py::Str(f.clone())).collect());
-    std::fs::write(&listed, crate::pyjson::dumps_spaced(&list))?;
+    std::fs::write(&listed, pyport::pyjson::dumps_spaced(&list))?;
     let todo: Vec<usize> = (0..files.len()).filter(|i| !parts.join(format!("{i:04}/.done")).exists()).collect();
     drop(p);
     eprintln!("buildings: {} files in release {release}, {} to scan", files.len(), todo.len());
@@ -317,7 +317,7 @@ pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
         PARTS_ROOM >> 30,
         free >> 30
     );
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let t0 = std::time::Instant::now();
     scan(&parts, ZOOM, workers, &release, b.url()?, b.param_str("s3")?)?;
     eprintln!("buildings: the release scanned ({:.0?})", t0.elapsed());
@@ -428,7 +428,7 @@ pub fn stage(
             // (Linked for the program to read where it lies: tests/nas_access.rs.)
             None => tile_path(root, &index.release, t).unchecked_path(),
         };
-        crate::sys::symlink(&at, &dir.join(format!("{}.f32", t.dash())))?;
+        jobrt::sys::symlink(&at, &dir.join(format!("{}.f32", t.dash())))?;
         n += 1;
     }
     Ok(n)
@@ -444,7 +444,7 @@ mod tests {
         let u = TileId { z: 6, x: 32, y: 21 };
         let near = tiles_for(u, None);
         // Its tile's z8 tiles and those within 20 km (+ 1 km): the same as the tiles meeting that box.
-        let b = crate::hipack::grow(crate::reach::near_box(u), MARGIN_KM);
+        let b = codecs::hipack::grow(crate::reach::near_box(u), MARGIN_KM);
         let deg = |v: i32| v as f64 * 1e-7;
         let want: Vec<TileId> = crate::stage::tiles_in(ZOOM, [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])])
             .into_iter()
@@ -454,9 +454,9 @@ mod tests {
         assert!(near.contains(&TileId { z: ZOOM, x: 128, y: 84 }) && near.len() == 36, "{near:?}");
         // Its own long road out to the next z6 tile but one reads the z8 tiles along it; a ferry,
         // or a road it doesn't own, doesn't.
-        let tb = crate::hipack::tile_bounds(6, 32, 21);
+        let tb = codecs::hipack::tile_bounds(6, 32, 21);
         let mid = (tb[1] + tb[3]) / 2;
-        let ftb = crate::hipack::tile_bounds(6, 34, 21);
+        let ftb = codecs::hipack::tile_bounds(6, 34, 21);
         let road = |owned, ferry| LongWay { owned, ferry, verts: vec![[tb[0] + 1000, mid], [ftb[0] + 100_000, mid]] };
         let with = |w: LongWay| tiles_for(u, Some(&Reach { cells: vec![], owned: None, long: vec![w] }));
         let t = with(road(true, false));

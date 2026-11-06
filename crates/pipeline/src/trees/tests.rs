@@ -440,7 +440,7 @@ fn expected(bx: u32, by: u32, i: usize, j: usize, inside: bool) -> [u32; 3] {
 fn a_block_from_its_squares() {
     let d = squares_dir();
     let shapes = Shapes::parse(COVERAGE).unwrap();
-    let fetch = crate::fetch::MapFetch::default();
+    let fetch = buildstore::fetch::MapFetch::default();
     let inp = Inputs {
         chm: Source::Dir(d.path().into()),
         leaf: Source::Dir(d.path().into()),
@@ -511,7 +511,7 @@ fn the_z3_run_and_its_blocks_alike() {
     let shapes = Shapes::parse(COV).unwrap();
     let blocks = z3_blocks(&shapes, 4, 2);
     assert_eq!(blocks, [(132, 88), (133, 88)]);
-    let fetch = crate::fetch::MapFetch::default();
+    let fetch = buildstore::fetch::MapFetch::default();
     let inp = Inputs {
         chm: Source::Dir(d.path().into()),
         leaf: Source::Dir(d.path().into()),
@@ -645,7 +645,7 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
 /// resumed each time, writes the same mid and archives as one never paused.
 #[test]
 fn a_z6_run_paused_at_every_safe_point_resumes_to_the_same_bytes() {
-    use crate::resume_log::STOP_AFTER;
+    use jobrt::resume_log::STOP_AFTER;
     let d = squares_dir();
     let o = tempfile::tempdir().unwrap();
     const COV: &str = r#"{"shapes": [[[[8.5, 48.6], [9.5, 48.6], [9.5, 48.95], [8.5, 48.95]]]]}"#;
@@ -675,7 +675,7 @@ fn a_z6_run_paused_at_every_safe_point_resumes_to_the_same_bytes() {
         STOP_AFTER.set(None);
         match r {
             Err(e) => {
-                assert!(crate::control::is_paused(&e), "{e:#}");
+                assert!(jobrt::control::is_paused(&e), "{e:#}");
                 stops += 1;
             }
             Ok(_) => break,
@@ -801,7 +801,7 @@ fn reads_recorded_and_read_back() {
     let d = squares_dir();
     let shapes = Shapes::parse(COVERAGE).unwrap();
     let m = tempfile::tempdir().unwrap();
-    let none = crate::fetch::MapFetch::default();
+    let none = buildstore::fetch::MapFetch::default();
     let inp = Inputs {
         chm: Source::Dir(d.path().into()),
         leaf: Source::Dir(d.path().into()),
@@ -811,7 +811,7 @@ fn reads_recorded_and_read_back() {
     };
     let a = block(&shapes, &inp, 132, 88).unwrap();
     assert!(a.kept > 0 && a.kept < 8 << 20, "{} bytes kept", a.kept);
-    let fetch = crate::fetch::Fetcher::new(Some(m.path().into()), None, false);
+    let fetch = buildstore::fetch::Fetcher::new(Some(m.path().into()), None, false);
     let url = format!("file://{}", std::path::absolute(d.path()).unwrap().display());
     let inp = Inputs { chm: Source::parse(&url), leaf: Source::parse(&url), fetch: &fetch, record: None, there: None };
     let b = block(&shapes, &inp, 132, 88).unwrap();
@@ -903,7 +903,7 @@ fn canopy_rows_read_first_are_the_files_bytes() {
     }
     // At the square's edges: its first row, its last, and rows past its end (its last strip); a
     // sparse strip (none stored) read where it lies.
-    let img = crate::geotiff::Tiff::open(std::sync::Arc::new(store::range::PlainFile::open(&p).unwrap()))
+    let img = buildstore::geotiff::Tiff::open(std::sync::Arc::new(store::range::PlainFile::open(&p).unwrap()))
         .unwrap()
         .level(0)
         .unwrap()
@@ -925,7 +925,7 @@ fn canopy_rows_read_first_are_the_files_bytes() {
 #[test]
 fn room_making_mid_run_never_reads_a_square_as_none_there() {
     // (No network: what isn't on the scratch NAS fails, never downloads.)
-    crate::fetch::go_offline();
+    buildstore::fetch::go_offline();
     let d = squares_dir();
     let o = tempfile::tempdir().unwrap();
     const COV: &str = r#"{"shapes": [[[[5.66, 48.2], [7.2, 48.2], [7.2, 48.91], [5.66, 48.91]]]]}"#;

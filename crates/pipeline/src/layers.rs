@@ -516,7 +516,7 @@ mod measure {
             .iter()
             .filter(|(l, _)| l.starts_with("markdata/"))
             .map(|(l, p)| {
-                let u = crate::legacy::TileId::parse(l.trim_start_matches("markdata/")).unwrap();
+                let u = codecs::legacy::TileId::parse(l.trim_start_matches("markdata/")).unwrap();
                 let to = dl.join(format!("{}.member", l.replace('/', "_")));
                 std::fs::copy(p, &to).unwrap();
                 (6, u.x, u.y, to)
@@ -525,7 +525,7 @@ mod measure {
         let md_made = Instant::now();
         crate::layers::write_file_bundle(
             &mut new,
-            crate::marks::MARKDATA_BUNDLE,
+            codecs::marks::MARKDATA_BUNDLE,
             serde_json::json!({"bundle": "markdata", "fmt": 1}),
             files,
         )
@@ -558,11 +558,11 @@ mod measure {
 
         // The members, byte for byte: each tile's markdata, each layer's tiles and their entries.
         let nm = &new.manifest;
-        let bundle = PlainFile::open(&roots[1].join(&nm[crate::marks::MARKDATA_BUNDLE])).unwrap();
+        let bundle = PlainFile::open(&roots[1].join(&nm[codecs::marks::MARKDATA_BUNDLE])).unwrap();
         let bidx = store::pack::PackIndex::read_from(&bundle).unwrap();
         assert_eq!(bidx.entries.len(), markdata.len());
         for (l, p) in olds.iter().filter(|(l, _)| l.starts_with("markdata/")) {
-            let u = crate::legacy::TileId::parse(l.trim_start_matches("markdata/")).unwrap();
+            let u = codecs::legacy::TileId::parse(l.trim_start_matches("markdata/")).unwrap();
             let e = bidx.find(6, u.x, u.y).unwrap();
             assert_eq!(bidx.read_blob(&bundle, &e).unwrap(), std::fs::read(p).unwrap(), "{l}");
             assert_eq!(e.offset % BUNDLE_ALIGN, 0);
@@ -618,7 +618,7 @@ mod measure {
                         layers_out.entry(ly.to_string()).or_insert_with(|| LayerOut::new(enc)).add_bundle(l, &keys);
                     }
                     ["layers", ly, scope, k] => {
-                        let u = crate::legacy::TileId::parse(k).unwrap();
+                        let u = codecs::legacy::TileId::parse(k).unwrap();
                         let enc = if ly.starts_with("marks-") { "rdmt" } else { "mvt" };
                         layers_out.entry(ly.to_string()).or_insert_with(|| LayerOut::new(enc)).add(
                             scope,
@@ -634,10 +634,10 @@ mod measure {
                         }
                     }
                     ["markdata", t] => {
-                        cat.markdata.insert(crate::legacy::TileId::parse(t).unwrap().slash(), l.clone());
+                        cat.markdata.insert(codecs::legacy::TileId::parse(t).unwrap().slash(), l.clone());
                     }
                     ["ovdata", t] => {
-                        cat.ovdata.insert(crate::legacy::TileId::parse(t).unwrap().slash(), l.clone());
+                        cat.ovdata.insert(codecs::legacy::TileId::parse(t).unwrap().slash(), l.clone());
                     }
                     ["global", g @ ..] => {
                         cat.global.insert(g.join("/"), l.clone());

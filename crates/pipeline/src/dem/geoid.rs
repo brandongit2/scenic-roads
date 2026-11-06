@@ -16,7 +16,7 @@
 //! counted (`Stats::unconverted`). No reference, grid or parameter is named in code but the target.
 
 use super::generic::{open_url, stored, Opts};
-use crate::geotiff::Tiff;
+use buildstore::geotiff::Tiff;
 use crate::inputs::sources::{Data, Source};
 use anyhow::{bail, Context, Result};
 use det::Det;

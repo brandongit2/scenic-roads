@@ -401,7 +401,7 @@ fn unwatched(map: &store::map::Map) -> Option<String> {
 }
 
 /// What `run` reads of catalogue `cat`, by content (`INPUTS`, as `run` reads them): the key of its
-/// roads' pieces (crate::resume_log), so a run taken up again goes on only on the same inputs.
+/// roads' pieces (jobrt::resume_log), so a run taken up again goes on only on the same inputs.
 pub fn inputs_key(cat: &store::catalogue::Catalogue) -> String {
     let mut parts: Vec<String> = vec![format!("names-todo inputs {VERSION}")];
     parts.extend(cat.units.iter().cloned());
@@ -442,8 +442,8 @@ fn tile_of(key: &str) -> Option<(u32, u32)> {
 }
 
 /// The coverage the catalogue records, as shapes for point tests (none: a catalogue that records none).
-fn coverage(cat: &store::catalogue::Catalogue) -> Vec<crate::coverage::Shape> {
-    let regions: Vec<crate::coverage::DrawnRegion> =
+fn coverage(cat: &store::catalogue::Catalogue) -> Vec<buildstore::coverage::Shape> {
+    let regions: Vec<buildstore::coverage::DrawnRegion> =
         cat.coverage.get("regions").and_then(|r| serde_json::from_value(r.clone()).ok()).unwrap_or_default();
     let e7 = |p: &[f64; 2]| [(p[0] * 1e7).round() as i32, (p[1] * 1e7).round() as i32];
     regions
@@ -451,7 +451,7 @@ fn coverage(cat: &store::catalogue::Catalogue) -> Vec<crate::coverage::Shape> {
         .flat_map(|r| r.shapes.iter().map(move |(entry, polys)| (format!("{}: {entry}", r.id), polys)))
         .filter(|(_, polys)| !polys.is_empty())
         .map(|(source, polys)| {
-            crate::coverage::Shape::new(
+            buildstore::coverage::Shape::new(
                 source,
                 polys.iter().flatten().map(|ring| ring.iter().map(e7).collect()).collect(),
                 0.0,
@@ -466,7 +466,7 @@ fn labels(
     root: &store::nasfs::NasRoot,
     cat: &store::catalogue::Catalogue,
     units: &HashSet<(u32, u32)>,
-    cov: &[crate::coverage::Shape],
+    cov: &[buildstore::coverage::Shape],
     lists: &mut Lists,
     progress: &dyn Fn(&str, u64, u64),
 ) -> Result<()> {
@@ -591,19 +591,19 @@ const HERE_PIECE: usize = 16;
 
 /// Roads and rail lines: each unit's named ways, placed by their boxes in the hidata's ways-here
 /// index (each way once: its first tile's record). By pieces of `HERE_PIECE` hidata files, each's
-/// ways placed kept (crate::resume_log::Pieces, a safe point): a resumed run replays those its last
+/// ways placed kept (jobrt::resume_log::Pieces, a safe point): a resumed run replays those its last
 /// kept and reads only the rest, a unit's ways read once a record of the rest names it.
 fn roads(
     root: &store::nasfs::NasRoot,
     cat: &store::catalogue::Catalogue,
     lists: &mut Lists,
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
     progress: &dyn Fn(&str, u64, u64),
 ) -> Result<()> {
     let by_key: HashMap<u64, (&String, &String)> = cat
         .base
         .iter()
-        .filter_map(|(unit, logical)| Some((crate::legacy::TileId::parse(unit)?.key(), (unit, logical))))
+        .filter_map(|(unit, logical)| Some((codecs::legacy::TileId::parse(unit)?.key(), (unit, logical))))
         .collect();
     let unit = |key: u64| -> Result<Option<UnitWays>> {
         let Some((unit, logical)) = by_key.get(&key) else { return Ok(None) };
@@ -634,7 +634,7 @@ fn roads(
 
 /// `roads`' pieces, of `n` hidata files' ways-here records (`here`), the units' ways read by `unit`.
 fn roads_in(
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
     n: usize,
     here: &dyn Fn(usize) -> Result<Vec<roadcore::packs::Here>>,
     unit: &dyn Fn(u64) -> Result<Option<UnitWays>>,
@@ -784,19 +784,19 @@ fn landmarks(
     let n = cat.markdata.len() as u64;
     // Each file opened once (a bundle holds every tile, task #449), its tiles read in the
     // catalogue's order.
-    let mut files: HashMap<&str, HashMap<(u32, u32), crate::marks::MarkdataFile>> = HashMap::new();
+    let mut files: HashMap<&str, HashMap<(u32, u32), codecs::marks::MarkdataFile>> = HashMap::new();
     for logical in cat.markdata.values() {
         if files.contains_key(logical.as_str()) {
             continue;
         }
         let Some(path) = path_of(root, cat, logical) else { continue };
-        files.insert(logical, crate::marks::markdata_files(&path)?.into_iter().collect());
+        files.insert(logical, codecs::marks::markdata_files(&path)?.into_iter().collect());
     }
     for (i, (tile, logical)) in cat.markdata.iter().enumerate() {
         progress("landmark tiles read", i as u64, n);
-        let Some(t) = crate::legacy::TileId::parse(tile).map(|u| (u.x, u.y)) else { continue };
+        let Some(t) = codecs::legacy::TileId::parse(tile).map(|u| (u.x, u.y)) else { continue };
         let Some(s) = files.get(logical.as_str()).and_then(|f| f.get(&t)) else { continue };
-        let pts: Vec<crate::marks::MarkPt> = s.read_pod("pts")?;
+        let pts: Vec<codecs::marks::MarkPt> = s.read_pod("pts")?;
         let blocks = |name: &str, idx: &str| -> Result<Vec<Vec<u8>>> {
             let data = s.read(name)?;
             let idx: Vec<[u64; 2]> = s.read_pod(idx)?;
@@ -811,15 +811,15 @@ fn landmarks(
         };
         let (props, info) = (blocks("props", "props_idx")?, blocks("info", "info_idx")?);
         for (k, p) in pts.iter().enumerate() {
-            let (b, j) = (k / crate::marks::BLOCK, k % crate::marks::BLOCK);
+            let (b, j) = (k / codecs::marks::BLOCK, k % codecs::marks::BLOCK);
             let pr: Value = props
                 .get(b)
-                .and_then(|b| crate::marks::object(b, j).ok())
+                .and_then(|b| codecs::marks::object(b, j).ok())
                 .and_then(|o| serde_json::from_slice(o).ok())
                 .unwrap_or(Value::Null);
             let inf: Value = info
                 .get(b)
-                .and_then(|b| crate::marks::object(b, j).ok())
+                .and_then(|b| codecs::marks::object(b, j).ok())
                 .and_then(|o| serde_json::from_slice(o).ok())
                 .unwrap_or(Value::Null);
             let name = pr.get("name").and_then(Value::as_str).unwrap_or("");
@@ -945,7 +945,7 @@ pub fn run(
     scratch: &Path,
     progress: &dyn Fn(&str, u64, u64),
 ) -> Result<Report> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let p = phase("reading the catalog, the languages spoken and the translations");
     let cat = crate::agent::publish::map_now(root)?.context("no map")?.catalogue()?;
     let spoken = spoken_for(root, &cat)?;
@@ -956,8 +956,8 @@ pub fn run(
     let units = unit_tiles(&cat);
     // (The roads' pieces, task #897: what they keep is the catalogue's alone, so by what of it the
     // lists read.)
-    let id = crate::resume_log::job_id("names-todo", &VERSION.to_string(), "roads", &[&inputs_key(&cat)]);
-    let mut pieces = crate::resume_log::Pieces::open(scratch, (0, 0, 0), "names-todo", &id, crate::resume_log::on());
+    let id = jobrt::resume_log::job_id("names-todo", &VERSION.to_string(), "roads", &[&inputs_key(&cat)]);
+    let mut pieces = jobrt::resume_log::Pieces::open(scratch, (0, 0, 0), "names-todo", &id, jobrt::resume_log::on());
     let mut lists = Lists { names: &names, spoken: &spoken, entries: HashMap::new(), report: Report::default() };
     // (Each kind's names read from the map's files on the NAS and sorted into the lists as they
     // come: a phase a kind.)
@@ -1150,7 +1150,7 @@ mod tests {
     /// as a run never paused, each piece's ways-here records read once.
     #[test]
     fn roads_paused_at_every_piece_resume_to_the_same() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         use roadcore::packs::Here;
         let names = Names::load(tempfile::tempdir().unwrap().path()).unwrap();
         let sp = spoken();
@@ -1207,7 +1207,7 @@ mod tests {
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(r) => break r,

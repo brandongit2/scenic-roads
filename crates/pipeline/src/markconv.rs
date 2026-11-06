@@ -3,7 +3,7 @@
 //! markdata per z6 tile and thinned tiles per kind, so the server answers the In view statistics
 //! and the app loads points by view. A kind's order is its rank (the app's tie-break).
 
-use crate::marks::{self, flag, Cell, IdSource, KeepPt, MarkPt, MarkTile, Row, SummitRec, KINDS};
+use codecs::marks::{self, flag, Cell, IdSource, KeepPt, MarkPt, MarkTile, Row, SummitRec, KINDS};
 use buildstore::out::Out;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -39,8 +39,8 @@ pub(crate) fn src_bytes(out: &Out, src: &str, stem: &str) -> Result<Vec<u8>> {
     let content = out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?;
     let mirror = std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join("Library/Application Support/scenic/mirror").join(content));
-    // (Its own phase, or a sub-phase of the one reading it: crate::timings.)
-    let p = crate::timings::phase("reading the heritage outputs");
+    // (Its own phase, or a sub-phase of the one reading it: jobrt::timings.)
+    let p = jobrt::timings::phase("reading the heritage outputs");
     // (The mirror's copy read under a shared lock, so the mirror's delete, under an exclusive one,
     // waits it out: store::cachefile; gone meanwhile, the NAS's.)
     let here = match &mirror {
@@ -203,7 +203,7 @@ fn id_sources(pts: &[Point]) -> Vec<IdSource> {
 /// `layers/marks-<kind>/{root,lo}`), and `global/marks/summary`; with the named peaks for the
 /// highest in view.
 pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) -> Result<Converted> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let t0 = std::time::Instant::now();
     let p = phase("working out their ids and zooms");
     let ids = marks::assign_ids(&id_sources(&pts))?;

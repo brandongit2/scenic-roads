@@ -14,8 +14,8 @@
 //! descriptions instead (crate::inputs::credits: the heritage registers' and the elevation
 //! datasets' among them).
 
-use crate::coverage::DrawnRegion;
-use crate::hipack::{grow, meets};
+use buildstore::coverage::DrawnRegion;
+use codecs::hipack::{grow, meets};
 
 /// One rule: its name, version and areas (none: the whole world).
 pub struct Rule {

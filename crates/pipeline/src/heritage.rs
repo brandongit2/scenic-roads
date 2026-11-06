@@ -8,7 +8,7 @@
 //! (`work/heritage/<d>/areas/6-x-y`, those whose bounding box meets the tile, each line keyed by
 //! its content so an unchanged polygon keeps its place).
 
-use crate::coverage::Coverage;
+use buildstore::coverage::Coverage;
 use buildstore::out::Out;
 use anyhow::{Context, Result};
 use rayon::prelude::*;

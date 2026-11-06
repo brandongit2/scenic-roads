@@ -1,15 +1,15 @@
 //! A dataset kept in the store (`[data] store = true`, docs/inputs.md §6.8) filled once
 //! (`scenic-build store-fetch <id> --index <its index>`): every file of its index, and each file's fill mask, that
-//! `sources/fetched/<id>/` lacks, downloaded as published (crate::fetch: the build's User-Agent,
+//! `sources/fetched/<id>/` lacks, downloaded as published (buildstore::fetch: the build's User-Agent,
 //! answers of 429 and 5xx waited out and asked again). Area builds never fetch a stored dataset: a
 //! file the index names and the store lacks is an error naming it (crate::dem::generic::stored).
 //!
 //! Each file goes in beside its name (`<name>.<host>.<pid>.tmp`), is checked whole (its TIFF
-//! directories read: crate::whole) and then takes its name; a file the server hasn't (404) is noted
+//! directories read: codecs::whole) and then takes its name; a file the server hasn't (404) is noted
 //! `<name>.none`, as the sampler reads it. A file the store has under its name is skipped, so a run
 //! stopped anywhere is started again as it is.
 
-use crate::fetch::Fetch;
+use buildstore::fetch::Fetch;
 use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -81,7 +81,7 @@ pub fn run(
                     };
                     let tmp = dir.join(format!("{name}.{host}.{}.tmp", store::sys::pid()));
                     tmp.write(&b)?;
-                    if !tmp.open().is_ok_and(|f| crate::whole::tiff_whole(&f)) {
+                    if !tmp.open().is_ok_and(|f| codecs::whole::tiff_whole(&f)) {
                         let _ = tmp.remove_file();
                         bail!("not a whole GeoTIFF ({} bytes)", b.len());
                     }
@@ -121,9 +121,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let store = d.path().join("glo30");
         let tif = |v: f32| {
-            crate::geotiff::write_f32(4, 4, &[v; 16], 4, [0.0, 0.25, 0.0, 1.0, 0.0, -0.25], 4326, None).unwrap()
+            buildstore::geotiff::write_f32(4, 4, &[v; 16], 4, [0.0, 0.25, 0.0, 1.0, 0.0, -0.25], 4326, None).unwrap()
         };
-        let fetch = crate::fetch::MapFetch(
+        let fetch = buildstore::fetch::MapFetch(
             [
                 ("https://e.org/a/A_DEM.tif".to_string(), Some(tif(1.0))),
                 ("https://e.org/a/A_FLM.tif".to_string(), Some(tif(0.0))),
@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(std::fs::read(store.join("A_DEM.tif")).unwrap(), tif(1.0));
         // Again: everything there, nothing asked.
         let again = run(
-            &crate::fetch::MapFetch(Default::default()),
+            &buildstore::fetch::MapFetch(Default::default()),
             &urls[..3],
             &store::nasfs::NasPath::local_for_test(&store),
             2,

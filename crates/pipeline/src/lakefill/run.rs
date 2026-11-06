@@ -4,7 +4,7 @@
 //! the `lakefill` step runs it (`all`). The `lakefill` tool runs each part on its own.
 
 use super::nts;
-use crate::watercov::Raster;
+use codecs::watercov::Raster;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -411,10 +411,10 @@ pub fn all(
     part: &dyn Fn(usize),
     said: &(dyn Fn(u64, u64) + Sync),
 ) -> Result<PathBuf> {
-    use crate::timings::sub;
+    use jobrt::timings::sub;
     std::fs::create_dir_all(work)?;
     part(0);
-    // (Each stage its sub-phase, with the memory it held: crate::timings.)
+    // (Each stage its sub-phase, with the memory it held: jobrt::timings.)
     let p = sub("surveying the sheets");
     let rows = survey(basemap, outlines, said)?;
     drop(p);
@@ -460,7 +460,7 @@ fn lonlat(z: u8, x: f64, y: f64) -> (f64, f64) {
 /// by where their rings' vertices average). By column west to east, each south to north.
 pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) -> Result<Vec<SheetRow>> {
     // The regions' outlines (simplified), to say which sheets are Canada's.
-    let o = crate::outlines::Outlines::open(outlines)?;
+    let o = buildstore::outlines::Outlines::open(outlines)?;
     let mut polys: Vec<(&str, Vec<Vec<[i32; 2]>>)> = Vec::new();
     for (id, name) in PROVINCES {
         let rec = o.by_id(id).with_context(|| format!("outline {id}"))?;
@@ -549,7 +549,7 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
                             continue;
                         }
                         for r in &rings {
-                            let a2 = crate::watercov::area2(r);
+                            let a2 = codecs::watercov::area2(r);
                             if a2 <= 0.0 {
                                 continue;
                             }
@@ -984,7 +984,7 @@ mod tests {
 
     /// A measure on real data, reading the NAS alone: `SCENIC_LAKEFILL_MEASURE="<root> <date> <work
     /// folder>"` fills the lakes as the lakefill step does (`all`), its work in `<work folder>`, a
-    /// local one, and prints its phases with the memory each held (crate::timings). Unset, nothing.
+    /// local one, and prints its phases with the memory each held (jobrt::timings). Unset, nothing.
     #[test]
     fn measure_a_real_fill() {
         let Ok(m) = std::env::var("SCENIC_LAKEFILL_MEASURE") else { return };
@@ -997,8 +997,8 @@ mod tests {
         let decl = crate::inputs::sources::read(out.root(), &out.manifest).unwrap();
         let decl = decl.role(crate::inputs::sources::LAKE_FILL).unwrap();
         let source = out.root().join(source_dir(decl));
-        crate::timings::start("lakefill");
-        let p = crate::timings::phase("filling the lakes from CanVec's zips");
+        jobrt::timings::start("lakefill");
+        let p = jobrt::timings::phase("filling the lakes from CanVec's zips");
         let f = all(
             &basemap.unchecked_path(),
             &outlines.unchecked_path(),
@@ -1011,7 +1011,7 @@ mod tests {
         .unwrap();
         drop(p);
         println!("{}", f.display());
-        print!("{}", crate::timings::table(&crate::timings::snapshot(true).unwrap()));
+        print!("{}", jobrt::timings::table(&jobrt::timings::snapshot(true).unwrap()));
     }
 
     /// The declared lake-fill source (producers/sources/canvec-lakes.toml) fills by what the code

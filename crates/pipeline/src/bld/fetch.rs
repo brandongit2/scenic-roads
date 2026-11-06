@@ -25,18 +25,18 @@
 //!
 //! `TRANSFERS` at once; no speed cap. A request that gets no answer (no connection, a timeout, a
 //! 429 or a 5xx, an answer cut short) is tried again with a growing wait (Retry-After honoured; a
-//! 429 or a Retry-After told to the job's proxy, crate::budget::seen); a refusal (403, 404) fails
+//! 429 or a Retry-After told to the job's proxy, jobrt::budget::seen); a refusal (403, 404) fails
 //! that file. When the NAS goes away, the run waits for it (up to `NAS_WAIT_H` hours), then goes
 //! on from the temporary files. One run at a time per Mac (a lock in the temporary folder). Every
-//! request says who asks (crate::fetch::USER_AGENT) and asks crate::fetch::online first; these are
-//! published data and an API's listings (crate::fetch::Kind::Data, Api): no robots.txt.
+//! request says who asks (buildstore::fetch::USER_AGENT) and asks buildstore::fetch::online first; these are
+//! published data and an API's listings (buildstore::fetch::Kind::Data, Api): no robots.txt.
 //!
 //! The indexes are written as Python's `json` wrote them (`json.dumps(…, indent=1, sort_keys=True)`,
 //! `footers.json.gz` on one line, gzip'd at level 9 with no time), so files the Python made read on.
 
 use super::ghsl::zip_bad;
-use crate::coverage::Coverage;
-use crate::pyjson::{self, Py};
+use buildstore::coverage::Coverage;
+use pyport::pyjson::{self, Py};
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -101,7 +101,7 @@ pub struct Http {
 fn status(url: &str, r: &ureq::http::Response<ureq::Body>) -> Result<(), Fail> {
     let code = r.status().as_u16();
     let ra = r.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
-    crate::budget::seen(url, code, ra.as_deref());
+    jobrt::budget::seen(url, code, ra.as_deref());
     match code {
         200..=299 => Ok(()),
         403 | 404 | 410 | 412 | 416 => Err(Fail::Refused(code)),
@@ -119,7 +119,7 @@ impl Http {
         let agent = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
-            .user_agent(crate::fetch::USER_AGENT)
+            .user_agent(buildstore::fetch::USER_AGENT)
             .accept_encoding("identity")
             .http_status_as_error(false)
             .build()
@@ -135,7 +135,7 @@ impl Http {
         headers: &[(&str, String)],
         body_s: u64,
     ) -> Result<ureq::http::Response<ureq::Body>, Fail> {
-        crate::fetch::online(url).map_err(|e| Fail::Other(format!("{e:#}")))?;
+        buildstore::fetch::online(url).map_err(|e| Fail::Other(format!("{e:#}")))?;
         let _w = store::waits::net();
         let r = if head {
             let mut q = self.agent.head(url);
@@ -516,7 +516,7 @@ fn overture_jobs(
     types: &[String],
     near: &Near,
 ) -> Result<(Vec<Job>, NasPath)> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let base = root.join(super::sources::release_dir(release));
     base.create_dir_all()?;
     // Every file's row groups (kept: a release's files never change).
@@ -674,7 +674,7 @@ fn ghsl_jobs(
     src: &crate::inputs::sources::Source,
     near: &Near,
 ) -> Result<(Vec<Job>, NasPath)> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let base = root.join(super::sources::ghsl_dir(src.version()?));
     base.create_dir_all()?;
     ensure!(!src.index.is_empty(), "GHSL: its declaration's index lists no tiles");
@@ -1074,10 +1074,10 @@ fn regions(cov: &Coverage) -> Vec<String> {
 /// Fetches what the coverage needs and writes the indexes (see the module's docs).
 pub fn run(a: Args<'_>) -> Result<()> {
     use crate::inputs::sources::{BUILDINGS, BUILDING_HEIGHTS};
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let root = a.root;
     ensure!(root.join("sources").is_dir(), "{}: not the NAS's project folder (no sources/)", root.display());
-    let lock = crate::sys::PathLock::take(&std::env::temp_dir().join("bldfetch.lock"), false)?;
+    let lock = jobrt::sys::PathLock::take(&std::env::temp_dir().join("bldfetch.lock"), false)?;
     ensure!(lock.is_some(), "another bld-fetch runs on this Mac");
     let (b, g) = (a.sources.role(BUILDINGS)?, a.sources.role(BUILDING_HEIGHTS)?);
     let release = b.version()?.to_string();
@@ -1345,7 +1345,7 @@ mod tests {
 
     #[test]
     fn near_is_within_the_margin_of_an_outline() {
-        use crate::coverage::Shape;
+        use buildstore::coverage::Shape;
         let sq = |x: f64, y: f64, d: f64| -> Vec<[i32; 2]> {
             let e = |v: f64| (v * 1e7) as i32;
             vec![[e(x), e(y)], [e(x + d), e(y)], [e(x + d), e(y + d)], [e(x), e(y + d)]]

@@ -15,11 +15,11 @@
 //! else AWS: crate::terrain_pack), not fetched by the sampler; a pyramid read tile by tile (GSI's)
 //! from its store on the NAS first (crate::pyramids, `Pool::stored`); every other file as the roads read
 //! them (the store, `sources/fetched/`, for a stored dataset, a file the job reads half or more of copied
-//! whole to this Mac first where it has room: crate::localread; else the network).
+//! whole to this Mac first where it has room: buildstore::localread; else the network).
 
 use crate::dem::declared::{Plan, Source};
 use crate::dem::generic::{tile_resolution, Copies, Opts, Sampler};
-use crate::fetch::Fetch;
+use buildstore::fetch::Fetch;
 use crate::terrain_pack::{RawSource, RawTiles};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -104,9 +104,9 @@ pub struct Pool {
     pub store: store::nasfs::NasPath,
     /// The area (west, south, east, north): its middle latitude sets the detail each level reads.
     pub area: [f64; 4],
-    /// This Mac's whole copies of the stores' files the area's jobs read much of (crate::localread:
+    /// This Mac's whole copies of the stores' files the area's jobs read much of (buildstore::localread:
     /// crate::dem::generic::COPY_SHARE); None, the NAS's read in place.
-    pub local: Option<crate::localread::Local>,
+    pub local: Option<buildstore::localread::Local>,
     /// The stored pyramids' folder (crate::pyramids::DIR under the root): the pyramids read tile by
     /// tile (`by_tile`) read there before the network. None: fetched.
     pub pyramids: Option<store::nasfs::NasPath>,
@@ -125,7 +125,7 @@ impl Pool {
         )?;
         let geoid = crate::inputs::sources::geoid(root, m)?;
         let mut pool = Pool::of(crate::dem::declared::plan_converted(&a, b, &geoid)?, root.join("sources/fetched"), b);
-        pool.local = crate::localread::Local::from_env(root);
+        pool.local = buildstore::localread::Local::from_env(root);
         pool.pyramids = Some(root.join(crate::pyramids::DIR));
         Ok(pool)
     }
@@ -189,7 +189,7 @@ impl Pool {
 
     /// `f` given the pool's tiles (`Tiles`), the Terrarium pyramid's read through `raw`.
     pub fn with_tiles<R>(&self, raw: &RawTiles, f: impl FnOnce(&Tiles) -> R) -> Result<R> {
-        let net = crate::fetch::Fetcher::from_env();
+        let net = buildstore::fetch::Fetcher::from_env();
         let stored = self.stored(&net);
         let fetch = RawFetch::new(raw, self.terrarium.as_deref(), stored.as_ref().map_or(&net as &dyn Fetch, |s| s));
         let o = Opts {
@@ -294,7 +294,7 @@ impl Fetch for RawFetch<'_> {
 
     // (The other pyramids' tiles held to the limits their reader asks, crate::dem::generic::TILE_WITHIN:
     // a silent connection given up in 30 s, not the client's 90 s a try.)
-    fn get_within(&self, url: &str, within: crate::fetch::Within) -> Result<Option<Vec<u8>>> {
+    fn get_within(&self, url: &str, within: buildstore::fetch::Within) -> Result<Option<Vec<u8>>> {
         match self.tile(url) {
             Some((z, x, y)) => self.raw_get(z, x, y),
             None => self.inner.get_within(url, within),
@@ -316,8 +316,8 @@ pub struct Tiles<'a> {
     /// By tile sampled, the datasets its pixels came from (their ids, sorted:
     /// crate::terrain_pack::RawSource::from), until asked for.
     from: Mutex<HashMap<(u8, u32, u32), Vec<String>>>,
-    /// Whether the build is pausing (crate::control::draining_lately; a test's own): checked before each
-    /// sampling, a chunk or a tile, which then stops with crate::control::Paused.
+    /// Whether the build is pausing (jobrt::control::draining_lately; a test's own): checked before each
+    /// sampling, a chunk or a tile, which then stops with jobrt::control::Paused.
     draining: &'a (dyn Fn() -> bool + Sync),
 }
 
@@ -331,7 +331,7 @@ impl<'a> Tiles<'a> {
             samplers: plans.iter().map(|_| OnceLock::new()).collect(),
             held: Mutex::new(HashMap::new()),
             from: Mutex::new(HashMap::new()),
-            draining: &crate::control::draining_lately,
+            draining: &jobrt::control::draining_lately,
         }
     }
 
@@ -388,8 +388,8 @@ impl<'a> Tiles<'a> {
         }
         // (Between chunks: a level's sampling runs for hours, and a pause waits for no more than
         // the chunks under way, task #705; counted in the job's measure, task #889.)
-        crate::control::reached();
-        crate::control::pause_point(self.draining)?;
+        jobrt::control::reached();
+        jobrt::control::pause_point(self.draining)?;
         self.sample_all(z, ts)
     }
 
@@ -489,12 +489,12 @@ impl RawSource for Tiles<'_> {
     }
 
     // (Its chunks `at_once` at a time, the first to fail stopping the rest, as one that finds the
-    // build pausing does (crate::control::Paused, from `sample`). A chunk's reads mostly wait on the NAS, one at a time left a
+    // build pausing does (jobrt::control::Paused, from `sample`). A chunk's reads mostly wait on the NAS, one at a time left a
     // job's threads idle, task #695. The same bytes: a tile's sampling reads nothing of another's.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
         // (As many at once as the job's threads, each a task of a pool as wide as the target's
-        // grant (crate::control::on_outside_pool), its sampler's passes there too
-        // (crate::dem::generic's, through crate::control::on_target_pool): the target's own thread
+        // grant (jobrt::control::on_outside_pool), its sampler's passes there too
+        // (crate::dem::generic's, through jobrt::control::on_target_pool): the target's own thread
         // waits, working on nothing, so the job is on its grant's threads, no more. Never threads of
         // their own whose passes go on a pool: the target's own one's thread is waiting for them
         // (task #961), and another's beside them is twice the grant. One task a thread of the pool
@@ -520,7 +520,7 @@ impl RawSource for Tiles<'_> {
             }
         };
         let k = at_once.min(chunks.len());
-        crate::control::on_outside_pool(|| {
+        jobrt::control::on_outside_pool(|| {
             rayon::broadcast(|b| if b.index() < k { run() } else { Ok(()) }).into_iter().collect::<Result<()>>()
         })?;
         Ok(0)
@@ -545,7 +545,7 @@ mod tests {
         let gt = [10.0, 0.001, 0.0, 46.0, 0.0, -0.001];
         let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32).collect();
         let m: Vec<f32> = (0..n * n).map(|p| if p % n < 500 { 3.0 } else { 1.0 }).collect();
-        let tif = |v: &[f32]| crate::geotiff::write_f32(n as u32, n as u32, v, 256, gt, 4326, None).unwrap();
+        let tif = |v: &[f32]| buildstore::geotiff::write_f32(n as u32, n as u32, v, 256, gt, 4326, None).unwrap();
         std::fs::write(store.join("glo/T_DEM.tif"), tif(&e)).unwrap();
         std::fs::write(store.join("glo/T_FLM.tif"), tif(&m)).unwrap();
         // The z12 tile over 10.5°E, 45.5°N, and its Terrarium tile: 500 m flat.
@@ -598,7 +598,7 @@ mod tests {
         let pool = Pool::of(plan, store::nasfs::NasPath::local_for_test(store), [10.0, 45.0, 11.0, 46.0]);
         assert_eq!(pool.terrarium.as_deref(), Some(crate::terrain_pack::TEST_BASE));
         let raw = RawTiles::new(&local, crate::terrain_pack::TEST_BASE);
-        crate::fetch::go_offline();
+        buildstore::fetch::go_offline();
         let (png, again) = pool
             .with_tiles(&raw, |t| {
                 let done = AtomicU64::new(0);
@@ -649,7 +649,7 @@ mod tests {
         let gt = [10.44, 0.0001, 0.0, 45.56, 0.0, -0.0001];
         let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32 * 0.01).collect();
         let m: Vec<f32> = (0..n * n).map(|p| if p % n < 600 { 3.0 } else { 1.0 }).collect();
-        let tif = |v: &[f32]| crate::geotiff::write_f32(n as u32, n as u32, v, 256, gt, 4326, None).unwrap();
+        let tif = |v: &[f32]| buildstore::geotiff::write_f32(n as u32, n as u32, v, 256, gt, 4326, None).unwrap();
         std::fs::write(store.join("fine/F_DEM.tif"), tif(&e)).unwrap();
         std::fs::write(store.join("fine/F_FLM.tif"), tif(&m)).unwrap();
         std::fs::create_dir_all(store.join("flat")).unwrap();
@@ -692,7 +692,7 @@ mod tests {
             ],
         };
         let raw = RawTiles::new(&d.path().join("local"), crate::terrain_pack::TEST_BASE);
-        crate::fetch::go_offline();
+        buildstore::fetch::go_offline();
         let tile_of = |area: [f64; 4]| {
             Pool::of(plan.clone(), store::nasfs::NasPath::local_for_test(store.clone()), area)
                 .with_tiles(&raw, |t| t.sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap())
@@ -704,7 +704,7 @@ mod tests {
         // (Read at the wide area's middle, 40°N: another blend.)
         let pool =
             Pool::of(plan.clone(), store::nasfs::NasPath::local_for_test(store.clone()), [10.0, 20.0, 11.0, 60.0]);
-        let net = crate::fetch::MapFetch::default();
+        let net = buildstore::fetch::MapFetch::default();
         let fetch = RawFetch::new(&raw, pool.terrarium.as_deref(), &net);
         let o = Opts { fetch: &fetch, store: Some(store::nasfs::NasPath::local_for_test(store.clone())), local: None };
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| pool.at_zoom(z, 40.0)).collect();
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn the_raw_tiles_are_told_by_the_template() {
         let raw = RawTiles::new(std::path::Path::new("/nonexistent"), crate::terrain_pack::TEST_BASE);
-        let net = crate::fetch::MapFetch::default();
+        let net = buildstore::fetch::MapFetch::default();
         let f = RawFetch::new(&raw, Some("https://t.org/a/{z}/{x}/{y}.png"), &net);
         assert_eq!(f.tile("https://t.org/a/12/3/4.png"), Some((12, 3, 4)));
         assert_eq!(f.tile("https://t.org/a/12/3.png"), None);
@@ -776,7 +776,7 @@ mod tests {
     }
 
     /// A drain asked while a level's chunks are sampled (task #705): the chunk under way finishes
-    /// whole and no other begins (which chunk is up to the threads), the sampling ending with crate::control::Paused; what it sampled is
+    /// whole and no other begins (which chunk is up to the threads), the sampling ending with jobrt::control::Paused; what it sampled is
     /// what a run never paused samples.
     #[test]
     fn a_drain_mid_sampling_stops_within_a_chunk() {
@@ -786,7 +786,7 @@ mod tests {
         let n = 1000usize;
         let gt = [10.0, 0.001, 0.0, 46.0, 0.0, -0.001];
         let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32 * 0.5 + (p / n) as f32 * 0.25).collect();
-        let tif = crate::geotiff::write_f32(n as u32, n as u32, &e, 256, gt, 4326, None).unwrap();
+        let tif = buildstore::geotiff::write_f32(n as u32, n as u32, &e, 256, gt, 4326, None).unwrap();
         std::fs::write(store.join("glo/T_DEM.tif"), tif).unwrap();
         let plan = Plan {
             fmt: 1,
@@ -810,8 +810,8 @@ mod tests {
         };
         let pool = Pool::of(plan, store::nasfs::NasPath::local_for_test(store), [10.0, 45.0, 11.0, 46.0]);
         let raw = RawTiles::new(&d.path().join("local"), crate::terrain_pack::TEST_BASE);
-        crate::fetch::go_offline();
-        let net = crate::fetch::Fetcher::from_env();
+        buildstore::fetch::go_offline();
+        let net = buildstore::fetch::Fetcher::from_env();
         let fetch = RawFetch::new(&raw, None, &net);
         let o = Opts { fetch: &fetch, store: Some(pool.store.clone()), local: None };
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| pool.at_zoom(z, 45.5)).collect();
@@ -829,7 +829,7 @@ mod tests {
         let paused = Tiles { draining: &draining, ..Tiles::new(&plans, &o) };
         let done = AtomicU64::new(0);
         let e = paused.prefetch_counted(z, &ts, 1, &done).unwrap_err();
-        assert!(crate::control::is_paused(&e), "{e:#}");
+        assert!(jobrt::control::is_paused(&e), "{e:#}");
         // Exactly one chunk sampled, whole: whichever worker asked first (under load the last,
         // shorter chunk's can), so its size is any chunk's, never part of one or two.
         let held: HashMap<(u8, u32, u32), Option<Vec<u8>>> = paused.held.lock().unwrap().clone();

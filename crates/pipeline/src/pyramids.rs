@@ -3,7 +3,7 @@
 //! the network (task #806: GSI's tiles were 41 % of terrain-hi's rebuild time, every run fetching
 //! them all again, its blend and terrain-deep again on top).
 //!
-//! Each pyramid's tiles are packed as AWS's raw tiles are (crate::rawpack: content-named archives by
+//! Each pyramid's tiles are packed as AWS's raw tiles are (buildstore::rawpack: content-named archives by
 //! shard, a z15 tile's its z6 tile's, an index read once and each tile read by byte range; an empty
 //! entry for a tile the server hasn't), in `sources/pyramids/<folder>/` (`folder`: the URL template's
 //! host and path, so a layer moved to another URL is stored afresh). Filled by the pool's
@@ -11,7 +11,7 @@
 //! those its terrain-hi run reads: the native tiles under the pixels of its z9–12 tiles, the sea's
 //! too; and its terrain-deep targets', all under their z12 tiles, `deep_bases`; and the ring round
 //! them its blends' bands reach), fetched once each with the build's fetcher (its User-Agent, its per-host limit), then packed and their
-//! archives handed off as the store's (crate::rawpack::handed_place), the lead naming them in the
+//! archives handed off as the store's (buildstore::rawpack::handed_place), the lead naming them in the
 //! store's index as it names AWS's; each z6 tile starts only while the NAS has more room past the
 //! owner's reserve than the most one has put there. Its key (its declared reads, crate::agent::steps)
 //! follows what `want` reads, so a z6 tile is filled again when that changes (`V` with its code).
@@ -22,7 +22,7 @@
 //! every tile (task #975).
 
 use crate::dem::declared::{Plan, Source};
-use crate::fetch::{Fetch, Within};
+use buildstore::fetch::{Fetch, Within};
 use anyhow::{Context, Result};
 use roadcore::archive::{tile_key, Entry};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -33,7 +33,7 @@ use store::range::RangeRead;
 use store::sys::PosIo;
 
 /// The stored pyramids' folder, under the build's root.
-pub const DIR: &str = crate::rawpack::PYRAMIDS;
+pub const DIR: &str = buildstore::rawpack::PYRAMIDS;
 
 /// The fill's version, in its key: bumped with any change to
 /// which tiles a z6 tile wants (`want`, `deep_bases`) or how they're stored (2: a deep target's
@@ -42,7 +42,7 @@ pub const DIR: &str = crate::rawpack::PYRAMIDS;
 /// dataset there).
 pub const V: u32 = 4;
 
-/// The archives' metadata (crate::rawpack::Packer::for_pyramid).
+/// The archives' metadata (buildstore::rawpack::Packer::for_pyramid).
 const META: &str = r#"{"kind":"elevation pyramid tiles"}"#;
 
 /// A pyramid's folder under `DIR`: its URL template's host and path up to `{z}`, `/` as `-`
@@ -89,14 +89,14 @@ struct Layer {
     store: NasPath,
     /// Its index, read when first wanted (None: none yet, every tile to fetch; an error: it
     /// couldn't be read, so no tile is told either way).
-    index: OnceLock<Result<Option<crate::rawpack::Index>, String>>,
+    index: OnceLock<Result<Option<buildstore::rawpack::Index>, String>>,
     shards: Mutex<HashMap<String, Arc<OnceLock<Result<Opened, String>>>>>,
 }
 
 impl Layer {
-    fn index(&self) -> Result<Option<&crate::rawpack::Index>> {
+    fn index(&self) -> Result<Option<&buildstore::rawpack::Index>> {
         self.index
-            .get_or_init(|| match crate::rawpack::Index::load(&self.store) {
+            .get_or_init(|| match buildstore::rawpack::Index::load(&self.store) {
                 Ok(ix) if ix.shards.is_empty() => Ok(None),
                 Ok(ix) => Ok(Some(ix)),
                 Err(e) => Err(format!("{}: {e:#}", self.store.display())),
@@ -110,14 +110,14 @@ impl Layer {
     /// it whole; an error when the store can't be read (its index, its archives: a run then asks
     /// the network for none of its tiles, task #975: that was every tile of the store).
     fn get(&self, z: u8, x: u32, y: u32) -> Result<Option<Option<Vec<u8>>>> {
-        let shard = crate::rawpack::shard(z, x, y);
+        let shard = buildstore::rawpack::shard(z, x, y);
         let Some(ix) = self.index()? else { return Ok(None) };
         let cell = self.shards.lock().unwrap().entry(shard.clone()).or_default().clone();
         let opened = cell.get_or_init(|| {
             let mut v = Vec::new();
             for p in ix.of(&shard).iter().rev() {
                 v.push(
-                    crate::rawpack::entries_of(&self.store.join("packs").join(&p.name))
+                    buildstore::rawpack::entries_of(&self.store.join("packs").join(&p.name))
                         .map_err(|e| format!("{shard} of {}: {e:#}", self.store.display()))?,
                 );
             }
@@ -133,7 +133,7 @@ impl Layer {
             if b.is_empty() {
                 return Ok(Some(None));
             }
-            if crate::whole::png_whole(&b) {
+            if codecs::whole::png_whole(&b) {
                 return Ok(Some(Some(b)));
             }
             eprintln!("pyramids: {z}/{x}/{y} of {} isn't whole: fetched", self.store.display());
@@ -299,7 +299,7 @@ fn ring_tiles(band_m: f64, px_m: f64) -> u32 {
 /// native tiles under them are what those targets' deep tiles may read: what `want` takes as `deep`.
 pub fn deep_bases(
     sets: &[crate::terrain_zoom::Set],
-    cov: &crate::coverage::Coverage,
+    cov: &buildstore::coverage::Coverage,
     t: (u32, u32),
 ) -> Vec<(u8, u32, u32)> {
     use crate::terrain_deep as td;
@@ -325,20 +325,20 @@ pub struct Filled {
     pub bytes: u64,
     /// Tiles that couldn't be fetched (left out: fetched by a job, or the z6 tile's next fill), with why.
     pub failed: Vec<String>,
-    /// Cut short by the build pausing (crate::control::draining): what was fetched is packed.
+    /// Cut short by the build pausing (jobrt::control::draining): what was fetched is packed.
     pub cut: bool,
 }
 
 /// Each of `want`'s tiles (by template) that its store under `dir` lacks fetched by `fetch`
-/// (as many at once as the fetcher lets a host have in flight, crate::fetch's `HOST_REQUESTS`:
+/// (as many at once as the fetcher lets a host have in flight, buildstore::fetch's `HOST_REQUESTS`:
 /// a layer's tiles are one host's, fetched a layer at a time, and more would wait on its slots;
-/// task #896) and packed there (crate::rawpack::Packer::for_pyramid, its local work in
+/// task #896) and packed there (buildstore::rawpack::Packer::for_pyramid, its local work in
 /// `work`): a job's archives handed off to `handoff` (`SCENIC_HANDOFF`) for the lead to name, else
 /// the index changed here, under `root`'s build lock. Restartable: a tile packed stays; one cut short is
 /// fetched again. `progress` is told the tiles asked of the network so far of all those the layers'
 /// stores lack (at the start, then after each `CHUNK`: a z6 tile's hours-long fill says how far it
 /// is every minute or two, nothing written a tile). With the build pausing (`draining`:
-/// crate::control::draining_lately, a test's own), each tile not yet asked is left (task #885: the
+/// jobrt::control::draining_lately, a test's own), each tile not yet asked is left (task #885: the
 /// stop waits for the fetches under way, seconds, not the rest of a chunk), what was fetched packed
 /// and the fill `cut`.
 #[allow(clippy::too_many_arguments)]
@@ -355,7 +355,7 @@ pub fn fill(
 ) -> Result<Filled> {
     use rayon::prelude::*;
     let mut done = Filled::default();
-    let threads = rayon::ThreadPoolBuilder::new().num_threads(crate::fetch::HOST_REQUESTS).build()?;
+    let threads = rayon::ThreadPoolBuilder::new().num_threads(buildstore::fetch::HOST_REQUESTS).build()?;
     // (Each layer's tiles its store lacks, worked out first: the whole fill's count for `progress`.)
     let mut todos: Vec<(&String, Vec<(u8, u32, u32)>)> = Vec::new();
     for (template, tiles) in want {
@@ -374,7 +374,7 @@ pub fn fill(
                 todo.push((z, x, y));
             }
         }
-        todo.sort_by_key(|&(z, x, y)| (crate::rawpack::shard(z, x, y), tile_key(z, x, y)));
+        todo.sort_by_key(|&(z, x, y)| (buildstore::rawpack::shard(z, x, y), tile_key(z, x, y)));
         say(&format!("pyramids: {}: {} tiles, {} to fetch", folder(template), tiles.len(), todo.len()));
         todos.push((template, todo));
     }
@@ -387,7 +387,7 @@ pub fn fill(
         }
         let store = dir.join(folder(template));
         let f = folder(template);
-        let mut p = crate::rawpack::Packer::for_pyramid(&work.join(&f), &store, root, META, &f, handoff)?;
+        let mut p = buildstore::rawpack::Packer::for_pyramid(&work.join(&f), &store, root, META, &f, handoff)?;
         p.keep = false;
         let n = todo.len();
         for (k, chunk) in todo.chunks(CHUNK).enumerate() {
@@ -407,7 +407,7 @@ pub fn fill(
                                 .replace("{y}", &y.to_string());
                             let b = fetch.get_within(&url, crate::dem::generic::TILE_WITHIN)?;
                             match b {
-                                Some(b) if !crate::whole::png_whole(&b) => {
+                                Some(b) if !codecs::whole::png_whole(&b) => {
                                     anyhow::bail!("{url}: not a whole PNG ({} bytes)", b.len())
                                 }
                                 b => Ok(b),
@@ -464,8 +464,8 @@ pub fn sizes(dir: &NasPath, templates: &[String]) -> Result<Vec<(String, u64, us
     templates
         .iter()
         .map(|t| {
-            let ix = crate::rawpack::Index::load(&dir.join(folder(t)))?;
-            let packs: Vec<&crate::rawpack::Pack> = ix.shards.values().flatten().collect();
+            let ix = buildstore::rawpack::Index::load(&dir.join(folder(t)))?;
+            let packs: Vec<&buildstore::rawpack::Pack> = ix.shards.values().flatten().collect();
             Ok((folder(t), packs.iter().map(|p| p.bytes).sum(), packs.len()))
         })
         .collect()
@@ -544,7 +544,7 @@ mod tests {
         let root = store::nasfs::NasRoot::from_arg(d.path().join("root").to_str().unwrap());
         let dir = root.join(DIR);
         let url = |x: u32| T.replace("{z}", "15").replace("{x}", &x.to_string()).replace("{y}", "9");
-        let mut net = crate::fetch::MapFetch::default();
+        let mut net = buildstore::fetch::MapFetch::default();
         net.0.insert(url(1), Some(png()));
         net.0.insert(url(2), None);
         let want = BTreeMap::from([(T.to_string(), BTreeSet::from([(15, 1, 9), (15, 2, 9)]))]);
@@ -564,7 +564,7 @@ mod tests {
         .unwrap();
         assert_eq!((f.had, f.fetched, f.none, f.failed.len()), (0, 1, 1, 0));
         assert_eq!(*said.lock().unwrap(), [(0, 2), (2, 2)]);
-        let empty = crate::fetch::MapFetch::default();
+        let empty = buildstore::fetch::MapFetch::default();
         let s = Stored::new(&empty, &dir, &plan());
         assert_eq!(s.get(&url(1)).unwrap(), Some(png()));
         assert_eq!(s.get(&url(2)).unwrap(), None);
@@ -594,13 +594,13 @@ mod tests {
     #[test]
     fn a_fill_paused_at_every_tile_resumes_to_the_same_tiles() {
         let url = |x: u32| T.replace("{z}", "15").replace("{x}", &x.to_string()).replace("{y}", "9");
-        let mut net = crate::fetch::MapFetch::default();
+        let mut net = buildstore::fetch::MapFetch::default();
         let n = 6u32;
         for x in 0..n {
             net.0.insert(url(x), if x % 3 == 2 { None } else { Some(png()) });
         }
         let want = BTreeMap::from([(T.to_string(), (0..n).map(|x| (15, x, 9)).collect::<BTreeSet<_>>())]);
-        let empty = crate::fetch::MapFetch::default();
+        let empty = buildstore::fetch::MapFetch::default();
         let served = |dir: &NasPath| -> Vec<Option<Vec<u8>>> {
             let s = Stored::new(&empty, dir, &plan());
             (0..n).map(|x| s.get(&url(x)).unwrap()).collect()
@@ -666,24 +666,24 @@ mod tests {
         let dir = root.join(DIR);
         let outbox = d.path().join("outbox");
         let url = T.replace("{z}", "15").replace("{x}", "1").replace("{y}", "9");
-        let mut net = crate::fetch::MapFetch::default();
+        let mut net = buildstore::fetch::MapFetch::default();
         net.0.insert(url.clone(), Some(png()));
         let want = BTreeMap::from([(T.to_string(), BTreeSet::from([(15, 1, 9)]))]);
         let f = fill(&net, &want, &dir, &d.path().join("cache"), &root, Some(&outbox), &|_| {}, &|_, _| {}, &|| false)
             .unwrap();
         assert_eq!((f.fetched, f.cut), (1, false));
-        let empty = crate::fetch::MapFetch::default();
+        let empty = buildstore::fetch::MapFetch::default();
         assert!(Stored::new(&empty, &dir, &plan()).get(&url).is_err(), "unnamed: not served yet");
-        let raw: Vec<(String, crate::rawpack::Pack)> =
-            crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
+        let raw: Vec<(String, buildstore::rawpack::Pack)> =
+            buildstore::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
         let place = format!("{}/6-0-0", folder(T));
         assert_eq!(raw.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), [place.as_str()]);
-        assert!(crate::rawpack::is_shard(&raw[0].0) && crate::rawpack::named_for(&raw[0].1.name, &raw[0].0));
-        assert!(!crate::rawpack::is_shard("../x/6-0-0") && !crate::rawpack::is_shard("a/b/6-0-0"));
+        assert!(buildstore::rawpack::is_shard(&raw[0].0) && buildstore::rawpack::named_for(&raw[0].1.name, &raw[0].0));
+        assert!(!buildstore::rawpack::is_shard("../x/6-0-0") && !buildstore::rawpack::is_shard("a/b/6-0-0"));
         let lock = buildstore::out::BuildLock::take(&root).unwrap();
-        let (settled, new) = crate::rawpack::name_handed_places(&root, &raw, &lock);
+        let (settled, new) = buildstore::rawpack::name_handed_places(&root, &raw, &lock);
         assert_eq!((settled, new), (vec![raw[0].1.name.clone()], 1));
-        assert!(crate::rawpack::Index::load(&root.join("sources/aws-terrarium")).unwrap().shards.is_empty());
+        assert!(buildstore::rawpack::Index::load(&root.join("sources/aws-terrarium")).unwrap().shards.is_empty());
         assert_eq!(Stored::new(&empty, &dir, &plan()).get(&url).unwrap(), Some(png()));
     }
 }

@@ -174,7 +174,7 @@ mod tests {
         v.sort_by_key(|t| roadcore::archive::tile_key(t.0 .0, t.0 .1, t.0 .2));
         let mut w = ArchiveWriter::create(path, "{}").unwrap();
         for ((z, x, y), e) in v {
-            let b = crate::terrain_codec::encode(&mut e.clone(), crate::terrain_codec::NATIVE_M).unwrap();
+            let b = codecs::terrain_codec::encode(&mut e.clone(), codecs::terrain_codec::NATIVE_M).unwrap();
             w.add(*z, *x, *y, &b, b.len()).unwrap();
         }
         w.finish().unwrap();

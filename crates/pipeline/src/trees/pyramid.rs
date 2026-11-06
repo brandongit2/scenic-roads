@@ -149,7 +149,7 @@ fn terrarium(v: impl Fn(usize) -> f32, step: f32) -> Vec<u8> {
         p[0] = (e >> 8) as u8;
         p[1] = (e & 255) as u8;
     }
-    crate::webp::encode_rgb(&rgb, TS as u32, TS as u32)
+    codecs::webp::encode_rgb(&rgb, TS as u32, TS as u32)
 }
 
 /// The tiles of a band of rows at zoom `z` (256 rows, its tile row `ty`, from column `x0`):

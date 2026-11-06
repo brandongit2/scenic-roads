@@ -28,7 +28,7 @@ pub mod stored;
 pub mod tiles;
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
-use crate::outlines::Outlines;
+use buildstore::outlines::Outlines;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -107,7 +107,7 @@ impl Regions {
     /// The folder `v` holds, resolved. The process is stopped (exit 3, saying so) if its footprint
     /// passes `max_mb()` while it resolves: a check never takes the Mac down.
     pub fn resolve(&self, v: &Version) -> Result<(resolve::Folder, resolve::Outcome)> {
-        crate::sys::footprint_guard("the regions' check", max_mb());
+        jobrt::sys::footprint_guard("the regions' check", max_mb());
         geom::watch(30, op_budget_s());
         let folder = resolve::Folder::read(v.paths.iter().cloned(), &|p| Ok((v.read)(p)?.to_vec()))?;
         let empty = BTreeMap::new();
@@ -169,7 +169,7 @@ pub fn max_mb() -> u64 {
     std::env::var("SCENIC_REGIONS_MAX_MB")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| crate::sys::memsize().map_or(4_000, |b| b / 2 / 1_000_000))
+        .unwrap_or_else(|| jobrt::sys::memsize().map_or(4_000, |b| b / 2 / 1_000_000))
 }
 
 /// The most seconds one overlay operation of the check may take (`geom::watch`):
@@ -343,8 +343,8 @@ impl Checks for Regions {
     }
 
     fn keep_in(&self, scratch: &std::path::Path) {
-        let id = crate::resume_log::job_id("inputs", &format!("{UNIT} {RESOLUTION}"), UNIT, &[]);
-        self.kept.open(scratch, &id, crate::resume_log::on());
+        let id = jobrt::resume_log::job_id("inputs", &format!("{UNIT} {RESOLUTION}"), UNIT, &[]);
+        self.kept.open(scratch, &id, jobrt::resume_log::on());
     }
 
     fn kept_done(&self) {
@@ -476,9 +476,9 @@ pub fn accept_fixture(
                 None => match entry.strip_prefix("place:") {
                     Some(v) => {
                         let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-                        vec![crate::coverage::fixture_circle(n[0], n[1], n[2])]
+                        vec![buildstore::coverage::fixture_circle(n[0], n[1], n[2])]
                     }
-                    None => crate::coverage::read_poly(
+                    None => buildstore::coverage::read_poly(
                         &dir.join(entry.trim_start_matches("poly:")).loc().read_to_string().unwrap(),
                     )
                     .unwrap(),

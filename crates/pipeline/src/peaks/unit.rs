@@ -127,7 +127,7 @@ impl UnitZ12 {
     /// `load`, from the terrain packs `packs` reads (a job's several z6 tiles', each pack opened once).
     pub fn load_from(packs: &crate::terrain_pack::ManifestTiles, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
         // (In one phase, its tiles' bytes counted.)
-        let p = crate::timings::phase("loading z12 terrain tiles from the packs");
+        let p = jobrt::timings::phase("loading z12 terrain tiles from the packs");
         // (The packs' tiles read in spans, a pack's at once: `get_many`.)
         let want: Vec<(u32, u32)> = want.iter().copied().collect();
         let from_packs = packs.get_many(&want.iter().map(|&(x, y)| (Z12, x, y)).collect::<Vec<_>>())?;
@@ -203,7 +203,7 @@ pub fn read_ahead<I: Sync, T: Send>(
         for (k, it) in items.iter().enumerate() {
             let t = match ahead.take() {
                 Some(h) => {
-                    let _p = crate::timings::phase("waiting for the next z6 tile's z12 tiles");
+                    let _p = jobrt::timings::phase("waiting for the next z6 tile's z12 tiles");
                     h.join().map_err(|_| anyhow::anyhow!("the read ahead panicked"))??
                 }
                 None => load(it)?,
@@ -537,10 +537,10 @@ struct Seen {
 /// The peaks of a z6 tile measured a piece at a time (`run`; a multiple of the fine stage's 64).
 const BATCH: usize = 512;
 
-/// A batch's results as a kept piece's payload (crate::resume_log::Put).
+/// A batch's results as a kept piece's payload (jobrt::resume_log::Put).
 fn put_outs(coarse: usize, outs: &[(usize, Out)]) -> Vec<u8> {
-    let mut p = crate::resume_log::Put::default();
-    let f64s = |p: &mut crate::resume_log::Put, v: &[f64]| v.iter().for_each(|x| p.u64(x.to_bits()));
+    let mut p = jobrt::resume_log::Put::default();
+    let f64s = |p: &mut jobrt::resume_log::Put, v: &[f64]| v.iter().for_each(|x| p.u64(x.to_bits()));
     p.u64(coarse as u64);
     p.u64(outs.len() as u64);
     for (i, o) in outs {
@@ -561,8 +561,8 @@ fn put_outs(coarse: usize, outs: &[(usize, Out)]) -> Vec<u8> {
 
 /// `put_outs`'s count of peaks that needed the coarse stage and results, read back.
 fn get_outs(p: &[u8]) -> Result<(usize, Vec<(usize, Out)>)> {
-    let mut g = crate::resume_log::Get(p);
-    let f64 = |g: &mut crate::resume_log::Get| g.u64().map(f64::from_bits);
+    let mut g = jobrt::resume_log::Get(p);
+    let f64 = |g: &mut jobrt::resume_log::Get| g.u64().map(f64::from_bits);
     let coarse = usize::try_from(g.u64()?)?;
     let mut v = Vec::new();
     for _ in 0..g.count(53)? {
@@ -588,7 +588,7 @@ pub fn run(
     z12: &UnitZ12,
     z8: &Z8,
     coarse_threads: usize,
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
 ) -> Result<Vec<(String, Out)>> {
     let t0 = std::time::Instant::now();
     let by_id: HashMap<&str, usize> = summits.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
@@ -715,7 +715,7 @@ pub fn run(
             }
         }
         drop(d0);
-        let mut p = crate::resume_log::Put::default();
+        let mut p = jobrt::resume_log::Put::default();
         p.u64(moved);
         let mut ks: Vec<(&u32, &Seen)> = info.iter().collect();
         ks.sort_unstable_by_key(|k| *k.0);
@@ -731,7 +731,7 @@ pub fn run(
     let mut info: HashMap<u32, Seen> = HashMap::new();
     let moved;
     {
-        let mut g = crate::resume_log::Get(&kept);
+        let mut g = jobrt::resume_log::Get(&kept);
         moved = g.u64()?;
         for _ in 0..g.count(24)? {
             let k = g.u32()?;
@@ -1067,7 +1067,7 @@ mod tests {
                     wants[k].iter().map(|&(x, y)| ((x, y), Some(one.get(Z12, x, y).unwrap().unwrap()))).collect(),
                 );
                 let r =
-                    run(&peaks_of(k), &summits, &base8, &z12, &z8, 2, &mut crate::resume_log::Pieces::none()).unwrap();
+                    run(&peaks_of(k), &summits, &base8, &z12, &z8, 2, &mut jobrt::resume_log::Pieces::none()).unwrap();
                 assert_eq!(z12.unexpected(), 0);
                 bytes(r)
             })
@@ -1087,7 +1087,7 @@ mod tests {
                     &z12,
                     &z8,
                     2,
-                    &mut crate::resume_log::Pieces::none(),
+                    &mut jobrt::resume_log::Pieces::none(),
                 )?));
                 Ok(())
             },
@@ -1101,13 +1101,13 @@ mod tests {
         let scratch = d.path().join("resume");
         let mut stops = 0;
         let resumed = loop {
-            crate::resume_log::STOP_AFTER.set(Some(1));
-            let mut pieces = crate::resume_log::Pieces::open(&scratch, (6, 33, 22), "peaks", "a", true);
+            jobrt::resume_log::STOP_AFTER.set(Some(1));
+            let mut pieces = jobrt::resume_log::Pieces::open(&scratch, (6, 33, 22), "peaks", "a", true);
             let r = run(&peaks_of(0), &summits, &base8, &z12, &z8, 2, &mut pieces);
-            crate::resume_log::STOP_AFTER.set(None);
+            jobrt::resume_log::STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(r) => break bytes(r),

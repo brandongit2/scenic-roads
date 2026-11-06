@@ -37,8 +37,8 @@ fn square_tiff_as_gdal_lays_it_out() {
     let a: Vec<u8> = (0..n * n).map(|i| ((i * 7 + i / n) % 5) as u8).collect();
     let b =
         tiff::square(&a, n, -120.0, 50.0, RES, &[("source", "x"), ("classes", CLASSES), ("complete", "1")]).unwrap();
-    assert!(crate::whole::tiff_bytes_whole(&b));
-    let t = crate::geotiff::Tiff::open(Arc::new(b.clone())).unwrap();
+    assert!(codecs::whole::tiff_bytes_whole(&b));
+    let t = buildstore::geotiff::Tiff::open(Arc::new(b.clone())).unwrap();
     assert_eq!(read_u8(&t, 0, 0, n, n).unwrap(), a);
     assert_eq!(t.transform(0).unwrap(), [-120.0, RES, 0.0, 50.0, 0.0, -RES]);
     assert_eq!(t.nodata(), Some(255.0));
@@ -116,7 +116,7 @@ fn chunks_and_rows() {
 /// one as kept; the parts gone once it's saved, the square complete.
 #[test]
 fn europe_square_from_kept_chunks() {
-    crate::fetch::go_offline();
+    buildstore::fetch::go_offline();
     let d = tempfile::tempdir().unwrap();
     let out = d.path().join("leaf");
     let src = LeafSources {
@@ -144,7 +144,7 @@ fn europe_square_from_kept_chunks() {
     let p = out.join("lat50_lon0.tif");
     assert!(crate::trees::squares::complete(&p));
     assert!(!parts.exists());
-    let t = crate::geotiff::Tiff::open(Arc::new(store::range::PlainFile::open(&p).unwrap())).unwrap();
+    let t = buildstore::geotiff::Tiff::open(Arc::new(store::range::PlainFile::open(&p).unwrap())).unwrap();
     // (3 is no class of the EEA's: no data.)
     assert_eq!(read_u8(&t, 0, 0, 4, 1).unwrap(), [0, 1, 2, 255]);
     assert_eq!(read_u8(&t, MAX_W, 0, 2, 1).unwrap(), [255, 255]);

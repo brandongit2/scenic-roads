@@ -1,6 +1,6 @@
 //! A block of depth tiles composed from the depth sources (docs/steps.md §3): up to 8 × 8
 //! tiles of one zoom with a margin of `PAD` pixels, on the basemap's own water
-//! (crate::terrain_water).
+//! (codecs::terrain_water).
 //!
 //! 1. Each source is sampled onto the block (crate::depth::grids): depth, the zoom of the grid each
 //!    pixel is from, its chart low water. A sea source is drawn on the sea (and in rivers and lakes
@@ -161,7 +161,7 @@ pub fn compose(
     let mut ups: std::collections::HashMap<u8, Vec<f32>> = std::collections::HashMap::new();
     let mut get_up = |zv: u8, ups: &mut std::collections::HashMap<u8, Vec<f32>>| -> Result<()> {
         if !ups.contains_key(&zv) {
-            let _p = crate::timings::sub("scaling up stored levels");
+            let _p = jobrt::timings::sub("scaling up stored levels");
             let v = if zv < zmin { vec![NODATA; n] } else { up(zv)? };
             ups.insert(zv, v);
         }
@@ -198,7 +198,7 @@ pub fn compose(
         // (Detail fades in where pixels of the tile's zoom meet capped ones.)
         if let Some(zc) = median.filter(|_| native.iter().any(|&x| x) && b.z > zmin) {
             get_up(b.z - 1, &mut ups)?;
-            let _p = crate::timings::sub("feathering");
+            let _p = jobrt::timings::sub("feathering");
             let band = (PAD as f32).min(3.0 * (1u32 << (b.z - zc).min(20)) as f32);
             let (d, _) = nearest(&capped, w, h);
             let prev = &ups[&(b.z - 1)];
@@ -221,7 +221,7 @@ pub fn compose(
         let band = s.band_m / gpx;
         if !gaps_only && band >= 1.0 && (0..n).any(|i| dv[i] && c[i].is_finite()) {
             // (Its edge in the water; along a shore it doesn't count.)
-            let _p = crate::timings::sub("feathering");
+            let _p = jobrt::timings::sub("feathering");
             let seed: Vec<bool> = (0..n).map(|i| !dv[i] && water.water[i] && !water.is_if_data(i)).collect();
             let (d, _) = nearest(&seed, w, h);
             let bw = band.min(PAD as f32);
@@ -278,7 +278,7 @@ pub fn compose(
         c[i] = c[i].min(DRY_MAX);
     }
     if (0..n).any(|i| water.water[i] && !c[i].is_finite()) {
-        let _p = crate::timings::sub("filling gaps");
+        let _p = jobrt::timings::sub("filling gaps");
         fill(&mut c, &mut k, water, w, h, gpx);
     }
     let (dl, near) = nearest(&water.water, w, h);

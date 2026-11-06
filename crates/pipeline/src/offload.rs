@@ -18,7 +18,7 @@
 //! coordinator to finish, to measure it).
 
 use crate::coord::client::Client;
-use crate::legacy::TileId;
+use codecs::legacy::TileId;
 use crate::unit::Run;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -63,7 +63,7 @@ pub struct WaitFile {
 }
 
 impl WaitNote {
-    /// Writes `self` to `path` (whole: crate::whole), kept until the returned value drops.
+    /// Writes `self` to `path` (whole: codecs::whole), kept until the returned value drops.
     pub fn keep(&self, path: &Path) -> Option<WaitFile> {
         store::whole::write(path, &serde_json::to_vec(self).ok()?).ok()?;
         Some(WaitFile { path: path.to_path_buf() })
@@ -315,7 +315,7 @@ impl Offload {
         p: Patience,
         here: &mut dyn FnMut() -> Result<()>,
     ) -> Result<Option<Settled>> {
-        use crate::timings::phase;
+        use jobrt::timings::phase;
         self.settle_with(t, wait, p, here, &mut |st| {
             let _p = phase("taking in a worker's results");
             take(st, dir)
@@ -346,7 +346,7 @@ impl Offload {
     }
 
     fn wait_on(&self, t: &Offered, mut st: serde_json::Value, p: Patience) -> Result<serde_json::Value> {
-        let _p = crate::timings::phase("waiting on other workers");
+        let _p = jobrt::timings::phase("waiting on other workers");
         let _o = store::waits::other();
         let status = || -> Result<serde_json::Value> { Ok(self.status(t)) };
         let clock = &*self.clock;
@@ -359,8 +359,8 @@ impl Offload {
         // (Whether to give a worker a moment to take it: decided on the first status.)
         let mut lease_wait = None;
         loop {
-            crate::control::reached();
-            if crate::control::draining() {
+            jobrt::control::reached();
+            if jobrt::control::draining() {
                 return Ok(st);
             }
             match st["state"].as_str() {
@@ -554,7 +554,7 @@ pub fn run_task(
     })));
     // (Each input's hash: what's written back unchanged isn't sent, the z6 tile's folder has it.)
     let mut sent = std::collections::HashMap::new();
-    let fetching = crate::timings::phase("fetching its files from the coordinator");
+    let fetching = jobrt::timings::phase("fetching its files from the coordinator");
     for (p, n) in &inputs {
         let rel = crate::coord::task::safe(p).with_context(|| format!("a task input outside its folder: {p}"))?;
         let t = std::time::Instant::now();
@@ -562,9 +562,9 @@ pub fn run_task(
         let secs = t.elapsed().as_secs_f64();
         eprintln!(
             "fetched {p}: {} in {} ({}/s)",
-            crate::timings::bytes(b.len() as u64),
-            crate::timings::secs(secs),
-            crate::timings::bytes((b.len() as f64 / secs.max(1e-3)) as u64)
+            jobrt::timings::bytes(b.len() as u64),
+            jobrt::timings::secs(secs),
+            jobrt::timings::bytes((b.len() as f64 / secs.max(1e-3)) as u64)
         );
         anyhow::ensure!(b.len() as u64 == *n, "{p}: {} bytes, not {n}", b.len());
         sent.insert(p.clone(), store::naming::hash16(&b));
@@ -607,7 +607,7 @@ pub fn run_task(
     crate::unit::on_stage(None);
     jobrt::jobs::stage(steps - 1, steps, "steps (sending what they wrote)");
     let had: std::collections::BTreeSet<&str> = inputs.iter().map(|(p, _)| p.as_str()).collect();
-    let sending = crate::timings::phase("sending back what they wrote");
+    let sending = jobrt::timings::phase("sending back what they wrote");
     let mut outputs = Vec::new();
     for (rel, f) in files_under(&dir.join("u"), "u")? {
         let written = std::fs::metadata(&f)?.modified()? >= started || !had.contains(rel.as_str());
@@ -1111,7 +1111,7 @@ mod tests {
     /// them gone; once the job has closed the task, its lease is gone (410), not an input missing.
     #[test]
     fn a_tail_offered_after_a_pause_and_resume_runs_to_the_same_folder_as_here() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         use crate::unit::{run_tail_kept, split_kept, PREPARE};
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
@@ -1164,14 +1164,14 @@ echo \"$2 $(($(wc -l < \"$1/out.txt\")))\" >> \"$1/out.txt\"\n",
         let open = || Pieces::open(&scratch, (6, 1, 2), "unit", "a", true);
         let mut p = open();
         STOP_AFTER.set(Some(1));
-        assert!(crate::control::is_paused(&prepare(&dir, &mut p).unwrap_err()));
+        assert!(jobrt::control::is_paused(&prepare(&dir, &mut p).unwrap_err()));
         let mut p = open();
         assert!(p.folders_as_kept(&[&dir]));
         prepare(&dir, &mut p).unwrap();
         let (here, anywhere) = split_kept(&runs, &p);
         assert_eq!((here.len(), anywhere.len()), (0, 3));
         STOP_AFTER.set(Some(1));
-        assert!(crate::control::is_paused(&run_tail_kept(anywhere, 0, &dir, &[&dir], &tools, &mut p).unwrap_err()));
+        assert!(jobrt::control::is_paused(&run_tail_kept(anywhere, 0, &dir, &[&dir], &tools, &mut p).unwrap_err()));
         STOP_AFTER.set(None);
         let mut p = open();
         assert!(p.folders_as_kept(&[&dir]));

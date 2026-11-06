@@ -418,7 +418,7 @@ fn morton_in(p: [i32; 2], z: u8, tx: u32, ty: u32) -> u64 {
     let (wx, wy) = world7(p);
     let n = (1u64 << z) as f64;
     let c = |v: f64, t: u32| (((v * n - t as f64) * EXTENT as f64).floor().max(0.0) as u32).min(EXTENT - 1);
-    crate::morton(c(wx, tx), c(wy, ty))
+    codecs::morton(c(wx, tx), c(wy, ty))
 }
 
 /// Bits of a feature id taken by the index within its z14 tile.

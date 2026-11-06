@@ -14,8 +14,8 @@
 //!
 //! Together the same packs, byte for byte, as a z3 tile's whole run (`build`, by hand).
 
-use crate::coverage::Coverage;
-use crate::legacy::TileId;
+use buildstore::coverage::Coverage;
+use codecs::legacy::TileId;
 use buildstore::out::Out;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,12 +91,12 @@ pub fn listed(cov: &Coverage, m: &BTreeMap<String, String>) -> Listed {
     let mut met: BTreeSet<(u32, u32, u32, u32)> = BTreeSet::new();
     for qx in 0..8u32 {
         for qy in 0..8u32 {
-            if !cov.meets_rect(crate::hipack::tile_bounds(3, qx, qy)) {
+            if !cov.meets_rect(codecs::hipack::tile_bounds(3, qx, qy)) {
                 continue;
             }
             for x in qx * 8..(qx + 1) * 8 {
                 for y in qy * 8..(qy + 1) * 8 {
-                    if cov.meets_rect(crate::hipack::tile_bounds(6, x, y)) {
+                    if cov.meets_rect(codecs::hipack::tile_bounds(6, x, y)) {
                         met.insert((qx, qy, x, y));
                     }
                 }
@@ -138,7 +138,7 @@ pub fn listed(cov: &Coverage, m: &BTreeMap<String, String>) -> Listed {
 /// whose box meets the tile, in degrees (inside by even–odd, as the shape has them; a ring that
 /// doesn't meet the tile can't change which of its points are inside).
 pub fn coverage_json(cov: &Coverage, t: TileId) -> serde_json::Value {
-    let b = crate::hipack::tile_bounds(t.z, t.x, t.y);
+    let b = codecs::hipack::tile_bounds(t.z, t.x, t.y);
     let deg = |v: i32| v as f64 * 1e-7;
     let shapes: Vec<Vec<Vec<[f64; 2]>>> = cov
         .shapes
@@ -181,24 +181,24 @@ fn fresh(cov: &Coverage, t: TileId, scratch: &Path, always: bool) -> Result<Opti
 fn run_trees(args: &[std::ffi::OsString]) -> Result<()> {
     let prog = "the trees program";
     let mut c = crate::cli::program(std::env::current_exe()?.parent().context("the programs' folder")?, "trees");
-    // (Its phase, its own under it: crate::timings.)
-    let _p = crate::timings::phase(prog);
+    // (Its phase, its own under it: jobrt::timings.)
+    let _p = jobrt::timings::phase(prog);
     c.args(args);
-    crate::timings::child(&mut c);
+    jobrt::timings::child(&mut c);
     // (What it reads of the NAS, the canopy rows above all, counted in a folder of its own, seen as
     // it runs, and added to this process's as it ends: the target's `bytes`, its NAS weight,
-    // crate::costin. Task #606: they weren't, so tree cover weighed only its uploads.)
+    // buildstore::costin. Task #606: they weren't, so tree cover weighed only its uploads.)
     let counts = store::nasio::program_dir(&std::env::temp_dir().join(format!("trees-{}.counts", std::process::id())));
     c.env(store::nasio::ENV, &counts);
-    // (Its safe points, the rows it keeps, this job's: crate::control::safe_gaps.)
-    let points = crate::control::ChildPoints::new(&mut c);
+    // (Its safe points, the rows it keeps, this job's: jobrt::control::safe_gaps.)
+    let points = jobrt::control::ChildPoints::new(&mut c);
     let st = store::spawn::status(&mut c).with_context(|| format!("run {prog}"));
     store::nasio::take_program(&counts);
     points.merge();
     let st = st?;
     // (Paused at a row it kept: the pause's error, task #889.)
-    if st.code() == Some(crate::control::PAUSED_EXIT) {
-        return Err(anyhow::Error::new(crate::control::Paused).context(format!("{prog} paused")));
+    if st.code() == Some(jobrt::control::PAUSED_EXIT) {
+        return Err(anyhow::Error::new(jobrt::control::Paused).context(format!("{prog} paused")));
     }
     anyhow::ensure!(st.success(), "{prog}: {st}");
     Ok(())
@@ -271,7 +271,7 @@ pub fn build_with(
 /// Uploads z3 tile `q`'s packs from its whole run's archives in `dir`, dropping its packs it no
 /// longer makes.
 pub fn put_z3(out: &mut Out, q: TileId, dir: &Path) -> Result<()> {
-    let _p = crate::timings::phase("uploading packs");
+    let _p = jobrt::timings::phase("uploading packs");
     for (i, layer) in LAYERS.iter().enumerate() {
         let arc = roadcore::archive::Archive::open(&dir.join(format!("{layer}.tiles")))?;
         let n = LAYERS.len() as u64;
@@ -335,7 +335,7 @@ pub fn build_piece(
     // (A z6 tile of the coverage, as `targets` has it, has a mid, made with no block if no ring's box
     // meets one; one the coverage has left, none.)
     anyhow::ensure!(
-        cov.meets_rect(crate::hipack::tile_bounds(6, t.x, t.y)),
+        cov.meets_rect(codecs::hipack::tile_bounds(6, t.x, t.y)),
         "{}: the coverage has left it, so it can't be made: its run drops it (drop_piece)",
         t.slash()
     );
@@ -343,14 +343,14 @@ pub fn build_piece(
     // (Its scratch removed whatever the run's end, as `build_with`'s.)
     let r = (|| {
         let mut a = run_args(out, t, &dir, chm, workers)?;
-        if crate::resume_log::on() {
+        if jobrt::resume_log::on() {
             a.extend(["--keep".into(), scratch.into()]);
         }
         run_trees(&a).with_context(|| format!("z6 tile {}", t.slash()))?;
         writing();
         put_piece(out, t, &dir, expect_same)?;
         // (Its rows kept by the program, gone once uploaded.)
-        std::fs::remove_file(crate::resume_log::path(scratch, (6, t.x, t.y))).ok();
+        std::fs::remove_file(jobrt::resume_log::path(scratch, (6, t.x, t.y))).ok();
         Ok(())
     })();
     std::fs::remove_dir_all(&dir).ok();
@@ -405,7 +405,7 @@ fn check_same(out: &Out, made: &[(String, Option<String>)], what: &str) -> Resul
 /// each must come out with the content name the manifest has (its mid, when it has one), else an
 /// error and nothing uploaded.
 pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Result<()> {
-    let p = crate::timings::phase("making packs and mid");
+    let p = jobrt::timings::phase("making packs and mid");
     let mut made: Made = Vec::new();
     for layer in LAYERS {
         let tiles = archive_tiles(&dir.join(format!("{layer}.tiles")))?;
@@ -443,7 +443,7 @@ pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Res
 /// Uploads a run's files (`made`), dropping from the manifest those it made none of; with `same`,
 /// once each is checked against the manifest (`check_same`), else nothing.
 fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
-    let p = crate::timings::phase("uploading packs");
+    let p = jobrt::timings::phase("uploading packs");
     if let Some(what) = same {
         let names: Vec<(String, Option<String>)> = made
             .iter()
@@ -538,7 +538,7 @@ pub fn build_lo(out: &mut Out, cov: &Coverage, q: TileId, scratch: &Path, worker
 /// dropping the manifest's of a layer it made none of. `expect_same`: each as the manifest has it,
 /// else an error and nothing uploaded.
 pub fn put_lo(out: &mut Out, q: TileId, dir: &Path, expect_same: bool) -> Result<()> {
-    let p = crate::timings::phase("making packs");
+    let p = jobrt::timings::phase("making packs");
     let mut made: Made = Vec::new();
     for layer in LAYERS {
         let tiles = archive_tiles(&dir.join(format!("{layer}.tiles")))?;

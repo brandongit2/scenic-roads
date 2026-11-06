@@ -28,7 +28,7 @@ fn flat(h: f64) -> Vec<u8> {
 }
 
 /// The map's tiles, and none for any other.
-struct NoneElse(crate::fetch::MapFetch);
+struct NoneElse(buildstore::fetch::MapFetch);
 
 impl Fetch for NoneElse {
     fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
@@ -64,7 +64,7 @@ fn tiles_blend_across_their_edges() {
     };
     // The fine dataset has tile 512/511 alone (lon 0 to 0.35°, just north of the equator); the
     // coarse one has it and its neighbour east.
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     f.0.insert("https://a.org/10/512/511.png".into(), Some(flat(100.0)));
     f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
     f.0.insert("https://b.org/10/513/511.png".into(), Some(flat(50.0)));
@@ -101,7 +101,7 @@ fn a_pyramids_tile_not_256_pixels_is_refused() {
         e.write_header().unwrap().write_image_data(&[128u8, 0, 0].repeat((n * n) as usize)).unwrap();
         out
     };
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     f.0.insert("https://e.org/3/1/1.png".into(), Some(png(256)));
     f.0.insert("https://e.org/3/2/1.png".into(), Some(png(512)));
     let o = Opts { fetch: &f, store: None, local: None };
@@ -123,7 +123,7 @@ fn a_pyramids_tile_not_256_pixels_is_refused() {
 #[test]
 fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     use super::super::declared::{Dataset, Plan, Source};
-    use crate::geotiff::write_f32;
+    use buildstore::geotiff::write_f32;
     const PX: f64 = 1.0 / 3600.0;
     let (w, h) = (1200usize, 1100usize);
     let gt = [10.0, PX, 0.0, 50.0, 0.0, -PX];
@@ -145,7 +145,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     let fine = write_f32(w as u32, h as u32, &data, 256, gt, 4326, Some(nd as f64)).unwrap();
     let cgt = [9.0, 3.0 * PX, 0.0, 51.0, 0.0, -3.0 * PX];
     let coarse = write_f32(2000, 2000, &vec![50.0f32; 2000 * 2000], 512, cgt, 4326, Some(nd as f64)).unwrap();
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     f.0.insert("https://a.org/fine.tif".into(), Some(fine));
     f.0.insert("https://b.org/coarse.tif".into(), Some(coarse));
     let o = Opts { fetch: &f, store: None, local: None };
@@ -249,7 +249,7 @@ fn sampling_says_increasing_fractions_to_one_per_chunk() {
             ds("coarse", 2, "https://b.org/{z}/{x}/{y}.png"),
         ],
     };
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     f.0.insert("https://a.org/10/512/511.png".into(), Some(flat(100.0)));
     f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
     let fetch = NoneElse(f);
@@ -298,7 +298,7 @@ fn a_pyramids_distance_is_the_whole_bands_scan() {
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         (seed >> 11) as f64 / (1u64 << 53) as f64
     };
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     let url = |x: i64, y: i64| format!("https://e.org/{z}/{x}/{y}.png");
     // (Tiles 0–2 × 30–32: holes of each shape; 1/31 missing; 2/30 clean.)
     for ty in 30..=32i64 {
@@ -380,7 +380,7 @@ struct Counting {
 }
 
 impl Counting {
-    fn new(f: crate::fetch::MapFetch) -> Counting {
+    fn new(f: buildstore::fetch::MapFetch) -> Counting {
         Counting { inner: NoneElse(f), asked: Default::default(), now: Default::default(), most: Default::default() }
     }
 }
@@ -430,7 +430,7 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
         datasets: vec![ds("a", 1, "a.org"), ds("b", 2, "b.org"), ds("c", 3, "c.org")],
     };
     // (Tiles 0–7 × 24–31: a's with holes, some missing; b's with other holes; c's whole.)
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     for ty in 24..32i64 {
         for tx in 0..8i64 {
             let (p, q) = ((tx * 37 + ty * 11) as usize % 200, (tx * 5 + ty * 29) as usize % 200);
@@ -453,7 +453,7 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
         lon.push(roadcore::geo::merc_lon(fx / n as f64));
         lat.push(roadcore::geo::merc_lat(fy / n as f64));
     }
-    let one = NoneElse(crate::fetch::MapFetch(f.0.clone()));
+    let one = NoneElse(buildstore::fetch::MapFetch(f.0.clone()));
     let want = sample(&plan, &lon, &lat, &Opts { fetch: &one, store: None, local: None }, &|_| {}).unwrap();
     let counting = Counting::new(f);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
@@ -476,7 +476,7 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
 /// The memo lets its oldest tiles go past its size, and fetches one again when asked after.
 #[test]
 fn the_tile_memo_lets_its_oldest_go() {
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     for i in 0..4 {
         f.0.insert(format!("https://m.org/{i}"), Some(vec![i as u8; 1000]));
     }
@@ -507,7 +507,7 @@ fn a_failed_fetch_leaves_no_slot() {
     let memo = TileMemo::new(2500);
     assert!(memo.get("https://m.org/x", &Fails).is_err());
     assert!(memo.inner.lock().unwrap().map.is_empty());
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     f.0.insert("https://m.org/x".into(), Some(vec![7]));
     assert_eq!(memo.get("https://m.org/x", &NoneElse(f)).unwrap().unwrap()[0], 7);
 }
@@ -521,7 +521,7 @@ fn heights_are_converted_before_the_blend() {
     let z = 10;
     // (A grid of one value over 4° around the tiles.)
     let grid =
-        |v: f32| crate::geotiff::write_f32(4, 4, &[v; 16], 16, [-2.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap();
+        |v: f32| buildstore::geotiff::write_f32(4, 4, &[v; 16], 16, [-2.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap();
     let decl = |id: &str, from: &str| {
         let t = format!(
             "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\nkind = \"data\"\n\
@@ -549,7 +549,7 @@ fn heights_are_converted_before_the_blend() {
             tiles("coarse", 2, "https://b.org/{z}/{x}/{y}.png", "S"),
         ],
     };
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     f.0.insert("https://a.org/10/512/511.png".into(), Some(flat(100.0)));
     f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
     f.0.insert("https://b.org/10/513/511.png".into(), Some(flat(50.0)));
@@ -571,14 +571,14 @@ fn heights_are_converted_before_the_blend() {
     // The dataset beneath without a grid value in the band: the seam mixing references, counted.
     let mut plan = plan;
     plan.datasets[1].convert = conversion("T", &[decl("far", "T")]).unwrap();
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     for (u, h) in [("a.org/10/512/511", 100.0), ("b.org/10/512/511", 50.0), ("b.org/10/513/511", 50.0)] {
         f.0.insert(format!("https://{u}.png"), Some(flat(h)));
     }
     f.0.insert("https://g.org/up.tif".into(), Some(grid(2.0)));
     f.0.insert(
         "https://g.org/far.tif".into(),
-        Some(crate::geotiff::write_f32(4, 4, &[1.0; 16], 16, [40.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap()),
+        Some(buildstore::geotiff::write_f32(4, 4, &[1.0; 16], 16, [40.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap()),
     );
     let fetch = NoneElse(f);
     let o = Opts { fetch: &fetch, store: None, local: None };
@@ -617,7 +617,7 @@ impl RangeRead for SlowReads {
 #[test]
 fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
     use super::super::declared::{Dataset, Plan, Source};
-    use crate::geotiff::write_f32;
+    use buildstore::geotiff::write_f32;
     const PX: f64 = 1.0 / 3600.0;
     let (w, h) = (2048usize, 1536usize);
     let gt = [10.0, PX, 0.0, 50.0, 0.0, -PX];
@@ -632,7 +632,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
     let fine = write_f32(w as u32, h as u32, &data, 256, gt, 4326, Some(nd as f64)).unwrap();
     let cgt = [9.0, 3.0 * PX, 0.0, 51.0, 0.0, -3.0 * PX];
     let coarse = write_f32(2000, 2000, &vec![50.0f32; 2000 * 2000], 512, cgt, 4326, Some(nd as f64)).unwrap();
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     f.0.insert("https://a.org/fine.tif".into(), Some(fine));
     f.0.insert("https://b.org/coarse.tif".into(), Some(coarse));
     let geo = |id: &str, code: u8, res: f64, url: &str, b: [f64; 4]| Dataset {
@@ -673,7 +673,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
     }
     let want = sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None, local: None }, &|_| {}).unwrap();
     struct Slow {
-        inner: crate::fetch::MapFetch,
+        inner: buildstore::fetch::MapFetch,
         asked: Arc<Mutex<HashMap<(u64, usize), usize>>>,
         now: Arc<std::sync::atomic::AtomicUsize>,
         most: Arc<std::sync::atomic::AtomicUsize>,
@@ -719,7 +719,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
 #[test]
 fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
     use super::super::declared::{Dataset, Source};
-    let f = crate::fetch::MapFetch::default();
+    let f = buildstore::fetch::MapFetch::default();
     let o = Opts { fetch: &f, store: None, local: None };
     let ds = |crs: u16, id: &str| Dataset {
         convert: None,
@@ -797,10 +797,10 @@ fn ramp(k: usize) -> Vec<u8> {
 
 /// A pyramid of 8 × 6 ramps at zoom 8, one in 13
 /// missing, and points across them.
-fn ramps() -> (crate::fetch::MapFetch, Vec<f64>, Vec<f64>) {
+fn ramps() -> (buildstore::fetch::MapFetch, Vec<f64>, Vec<f64>) {
     let z = 8;
     let n = 1i64 << z;
-    let mut f = crate::fetch::MapFetch::default();
+    let mut f = buildstore::fetch::MapFetch::default();
     for ty in 80..86i64 {
         for tx in 100..108i64 {
             let k = (tx * 40 + ty) as usize;
@@ -913,7 +913,7 @@ fn one_slow_tile_does_not_stall_the_others() {
         }
     }
     let slow = Slow {
-        inner: NoneElse(crate::fetch::MapFetch(f.0.clone())),
+        inner: NoneElse(buildstore::fetch::MapFetch(f.0.clone())),
         url: slow_url,
         share: Mutex::new(0.0),
         cv: Condvar::new(),
@@ -1025,7 +1025,7 @@ fn fds_under(dir: &std::path::Path) -> usize {
 #[test]
 fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
     use super::super::declared::{Dataset, Plan, Source};
-    use crate::geotiff::write_f32;
+    use buildstore::geotiff::write_f32;
     let d = tempfile::tempdir().unwrap();
     let dir = d.path().join("glo");
     std::fs::create_dir_all(&dir).unwrap();
@@ -1071,7 +1071,7 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
         lon.push(10.0 + rnd() * 0.1 * cols as f64);
         lat.push(46.0 - rnd() * 0.1 * rows as f64);
     }
-    let f = crate::fetch::MapFetch::default();
+    let f = buildstore::fetch::MapFetch::default();
     let threads = 2;
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
     let o = Opts { fetch: &f, store: Some(store::nasfs::NasPath::local_for_test(d.path().to_path_buf())), local: None };
@@ -1142,7 +1142,7 @@ fn a_mask_answers_as_its_pixels() {
         })
         .collect();
     let gt = [10.0, 0.01, 0.0, 46.0, 0.0, -0.01];
-    let tif = crate::geotiff::write_f32(w, h, &v, 32, gt, 4326, None).unwrap();
+    let tif = buildstore::geotiff::write_f32(w, h, &v, 32, gt, 4326, None).unwrap();
     let t = Tiff::open(Arc::new(tif.clone())).unwrap();
     let m = Mask::of(Tiff::open(Arc::new(tif)).unwrap()).unwrap();
     // (The top row of blocks holds no void.)
@@ -1159,13 +1159,13 @@ fn a_mask_answers_as_its_pixels() {
 
 /// Task #689: a stored file the job reads `COPY_SHARE` of or more (its level's share of the pixels
 /// times its box's share inside the job's area) is copied whole to this Mac once
-/// (crate::localread) and read there, its fill mask too (read whole); one read at a coarse level,
+/// (buildstore::localread) and read there, its fill mask too (read whole); one read at a coarse level,
 /// or mostly outside the area, stays on the NAS. The heights are those read in place, to the bit; a copy of
 /// another length than the NAS's (a file fetched again) is deleted and copied again.
 #[test]
 fn stored_files_read_finely_are_copied_here_and_read_the_same() {
     use super::super::declared::{Dataset, Plan, Source};
-    use crate::geotiff::testtiff::{make_images, Opts as TOpts};
+    use buildstore::geotiff::testtiff::{make_images, Opts as TOpts};
     let d = tempfile::tempdir().unwrap();
     let (nas, cache) = (d.path().join("nas"), d.path().join("cache"));
     let dir = nas.join("sources/fetched/glo");
@@ -1215,9 +1215,9 @@ fn stored_files_read_finely_are_copied_here_and_read_the_same() {
     };
     let (lon, lat): (Vec<f64>, Vec<f64>) =
         (0..2000).map(|i| (10.0005 + 0.127 * (i % 50) as f64 / 50.0, 45.9995 - 0.063 * (i / 50) as f64 / 40.0)).unzip();
-    let f = crate::fetch::MapFetch::default();
+    let f = buildstore::fetch::MapFetch::default();
     let root = store::nasfs::NasRoot::local_for_test(&nas);
-    let local = crate::localread::Local::new(&root, &cache, 0);
+    let local = buildstore::localread::Local::new(&root, &cache, 0);
     let bits = |s: &Sampled| (s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>(), s.src.clone(), s.blended.clone());
     let whole = [9.0, 45.0, 11.0, 47.0];
     let run = |p: &Plan, area: Option<[f64; 4]>| {
@@ -1280,7 +1280,7 @@ fn membership_asks_a_nan_point_alone() {
 #[test]
 fn samplers_sharing_a_memo_read_each_file_at_their_own_level() {
     use super::super::declared::{Dataset, Plan, Source};
-    use crate::geotiff::testtiff::{make_images, Opts as TOpts};
+    use buildstore::geotiff::testtiff::{make_images, Opts as TOpts};
     let d = tempfile::tempdir().unwrap();
     let dir = d.path().join("sources/fetched/glo");
     std::fs::create_dir_all(&dir).unwrap();
@@ -1315,7 +1315,7 @@ fn samplers_sharing_a_memo_read_each_file_at_their_own_level() {
         }],
     };
     let (lon, lat) = (vec![10.03], vec![45.97]);
-    let f = crate::fetch::MapFetch::default();
+    let f = buildstore::fetch::MapFetch::default();
     let root = store::nasfs::NasRoot::local_for_test(d.path());
     let o = Opts { fetch: &f, store: Some(root.join("sources/fetched")), local: None };
     let (fine, coarse) = (plan(None), plan(Some(400.0)));

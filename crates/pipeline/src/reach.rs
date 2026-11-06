@@ -17,9 +17,9 @@
 //! `extract` keeps, so nothing a z6 tile builds is missed (an extra way only costs a run that keeps
 //! nothing).
 
-use crate::coverage::Coverage;
+use buildstore::coverage::Coverage;
 use crate::dem::spacing::Spacing;
-use crate::legacy::TileId;
+use codecs::legacy::TileId;
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
 use serde::{Deserialize, Serialize};
@@ -53,7 +53,7 @@ impl LongWay {
     pub fn touches(&self, cov: &Coverage, sp: &dyn Spacing) -> bool {
         let Some(&first) = self.verts.first() else { return false };
         let spacing = sp.at(first);
-        // (Each shape's answer kept for these points: crate::coverage's `Memo`.)
+        // (Each shape's answer kept for these points: buildstore::coverage's `Memo`.)
         let mut d = blake3::Hasher::new();
         d.update(&[self.ferry as u8]);
         d.update(&spacing.to_le_bytes());
@@ -121,10 +121,10 @@ pub struct Reaches {
     pub date: String,
     /// (Stored as `units` in `reach.json.zst`, from when a z6 tile was a "unit": kept, as every pass's file has it.)
     pub units: BTreeMap<String, Reach>,
-    /// The base packs' extents kept with them (crate::extents), read as the reaches are: what
+    /// The base packs' extents kept with them (codecs::extents), read as the reaches are: what
     /// their headers say, by content name. Not part of the reaches' file.
     #[serde(skip)]
-    pub extents: crate::extents::Extents,
+    pub extents: codecs::extents::Extents,
 }
 
 /// The logical name of a pass's reaches.
@@ -133,10 +133,10 @@ pub fn logical(date: &str) -> String {
 }
 
 /// Z6 tiles `units`' reaches (`make`'s: none for a tile with no counted way), each a piece kept
-/// (crate::resume_log::Pieces, task #890; a safe point once kept): a resumed run makes only those
+/// (jobrt::resume_log::Pieces, task #890; a safe point once kept): a resumed run makes only those
 /// its last didn't keep, the same values (whole numbers all, as JSON). By z6 tile ("6/x/y").
 pub fn each_kept(
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
     units: &[TileId],
     make: &mut dyn FnMut(TileId) -> anyhow::Result<Option<Reach>>,
 ) -> anyhow::Result<BTreeMap<String, Reach>> {
@@ -152,7 +152,7 @@ pub fn each_kept(
 
 /// A z6 tile's tile grown by `LONG_KM` (E7): where its ordinary ways are.
 pub fn near_box(u: TileId) -> [i32; 4] {
-    crate::hipack::grow(crate::hipack::tile_bounds(u.z, u.x, u.y), LONG_KM)
+    codecs::hipack::grow(codecs::hipack::tile_bounds(u.z, u.x, u.y), LONG_KM)
 }
 
 /// Why a pass's reaches couldn't be read.
@@ -175,7 +175,7 @@ impl Reaches {
         let raw = root.join(c).read().map_err(LoadError::Io)?;
         let b = zstd::decode_all(&raw[..]).map_err(|e| LoadError::Bad(format!("{c}: {e}")))?;
         let mut r: Reaches = serde_json::from_slice(&b).map_err(|e| LoadError::Bad(format!("{c}: {e}")))?;
-        r.extents = crate::extents::load(root);
+        r.extents = codecs::extents::load(root);
         Ok(Some(r))
     }
 
@@ -205,7 +205,7 @@ impl Reach {
     /// The box of the ways the z6 tile owns, wherever they go (E7): its tile, its owned box and its own
     /// long ways. A base pack's ways lie inside it (the map tiles are keyed by it).
     pub fn owned_extent(&self, u: TileId) -> [i32; 4] {
-        let mut b = crate::hipack::tile_bounds(u.z, u.x, u.y);
+        let mut b = codecs::hipack::tile_bounds(u.z, u.x, u.y);
         let mut add = |p: [i32; 4]| b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[2]), b[3].max(p[3])];
         if let Some(o) = self.owned {
             add(o);
@@ -307,7 +307,7 @@ pub fn of_piece(piece: &Path, u: TileId) -> Result<Option<Reach>> {
     )?;
     coords.sort_unstable_by_key(|c| c.0);
     let at = |id: i64| coords.binary_search_by_key(&id, |c| c.0).ok().map(|i| coords[i].1);
-    let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
+    let tb = codecs::hipack::tile_bounds(u.z, u.x, u.y);
     let near = near_box(u);
     let mut reach = Reach::default();
     let mut cells = std::collections::BTreeSet::new();
@@ -351,7 +351,7 @@ mod tests {
     /// the same as a run never paused, each tile worked out once.
     #[test]
     fn reaches_paused_at_every_tile_resume_to_the_same() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         let units: Vec<TileId> = (0..5).map(|x| TileId { z: 6, x, y: 20 }).collect();
         let made = std::cell::Cell::new(0);
         let mut make = |u: TileId| -> Result<Option<Reach>> {
@@ -372,7 +372,7 @@ mod tests {
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(r) => break r,

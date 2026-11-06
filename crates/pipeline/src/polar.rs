@@ -3,7 +3,7 @@
 //! from the elevation pool as the Mercator terrain is (crate::terrain_base: the same datasets in the
 //! same order, blended alike, each pixel the mean of `K` × `K` samples), so the roads and both
 //! terrains read one dataset at every point. Stored as the Mercator tiles are: terrain as Terrarium
-//! in lossless WebP (crate::terrain_codec), shading as `shade-webp` (crate::shade_codec) from
+//! in lossless WebP (codecs::terrain_codec), shading as `shade-webp` (codecs::shade_codec) from
 //! Horn's method at the finest level and plain means of four above it (crate::slope_pack's rule),
 //! its directions on the grid (east = +x, south = −y; a renderer turns them to the ground's:
 //! roadcore::polar::east_north). Nothing here is the globe's: the tiles are the grid's, for any
@@ -88,7 +88,7 @@ pub fn blocks(pole: Pole) -> Vec<(u32, u32)> {
 }
 
 /// A pole's blocks the coverage builds: those whose latitudes it meets (`roadcore::polar::lat_box`).
-pub fn built(cov: &crate::coverage::Coverage, pole: Pole) -> Vec<(u32, u32)> {
+pub fn built(cov: &buildstore::coverage::Coverage, pole: Pole) -> Vec<(u32, u32)> {
     let e7 = |b: [f64; 4]| b.map(|v| (v * 1e7).round() as i32);
     blocks(pole).into_iter().filter(|&(x, y)| cov.meets_rect(e7(polar::lat_box(pole, BLOCK_Z, x, y)))).collect()
 }
@@ -108,11 +108,11 @@ pub fn around(pole: Pole, b: (u32, u32)) -> Vec<(u32, u32)> {
     out
 }
 
-/// A tile's terrain as stored (crate::terrain_codec): 1 cm at the finest zoom `max_z`, 10 cm coarser.
+/// A tile's terrain as stored (codecs::terrain_codec): 1 cm at the finest zoom `max_z`, 10 cm coarser.
 pub fn encode_terrain(z: u8, max_z: u8, e: &[f32]) -> Result<Vec<u8>> {
     let mut h = e.to_vec();
-    let q = if z == max_z { crate::terrain_codec::NATIVE_M } else { crate::terrain_codec::COARSER_M };
-    crate::terrain_codec::encode(&mut h, q)
+    let q = if z == max_z { codecs::terrain_codec::NATIVE_M } else { codecs::terrain_codec::COARSER_M };
+    codecs::terrain_codec::encode(&mut h, q)
 }
 
 /// Samples a side over a pixel (crate::terrain_base's).
@@ -154,14 +154,14 @@ impl Voids {
 }
 
 /// Piece `id`'s sampled tiles (`make`'s, with the voids it counted), kept with those counts
-/// (crate::resume_log::Pieces): its tiles, its counts added to `voids` whether made now or kept.
+/// (jobrt::resume_log::Pieces): its tiles, its counts added to `voids` whether made now or kept.
 fn sample_kept(
-    pieces: &mut crate::resume_log::Pieces,
-    id: crate::resume_log::BlockId,
+    pieces: &mut jobrt::resume_log::Pieces,
+    id: jobrt::resume_log::BlockId,
     voids: &Voids,
     make: impl FnOnce() -> Result<(Vec<Vec<f32>>, Voids)>,
 ) -> Result<Vec<Vec<f32>>> {
-    use crate::resume_log::{Get, Put};
+    use jobrt::resume_log::{Get, Put};
     let p = pieces.piece(id, || {
         let (es, mine) = make()?;
         let mut p = Put::default();
@@ -202,7 +202,7 @@ pub const SAMPLE_CHUNK: usize = 16;
 /// polar-root's), so a resumed run samples only the chunks its last didn't keep, and each piece's
 /// gap is one chunk's sampling.
 pub fn sample_pieces(
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
     z: u8,
     ts: &[(u32, u32)],
     voids: &Voids,
@@ -482,7 +482,7 @@ pub fn terrain_block(
     b: (u32, u32),
     max_z: u8,
     voids: &Voids,
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
     put: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Result<()>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<()> {
@@ -529,7 +529,7 @@ pub fn slope_block(
     b: (u32, u32),
     max_z: u8,
     terrain: &dyn Fn(u8, u32, u32) -> Result<Option<Arc<Vec<f32>>>>,
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
     put: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Result<()>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<()> {
@@ -588,7 +588,7 @@ pub fn slope_block(
         let mut keys: Vec<&(u32, u32)> = kids.keys().collect();
         keys.sort();
         for &(x, y) in keys {
-            put(z, x, y, crate::shade_codec::encode(&kids[&(x, y)])?)?;
+            put(z, x, y, codecs::shade_codec::encode(&kids[&(x, y)])?)?;
             tally.add(1);
         }
         // (The level's tiles with no shading, their terrain missing, count as done too.)
@@ -632,7 +632,7 @@ pub fn root(
         keys.sort();
         for &(x, y) in keys {
             let s = ss.get(&(x, y)).cloned().unwrap_or_else(|| vec![Px::default(); TS * TS]);
-            put(z, x, y, encode_terrain(z, max_z, &hs[&(x, y)])?, crate::shade_codec::encode(&s)?)?;
+            put(z, x, y, encode_terrain(z, max_z, &hs[&(x, y)])?, codecs::shade_codec::encode(&s)?)?;
         }
     }
     Ok(())
@@ -686,7 +686,7 @@ fn write(
     root: (u8, u32, u32),
     tiles: Vec<(u8, u32, u32, Vec<u8>)>,
 ) -> Result<()> {
-    let enc = if kind == "terrain" { crate::terrain_codec::ENCODING } else { crate::shade_codec::ENCODING };
+    let enc = if kind == "terrain" { codecs::terrain_codec::ENCODING } else { codecs::shade_codec::ENCODING };
     let mut it = tiles.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
         (z, x, y, b, n)
@@ -695,34 +695,34 @@ fn write(
     Ok(())
 }
 
-/// A block's resume log's target (crate::resume_log::path): the south's blocks at z 4 + 128.
+/// A block's resume log's target (jobrt::resume_log::path): the south's blocks at z 4 + 128.
 fn resume_target(pole: Pole, b: (u32, u32)) -> (u8, u32, u32) {
     (BLOCK_Z + if pole == Pole::South { 128 } else { 0 }, b.0, b.1)
 }
 
 /// `polar-terrain`: each block's terrain pack (`terrain_block`), from the pool over its latitudes.
 pub fn terrain_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32))]) -> Result<()> {
-    let net = crate::fetch::Fetcher::from_env();
+    let net = buildstore::fetch::Fetcher::from_env();
     for (k, &(pole, b)) in targets.iter().enumerate() {
         let t = target(pole, b);
-        crate::control::safe_point("polar-terrain");
+        jobrt::control::safe_point("polar-terrain");
         jobrt::jobs::report(k as u64, targets.len() as u64, "polar blocks");
         let max_z = finest_now(out, pole)?;
         let (plans, store) = pool_plans(out, polar::lat_box(pole, BLOCK_Z, b.0, b.1), max_z)?;
         let o = crate::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
         let ss = samplers(&plans, &o)?;
         let voids = Voids::default();
-        let mut pieces = crate::resume_log::Pieces::open(
+        let mut pieces = jobrt::resume_log::Pieces::open(
             &out.scratch,
             resume_target(pole, b),
             "polar-terrain",
-            &crate::resume_log::job_id(
+            &jobrt::resume_log::job_id(
                 "polar-terrain",
-                &format!("{} {} z{max_z}", TERRAIN_V, crate::terrain_codec::version()),
+                &format!("{} {} z{max_z}", TERRAIN_V, codecs::terrain_codec::version()),
                 &t,
                 &[&crate::terrain_resume::inputs_read(out.root(), &out.manifest)?, &format!("{plans:?}")],
             ),
-            crate::resume_log::on(),
+            jobrt::resume_log::on(),
         );
         let mut tiles = Vec::new();
         terrain_block(
@@ -741,7 +741,7 @@ pub fn terrain_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32)
             },
         )
         // (Paused at a chunk kept: the block's pieces kept, the run resumed there.)
-        .map_err(|e| crate::control::stop_if_paused("polar-terrain", e))?;
+        .map_err(|e| jobrt::control::stop_if_paused("polar-terrain", e))?;
         let (v, f, n) = voids.total();
         eprintln!(
             "polar-terrain {t}: {} tiles; of {n} samples {v} with no data, {f} of them filled from voids",
@@ -749,7 +749,7 @@ pub fn terrain_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32)
         );
         write(out, "terrain", pole, "polar", (BLOCK_Z, b.0, b.1), tiles)?;
         pieces.finish();
-        crate::control::done("polar-terrain", &t);
+        jobrt::control::done("polar-terrain", &t);
     }
     jobrt::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
     Ok(())
@@ -761,7 +761,7 @@ pub fn slope_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32))]
     for (k, &(pole, b)) in targets.iter().enumerate() {
         let t = target(pole, b);
         let max_z = finest_now(out, pole)?;
-        crate::control::safe_point("polar-slope");
+        jobrt::control::safe_point("polar-slope");
         jobrt::jobs::report(k as u64, targets.len() as u64, "polar blocks");
         let mut packs: HashMap<(u32, u32), Pack> = HashMap::new();
         for n in around(pole, b) {
@@ -774,20 +774,20 @@ pub fn slope_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32))]
             let Some(p) = packs.get(&(x >> (z - BLOCK_Z), y >> (z - BLOCK_Z))) else { return Ok(None) };
             p.get(z, x, y)?.map(|b| roadcore::grid::decode_terrain(&b).map(Arc::new)).transpose()
         };
-        let mut pieces = crate::resume_log::Pieces::open(
+        let mut pieces = jobrt::resume_log::Pieces::open(
             &out.scratch,
             resume_target(pole, b),
             "polar-slope",
-            &crate::resume_log::job_id(
+            &jobrt::resume_log::job_id(
                 "polar-slope",
-                &format!("{} {} z{max_z}", SLOPE_V, crate::shade_codec::version()),
+                &format!("{} {} z{max_z}", SLOPE_V, codecs::shade_codec::version()),
                 &t,
-                &[&crate::resume_log::names(
+                &[&jobrt::resume_log::names(
                     out,
                     around(pole, b).into_iter().map(|n| block_logical("terrain", pole, n)),
                 )],
             ),
-            crate::resume_log::on(),
+            jobrt::resume_log::on(),
         );
         let mut tiles = Vec::new();
         slope_block(
@@ -804,11 +804,11 @@ pub fn slope_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32))]
                 jobrt::jobs::report_f(k as f64 + d as f64 / n as f64, targets.len() as u64, "polar blocks")
             },
         )
-        .map_err(|e| crate::control::stop_if_paused("polar-slope", e))?;
+        .map_err(|e| jobrt::control::stop_if_paused("polar-slope", e))?;
         eprintln!("polar-slope {t}: {} tiles", tiles.len());
         write(out, "slope", pole, "polar", (BLOCK_Z, b.0, b.1), tiles)?;
         pieces.finish();
-        crate::control::done("polar-slope", &t);
+        jobrt::control::done("polar-slope", &t);
     }
     jobrt::jobs::report(targets.len() as u64, targets.len() as u64, "polar blocks");
     Ok(())
@@ -860,7 +860,7 @@ pub fn root_step(out: &mut buildstore::out::Out, pole: Pole, built: &[(u32, u32)
             out.remove(&l);
         }
     }
-    crate::control::done("polar-root", &root_target(pole));
+    jobrt::control::done("polar-root", &root_target(pole));
     Ok(())
 }
 
@@ -928,7 +928,7 @@ mod tests {
         let gt = [10.0, 0.005, 0.0, 46.0, 0.0, -0.005];
         let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32).collect();
         let m: Vec<f32> = (0..n * n).map(|p| if p % n < 100 { 3.0 } else { 1.0 }).collect();
-        let tif = |v: &[f32]| crate::geotiff::write_f32(n as u32, n as u32, v, 256, gt, 4326, None).unwrap();
+        let tif = |v: &[f32]| buildstore::geotiff::write_f32(n as u32, n as u32, v, 256, gt, 4326, None).unwrap();
         std::fs::write(store.join("glo/T_DEM.tif"), tif(&e)).unwrap();
         std::fs::write(store.join("glo/T_FLM.tif"), tif(&m)).unwrap();
         let plan = Plan {
@@ -951,8 +951,8 @@ mod tests {
                 outline: None,
             }],
         };
-        crate::fetch::go_offline();
-        let net = crate::fetch::Fetcher::from_env();
+        buildstore::fetch::go_offline();
+        let net = buildstore::fetch::Fetcher::from_env();
         let o = crate::dem::generic::Opts {
             fetch: &net,
             store: Some(store::nasfs::NasPath::local_for_test(store)),
@@ -1028,7 +1028,7 @@ mod tests {
     /// piece), resumed each time, puts the same tiles as one never paused.
     #[test]
     fn a_block_paused_at_every_safe_point_resumes_to_the_same_tiles() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         let (pole, b, max_z) = (Pole::South, (7, 7), 8u8);
         let hilly = |_: u8, x: u32, y: u32| -> Result<Option<Arc<Vec<f32>>>> {
             Ok((x % 5 != 0)
@@ -1060,7 +1060,7 @@ mod tests {
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(t) => break t,
@@ -1083,7 +1083,7 @@ mod tests {
             b,
             max_z,
             &flat,
-            &mut crate::resume_log::Pieces::none(),
+            &mut jobrt::resume_log::Pieces::none(),
             &mut |_, _, _, _| {
                 puts += 1;
                 Ok(())
@@ -1109,7 +1109,7 @@ mod tests {
             b,
             max_z,
             &holes,
-            &mut crate::resume_log::Pieces::none(),
+            &mut jobrt::resume_log::Pieces::none(),
             &mut |_, _, _, _| {
                 puts += 1;
                 Ok(())
@@ -1126,7 +1126,7 @@ mod tests {
     /// sampled once.
     #[test]
     fn a_levels_sampling_paused_at_every_chunk_resumes_to_the_same_tiles() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         let ts: Vec<(u32, u32)> = (0..5).flat_map(|y| (0..9).map(move |x| (x, y))).collect();
         let made = std::cell::Cell::new(0);
         let make = |c: &[(u32, u32)], v: &Voids| -> Result<Vec<Vec<f32>>> {
@@ -1149,7 +1149,7 @@ mod tests {
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(t) => break t,

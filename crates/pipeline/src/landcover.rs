@@ -9,8 +9,8 @@
 //! lack), the rest of grid.class.u8 kept as staged. Without: every tile, those of the last run
 //! copied from its grid.class.u8 (its tile order in `<build>/../cache/steps/landcover.tiles`).
 
-use crate::fetch::Fetch;
-use crate::geotiff::Tiff;
+use buildstore::fetch::Fetch;
+use buildstore::geotiff::Tiff;
 use anyhow::{bail, Context, Result};
 use det::Det;
 use rayon::prelude::*;
@@ -270,8 +270,8 @@ fn classify(wc: &WorldCover, tiles: &[[u32; 2]], slots: &[u32], out: &mut [u8], 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fetch::MapFetch;
-    use crate::geotiff::testtiff::{make_images, Opts};
+    use buildstore::fetch::MapFetch;
+    use buildstore::geotiff::testtiff::{make_images, Opts};
 
     fn cover() -> Cover {
         Cover::of(crate::inputs::sources::staged().role(crate::inputs::sources::LAND_COVER).unwrap()).unwrap()

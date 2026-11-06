@@ -479,7 +479,7 @@ pub fn forget(out: &mut buildstore::out::Out, unit: &str) -> Result<String> {
 }
 
 pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Option<super::Planned>) -> Result<String> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let checks = super::checks(unit).with_context(|| format!("{unit} isn't a gate unit this app knows"))?;
     let root = out.root().clone();
     let p = phase("listing the accepted version and the inputs folder");

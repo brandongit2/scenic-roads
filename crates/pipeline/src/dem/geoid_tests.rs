@@ -1,5 +1,5 @@
 use super::*;
-use crate::fetch::MapFetch;
+use buildstore::fetch::MapFetch;
 use crate::inputs::sources::{parse, Source};
 
 /// A geoid source from its `[data]` lines.
@@ -18,7 +18,7 @@ fn grid(id: &str, url: &str, from: &str, to: &str) -> Source {
 /// A 4 × 4 float grid of `px`° pixels from `x0`, `y0` (its north-west corner), each `f(col, row)`.
 fn tiff(x0: f64, y0: f64, px: f64, f: impl Fn(u32, u32) -> f32) -> Vec<u8> {
     let v: Vec<f32> = (0..16).map(|i| f(i % 4, i / 4)).collect();
-    crate::geotiff::write_f32(4, 4, &v, 16, [x0, px, 0.0, y0, 0.0, -px], 4326, None).unwrap()
+    buildstore::geotiff::write_f32(4, 4, &v, 16, [x0, px, 0.0, y0, 0.0, -px], 4326, None).unwrap()
 }
 
 #[test]

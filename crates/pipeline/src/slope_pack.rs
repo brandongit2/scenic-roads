@@ -1,5 +1,5 @@
 //! The slope layer (docs/steps.md §2, Slope): the terrain's shading pyramid (roadcore::shade, stored
-//! by crate::shade_codec), which the map's slope tint and hill-shading both read. At each place's
+//! by codecs::shade_codec), which the map's slope tint and hill-shading both read. At each place's
 //! finest terrain level, every pixel's steepness and direction by Horn's method (with the
 //! neighbouring tiles); each coarser level the mean of the four pixels beneath it, or where no finer
 //! level covers a pixel, its own level's terrain's. Every level is stored: z0–2 in the root
@@ -295,7 +295,7 @@ pub const PAR_LEVELS: u8 = 3;
 pub const THREADS: usize = 16;
 
 /// A pyramid's build on the threads its target runs on (its job's grant now:
-/// crate::control::on_grant), at most `THREADS`: past them, on a pool `THREADS` wide. (Not a pool
+/// jobrt::control::on_grant), at most `THREADS`: past them, on a pool `THREADS` wide. (Not a pool
 /// made at the job's first target and kept: a re-grant is taken at the next target, task #948.)
 fn on_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     if rayon::current_num_threads() <= THREADS {
@@ -382,7 +382,7 @@ const PX_TILE: u64 = (TS * TS * std::mem::size_of::<Px>()) as u64;
 /// z8 and up to 9 % of pixels changed between none and some; the steepness crept up: task #632's
 /// review, `measure_quantisation_drift`.)
 pub fn stored(v: &[Px]) -> (Vec<u8>, Vec<Px>) {
-    (crate::shade_codec::encode(v).expect("a tile's WebP"), quadrant(v))
+    (codecs::shade_codec::encode(v).expect("a tile's WebP"), quadrant(v))
 }
 
 /// What a slope run made.
@@ -407,7 +407,7 @@ pub fn deep_logical(x: u32, y: u32) -> String {
 
 /// A deep pack's z10 tile, from its logical name.
 pub fn deep_tile(l: &str) -> Option<(u32, u32)> {
-    let u = crate::legacy::TileId::parse(l.strip_prefix(DEEP_PREFIX)?).filter(|u| u.z == PACK_Z)?;
+    let u = codecs::legacy::TileId::parse(l.strip_prefix(DEEP_PREFIX)?).filter(|u| u.z == PACK_Z)?;
     (deep_logical(u.x, u.y) == l).then_some((u.x, u.y))
 }
 
@@ -483,12 +483,12 @@ pub fn read_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<((u32, u32
     );
     let t = m["tile"]
         .as_str()
-        .and_then(crate::legacy::TileId::parse)
+        .and_then(codecs::legacy::TileId::parse)
         .filter(|u| u.z == 6)
         .with_context(|| format!("{}: no z6 tile", what()))?;
     let mut out = Vec::new();
     for s in r.sections() {
-        let u = crate::legacy::TileId::parse(&s.name.replace('-', "/"))
+        let u = codecs::legacy::TileId::parse(&s.name.replace('-', "/"))
             .filter(|u| (6..=8).contains(&u.z) && (u.x >> (u.z - 6), u.y >> (u.z - 6)) == (t.x, t.y))
             .with_context(|| format!("{}: a section {:?}", what(), s.name))?;
         out.push((u.z, u.x, u.y, r.read(&s.name).with_context(what)?));
@@ -743,7 +743,7 @@ fn assemble(
     ts: &[(u32, u32)],
     mids: &BTreeMap<(u32, u32), Vec<Made>>,
     count: &Count,
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
 ) -> Result<Vec<Made>> {
     let slope_now = ManifestTiles::new(out, "slope");
     let mut made: Vec<Made> = Vec::new();
@@ -779,7 +779,7 @@ fn assemble(
             continue;
         }
         let p = pieces.piece((6, q.0 * 8, y), || {
-            let mut p = crate::resume_log::Put::default();
+            let mut p = jobrt::resume_log::Put::default();
             for &x in &row {
                 count.one();
                 match shade_tile(terrain, 6, x, y) {
@@ -794,7 +794,7 @@ fn assemble(
             }
             Ok(p.0)
         })?;
-        let mut g = crate::resume_log::Get(&p);
+        let mut g = jobrt::resume_log::Get(&p);
         for &x in &row {
             if g.u8()? == 0 {
                 continue;
@@ -876,7 +876,7 @@ pub fn build_piece_later(
     expect_same: bool,
     on: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Report> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let mut rep = Report::default();
     let p = phase("reading the terrain packs' indexes");
     let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
@@ -934,7 +934,7 @@ pub fn build_piece_later(
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    let enc = crate::shade_codec::ENCODING;
+    let enc = codecs::shade_codec::ENCODING;
     let pack = crate::layers::write_pack_local(out, "slope", enc, false, "hi", (6, t.0, t.1), &mut it)?;
     let ml = mid_logical(t.0, t.1);
     let mid = out.scratch_file(&format!("{ml}.sect"));
@@ -1012,7 +1012,7 @@ impl DeepBatch {
     /// save (`Out::save_upto` the mark after it). Its pack copied first, or waited for where it's
     /// being copied ahead; then the next target's copying ahead begins.
     pub fn build(&mut self, out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
-        use crate::timings::phase;
+        use jobrt::timings::phase;
         let at = self.targets.iter().position(|&u| u == t);
         let p = phase("copying its terrain pack here");
         if let Some(h) = self.ahead.take() {
@@ -1073,7 +1073,7 @@ fn build_deep_with(
     t: (u32, u32),
     on: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Report> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let mut rep = Report::default();
     let p = phase("reading the terrain packs' indexes");
     let (get, has) = terrain_reads(terr);
@@ -1092,7 +1092,7 @@ fn build_deep_with(
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    let enc = crate::shade_codec::ENCODING;
+    let enc = codecs::shade_codec::ENCODING;
     let pack = crate::layers::write_pack_local(out, "slope", enc, false, "deep", (PACK_Z, t.0, t.1), &mut it)?;
     let ml = deep_mid_logical(t.0, t.1);
     let path = out.scratch_file(&format!("{ml}.sect"));
@@ -1127,7 +1127,7 @@ pub const DEEP_MID_PREFIX: &str = "work/slope-deep-mid/";
 
 /// The z10 tile of a deep mid, from its logical name.
 pub fn deep_mid_tile(l: &str) -> Option<(u32, u32)> {
-    let u = crate::legacy::TileId::parse(l.strip_prefix(DEEP_MID_PREFIX)?).filter(|u| u.z == PACK_Z)?;
+    let u = codecs::legacy::TileId::parse(l.strip_prefix(DEEP_MID_PREFIX)?).filter(|u| u.z == PACK_Z)?;
     (deep_mid_logical(u.x, u.y) == l).then_some((u.x, u.y))
 }
 
@@ -1197,13 +1197,13 @@ pub fn read_deep_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<((u32
     );
     let t = m["tile"]
         .as_str()
-        .and_then(crate::legacy::TileId::parse)
+        .and_then(codecs::legacy::TileId::parse)
         .filter(|u| u.z == PACK_Z)
         .with_context(|| format!("{}: no z10 tile", what()))?;
     let k = FIRST_Z - PACK_Z;
     let mut mid = DeepMid::default();
     for s in r.sections() {
-        let u = crate::legacy::TileId::parse(&s.name.replace('-', "/"))
+        let u = codecs::legacy::TileId::parse(&s.name.replace('-', "/"))
             .filter(|u| u.z == FIRST_Z && (u.x >> k, u.y >> k) == (t.x, t.y))
             .with_context(|| format!("{}: a section {:?}", what(), s.name))?;
         let b = r.read(&s.name).with_context(what)?;
@@ -1249,7 +1249,7 @@ pub fn build_lo(
     ts: &[(u32, u32)],
     on: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Report> {
-    build_lo_keeping(out, q, ts, on, crate::resume_log::on())
+    build_lo_keeping(out, q, ts, on, jobrt::resume_log::on())
 }
 
 /// What z3 tile `q`'s zoomed-out slope reads besides its z6 tiles' mids `ts`: the terrain's lo
@@ -1265,11 +1265,11 @@ fn lo_inputs(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> String {
         }
     }
     ls.extend(ts.iter().map(|t| mid_logical(t.0, t.1)));
-    crate::resume_log::names(out, ls)
+    jobrt::resume_log::names(out, ls)
 }
 
 /// `build_lo`, its z6 tiles shaded from their terrain kept a row at a time (task #889:
-/// crate::resume_log::Pieces) with `keep`.
+/// jobrt::resume_log::Pieces) with `keep`.
 pub fn build_lo_keeping(
     out: &mut Out,
     q: (u32, u32),
@@ -1277,20 +1277,20 @@ pub fn build_lo_keeping(
     on: &(dyn Fn(&str, u64, u64) + Sync),
     keep: bool,
 ) -> Result<Report> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let target = format!("3/{}/{}", q.0, q.1);
-    let id = crate::resume_log::job_id(
+    let id = jobrt::resume_log::job_id(
         "slope-lo",
         &format!(
             "slope-lo {} slope {} {}",
             crate::agent::build::SLOPE_LO_V,
             crate::agent::build::SLOPE_V,
-            crate::shade_codec::version()
+            codecs::shade_codec::version()
         ),
         &target,
         &[&lo_inputs(out, q, ts)],
     );
-    let mut pieces = crate::resume_log::Pieces::open(&out.scratch, (3, q.0, q.1), "slope-lo", &id, keep);
+    let mut pieces = jobrt::resume_log::Pieces::open(&out.scratch, (3, q.0, q.1), "slope-lo", &id, keep);
     let mut rep = Report::default();
     let p = phase("reading the pieces' mids and the terrain packs' indexes");
     let mids = read_mids(out, q, ts)?;
@@ -1311,7 +1311,7 @@ pub fn build_lo_keeping(
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    let enc = crate::shade_codec::ENCODING;
+    let enc = codecs::shade_codec::ENCODING;
     if crate::layers::write_pack(out, "slope", enc, false, "lo", (3, q.0, q.1), &mut it)?.is_none() {
         crate::layers::drop(out, &[crate::layers::lo_logical("slope", q.0, q.1)]);
     }
@@ -1325,7 +1325,7 @@ pub fn build_lo_keeping(
 /// The root pack (z0–2) made from the 64 z3 slope tiles as stored (their quadrants), where a z3
 /// tile is missing from its own terrain's shading.
 pub fn build_root(out: &mut Out) -> Result<usize> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let p = phase("reading the z3 slope tiles and the terrain packs' indexes");
     let terr = ManifestTiles::new(out, "terrain");
     let have = ManifestTiles::new(out, "slope");
@@ -1367,7 +1367,7 @@ pub fn build_root(out: &mut Out) -> Result<usize> {
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    crate::layers::write_pack(out, "slope", crate::shade_codec::ENCODING, false, "root", (0, 0, 0), &mut it)?;
+    crate::layers::write_pack(out, "slope", codecs::shade_codec::ENCODING, false, "root", (0, 0, 0), &mut it)?;
     drop(up);
     out.save()?;
     Ok(n)
@@ -1543,7 +1543,7 @@ mod tests {
     /// (the deep detail reaching z6), else its own terrain's shading; the same bytes as one run of the
     /// whole pyramid. Made again, the same packs; the deep terrain gone, its deep pack dropped.
     /// Made on 8 threads, the same bytes as on 2 (task #948 review: a target's work runs on its
-    /// job's grant as it begins, crate::control::on_grant, a pool that wide, which a re-grant
+    /// job's grant as it begins, jobrt::control::on_grant, a pool that wide, which a re-grant
     /// changes between targets; its own test before #969, a third run of the two).
     #[test]
     fn a_z6_tile_stores_every_level_down_to_its_deep_terrain() {
@@ -1748,7 +1748,7 @@ mod tests {
 
     /// Task #929 review: a slope-deep batch re-granted as it goes (its job's threads file rewritten
     /// mid-target, as the agent's tend_grant does: 2, then 5, then 1) runs each target on the grant
-    /// as that target began (crate::control::on_grant, scenic-build's slope_deep_batch), while the
+    /// as that target began (jobrt::control::on_grant, scenic-build's slope_deep_batch), while the
     /// copying ahead of the next target's pack and the target before's uploads (put off, landed by
     /// the next target's save as `Landing` does) go on across the change of pool; every target lands,
     /// the same bytes as each made alone; on grants of 2 and 1, within the bound (a target waiting
@@ -1790,17 +1790,17 @@ mod tests {
         let mut out = fresh(d.path());
         let f = d.path().join("threads");
         let grants = [2, 5, 1];
-        crate::control::grant(&f, grants[0]).unwrap();
-        std::env::set_var(crate::control::THREADS_ENV, &f);
+        jobrt::control::grant(&f, grants[0]).unwrap();
+        std::env::set_var(jobrt::control::THREADS_ENV, &f);
         let mut batch = DeepBatch::new(&out, &ts);
         // (The mark after the target uploading's uploads, and the targets landed: saved and named.)
         let mut up: Option<(buildstore::out::Mark, (u32, u32))> = None;
         let mut landed = Vec::new();
         for (k, &t) in ts.iter().enumerate() {
-            let ran = crate::control::on_grant(|| {
+            let ran = jobrt::control::on_grant(|| {
                 let ran = rayon::current_num_threads();
                 // (Re-granted while it's made: the next target takes it.)
-                crate::control::grant(&f, grants.get(k + 1).copied().unwrap_or(1)).unwrap();
+                jobrt::control::grant(&f, grants.get(k + 1).copied().unwrap_or(1)).unwrap();
                 batch.build(&mut out, t, &|_, _, _| {}).unwrap();
                 assert_eq!(rayon::current_num_threads(), ran, "a target stays on its grant to its end");
                 // (The one before landed, as `Landing::then` lands it: its uploads went on beside.)
@@ -1812,13 +1812,13 @@ mod tests {
                 ran
             });
             assert_eq!(ran, grants[k], "target {k} on the grant as it began");
-            assert_eq!(crate::control::in_force(), None, "between targets");
+            assert_eq!(jobrt::control::in_force(), None, "between targets");
         }
         let (m, u) = up.take().unwrap();
         out.save_upto(m).unwrap();
         landed.push(u);
         drop(batch);
-        std::env::remove_var(crate::control::THREADS_ENV);
+        std::env::remove_var(jobrt::control::THREADS_ENV);
         assert_eq!(landed, ts, "every target landed, in turn");
         assert_eq!(std::fs::read_dir(out.scratch_file("terrain-copies")).map_or(0, |d| d.count()), 0, "copies let go");
         assert_eq!(deep(out), alone);
@@ -1953,7 +1953,7 @@ mod tests {
         .unwrap();
         terrain(&mut again);
         let old = vec![(6, 24, 23, z6.clone(), z6.len() as u32), (7, 48, 46, z7.clone(), z7.len() as u32)];
-        let enc = crate::shade_codec::ENCODING;
+        let enc = codecs::shade_codec::ENCODING;
         crate::layers::write_pack(&mut again, "slope", enc, false, "lo", (3, 3, 2), &mut old.into_iter()).unwrap();
         again.save().unwrap();
         build_piece(&mut again, (28, 16), false, &|_, _, _| {}).unwrap();
@@ -1970,12 +1970,12 @@ mod tests {
         build_piece(&mut paused, (28, 16), false, &|_, _, _| {}).unwrap();
         let mut stops = 0;
         loop {
-            crate::resume_log::STOP_AFTER.set(Some(1));
+            jobrt::resume_log::STOP_AFTER.set(Some(1));
             let r = build_lo_keeping(&mut paused, (3, 2), &[(28, 16)], &|_, _, _| {}, true);
-            crate::resume_log::STOP_AFTER.set(None);
+            jobrt::resume_log::STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     assert!(paused.get(lo).is_none(), "nothing of it put");
                     stops += 1;
                 }
@@ -2109,7 +2109,7 @@ mod tests {
             let s = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
             s(u.ru_utime) + s(u.ru_stime)
         };
-        crate::timings::start(if a[1] == "lo" { "slope-lo" } else { "slope" });
+        jobrt::timings::start(if a[1] == "lo" { "slope-lo" } else { "slope" });
         let (t0, c0) = (std::time::Instant::now(), cpu());
         let none = |_: &str, _: u64, _: u64| {};
         let mut h = <sha2::Sha256 as sha2::Digest>::new();
@@ -2139,7 +2139,7 @@ mod tests {
         let piece_of = |t: (u32, u32), put: &mut dyn FnMut(&[Made])| -> Vec<Made> {
             let k = PACK_Z - 6;
             let mut tops = BTreeMap::new();
-            let p = crate::timings::phase("its z10 tiles' slope-deep runs");
+            let p = jobrt::timings::phase("its z10 tiles' slope-deep runs");
             for x in t.0 << k..(t.0 + 1) << k {
                 for y in t.1 << k..(t.1 + 1) << k {
                     let deep = deep_terrain(&terr, (x, y)).unwrap();
@@ -2155,7 +2155,7 @@ mod tests {
                 }
             }
             drop(p);
-            let p = crate::timings::phase("its slope-hi run");
+            let p = jobrt::timings::phase("its slope-hi run");
             terr.copy_here(9, t.0 << 3, t.1 << 3);
             let read = |f: (u32, u32)| Ok(read_deep_mid(&mid_path(f.0, f.1))?.1);
             let deep = DeepQuadrants {
@@ -2187,7 +2187,7 @@ mod tests {
                     &ts,
                     &mids,
                     &Count::new(85, &none),
-                    &mut crate::resume_log::Pieces::none(),
+                    &mut jobrt::resume_log::Pieces::none(),
                 )
                 .unwrap());
             }
@@ -2211,7 +2211,7 @@ mod tests {
                     &ts,
                     &mids,
                     &Count::new(85, &none),
-                    &mut crate::resume_log::Pieces::none(),
+                    &mut jobrt::resume_log::Pieces::none(),
                 )
                 .unwrap();
                 put(&lo
@@ -2223,7 +2223,7 @@ mod tests {
                 // As its slope-deep run makes it (`build_deep`), nothing uploaded: the terrain packs
                 // it copies, the tiles it reads from the NAS besides, its deep pack's and deep mid's
                 // bytes.
-                let p = crate::timings::phase("copying its terrain packs here");
+                let p = jobrt::timings::phase("copying its terrain packs here");
                 let copied = terr.copy_here(FIRST_Z, t.0 << 3, t.1 << 3).unwrap_or(0);
                 drop(p);
                 let local = |z: u8, x: u32, y: u32| z >= FIRST_Z && (x >> (z - PACK_Z), y >> (z - PACK_Z)) == t;
@@ -2236,7 +2236,7 @@ mod tests {
                     b
                 };
                 let terrain = Terrain::new(&counted, &has);
-                let p = crate::timings::phase("working out the slope tiles");
+                let p = jobrt::timings::phase("working out the slope tiles");
                 let tiles = deep_tiles(&deep_terrain(&terr, t).unwrap(), t);
                 let (d, mid) = deep_part(&terrain, &tiles, &Count::new(1, &none));
                 drop(p);
@@ -2258,7 +2258,7 @@ mod tests {
             }
         }
         let (wall, cpu) = (t0.elapsed().as_secs_f64(), cpu() - c0);
-        let r = crate::timings::snapshot(true).unwrap();
+        let r = jobrt::timings::snapshot(true).unwrap();
         // (The process's peak physical footprint, compressed and swapped memory included.)
         let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
         unsafe {
@@ -2306,12 +2306,12 @@ mod tests {
             })
             .collect();
         let alone = a.get(3) == Some(&"alone");
-        crate::sys::footprint_guard("measure_a_slope_deep_batch", 4000);
+        jobrt::sys::footprint_guard("measure_a_slope_deep_batch", 4000);
         let peak = Arc::new(std::sync::atomic::AtomicU64::new(0));
         {
             let peak = peak.clone();
             std::thread::spawn(move || loop {
-                peak.fetch_max(crate::sys::footprint().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+                peak.fetch_max(jobrt::sys::footprint().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
                 std::thread::sleep(std::time::Duration::from_millis(50));
             });
         }
@@ -2326,7 +2326,7 @@ mod tests {
         let read = Out::unbound(&store::nasfs::NasRoot::from_arg(root), scratch.path()).unwrap();
         std::fs::create_dir_all(into).unwrap();
         let mut w = Out::unbound(&store::nasfs::NasRoot::local_for_test(into), scratch.path()).unwrap();
-        crate::timings::start("slope-deep");
+        jobrt::timings::start("slope-deep");
         let none = |_: &str, _: u64, _: u64| {};
         let threads = rayon::current_num_threads();
         let (t0, c0) = (std::time::Instant::now(), cpu());
@@ -2377,7 +2377,7 @@ mod tests {
                 w.get(&deep_mid_logical(t.0, t.1))
             );
         }
-        let r = crate::timings::snapshot(true).unwrap();
+        let r = jobrt::timings::snapshot(true).unwrap();
         for p in &r.phases {
             let bg = if p.background { " (beside)" } else { "" };
             println!(

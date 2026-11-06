@@ -36,10 +36,10 @@
 //! a header), `get-key-json-link` (the key in a header, the answer JSON holding the download link at
 //! `link`).
 //!
-//! What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the operators' published feeds and the
+//! What it fetches (buildstore::fetch::Kind, docs/inputs.md §6.9): the operators' published feeds and the
 //! catalogue (`data`), some through their keyed APIs (`api`): no robots.txt is read. Every request
-//! carries crate::fetch::USER_AGENT, is refused offline first (crate::fetch::online), goes through
-//! the job's proxy (`HTTPS_PROXY`), and a 429 or a `Retry-After` is told to it (crate::budget::seen)
+//! carries buildstore::fetch::USER_AGENT, is refused offline first (buildstore::fetch::online), goes through
+//! the job's proxy (`HTTPS_PROXY`), and a 429 or a `Retry-After` is told to it (jobrt::budget::seen)
 //! and backed off from.
 //!
 //! A request that gets no answer (no connection, a 429 or a 5xx, an answer cut short) is tried three
@@ -55,12 +55,12 @@
 //! counter reads them, each with its facts, `zip` ("cache" for the NAS's, "new" for a download, none
 //! when left out, with `status` saying why) and `fetched`; ferries.json likewise, the ferry feeds
 //! (id, name, url, source, ferry_routes); and checked.json (the checks so far with this run's
-//! answers, its bytes the Python's: crate::pyjson). Each is written by a temporary name, then
+//! answers, its bytes the Python's: pyport::pyjson). Each is written by a temporary name, then
 //! renamed.
 
-use crate::coverage::Coverage;
+use buildstore::coverage::Coverage;
 use crate::gtfs::{self, ferrycount, railcount, Date, Kind, Lines};
-use crate::pyjson::{self, Py};
+use pyport::pyjson::{self, Py};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
@@ -140,7 +140,7 @@ fn answer(out: Vec<u8>) -> Answer {
         headers = lines
             .map(|l| {
                 let (k, v) = l.split_once(':').unwrap_or((l, ""));
-                (crate::pytext::strip(k).to_lowercase(), crate::pytext::strip(v).to_string())
+                (pyport::pytext::strip(k).to_lowercase(), pyport::pytext::strip(v).to_string())
             })
             .collect();
         body = &body[end + 4..];
@@ -162,11 +162,11 @@ impl Net {
     /// answer (no connection, a timeout, an answer cut short).
     fn once(&self, url: &str, rng: Option<(u64, u64)>, head: bool) -> Answer {
         let none = Answer { code: 0, body: Vec::new(), headers: HashMap::new() };
-        if crate::fetch::online(url).is_err() {
+        if buildstore::fetch::online(url).is_err() {
             return none;
         }
         let mut args: Vec<std::ffi::OsString> =
-            ["-sS", "-L", "-m", "90", "-A", crate::fetch::USER_AGENT, "-D", "-", "-o", "-"].iter().map(os).collect();
+            ["-sS", "-L", "-m", "90", "-A", buildstore::fetch::USER_AGENT, "-D", "-", "-o", "-"].iter().map(os).collect();
         if let Some((a, z)) = rng {
             args.extend([os("-r"), os(format!("{a}-{z}")), os("--max-filesize"), os((z - a + 1).to_string())]);
         }
@@ -181,7 +181,7 @@ impl Net {
         } else if rc != 0 || (!head && length(&a.headers).is_some_and(|l| l != a.body.len() as u64)) {
             a.code = 0;
         }
-        crate::budget::seen(url, a.code, a.headers.get("retry-after").map(String::as_str));
+        jobrt::budget::seen(url, a.code, a.headers.get("retry-after").map(String::as_str));
         a
     }
 
@@ -364,7 +364,7 @@ impl Net {
 
 /// `round(x, 1)` as a float.
 fn round1(x: f64) -> f64 {
-    crate::interest::py_round(x, 1)
+    landmarks::interest::py_round(x, 1)
 }
 
 /// A catalogue feed's rail routes, from its routes.txt alone: `status` "ok" with `rail_routes` and
@@ -437,7 +437,7 @@ fn unanswered(c: &Py) -> bool {
         && w[1].parse::<u16>().map_or(true, transient)
 }
 
-/// Whether the box w, s, e, n (degrees) meets the coverage (crate::coverage's `meets_rect`).
+/// Whether the box w, s, e, n (degrees) meets the coverage (buildstore::coverage's `meets_rect`).
 fn meets(cov: &Coverage, b: [f64; 4]) -> bool {
     let e7 = |v: f64, lim: f64| (v.clamp(-lim, lim) * 1e7).round() as i32;
     cov.meets_rect([e7(b[0], 180.0), e7(b[1], 90.0), e7(b[2], 180.0), e7(b[3], 90.0)])
@@ -606,7 +606,7 @@ impl Net {
         to: &Path,
     ) -> std::result::Result<(u16, Vec<u8>), (u16, &'static str)> {
         let url = feed.at("url").py_str();
-        crate::fetch::online(&url).map_err(|_| (0, "URLError"))?;
+        buildstore::fetch::online(&url).map_err(|_| (0, "URLError"))?;
         let f = feed.at("fetch");
         let headers =
             format!("{}: {key}\naccept: {}\n", f.at("header").py_str(), if json { "application/json" } else { "*/*" });
@@ -616,7 +616,7 @@ impl Net {
             os("-m"),
             os(if json { "60" } else { "3600" }),
             os("-A"),
-            os(crate::fetch::USER_AGENT),
+            os(buildstore::fetch::USER_AGENT),
             os("-H"),
             os("@-"),
             os("-D"),
@@ -627,7 +627,7 @@ impl Net {
         ];
         let (rc, out) = curl_run(&args, Some(headers.as_bytes()));
         let a = answer(out);
-        crate::budget::seen(&url, a.code, a.headers.get("retry-after").map(String::as_str));
+        jobrt::budget::seen(&url, a.code, a.headers.get("retry-after").map(String::as_str));
         if rc != 0 || a.code == 0 {
             return Err((0, no_answer_class(rc)));
         }
@@ -742,7 +742,7 @@ impl Net {
 
     /// A file's download into `to`: its status (0: none) and curl's exit.
     fn download(&self, url: &str, to: &Path) -> (u16, i32) {
-        if crate::fetch::online(url).is_err() {
+        if buildstore::fetch::online(url).is_err() {
             return (0, 7);
         }
         let args: Vec<std::ffi::OsString> = vec![
@@ -750,7 +750,7 @@ impl Net {
             os("-m"),
             os("3600"),
             os("-A"),
-            os(crate::fetch::USER_AGENT),
+            os(buildstore::fetch::USER_AGENT),
             os("-o"),
             os(to),
             os("-w"),
@@ -759,8 +759,8 @@ impl Net {
         ];
         let (rc, out) = curl_run(&args, None);
         let text = String::from_utf8_lossy(&out);
-        let code = crate::pytext::strip(&text).parse().unwrap_or(0);
-        crate::budget::seen(url, code, None);
+        let code = pyport::pytext::strip(&text).parse().unwrap_or(0);
+        jobrt::budget::seen(url, code, None);
         (code, rc)
     }
 }
@@ -771,7 +771,7 @@ fn keys(path: Option<&Path>) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for l in text.lines() {
         let (k, v) = l.split_once('=').unwrap_or((l, ""));
-        let (k, v) = (crate::pytext::strip(k), crate::pytext::strip(v));
+        let (k, v) = (pyport::pytext::strip(k), pyport::pytext::strip(v));
         if !v.is_empty() && !k.starts_with('#') {
             out.insert(k.to_string(), v.to_string());
         }
@@ -965,7 +965,7 @@ impl Run<'_> {
                 .ok_or_else(|| ("ValueError".to_string(), format!("Invalid isoformat string: {fetched:?}")))?;
             let path = PathBuf::from(c["path"].as_str().unwrap_or(""));
             let fresh = {
-                let _p = crate::timings::phase("checking the NAS's zips for service");
+                let _p = jobrt::timings::phase("checking the NAS's zips for service");
                 let rail = if serves(f, "rail") { railcount::has_service(&path, day) } else { Ok(false) };
                 let r = match rail {
                     Ok(true) => Ok(true),
@@ -996,7 +996,7 @@ impl Run<'_> {
                 return Ok((State::Zip, cached));
             }
             let got = {
-                let _p = crate::timings::phase("downloading the feeds' zips");
+                let _p = jobrt::timings::phase("downloading the feeds' zips");
                 self.net.fetch(f, &dest, key.as_deref())
             };
             let (ok, why) = got.unwrap_or_else(|e| (false, format!("no answer ({e})")));
@@ -1009,7 +1009,7 @@ impl Run<'_> {
             return Ok((State::Zip, with(rec, &[("zip", st("new".into())), ("fetched", st(self.today.iso()))])));
         }
         let got = {
-            let _p = crate::timings::phase("downloading the feeds' zips");
+            let _p = jobrt::timings::phase("downloading the feeds' zips");
             self.net.fetch(f, &dest, key.as_deref())
         };
         let (ok, why) = match got {
@@ -1044,7 +1044,7 @@ impl Run<'_> {
     /// Why a declared feed with a zip is left out of the rail list: its stops all beyond the
     /// coverage, or (its modes not said) no rail routes. None: it's in.
     fn beyond(&self, f: &Py, rec: &Py, cov: &Coverage) -> Result<Option<String>> {
-        let _p = crate::timings::phase("reading the declared feeds' stops");
+        let _p = jobrt::timings::phase("reading the declared feeds' stops");
         let i = f.at("id").py_str();
         let path = self.zip_path(&i, rec);
         let r = (|| -> gtfs::R<Option<String>> {
@@ -1070,7 +1070,7 @@ impl Run<'_> {
 
 /// The run: what it checked and fetched is written in `out` even when it fails (Err).
 pub fn run(a: Args<'_>) -> Result<()> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let out = a.out.clone();
     std::fs::create_dir_all(&out)?;
     let today = gtfs::today();
@@ -1338,12 +1338,12 @@ mod tests {
         vec![[e(x), e(y)], [e(x + d), e(y)], [e(x + d), e(y + d)], [e(x), e(y + d)]]
     }
 
-    /// The cases the Python's coverage was tested on (task #498), as crate::coverage
+    /// The cases the Python's coverage was tested on (task #498), as buildstore::coverage
     /// answers them.
     #[test]
     fn boxes_meet_the_coverage_as_before() {
         let cov = |rings: Vec<Vec<[i32; 2]>>, buffer: f64| Coverage {
-            shapes: vec![crate::coverage::Shape::new("t".into(), rings, buffer)],
+            shapes: vec![buildstore::coverage::Shape::new("t".into(), rings, buffer)],
             ..Default::default()
         };
         let c = cov(vec![square(0.0, 0.0, 10.0), square(4.0, 4.0, 2.0)], 0.0);

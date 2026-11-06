@@ -40,8 +40,8 @@
 //! of the routes that match nothing on the map (docs/inputs.md §6.7.3).
 
 use super::{statics, Date, Kind, PyErr, Zip, R};
-use crate::interest::py_round;
-use crate::pyjson::Py;
+use landmarks::interest::py_round;
+use pyport::pyjson::Py;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -63,7 +63,7 @@ pub fn mode_of(t: i64) -> Option<u8> {
 
 /// `h:m:s` in seconds; -1 when it isn't one.
 pub fn secs(t: &str) -> i64 {
-    let p: Vec<&str> = crate::pytext::strip(t).split(':').collect();
+    let p: Vec<&str> = pyport::pytext::strip(t).split(':').collect();
     if p.len() != 3 {
         return -1;
     }
@@ -275,7 +275,7 @@ impl Routes {
             let cell = |k: &str| r.map_or("", |r| r.cell(k).or_empty());
             let name =
                 [cell("route_short_name"), cell("route_long_name")].into_iter().find(|s| !s.is_empty()).unwrap_or("");
-            let osm = if static_ { crate::pytext::strip(cell("osm")) } else { "" };
+            let osm = if static_ { pyport::pytext::strip(cell("osm")) } else { "" };
             let s = |x: &str| Py::Str(x.to_string());
             (
                 vec![
@@ -363,7 +363,7 @@ impl Counted {
     /// (None) by its months and days; each route's stop pairs into the routes, named by `source`.
     /// Its status, day, trips and duplicates.
     pub fn process(&mut self, zpath: &Path, anchor: Option<Date>, source: &str) -> R<Vec<(String, Py)>> {
-        let p = crate::timings::phase("reading the feeds' tables");
+        let p = jobrt::timings::phase("reading the feeds' tables");
         let z = Zip::open(zpath)?;
         let routes = rail_routes(&z)?;
         let st = |s: &str| vec![("status".to_string(), Py::Str(s.to_string()))];
@@ -472,7 +472,7 @@ impl Counted {
             }
         }
         drop(p);
-        let _p = crate::timings::phase("counting the trains");
+        let _p = jobrt::timings::phase("counting the trains");
         let (mut n_trips, mut n_dup) = (0u64, 0u64);
         let (facts, agencies) = route_facts(&z)?;
         for (tid, c) in calls.items.iter_mut() {
@@ -563,7 +563,7 @@ impl Counted {
             stops.insert(s.cell("stop_id").req("stop_id")?.to_string(), [x, y]);
         }
         for c in statics::count_rows(&z)? {
-            let cell = |k: &str| crate::pytext::strip(c.cell(k).or_empty()).to_string();
+            let cell = |k: &str| pyport::pytext::strip(c.cell(k).or_empty()).to_string();
             let r = routes.get(&cell("route_id"));
             let (a, b) = (stops.get(&cell("from_stop_id")), stops.get(&cell("to_stop_id")));
             let (Some(r), Some(&a), Some(&b)) = (r, a, b) else { continue };
@@ -583,7 +583,7 @@ impl Counted {
                 (None, None) => continue,
             };
             let mode = r.0 | if cell("at_least") == "1" { 0x80 } else { 0 };
-            let rid = crate::pytext::strip(c.cell("route_id").req("route_id")?).to_string();
+            let rid = pyport::pytext::strip(c.cell("route_id").req("route_id")?).to_string();
             for (p, q) in [(a, b), (b, a)] {
                 for x in [p[0], p[1], q[0], q[1]] {
                     out.extend((x as f32).to_le_bytes());
@@ -652,7 +652,7 @@ fn unreadable(e: &PyErr) -> bool {
 pub fn run(feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)]) -> anyhow::Result<Run> {
     let mut replaced: HashMap<String, String> = HashMap::new();
     for f in feeds {
-        if f.get("path").is_some_and(|p| crate::pyjson::from_serde(p).truthy()) {
+        if f.get("path").is_some_and(|p| pyport::pyjson::from_serde(p).truthy()) {
             for r in f.get("replaces").and_then(|r| r.as_array()).into_iter().flatten() {
                 if let Some(r) = r.as_str() {
                     replaced.insert(r.to_string(), f["id"].as_str().unwrap_or("").to_string());
@@ -666,7 +666,7 @@ pub fn run(feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)
         jobrt::jobs::report(k as u64, feeds.len() as u64, "feeds");
         let mut facts: Vec<(String, Py)> = ["id", "provider", "url", "licence", "fetched"]
             .iter()
-            .filter_map(|&key| feed.get(key).map(|v| (key.to_string(), crate::pyjson::from_serde(v))))
+            .filter_map(|&key| feed.get(key).map(|v| (key.to_string(), pyport::pyjson::from_serde(v))))
             .collect();
         let id = feed["id"].as_str().unwrap_or("");
         if let Some(by) = replaced.get(id) {
@@ -718,7 +718,7 @@ pub fn run(feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)
         entry.extend(res);
         used.push(Py::Dict(entry));
     }
-    let _p = crate::timings::phase("writing the stop pairs");
+    let _p = jobrt::timings::phase("writing the stop pairs");
     let (pairs, n_week) = c.pairs();
     eprintln!("{n_week} stop pairs served only on other days of the week (weekly average)");
     let ok: Vec<&Py> = used.iter().filter(|u| u.at("status").as_str() == Some("ok")).collect();
@@ -733,7 +733,7 @@ pub fn run(feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)
     Ok(Run {
         pairs,
         counts,
-        used: crate::pyjson::dumps_indent(&Py::List(used), 1),
-        routes: crate::pyjson::dumps(&c.routes.json()),
+        used: pyport::pyjson::dumps_indent(&Py::List(used), 1),
+        routes: pyport::pyjson::dumps(&c.routes.json()),
     })
 }

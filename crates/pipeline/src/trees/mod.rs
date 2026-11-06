@@ -7,11 +7,11 @@
 //! - **Pyramid:** zoom 11 to 8 are float32 means of four pixels, summed as numpy sums them; leaf type
 //!   goes as each class's share, a pixel showing the commonest type where forest is at least half
 //!   of what's known (`pyramid`). Zoom 7 to 4 come from the blocks' zoom-8 values (`Tops`).
-//! - **Tiles:** Terrarium-encoded lossless WebP (`crate::webp`): exact pixels, not exact bytes
+//! - **Tiles:** Terrarium-encoded lossless WebP (`codecs::webp`): exact pixels, not exact bytes
 //!   (another encoder).
 //!
 //! A block runs on its own (`block`, so a worker can be given one: tasks of it are planned): what it
-//! reads comes from a `Source` (a folder, or URLs read through `crate::fetch`, whose mirror can hold
+//! reads comes from a `Source` (a folder, or URLs read through `buildstore::fetch`, whose mirror can hold
 //! just the byte ranges the block reads); it gives its zoom 8–12 tiles and its zoom-8 values, from
 //! which `assemble` makes the z3 tile's archives. `z3` does both, its blocks on rayon's threads, and the
 //! archives are the same bytes at any thread count, and as
@@ -28,7 +28,7 @@ pub mod task;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use crate::fetch::{Fetch, Noted};
+use buildstore::fetch::{Fetch, Noted};
 use anyhow::{bail, ensure, Context, Result};
 use pyramid::{Tile, Tops};
 use roadcore::archive::{Archive, ArchiveWriter};
@@ -172,7 +172,7 @@ pub fn leaf_name(top: i32, left: i32) -> String {
     format!("lat{top}_lon{left}.tif")
 }
 
-/// Where a block's squares are: a folder, or URLs under a prefix, read through `crate::fetch` (its
+/// Where a block's squares are: a folder, or URLs under a prefix, read through `buildstore::fetch` (its
 /// mirror folder first; a `file://` prefix names a folder's files there, as `--record` keeps them),
 /// or files opened already, by name (a run's canopy files: `begin`), one not among them not there.
 #[derive(Clone)]
@@ -214,7 +214,7 @@ impl Source {
 }
 
 /// What a block reads: the canopy and leaf-type squares, and where the bytes it reads are kept
-/// (`record`: a mirror folder for `crate::fetch`, so a run elsewhere is given just those).
+/// (`record`: a mirror folder for `buildstore::fetch`, so a run elsewhere is given just those).
 pub struct Inputs<'a> {
     pub chm: Source,
     pub leaf: Source,
@@ -261,7 +261,7 @@ impl Inputs<'_> {
             n += match f {
                 Some(f) => f.save(root, url)?,
                 None => {
-                    crate::fetch::save_none(root, url)?;
+                    buildstore::fetch::save_none(root, url)?;
                     0
                 }
             };
@@ -273,7 +273,7 @@ impl Inputs<'_> {
 /// One square's band of a layer, sampled: each block row's source row, each block column's source
 /// column, and the decoded TIFF (shared by the blocks of a run that read it: `Files`).
 struct Layer {
-    tiff: Arc<crate::geotiff::Tiff>,
+    tiff: Arc<buildstore::geotiff::Tiff>,
     rows: Vec<Option<u32>>,
     cols: Vec<Option<u32>>,
 }
@@ -306,7 +306,7 @@ fn indices(top: i32, left: i32, res: f64, lon: &[f64], lat: &[f64]) -> Pixels {
 struct Files<'a> {
     inp: &'a Inputs<'a>,
     raw: BTreeMap<String, Option<Arc<dyn RangeRead>>>,
-    tiffs: BTreeMap<String, Arc<crate::geotiff::Tiff>>,
+    tiffs: BTreeMap<String, Arc<buildstore::geotiff::Tiff>>,
     opened: Opened,
     /// Decoded strips and tiles kept per file (`CHM_CACHE`, `LEAF_CACHE`; a row's more).
     chm_cache: usize,
@@ -339,7 +339,7 @@ impl<'a> Files<'a> {
         let tiff = match self.tiffs.get(what) {
             Some(t) => t.clone(),
             None => {
-                let t = Arc::new(crate::geotiff::Tiff::open(f).with_context(|| what.to_string())?.with_cache(cache));
+                let t = Arc::new(buildstore::geotiff::Tiff::open(f).with_context(|| what.to_string())?.with_cache(cache));
                 self.tiffs.insert(what.to_string(), t.clone());
                 t
             }
@@ -359,7 +359,7 @@ impl Layer {
         r0: usize,
         out: &mut [T],
         fill: T,
-        get: impl Fn(&crate::geotiff::Block) -> Option<&[T]>,
+        get: impl Fn(&buildstore::geotiff::Block) -> Option<&[T]>,
         what: &str,
     ) -> Result<()> {
         let img = self.tiff.level(0)?;
@@ -747,7 +747,7 @@ pub struct Run {
     /// The leaf-type squares (the NAS's), made where missing (crate::leaftype).
     pub leaf: PathBuf,
     pub out: PathBuf,
-    /// Where a z6 run keeps its rows of blocks as they're made (crate::resume_log::Pieces, task
+    /// Where a z6 run keeps its rows of blocks as they're made (jobrt::resume_log::Pieces, task
     /// #889: its job's scratch folder), resumed from there; None: nothing kept.
     pub keep: Option<PathBuf>,
 }
@@ -777,7 +777,7 @@ fn chm_rows(blocks: &[(u32, u32)], top: i32, left: i32) -> Option<(u32, u32)> {
 /// (squares::rows_here), and their leaf-type squares made; the coverage's shapes, the blocks, the
 /// canopy squares there and their files, with its line.
 fn begin(a: &Run) -> Result<Begun> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let t0 = std::time::Instant::now();
     for d in [&a.chm, &a.leaf, &a.out] {
         std::fs::create_dir_all(d).with_context(|| d.display().to_string())?;
@@ -867,7 +867,7 @@ fn each_block(
     chm: Source,
     mut sink: impl FnMut((u32, u32), BlockOut) -> Result<()>,
 ) -> Result<()> {
-    let fetch = crate::fetch::MapFetch::default();
+    let fetch = buildstore::fetch::MapFetch::default();
     let inp = Inputs { chm, leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
     // (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)
     jobrt::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
@@ -902,7 +902,7 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
     let (shapes, blocks, sqs, chm) = begin(a)?;
     let mut w = Writers::create(&a.out)?;
     let mut tops: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
-    let p = crate::timings::phase("making zoom-8 blocks");
+    let p = jobrt::timings::phase("making zoom-8 blocks");
     each_block(a, &shapes, &blocks, sqs, chm, |at, b| {
         for t in &b.tiles {
             w.add(t)?;
@@ -912,7 +912,7 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
     })?;
     std::fs::remove_dir_all(a.out.join(ROWS_DIR)).ok();
     drop(p);
-    let _p = crate::timings::phase("making zoom 7 to 4 and writing the archives");
+    let _p = jobrt::timings::phase("making zoom 7 to 4 and writing the archives");
     for t in pyramid::lower(&tops, &|done, total| jobrt::jobs::report(done, total, "zoom 7–4 tiles"))? {
         w.add(&t)?;
     }
@@ -934,7 +934,7 @@ pub fn z6(a: &Run) -> Result<[usize; 3]> {
 
 /// `z6`, its rows offered through `offload` (none: all made here).
 pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[usize; 3]> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     ensure!(a.tile.0 == 6, "a z6 run of a zoom-{} tile", a.tile.0);
     let t0 = std::time::Instant::now();
     let (shapes, blocks, sqs, chm) = begin(a)?;
@@ -947,15 +947,15 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
     let mut pieces = match &a.keep {
         Some(d) => {
             let sources = std::fs::read_to_string(&a.sources).with_context(|| a.sources.display().to_string())?;
-            let id = crate::resume_log::job_id(
+            let id = jobrt::resume_log::job_id(
                 "trees",
                 &crate::treepacks::TREES_V.to_string(),
                 &format!("6/{}/{}", a.tile.1, a.tile.2),
                 &[&coverage, &sources],
             );
-            crate::resume_log::Pieces::open(d, (6, a.tile.1, a.tile.2), "trees", &id, true)
+            jobrt::resume_log::Pieces::open(d, (6, a.tile.1, a.tile.2), "trees", &id, true)
         }
-        None => crate::resume_log::Pieces::none(),
+        None => jobrt::resume_log::Pieces::none(),
     };
     let kept: Vec<bool> = rows.iter().map(|r| pieces.kept(row_id(r)).is_some()).collect();
     let todo: Vec<(u32, u32)> = rows.iter().zip(&kept).filter(|(_, k)| !**k).flat_map(|(r, _)| r.clone()).collect();
@@ -972,7 +972,7 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
     // (Made here on rayon's threads, others' taken in their turn, and written once all are made: one
     // phase.)
     let p = phase("making zoom-8 blocks (some by other workers)");
-    let fetch = crate::fetch::MapFetch::default();
+    let fetch = buildstore::fetch::MapFetch::default();
     let inp = Inputs { chm, leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
     let here = task::here_run(shapes, &inp);
     let mut w = Writers::create(&a.out)?;
@@ -1040,7 +1040,7 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
 
 /// A row's blocks made (each its tiles and zoom-8 values) as a piece kept (`z6_with`).
 fn row_piece(made: &[(Vec<Tile>, Vec<u8>)]) -> Vec<u8> {
-    let mut p = crate::resume_log::Put::default();
+    let mut p = jobrt::resume_log::Put::default();
     p.u64(made.len() as u64);
     for (tiles, tops) in made {
         p.u64(tiles.len() as u64);
@@ -1057,7 +1057,7 @@ fn row_piece(made: &[(Vec<Tile>, Vec<u8>)]) -> Vec<u8> {
 }
 
 fn row_unpiece(p: &[u8]) -> Result<Vec<(Vec<Tile>, Vec<u8>)>> {
-    let mut g = crate::resume_log::Get(p);
+    let mut g = jobrt::resume_log::Get(p);
     let mut v = Vec::new();
     for _ in 0..g.count(16)? {
         let mut tiles = Vec::new();
@@ -1139,7 +1139,7 @@ pub fn read_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Mid> {
     );
     let tile = m["tile"]
         .as_str()
-        .and_then(crate::legacy::TileId::parse)
+        .and_then(codecs::legacy::TileId::parse)
         .filter(|u| u.z == 6)
         .with_context(|| format!("{}: no z6 tile", what()))?;
     let mut out = Mid { tile: (tile.x, tile.y), z8: Vec::new(), tops: BTreeMap::new() };
@@ -1176,7 +1176,7 @@ pub fn assemble_lo(mids: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync
     let mut z8: Vec<Tile> = Vec::new();
     let mut tops: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
     let mut tiles: BTreeMap<(u32, u32), PathBuf> = BTreeMap::new();
-    let reading = crate::timings::phase("reading the pieces' mids");
+    let reading = jobrt::timings::phase("reading the pieces' mids");
     for p in mids {
         let m = read_mid(p)?;
         if let Some(other) = tiles.insert(m.tile, p.clone()) {
@@ -1197,7 +1197,7 @@ pub fn assemble_lo(mids: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync
         tops.extend(m.tops);
     }
     drop(reading);
-    let _p = crate::timings::phase("making zoom 8 to 4 and writing the archives");
+    let _p = jobrt::timings::phase("making zoom 8 to 4 and writing the archives");
     // (By block and layer, whatever order the mids came in.)
     z8.sort_by_key(|t| (t.x, t.y, t.layer));
     let mut w = Writers::create(out)?;

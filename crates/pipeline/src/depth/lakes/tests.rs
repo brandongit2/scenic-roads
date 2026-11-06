@@ -1,5 +1,5 @@
 use super::*;
-use crate::terrain_water::{Kind, Poly};
+use codecs::terrain_water::{Kind, Poly};
 
 /// The depth lab's table (validation.md §3, "What the chosen model gives (m)", to its 0.1 m).
 #[test]
@@ -170,7 +170,7 @@ fn a_pack_holds_its_grids_where_its_index_says() {
     let e = &idx[0];
     assert_eq!((e.zoom, e.c0, e.r0, e.w, e.h), (14, 512, 1024, 512, 256));
     let tiff = &p[e.at[0] as usize..(e.at[0] + e.at[1]) as usize];
-    let t = crate::geotiff::Tiff::open(std::sync::Arc::new(tiff.to_vec())).unwrap();
+    let t = buildstore::geotiff::Tiff::open(std::sync::Arc::new(tiff.to_vec())).unwrap();
     let gt = t.transform(0).unwrap();
     let px = super::super::grids::px(14);
     assert!((gt[0] - (-super::super::grids::HALF + 512.0 * px)).abs() < 1e-6 && (gt[1] - px).abs() < 1e-9);

@@ -23,8 +23,8 @@
 use super::field;
 use super::job::{self, AddTile, Summary};
 use super::work::{self, WorkFile};
-use crate::coverage::{Coverage, Shape};
-use crate::legacy::TileId;
+use buildstore::coverage::{Coverage, Shape};
+use codecs::legacy::TileId;
 use anyhow::{ensure, Context, Result};
 use roadcore::archive::{Archive, ArchiveWriter};
 use std::collections::BTreeMap;

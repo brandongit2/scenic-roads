@@ -19,7 +19,7 @@
 //! what the code's was, so nothing is built again when a source moves into its declaration.
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
-use crate::outlines::Outlines;
+use buildstore::outlines::Outlines;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -51,12 +51,12 @@ pub const ROLES: [(&str, &[&str], &[&str]); 16] = [
     (BUILDINGS, &["geoparquet"], &[]),
     // (Building heights on a grid: crate::bld.)
     (BUILDING_HEIGHTS, &["zip-geotiff"], &[]),
-    // (Wikidata's facts: crate::heritagewd, crate::areadetails, crate::whsshapes, crate::items,
-    // crate::pageviews.)
+    // (Wikidata's facts: landmarks::heritagewd, landmarks::areadetails, landmarks::whsshapes, landmarks::items,
+    // landmarks::pageviews.)
     (WIKIDATA, &["sparql"], &[]),
-    // (Wikipedia's short descriptions: crate::heritagewd.)
+    // (Wikipedia's short descriptions: landmarks::heritagewd.)
     (WIKIPEDIA, &["mediawiki-api"], &[]),
-    // (Wikipedia's monthly pageviews: crate::pageviews, which picks the months.)
+    // (Wikipedia's monthly pageviews: landmarks::pageviews, which picks the months.)
     (PAGEVIEWS, &["pageviews-dump"], &["{y}", "{m}"]),
     // (Lakes missing from OSM, Canada: crate::lakefill. Shapefile zips, its files kept by hand.)
     (LAKE_FILL, &["zip-shapefile"], &[]),
@@ -100,11 +100,11 @@ pub struct Data {
     pub role: String,
     /// Its format (one of its role's).
     pub format: String,
-    /// What fetching it is (crate::fetch::Kind: `api`, `data` or `page`), required: only a page's
+    /// What fetching it is (buildstore::fetch::Kind: `api`, `data` or `page`), required: only a page's
     /// host's robots.txt is read first. Kept out of the digests and the accepted index (what's
     /// fetched is the same whatever it's called), so the steps read None.
     #[serde(default, skip_serializing)]
-    pub kind: Option<crate::fetch::Kind>,
+    pub kind: Option<buildstore::fetch::Kind>,
     /// Where it is: a URL, or a template of the role's placeholders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -217,7 +217,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     match data.kind {
         None => why.push("no `kind`: api, data or page (docs/inputs.md §6.9)".into()),
         // (No Rust fetcher reads robots.txt: a page is a producer script's, `FETCHES = "page"`.)
-        Some(crate::fetch::Kind::Page) => {
+        Some(buildstore::fetch::Kind::Page) => {
             why.push("`kind` is page: no step's fetcher reads robots.txt; a page is fetched by a producer script (docs/inputs.md §6.9)".into())
         }
         Some(_) => {}
@@ -1058,7 +1058,7 @@ mod tests {
         let mut m = BTreeMap::new();
         accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
         let s = read(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap();
-        // (crate::heritagewd's query service and its Wikipedia API, crate::pageviews's dumps.)
+        // (landmarks::heritagewd's query service and its Wikipedia API, landmarks::pageviews's dumps.)
         assert_eq!(s.role(WIKIDATA).unwrap().url().unwrap(), "https://qlever.dev/api/wikidata");
         assert_eq!(s.role(WIKIPEDIA).unwrap().url().unwrap(), "https://en.wikipedia.org/w/api.php");
         assert_eq!(

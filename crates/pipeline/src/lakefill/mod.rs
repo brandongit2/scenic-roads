@@ -76,7 +76,7 @@ impl Lake {
             let mut q: Vec<[u32; 2]> = r
                 .iter()
                 .map(|p| {
-                    let w = crate::watercov::world(p[0], p[1]);
+                    let w = codecs::watercov::world(p[0], p[1]);
                     [quant(w[0]), quant(w[1])]
                 })
                 .collect();
@@ -88,14 +88,14 @@ impl Lake {
                 continue;
             }
             let r: Vec<[f64; 2]> = q.iter().map(|p| [f64::from(p[0]) / SCALE, f64::from(p[1]) / SCALE]).collect();
-            if crate::watercov::area2(&r) == 0.0 {
+            if codecs::watercov::area2(&r) == 0.0 {
                 continue;
             }
             out.push(r);
         }
         let big =
-            out.iter().max_by(|a, b| crate::watercov::area2(a).abs().total_cmp(&crate::watercov::area2(b).abs()))?;
-        if crate::watercov::area2(big) < 0.0 {
+            out.iter().max_by(|a, b| codecs::watercov::area2(a).abs().total_cmp(&codecs::watercov::area2(b).abs()))?;
+        if codecs::watercov::area2(big) < 0.0 {
             for r in &mut out {
                 r.reverse();
             }
@@ -114,7 +114,7 @@ impl Lake {
 
     /// Its area (world units², outer rings less holes).
     pub fn area(&self) -> f64 {
-        self.rings.iter().map(|r| crate::watercov::area2(r)).sum::<f64>() / 2.0
+        self.rings.iter().map(|r| codecs::watercov::area2(r)).sum::<f64>() / 2.0
     }
 
     /// Its points on the fill's grid, sorted: the same for the same lake however its rings start.
@@ -434,7 +434,7 @@ fn gap_sheet(l: &Lake, gap: &(dyn Fn(nts::Key) -> bool + Sync)) -> Option<nts::K
             let k = (col, row);
             if gap(k) {
                 let (sw, ss, se, sn) = nts::bounds(k);
-                if roadcore::geo::winding(&l.rings, crate::watercov::world((sw + se) / 2.0, (ss + sn) / 2.0)) != 0 {
+                if roadcore::geo::winding(&l.rings, codecs::watercov::world((sw + se) / 2.0, (ss + sn) / 2.0)) != 0 {
                     return Some(k);
                 }
             }
@@ -584,7 +584,7 @@ pub fn select(
     // (A gap sheet's box in world units, shrunk by `by` each way.)
     let sheet_box = |k: nts::Key, by: f64| {
         let (w, s, e, n) = nts::bounds(k);
-        let (a, b) = (crate::watercov::world(w, n), crate::watercov::world(e, s));
+        let (a, b) = (codecs::watercov::world(w, n), codecs::watercov::world(e, s));
         [a[0] + by, a[1] + by, b[0] - by, b[1] - by]
     };
     // The gap sheets a lake's box meets.
@@ -608,7 +608,7 @@ pub fn select(
         let rings = boxes
             .iter()
             .flat_map(|b| l.rings.iter().map(move |r| clip(r, *b)))
-            .filter(|r| r.len() >= 3 && crate::watercov::area2(r) != 0.0)
+            .filter(|r| r.len() >= 3 && codecs::watercov::area2(r) != 0.0)
             .collect();
         Lake { rings, intermittent: l.intermittent }
     };
@@ -1088,18 +1088,18 @@ pub struct FilledWater<W> {
     pub fill: Option<Fill>,
 }
 
-impl<W: crate::terrain_water::WaterSource> crate::terrain_water::WaterSource for FilledWater<W> {
-    fn polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<crate::terrain_water::Poly>> {
+impl<W: codecs::terrain_water::WaterSource> codecs::terrain_water::WaterSource for FilledWater<W> {
+    fn polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<codecs::terrain_water::Poly>> {
         let base = self.base.polys(z, x, y)?;
         self.filled(base, z, x, y)
     }
 
-    fn depth_polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<crate::terrain_water::Poly>> {
+    fn depth_polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<codecs::terrain_water::Poly>> {
         let base = self.base.depth_polys(z, x, y)?;
         self.filled(base, z, x, y)
     }
 
-    fn depth_polys_many(&self, tiles: &[(u8, u32, u32)]) -> Result<Vec<Vec<crate::terrain_water::Poly>>> {
+    fn depth_polys_many(&self, tiles: &[(u8, u32, u32)]) -> Result<Vec<Vec<codecs::terrain_water::Poly>>> {
         let base = self.base.depth_polys_many(tiles)?;
         tiles.iter().zip(base).map(|(&(z, x, y), b)| self.filled(b, z, x, y)).collect()
     }
@@ -1114,17 +1114,17 @@ impl<W> FilledWater<W> {
     /// The base's polygons `out` with the fill's lakes in tile z/x/y added.
     fn filled(
         &self,
-        mut out: Vec<crate::terrain_water::Poly>,
+        mut out: Vec<codecs::terrain_water::Poly>,
         z: u8,
         x: u32,
         y: u32,
-    ) -> Result<Vec<crate::terrain_water::Poly>> {
+    ) -> Result<Vec<codecs::terrain_water::Poly>> {
         if let Some(f) = self.fill.as_ref().filter(|_| (6..=14).contains(&z)) {
             for (id, rings) in f.in_tile(z, x, y, 256.0) {
                 if id & INTERMITTENT != 0 {
                     continue;
                 }
-                out.push(crate::terrain_water::Poly { kind: crate::terrain_water::Kind::Lake, id, rings });
+                out.push(codecs::terrain_water::Poly { kind: codecs::terrain_water::Kind::Lake, id, rings });
             }
         }
         Ok(out)
@@ -1692,7 +1692,7 @@ mod tests {
 
     impl OsmWater for Osm {
         fn rings_near(&self, _b: [f64; 4]) -> Result<Vec<Vec<[f64; 2]>>> {
-            Ok(self.0.iter().map(|r| r.iter().map(|p| crate::watercov::world(p[0], p[1])).collect()).collect())
+            Ok(self.0.iter().map(|r| r.iter().map(|p| codecs::watercov::world(p[0], p[1])).collect()).collect())
         }
     }
 
@@ -1802,7 +1802,7 @@ mod tests {
             s.lakes[0].area(),
             west.area()
         );
-        assert!(s.lakes[0].bbox()[2] <= crate::watercov::world(-72.0, 53.8)[0] + 1e-12);
+        assert!(s.lakes[0].bbox()[2] <= codecs::watercov::world(-72.0, 53.8)[0] + 1e-12);
         // OSM's water inside the gap sheet touching it: left out still.
         let pond = sq(-72.019, 53.805, -72.018, 53.806);
         let whole = lake(&[sq(-72.02, 53.80, -71.98, 53.81)]);
@@ -1852,7 +1852,7 @@ mod tests {
         let mut r = sq(-72.3, 53.80, -72.29, 53.81);
         r.reverse();
         let l = lake(&[r]);
-        assert!(crate::watercov::area2(&l.rings[0]) > 0.0);
+        assert!(codecs::watercov::area2(&l.rings[0]) > 0.0);
     }
 
     #[test]
@@ -1888,7 +1888,7 @@ mod tests {
     }
 
     fn tile_of(lon: f64, lat: f64, z: u8) -> (u32, u32) {
-        let w = crate::watercov::world(lon, lat);
+        let w = codecs::watercov::world(lon, lat);
         let n = f64::from(1u32 << z);
         ((w[0] * n) as u32, (w[1] * n) as u32)
     }
@@ -1945,7 +1945,7 @@ mod tests {
 
     #[test]
     fn the_terrains_water_reads_filled_lakes_as_lakes_and_keys_on_the_fill() {
-        use crate::terrain_water::{Kind, Poly, WaterSource};
+        use codecs::terrain_water::{Kind, Poly, WaterSource};
         struct None_;
         impl WaterSource for None_ {
             fn polys(&self, _: u8, _: u32, _: u32) -> Result<Vec<Poly>> {
@@ -1967,7 +1967,7 @@ mod tests {
         let p = with.polys(12, x, y).unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!((p[0].kind, p[0].id), (Kind::Lake, id));
-        let wt = crate::terrain_water::water_tile(&p);
+        let wt = codecs::terrain_water::water_tile(&p);
         assert!(wt.lake.iter().any(|&v| v > 0));
         // Tiles asked for together (task #492): each the fill's lake as one by one, in order,
         // tiles beyond the fill's zooms empty.
@@ -1984,7 +1984,7 @@ mod tests {
 
     #[test]
     fn intermittent_lakes_are_water_but_not_the_terrains() {
-        use crate::terrain_water::{Poly, WaterSource};
+        use codecs::terrain_water::{Poly, WaterSource};
         struct None_;
         impl WaterSource for None_ {
             fn polys(&self, _: u8, _: u32, _: u32) -> Result<Vec<Poly>> {
@@ -2060,7 +2060,7 @@ mod tests {
     fn clipping_keeps_what_s_inside() {
         let r = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
         let c = clip(&r, [1.0, 1.0, 2.0, 3.0]);
-        assert!((crate::watercov::area2(&c) / 2.0 - 2.0).abs() < 1e-12);
+        assert!((codecs::watercov::area2(&c) / 2.0 - 2.0).abs() < 1e-12);
         assert!(clip(&r, [5.0, 5.0, 6.0, 6.0]).is_empty());
     }
 }

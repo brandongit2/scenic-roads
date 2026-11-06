@@ -6,7 +6,7 @@ use super::fall::{self, Grid, Kind};
 use super::grids::{tests::grid_file, window_box, Grid as SGrid, Source};
 use super::*;
 use buildstore::out::Out;
-use crate::terrain_water::{Kind as WKind, Poly, WaterSource};
+use codecs::terrain_water::{Kind as WKind, Poly, WaterSource};
 use det::Det;
 use std::path::Path;
 
@@ -498,10 +498,10 @@ fn the_depth_steps_time_their_stages() {
     }
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
-    crate::timings::reset();
-    crate::timings::start("depth-lo");
+    jobrt::timings::reset();
+    jobrt::timings::start("depth-lo");
     packs(&srcs, &Fixture, &store::nasfs::NasRoot::local_for_test(d.path()));
-    let r = crate::timings::snapshot(true).unwrap();
+    let r = jobrt::timings::snapshot(true).unwrap();
     let top: Vec<&str> = r.phases.iter().map(|p| p.name.as_str()).collect();
     for p in [
         "reading the basemap's water",
@@ -710,7 +710,7 @@ fn measure_the_waters_reads() {
                         for tx in b.tx0 - 1..=b.tx0 + b.nx {
                             let ps = super::build::polys_at(&water, zoom, tx, ty).unwrap();
                             if !ps.is_empty() {
-                                let wt = crate::terrain_water::water_tile(&ps);
+                                let wt = codecs::terrain_water::water_tile(&ps);
                                 wet += wt.sea.iter().filter(|&&s| s >= 8).count();
                             }
                         }
@@ -736,7 +736,7 @@ fn measure_the_waters_reads() {
 /// source `id`'s grids by a packed index (producers/depth/packs.py's) from its packs in `folder`
 /// instead: the same digest is the same output. With `SCENIC_CACHE` (and `SCENIC_ROOM_TARGET_MB`)
 /// set, the basemap and the packs are read from whole local copies there, as a job's are
-/// (crate::localread, task #551; the copies' time is the phase "making whole local copies").
+/// (buildstore::localread, task #551; the copies' time is the phase "making whole local copies").
 /// A packed index's feature as the build reads it (`Source::from_declared`'s, one grid).
 fn grid_of(root: &store::nasfs::NasRoot, id: &str, f: &crate::inputs::sources::Feature) -> grids::Grid {
     let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\nkind = \"data\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 3\nwater = \"sea\"\nlabel = \"L\"\ndatum = \"D\"\n";
@@ -756,8 +756,8 @@ fn measure_a_real_assembly() {
     let upto: u8 = a[2].parse().unwrap();
     grids::WINDOW_READS.store(a[3].parse().unwrap(), std::sync::atomic::Ordering::Relaxed);
     grids::GRIDS_TOGETHER.store(a[3] != "1", std::sync::atomic::Ordering::Relaxed);
-    // (Its open-files limit a job's, so a reader keeps as many grids open: crate::sys.)
-    crate::sys::raise_open_files();
+    // (Its open-files limit a job's, so a reader keeps as many grids open: jobrt::sys.)
+    jobrt::sys::raise_open_files();
     let scratch = tempfile::tempdir().unwrap();
     let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch.path()).unwrap();
     let mut srcs = grids::declared(out.root(), &out.manifest).unwrap();
@@ -789,12 +789,12 @@ fn measure_a_real_assembly() {
         s.grids = all;
         println!("{id}: {n} grids read from packs in {}", dir.display());
     }
-    crate::timings::start(if z == 3 { "depth-lo" } else { "depth" });
+    jobrt::timings::start(if z == 3 { "depth-lo" } else { "depth" });
     let t0 = std::time::Instant::now();
     let local =
-        crate::localread::Local::from_env(&store::nasfs::NasRoot::local_for_test(root)).map(std::sync::Arc::new);
+        buildstore::localread::Local::from_env(&store::nasfs::NasRoot::local_for_test(root)).map(std::sync::Arc::new);
     let water = {
-        let _p = crate::timings::phase("opening the basemap's water");
+        let _p = jobrt::timings::phase("opening the basemap's water");
         crate::terrain_pack::open_water_with(&out, local.as_deref()).unwrap()
     };
     let io0 = grids::io_counts();
@@ -811,7 +811,7 @@ fn measure_a_real_assembly() {
             std::fs::write(Path::new(&dir).join(format!("{z}-{x}-{y}.c")), c).unwrap();
         }
     }
-    let r = crate::timings::snapshot(true).unwrap();
+    let r = jobrt::timings::snapshot(true).unwrap();
     println!("{z}/{}/{} to z{upto}, reads {}: {} tiles in {wall:.1} s", q.0, q.1, a[3], made.len());
     let io = grids::io_counts();
     let mut h = Vec::new();
@@ -889,11 +889,11 @@ fn the_floors_shading_assembly_takes_the_z6_tiles_finer_shading() {
     let made: std::collections::BTreeMap<_, _> =
         [((8u8, 74u32, 91u32), (enc(&ramp), Vec::new())), ((8, 80, 91), (enc(&ramp), Vec::new()))].into();
     let steep = vec![Px::of_gradient(0.0, 0.5); 65536];
-    let mut hi = vec![(9u8, 149u32, 183u32, crate::shade_codec::encode(&steep).unwrap(), 0u32)].into_iter();
+    let mut hi = vec![(9u8, 149u32, 183u32, codecs::shade_codec::encode(&steep).unwrap(), 0u32)].into_iter();
     crate::layers::write_pack(
         &mut out,
         super::SHADE_LAYER,
-        crate::shade_codec::ENCODING,
+        codecs::shade_codec::ENCODING,
         false,
         "hi",
         (6, 18, 22),
@@ -904,7 +904,7 @@ fn the_floors_shading_assembly_takes_the_z6_tiles_finer_shading() {
     let s = super::build::shading_lo(&out, &made, (2, 2)).unwrap();
     let px = |z: u8, x: u32, y: u32| decode(&s[&(z, x, y)]).unwrap();
     let z8 = px(8, 74, 91);
-    let want = quadrant(&decode(&crate::shade_codec::encode(&steep).unwrap()).unwrap());
+    let want = quadrant(&decode(&codecs::shade_codec::encode(&steep).unwrap()).unwrap());
     assert_eq!(code(z8[200 * 256 + 200]), code(want[72 * 128 + 72]), "its south-east quadrant from the z9 tile");
     assert_eq!(code(z8[200 * 256 + 200])[2], 248, "steep, facing south");
     let own = super::build::shading(&[((8, 80, 91), (enc(&ramp), Vec::new()))].into(), 8).unwrap();
@@ -931,11 +931,11 @@ fn the_depth_root_is_the_means_of_the_z3_tiles() {
     // Z3 tile 3/3/2: -100 m on its west half, none on its east; its class native; its shading steep.
     let depth: Vec<f32> = (0..65536).map(|i| if i % 256 < 128 { -100.0 } else { NODATA }).collect();
     let steep = vec![Px::of_gradient(0.0, 0.5); 65536];
-    let shade_b = crate::shade_codec::encode(&steep).unwrap();
+    let shade_b = codecs::shade_codec::encode(&steep).unwrap();
     for (layer, enc, b) in [
         (LAYER, ENCODING, fall::encode(&Grid::F(depth)).unwrap()),
         (CLASS_LAYER, CLASS_ENCODING, fall::encode(&Grid::C(vec![C_NATIVE; 65536])).unwrap()),
-        (SHADE_LAYER, crate::shade_codec::ENCODING, shade_b.clone()),
+        (SHADE_LAYER, codecs::shade_codec::ENCODING, shade_b.clone()),
     ] {
         let mut it = vec![(3u8, 3u32, 2u32, b, 0u32)].into_iter();
         crate::layers::write_pack(&mut out, layer, enc, false, "lo", (3, 3, 2), &mut it).unwrap();
@@ -1031,7 +1031,7 @@ fn measure_the_floors_shading() {
 #[test]
 fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes() {
     use super::build::{compose_hi, compose_lo};
-    use crate::resume_log::STOP_AFTER;
+    use jobrt::resume_log::STOP_AFTER;
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
     let mut out =
@@ -1042,14 +1042,14 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
     build_hi(&mut out, &srcs, &Fixture, None, T).unwrap();
     let fresh_lo = compose_lo(&out, &srcs, &Fixture, None, q, 8, false).unwrap();
     let fresh_hi = compose_hi(&out, &srcs, &Fixture, None, T, 12, false).unwrap();
-    assert!(!crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
+    assert!(!jobrt::resume_log::path(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
     // (An assembly's blocks are few: z6 one, z7 one, z8 four.)
     for stop in [1, 4] {
         let scratch = d.path().join(format!("scratch-{stop}"));
         let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &scratch).unwrap();
         STOP_AFTER.set(Some(stop));
         assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).is_err(), "stopped after {stop} blocks");
-        let log = std::fs::read(crate::resume_log::path(&scratch, (3, q.0, q.1))).unwrap();
+        let log = std::fs::read(jobrt::resume_log::path(&scratch, (3, q.0, q.1))).unwrap();
         assert!(!log.is_empty());
         assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).unwrap() == fresh_lo);
     }
@@ -1068,7 +1068,7 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
     };
     let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &scratch).unwrap();
     lo_pack(&mut out, LAYER, ENCODING, q, -5.0);
-    lo_pack(&mut out, SHADE_LAYER, crate::shade_codec::ENCODING, q, -5.0);
+    lo_pack(&mut out, SHADE_LAYER, codecs::shade_codec::ENCODING, q, -5.0);
     lo_pack(&mut out, CLASS_LAYER, CLASS_ENCODING, q, -5.0);
     for c in 1..=3 {
         std::fs::remove_file(d.path().join(format!("{c}.tif"))).unwrap();
@@ -1086,7 +1086,7 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
 /// Task #885: a z6 tile's whole job (`build_hi`) paused again and again at its safe points (each
 /// block kept in its resume log): after its first block, resumed and paused after the next, then
 /// midway, before its last block and after it (all kept, nothing left but the shading and the
-/// packs), each stop the pause's own error (crate::control::Paused) with nothing of the tile put
+/// packs), each stop the pause's own error (jobrt::control::Paused) with nothing of the tile put
 /// and its log kept, stores the same packs as one never paused nor keeping its blocks: its depth,
 /// class and floor's shading (`depth-shade`, made from the tiles once all are, not logged), the
 /// same bytes; its log gone once they're saved. (#969: it paused at every safe point, one by one,
@@ -1096,7 +1096,7 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
 #[test]
 fn a_z6_tile_paused_at_its_safe_points_resumes_to_the_same_bytes() {
     use super::build::build_hi_keeping;
-    use crate::resume_log::STOP_AFTER;
+    use jobrt::resume_log::STOP_AFTER;
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
     let packs = |out: &Out| {
@@ -1109,7 +1109,7 @@ fn a_z6_tile_paused_at_its_safe_points_resumes_to_the_same_bytes() {
         Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join(name)), &d.path().join(format!("{name}-s")))
             .unwrap()
     };
-    let log = |out: &Out| crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists();
+    let log = |out: &Out| jobrt::resume_log::path(&out.scratch, (6, T.0, T.1)).exists();
     let mut out = open("fresh");
     build_hi_keeping(&mut out, &srcs, &Fixture, None, T, false).unwrap();
     let fresh = packs(&out);
@@ -1129,7 +1129,7 @@ fn a_z6_tile_paused_at_its_safe_points_resumes_to_the_same_bytes() {
         STOP_AFTER.set(Some(stop - at));
         let e = build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).unwrap_err();
         STOP_AFTER.set(None);
-        assert!(crate::control::is_paused(&e), "after {stop} of {blocks}: {e:#}");
+        assert!(jobrt::control::is_paused(&e), "after {stop} of {blocks}: {e:#}");
         assert!(out.get(&hi_logical(LAYER, T.0, T.1)).is_none(), "nothing of the tile put");
         assert!(log(&out), "its blocks kept, after {stop}");
         at = stop;

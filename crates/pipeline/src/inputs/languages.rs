@@ -258,7 +258,7 @@ impl Checks for Languages {
         let Some(o) = outlines_of(manifest) else { return Ok(None) };
         // (Outlines that can't be read now don't fail the check: it goes on without the "no
         // outline" warnings, which the next pass's check raises.)
-        match crate::outlines::Outlines::open(&root.join(o)) {
+        match buildstore::outlines::Outlines::open(&root.join(o)) {
             Ok(outlines) => Ok(Some(Box::new(Languages { codes: Some(outlines.spoken_codes()) }))),
             Err(e) => {
                 eprintln!("inputs: {UNIT}: the pass's outlines, {o}, can't be read ({e:#}): checked without the codes they have");

@@ -642,14 +642,14 @@ pub fn list(root: &store::nasfs::NasRoot, unit: &str, recursive: bool) -> Result
     let mut stack = vec![(top.clone(), String::new())];
     while let Some((dir, rel)) = stack.pop() {
         for e in dir.read_dir().with_context(|| format!("list {}", dir.display()))? {
-            // (Its NAS metadata work, for the step's weight: crate::costin::meta, task #451.)
-            crate::costin::meta(1, 0, 0);
+            // (Its NAS metadata work, for the step's weight: buildstore::costin::meta, task #451.)
+            buildstore::costin::meta(1, 0, 0);
             let name = e.name.clone();
             if ignored(&name) && !checks(unit).is_some_and(|c| c.takes_ignored(&name)) {
                 continue;
             }
             let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-            crate::costin::meta(0, 1, 0);
+            buildstore::costin::meta(0, 1, 0);
             let md = e.metadata().with_context(|| format!("stat {}", e.path.display()))?;
             if !md.is_dir() && checks(unit).is_some_and(|c| !c.takes(&path)) {
                 continue;
@@ -685,7 +685,7 @@ pub fn list(root: &store::nasfs::NasRoot, unit: &str, recursive: bool) -> Result
                 Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
             };
             for e in rd {
-                crate::costin::meta(1, 0, 0);
+                buildstore::costin::meta(1, 0, 0);
                 let name = e.name.clone();
                 if ignored(&name) {
                     continue;

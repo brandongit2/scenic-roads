@@ -15,13 +15,13 @@
 //!   it, its ways' lines' records; each way with its whole length (`km`) and an id, so the app
 //!   merges blocks by id and measures what's in view on the geometry it has.
 
-use crate::hipack::{grow, meets, tile_bounds};
+use codecs::hipack::{grow, meets, tile_bounds};
 use crate::layers::{pack_of, write_pack};
-use crate::legacy::TileId;
+use codecs::legacy::TileId;
 use crate::markconv::{self, src_bytes};
-use crate::marks::{self, IdSource};
+use codecs::marks::{self, IdSource};
 use buildstore::out::Out;
-use crate::vtgen::{self, Feature, Geom};
+use codecs::vtgen::{self, Feature, Geom};
 use anyhow::{bail, Context, Result};
 use det::Det;
 use names::mvt::Value as MvtValue;
@@ -231,7 +231,7 @@ fn areas_and_parks(
             Some((f, _)) => details_by_i(out, src, f)?,
             None => HashMap::new(),
         };
-        let p = crate::timings::phase("making the areas' features and ids");
+        let p = jobrt::timings::phase("making the areas' features and ids");
         let mut src: Vec<IdSource> = Vec::new();
         // Per feature: it, its id (outlines: their dot's), its details record, its owner.
         let mut made: Vec<(Feature, Option<u64>, String, String)> = Vec::new();
@@ -320,7 +320,7 @@ fn areas_and_parks(
         parks += 1;
     }
     // ovdata, per z3 tile.
-    let _p = crate::timings::phase("making and uploading ovdata");
+    let _p = jobrt::timings::phase("making and uploading ovdata");
     let n_ov = owned.len();
     for (tile, keys) in owned {
         let u = TileId::parse(&tile).unwrap();
@@ -419,7 +419,7 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted)
     };
     // (osmium's input, read where it lies: tests/nas_access.rs.)
     let set_s = set.unchecked_path().to_string_lossy().into_owned();
-    let p = crate::timings::phase("pulling the ferry routes out of the map data (osmium)");
+    let p = jobrt::timings::phase("pulling the ferry routes out of the map data (osmium)");
     run(
         osmium(&["tags-filter", &set_s, "w/route=ferry", "r/route=ferry", "-o", "ferries.osm.pbf", "--overwrite"]),
         "osmium (ferry routes)",
@@ -462,12 +462,12 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted)
         "osmium export (terminals)",
     )?;
     drop(p);
-    let p = crate::timings::phase("listing the feeds and static files");
+    let p = jobrt::timings::phase("listing the feeds and static files");
     let feeds = crate::rail::feeds_for_counting(out, crate::rail::FERRY_FEEDS)?;
     let zips = crate::inputs::gtfs::zips(statics);
     let n_static = zips.len();
     drop(p);
-    let p = crate::timings::phase("finding the ferry lines and their sailings");
+    let p = jobrt::timings::phase("finding the ferry lines and their sailings");
     let w = crate::ferries::run(&work, feeds["feeds"].as_array().context("the ferry feeds' list")?, &zips)?;
     std::fs::write(work.join("timetables.json"), &w.timetables)?;
     drop(p);
@@ -493,7 +493,7 @@ fn ferry_blocks(
     ntiles: &mut usize,
 ) -> Result<usize> {
     // (Made, then written: their own phases below this one.)
-    let _p = crate::timings::phase("making and writing the ferries' blocks");
+    let _p = jobrt::timings::phase("making and writing the ferries' blocks");
     let feats = fc["features"].as_array().context("ferries: no features")?;
     // Per feature: its geometry (a way's line, a terminal's point), properties, id.
     struct F {
@@ -638,7 +638,7 @@ fn write_tiles(
     ntiles: &mut usize,
     bundle: bool,
 ) -> Result<Vec<String>> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let p = phase("cutting vector tiles");
     let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
     let mut err = None;
@@ -685,13 +685,13 @@ fn station_feature(lon: f64, lat: f64, props: &serde_json::Map<String, Value>) -
 
 /// A stop's properties as the map reads them (n, g, m, sp rounded, mz to 2 places,
 /// en where OSM's English differs).
-pub fn station_props(s: &crate::stations::Stop) -> serde_json::Map<String, Value> {
+pub fn station_props(s: &codecs::stations::Stop) -> serde_json::Map<String, Value> {
     let mut p = serde_json::Map::new();
     p.insert("n".into(), serde_json::json!(s.name));
     p.insert("g".into(), serde_json::json!(s.group));
     p.insert("m".into(), serde_json::json!(s.mask));
-    p.insert("sp".into(), serde_json::json!(crate::interest::py_round(s.spacing, 0) as i64));
-    p.insert("mz".into(), serde_json::json!(crate::interest::py_round(s.mz(), 2)));
+    p.insert("sp".into(), serde_json::json!(landmarks::interest::py_round(s.spacing, 0) as i64));
+    p.insert("mz".into(), serde_json::json!(landmarks::interest::py_round(s.mz(), 2)));
     if let Some(en) = &s.en {
         p.insert("en".into(), serde_json::json!(en));
     }
@@ -705,12 +705,12 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     let logical = crate::osmpass::set_name(date, "rail");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
     let t0 = std::time::Instant::now();
-    let p = crate::timings::phase("reading the rail set's stops");
-    let all = crate::stations::stops(&set)?;
+    let p = jobrt::timings::phase("reading the rail set's stops");
+    let all = codecs::stations::stops(&set)?;
     drop(p);
-    let p = crate::timings::phase("keeping the stops in the coverage");
+    let p = jobrt::timings::phase("keeping the stops in the coverage");
     let cover = hi_cover(out);
-    let kept: Vec<&crate::stations::Stop> = all
+    let kept: Vec<&codecs::stations::Stop> = all
         .iter()
         .filter(|s| {
             let u = TileId::of_point(6, [marks::e7(s.lon), marks::e7(s.lat)]);
@@ -721,7 +721,7 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     if let Some(p) = geojson {
         let feats: Vec<Value> = kept
             .iter()
-            .map(|s| serde_json::json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [crate::interest::py_round(s.lon, 6), crate::interest::py_round(s.lat, 6)]}, "properties": station_props(s)}))
+            .map(|s| serde_json::json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [landmarks::interest::py_round(s.lon, 6), landmarks::interest::py_round(s.lat, 6)]}, "properties": station_props(s)}))
             .collect();
         std::fs::write(p, serde_json::to_vec(&serde_json::json!({"type": "FeatureCollection", "features": feats}))?)?;
     }

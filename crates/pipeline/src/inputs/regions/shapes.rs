@@ -120,7 +120,7 @@ pub fn degrees(v: i64) -> String {
 /// A `.poly` file's rings (Osmosis's polygon format): each section a ring, `!`-prefixed sections
 /// holes, E7. (As `coverage::read_poly` read them for the `poly:` and `geofabrik:` parts.)
 pub fn read_poly(text: &str) -> Result<Vec<Vec<[i32; 2]>>> {
-    crate::coverage::read_poly(text)
+    buildstore::coverage::read_poly(text)
 }
 
 /// A `.poly`'s rings as a GeoJSON Feature (`properties`: where it came from): each ring a polygon of

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 /// Raw tiles got at once (each mostly waits on the NAS or S3; S3's requests themselves held to
-/// crate::fetch::HOST_REQUESTS a host).
+/// buildstore::fetch::HOST_REQUESTS a host).
 const FETCH_THREADS: usize = 64;
 /// A z3 tile's mids read at once (`build_lo`): SMB's throughput wants a few calls in flight.
 const MID_READERS: usize = 8;
@@ -39,13 +39,13 @@ pub struct Sources<'a> {
 }
 
 impl Sources<'_> {
-    /// What tile `z/x/y`'s heights are rounded to as stored (crate::terrain_codec): to the
+    /// What tile `z/x/y`'s heights are rounded to as stored (codecs::terrain_codec): to the
     /// centimetre at its place's finest zoom (`native`), else to the decimetre.
     pub fn quantum(&self, z: u8, x: u32, y: u32) -> f64 {
         if self.native.is_some_and(|n| n(z, x, y)) {
-            crate::terrain_codec::NATIVE_M
+            codecs::terrain_codec::NATIVE_M
         } else {
-            crate::terrain_codec::COARSER_M
+            codecs::terrain_codec::COARSER_M
         }
     }
 }
@@ -228,7 +228,7 @@ pub fn water_pin(m: &std::collections::BTreeMap<String, String>) -> Option<(&str
 /// Canada's own data's after it when the manifest has them for that basemap
 /// (crate::lakefill::current, filled_pin); None
 /// without a basemap. What the depth's keys name the water by (agent::build: its digests,
-/// crate::terrain_water::WaterIdx).
+/// codecs::terrain_water::WaterIdx).
 pub fn water_source_pin(m: &std::collections::BTreeMap<String, String>) -> Option<String> {
     let (_, c) = water_pin(m)?;
     Some(crate::lakefill::filled_pin(c, crate::lakefill::current(m).map(|(_, f)| f)))
@@ -236,20 +236,20 @@ pub fn water_source_pin(m: &std::collections::BTreeMap<String, String>) -> Optio
 
 /// The depth's water source, open (its pin `water_source_pin`'s): the latest pass's basemap, with
 /// the fill's lakes when the manifest has a fill.
-pub fn open_water(out: &Out) -> anyhow::Result<crate::lakefill::FilledWater<crate::terrain_water::BasemapWater>> {
+pub fn open_water(out: &Out) -> anyhow::Result<crate::lakefill::FilledWater<codecs::terrain_water::BasemapWater>> {
     open_water_with(out, None)
 }
 
-/// `open_water`, the basemap read from `local`'s whole copy where it gives one (crate::localread:
+/// `open_water`, the basemap read from `local`'s whole copy where it gives one (buildstore::localread:
 /// the steps reading it in thousands of ranges, its shared cache's, crate::needs::CACHES).
 pub fn open_water_with(
     out: &Out,
-    local: Option<&crate::localread::Local>,
-) -> anyhow::Result<crate::lakefill::FilledWater<crate::terrain_water::BasemapWater>> {
+    local: Option<&buildstore::localread::Local>,
+) -> anyhow::Result<crate::lakefill::FilledWater<codecs::terrain_water::BasemapWater>> {
     use anyhow::Context;
     let (_, c) = water_pin(&out.manifest)
         .context("no basemap (layers/basemap/world-<date>): the depth's water is the latest pass's basemap's")?;
-    let base = crate::terrain_water::BasemapWater::open(&crate::localread::path(local, &out.path(c)), c)?;
+    let base = codecs::terrain_water::BasemapWater::open(&buildstore::localread::path(local, &out.path(c)), c)?;
     let fill = match crate::lakefill::current(&out.manifest) {
         Some((_, f)) => Some(crate::lakefill::Fill::open(&out.path(f), f)?),
         None => None,
@@ -350,7 +350,7 @@ fn prepare(
     Ok(Prepared { e, before, decoded: true, z, quantum })
 }
 
-/// A prepared tile finished: rounded and encoded (crate::terrain_codec), its heights the source's
+/// A prepared tile finished: rounded and encoded (codecs::terrain_codec), its heights the source's
 /// (below 0 m too). Returns the tile to store (None: its raw tile didn't decode), whether its
 /// children or voids moved a pixel by over half a metre from the raw tile's, and from z1 on its
 /// 2×2 means (of the heights before rounding) for the level above.
@@ -363,7 +363,7 @@ fn finish(p: Prepared) -> (Option<Vec<u8>>, bool, Option<Vec<f32>>) {
     // (The level above takes its heights before rounding: rounded once, as stored, not a level at a
     // time; the owner's, 4 Nov.)
     let quad = (z >= 1).then(|| quad_mean(&e));
-    let out = crate::terrain_codec::encode(&mut e, quantum).ok();
+    let out = codecs::terrain_codec::encode(&mut e, quantum).ok();
     (out, changed, quad)
 }
 
@@ -402,7 +402,7 @@ pub fn tile_lat(z: u8, ty: u32) -> f64 {
 
 // ---- per pack ----------------------------------------------------------------------------------
 
-use crate::coverage::Coverage;
+use buildstore::coverage::Coverage;
 use buildstore::out::Out;
 use rayon::prelude::*;
 use std::sync::Mutex;
@@ -732,7 +732,7 @@ impl store::range::RangeRead for FileSource<'_> {
 
 /// The index file a version of the raw tiles' index is (`Stamp`): its inode (on the NAS, the
 /// server's file ID on the share), time and size. The index is only ever written by a temporary
-/// name and renamed over (rawpack's `Index::save`, crate::whole), and a renamed file has a new file
+/// name and renamed over (rawpack's `Index::save`, codecs::whole), and a renamed file has a new file
 /// ID as the share gives them, so two versions don't share a stamp even written a moment apart with
 /// an archive swapped for another of a name as long (the same time and size). A change the stamp
 /// missed would cost a re-fetch (a tile asked of AWS that a newer archive had), not correctness:
@@ -750,12 +750,12 @@ fn stamp_of(m: &std::fs::Metadata) -> Stamp {
 
 /// The raw tiles' archives' index in `store` as read now, with the stamp of the very file it was
 /// read from (taken from the open file, not its name again); none there, empty.
-fn load_index(store: &store::nasfs::NasPath) -> anyhow::Result<(crate::rawpack::Index, Stamp)> {
+fn load_index(store: &store::nasfs::NasPath) -> anyhow::Result<(buildstore::rawpack::Index, Stamp)> {
     use std::io::Read;
-    let p = store.join(crate::rawpack::INDEX);
+    let p = store.join(buildstore::rawpack::INDEX);
     let mut f = match p.open() {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((crate::rawpack::Index::default(), None)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((buildstore::rawpack::Index::default(), None)),
         Err(e) => return Err(anyhow::Error::from(e).context(format!("read {}", p.display()))),
     };
     let stamp = f.metadata().ok().as_ref().and_then(stamp_of);
@@ -766,7 +766,7 @@ fn load_index(store: &store::nasfs::NasPath) -> anyhow::Result<(crate::rawpack::
 
 /// The stamp of the index in `store` as it is now (a stat: `Stamp`); Err when it can't be told.
 fn index_stamp(store: &store::nasfs::NasPath) -> Result<Stamp, ()> {
-    match store.join(crate::rawpack::INDEX).metadata() {
+    match store.join(buildstore::rawpack::INDEX).metadata() {
         Ok(m) => Ok(stamp_of(&m)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err(()),
@@ -792,7 +792,7 @@ type RangedArchives = std::sync::Arc<Vec<(std::fs::File, Vec<roadcore::archive::
 const RANGED: usize = 16;
 
 /// AWS's raw tiles, kept so each is downloaded once: in the lead's cache as they come, then on
-/// the NAS packed (crate::rawpack: archives grouped as the terrain is, packed at the end of the job
+/// the NAS packed (buildstore::rawpack: archives grouped as the terrain is, packed at the end of the job
 /// that fetched them, or by room-making), read from there (`Opened`: a few tiles of a shard by
 /// range, else its archives copied here whole); and the NAS's loose tiles from before (`sources/aws-terrarium/<z>/<x>/<y>.png`,
 /// `.none` for a tile AWS doesn't have), while they're there. Packs are always made from the same
@@ -811,7 +811,7 @@ pub struct RawTiles {
     listed: Mutex<HashMap<(u8, u32), std::sync::Arc<std::collections::HashSet<String>>>>,
     /// The store's archives' index: read when first wanted (tried again a minute after it can't
     /// be), and again when an archive it names is gone from the NAS (a job that outlived it).
-    index: Mutex<(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)>,
+    index: Mutex<(Option<std::sync::Arc<buildstore::rawpack::Index>>, Option<std::time::Instant>)>,
     /// The index's stamp as it was read (`load_index`): one changed since (an archive packed meanwhile,
     /// by another job here or room-making, of tiles this job's cache held) has a shard's archives
     /// opened again before a tile they lack is fetched from AWS.
@@ -878,7 +878,7 @@ impl RawTiles {
 
     /// The store's archives' index: as read before unless `fresh`; None when it can't be read (three
     /// tries a moment apart, then none for a minute: each try waits on the NAS).
-    fn index(&self, st: &store::nasfs::NasPath, fresh: bool) -> Option<std::sync::Arc<crate::rawpack::Index>> {
+    fn index(&self, st: &store::nasfs::NasPath, fresh: bool) -> Option<std::sync::Arc<buildstore::rawpack::Index>> {
         self.index_pair(st, fresh).map(|p| p.0)
     }
 
@@ -889,9 +889,9 @@ impl RawTiles {
         &self,
         st: &store::nasfs::NasPath,
         fresh: bool,
-    ) -> Option<(std::sync::Arc<crate::rawpack::Index>, Stamp)> {
+    ) -> Option<(std::sync::Arc<buildstore::rawpack::Index>, Stamp)> {
         let mut s = self.index.lock().unwrap();
-        let pair = |s: &(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)| {
+        let pair = |s: &(Option<std::sync::Arc<buildstore::rawpack::Index>>, Option<std::time::Instant>)| {
             s.0.clone().map(|ix| (ix, *self.index_stamp.lock().unwrap()))
         };
         if let (Some(_), false) = (&s.0, fresh) {
@@ -938,10 +938,10 @@ impl RawTiles {
                     Ok(Some(l)) => store::nasfs::Place::Local(l),
                     _ => store::nasfs::Place::Nas(st.join("packs").join(&p.name)),
                 };
-                match crate::rawpack::entries_of(&at) {
+                match buildstore::rawpack::entries_of(&at) {
                     Ok(e) => v.push((e.0, e.1, at.loc().on())),
                     // (Gone from the NAS: the index read before is out of date.)
-                    Err(e) if !fresh && crate::rawpack::not_found(&e) => break,
+                    Err(e) if !fresh && buildstore::rawpack::not_found(&e) => break,
                     Err(e) => {
                         eprintln!("terrain: the raw tiles of {shard}: {e:#}");
                         return None;
@@ -961,13 +961,13 @@ impl RawTiles {
     fn copy_shard(
         &self,
         st: &store::nasfs::NasPath,
-        packs: &[crate::rawpack::Pack],
+        packs: &[buildstore::rawpack::Pack],
     ) -> Option<std::sync::Arc<[roadcore::archive::Archive]>> {
         let mut v = Vec::new();
         for p in packs.iter().rev() {
             // (Held, and marked used: rawpack::local_copy, store::cachefile.)
             let opened =
-                crate::rawpack::local_copy(&self.dir, st, &p.name).and_then(|l| roadcore::archive::Archive::open(&l));
+                buildstore::rawpack::local_copy(&self.dir, st, &p.name).and_then(|l| roadcore::archive::Archive::open(&l));
             match opened {
                 Ok(a) => v.push(a),
                 Err(e) => {
@@ -993,13 +993,13 @@ impl RawTiles {
     /// beside each other.
     fn archived_by(&self, z: u8, x: u32, y: u32, used: &mut Option<Stamp>) -> Option<Option<Vec<u8>>> {
         let st = self.store.as_ref()?;
-        let shard = crate::rawpack::shard(z, x, y);
+        let shard = buildstore::rawpack::shard(z, x, y);
         let cell = self.archives.lock().unwrap().entry(shard.clone()).or_default().clone();
         let key = roadcore::archive::tile_key(z, x, y);
         let whole = |b: &[u8]| -> Option<Option<Vec<u8>>> {
             if b.is_empty() {
                 Some(None)
-            } else if crate::whole::png_whole(b) {
+            } else if codecs::whole::png_whole(b) {
                 Some(Some(b.to_vec()))
             } else {
                 eprintln!("terrain: {z}/{x}/{y} in an archive of {shard} isn't whole: passed over");
@@ -1064,7 +1064,7 @@ impl RawTiles {
     /// one that isn't again then).
     fn in_archive(&self, z: u8, x: u32, y: u32) -> bool {
         let Some(st) = self.store.as_ref() else { return false };
-        let shard = crate::rawpack::shard(z, x, y);
+        let shard = buildstore::rawpack::shard(z, x, y);
         let cell = self.archives.lock().unwrap().entry(shard.clone()).or_default().clone();
         let mut c = cell.lock().unwrap();
         if c.is_none() {
@@ -1119,7 +1119,7 @@ impl RawTiles {
             // room-making or another job's packing meanwhile): its shard's archives opened again,
             // the index read afresh, before AWS is asked (docs/pool.md §7.7: two raw-tile jobs at
             // once on one Mac).
-            let shard = crate::rawpack::shard(z, x, y);
+            let shard = buildstore::rawpack::shard(z, x, y);
             if self.refresh_shard(st, &shard, used) {
                 if let Some(b) = self.archived(z, x, y) {
                     return Ok((b, false));
@@ -1223,7 +1223,7 @@ impl RawTiles {
 /// one that isn't whole is deleted.
 fn read_whole(p: &std::path::Path) -> Option<Vec<u8>> {
     let b = store::cachefile::read(p).ok()??;
-    if crate::whole::png_whole(&b) {
+    if codecs::whole::png_whole(&b) {
         return Some(b);
     }
     eprintln!("terrain: {} isn't whole ({} bytes): fetched again", p.display(), b.len());
@@ -1235,7 +1235,7 @@ fn read_whole(p: &std::path::Path) -> Option<Vec<u8>> {
 /// locked); one that isn't whole is deleted.
 fn nas_whole(p: &store::nasfs::NasPath) -> Option<Vec<u8>> {
     let b = p.read().ok()?;
-    if crate::whole::png_whole(&b) {
+    if codecs::whole::png_whole(&b) {
         return Some(b);
     }
     eprintln!("terrain: {} isn't whole ({} bytes): fetched again", p.display(), b.len());
@@ -1245,19 +1245,19 @@ fn nas_whole(p: &store::nasfs::NasPath) -> Option<Vec<u8>> {
 
 /// One of AWS's tiles, whole: None when AWS says it has none (404, or S3's 403) twice, a moment
 /// apart (it's remembered for good); an error when it can't be fetched or isn't a whole PNG (so
-/// a network failure isn't remembered as "no tile"). Fetched by crate::fetch::get: its retries,
+/// a network failure isn't remembered as "no tile"). Fetched by buildstore::fetch::get: its retries,
 /// its wait for this Mac's agent through a restart.
 fn fetch_checked(url: &str, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
     let url = tile_url(url, z, x, y);
-    let got = match crate::fetch::get(&url)? {
+    let got = match buildstore::fetch::get(&url)? {
         None => {
             std::thread::sleep(Duration::from_secs(2));
-            crate::fetch::get(&url)?
+            buildstore::fetch::get(&url)?
         }
         got => got,
     };
     match got {
-        Some(b) if !crate::whole::png_whole(&b) => anyhow::bail!("{url}: not a whole PNG ({} bytes)", b.len()),
+        Some(b) if !codecs::whole::png_whole(&b) => anyhow::bail!("{url}: not a whole PNG ({} bytes)", b.len()),
         got => Ok(got),
     }
 }
@@ -1341,7 +1341,7 @@ pub fn read_mid_of<'a>(path: impl Into<store::nasfs::Loc<'a>>, tz: u8) -> anyhow
     );
     let t = m["tile"]
         .as_str()
-        .and_then(crate::legacy::TileId::parse)
+        .and_then(codecs::legacy::TileId::parse)
         .filter(|u| u.z == tz)
         .with_context(|| format!("{}: no z{tz} tile", what()))?;
     let prefix = format!("quad-{}-", tz + 3);
@@ -1432,7 +1432,7 @@ impl<'a> Maker<'a> {
         mut log: Option<&mut crate::terrain_resume::HiLog>,
     ) -> anyhow::Result<Level> {
         use crate::terrain_resume::Finished;
-        use crate::timings::sub;
+        use jobrt::timings::sub;
         let up = z.min(self.block_up);
         let blocks = if by_block { blocks(z, &tiles, self.block_up) } else { vec![tiles.clone()] };
         // (What a resumed run's log kept of the level: its blocks, whether it ended.)
@@ -1742,7 +1742,7 @@ fn upper_levels(q: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)> {
 fn saying<T>(
     mk: &Maker,
     total: u64,
-    progress: crate::rawpack::Progress,
+    progress: buildstore::rawpack::Progress,
     run: impl FnOnce() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     let finished = std::sync::atomic::AtomicBool::new(false);
@@ -1786,7 +1786,7 @@ pub fn build_piece(
     cov: &Coverage,
     src: &Sources,
     expect_same: bool,
-    progress: crate::rawpack::Progress,
+    progress: buildstore::rawpack::Progress,
 ) -> anyhow::Result<PackReport> {
     build_piece_with(out, raw, t, cov, src, expect_same, progress, None)
 }
@@ -1802,7 +1802,7 @@ pub fn build_piece_with(
     cov: &Coverage,
     src: &Sources,
     expect_same: bool,
-    progress: crate::rawpack::Progress,
+    progress: buildstore::rawpack::Progress,
     offload: Option<&crate::offload::Offload>,
 ) -> anyhow::Result<PackReport> {
     let offers = crate::terrain_task::Offers::offer(offload, t, &piece_levels(cov, src.sets, t), raw, src);
@@ -1819,7 +1819,7 @@ pub fn build_piece_offered(
     cov: &Coverage,
     src: &Sources,
     expect_same: bool,
-    progress: crate::rawpack::Progress,
+    progress: buildstore::rawpack::Progress,
     offers: crate::terrain_task::Offers,
 ) -> anyhow::Result<PackReport> {
     let rep = build_piece_later(out, raw, t, cov, src, expect_same, progress, offers, Mid::default())?;
@@ -1841,11 +1841,11 @@ pub fn build_piece_later(
     cov: &Coverage,
     src: &Sources,
     expect_same: bool,
-    progress: crate::rawpack::Progress,
+    progress: buildstore::rawpack::Progress,
     offers: crate::terrain_task::Offers,
     deep: Mid,
 ) -> anyhow::Result<PackReport> {
-    build_piece_kept(out, raw, t, cov, src, expect_same, progress, offers, deep, crate::resume_log::on())
+    build_piece_kept(out, raw, t, cov, src, expect_same, progress, offers, deep, jobrt::resume_log::on())
 }
 
 /// `build_piece_later`, its levels' blocks kept as made and those an earlier run kept taken with
@@ -1858,7 +1858,7 @@ pub(crate) fn build_piece_kept(
     cov: &Coverage,
     src: &Sources,
     expect_same: bool,
-    progress: crate::rawpack::Progress,
+    progress: buildstore::rawpack::Progress,
     offers: crate::terrain_task::Offers,
     deep: Mid,
     keep: bool,
@@ -1881,7 +1881,7 @@ pub(crate) fn build_piece_kept(
     let levels = piece_levels(cov, src.sets, t);
     let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
     let mk = Maker::new(raw, src);
-    let p = crate::timings::phase("making the piece's terrain tiles, z12 down to z9");
+    let p = jobrt::timings::phase("making the piece's terrain tiles, z12 down to z9");
     let (hi, mid) = saying(&mk, total, progress, || {
         let mine = offers.rest(&levels);
         anyhow::ensure!(
@@ -1906,7 +1906,7 @@ pub(crate) fn build_piece_kept(
         let began = std::time::Instant::now();
         let (mut hi, mut mid) = mk.piece(mine, true, log.as_mut(), deep)?;
         offers.made_here(began.elapsed().as_secs_f64(), n);
-        let _w = crate::timings::sub("waiting for the subtrees other workers make (or making them here)");
+        let _w = jobrt::timings::sub("waiting for the subtrees other workers make (or making them here)");
         let _o = store::waits::other();
         offers.settle(&|lv| mk.piece(lv, true, None, Mid::default()), &mut hi, &mut mid)?;
         hi.sort_by_key(|t| (t.0, t.1, t.2));
@@ -1915,7 +1915,7 @@ pub(crate) fn build_piece_kept(
     drop(p);
     mk.report(&mut rep);
     progress("packs", 0, 1);
-    let p = crate::timings::phase("writing its hi pack and mid");
+    let p = jobrt::timings::phase("writing its hi pack and mid");
     rep.hi_tiles = hi.len();
     let mut it = hi.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
@@ -1924,7 +1924,7 @@ pub(crate) fn build_piece_kept(
     let pack = crate::layers::write_pack_local(
         out,
         "terrain",
-        crate::terrain_codec::ENCODING,
+        codecs::terrain_codec::ENCODING,
         false,
         "hi",
         (6, t.0, t.1),
@@ -1933,7 +1933,7 @@ pub(crate) fn build_piece_kept(
     let ml = mid_logical(t.0, t.1);
     let mid_path = out.scratch_file(&format!("{ml}.sect"));
     write_mid(&mid_path, t, &mid)?;
-    std::fs::remove_file(crate::resume_log::path(&out.scratch, (6, t.0, t.1))).ok();
+    std::fs::remove_file(jobrt::resume_log::path(&out.scratch, (6, t.0, t.1))).ok();
     let hl = crate::layers::hi_logical("terrain", t.0, t.1);
     if expect_same {
         let made = pack.as_ref().map(|p| p.content_name()).transpose()?;
@@ -1979,17 +1979,17 @@ pub fn build_lo(
     q: (u32, u32),
     ts: &[(u32, u32)],
     src: &Sources,
-    progress: crate::rawpack::Progress,
+    progress: buildstore::rawpack::Progress,
 ) -> anyhow::Result<PackReport> {
     let (lo, mut rep) = make_lo(out, raw, q, ts, src, progress)?;
-    let up = crate::timings::phase("uploading the lo pack");
+    let up = jobrt::timings::phase("uploading the lo pack");
     progress("packs", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    if crate::layers::write_pack(out, "terrain", crate::terrain_codec::ENCODING, false, "lo", (3, q.0, q.1), &mut it)?
+    if crate::layers::write_pack(out, "terrain", codecs::terrain_codec::ENCODING, false, "lo", (3, q.0, q.1), &mut it)?
         .is_none()
     {
         crate::layers::drop(out, &[crate::layers::lo_logical("terrain", q.0, q.1)]);
@@ -2008,11 +2008,11 @@ pub fn make_lo(
     q: (u32, u32),
     ts: &[(u32, u32)],
     src: &Sources,
-    progress: crate::rawpack::Progress,
+    progress: buildstore::rawpack::Progress,
 ) -> anyhow::Result<(Vec<Made>, PackReport)> {
     use anyhow::Context;
     let mut rep = PackReport::default();
-    let p = crate::timings::phase("reading the pieces' mids");
+    let p = jobrt::timings::phase("reading the pieces' mids");
     let mut paths = Vec::with_capacity(ts.len());
     for &t in ts {
         anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
@@ -2031,7 +2031,7 @@ pub fn make_lo(
     drop(p);
     let mk = Maker::new(raw, src);
     let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
-    let p = crate::timings::phase("making the z3 tile's coarser levels, z8 down to z3");
+    let p = jobrt::timings::phase("making the z3 tile's coarser levels, z8 down to z3");
     let lo = saying(&mk, 1365, progress, || mk.lo(q, &refs))?;
     drop(p);
     mk.report(&mut rep);
@@ -2053,13 +2053,13 @@ pub fn make_lo_from(
 /// its tiles.
 pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::Result<usize> {
     let tiles = make_root(out, raw, src)?;
-    let up = crate::timings::phase("uploading the root pack");
+    let up = jobrt::timings::phase("uploading the root pack");
     let n = tiles.len();
     let mut it = tiles.into_iter().map(|(z, x, y, b)| {
         let l = b.len() as u32;
         (z, x, y, b, l)
     });
-    crate::layers::write_pack(out, "terrain", crate::terrain_codec::ENCODING, false, "root", (0, 0, 0), &mut it)?;
+    crate::layers::write_pack(out, "terrain", codecs::terrain_codec::ENCODING, false, "root", (0, 0, 0), &mut it)?;
     drop(up);
     out.save()?;
     Ok(n)
@@ -2070,7 +2070,7 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
 /// region and takes the relief (`raw`: `Fills`, its one tile a root tile), never the pool;
 /// deterministic given the lo packs and the relief. Nothing written.
 pub fn make_root(out: &Out, raw: &dyn RawSource, src: &Sources) -> anyhow::Result<Vec<Made>> {
-    let p = crate::timings::phase("reading the z3 tiles from the lo packs");
+    let p = jobrt::timings::phase("reading the z3 tiles from the lo packs");
     let have = ManifestTiles::new(out, "terrain");
     let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
     for x in 0..8u32 {
@@ -2082,7 +2082,7 @@ pub fn make_root(out: &Out, raw: &dyn RawSource, src: &Sources) -> anyhow::Resul
     }
     drop(have);
     drop(p);
-    let _p = crate::timings::phase("making the top tiles (z0–2) from the z3 tiles and the relief");
+    let _p = jobrt::timings::phase("making the top tiles (z0–2) from the z3 tiles and the relief");
     let mk = Maker::new(raw, src);
     let mut tiles: Vec<Made> = Vec::new();
     for z in (0..=2u8).rev() {
@@ -2102,7 +2102,7 @@ pub(crate) mod tests {
 
     /// Raw tiles `inner`'s, sampled as crate::terrain_base::Tiles samples the pool: `CHUNK` tiles a
     /// call of `prefetch_counted`, or a tile read not prefetched; once `left` of those have run, the
-    /// next finds the build pausing (crate::control::Paused, task #705).
+    /// next finds the build pausing (jobrt::control::Paused, task #705).
     pub(crate) struct PauseAfter<'a> {
         inner: &'a dyn RawSource,
         left: std::sync::atomic::AtomicUsize,
@@ -2121,7 +2121,7 @@ pub(crate) mod tests {
         fn sampling(&self) -> anyhow::Result<()> {
             let ord = std::sync::atomic::Ordering::Relaxed;
             let went = self.left.fetch_update(ord, ord, |n| n.checked_sub(1)).is_ok();
-            crate::control::pause_point(&|| !went)
+            jobrt::control::pause_point(&|| !went)
         }
     }
 
@@ -2203,7 +2203,7 @@ pub(crate) mod tests {
         crate::layers::write_pack(
             &mut out,
             "terrain",
-            crate::terrain_codec::ENCODING,
+            codecs::terrain_codec::ENCODING,
             false,
             "hi",
             (6, 5, 7),
@@ -2291,7 +2291,7 @@ pub(crate) mod tests {
     fn raw_tiles_from_the_store() {
         let d = tempfile::tempdir().unwrap();
         let (local, store) = (d.path().join("local"), d.path().join("store"));
-        let png = crate::whole::testfiles::png();
+        let png = codecs::whole::testfiles::png();
         std::fs::create_dir_all(store.join("9/5")).unwrap();
         std::fs::write(store.join("9/5/7.png"), &png).unwrap();
         std::fs::write(store.join("9/5/8.none"), b"").unwrap();
@@ -2316,7 +2316,7 @@ pub(crate) mod tests {
         let root = d.path().join("nas");
         let store = root.join("sources/aws-terrarium");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let png = crate::whole::testfiles::png();
+        let png = codecs::whole::testfiles::png();
         // Tiles packed onto the NAS from another cache (a minute old: packable).
         let other = d.path().join("other");
         for (rel, b) in [("12/2048/1365.png", &png[..]), ("12/2049/1365.none", &[][..])] {
@@ -2330,7 +2330,7 @@ pub(crate) mod tests {
                 .unwrap();
         }
         assert_eq!(
-            crate::rawpack::pack_local(
+            buildstore::rawpack::pack_local(
                 &other,
                 &store::nasfs::NasPath::local_for_test(&store),
                 &store::nasfs::NasRoot::local_for_test(&root),
@@ -2605,7 +2605,7 @@ pub(crate) mod tests {
             .collect();
         // One pass: the 32 × 32 mean under each coarsest pixel, of the finest as stored.
         let mut stored = fine.clone();
-        crate::terrain_codec::round(&mut stored, crate::terrain_codec::NATIVE_M);
+        codecs::terrain_codec::round(&mut stored, codecs::terrain_codec::NATIVE_M);
         let one = |w: &[f32], width: usize, f: usize| -> Vec<f64> {
             let (cw, ch) = (width / f, w.len() / width / f);
             let mut out = vec![0f64; cw * ch];
@@ -2630,11 +2630,11 @@ pub(crate) mod tests {
             lv = next;
             w = nw;
         }
-        crate::terrain_codec::round(&mut lv, crate::terrain_codec::COARSER_M);
+        codecs::terrain_codec::round(&mut lv, codecs::terrain_codec::COARSER_M);
         let errs: Vec<f64> = lv.iter().zip(&reference).map(|(a, b)| *a as f64 - b).collect();
         let worst = errs.iter().fold(0f64, |m, e| m.max(e.abs()));
         let mean = errs.iter().sum::<f64>() / errs.len() as f64;
-        assert!(worst <= crate::terrain_codec::COARSER_M * 0.5 + 1e-3, "worst {worst}");
-        assert!(mean.abs() < crate::terrain_codec::COARSER_M * 0.05, "mean {mean}");
+        assert!(worst <= codecs::terrain_codec::COARSER_M * 0.5 + 1e-3, "worst {worst}");
+        assert!(mean.abs() < codecs::terrain_codec::COARSER_M * 0.05, "mean {mean}");
     }
 }

@@ -277,7 +277,7 @@ pub fn dem_labels(described: &[Described]) -> BTreeMap<u8, String> {
 /// description in place of the entry of its `what`, then the other descriptions in unit and path
 /// order.
 pub fn catalogue_credits(
-    regions: &[crate::coverage::DrawnRegion],
+    regions: &[buildstore::coverage::DrawnRegion],
     extents: &[[i32; 4]],
     described: &[Described],
 ) -> Vec<serde_json::Value> {
@@ -289,7 +289,7 @@ pub fn catalogue_credits(
 /// (crate::depth), so a source's territory beside the coverage isn't enough to tell; and the
 /// declared timetable feeds the trains and ferries count (crate::inputs::feeds::credited).
 pub fn catalogue_credits_with(
-    regions: &[crate::coverage::DrawnRegion],
+    regions: &[buildstore::coverage::DrawnRegion],
     extents: &[[i32; 4]],
     described: &[Described],
     also: &[(String, String)],

@@ -2,7 +2,7 @@
 //! outside the pass's outline set and the ways the regions' lines name, from the pinned pass's
 //! planet, content-named as `sources/osm/<date>/regions-extract`. An id the pass doesn't have is
 //! `null` in it, so "missing" is a fact of the extract. A relation's rings are assembled as the
-//! outline set's are (crate::outlines::rings_of: ways joined at shared ends, gaps up to 1 km
+//! outline set's are (buildstore::outlines::rings_of: ways joined at shared ends, gaps up to 1 km
 //! closed). It never shrinks within a pass: a new job extracts the ids already there with the new.
 //!
 //! The `regions-extract` job (`scenic-build regions-extract --pass <date> --ids r1,w2,…`) reads in
@@ -134,7 +134,7 @@ pub fn make<'a>(
     pbf: impl Into<store::nasfs::Loc<'a>>,
     date: &str,
     ids: &BTreeSet<Id>,
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
     tag: u8,
     range: u64,
 ) -> Result<Extract> {
@@ -183,7 +183,7 @@ pub fn make<'a>(
 /// passed over by its blobs' headers alone, no blob read.
 fn scan<T: Serialize + serde::de::DeserializeOwned + Send>(
     pbf: &store::nasfs::Loc<'_>,
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
     tag: (u8, u8),
     range: u64,
     find: &(dyn Fn(Element) -> Option<T> + Sync),
@@ -306,8 +306,8 @@ pub fn assemble(
                     let rings = if problem.is_some() {
                         Vec::new()
                     } else {
-                        let mut segs = crate::outlines::segments_of(ws.iter());
-                        match crate::outlines::rings_of(&ws, &mut segs) {
+                        let mut segs = buildstore::outlines::segments_of(ws.iter());
+                        match buildstore::outlines::rings_of(&ws, &mut segs) {
                             Ok((rings, _)) => rings
                                 .into_iter()
                                 .map(|mut r| {
@@ -342,7 +342,7 @@ pub fn assemble(
 /// The job: pass `date`'s extract of `ids` and every id its current one has (never shrinking within
 /// a pass), stored and named in the records.
 pub fn run(out: &mut buildstore::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<String> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let mut all = ids.clone();
     if let Some(name) = out.get(&logical(date)).map(str::to_string) {
         let e = Extract::read(&out.root().join(&name).read().with_context(|| format!("read {name}"))?)?;
@@ -352,18 +352,18 @@ pub fn run(out: &mut buildstore::out::Out, date: &str, ids: &BTreeSet<Id>) -> Re
     let filtered = out.get(&format!("sources/osm/{date}/filtered")).map(|n| out.root().join(n));
     // (Each scan's ranges kept as pieces, task #897: by the ids, the filtered planet's name and the
     // planet's fingerprint (no manifest name: `planet_print`), what the scans read.)
-    let id = crate::resume_log::job_id(
+    let id = jobrt::resume_log::job_id(
         "regions-extract",
         "1",
         date,
         &[
             &key(date, &all),
-            &crate::resume_log::names(out, [format!("sources/osm/{date}/filtered")]),
+            &jobrt::resume_log::names(out, [format!("sources/osm/{date}/filtered")]),
             &planet_print(&planet),
         ],
     );
     let mut pieces =
-        crate::resume_log::Pieces::open(&out.scratch, (0, 0, 0), "regions-extract", &id, crate::resume_log::on());
+        jobrt::resume_log::Pieces::open(&out.scratch, (0, 0, 0), "regions-extract", &id, jobrt::resume_log::on());
     let mut e = match &filtered {
         Some(f) => {
             let _p = phase("reading the filtered planet three times (relations, ways, nodes)");
@@ -550,7 +550,7 @@ pub(crate) mod tests {
         let rels = vec![(7, vec![("type", "multipolygon"), ("natural", "water")], vec![("outer", 9), ("outer", 10)])];
         std::fs::write(&p, pbf::file(&nodes, &ways, &rels)).unwrap();
         let ids: BTreeSet<Id> = ["r7", "r8", "w11", "w12", "w13"].iter().map(|s| s.parse().unwrap()).collect();
-        let none = crate::resume_log::Pieces::none;
+        let none = jobrt::resume_log::Pieces::none;
         let e = make(&p, "2026-09-28", &ids, &mut none(), 0, RANGE_BYTES).unwrap();
         let r = e.relation(7).unwrap().as_ref().unwrap();
         assert_eq!(r.rings, vec![vec![[0, 0], [10_000_000, 0], [10_000_000, 10_000_000], [0, 10_000_000]]]);
@@ -577,7 +577,7 @@ pub(crate) mod tests {
     /// each), resumed each time, is the same as a run never paused.
     #[test]
     fn an_extract_paused_at_every_range_resumes_to_the_same() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("planet.osm.pbf");
         let nodes = [(1, 0, 0), (2, 10_000_000, 0), (3, 10_000_000, 10_000_000), (4, 0, 10_000_000)];
@@ -594,7 +594,7 @@ pub(crate) mod tests {
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(e) => break e,

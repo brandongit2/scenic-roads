@@ -30,11 +30,11 @@ use super::compose::{compose, tiles, Block, Water, BLOCK, PAD};
 use super::fall::{self, Grid, Kind, Stored};
 use super::grids::{Reader, Source};
 
-/// This Mac's whole copies of the depth sources' packs a reader reads (crate::localread), if any.
-type Local = Option<std::sync::Arc<crate::localread::Local>>;
+/// This Mac's whole copies of the depth sources' packs a reader reads (buildstore::localread), if any.
+type Local = Option<std::sync::Arc<buildstore::localread::Local>>;
 use super::{CLASS_ENCODING, CLASS_LAYER, ENCODING, LAYER, NODATA, NODATA_MIN};
 use buildstore::out::Out;
-use crate::terrain_water::{water_tile, Poly, WaterSource, WaterTile};
+use codecs::terrain_water::{water_tile, Poly, WaterSource, WaterTile};
 use anyhow::{Context, Result};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -46,7 +46,7 @@ use std::sync::Arc;
 /// floor's shading, `shading`, task #632; 3: a grid lined up with no overview sampled from one
 /// askew, `grids::level_for`, task #433; 8: a pixel's place by roadcore::geo's Mercator, task #862;
 /// 9: the land's band the nearest water's own value (not 0), gaps filled through their own water, the estimates after every survey and the
-/// sources declared `lakes` drawn in lakes, task #963). Its key names crate::shade_codec::version too.
+/// sources declared `lakes` drawn in lakes, task #963). Its key names codecs::shade_codec::version too.
 pub const DEPTH_V: u32 = 9;
 /// The depth assembly's (`build_lo`; 8: composed only at a grid's own zoom, z3–8 the means of the
 /// finer, its shading made here, task #804; 7: z3–8 from the z9 tiles, task #532; 6: lossless
@@ -432,7 +432,7 @@ fn level(
     z: u8,
     area: Area,
     zmin: u8,
-    log: Option<&mut crate::resume_log::Log>,
+    log: Option<&mut jobrt::resume_log::Log>,
     done: &(dyn Fn(f64) + Sync),
 ) -> Result<usize> {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -508,7 +508,7 @@ fn level_blocks(
     z: u8,
     area: Area,
     zmin: u8,
-    mut log: Option<&mut crate::resume_log::Log>,
+    mut log: Option<&mut jobrt::resume_log::Log>,
     blocks: &std::sync::atomic::AtomicU32,
 ) -> Result<usize> {
     let Area { x0, y0, nx, ny } = area;
@@ -550,7 +550,7 @@ fn block(
     b: Block,
     zmin: u8,
 ) -> Result<Vec<(u8, u32, u32)>> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let z = b.z;
     let mut put = Vec::new();
     {
@@ -593,7 +593,7 @@ fn put_packs(
     scope: &str,
     root: (u8, u32, u32),
 ) -> Result<usize> {
-    let _p = crate::timings::phase("writing packs");
+    let _p = jobrt::timings::phase("writing packs");
     for (layer, enc, which) in [(LAYER, ENCODING, 0usize), (CLASS_LAYER, CLASS_ENCODING, 1)] {
         let mut it = made.iter().map(move |(&(z, x, y), p)| {
             let b = if which == 0 { &p.0 } else { &p.1 };
@@ -603,7 +603,7 @@ fn put_packs(
     }
     if let Some(shade) = shade {
         let mut it = shade.iter().map(|(&(z, x, y), b)| (z, x, y, b.clone(), 0u32));
-        put_pack(out, super::SHADE_LAYER, crate::shade_codec::ENCODING, scope, root, &mut it)?;
+        put_pack(out, super::SHADE_LAYER, codecs::shade_codec::ENCODING, scope, root, &mut it)?;
     }
     out.save()?;
     Ok(made.len())
@@ -760,7 +760,7 @@ fn put_means(made: &mut Made, got: Means) {
 
 /// Zooms `top - 1` down to `bottom` of `made`, each the mean of the finer over its own (`means`).
 fn means_down(made: &mut Made, top: u8, bottom: u8) -> Result<()> {
-    let _p = crate::timings::phase("making the coarser levels from the finer");
+    let _p = jobrt::timings::phase("making the coarser levels from the finer");
     for z in (bottom..top).rev() {
         let got = means(made, made, z)?;
         put_means(made, got);
@@ -776,7 +776,7 @@ fn encoded(depth: &[f32], class: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>)> {
 
 /// The assembly of z3 tile `q`: its lo packs (z3–8: the depth, its classes and the floor's
 /// shading); how many depth tiles.
-/// (`local`: this Mac's whole copies of the sources' packs, crate::localread; None, the NAS's read.)
+/// (`local`: this Mac's whole copies of the sources' packs, buildstore::localread; None, the NAS's read.)
 pub fn build_lo(
     out: &mut Out,
     sources: &[Source],
@@ -784,10 +784,10 @@ pub fn build_lo(
     local: Local,
     q: (u32, u32),
 ) -> Result<usize> {
-    let made = compose_lo(out, sources, water, local, q, LO.1, crate::resume_log::on())?;
+    let made = compose_lo(out, sources, water, local, q, LO.1, jobrt::resume_log::on())?;
     let shade = shading_lo(out, &made, q)?;
     let n = put_packs(out, &made, Some(&shade), "lo", (3, q.0, q.1))?;
-    std::fs::remove_file(crate::resume_log::path(&out.scratch, (3, q.0, q.1))).ok();
+    std::fs::remove_file(jobrt::resume_log::path(&out.scratch, (3, q.0, q.1))).ok();
     Ok(n)
 }
 
@@ -800,7 +800,7 @@ pub const ROOT: (u8, u8) = (0, LO.0 - 1);
 /// store, as the terrain's root from its lo packs (`root_of`); how many depth tiles. With no z3
 /// tile, the root packs are dropped.
 pub fn build_root(out: &mut Out) -> Result<usize> {
-    let p = crate::timings::phase("reading the z3 tiles");
+    let p = jobrt::timings::phase("reading the z3 tiles");
     let z3: Vec<(u8, u32, u32)> = (0..64u32).map(|k| (LO.0, k % 8, k / 8)).collect();
     let mut made = Made::new();
     let mut below = HashMap::new();
@@ -876,7 +876,7 @@ const fn shade_lo_peak_mb() -> u64 {
 /// `shading` over its depth tiles `made`, each z8 pixel under a z6 tile's z9 shading the mean of
 /// those four as the hi packs store them (the fine sources' detail), else its own depth's.
 pub(super) fn shading_lo(out: &Out, made: &Made, q: (u32, u32)) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
-    let p = crate::timings::phase("reading the z9 shading");
+    let p = jobrt::timings::phase("reading the z9 shading");
     let shade = crate::terrain_pack::ManifestTiles::new(out, super::SHADE_LAYER);
     let mut below = HashMap::new();
     for k in 0..64u32 {
@@ -939,7 +939,7 @@ pub fn compose_lo(
 /// Z3 tile `q`'s z8 tiles in `made` from the z9 tiles its z6 tiles' hi packs store (`means`, a z6
 /// tile at a time: its z9 tiles held only while its z8 is made).
 fn from_hi(out: &Out, q: (u32, u32), made: &mut Made) -> Result<()> {
-    let _p = crate::timings::phase("making z8 from the z9 tiles");
+    let _p = jobrt::timings::phase("making z8 from the z9 tiles");
     let depth = crate::terrain_pack::ManifestTiles::new(out, LAYER);
     let class = crate::terrain_pack::ManifestTiles::new(out, CLASS_LAYER);
     for k in 0..64u32 {
@@ -973,12 +973,12 @@ fn resume_log(
     water: &dyn WaterSource,
     t: (u8, u32, u32),
     upto: u8,
-) -> Option<crate::resume_log::Log> {
+) -> Option<jobrt::resume_log::Log> {
     if !keep {
         return None;
     }
     let pins: Vec<&str> = sources.iter().map(|s| s.pin.as_str()).collect();
-    let id = crate::resume_log::id(&[
+    let id = jobrt::resume_log::id(&[
         &format!("depth {DEPTH_V} {DEPTH_LO_V} {LAYER} {CLASS_LAYER} {}", fall::version()),
         &format!("{}/{}/{} to z{upto}", t.0, t.1, t.2),
         &pins.join("\n"),
@@ -990,7 +990,7 @@ fn resume_log(
 /// The grids a reader holds open closed and the water's polygons let go, as a phase: on the NAS
 /// a close is a round trip, and a reader keeps up to 2,000 open (grids::open_grids_limit).
 fn close(rd: Reader, wc: WaterCache) {
-    let _p = crate::timings::phase("closing the grids and letting the caches go");
+    let _p = jobrt::timings::phase("closing the grids and letting the caches go");
     drop(rd);
     drop(wc);
 }
@@ -1004,7 +1004,7 @@ pub fn build_hi(
     local: Local,
     t: (u32, u32),
 ) -> Result<usize> {
-    build_hi_keeping(out, sources, water, local, t, crate::resume_log::on())
+    build_hi_keeping(out, sources, water, local, t, jobrt::resume_log::on())
 }
 
 /// `build_hi`, its blocks kept and taken (crate::depth::resume) with `keep`.
@@ -1020,7 +1020,7 @@ pub(super) fn build_hi_keeping(
     // (The shading from the tiles made alone: a resumed run's the same bytes.)
     let shade = shading(&made, HI.0)?;
     let n = put_packs(out, &made, Some(&shade), "hi", (6, t.0, t.1))?;
-    std::fs::remove_file(crate::resume_log::path(&out.scratch, (6, t.0, t.1))).ok();
+    std::fs::remove_file(jobrt::resume_log::path(&out.scratch, (6, t.0, t.1))).ok();
     Ok(n)
 }
 
@@ -1043,7 +1043,7 @@ fn shading_over(
 ) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
     use std::collections::HashSet;
     use std::sync::Mutex;
-    let _p = crate::timings::phase("shading the floor");
+    let _p = jobrt::timings::phase("shading the floor");
     let mut tiles: HashSet<(u8, u32, u32)> = HashSet::new();
     for &(z, x, y) in made.keys().chain(below.keys()).filter(|k| k.0 >= top) {
         for dz in 0..=(z - top) {
@@ -1184,6 +1184,6 @@ pub fn compose_hi(
 
 /// The sea and lakes `polys` of a test: squares in a tile's pixels.
 #[cfg(test)]
-pub fn square(kind: crate::terrain_water::Kind, id: u64, x0: f64, y0: f64, x1: f64, y1: f64) -> Poly {
+pub fn square(kind: codecs::terrain_water::Kind, id: u64, x0: f64, y0: f64, x1: f64, y1: f64) -> Poly {
     Poly { kind, id, rings: vec![vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]] }
 }

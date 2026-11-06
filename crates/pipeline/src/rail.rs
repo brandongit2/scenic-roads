@@ -32,9 +32,9 @@
 //! file then counts from that run's day (crate::railfeeds). The catalogue is fetched from its
 //! declaration's URL when there's no copy.
 
-use crate::coverage::{Coverage, Shape};
+use buildstore::coverage::{Coverage, Shape};
 use buildstore::out::Out;
-use crate::outlines::{flag, Outlines};
+use buildstore::outlines::{flag, Outlines};
 use anyhow::{Context, Result};
 use jobrt::timings::day_of;
 use serde_json::Value;
@@ -194,7 +194,7 @@ fn territory_codes(iso: &str, own_code: &OwnCode) -> Vec<String> {
 /// Taiwan's 11 % China, around Kinmen and Matsu). A territory with an ISO 3166-2 code brings its
 /// country too (`territory_codes`: Hong Kong brings China).
 pub fn countries(cov: &Coverage, outlines: &Outlines, own_code: &OwnCode) -> Result<Vec<String>> {
-    let mut terr: Vec<(&crate::outlines::OutlineRec, Vec<String>)> = outlines
+    let mut terr: Vec<(&buildstore::outlines::OutlineRec, Vec<String>)> = outlines
         .recs
         .iter()
         .filter(|r| r.flags & flag::ISO1 != 0 && cov.meets_box(r.bbox))
@@ -571,7 +571,7 @@ mod tests {
             .concat(),
         )
         .unwrap();
-        crate::outlines::assemble_geojsonseq(&geo, &d.join("o.sect")).unwrap();
+        buildstore::outlines::assemble_geojsonseq(&geo, &d.join("o.sect")).unwrap();
         Outlines::open(&d.join("o.sect")).unwrap()
     }
 

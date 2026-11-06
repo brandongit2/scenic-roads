@@ -1,5 +1,5 @@
 //! GHSL's building heights (GHS-BUILT-H R2023A, ANBH) as JRC's 10° zips hold them, each a GeoTIFF
-//! (crate::geotiff): the windows under a z6 tile that `bldprep` samples ([`windows`]), and the
+//! (buildstore::geotiff): the windows under a z6 tile that `bldprep` samples ([`windows`]), and the
 //! check a downloaded zip passes before it's put in place ([`zip_bad`]: every member's CRC-32, as
 //! Python's `zipfile` tests it, and a GeoTIFF among them).
 
@@ -115,7 +115,7 @@ pub fn windows<'a>(
             .into_iter()
             .find(|m| m.name == tif_name)
             .with_context(|| format!("{name}: no {tif_name}"))?;
-        let tif = crate::geotiff::Tiff::open(std::sync::Arc::new(read_member(&zip, &m)?))?;
+        let tif = buildstore::geotiff::Tiff::open(std::sync::Arc::new(read_member(&zip, &m)?))?;
         drop(zip);
         let gt = tif.transform(0)?;
         let img = tif.level(0)?;
@@ -214,7 +214,7 @@ mod tests {
         // nodata pixel among them 0.
         let gt = [10.0, 0.25, 0.0, 50.0, 0.0, -0.25];
         let vals: Vec<f32> = (0..16).map(|v| v as f32).collect();
-        let tif = crate::geotiff::write_f32(4, 4, &vals, 16, gt, 4326, Some(5.0)).unwrap();
+        let tif = buildstore::geotiff::write_f32(4, 4, &vals, 16, gt, 4326, Some(5.0)).unwrap();
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("g.zip"), zip(&[("g.tif", &tif)])).unwrap();
         let tiles = vec![("g.zip".to_string(), 0, [10.0, 49.0, 11.0, 50.0])];

@@ -48,7 +48,7 @@ pub struct Rel {
 
 /// The rail service relations of an OPL file (`osmium cat -t relation -f opl`).
 pub fn read_rels(r: impl BufRead) -> Result<Vec<Rel>> {
-    use crate::outlines::opl::unescape;
+    use buildstore::outlines::opl::unescape;
     let mut out = Vec::new();
     for l in r.lines() {
         let l = l?;
@@ -274,14 +274,14 @@ fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
 /// [`REPORT`].
 pub fn run(
     out: &mut buildstore::out::Out,
-    cov: &crate::coverage::Coverage,
+    cov: &buildstore::coverage::Coverage,
     todo_root: &store::nasfs::NasRoot,
 ) -> Result<Report> {
     let read = |l: &str| -> Result<Value> {
         let c = out.get(l).with_context(|| format!("no {l} yet"))?;
         Ok(serde_json::from_slice(&out.path(c).read().with_context(|| format!("read {c}"))?)?)
     };
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let p = phase("reading the rail and ferry lines");
     let (rail, ferries) = (read(RAIL_LINES)?, read(FERRY_LINES)?);
     drop(p);
@@ -477,7 +477,7 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
         )
         .unwrap();
         std::fs::write(d.path().join("sq.poly"), "sq\n1\n 0 0\n 1 0\n 1 1\n 0 1\nEND\nEND\n").unwrap();
-        let cov = crate::coverage::Coverage::fixture(
+        let cov = buildstore::coverage::Coverage::fixture(
             &[buildstore::recipes::Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }],
             None,
             d.path(),

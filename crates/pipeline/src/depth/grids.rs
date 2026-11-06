@@ -8,7 +8,7 @@
 //! as the map's fallback does). Every cell shows at its grid's zoom; its chart low water
 //! (`low_file`) is averaged like the depth.
 
-use crate::geotiff::{BlockCache, Tiff};
+use buildstore::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
 use det::Det;
 use std::collections::HashMap;
@@ -347,9 +347,9 @@ pub struct Reader {
     open: Mutex<Open>,
     cache: Arc<Mutex<BlockCache>>,
     keep: usize,
-    /// This Mac's whole copies of the packs (task #551: crate::localread), read in place of the
+    /// This Mac's whole copies of the packs (task #551: buildstore::localread), read in place of the
     /// NAS's where it has them or room for them; None, the NAS's read.
-    local: Option<Arc<crate::localread::Local>>,
+    local: Option<Arc<buildstore::localread::Local>>,
 }
 
 #[derive(Default)]
@@ -441,7 +441,7 @@ impl Default for Reader {
 /// How many grids a reader keeps open: half the process's open-files limit, past 64 held for the
 /// rest (packs, sockets, logs), 16 at least and 2,000 at most.
 fn open_grids_limit() -> usize {
-    let lim = crate::sys::open_files_limit().unwrap_or(256);
+    let lim = jobrt::sys::open_files_limit().unwrap_or(256);
     (lim.saturating_sub(64) / 2).clamp(16, 2000) as usize
 }
 
@@ -457,7 +457,7 @@ impl Reader {
     }
 
     /// It reading the packs from `local`'s copies.
-    pub fn with_local(mut self, local: Option<Arc<crate::localread::Local>>) -> Self {
+    pub fn with_local(mut self, local: Option<Arc<buildstore::localread::Local>>) -> Self {
         self.local = local;
         self
     }
@@ -494,7 +494,7 @@ impl Reader {
         }
         // (Its whole local copy where there's one or room for one: one sequential read of the NAS,
         // in place of a seek a grid's every block.)
-        let at = crate::localread::path(self.local.as_deref(), p);
+        let at = buildstore::localread::path(self.local.as_deref(), p);
         let f = match &at {
             Place::Local(l) => {
                 open_retrying(l.as_path(), &|l| within(l, OPEN_DEADLINE, plain_local), &store::retry::waits())
@@ -581,7 +581,7 @@ impl Reader {
         if todo.is_empty() {
             return Ok(());
         }
-        crate::timings::count(0, todo.len() as u64);
+        jobrt::timings::count(0, todo.len() as u64);
         let next = std::sync::atomic::AtomicUsize::new(0);
         let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
         std::thread::scope(|s| {
@@ -824,7 +824,7 @@ fn read(t: &Tiff, level: usize, x0: i64, y0: i64, x1: i64, y1: i64) -> Result<Op
 /// Source `src` on the zoom-z window of global pixels `c0..c0 + w`, `r0..r0 + h` (beyond the
 /// world's edge: none); None when it has nothing there.
 pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> Result<Option<Sample>> {
-    use crate::timings::sub;
+    use jobrt::timings::sub;
     let b = window_box(z, c0, r0, w, h);
     let grids: Vec<&Grid> = src.meeting(b).collect();
     SAMPLED[1].fetch_add(grids.len() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -1215,7 +1215,7 @@ pub(crate) mod tests {
             levels.push((lw, lh, v));
             f_ *= 2;
         }
-        use crate::geotiff::testtiff::{make_images, Opts};
+        use buildstore::geotiff::testtiff::{make_images, Opts};
         let sizes: Vec<(u32, u32)> = levels.iter().map(|l| (l.0, l.1)).collect();
         let (b, _) = make_images(&sizes, Opts { tile: Some(64), ..Opts::default() }, gt, Some("nan"), &|k, x, y, _| {
             f64::from(levels[k].2[(y * levels[k].0 + x) as usize])
@@ -1557,7 +1557,7 @@ pub(crate) mod tests {
         // Task #551: read from whole local copies of the packs, the same, the copies made once.
         let cache = tempfile::tempdir().unwrap();
         let local =
-            Arc::new(crate::localread::Local::new(&store::nasfs::NasRoot::local_for_test(d.path()), cache.path(), 0));
+            Arc::new(buildstore::localread::Local::new(&store::nasfs::NasRoot::local_for_test(d.path()), cache.path(), 0));
         let (ra, rl) = (Reader::keeping(100), Reader::keeping(100).with_local(Some(local)));
         let sa = sample(&ra, &a, zoom, c, r, 320, 64).unwrap().unwrap();
         let sl = sample(&rl, &b, zoom, c, r, 320, 64).unwrap().unwrap();

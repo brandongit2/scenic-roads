@@ -42,7 +42,7 @@ pub enum Grid {
 }
 
 /// libwebp's lossless preset the tiles are stored at (cwebp's `-z`, as the terrain's:
-/// crate::terrain_codec::LEVEL).
+/// codecs::terrain_codec::LEVEL).
 pub const LEVEL: u8 = 6;
 
 /// What a key naming the tiles' bytes names of their making: the encodings, libwebp's version and

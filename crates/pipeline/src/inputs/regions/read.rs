@@ -5,7 +5,7 @@
 
 use super::stored::{Drawn, Geometry};
 use buildstore::recipes::Recipe;
-use crate::coverage::{Coverage, DrawnRegion, Shape};
+use buildstore::coverage::{Coverage, DrawnRegion, Shape};
 use crate::inputs::Accepted;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -283,7 +283,7 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
     let at = dir.join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
     // (Read and written as a stream, never whole in memory: the file holds the grids, about the
     // coverage's own size, task #807.)
-    match store::cachefile::read_streamed(&at, &mut |r| crate::coverage::from_kept(r)) {
+    match store::cachefile::read_streamed(&at, &mut |r| buildstore::coverage::from_kept(r)) {
         Ok(Some(Some(c))) => return Ok(c),
         // (Another format's: made again in its place, not read past forever.)
         Ok(Some(None)) => drop(store::cachefile::try_remove(&at)),
@@ -294,7 +294,7 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
         use std::io::Write;
         let mut w =
             std::io::BufWriter::with_capacity(1 << 20, std::fs::File::options().write(true).truncate(true).open(t)?);
-        crate::coverage::write_kept(&c, &mut w)?;
+        buildstore::coverage::write_kept(&c, &mut w)?;
         w.flush()
     });
     if written.is_ok() {
@@ -441,8 +441,8 @@ pub fn check_folder(
     eprintln!(
         "regions-check: datasets read in {:.0} s, footprint {} MB, peak resident {} MB",
         t.elapsed().as_secs_f64(),
-        crate::sys::footprint().unwrap_or(0) / 1_000_000,
-        crate::sys::peak_rss() / 1_000_000
+        jobrt::sys::footprint().unwrap_or(0) / 1_000_000,
+        jobrt::sys::peak_rss() / 1_000_000
     );
     let checks = super::Regions::new(Some(super::prepare(root, manifest, data)?));
     let read = |p: &str| -> Result<std::sync::Arc<Vec<u8>>> {
@@ -464,8 +464,8 @@ pub fn check_folder(
     eprintln!(
         "regions-check: resolved in {:.0} s, footprint {} MB, peak resident {} MB",
         t.elapsed().as_secs_f64(),
-        crate::sys::footprint().unwrap_or(0) / 1_000_000,
-        crate::sys::peak_rss() / 1_000_000
+        jobrt::sys::footprint().unwrap_or(0) / 1_000_000,
+        jobrt::sys::peak_rss() / 1_000_000
     );
     findings.extend(out.problems.iter().map(super::problem_finding));
     let mut regions = serde_json::Map::new();

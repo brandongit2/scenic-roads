@@ -44,7 +44,7 @@ pub fn native_zoom(sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> u8 {
 /// Z10 tile `t`'s tiles of the band, finest first (`MAX_Z` → `FIRST_Z`): those near the coverage
 /// (20 km) no finer than their place's finest zoom.
 pub fn levels(
-    cov: &crate::coverage::Coverage,
+    cov: &buildstore::coverage::Coverage,
     sets: &[crate::terrain_zoom::Set],
     t: (u32, u32),
 ) -> Vec<(u8, Vec<(u32, u32)>)> {
@@ -76,7 +76,7 @@ pub fn levels(
 }
 
 /// Whether z10 tile `t` is a terrain-deep target: it has tiles of the band (`levels`).
-pub fn is_target(sets: &[crate::terrain_zoom::Set], cov: &crate::coverage::Coverage, t: (u32, u32)) -> bool {
+pub fn is_target(sets: &[crate::terrain_zoom::Set], cov: &buildstore::coverage::Coverage, t: (u32, u32)) -> bool {
     is_target_with(sets, t, &levels(cov, sets, t))
 }
 
@@ -88,7 +88,7 @@ pub fn is_target_with(sets: &[crate::terrain_zoom::Set], t: (u32, u32), levels: 
 /// The terrain-deep targets under z6 tile `t` (`is_target`).
 pub fn targets_in(
     sets: &[crate::terrain_zoom::Set],
-    cov: &crate::coverage::Coverage,
+    cov: &buildstore::coverage::Coverage,
     t: (u32, u32),
 ) -> Vec<(u32, u32)> {
     targets_under(sets, t, |u| is_target(sets, cov, u))
@@ -136,14 +136,14 @@ pub struct Memo {
 /// worked out per target and twice a plan before task #965) worked out once for both, kept as
 /// long as its `Memo` is (`Kept`: the agent's, agent::tiles::TerrainTiles::deep).
 pub struct Deep<'a> {
-    pub cov: &'a crate::coverage::Coverage,
+    pub cov: &'a buildstore::coverage::Coverage,
     pub sets: Arc<Vec<crate::terrain_zoom::Set>>,
     memo: Arc<Memo>,
 }
 
 impl<'a> Deep<'a> {
     /// Kept for as long as it lives (a job's: no agent's `Kept`).
-    pub fn new(cov: &'a crate::coverage::Coverage, sets: Arc<Vec<crate::terrain_zoom::Set>>) -> Deep<'a> {
+    pub fn new(cov: &'a buildstore::coverage::Coverage, sets: Arc<Vec<crate::terrain_zoom::Set>>) -> Deep<'a> {
         Deep { cov, sets, memo: Default::default() }
     }
 
@@ -188,7 +188,7 @@ impl<'a> Deep<'a> {
 /// asked (a digest for a target), one per z6 tile.
 const KEPT: usize = 16;
 
-/// `Deep`'s answers kept by the coverage's version (crate::coverage::Coverage::version) and the
+/// `Deep`'s answers kept by the coverage's version (buildstore::coverage::Coverage::version) and the
 /// declared sets they were worked out of (held, so told apart by their pointer), the latest `KEPT`.
 #[derive(Default)]
 pub struct Kept(Mutex<Vec<(String, Arc<Vec<crate::terrain_zoom::Set>>, Arc<Memo>)>>);
@@ -196,7 +196,7 @@ pub struct Kept(Mutex<Vec<(String, Arc<Vec<crate::terrain_zoom::Set>>, Arc<Memo>
 impl Kept {
     /// The answers of coverage `cov` and the declared sets `sets`, kept: the same memo for every
     /// asker while neither changes.
-    pub fn get<'a>(&self, cov: &'a crate::coverage::Coverage, sets: Arc<Vec<crate::terrain_zoom::Set>>) -> Deep<'a> {
+    pub fn get<'a>(&self, cov: &'a buildstore::coverage::Coverage, sets: Arc<Vec<crate::terrain_zoom::Set>>) -> Deep<'a> {
         let v = cov.version();
         let mut all = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let memo = match all.iter().position(|(c, s, _)| *c == v && Arc::ptr_eq(s, &sets)) {
@@ -260,7 +260,7 @@ pub const RETIRED: &str = "layers/terrain/fine/";
 /// A deep pack's z10 tile, from its logical name (or a retired pack's, `RETIRED`).
 pub fn pack_tile(l: &str) -> Option<(u32, u32)> {
     let p = [PREFIX, RETIRED].into_iter().find(|p| l.starts_with(p))?;
-    let u = crate::legacy::TileId::parse(&l[p.len()..]).filter(|u| u.z == PACK_Z)?;
+    let u = codecs::legacy::TileId::parse(&l[p.len()..]).filter(|u| u.z == PACK_Z)?;
     (format!("{p}{PACK_Z}-{}-{}", u.x, u.y) == l).then_some((u.x, u.y))
 }
 
@@ -285,7 +285,7 @@ pub fn mid_logical(x: u32, y: u32) -> String {
 
 /// A deep mid's z10 tile, from its logical name.
 pub fn mid_tile(l: &str) -> Option<(u32, u32)> {
-    let u = crate::legacy::TileId::parse(l.strip_prefix(MID_PREFIX)?).filter(|u| u.z == PACK_Z)?;
+    let u = codecs::legacy::TileId::parse(l.strip_prefix(MID_PREFIX)?).filter(|u| u.z == PACK_Z)?;
     (mid_logical(u.x, u.y) == l).then_some((u.x, u.y))
 }
 
@@ -334,7 +334,7 @@ pub fn build_target(
     keep: bool,
 ) -> Result<Report> {
     let mut rep = Report::default();
-    let p = crate::timings::phase("making its tiles, its finest zooms sampled, the coarser from them");
+    let p = jobrt::timings::phase("making its tiles, its finest zooms sampled, the coarser from them");
     let mut log = if keep {
         let inputs = crate::terrain_resume::inputs_read(out.root(), &out.manifest)?;
         let id = crate::terrain_resume::hi_id(&inputs, src, (PACK_Z, t.0, t.1), &levels, 4);
@@ -344,7 +344,7 @@ pub fn build_target(
     };
     let (made, mid) = crate::terrain_pack::make_piece_logged(raw, src, levels, log.as_mut())?;
     drop(p);
-    let _p = crate::timings::phase("writing and uploading its deep pack and mid");
+    let _p = jobrt::timings::phase("writing and uploading its deep pack and mid");
     rep.tiles = made.len();
     rep.bytes = made.iter().map(|m| m.3.len() as u64).sum();
     let mut it = made.into_iter().map(|(z, x, y, b)| {
@@ -354,7 +354,7 @@ pub fn build_target(
     let pack = crate::layers::write_pack_local(
         out,
         "terrain",
-        crate::terrain_codec::ENCODING,
+        codecs::terrain_codec::ENCODING,
         false,
         "deep",
         (PACK_Z, t.0, t.1),
@@ -371,7 +371,7 @@ pub fn build_target(
     }
     rep.dropped = crate::layers::drop(out, &gone);
     out.put_file(&ml, "sect", &mid_path)?;
-    std::fs::remove_file(crate::resume_log::path(&out.scratch, (PACK_Z, t.0, t.1))).ok();
+    std::fs::remove_file(jobrt::resume_log::path(&out.scratch, (PACK_Z, t.0, t.1))).ok();
     Ok(rep)
 }
 
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn a_targets_levels_follow_each_places_finest_zoom() {
         let d = tempfile::tempdir().unwrap();
-        let cov = crate::coverage::Coverage::fixture(
+        let cov = buildstore::coverage::Coverage::fixture(
             &[buildstore::recipes::Recipe {
                 id: "r".into(),
                 name: "R".into(),

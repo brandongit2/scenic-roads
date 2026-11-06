@@ -55,7 +55,7 @@ pub fn sub_of(z: u8, x: u32, y: u32) -> (u32, u32) {
 pub fn parse_subtrees(s: &str) -> Result<Vec<(u32, u32)>> {
     s.split(',')
         .map(|b| {
-            crate::legacy::TileId::parse(b.trim())
+            codecs::legacy::TileId::parse(b.trim())
                 .filter(|u| u.z == 8)
                 .map(|u| (u.x, u.y))
                 .with_context(|| format!("not a z8 subtree: {b}"))
@@ -205,7 +205,7 @@ impl Inputs {
 
     /// The z6 tile and the group's subtrees.
     pub fn piece(&self) -> Result<(u32, u32)> {
-        let u = crate::legacy::TileId::parse(&self.meta.piece)
+        let u = codecs::legacy::TileId::parse(&self.meta.piece)
             .filter(|u| u.z == 6)
             .context("a task's piece isn't a z6 tile")?;
         Ok((u.x, u.y))
@@ -372,7 +372,7 @@ impl<'a> Offers<'a> {
         if workers == 0 {
             return o;
         }
-        let _p = crate::timings::phase("offering the z6 tile's subtrees to other workers");
+        let _p = jobrt::timings::phase("offering the z6 tile's subtrees to other workers");
         let groups = groups(levels);
         let depth = workers.min(MOST).min(groups.len().saturating_sub(1));
         let chosen: Vec<&Vec<(u32, u32)>> = groups.iter().rev().take(depth).collect();
@@ -509,7 +509,7 @@ impl<'a> Offers<'a> {
 mod tests {
     use super::*;
     use crate::coord::client::Client;
-    use crate::coverage::Coverage;
+    use buildstore::coverage::Coverage;
     use buildstore::out::Out;
     use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles};
     use std::path::PathBuf;
@@ -542,7 +542,7 @@ mod tests {
         )
     }
 
-    /// Paused mid-sampling (task #705: crate::control::Paused, between the pool's chunks), a z6 tile
+    /// Paused mid-sampling (task #705: jobrt::control::Paused, between the pool's chunks), a z6 tile
     /// saves nothing, its blocks made so far kept in its log; resumed, the packs of a run never
     /// paused.
     #[test]
@@ -572,12 +572,12 @@ mod tests {
             let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
             let p = PauseAfter::new(&raw, left);
             let Err(e) = crate::terrain_pack::build_piece_keeping(&mut out, &p, t, &cov, &src) else { break };
-            assert!(crate::control::is_paused(&e), "{e:#}");
+            assert!(jobrt::control::is_paused(&e), "{e:#}");
             assert!(saved(&root, &scratch).is_empty(), "paused after {left}: nothing saved");
             let packs = files_under(&root).into_iter().filter(|f| f.to_string_lossy().contains("terrain")).count();
             assert_eq!(packs, 0, "paused after {left}: no pack");
             paused += 1;
-            logged += crate::resume_log::path(&scratch, (6, t.0, t.1)).exists() as usize;
+            logged += jobrt::resume_log::path(&scratch, (6, t.0, t.1)).exists() as usize;
             // Resumed: the same packs.
             let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
             crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, &src).unwrap();
@@ -591,7 +591,7 @@ mod tests {
     /// stopped. (After each one in turn before #969, 143 s on the test Mac, a whole run each.)
     #[test]
     fn a_z6_tile_stopped_and_resumed_makes_the_same_packs() {
-        use crate::resume_log::STOP_AFTER;
+        use jobrt::resume_log::STOP_AFTER;
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
@@ -605,9 +605,9 @@ mod tests {
             STOP_AFTER.set(Some(stop.unwrap_or(usize::MAX)));
             let r = crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, src);
             let left = STOP_AFTER.take();
-            let log = crate::resume_log::path(&scratch, (6, t.0, t.1));
+            let log = jobrt::resume_log::path(&scratch, (6, t.0, t.1));
             if let Err(e) = r {
-                assert!(crate::control::is_paused(&e) && log.exists(), "{e:#}");
+                assert!(jobrt::control::is_paused(&e) && log.exists(), "{e:#}");
                 return None;
             }
             if stop.is_none() {
@@ -899,7 +899,7 @@ mod tests {
         eprintln!("worker: {who}");
         let pieces: Vec<(u32, u32)> = env("TT_PIECES")
             .split(',')
-            .map(|p| crate::legacy::TileId::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
+            .map(|p| codecs::legacy::TileId::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
             .collect();
         for &t in &pieces {
             let (hi_l, mid_l) = (crate::layers::hi_logical("terrain", t.0, t.1), mid_logical(t.0, t.1));

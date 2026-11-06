@@ -1,5 +1,5 @@
 //! The terrain's long targets resumed where they stopped (task #650; docs/pool.md §7.2, Resuming),
-//! their logs crate::resume_log's (this Mac's disk, at the top of the step's scratch folder, only
+//! their logs jobrt::resume_log's (this Mac's disk, at the top of the step's scratch folder, only
 //! with resuming on):
 //!
 //! - **terrain-hi, a z6 tile, and terrain-deep, a z10 tile** (`HiLog`; dense ones run 30 minutes
@@ -16,7 +16,7 @@
 //! z6 tiles took 37 s at the median and 2 minutes at the 90th percentile with their deep levels
 //! in them, before #639 split those out a z10 tile a target); a stop costs them little.
 
-use crate::resume_log::{Get, Log, Put};
+use jobrt::resume_log::{Get, Log, Put};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -166,9 +166,9 @@ pub fn hi_id(
             h.update(&y.to_le_bytes());
         }
     }
-    crate::resume_log::id(&[
+    jobrt::resume_log::id(&[
         &format!("terrain-hi {} blocks {up}", crate::agent::build::TERRAIN_V),
-        &crate::terrain_codec::version(),
+        &codecs::terrain_codec::version(),
         &format!("{}/{}/{}", t.0, t.1, t.2),
         &h.finalize().to_hex(),
         inputs,

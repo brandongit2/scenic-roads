@@ -16,7 +16,7 @@ use super::file::{Line, Part, Region, Target};
 use super::geom::{self, Area, Frame, Pt, Ring};
 use super::shapes::Polys;
 use super::stored::{Drawn, Geometry, Shape};
-use crate::outlines::Outlines;
+use buildstore::outlines::Outlines;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A problem that holds files (an error finding, §6.1.8): its check (`rg-<check>`), what it's about
@@ -886,8 +886,8 @@ pub(super) fn resolve_one(
             let polys = match part {
                 Part::Osm(id) if drawn_osm.contains_key(id) => drawn_osm[id].clone(),
                 _ => {
-                    let t = crate::coverage::draw_tolerance_m(&rings32);
-                    rings32.iter().map(|r| vec![crate::outlines::simplify(r, t)]).collect()
+                    let t = buildstore::coverage::draw_tolerance_m(&rings32);
+                    rings32.iter().map(|r| vec![buildstore::outlines::simplify(r, t)]).collect()
                 }
             };
             drawn.insert(key.clone(), degrees(&polys));
@@ -991,11 +991,11 @@ pub(super) fn resolve_one(
     for (k, (_, piece)) in pieces.into_iter().enumerate() {
         let f = piece_name(&from, k, n);
         let rings32: Vec<Vec<[i32; 2]>> = piece.rings().iter().map(|r| super::shapes::to_i32(r)).collect();
-        let t = crate::coverage::draw_tolerance_m(&rings32);
+        let t = buildstore::coverage::draw_tolerance_m(&rings32);
         let polys: Vec<Vec<Vec<[i32; 2]>>> = piece
             .polys
             .iter()
-            .map(|p| p.iter().map(|r| crate::outlines::simplify(&super::shapes::to_i32(r), t)).collect())
+            .map(|p| p.iter().map(|r| buildstore::outlines::simplify(&super::shapes::to_i32(r), t)).collect())
             .collect();
         drawn.insert(f.clone(), degrees(&polys));
         shapes.push(Shape { from: f, country: country.clone(), tolerance_m: 0, rings: rings32, water: false });
@@ -1021,7 +1021,7 @@ pub fn piece_name(from: &str, k: usize, n: usize) -> String {
 }
 
 fn degrees(polys: &[Vec<Vec<[i32; 2]>>]) -> Vec<Vec<Vec<[f64; 2]>>> {
-    polys.iter().map(|p| p.iter().map(|r| crate::coverage::ring_degrees(r)).collect()).collect()
+    polys.iter().map(|p| p.iter().map(|r| buildstore::coverage::ring_degrees(r)).collect()).collect()
 }
 
 /// Ways strung together end to end in the order given, each reversed if that's what meets the

@@ -4,13 +4,13 @@
 //! - **`depth`** (Terrarium RGB as lossless WebP, 256 px): depth below the water's surface in metres, negative (the
 //!   sea's mean level; a lake's mean surface), drying heights positive, `NODATA` where there's none;
 //!   quantised to 0.1 m in the first 100 m and 1 m deeper (`quantise`). It lies on the basemap's
-//!   water (crate::terrain_water), so the water's surface (sea level at sea, the terrain's heights
+//!   water (codecs::terrain_water), so the water's surface (sea level at sea, the terrain's heights
 //!   on a lake or a river: the terrain keeps the source's at sea) less the depth is the floor: the
 //!   server serves it so (`?floor=1` on the terrain's tiles) with no second terrain stored.
 //! - **`depth-class`** (lossless WebP, the byte in all three channels): a byte a pixel: the class (bits 0–2: `C_NONE`, a grid at
 //!   the tile's zoom or finer, a coarser one scaled up, estimated, filled to the shore), dries at low tide (bit 3), the source's code
 //!   (bits 4–7, its declaration's `code`).
-//! - **`depth-shade`** (crate::shade_codec, as the terrain's shading: crate::slope_pack): the
+//! - **`depth-shade`** (codecs::shade_codec, as the terrain's shading: crate::slope_pack): the
 //!   floor's steepness and direction, which the map's depth shading reads, made with the depth
 //!   tiles (`build`'s `shading`).
 //!
@@ -34,7 +34,7 @@ pub mod resume;
 pub const LAYER: &str = "depth";
 /// The class layer's.
 pub const CLASS_LAYER: &str = "depth-class";
-/// The floor's shading's (`depth-shade`; encoding crate::shade_codec::ENCODING).
+/// The floor's shading's (`depth-shade`; encoding codecs::shade_codec::ENCODING).
 pub const SHADE_LAYER: &str = "depth-shade";
 /// Their encodings in the packs' meta and the catalogue.
 pub const ENCODING: &str = "terrarium-webp";

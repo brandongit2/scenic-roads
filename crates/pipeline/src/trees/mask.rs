@@ -4,11 +4,11 @@
 //! inside any shape.
 //! - **Rings** loaded: densified so no edge spans more than 0.05° on
 //!   either axis, in Mercator metres, closed as shapely closes them, and walked clockwise (OGR's
-//!   test, crate::areaflags).
+//!   test, codecs::areaflags).
 //! - **Burn:** GDAL's scanline fill (GDALdllImageFilledPolygon): a pixel whose centre the ring holds;
 //!   a horizontal edge on a row of centres, walked right to left, burns along it, unless a span of
 //!   that row starts where it does (GDAL's guard against adding twice).
-//! - **Arithmetic:** GDAL's, as built for the Mac's Python (as crate::areaflags): rasterio's
+//! - **Arithmetic:** GDAL's, as built for the Mac's Python (as codecs::areaflags): rasterio's
 //!   `from_bounds` transform inverted (GDALInvGeoTransform) and applied with fused multiply-adds,
 //!   on roadcore::geo's Mercator metres (`epsg3857`).
 
@@ -57,7 +57,7 @@ impl Ring {
             m.push(m[0]);
         }
         ensure!(m.len() >= 4, "a ring of {} points", m.len());
-        if !crate::areaflags::is_clockwise(&m) {
+        if !codecs::areaflags::is_clockwise(&m) {
             m.reverse();
         }
         Ok(Ring { bbox, merc: m })

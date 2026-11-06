@@ -24,14 +24,14 @@
 //! Outputs (`Written`): ferries.json (GeoJSON: one feature per way, plus terminals),
 //! ferry-lines.json (every line's details, for the hover card), and timetables.json (the lines no
 //! timetable counts and the timetable routes that match no line, for the timetables' to-do list and
-//! report: docs/inputs.md §6.7.3), each as the Python wrote it (crate::pyjson): its numbers' types,
+//! report: docs/inputs.md §6.7.3), each as the Python wrote it (pyport::pyjson): its numbers' types,
 //! its dicts' orders, the order of a Python set where one decided an order (`line_ends`).
 
 use crate::gtfs::ferrycount;
 use crate::gtfs::{statics, Date, Num, Zip};
-use crate::interest::py_round;
-use crate::pyjson::{dumps, loads, Py};
-use crate::pytext::{decimal, space, strip, word_char};
+use landmarks::interest::py_round;
+use pyport::pyjson::{dumps, loads, Py};
+use pyport::pytext::{decimal, space, strip, word_char};
 use anyhow::{Context, Result};
 use det::Det;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -453,7 +453,7 @@ fn minutes(v: Option<&str>) -> Option<Num> {
         }
         let tail: String = c[e..].iter().collect();
         if matches!(tail.as_str(), "" | "m" | "min" | "mins" | "minutes") {
-            return crate::pytext::float(&c[..e].iter().collect::<String>()).map(Num::Float);
+            return pyport::pytext::float(&c[..e].iter().collect::<String>()).map(Num::Float);
         }
     }
     None
@@ -882,7 +882,7 @@ pub struct Written {
 /// counted with the ferry `feeds` (serde objects with `id`, `path`, `fetched` and the facts) and the
 /// static files (`statics`: name, path).
 pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::path::PathBuf)]) -> Result<Written> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let p = phase("reading the ferry ways and relations");
     let mut ways: BTreeMap<i64, Way> = BTreeMap::new();
     let mut way_order: Vec<i64> = Vec::new();
@@ -1154,7 +1154,7 @@ pub fn run(src: &Path, feeds: &[serde_json::Value], statics_: &[(String, std::pa
                     while k < c.len() && space(c[k]) {
                         k += 1;
                     }
-                    let n = crate::pytext::float(&c[i..e].iter().collect::<String>()).unwrap_or(0.0);
+                    let n = pyport::pytext::float(&c[i..e].iter().collect::<String>()).unwrap_or(0.0);
                     Py::Float(n * if c.get(k) == Some(&'h') { 60.0 } else { 1.0 })
                 };
                 rec.set("headway", v);

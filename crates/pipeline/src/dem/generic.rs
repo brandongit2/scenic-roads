@@ -18,7 +18,7 @@
 //!   the network no longer than it must, and a slow tile holds up its own points alone. A tile's
 //!   request is held to `TILE_WITHIN`, and asked again past it. A GeoTIFF dataset's blocks are read
 //!   likewise ahead of their sampling (`read_ahead`): `GEO_FETCHES` at once, up to `GEO_AHEAD`
-//!   blocks past the chunk being sampled, each once (crate::geotiff::Tiff::block); so the sampler
+//!   blocks past the chunk being sampled, each once (buildstore::geotiff::Tiff::block); so the sampler
 //!   waits on several requests at once, not on a chunk's few blocks in turn.
 //! - **The distance to the invalid area** is looked for pixel by pixel only where it can be found:
 //!   each block (or tile) read for sampling is noted as clean when every pixel of it holds data
@@ -34,8 +34,8 @@ use super::proj::{mercator_tile, projected, Projection};
 use super::sample::{
     bilinear_above, blocks_read, sample_raster_noting, window_clean, Clean, Seen, BLOCK, NODATA_BELOW,
 };
-use crate::fetch::Fetch;
-use crate::geotiff::{BlockCache, Tiff};
+use buildstore::fetch::Fetch;
+use buildstore::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
@@ -50,7 +50,7 @@ pub struct Opts<'a> {
     /// The stores' folder (`sources/fetched/`): a dataset declared `store` is read from
     /// `<it>/<dataset>/` alone (`stored`).
     pub store: Option<store::nasfs::NasPath>,
-    /// This Mac's whole copies of the stored files (crate::localread, task #689): a stored file the
+    /// This Mac's whole copies of the stored files (buildstore::localread, task #689): a stored file the
     /// job reads `COPY_SHARE` of or more is copied there once and read there.
     pub local: Option<Copies<'a>>,
 }
@@ -59,7 +59,7 @@ pub struct Opts<'a> {
 /// degrees) the job reads, which sets how much of each file it reads.
 #[derive(Clone, Copy)]
 pub struct Copies<'a> {
-    pub local: &'a crate::localread::Local,
+    pub local: &'a buildstore::localread::Local,
     pub area: [f64; 4],
 }
 
@@ -91,7 +91,7 @@ fn box_share(b: &[f64; 4], area: &[f64; 4]) -> f64 {
 
 /// The share of `t`'s pixels image `level` holds.
 fn level_share(t: &Tiff, level: usize) -> f64 {
-    let px = |i: &crate::geotiff::Image| i.width as f64 * i.height as f64;
+    let px = |i: &buildstore::geotiff::Image| i.width as f64 * i.height as f64;
     let all: f64 = t.images().iter().map(px).sum();
     t.images().get(level).map_or(0.0, |i| px(i) / all.max(1.0))
 }
@@ -143,7 +143,7 @@ type AheadBlock = (Arc<Tiff>, usize, u32, u32);
 /// sampling it) while `GEO_FETCHES` threads read `ahead`'s blocks into the cache, in the list's
 /// order, at most its count past the end of the part being sampled. A failed read stops the
 /// reading ahead (the sampling's own read of that block says why); so does `run`'s end, however
-/// it ends, a read waiting to retry too (crate::fetch::cancellable): a host that gives no answer
+/// it ends, a read waiting to retry too (buildstore::fetch::cancellable): a host that gives no answer
 /// doesn't keep the threads, or the step, waiting out their retries. No list: `run` alone.
 fn read_ahead<R>(ahead: Option<&Ahead>, run: impl FnOnce(&dyn Fn(usize)) -> R) -> R {
     let Some((blocks, starts, n_ahead)) = ahead.filter(|a| a.0.len() > 1) else { return run(&|_| {}) };
@@ -178,7 +178,7 @@ fn read_ahead<R>(ahead: Option<&Ahead>, run: impl FnOnce(&dyn Fn(usize)) -> R) -
                     g.0 - 1
                 };
                 let (t, level, bx, by) = &blocks[i];
-                if crate::fetch::cancellable(&cancel, || t.block(*level, *bx, *by)).is_err() {
+                if buildstore::fetch::cancellable(&cancel, || t.block(*level, *bx, *by)).is_err() {
                     stop();
                     return;
                 }
@@ -276,7 +276,7 @@ pub fn stored(
     id: &str,
     dir: &store::nasfs::NasPath,
     url: &str,
-    local: Option<&crate::localread::Local>,
+    local: Option<&buildstore::localread::Local>,
 ) -> Result<Option<Stored>> {
     let name = stored_name(url);
     let f = dir.join(&name);
@@ -309,13 +309,13 @@ pub fn stored(
     };
     // (A copy here is the NAS's bytes: checked whole here, the NAS not read.)
     if let Some(l) = local.and_then(|c| c.here(&f, len)) {
-        if std::fs::File::open(&l).and_then(|h| crate::whole::tiff_whole_checked(&h)).unwrap_or(false) {
+        if std::fs::File::open(&l).and_then(|h| codecs::whole::tiff_whole_checked(&h)).unwrap_or(false) {
             return Ok(Some(Stored { read: Arc::new(PlainFile::open(&l)?), nas: None }));
         }
     }
     let read = f
         .retry_with(&what, &store::retry::waits(), store::retry::transient_or_missing, || {
-            Ok(crate::whole::tiff_whole_checked(&f.open()?.into_file())?.then(|| f.open_plain()).transpose()?)
+            Ok(codecs::whole::tiff_whole_checked(&f.open()?.into_file())?.then(|| f.open_plain()).transpose()?)
         })
         .with_context(|| format!("{id}: reading tile {name} in the store ({})", dir.display()))?;
     let Some(file) = read else {
@@ -759,7 +759,7 @@ impl GeoSet<'_> {
         }
         tally.add(sel.len() - groups.values().map(Vec::len).sum::<usize>());
         let groups: Vec<((u32, i64, i64), Vec<Band>)> = groups.into_iter().collect();
-        let got: Vec<Vec<(usize, f64)>> = crate::control::on_target_pool(|| {
+        let got: Vec<Vec<(usize, f64)>> = jobrt::control::on_target_pool(|| {
             groups
                 .par_iter()
                 .map(|((k, ..), bands)| {
@@ -931,9 +931,9 @@ pub(crate) struct TileMemo {
 }
 
 /// What an open file holds at most (`TileMemo::opened`'s weight): its tile arrays kept
-/// (crate::geotiff::STRILES_KEPT; its header's windows are within it, a level read whole is held
+/// (buildstore::geotiff::STRILES_KEPT; its header's windows are within it, a level read whole is held
 /// under the process's own bound, SPANNED_MAX).
-const OPEN_BYTES: usize = crate::geotiff::STRILES_KEPT as usize;
+const OPEN_BYTES: usize = buildstore::geotiff::STRILES_KEPT as usize;
 
 /// A map keeping its most recently asked for entries within a budget of bytes (each entry's weight,
 /// `put`, `weigh`), the least recently asked for let go first: what a run holds is its working
@@ -1022,16 +1022,16 @@ pub const fn samplers_mb() -> u64 {
 /// flight all along (`TileSet::rolling`), a slow tile holding up its own points alone.
 pub const TILE_FETCHES: usize = 64;
 
-/// A tile request's limits (crate::fetch::Fetch::get_within): its answer's head within 30 s (a
+/// A tile request's limits (buildstore::fetch::Fetch::get_within): its answer's head within 30 s (a
 /// connection silent that long is dead, not slow: it fails and is asked again, where it held its
 /// fetch for the client's 90 s a try), then its whole body within 64 s (512 KB's time at
 /// 8 KB/s: a pyramid's tiles are tens to a couple of hundred KB, so even 64 at once on a link of
 /// 512 KB/s come in time). Not a cap on each request's whole time; a host whose every failure was
 /// a body past its time isn't noted down, one whose head never came is. (The budget proxy's idle
-/// end, crate::budget::proxy::Limits, 600 s, is left as it is: its long query tunnels need it,
+/// end, jobrt::budget::proxy::Limits, 600 s, is left as it is: its long query tunnels need it,
 /// and the client's limits end a tile's tunnel first.)
-pub const TILE_WITHIN: crate::fetch::Within =
-    crate::fetch::Within { head: std::time::Duration::from_secs(30), floor: 8 << 10, most: 512 << 10 };
+pub const TILE_WITHIN: buildstore::fetch::Within =
+    buildstore::fetch::Within { head: std::time::Duration::from_secs(30), floor: 8 << 10, most: 512 << 10 };
 
 impl TileMemo {
     pub(crate) fn new(cap: usize) -> TileMemo {
@@ -1104,12 +1104,12 @@ impl TileSet<'_> {
     /// batch. The tiles fetched and not yet done with (an item to work still reads them) are held
     /// to a quarter of the memo, so none is let go before its items are worked; the earliest item
     /// not yet worked always has its tiles fetched, whatever that holds. The first failed fetch
-    /// stops the fetching (its requests' retries too: crate::fetch::cancellable) and is the error.
+    /// stops the fetching (its requests' retries too: buildstore::fetch::cancellable) and is the error.
     /// (A single tile: none ahead; the work fetches it.)
     fn rolling<T: Send>(&self, need: &[Vec<(i64, i64)>], work: impl Fn(usize) -> Result<T> + Sync) -> Result<Vec<T>> {
         let n_items = need.len();
         if need.iter().map(Vec::len).sum::<usize>() < 2 {
-            return crate::control::on_target_pool(|| (0..n_items).into_par_iter().map(&work).collect());
+            return jobrt::control::on_target_pool(|| (0..n_items).into_par_iter().map(&work).collect());
         }
         // (The tiles in the order the items first read them; by item its tiles' places in that
         // list, and the last of them; by tile, the items reading it.)
@@ -1207,7 +1207,7 @@ impl TileSet<'_> {
                     // (A fetch that panics is a failed fetch: the working, waiting on its tile,
                     // would otherwise wait on forever.)
                     let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        crate::fetch::cancellable(&cancel, || self.memo.get(&url, self.o.fetch))
+                        buildstore::fetch::cancellable(&cancel, || self.memo.get(&url, self.o.fetch))
                     }))
                     .unwrap_or_else(|p| {
                         let why = p
@@ -1255,7 +1255,7 @@ impl TileSet<'_> {
                     }
                     std::mem::take(&mut g.ready)
                 };
-                let got: Vec<(usize, T)> = crate::control::on_target_pool(|| {
+                let got: Vec<(usize, T)> = jobrt::control::on_target_pool(|| {
                     batch.par_iter().map(|&i| work(i).map(|v| (i, v))).collect::<Result<_>>()
                 })?;
                 let mut g = lock();
@@ -1614,7 +1614,7 @@ impl Reader<'_, '_> {
         match self {
             Reader::Tiles(t) => {
                 let n = 1i64 << t.zoom;
-                let keys: Vec<i64> = crate::control::on_target_pool(|| {
+                let keys: Vec<i64> = jobrt::control::on_target_pool(|| {
                     sel.par_iter()
                         .map(|&i| {
                             let (fx, fy) = mercator_tile(lon[i as usize], lat[i as usize], t.zoom);
@@ -1626,7 +1626,7 @@ impl Reader<'_, '_> {
             }
             Reader::Geo(g, xy) => {
                 let (x, y) = native(xy, lon, lat);
-                let keys: Vec<(usize, f64)> = crate::control::on_target_pool(|| {
+                let keys: Vec<(usize, f64)> = jobrt::control::on_target_pool(|| {
                     sel.par_iter()
                         .map_init(
                             || None,
@@ -1764,7 +1764,7 @@ fn membership(cover: &Cover, lon: &[f64], lat: &[f64]) -> Vec<bool> {
         out.fill(true);
         return out;
     }
-    crate::control::on_target_pool(|| {
+    jobrt::control::on_target_pool(|| {
         out.par_chunks_mut(MEMBER_RUN).enumerate().for_each(|(c, o)| {
             let at = c * MEMBER_RUN;
             let (lo, la) = (&lon[at..at + o.len()], &lat[at..at + o.len()]);
@@ -1861,7 +1861,7 @@ impl<'a> Sampler<'a> {
             let ks: Vec<usize> = (0..self.sets.len()).filter(|&m| self.sets[m].projected_crs() == Some(crs)).collect();
             let member = |i: usize| ks.iter().any(|&m| held(m, i));
             let p = Projection::of(crs).expect("a projected CRS");
-            let xy = crate::control::on_target_pool(|| {
+            let xy = jobrt::control::on_target_pool(|| {
                 (0..lon.len())
                     .into_par_iter()
                     .map(|i| if member(i) { p.project(lon[i], lat[i]) } else { (f64::NAN, f64::NAN) })
@@ -1877,7 +1877,7 @@ impl<'a> Sampler<'a> {
     /// their points to measure against the points to sample), not per point. The blend stage hands
     /// `step` (the share of its call done, 0 to 1) to a distance measure that reports.
     pub fn sample(&self, lon: &[f64], lat: &[f64], said: Said) -> Result<Sampled> {
-        use crate::timings::phase;
+        use jobrt::timings::phase;
         let plan = self.plan;
         let n = lon.len();
         let mono = Mono { last: Mutex::new(0.0), to: said };
@@ -1887,7 +1887,7 @@ impl<'a> Sampler<'a> {
         let xy = self.projections(lon, lat, &|m, i| covers[m][i]);
         // (The work to say by: points to sample (those some dataset covers), and points to measure (the
         // first dataset covering one is followed by another).)
-        let (to_sample, to_blend) = crate::control::on_target_pool(|| {
+        let (to_sample, to_blend) = jobrt::control::on_target_pool(|| {
             (0..n)
                 .into_par_iter()
                 .map(|i| {
@@ -1908,12 +1908,12 @@ impl<'a> Sampler<'a> {
         let mut readers = Vec::new();
         // (What each phase fetches over the network: its count.)
         let fetched =
-            |p: &crate::timings::Phase, since: u64| p.count(crate::fetch::fetched_bytes().saturating_sub(since), 0);
+            |p: &jobrt::timings::Phase, since: u64| p.count(buildstore::fetch::fetched_bytes().saturating_sub(since), 0);
         for (k, ds) in plan.datasets.iter().enumerate() {
             let p = phase(&format!("sampling {}", ds.id));
-            let since = crate::fetch::fetched_bytes();
+            let since = buildstore::fetch::fetched_bytes();
             let r = self.sets[k].reader(&xy);
-            let sel: Vec<u32> = crate::control::on_target_pool(|| {
+            let sel: Vec<u32> = jobrt::control::on_target_pool(|| {
                 (0..n as u32)
                     .into_par_iter()
                     .filter(|&i| first[i as usize] == u16::MAX && covers[k][i as usize])
@@ -1956,13 +1956,13 @@ impl<'a> Sampler<'a> {
         // it could have (four of the coarsest pixels of the datasets after it there); then the next
         // dataset with data, for those within it.
         let p = phase("blending the edges");
-        let since = crate::fetch::fetched_bytes();
+        let since = buildstore::fetch::fetched_bytes();
         let res: Vec<f64> = plan.datasets.iter().map(|d| d.resolution).collect();
         let mut dist = vec![f64::INFINITY; n];
         mono.say(to_sample as f64 / total);
         let mut blended = 0usize;
         for k in 0..plan.datasets.len() {
-            let (sel, radius): (Vec<u32>, Vec<f64>) = crate::control::on_target_pool(|| {
+            let (sel, radius): (Vec<u32>, Vec<f64>) = jobrt::control::on_target_pool(|| {
                 (0..n)
                     .into_par_iter()
                     .filter_map(|i| {
@@ -1995,7 +1995,7 @@ impl<'a> Sampler<'a> {
         let mut b = vec![f32::NAN; n];
         let mut second = vec![u16::MAX; n];
         for (k, r) in readers.iter().enumerate() {
-            let sel: Vec<u32> = crate::control::on_target_pool(|| {
+            let sel: Vec<u32> = jobrt::control::on_target_pool(|| {
                 (0..n as u32)
                     .into_par_iter()
                     .filter(|&i| {
@@ -2039,7 +2039,7 @@ impl<'a> Sampler<'a> {
         // Each dataset's heights brought to EGM2008 (crate::dem::geoid) before the blend: the first's
         // and the second's alike.
         let p = phase("bringing the heights to EGM2008");
-        let since = crate::fetch::fetched_bytes();
+        let since = buildstore::fetch::fetched_bytes();
         let grids = &self.grids;
         let mut unconverted = 0usize;
         let mut b_kept = vec![false; n];
@@ -2047,7 +2047,7 @@ impl<'a> Sampler<'a> {
         for (k, ds) in plan.datasets.iter().enumerate() {
             let Some(c) = &ds.convert else { continue };
             for (vals, from, firsts) in [(&mut a, &first, true), (&mut b, &second, false)] {
-                let sel: Vec<usize> = crate::control::on_target_pool(|| {
+                let sel: Vec<usize> = jobrt::control::on_target_pool(|| {
                     (0..n).into_par_iter().filter(|&i| from[i] as usize == k && vals[i].is_finite()).collect()
                 });
                 if sel.is_empty() {
@@ -2083,7 +2083,7 @@ impl<'a> Sampler<'a> {
             unconverted,
             unconverted_seam: 0,
         };
-        out.unconverted_seam = crate::control::on_target_pool(|| {
+        out.unconverted_seam = jobrt::control::on_target_pool(|| {
             (out.elev.par_iter_mut(), out.src.par_iter_mut(), out.blended.par_iter_mut())
                 .into_par_iter()
                 .enumerate()

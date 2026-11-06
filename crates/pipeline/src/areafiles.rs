@@ -62,7 +62,7 @@ pub fn polar_blocks_meeting(rings: &[Vec<[f64; 2]>], pole: roadcore::polar::Pole
 
 /// A region's outer rings, as the catalogue records them (simplified; holes left out: a tile in a
 /// hole is kept all the same).
-pub fn outer_rings(r: &crate::coverage::DrawnRegion) -> Vec<Vec<[f64; 2]>> {
+pub fn outer_rings(r: &buildstore::coverage::DrawnRegion) -> Vec<Vec<[f64; 2]>> {
     r.shapes.values().flat_map(|polys| polys.iter().filter_map(|p| p.first().cloned())).collect()
 }
 

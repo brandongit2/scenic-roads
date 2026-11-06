@@ -21,7 +21,7 @@ use store::range::{PlainFile, RangeRead};
 /// deleted, to be taken again.
 fn kept_whole(f: &Path) -> bool {
     let Ok(m) = std::fs::metadata(f) else { return false };
-    if m.len() == 0 || crate::whole::tiff_file_whole(f) {
+    if m.len() == 0 || codecs::whole::tiff_file_whole(f) {
         return true;
     }
     eprintln!("canopy: {} isn't whole: taken again", f.display());
@@ -48,7 +48,7 @@ pub fn canopy(
         let name = chm_name(top, left, kind);
         let copy = chm.join(&name);
         let here = if store::cachefile::hold_existing(&copy)?.is_some()
-            && (std::fs::metadata(&copy).is_ok_and(|m| m.len() == 0) || crate::whole::tiff_file_whole(&copy))
+            && (std::fs::metadata(&copy).is_ok_and(|m| m.len() == 0) || codecs::whole::tiff_file_whole(&copy))
         {
             Here::Local(copy)
         } else {
@@ -108,7 +108,7 @@ pub fn rows_here(
     let what = || path.display().to_string();
     let src: Arc<dyn RangeRead> = Arc::new(PlainFile::open(path).with_context(what)?);
     let (lo, hi) = {
-        let t = crate::geotiff::Tiff::open(src.clone()).with_context(what)?;
+        let t = buildstore::geotiff::Tiff::open(src.clone()).with_context(what)?;
         let img = t.level(0)?;
         let (across, bh) = (img.width.div_ceil(img.block_w.max(1)), img.block_h.max(1));
         let last = img.height.div_ceil(bh).saturating_sub(1);
@@ -239,7 +239,7 @@ pub fn ensure_square(store: &Path, kept: &Path, url: Option<&str>, coming: &dyn 
 }
 
 /// The file at `url` (the canopy source's index's: `super::canopy_urls`) into `path`, whole
-/// (crate::fetch::download: by a temporary name, flushed, a whole TIFF, then renamed). An empty
+/// (buildstore::fetch::download: by a temporary name, flushed, a whole TIFF, then renamed). An empty
 /// file when the index lists none (`url` None), or Meta has none (it says so twice). `coming` is
 /// told how much has come (0–1).
 fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
@@ -248,7 +248,7 @@ fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> 
         return Ok(());
     };
     let tmp = store::whole::tmp_name(path);
-    let got = crate::fetch::download(url, &tmp, &crate::whole::tiff_file_whole, coming);
+    let got = buildstore::fetch::download(url, &tmp, &codecs::whole::tiff_file_whole, coming);
     let r = match got {
         Ok(true) => std::fs::rename(&tmp, path),
         Ok(false) => std::fs::write(path, b""),
@@ -264,12 +264,12 @@ fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> 
 /// Whether leaf-type square `p` was made whole (tagged so), not only over some regions, and is whole
 /// on the disk; a NALCMS square, also resampled as today (its `source`: crate::leaftype::NALCMS_SOURCE).
 pub fn complete(p: &Path) -> bool {
-    if !crate::whole::tiff_file_whole(p) {
+    if !codecs::whole::tiff_file_whole(p) {
         return false;
     }
     let Ok(t) = store::range::PlainFile::open(p)
         .map_err(anyhow::Error::from)
-        .and_then(|f| crate::geotiff::Tiff::open(std::sync::Arc::new(f)))
+        .and_then(|f| buildstore::geotiff::Tiff::open(std::sync::Arc::new(f)))
     else {
         return false;
     };

@@ -5,10 +5,10 @@
 //! alone.
 
 use super::*;
-use crate::fetch::{Fetch, MapFetch};
-use crate::geotiff::key;
-use crate::geotiff::testtiff::{make_images, Opts};
-use crate::geotiff::write_f32;
+use buildstore::fetch::{Fetch, MapFetch};
+use buildstore::geotiff::key;
+use buildstore::geotiff::testtiff::{make_images, Opts};
+use buildstore::geotiff::write_f32;
 use anyhow::bail;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -239,7 +239,7 @@ impl Fixture {
             Some("-9999"),
             &|_, x, y, _| pf.at(x as f64, y as f64),
         );
-        let pgt = crate::geotiff::Tiff::open(Arc::new(paris.clone())).unwrap().transform(0).unwrap();
+        let pgt = buildstore::geotiff::Tiff::open(Arc::new(paris.clone())).unwrap().transform(0).unwrap();
         std::fs::write(store.join("N48E002_DEM.tif"), &paris).unwrap();
         for v in grid(PARIS.0, PARIS.1, 1, (0.01, 0.01)) {
             let (lon, lat) = ll(v);

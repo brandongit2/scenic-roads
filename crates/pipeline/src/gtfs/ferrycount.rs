@@ -28,8 +28,8 @@
 //! Distances: `math.hypot` as CPython computes it (`hypot`), `cos` det's.
 
 use super::{statics, Cell, Date, OwnedRow, PyErr, Zip, R};
-use crate::interest::py_round;
-use crate::pyjson::Py;
+use landmarks::interest::py_round;
+use pyport::pyjson::Py;
 use det::Det;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -124,7 +124,7 @@ pub fn is_ferry(route_type: &str) -> bool {
 
 /// `h:m:s` in seconds (a ValueError for anything else; an empty time is midnight).
 fn secs(t: &str) -> R<i64> {
-    let t = crate::pytext::strip(t);
+    let t = pyport::pytext::strip(t);
     let t = if t.is_empty() { "0:0:0" } else { t };
     let p: Vec<&str> = t.split(':').collect();
     let bad = || PyErr::value(format!("not a time: {}", super::py_repr(t)));
@@ -492,7 +492,7 @@ pub fn process(
         .iter()
         .filter(|_| static_)
         .filter_map(|(rid, r)| {
-            let p = crate::pytext::strip(r.cell("osm").or_empty());
+            let p = pyport::pytext::strip(r.cell("osm").or_empty());
             (!p.is_empty()).then(|| (rid.as_str(), p.to_string()))
         })
         .collect();

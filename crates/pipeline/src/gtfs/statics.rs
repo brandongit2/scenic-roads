@@ -15,7 +15,7 @@
 //!   OSM line the route is pinned to: `w<id>` or `r<id>`).
 
 use super::{Date, OwnedRow, PyErr, Zip, R};
-use crate::pyjson::Py;
+use pyport::pyjson::Py;
 use std::collections::HashMap;
 
 pub const REF_YEAR: i64 = 2001;
@@ -32,7 +32,7 @@ fn tail_slice(s: &[char], from: usize, to: usize) -> String {
 
 /// A calendar date read as month and day, in the reference year.
 pub fn month_day(s: &str) -> R<Date> {
-    let c: Vec<char> = crate::pytext::strip(s).chars().collect();
+    let c: Vec<char> = pyport::pytext::strip(s).chars().collect();
     let int = |t: String| {
         super::py_int(&t)
             .ok_or_else(|| PyErr::value(format!("invalid literal for int() with base 10: {}", super::py_repr(&t))))
@@ -61,7 +61,7 @@ pub fn service_dates(z: &Zip) -> R<HashMap<String, Vec<Date>>> {
         };
         let mut wd = [false; 7];
         for (k, name) in WEEKDAYS.iter().enumerate() {
-            wd[k] = crate::pytext::strip(c.cell(name).get_or_empty()?) == "1";
+            wd[k] = pyport::pytext::strip(c.cell(name).get_or_empty()?) == "1";
         }
         let spans = if a <= b { vec![(a, b)] } else { vec![(first, b), (a, last)] };
         for (lo, hi) in spans {
@@ -79,7 +79,7 @@ pub fn service_dates(z: &Zip) -> R<HashMap<String, Vec<Date>>> {
 
 /// A number as written: a whole number an int, else a float; None when it isn't one.
 pub fn number(s: &str) -> Option<Py> {
-    let digits = |t: &str| !t.is_empty() && t.chars().all(|c| crate::pytext::decimal(c).is_some());
+    let digits = |t: &str| !t.is_empty() && t.chars().all(|c| pyport::pytext::decimal(c).is_some());
     let body = s.strip_prefix('-').unwrap_or(s);
     if digits(body) {
         return Some(Py::Int(super::py_int(s)?.to_string()));
@@ -156,7 +156,7 @@ pub fn ferry_counts(z: &Zip) -> R<Vec<Py>> {
             super::Cell::Str(id) => rs.get(id),
         };
         let Some(r) = r else { continue };
-        let pin = crate::pytext::strip(r.cell("osm").or_empty());
+        let pin = pyport::pytext::strip(r.cell("osm").or_empty());
         if !super::ferrycount::is_ferry(r.cell("route_type").get_or_empty()?) || pin.is_empty() {
             continue;
         }

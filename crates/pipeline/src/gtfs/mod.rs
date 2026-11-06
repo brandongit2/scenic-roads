@@ -114,7 +114,7 @@ pub fn py_repr(s: &str) -> String {
 /// Python's `int(s)` of a string: surrounding white space, a sign, any script's decimal digits,
 /// underscores between digits; None where it raises ValueError.
 pub fn py_int(s: &str) -> Option<i64> {
-    let t = crate::pytext::strip(s);
+    let t = pyport::pytext::strip(s);
     let (neg, digits) = match t.strip_prefix('-') {
         Some(r) => (true, r),
         None => (false, t.strip_prefix('+').unwrap_or(t)),
@@ -130,7 +130,7 @@ pub fn py_int(s: &str) -> Option<i64> {
             prev_digit = false;
             continue;
         }
-        let d = crate::pytext::decimal(c)?;
+        let d = pyport::pytext::decimal(c)?;
         v = v.checked_mul(10)?.checked_add(d as i64)?;
         prev_digit = true;
         any = true;
@@ -140,7 +140,7 @@ pub fn py_int(s: &str) -> Option<i64> {
 
 /// Python's `float(s)` of a string.
 pub fn py_float(s: &str) -> Option<f64> {
-    crate::pytext::float(s)
+    pyport::pytext::float(s)
 }
 
 // ---- Numbers -------------------------------------------------------------------------------------
@@ -159,8 +159,8 @@ impl Num {
             Num::Float(f) => f,
         }
     }
-    pub fn of(v: &crate::pyjson::Py) -> Option<Num> {
-        use crate::pyjson::Py;
+    pub fn of(v: &pyport::pyjson::Py) -> Option<Num> {
+        use pyport::pyjson::Py;
         match v {
             Py::Int(s) => s.parse().ok().map(Num::Int),
             Py::Float(f) => Some(Num::Float(*f)),
@@ -168,17 +168,17 @@ impl Num {
             _ => None,
         }
     }
-    pub fn py(self) -> crate::pyjson::Py {
+    pub fn py(self) -> pyport::pyjson::Py {
         match self {
-            Num::Int(i) => crate::pyjson::Py::Int(i.to_string()),
-            Num::Float(f) => crate::pyjson::Py::Float(f),
+            Num::Int(i) => pyport::pyjson::Py::Int(i.to_string()),
+            Num::Float(f) => pyport::pyjson::Py::Float(f),
         }
     }
     /// `round(x, n)`: an int as it is.
     pub fn round(self, n: usize) -> Num {
         match self {
             Num::Int(i) => Num::Int(i),
-            Num::Float(f) => Num::Float(crate::interest::py_round(f, n)),
+            Num::Float(f) => Num::Float(landmarks::interest::py_round(f, n)),
         }
     }
 }
@@ -811,7 +811,7 @@ impl StrippedRows {
         let head = match csv.as_mut() {
             Some(c) => {
                 let names: Vec<String> =
-                    c.record()?.unwrap_or_default().iter().map(|h| crate::pytext::strip(h).to_string()).collect();
+                    c.record()?.unwrap_or_default().iter().map(|h| pyport::pytext::strip(h).to_string()).collect();
                 Head::new(&names)
             }
             None => Head::default(),
@@ -824,7 +824,7 @@ impl StrippedRows {
             let mut r: Vec<String> = r
                 .into_iter()
                 .map(|v| {
-                    let t = crate::pytext::strip(&v);
+                    let t = pyport::pytext::strip(&v);
                     if t.len() == v.len() {
                         v
                     } else {

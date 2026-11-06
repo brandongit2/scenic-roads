@@ -21,7 +21,7 @@
 //! - **`bldfield-lo Q`** (a z3 tile) makes levels 8–4 from its z6 tiles' mids ([`lo`]): the lo packs
 //!   hold levels 4–8, the hi packs 9–14 (as the server takes zooms 3–8 from lo packs).
 //! - **Encoding `field5-webp`** ([`encode`]): a mask byte (the classes held, bit k class k), then one
-//!   lossless WebP (`crate::webp`), 512 wide and 2 × 512 × (the classes held) tall: first a block a
+//!   lossless WebP (`codecs::webp`), 512 wide and 2 × 512 × (the classes held) tall: first a block a
 //!   class, R `f` as √f, G `w` as log2(1 + w) ÷ log2(4097) (to 4096), B the class's mean top
 //!   linearly in its class's range ([`LO_M`], [`HI_M`]), each × 255 rounded; then a block a class, R
 //!   and G the offset from the texel's centre to its buildings' centroid (their mean, by coverage) in
@@ -674,7 +674,7 @@ pub fn encode(p: &Planes, allowed: u8, tail: &[u8]) -> Option<Vec<u8>> {
         }
     }
     // (Regions of 128 px for the codes' groups: 32 px took 6.8× the time for 0.25 % less, Annecy's tiles.)
-    let webp = crate::webp::encode_rgb_regions(&rgb, T as u32, T as u32 * n * 2, 7);
+    let webp = codecs::webp::encode_rgb_regions(&rgb, T as u32, T as u32 * n * 2, 7);
     let mut out = Vec::with_capacity(1 + webp.len() + tail.len());
     out.push(mask);
     out.extend_from_slice(&webp);
@@ -866,13 +866,13 @@ pub fn read_mid(b: &[u8]) -> Result<BTreeMap<(u32, u32), Mid>> {
 pub fn lo(
     q: (u32, u32),
     mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync),
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
 ) -> Result<Vec<(u8, u32, u32, Vec<u8>)>> {
     type Mid<'a> = dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync + 'a;
     type Out = (Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>);
     // (Each z6 tile's levels a piece kept, task #889: a resumed run reads only the mids its last
     // didn't keep.)
-    fn node(z: u8, x: u32, y: u32, mid: &Mid, pieces: &mut crate::resume_log::Pieces) -> Result<Out> {
+    fn node(z: u8, x: u32, y: u32, mid: &Mid, pieces: &mut jobrt::resume_log::Pieces) -> Result<Out> {
         if z == 6 {
             let p = pieces.piece((6, x, y), || Ok(out_piece(&z6(x, y, mid)?)))?;
             return out_unpiece(&p);
@@ -883,7 +883,7 @@ pub fn lo(
         Ok(up(z, x, y, kids))
     }
     fn out_piece(o: &Out) -> Vec<u8> {
-        let mut p = crate::resume_log::Put::default();
+        let mut p = jobrt::resume_log::Put::default();
         p.u64(o.0.len() as u64);
         for (z, x, y, b) in &o.0 {
             p.u8(*z);
@@ -912,7 +912,7 @@ pub fn lo(
         p.0
     }
     fn out_unpiece(b: &[u8]) -> Result<Out> {
-        let mut g = crate::resume_log::Get(b);
+        let mut g = jobrt::resume_log::Get(b);
         let mut tiles = Vec::new();
         for _ in 0..g.count(17)? {
             tiles.push((g.u8()?, g.u32()?, g.u32()?, g.bytes()?));

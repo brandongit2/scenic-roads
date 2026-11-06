@@ -2,7 +2,7 @@
 //! URLs (no network): shapes, references, the data measured, and the plan a unit reads.
 
 use super::*;
-use crate::fetch::MapFetch;
+use buildstore::fetch::MapFetch;
 use std::path::Path;
 
 const PX: f64 = 1.0 / 3600.0;
@@ -11,7 +11,7 @@ const PX: f64 = 1.0 / 3600.0;
 /// 100″ for speed (so 100″, about 3 km).
 fn tile(lon: f64, lat: f64) -> Vec<u8> {
     let data = vec![12.5f32; 36 * 36];
-    crate::geotiff::write_f32(
+    buildstore::geotiff::write_f32(
         36,
         36,
         &data,
@@ -75,7 +75,7 @@ fn fetch() -> MapFetch {
     f.0.insert(
         "https://e.org/half.tif".into(),
         Some(
-            crate::geotiff::write_f32(
+            buildstore::geotiff::write_f32(
                 72,
                 36,
                 &half,
@@ -160,7 +160,7 @@ fn regions_cut_a_coverage_to_their_outlines() {
     let dir = tempfile::tempdir().unwrap();
     let r =
         buildstore::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec!["place:10.5,45.5,20".into()] };
-    let cov = crate::coverage::Coverage::fixture(&[r], None, dir.path()).unwrap();
+    let cov = buildstore::coverage::Coverage::fixture(&[r], None, dir.path()).unwrap();
     let d2 = Declaration {
         regions: Some(vec!["a".into()]),
         ..declared::parse(&decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")).unwrap()
@@ -500,7 +500,7 @@ fn geoid_findings(geoid: Vec<crate::inputs::sources::Source>, grid: [f64; 4]) ->
     let mut f = Fixture::new(vec![("single.toml", d.replace("EGM2008", "NAVD88").into_bytes())]);
     let mut fetch = fetch();
     let (w, h) = (((grid[2] - grid[0]) * 10.0) as u32, ((grid[3] - grid[1]) * 10.0) as u32);
-    let g = crate::geotiff::write_f32(
+    let g = buildstore::geotiff::write_f32(
         w,
         h,
         &vec![-30.0f32; (w * h) as usize],
@@ -557,7 +557,7 @@ fn an_unchanged_dataset_whose_grids_stop_reaching_it_is_held_as_accepted() {
     let checks = |grid: [f64; 4]| {
         let mut fetch = fetch();
         let (w, h) = (((grid[2] - grid[0]) * 10.0) as u32, ((grid[3] - grid[1]) * 10.0) as u32);
-        let g = crate::geotiff::write_f32(
+        let g = buildstore::geotiff::write_f32(
             w,
             h,
             &vec![-30.0f32; (w * h) as usize],
@@ -649,7 +649,7 @@ fn a_regions_change_cuts_the_datasets_again_and_no_change_nothing() {
     let checks = |place: &str, index: &str, fetch: MapFetch| {
         let r = buildstore::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec![place.into()] };
         Elevation {
-            regions: Some(crate::coverage::Coverage::fixture(&[r], None, dir.path()).unwrap()),
+            regions: Some(buildstore::coverage::Coverage::fixture(&[r], None, dir.path()).unwrap()),
             regions_index: Some(index.into()),
             region_geometry: BTreeMap::from([(
                 "a".to_string(),
@@ -694,7 +694,7 @@ fn a_regions_change_cuts_the_datasets_again_and_no_change_nothing() {
 fn regional_checks(dir: &Path, place: &str, index: &str, grid: [f64; 4]) -> Elevation {
     let mut fetch = fetch();
     let (w, h) = (((grid[2] - grid[0]) * 10.0) as u32, ((grid[3] - grid[1]) * 10.0) as u32);
-    let g = crate::geotiff::write_f32(
+    let g = buildstore::geotiff::write_f32(
         w,
         h,
         &vec![-30.0f32; (w * h) as usize],
@@ -707,7 +707,7 @@ fn regional_checks(dir: &Path, place: &str, index: &str, grid: [f64; 4]) -> Elev
     fetch.0.insert("https://g.org/w.tif".into(), Some(g));
     let r = buildstore::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec![place.into()] };
     Elevation {
-        regions: Some(crate::coverage::Coverage::fixture(&[r], None, dir).unwrap()),
+        regions: Some(buildstore::coverage::Coverage::fixture(&[r], None, dir).unwrap()),
         regions_index: Some(index.into()),
         region_geometry: BTreeMap::from([(
             "a".to_string(),
@@ -748,12 +748,12 @@ fn a_dataset_held_through_a_regions_change_is_cut_again_once_let_go() {
 }
 
 /// Outlines of territory AA over `b` (w, s, e, n), assembled in `d`.
-fn outlines(d: &Path, b: [f64; 4]) -> crate::outlines::Outlines {
+fn outlines(d: &Path, b: [f64; 4]) -> buildstore::outlines::Outlines {
     let [w, s, e, n] = b;
     let geo = d.join("o.geojsonseq");
     std::fs::write(&geo, format!("\u{1e}{{\"type\":\"Feature\",\"geometry\":{{\"type\":\"Polygon\",\"coordinates\":[[[{w},{s}],[{e},{s}],[{e},{n}],[{w},{n}],[{w},{s}]]]}},\"properties\":{{\"@type\":\"relation\",\"@id\":1,\"boundary\":\"administrative\",\"admin_level\":\"2\",\"name\":\"AA\",\"ISO3166-1\":\"AA\"}}}}\n")).unwrap();
-    crate::outlines::assemble_geojsonseq(&geo, &d.join("o.sect")).unwrap();
-    crate::outlines::Outlines::open(&d.join("o.sect")).unwrap()
+    buildstore::outlines::assemble_geojsonseq(&geo, &d.join("o.sect")).unwrap();
+    buildstore::outlines::Outlines::open(&d.join("o.sect")).unwrap()
 }
 
 /// A tile pyramid's coverage is its territory's outlines': taken as accepted while the pass's
@@ -768,7 +768,7 @@ fn new_outlines_measure_a_territorys_pyramid_again() {
             "format = \"tiles\"\nurl = \"https://e.org/p/{z}/{x}/{y}.png\"\nzoom = 0\nencoding = \"terrarium\"",
         ),
     )]);
-    let checks = |o: crate::outlines::Outlines, name: &str, served: bool| {
+    let checks = |o: buildstore::outlines::Outlines, name: &str, served: bool| {
         let mut f = MapFetch::default();
         if served {
             f.0.insert("https://e.org/p/0/0/0.png".into(), Some(png(256, 256)));

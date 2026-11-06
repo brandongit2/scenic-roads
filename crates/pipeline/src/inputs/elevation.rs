@@ -22,8 +22,8 @@
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
 use crate::dem::declared::{self, Data, Declaration, Measured};
-use crate::fetch::Fetch;
-use crate::outlines::Outlines;
+use buildstore::fetch::Fetch;
+use buildstore::outlines::Outlines;
 use anyhow::Result;
 use det::Det;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -62,7 +62,7 @@ pub struct Elevation {
     pub store: Option<store::nasfs::NasPath>,
     /// The accepted regions' coverage, which a dataset's `regions` cut its coverage to (`scoped`);
     /// None: none accepted, or none read here.
-    pub regions: Option<crate::coverage::Coverage>,
+    pub regions: Option<buildstore::coverage::Coverage>,
     /// The accepted regions' index (content name) `regions` was read from: what the cut is
     /// derived from (`Checks::derived_from`).
     pub regions_index: Option<String>,
@@ -162,7 +162,7 @@ fn sample_of(n: usize) -> Vec<usize> {
 
 /// A geographic GeoTIFF's latitudes and cell (south, north, m): the coarser of its ground spacings,
 /// its longitude's at its equatorward edge (`Measured::bands`).
-fn geographic_cell(t: &crate::geotiff::Tiff) -> anyhow::Result<(f64, f64, f64)> {
+fn geographic_cell(t: &buildstore::geotiff::Tiff) -> anyhow::Result<(f64, f64, f64)> {
     let gt = t.transform(0)?;
     let h = t.level(0)?.height as f64;
     let (a, b) = (gt[3], gt[3] + gt[5] * h);
@@ -182,7 +182,7 @@ pub fn presence_of(
     crs: u16,
     files: &[(String, Option<[f64; 4]>)],
     cover: &[[f64; 4]],
-    open: &dyn Fn(&str) -> std::result::Result<crate::geotiff::Tiff, String>,
+    open: &dyn Fn(&str) -> std::result::Result<buildstore::geotiff::Tiff, String>,
 ) -> std::result::Result<Vec<[u32; 2]>, String> {
     use crate::terrain_deep::PACK_Z;
     let projected = crate::dem::proj::projected(crs);
@@ -403,7 +403,7 @@ impl Elevation {
                     sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
                 picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
                 // (A file opened: from the store, the network or the version's folder.)
-                let open = |w: &str| -> std::result::Result<crate::geotiff::Tiff, String> {
+                let open = |w: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
                     let src: Arc<dyn store::range::RangeRead> = if w.starts_with("http") && *store {
                         let dir = self
                             .store
@@ -421,7 +421,7 @@ impl Elevation {
                     } else {
                         Arc::new((v.read)(w).map_err(|e| format!("{w}: {e:#}"))?.as_ref().clone())
                     };
-                    let t = crate::geotiff::Tiff::open(src)
+                    let t = buildstore::geotiff::Tiff::open(src)
                         .map_err(|e| format!("{w}: its header can't be read ({e:#})"))?;
                     Ok(t)
                 };
@@ -433,8 +433,8 @@ impl Elevation {
                     let t = open(w)?;
                     let keys = t.geo_keys();
                     let c = keys
-                        .short(crate::geotiff::key::PROJECTED_CS_TYPE)
-                        .or_else(|| keys.short(crate::geotiff::key::GEOGRAPHIC_TYPE))
+                        .short(buildstore::geotiff::key::PROJECTED_CS_TYPE)
+                        .or_else(|| keys.short(buildstore::geotiff::key::GEOGRAPHIC_TYPE))
                         .ok_or_else(|| format!("{w}: names no EPSG CRS"))?;
                     if !declared::known_crs(c) {
                         return Err(format!("{w}: EPSG:{c} isn't a CRS the app can project"));
@@ -891,7 +891,7 @@ impl Checks for Elevation {
             match crate::inputs::open(root, manifest, crate::inputs::regions::UNIT) {
                 Ok(Some(a)) => {
                     let index = manifest.get(&crate::inputs::logical(crate::inputs::regions::UNIT)).cloned();
-                    let cache = std::env::var_os(crate::coverage::CACHE_ENV).map(std::path::PathBuf::from);
+                    let cache = std::env::var_os(buildstore::coverage::CACHE_ENV).map(std::path::PathBuf::from);
                     let read =
                         crate::inputs::regions::read::accepted_coverage(root, &a, cache.as_deref()).and_then(|c| {
                             let named = crate::inputs::regions::read::enabled(&a)?
@@ -931,7 +931,7 @@ impl Checks for Elevation {
             outlines_name,
             geoid: Some(geoid),
             region_geometry,
-            ..Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines)
+            ..Elevation::new(Arc::new(buildstore::fetch::Fetcher::from_env()), outlines)
         })))
     }
 }
@@ -1008,7 +1008,7 @@ impl Mask {
 
 /// Where a GeoTIFF has valid data, read at its coarsest overview; one with no overview small enough
 /// (`MASK_MAX_PX`) taken as all data within its bounds.
-fn valid_data(t: &crate::geotiff::Tiff) -> Result<Mask> {
+fn valid_data(t: &buildstore::geotiff::Tiff) -> Result<Mask> {
     let level = t.images().len() - 1;
     let img = t.level(level)?.clone();
     let gt = t.transform(level)?;

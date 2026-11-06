@@ -3,8 +3,8 @@
 //! the unit owns that are in the coverage, with their kept tags and covered bridges' lengths, written
 //! sorted by key as `work/pois/<u>` (zstd JSON lines).
 
-use crate::coverage::Coverage;
-use crate::legacy::TileId;
+use buildstore::coverage::Coverage;
+use codecs::legacy::TileId;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -56,7 +56,7 @@ pub struct Cand {
 /// coverage holds: a point by its position, a way when one of its nodes is inside.
 pub fn from_pois(pois_json: &[u8], u: TileId, cov: &Coverage) -> Result<Vec<Cand>> {
     let v: serde_json::Value = serde_json::from_slice(pois_json).context("pois.json")?;
-    let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
+    let tb = codecs::hipack::tile_bounds(u.z, u.x, u.y);
     let mut out = Vec::new();
     for f in v["features"].as_array().context("pois.json: no features")? {
         let c = &f["geometry"]["coordinates"];
@@ -143,7 +143,7 @@ mod tests {
         )
         .unwrap();
         let u = TileId { z: 6, x: 28, y: 17 };
-        let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
+        let tb = codecs::hipack::tile_bounds(u.z, u.x, u.y);
         assert!(crate::unit::owns(tb, [-219_000_000, 641_300_000]), "{tb:?}");
         let pois = br#"{"type":"FeatureCollection","features":[
           {"geometry":{"coordinates":[-21.9,64.13]},"properties":{"kind":"peak","name":"A","ele":512,"osm":"n2","tags":{"name":"A","tourism":"viewpoint","name:ja-Latn":"a","wikidata":"Q5"}}},

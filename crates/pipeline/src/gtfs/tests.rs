@@ -1,5 +1,5 @@
 use super::*;
-use crate::pyjson::Py;
+use pyport::pyjson::Py;
 
 /// The fixture's zips (fixture.json) and what the Python counters made of them (fixture_py.json:
 /// dem/railgtfs.py, dem/ferrygtfs.py and dem/staticgtfs.py as they were, CPython 3.14).
@@ -102,7 +102,7 @@ fn the_rail_counter_makes_the_pythons_bytes() {
 #[test]
 fn the_ferry_counter_makes_the_pythons_records() {
     let fx = fixture();
-    let dumps = |v: Vec<Py>| crate::pyjson::dumps(&Py::List(v));
+    let dumps = |v: Vec<Py>| pyport::pyjson::dumps(&Py::List(v));
     let feed = ferrycount::Feed {
         id: "f".into(),
         name: Some("Ferry Co".into()),

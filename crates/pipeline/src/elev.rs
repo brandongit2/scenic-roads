@@ -14,7 +14,7 @@
 //!    fills and tunnel floors are straight, not the terrain beside them.
 //! 5. |grade| over ±25 m, again continuing across junctions (using final elevations).
 
-use crate::count_bar;
+use codecs::count_bar;
 use det::Det;
 use rayon::prelude::*;
 use roadcore::{class, dist_m, flag, WayRec, E7};

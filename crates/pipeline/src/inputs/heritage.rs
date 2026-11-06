@@ -27,7 +27,7 @@
 //! (crate::inputs::credits).
 
 use super::{Checks, Derived, FileCheck, FileEntry, Finding, Level, Version};
-use crate::outlines::{OutlineRec, Outlines};
+use buildstore::outlines::{OutlineRec, Outlines};
 use anyhow::Result;
 use det::Det;
 use serde_json::Value;

@@ -49,7 +49,7 @@ impl Area {
     const RUN_DEG: f64 = FAR_KM / roadcore::geo::KM_PER_DEG;
 
     /// Z6 tile `u`'s, its long ways from its reach (none: its tile grown by `MARGIN_KM` alone).
-    pub fn of(u: crate::legacy::TileId, reach: Option<&crate::reach::Reach>) -> Area {
+    pub fn of(u: codecs::legacy::TileId, reach: Option<&crate::reach::Reach>) -> Area {
         let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, MARGIN_KM);
         let mut along = Vec::new();
         for w in reach.into_iter().flat_map(|r| &r.long).filter(|w| w.owned && !w.ferry) {
@@ -341,7 +341,7 @@ fn read_tiles(pf: &PlainFile, idx: &PackIndex, tiles: &[(u8, u32, u32)]) -> Resu
 /// Writes `terrain.tiles` and the grids for `area` into `dir`: the terrain's z0–12 over it, and
 /// its deep tiles `deep` (z13–16, those the roads' heights read:
 /// crate::road_terrain::deep_tiles) where it has them, as stored (lossless WebP,
-/// crate::terrain_codec) in one archive (crate::road_terrain::TERRAIN_FILE).
+/// codecs::terrain_codec) in one archive (crate::road_terrain::TERRAIN_FILE).
 pub fn stage(
     src: &Source,
     area: &Area,
@@ -389,7 +389,7 @@ pub fn stage(
     }
     write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
     st.grids.push("terrain".into());
-    // (The area flags are rasterised per z6 tile: crate::heritage, crate::areaflags.)
+    // (The area flags are rasterised per z6 tile: crate::heritage, codecs::areaflags.)
     for var in ["class", "canopy", "cover"] {
         let mut l = LayerReader::new(src, &format!("grid-{var}"));
         let mut data = vec![0u8; tiles.len() * CELLS];
@@ -442,7 +442,7 @@ mod tests {
     /// way's along it, at every node and between; a ferry's and a neighbour's long ways not.
     #[test]
     fn the_area_holds_every_owned_samples_far_field() {
-        use crate::legacy::TileId;
+        use codecs::legacy::TileId;
         use crate::reach::{LongWay, Reach};
         let inside = |a: [f64; 4], b: [f64; 4]| a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3];
         for (x, y) in [(31, 19), (20, 22), (10, 5), (60, 58), (33, 31)] {
@@ -494,14 +494,14 @@ mod tests {
             Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
                 .unwrap();
         let (x6, y6) = (31u32, 19u32);
-        let area = Area::of(crate::legacy::TileId { z: 6, x: x6, y: y6 }, None);
+        let area = Area::of(codecs::legacy::TileId { z: 6, x: x6, y: y6 }, None);
         let b = area.b;
         assert!(
             copied_whole(12, x6 << 6, y6 << 6, b) && copied_whole(9, x6 << 3, y6 << 3, b) && copied_whole(8, 0, 0, b)
         );
         assert!(!copied_whole(12, (x6 + 1) << 6, y6 << 6, b) && !copied_whole(10, (x6 - 1) << 4, (y6 + 1) << 4, b));
         // One terrain tile for every z11 tile (staging decodes them), other tiles' bytes their own.
-        let png = crate::terrain_codec::encode(&mut vec![123.0f32; 256 * 256], 0.1).unwrap();
+        let png = codecs::terrain_codec::encode(&mut vec![123.0f32; 256 * 256], 0.1).unwrap();
         for (px, py) in [(x6, y6), (x6 + 1, y6), (x6, y6 + 1)] {
             let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
             for z in 9..=12u8 {
@@ -516,7 +516,7 @@ mod tests {
             crate::layers::write_pack(
                 &mut out,
                 "terrain",
-                crate::terrain_codec::ENCODING,
+                codecs::terrain_codec::ENCODING,
                 false,
                 "hi",
                 (6, px, py),

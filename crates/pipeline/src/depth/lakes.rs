@@ -105,7 +105,7 @@ pub fn logical(id: &str, t: (u32, u32)) -> String {
 /// A pack's source id and z6 tile, from its logical name.
 pub fn tile_of(l: &str) -> Option<(&str, (u32, u32))> {
     let (id, t) = l.strip_prefix(PREFIX)?.split_once('/')?;
-    let u = crate::legacy::TileId::parse(t).filter(|u| u.z == 6)?;
+    let u = codecs::legacy::TileId::parse(t).filter(|u| u.z == 6)?;
     (logical(id, (u.x, u.y)) == l).then_some((id, (u.x, u.y)))
 }
 
@@ -626,7 +626,7 @@ impl HiPacks {
             .range(p.to_string()..)
             .take_while(|(l, _)| l.starts_with(p))
             .filter_map(|(l, c)| {
-                let u = crate::legacy::TileId::parse(&l["layers/terrain/hi/".len()..].replace('-', "/"))?;
+                let u = codecs::legacy::TileId::parse(&l["layers/terrain/hi/".len()..].replace('-', "/"))?;
                 Some(((u.x, u.y), c.clone()))
             })
             .collect();
@@ -867,13 +867,13 @@ fn largest_distance(g: &geos::Geometry, gm: f64) -> Result<f64> {
 /// its tiles and a ring of one (`water`, a tile's polygons in its own pixels, 0–256), HydroLAKES'
 /// polygons `hl` (zoom-`SMALL_Z` pixels), the terrain; counted in `counts`.
 pub fn small_lakes(
-    water: &[((u32, u32), Vec<crate::terrain_water::Poly>)],
+    water: &[((u32, u32), Vec<codecs::terrain_water::Poly>)],
     hl: &[geos::Geometry],
     terrain: &dyn Terrain,
     t: (u32, u32),
     counts: &mut Counts,
 ) -> Result<Vec<Small>> {
-    use crate::terrain_water::Kind;
+    use codecs::terrain_water::Kind;
     use geos::Geom;
     let f = 1u32 << (SMALL_Z - 10);
     let (x0, y0) = (t.0 * f, t.1 * f);
@@ -896,7 +896,7 @@ pub fn small_lakes(
             let Ok(g) = polygon(&rings) else { continue };
             match p.kind {
                 Kind::Sea => sea.push(g),
-                _ if crate::terrain_water::is_own(p.id) => own.push(g),
+                _ if codecs::terrain_water::is_own(p.id) => own.push(g),
                 _ => pieces.entry(p.id).or_default().push(g),
             }
         }
@@ -1004,7 +1004,7 @@ pub fn small_lakes(
 /// grid given to `sink` as it's made (64 MB of floats each: a z6 tile has 256), `progress` told
 /// each z10 tile done.
 pub fn small_grids(
-    water: &dyn crate::terrain_water::WaterSource,
+    water: &dyn codecs::terrain_water::WaterSource,
     hl: &[(u64, Rings)],
     terrain: &dyn Terrain,
     t: (u32, u32),
@@ -1027,7 +1027,7 @@ pub fn small_grids(
             })
             .collect();
         let polys = water.depth_polys_many(&tiles)?;
-        let read: Vec<((u32, u32), Vec<crate::terrain_water::Poly>)> =
+        let read: Vec<((u32, u32), Vec<codecs::terrain_water::Poly>)> =
             tiles.iter().zip(polys).map(|(&(_, x, y), p)| ((x, y), p)).collect();
         let lakes = small_lakes(&read, &hl, terrain, (px, py), counts)?;
         if let Some(c) = small_grid(&lakes, (px, py)) {
@@ -1094,7 +1094,7 @@ impl Tif {
             r0: g.r0,
             w,
             h,
-            bytes: crate::geotiff::write_f32_mercator(g.zoom, g.c0, g.r0, w, h, &g.v)?,
+            bytes: buildstore::geotiff::write_f32_mercator(g.zoom, g.c0, g.r0, w, h, &g.v)?,
         })
     }
 }

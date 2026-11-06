@@ -5,9 +5,9 @@
 //! Each stage leaves a marker in the scratch folder, so a pass interrupted by sleep, a reboot or a
 //! full disk resumes at the stage it was in; a stage that touched the NAS is redone from its inputs.
 
-use crate::chain::{self, Interner, Link, RoadVal};
-use crate::hipack::{grow, tile_bounds};
-use crate::legacy::TileId;
+use codecs::chain::{self, Interner, Link, RoadVal};
+use codecs::hipack::{grow, tile_bounds};
+use codecs::legacy::TileId;
 use buildstore::out::Out;
 use anyhow::{bail, ensure, Context, Result};
 use buildstore::nasssh::{proxy_addr, ssh_stalled, watched, SSH_START};
@@ -98,9 +98,9 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
             "nwr/heritage:operator=whc",
         ],
     ),
-    // The World Heritage outlines' sources (crate::whsshapes' filter, its objects' references
+    // The World Heritage outlines' sources (landmarks::whsshapes' filter, its objects' references
     // with them), and every multipolygon, so the heritage job's clip of this to the cover (its smart
-    // strategy completing the multipolygons that reach it) holds what crate::whsshapes reads of the
+    // strategy completing the multipolygons that reach it) holds what landmarks::whsshapes reads of the
     // filtered planet's clip: about a fifth of the filtered planet, read in its place (task #496).
     ("whs", 1, &["nwr/wikidata", "nwr/ref:whc", "nwr/heritage:operator=whc", "r/type=multipolygon"]),
 ];
@@ -125,14 +125,14 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path)
         jobrt::jobs::stage(k as u64, missing.len() as u64, &format!("sets made ({name} now)"));
         let o = scratch.join(format!("set-{name}.osm.pbf"));
         tags_filter(src, &o, exprs, scratch, &format!("osmium tags-filter (set {name})"), Some("filtering sets"))?;
-        let p = crate::timings::phase("uploading sets");
+        let p = jobrt::timings::phase("uploading sets");
         out.put_file(&set_name(date, name), "osm.pbf", &o)?;
         drop(p);
         out.save()?;
         std::fs::remove_file(&o).ok();
         // (A safe point, task #890: the set saved in the records, which a resumed run reads as made,
         // `missing_sets`, so it makes only the rest, each the same bytes as ever.)
-        crate::control::piece_saved()?;
+        jobrt::control::piece_saved()?;
     }
     jobrt::jobs::report(missing.len() as u64, missing.len() as u64, "sets made");
     Ok(missing.len())
@@ -149,8 +149,8 @@ pub enum Input {
 /// given one (`phase`: osmium's time for a local file, the NAS's read for one on the NAS).
 fn tags_filter(src: &Input, o: &Path, exprs: &[&str], scratch: &Path, what: &str, phase: Option<&str>) -> Result<()> {
     let _p = phase.map(|ph| match src {
-        Input::Local(_) => crate::timings::phase(&format!("{ph} (osmium)")),
-        Input::Nas(_) => crate::timings::phase(&format!("{ph} (osmium, over SSH)")),
+        Input::Local(_) => jobrt::timings::phase(&format!("{ph} (osmium)")),
+        Input::Nas(_) => jobrt::timings::phase(&format!("{ph} (osmium, over SSH)")),
     });
     // (Adding the objects the matches reference, osmium reads its input twice.)
     read_input(src, &scratch.join("stream"), 2, |input, local| {
@@ -174,7 +174,7 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
             let remote =
                 store::nas::on_nas(p).with_context(|| format!("{} isn't on the NAS's mounted share", p.display()))?;
             let n = streamed(&ssh, SSH_START, &remote, reads, dir, |input| run(input, false))?;
-            crate::timings::count(n, 1);
+            jobrt::timings::count(n, 1);
             Ok(())
         }
     }
@@ -186,13 +186,13 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
 const STREAM_CIPHERS: &str = "aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr";
 
 /// `ssh` to the NAS in batch mode (no prompts), through the job's proxy when it has one (a job
-/// under the budgets' sandbox, crate::budget::SANDBOX, connects only to this Mac: the proxy
+/// under the budgets' sandbox, jobrt::budget::SANDBOX, connects only to this Mac: the proxy
 /// tunnels the connection, `CONNECT`, unmetered).
 fn ssh() -> Command {
     let mut c = store::spawn::command("ssh");
     c.args(["-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=20"]);
     c.args(["-c", STREAM_CIPHERS]);
-    if let Some(p) = std::env::var(crate::budget::PROXY_ENV).ok().and_then(|u| proxy_addr(&u)) {
+    if let Some(p) = std::env::var(jobrt::budget::PROXY_ENV).ok().and_then(|u| proxy_addr(&u)) {
         c.arg("-o").arg(format!("ProxyCommand=/usr/bin/nc -X connect -x {p} %h %p"));
     }
     c
@@ -782,14 +782,14 @@ const PARTS: [&str; 9] = [
     "Walking the world's roads and writing their values",
 ];
 
-/// The part under way's phase (crate::timings), ended as the next begins (`part`) or the pass ends
+/// The part under way's phase (jobrt::timings), ended as the next begins (`part`) or the pass ends
 /// (`end_part`).
-static PART: std::sync::Mutex<Option<crate::timings::Phase>> = std::sync::Mutex::new(None);
+static PART: std::sync::Mutex<Option<jobrt::timings::Phase>> = std::sync::Mutex::new(None);
 
 /// Part `i` of the pass begins (`PARTS`), its progress one item's (`one`) until it says its own.
 fn part(i: usize, one: &str) {
     end_part();
-    *PART.lock().unwrap() = Some(crate::timings::phase(one));
+    *PART.lock().unwrap() = Some(jobrt::timings::phase(one));
     jobrt::jobs::part(i, &PARTS);
     jobrt::jobs::stage(0, 1, one);
 }
@@ -814,13 +814,13 @@ pub fn previous_outlines<'a>(
         .max_by_key(|(d, _)| *d)
 }
 
-/// The pass's administrative and ISO 3166 outlines (crate::outlines::assemble) from its outline
+/// The pass's administrative and ISO 3166 outlines (buildstore::outlines::assemble) from its outline
 /// set, as `sources/osm/<date>/outlines`: the outlines step's work (crate::agent::build::
 /// outlines_work, keyed on the set, the previous outlines and `OUTLINES_V`). The set is copied
 /// into `scratch` first (osmium reads it twice); the previous pass's outlines
 /// (`previous_outlines`) are what a country this planet can't assemble keeps.
-pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate::outlines::Summary> {
-    use crate::timings::phase;
+pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<buildstore::outlines::Summary> {
+    use jobrt::timings::phase;
     std::fs::create_dir_all(scratch)?;
     let nas = out.path(out.get(&set_name(date, "outlines")).context("the pass's outline set")?);
     let set = scratch.join("set-outlines.osm.pbf");
@@ -830,7 +830,7 @@ pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate:
     let file = scratch.join("outlines.sect");
     let previous = previous_outlines(&out.manifest, date).map(|(d, c)| (out.path(c), d.to_string()));
     let p = phase("assembling");
-    let s = crate::outlines::assemble(
+    let s = buildstore::outlines::assemble(
         &set,
         &scratch.join("outlines-work"),
         &file,
@@ -907,7 +907,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
             let o = scratch.join(format!("set-{name}.osm.pbf"));
             let src = Input::Local(filtered.clone());
             tags_filter(&src, &o, exprs, scratch, &format!("osmium tags-filter (set {name})"), Some("filtering sets"))?;
-            let _p = crate::timings::sub("uploading sets");
+            let _p = jobrt::timings::sub("uploading sets");
             out.put_file(&set_name(date, name), "osm.pbf", &o)?;
             std::fs::remove_file(&o).ok();
         }
@@ -993,7 +993,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
         j.arg("--output=basemap.pmtiles");
         run_planetiler(j, "planetiler (basemap)")?;
         end_part();
-        let _p = crate::timings::phase("uploading the basemap");
+        let _p = jobrt::timings::phase("uploading the basemap");
         out.put_file(&format!("layers/basemap/world-{date}"), "pmtiles", &pm)?;
         out.save()?;
         std::fs::remove_file(&b).ok();
@@ -1042,7 +1042,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
             let logical = format!("sources/osm/{date}/pieces/{}", u.dash());
             if out.get(&logical).is_none() {
                 let mb = std::fs::metadata(f).map(|m| m.len() >> 20).unwrap_or(0);
-                let _p = crate::timings::sub("uploading pieces");
+                let _p = jobrt::timings::sub("uploading pieces");
                 out.put_file(&logical, "osm.pbf", &copy_keep(f, scratch)?)?;
                 out.save()?;
                 done_mb += mb;
@@ -1050,7 +1050,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
             }
             let lf = links.join(format!("{}.bin", u.dash()));
             if !lf.exists() {
-                let _p = crate::timings::sub("working out how their roads connect (extract)");
+                let _p = jobrt::timings::sub("working out how their roads connect (extract)");
                 let ul = unit_links(bin, &spacing, f, u, &work)?;
                 eprintln!("roads: {} {} ways, {} pairs", u.slash(), ul.ways.len(), ul.pairs.len());
                 ul.save(&lf)?;
@@ -1098,10 +1098,10 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
         report(n, n, "z6 tiles' road links read");
         let (units, mut lists): (Vec<TileId>, Vec<UnitLinks>) = all.into_iter().unzip();
         part(8, "the roads walked");
-        let p = crate::timings::sub("walking");
+        let p = jobrt::timings::sub("walking");
         let (ways, vals) = walk_all(&mut lists);
         drop(p);
-        let _p = crate::timings::sub("uploading their values");
+        let _p = jobrt::timings::sub("uploading their values");
         for (k, (unit, ul)) in units.iter().zip(&lists).enumerate() {
             report(k as u64, n, "z6 tiles' road values written");
             let mut recs: Vec<u8> = Vec::with_capacity(ul.ways.len() * 32);
@@ -1194,7 +1194,7 @@ pub fn pass_done(root: &store::nasfs::NasRoot, date: &str) -> bool {
 
 // A job's environment: a pass is complete when its records say so (`latest_pass`; the agent sets
 // it with `state/pool/resume` on: crate::agent::resume).
-use crate::resume_log::RESUME_ENV;
+use jobrt::resume_log::RESUME_ENV;
 
 /// The date of the newest complete pass: by the records when the job's agent says so
 /// (`RESUME_ENV`), else by the `pass.*.json` files on the NAS (`latest_pass_by`).
@@ -1415,7 +1415,7 @@ mod tests {
     /// A measure on real data, reading the NAS alone: `SCENIC_OUTLINES_MEASURE="<root> <date> <out
     /// file>"` assembles the pass's outline set as the outlines step does (the previous pass's file
     /// for its repairs) into `<out file>`, a local file, and prints its phases with the memory each
-    /// held (crate::timings). Unset, nothing.
+    /// held (jobrt::timings). Unset, nothing.
     #[test]
     fn measure_a_real_assembly() {
         let Ok(m) = std::env::var("SCENIC_OUTLINES_MEASURE") else { return };
@@ -1425,9 +1425,9 @@ mod tests {
             buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
         let set = out.path(out.get(&set_name(a[1], "outlines")).unwrap());
         let previous = previous_outlines(&out.manifest, a[1]).map(|(d, c)| (out.path(c), d.to_string()));
-        crate::timings::start("outlines");
-        let p = crate::timings::phase("assembling");
-        let s = crate::outlines::assemble(
+        jobrt::timings::start("outlines");
+        let p = jobrt::timings::phase("assembling");
+        let s = buildstore::outlines::assemble(
             &set.unchecked_path(),
             &scratch.path().join("work"),
             Path::new(a[2]),
@@ -1436,7 +1436,7 @@ mod tests {
         .unwrap();
         drop(p);
         println!("{} outlines, {} points", s.outlines, s.points);
-        print!("{}", crate::timings::table(&crate::timings::snapshot(true).unwrap()));
+        print!("{}", jobrt::timings::table(&jobrt::timings::snapshot(true).unwrap()));
     }
 
     /// Task #890: a copy paused at each 1 % safe point and resumed each time appends only the rest,
@@ -1450,10 +1450,10 @@ mod tests {
         std::fs::write(&src, &bytes).unwrap();
         let mut stops = 0;
         loop {
-            let r = copy_resume_with(&src, &dst, &mut |_, _| Err(crate::control::Paused.into()));
+            let r = copy_resume_with(&src, &dst, &mut |_, _| Err(jobrt::control::Paused.into()));
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                     assert!(stops < 10);
                 }
@@ -1524,7 +1524,7 @@ mod tests {
         std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         mark(&scratch, "filter").unwrap();
         let date = "2026-10-01";
-        let earlier = crate::handoff::Handoff {
+        let earlier = buildstore::handoff::Handoff {
             changes: [(
                 format!("sources/osm/{date}/filtered"),
                 Some(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")),

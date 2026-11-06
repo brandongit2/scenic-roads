@@ -31,7 +31,7 @@ pub const MOST: usize = 3;
 pub fn parse_blocks(s: &str) -> Result<Vec<(u32, u32)>> {
     s.split(',')
         .map(|b| {
-            crate::legacy::TileId::parse(b.trim())
+            codecs::legacy::TileId::parse(b.trim())
                 .filter(|u| u.z == ZBLOCK)
                 .map(|u| (u.x, u.y))
                 .with_context(|| format!("not a zoom-8 block: {b}"))
@@ -411,7 +411,7 @@ mod tests {
         let d = squares_dir();
         let o = tempfile::tempdir().unwrap();
         let shapes = Shapes::parse(COV).unwrap();
-        let fetch = crate::fetch::MapFetch::default();
+        let fetch = buildstore::fetch::MapFetch::default();
         let inp = Inputs {
             chm: Source::Dir(d.path().into()),
             leaf: Source::Dir(d.path().into()),
@@ -539,7 +539,7 @@ mod tests {
                 .collect();
             let arg = |k: &str| args[args.iter().position(|a| a == k).unwrap() + 1].clone();
             let shapes = Shapes::parse(&std::fs::read_to_string(arg("--coverage")).unwrap()).unwrap();
-            let fetch = crate::fetch::MapFetch::default();
+            let fetch = buildstore::fetch::MapFetch::default();
             let inp = Inputs {
                 chm: Source::Dir(arg("--chm").into()),
                 leaf: Source::Dir(arg("--leaf").into()),

@@ -174,7 +174,7 @@ fn boxes_areas_and_wide_buffers() {
 /// a disputed square of its own. A big lake inside A.
 struct World {
     _d: tempfile::TempDir,
-    o: crate::outlines::Outlines,
+    o: buildstore::outlines::Outlines,
     data: Datasets,
 }
 
@@ -206,7 +206,7 @@ fn world_more(north: f64, more: Vec<Vec<geom::Ring>>) -> World {
     let eez = HashMap::from([(1, zone1), (2, bx(5.0, 5.0, 6.0, 6.0))]);
     let lakes = HashMap::from([(77, bx(0.2, 0.2, 0.4, 0.4)), (78, bx(0.6, 0.6, 0.61, 0.61))]);
     let data = Datasets::from_parts(eez, HashMap::new(), HashMap::new(), lakes, land, "fixture");
-    World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d }
+    World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d }
 }
 
 fn run(w: &World, files: &[(&str, &str)]) -> resolve::Outcome {
@@ -344,7 +344,7 @@ fn overlapping_water_or_an_uncovered_sea_is_an_error() {
 /// paused, each piece made once.
 #[test]
 fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
-    use crate::resume_log::STOP_AFTER;
+    use jobrt::resume_log::STOP_AFTER;
     let w = world();
     let old = "id = \"old\"\nname = \"Old\"\noutline = [\"osm:4\"]\n";
     let mut files = all();
@@ -377,7 +377,7 @@ fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
         let out = with(Some(&kept));
         match kept.stopped() {
             Err(e) => {
-                assert!(crate::control::is_paused(&e), "{e:#}");
+                assert!(jobrt::control::is_paused(&e), "{e:#}");
                 stops += 1;
             }
             Ok(()) => break out,
@@ -587,7 +587,7 @@ fn a_stretch_one_region_alone_borders_is_its_own() {
         land,
         "fixture",
     );
-    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
     let (p1, p2, p3) = (m("p1", 11), m("p2", 12), m("p3", 13));
     let pw =
@@ -662,7 +662,7 @@ fn a_zone_and_its_overlapping_internal_waters_are_unioned() {
         vec![bx(20.0, 20.0, 21.0, 21.0)],
         "fixture",
     );
-    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     let z = "id = \"z\"\nname = \"Z\"\nwater = [\"eez:7\"]\n";
     let out = run(&w, &[PINS, ("z.toml", z)]);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
@@ -767,7 +767,7 @@ fn a_sliver_across_a_cells_edge_joins_its_neighbour() {
         vec![bx(20.0, 20.0, 21.0, 21.0)],
         "fixture",
     );
-    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     // s: land far away, and a sliver of 4.4 × 5.5 km across the edge at 2°; t: water above it.
     let s = "id = \"s\"\nname = \"S\"\noutline = [\"osm:4\"]\nwater = [\"box:1.98,0.0,2.02,0.05\"]\n";
     let t = "id = \"t\"\nname = \"T\"\nwater = [\"box:1.9,0.05,2.1,0.2\"]\n";
@@ -837,7 +837,7 @@ fn hand_out_all_gives_every_stretch() {
         bx(10.0, 3.0, 10.2, 3.2),
     ];
     let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
-    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
     let (p1, p2, p3) = (m("p1", 21), m("p2", 22), m("p3", 23));
     let rest = "id = \"p-rest\"\nname = \"P rest\"\noutline = [{ minus = [\"box:0,0,11,4\", \"osm:21\", \"osm:22\", \"osm:23\"] }]\nwater = []\nhand_out = \"p\"\nhand_out_all = true\n";
@@ -860,7 +860,7 @@ fn hand_out_all_looks_across_the_antimeridian() {
     );
     let land = vec![bx(179.0, 0.0, 179.95, 1.0), bx(-175.5, 0.0, -175.0, 1.0), bx(-179.9, 0.2, -179.7, 0.4)];
     let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
-    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
     let (west, east) = (m("west", 31), m("east", 32));
     let rest = "id = \"p-rest\"\nname = \"P rest\"\noutline = [\"box:-180,0,-179,1\"]\nwater = []\nhand_out = \"p\"\nhand_out_all = true\n";
@@ -880,7 +880,7 @@ fn a_hand_out_all_leftover_is_a_finding() {
     let p = outlines(d.path(), &[(41, "PP", deg_sq(5.0, 5.0, 6.0, 6.0))]);
     let land = vec![bx(0.0, 0.0, 0.5, 0.5)];
     let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
-    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     let sea = "id = \"q1\"\nname = \"Q1\"\noutline = [\"osm:41\"]\nwater = [\"box:5,5,6,6\"]\n";
     let rest = "id = \"q-rest\"\nname = \"Q rest\"\noutline = [\"box:0,0,1,1\"]\nwater = []\nhand_out = \"q\"\nhand_out_all = true\n";
     let out = run(&w, &[PINS, ("q/q1.toml", sea), ("q/q-rest.toml", rest)]);

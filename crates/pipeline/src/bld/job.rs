@@ -22,8 +22,8 @@ use super::fill::{self, src, Near, Point};
 use super::tiles::{self, Feat};
 use super::work::{flag, Block, IndexEntry, Meta, WorkFile};
 use super::{key_zxy, world7};
-use crate::coverage::Coverage;
-use crate::legacy::TileId;
+use buildstore::coverage::Coverage;
+use codecs::legacy::TileId;
 use buildstore::out::Out;
 use anyhow::{ensure, Context, Result};
 use det::Det;
@@ -150,7 +150,7 @@ fn country(cov: &Coverage, s: Option<usize>) -> &str {
 /// A z14 tile's box in E7.
 pub(super) fn box14(key: u64) -> [i32; 4] {
     let (_, x, y) = key_zxy(key);
-    crate::hipack::tile_bounds(14, x, y)
+    codecs::hipack::tile_bounds(14, x, y)
 }
 
 /// The blocks z8 tile `a` (a z8 tile of T) reads: its own (T's blocks in it), then those within
@@ -500,13 +500,13 @@ pub fn work_files(out: &Out, t: TileId) -> Result<Vec<Option<WorkFile>>> {
 /// (`field::lo`), as the lo pack `layers/buildings-field/lo/3-x-y`, or that dropped with no mid
 /// there. Its tiles.
 pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
-    build_lo_keeping(out, q, crate::resume_log::on())
+    build_lo_keeping(out, q, jobrt::resume_log::on())
 }
 
-/// `build_lo`, its z6 tiles' levels kept as pieces with `keep` (crate::resume_log::Pieces).
+/// `build_lo`, its z6 tiles' levels kept as pieces with `keep` (jobrt::resume_log::Pieces).
 pub fn build_lo_keeping(out: &mut Out, q: TileId, keep: bool) -> Result<usize> {
     ensure!(q.z == 3, "bldfield-lo takes z3 tiles ({} isn't one)", q.slash());
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let t0 = std::time::Instant::now();
     let mut paths: BTreeMap<(u32, u32), store::nasfs::NasPath> = BTreeMap::new();
     for y in q.y * 8..q.y * 8 + 8 {
@@ -518,13 +518,13 @@ pub fn build_lo_keeping(out: &mut Out, q: TileId, keep: bool) -> Result<usize> {
     }
     let p = phase("reading the mids and making the levels");
     let names = paths.keys().map(|&(x, y)| field::mid_logical(x, y));
-    let id = crate::resume_log::job_id(
+    let id = jobrt::resume_log::job_id(
         "bldfield-lo",
         &field::LO_V.to_string(),
         &q.slash(),
-        &[&crate::resume_log::names(out, names)],
+        &[&jobrt::resume_log::names(out, names)],
     );
-    let mut pieces = crate::resume_log::Pieces::open(&out.scratch, (3, q.x, q.y), "bldfield-lo", &id, keep);
+    let mut pieces = jobrt::resume_log::Pieces::open(&out.scratch, (3, q.x, q.y), "bldfield-lo", &id, keep);
     let tiles = field::lo(
         (q.x, q.y),
         &|x, y| paths.get(&(x, y)).map(|p| p.read().with_context(|| format!("read {}", p.display()))).transpose(),
@@ -582,13 +582,13 @@ fn neighbours_names(out: &Out, t: TileId) -> String {
             }
         }
     }
-    crate::resume_log::names(out, ls)
+    jobrt::resume_log::names(out, ls)
 }
 
-/// A z8 tile's results as a piece kept (crate::resume_log::Pieces): its tiles, summary, field
+/// A z8 tile's results as a piece kept (jobrt::resume_log::Pieces): its tiles, summary, field
 /// tiles and mid.
 fn z8_piece(a: (u32, u32), tiles: &[(u8, u32, u32, Vec<u8>, u32)], s: &Summary, f: &field::Z8Field) -> Result<Vec<u8>> {
-    let mut p = crate::resume_log::Put::default();
+    let mut p = jobrt::resume_log::Put::default();
     p.u64(tiles.len() as u64);
     for (z, x, y, gz, raw) in tiles {
         p.u8(*z);
@@ -616,7 +616,7 @@ fn z8_piece(a: (u32, u32), tiles: &[(u8, u32, u32, Vec<u8>, u32)], s: &Summary, 
 type Z8Piece = (Vec<(u8, u32, u32, Vec<u8>, u32)>, Summary, field::Z8Field);
 
 fn z8_unpiece(a: (u32, u32), p: &[u8]) -> Result<Z8Piece> {
-    let mut g = crate::resume_log::Get(p);
+    let mut g = jobrt::resume_log::Get(p);
     let mut tiles = Vec::new();
     for _ in 0..g.count(21)? {
         tiles.push((g.u8()?, g.u32()?, g.u32()?, g.bytes()?, g.u32()?));
@@ -671,10 +671,10 @@ pub fn build_later(
     t: TileId,
     offload: Option<&crate::offload::Offload>,
 ) -> Result<Summary> {
-    build_later_keeping(out, cov, t, offload, crate::resume_log::on())
+    build_later_keeping(out, cov, t, offload, jobrt::resume_log::on())
 }
 
-/// `build_later`, its z8 tiles kept as pieces with `keep` (crate::resume_log::Pieces).
+/// `build_later`, its z8 tiles kept as pieces with `keep` (jobrt::resume_log::Pieces).
 pub fn build_later_keeping(
     out: &mut Out,
     cov: &Coverage,
@@ -683,7 +683,7 @@ pub fn build_later_keeping(
     keep: bool,
 ) -> Result<Summary> {
     ensure!(t.z == 6, "bldtiles takes z6 tiles ({} isn't one)", t.slash());
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let t0 = std::time::Instant::now();
     let p = phase("reading the normalized files");
     let files = work_files(out, t)?;
@@ -704,11 +704,11 @@ pub fn build_later_keeping(
     let z8s = z8_tiles_of(&files);
     // (Each z8 tile's results a piece kept, task #889: a resumed run makes, or offers, only the z8
     // tiles its last didn't keep.)
-    let mut pieces = crate::resume_log::Pieces::open(
+    let mut pieces = jobrt::resume_log::Pieces::open(
         &out.scratch,
         (6, t.x, t.y),
         "bldtiles",
-        &crate::resume_log::job_id(
+        &jobrt::resume_log::job_id(
             "bldtiles",
             &super::BUILDINGS_V.to_string(),
             &t.slash(),
@@ -858,7 +858,7 @@ mod tests {
     /// tile's field likewise (each z6 tile's levels kept).
     #[test]
     fn bldtiles_and_bldfield_lo_paused_at_every_safe_point_resume_to_the_same_bytes() {
-        use crate::resume_log::STOP_AFTER;
+        use jobrt::resume_log::STOP_AFTER;
         let t = TileId { z: 6, x: 32, y: 22 };
         let d = tempfile::tempdir().unwrap();
         let (lon, lat) = (2.3470, 48.8580);
@@ -907,7 +907,7 @@ mod tests {
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(_) => break,
@@ -924,7 +924,7 @@ mod tests {
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(_) => break,

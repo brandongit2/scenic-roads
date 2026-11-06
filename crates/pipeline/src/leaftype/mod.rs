@@ -6,8 +6,8 @@
 //! Sources:
 //! - Europe: Copernicus HRL Dominant Leaf Type 2018, 10 m (broadleaf / coniferous), read at
 //!   0.0005° from the EEA's public image service (exportImage, nearest neighbour): a documented API
-//!   (crate::fetch::Kind::Api), asked with the build's User-Agent through the job's proxy, a 429
-//!   told to the budgets (crate::budget::seen) and backed off from.
+//!   (buildstore::fetch::Kind::Api), asked with the build's User-Agent through the job's proxy, a 429
+//!   told to the budgets (jobrt::budget::seen) and backed off from.
 //! - North America: NALCMS 2020 land cover, 30 m (CEC; NRCan, USGS, INEGI…): needleleaf forest →
 //!   conifer, broadleaf deciduous → broadleaf, mixed forest → mixed. The GeoTIFF is streamed out of
 //!   CEC's 3.9 GB zip by byte range, its size and CRC checked against the zip's, and kept beside the
@@ -26,7 +26,7 @@
 mod tiff;
 mod warp;
 
-use crate::timings::phase;
+use jobrt::timings::phase;
 use crate::trees::LeafSources;
 use anyhow::{bail, ensure, Context, Result};
 use std::path::Path;
@@ -136,7 +136,7 @@ fn save(top: i32, left: i32, a: &[u8], source: &str, out: &Path) -> Result<()> {
             f.write_all(&b)?;
             f.sync_all()?;
         }
-        ensure!(crate::whole::tiff_file_whole(&tmp), "{}: written short", tmp.display());
+        ensure!(codecs::whole::tiff_file_whole(&tmp), "{}: written short", tmp.display());
         store::whole::rename_over(&tmp, &path)?;
         Ok(())
     })();
@@ -161,7 +161,7 @@ fn save(top: i32, left: i32, a: &[u8], source: &str, out: &Path) -> Result<()> {
 }
 
 /// Band 1 of `t` in window (`x0`, `y0`, `w`, `h`), 8-bit samples, row by row.
-fn read_u8(t: &crate::geotiff::Tiff, x0: usize, y0: usize, w: usize, h: usize) -> Result<Vec<u8>> {
+fn read_u8(t: &buildstore::geotiff::Tiff, x0: usize, y0: usize, w: usize, h: usize) -> Result<Vec<u8>> {
     let img = t.level(0)?;
     ensure!(x0 + w <= img.width as usize && y0 + h <= img.height as usize, "a window off the image");
     let (bw, bh) = (img.block_w as usize, img.block_h as usize);
@@ -192,7 +192,7 @@ fn agent(timeout: Option<Duration>) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(timeout)
         .timeout_connect(Some(Duration::from_secs(30)))
-        .user_agent(crate::fetch::USER_AGENT)
+        .user_agent(buildstore::fetch::USER_AGENT)
         .http_status_as_error(false)
         .proxy(ureq::Proxy::try_from_env())
         .max_redirects(0)
@@ -203,7 +203,7 @@ fn agent(timeout: Option<Duration>) -> ureq::Agent {
 /// One exportImage request: its band 1 (`height` rows of `width`), None when it keeps failing (three
 /// tries, 10, 20 and 30 s apart; a 429 told to the budgets and waited out longer).
 fn eea_request(src: &LeafSources, bb: [f64; 4], width: usize, height: usize) -> Result<Option<Vec<u8>>> {
-    use crate::pyjson::float_repr as r;
+    use pyport::pyjson::float_repr as r;
     let url = format!(
         "{}?bbox={},{},{},{}&bboxSR=4326&imageSR=4326&size={width},{height}&format=tiff&pixelType=U8\
          &interpolation=RSP_NearestNeighbor&f=image",
@@ -213,7 +213,7 @@ fn eea_request(src: &LeafSources, bb: [f64; 4], width: usize, height: usize) -> 
         r(bb[2]),
         r(bb[3])
     );
-    crate::fetch::online(&url)?;
+    buildstore::fetch::online(&url)?;
     let ag = agent(Some(Duration::from_secs(240)));
     for attempt in 1..=3u64 {
         let mut wait = 10 * attempt;
@@ -222,7 +222,7 @@ fn eea_request(src: &LeafSources, bb: [f64; 4], width: usize, height: usize) -> 
             let status = resp.status().as_u16();
             let retry = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
             if status == 429 || retry.is_some() {
-                crate::budget::seen(&url, status, retry.as_deref());
+                jobrt::budget::seen(&url, status, retry.as_deref());
                 wait = wait.max(retry.and_then(|r| r.trim().parse::<u64>().ok()).unwrap_or(45 * attempt));
             }
             ensure!(status < 400, "HTTP {status}");
@@ -230,7 +230,7 @@ fn eea_request(src: &LeafSources, bb: [f64; 4], width: usize, height: usize) -> 
         });
         if let Ok(b) = got {
             if b.starts_with(b"II") || b.starts_with(b"MM") {
-                let a = crate::geotiff::Tiff::open(Arc::new(b)).and_then(|t| {
+                let a = buildstore::geotiff::Tiff::open(Arc::new(b)).and_then(|t| {
                     let img = t.level(0)?;
                     ensure!(
                         (img.width as usize, img.height as usize) == (width, height),
@@ -369,9 +369,9 @@ fn europe_square(top: i32, left: i32, out: &Path, src: &LeafSources, progress: &
     let path = out.join(format!("{}.tif", name(top, left)));
     let old: Option<Vec<u8>> = {
         let _p = phase("reading today's squares");
-        (path.exists() && crate::whole::tiff_file_whole(&path))
+        (path.exists() && codecs::whole::tiff_file_whole(&path))
             .then(|| {
-                let t = crate::geotiff::Tiff::open(Arc::new(store::range::PlainFile::open(&path).ok()?)).ok()?;
+                let t = buildstore::geotiff::Tiff::open(Arc::new(store::range::PlainFile::open(&path).ok()?)).ok()?;
                 let img = t.level(0).ok()?;
                 ((img.width as usize, img.height as usize) == (N, N)).then(|| read_u8(&t, 0, 0, N, N).ok()).flatten()
             })
@@ -508,14 +508,14 @@ fn fetch_nalcms(tif: &Path, src: &LeafSources) -> Result<()> {
     let [offset, compressed] = src.north_america_member;
     let _p = phase("downloading NALCMS's GeoTIFF");
     std::fs::create_dir_all(tif.parent().context("NALCMS: no folder")?)?;
-    crate::fetch::online(url)?;
+    buildstore::fetch::online(url)?;
     let _w = store::waits::net();
     let ag = agent(None);
     let get = |from: u64, to: u64| -> Result<ureq::http::Response<ureq::Body>> {
         let r = ag.get(url).header("Range", &format!("bytes={from}-{to}")).call()?;
         let status = r.status().as_u16();
         if status == 429 {
-            crate::budget::seen(url, status, r.headers().get("retry-after").and_then(|v| v.to_str().ok()));
+            jobrt::budget::seen(url, status, r.headers().get("retry-after").and_then(|v| v.to_str().ok()));
         }
         ensure!(status < 400, "NALCMS: HTTP {status}");
         Ok(r)
@@ -592,28 +592,28 @@ fn fetch_nalcms(tif: &Path, src: &LeafSources) -> Result<()> {
 }
 
 /// NALCMS's projection as its GeoTIFF says it (Lambert azimuthal equal-area on WGS 84), its centre.
-fn nalcms_centre(t: &crate::geotiff::Tiff) -> Result<(f64, f64)> {
+fn nalcms_centre(t: &buildstore::geotiff::Tiff) -> Result<(f64, f64)> {
     let k = t.geo_keys();
     let d = |key: u16| k.double(key);
     // ProjCoordTransGeoKey 10 (CT_LambertAzimEqualArea); ProjCenterLatGeoKey, ProjCenterLongGeoKey
     // (or the natural origin's); no false origin; WGS 84's ellipsoid.
-    ensure!(k.short(crate::geotiff::key::PROJ_COORD_TRANS) == Some(10), "NALCMS: not Lambert azimuthal equal-area");
-    let lat = d(3089).or_else(|| d(crate::geotiff::key::PROJ_NAT_ORIGIN_LAT)).context("NALCMS: no centre latitude")?;
+    ensure!(k.short(buildstore::geotiff::key::PROJ_COORD_TRANS) == Some(10), "NALCMS: not Lambert azimuthal equal-area");
+    let lat = d(3089).or_else(|| d(buildstore::geotiff::key::PROJ_NAT_ORIGIN_LAT)).context("NALCMS: no centre latitude")?;
     let lon =
-        d(3088).or_else(|| d(crate::geotiff::key::PROJ_NAT_ORIGIN_LONG)).context("NALCMS: no centre longitude")?;
-    for key in [crate::geotiff::key::PROJ_FALSE_EASTING, crate::geotiff::key::PROJ_FALSE_NORTHING] {
+        d(3088).or_else(|| d(buildstore::geotiff::key::PROJ_NAT_ORIGIN_LONG)).context("NALCMS: no centre longitude")?;
+    for key in [buildstore::geotiff::key::PROJ_FALSE_EASTING, buildstore::geotiff::key::PROJ_FALSE_NORTHING] {
         ensure!(d(key).unwrap_or(0.0) == 0.0, "NALCMS: a false origin");
     }
-    let wgs = k.short(crate::geotiff::key::GEOGRAPHIC_TYPE) == Some(4326)
-        || k.short(crate::geotiff::key::GEOG_GEODETIC_DATUM) == Some(6326)
-        || (d(crate::geotiff::key::GEOG_SEMI_MAJOR_AXIS) == Some(roadcore::geo::WGS84_A)
-            && d(crate::geotiff::key::GEOG_INV_FLATTENING) == Some(roadcore::geo::WGS84_RF));
+    let wgs = k.short(buildstore::geotiff::key::GEOGRAPHIC_TYPE) == Some(4326)
+        || k.short(buildstore::geotiff::key::GEOG_GEODETIC_DATUM) == Some(6326)
+        || (d(buildstore::geotiff::key::GEOG_SEMI_MAJOR_AXIS) == Some(roadcore::geo::WGS84_A)
+            && d(buildstore::geotiff::key::GEOG_INV_FLATTENING) == Some(roadcore::geo::WGS84_RF));
     ensure!(wgs, "NALCMS: not on WGS 84");
     Ok((lat, lon))
 }
 
 /// Square (`top`, `left`) resampled from NALCMS (`t`), its own classes, 255 where it has none.
-fn nalcms_square(t: &crate::geotiff::Tiff, top: i32, left: i32) -> Result<Vec<u8>> {
+fn nalcms_square(t: &buildstore::geotiff::Tiff, top: i32, left: i32) -> Result<Vec<u8>> {
     use rayon::prelude::*;
     let (lat0, lon0) = nalcms_centre(t)?;
     let img = t.level(0)?;
@@ -663,7 +663,7 @@ fn north_america_squares(
     }
     fetch_nalcms(tif, src)?;
     let f = store::range::PlainFile::open(tif).with_context(|| tif.display().to_string())?;
-    let t = crate::geotiff::Tiff::open(Arc::new(f))?.with_cache(512 << 20);
+    let t = buildstore::geotiff::Tiff::open(Arc::new(f))?.with_cache(512 << 20);
     for (k, &(top, left)) in todo.iter().enumerate() {
         let t0 = std::time::Instant::now();
         let a = {

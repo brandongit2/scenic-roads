@@ -171,7 +171,7 @@ fn mids_and_lo() {
     assert_eq!(read_mid(&bytes).unwrap(), z8s, "kept exactly");
     // Z3 tile 3/4/2 holds z6 6/32/22 (z8 tile 129/88's).
     let lo_tiles =
-        lo((4, 2), &|x, y| Ok(((x, y) == (32, 22)).then(|| bytes.clone())), &mut crate::resume_log::Pieces::none())
+        lo((4, 2), &|x, y| Ok(((x, y) == (32, 22)).then(|| bytes.clone())), &mut jobrt::resume_log::Pieces::none())
             .unwrap();
     let got: Vec<(u8, u32, u32)> = lo_tiles.iter().map(|t| (t.0, t.1, t.2)).collect();
     assert_eq!(got, [(8, 129, 88), (7, 64, 44), (6, 32, 22), (5, 16, 11), (4, 8, 5)]);
@@ -223,7 +223,7 @@ fn region_sizes_tried() {
         let h = T as u32 * mask.count_ones();
         for rb in [5u32, 6, 7, 8] {
             let t0 = std::time::Instant::now();
-            let w = crate::webp::encode_rgb_regions(&rgb, T as u32, h, rb);
+            let w = codecs::webp::encode_rgb_regions(&rgb, T as u32, h, rb);
             let s = tot.entry(rb).or_default();
             s.0 += w.len();
             s.1 += t0.elapsed().as_secs_f64();
@@ -234,16 +234,16 @@ fn region_sizes_tried() {
 
 /// A z6 tile's heritage sites from its markdata (`marks::KINDS`' heritage, a World Heritage Site's
 /// components left out: they aren't dots), E7.
-fn sites_of_markdata(r: &crate::marks::MarkdataFile) -> Result<Vec<[i32; 2]>> {
+fn sites_of_markdata(r: &codecs::marks::MarkdataFile) -> Result<Vec<[i32; 2]>> {
     let kinds: Vec<[u32; 2]> = r.read_pod("kinds")?;
-    let pts: Vec<crate::marks::MarkPt> = r.read_pod("pts")?;
-    let k = crate::marks::kind_index("heritage").unwrap();
+    let pts: Vec<codecs::marks::MarkPt> = r.read_pod("pts")?;
+    let k = codecs::marks::kind_index("heritage").unwrap();
     let Some(&[first, n]) = kinds.get(k) else { return Ok(Vec::new()) };
     let mut out: Vec<[i32; 2]> = pts
         .get(first as usize..(first + n) as usize)
         .context("markdata's kinds past its points")?
         .iter()
-        .filter(|p| p.flags & crate::marks::flag::COMPONENT == 0)
+        .filter(|p| p.flags & codecs::marks::flag::COMPONENT == 0)
         .map(|p| [p.lon, p.lat])
         .collect();
     out.sort_unstable();
@@ -270,20 +270,20 @@ fn heritage_slices_against_markdata() {
         .max()
         .unwrap();
     // (Markdata by tile: the marks job's bundle, or a file per tile from before task #449.)
-    let markdata: std::collections::HashMap<(u32, u32), crate::marks::MarkdataFile> = m
+    let markdata: std::collections::HashMap<(u32, u32), codecs::marks::MarkdataFile> = m
         .iter()
         .filter(|(k, _)| k.starts_with("markdata/"))
-        .flat_map(|(_, c)| crate::marks::markdata_files(&root.join(c)).unwrap())
+        .flat_map(|(_, c)| codecs::marks::markdata_files(&root.join(c)).unwrap())
         .collect();
     for t in ["6-33-22", "6-18-24", "6-56-25", "6-17-23", "6-31-18", "6-32-22"] {
-        let u = crate::legacy::TileId::parse(t).unwrap();
+        let u = codecs::legacy::TileId::parse(t).unwrap();
         let md = markdata.get(&(u.x, u.y)).map(|r| sites_of_markdata(r).unwrap()).unwrap_or_default();
         let all = markdata
             .get(&(u.x, u.y))
             .map(|r| {
                 let kinds: Vec<[u32; 2]> = r.read_pod("kinds").unwrap();
-                let pts: Vec<crate::marks::MarkPt> = r.read_pod("pts").unwrap();
-                let k = kinds[crate::marks::kind_index("heritage").unwrap()];
+                let pts: Vec<codecs::marks::MarkPt> = r.read_pod("pts").unwrap();
+                let k = kinds[codecs::marks::kind_index("heritage").unwrap()];
                 pts[k[0] as usize..(k[0] + k[1]) as usize]
                     .iter()
                     .map(|p| [p.lon, p.lat])

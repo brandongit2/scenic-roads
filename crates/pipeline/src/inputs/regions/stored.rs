@@ -198,8 +198,8 @@ pub struct Drawn {
 
 impl Drawn {
     /// As the catalogue records a region (`coverage::DrawnRegion`).
-    pub fn region(&self) -> crate::coverage::DrawnRegion {
-        crate::coverage::DrawnRegion {
+    pub fn region(&self) -> buildstore::coverage::DrawnRegion {
+        buildstore::coverage::DrawnRegion {
             id: self.id.clone(),
             name: self.name.clone(),
             outline: self.outline.clone(),

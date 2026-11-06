@@ -824,7 +824,7 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     // A heritage register's names it.
     let region = |w: f64, s: f64, e: f64, n: f64| {
         let ring = vec![[w, s], [e, s], [e, n], [w, n], [w, s]];
-        crate::coverage::DrawnRegion {
+        buildstore::coverage::DrawnRegion {
             id: "r".into(),
             name: "r".into(),
             outline: vec!["osm:1".into()],

@@ -1,7 +1,7 @@
 //! A depth target's run resumed where it stopped (docs/pool.md §7.2, Resuming; task #643): a z6
 //! tile's (z6–16) or an assembly's (z3–8) composing goes block by block (crate::depth::build's
 //! `level`), up to two hours a run; a run stopped starts again at the block after the last it
-//! finished, not at z9. The log is crate::resume_log's (on this Mac's disk, at the top of the step's
+//! finished, not at z9. The log is jobrt::resume_log's (on this Mac's disk, at the top of the step's
 //! scratch folder, moved from another slot's, swept after a day, only with resuming on); what it
 //! keeps of a block is its tiles, each with its depth's and class's encodings.
 //!
@@ -16,7 +16,7 @@
 //!   shading (`shading`).
 //! - **Gone** once the target's packs are saved (crate::depth::build's `build_hi`, `build_lo`).
 
-use crate::resume_log::{BlockId, Get, Log, Put};
+use jobrt::resume_log::{BlockId, Get, Log, Put};
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -25,7 +25,7 @@ use std::path::Path;
 pub type Made = ((u8, u32, u32), (Vec<u8>, Vec<u8>));
 
 /// Target `t`'s log in `scratch` for a run of identity `id`: its blocks, their tiles laid into
-/// `made` (crate::resume_log::Log::open).
+/// `made` (jobrt::resume_log::Log::open).
 pub fn open(
     scratch: &Path,
     t: (u8, u32, u32),

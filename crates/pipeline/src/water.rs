@@ -25,7 +25,7 @@
 //! - Deeper zooms are made when asked (`cover`: the server), from the z14 tiles under the tile or
 //!   over it.
 
-use crate::watercov::Raster;
+use codecs::watercov::Raster;
 use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -569,7 +569,7 @@ pub fn build(
     z14: &Z14,
     extra: Option<&dyn Extra>,
     only: Option<&[(u32, u32)]>,
-    pieces: &std::sync::Mutex<crate::resume_log::Pieces>,
+    pieces: &std::sync::Mutex<jobrt::resume_log::Pieces>,
     said: &(dyn Fn(u64, u64) + Sync),
 ) -> Result<(Vec<TileOut>, Made)> {
     let fives: Vec<(u32, u32)> = match only {
@@ -649,7 +649,7 @@ pub fn build(
     Ok((tiles, made))
 }
 
-/// A z5 tile's subtree as kept (crate::resume_log::Pieces): its node, the tiles stored under it, and
+/// A z5 tile's subtree as kept (jobrt::resume_log::Pieces): its node, the tiles stored under it, and
 /// the z`DRAW_Z` tiles it drew and z14 tiles it read (`Made`'s, whole on a resumed run too).
 struct Piece {
     node: Node,
@@ -660,7 +660,7 @@ struct Piece {
 
 impl Piece {
     fn encode(&self) -> Vec<u8> {
-        let mut p = crate::resume_log::Put::default();
+        let mut p = jobrt::resume_log::Put::default();
         match &self.node {
             Node::Uniform(s, i) => {
                 p.u8(0);
@@ -687,7 +687,7 @@ impl Piece {
     }
 
     fn decode(b: &[u8]) -> Result<Piece> {
-        let mut g = crate::resume_log::Get(b);
+        let mut g = jobrt::resume_log::Get(b);
         let node = match g.u8()? {
             0 => Node::Uniform(g.u8()?, g.u8()?),
             1 => Node::Cov(Cov { sea: g.f32s()?, inland: g.f32s()?, some: g.bytes()? }),
@@ -955,7 +955,7 @@ mod tests {
     /// subtree uniform) and on one with sea, a lake and land in some of its z5 tiles.
     #[test]
     fn the_water_paused_at_every_z5_tile_resumes_to_the_same_tiles() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         let only: Vec<(u32, u32)> = (0..6).map(|x| (x + 10, 12)).collect();
         // (z5 tile 10/12's first z14 tiles sea, 12/12's a lake, 13/12's a tile of land.)
         let wet = vec![
@@ -988,7 +988,7 @@ mod tests {
                 });
                 match r {
                     Err(e) => {
-                        assert!(crate::control::is_paused(&e), "{e:#}");
+                        assert!(jobrt::control::is_paused(&e), "{e:#}");
                         stops += 1;
                     }
                     Ok(t) => break t,

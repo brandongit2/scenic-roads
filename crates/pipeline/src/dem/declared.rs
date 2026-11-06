@@ -361,13 +361,13 @@ pub struct Outline {
 }
 
 /// An `Outline` as a sampler reads it: its edge cells, and the regions' shapes (land and water),
-/// whose point test (crate::coverage::Shape::contains, their buffer included) decides a point in
+/// whose point test (buildstore::coverage::Shape::contains, their buffer included) decides a point in
 /// one.
 #[derive(Clone)]
 pub struct OutlineCut {
     pub geometry: Vec<String>,
     pub edges: HashSet<(i32, i32)>,
-    pub shapes: std::sync::Arc<Vec<crate::coverage::Shape>>,
+    pub shapes: std::sync::Arc<Vec<buildstore::coverage::Shape>>,
     /// `within` of the shapes for each box asked about, kept while the cut is (the agent holds its
     /// fine sets across plans, `TerrainTiles::fine`): a plan's terrain targets ask the same boxes
     /// each time, and worked out afresh they were ~100 s of a plan (27 Oct, lead).
@@ -390,7 +390,7 @@ impl OutlineCut {
     /// `o`, its shapes read from the regions' stored geometry (`read`: a content name's bytes);
     /// the shapes kept per process by their files, so a pool's plans read them once.
     pub fn read(o: &Outline, read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<OutlineCut> {
-        type Shapes = BTreeMap<Vec<String>, std::sync::Arc<Vec<crate::coverage::Shape>>>;
+        type Shapes = BTreeMap<Vec<String>, std::sync::Arc<Vec<buildstore::coverage::Shape>>>;
         static SHAPES: std::sync::Mutex<Shapes> = std::sync::Mutex::new(BTreeMap::new());
         let edges = o
             .edges
@@ -408,7 +408,7 @@ impl OutlineCut {
             let g = crate::inputs::regions::stored::Geometry::decode(&read(n)?).with_context(|| n.clone())?;
             shapes.extend(g.shapes.iter().map(|s| {
                 let mut shape =
-                    crate::coverage::Shape::new(format!("{}: {}", g.id, s.from), s.rings.clone(), s.tolerance_m as f64);
+                    buildstore::coverage::Shape::new(format!("{}: {}", g.id, s.from), s.rings.clone(), s.tolerance_m as f64);
                 shape.water = s.water;
                 shape
             }));
@@ -420,7 +420,7 @@ impl OutlineCut {
 
     /// Of shapes `shapes` in edge cells `edges`, named `geometry` (the tests').
     #[cfg(test)]
-    pub fn of_shapes(geometry: &str, edges: HashSet<(i32, i32)>, shapes: Vec<crate::coverage::Shape>) -> OutlineCut {
+    pub fn of_shapes(geometry: &str, edges: HashSet<(i32, i32)>, shapes: Vec<buildstore::coverage::Shape>) -> OutlineCut {
         OutlineCut {
             geometry: vec![geometry.into()],
             edges,
@@ -514,7 +514,7 @@ impl Cover {
     /// asked (the box crosses a cell's edge or an outline, or is wider than a few cells). What
     /// `contains` answers for each point, by the cells any point of the box may lie in (a point
     /// on a cell's edge is in both cells beside it) and, where those are all edge cells, by the
-    /// outlines' exact box tests (crate::coverage::Shape::covers_rect, `meets_rect`). A sampling's
+    /// outlines' exact box tests (buildstore::coverage::Shape::covers_rect, `meets_rect`). A sampling's
     /// run of neighbouring points (a terrain tile's row) is one answer, not a test a point.
     pub fn contains_box(&self, b: [f64; 4]) -> Option<bool> {
         if self.world {
@@ -1010,7 +1010,7 @@ pub fn cover_read(d: &Accepted, read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Resul
 pub fn scope_cover(
     cover: Option<&[[f64; 4]]>,
     regions: &[String],
-    cov: &crate::coverage::Coverage,
+    cov: &buildstore::coverage::Coverage,
 ) -> (Vec<[f64; 4]>, Vec<String>) {
     let had = Cover::of(cover);
     let missing = regions.iter().filter(|g| !cov.shapes.iter().any(|s| region_of(s) == g.as_str())).cloned().collect();
@@ -1033,7 +1033,7 @@ pub fn scope_cover(
 }
 
 /// The region a coverage's shape is of (its source, "<region id>: <from>").
-fn region_of(s: &crate::coverage::Shape) -> &str {
+fn region_of(s: &buildstore::coverage::Shape) -> &str {
     s.source.split_once(": ").map_or(s.source.as_str(), |(id, _)| id)
 }
 
@@ -1041,7 +1041,7 @@ fn region_of(s: &crate::coverage::Shape) -> &str {
 /// edges: no edge of their union meets the box less its edges (an edge two of them share, as a
 /// region's land and water do and its stored pieces, which meet on whole degrees, is none), and
 /// its middle is in one.
-fn wholly_held(shapes: &[crate::coverage::Shape], r: [i32; 4]) -> bool {
+fn wholly_held(shapes: &[buildstore::coverage::Shape], r: [i32; 4]) -> bool {
     let inner = [r[0] as i64 + 1, r[1] as i64 + 1, r[2] as i64 - 1, r[3] as i64 - 1];
     let mut edges: Vec<[i32; 4]> = shapes.iter().flat_map(|s| s.edges_in(inner)).collect();
     edges.sort_unstable();
@@ -1057,16 +1057,16 @@ pub enum Within {
     Held,
     /// None of it, their buffer included: they have nothing in it.
     Outside,
-    /// In part: the outlines there (crate::coverage::fingerprint_of), digested.
+    /// In part: the outlines there (buildstore::coverage::fingerprint_of), digested.
     Edge(String),
 }
 
 /// How shapes `shapes` hold box `r` (w, s, e, n, E7).
-fn within(shapes: &[crate::coverage::Shape], r: [i32; 4]) -> Within {
+fn within(shapes: &[buildstore::coverage::Shape], r: [i32; 4]) -> Within {
     if wholly_held(shapes, r) {
         return Within::Held;
     }
-    match crate::coverage::fingerprint_of(shapes, r) {
+    match buildstore::coverage::fingerprint_of(shapes, r) {
         f if f.is_empty() => Within::Outside,
         f => Within::Edge(store::naming::hash16(f.as_bytes())),
     }
@@ -1074,15 +1074,15 @@ fn within(shapes: &[crate::coverage::Shape], r: [i32; 4]) -> Within {
 
 /// Coverage `cover` (as `scope_cover` cut it) cut to the outlines of map regions `regions` in
 /// coverage `cov` inside its cells: their shapes, land and water, as the coverage holds a point
-/// (crate::coverage::Shape::contains), whose stored geometry is `geometry`. A cell they wholly
+/// (buildstore::coverage::Shape::contains), whose stored geometry is `geometry`. A cell they wholly
 /// hold together (`wholly_held`, their buffer aside) is whole; any other is an edge cell.
 pub fn scope_outline(
     cover: &[[f64; 4]],
     regions: &[String],
-    cov: &crate::coverage::Coverage,
+    cov: &buildstore::coverage::Coverage,
     geometry: Vec<String>,
 ) -> Outline {
-    let shapes: Vec<crate::coverage::Shape> =
+    let shapes: Vec<buildstore::coverage::Shape> =
         cov.shapes.iter().filter(|s| regions.iter().any(|g| g == region_of(s))).cloned().collect();
     let e7 = |v: i32| (v as i64 * 10_000_000).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
     let cells: BTreeSet<(i32, i32)> = Cover::of(Some(cover)).cells.into_iter().collect();
@@ -1314,7 +1314,7 @@ mod tests {
             name: id.into(),
             outline: vec![format!("place:{place}")],
         };
-        let cov = crate::coverage::Coverage::fixture(&[r("a", "10.5,45.5,20"), r("b", "20.5,45.5,20")], None, d.path())
+        let cov = buildstore::coverage::Coverage::fixture(&[r("a", "10.5,45.5,20"), r("b", "20.5,45.5,20")], None, d.path())
             .unwrap();
         // (A circle of 20 km inside its cell: that cell alone, of the data's.)
         let had = vec![[10.0, 45.0, 12.0, 46.0], [20.0, 45.0, 21.0, 46.0]];

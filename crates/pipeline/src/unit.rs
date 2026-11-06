@@ -8,8 +8,8 @@
 //! The global-source layers come from the catalogue's packs (`stage`), and the roads' heights from the
 //! finished terrain staged with them (crate::road_terrain).
 
-use crate::coverage::Coverage;
-use crate::legacy::TileId;
+use buildstore::coverage::Coverage;
+use codecs::legacy::TileId;
 use anyhow::{bail, Context, Result};
 use roadcore::WayRec;
 use std::collections::BTreeMap;
@@ -165,7 +165,7 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// Where z6 tile `u`'s scenic results are kept between its runs (crate::scache::Carry).
+    /// Where z6 tile `u`'s scenic results are kept between its runs (mapview::scache::Carry).
     pub fn scenic_kept(&self, u: TileId) -> PathBuf {
         self.shared.as_ref().unwrap_or(&self.cache).join("scenic-units").join(u.dash())
     }
@@ -254,10 +254,10 @@ impl TileProgress {
             .and_then(|f| std::fs::read(f).ok())
             .and_then(|b| serde_json::from_slice::<BTreeMap<String, f64>>(&b).ok())
         {
-            // (A stage kept under its name from before task #844 is read as its new one: crate::phase_names.)
+            // (A stage kept under its name from before task #844 is read as its new one: jobrt::phase_names.)
             for (s, t) in kept
                 .into_iter()
-                .map(|(s, t)| (crate::phase_names::current(&s).into_owned(), t))
+                .map(|(s, t)| (jobrt::phase_names::current(&s).into_owned(), t))
                 .filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0)
             {
                 learned.insert(s.clone());
@@ -343,18 +343,18 @@ impl TileProgress {
     }
 }
 
-/// A part of a z6 tile's build done in-process: a phase of the job's (crate::timings), logged as its
+/// A part of a z6 tile's build done in-process: a phase of the job's (jobrt::timings), logged as its
 /// programs' times are, "  <what>: <time>", and said as a stage finished (`on_stage`) when it
 /// `end`s. (Ended by an error instead, its time is the phase's alone.)
 pub struct Stage {
     what: String,
     t: std::time::Instant,
-    _p: crate::timings::Phase,
+    _p: jobrt::timings::Phase,
 }
 
 /// Starts stage `what`.
 pub fn stage(what: &str) -> Stage {
-    Stage { what: what.to_string(), t: std::time::Instant::now(), _p: crate::timings::phase(what) }
+    Stage { what: what.to_string(), t: std::time::Instant::now(), _p: jobrt::timings::phase(what) }
 }
 
 impl Stage {
@@ -416,7 +416,7 @@ fn run_in(c: Command, what: &str, log: &Path, dir: &Path, tools: &Tools) -> Resu
 }
 
 /// A z6 tile's step ended by a server it reads giving no answer (its program's exit status
-/// crate::fetch::UNREACHABLE_EXIT): the network's or the server's, not the z6 tile's. The `unit` job sets
+/// buildstore::fetch::UNREACHABLE_EXIT): the network's or the server's, not the z6 tile's. The `unit` job sets
 /// the z6 tile aside and goes on with its others (scenic-build's `unit` step).
 #[derive(Debug)]
 pub struct SourceDown(pub String);
@@ -430,16 +430,16 @@ impl std::fmt::Display for SourceDown {
 impl std::error::Error for SourceDown {}
 
 /// Whether `e` is a server that gave no answer: a step's (`SourceDown`), or a request of this
-/// process's (crate::fetch::is_unreachable).
+/// process's (buildstore::fetch::is_unreachable).
 pub fn source_down(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| c.is::<SourceDown>()) || crate::fetch::is_unreachable(e)
+    e.chain().any(|c| c.is::<SourceDown>()) || buildstore::fetch::is_unreachable(e)
 }
 
 fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     let f = std::fs::File::options().create(true).append(true).open(log)?;
     // (Its phase, the program's own phases under it where it says them.)
-    let _p = crate::timings::phase(what);
-    crate::timings::child(&mut c);
+    let _p = jobrt::timings::phase(what);
+    jobrt::timings::child(&mut c);
     // (What it and its programs read and open, counted in a folder of their own inside this
     // process's, seen as it runs: added to this process's as it ends, store::nasio.)
     let counts = store::nasio::program_dir(Path::new(&format!("{}.counts", log.display())));
@@ -466,7 +466,7 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
         }
     });
     // Waited for with what it used: its (and its programs') peak memory.
-    let waited = crate::sys::wait_with_peak(child).with_context(|| format!("wait for {what}"));
+    let waited = jobrt::sys::wait_with_peak(child).with_context(|| format!("wait for {what}"));
     read.join().ok();
     store::nasio::take_program(&counts);
     let (st, peak) = waited?;
@@ -475,14 +475,14 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
         // The end of its log into the job's: the z6 tile's folder, its log with it, goes when the next
         // job starts.
         eprintln!("{what}, the end of its log:\n{}", log_tail(log, 40));
-        if st.code() == Some(crate::fetch::UNREACHABLE_EXIT as i32) {
+        if st.code() == Some(buildstore::fetch::UNREACHABLE_EXIT as i32) {
             return Err(
                 SourceDown(format!("{what}: a server it reads gave no answer ({st}); see {}", log.display())).into()
             );
         }
-        // (It stopped as the build pauses, crate::control::stop_paused: a pause, not a failure.)
-        if st.code() == Some(crate::control::PAUSED_EXIT) && crate::control::draining() {
-            return Err(anyhow::Error::new(crate::control::Paused).context(format!("{what}: paused")));
+        // (It stopped as the build pauses, jobrt::control::stop_paused: a pause, not a failure.)
+        if st.code() == Some(jobrt::control::PAUSED_EXIT) && jobrt::control::draining() {
+            return Err(anyhow::Error::new(jobrt::control::Paused).context(format!("{what}: paused")));
         }
         bail!("{what} failed ({st}); see {}", log.display());
     }
@@ -537,7 +537,7 @@ pub fn build_folder(
     src: &crate::stage::Source,
     tools: &Tools,
     heritage: HeritageInputs,
-    carry: Option<&crate::scache::Carry>,
+    carry: Option<&mapview::scache::Carry>,
 ) -> Result<Report> {
     let rep = prepare_folder(u, area, piece, dir, cov, src, tools, heritage, carry)?;
     if rep.kept_ways > 0 {
@@ -561,7 +561,7 @@ pub fn prepare_folder(
     src: &crate::stage::Source,
     tools: &Tools,
     heritage: HeritageInputs,
-    carry: Option<&crate::scache::Carry>,
+    carry: Option<&mapview::scache::Carry>,
 ) -> Result<Report> {
     std::fs::create_dir_all(dir)?;
     let log = dir.join("steps.log");
@@ -584,7 +584,7 @@ pub fn prepare_folder(
         s.end();
         return Ok(rep);
     }
-    let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
+    let tb = codecs::hipack::tile_bounds(u.z, u.x, u.y);
     {
         let w = roadcore::Ways::open(dir)?;
         let verts = w.verts();
@@ -632,7 +632,7 @@ pub fn prepare_folder(
             // (Without the cache's record the steps start afresh, whatever was copied.)
             Err(e) => {
                 eprintln!("unit {}: its last run's scenic results not used: {e:#}", u.slash());
-                std::fs::remove_dir_all(crate::scache::unit_dir(dir)).ok();
+                std::fs::remove_dir_all(mapview::scache::unit_dir(dir)).ok();
             }
         }
         s.end();
@@ -694,7 +694,7 @@ pub fn split(runs: &[Run]) -> (&[Run], &[Run]) {
 /// never offered nor run again: a worker is sent the folder as it is at the first step not yet
 /// run, as a run here takes it up, not one whose steps already ran over it (each step again, over
 /// what it wrote the first time: the scenic steps' kept results among it; task #903).
-pub fn split_kept<'a>(runs: &'a [Run], pieces: &crate::resume_log::Pieces) -> (&'a [Run], &'a [Run]) {
+pub fn split_kept<'a>(runs: &'a [Run], pieces: &jobrt::resume_log::Pieces) -> (&'a [Run], &'a [Run]) {
     let (here, anywhere) = split(runs);
     let kept = (0..anywhere.len()).take_while(|i| pieces.kept(tail_piece(here.len() + i)).is_some()).count();
     runs.split_at(here.len() + kept)
@@ -753,7 +753,7 @@ pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
             .map(|n| if n.starts_with('{') { n.to_string() } else { format!("{{dir}}/{n}") })
             .collect::<Vec<_>>()
     };
-    let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
+    let tb = codecs::hipack::tile_bounds(u.z, u.x, u.y);
     let own = format!("{},{},{},{}", tb[0], tb[1], tb[2], tb[3]);
     let scenic = |step: &str, with_own: bool| {
         let mut e = Vec::new();
@@ -856,18 +856,18 @@ pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
 
 // ---- A z6 tile resumed where it stopped (task #889; docs/pool.md §7.2) ----------------------------
 //
-// Its pieces (crate::resume_log::Pieces), its folders (`dirs`: the z6 tile's and its buildings') kept
+// Its pieces (jobrt::resume_log::Pieces), its folders (`dirs`: the z6 tile's and its buildings') kept
 // on this Mac's disk between runs: its preparing (`PREPARE`: the piece copied, the buildings
 // staged, `prepare_folder`; what's kept, its `Report`), then each program of its tail run here
-// (`tail_piece`). Each piece kept with its folders' digest (crate::resume_log::Pieces::folder_piece):
+// (`tail_piece`). Each piece kept with its folders' digest (jobrt::resume_log::Pieces::folder_piece):
 // a run resumed takes them only when its folders are as the last piece left them
 // (`Pieces::folders_as_kept`).
 
 /// The piece of a z6 tile's preparing.
-pub const PREPARE: crate::resume_log::BlockId = (6, 0, 0);
+pub const PREPARE: jobrt::resume_log::BlockId = (6, 0, 0);
 
 /// The piece of its tail's program `i` (its place in `tail`).
-pub fn tail_piece(i: usize) -> crate::resume_log::BlockId {
+pub fn tail_piece(i: usize) -> jobrt::resume_log::BlockId {
     (6, 1, i as u32)
 }
 
@@ -879,7 +879,7 @@ pub fn run_tail_kept(
     dir: &Path,
     dirs: &[&Path],
     tools: &Tools,
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
 ) -> Result<()> {
     for (i, r) in runs.iter().enumerate() {
         pieces.folder_piece(tail_piece(at + i), dirs, || {
@@ -893,7 +893,7 @@ pub fn run_tail_kept(
 /// asks).
 pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
     let log = dir.join("steps.log");
-    let scache = crate::scache::unit_dir(dir);
+    let scache = mapview::scache::unit_dir(dir);
     let store = tools.sources.as_ref().filter(|_| !tools.stores_read_only).map(|s| s.join("canopy"));
     // (A place this worker hasn't, or that no worker here fills, `{net}`: its variable left out.)
     let fill = |v: &str| -> Option<String> {
@@ -939,31 +939,31 @@ mod tests {
     /// z6 tile's measures, as its tail's steps run here (task #235).
     #[test]
     fn a_spawned_steps_reads_land_on_its_unit() {
-        let _l = crate::costin::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _l = buildstore::costin::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         let mut c = store::spawn::command("sh");
         c.arg("-c").arg(counts_sh(5_000_000_000, 7));
-        crate::costin::begin();
-        crate::costin::set("km2", 1);
+        buildstore::costin::begin();
+        buildstore::costin::set("km2", 1);
         run(c, "a step", &d.path().join("step.log")).unwrap();
-        let m = crate::costin::take();
+        let m = buildstore::costin::take();
         assert!(m["bytes"] >= 5_000_000_000 && m["tiffs"] >= 7, "{m:?}");
         assert!(!d.path().join("step.log.counts").exists());
         // (A tail's, after its z6 tile's measures were taken.)
         let mut c = store::spawn::command("sh");
         c.arg("-c").arg(counts_sh(300, 2));
-        let (r, t) = crate::costin::measured(|| run(c, "a tail step", &d.path().join("tail.log")));
+        let (r, t) = buildstore::costin::measured(|| run(c, "a tail step", &d.path().join("tail.log")));
         r.unwrap();
         assert!(t.bytes >= 300 && t.tiffs >= 2);
         // (Its programs' CPU as each is waited for: a busy one's counted, and added to the z6 tile's.)
         let mut c = store::spawn::command("sh");
         c.arg("-c").arg("i=0; while [ $i -lt 200000 ]; do i=$((i+1)); done");
-        let (r, t) = crate::costin::measured(|| run(c, "a busy tail step", &d.path().join("busy.log")));
+        let (r, t) = buildstore::costin::measured(|| run(c, "a busy tail step", &d.path().join("busy.log")));
         r.unwrap();
         let ms = t.cpu_ms.unwrap();
         assert!(ms >= 50, "{t:?}");
         let mut m = BTreeMap::from([("cpu_ms".to_string(), 7u64)]);
-        crate::costin::add_to(&mut m, t);
+        buildstore::costin::add_to(&mut m, t);
         assert_eq!(m["cpu_ms"], 7 + ms);
     }
 
@@ -982,7 +982,7 @@ mod tests {
     /// folder as one never paused; a folder changed since its last piece isn't taken.
     #[test]
     fn a_z6_tile_paused_at_every_safe_point_resumes_to_the_same_folder() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         let d = tempfile::tempdir().unwrap();
         let bin = d.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
@@ -1035,7 +1035,7 @@ mod tests {
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(()) => break,
@@ -1093,7 +1093,7 @@ mod tests {
 
     #[test]
     fn stage_times_kept_under_old_names_are_read_as_the_new() {
-        // (Kept before task #844: its phases' names then, crate::phase_names.)
+        // (Kept before task #844: its phases' names then, jobrt::phase_names.)
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("unit-stages.json");
         std::fs::write(&file, r#"{"elevations (elev)": 300, "DEM samples kept": 12, "scenic canopy": 50}"#).unwrap();
@@ -1121,9 +1121,9 @@ mod tests {
     fn a_step_whose_server_gave_no_answer_is_told_from_a_failed_one() {
         let d = tempfile::tempdir().unwrap();
         let log = d.path().join("steps.log");
-        // (Its program's own status for a server that gave no answer: crate::fetch::exit_with.)
+        // (Its program's own status for a server that gave no answer: buildstore::fetch::exit_with.)
         let mut c = store::spawn::command("sh");
-        c.args(["-c", &format!("echo no answer; exit {}", crate::fetch::UNREACHABLE_EXIT)]);
+        c.args(["-c", &format!("echo no answer; exit {}", buildstore::fetch::UNREACHABLE_EXIT)]);
         let e = run(c, "sampling the elevations (elev)", &log).unwrap_err();
         assert!(e.is::<SourceDown>() && source_down(&e), "{e:#}");
         // (Wrapped in context, too.)

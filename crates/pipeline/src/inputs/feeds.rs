@@ -412,8 +412,8 @@ impl Checks for Feeds {
         manifest: &BTreeMap<String, String>,
     ) -> Result<Option<Box<dyn Checks>>> {
         // (What can't be read now doesn't fail the check: it goes on without those warnings.)
-        let territories = super::languages::outlines_of(manifest).and_then(|o| match crate::outlines::Outlines::open(&root.join(o)) {
-            Ok(outlines) => Some(outlines.recs.iter().filter(|r| r.flags & crate::outlines::flag::ISO1 != 0).map(|r| outlines.string(r.iso).to_string()).collect()),
+        let territories = super::languages::outlines_of(manifest).and_then(|o| match buildstore::outlines::Outlines::open(&root.join(o)) {
+            Ok(outlines) => Some(outlines.recs.iter().filter(|r| r.flags & buildstore::outlines::flag::ISO1 != 0).map(|r| outlines.string(r.iso).to_string()).collect()),
             Err(e) => {
                 eprintln!("inputs: {UNIT}: the pass's outlines, {o}, can't be read ({e:#}): checked without the codes they have");
                 None

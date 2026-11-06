@@ -13,7 +13,7 @@
 
 use super::work::{self, flag, osm, Block, Meta};
 use super::{e7, z14_key};
-use crate::legacy::TileId;
+use codecs::legacy::TileId;
 use anyhow::{bail, ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
@@ -735,9 +735,9 @@ pub fn read(
     t: TileId,
     scratch: &std::path::Path,
     keep: bool,
-) -> Result<(Prepped, crate::resume_log::Pieces)> {
+) -> Result<(Prepped, jobrt::resume_log::Pieces)> {
     use super::sources::{release_dir, Sources, PART_MARGIN_DEG};
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     ensure!(t.z == 6, "bldprep takes z6 tiles ({} isn't one)", t.slash());
     let p = phase("reading the file list and footers");
     let src = Sources::read(root, release, ghsl)?
@@ -795,13 +795,13 @@ pub fn read(
     }
     // (Each chunk of row groups read a piece kept, task #889: a resumed run reads only the chunks
     // its last didn't keep, and takes them all in the same order.)
-    let id = crate::resume_log::job_id(
+    let id = jobrt::resume_log::job_id(
         "bldprep",
         &super::BLDPREP_V.to_string(),
         &t.slash(),
         &[release, ghsl, &serde_json::to_string(&files)?],
     );
-    let mut pieces = crate::resume_log::Pieces::open(scratch, (6, t.x, t.y), "bldprep", &id, keep);
+    let mut pieces = jobrt::resume_log::Pieces::open(scratch, (6, t.x, t.y), "bldprep", &id, keep);
     let chunks: Vec<&[_]> = jobs.chunks(JOBS).collect();
     let rows = take_chunks(&mut prepped, t, &mut pieces, chunks.len(), &|c| {
         chunks[c]
@@ -824,7 +824,7 @@ pub fn read(
 fn take_chunks(
     prepped: &mut Prepped,
     t: TileId,
-    pieces: &mut crate::resume_log::Pieces,
+    pieces: &mut jobrt::resume_log::Pieces,
     n: usize,
     read: &(dyn Fn(usize) -> Result<Vec<Option<Frame>>> + Sync),
 ) -> Result<u64> {
@@ -842,7 +842,7 @@ fn take_chunks(
 
 /// A chunk's frames (None: a row group with nothing for T) as a piece's payload.
 fn frames_piece(fs: &[Option<Frame>]) -> Vec<u8> {
-    let mut p = crate::resume_log::Put::default();
+    let mut p = jobrt::resume_log::Put::default();
     p.u64(fs.len() as u64);
     for f in fs {
         let Some(f) = f else {
@@ -864,7 +864,7 @@ fn frames_piece(fs: &[Option<Frame>]) -> Vec<u8> {
 }
 
 fn frames_unpiece(p: &[u8]) -> Result<Vec<Option<Frame>>> {
-    let mut g = crate::resume_log::Get(p);
+    let mut g = jobrt::resume_log::Get(p);
     let mut v = Vec::new();
     for _ in 0..g.count(1)? {
         if g.u8()? == 0 {
@@ -887,10 +887,10 @@ fn frames_unpiece(p: &[u8]) -> Result<Vec<Option<Frame>>> {
 /// folder, crate::inputs::sources), the normalized file written and uploaded as `work/bld/6-x-y`
 /// (or, when T has no building, the one it had dropped). Its counts.
 pub fn run(out: &mut buildstore::out::Out, t: TileId) -> Result<Stats> {
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     let (release, ghsl, _) = super::sources::declared(&crate::inputs::sources::read(out.root(), &out.manifest)?)?;
     let t0 = std::time::Instant::now();
-    let (p, pieces) = read(out.root(), &release, &ghsl, t, &out.scratch, crate::resume_log::on())
+    let (p, pieces) = read(out.root(), &release, &ghsl, t, &out.scratch, jobrt::resume_log::on())
         .with_context(|| format!("bldprep {}", t.slash()))?;
     eprintln!("bldprep {}: read in {:.0?}: {:?}", t.slash(), t0.elapsed(), p.stats);
     let logical = super::work_logical(t.x, t.y);
@@ -1054,7 +1054,7 @@ pub(crate) mod tests {
     /// (each chunk kept), resumed each time, make the same normalized file as a read never paused.
     #[test]
     fn row_groups_paused_at_every_safe_point_resume_to_the_same_bytes() {
-        use crate::resume_log::{Pieces, STOP_AFTER};
+        use jobrt::resume_log::{Pieces, STOP_AFTER};
         let t = TileId { z: 6, x: 32, y: 22 };
         let chunks: Vec<Vec<Option<Frame>>> = (0..4)
             .map(|c| {
@@ -1096,7 +1096,7 @@ pub(crate) mod tests {
             STOP_AFTER.set(None);
             match r {
                 Err(e) => {
-                    assert!(crate::control::is_paused(&e), "{e:#}");
+                    assert!(jobrt::control::is_paused(&e), "{e:#}");
                     stops += 1;
                 }
                 Ok(b) => break b,

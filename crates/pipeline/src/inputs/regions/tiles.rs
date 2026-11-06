@@ -632,7 +632,7 @@ struct Made {
 }
 
 /// An area by cell, as a piece keeps it (super::kept).
-fn put_tarea(p: &mut crate::resume_log::Put, t: &TArea) {
+fn put_tarea(p: &mut jobrt::resume_log::Put, t: &TArea) {
     p.u64(t.cells.len() as u64);
     for (c, a) in &t.cells {
         p.u64(c.0 as u64);
@@ -641,7 +641,7 @@ fn put_tarea(p: &mut crate::resume_log::Put, t: &TArea) {
     }
 }
 
-fn get_tarea(g: &mut crate::resume_log::Get) -> anyhow::Result<TArea> {
+fn get_tarea(g: &mut jobrt::resume_log::Get) -> anyhow::Result<TArea> {
     let mut cells = BTreeMap::new();
     for _ in 0..g.count(24)? {
         let c = (g.u64()? as i64, g.u64()? as i64);
@@ -650,14 +650,14 @@ fn get_tarea(g: &mut crate::resume_log::Get) -> anyhow::Result<TArea> {
     Ok(TArea { cells })
 }
 
-fn put_made(p: &mut crate::resume_log::Put, m: &Made) {
+fn put_made(p: &mut jobrt::resume_log::Put, m: &Made) {
     put_tarea(p, &m.land);
     put_tarea(p, &m.lakes);
     put_tarea(p, &m.water);
     p.bytes(m.country.as_bytes());
 }
 
-fn get_made(g: &mut crate::resume_log::Get) -> anyhow::Result<Made> {
+fn get_made(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Made> {
     Ok(Made {
         land: get_tarea(g)?,
         lakes: get_tarea(g)?,
@@ -1115,7 +1115,7 @@ fn trace(step: &str) {
         eprintln!(
             "regions: {step} at {:.0} s, footprint {} MB; buffers {}; wide buffers {}; nearest-coast splits {}",
             T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64(),
-            crate::sys::footprint().unwrap_or(0) / 1_000_000,
+            jobrt::sys::footprint().unwrap_or(0) / 1_000_000,
             f(&BUFFERS),
             f(&WIDE_BUFFERS),
             f(&NEARESTS)
@@ -1180,7 +1180,7 @@ impl Drop for Timed {
         self.0 .0.fetch_add(1, Relaxed);
         self.0 .1.fetch_add(self.1.elapsed().as_millis() as u64, Relaxed);
         if std::env::var_os("SCENIC_REGIONS_TRACE").is_some() {
-            self.0 .2.fetch_max(crate::sys::footprint().unwrap_or(0) / 1_000_000, Relaxed);
+            self.0 .2.fetch_max(jobrt::sys::footprint().unwrap_or(0) / 1_000_000, Relaxed);
         }
     }
 }
@@ -2253,13 +2253,13 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, data: &super::data::Datasets
     }
     let country = res.geometry.shapes.first().map(|s| s.country.clone()).unwrap_or_default();
     let rings32 = |t: &TArea| -> Vec<Vec<[i32; 2]>> { t.rings().iter().map(|r| super::shapes::to_i32(r)).collect() };
-    let tol = crate::coverage::draw_tolerance_m(&rings32(t));
+    let tol = buildstore::coverage::draw_tolerance_m(&rings32(t));
     let polys: Vec<Vec<Vec<[f64; 2]>>> = dissolved(t)
         .polys
         .iter()
         .map(|p| {
             p.iter()
-                .map(|r| crate::coverage::ring_degrees(&crate::outlines::simplify(&super::shapes::to_i32(r), tol)))
+                .map(|r| buildstore::coverage::ring_degrees(&buildstore::outlines::simplify(&super::shapes::to_i32(r), tol)))
                 .collect()
         })
         .collect();

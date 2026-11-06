@@ -1,7 +1,7 @@
 //! The regions' check's resolutions kept as pieces (task #897; docs/pool.md §7.2): each region
 //! without water resolved (`resolve::resolve_one`, by its memo key), and each region with water's
 //! land and water (`tiles`, by the folder's whole key), kept as it's made in the job's scratch
-//! (crate::resume_log::Pieces), each a safe point. A check resumed after a pause takes what its
+//! (jobrt::resume_log::Pieces), each a safe point. A check resumed after a pause takes what its
 //! last kept, by the same keys (a digest of everything a resolution reads), so it resolves to the
 //! same geometry and holds the same files.
 //!
@@ -11,7 +11,7 @@
 
 use super::geom::Area;
 use super::resolve::{Problem, Resolved};
-use crate::resume_log::{BlockId, Get, Pieces, Put};
+use jobrt::resume_log::{BlockId, Get, Pieces, Put};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,7 +28,7 @@ pub struct Kept {
     pieces: Mutex<Option<Pieces>>,
     made: Mutex<HashMap<BlockId, Arc<Vec<u8>>>>,
     stop: Mutex<Option<anyhow::Error>>,
-    /// Tests: crate::resume_log::STOP_AFTER as it was at `open`, counted here (the pieces are kept
+    /// Tests: jobrt::resume_log::STOP_AFTER as it was at `open`, counted here (the pieces are kept
     /// on the resolution's own threads, where the test's thread-local isn't).
     #[cfg(test)]
     stop_after: Mutex<Option<usize>>,
@@ -40,7 +40,7 @@ impl Kept {
         *self.pieces.lock().unwrap() = Some(Pieces::open(scratch, (0, 0, 0), "inputs", id, keep));
         #[cfg(test)]
         {
-            *self.stop_after.lock().unwrap() = crate::resume_log::STOP_AFTER.take();
+            *self.stop_after.lock().unwrap() = jobrt::resume_log::STOP_AFTER.take();
         }
     }
 
@@ -98,7 +98,7 @@ impl Kept {
                 match *n {
                     Some(k) if k <= 1 => {
                         *n = None;
-                        self.stop.lock().unwrap().get_or_insert(anyhow::Error::new(crate::control::Paused));
+                        self.stop.lock().unwrap().get_or_insert(anyhow::Error::new(jobrt::control::Paused));
                     }
                     Some(k) => *n = Some(k - 1),
                     None => {}

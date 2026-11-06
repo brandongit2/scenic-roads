@@ -3,7 +3,7 @@
 
 use super::*;
 use buildstore::recipes::Recipe;
-use crate::coverage::Coverage;
+use buildstore::coverage::Coverage;
 use crate::inputs::gate::{decide, Given};
 use crate::inputs::{FileEntry, Index, Listing};
 use std::collections::BTreeMap;
@@ -20,7 +20,7 @@ pub(crate) fn outlines(dir: &Path, rels: &[(u64, &str, Vec<Vec<[f64; 2]>>)]) -> 
     let geo = dir.join("o.geojsonseq");
     std::fs::write(&geo, text).unwrap();
     let out = dir.join("outlines.sect");
-    crate::outlines::assemble_geojsonseq(&geo, &out).unwrap();
+    buildstore::outlines::assemble_geojsonseq(&geo, &out).unwrap();
     out
 }
 
@@ -97,10 +97,10 @@ fn a_plain_region_is_today_s_coverage_exactly() {
             .iter()
             .map(|id| {
                 let rec = f.o.by_id(*id).unwrap();
-                let mut s = crate::coverage::Shape::new(
+                let mut s = buildstore::coverage::Shape::new(
                     format!("a: osm:{id}"),
                     f.o.rings(rec).unwrap(),
-                    crate::coverage::OSM_BUFFER_M,
+                    buildstore::coverage::OSM_BUFFER_M,
                 );
                 s.country = f.o.country_code(rec);
                 s

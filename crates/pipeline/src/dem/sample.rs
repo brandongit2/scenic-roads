@@ -2,7 +2,7 @@
 //! nodata marked, and a bilinear sample in 32-bit floats in numpy's order of operations, edges
 //! clamping to the block's, falling back to the nearest pixel where a neighbour has no data.
 
-use crate::geotiff::Tiff;
+use buildstore::geotiff::Tiff;
 use anyhow::Result;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
