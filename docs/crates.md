@@ -905,7 +905,8 @@ commit; re-exports at the old paths as before.
       (§5's figures come with 6f4). Not moved, as they are the plan's: `Step` and `Read` (a row's
       reads and idents are functions over the plan's `KeyCtx`), `Along` (its data is the
       forecast's input; its filling, `add` and `add_built`, reads the table and `KeyCtx`), `Kind`
-      and `Scope`. What the runtime asks of them (a step's kind a fetch: needs' `Io`, sched's
+      and `Scope`. The second review made progress's `grouped` private: nothing else calls it.
+      What the runtime asks of them (a step's kind a fetch: needs' `Io`, sched's
       downloads; the first read naming a target: needs' `source_secs`; a row's `cost_v`; a
       target's reads along its ways) are `Plan`'s questions (6f2).
    2. **6f2, `Plan`** (planned): the trait, in the runtime, implemented by the plan; `&'static dyn
@@ -917,9 +918,19 @@ commit; re-exports at the old paths as before.
       composition is the plan's: it moves to build.rs first, as one function over what the
       planner knows (the pass, the manifest, the keys, its failure counts and holds) answering the
       worldwide jobs and the checklist's lines from one place, so `Plan` carries that, `plan_with`,
-      the regions' steps and the table's queries rather than ~60 items. Moving the planner up with
-      the plan instead was weighed and is the larger cut: its pass names ~150 of the runtime's
-      items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
+      the regions' steps and the table's queries rather than ~60 items. That function
+      (`build::pass_work`, planned) takes as arguments what the planner reads from the root today
+      (lakefill's planned source, the tiles' release, the failure counts, names-to-do's `since`
+      and `idle`) and answers each worldwide step's work and, apart, its hold or wait: the jobs
+      leave a held work out, the checklist still counts it left, and keeps its own checks of an
+      output missing from the manifest (the pass's sets, outlines, hikes, summits, the tiles'
+      index), as today. It is not a pure move, so it is checked on a frozen plan (planned, as
+      docs/incremental-planning.md §1.2): an ignored test, as `bench_plan_on_a_real_root`, runs a
+      planner's `region_jobs` and `checklist` on a private copy of the lead's records (everything
+      else symlinked read-only; no coordinator; the clock and failure counts fixed), before and
+      after, and compares the jobs, waits, holds and lines byte for byte. No such harness exists
+      yet: the bench runs `build::plan` alone. Moving the planner up with the plan instead was
+      weighed and is the larger cut: its pass names ~150 of the runtime's items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
       API. The family items above go through `Plan` too: `input_digests` and `key_inputs` (they
       name heritage and bld) and `terrain_peak` move to the plan, called through it, as are the
       kinds, room's hints of a step's targets and publish's watches. `timetables::View` went
