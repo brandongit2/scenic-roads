@@ -2368,14 +2368,21 @@ mod tests {
     }
 
     /// Task #975: a z6 tile's terrain-hi and its z10 tiles' terrain-deep wait for that z6 tile's
-    /// pyramids-fill (they read its tiles from the store, asking GSI for none), not another's.
+    /// pyramids-fill (they read its tiles from the store, asking GSI for none), not another's; a
+    /// terrain-hi through its terrain-deep too.
     #[test]
     fn the_terrain_waits_for_its_own_pyramids_fill() {
         use super::{readiness, Left, Ready};
         let mut left = Left::default();
         left.set("pyramids-fill", ["6/56/24".to_string()]);
         assert_eq!(readiness("terrain-hi", "6/56/25", &left), Ready::Yes, "another z6 tile's fill");
-        assert_eq!(readiness("terrain-hi", "6/56/24", &left), Ready::Waits(vec![("pyramids-fill", "6/56/24".into())]));
+        // (And for its z10 tiles' terrain-deep, which wait for the same fill.)
+        let Ready::Waits(w) = readiness("terrain-hi", "6/56/24", &left) else { panic!("it waits") };
+        assert_eq!(w[0], ("pyramids-fill", "6/56/24".into()));
+        assert!(
+            w[1..].iter().all(|(s, t)| *s == "terrain-deep" && t.starts_with("10/")) && w.len() == 1 + 256,
+            "{w:?}"
+        );
         assert_eq!(
             readiness("terrain-deep", "10/901/399", &left),
             Ready::Waits(vec![("pyramids-fill", "6/56/24".into())])
