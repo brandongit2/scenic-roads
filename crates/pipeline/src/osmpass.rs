@@ -668,12 +668,12 @@ impl UnitLinks {
     }
 }
 
-/// Run `extract` (of the programs in `bin`: crate::cli::program) on a extract and work out its z6
+/// Run `extract` (of the programs in `bin`: jobrt::sys::program) on a extract and work out its z6
 /// tile's chaining inputs.
 /// `spacing`: the declared datasets' spacing file (crate::dem::spacing), as the z6 tiles' extract has it.
 pub fn unit_links(bin: &Path, spacing: &Path, piece: &Path, unit: TileId, work: &Path) -> Result<UnitLinks> {
     std::fs::create_dir_all(work)?;
-    let mut c = crate::cli::program(bin, "extract");
+    let mut c = jobrt::sys::program(bin, "extract");
     c.arg(work).arg(spacing).arg(piece);
     c.stderr(std::process::Stdio::null());
     run(c, &format!("extract {}", piece.display()))?;

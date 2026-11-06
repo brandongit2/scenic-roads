@@ -1013,6 +1013,38 @@ pub fn osmium() -> Command {
     c
 }
 
+/// The programs folded into `scenic-build` (task #917): run as `scenic-build tool <name> …`, each
+/// with its own command line (pipeline::cli::tool); jobs and tasks name them as programs
+/// (`program`), so a task's spec (`unit::Run::prog`) reads the same to an app from before the fold,
+/// which has them as binaries. (Task #916 step 6d: from pipeline::cli, which re-exports both.)
+pub const TOOLS: [&str; 13] = [
+    "scenic-metrics",
+    "extract",
+    "elev",
+    "tile",
+    "areaflags",
+    "landcover",
+    "railfreq",
+    "trees",
+    "bldtile",
+    "terrainsub",
+    "lakefill",
+    "coastcheck",
+    "scenic-polar",
+];
+
+/// The command running program `prog` from the programs' folder `bin` (an app version's): a tool
+/// (`TOOLS`) through `bin`'s scenic-build, any other by its own file there. Its arguments follow.
+pub fn program(bin: &std::path::Path, prog: &str) -> std::process::Command {
+    if TOOLS.contains(&prog) {
+        let mut c = store::spawn::command(bin.join("scenic-build"));
+        c.args(["tool", prog]);
+        c
+    } else {
+        store::spawn::command(bin.join(prog))
+    }
+}
+
 /// The available memory's reckoning, on the three Macs' pages as read at 14:39 on 4 Nov (task #945;
 /// `vm_stat`, the pressure normal on each), whatever Mac the test runs on.
 #[cfg(test)]
