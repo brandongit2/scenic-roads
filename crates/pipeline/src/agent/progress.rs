@@ -47,7 +47,7 @@ fn is_zero(n: &usize) -> bool {
 }
 
 /// "12,345": a count as every surface says it (docs/pipeline.md §2).
-pub fn grouped(n: usize) -> String {
+fn grouped(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
