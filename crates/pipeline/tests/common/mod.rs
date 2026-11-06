@@ -107,13 +107,14 @@ pub fn block_end(code: &[String], at: usize) -> usize {
 }
 
 /// The lines inside `#[cfg(test)]` items (a test module, a test helper), each attribute's item to
-/// its block's end.
+/// its block's end; `#[cfg(any(test, …))]` too: a crate's test helpers other crates' tests reach
+/// by its `testkit` feature (docs/crates.md: helpers only, never behaviour).
 pub fn test_lines(code: &[String]) -> Vec<bool> {
     let mut mask = vec![false; code.len()];
     let mut k = 0;
     while k < code.len() {
         let t = code[k].trim();
-        if t.starts_with("#[cfg(test)]") || t.starts_with("#[cfg(all(test") {
+        if t.starts_with("#[cfg(test)]") || t.starts_with("#[cfg(all(test") || t.starts_with("#[cfg(any(test,") {
             let end = block_end(code, k + 1);
             for m in mask.iter_mut().take(end + 1).skip(k) {
                 *m = true;
