@@ -15,8 +15,14 @@
 # The tree: the source dir's tracked files and its untracked, not-ignored ones (as on disk,
 # uncommitted edits and symlinks included) are copied by rsync into the test Mac's
 # ~/scenic-check/<key>/src; any file or symlink there not in that list, and then any empty folder,
-# is deleted, so the test Mac builds exactly what's here. A tree holding ignored test data (data/build,
-# which tests read when present and skip without) runs here, where that data is.
+# is deleted, so the test Mac builds exactly what's here. Compared by content (rsync --checksum),
+# times not kept (#983): a file sent is dated when it arrives there, after every build of its key,
+# so cargo (which takes a source older than its last build's output for built) rebuilds it; a file
+# whose content is there already is left as it is, its crate not rebuilt. (Kept times let a file
+# edited during a run arrive at the next dated before that run's build, and the next run test the
+# old binary.) A key's copy without the `copy` stamp of this scheme has every file dated now, once.
+# A tree holding ignored test data (data/build, which tests read when present and skip without)
+# runs here, where that data is.
 # The build folder, ~/scenic-check/<key>/target, is kept between runs (only what changed rebuilds),
 # set by ~/scenic-check/<key>/.cargo/config.toml, and rustc goes through the test Mac's sccache when it
 # has one (third-party crates shared between keys).
@@ -70,11 +76,11 @@ remote_lock() {  # <key> <owner>: 0 taken, 1 busy (prints its owner)
   local age=$(( $(date +%s) - $(stat -f %m $d/.busy 2>/dev/null || date +%s) ))
   # Older than 6 h, or its owner never written (10 s on): taken over (moved aside, checked unchanged).
   if (( age > stale_after )) || [[ -z $held && age -gt 10 ]]; then
-    remote_unlock $1 "$held" quiet && remote_lock $1 "$owner"
+    remote_unlock $1 "$held" && remote_lock $1 "$owner"
   fi
   print -r -- "${held:-?}"; exit 1
 }
-remote_unlock() {  # <key> <owner> [quiet]: removes the lock only while it is still <owner>'s
+remote_unlock() {  # <key> <owner>: removes the lock only while it is still <owner>'s
   local d=~/scenic-check/$1 aside=~/scenic-check/$1/.busy.aside-$$
   mv $d/.busy $aside 2>/dev/null || return 1
   if [[ $(cat $aside/owner 2>/dev/null) == "$2" ]]; then rm -rf $aside; return 0; fi
@@ -143,6 +149,16 @@ make_room() {  # <base> <this key> <origin> <live keys>
   return 0
 }
 
+# A key's copy not stamped as dated by arrival (made with times kept) may hold a file dated before
+# a build that didn't take it in: every file dated now, once, then stamped.
+copy_scheme="arrival-dated 1"
+arrival_dates() {  # <key folder>
+  [[ $(cat $1/copy 2>/dev/null) == "$copy_scheme" ]] && return 0
+  find $1/src -type f -exec touch -c {} + 2>/dev/null
+  print -r -- "$copy_scheme" > $1/copy
+  print "remote-tests: the test Mac's copy wasn't dated by arrival: every file dated now, its crates built again"
+}
+
 remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   local key=$1 owner=$2 cmd=$3 origin=$4 live=$5 base=~/scenic-check slots=3
   local dir=$base/$key slot= waited=0 s held pid start mine
@@ -158,6 +174,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   comm -23 <(find . \( -type f -o -type l \) | sed 's|^\./||' | LC_ALL=C sort) \
            <(tr '\0' '\n' < $dir/files.list | LC_ALL=C sort) | while IFS= read -r f; do rm -f -- "$f"; done
   find . -mindepth 1 -type d -empty -delete 2>/dev/null
+  arrival_dates $dir
   mkdir -p $base/.slots
   mine="$$ $(ps -o lstart= -p $$) $key"
   while true; do
@@ -261,6 +278,11 @@ remote_drop() {  # on the test Mac: <key>
 
 # --- This side ------------------------------------------------------------------------------------
 
+send_tree() {  # <source dir> <file list (NUL-separated)> <destination>: the copy (#983)
+  # By content, times not kept (-a less -t, -o and -g): a file sent is dated when it arrives.
+  rsync -rlpD --checksum --from0 --files-from=$2 $1/ $3
+}
+
 run_local() {  # <source dir> <command>
   ( cd $1 && eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
     ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null
@@ -337,7 +359,7 @@ local_main() {  # <key> <source dir> <command>
   fi
   local t0=$SECONDS
   bounded 60 ssh -o ConnectTimeout=10 -o BatchMode=yes $host "mkdir -p ~/scenic-check/$key/src" &&
-  rsync -a --from0 --files-from=$tmp/files.list $src/ ${host}:scenic-check/$key/src/ &&
+  send_tree $src $tmp/files.list ${host}:scenic-check/$key/src/ &&
   rsync -a $tmp/files.list ${host}:scenic-check/$key/files.list
   rc=$?
   if (( rc )); then

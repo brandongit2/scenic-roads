@@ -1,7 +1,8 @@
 #!/bin/zsh
-# Tests of tools/app/remote-tests.sh's disk room on the test Mac (make_room, #912), in a scratch
-# folder: a fake ~/scenic-check, a fake agent folder with its room target, a fake free space (the
-# fake disk's free space rises by what is removed), locks held, stale and free. Run by
+# Tests of tools/app/remote-tests.sh, in a scratch folder: the copy (send_tree, #983) builds exactly
+# the tree sent, a toy crate built by cargo before and after an edit dated back; and the disk room on
+# the test Mac (make_room, #912): a fake ~/scenic-check, a fake agent folder with its room target, a
+# fake free space (the fake disk's free space rises by what is removed), locks held, stale and free. Run by
 # tools/dev/check.sh when tools/app changes:
 #   zsh tools/app/test/remote-tests.zsh
 # Prints PASS or FAIL per test; exits non-zero when one failed.
@@ -11,6 +12,46 @@ trap 'rm -rf $tmp' EXIT
 failed=0
 ok() { print "PASS  $1" }
 no() { print "FAIL  $1: $2"; failed=1 }
+
+# The copy: an edit made during a run (dated before that run's build, as rsync -a kept it) is built
+# by the next; a file unchanged isn't rewritten (its crate not rebuilt).
+toy() {  # <dir> <version>: a one-file crate printing <version>, its source dated back an hour
+  mkdir -p $1/src
+  print -r -- $'[package]\nname = "toy"\nversion = "0.1.0"\nedition = "2021"\n[workspace]' > $1/Cargo.toml
+  print -r -- "fn main() { println!(\"$2\"); }" > $1/src/main.rs
+  touch -t $(date -v-1H +%Y%m%d%H%M.%S) $1/Cargo.toml $1/src/main.rs
+}
+built() {  # <copy>: what its build prints
+  ( cd $1 && CARGO_TARGET_DIR=$1/../target cargo build -q --offline 2>&1 && $1/../target/debug/toy )
+}
+copy_run() {  # <copier> <key folder>: the toy sent, built, edited (same size, dated back), sent, built
+  local src=$2/../tree-${2:t}
+  rm -rf $src $2; mkdir -p $2/src; toy $src v1
+  print -rn -- $'Cargo.toml\0src/main.rs\0' > $2/files.list
+  $1 $src $2/files.list $2/src/ && arrival_dates $2 >/dev/null && built $2/src >/dev/null || return 1
+  toy $src v2  # (the edit: dated an hour back, before the build above)
+  stat -f %m $2/src/Cargo.toml > $2/cargo-toml-date
+  $1 $src $2/files.list $2/src/ && built $2/src
+}
+kept_times() { rsync -a --from0 --files-from=$2 $1/ $3 }  # (times kept, for contrast)
+if command -v cargo >/dev/null; then
+  out=$(copy_run send_tree $tmp/k1)
+  [[ $out == v2 ]] && ok "an edit dated back is built" || no "an edit dated back is built" "ran: $out"
+  [[ $(stat -f %m $tmp/k1/src/Cargo.toml) == $(<$tmp/k1/cargo-toml-date) ]] \
+    && ok "an unchanged file not rewritten" || no "an unchanged file not rewritten" "Cargo.toml re-dated"
+  # (The case is real: kept times built the old source.)
+  out=$(copy_run kept_times $tmp/k2)
+  [[ $out == v1 ]] && ok "kept times would test the stale build" || no "kept times would test the stale build" "ran: $out"
+else no "an edit dated back is built" "no cargo on the PATH"; fi
+# A copy made with times kept (no stamp): every file dated now, once; a stamped one left alone.
+mkdir -p $tmp/k3/src; toy $tmp/k3/src v1; t0=$(date +%s)
+out=$(arrival_dates $tmp/k3)
+(( $(stat -f %m $tmp/k3/src/src/main.rs) >= t0 )) && [[ $(<$tmp/k3/copy) == "$copy_scheme" && -n $out ]] \
+  && ok "an old copy re-dated" || no "an old copy re-dated" "$(stat -f %m $tmp/k3/src/src/main.rs) < $t0: $out"
+touch -t 202601010000 $tmp/k3/src/src/main.rs
+out=$(arrival_dates $tmp/k3)
+[[ -z $out && $(stat -f %Sm -t %Y%m%d $tmp/k3/src/src/main.rs) == 20260101 ]] \
+  && ok "a stamped copy left as it is" || no "a stamped copy left as it is" "$out"
 
 base=$tmp/scenic-check
 agent_home=$tmp/agent
