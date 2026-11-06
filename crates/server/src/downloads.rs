@@ -68,9 +68,9 @@
 //!   the labels the place search reads there), and the basemap's zooms 0–10 (one piece, worldwide);
 //!   the terrain's and the grids' hi packs within 25 km (the viewshed's reach, so one from inside
 //!   works offline); the hi data of the z6 tiles within 50 km (what the lists of a view read around
-//!   it); and what the map reads of the World's files (pipeline::areafiles::files_of). Zoomed out
-//!   a region's lo packs and basemap reach past it, as far as their z3 tile and the world; its
-//!   place search, away from the NAS, keeps to its z6 tiles (Data::reach).
+//!   it); and what the map reads of the World's files (pipeline::areafiles::files_of). A region's
+//!   lo packs and basemap reach past it, as far as their z3 tile and the world: away from the NAS
+//!   what's read of them keeps to its z6 tiles (Data::reaches, set each round: `reach`).
 //! - **A region's terrain detail** (`detail_of`), an add-on to its download: the terrain's deep
 //!   packs (pipeline::terrain_deep, z13 and finer, by z10 tile) within 2 km of it, and their
 //!   shading's (the slope layer's deep packs: pipeline::slope_pack). They cover only parts of a
@@ -757,7 +757,7 @@ impl Downloads {
         let mut plan = make_plan(generation, version, asked, cur.n, at);
         // (A change moves the generation on: the plan is for the one it leaves.)
         let older = data.mirror.as_ref().map(|m| older(&plan, m)).unwrap_or_default();
-        if data.set_older(older) | data.set_reach(reach(&plan)) {
+        if data.set_older(older) {
             plan.generation = data.generation.load(Ordering::SeqCst);
         }
         let plan = Arc::new(plan);
@@ -766,22 +766,20 @@ impl Downloads {
     }
 }
 
-/// Where the downloads reach (Data::reach): everywhere with the World, else the z6 tiles of the
-/// regions downloaded (their basemap pieces').
-fn reach(plan: &Plan) -> Reach {
-    if plan.asked.world.is_some() {
+/// Where the downloads of `asked` reach (Data::reach): everywhere with the World, else the z6 tiles
+/// of the regions downloaded as `cat` records them (their basemap pieces', `area_part`). Only those
+/// regions' outlines are read: known at once, not after a plan of every region.
+fn reach(asked: &Asked, cat: &Catalogue) -> Reach {
+    if asked.world.is_some() {
         return Reach::World;
     }
-    let tiles = plan
-        .asked
-        .regions
+    let ids: HashSet<&str> = asked.regions.iter().map(|r| r.id.as_str()).collect();
+    let recorded = cat.coverage.get("regions").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let tiles = recorded
         .iter()
-        .filter_map(|r| plan.part(&Which::Region(r.id.clone()), r.pin.cat))
-        .flat_map(Part::pieces)
-        .filter_map(|(_, p)| match p {
-            Piece::Tile(x, y) => Some((x, y)),
-            Piece::Lo => None,
-        })
+        .filter(|r| r["id"].as_str().is_some_and(|id| ids.contains(id)))
+        .filter_map(|r| serde_json::from_value::<pipeline::coverage::DrawnRegion>(r.clone()).ok())
+        .flat_map(|r| tiles_meeting(&outer_rings(&r), NEAR_KM))
         .collect();
     Reach::Tiles(Arc::new(tiles))
 }
@@ -1090,7 +1088,9 @@ pub fn spawn_mirror(s: S, mut lead: Option<crate::maplog::MirrorLink>) {
     let Some(m) = s.data.mirror.clone() else { return };
     let spawned = std::thread::Builder::new().name("mirror".into()).spawn(move || loop {
         if !once(&s, &m, lead.as_mut()) {
-            s.downloads.wait(Duration::from_secs(60));
+            // (No map yet: its first round as soon as one comes, so where the downloads reach,
+            // what's read away from the NAS, is known at once: Data::reach.)
+            s.downloads.wait(Duration::from_secs(if s.data.catalogue().n == 0 { 1 } else { 60 }));
         }
     });
     if let Err(e) = spawned {
@@ -1106,6 +1106,7 @@ fn once(s: &crate::AppState, m: &Mirror, mut lead: Option<&mut crate::maplog::Mi
     if cat.n == 0 {
         return false;
     }
+    s.data.set_reach(reach(&s.downloads.asked(), &cat));
     let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
     s.downloads.keep_lists(&s.downloads.plan(&s.data), owners_known);
     // (A partial list read, its map gone: its owners are as unknown.)

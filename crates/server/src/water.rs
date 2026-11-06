@@ -163,6 +163,10 @@ fn stored(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Cov>> {
 
 /// Tile z/x/y's shares if they're stored (Ok(None): to be drawn).
 fn from_store(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
+    // (Away from the NAS, where the downloads don't reach: none, never a coarse ancestor's that does.)
+    if !s.data.reaches(z, x, y) {
+        anyhow::bail!("water {z}/{x}/{y}: not downloaded");
+    }
     let has_layer = s.data.catalogue().layers.contains_key(wt::LAYER);
     if has_layer && z <= wt::STORED_MAXZ {
         let from_packs = (|| -> Result<Option<Vec<u8>>> {
@@ -191,6 +195,9 @@ fn from_store(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
 /// has it, rather than none (a failed tile is asked for again and again, and fails the coastal
 /// shading's tiles around it).
 fn fallback(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
+    if !s.data.reaches(z, x, y) {
+        return Ok(None);
+    }
     for a in (0..=z.min(wt::STORED_MAXZ)).rev() {
         let d = z - a;
         let Some(c) = stored(s, a, x >> d, y >> d)? else { continue };

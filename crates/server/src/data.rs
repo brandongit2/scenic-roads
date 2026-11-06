@@ -6,8 +6,10 @@
 //! **Away from the NAS, the map is what's downloaded** (`Data::content_in`): while the NAS isn't
 //! read (not mounted, or its pool's breaker open), a file not on this Mac is none, as if the map had
 //! none there, so every feature answers from the downloads alone, at once, and is empty outside
-//! them. A share found mounted is read only once it has answered a probe (`find_nas`): a mount
-//! left from home never holds a request.
+//! them. What's downloaded that covers more than the downloads (a region's lo and root packs, the
+//! basemap's zooms 0–10, the landmarks' bundle) is read only where they reach (`Data::reaches`). A
+//! share found mounted is read only once it has answered a probe (`find_nas`): a mount left from
+//! home never holds a request.
 
 use crate::cache::Lru;
 use crate::views::{BaseView, Blob, HiView, RoadUnits, SectView, Src};
@@ -263,8 +265,10 @@ impl Data {
         }
     }
 
-    /// Where the downloads reach, away from the NAS: the place search keeps to it (crate::places).
-    /// None while the NAS is read, or with the World downloaded (zoomed out, everywhere).
+    /// Where the downloads reach, away from the NAS, as z6 tiles: what's read of the files that
+    /// reach past them (the lo and root packs, the basemap's zooms 0–10: `reaches`) and the place
+    /// search (crate::places) keep to it. None while the NAS is read, or with the World downloaded
+    /// (zoomed out, everywhere).
     pub fn reach(&self) -> Option<Arc<HashSet<(u32, u32)>>> {
         if self.online() {
             return None;
@@ -272,6 +276,27 @@ impl Data {
         match &*self.reach.read().unwrap() {
             Reach::World => None,
             Reach::Tiles(t) => Some(t.clone()),
+        }
+    }
+
+    /// Whether tile z/x/y is where the downloads reach (`reach`): from z6 its z6 tile is one of
+    /// theirs, coarser one of theirs is under it. A region's lo packs and the basemap's zooms 0–10
+    /// cover far more than the region: away from the NAS, read only over it.
+    pub fn reaches(&self, z: u8, x: u32, y: u32) -> bool {
+        let Some(r) = self.reach() else { return true };
+        match z.checked_sub(6) {
+            Some(d) => r.contains(&(x >> d, y >> d)),
+            None => r.iter().any(|&(a, b)| (a >> (6 - z), b >> (6 - z)) == (x, y)),
+        }
+    }
+
+    /// `reaches` for a tile key ("6/32/21"; the landmark points' and area details' files, one
+    /// bundle of every tile's for the landmarks: what's read of them keeps to the downloads).
+    fn reaches_key(&self, key: &str) -> bool {
+        let mut p = key.split('/').map(str::parse::<u32>);
+        match (p.next(), p.next(), p.next()) {
+            (Some(Ok(z)), Some(Ok(x)), Some(Ok(y))) => self.reaches(z as u8, x, y),
+            _ => true,
         }
     }
 
@@ -406,6 +431,9 @@ impl Data {
     /// name, with the tile when the file is the marks job's bundle of every tile (docs/formats.md
     /// "Bundles"; task #449). None when the catalogue has none there.
     pub fn markdata_id(&self, tile: &str) -> Option<String> {
+        if !self.reaches_key(tile) {
+            return None;
+        }
         let content = self.content(self.catalogue().markdata.get(tile)?)?;
         Some(if is_bundle(&content) { format!("{content}#{tile}") } else { content })
     }
@@ -413,6 +441,9 @@ impl Data {
     /// A z6 tile's landmark points ("6/32/21"), cached by `markdata_id`: its own file, or its member
     /// of the bundle (read in place: one range read of the bundle's index, kept as a pack's is).
     pub fn markdata(&self, tile: &str) -> Result<Option<Arc<crate::markview::MarkView>>> {
+        if !self.reaches_key(tile) {
+            return Ok(None);
+        }
         let cat = self.catalogue();
         let Some(l) = cat.markdata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
@@ -435,6 +466,9 @@ impl Data {
 
     /// A z3 tile's area details and parks ("3/x/y"), cached by content.
     pub fn ovdata(&self, tile: &str) -> Result<Option<Arc<crate::ovdata::OvView>>> {
+        if !self.reaches_key(tile) {
+            return Ok(None);
+        }
         let cat = self.catalogue();
         let Some(l) = cat.ovdata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
@@ -489,7 +523,8 @@ impl Data {
         Ok(Some(b))
     }
 
-    /// The pack holding a tile of `layer`, by logical name.
+    /// The pack holding a tile of `layer`, by logical name: none for a root or lo pack's tile where
+    /// the downloads don't reach (`reaches`), away from the NAS.
     pub(crate) fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         let cat = self.catalogue();
         let l = cat.layers.get(layer)?;
@@ -503,6 +538,7 @@ impl Data {
             };
         }
         match z {
+            0..=8 if !self.reaches(z, x, y) => None,
             0..=2 => l.root.clone(),
             3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
             // (The terrain's deep levels: its deep packs by z10 tile, pipeline::terrain_deep.)
@@ -640,8 +676,12 @@ impl Data {
     /// Where tile z/x/y of the basemap archive `archive` (a content name) is read from: the
     /// mirror's piece holding it when it's here (its path in the mirror, `.basemap/…`; a download
     /// behind the catalogue's piece of its older archive first, as `content`), else the archive itself
-    /// (on the NAS while it's read, or whole in the mirror); None away from the NAS with neither here.
+    /// (on the NAS while it's read, or whole in the mirror); None away from the NAS with neither here,
+    /// or where the downloads don't reach (`reaches`: the zooms 0–10 piece is worldwide).
     pub fn basemap_key(&self, archive: &str, z: u8, x: u32, y: u32) -> Option<String> {
+        if !self.reaches(z, x, y) {
+            return None;
+        }
         let older =
             store::naming::parse_content_name(archive).and_then(|c| self.older.read().unwrap().get(c.logical).cloned());
         let piece = self.mirror.as_ref().zip(store::pieces::Piece::of(z, x, y)).and_then(|(m, p)| {

@@ -77,9 +77,12 @@ fn deep_zoom(z: u8) -> bool {
 
 /// Terrain heights (m) of a tile, from its nearest stored ancestor when it isn't stored, or is a
 /// deep tile that can't be read now (`deep_zoom`): None outside the data (away from the NAS,
-/// outside the downloads: crate::data), an error when a tile of z12 or coarser couldn't be read (a
-/// read of the NAS that failed).
+/// where the downloads don't reach, Data::reaches: never made from a coarse ancestor that does), an
+/// error when a tile of z12 or coarser couldn't be read (a read of the NAS that failed).
 pub fn terrain_f32(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<f32>>> {
+    if !s.data.reaches(z, x, y) {
+        return Ok(None);
+    }
     let failed = std::cell::RefCell::new(None);
     let got = tile_with_fallback_by(
         &|z, x, y| match terrain_stored(s, z, x, y) {
@@ -329,9 +332,13 @@ fn not_shade(b: &[u8]) -> String {
 
 /// A shading tile's pixels made from its nearest stored ancestor in `layer` (up to eight levels
 /// up: the terrain's reach, roadcore::grid::tile_with_fallback_by), scaled up
-/// (roadcore::shade::upsampled), encoded as stored; None with none. A deep tile's ancestor that
-/// can't be read is passed over, as the terrain's.
+/// (roadcore::shade::upsampled), encoded as stored; None with none, or where the downloads don't
+/// reach away from the NAS (as the terrain's). A deep tile's ancestor that can't be read is passed
+/// over, as the terrain's.
 pub fn shade_from_ancestor(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+    if !s.data.reaches(z, x, y) {
+        return Ok(None);
+    }
     for dz in 1..=z.min(8) {
         let (pz, px, py) = (z - dz, x >> dz, y >> dz);
         let b = match s.data.tile(layer, pz, px, py) {

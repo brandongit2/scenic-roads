@@ -62,7 +62,8 @@ fn catalogue(root: &store::nasfs::NasRoot) -> Catalogue {
     put(root, &mut c, "layers/terrain/lo/3-3-2", 2_000);
     terrain.root = Some("layers/terrain/root".into());
     terrain.lo.insert("3/3/2".into(), "layers/terrain/lo/3-3-2".into());
-    let mut tiles: Vec<(u8, u32, u32, Vec<u8>)> = vec![(0, 0, 0, gz(b"world")), (10, 510, 340, gz(b"z10"))];
+    let mut tiles: Vec<(u8, u32, u32, Vec<u8>)> =
+        vec![(0, 0, 0, gz(b"world")), (10, 510, 340, gz(b"z10")), (10, 0, 340, gz(b"far"))];
     for x in [30u32, 31, 32] {
         let (t, key) = (format!("6-{x}-21"), format!("6/{x}/21"));
         put(root, &mut c, &format!("layers/terrain/hi/{t}"), 10_000 + x as usize);
@@ -809,9 +810,16 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     }
     assert!(s.data.tile("roads", 12, 30 << 6, 21 << 6).unwrap().is_none(), "none, not an error");
     assert_eq!(basemap(0, 0, 0).unwrap(), [gz(b"world")], "zoomed out over it");
+    assert_eq!(basemap(10, 510, 340).unwrap(), [gz(b"z10")]);
     assert_eq!(basemap(12, 31 << 6, 21 << 6).unwrap(), [gz(b"12/31")]);
     assert!(basemap(12, 30 << 6, 21 << 6).unwrap().is_empty(), "outside it: none, not an error");
     assert_eq!(s.data.reach(), Some(Arc::new([(31, 21)].into())));
+    // What reaches past it (the basemap's zooms 0–10, the lo and root packs) is read over it alone.
+    assert!(basemap(10, 0, 340).unwrap().is_empty(), "the zooms 0–10 piece, far from it");
+    assert_eq!(s.data.pack_of("terrain", 5, 15, 10).as_deref(), Some("layers/terrain/lo/3-3-2"), "over it");
+    assert_eq!(s.data.pack_of("terrain", 5, 14, 10), None, "its lo pack, beside it");
+    assert_eq!(s.data.pack_of("terrain", 2, 1, 1).as_deref(), Some("layers/terrain/root"));
+    assert_eq!(s.data.pack_of("terrain", 2, 2, 1), None);
 
     // Nothing downloaded: nothing at all.
     assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
@@ -827,6 +835,7 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     store::testkit::eventually("the NAS read again", || s.data.online());
     assert_eq!(s.data.content(far).as_deref(), cat.content(far));
     assert_eq!(s.data.reach(), None);
+    assert_eq!(basemap(10, 0, 340).unwrap(), [gz(b"far")]);
 }
 
 /// One way of the roads fixture: its id, owner (z6 x at y 21), and its two ends' longitudes (at

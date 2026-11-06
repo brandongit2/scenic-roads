@@ -63,10 +63,12 @@ fn decoded(s: &crate::AppState, layer: &'static str, kind: Kind, z: u8, x: u32, 
     Ok(d)
 }
 
-/// Tile z/x/y of a depth layer as the map is given it (stored or made), decoded: None outside it.
+/// Tile z/x/y of a depth layer as the map is given it (stored or made), decoded: None outside it, or
+/// where the downloads don't reach away from the NAS (Data::reaches: never made from a coarse
+/// ancestor that does).
 pub fn served(s: &crate::AppState, layer: &'static str, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Grid>> {
     let kind = Kind::of_layer(layer).ok_or_else(|| anyhow::anyhow!("{layer} isn't a depth layer"))?;
-    if !s.data.catalogue().layers.contains_key(layer) {
+    if !s.data.catalogue().layers.contains_key(layer) || !s.data.reaches(z, x, y) {
         return Ok(None);
     }
     Ok(fall::served(&|z, x, y| decoded(s, layer, kind, z, x, y), kind, z, x, y)?.map(|(g, _)| g))
