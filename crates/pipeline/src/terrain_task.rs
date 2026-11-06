@@ -30,13 +30,13 @@ pub const MID: &str = "mid.sect";
 pub const MOST: usize = 3;
 /// Whether a terrain job offers its next z6 tile's groups as it begins a z6 tile (a whole z6 tile's time
 /// for a worker to make them, not the moments before the run needs them): while its agent's
-/// placement is on (crate::agent::placement::ahead_on). Each group then says its head start (the
+/// placement is on (jobrt::jobs::ahead_on). Each group then says its head start (the
 /// tiles the run makes before it needs the group, over the group's: `Offers::offer_after`), and the
 /// coordinator gives it to a worker slower than this Mac only while that covers it
 /// (crate::coord::task's `covered`). Off: the waiting rule gives a worker only what it would make
 /// sooner than this Mac (`task::beats`), as before.
 pub fn offer_ahead() -> bool {
-    crate::agent::placement::ahead_on()
+    jobrt::jobs::ahead_on()
 }
 /// The files' format (4: the raw tiles by the rule, crate::terrain_pack::Fills, and the tiles at
 /// their place's finest zoom, `Meta::native`. 5: the water's sea alone, as the terrain reads it:

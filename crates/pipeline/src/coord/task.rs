@@ -72,7 +72,7 @@ pub struct Offer {
     pub root: PathBuf,
     pub inputs: BTreeMap<String, u64>,
     pub mem_mb: u64,
-    /// Offered ahead (`Task::ahead`): said only by a job told to (crate::agent::placement::AHEAD_ENV).
+    /// Offered ahead (`Task::ahead`): said only by a job told to (jobrt::jobs::AHEAD_ENV).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ahead: Option<f64>,
 }

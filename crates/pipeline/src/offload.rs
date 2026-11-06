@@ -251,7 +251,7 @@ impl Offload {
 
     /// `offer_spec`, saying how much of the job's own work comes before it needs the task (`ahead`,
     /// in tasks' worth of this Mac's time at its kind: crate::coord::task::Task::ahead), when its
-    /// agent tells it to offer ahead (crate::agent::placement::ahead_on); else as `offer_spec`.
+    /// agent tells it to offer ahead (jobrt::jobs::ahead_on); else as `offer_spec`.
     pub fn offer_spec_ahead(
         &self,
         kind: &str,
@@ -261,7 +261,7 @@ impl Offload {
         mem_mb: u64,
         ahead: Option<f64>,
     ) -> Result<Offered> {
-        let ahead = ahead.filter(|a| a.is_finite() && *a > 0.0 && crate::agent::placement::ahead_on());
+        let ahead = ahead.filter(|a| a.is_finite() && *a > 0.0 && jobrt::jobs::ahead_on());
         let offer = crate::coord::task::Offer {
             owner: self.owner,
             kind: kind.into(),

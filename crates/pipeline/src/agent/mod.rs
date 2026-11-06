@@ -6841,7 +6841,7 @@ impl Agent {
         }
         // Placement on: its tasks offered ahead, with their head starts (crate::agent::placement).
         if self.placement_on() {
-            env.push((placement::AHEAD_ENV.into(), "1".into()));
+            env.push((jobrt::jobs::AHEAD_ENV.into(), "1".into()));
         }
         // This Mac's cache, where a job keeps what it reads again and again (the coverage:
         // pipeline::coverage::Coverage::load).
@@ -15717,7 +15717,7 @@ mod pool_tests {
     /// member: off, the lead's coordinator places as before and no job is told to offer ahead; on,
     /// the lead's coordinator is told (the forecast's slack and measured speeds), the member alone
     /// asking is drawn its target and takes it, its job told to offer its tasks ahead
-    /// (`AHEAD_ENV`); off again, as before.
+    /// (`jobrt::jobs::AHEAD_ENV`); off again, as before.
     #[test]
     fn placement_a_member_drawn_its_target_and_its_job_told_to_offer_ahead() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
@@ -15791,7 +15791,7 @@ mod pool_tests {
         // the lead isn't stepped after it's offered.)
         until(&mut m, |m| bin.join("env-slope-hi").exists() && m.slots[0].running.is_none());
         let env = std::fs::read_to_string(bin.join("env-slope-hi")).unwrap();
-        assert!(env.lines().any(|l| l == format!("{}=1", placement::AHEAD_ENV)), "{env}");
+        assert!(env.lines().any(|l| l == format!("{}=1", jobrt::jobs::AHEAD_ENV)), "{env}");
         // Off again: as before.
         set_placement(&lead, &r, false);
         lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));

@@ -113,6 +113,15 @@ pub fn within(frac: f64) {
     }
 }
 
+/// What a job is told when the pool's placement acts (pipeline's agent::placement): offer ahead
+/// (pipeline's terrain_task, trees::task).
+pub const AHEAD_ENV: &str = "SCENIC_OFFER_AHEAD";
+
+/// Whether this job offers its tasks ahead (`AHEAD_ENV` set by its agent).
+pub fn ahead_on() -> bool {
+    std::env::var(AHEAD_ENV).is_ok_and(|v| v == "1")
+}
+
 /// A key of `parts`: the hash (store::naming::hash16) of them one a line.
 pub fn h(parts: &[&str]) -> String {
     store::naming::hash16(parts.join("\n").as_bytes())

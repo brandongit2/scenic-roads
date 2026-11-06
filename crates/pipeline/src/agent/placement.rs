@@ -19,7 +19,7 @@
 //!   neighbourhood (`group`) when one is drawn to it; a task likewise among the pages and workers that
 //!   could take it, weighted by their measured pace at its kind. Weights only, never exclusive: no
 //!   rule names a Mac or a kind of job.
-//! - **Offered ahead** (`AHEAD_ENV`, told to every job): a terrain job offers its next z6 tile's
+//! - **Offered ahead** (jobrt::jobs::AHEAD_ENV, told to every job): a terrain job offers its next z6 tile's
 //!   subtrees as it begins a z6 tile; each task of a terrain z6 tile or a tree cover's row says how
 //!   much of this Mac's work comes before the job needs it (`ahead`, in tasks' worth: a head start
 //!   of that many times this Mac's measured time at its kind). A worker measured slower than this
@@ -30,14 +30,6 @@ use std::collections::BTreeMap;
 
 /// The switch (`on` in it, or present; `off` in it, or missing: off, the agent as it was).
 pub const SWITCH: &str = "state/pool/placement";
-
-/// What a job is told when the switch acts: offer ahead (crate::terrain_task, crate::trees::task).
-pub const AHEAD_ENV: &str = "SCENIC_OFFER_AHEAD";
-
-/// Whether this job offers its tasks ahead (`AHEAD_ENV` set by its agent).
-pub fn ahead_on() -> bool {
-    std::env::var(AHEAD_ENV).is_ok_and(|v| v == "1")
-}
 
 /// How long one draw holds (s): a target drawn to a member that doesn't ask for it in that time is
 /// drawn again.
