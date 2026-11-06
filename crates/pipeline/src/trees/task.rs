@@ -399,6 +399,7 @@ pub fn here_run<'a>(
 mod tests {
     use super::*;
     use crate::coord::client::Client;
+    use crate::coord::client::LeaseCalls;
     use crate::trees::{block_files as one_block, blocks_files, mask::Shapes, tests::squares_dir, Run, Source, MID};
     use std::sync::{Arc, Mutex};
 

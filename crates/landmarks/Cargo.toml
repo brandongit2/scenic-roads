@@ -20,7 +20,7 @@ libc = "0.2"
 osmpbf = "0.3"
 # (Names compared as the heritage chain does: heritage_layers, heritagewd.)
 unicode-normalization = "0.1"
-# Pinned as pipeline pins it (coord::client's idle transport uses ureq's unversioned::transport API).
+# Pinned as coordwire pins it (coordwire::client's idle transport uses ureq's unversioned::transport API).
 ureq = "=3.4.2"
 # GEOS for the World Heritage Sites' dots (whsshapes, as shapely computed them): pipeline's static
 # GEOS 3.13.1 (crates/pipeline/Cargo.toml says why these versions).

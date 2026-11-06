@@ -11,16 +11,11 @@
 //! fails it otherwise, or goes quiet holding it, isn't offered it again; after two such workers the
 //! job runs it itself (as it does any task no one takes).
 
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Output {
-    pub path: String,
-    pub size: u64,
-}
+pub use coordwire::task::{beats, clone, safe, Offer, Output, MARGIN};
 
 #[derive(Clone, Debug)]
 pub enum State {
@@ -63,20 +58,6 @@ pub struct Task {
     pub ahead: Option<f64>,
 }
 
-/// A task as a job offers it (`POST /task/offer`).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Offer {
-    pub owner: u32,
-    pub kind: String,
-    pub spec: serde_json::Value,
-    pub root: PathBuf,
-    pub inputs: BTreeMap<String, u64>,
-    pub mem_mb: u64,
-    /// Offered ahead (`Task::ahead`): said only by a job told to (jobrt::jobs::AHEAD_ENV).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ahead: Option<f64>,
-}
-
 #[derive(Debug)]
 pub struct Tasks {
     next: u64,
@@ -97,32 +78,12 @@ pub struct Tasks {
     pub here_s: BTreeMap<String, f64>,
 }
 
-/// The margin a worker's pace is taken with: it's waited on only if its time, a quarter more,
-/// comes before the job's own run would end.
-pub const MARGIN: f64 = 1.25;
-
-/// Whether a worker at `pace` is faster than the job's own run, with the margin.
-pub fn beats(pace: f64) -> bool {
-    pace * MARGIN < 1.0
-}
-
 /// How often the jobs wait for a worker whose pace isn't measured to take a task, at most: once an
 /// hour a worker.
 pub const EXPLORE_EVERY: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// How many tasks' memory a kind's typical one is of.
 const RECENT: usize = 20;
-
-/// A path a worker names (an input it fetches, an output it uploads), when it stays inside the
-/// folder: relative, no `..`, nothing odd.
-pub fn safe(path: &str) -> Option<&Path> {
-    let p = Path::new(path);
-    let ok = !path.is_empty()
-        && path.len() < 1024
-        && p.components()
-            .all(|c| matches!(c, Component::Normal(s) if !s.to_string_lossy().starts_with('.') || s.len() > 2));
-    ok.then_some(p).filter(|p| !p.to_string_lossy().contains('\0'))
-}
 
 impl Tasks {
     pub fn new(dir: PathBuf) -> Tasks {
@@ -465,19 +426,6 @@ pub fn stage(dir: &Path, mut o: Offer) -> std::io::Result<Staged> {
     }
     o.root = to;
     Ok(Staged(o))
-}
-
-/// A clone of `src` at `dst` (store::sys::copy_data: copy-on-write where the volume can, else a
-/// copy); a link stays a link (to the same file, served from there: a z6 tile's roadside buildings
-/// are links to the NAS's).
-pub fn clone(src: &Path, dst: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    if std::fs::symlink_metadata(src)?.file_type().is_symlink() {
-        let to = std::fs::read_link(src)?;
-        let to = if to.is_relative() { src.parent().unwrap_or(Path::new(".")).join(to) } else { to };
-        return std::os::unix::fs::symlink(to, dst);
-    }
-    store::sys::copy_data(src, dst).map(|_| ())
 }
 
 #[cfg(test)]

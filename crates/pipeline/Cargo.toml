@@ -12,6 +12,7 @@ pyport = { path = "../pyport" }
 codecs = { path = "../codecs" }
 jobrt = { path = "../jobrt" }
 buildstore = { path = "../buildstore" }
+coordwire = { path = "../coordwire" }
 landmarks = { path = "../landmarks" }
 mapview = { path = "../mapview" }
 sha2 = "0.10"
@@ -37,7 +38,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # (The regions' set operations, in integer coordinates: docs/inputs.md §6.1.4.)
 i_overlay = { version = "=9.0.0", default-features = false }
 clap = { workspace = true, features = ["help", "usage", "error-context", "suggestions"] }
-# Pinned: coord::client's idle transport uses ureq's unversioned::transport API (no semver promise).
+# Pinned as coordwire pins it (coordwire::client's idle transport uses ureq's unversioned::transport API).
 ureq = "=3.4.2"
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", "sync", "time"] }
@@ -69,6 +70,7 @@ bytes = "1"
 
 [dev-dependencies]
 buildstore = { path = "../buildstore", features = ["testkit"] }
+coordwire = { path = "../coordwire", features = ["testkit"] }
 codecs = { path = "../codecs", features = ["testkit"] }
 jobrt = { path = "../jobrt", features = ["testkit"] }
 store = { path = "../store", features = ["testkit"] }

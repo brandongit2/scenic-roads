@@ -27,6 +27,7 @@ use super::bus::{BeatMsg, Snap};
 use super::{now_s, write_beat, write_replace, Status};
 use crate::control::HoldState;
 use crate::coord::beats::Beats;
+use crate::coord::client::LeaseCalls;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};

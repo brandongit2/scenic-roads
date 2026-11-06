@@ -186,7 +186,7 @@ All on the lead's coordinator, the build's key as today, sent only to tailnet ad
 
 ### 5.2 Timing
 
-Each call has 5 s to connect and 15 s in all at the client (`crate::coord::client`; a file's
+Each call has 5 s to connect and 15 s in all at the client (`coordwire::client`; a file's
 transfer, `/work/in/`, `/work/out/`, no limit on its whole time, only 60 s with no byte moving). A
 call that gets no answer marks the lead unreached for that round (`Client::new_round`), and the next
 beat tries again.

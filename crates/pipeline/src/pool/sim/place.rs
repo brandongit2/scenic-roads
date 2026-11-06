@@ -2,7 +2,7 @@
 //! disk, working one plan through the lead's real coordinator (crate::coord), its measures read by
 //! crate::needs as every placement path reads them, on a clock of the simulator's.
 //!
-//! - **The members** ask the coordinator over HTTP, as their agents do (`client::Client::ask`), with
+//! - **The members** ask the coordinator over HTTP, as their agents do (`client::LeaseCalls::ask`), with
 //!   what their Mac spares (what its jobs may hold above its default memory floor less what they hold, its disk's free space
 //!   now (past its room target) less its jobs' reservations, its capacity); what they're granted is
 //!   `pack`'s, untouched. Each runs `Cfg::member_slots` jobs (0: the agent's, by its cores), asking
@@ -40,6 +40,7 @@
 
 use crate::agent::every;
 use crate::agent::memguard::Floor;
+use crate::coord::client::LeaseCalls;
 use crate::coord::{self, client, cost_key, cost_version, Ask, Capacity, Cost, Granted, Offer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;

@@ -43,6 +43,9 @@ pub mod sched;
 pub mod task;
 
 pub use broker::{Broker, Brokering};
+// How workers reach the coordinator, and the headers its answers carry: the client side's
+// (coordwire, task #916 step 6c).
+pub use coordwire::{contact_path, Contact, POOL_MEMBER, POOL_TERM};
 
 use crate::agent::memguard::Floor;
 use crate::handoff::Handoff;
@@ -153,22 +156,6 @@ const WHY_MAX: usize = 3000;
 /// asks for work, beats for a task or hands one back: refused, never an error to retry on (its
 /// next version, which its service worker loads, asks for none).
 pub const NO_PAGE_HELPERS: &str = "pages no longer help with the build: reload this page";
-
-/// How workers reach the coordinator: `state/coordinator.json` on the NAS.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Contact {
-    /// Its addresses, in the order to try.
-    pub urls: Vec<String>,
-    pub token: String,
-    /// The build page's address over HTTPS when `tailscale serve` proxies the coordinator (a Mac's
-    /// menu bar opens it: its web view loads no plain HTTP but the LAN's). None otherwise.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
-}
-
-pub fn contact_path(root: &store::nasfs::NasRoot) -> store::nasfs::NasPath {
-    root.join("state/coordinator.json")
-}
 
 /// What a job's target cost last time (a z6 tile's, another shared step's, a task's): its peak memory
 /// (MB) and its wall time, the worker it was measured on (None: the lead, or not said), and
@@ -817,10 +804,6 @@ impl std::ops::DerefMut for Shared {
     }
 }
 
-/// The headers every answer of a pool's lead's coordinator carries: its term and its member.
-pub const POOL_TERM: &str = "x-pool-term";
-pub const POOL_MEMBER: &str = "x-pool-member";
-
 pub struct Coordinator {
     pub shared: Arc<Mutex<Shared>>,
     pub contact: Contact,
@@ -848,7 +831,7 @@ pub struct Coordinator {
     /// member's broker or a viewer, which run none.
     phases: Option<Phases>,
     /// The connections it has taken (`http::accept`): a test's measure of how many its clients
-    /// open (crate::coord::client keeps them alive).
+    /// open (coordwire::client keeps them alive).
     #[cfg_attr(not(test), allow(dead_code))]
     taken: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -5409,7 +5392,7 @@ mod http {
     }
 
     /// The most connections at once, how long a request's headers may take to arrive (and an idle
-    /// kept-alive connection to stay open: crate::coord::client lets its own go sooner), and a
+    /// kept-alive connection to stay open: coordwire::client lets its own go sooner), and a
     /// request's whole time, its answer's body too (a connection takes no new request after it).
     const CONNECTIONS: usize = 512;
     pub(super) const HEADERS_MAX: Duration = Duration::from_secs(20);
@@ -6042,6 +6025,7 @@ pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coord::client::LeaseCalls;
 
     /// The floor kept for `target` of `step` (of any way its step ran), as the pool's floors list has it.
     fn floor_of(c: &Coordinator, step: &str, target: &str) -> Option<Floor> {
@@ -6287,7 +6271,7 @@ mod tests {
         assert!(c.held("unit").contains("6/1/1"), "not released by an older member's beat");
         clock.advance(TTL + Duration::from_secs(60));
         assert_eq!(c.expire().iter().map(|l| l.id).collect::<Vec<_>>(), [g.lease], "lapsed as before");
-        let (url, _) = client::tests::answering(404);
+        let (url, _) = coordwire::testkit::answering(404);
         let older_lead = client::Client::at(vec![url], "t".into(), "m1");
         assert_eq!(older_lead.pool_beat(&word("m1", &[])).unwrap(), None);
     }

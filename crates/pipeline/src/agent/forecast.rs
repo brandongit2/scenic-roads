@@ -2284,6 +2284,8 @@ pub fn speeds(
 
 #[cfg(test)]
 mod tests {
+    use crate::coord::client::LeaseCalls;
+
     #[test]
     fn a_machine_listed_twice_does_not_panic() {
         // (Task #816 review: two machines under one name shared its lanes while run_of numbered

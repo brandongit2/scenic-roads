@@ -500,6 +500,7 @@ mod tests {
         self,
         tests::{end, frame, square, B},
     };
+    use crate::coord::client::LeaseCalls;
     use buildstore::recipes::Recipe;
 
     /// Tile `t`'s work file in `dir`, from buildings and parts.

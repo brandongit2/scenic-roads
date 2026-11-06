@@ -490,6 +490,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "coordwire"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jobrt",
+ "serde",
+ "serde_json",
+ "store",
+ "ureq",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1351,6 +1363,7 @@ dependencies = [
  "bytes",
  "clap",
  "codecs",
+ "coordwire",
  "crc32fast",
  "det",
  "flate2",

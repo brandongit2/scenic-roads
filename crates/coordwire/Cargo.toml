@@ -1,0 +1,19 @@
+[package]
+name = "coordwire"
+version = "0.1.0"
+edition = "2021"
+description = "The coordinator's client side: the contact, the client's transport, a task's shared side, the map now from the lead (docs/crates.md, step 6c)"
+
+[dependencies]
+store = { path = "../store" }
+jobrt = { path = "../jobrt" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+anyhow.workspace = true
+# Pinned: the client's idle transport uses ureq's unversioned::transport API (no semver promise).
+ureq = "=3.4.2"
+
+[features]
+# Test coordinators (testkit: answering, mute, dead, serve) for other crates' tests: their
+# dev-dependency on coordwire turns it on. Helpers only, never behaviour.
+testkit = []

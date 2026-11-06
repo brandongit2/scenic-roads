@@ -509,6 +509,7 @@ impl<'a> Offers<'a> {
 mod tests {
     use super::*;
     use crate::coord::client::Client;
+    use crate::coord::client::LeaseCalls;
     use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles};
     use buildstore::coverage::Coverage;
     use buildstore::out::Out;

@@ -22,7 +22,7 @@ anyhow.workspace = true
 rayon.workspace = true
 bytemuck.workspace = true
 libc = "0.2"
-# Pinned as pipeline pins it (coord::client's idle transport uses ureq's unversioned::transport API).
+# Pinned as coordwire pins it (coordwire::client's idle transport uses ureq's unversioned::transport API).
 ureq = "=3.4.2"
 
 [features]

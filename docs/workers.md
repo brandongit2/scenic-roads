@@ -72,7 +72,7 @@ Common rules:
   the canopy squares) and `{net}` (the land cover's servers' files, laid out as `crate::fetch`'s
   mirror, `<host>/<path>`). A worker reads its own mount, read-only (`Tools::stores_read_only`,
   `SCENIC_STORES_READ_ONLY`).
-- **A worker's transfers** (`coord::client::Files`): a task's files (`/work/in/`,
+- **A worker's transfers** (`coordwire::client::Files`): a task's files (`/work/in/`,
   `/work/out/`) have no limit on their whole time, so a big file on a slow link goes on while it
   moves. Connecting has 5 s; after that a transfer fails once nothing has moved for 60 s,
   counted from the connection made, the start and end of each write (ureq's output buffer, each

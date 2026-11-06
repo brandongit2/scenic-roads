@@ -709,6 +709,7 @@ fn take(st: &serde_json::Value, dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coord::client::LeaseCalls;
     use std::sync::{Arc, Mutex};
 
     #[test]

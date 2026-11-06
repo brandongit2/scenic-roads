@@ -71,6 +71,7 @@ pub mod steps;
 pub mod takeover;
 pub mod tiles;
 
+use crate::coord::client::LeaseCalls;
 use crate::pool::term::Role;
 use anyhow::{Context, Result};
 use cond::{Conditions, SleepWatch};
@@ -11119,7 +11120,7 @@ mod tests {
         let fail = |id| Tell::Fail { id, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 };
         a.tell_or_owe(fail(1));
         assert_eq!(a.owed.len(), 1, "no client: owed");
-        a.client = Some(crate::coord::client::Client::at(vec![crate::coord::client::tests::dead()], "t".into(), "m1"));
+        a.client = Some(crate::coord::client::Client::at(vec![coordwire::testkit::dead()], "t".into(), "m1"));
         a.begin_round();
         a.tell_or_owe(fail(2));
         assert!(a.client.as_ref().unwrap().round_failed());
@@ -11135,7 +11136,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
         );
-        let (url, tried) = crate::coord::client::tests::answering(200);
+        let (url, tried) = coordwire::testkit::answering(200);
         a.client = Some(crate::coord::client::Client::at(vec![url], "t".into(), "m1"));
         a.owed.clear();
         a.tell_or_owe(fail(5));
@@ -11199,7 +11200,7 @@ mod tests {
         })
         .unwrap();
         a.begin_round();
-        a.client = Some(crate::coord::client::Client::at(vec![crate::coord::client::tests::dead()], "t".into(), "m1"));
+        a.client = Some(crate::coord::client::Client::at(vec![coordwire::testkit::dead()], "t".into(), "m1"));
         a.begin_round();
         assert!(a.client.as_ref().unwrap().beat(1, None).is_err());
         assert!(a.client.as_ref().unwrap().round_failed());

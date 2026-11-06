@@ -2319,6 +2319,8 @@ pub fn status(root: &store::nasfs::NasRoot) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::coord::client::LeaseCalls;
+
     #[test]
     fn a_message_this_app_doesnt_know_is_read_past() {
         // (Task #409 review) a newer app's message among the others: passed over, the rest taken,
