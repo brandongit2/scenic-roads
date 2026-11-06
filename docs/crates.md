@@ -472,8 +472,10 @@ Final layering, bottom to top (each line depends only on lines above it):
 2. **inputs**;
 3. the families **terrain**, then **trees**, **roads**, **names** (landmarks grows into it),
    **bld**; and, beside them, **agentcore** (the agent's runtime, coord, pool and the rest of
-   that row, with pipeline's offload: a task run on a worker, `run_task`, and its kind,
-   `task_kind`, which name the families);
+   that row). Not pipeline's offload, which names the families: a task's kind (`task_kind`, the
+   agent's only use) reads the families' `KIND`s through `Plan` as the other family constants
+   do (below), and running a task on a worker (`run_task`, over unit's steps; only the `scenic`
+   binary calls it) stays pipeline's;
 4. **pipeline**: the agent's plan, the binaries, the re-exports. It names everything; nothing
    names it.
 
