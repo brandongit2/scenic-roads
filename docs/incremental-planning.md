@@ -188,8 +188,8 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
 
 1. **The key memo**, across plans: `(step, target) → (key, reads)`. Today's `KeyMemo` holds keys
    for one plan (#924); this one outlives it. `reads` is what deriving the key looked at: manifest
-   entries by name, manifest prefix ranges, input names, and whether it read the coverage, the
-   reaches or a terrain index. It is recorded by construction: `KeyCtx`'s manifest becomes a view
+   entries by name, manifest prefix ranges, input names, whether it read the coverage or the
+   reaches, and what of `TerrainTiles`' load state it met (below). It is recorded by construction: `KeyCtx`'s manifest becomes a view
    (`Reads`) whose `get`, `contains_key` and `range` record into the key being derived (into every
    key on the derivation stack: a key derived inside another's adds its reads to its reader's), with
    no `Deref` to the map, so code that derives a key can't read the manifest past it; the compiler
@@ -213,11 +213,11 @@ a 5-min fallback), owning its state `&mut`, publishing `PlanView`, sharing no `M
      call, such as terrain_pack's `water_source_pin` or heritage's `latest_date`, unchecked); the NAS
      is read for keys by `TerrainTiles::load` and `key_inputs`, whose results are diffed (the inputs)
      or tracked above. The app's version is the process's: the state starts empty after an update.
-     The manifest is a `BTreeMap` and the brief's order is irrelevant to it; nothing in the key
-     path lists a NAS folder. A guard test keeping it so (no `env::var`, clock or `nasfs` call
+     The manifest is a `BTreeMap`, so neither the brief's order nor a NAS listing's reaches a key
+     through it. A guard test keeping it so (no `env::var`, clock or `nasfs` call
      reachable from `key_lines` but through `KeyCtx`) belongs with step 3.
 2. **The reverse index**: entry name → keys, prefix → keys, input name → keys, and the keys that
-   read the coverage, the reaches or the terrain indexes. A changed name finds its keys by exact
+   read the coverage, the reaches or `TerrainTiles`' load state. A changed name finds its keys by exact
    lookup and by each of its own prefixes (a name is ~60 bytes: ~60 lookups).
 3. **Target lists, as memo entries of their own** (`enum <list>`, read the same way): which z6
    tiles the coverage builds, the terrain and slope targets with their "none" ones, the deep
