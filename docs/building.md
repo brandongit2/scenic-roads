@@ -429,10 +429,10 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
      catalogue (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
      goes out with a later one. Nothing is published before a z6 tile is
      built, while the regions have work left. The lead keeps `publishing.json` in its agent's folder
-     (`build::LastCatalogue`: when a catalogue due was first held back since, and the cadenced
+     (`publish::LastCatalogue`: when a catalogue due was first held back since, and the cadenced
      steps' runs); when its last catalogue went out, and the last with the low zooms made, are the
      map's log's (its head batch, and its last batch whose `why` says so: docs/maplog.md §6.5),
-     and records what publishing does and why (`build::PublishLine`), shown in the build status
+     and records what publishing does and why (`publish::PublishLine`), shown in the build status
      (`publishing`), the worker page and `scenic status`, and logged when it changes. Beside it the
      status's `published` (`agent::Published`): the last catalogue (number, when, with the low zooms
      or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the catalogue
@@ -473,14 +473,14 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
    mids of z6 tiles current without one, each made again with `--expect-same` (`scenic-build
    trees|terrain|slope --expect-same`: a pack differing from the manifest fails the job).
 5. **A catalogue** whenever the served files, the regions or which of them are done change
-   (`build::catalogue_key`), at most one each `build::CATALOGUE_EVERY_S` (a minute) since the last
+   (`build::catalogue_key`), at most one each `publish::CATALOGUE_EVERY_S` (a minute) since the last
    began. It waits while the map tiles or the road index are left to draw (`build::CATALOGUE_GATE`)
    or a hand-off of theirs waits to be merged. That wait is counted from when a catalogue due was
    first held back, whether or not one was made before (`Publish::held_for`: the lead's agent keeps
    that time in `publishing.json`, `LastCatalogue::held_at`, so a restart doesn't reset it; a new
    lead's agent, with a record of its own, starts the count afresh). It's reset by each catalogue
    made, and when none is held back, none is due and none waits out its minute: past
-   `build::CATALOGUE_CAP_S` (ten minutes) one goes out with what's drawn and merged, its minute
+   `publish::CATALOGUE_CAP_S` (ten minutes) one goes out with what's drawn and merged, its minute
    allowing, the status saying which held it (the map tiles or the road index to draw, or their
    hand-offs waiting to be merged). It records as built (`--ready <id>=<outline
    digest>,…`) the regions done whose z6 tiles are merged, whose map tiles are drawn and merged and

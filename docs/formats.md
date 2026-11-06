@@ -642,7 +642,7 @@ status.json             the lead's status; a member not leading writes helper.js
 state.json, job.json, agent.lock, logs/
 publishing.json         the lead's record of its catalogues {held_at, ran}: when a catalogue due was
                         first held back since (none: none is), the cadenced steps' runs
-                        (agent::build::LastCatalogue); when the last went out, and the last with
+                        (agent::publish::LastCatalogue); when the last went out, and the last with
                         the low zooms, are the map log's (docs/maplog.md §6.5)
 maplog/                 the lead's map log (docs/maplog.md: snapshot.json.zst with its cursors and
                         marks, segments of batches)
@@ -1114,7 +1114,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     `/work/fail` carry `floors`, `disks` (`[[cost key, MB], …]`) and `job_disk_mb`.
 - **State:** `state/status.json` (the agent's heartbeat, at least every two minutes): conditions,
   the job, `parts`/`part`, progress, `paused`/`pausing`, what waits, `pause`, `publishing`
-  (agent::build::PublishLine: `why`, `tiles`, `units`, `regions`, `low`, `wait_s`), `published`
+  (agent::publish::PublishLine: `why`, `tiles`, `units`, `regions`, `low`, `wait_s`), `published`
   (agent::Published: `last` `{n, at}`, `low`, `drawing` by Mac, `adopted` by Mac `{n, at}`), the
   forecast (`regions` with `map_at`; `publishes`: `{what: low | marks | overlays, at}`), the checklist (a line per stage: `id`, `what`, `steps`, `done`/`total`/`left`,
   `unit`, `items` (per step: `step`, `noun`, `done`, `total`, `left`), `next`, `note`,

@@ -86,8 +86,8 @@ const S = {
 };
 // The one word a waiting line's or notice's `what` is said by: its step, else its own (a stage's id).
 const waitName = (w) => w.step || w.what;
-// A step's line of the checklist (build::Item) or a stage's (build::Line) in words, as the agent
-// says them (build::Line::said, task #846: the menu bar and `scenic status` say the same): "156 of
+// A step's line of the checklist (progress::Item) or a stage's (progress::Line) in words, as the agent
+// says them (progress::Line::said, task #846: the menu bar and `scenic status` say the same): "156 of
 // 284 z6 tiles", "3 runs left", "done", "to come"; the done that made nothing to publish counted
 // apart: "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)".
 // (An agent's before #846, a rollout's: worked out from the older fields as build.rs Item::count
@@ -1404,8 +1404,8 @@ function schedule(m) {
 }
 
 // ---- Jobs: the stages ---------------------------------------------------------------------------------
-// A list, a stage under another (the checklist's lines, build::Line): its mark, title, counts and
-// bar; under it a row per step (build::Item): its mark, id (⇄ when any Mac may take it), count and
+// A list, a stage under another (the checklist's lines, progress::Line): its mark, title, counts and
+// bar; under it a row per step (progress::Item): its mark, id (⇄ when any Mac may take it), count and
 // bar. Done and left of all the enabled regions' work, in the steps' nouns (map tiles, z3 tiles,
 // runs): the one place the page counts a whole (task #685). Under a step that ran in the footer's
 // range ("Charts show the last"), its time breakdown (task #844): `timeRow`.

@@ -1,6 +1,6 @@
 // The build page's sums, apart from the page so Node tests them (tools/check/worksums.test.mjs).
 
-// A stage's or step's line finished: nothing left (build::Line, build::Item).
+// A stage's or step's line finished: nothing left (progress::Line, progress::Item).
 export const finished = (x) => (x.left != null ? x.left === 0 : x.total != null && x.done >= x.total && x.total > 0);
 
 // The schedule's lanes worth a row: those with a bar in the window [t0, t1] (a run ending at or

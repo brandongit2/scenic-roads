@@ -51,7 +51,7 @@ templated from its row (its `id`, `steps::said`, `counted`):
 |---|---|---|
 | a job's name (agent, menu bar) | `{id}: {n} {noun}s`; a worldwide step `{id}` | "terrain-hi: 8 z6 tiles", "outlines" |
 | a job's name (the build page) | its id: `{id} {first target}`; a worldwide step `{id}` | "terrain-deep 10/259/338", "outlines" |
-| a checklist count | `{done} of {total} {noun}s` (thousands grouped; the done that made nothing to publish apart), `{left} {noun}s left`, "done", "to come" (not sized yet): served as `counts`/`count` and `finished` (build::Line::said), printed as is by the menu bar and the page | "156 of 284 z6 tiles", "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)" |
+| a checklist count | `{done} of {total} {noun}s` (thousands grouped; the done that made nothing to publish apart), `{left} {noun}s left`, "done", "to come" (not sized yet): served as `counts`/`count` and `finished` (progress::Line::said), printed as is by the menu bar and the page | "156 of 284 z6 tiles", "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)" |
 | a step waiting | `{id}: {why}` | "lakefill: failed 3 times in a row: …" |
 | an event | `{who} finished {job's name} in {time}` | "m4 finished unit 6/33/22 (unit: 6 z6 tiles) in 10 min" |
 
@@ -143,8 +143,8 @@ forecast marks each region where it's all on the map (`map_at`).
 
 ## 4. The checklist
 
-The agent's status carries the build to the end as a line per stage (`agent::build::Line`), each
-with an item per step counted (`agent::build::Item`: its step and noun, and its targets
+The agent's status carries the build to the end as a line per stage (`agent::progress::Line`), each
+with an item per step counted (`agent::progress::Item`: its step and noun, and its targets
 `done` of `total`, or `left` (a worldwide step's run: 1 or 0; a chain step's: the targets of its
 works to come), or neither while it can't be sized yet, "to come"). A line names every step of its
 stage (`steps`); its own `done` and `total` count the items of one noun (its `unit` field: the first sized

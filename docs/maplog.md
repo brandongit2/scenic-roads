@@ -415,7 +415,7 @@ map) as one.
   `read_n_from`, #684's fix) → the lead's in-process map: the log store's current `Arc<Catalogue>`,
   no read at all. On a member (its page, `on_map`) → the same client as the server's. The held
   folder's catalogue → the held batch applied to the map.
-- `build::LastCatalogue` (`publishing.json`: `at`, `low_at`, `held_at`) and the status's
+- `publish::LastCatalogue` (`publishing.json`: `at`, `low_at`, `held_at`) and the status's
   `published` → the log's head batch (`seq`, `at`) and the newest batch with the low zooms (the
   batch's `why` says which parts it carries). `held_at` stays: it's the gate's clock.
 - `build::catalogue_key` (whether anything to publish changed) stays as the batch's trigger; the

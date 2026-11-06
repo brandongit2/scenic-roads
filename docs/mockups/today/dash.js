@@ -65,7 +65,7 @@ const S = {
   // "Terrain: 8 tiles", "Terrain: 8 of 480 tiles", "Outlines" (a worldwide step's one run).
   said: (id, k, of) => (S.world(id) || !k ? S.title(id) : `${S.title(id)}: ${of != null && of !== k ? `${n(k)} of ${n(of)} ${S.noun(id)}s` : S.counted(id, k)}`),
 };
-// A step's line of the checklist (build::Item) or a stage's (build::Line) in words: "12 of 480
+// A step's line of the checklist (progress::Item) or a stage's (progress::Line) in words: "12 of 480
 // tiles", "3 runs left", "done", "to come".
 function countOf(x, noun) {
   if (x.total != null && x.total > 0) return `${n(x.done)} of ${n(x.total)} ${noun}`;
@@ -73,7 +73,7 @@ function countOf(x, noun) {
   if (x.left != null) return `${plural(x.left, noun.replace(/s$/, ""))} left`;
   return "to come";
 }
-// A stage's counts, a noun at a time in its items' order (build::Line::counts): "398 of 398 tiles ·
+// A stage's counts, a noun at a time in its items' order (progress::Line::counts): "398 of 398 tiles ·
 // 18 of 18 areas", "2 runs left"; "done" or "to come" with no item to count (an older lead's line:
 // its own count).
 function countsOf(l) {
@@ -752,7 +752,7 @@ function lastUpdate(m) {
 // The cadenced publishes (agent::forecast::PublishFc) in words, as `scenic status` says them.
 const PUBLISH_NAMES = { low: "the low zooms", marks: "the landmarks", overlays: "the area overlays" };
 
-// The Publishing card (agent::Published, agent::build::PublishLine, the forecast's `publishes`):
+// The Publishing card (agent::Published, agent::publish::PublishLine, the forecast's `publishes`):
 // what publishing does and why; the last catalogue, its number, when and its kind; the map tiles to
 // draw, by the Mac drawing them; when each cadenced publish may next go out; the catalogue each Mac's
 // map server adopted.

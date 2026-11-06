@@ -3,8 +3,8 @@
 **Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
 (`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a to 6d (§6, 6c
 `crates/coordwire`, 6d `crates/inputs`) and 6e (`crates/offload`, `crates/terrain`, `crates/trees`,
-`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1's
-first part (§6.3); every later step below is planned (the rest of 6f: §6).
+`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1
+(§6.3); every later step below is planned (the rest of 6f: §6).
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -507,9 +507,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1's first built)
+## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1 built)
 
-**Status: 6a-6e and 6f1's first part built; the rest of 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6e and 6f1 built; the rest of 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -879,18 +879,35 @@ commit; re-exports at the old paths as before.
       pool::records (the records carry them: `Records::keys`), steps re-exporting `current` for
       the plan and scenic; the runtime names them there, as do pipeline's inputs_tests and the
       checklist example; and `terrain_deep::PACK_Z` by its home's path (`dem::zoom`). Cut: build's
-      imports of `TERRAIN_V`, `SLOPE_V` and `SLOPE_LO_V`, unused since 6b. The review cut `Keys::record`'s list of
-      25 steps and the roots whose keys go with the lo keys: its last branch does the same for every step without
-      a key per target. The runtime's lines
-      naming the plan (`build::`, `steps::`, `idents::`, `tiles::`; tests included) 288 → 184; the
-      pool's edge to agent::build gone. Pure moves: over the commits' Rust diff, comments and
-      whitespace dropped and every path reduced to its last name, the tokens removed and added
-      differ only by the imports (`use super::jobs::Work`, steps' `pub use … current`, the cut
-      ones) and inputs_accessor's exemption, whose file is now records.rs; so jobs.json, the
-      records, the keys and a job's record are as before. Not measured: nothing left pipeline, so
-      no crate's compile changed (§5's figures come with 6f4). Planned: the rest of the data the
-      runtime reads (`Line`, `Item`, `PublishLine`, `RegionState`, `LastCatalogue`, `ReadTarget`,
-      `Read`, `Along`; `Step`, `Kind`, `Place`), each to the runtime module holding it.
+      imports of `TERRAIN_V`, `SLOPE_V` and `SLOPE_LO_V`, unused since 6b. The review cut
+      `Keys::record`'s list of 25 steps and the roots whose keys go with the lo keys: its last
+      branch does the same for every step without a key per target. Then publishing's types to
+      agent::publish, beside its switches (`Publishing`, `LastCatalogue` with `Ran` and `GATED`,
+      the steps its record covers, `PublishLine`, `PublishRegion`, and the cadence constants both
+      sides read: `CATALOGUE_EVERY_S`, `CATALOGUE_CAP_S`, `LOW_EVERY_S`, `MARKS_EVERY_S`,
+      `OVERLAYS_EVERY_S`, `NAMES_TODO_EVERY_S`); the checklist's lines (`Item`, `Line`, the
+      planner's `Checklist` pair) and the regions' counts (`RegionState`) to a runtime module of
+      their own, agent::progress (their sayings still read the table's nouns, `steps::noun`: a
+      query for `Plan`); `Place` (with `place`, which reads `every::offered`) to agent::every and
+      `ReadTarget` to agent::forecast; and `timetables::View` (with `Unmatched`, `VIEW_MAX` and
+      the report's name, `REPORT`) to inputs::gtfs, the timetables input it answers
+      (docs/inputs.md §6.7.3), a crate below both the roads and the runtime, roads::timetables
+      re-exporting `REPORT`. Decided so rather than carrying the field as the plan made it (a JSON
+      value the status would parse again): the type is the status's, and the planner's read of
+      the report then names no family. The runtime's lines naming the plan (`build::`, `steps::`,
+      `idents::`, `tiles::`; comments aside, tests and plan.rs included) 288 → 184 with the first
+      part, → 145 after; the pool's edge to agent::build gone. Pure moves: over each commit's Rust
+      diff, comments and whitespace dropped and every path reduced to its last name, the tokens
+      removed and added differ only by imports, the new module's line, `pub(super)` on the two
+      `Item` constructors the plan calls, and inputs_accessor's exemption, whose file is now
+      records.rs; so jobs.json, the records, the keys, a job's record, publishing.json and the
+      status are as before. Not measured: nothing left pipeline, so no crate's compile changed
+      (§5's figures come with 6f4). Not moved, as they are the plan's: `Step` and `Read` (a row's
+      reads and idents are functions over the plan's `KeyCtx`), `Along` (its data is the
+      forecast's input; its filling, `add` and `add_built`, reads the table and `KeyCtx`), `Kind`
+      and `Scope`. What the runtime asks of them (a step's kind a fetch: needs' `Io`, sched's
+      downloads; the first read naming a target: needs' `source_secs`; a row's `cost_v`; a
+      target's reads along its ways) are `Plan`'s questions (6f2).
    2. **6f2, `Plan`** (planned): the trait, in the runtime, implemented by the plan; `&'static dyn
       Plan` held by the agent, the planner, the forecast, the simulator and coord's scheduler,
       passed by their entry points. Cut at the planner's questions, not at the plan's items: of
@@ -905,9 +922,8 @@ commit; re-exports at the old paths as before.
       items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
       API. The family items above go through `Plan` too: `input_digests` and `key_inputs` (they
       name heritage and bld) and `terrain_peak` move to the plan, called through it, as are the
-      kinds, room's hints of a step's targets and publish's watches. `timetables::View` (a field
-      the heartbeat carries) is the open one: a type below both, or the field carried as the plan
-      made it; decided then. `Keys` (6f1) names every per-target step, as the records' format
+      kinds, room's hints of a step's targets and publish's watches. `timetables::View` went
+      below both (6f1). `Keys` (6f1) names every per-target step, as the records' format
       `jobs.json` does; `per_target` and `recorded` are that format's table, so they stay with it.
    3. **6f3, test time** (planned): the runtime's `cfg(test)` behaviours (the waits `JOIN_WAIT`
       and `JOIN_TRY`, coord's `LISTEN` and loopback waits, the panics where a test wants one;
