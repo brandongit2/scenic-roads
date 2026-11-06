@@ -506,8 +506,8 @@ available. Until work is done, the map serves the last catalogue.
 
 **Status.**
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions;
-  its flags: a Mac idle while work it could take waits, a job stuck on a target or past the
-  overdue factor times the time it was sized to, a catalogue due that hasn't gone out, docs/pool.md
+  its flags: a Mac idle while work it could take waits, a job whose work stopped moving (stuck),
+  a catalogue due that hasn't gone out, docs/pool.md
   §10, Flags; `--flags` alone, with the pool's warnings and the failures
   since a time, as tools/dev/health.sh reads them),
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean [--deep]`, `scenic room` (Room on the

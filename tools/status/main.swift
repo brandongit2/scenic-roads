@@ -104,7 +104,7 @@ struct LeadLine: Decodable {
     let flags: [Flag]?
 }
 
-/// A flag of the lead's status (crates/pipeline/src/agent/flags.rs Flag): "idle", "stuck", "overdue" or "stale", the
+/// A flag of the lead's status (crates/pipeline/src/agent/flags.rs Flag): "idle", "stuck" or "stale", the
 /// Mac it's about, what it says.
 struct Flag: Decodable {
     let kind: String

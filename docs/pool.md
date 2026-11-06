@@ -2107,27 +2107,28 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
     cold start). With none free but work of a step any Mac takes held behind other steps (the
     plan's waits with a step: slope-hi behind terrain-root), it names those waits, and the wait of
     each step a wait names that waits too. Nothing left it could take: no flag.
-  - *stuck*: a leased job whose target under way has run more than the overdue factor times
-    that target's own measured time on its Mac at the job's threads, or, for a target never run
-    itself, its step's runs' 90th percentile there where longer than its model's time
-    (`Sched::late_on`; its worker's beat says the target and since when; a target's end is the job's
-    safe point), or, before its first target, its start and first target since its grant: a job
-    making no progress at all is found within a few of its own targets' times, not its whole
-    batch's (5 Nov: terrain-hi jobs at 0 tiles and no CPU for 20 min). A step's mean says what a
-    batch of its targets takes, not one: trees' unmeasured z6 tiles were flagged at minutes past
-    "3× its usual 1 min" while healthy (6 Nov; 8 % of its runs took over three times its mean,
-    1.6 % over three times its 90th percentile).
-  - *overdue*: a leased job running more than the overdue factor times the time it was sized to
-    (§7.7, Batch length: `Sched::batch_secs` at the lease's threads, its Mac's start and its targets'
-    measured times there), with its targets done of its batch (its worker's beat) and its threads;
-    one flagged stuck isn't flagged overdue too. A time not known (a target of its step never
-    measured the way it runs now) flags nothing.
+  - *stuck*: a leased job whose work hasn't moved, by its worker's beats (each minute), for more
+    than the overdue factor times its step's usual stillness (task #986). Its work moved at a beat
+    when anything of it changed since the one before (`Lease::still`): its progress line, the
+    target under way, its targets ended, its phase, its NAS bytes, files made, listed, statted or
+    deleted, its internet bytes. Its step's usual stillness is the 90th percentile, over its jobs
+    kept in the history that ended well, of each one's longest stretch between two beats that saw
+    its work move (`still_s` on its "done" or "end" event, `History::still_p90`); a step none of
+    whose jobs measured it flags nothing. The flag says how long it has been still, the target and
+    phase it is in, its batch's targets done and its threads. A job is held to what it is doing,
+    not to how long its targets took before: on 6 Nov a first GSI fetch (pyramids-fill, 19-25
+    min), bldprep and pack while the NAS was slow and terrain-hi copying GLO-30 at 4 MB/s were
+    flagged by their targets' earlier times while their bytes moved. A job slow but moving isn't
+    flagged; one that stopped is (5 Nov: terrain-hi jobs at 0 tiles and no CPU, replayed from the
+    records: found 16 min after their last move, terrain-hi's usual stillness 5 min). Beats not
+    heard say nothing (a member out of touch is a warning of its own); a lead restarted counts
+    each job's stillness from its first beat after.
   - *stale*: the lead's catalogue due (held back, planned, or waiting out its minute:
     `PublishLine::due_since`) for more than the overdue factor times the most the plan holds one
     (`CATALOGUE_CAP_S` and `CATALOGUE_EVERY_S`, 11 min), counted from the last catalogue's going out
-    where later, with no catalogue job leased (that one is stuck or overdue by its own time). A
+    where later, with no catalogue job leased (that one is stuck by its own stillness). A
     catalogue merely old, nothing new to list, isn't stale.
-  - The factor is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
+  - The factor (stuck's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
     overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
     set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).
   - `scenic status --flags [--since <unix s>]` prints what needs a look alone, a line each: the

@@ -167,8 +167,8 @@ Common rules:
   (GB past the room target at which tools/dev/sweep-targets.sh frees the agents' build caches,
   tools/dev/testing.md), and the pool's NAS reserve (GB kept free on the NAS; "not here" while the
   pool box's Mac doesn't reach the NAS), batch length (minutes of measured time a shared step's
-  job is sized to, docs/pool.md §7.7, task #927) and overdue factor (the status flags a job past
-  that many times the time it was sized to, docs/pool.md §10, Flags), the latter two as that Mac's
+  job is sized to, docs/pool.md §7.7, task #927) and overdue factor (the status flags a job still
+  past that many times its step's usual stillness, docs/pool.md §10, Flags), the latter two as that Mac's
   agent last had them from the lead, set through any Mac's agent. The pool box is set through the
   first Mac on the page that reaches the NAS, else the first that answered. Each Mac's `POST /work/settings`
   (its coordinator, broker or viewer; the lead's page reaches the others' through CORS) with `{}` reads them; with
