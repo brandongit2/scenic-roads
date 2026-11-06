@@ -26,11 +26,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// within the deep levels alone, past them its own edge repeated (crate::slope_pack::fallback_floor),
 /// and z10–12 are made by slope-hi from its z10 tiles' z13 quadrants (their deep mids, format 2) and
 /// its hi terrain; the terrain it shades follows the one pyramid's rule (terrain_pack::TERRAIN_V 8); lossless
-/// WebP (crate::shade_codec: its version in the key). 5 (task #862): a pixel's metres from
+/// WebP (codecs::shade_codec: its version in the key). 5 (task #862): a pixel's metres from
 /// roadcore::geo's Mercator (`MERC_C`).
 pub const SLOPE_V: u32 = 5;
 
-/// Slope's 3: the shading pyramid (`SLOPE_V` 2), lossless WebP (crate::shade_codec, its version in
+/// Slope's 3: the shading pyramid (`SLOPE_V` 2), lossless WebP (codecs::shade_codec, its version in
 /// the key). 2: an assembly's z6 tiles that aren't its z6 tiles' made from their terrain, never kept
 /// from the lo pack as an earlier run stored them, and their z7–8 tiles not kept
 /// (crate::slope_pack::assemble).
