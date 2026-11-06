@@ -11,38 +11,39 @@
 //!   other work (`Status::waiting`'s entries with a step: slope-hi behind terrain-root): flagged
 //!   with those waits, and the wait of the step each names where that one waits too, never just
 //!   "nothing offered". Nothing left it could take: no flag.
-//! - **Stuck** (`stuck`): a leased job whose target under way has run past `factor` times that
-//!   target's own measured time on its Mac at the job's threads, or, one never run itself, its
-//!   step's runs' 90th percentile there where longer than what its model says (`UnderWay`,
-//!   crate::coord::sched's `Sched::late_on`: a step's mean is what a batch takes, and a long-tailed
-//!   step's big targets ran past three times it healthy). The job's safe point is a target's end,
-//!   so a job making no progress at all is found within a few of its own targets' times, not its
-//!   whole batch's: 5 Nov, terrain-hi jobs at 0 tiles and no CPU for 20 min; before its first
-//!   target, its start and first target since its grant.
-//! - **Overdue** (`overdue`): a leased job running past `factor` times the time it was sized to on
-//!   its Mac (`Run::sized_s`: its targets' measured times there at its threads and its start,
-//!   crate::coord::sched's `Sched::batch_secs`, as `pick_every` sized it), with how far its batch
-//!   is; a job flagged stuck isn't flagged overdue too. Its "N of M targets done", the batch's percent
-//!   and its time left count one thing, the targets whose end line the step noted
-//!   (`memguard::targets`), however late the step noted it.
+//! - **Stuck** (`stuck`): a leased job whose work hasn't moved, by its worker's beats, for longer
+//!   than `factor` times its step's usual stillness (`Still`). Its work moved at a beat when
+//!   anything of it changed since the one before (crate::coord::lease::Lease::still): its progress
+//!   line, the target under way, its targets ended, its phase, its NAS bytes, files made, listed,
+//!   statted or deleted, its internet bytes. Its step's usual stillness is measured from its jobs
+//!   that ended well (crate::coord::history::History::still_p90): the 90th percentile of each one's
+//!   longest stretch between two beats that saw its work move. So a job judged is held to what it
+//!   is doing now, not to how long its targets took before: a target fetching for the first time,
+//!   copying from a cold cache or writing to a slow NAS moves bytes all the while (6 Nov:
+//!   pyramids-fill's first GSI fetches at 19-25 min, bldprep and pack while the NAS was slow,
+//!   terrain-hi copying GLO-30 at 4 MB/s, all flagged by their targets' earlier times while
+//!   moving), and a job that stopped is found within a few of its step's still stretches (5 Nov:
+//!   terrain-hi jobs at 0 tiles and no CPU for 20 min and more). A job slow but moving isn't
+//!   flagged: there is no flag of a job's time as a whole. Beats a worker didn't send say nothing
+//!   (its being out of touch is a warning of its own, `look`).
 //! - **Stale** (`stale`): the lead's catalogue due (`publish::PublishLine::due_since`: held back,
 //!   planned or waiting out its minute) for longer than `factor` times the most the plan holds one
 //!   back and waits between two (publish::CATALOGUE_CAP_S and CATALOGUE_EVERY_S), counted from the
 //!   last catalogue's going out where that's later, and no catalogue job leased (that one is
-//!   stuck or overdue by its own time): a catalogue that should have gone out and didn't (its job
+//!   stuck by its own stillness): a catalogue that should have gone out and didn't (its job
 //!   never started: the lead's slots full, its plan held). A catalogue merely old, nothing new to
 //!   list, isn't stale.
 //!
 //! `factor` is the pool's setting (`overdue-factor`, `scenic pool set` or the build page;
-//! crate::coord::asks::OVERDUE_DEFAULT while unset). A time not known (a target of its step never
-//! measured the way it runs now) flags nothing.
+//! crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
+//! measured its stillness flags nothing.
 //!
 //! Nothing is flagged while the build is paused, nor on a Mac paused alone.
 
 use super::{Status, Waiting};
 use serde::{Deserialize, Serialize};
 
-/// A flag: its kind ("idle", "stuck", "overdue", "stale"), the Mac it's about and what it says.
+/// A flag: its kind ("idle", "stuck", "stale"), the Mac it's about and what it says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
     pub kind: String,
@@ -51,7 +52,7 @@ pub struct Flag {
 }
 
 impl Flag {
-    /// Its line, as `scenic status` and the health check print it: "idle: …", "stuck: …", "overdue: …".
+    /// Its line, as `scenic status` and the health check print it: "idle: …", "stuck: …", "stale: …".
     pub fn line(&self) -> String {
         format!("{}: {}", self.kind, self.said)
     }
@@ -67,8 +68,8 @@ pub struct Open {
 }
 
 /// A leased job as the lead's coordinator holds it (crate::coord's `Coordinator::runs`): its worker,
-/// lease, step, targets (and those done, as its worker's beat last said), threads, since when (unix
-/// s), the time it was sized to there (s) and what it has under way.
+/// lease, step, targets (and those done, as its worker's beat last said), threads, and how still
+/// it is (None: no beat heard yet).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub worker: String,
@@ -77,18 +78,18 @@ pub struct Run {
     pub targets: usize,
     pub done: Option<usize>,
     pub threads: u32,
-    pub since: u64,
-    pub sized_s: Option<u64>,
-    pub under_way: Option<UnderWay>,
+    pub still: Option<Still>,
 }
 
-/// A job's target under way (empty: its start, before its first target), since when (unix s), and
-/// the time past which it is late on the job's Mac at its threads (s, `Sched::late_on`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct UnderWay {
-    pub target: String,
-    pub since: u64,
+/// How long a job's work hasn't moved by its worker's beats (s), its step's usual stillness (s,
+/// crate::coord::history::History::still_p90; None: not measured), and where it is, as its last
+/// beat said: the target under way (empty: none, its start) and its phase.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Still {
+    pub secs: u64,
     pub usual_s: Option<u64>,
+    pub target: String,
+    pub phase: Option<String>,
 }
 
 /// Every flag of the lead's status `st`, at `now`.
@@ -97,7 +98,7 @@ pub fn of(st: &Status, open: &[Open], runs: &[Run], factor: f64, now: u64) -> Ve
         return Vec::new();
     }
     let mut v = idle(st, open);
-    v.extend(overdue(st, runs, factor, now));
+    v.extend(stuck(st, runs, factor));
     v.extend(stale(st, runs, factor, now));
     v
 }
@@ -190,18 +191,14 @@ fn names(text: &str, step: &str) -> bool {
     })
 }
 
-/// The stuck and overdue flags (the module's doc): one per job past `factor` times its target's
-/// time, else past `factor` times its sized time.
-pub fn overdue(st: &Status, runs: &[Run], factor: f64, now: u64) -> Vec<Flag> {
-    let past = |since: u64, usual: Option<u64>| {
-        let usual = usual.filter(|&u| u > 0)?;
-        let ran = now.saturating_sub(since);
-        ((ran as f64) > usual as f64 * factor).then_some((ran, usual))
-    };
+/// The stuck flags (the module's doc): one per job still past `factor` times its step's usual.
+pub fn stuck(st: &Status, runs: &[Run], factor: f64) -> Vec<Flag> {
     runs.iter()
         .filter_map(|r| {
             let mac = crate::paces::mac_of(&r.worker).to_string();
-            if held(st, &mac) {
+            let s = r.still.as_ref()?;
+            let usual = s.usual_s?;
+            if held(st, &mac) || (s.secs as f64) <= usual as f64 * factor {
                 return None;
             }
             let batch = match r.done {
@@ -210,25 +207,16 @@ pub fn overdue(st: &Status, runs: &[Run], factor: f64, now: u64) -> Vec<Flag> {
                 _ => String::new(),
             };
             let threads = format!("{} thread{}", r.threads, if r.threads == 1 { "" } else { "s" });
-            let head = format!("{} (lease {}) on {mac}", r.step, r.lease);
-            if let Some(u) = &r.under_way {
-                if let Some((ran, usual)) = past(u.since, u.usual_s) {
-                    let what = if u.target.is_empty() { "its start".to_string() } else { u.target.clone() };
-                    let said = format!(
-                        "{head}: {what} under way {}, past {factor}× its usual {} there{batch}, {threads}",
-                        span(ran),
-                        span(usual)
-                    );
-                    return Some(Flag { kind: "stuck".into(), mac, said });
-                }
-            }
-            let (ran, sized) = past(r.since, r.sized_s)?;
+            let at = if s.target.is_empty() { "its start".to_string() } else { s.target.clone() };
+            let phase = s.phase.as_ref().map_or(String::new(), |p| format!(", {p}"));
             let said = format!(
-                "{head} has run {}, past {factor}× the {} it was sized to{batch}, {threads}",
-                span(ran),
-                span(sized)
+                "{} (lease {}) on {mac}: nothing moved for {} ({at}{phase}), past {factor}× its step's usual still stretch of {}{batch}, {threads}",
+                r.step,
+                r.lease,
+                span(s.secs),
+                span(usual)
             );
-            Some(Flag { kind: "overdue".into(), mac, said })
+            Some(Flag { kind: "stuck".into(), mac, said })
         })
         .collect()
 }
@@ -350,123 +338,61 @@ mod tests {
         assert!(of(&st, &[], &[], 3.0, 0).is_empty());
     }
 
-    /// A job past the factor times the time it was sized to is flagged with its batch's progress;
-    /// within it, or of no time known, not.
-    #[test]
-    fn a_job_past_the_factor_is_flagged() {
-        let st = lead();
-        let run = Run {
-            worker: "m4 #2".into(),
-            lease: 7,
-            step: "slope-deep".into(),
-            targets: 36,
-            done: Some(12),
-            threads: 3,
-            since: 1_000,
-            sized_s: Some(900),
-            under_way: None,
-        };
-        let at = |r: &Run, f: f64, t: u64| overdue(&st, std::slice::from_ref(r), f, t);
-        assert!(at(&run, 3.0, 1_000 + 3 * 900).is_empty(), "at 3× exactly");
-        // (4 Nov: the M4's slope-deep job at 3 threads for 5 h.)
-        let f = at(&run, 3.0, 1_000 + 5 * 3_600);
-        assert_eq!(f.len(), 1);
-        assert_eq!(f[0].mac, "m4");
-        assert_eq!(
-            f[0].line(),
-            "overdue: slope-deep (lease 7) on m4 has run 5.0 h, past 3× the 15 min it was sized to, 12 of 36 targets done, 3 threads"
-        );
-        assert!(at(&run, 30.0, 1_000 + 5 * 3_600).is_empty(), "a larger factor set");
-        assert!(at(&Run { sized_s: None, ..run }, 3.0, 1_000 + 50 * 3_600).is_empty());
+    fn run(step: &str, secs: u64, usual: Option<u64>) -> Run {
+        Run {
+            worker: "m1 #2".into(),
+            lease: 9,
+            step: step.into(),
+            targets: 8,
+            done: Some(2),
+            threads: 4,
+            still: Some(Still { secs, usual_s: usual, target: "6/55/26".into(), phase: Some("sampling glo30".into()) }),
+        }
     }
 
-    /// A job making no progress is found by its target under way, well before its batch's time: 5
-    /// Nov, terrain-hi jobs at 0 tiles and no CPU for 20 min; and before its first target, by its
-    /// start's. Stuck isn't said overdue too.
+    /// A job whose work stopped is stuck past the factor times its step's usual stillness, said
+    /// with where it is and its batch's progress; within it, or of a step not measured, or before
+    /// its first beat, not.
     #[test]
-    fn a_target_past_the_factor_is_flagged_stuck() {
+    fn a_job_still_past_the_factor_is_stuck() {
         let st = lead();
-        let under =
-            |target: &str, since: u64, usual: u64| UnderWay { target: target.into(), since, usual_s: Some(usual) };
-        let run = Run {
-            worker: "m1".into(),
-            lease: 9,
-            step: "terrain-hi".into(),
-            targets: 8,
-            done: Some(0),
-            threads: 4,
-            since: 1_000,
-            sized_s: Some(900),
-            under_way: Some(under("9/80/180", 1_030, 110)),
-        };
-        let at = |r: &Run, t: u64| overdue(&st, std::slice::from_ref(r), 3.0, t);
-        assert!(at(&run, 1_030 + 330).is_empty(), "within 3× its target's time");
-        let f = at(&run, 1_030 + 20 * 60);
+        let at = |r: &Run, f: f64| stuck(&st, std::slice::from_ref(r), f);
+        // (5 Nov: terrain-hi jobs at 0 tiles and no CPU, still 20 min against a usual 4 min.)
+        let f = at(&run("terrain-hi", 20 * 60, Some(240)), 3.0);
         assert_eq!(
             f.iter().map(Flag::line).collect::<Vec<_>>(),
-            ["stuck: terrain-hi (lease 9) on m1: 9/80/180 under way 20 min, past 3× its usual 2 min there, 0 of 8 targets done, 4 threads"]
+            ["stuck: terrain-hi (lease 9) on m1: nothing moved for 20 min (6/55/26, sampling glo30), past 3× its step's usual still stretch of 4 min, 2 of 8 targets done, 4 threads"]
         );
-        let f = at(&run, 1_000 + 5 * 3_600);
-        assert_eq!((f.len(), f[0].kind.as_str()), (1, "stuck"), "one flag a job: {f:?}");
-        let start = Run { under_way: Some(under("", 1_000, 60)), ..run.clone() };
-        assert!(at(&start, 1_000 + 20 * 60)[0].said.contains(": its start under way 20 min"));
-        // A target of no time known: by its batch's alone.
-        let unknown = Run { under_way: Some(UnderWay { usual_s: None, ..under("9/80/180", 1_030, 0) }), ..run };
-        assert!(at(&unknown, 1_030 + 20 * 60).is_empty());
-        assert_eq!(at(&unknown, 1_000 + 3 * 3_600)[0].kind, "overdue");
+        assert!(at(&run("terrain-hi", 3 * 240, Some(240)), 3.0).is_empty(), "at 3× exactly");
+        assert!(at(&run("terrain-hi", 20 * 60, Some(240)), 6.0).is_empty(), "a larger factor set");
+        assert!(at(&run("terrain-hi", 50 * 3_600, None), 3.0).is_empty(), "its step not measured");
+        assert!(at(&Run { still: None, ..run("terrain-hi", 0, Some(240)) }, 3.0).is_empty(), "no beat heard");
+        let start =
+            Run { still: Some(Still { secs: 900, usual_s: Some(60), ..Default::default() }), ..run("pack", 0, None) };
+        assert!(
+            at(&start, 3.0)[0].said.contains("nothing moved for 15 min (its start), past"),
+            "{:?}",
+            at(&start, 3.0)
+        );
+        // A Mac paused alone isn't flagged.
+        let mut st = lead();
+        st.helpers.push(Status { host: "m1".into(), held: Some(crate::control::Hold::new("t")), ..Default::default() });
+        assert!(stuck(&st, &[run("terrain-hi", 20 * 60, Some(240))], 3.0).is_empty());
     }
 
-    /// A batch of mixed target sizes (one big tile, twelve small) whose uploads land beside the next
-    /// target's work, as its costs file says (5 Nov: 9 of 13 tiles made, "0 of 13 targets done"):
-    /// its done count is the targets ended, each flag compares a target's time with that target's
-    /// usual time and the job's with the time its targets were sized to, so a healthy batch
-    /// (small targets quick, the big one long) is flagged by neither; one slow target is stuck.
+    /// The false flags of 6 Nov's health checks: jobs long past their targets' earlier times while
+    /// their work moved (a first fetch, a cold copy, a slow NAS) are still a moment at most, so not
+    /// stuck, however long their target takes; there is no flag of a job's time as a whole.
     #[test]
-    fn a_healthy_batch_of_mixed_sizes_is_not_flagged() {
+    fn a_slow_job_still_moving_is_not_flagged() {
         let st = lead();
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("costs.jsonl");
-        let line = |k: u32, what: &str| format!("{{\"unit\":\"terrain-hi 6/1/{k}\",{what}}}\n");
-        // The big tile (6/1/0) first, then small ones, the cost lines one target behind.
-        let mut text = line(0, "\"started\":1000");
-        for k in 1..=9u32 {
-            text += &line(k, &format!("\"started\":{}", 1_600 + 30 * k));
-            text += &line(k - 1, "\"peak_mb\":9");
-        }
-        std::fs::write(&p, text).unwrap();
-        let t = crate::agent::memguard::targets(&p);
-        assert_eq!(t.ended, 9, "9 of 13 made: {t:?}");
-        let on = t.on.unwrap();
-        assert_eq!(on.0, "terrain-hi 6/1/9");
-        // Sized: the big tile 600 s, twelve small ones 30 s each, a start of 40 s: 1,000 s.
-        let run = Run {
-            worker: "mini".into(),
-            lease: 1,
-            step: "terrain-hi".into(),
-            targets: 13,
-            done: Some(t.ended),
-            threads: 4,
-            since: 1_000,
-            sized_s: Some(1_000),
-            under_way: Some(UnderWay { target: "6/1/9".into(), since: on.1, usual_s: Some(30) }),
+        // (pyramids-fill 6/55/26 under way 24 min, its targets' earlier runs 1 min: its last beat
+        // saw its fetch's bytes move, so it is still 0 s.)
+        let fill = Run {
+            still: Some(Still { secs: 0, usual_s: Some(120), ..Default::default() }),
+            ..run("pyramids-fill", 0, None)
         };
-        let at = |r: &Run, now: u64| overdue(&st, std::slice::from_ref(r), 3.0, now);
-        // 9 targets in 880 s (the big one in 600): well within its sized time and 3x each one's.
-        assert!(at(&run, on.1 + 20).is_empty(), "{:?}", at(&run, on.1 + 20));
-        // The tenth small target stuck 2 min (past 3x its usual 30 s): stuck, saying 9 of 13 done.
-        let f = at(&run, on.1 + 120);
-        assert_eq!(f.len(), 1, "{f:?}");
-        assert_eq!(f[0].kind, "stuck");
-        assert!(f[0].said.contains("9 of 13 targets done"), "{}", f[0].said);
-        // The same batch slow as a whole (3,100 s of a sized 1,000 s) with every target moving:
-        // overdue, with the same count.
-        let moving = Run {
-            under_way: Some(UnderWay { target: "6/1/9".into(), since: 1_000 + 3_090, usual_s: Some(30) }),
-            ..run
-        };
-        let f = at(&moving, 1_000 + 3_100);
-        assert_eq!((f.len(), f[0].kind.as_str()), (1, "overdue"), "{f:?}");
-        assert!(f[0].said.contains("9 of 13 targets done"), "{}", f[0].said);
+        assert!(of(&st, &[], &[fill], 3.0, 0).is_empty());
     }
 
     /// A catalogue due past the factor times the plan's most hold (11 min) and not going out is
@@ -503,9 +429,7 @@ mod tests {
             targets: 0,
             done: None,
             threads: 1,
-            since: now - 60,
-            sized_s: None,
-            under_way: None,
+            still: None,
         };
         assert!(stale(&st, &[job], 3.0, now).is_none(), "its job is under way");
         assert!(stale(&st, &[], 3.0, now).is_some());

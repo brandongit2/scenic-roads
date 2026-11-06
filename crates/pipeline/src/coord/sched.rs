@@ -625,23 +625,6 @@ impl Sched {
         }
     }
 
-    /// The time past which `target` of `step` under way on `worker` at `threads` is late (s, the
-    /// stuck flag's: crate::agent::flags): its own run's (`secs_on`, its Mac's pace and threads),
-    /// a drop's its step's drops'; a target never run itself, the larger of that and its step's
-    /// runs' 90th percentile at the worker's pace (crate::needs::Book::secs_p90, its good fit's
-    /// where it has one): its step's mean says what a batch of such targets takes together, not
-    /// one, and a long-tailed step's big target ran past three times it while healthy (trees, 6
-    /// Nov: 8 % of its runs past three times their mean, 1.6 % past three times their p90). None
-    /// when none of its step's has run the way it runs now.
-    pub(super) fn late_on(&self, step: &str, target: &str, worker: &str, threads: u32) -> Option<u64> {
-        let (s, _) = self.secs_on(step, target, worker, threads)?;
-        let own = self.costs.get(&cost_key(step, target)).is_some_and(|c| c.v >= cost_version(step));
-        if own || self.drops.contains(&(step.to_string(), target.to_string())) {
-            return Some(s);
-        }
-        Some(s.max(self.book().secs_p90(step, target, threads, Some(worker)).unwrap_or(0)))
-    }
-
     /// The threads a job of `step` starting with `first` is sized at on `worker`'s Mac of `total`
     /// cores: the grant rule's (`lease_cores`) for it alone.
     pub fn sizing_threads(&self, worker: &str, step: &str, first: &str, total: u32) -> u32 {

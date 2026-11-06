@@ -56,6 +56,16 @@ pub struct Lease {
     pub live_at: Option<Instant>,
     #[serde(skip)]
     pub window: std::collections::VecDeque<(Instant, crate::agent::jobs::Live)>,
+    /// Its job's stillness as its worker's beats show it (docs/pool.md §10, Flags; in memory
+    /// alone, a lead restarted counts from its load): the last beat heard, the last at which its
+    /// work moved (None: none yet, counted from its grant: `Lease::still`), and the longest stretch
+    /// between two such so far (s).
+    #[serde(skip)]
+    pub heard: Option<Instant>,
+    #[serde(skip)]
+    pub moved: Option<Instant>,
+    #[serde(skip)]
+    pub still_most: u64,
     /// The threads its job is counted for (0: not said): granted, then as re-granted (docs/pool.md
     /// §7.1, Threads re-granted: the most of what it runs on now, what its agent has told it and
     /// what it is still to be told), the cores the pool's own work takes on its Mac, apart from load
@@ -93,6 +103,19 @@ impl Lease {
         let (live, at) = (self.live.as_ref()?, self.live_at?);
         let (t, base) = self.window.front().filter(|(t, _)| at.saturating_duration_since(*t) >= WINDOW)?;
         live.nas_rate(Some(base), at.saturating_duration_since(*t).as_secs_f64())
+    }
+
+    /// How long its job's work has not moved, by the beats heard: from the last beat at which it
+    /// moved (its grant, before one) to the last heard; None before any beat (no word of it either
+    /// way). A beat not heard says nothing: a worker out of touch is its own warning.
+    pub fn still(&self) -> Option<Duration> {
+        Some(self.heard?.saturating_duration_since(self.moved.unwrap_or(self.granted)))
+    }
+
+    /// The longest its job went with nothing moving, to `end` (its end: a move of its own), in
+    /// whole seconds: what its step's runs are held to (crate::coord::history::History::still_p90).
+    pub fn still_most(&self, end: Instant) -> u64 {
+        self.still_most.max(end.saturating_duration_since(self.moved.unwrap_or(self.granted)).as_secs())
     }
 
     /// A job lease's targets (none for a task).
@@ -470,6 +493,9 @@ impl Leases {
                 live: None,
                 live_at: None,
                 window: Default::default(),
+                heard: None,
+                moved: None,
+                still_most: 0,
                 slot: None,
                 threads: 0,
                 start_threads: 0,
@@ -538,11 +564,21 @@ impl Leases {
         match self.by_id.get_mut(&id) {
             Some(l) if l.worker == worker && lasts => {
                 l.deadline = now + self.ttl;
+                // (Its work moved: its progress line, or anything its job's view says, changed.)
+                let frac = frac.filter(|f| f.is_finite()).map(|f| f.clamp(0.0, 1.0));
+                let moved = (progress.is_some() && progress != l.progress)
+                    || (frac.is_some() && frac != l.frac)
+                    || live.as_ref().is_some_and(|v| l.live.as_ref() != Some(v));
+                if moved {
+                    l.still_most = l.still_most(now);
+                    l.moved = Some(now);
+                }
+                l.heard = Some(now);
                 if progress.is_some() {
                     l.progress = progress;
                 }
-                if let Some(f) = frac.filter(|f| f.is_finite()) {
-                    l.frac = Some(f.clamp(0.0, 1.0));
+                if frac.is_some() {
+                    l.frac = frac;
                 }
                 if let Some(v) = live {
                     // (Views older than the newest one `WINDOW` back are let go.)
@@ -776,5 +812,31 @@ mod tests {
         let mine = b.grant("m4", job(&[("6/2/2", "k2")]), t1);
         assert!(mine > id && b.of(mine).unwrap().term == 5);
         assert!(b.restore(&serde_json::json!({"leases": 3}), t1).is_err());
+    }
+
+    /// A job's stillness by its beats (task #986): anything its view or progress line says
+    /// changed is a move; the stretch from its last move to the last beat heard is how still it is
+    /// now, and the longest between two moves (its end one) what its run is held to.
+    #[test]
+    fn a_jobs_stillness_is_the_time_since_its_beats_saw_it_move() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut ls = Leases::new(Duration::from_secs(600));
+        let id = ls.grant("m1", Work::Job { step: "unit".into(), targets: vec![] }, t0);
+        assert_eq!(ls.of(id).unwrap().still(), None, "no beat yet");
+        let view = |bytes: u64| crate::agent::jobs::Live { nas_read: Some(bytes), ..Default::default() };
+        assert!(ls.renew_frac(id, "m1", None, None, Some(view(1)), at(60)));
+        assert!(ls.renew_frac(id, "m1", None, None, Some(view(1)), at(120)));
+        assert!(ls.renew_frac(id, "m1", None, None, Some(view(1)), at(180)));
+        assert_eq!(ls.of(id).unwrap().still(), Some(Duration::from_secs(120)));
+        // (Its bytes moved: still no more.)
+        assert!(ls.renew_frac(id, "m1", None, None, Some(view(2)), at(240)));
+        assert_eq!(ls.of(id).unwrap().still(), Some(Duration::ZERO));
+        // (Its progress line moved, its view the same.)
+        assert!(ls.renew_frac(id, "m1", Some("1/4 tiles".into()), None, Some(view(2)), at(270)));
+        assert!(ls.renew_frac(id, "m1", Some("1/4 tiles".into()), None, Some(view(2)), at(330)));
+        assert_eq!(ls.of(id).unwrap().still(), Some(Duration::from_secs(60)));
+        assert_eq!(ls.of(id).unwrap().still_most(at(400)), 180, "60 s to 240 s; its end 130 s after its last move");
+        assert_eq!(ls.of(id).unwrap().still_most(at(500)), 230);
     }
 }

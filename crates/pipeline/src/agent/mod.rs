@@ -947,7 +947,7 @@ pub struct Status {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<crate::inputs::view::InputView>,
     /// What needs a look (flags::of, task #953: a Mac idle while work it could take waits, a job
-    /// stuck or overdue, a catalogue stale): the lead's, worked out at each round.
+    /// stuck, a catalogue stale): the lead's, worked out at each round.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<flags::Flag>,
 }
@@ -6965,6 +6965,11 @@ impl Agent {
             .as_ref()
             .map_or((String::new(), String::new()), |r| (r.spec.id.clone(), r.spec.what.clone()));
         let step = if step.is_empty() { id.split(' ').next().unwrap_or("").to_string() } else { step.to_string() };
+        // (Its lease's stillness, as the lead heard its beats: noted before the lease ends.)
+        let still_s = match (&self.coord, &self.slots[k].lease) {
+            (Some(c), Some(Held::Own(l) | Held::Pooled { id: l, .. })) => c.still_most(*l),
+            _ => None,
+        };
         self.note(crate::coord::history::Event {
             worker: Some(self.worker_of(k)),
             step: (!step.is_empty()).then_some(step),
@@ -6973,6 +6978,7 @@ impl Agent {
             ok: Some(ok),
             what,
             note: how.to_string(),
+            still_s,
             ..crate::coord::history::Event::new("end")
         });
     }
