@@ -4,43 +4,27 @@ import { getDrives, type Drive } from '../api';
 import { COMPONENTS } from '../scenic';
 import * as prefs from '../prefs';
 import { cap, fmt, h } from './dom';
+import { LENGTHS, ListPane } from './listpane';
 import { displayName } from '../names';
 
-const LENGTHS = [2, 5, 10, 25];
 /** What "≈" by a list's count means. */
 export const APPROX_TIP = 'Zoomed out: found in 500 m summaries of the roads (scores within a point or two of the exact ones); zoom in for exact lists.';
 
-export class DrivesPane {
+/** `len`: whole-road length filter [min, max], km (0 = no limit); `approx`: zoomed out (the
+ * server's summaries). */
+type Query = { bbox: string; poly: string; classes: number; surface: number; toll: number; unnamed: number; len: [number, number]; weights: number[]; approx: boolean };
+
+export class DrivesPane extends ListPane<Drive, Query> {
   private len = 5;
-  private list: HTMLDivElement;
-  private count: HTMLSpanElement;
-  private spin: HTMLSpanElement;
-  private seg: HTMLButtonElement[] = [];
-  private abort: AbortController | null = null;
-  private timer = 0;
-  private lastKey = '';
+  private lenSeg: { el: HTMLDivElement; on: (l: number) => void };
   onResults: (d: Drive[]) => void = () => {};
-  onHover: (d: Drive | null) => void = () => {};
-  onSelect: (d: Drive) => void = () => {};
-  /** The row under the pointer (G, M, O open it). */
-  hovered: Drive | null = null;
   /** Listed stretches drawn on the map all the time (else only the hovered one). */
   showOnMap = prefs.load('drives.showOnMap', false);
   onShowChange: (on: boolean) => void = () => {};
-  /** `len`: whole-road length filter [min, max], km (0 = no limit); `approx`: zoomed out (the
-   * server's summaries). */
-  query: () => { bbox: string; poly: string; classes: number; surface: number; toll: number; unnamed: number; len: [number, number]; weights: number[]; approx: boolean } = () => ({ bbox: '', poly: '', classes: 0, surface: 3, toll: 3, unnamed: 0, len: [0, 0], weights: [], approx: false });
 
-  constructor(readonly root: HTMLElement) {
-    this.list = h('div', { class: 'picks' });
-    this.count = h('span', { class: 'faint' });
-    this.spin = h('span', { class: 'spin', hidden: true });
-    const seg = h('div', { class: 'seg small' });
-    for (const l of LENGTHS) {
-      const b = h('button', { title: `Best ${l} km stretch of each road`, onclick: () => this.setLen(l) }, `${l} km`);
-      this.seg.push(b);
-      seg.append(b);
-    }
+  constructor(root: HTMLElement) {
+    super(root, 'Scenic drives not available.', () => ({ bbox: '', poly: '', classes: 0, surface: 3, toll: 3, unnamed: 0, len: [0, 0], weights: [], approx: false }));
+    this.lenSeg = this.lengthSeg('road', (l) => this.setLen(l));
     const show = h('input', { type: 'checkbox' });
     show.checked = this.showOnMap;
     show.addEventListener('change', () => {
@@ -49,7 +33,7 @@ export class DrivesPane {
       this.onShowChange(show.checked);
     });
     root.append(
-      seg,
+      this.lenSeg.el,
       h('div', { class: 'picks-meta' }, this.count, this.spin,
         h('label', { class: 'show-map', title: 'Highlight the listed stretches on the map all the time (hovering a row always highlights it)' }, show, 'On map')),
       this.list,
@@ -63,38 +47,23 @@ export class DrivesPane {
   private setLen(l: number) {
     this.len = l;
     prefs.save('drives.len', l);
-    this.seg.forEach((b, i) => b.classList.toggle('on', LENGTHS[i] === l));
+    this.lenSeg.on(l);
     this.lastKey = '';
     this.refresh(true);
   }
 
-  refresh(now = false) {
-    if (this.root.hidden) return;
-    clearTimeout(this.timer);
-    this.timer = window.setTimeout(() => this.load(), now ? 0 : 300);
+  protected key(q: Query, w: string) {
+    return `${q.poly || q.bbox}|${q.classes}|${q.surface}|${q.toll}|${q.unnamed}|${q.len}|${w}|${this.len}|${q.approx}`;
   }
 
-  private async load() {
-    const q = this.query();
-    const w = q.weights.map((v) => v.toFixed(2)).join(',');
-    const key = `${q.poly || q.bbox}|${q.classes}|${q.surface}|${q.toll}|${q.unnamed}|${q.len}|${w}|${this.len}|${q.approx}`;
-    if (key === this.lastKey) return;
-    this.lastKey = key;
-    this.abort?.abort();
-    this.abort = new AbortController();
-    this.spin.hidden = false;
-    try {
-      const d = await getDrives({ bbox: q.bbox, poly: q.poly, w, len: String(this.len), limit: '30', classes: String(q.classes), surface: String(q.surface), toll: String(q.toll), unnamed: String(q.unnamed), lmin: String(q.len[0] * 1000), lmax: String(q.len[1] * 1000), ...(q.approx ? { approx: '1' } : {}) }, this.abort.signal);
-      this.render(d);
-      this.onResults(d.drives);
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
-        this.list.replaceChildren(h('div', { class: 'muted' }, 'Scenic analysis not available — run the scenic pipeline step.'));
-        this.onResults([]);
-      }
-    } finally {
-      this.spin.hidden = true;
-    }
+  protected async fetch(q: Query, w: string, signal: AbortSignal) {
+    const d = await getDrives({ bbox: q.bbox, poly: q.poly, w, len: String(this.len), limit: '30', classes: String(q.classes), surface: String(q.surface), toll: String(q.toll), unnamed: String(q.unnamed), lmin: String(q.len[0] * 1000), lmax: String(q.len[1] * 1000), ...(q.approx ? { approx: '1' } : {}) }, signal);
+    this.render(d);
+    this.onResults(d.drives);
+  }
+
+  protected failed() {
+    this.onResults([]);
   }
 
   private render(d: { total: number; drives: Drive[]; approx?: boolean }) {
@@ -116,19 +85,7 @@ export class DrivesPane {
           .map(([v, k]) => `${COMPONENTS[k].label} ${Math.round(v * 100)}`);
         const flags = [c.parts[10] > 0.3 ? 'scenic route' : '', c.parts[11] > 0.3 ? 'viewpoints' : '']
           .filter(Boolean);
-        const bar = h('i', { class: 'sbar' });
-        bar.style.width = `${Math.max(4, c.score)}%`;
-        const row = h('a', { class: 'pick', onclick: () => this.onSelect(c) },
-          h('span', { class: 'rank' }, String(i + 1)),
-          h('div', { class: 'cbody' },
-            h('div', { class: 'cl1' }, title, h('b', {}, c.score.toFixed(0))),
-            h('div', { class: 'sbarw' }, bar),
-            h('div', { class: 'cl2' }, `${fmt.dist(c.length_m)} · ${[...top, ...flags].join(' · ')}`),
-          ),
-        );
-        row.addEventListener('mouseenter', () => this.onHover((this.hovered = c)));
-        row.addEventListener('mouseleave', () => this.onHover((this.hovered = null)));
-        return row;
+        return this.row(i, title, c.score, `${fmt.dist(c.length_m)} · ${[...top, ...flags].join(' · ')}`, c);
       }),
     );
   }
