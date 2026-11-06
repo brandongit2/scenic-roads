@@ -93,3 +93,6 @@ mod terrain_tests;
 
 #[cfg(test)]
 mod trees_tests;
+
+#[cfg(test)]
+mod roads_tests;
