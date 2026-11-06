@@ -3699,6 +3699,7 @@ mod tests {
             step: step.into(),
             targets: ts.iter().map(|t| (t.clone(), "k".to_string())).collect(),
             threads: 2,
+            granted_at: 0,
         };
         let packs: Vec<String> = regions[0].packs.iter().map(|p| p.0.clone()).take(5).collect();
         let st = State {
@@ -3957,6 +3958,25 @@ mod tests {
             let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
             check(&r.input);
         }
+    }
+
+    /// A recorded forecast's scheduler (SCENIC_PACK_RECORD: a forecast-input.json, its leases'
+    /// `granted_at` where said) asked once by its lead as its last ask said, at the record's time:
+    /// what it grants and why it grants no more, printed (unset: nothing). How task #973 showed the
+    /// mini's held room taking work on a frozen copy of its state.
+    #[test]
+    fn recorded_lead_pack() {
+        let Ok(p) = std::env::var("SCENIC_PACK_RECORD") else { return };
+        let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
+        let st = r.input.sched.as_ref().expect("the lead's scheduler's state");
+        let clock = Clock { now: Instant::now(), unix: r.input.now };
+        let mut s = Sched::from_state(st, clock, RUN_TTL);
+        let a = st.workers.iter().find(|w| w.ask.worker == st.lead_name).expect("the lead's ask").ask.clone();
+        let (picks, why) = s.pack(&a, &st.offers, true, clock);
+        for p in &picks {
+            eprintln!("granted: {} ({} targets, {} threads)", p.step, p.targets.len(), p.threads);
+        }
+        eprintln!("granted {} of {} wanted; why: {}", picks.len(), a.want, why.unwrap_or_default());
     }
 
     /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed. For profiling at live scale (unset: nothing);
