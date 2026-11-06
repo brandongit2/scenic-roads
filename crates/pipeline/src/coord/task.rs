@@ -15,7 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-pub use coordwire::task::{beats, clone, safe, Offer, Output, MARGIN};
+pub use coordwire::task::{beats, Offer, Output};
+use coordwire::task::{clone, safe, MARGIN};
 
 #[derive(Clone, Debug)]
 pub enum State {

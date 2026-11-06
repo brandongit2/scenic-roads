@@ -17,10 +17,10 @@
 //! holding it, run here too (whichever finishes first counts; one not measured is kept by the
 //! coordinator to finish, to measure it).
 
-use crate::coord::client::Client;
 use crate::unit::Run;
 use anyhow::{Context, Result};
 use codecs::legacy::TileId;
+use coordwire::client::Client;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -125,7 +125,7 @@ impl Patience {
     pub fn wait_on(&self, waited_s: f64, age_s: f64, pace: Option<f64>) -> bool {
         let budget = self.budget();
         match pace {
-            Some(p) if waited_s < budget => p * crate::coord::task::MARGIN * budget - age_s <= budget - waited_s,
+            Some(p) if waited_s < budget => p * coordwire::task::MARGIN * budget - age_s <= budget - waited_s,
             _ => false,
         }
     }
@@ -262,7 +262,7 @@ impl Offload {
         ahead: Option<f64>,
     ) -> Result<Offered> {
         let ahead = ahead.filter(|a| a.is_finite() && *a > 0.0 && jobrt::jobs::ahead_on());
-        let offer = crate::coord::task::Offer {
+        let offer = coordwire::task::Offer {
             owner: self.owner,
             kind: kind.into(),
             spec,
@@ -288,7 +288,7 @@ impl Offload {
                     }
                     let dst = root.join(&rel);
                     std::fs::create_dir_all(dst.parent().unwrap())?;
-                    crate::coord::task::clone(&src, &dst)
+                    coordwire::task::clone(&src, &dst)
                         .with_context(|| format!("clone {} to {}", src.display(), dst.display()))?;
                     inputs.insert(rel, std::fs::metadata(&dst)?.len());
                 }
@@ -367,7 +367,7 @@ impl Offload {
                 Some("offered") if held.is_none() && since(began) < self.lease_wait => {
                     let wait = *lease_wait.get_or_insert_with(|| {
                         let takers = st["takers"].as_array().cloned().unwrap_or_default();
-                        let fast = takers.iter().any(|w| w["pace"].as_f64().is_some_and(crate::coord::task::beats));
+                        let fast = takers.iter().any(|w| w["pace"].as_f64().is_some_and(coordwire::task::beats));
                         // (Else one not measured, once an hour: told, so the hour starts now.)
                         fast || (takers.iter().any(|w| w["explore"] == true)
                             && self
@@ -556,7 +556,7 @@ pub fn run_task(
     let mut sent = std::collections::HashMap::new();
     let fetching = jobrt::timings::phase("fetching its files from the coordinator");
     for (p, n) in &inputs {
-        let rel = crate::coord::task::safe(p).with_context(|| format!("a task input outside its folder: {p}"))?;
+        let rel = coordwire::task::safe(p).with_context(|| format!("a task input outside its folder: {p}"))?;
         let t = std::time::Instant::now();
         let b = client.get_bytes(&format!("/work/in/{lease}/{p}"))?;
         let secs = t.elapsed().as_secs_f64();
@@ -620,7 +620,7 @@ pub fn run_task(
         }
         client.put_bytes(&format!("/work/out/{lease}/{rel}"), &b)?;
         sending.count(b.len() as u64, 1);
-        outputs.push(crate::coord::task::Output { path: rel, size: b.len() as u64 });
+        outputs.push(coordwire::task::Output { path: rel, size: b.len() as u64 });
     }
     let removed: Vec<&str> = had.iter().filter(|p| p.starts_with("u/") && !dir.join(p).exists()).copied().collect();
     jobrt::jobs::report(steps, steps, "steps");
@@ -683,7 +683,7 @@ fn matching(pat: &str, dir: &Path, bdir: Option<&Path>) -> Result<Vec<(String, P
 
 /// A finished task's outputs (`u/<path>`) in the z6 tile's folder.
 fn place(dir: &Path, path: &str) -> Option<PathBuf> {
-    path.strip_prefix("u/").and_then(crate::coord::task::safe).map(|p| dir.join(p))
+    path.strip_prefix("u/").and_then(coordwire::task::safe).map(|p| dir.join(p))
 }
 
 /// Moves a worker's outputs into the z6 tile's folder, and removes what it removed.
@@ -1092,7 +1092,7 @@ mod tests {
         assert!(names("{dir}/missing.bin").is_empty());
         assert!(matching("{cache}/chm10/x", &dir, None).is_err());
         // A clone has the same bytes; outputs placed back only inside the folder.
-        let clone = crate::coord::task::clone;
+        let clone = coordwire::task::clone;
         clone(&dir.join("samples.bin"), &d.path().join("c.bin")).unwrap();
         assert_eq!(std::fs::read(d.path().join("c.bin")).unwrap(), b"samples.bin");
         // A link: matched, and linked again to the same file.
