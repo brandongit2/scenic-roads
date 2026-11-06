@@ -10,6 +10,10 @@
 
 use super::jobs::Work;
 use super::nasread;
+use super::publish::{
+    PublishLine, PublishRegion, Publishing, CATALOGUE_CAP_S, CATALOGUE_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S,
+    NAMES_TODO_EVERY_S, OVERLAYS_EVERY_S,
+};
 use super::steps::{readiness, ready, Left, Ready, View};
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
 use crate::coverage::Coverage;
@@ -1750,116 +1754,10 @@ pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, d
     w
 }
 
-/// A catalogue at most this often (seconds; the owner's, 17 Oct): what's drawn meanwhile goes out
-/// with the next.
-pub const CATALOGUE_EVERY_S: u64 = 60;
-
 /// The publishing chain's steps a catalogue waits for (`publish_chain`): the map tiles no z6 tile
 /// reaches pruned, the map tiles whose owners changed, the road index. The rest (the low zooms, rail
 /// stops, ferries, roots) go out with a later catalogue.
 pub const CATALOGUE_GATE: [&str; 3] = ["prune", "pack", "roadunits"];
-
-/// How long (seconds) a catalogue may be held back by the map tiles or the road index still to draw,
-/// or their hand-offs waiting to be merged (z6 tiles landing one after another), counted from when it
-/// was first held (`Publish::held_for`): past it, one goes out with what's drawn and merged.
-pub const CATALOGUE_CAP_S: u64 = 600;
-
-/// The low zooms' cadence (`low_gate`): how long after they were last made they're made again
-/// while other work is queued (the owner's "every few hours"; a policy, not a measure). Sooner
-/// when much has changed (`low_due`), when nothing else is queued, and once everything is built.
-pub const LOW_EVERY_S: u64 = 3 * 3600;
-
-/// How publishing goes, as the switches under `state/pool/` say (crate::agent::publish).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Publishing {
-    /// Seconds since a catalogue last went out with the low zooms made: the map log's last batch
-    /// saying so (crate::agent::publish::LOW; None: none in the log).
-    pub since_low: Option<u64>,
-    /// A done region's slope and tree cover by the z6 tiles near it (`state/pool/near-slope`): the
-    /// slope z6 tiles whose z6 tile is within 20 km of it (what its slope reads), the tree cover
-    /// z6 tiles meeting it; not every stale z6 tile of the z3 tiles around it. Their assemblies (z3–8)
-    /// are made with the low zooms, and a region is done with its
-    /// z6 tiles.
-    pub near: bool,
-    /// Seconds since the landmark points and the area overlays last ran (`LastCatalogue::since`;
-    /// None: not known): their cadence (`MARKS_EVERY_S`, `OVERLAYS_EVERY_S`).
-    pub since_marks: Option<u64>,
-    pub since_overlays: Option<u64>,
-}
-
-/// The lead's record of its catalogues (its folder's `publishing.json`). When the last went out, and
-/// the last with the low zooms made, are the map log's (docs/maplog.md §6.5: its head batch, and its
-/// last batch saying crate::agent::publish::LOW).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct LastCatalogue {
-    /// When a catalogue due was first held back since the last (by the map tiles or the road index
-    /// to draw, `Plan::catalogue_held`, or their hand-offs waiting to be merged), kept across a
-    /// restart or a change of lead: `Publish::held_for` counts from it, toward `CATALOGUE_CAP_S`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub held_at: Option<u64>,
-    /// The cadence-gated steps' (`GATED`) last runs as the lead saw them: the key recorded, and
-    /// when it was first seen changed (`LastCatalogue::observe`). Only for when they're planned,
-    /// never in a key.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub ran: BTreeMap<String, Ran>,
-    /// The last plan had no z6 tile or terrain left to build (`Plan::idle`; not kept).
-    #[serde(skip)]
-    pub idle: bool,
-}
-
-/// A cadence-gated step's last run (`LastCatalogue::ran`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Ran {
-    /// Its key recorded ("" for none).
-    pub key: String,
-    /// When that key was first seen; None when it was already there as this record began (when it
-    /// ran isn't known: it's due).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<u64>,
-}
-
-/// The landmark points at most this often (seconds; the owner's, a policy) while z6 tiles build; at
-/// once when none's left.
-pub const MARKS_EVERY_S: u64 = 3600;
-/// The area overlays at most this often while z6 tiles build; and after the last.
-pub const OVERLAYS_EVERY_S: u64 = 6 * 3600;
-/// The names' to-do lists at most this often while z6 tiles build; after any catalogue when none's left.
-pub const NAMES_TODO_EVERY_S: u64 = 24 * 3600;
-/// The steps gated by time: the gate decides only WHEN they're planned; their keys stay by content.
-pub const GATED: [&str; 3] = ["marks", "overlays", "names-todo"];
-
-impl LastCatalogue {
-    /// Notes, at `now`, each gated step whose recorded key in `done` changed since last seen: a run
-    /// of it ended (the lead's own, or a member's merged). Whether the record changed.
-    pub fn observe(&mut self, done: &Keys, now: u64) -> bool {
-        let mut changed = false;
-        for step in GATED {
-            let key = done.lo.get(step).cloned().unwrap_or_default();
-            match self.ran.get_mut(step) {
-                Some(r) if r.key == key => {}
-                // (Its record dropped: not a run; its time kept.)
-                Some(r) if key.is_empty() => {
-                    r.key = key;
-                    changed = true;
-                }
-                Some(r) => {
-                    *r = Ran { key, at: Some(now) };
-                    changed = true;
-                }
-                None => {
-                    self.ran.insert(step.to_string(), Ran { key, at: None });
-                    changed = true;
-                }
-            }
-        }
-        changed
-    }
-
-    /// Seconds since gated step `step` last ran, as seen (None: not known).
-    pub fn since(&self, step: &str, now: u64) -> Option<u64> {
-        self.ran.get(step).and_then(|r| r.at).map(|t| now.saturating_sub(t))
-    }
-}
 
 /// Whether the low zooms (the roads' and rails' lo packs, the terrain's and slope's roots, the
 /// near way's assemblies) may be planned now: everything's built (`last`), nothing else is queued
@@ -1874,76 +1772,6 @@ pub fn low_gate(last: bool, queue_empty: bool, half_stale: bool, since: Option<u
 /// last run isn't known, or it was `every` seconds or more ago.
 pub fn gate_open(idle: bool, since: Option<u64>, every: u64) -> bool {
     idle || since.is_none_or(|s| s >= every)
-}
-
-/// Publishing as the plan has it now, for the agent's log and the build status (`publishing`;
-/// docs/building.md §2, Publishing).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct PublishLine {
-    /// What publishing does now, or waits for, in plain words.
-    pub why: String,
-    /// The map tiles to draw (pack(T) targets whose owners changed), and the z6 tiles whose change made
-    /// them stale (`by_unit`).
-    #[serde(default)]
-    pub tiles: usize,
-    /// The z6 tiles drawn (`units`: the status's stored key, read by the menu bar app and the page: kept).
-    #[serde(default)]
-    pub units: usize,
-    /// The regions done whose catalogue hasn't them as they are now, each with what it still waits
-    /// for.
-    #[serde(default)]
-    pub regions: Vec<PublishRegion>,
-    /// The low zooms are made now (`low_gate`).
-    #[serde(default)]
-    pub low: bool,
-    /// Seconds until the next catalogue may be made (`CATALOGUE_EVERY_S`; 0: it may now).
-    #[serde(default)]
-    pub wait_s: u64,
-    /// Since when a catalogue has been due without a break (unix s; held back, planned, or waiting
-    /// out its minute; None: none due): the stale flag's (crate::agent::flags), counted from the
-    /// last catalogue's going out where that's later.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub due_since: Option<u64>,
-}
-
-/// A region done whose catalogue hasn't it as it is now (`PublishLine::regions`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct PublishRegion {
-    pub id: String,
-    /// "new region" or "rebuilt" (its outline or z6 tiles changed), and while it isn't recorded built,
-    /// why: "waiting to be merged" (a z6 tile's or a map tile's hand-off), "map tiles to draw", or
-    /// "slope and tree cover to make".
-    pub kinds: Vec<String>,
-}
-
-impl PublishLine {
-    /// One line for the agent's log.
-    pub fn line(&self) -> String {
-        let regions = if self.regions.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "; done, not on the map as they are: {}",
-                self.regions
-                    .iter()
-                    .map(|r| format!("{} ({})", r.id, r.kinds.join(", ")))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        format!(
-            "publishing: {}{regions}{}",
-            self.why,
-            if self.low { "" } else { "; the low zooms wait for their turn" }
-        )
-    }
-
-    /// What the log line is logged again on: what publishing does and why, not the seconds counting
-    /// down nor the tiles' count as they're drawn, nor an error's text in what it waits for.
-    pub fn key(&self) -> String {
-        let why = self.why.split(" (").next().unwrap_or("");
-        format!("{why} {:?} {}", self.regions, self.low)
-    }
 }
 
 /// What the plan builds the regions by, one at a time, and publishes them by, as they're done:
@@ -4818,6 +4646,7 @@ pub fn catalogue_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, Str
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::agent::publish::{LastCatalogue, GATED};
     use crate::agent::recipes::Recipe;
     use crate::depth::build::depth_hi_box_read;
     use crate::reach::{LongWay, Reach};

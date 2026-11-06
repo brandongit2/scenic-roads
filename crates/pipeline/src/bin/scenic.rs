@@ -617,7 +617,7 @@ fn publish_name(what: &str) -> &str {
 }
 
 /// Publishing as it stands (the build page's map KPI says its last catalogue): what it does and
-/// why (agent::build::PublishLine), the last catalogue, the map tiles to draw and by which Mac, the
+/// why (agent::publish::PublishLine), the last catalogue, the map tiles to draw and by which Mac, the
 /// cadenced publishes next (agent::forecast), each Mac's catalogue adopted (agent::Published).
 fn publishing_lines(st: &agent::Status) -> Vec<String> {
     let mut out = Vec::new();
@@ -1685,7 +1685,7 @@ mod tests {
         let seen = |n: u64, ago: u64| agent::CatalogueSeen { n, at: now - ago };
         let fc = |what: &str, at: u64| agent::forecast::PublishFc { what: what.into(), at };
         let st = agent::Status {
-            publishing: Some(agent::build::PublishLine {
+            publishing: Some(agent::publish::PublishLine {
                 why: "drawing the map tiles of the units built".into(),
                 tiles: 18,
                 ..Default::default()

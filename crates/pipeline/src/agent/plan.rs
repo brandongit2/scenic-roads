@@ -30,7 +30,7 @@ const STEPS_EVERY: Duration = Duration::from_secs(60);
 pub(super) enum Msg {
     /// Its side as of this round (the newest kept: a burst coalesces).
     Inputs(Box<Inputs>),
-    /// A catalogue made (build::LastCatalogue::held_at).
+    /// A catalogue made (publish::LastCatalogue::held_at).
     CatalogueMade,
     /// A job done: a gate check or forget it asked for done.
     Done(String),
@@ -100,7 +100,7 @@ pub(super) struct PlanView {
     pub checklist: Vec<build::Line>,
     pub built: BTreeMap<String, build::RegionState>,
     pub forecast: Option<forecast::Forecast>,
-    pub publishing: Option<build::PublishLine>,
+    pub publishing: Option<publish::PublishLine>,
     pub timetables: Option<crate::timetables::View>,
     pub catalogue: Option<CatalogueSeen>,
     pub published: Option<Published>,
@@ -459,21 +459,21 @@ pub(super) struct Planner {
     /// This Mac's tiles to come in its last forecast, as cache hints (room::Hints::of_tocome,
     /// task #843), with that forecast's time.
     pub(super) upcoming: std::cell::RefCell<Option<(u64, std::sync::Arc<room::Hints>)>>,
-    /// Publishing as last planned (build::PublishLine), and the key of the last line logged (logged
+    /// Publishing as last planned (publish::PublishLine), and the key of the last line logged (logged
     /// again only when it changes).
-    pub(super) publish_line: std::cell::RefCell<Option<build::PublishLine>>,
+    pub(super) publish_line: std::cell::RefCell<Option<publish::PublishLine>>,
     /// The timetables' report as last read (its content name, and what the status shows).
     pub(super) timetables: std::cell::RefCell<Option<(String, crate::timetables::View)>>,
     pub(super) publish_logged: std::cell::RefCell<String>,
     /// The map's `seq` and when its batch went out (`map_now`), for the status.
     pub(super) catalogue_seen: std::cell::Cell<Option<CatalogueSeen>>,
-    /// The lead's record of its catalogues (build::LastCatalogue, its folder's `publishing.json`):
+    /// The lead's record of its catalogues (publish::LastCatalogue, its folder's `publishing.json`):
     /// when one was first held back, and the gated steps' runs.
-    pub(super) catalogues: std::cell::RefCell<build::LastCatalogue>,
+    pub(super) catalogues: std::cell::RefCell<publish::LastCatalogue>,
     /// Whether the catalogue last planned had the low zooms made (build::Plan::low, nothing left of
     /// the publishing chain): its batch, once made, says so (`PlanView::catalogue_low`).
     pub(super) catalogue_low: std::cell::Cell<bool>,
-    /// Since when a catalogue has been due (build::PublishLine::due_since).
+    /// Since when a catalogue has been due (publish::PublishLine::due_since).
     pub(super) catalogue_due_since: std::cell::Cell<Option<u64>>,
     /// Publishing's switches as last read (crate::agent::publish).
     pub(super) publishing: std::cell::Cell<publish::Switches>,
@@ -495,7 +495,7 @@ impl Planner {
         coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
         locked: bool,
         hold: std::sync::Arc<bus::Snap<crate::control::HoldState>>,
-        catalogues: build::LastCatalogue,
+        catalogues: publish::LastCatalogue,
     ) -> Planner {
         let (out, out_rx) = mpsc::channel();
         let tiles = tiles::TerrainTiles::new(Some(o.home.join("pack-idx")));
@@ -936,7 +936,7 @@ impl Planner {
         h
     }
 
-    /// A catalogue made: the gate's count of it held back starts again (build::LastCatalogue::held_at).
+    /// A catalogue made: the gate's count of it held back starts again (publish::LastCatalogue::held_at).
     /// (When it went out, and with the low zooms or not, is the map log's: `map_now`, `map_marks`.)
     pub(super) fn catalogue_made(&self) {
         let mut r = self.catalogues.borrow_mut();
@@ -951,7 +951,7 @@ impl Planner {
     }
 
     /// The steps gated by time whose recorded keys in `done` changed: noted run now in the lead's
-    /// record (build::LastCatalogue::observe).
+    /// record (publish::LastCatalogue::observe).
     pub(super) fn note_ran(&self, done: &crate::pool::records::Keys) {
         let mut r = self.catalogues.borrow_mut();
         if r.observe(done, now_s()) && self.keeps_publishing() {
@@ -961,7 +961,7 @@ impl Planner {
         }
     }
 
-    /// When a catalogue due was first held back (build::LastCatalogue::held_at), kept in the lead's
+    /// When a catalogue due was first held back (publish::LastCatalogue::held_at), kept in the lead's
     /// record when it changes.
     pub(super) fn note_held(&self, held_at: Option<u64>) {
         let mut r = self.catalogues.borrow_mut();
@@ -976,9 +976,9 @@ impl Planner {
         }
     }
 
-    /// Publishing as planned (build::PublishLine) kept for the status, the pause said, and logged
+    /// Publishing as planned (publish::PublishLine) kept for the status, the pause said, and logged
     /// when it or its reasons change.
-    pub(super) fn record_publishing(&self, mut u: build::PublishLine) {
+    pub(super) fn record_publishing(&self, mut u: publish::PublishLine) {
         if let Some(p) = &self.inp.pause {
             u.why = format!("{} (but {})", u.why, p.why());
         }
@@ -1754,7 +1754,7 @@ impl Planner {
             eprintln!("agent: publishing's switches: {sw:?}");
         }
         self.publishing.set(sw);
-        let way = build::Publishing {
+        let way = publish::Publishing {
             since_low: self.since_low(now_s()),
             near: sw.near,
             since_marks: self.catalogues.borrow().since("marks", now_s()),
@@ -1953,14 +1953,14 @@ impl Planner {
         }
         // A catalogue waits while a helper's hand-offs of its map tiles or road index wait to be
         // merged (counted as done, their files not yet in the manifest).
-        // (Held so since the gate first held past build::CATALOGUE_CAP_S: it goes, the regions those
+        // (Held so since the gate first held past publish::CATALOGUE_CAP_S: it goes, the regions those
         // hand-offs touch left out of `--ready`, build::plan's.)
         let held_for = self.catalogues.borrow().held_at.map(|t| now_s().saturating_sub(t));
         let mut held_back = planned.catalogue_held;
         if unmerged && !publish::unmerged_holds(unmerged, held_for) && plan.iter().any(|w| w.step == "catalog") {
             planned.publishing.why = format!(
                 "a catalogue now with what's merged: held {} min by hand-offs waiting to be merged",
-                build::CATALOGUE_CAP_S / 60
+                publish::CATALOGUE_CAP_S / 60
             );
         }
         if publish::unmerged_holds(unmerged, held_for) && plan.iter().any(|w| w.step == "catalog") {

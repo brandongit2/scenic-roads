@@ -304,15 +304,15 @@ fn slot_suffix(k: usize) -> String {
     }
 }
 
-/// The lead's record of its catalogues (build::LastCatalogue), in the agent's folder.
+/// The lead's record of its catalogues (publish::LastCatalogue), in the agent's folder.
 const PUBLISHED_FILE: &str = "publishing.json";
 /// The lead's record of its catalogues kept in `home` (`PUBLISHED_FILE`); none when it doesn't read.
-fn read_published(home: &Path) -> build::LastCatalogue {
+fn read_published(home: &Path) -> publish::LastCatalogue {
     std::fs::read(home.join(PUBLISHED_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 /// Keeps the lead's record of its catalogues in `home` (`PUBLISHED_FILE`).
-fn write_published(home: &Path, r: &build::LastCatalogue) -> Result<()> {
+fn write_published(home: &Path, r: &publish::LastCatalogue) -> Result<()> {
     store::whole::write(&home.join(PUBLISHED_FILE), &serde_json::to_vec(r)?)
 }
 
@@ -907,10 +907,10 @@ pub struct Status {
     /// (the lead's: crate::agent::forecast).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forecast: Option<forecast::Forecast>,
-    /// Publishing as the lead last planned it, and why (build::PublishLine; docs/building.md §2,
+    /// Publishing as the lead last planned it, and why (publish::PublishLine; docs/building.md §2,
     /// Publishing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publishing: Option<build::PublishLine>,
+    pub publishing: Option<publish::PublishLine>,
     /// The timetables' to-do list's counts and the routes matching nothing on the map
     /// (crate::timetables, docs/inputs.md §6.7.3): the lead's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -989,7 +989,7 @@ pub struct CatalogueSeen {
 
 /// Publishing as it stands, for the build page's map KPI and `scenic status` (the
 /// lead's; docs/building.md §2, Publishing): the last catalogue, whether it went with the low zooms
-/// (build::LastCatalogue::low_at), the map tiles being drawn by Mac (pack's targets leased), and the
+/// (publish::LastCatalogue::low_at), the map tiles being drawn by Mac (pack's targets leased), and the
 /// catalogue each Mac's map server last adopted (its cursor in the map's log).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Published {
@@ -1309,7 +1309,7 @@ struct Memory {
     last_ok: BTreeMap<String, u64>,
     recent: Vec<Done>,
     /// When a catalogue last started (seconds since the epoch): the next waits
-    /// build::CATALOGUE_EVERY_S from it, whether or not it went out.
+    /// publish::CATALOGUE_EVERY_S from it, whether or not it went out.
     #[serde(default, rename = "catalog_at")] // stored key: old spelling
     catalogue_at: u64,
     /// About how long a target of each step takes here (seconds, as its jobs went lately), by
@@ -5484,7 +5484,7 @@ impl Agent {
                 return false;
             }
         }
-        // (A catalogue's start: the next waits build::CATALOGUE_EVERY_S from it, whether or not it goes out.)
+        // (A catalogue's start: the next waits publish::CATALOGUE_EVERY_S from it, whether or not it goes out.)
         if spec.id.starts_with("catalog") {
             self.mem.catalogue_at = now_s();
             self.save();
@@ -12865,8 +12865,8 @@ mod tests {
             member: false,
         })
         .unwrap();
-        assert_eq!(*a.planner().catalogues.borrow(), build::LastCatalogue::default());
-        let file = || -> build::LastCatalogue {
+        assert_eq!(*a.planner().catalogues.borrow(), publish::LastCatalogue::default());
+        let file = || -> publish::LastCatalogue {
             serde_json::from_slice(&std::fs::read(home.join(PUBLISHED_FILE)).unwrap()).unwrap()
         };
         // A catalogue held back: when, kept in the file (a restart reads it), until the next is made.
@@ -12874,7 +12874,7 @@ mod tests {
         assert_eq!(file().held_at, Some(250));
         assert_eq!(read_published(&home).held_at, Some(250));
         a.planner().catalogue_made();
-        assert_eq!(file(), build::LastCatalogue::default());
+        assert_eq!(file(), publish::LastCatalogue::default());
         // A dry run beside it (a second agent on this Mac, planning only): its record its own,
         // never the file.
         let mut dry = test_agent(Options {
@@ -12888,10 +12888,10 @@ mod tests {
         .unwrap();
         assert_eq!(*dry.planner().catalogues.borrow(), file());
         dry.planner().note_held(Some(300));
-        assert_eq!(file(), build::LastCatalogue::default());
+        assert_eq!(file(), publish::LastCatalogue::default());
         // (A record that doesn't read: none.)
         std::fs::write(home.join(PUBLISHED_FILE), "?").unwrap();
-        assert_eq!(read_published(&home), build::LastCatalogue::default());
+        assert_eq!(read_published(&home), publish::LastCatalogue::default());
     }
 
     /// The lead's plan `jobs` offered through its coordinator and asked for as its loop asks

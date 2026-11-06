@@ -14,14 +14,15 @@
 //! its slot's job under way. The trains' and the landmarks' chains run from the start, each step once what it reads is
 //! built. Publishing goes per z6 tile (docs/building.md §2, Publishing): each map tile of a region
 //! (`RegionLeft::packs`, at its own measured time) is drawn once the z6 tiles that draw it are built,
-//! ahead of the regions' work, and a catalogue follows within the minute (build::CATALOGUE_EVERY_S):
+//! ahead of the regions' work, and a catalogue follows within the minute (publish::CATALOGUE_EVERY_S):
 //! the region is all on the map then (none said once only slope and tree cover are left). The whole-map steps go by their cadence (`Forecast::publishes`:
 //! build::low_gate, build::gate_open). Each target takes its last run's time (else its step's mean,
 //! else a first guess), at the pace measured for the machine doing it at its step (crate::paces), else
 //! at its speed. It's run three times: as
 //! estimated, and for a range, the times measured a little off and those guessed much more.
 
-use super::build::{RegionLeft, CATALOGUE_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S, OVERLAYS_EVERY_S};
+use super::build::RegionLeft;
+use super::publish::{CATALOGUE_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S, OVERLAYS_EVERY_S};
 use crate::coord::sched::{Clock, Sched, State};
 use crate::coord::{cost_key, Ask, Capacity, Offer};
 use serde::{Deserialize, Serialize};
@@ -632,7 +633,7 @@ pub const ZSTD_OVER: usize = 2 << 20;
 
 /// Seconds since each cadenced publish last went out (None: not known, so due now): the low zooms
 /// (the map log's last batch saying so: crate::agent::publish::LOW), the landmark points and the area overlays
-/// (build::LastCatalogue::since).
+/// (publish::LastCatalogue::since).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cadence {
     pub since_low: Option<u64>,

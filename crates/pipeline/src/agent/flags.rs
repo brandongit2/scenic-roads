@@ -25,9 +25,9 @@
 //!   is; a job flagged stuck isn't flagged overdue too. Its "N of M targets done", the batch's percent
 //!   and its time left count one thing, the targets whose end line the step noted
 //!   (`memguard::targets`), however late the step noted it.
-//! - **Stale** (`stale`): the lead's catalogue due (`build::PublishLine::due_since`: held back,
+//! - **Stale** (`stale`): the lead's catalogue due (`publish::PublishLine::due_since`: held back,
 //!   planned or waiting out its minute) for longer than `factor` times the most the plan holds one
-//!   back and waits between two (build::CATALOGUE_CAP_S and CATALOGUE_EVERY_S), counted from the
+//!   back and waits between two (publish::CATALOGUE_CAP_S and CATALOGUE_EVERY_S), counted from the
 //!   last catalogue's going out where that's later, and no catalogue job leased (that one is
 //!   stuck or overdue by its own time): a catalogue that should have gone out and didn't (its job
 //!   never started: the lead's slots full, its plan held). A catalogue merely old, nothing new to
@@ -106,7 +106,7 @@ pub fn of(st: &Status, open: &[Open], runs: &[Run], factor: f64, now: u64) -> Ve
 pub fn stale(st: &Status, runs: &[Run], factor: f64, now: u64) -> Option<Flag> {
     let due = st.publishing.as_ref()?.due_since?;
     let since = st.catalogue.as_ref().map_or(due, |c| c.at.max(due));
-    let most = super::build::CATALOGUE_CAP_S + super::build::CATALOGUE_EVERY_S;
+    let most = super::publish::CATALOGUE_CAP_S + super::publish::CATALOGUE_EVERY_S;
     let ran = now.saturating_sub(since);
     if (ran as f64) <= most as f64 * factor || runs.iter().any(|r| super::pool::PUBLISHES.contains(&r.step.as_str())) {
         return None;
@@ -479,7 +479,7 @@ mod tests {
         st.catalogue = Some(super::super::CatalogueSeen { n: 812, at: now - 6 * 3_600 });
         assert!(stale(&st, &[], 3.0, now).is_none(), "nothing due");
         let due = |since: u64| {
-            Some(super::super::build::PublishLine {
+            Some(super::super::publish::PublishLine {
                 why: "a catalogue now: what it would list changed".into(),
                 due_since: Some(since),
                 ..Default::default()
