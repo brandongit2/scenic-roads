@@ -6,6 +6,8 @@
 use names::mvt::{Feature as MvtFeature, Layer, Tile, Value};
 use std::collections::HashMap;
 
+/// The area overlays' and stations' deepest zoom (pipeline::ovconv: their vector tiles go to it).
+pub const MAXZ: u8 = 12;
 pub const EXTENT: u32 = 4096;
 pub const BUFFER: f64 = 64.0;
 /// Simplification tolerance, in tile units (of EXTENT).

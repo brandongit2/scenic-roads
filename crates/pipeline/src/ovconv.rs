@@ -30,7 +30,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The areas' vector-tile layer.
 pub const LAYER: &str = "a";
-pub const MAXZ: u8 = 12;
+/// The overlays' deepest zoom (codecs::vtgen's, which layers' tests name).
+pub use codecs::vtgen::MAXZ;
 /// Hi tiles (z9–12) only where the coverage is, and this far around it.
 const HALO_KM: f64 = 20.0;
 

@@ -644,7 +644,7 @@ mod measure {
                 }
             }
             for (name, mut lo) in layers_out {
-                (lo.minzoom, lo.maxzoom) = if name.starts_with("marks-") { (0, 5) } else { (0, crate::ovconv::MAXZ) };
+                (lo.minzoom, lo.maxzoom) = if name.starts_with("marks-") { (0, 5) } else { (0, codecs::vtgen::MAXZ) };
                 cat.layers.insert(name, serde_json::from_value(serde_json::to_value(&lo).unwrap()).unwrap());
             }
             cat.validate().unwrap();
