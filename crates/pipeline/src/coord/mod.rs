@@ -653,7 +653,7 @@ impl Shared {
                 work: Granted::Job { step: p.step, targets: p.targets, pass: self.pass.clone() },
                 more: Vec::new(),
                 threads: p.threads,
-                mem_mb: p.mem_mb,
+                peak_mb: p.mem_mb,
                 disk_mb: p.disk_mb,
                 job: p.job,
                 plan: self.plan,
@@ -995,7 +995,7 @@ pub struct Capacity {
     /// say.
     pub build_mb: u64,
     /// `build_mb` less each running job's need (the larger of what it holds and the peak its grant
-    /// was packed at, `Grant::mem_mb`: the lead's measure, on the lead and a member alike) (MB): what
+    /// was packed at, `Grant::peak_mb`: the lead's measure, on the lead and a member alike) (MB): what
     /// a new job's peak may be.
     pub mem_mb: u64,
     /// Its memory against its floor (MB, docs/pool.md §7.1; memguard::Reading): what's available
@@ -1209,9 +1209,9 @@ pub struct Grant {
     /// The memory its job's peak was packed at (MB: `sched::Pick::mem_mb`, the lead's measure of its
     /// targets, a cold start's provisional need; a task's, its predicted memory): its agent
     /// counts the job at the larger of this and what it holds, the rest reserved for its growth
-    /// (`Capacity::mem_reserved_mb`; docs/pool.md §7.1). 0: an older lead's (what it holds alone).
+    /// (`Capacity::mem_reserved_mb`; docs/pool.md §7.1). 0: an older lead's (what it holds alone). (Not `mem_mb`: the flattened `Granted::Task` has one.)
     #[serde(default, skip_serializing_if = "is_zero64")]
-    pub mem_mb: u64,
+    pub peak_mb: u64,
     /// The disk its job is measured to take (MB: `Coordinator::measured_batch`'s), which its agent
     /// reserves until it hands the job off or gives it back (docs/pool.md §7.1). 0: a cold start,
     /// a task, or an older lead's.
@@ -2293,7 +2293,7 @@ impl Coordinator {
     }
 
     /// The floor of `target` of `step` (what it takes at least), when one was seen, of any way its
-    /// step ran. (Tests': a job's grant carries what it's packed at, `Grant::mem_mb`.)
+    /// step ran. (Tests': a job's grant carries what it's packed at, `Grant::peak_mb`.)
     #[cfg(test)]
     pub fn floor(&self, step: &str, target: &str) -> Option<Floor> {
         self.shared.lock().unwrap().floors.get(&cost_key(step, target)).copied()
@@ -2389,7 +2389,7 @@ impl Coordinator {
     /// The memory a job of `step` for `target` is expected to take (MB), as `pick` sizes it: its
     /// step's model's (crate::needs), its first guess what the plan offered it with (a z6 tile's extract,
     /// another step's guess); None when nothing of its step was measured and it isn't offered.
-    /// (Tests': a job's grant carries what it's packed at, `Grant::mem_mb`.)
+    /// (Tests': a job's grant carries what it's packed at, `Grant::peak_mb`.)
     #[cfg(test)]
     pub fn peak(&self, step: &str, target: &str) -> Option<u64> {
         let s = self.shared.lock().unwrap();
@@ -4167,7 +4167,7 @@ fn route(
                         term: s.leases.term,
                         ttl_s: TTL.as_secs(),
                         threads: ask_cores(&a),
-                        mem_mb: n.m.mem_mb,
+                        peak_mb: n.m.mem_mb,
                         disk_mb: if n.cold { 0 } else { n.m.disk_mb },
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         more: Vec::new(),
@@ -4211,7 +4211,7 @@ fn route(
                     work: Granted::Task { id, task: t.spec.clone(), task_kind: t.kind.clone(), mem_mb: t.mem_mb },
                     more: Vec::new(),
                     threads: 0,
-                    mem_mb: t.mem_mb,
+                    peak_mb: t.mem_mb,
                     disk_mb: 0,
                     job: None,
                     plan,
@@ -10203,7 +10203,7 @@ mod tests {
         assert!(w.ask(&ask(150, vec![g1.lease])).unwrap().is_none());
     }
 
-    /// Task #970: a grant carries the memory its job was packed at (`Grant::mem_mb`: its targets'
+    /// Task #970: a grant carries the memory its job was packed at (`Grant::peak_mb`: its targets'
     /// measured peak, 2000 MB), the one figure its agent counts the job at as it runs; never its
     /// step's first guess (slope-hi's steps-table figure).
     #[test]
@@ -10215,7 +10215,7 @@ mod tests {
             ..every_ask("m1", "slope-hi", 64_000, 250)
         };
         let g = w.ask(&a).unwrap().unwrap();
-        assert_eq!(g.mem_mb, 2000);
+        assert_eq!(g.peak_mb, 2000);
         assert_ne!(crate::agent::steps::mem_mb("slope-hi"), 2000, "the step's first guess is another figure");
     }
 

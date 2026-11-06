@@ -417,7 +417,7 @@ struct Slot {
     pressure_frozen: Option<(Instant, String, String)>,
     /// The threads its lead granted the job given it (crate::coord::Grant::threads), for its start.
     granted: Option<u32>,
-    /// The memory its lead packed the job given it at (MB: crate::coord::Grant::mem_mb, its measured
+    /// The memory its lead packed the job given it at (MB: crate::coord::Grant::peak_mb, its measured
     /// peak): the job counts at the larger of this and what it holds (`Agent::peak_mb`).
     peak_mb: Option<u64>,
     /// The disk its lead measured the job given it to take (MB: crate::coord::Grant::disk_mb),
@@ -2498,7 +2498,7 @@ impl Agent {
             return None;
         };
         self.slots[k].granted = Some(grant.threads).filter(|&t| t > 0);
-        self.slots[k].peak_mb = Some(grant.mem_mb).filter(|&m| m > 0);
+        self.slots[k].peak_mb = Some(grant.peak_mb).filter(|&m| m > 0);
         self.slots[k].reserve_mb = Some(grant.disk_mb).filter(|&d| d > 0);
         match grant {
             crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. }
@@ -2811,7 +2811,7 @@ impl Agent {
             return None;
         }
         self.slots[k].granted = Some(g.threads).filter(|&t| t > 0);
-        self.slots[k].peak_mb = Some(g.mem_mb).filter(|&m| m > 0);
+        self.slots[k].peak_mb = Some(g.peak_mb).filter(|&m| m > 0);
         self.slots[k].reserve_mb = Some(g.disk_mb).filter(|&d| d > 0);
         Some((k, spec))
     }
@@ -5505,7 +5505,7 @@ impl Agent {
     }
 
     /// The memory slot `k`'s job counts for (MB): what it holds, or the peak its lead packed it at
-    /// (`Slot::peak_mb`: crate::coord::Grant::mem_mb, its targets' measure), the larger; the same on
+    /// (`Slot::peak_mb`: crate::coord::Grant::peak_mb, its targets' measure), the larger; the same on
     /// the lead and a member, the figure the lead's packing counts it at (task #970: a member had
     /// counted its step's first guess, bldtiles' sized for Kantō's 30 M rows, 14 GB a job beside its
     /// runs' 3.4 GB). A job of no such grant (an older lead's, or one taken over from an older
@@ -11375,7 +11375,7 @@ mod tests {
     }
 
     /// Task #970: a member's running job counts at the peak its grant was packed at (`Slot::peak_mb`,
-    /// crate::coord::Grant::mem_mb) or what it holds, the larger: its growth to come reserved off
+    /// crate::coord::Grant::peak_mb) or what it holds, the larger: its growth to come reserved off
     /// the room for a new job, kept across an agent's hand-over, gone with its lease. Never its
     /// step's first guess (bldtiles': sized for Kantō's 30 M rows, 14 GB), which reserved 13 GB
     /// beside a job holding 1 GB; a job of no such grant (an older lead's) counts at what it holds.
