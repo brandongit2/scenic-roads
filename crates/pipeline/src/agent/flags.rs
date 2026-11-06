@@ -164,7 +164,7 @@ pub fn idle(st: &Status, open: &[Open]) -> Vec<Flag> {
 /// The plan's waits of work a Mac could take (any Mac's step; the lead's own too on the lead): each
 /// "<step> <why>", and where its wait names another step that waits too, that one's after it.
 fn held_back(waiting: &[Waiting], lead: bool) -> Vec<String> {
-    let takes = |s: &str| lead || super::steps::place(s) == super::steps::Place::Any;
+    let takes = |s: &str| lead || super::every::place(s) == super::every::Place::Any;
     waiting
         .iter()
         .filter_map(|w| w.step.as_deref().filter(|s| takes(s)).map(|s| (s, w)))

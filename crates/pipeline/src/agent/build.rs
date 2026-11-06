@@ -4446,8 +4446,8 @@ pub(crate) mod tests {
         crate::agent::steps::read_targets(step, t, None)
             .into_iter()
             .filter_map(|r| match r {
-                crate::agent::steps::ReadTarget::One(s, u) => Some((s, u)),
-                crate::agent::steps::ReadTarget::Whole(_) => None,
+                crate::agent::forecast::ReadTarget::One(s, u) => Some((s, u)),
+                crate::agent::forecast::ReadTarget::Whole(_) => None,
             })
             .collect()
     }

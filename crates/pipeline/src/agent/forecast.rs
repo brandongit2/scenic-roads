@@ -32,6 +32,13 @@ use std::time::{Duration, Instant};
 
 use super::steps::SHARED;
 
+/// A read target (`read_targets`): one target of a step, or a step's every target.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReadTarget {
+    One(&'static str, String),
+    Whole(&'static str),
+}
+
 /// A machine the work is shared among.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
@@ -48,7 +55,7 @@ pub struct Machine {
     /// the z6 tile begins and waited for only after its own run, by then taken or not, and its
     /// measured time, the job's, has those waits in it.)
     pub unit_extra_s: f64,
-    /// It may run the lead's own steps (`steps::Place::Lead`): the lead's slots; a member's take
+    /// It may run the lead's own steps (`every::Place::Lead`): the lead's slots; a member's take
     /// only those any Mac may (crate::agent::every::grants).
     pub lead_steps: bool,
     /// The job its slot runs now, when no item of the work left is it (a step's job the plan lists
@@ -919,7 +926,6 @@ fn waits_of(
     step: &str,
     t: &str,
 ) -> (Vec<usize>, Vec<usize>) {
-    use crate::agent::steps::ReadTarget;
     let (mut deps, mut gs) = (Vec::new(), Vec::new());
     for r in crate::agent::steps::read_targets(step, t, Some(along)) {
         match r {
@@ -3868,7 +3874,6 @@ mod tests {
     /// (crate::agent::steps::read_targets), of the items listed before it: a target read, every
     /// item of a step read whole.
     fn declared_waits(its: &Items, along: &crate::agent::steps::Along, i: usize) -> BTreeSet<(String, String)> {
-        use crate::agent::steps::ReadTarget;
         let it = &its.items[i];
         let reads = crate::agent::steps::read_targets(&it.step, &it.target, Some(along));
         its.items[..i]

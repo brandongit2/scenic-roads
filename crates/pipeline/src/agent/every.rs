@@ -21,6 +21,8 @@
 //!   steps kept to the lead (`LEAD_ONLY`, the answer-keeping steps, the worldwide steps: those not
 //!   `offered`) and the lead's own planned jobs are granted to the current lead's member alone.
 
+use serde::{Deserialize, Serialize};
+
 /// The steps kept to the lead: the catalogues and prune (their gates:
 /// crate::agent's catalogue and sweep), the 3D buildings' sources' fetch and the elevation
 /// pyramids' (written outside the records, under `sources/`: one Mac's fetcher holds a host to its
@@ -54,6 +56,25 @@ pub fn offered(step: &str) -> bool {
         && names_target(step)
         && !super::steps::alone(step)
         && step != "spoken"
+}
+
+/// Which Mac runs a step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Place {
+    /// The lead alone.
+    Lead,
+    /// Any member whose measured room fits (crate::agent::every).
+    Any,
+}
+
+/// Which Mac runs `step`: any member the lead offers it to (crate::agent::every), else the lead.
+pub fn place(step: &str) -> Place {
+    if offered(step) {
+        Place::Any
+    } else {
+        Place::Lead
+    }
 }
 
 /// The authority rule: whether work of `step` may be granted to the asker, `lead` when it's the

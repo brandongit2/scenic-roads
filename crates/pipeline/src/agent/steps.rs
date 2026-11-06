@@ -42,6 +42,8 @@
 //! in crate::agent::pool's check). A shared step's files for its targets (`saves`, which
 //! crate::coord's check of a member's hand-off and the merge's check use) are checked beside it.
 
+use super::every::{place, Place};
+use super::forecast::ReadTarget;
 use crate::legacy::TileId;
 pub use crate::pool::records::current;
 use serde::{Deserialize, Serialize};
@@ -97,16 +99,6 @@ impl Scope {
             Scope::Task => "task",
         }
     }
-}
-
-/// Which Mac runs a step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Place {
-    /// The lead alone.
-    Lead,
-    /// Any member whose measured room fits (crate::agent::every).
-    Any,
 }
 
 /// A stage of the build: a group of steps in the order they run.
@@ -312,13 +304,6 @@ pub trait View {
     fn along(&self) -> Option<&Along> {
         None
     }
-}
-
-/// A read target (`read_targets`): one target of a step, or a step's every target.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ReadTarget {
-    One(&'static str, String),
-    Whole(&'static str),
 }
 
 /// What target `t` of `step` waits for, its row's declaration (`Step::reads`), its reads along its
@@ -1666,15 +1651,6 @@ pub fn said(step: &str, n: usize) -> String {
         return t.to_string();
     }
     format!("{t}: {}", counted(step, n))
-}
-
-/// Which Mac runs `step`: any member the lead offers it to (crate::agent::every), else the lead.
-pub fn place(step: &str) -> Place {
-    if super::every::offered(step) {
-        Place::Any
-    } else {
-        Place::Lead
-    }
 }
 
 /// A step's row as the build page and `scenic status` read it (`/work/steps`): everything but the

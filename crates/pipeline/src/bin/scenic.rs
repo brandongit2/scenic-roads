@@ -756,7 +756,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
             for i in &l.items {
                 let noun = format!("{}s", agent::steps::noun(&i.step));
                 let here = now.iter().any(|n| n == &i.step);
-                let place = if agent::steps::place(&i.step) == agent::steps::Place::Any { " ⇄" } else { "" };
+                let place = if agent::every::place(&i.step) == agent::every::Place::Any { " ⇄" } else { "" };
                 println!(
                     "      {} {}: {}{place}",
                     if i.finished() {
@@ -895,7 +895,8 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
 /// `scenic steps [--json]`: the steps table (crate::agent::steps, docs/pipeline.md), a stage at a
 /// time, each step one line of the same columns; `--json` as `/work/steps` serves it.
 fn steps(json: bool) -> Result<()> {
-    use agent::steps::{self, Kind, Place, Scope};
+    use agent::every::Place;
+    use agent::steps::{self, Kind, Scope};
     let rows = steps::table();
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "steps": rows, "stages": steps::STAGES }))?);
