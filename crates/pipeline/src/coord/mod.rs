@@ -2292,13 +2292,6 @@ impl Coordinator {
         }
     }
 
-    /// The floor of `target` of `step` (what it takes at least), when one was seen, of any way its
-    /// step ran. (Tests': a job's grant carries what it's packed at, `Grant::peak_mb`.)
-    #[cfg(test)]
-    pub fn floor(&self, step: &str, target: &str) -> Option<Floor> {
-        self.shared.lock().unwrap().floors.get(&cost_key(step, target)).copied()
-    }
-
     /// The floor of `target` of `step` that may hold it off a Mac: the way its step runs now.
     pub fn holding_floor(&self, step: &str, target: &str) -> Option<Floor> {
         self.shared.lock().unwrap().holding_floor(step, target)
@@ -2384,22 +2377,6 @@ impl Coordinator {
             .filter(|w| now.duration_since(w.seen) < Duration::from_secs(600))
             .filter_map(|w| w.ask.as_ref().and_then(ask_limit))
             .max()
-    }
-
-    /// The memory a job of `step` for `target` is expected to take (MB), as `pick` sizes it: its
-    /// step's model's (crate::needs), its first guess what the plan offered it with (a z6 tile's extract,
-    /// another step's guess); None when nothing of its step was measured and it isn't offered.
-    /// (Tests': a job's grant carries what it's packed at, `Grant::peak_mb`.)
-    #[cfg(test)]
-    pub fn peak(&self, step: &str, target: &str) -> Option<u64> {
-        let s = self.shared.lock().unwrap();
-        match s.offered_size(step, target) {
-            Some(size) => Some(s.peak_of(step, target, size, 0)),
-            None => {
-                let (mb, from) = s.book().mem(step, target, 0, 0);
-                (from != crate::needs::From::Table).then_some(mb)
-            }
-        }
     }
 
     /// Notes what happened (`history`): this Mac's jobs started and ended, catalogues, its conditions.
@@ -6052,6 +6029,17 @@ pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u
 mod tests {
     use super::*;
 
+    /// The floor kept for `target` of `step` (of any way its step ran), as the pool's floors list has it.
+    fn floor_of(c: &Coordinator, step: &str, target: &str) -> Option<Floor> {
+        c.floors(false, None, None).get(&cost_key(step, target)).copied()
+    }
+
+    /// The memory a job of `step` for `target` is packed at when measured (`Coordinator::measured`,
+    /// as `pack_need` reads it); None: a cold start.
+    fn mem_of(c: &Coordinator, step: &str, target: &str) -> Option<u64> {
+        c.measured(step, target).map(|m| m.mem_mb)
+    }
+
     /// docs/coordination.md §2, principle 3 (task #878, step 1): the handlers answer from memory and
     /// the store, never the NAS: no `nasread`, NAS handle or whole-file write in `route`, nor in what
     /// it saves through (`save_leases`, `save_costs`, `set_pause`). `/work/settings` alone still
@@ -7523,21 +7511,21 @@ mod tests {
             &[(cost_key("peaks", "6/1/1"), f(9000, true)), (cost_key("peaks", "6/9/9"), f(1, true))],
         )
         .unwrap();
-        assert_eq!((c.floor("peaks", "6/1/1"), c.floor("peaks", "6/9/9")), (Some(f(9000, true)), None));
-        assert_eq!(c.peak("peaks", "6/1/1"), Some(9000), "never below its floor");
+        assert_eq!((floor_of(&c, "peaks", "6/1/1"), floor_of(&c, "peaks", "6/9/9")), (Some(f(9000, true)), None));
+        assert_eq!(mem_of(&c, "peaks", "6/1/1"), Some(9000), "never below its floor");
         // Not to a worker that spares less; to one that spares more.
         assert!(w.ask(&can(4096)).unwrap().is_none());
         let g = w.ask(&can(10 << 10)).unwrap().unwrap();
         // A floor only rises (a lower one seen later changes nothing); it moves with the pool's state.
         w.give_back_with(g.lease, "the build paused", &[(cost_key("peaks", "6/1/1"), f(5000, true))]).unwrap();
-        assert_eq!(c.floor("peaks", "6/1/1").map(|f| f.mb), Some(9000));
+        assert_eq!(floor_of(&c, "peaks", "6/1/1").map(|f| f.mb), Some(9000));
         assert_eq!(c.pool_state().floors.get(&cost_key("peaks", "6/1/1")).map(|f| f.mb), Some(9000));
         // A run's measure takes its place.
         c.add_costs(&[(
             cost_key("peaks", "6/1/1"),
             Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() },
         )]);
-        assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
+        assert_eq!((floor_of(&c, "peaks", "6/1/1"), mem_of(&c, "peaks", "6/1/1")), (None, Some(3000)));
         let g = w.ask(&can(4096)).unwrap().unwrap();
         // A member's done carries its floors (of the lease's targets alone).
         let h = Handoff {
@@ -7553,20 +7541,20 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        assert_eq!((c.floor("peaks", "6/1/1").map(|f| f.mb), c.floor("peaks", "6/7/7")), (Some(3500), None));
+        assert_eq!((floor_of(&c, "peaks", "6/1/1").map(|f| f.mb), floor_of(&c, "peaks", "6/7/7")), (Some(3500), None));
         // A batch's floor gives way to one learned alone, even lower; a floor of an older way of its
         // step neither holds the target nor sizes it (crate::needs: a z6 tile's v1 floors held malloc's
         // cached blocks).
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(20_000, false))]);
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(4000, true))]);
-        assert_eq!(c.floor("peaks", "6/2/2"), Some(f(4000, true)));
+        assert_eq!(floor_of(&c, "peaks", "6/2/2"), Some(f(4000, true)));
         c.add_floors(&[(cost_key("terrain-hi", "6/3/3"), Floor { mb: 20_000, alone: true, v: 1 })]);
-        assert_eq!((c.holding_floor("terrain-hi", "6/3/3"), c.peak("terrain-hi", "6/3/3")), (None, None));
+        assert_eq!((c.holding_floor("terrain-hi", "6/3/3"), mem_of(&c, "terrain-hi", "6/3/3")), (None, None));
         // The OSM pass's floor puts an earlier pass's away.
         c.add_floors(&[(cost_key("osm-pass", "2026-08-01"), f(30_000, true))]);
         c.add_floors(&[(cost_key("osm-pass", "2026-09-28"), f(31_000, true))]);
         assert_eq!(
-            (c.floor("osm-pass", "2026-08-01"), c.floor("osm-pass", "2026-09-28").map(|f| f.mb)),
+            (floor_of(&c, "osm-pass", "2026-08-01"), floor_of(&c, "osm-pass", "2026-09-28").map(|f| f.mb)),
             (None, Some(31_000))
         );
         // A target whose floor is a batch's, under what a worker spares, goes in a run as any.
@@ -7600,13 +7588,13 @@ mod tests {
             vec![Offer { step: "peaks".into(), targets: vec![("6/1/1".into(), "k".into(), 2500)], job: None }],
         );
         c.add_floors(&[(cost_key("peaks", "6/1/1"), Floor { mb: 43_000, alone: true, v: 0 })]);
-        assert_eq!(c.peak("peaks", "6/1/1"), Some(43_000));
+        assert_eq!(mem_of(&c, "peaks", "6/1/1"), Some(43_000));
         assert!(c.holding_floor("peaks", "6/1/1").is_some());
         let (code, v) = w.post_json("/work/floors", &serde_json::json!({ "clear": true, "step": "peaks" })).unwrap();
         assert_eq!(code, 200);
         assert_eq!((v["cleared"]["floors"].as_u64(), v["cleared"]["disks"].as_u64()), (Some(1), Some(0)), "{v}");
         assert_eq!(c.holding_floor("peaks", "6/1/1"), None, "the floor held it off a Mac still");
-        assert!(c.peak("peaks", "6/1/1").unwrap() < 43_000, "and sized it: {:?}", c.peak("peaks", "6/1/1"));
+        assert_eq!(mem_of(&c, "peaks", "6/1/1"), None, "and sized it: a cold start again");
     }
 
     /// Task #780: the owner's redo (`scenic redo`, with the build's key) is taken for the agent, its
@@ -7656,7 +7644,7 @@ mod tests {
         assert_eq!(cost_version("bld-fetch"), 1);
         c.add_floors(&[(cost_key("bld-fetch", "6/1/1"), Floor { mb: 43_000, alone: true, v: 0 })]);
         assert_eq!(c.holding_floor("bld-fetch", "6/1/1"), None);
-        assert!(c.peak("bld-fetch", "6/1/1").is_none_or(|mb| mb < 43_000));
+        assert!(mem_of(&c, "bld-fetch", "6/1/1").is_none_or(|mb| mb < 43_000));
     }
 
     #[test]
@@ -7895,7 +7883,7 @@ mod tests {
             ..Default::default()
         };
         c.load_pool_state(&p).unwrap();
-        assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
+        assert_eq!((floor_of(&c, "peaks", "6/1/1"), mem_of(&c, "peaks", "6/1/1")), (None, Some(3000)));
         // An old step shape's measures in a term's state aren't taken up (`old_shape`).
         let old =
             |mb: u64| Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("trees"), ..Default::default() };
@@ -7909,10 +7897,10 @@ mod tests {
         c.load_pool_state(&p).unwrap();
         let costs = c.shared.lock().unwrap().costs.clone();
         assert!(!costs.contains_key("trees 3/1/3") && costs.contains_key("trees 6/4/14"), "{costs:?}");
-        assert_eq!(c.floor("trees", "3/2/3"), None);
+        assert_eq!(floor_of(&c, "trees", "3/2/3"), None);
         assert!(!c.disks().contains_key("terrain-hi 3/1/1"));
         assert_eq!(
-            (c.floor("peaks", "6/1/2").map(|f| f.mb), c.floor("peaks", "6/1/3").map(|f| f.mb)),
+            (floor_of(&c, "peaks", "6/1/2").map(|f| f.mb), floor_of(&c, "peaks", "6/1/3").map(|f| f.mb)),
             (Some(9000), Some(7000))
         );
     }

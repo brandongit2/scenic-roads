@@ -418,7 +418,7 @@ struct Slot {
     /// The threads its lead granted the job given it (crate::coord::Grant::threads), for its start.
     granted: Option<u32>,
     /// The memory its lead packed the job given it at (MB: crate::coord::Grant::peak_mb, its measured
-    /// peak): the job counts at the larger of this and what it holds (`Agent::peak_mb`).
+    /// peak): the job counts at the larger of this and what it holds (`Agent::need_mb`).
     peak_mb: Option<u64>,
     /// The disk its lead measured the job given it to take (MB: crate::coord::Grant::disk_mb),
     /// reserved while it holds the lease (`Agent::reservation`).
@@ -12068,7 +12068,12 @@ mod tests {
                 && a.slots[0].mem_drain.is_none()
         );
         assert!(a.guard_backoff.is_empty(), "{:?}", a.guard_backoff);
-        assert!(a.coord.as_ref().unwrap().floor("labels", "labels").is_none());
+        assert!(!a
+            .coord
+            .as_ref()
+            .unwrap()
+            .floors(false, None, None)
+            .contains_key(&crate::coord::cost_key("labels", "labels")));
         // Started beside it again, the Mac short of memory though within the limit: stopped at once.
         assert!(note(pgid).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
         tick(&mut a, vec![Some(1 << 10), None]);
@@ -12688,7 +12693,13 @@ mod tests {
         assert!(a.guard() && a.slots[0].running.is_none());
         let c = a.coord.clone().unwrap();
         assert_eq!(
-            (c.floor("terrain-hi", "6/1/1").map(|f| (f.mb, f.alone)), c.floor("terrain-hi", "6/1/2")),
+            (
+                c.floors(false, None, None)
+                    .get(&crate::coord::cost_key("terrain-hi", "6/1/1"))
+                    .copied()
+                    .map(|f| (f.mb, f.alone)),
+                c.floors(false, None, None).get(&crate::coord::cost_key("terrain-hi", "6/1/2")).copied()
+            ),
             (Some((15 << 10, false)), None)
         );
         assert!(!a.mem.retry.contains_key("terrain-hi 6/1/1"), "not held against it as a failure");
@@ -12743,7 +12754,13 @@ mod tests {
         tick(&mut a, vec![Some(15 << 10), None], true);
         assert!(a.guard());
         let c = a.coord.clone().unwrap();
-        assert_eq!(c.floor("terrain-hi", "6/1/1").map(|f| (f.mb, f.alone)), Some((15 << 10, true)));
+        assert_eq!(
+            c.floors(false, None, None)
+                .get(&crate::coord::cost_key("terrain-hi", "6/1/1"))
+                .copied()
+                .map(|f| (f.mb, f.alone)),
+            Some((15 << 10, true))
+        );
         let h = a.planner().guard_holds(&works);
         assert!(
             h.here.contains(&("terrain-hi".to_string(), "6/1/1".to_string()))
