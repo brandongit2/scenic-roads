@@ -477,6 +477,40 @@ fn a_survey_beats_an_estimate_in_a_lake() {
     assert!(tile(&out, LAYER, "hi", (6, T.0, T.1), 11, x, y).is_none());
 }
 
+/// Task #966: a source feathered at its edge (it overlaps another in the block) whose edge meets
+/// water with nothing beneath keeps its own pixels there whole, classed as its own: weighed toward
+/// nothing, its value showed but the pixel was classed none, which the map doesn't draw. Here a
+/// source drawn in lakes ends inside the lake, whose survey is left out, and overlaps the coarse
+/// sea source on the sea.
+#[test]
+fn a_source_ending_over_nothing_keeps_its_edge() {
+    let d = tempfile::tempdir().unwrap();
+    let mut srcs = sources(d.path());
+    srcs.truncate(2);
+    let (c0, r0) = at(8, 0.45, 0.2);
+    let (c1, r1) = at(8, 0.75, 0.3);
+    let p = d.path().join("4.tif");
+    grid_file(&p, 8, c0, r0, (c1 - c0) as u32, (r1 - r0) as u32, &|_, _| -7.0);
+    let mut s = srcs[1].clone();
+    (s.id, s.code, s.pin, s.lakes) = ("s4".into(), 4, "s4".into(), true);
+    s.grids = vec![SGrid {
+        bbox: window_box(8, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize),
+        zoom: 8,
+        file: store::nasfs::NasPath::local_for_test(p),
+        low_file: None,
+        packed: None,
+    }];
+    srcs.push(s);
+    let (out, _) = packs(&srcs, &Fixture, &store::nasfs::NasRoot::local_for_test(&d.path().join("a")));
+    let q = (3, T.0 >> 3, T.1 >> 3);
+    for u in [0.749, 0.72] {
+        let (x, y, px, py) = where_(8, u, 0.25);
+        let t = |l| tile(&out, l, "lo", q, 8, x, y).expect("the lake's z8 tile");
+        let (v, k) = (depth_at(&t(LAYER), px, py), class_at(&t(CLASS_LAYER), px, py));
+        assert!((v + 7.0).abs() < 0.05 && k == C_NATIVE | (4 << 4), "the lake at u {u}: {v} {k}");
+    }
+}
+
 /// Task #398: an assembly's and a piece's run are timed by stage (no hour of "(untimed)"): the
 /// sources' files opened and windows read, the water read, composing and within it feathering
 /// (and the gaps filled, which the fixture has none of), the tiles encoded, the coarser levels

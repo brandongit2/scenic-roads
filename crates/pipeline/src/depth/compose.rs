@@ -11,8 +11,9 @@
 //!    stored tiles of that zoom scaled up, as the map's fallback makes them (crate::depth::fall);
 //!    inside a source, detail fades in over three of the capped zoom's pixels where its finer grids
 //!    meet capped ones;
-//!    where a source ends in the water it's feathered into what lies beneath over its band (never
-//!    across a source whose datum isn't corrected to the others', which only fills gaps).
+//!    where a source ends in the water it's feathered into what lies beneath over its band, where
+//!    something does (never across a source whose datum isn't corrected to the others', which only
+//!    fills gaps); with nothing beneath, its pixels are its own whole.
 //! 3. The water decides the shore: positive values stay as drying heights only where an intertidal
 //!    source gives them (else 0, and at most `DRY_MAX`); water with no data near data is filled,
 //!    falling linearly to 0 at the shore, from data within `GAP_M` reached through the same water
@@ -226,7 +227,9 @@ pub fn compose(
             let (d, _) = nearest(&seed, w, h);
             let bw = band.min(PAD as f32);
             for i in 0..n {
-                wgt[i] = if dok[i] { (d[i] / bw).clamp(0.0, 1.0) } else { 1.0 };
+                // (Nothing beneath: its own whole. Weighed down, its value showed but its class,
+                // zoom and source weren't set: a pixel classed none, which the map doesn't draw.)
+                wgt[i] = if dok[i] && c[i].is_finite() { (d[i] / bw).clamp(0.0, 1.0) } else { 1.0 };
             }
         }
         for i in 0..n {

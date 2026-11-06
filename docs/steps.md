@@ -404,7 +404,8 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   estimate wherever both cover water);
   past its own zoom a pixel shows the stored level of its zoom scaled up as the map's fallback makes
   it (`depth::fall`, the server's too), detail fading in over three capped pixels; a source ending in
-  the water feathered over its `band_m` (a source off the others' datum fills gaps only); the shore:
+  the water feathered over its `band_m` into what lies beneath, its own whole where nothing does (a
+  source off the others' datum fills gaps only); the shore:
   positive values kept as drying heights only from intertidal sources, water without data filled
   linearly to 0 at the shore within 600 m from data reached through the same water body (never
   across a dike or a spit; a lake without data of its own stays empty), the land a 3-pixel band of

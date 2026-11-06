@@ -46,12 +46,14 @@ use std::sync::Arc;
 /// floor's shading, `shading`, task #632; 3: a grid lined up with no overview sampled from one
 /// askew, `grids::level_for`, task #433; 8: a pixel's place by roadcore::geo's Mercator, task #862;
 /// 9: the land's band the nearest water's own value (not 0), gaps filled through their own water, the estimates after every survey and the
-/// sources declared `lakes` drawn in lakes, task #963). Its key names codecs::shade_codec::version too.
-pub const DEPTH_V: u32 = 9;
+/// sources declared `lakes` drawn in lakes, task #963; 10: a source's edge with nothing beneath not
+/// feathered, its pixels its own rather than classed none, task #966). Its key names
+/// codecs::shade_codec::version too.
+pub const DEPTH_V: u32 = 10;
 /// The depth assembly's (`build_lo`; 8: composed only at a grid's own zoom, z3–8 the means of the
 /// finer, its shading made here, task #804; 7: z3–8 from the z9 tiles, task #532; 6: lossless
-/// WebP, task #671; 9: composed as the piece's 9, task #963).
-pub const DEPTH_LO_V: u32 = 9;
+/// WebP, task #671; 9: composed as the piece's 9, task #963; 10: as the piece's 10, task #966).
+pub const DEPTH_LO_V: u32 = 10;
 /// How far from the coverage depth is built (km): 200 nautical miles, a region's EEZ's reach.
 pub const REACH_KM: f64 = 370.4;
 /// The zooms a z6 tile's hi packs hold.
