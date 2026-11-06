@@ -60,15 +60,13 @@
 //!   basemap to 10), and the place search's places that show by zoom 8, everywhere. It's downloaded
 //!   on its own: a region doesn't bring it.
 //! - **A region** (`area_part`): what the map reads over it at every zoom, so away from the NAS
-//!   every feature works inside it without the World. Every layer's hi pack (zooms 9–14), and the
-//!   base pack and road values, of each z6 tile within 2 km of it (its outlines are simplified),
-//!   and those of the owners of the ways those tiles' hidata list (`Downloads::learn_owners`), and
+//!   every feature works inside it without the World. Every layer's hi pack (zooms 9–14), the base
+//!   pack and road values, the hi data, landmark points and area details, of each z6 tile within
+//!   2 km of it (its outlines are simplified), and the base packs and road values of the owners of the ways those tiles' hidata list (`Downloads::learn_owners`), and
 //!   the basemap's zooms 11–14 over those tiles; zoomed out, its pieces over those tiles of every
 //!   layer's root and lo packs (what a terrain or shading tile without its own is made from, and
 //!   the labels the place search reads there) and of the basemap's zooms 0–10 (store::pieces;
-//!   pipeline::areafiles::pieces_of); the terrain's and the grids' hi packs within 25 km (the
-//!   viewshed's reach, so one from inside works offline); the hi data of the z6 tiles within 50 km
-//!   (what the lists of a view read around it); and what the map reads of the World's files
+//!   pipeline::areafiles::pieces_of); and what the map reads of the World's files
 //!   (pipeline::areafiles::files_of). A tile of zooms 0–5 reaches past its z6 tiles: away from
 //!   the NAS one is cut to them as it's served (Data::reaches and Data::cut, set each round:
 //!   `reach`).

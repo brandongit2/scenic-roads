@@ -1,6 +1,6 @@
 use super::*;
 use crate::maplog::MirrorLink;
-use pipeline::areafiles::{clip, lat_y, lon_x, ring_area, LISTS_KM};
+use pipeline::areafiles::{clip, lat_y, lon_x, ring_area};
 use store::catalogue::{FileRef, Layer};
 use store::naming::{write_atomic, Source};
 use store::pmtiles::Compression;
@@ -12,11 +12,11 @@ fn rect(w: f64, s: f64, e: f64, n: f64) -> Vec<[f64; 2]> {
 
 #[test]
 fn the_tiles_an_area_meets() {
-    // A box west of Greenwich, in the z6 tile 31/21: its hi data's margin (50 km) reaches over
-    // the meridian into 32/21, its tiles' (2 km) doesn't.
+    // A box west of Greenwich, in the z6 tile 31/21: a margin of 50 km reaches over the meridian
+    // into 32/21, its tiles' (2 km) doesn't.
     let london = rect(-0.3, 51.4, -0.1, 51.6);
     assert_eq!(tiles_meeting(std::slice::from_ref(&london), NEAR_KM), [(31, 21)].into());
-    assert_eq!(tiles_meeting(std::slice::from_ref(&london), LISTS_KM), [(31, 21), (32, 21)].into());
+    assert_eq!(tiles_meeting(std::slice::from_ref(&london), 50.0), [(31, 21), (32, 21)].into());
     // A tile wholly inside an area is met, though no edge or vertex of it is in the tile.
     let big = rect(-40.0, 0.0, 40.0, 60.0);
     assert!(tiles_meeting(&[big], 0.0).contains(&(32, 26)));
@@ -132,12 +132,12 @@ fn logicals(f: &Files) -> Vec<String> {
 }
 
 #[test]
-fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around() {
+fn an_areas_files_are_its_tiles_hi_packs_base_packs_and_hi_data() {
     let nas = tempfile::tempdir().unwrap();
     let cat = catalogue(&store::nasfs::NasRoot::local_for_test(nas.path()));
     let f = files_of(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
-    // Its tile's packs, the terrain of the tile within 25 km across the meridian (for the
-    // viewshed), the hi data within 50 km, the worldwide file (read zoomed in too).
+    // Its tile's packs and hi data, the worldwide file (read zoomed in too); nothing of the tile
+    // over the meridian, 25 km off (away from the NAS nothing past its tiles is read).
     assert_eq!(
         logicals(&f),
         [
@@ -145,13 +145,11 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
             "global/railfreq",
             "global/roads/6-31-21",
             "hidata/6-31-21",
-            "hidata/6-32-21",
             "layers/roads/hi/6-31-21",
-            "layers/terrain/hi/6-31-21",
-            "layers/terrain/hi/6-32-21"
+            "layers/terrain/hi/6-31-21"
         ]
     );
-    assert_eq!(f.bytes, 30_031 + 300 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032);
+    assert_eq!(f.bytes, 30_031 + 300 + 4_031 + 5_031 + 20_031 + 10_031);
     // And after its files, its pieces of the worldwide files, over its tile alone: of the terrain's
     // root (zooms 0–2) and its lo pack (3–8), and of the basemap (0–14).
     let p = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)], &BTreeSet::new());
@@ -169,8 +167,8 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
     ];
     want.extend((0..6).map(|z| piece(&world, Piece::Over(z, 31 >> (6 - z), 21 >> (6 - z)))));
     want.extend([piece(&world, Piece::Mid(31, 21)), piece(&world, Piece::Tile(31, 21))]);
-    assert_eq!(p.items[8..], want);
-    assert_eq!(p.items.len(), 8 + 15);
+    assert_eq!(p.items[6..], want);
+    assert_eq!(p.items.len(), 6 + 15);
 }
 
 async fn call(r: Response) -> (StatusCode, Value) {
@@ -934,6 +932,12 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     let r = s.data.reach_token().expect("kept to the region");
     assert_eq!(root_token(), format!("{home_root}-{r}"));
     assert_eq!(base(10, 0, 340).await, (StatusCode::NO_CONTENT, Some("no-store".to_string())));
+    // A file here of a tile past where the downloads reach (a reach other than the files', as an
+    // older download's) is read at no zoom: its hi pack's tiles and its hi data none.
+    s.data.set_reach(crate::data::Reach::Tiles(Arc::new(crate::data::Footprint::of([(33, 21)], []))));
+    assert!(s.data.content("layers/terrain/hi/6-31-21").is_some());
+    assert!(terrain(12, 31 << 6, 21 << 6).is_none() && terrain(9, 31 << 3, 21 << 3).is_none());
+    assert!(s.data.hidata("6/31/21").unwrap().is_none());
 
     // Nothing downloaded: nothing at all.
     assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
@@ -1269,8 +1273,8 @@ fn tile_cats(s: &S, cats: &[&Catalogue], t: &str) -> BTreeMap<String, BTreeSet<u
 }
 
 /// Updating London moves every tile it has to the new catalogue whole, East's files of them too
-/// (32/21's base pack, which London doesn't keep): no tile mixes catalogues. East keeps its own
-/// tile (33/21) at its catalogue, out of date for that alone.
+/// (31/21, the tile they share): no tile mixes catalogues. East keeps its own tiles (32/21 and
+/// 33/21) at its catalogue, out of date for those alone.
 #[tokio::test(flavor = "multi_thread")]
 async fn updating_a_region_moves_the_tiles_it_shares_whole() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -1290,25 +1294,24 @@ async fn updating_a_region_moves_the_tiles_it_shares_whole() {
     let pins: BTreeMap<String, Pin> = s.downloads.asked().regions.iter().map(|r| (r.id.clone(), r.pin)).collect();
     assert_eq!(pins["london"], Pin { cat: 3, to: None });
     assert_eq!(pins["east"], Pin { cat: 2, to: None }, "East stays at its own");
-    // Whole tiles: London's and East's of 31/21 and 32/21 at 3, here (East's base pack too);
-    // East's own 33/21 at 2.
-    for t in ["6-30-21", "6-31-21", "6-32-21"] {
+    // Whole tiles: London's of 30/21 (an owner's base pack) and 31/21 (East's too) at 3; East's
+    // own 32/21 and 33/21 at 2.
+    for t in ["6-30-21", "6-31-21"] {
         let c = tile_cats(&s, &[&two, &three], t);
         assert!(c.values().all(|n| n.contains(&3)), "{t}: {c:?}");
     }
-    assert!(m.has(three.content("base/6-32-21").unwrap()), "East's base pack of the shared tile, moved");
-    assert!(!m.has(two.content("base/6-32-21").unwrap()), "its old one gone");
-    let c = tile_cats(&s, &[&two, &three], "6-33-21");
-    assert!(c.values().all(|n| n.contains(&2)), "{c:?}");
-    assert!(m.has(two.content("layers/roads/hi/6-33-21").unwrap()));
-    // East: all here, out of date for 33/21's roads alone.
+    for t in ["6-32-21", "6-33-21"] {
+        let c = tile_cats(&s, &[&two, &three], t);
+        assert!(c.values().all(|n| n.contains(&2)), "{t}: {c:?}");
+    }
+    assert!(m.has(two.content("base/6-32-21").unwrap()) && m.has(two.content("layers/roads/hi/6-33-21").unwrap()));
+    // East: all here, out of date for its own two tiles' files alone.
     let v = get(&s).await;
     let e = &v["regions"]["east"];
     assert_eq!((e["state"].as_str(), e["cat"].as_u64()), (Some("done"), Some(2)), "{v}");
     assert_eq!(e["here"], e["bytes"]);
-    assert_eq!(e["behind"]["files"], 1, "{e}");
-    assert_eq!(e["behind"]["what"], json!(["roads"]));
-    assert_eq!(e["behind"]["bytes"], 1_234);
+    assert_eq!(e["behind"]["files"], 2, "{e}");
+    assert_eq!(e["behind"]["bytes"], 2 * 1_234);
     assert!(v["regions"]["london"].get("behind").is_none(), "{v}");
 
     // East updated in its turn: all at 3, the old 33/21 gone.
@@ -1316,7 +1319,7 @@ async fn updating_a_region_moves_the_tiles_it_shares_whole() {
     assert_eq!(code, StatusCode::OK, "{v}");
     tokio::task::block_in_place(|| settle(&s));
     assert!(s.downloads.asked().regions.iter().all(|r| r.pin == Pin { cat: 3, to: None }));
-    assert!(!m.has(two.content("layers/roads/hi/6-33-21").unwrap()));
+    assert!(!m.has(two.content("layers/roads/hi/6-33-21").unwrap()) && !m.has(two.content("base/6-32-21").unwrap()));
 }
 
 /// A download whose tiles another's update moved, with nothing else changed, has nothing left to
@@ -1325,17 +1328,17 @@ async fn updating_a_region_moves_the_tiles_it_shares_whole() {
 async fn a_download_another_update_covered_moves_on_by_itself() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let (root, two, s) = two_regions(home.path(), nas.path()).await;
-    let three = next_catalogue(&s, &root, &two, 3, &["base/6-32-21", "layers/terrain/hi/6-31-21"]);
+    let three = next_catalogue(&s, &root, &two, 3, &["layers/terrain/hi/6-31-21"]);
     tokio::task::block_in_place(|| settle(&s));
     let v = get(&s).await;
-    assert_eq!(v["regions"]["east"]["behind"]["files"], 2, "{v}");
+    assert_eq!(v["regions"]["east"]["behind"]["files"], 1, "{v}");
     assert_eq!(call(post_region_update(State(s.clone()), Path("london".into())).await).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     assert!(s.downloads.asked().regions.iter().all(|r| r.pin == Pin { cat: 3, to: None }));
     let v = get(&s).await;
     assert!(v["regions"]["east"].get("behind").is_none(), "{v}");
     assert_eq!(v["regions"]["east"]["state"].as_str(), Some("done"));
-    assert!(tile_cats(&s, &[&two, &three], "6-32-21").values().all(|n| n.contains(&3)));
+    assert!(tile_cats(&s, &[&two, &three], "6-31-21").values().all(|n| n.contains(&3)));
 }
 
 #[test]

@@ -327,13 +327,12 @@ installed by `tools/app/install.sh`, updated by the updater).
   whole world to zoom 8 (the basemap to 10) and the place search's places that show by zoom 8,
   everywhere.
 - **A region:** what the map reads over it at every zoom, so away from the NAS every feature works
-  inside it without the World. Every layer's hi pack and the base pack and road values of each z6
-  tile within 2 km of it, and those of the owners of the ways those tiles' hi data list whose boxes
+  inside it without the World. Every layer's hi pack, the base pack and road values, the hi data,
+  landmark points (markdata) and area details (ovdata, by z3 tile) of each z6 tile within 2 km of
+  it, and the base pack and road values of the owners of the ways those tiles' hi data list whose boxes
   meet the region within 2 km (read once per hi data and region, from the Mac's copy or the NAS;
   a downloaded region's size counts them once read, a region not downloaded doesn't), so a way
-  drawn in it that starts far outside has its info; the basemap's zooms 11–14 over those tiles; the terrain's and grids' hi packs
-  within 25 km (the viewshed's reach); the hi data, landmark points (markdata) and area details
-  (ovdata, by z3 tile) within 50 km; the worldwide `global/` files (those by z6 tile, such as the
+  drawn in it that starts far outside has its info; the basemap's zooms 11–14 over those tiles; the worldwide `global/` files (those by z6 tile, such as the
   roads' English names and ids, only for its tiles); the Canadian lake fill when it meets Canada.
   Zoomed out (#985), only what lies over its z6 tiles of the files that cover far more, as pieces
   (below): of every layer's root (z0–2) and lo packs (z3–8), each tile of zooms 0–5 over its z6
@@ -345,15 +344,16 @@ installed by `tools/app/install.sh`, updated by the updater).
   together (9,592 pieces: 2.0 GB of the packs, 0.4 GB of the basemap); a piece shared with
   another region is copied once. A tile of zooms 0–5 still reaches past the region, as do the
   landmark points' one bundle and the area details' z3 files: away from the NAS, every tile shows
-  only what lies inside the downloaded regions' z6 tiles (`Data::reaches`, `Data::cut`; the
-  World's reach everywhere). One only partly over them is cut to them as it's served
+  only what lies inside the downloaded regions' z6 tiles (`Data::reaches`, `Data::cut`, at every
+  zoom; the World's reach everywhere). One only partly over them is cut to them as it's served
   (crates/server clip.rs): a raster's pixels outside take the value the layer has where it has
   nothing (the terrain 0 m, the depth's no data, the shading flat, the water and classes none), a
   vector tile's points outside go and its lines and areas are cut at their edges (the basemap,
   labels, stations, areas, roads and rails, landmarks, ferries; a ferry cut in pieces keeps its
   longest); its ETag names where the downloads reach. So a small region stays alone when zoomed
   out, with nothing around it. The place search, a tile made from a coarser one (terrain,
-  shading, water, depth) and the landmark points keep to them too, the area details (looked up by
+  shading, water, depth), the lists of a view (drives, rides, rail lines: the hi data), the
+  viewshed and the landmark points keep to them too, the area details (looked up by
   id, a z3 tile's file) to the z3 tiles meeting them; outside them every layer is none (the
   terrain and its shading flat). A region downloaded before its pieces (its
   list naming the whole root and lo packs over it, or the basemap's worldwide zooms 0–10) takes

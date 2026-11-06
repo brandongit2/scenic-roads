@@ -11,13 +11,6 @@ use store::pieces::Piece;
 /// How far around an area its tiles are kept: its outlines are simplified (60 m to 1 km), and the
 /// build reaches 1 km past coasts.
 pub const NEAR_KM: f64 = 2.0;
-/// How far around an area its hi data are kept: the lists of a view (scenic drives and rides, rail
-/// lines) read the tiles within half their window of it, 50 km at most.
-pub const LISTS_KM: f64 = 50.0;
-/// How far around an area the layers the viewshed reads are kept (its z11 terrain, canopy heights
-/// and land cover): its radius goes to 25 km (viewshed.rs), so one from inside works offline.
-pub const VIEWSHED_KM: f64 = 25.0;
-pub const VIEWSHED_LAYERS: [&str; 3] = ["terrain", "grid-canopy", "grid-class"];
 
 /// Some of the catalogue's files: (content name, size), sorted by name.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -127,10 +120,13 @@ pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
                 add(h);
             }
         }
-        for m in [&cat.base, &cat.roads] {
+        for m in [&cat.base, &cat.roads, &cat.hidata, &cat.markdata] {
             if let Some(l) = m.get(&key) {
                 add(l);
             }
+        }
+        if let Some(l) = cat.ovdata.get(&format!("3/{}/{}", x >> 3, y >> 3)) {
+            add(l);
         }
     }
     // (Zoomed out, the layers' roots and lo packs: their pieces over it, `pieces_of`. The polar
@@ -141,26 +137,6 @@ pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
             if let Some(b) = l.polar.get(&format!("{}/{x}/{y}", roadcore::polar::BLOCK_Z)) {
                 add(b);
             }
-        }
-    }
-    for (x, y) in tiles_meeting(rings, VIEWSHED_KM) {
-        let key = format!("6/{x}/{y}");
-        for l in VIEWSHED_LAYERS.iter().filter_map(|l| cat.layers.get(*l)) {
-            if let Some(h) = l.hi.get(&key) {
-                add(h);
-            }
-        }
-    }
-    let lists = tiles_meeting(rings, LISTS_KM);
-    for &(x, y) in &lists {
-        let key = format!("6/{x}/{y}");
-        for m in [&cat.hidata, &cat.markdata] {
-            if let Some(l) = m.get(&key) {
-                add(l);
-            }
-        }
-        if let Some(l) = cat.ovdata.get(&format!("3/{}/{}", x >> 3, y >> 3)) {
-            add(l);
         }
     }
     // What the map reads from the World's part too (store::mirror's essentials), so a region works

@@ -440,8 +440,12 @@ impl Data {
         Ok(Some(v))
     }
 
-    /// A z6 tile's hidata ("6/32/21"), cached by content.
+    /// A z6 tile's hidata ("6/32/21"), cached by content: none where the downloads don't reach
+    /// (`reaches_key`), away from the NAS.
     pub fn hidata(&self, tile: &str) -> Result<Option<Arc<HiView>>> {
+        if !self.reaches_key(tile) {
+            return Ok(None);
+        }
         let cat = self.catalogue();
         let Some(l) = cat.hidata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
@@ -555,8 +559,8 @@ impl Data {
         Ok(Some(b))
     }
 
-    /// The pack holding a tile of `layer`, by logical name: none for a root or lo pack's tile, or a
-    /// polar cap's, where the downloads don't reach (`reaches`, `cut`), away from the NAS.
+    /// The pack holding a tile of `layer`, by logical name: none, away from the NAS, for a tile where
+    /// the downloads don't reach (`reaches`, `cut`), at every zoom.
     pub(crate) fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         let cat = self.catalogue();
         let l = cat.layers.get(layer)?;
@@ -573,7 +577,7 @@ impl Data {
             };
         }
         match z {
-            0..=8 if !self.reaches(z, x, y) => None,
+            _ if !self.reaches(z, x, y) => None,
             0..=2 => l.root.clone(),
             3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
             // (The terrain's deep levels: its deep packs by z10 tile, pipeline::terrain_deep.)
