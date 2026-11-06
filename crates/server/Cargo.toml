@@ -31,6 +31,9 @@ tower = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 png = "0.18"
+# Tiles cut to the downloads away from the NAS (clip.rs): the stored lossless WebPs read and made again.
+image-webp = "0.2"
+webpenc = { path = "../webpenc" }
 base64 = "0.22"
 rayon = { workspace = true }
 ureq = "=3.4.2"

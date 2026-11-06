@@ -1893,6 +1893,7 @@ dependencies = [
  "det",
  "flate2",
  "geos",
+ "image-webp",
  "libc",
  "memmap2 0.9.11",
  "names",
@@ -1911,6 +1912,7 @@ dependencies = [
  "tower-http",
  "unicode-normalization",
  "ureq",
+ "webpenc",
  "xxhash-rust",
  "zstd 0.13.3",
 ]

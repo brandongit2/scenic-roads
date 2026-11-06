@@ -14,6 +14,7 @@
 
 mod accepted;
 mod cache;
+mod clip;
 mod data;
 mod depth;
 mod descriptions;

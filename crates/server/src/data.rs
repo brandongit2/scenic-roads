@@ -6,12 +6,15 @@
 //! **Away from the NAS, the map is what's downloaded** (`Data::content_in`): while the NAS isn't
 //! read (not mounted, or its pool's breaker open), a file not on this Mac is none, as if the map had
 //! none there, so every feature answers from the downloads alone, at once, and is empty outside
-//! them. What's downloaded that covers more than the downloads (a region's lo and root packs, the
-//! basemap's zooms 0–10, the landmarks' bundle) is read only where they reach (`Data::reaches`). A
+//! them. What's downloaded that covers more than the downloads (a tile of zooms 0–5 of a region's
+//! pieces of the lo and root packs and the basemap, the World's, the landmarks' bundle) is read only
+//! where they reach (`Data::reaches`), a tile only partly there cut to them (`Data::cut`,
+//! crate::clip). A region's pieces of a pack are read as the pack (`Data::pack_key`). A
 //! share found mounted is read only once it has answered a probe (`find_nas`): a mount left from
 //! home never holds a request.
 
 use crate::cache::Lru;
+use crate::clip::{Cells, Cover};
 use crate::views::{BaseView, Blob, HiView, RoadUnits, SectView, Src};
 use anyhow::{anyhow, Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -55,6 +58,8 @@ pub struct Data {
     ovs: Mutex<Lru<String, Arc<crate::ovdata::OvView>>>,
     roadunits: Mutex<Option<(String, Arc<RoadUnits>)>>,
     globals: Mutex<Lru<String, Arc<Vec<u8>>>>,
+    /// Tiles cut to the downloads (`tile`), by their key, tile and generation, under a byte budget.
+    clipped: Mutex<Lru<(String, u8, u32, u32, u64), Arc<Vec<u8>>>>,
     /// The older files the downloads behind the catalogue keep, by logical name (`set_older`).
     older: RwLock<Arc<HashMap<String, String>>>,
     /// Where the downloads reach (`set_reach`): what's read away from the NAS keeps to it (`reaches`).
@@ -111,6 +116,7 @@ impl Data {
             ovs: Mutex::new(Lru::entries(512)),
             roadunits: Mutex::new(None),
             globals: Mutex::new(Lru::entries(128)),
+            clipped: Mutex::new(Lru::new(64 << 20)),
             generation: Default::default(),
             mirror_gen: Default::default(),
             last_mount: Mutex::new(None),
@@ -265,11 +271,11 @@ impl Data {
         }
     }
 
-    /// Where the downloads reach, away from the NAS, as z6 tiles: what's read of the files that
-    /// reach past them (the lo and root packs, the basemap's zooms 0–10: `reaches`) and the place
-    /// search (crate::places) keep to it. None while the NAS is read, or with the World downloaded
-    /// (zoomed out, everywhere).
-    pub fn reach(&self) -> Option<Arc<HashSet<(u32, u32)>>> {
+    /// Where the downloads reach, away from the NAS (their z6 tiles, and their polar caps' blocks):
+    /// what's read of the files that reach past them (the lo and root packs, the basemap's zooms
+    /// 0–10: `reaches`, `cut`) and the place search (crate::places) keep to it. None while the NAS
+    /// is read, or with the World downloaded (zoomed out, everywhere).
+    pub fn reach(&self) -> Option<Arc<Footprint>> {
         if self.online() {
             return None;
         }
@@ -281,31 +287,33 @@ impl Data {
 
     /// A token of `reach` while it keeps what's read (None while the NAS is read, or with the
     /// World): every version the app's URLs carry has it after it then (main.rs `meta_json`), so
-    /// an answer made for one reach (a tile outside it, none) is neither reused for another nor
-    /// kept at home, by the browser's cache or an open page (which asks again for what a new
-    /// version names).
+    /// an answer made for one reach (a tile outside it, none; one clipped to it) is neither reused
+    /// for another nor kept at home, by the browser's cache or an open page (which asks again for
+    /// what a new version names).
     pub fn reach_token(&self) -> Option<String> {
-        let r = self.reach()?;
-        let mut tiles: Vec<&(u32, u32)> = r.iter().collect();
-        tiles.sort_unstable();
-        let mut h = blake3::Hasher::new();
-        h.update(b"reach");
-        for (x, y) in tiles {
-            h.update(&x.to_le_bytes());
-            h.update(&y.to_le_bytes());
-        }
-        Some(format!("r{}", &h.finalize().to_hex()[..8]))
+        Some(self.reach()?.token())
     }
 
-    /// Whether tile z/x/y is where the downloads reach (`reach`): from z6 its z6 tile is one of
-    /// theirs, coarser one of theirs is under it. A region's lo packs and the basemap's zooms 0–10
-    /// cover far more than the region: away from the NAS, read only over it.
+    /// Whether tile z/x/y (Web Mercator's) is where the downloads reach (`reach`): from z6 its z6
+    /// tile is one of theirs, coarser one of theirs is under it (and it's served clipped to them:
+    /// `cut`). A region's lo packs and the basemap's zooms 0–10 cover far more than the region:
+    /// away from the NAS, read only over it.
     pub fn reaches(&self, z: u8, x: u32, y: u32) -> bool {
-        let Some(r) = self.reach() else { return true };
-        match z.checked_sub(6) {
-            Some(d) => r.contains(&(x >> d, y >> d)),
-            None => r.iter().any(|&(a, b)| (a >> (6 - z), b >> (6 - z)) == (x, y)),
-        }
+        self.reach().is_none_or(|r| r.merc.cover(z, x, y) != Cover::None)
+    }
+
+    /// The pole of `layer`, a polar cap's (its blocks the grid its reach is told in).
+    fn pole(cat: &Catalogue, layer: &str) -> Option<char> {
+        cat.layers.get(layer).filter(|l| !l.polar.is_empty())?;
+        layer.chars().last()
+    }
+
+    /// Where the downloads reach, when tile z/x/y of the grid of `pole` (None: Web Mercator's; a
+    /// polar cap's) lies only partly there: it's served cut to them (crate::clip). None when it's
+    /// read whole (the NAS read, the World, a tile all inside).
+    pub fn cut(&self, pole: Option<char>, z: u8, x: u32, y: u32) -> Option<Arc<Footprint>> {
+        let r = self.reach()?;
+        (r.grid(pole).cover(z, x, y) == Cover::Part).then_some(r)
     }
 
     /// `reaches` for a tile key ("6/32/21"; the landmark points' and area details' files, one
@@ -547,14 +555,17 @@ impl Data {
         Ok(Some(b))
     }
 
-    /// The pack holding a tile of `layer`, by logical name: none for a root or lo pack's tile where
-    /// the downloads don't reach (`reaches`), away from the NAS.
+    /// The pack holding a tile of `layer`, by logical name: none for a root or lo pack's tile, or a
+    /// polar cap's, where the downloads don't reach (`reaches`, `cut`), away from the NAS.
     pub(crate) fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         let cat = self.catalogue();
         let l = cat.layers.get(layer)?;
         let f = pipeline::terrain_deep::PACK_Z;
         // (A polar layer's: z0–3 in its root, z4–9 in its blocks, pipeline::polar.)
         if !l.polar.is_empty() {
+            if self.reach().is_some_and(|r| r.grid(Self::pole(&cat, layer)).cover(z, x, y) == Cover::None) {
+                return None;
+            }
             let b = pipeline::polar::BLOCK_Z;
             return match z {
                 _ if z < b => l.root.clone(),
@@ -648,7 +659,8 @@ impl Data {
     }
 
     /// A tile of one of our layers: its bytes as stored, and whether they are gzip'd (its pack's flag,
-    /// `PackIndex::gzip`).
+    /// `PackIndex::gzip`). Away from the NAS, one only partly where the downloads reach is cut to them
+    /// (`cut`, crate::clip): none when it can't be.
     pub fn tile(&self, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<(Blob, bool)>> {
         let Some(logical) = self.pack_of(layer, z, x, y) else { return Ok(None) };
         let Some(key) = self.pack_key(&logical, z, x, y) else { return Ok(None) };
@@ -658,16 +670,39 @@ impl Data {
             Src::Local(m) => Blob::Map(m, e.offset as usize, e.len as usize),
             Src::Remote(r) => Blob::from_vec(r.read_at(e.offset, e.len as usize)?),
         };
-        Ok(Some((blob, idx.gzip())))
+        let cat = self.catalogue();
+        let pole = Self::pole(&cat, layer);
+        let Some(reach) = self.cut(pole, z, x, y) else { return Ok(Some((blob, idx.gzip()))) };
+        let id = (key, z, x, y, self.generation.load(std::sync::atomic::Ordering::Relaxed));
+        if let Some(b) = self.clipped.lock().unwrap().get(&id) {
+            return Ok(Some((Blob::from_vec(b.to_vec()), idx.gzip())));
+        }
+        let encoding = cat.layers.get(layer).map_or("", |l| l.encoding.as_str());
+        match crate::clip::tile(encoding, layer, z, x, y, blob.bytes(), idx.gzip(), reach.grid(pole)) {
+            Ok(b) => {
+                let b = Arc::new(b);
+                self.clipped.lock().unwrap().put(id, b.clone(), Vec::len(&b) as u64);
+                Ok(Some((Blob::from_vec(b.to_vec()), idx.gzip())))
+            }
+            Err(e) => {
+                eprintln!("{layer} {z}/{x}/{y}: can't be cut to the downloads, so none: {e:#}");
+                Ok(None)
+            }
+        }
     }
 
     /// The content hash of a tile, without reading it (for 304s): None when there's no such tile,
-    /// an error when its pack's index can't be read.
+    /// an error when its pack's index can't be read. A tile cut to the downloads (`tile`) is told
+    /// apart by where they reach.
     pub fn tile_hash(&self, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<u64>> {
         let Some(logical) = self.pack_of(layer, z, x, y) else { return Ok(None) };
         let Some(key) = self.pack_key(&logical, z, x, y) else { return Ok(None) };
         // (A 304 is a use too: the area is in view.)
-        Ok(self.index(&key)?.find(z, x, y).map(|e| e.hash))
+        let Some(h) = self.index(&key)?.find(z, x, y).map(|e| e.hash) else { return Ok(None) };
+        Ok(Some(match self.cut(Self::pole(&self.catalogue(), layer), z, x, y) {
+            Some(r) => xxhash_rust::xxh3::xxh3_64_with_seed(r.token().as_bytes(), h),
+            None => h,
+        }))
     }
 
     /// Each tile at zoom `z` of the pack `key` (a content name, so of whichever catalogue named it,
@@ -878,8 +913,61 @@ impl Data {
 pub enum Reach {
     /// The World is downloaded: everywhere, zoomed out.
     World,
-    /// The z6 tiles of the regions downloaded (none: nothing downloaded).
-    Tiles(Arc<HashSet<(u32, u32)>>),
+    /// Where the regions downloaded are (none: nothing downloaded).
+    Tiles(Arc<Footprint>),
+}
+
+/// Where the regions downloaded are: their z6 tiles, and the polar caps' blocks they meet.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Footprint {
+    pub merc: Cells,
+    /// By pole ('n', 's'): its blocks (roadcore::polar::BLOCK_Z).
+    pub polar: std::collections::BTreeMap<char, Cells>,
+}
+
+impl Default for Footprint {
+    fn default() -> Self {
+        Footprint::of(std::iter::empty(), std::iter::empty())
+    }
+}
+
+impl Footprint {
+    /// Of these z6 tiles and polar blocks (pole letter, x, y).
+    pub fn of(tiles: impl IntoIterator<Item = (u32, u32)>, blocks: impl IntoIterator<Item = (char, u32, u32)>) -> Self {
+        let mut polar: std::collections::BTreeMap<char, Cells> =
+            ['n', 's'].into_iter().map(|p| (p, Cells { z: roadcore::polar::BLOCK_Z, set: HashSet::new() })).collect();
+        for (p, x, y) in blocks {
+            if let Some(c) = polar.get_mut(&p) {
+                c.set.insert((x, y));
+            }
+        }
+        Footprint { merc: Cells { z: 6, set: tiles.into_iter().collect() }, polar }
+    }
+
+    /// The cells of the grid of `pole` (None: Web Mercator's z6 tiles), none for a grid it lacks.
+    pub fn grid(&self, pole: Option<char>) -> &Cells {
+        static NONE: std::sync::OnceLock<Cells> = std::sync::OnceLock::new();
+        match pole {
+            None => &self.merc,
+            Some(p) => self.polar.get(&p).unwrap_or_else(|| NONE.get_or_init(Cells::default)),
+        }
+    }
+
+    /// A token of it (`Data::reach_token`).
+    pub(crate) fn token(&self) -> String {
+        let mut h = blake3::Hasher::new();
+        h.update(b"reach");
+        for (k, c) in std::iter::once(('m', &self.merc)).chain(self.polar.iter().map(|(p, c)| (*p, c))) {
+            let mut cells: Vec<&(u32, u32)> = c.set.iter().collect();
+            cells.sort_unstable();
+            h.update(&[k as u8]);
+            for (x, y) in cells {
+                h.update(&x.to_le_bytes());
+                h.update(&y.to_le_bytes());
+            }
+        }
+        format!("r{}", &h.finalize().to_hex()[..8])
+    }
 }
 
 impl Default for Reach {

@@ -707,7 +707,7 @@ struct Sources {
     /// The packs as content names (so they're the one catalogue's), or keys of their pieces in the
     /// mirror, and the zoom read.
     packs: Vec<(String, u8)>,
-    reach: Option<Arc<HashSet<(u32, u32)>>>,
+    reach: Option<Arc<crate::data::Footprint>>,
 }
 
 /// The labels' packs to read in `cat` as `data` reads them (`Data::content_in`, `Data::pack_keys`:
@@ -734,13 +734,7 @@ fn key_of(src: &Sources, names_version: u64) -> u64 {
         h.update(&[0, *z]);
     }
     if let Some(r) = &src.reach {
-        let mut tiles: Vec<&(u32, u32)> = r.iter().collect();
-        tiles.sort();
-        h.update(b"reach");
-        for (x, y) in tiles {
-            h.update(&x.to_le_bytes());
-            h.update(&y.to_le_bytes());
-        }
+        h.update(r.token().as_bytes());
     }
     h.update(&names_version.to_le_bytes());
     u64::from_le_bytes(h.finalize().as_bytes()[..8].try_into().unwrap_or_default())
@@ -768,8 +762,10 @@ fn build(data: &Data, src: &Sources, names: Option<&names::Namer>) -> Result<Bui
     }
     let pool = rayon::ThreadPoolBuilder::new().num_threads(THREADS).thread_name(|i| format!("places-{i}")).build()?;
     pool.install(|| {
-        let read: Vec<Result<Chunk>> =
-            packs.par_iter().map(|(content, z)| read_pack(data, content, *z, src.reach.as_deref(), names)).collect();
+        let read: Vec<Result<Chunk>> = packs
+            .par_iter()
+            .map(|(content, z)| read_pack(data, content, *z, src.reach.as_ref().map(|r| &r.merc.set), names))
+            .collect();
         let mut b = Built::default();
         let mut chunks = Vec::with_capacity(read.len());
         let mut first_bad = None;
@@ -1465,7 +1461,7 @@ mod tests {
         assert!(ask(&s, "banff", None).await["hits"].as_array().unwrap().is_empty(), "nothing downloaded");
 
         // A region over 6/32/21: its tile's places, not those of its lo pack's other tiles.
-        s.data.set_reach(crate::data::Reach::Tiles(Arc::new([(32, 21)].into())));
+        s.data.set_reach(crate::data::Reach::Tiles(Arc::new(crate::data::Footprint::of([(32, 21)], []))));
         assert_eq!(finds(&s, "lake louise", 1).await, ["\"Lake Louise\""]);
         assert_eq!(finds(&s, "banff", 1).await.len(), 1);
         assert!(ask(&s, "yokohama", None).await["hits"].as_array().unwrap().is_empty(), "another tile's");

@@ -33,7 +33,7 @@
 //! whose older files the map never reads (they'd mix with the NAS's, `older`).
 //!
 //! **Its own list** (docs/maplog.md §6.2). Each download keeps what it is at its catalogue: its
-//! files' content names (each names its logical name) and sizes, and its basemap pieces, in
+//! files' content names (each names its logical name) and sizes, and its pieces, in
 //! `downloads.json`'s `lists`, by catalogue number (`seq`). The lists of the catalogue served are
 //! written as the mirror plans, for every download (`Downloads::keep_lists`), and those of each
 //! catalogue a download is at or updating to are kept, however old: what it keeps, what changed and
@@ -63,14 +63,15 @@
 //!   every feature works inside it without the World. Every layer's hi pack (zooms 9–14), and the
 //!   base pack and road values, of each z6 tile within 2 km of it (its outlines are simplified),
 //!   and those of the owners of the ways those tiles' hidata list (`Downloads::learn_owners`), and
-//!   the basemap's zooms 11–14 over those tiles; zoomed out, every layer's root and its lo packs of
-//!   the z3 tiles over those tiles (what a terrain or shading tile without its own is made from, and
-//!   the labels the place search reads there), and the basemap's zooms 0–10 (one piece, worldwide);
-//!   the terrain's and the grids' hi packs within 25 km (the viewshed's reach, so one from inside
-//!   works offline); the hi data of the z6 tiles within 50 km (what the lists of a view read around
-//!   it); and what the map reads of the World's files (pipeline::areafiles::files_of). A region's
-//!   lo packs and basemap reach past it, as far as their z3 tile and the world: away from the NAS
-//!   what's read of them keeps to its z6 tiles (Data::reaches, set each round: `reach`).
+//!   the basemap's zooms 11–14 over those tiles; zoomed out, its pieces over those tiles of every
+//!   layer's root and lo packs (what a terrain or shading tile without its own is made from, and
+//!   the labels the place search reads there) and of the basemap's zooms 0–10 (store::pieces;
+//!   pipeline::areafiles::pieces_of); the terrain's and the grids' hi packs within 25 km (the
+//!   viewshed's reach, so one from inside works offline); the hi data of the z6 tiles within 50 km
+//!   (what the lists of a view read around it); and what the map reads of the World's files
+//!   (pipeline::areafiles::files_of). A tile of zooms 0–5 reaches past its z6 tiles: away from
+//!   the NAS one is cut to them as it's served (Data::reaches and Data::cut, set each round:
+//!   `reach`).
 //! - **A region's terrain detail** (`detail_of`), an add-on to its download: the terrain's deep
 //!   packs (pipeline::terrain_deep, z13 and finer, by z10 tile) within 2 km of it, and their
 //!   shading's (the slope layer's deep packs: pipeline::slope_pack). They cover only parts of a
@@ -776,21 +777,28 @@ impl Downloads {
 }
 
 /// Where the downloads of `asked` reach (Data::reach): everywhere with the World, else the z6 tiles
-/// of the regions downloaded as `cat` records them (their pieces', `area_part`). Only those
-/// regions' outlines are read: known at once, not after a plan of every region.
+/// of the regions downloaded as `cat` records them (their pieces', `area_part`), and the polar
+/// caps' blocks they meet (their polar blocks', pipeline::areafiles). Only those regions' outlines
+/// are read: known at once, not after a plan of every region.
 fn reach(asked: &Asked, cat: &Catalogue) -> Reach {
     if asked.world.is_some() {
         return Reach::World;
     }
     let ids: HashSet<&str> = asked.regions.iter().map(|r| r.id.as_str()).collect();
     let recorded = cat.coverage.get("regions").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    let tiles = recorded
+    let rings: Vec<Vec<Vec<[f64; 2]>>> = recorded
         .iter()
         .filter(|r| r["id"].as_str().is_some_and(|id| ids.contains(id)))
         .filter_map(|r| serde_json::from_value::<pipeline::coverage::DrawnRegion>(r.clone()).ok())
-        .flat_map(|r| tiles_meeting(&outer_rings(&r), NEAR_KM))
+        .map(|r| outer_rings(&r))
         .collect();
-    Reach::Tiles(Arc::new(tiles))
+    let tiles = rings.iter().flat_map(|r| tiles_meeting(r, NEAR_KM));
+    let blocks = rings.iter().flat_map(|r| {
+        [roadcore::polar::Pole::North, roadcore::polar::Pole::South].into_iter().flat_map(move |p| {
+            pipeline::areafiles::polar_blocks_meeting(r, p, NEAR_KM).into_iter().map(move |(x, y)| (p.letter(), x, y))
+        })
+    });
+    Reach::Tiles(Arc::new(crate::data::Footprint::of(tiles, blocks)))
 }
 
 /// What downloads of `cat` copy, with the owners learned.

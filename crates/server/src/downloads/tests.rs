@@ -902,18 +902,32 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
     assert_eq!(basemap(10, 510, 340).unwrap(), [gz(b"z10")]);
     assert_eq!(basemap(12, 31 << 6, 21 << 6).unwrap(), [gz(b"12/31")]);
     assert!(basemap(12, 30 << 6, 21 << 6).unwrap().is_empty(), "outside it: none, not an error");
-    assert_eq!(s.data.reach(), Some(Arc::new([(31, 21)].into())));
+    assert_eq!(s.data.reach().map(|r| r.merc.set.clone()), Some([(31, 21)].into()));
     // What reaches past it (the basemap's zooms 0–10, the lo and root packs) is read over it alone:
-    // their pieces over it (the packs not here whole).
+    // their pieces over it (the packs not here whole), a tile only partly over it cut to it.
     assert!(basemap(10, 0, 340).unwrap().is_empty(), "the zooms 0–10 piece, far from it");
     assert_eq!(s.data.content("layers/terrain/lo/3-3-2"), None, "not here whole");
     let terrain = |z: u8, x: u32, y: u32| {
         s.data.tile("terrain", z, x, y).unwrap().map(|(b, _)| roadcore::grid::decode_terrain(b.bytes()).unwrap())
     };
-    assert_eq!(terrain(6, 31, 21).unwrap()[0], 100.0, "its tile, from its piece");
-    assert_eq!(terrain(5, 15, 10).unwrap()[0], 100.0, "over it, from its piece");
+    assert_eq!(terrain(6, 31, 21).unwrap()[0], 100.0, "its tile, whole");
     assert!(terrain(6, 30, 21).is_none() && terrain(5, 14, 10).is_none(), "its lo pack, beside it");
-    assert!(terrain(2, 3, 1).is_none());
+    // (z5 15/10 is four z6 tiles: London's 31/21, its bottom right; z2 1/1 is 16/16 to 31/31, 31/21
+    // its pixels 240–255 across, 80–95 down.)
+    for (z, x, y, inside) in [(5, 15, 10, 200 * 256 + 200), (2, 1, 1, 85 * 256 + 250)] {
+        let t = terrain(z, x, y).unwrap();
+        assert_eq!((t[inside], t[0]), (100.0, 0.0), "{z}/{x}/{y}: cut to it, flat outside");
+    }
+    assert!(terrain(2, 3, 1).is_none() && terrain(5, 14, 10).is_none());
+    let stored = |z, x, y| {
+        let ix = store::pack::PackIndex::parse_bytes(
+            &std::fs::read(nas.path().join("gone").join(cat.content("layers/terrain/lo/3-3-2").unwrap())).unwrap(),
+        )
+        .unwrap();
+        ix.find(z, x, y).unwrap().hash
+    };
+    assert_ne!(s.data.tile_hash("terrain", 5, 15, 10).unwrap(), Some(stored(5, 15, 10)), "a cut tile's own ETag");
+    assert_eq!(s.data.tile_hash("terrain", 6, 31, 21).unwrap(), Some(stored(6, 31, 21)));
     // Every version the app's URLs carry names the reach (Data::reach_token), so what's answered
     // for it isn't reused at home or for another reach; and a 204 away isn't cached for good (it
     // says "not downloaded"), nor is the tile made at home served.
@@ -928,7 +942,7 @@ async fn away_from_the_nas_the_map_is_its_downloads() {
         assert_eq!(s.data.content(l), None, "{l}");
     }
     assert!(basemap(0, 0, 0).unwrap().is_empty());
-    assert_eq!(s.data.reach(), Some(Arc::new(HashSet::new())));
+    assert_eq!(s.data.reach(), Some(Arc::new(crate::data::Footprint::default())));
     assert!(s.data.tile("terrain", 0, 0, 0).unwrap().is_none(), "no pieces, none");
 
     // Home again: the NAS's.

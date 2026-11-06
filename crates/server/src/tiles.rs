@@ -223,7 +223,13 @@ pub async fn base_tile(
         return none();
     }
     let nv = s.names.version_for_tile(z, x, y, 1.0);
-    let h = base_hash(&archives, z, x, y);
+    // (Away from the NAS, a tile only partly where the downloads reach is cut to them: told apart by
+    // where they reach.)
+    let cut = s.data.cut(None, z, x, y);
+    let h = match &cut {
+        Some(r) => xxhash_rust::xxh3::xxh3_64_with_seed(r.token().as_bytes(), base_hash(&archives, z, x, y)),
+        None => base_hash(&archives, z, x, y),
+    };
     let etag = format!("\"{h:016x}-{nv:x}\"");
     let what = format!("basemap {z}/{x}/{y}");
     serve_made(&MADE, (1, z, x, y, h, nv), &etag, &headers, v, "application/x-protobuf", what, move || {
@@ -238,6 +244,10 @@ pub async fn base_tile(
                 let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
                 names::mvt::merge(&refs)?
             }
+        };
+        let merged = match &cut {
+            Some(r) => crate::clip::basemap(&merged, z, x, y, r.grid(None))?,
+            None => merged,
         };
         let out = s.names.attach_raw(&merged, z, x, y, crate::names_live::Rules::Basemap);
         Ok(Some(names::mvt::gzip(&out)?))
