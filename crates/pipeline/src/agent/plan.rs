@@ -97,8 +97,8 @@ pub(super) struct PlanView {
     pub waiting: Vec<Waiting>,
     pub regions: Vec<recipes::Recipe>,
     pub bad: Vec<(String, String)>,
-    pub checklist: Vec<build::Line>,
-    pub built: BTreeMap<String, build::RegionState>,
+    pub checklist: Vec<progress::Line>,
+    pub built: BTreeMap<String, progress::RegionState>,
     pub forecast: Option<forecast::Forecast>,
     pub publishing: Option<publish::PublishLine>,
     pub timetables: Option<crate::timetables::View>,
@@ -390,9 +390,9 @@ pub(super) struct Planner {
     /// found them (build::Plan::checklist: None while no plan got that far); how far each region
     /// is built, as the last plan that got that far counted (build::Plan::built); the regions'
     /// steps for the page, when that count was last started and the count under way.
-    pub(super) progress: Vec<build::Line>,
-    pub(super) regions_checklist: std::cell::RefCell<Option<build::Checklist>>,
-    pub(super) built: std::cell::RefCell<BTreeMap<String, build::RegionState>>,
+    pub(super) progress: Vec<progress::Line>,
+    pub(super) regions_checklist: std::cell::RefCell<Option<progress::Checklist>>,
+    pub(super) built: std::cell::RefCell<BTreeMap<String, progress::RegionState>>,
     pub(super) steps_counted: Option<Instant>,
     #[allow(clippy::type_complexity)]
     pub(super) steps_making:
@@ -2806,21 +2806,21 @@ impl Planner {
     /// with an item per step counted: the OSM pass (the planet, read when a newer one is on the
     /// NAS, and its worldwide steps), then the regions' steps (build::checklist, the last plan's:
     /// `regions_checklist`).
-    pub(super) fn checklist(&self, root: &store::nasfs::NasRoot, regions: &[recipes::Recipe]) -> Vec<build::Line> {
+    pub(super) fn checklist(&self, root: &store::nasfs::NasRoot, regions: &[recipes::Recipe]) -> Vec<progress::Line> {
         let mut items = Vec::new();
         let mut next: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         let mut notes: BTreeMap<&str, String> = BTreeMap::new();
         let have = self.latest_pass(root);
         // The planet: a newer one's under way (or waiting), else done.
         let newer = matches!(crate::osmpass::newer_planet(root, have.as_deref()), Ok(Some(_)));
-        items.push(build::Item {
+        items.push(progress::Item {
             step: "osm-pass".into(),
             left: Some((newer || have.is_none()) as usize),
             ..Default::default()
         });
         let Some(date) = have else {
             // Nothing to size the rest by until a pass is complete: its steps, to come.
-            items.extend(WORLDWIDE_STEPS.iter().map(|s| build::Item { step: s.to_string(), ..Default::default() }));
+            items.extend(WORLDWIDE_STEPS.iter().map(|s| progress::Item { step: s.to_string(), ..Default::default() }));
             items.extend(build::checklist_to_come());
             return build::fold(&items, &next, &notes);
         };
@@ -2863,7 +2863,7 @@ impl Planner {
                 .map_or(true, |s| build::lakefill_work(&date, &manifest, &keys, s.as_deref()).is_some()),
             build::water_work(&px, &keys).is_some(),
         ];
-        items.extend(WORLDWIDE_STEPS.iter().zip(left).map(|(s, l)| build::Item {
+        items.extend(WORLDWIDE_STEPS.iter().zip(left).map(|(s, l)| progress::Item {
             step: s.to_string(),
             left: Some(l as usize),
             ..Default::default()

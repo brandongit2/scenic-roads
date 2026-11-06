@@ -471,7 +471,7 @@ pub(crate) mod tests {
     /// Pinned on both sides by tools/status/test/status-said.json (the Swift selfTest reads it;
     /// `SCENIC_BLESS=1` writes it anew).
     pub fn said_status() -> Status {
-        use crate::agent::build::{Item, Line};
+        use crate::agent::progress::{Item, Line};
         let mut st = Status { host: "m1".into(), app: "2026-10-30".into(), beat: 1_700_000_000, ..Default::default() };
         st.set_jobs(vec![job("unit 6/1/2", 0), job("pack 6/1/1", 1), job("unit 6/1/3", 2)], true);
         st.checklist = vec![Line {

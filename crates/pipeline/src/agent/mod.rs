@@ -57,6 +57,7 @@ pub mod pageview;
 pub mod placement;
 pub mod plan;
 pub mod pool;
+pub mod progress;
 pub mod publish;
 pub mod redo;
 pub mod regionsview;
@@ -828,10 +829,10 @@ pub struct Status {
     pub bad_recipes: Vec<(String, String)>,
     /// Per region, how many of its z6 tiles are built (after the first pass).
     #[serde(default)]
-    pub built: BTreeMap<String, build::RegionState>,
+    pub built: BTreeMap<String, progress::RegionState>,
     /// The build to the end, step by step: the pass's steps, then the regions'.
     #[serde(default)]
-    pub checklist: Vec<build::Line>,
+    pub checklist: Vec<progress::Line>,
     /// The workers the coordinator heard from in the last two minutes (helpers, web pages).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers: Vec<WorkerView>,
@@ -4582,7 +4583,7 @@ impl Agent {
         let now_steps: Vec<String> =
             self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| step_of(&r.spec.id))).collect();
         annotate(&mut checklist, &now_steps, &helpers, &waiting);
-        let checklist: Vec<build::Line> = checklist.into_iter().map(build::Line::said).collect();
+        let checklist: Vec<progress::Line> = checklist.into_iter().map(progress::Line::said).collect();
         let views: Vec<JobView> = (0..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
         let all_new = self.all_new();
         let capacity = self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default();
@@ -9181,8 +9182,8 @@ fn hold_for_lakefill(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>)
 /// its step) says why: another Mac is on it, or its job waits (`waiting`: for the home network,
 /// out a failure). Publishing, while a step above has work left, goes out as each z6 tile is built (a
 /// catalogue at most each minute) and once they all are: it's done only then.
-fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waiting: &[Waiting]) {
-    // (A step whose job runs, here or on a helper, isn't done: build::Line::under_way.)
+fn annotate(list: &mut [progress::Line], now: &[String], helpers: &[Status], waiting: &[Waiting]) {
+    // (A step whose job runs, here or on a helper, isn't done: progress::Line::under_way.)
     let helper_steps = helpers.iter().flat_map(|h| h.jobs()).filter_map(|j| step_of(&j.id));
     let running: Vec<String> = now.iter().cloned().chain(helper_steps).collect();
     for s in list.iter_mut() {
@@ -9190,10 +9191,10 @@ fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waitin
             s.under_way(r);
         }
     }
-    let busy = |s: &build::Line| now.iter().any(|n| s.steps.iter().any(|x| x == n));
+    let busy = |s: &progress::Line| now.iter().any(|n| s.steps.iter().any(|x| x == n));
     // (Work known to be left: a line not sized yet, as trains a day before its sources are seeded,
     // holds nothing up.)
-    let known_left = |s: &build::Line| s.left.is_some_and(|l| l > 0) || s.total.is_some_and(|t| s.done < t);
+    let known_left = |s: &progress::Line| s.left.is_some_and(|l| l > 0) || s.total.is_some_and(|t| s.done < t);
     let before_left = list.iter().rev().skip(1).any(known_left);
     for s in list.iter_mut() {
         if s.finished() || busy(s) {
@@ -15022,14 +15023,14 @@ mod tests {
     /// its records, read earlier, say so; the stage's count goes with it.
     #[test]
     fn a_step_running_again_is_not_done() {
-        let item = |step: &str, done: usize, total: Option<usize>, left: usize| build::Item {
+        let item = |step: &str, done: usize, total: Option<usize>, left: usize| progress::Item {
             step: step.into(),
             done,
             total,
             left: Some(left),
             ..Default::default()
         };
-        let mut l = vec![build::Line {
+        let mut l = vec![progress::Line {
             what: "landmarks".into(),
             steps: ["peaks", "heritage", "marks"].iter().map(|s| s.to_string()).collect(),
             done: 4,
@@ -15089,7 +15090,7 @@ mod tests {
 
     #[test]
     fn the_checklist_says_why_a_step_waits() {
-        let step = |what: &str, steps: &[&str], left: usize| build::Line {
+        let step = |what: &str, steps: &[&str], left: usize| progress::Line {
             id: what.to_lowercase(),
             what: what.into(),
             steps: steps.iter().map(|s| s.to_string()).collect(),
@@ -15133,7 +15134,7 @@ mod tests {
         // Publishing waits for the steps above, though its catalogue is current.
         assert!(!l[3].finished() && l[3].note.as_deref().is_some_and(|n| n.starts_with("as each unit is built")));
         // All above done: done.
-        let mut l: Vec<build::Line> = list()
+        let mut l: Vec<progress::Line> = list()
             .into_iter()
             .map(|mut s| {
                 s.left = Some(0);
