@@ -714,12 +714,11 @@ clients keep their map, and one with none reads the NAS's snapshot (§5.2).
    server's `catalog/`. Any time: nothing reads them since step 6.
 5. **10, docs**: formats.md, storage.md, macs.md, building.md, pool.md, and this doc folded in.
 
-**With #916 step 6d** (docs/crates.md §6.3: it needs `cli::program` out of pipeline). #883's steps
-left touch one place in cli: `scenic gc`'s flags (`crates/pipeline/src/cli/scenic.rs:198`; 8b,
-where `--shadow-due` becomes the set the job deletes and `--days` goes with the window). Nothing
-left edits `cli/mod.rs`, `cli/build.rs`, `cli/progs.rs` or `net.rs` (`net.rs` has no catalogue code
-since step 6). So `cli::program` (`crates/pipeline/src/cli/mod.rs:68`, with `TOOLS`) can move alone
-now without meeting #883's work, and 6d need not wait for #883.
+**With #916 step 6d** (docs/crates.md §6.3). #883's steps left touch one place in cli: `scenic
+gc`'s flags (`crates/pipeline/src/cli/scenic.rs:198`; 8b, where `--shadow-due` becomes the set the
+job deletes and `--days` goes with the window). Nothing left edits `cli/mod.rs`, `cli/build.rs`,
+`cli/progs.rs` or `net.rs` (`net.rs` has no catalogue code since step 6). So 6d moved
+`cli::program` (with `TOOLS`) to jobrt::sys without waiting for #883.
 
 **With #882** (each Mac a role; the mini serves). The log, its feed, GC's queue and the Catalogues
 map are the lead's already, so with the lead fixed on the mini they are where #882 puts them, and
