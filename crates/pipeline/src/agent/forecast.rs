@@ -3081,7 +3081,7 @@ mod tests {
         inp.sched = Some(st);
         let spans = |code: u32| {
             let inp = Input { code, ..inp.clone() };
-            let sim = run(&inp, &|c| c.secs, far());
+            let sim = run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far());
             let mut v: Vec<(f64, f64)> =
                 sim.items.iter().filter(|i| i.step == "slope-deep").map(|i| (i.from, i.end)).collect();
             v.sort_by(|a, b| a.0.total_cmp(&b.0));
