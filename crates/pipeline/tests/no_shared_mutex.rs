@@ -25,7 +25,6 @@ const LEFT: &[(&str, usize)] = &[
     ("memguard.rs", 1),
     ("pageview.rs", 4),
     ("pool.rs", 1),
-    ("settings.rs", 1),
     ("tiles.rs", 1),
 ];
 
