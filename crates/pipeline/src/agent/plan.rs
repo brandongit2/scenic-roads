@@ -3054,6 +3054,23 @@ impl Planner {
         let units = crate::inputs::units(root);
         let mut jobs = Vec::new();
         let mut checking: BTreeSet<String> = BTreeSet::new();
+        // (The listing files a check may still read, `drop_unnamed`: this plan's, the last plan's
+        // (granted from until this one's offers replace its own), those of the jobs running here and
+        // of every lease of the step, the coordinator's now (a grant made but not started yet).)
+        let mut named: BTreeSet<String> = BTreeSet::new();
+        let mut name = |w: &jobs::Work| {
+            for (t, k) in w.targets.iter().filter(|_| w.step == "inputs") {
+                named.extend(t.strip_prefix("inputs/").map(|u| listing_name(u, k)));
+            }
+        };
+        for w in self.jobs.iter().chain(self.inp.slots.iter().filter_map(|s| s.running.as_ref().map(|r| &r.spec))) {
+            if let Some(r) = &w.record {
+                name(r);
+            }
+        }
+        if let Some(c) = &self.coord {
+            name(&jobs::Work { step: "inputs".into(), targets: c.leased_keyed("inputs") });
+        }
         // (Running now, on this Mac.)
         for r in self.inp.slots.iter().filter_map(|s| s.running.as_ref()) {
             if let Some(w) = r.spec.record.as_ref().filter(|w| w.step == "inputs") {
@@ -3101,17 +3118,23 @@ impl Planner {
                 }
                 checking.insert(unit.to_string());
                 // (The listing and acceptances the key is made from, for the job to check exactly
-                // them: inputs::Planned. The file stays while the job it names may start: a folder
-                // that changes before then is planned again under another key, and this job, which
-                // checks what it was keyed, is replaced by that one.)
-                // (Named by the z6 tile flat, `timetables+gtfs`: a nested z6 tile's name is one file's.)
-                let flat = crate::inputs::flat(unit);
-                let planned = self.o.home.join("inputs-listing").join(format!("{flat}.{key}.json"));
-                let wrote = keep_listing(
-                    &planned,
-                    &flat,
-                    &crate::inputs::Planned { listing: l.listing.clone(), accepted: l.accepted.clone() },
-                );
+                // them: inputs::Planned. Written once: its name is its key's. It stays while a job
+                // may read it, `named`: a folder changed meanwhile is planned again under another key.)
+                let planned = self.o.home.join(LISTINGS).join(listing_name(unit, &key));
+                named.insert(listing_name(unit, &key));
+                let wrote = if planned.exists() {
+                    Ok(())
+                } else {
+                    std::fs::create_dir_all(planned.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| {
+                        store::whole::write(
+                            &planned,
+                            &serde_json::to_vec(&crate::inputs::Planned {
+                                listing: l.listing.clone(),
+                                accepted: l.accepted.clone(),
+                            })?,
+                        )
+                    })
+                };
                 if let Err(e) = wrote {
                     waiting.push(Waiting {
                         step: Some("inputs".into()),
@@ -3146,6 +3169,10 @@ impl Planner {
                     record: Some(jobs::Work { step: "inputs".into(), targets: vec![(target, key)] }),
                 });
             }
+        }
+        // (Only by the agent that runs the jobs: a dry run beside it shares its home, not its leases.)
+        if self.locked && !self.o.dry_run {
+            drop_unnamed(&self.o.home.join(LISTINGS), &named);
         }
         // The regions' extract, when their check holds files waiting for ids it lacks (its held
         // report's `needs`, of the current pass): a job extracting them with those it has.
@@ -3273,24 +3300,24 @@ fn sample_name(now: u64) -> String {
     format!("{STALL_SAMPLE}-{year:04}{month:02}{day:02}-{:02}{:02}{:02}Z.txt", d / 3600, d / 60 % 60, d % 60)
 }
 
-/// How long a unit's earlier listing files stay (`keep_listing`): a day, as room's leftovers.
-const LISTING_KEPT: Duration = Duration::from_secs(86400);
+/// The agent's folder of the listings its checks read (`gate_work`).
+const LISTINGS: &str = "inputs-listing";
 
-/// The listing a check is keyed by, `listing`, written (whole) to `planned` for its job to read, in
-/// the folder of the unit's earlier ones (`flat.<key>.json`). Those stay a day: a job planned under
-/// an earlier key may start after the folder changed (task #971: the NAS's regions being edited,
-/// its listing file gone, the job failed at once), and checks exactly what it was keyed.
-fn keep_listing(planned: &Path, flat: &str, listing: &crate::inputs::Planned) -> Result<()> {
-    let dir = planned.parent().context("the listing's folder")?;
-    std::fs::create_dir_all(dir)?;
-    store::whole::write(planned, &serde_json::to_vec(listing)?)?;
-    for e in std::fs::read_dir(dir)?.flatten() {
-        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
-        if e.file_name().to_string_lossy().starts_with(&format!("{flat}.")) && old.is_some_and(|a| a >= LISTING_KEPT) {
+/// The file in `LISTINGS` of unit `unit`'s listing keyed `key`, by the unit's flat name
+/// (`timetables+gtfs`: a nested z6 tile's name is one file's).
+fn listing_name(unit: &str, key: &str) -> String {
+    format!("{}.{key}.json", crate::inputs::flat(unit))
+}
+
+/// The files of `dir` not `named` removed (task #971: a job planned before its folder changed found
+/// its listing gone, as each new key's file removed the unit's others). One read of the folder, on
+/// the agent's own disk; what stays is what a job may read.
+fn drop_unnamed(dir: &Path, named: &BTreeSet<String>) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if !named.contains(&*e.file_name().to_string_lossy()) {
             std::fs::remove_file(e.path()).ok();
         }
     }
-    Ok(())
 }
 
 /// The oldest samples in `home` removed past the newest `keep`, and the single file the sampler
@@ -3377,37 +3404,6 @@ const SAMPLE_LIMIT: Duration = Duration::from_secs(300);
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A folder that changes between the plan and the job's start: the listing the job was handed
-    /// is still there, for the key it was given; the unit's listings a day old are swept (task #971).
-    #[test]
-    fn a_listing_handed_to_a_job_stays_when_the_folder_changes() {
-        let d = tempfile::tempdir().unwrap();
-        let dir = d.path().join("inputs-listing");
-        let at = |key: &str| dir.join(format!("regions.{key}.json"));
-        let with = |n: usize| crate::inputs::Planned {
-            listing: crate::inputs::Listing {
-                files: (0..n).map(|i| (format!("{i}.json"), (1, 1))).collect(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        keep_listing(&at("a"), "regions", &with(1)).unwrap();
-        // (The folder changed: the plan keyed it again, before the first job started.)
-        keep_listing(&at("b"), "regions", &with(2)).unwrap();
-        let handed: crate::inputs::Planned = serde_json::from_slice(&std::fs::read(at("a")).unwrap()).unwrap();
-        assert_eq!(handed, with(1));
-        // (Another unit's stays; one of the unit's a day old goes.)
-        keep_listing(&dir.join("roads.c.json"), "roads", &with(1)).unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(at("a"))
-            .unwrap()
-            .set_modified(std::time::SystemTime::now() - LISTING_KEPT)
-            .unwrap();
-        keep_listing(&at("c"), "regions", &with(3)).unwrap();
-        assert!(!at("a").exists() && at("b").exists() && at("c").exists() && dir.join("roads.c.json").exists());
-    }
 
     /// The plan is made again when something it depends on changed, it was kicked (a job's end, a
     /// gate ask), a timed wait ended, or its fallback is due; none made yet, at once. (Times passed

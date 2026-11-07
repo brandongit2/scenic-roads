@@ -2496,6 +2496,21 @@ impl Coordinator {
         out
     }
 
+    /// The targets of `step` leased now, every Mac's, each with its key (pool::records::Keys::record).
+    pub fn leased_keyed(&self, step: &str) -> Vec<(String, String)> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let mut out = Vec::new();
+        for l in s.leases.all(now) {
+            if let Work::Job { step: st, targets } = &l.work {
+                if st == step {
+                    out.extend(targets.iter().cloned());
+                }
+            }
+        }
+        out
+    }
+
     /// The plan's work offered and free to take now (crate::agent::flags::Open), by step in plan
     /// order: its targets no lease holds and none done meanwhile (`pick_every`'s own rules, before
     /// any worker's measures or backoff), the lead's own planned jobs marked `own`.

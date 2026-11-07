@@ -13829,6 +13829,93 @@ mod tests {
         assert!(!read_status(Some(&nas), &d.path().join("old")).unwrap().conditions.nas, "an older app's check");
     }
 
+    /// Task #971: a check's listing stays while a job may read it, its folder changed meanwhile:
+    /// named by the last plan (granted from until the next one's offers), then by a lease (granted,
+    /// not started), and gone once nothing names it; the job keyed by the old listing checks exactly
+    /// that, and the next plan keys the folder as it is.
+    #[test]
+    fn a_checks_listing_stays_while_a_job_may_read_it() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        for f in [NAS_CHECK, "state/build", "state/inputs"] {
+            std::fs::create_dir_all(root.join(f)).unwrap();
+        }
+        std::fs::write(root.join(crate::inputs::TEST_FLAG), b"").unwrap();
+        let unit = crate::inputs::TEST_UNIT;
+        let inputs_dir = root.join("inputs").join(unit);
+        std::fs::create_dir_all(&inputs_dir).unwrap();
+        let put = |name: &str| {
+            let p = inputs_dir.join(name);
+            std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+                .unwrap();
+        };
+        put("a.jsonl");
+        let mut a = agent(&nas, &home);
+        a.round().unwrap();
+        let c = read_status(Some(&nas), &home).unwrap().conditions;
+        // (The agent that runs the jobs, its coordinator's leases: what removes a listing.)
+        a.o.dry_run = false;
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
+        a.coord = Some(co.clone());
+        let listed = |a: &mut Agent, n: usize| {
+            a.planner().inputs.watch.as_ref().unwrap().1.ask();
+            let t = Instant::now();
+            while a.planner().inputs.watch.as_ref().unwrap().1.get(unit).is_none_or(|l| l.listing.files.len() != n) {
+                assert!(t.elapsed() < store::testkit::WATCHDOG, "listed");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        // (Each plan published as a look publishes it: the agent grants from it until the next.)
+        let plan = |a: &mut Agent| {
+            let jobs = a.planner().plan(&nas, &c, &mut Vec::new());
+            a.planner().jobs = jobs.clone();
+            let j = jobs.into_iter().find(|j| j.id.starts_with("inputs ")).expect("a check planned");
+            let at = j.cmd.iter().position(|a| a == "--listing").unwrap();
+            (PathBuf::from(&j.cmd[at + 1]), j.record.unwrap().targets)
+        };
+        let kept = || -> BTreeSet<PathBuf> {
+            std::fs::read_dir(home.join("inputs-listing")).unwrap().map(|e| e.unwrap().path()).collect()
+        };
+        listed(&mut a, 1);
+        let (first, keyed) = plan(&mut a);
+        // The folder changes before the first plan's job starts: planned again under another key,
+        // the first listing kept, the last plan's job still granted from it.
+        put("b.jsonl");
+        listed(&mut a, 2);
+        let (second, _) = plan(&mut a);
+        assert_ne!(first, second);
+        assert!(first.exists() && second.exists());
+        // Granted before the second plan's offers (its lease), not started yet: kept by the lease.
+        let lease = co.hold("inputs", &keyed).unwrap();
+        assert_eq!(plan(&mut a).0, second);
+        assert_eq!(kept(), BTreeSet::from([first.clone(), second.clone()]));
+        // Its check runs: exactly the listing it was keyed by, one file of the two there now.
+        let given: crate::inputs::Planned = serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
+        let mut out = crate::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
+        let said = crate::inputs::gate::run(&mut out, unit, true, Some(given)).unwrap();
+        assert!(said.starts_with(&format!("{unit}: 1 file read of 1")), "{said}");
+        let listing = crate::inputs::read_listed(&nas, &out.manifest, unit).unwrap();
+        assert_eq!(listing.listed.keys().collect::<Vec<_>>(), ["a.jsonl"]);
+        let mut keys = crate::pool::records::Keys::load_strict(&nas).unwrap();
+        keys.record("inputs", &keyed);
+        keys.save(&nas).unwrap();
+        co.finish(lease, &[]);
+        // Ended and recorded: the next plan keys the folder as it is (a normal check of both files),
+        // the first listing named by nothing now, gone; the second the last plan's, gone after.
+        let (third, _) = plan(&mut a);
+        let given: crate::inputs::Planned = serde_json::from_slice(&std::fs::read(&third).unwrap()).unwrap();
+        assert_eq!(given.listing.files.len(), 2);
+        assert_eq!(kept(), BTreeSet::from([second, third.clone()]));
+        assert_eq!(plan(&mut a).0, third);
+        assert_eq!(kept(), BTreeSet::from([third]));
+    }
+
     /// The gate in the agent (docs/inputs.md §4.2, §4.3, §4.7): the inputs folders listed off the loop,
     /// a unit's check planned before every other job while its key isn't the one recorded (a full
     /// one daily), the status's entry; an acceptance asked of the agent written by it.
