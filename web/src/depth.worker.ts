@@ -20,14 +20,15 @@
 import { HeightTile } from './contour/height-tile';
 import generateIsolines from './contour/isolines';
 import { NODATA_MIN, SENTINEL, coarsen, contourValues, reliefValues, type Grid } from './depthgrid';
-import { HBINS, hbin } from './depthlook';
+import { HBINS, HCELLS, hbin } from './depthlook';
 import { encodeLines, readPolygons } from './mvt';
 
 export type DepthMsg =
   | { type: 'init'; base: string; depth: string; cls: string; minzoom: number }
   | { type: 'tile'; id: number; kind: 'relief' | 'contour'; z: number; x: number; y: number; q: Record<string, string> }
   | { type: 'probe'; id: number; z: number; x: number; y: number; px: number; py: number }
-  | { type: 'hist'; id: number; tiles: [number, number, number][] }
+  /** The depths of the tiles' cells listed (HCELLS × HCELLS a tile, row by row). */
+  | { type: 'hist'; id: number; tiles: [number, number, number, number[]][] }
   | { type: 'cancel'; id: number };
 export interface Probe {
   /** Depth (m, negative below the surface; null: none). */
@@ -46,6 +47,8 @@ export interface DepthReply {
 }
 
 const N = 512;
+/** A histogram cell's side (px). */
+const CELL = N / HCELLS;
 /** The basemap's deepest tiles. */
 const VMAX = 14;
 
@@ -92,9 +95,9 @@ async function handle(m: Exclude<DepthMsg, { type: 'init' } | { type: 'cancel' }
     post({ id: m.id, probe: { d: d < NODATA_MIN ? d : null, cls: c.k[i] & 7, src: c.k[i] >> 4, water: c.w[i] === 1, dries: (c.k[i] & 8) !== 0 } });
   } else if (m.type === 'hist') {
     const h = new Array(HBINS).fill(0);
-    for (const [z, x, y] of m.tiles) {
+    for (const [z, x, y, cells] of m.tiles) {
       const c = await composite(z, x, y);
-      for (let b = 0; b < HBINS; b++) h[b] += c.h[b];
+      for (const k of cells) for (let b = 0; b < HBINS; b++) h[b] += c.h[k * HBINS + b];
     }
     post({ id: m.id, hist: h });
   }
@@ -209,8 +212,9 @@ interface Composite {
   k: Uint8Array;
   /** Basemap water. */
   w: Uint8Array;
-  /** Depth histogram of the water with data (HBINS log bins). */
-  h: number[];
+  /** Depth histograms of the water with data, a cell's HBINS log bins after another's (HCELLS ×
+   * HCELLS cells, row by row). */
+  h: Uint32Array;
   empty: boolean;
 }
 const composites = new Map<string, Promise<Composite>>();
@@ -225,7 +229,7 @@ function composite(z: number, x: number, y: number): Promise<Composite> {
       serverTile(z1, 2 * x, 2 * y), serverTile(z1, 2 * x + 1, 2 * y), serverTile(z1, 2 * x, 2 * y + 1), serverTile(z1, 2 * x + 1, 2 * y + 1), waterMask(z, x, y),
     ]);
     const d = new Float32Array(N * N).fill(SENTINEL), k = new Uint8Array(N * N);
-    const h = new Array(HBINS).fill(0);
+    const h = new Uint32Array(HCELLS * HCELLS * HBINS);
     let any = false;
     ([[g00, 0, 0], [g10, 256, 0], [g01, 0, 256], [g11, 256, 256]] as [Grid, number, number][]).forEach(([g, ox, oy]) => {
       if (!g) return;
@@ -237,7 +241,7 @@ function composite(z: number, x: number, y: number): Promise<Composite> {
     });
     for (let i = 0; i < N * N; i++) {
       if (!w[i] || !(d[i] < NODATA_MIN)) continue;
-      if (d[i] < 0) h[hbin(-d[i])]++;
+      if (d[i] < 0) h[(Math.floor(i / N / CELL) * HCELLS + Math.floor((i % N) / CELL)) * HBINS + hbin(-d[i])]++;
     }
     return { d, k, w, h, empty: !any };
   })();

@@ -1809,6 +1809,7 @@ async function main() {
   layers.trees.onPreview = (palette) => applyTrees(map, palette ? { ...store.s.trees, palette } : store.s.trees);
   // Depth under the water (depth.ts): its layers once the catalogue has them.
   const depth = new Depth(map);
+  depth.viewOutline = overlays.viewOutline;
   layers.depth.onPreview = (palette) => depth.preview(palette);
   depth.onFit = () => layers.depth.update(depth.dist, depth.domain(), depth.cdf());
   viewshed.onActive = (on) => layers.setViewshedActive(on);

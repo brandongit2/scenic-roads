@@ -36,9 +36,10 @@ import { onVersions, ver } from './api';
 import { SHADE_SHIFT, floorTiles, waterTilesOn, waterTop } from './basemap';
 import { hostFor } from './hosts';
 import { DRY_MIN, depthZooms, type DepthZooms } from './depthgrid';
-import { DEPTH_DOMAIN, depthBins, depthColour, hdepth, HBINS, rgba, DEPTH_DEFAULTS, type DepthState } from './depthlook';
+import { DEPTH_DOMAIN, depthBins, depthColour, hdepth, HBINS, HCELLS, rgba, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
-import { mercX, mercY, tileY } from './merc';
+import { viewArea } from './inview';
+import { mercLat, mercLon, mercX, mercY, mercYClamped, tileY } from './merc';
 import { hexRgb } from './palettes';
 import { spaced, unspaced } from './scaleaxis';
 import { WorkerPool } from './workerpool';
@@ -84,6 +85,8 @@ export class Depth {
   private viewTimer = 0;
   /** Told when the depths in view or the fitted range change (the panel's scale). */
   onFit: () => void = () => {};
+  /** The ground in view's outline (main.ts groundOutline), as the other layers' in-view take it. */
+  viewOutline?: () => [number, number][];
 
   constructor(private map: MLMap) {
     map.on('moveend', () => this.scheduleView());
@@ -363,16 +366,36 @@ export class Depth {
     this.viewTimer = window.setTimeout(() => void this.view(), 250);
   }
 
-  /** The tiles in view at the map's zoom (none past 48). */
-  private viewTiles(): [number, number, number][] {
+  /** The tiles in view at the map's zoom (none past 48) and their histogram cells in view: the
+   * ground in view (inview.ts, as the roads' and the other layers' statistics take it) holding the
+   * cell's centre, or the cell holding the view's centre. */
+  private viewTiles(): [number, number, number, number[]][] {
     const m = this.map, z = Math.max(0, Math.min(this.zooms.tiles, Math.floor(m.getZoom())));
     const b = m.getBounds();
+    const a = viewArea(this.viewOutline?.() ?? [], [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+    const [w, s, e, no] = a.box;
     const n = 2 ** z;
     const tx = (lng: number) => Math.floor(mercX(lng) * n);
-    const tiles: [number, number, number][] = [];
-    for (let y = tileY(b.getNorth(), z); y <= tileY(b.getSouth(), z); y++)
-      for (let x = tx(b.getWest()); x <= tx(b.getEast()); x++) tiles.push([z, ((x % n) + n) % n, y]);
-    return tiles.length > 48 ? [] : tiles;
+    // The box's columns: every one round a pole, on through 180° when it crosses it.
+    const [x0, x1] = a.pole ? [0, n - 1] : [tx(w), tx(e) + (w > e ? n : 0)];
+    const c = m.getCenter(), cx = mercX(c.lng) * n, cy = mercYClamped(c.lat) * n;
+    const tiles: [number, number, number, number[]][] = [];
+    for (let y = tileY(no, z); y <= tileY(s, z); y++)
+      for (let xu = x0; xu <= Math.min(x1, x0 + n - 1); xu++) {
+        const x = ((xu % n) + n) % n;
+        const cells: number[] = [];
+        for (let j = 0; j < HCELLS; j++) {
+          const lat = mercLat((y + (j + 0.5) / HCELLS) / n);
+          for (let i = 0; i < HCELLS; i++) {
+            const centre = Math.floor((cx - x) * HCELLS) === i && Math.floor((cy - y) * HCELLS) === j;
+            if (centre || a.test(mercLon((x + (i + 0.5) / HCELLS) / n), lat)) cells.push(j * HCELLS + i);
+          }
+        }
+        if (!cells.length) continue;
+        if (tiles.length === 48) return [];
+        tiles.push([z, x, y, cells]);
+      }
+    return tiles;
   }
 
   /** The depths in view, while the scale fits to them (its range: their percentiles, `fit`) or
@@ -384,7 +407,7 @@ export class Depth {
     const tiles = this.viewTiles();
     // (Too many to sample.)
     if (!tiles.length) return;
-    const halves = pool.workers.map((w) => tiles.filter((t) => this.workerFor(...t) === w));
+    const halves = pool.workers.map((w) => tiles.filter(([z, x, y]) => this.workerFor(z, x, y) === w));
     const rs = await Promise.all(halves.map((ts, i) => (ts.length ? pool.ask({ type: 'hist', id: 0, tiles: ts }, undefined, pool.workers[i]) : Promise.resolve({ id: 0, hist: new Array(HBINS).fill(0) } as DepthReply))));
     if (!wanted()) return;
     const hst = new Array(HBINS).fill(0);

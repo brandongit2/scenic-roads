@@ -72,6 +72,9 @@ export const rgba = (c: RGB, a = 1) => `rgba(${c.map((v) => Math.round(Math.max(
 export const DEPTH_DOMAIN: [number, number] = [0, 6000];
 /** Histogram bins: depth (m) on a log scale from 0.1 to 12,000 m. */
 export const HBINS = 120;
+/** The depth histograms' cells a tile side (depth.worker.ts composite): the view's ground counts
+ * a cell whose centre it holds, or the cell holding its centre (depth.ts viewTiles). */
+export const HCELLS = 8;
 export const hbin = (d: number) => Math.max(0, Math.min(HBINS - 1, Math.floor(((Math.log10(Math.max(0.1, d)) + 1) / 5.08) * HBINS)));
 export const hdepth = (b: number) => 10 ** ((b / HBINS) * 5.08 - 1);
 
