@@ -214,14 +214,6 @@ impl NasWeigher<'_> {
     }
 }
 
-/// What lease `l`'s job moved on the NAS a second, as `Sched::job_weight` weighs it: the heavier
-/// under `limits` of its mean and its rate lately (`Lease::mean`, `Lease::lately`); from a recorded
-/// state, what that says (`Lease::recorded_rate`). None: no beat has said yet.
-fn moved_rate(limits: &crate::budget::nas::Limits, l: &Lease) -> Option<crate::budget::nas::Rate> {
-    let Some(mean) = l.mean() else { return l.recorded_rate };
-    Some(l.lately().filter(|r| limits.weight(*r) > limits.weight(mean)).unwrap_or(mean))
-}
-
 /// A job's NAS load as its targets are added (`NasWeigher::add`, `NasWeigher::job`): what they
 /// move (each rate times its time, summed) and their time, their heaviest weight, and whether
 /// one's rate or time isn't known.
@@ -766,7 +758,9 @@ impl Sched {
     pub(super) fn job_weight(&self, nw: &NasWeigher, l: &Lease, now: Instant) -> (u32, bool) {
         let Work::Job { step, targets } = &l.work else { return (0, false) };
         let (w, dl) = Self::job_nas(nw, step, Some(&l.worker), targets.iter().map(|t| t.0.as_str()));
-        let Some(rate) = moved_rate(&nw.limits, l) else { return (w, dl) };
+        if l.live.is_none() {
+            return (w, dl);
+        }
         let names: Vec<&str> =
             if targets.is_empty() { vec![""] } else { targets.iter().map(|t| t.0.as_str()).collect() };
         // (No time known for a target: `OWN_AGE`, so an unmeasured job is weighed by what it does
@@ -777,7 +771,10 @@ impl Sched {
         if l.ran(now).as_secs() <= predicted {
             return (w, dl);
         }
-        (nw.limits.weight(rate), dl)
+        match (l.mean(), l.lately()) {
+            (None, _) => (w, dl),
+            (Some(m), r) => (nw.limits.weight(m).max(r.map_or(0, |r| nw.limits.weight(r))), dl),
+        }
     }
 
     /// The NAS budget now (docs/pool.md §7.7) for an ask of the lead's own (`lead`) or a member's:
@@ -2239,11 +2236,6 @@ pub struct Leased {
     /// weighs, `Backfill`), not just started.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub granted_at: u64,
-    /// What its job moved on the NAS a second as its beats said (`moved_rate`; None: not said yet,
-    /// or a record before task #993): a job past its predicted time is weighed by it, in a
-    /// scheduler made from the state as in the live one (`Sched::job_weight`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nas_rate: Option<crate::budget::nas::Rate>,
 }
 
 /// A worker's last ask (`State::workers`): the ask, whether it ran an older app (`Worker::old`),
@@ -2274,10 +2266,9 @@ impl Sched {
                 .filter_map(|l| {
                     // (Its job's start when it's older than its lease: `Lease::began`, task #992.)
                     let granted_at = l.granted_at.min(clock.unix.saturating_sub(l.ran(now).as_secs()));
-                    let nas_rate = moved_rate(&self.nas_own.or(self.nas).unwrap_or_default(), &l);
                     match l.work {
                         Work::Job { step, targets } => {
-                            Some(Leased { granted_at, nas_rate, worker: l.worker, step, targets, threads: l.threads })
+                            Some(Leased { granted_at, worker: l.worker, step, targets, threads: l.threads })
                         }
                         Work::Task { .. } => None,
                     }
@@ -2338,7 +2329,6 @@ impl Sched {
                 leases.grant_at(&l.worker, Work::Job { step: l.step.clone(), targets: l.targets.clone() }, now, at);
             leases.began_at(id, at, clock.unix, now);
             leases.set_threads(id, l.threads);
-            leases.set_recorded_rate(id, l.nas_rate);
         }
         let workers = s
             .workers

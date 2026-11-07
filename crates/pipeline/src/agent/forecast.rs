@@ -3014,18 +3014,19 @@ mod tests {
         assert!(sim.items.iter().all(|i| i.by.is_some()));
     }
 
-    /// Slope-deep targets of 100 thousandths of the NAS each, a member's four lanes free, the lead's
-    /// lane busy, and a member's job out for 900 s past its predicted time: the input of task #993's
-    /// tests, with the NAS's limits and that job's rate as its beats said.
-    fn nas_held_input<'a>(
-        regions: &'a [RegionLeft],
-        c: &'a dyn Fn(&str, &str) -> Cost,
-        held: bool,
-        rate: Option<f64>,
-    ) -> Input<'a> {
+    /// Task #993: the NAS's own load over its target (`Limits::held`) is a reading of now: the run
+    /// holds it while the jobs out now run, not for its whole length (code 6 did: two records of
+    /// 5 Nov so shut ran every job that weighs anything one at a time, their depth a day late).
+    #[test]
+    fn the_nas_gate_opens_once_the_jobs_out_end() {
         use crate::coord::sched::{Asked, Leased, State};
         use crate::coord::{Ask, Capacity};
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, held, ..Default::default() };
+        let ts: Vec<String> = (0..8).map(|i| format!("10/{i}/0")).collect();
+        let regions = [RegionLeft { slope_deep: ts, ..region("a", &[], &[], &[]) }];
+        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
+        // (Targets of 100 thousandths of the NAS each, a member's four lanes free, the lead's lane
+        // busy, a member's job out for 900 s.)
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, held: true, ..Default::default() };
         let v = crate::coord::cost_version("slope-deep");
         let mut st = State { nas: Some(limits), nas_own: Some(limits), lead_name: "m4".into(), ..Default::default() };
         for t in &regions[0].slope_deep {
@@ -3041,7 +3042,6 @@ mod tests {
             targets: vec![("6/9/9".into(), "k".into())],
             threads: 1,
             granted_at: 1_000_000 - 7200,
-            nas_rate: rate.map(|bytes_s| crate::budget::nas::Rate { bytes_s, ..Default::default() }),
         }];
         let cap = Capacity { mem_mb: 16_000, build_mb: 16_000, cores: 8, cores_free: 8, ..Default::default() };
         st.workers = vec![Asked {
@@ -3060,43 +3060,11 @@ mod tests {
         let out =
             Machine { busy_s: 900.0, running: Some(("terrain-hi".into(), 1)), mac: Some("m2".into()), ..member("m2") };
         let lead = Machine { busy_s: 1e6, ..mac("m4", 1.0) };
-        let mut inp = input(regions, vec![lead, out, lane(0), lane(1), lane(2), lane(3)], c);
+        let mut inp = input(&regions, vec![lead, out, lane(0), lane(1), lane(2), lane(3)], &c);
         inp.after.clear();
         inp.sched = Some(st);
-        inp
-    }
-
-    fn slope_deep_targets() -> [RegionLeft; 1] {
-        let ts: Vec<String> = (0..8).map(|i| format!("10/{i}/0")).collect();
-        [RegionLeft { slope_deep: ts, ..region("a", &[], &[], &[]) }]
-    }
-
-    /// Task #993: a job under way past its predicted time weighs what its beats said it moved, in
-    /// the run as in the live scheduler (`Leased::nas_rate`, `Sched::job_weight`). The lead's record
-    /// of 6 Nov 23:27 UTC: a bld-fetch no target's rate weighs, 472 bldtiles aged behind it live, the
-    /// run giving them their lanes at once.
-    #[test]
-    fn a_job_under_way_holds_the_nas_by_what_it_moved() {
-        let regions = slope_deep_targets();
-        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
-        let first = |rate: Option<f64>| {
-            let sim = run(&nas_held_input(&regions, &c, false, rate), &|c| c.secs, far());
-            sim.items.iter().filter(|i| i.step == "slope-deep").map(|i| i.from).fold(f64::INFINITY, f64::min)
-        };
-        assert_eq!(first(None), 0.0, "weighed by its targets, it weighs nothing: they go at once");
-        assert_eq!(first(Some(100e6)), 900.0, "moving the whole NAS, they wait for it to end");
-        assert_eq!(first(Some(1e6)), 0.0, "moving a hundredth of it, they go beside it");
-    }
-
-    /// Task #993: the NAS's own load over its target (`Limits::held`) is a reading of now: the run
-    /// holds it while the jobs out now run, not for its whole length (code 6 did: two records of
-    /// 5 Nov so shut ran every job that weighs anything one at a time).
-    #[test]
-    fn the_nas_gate_opens_once_the_jobs_out_end() {
-        let regions = slope_deep_targets();
-        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
         let spans = |code: u32| {
-            let inp = Input { code, ..nas_held_input(&regions, &c, true, Some(1e6)) };
+            let inp = Input { code, ..inp.clone() };
             let sim = run(&inp, &|c| c.secs, far());
             let mut v: Vec<(f64, f64)> =
                 sim.items.iter().filter(|i| i.step == "slope-deep").map(|i| (i.from, i.end)).collect();
@@ -3942,7 +3910,6 @@ mod tests {
             targets: ts.iter().map(|t| (t.clone(), "k".to_string())).collect(),
             threads: 2,
             granted_at: 0,
-            nas_rate: None,
         };
         let packs: Vec<String> = regions[0].packs.iter().map(|p| p.0.clone()).take(5).collect();
         let st = State {

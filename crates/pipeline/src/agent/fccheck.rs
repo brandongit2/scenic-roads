@@ -371,10 +371,8 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 /// already), the build's pause (`forecast::paused`) and each Mac's pace at each step (crate::paces: the
 /// scheduler's, its costs and its lanes' times by it, `repace`) read from the history, each Mac's room
 /// at its sustained best (`Rooms`, from the asks the inputs before it recorded) and each Mac's slots
-/// its lanes (`unhold`: no hold of the day before). Code 7 also has each job under way weigh what its
-/// beats said it moved (a record of task #993 on: `Leased::nas_rate`) and the NAS's own gate open once
-/// the jobs out then end; code 6, its targets' predicted rates (`nas_rate` cleared) and the gate as
-/// recorded for the whole run.
+/// its lanes (`unhold`: no hold of the day before). Code 7 also has the NAS's own gate open once the
+/// jobs out then end; code 6, as recorded for the whole run.
 pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut rooms = Rooms::default();
@@ -395,11 +393,6 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
         rooms.set(inp);
         unhold(inp);
         inp.paused = forecast::paused(events, inp.now);
-        if code < 7 {
-            for l in inp.sched.iter_mut().flat_map(|s| &mut s.leases) {
-                l.nas_rate = None;
-            }
-        }
         repace(inp, events);
         let paces = inp.sched.as_ref().map(|s| s.paces.clone()).unwrap_or_default();
         let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();

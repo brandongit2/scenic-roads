@@ -8590,22 +8590,6 @@ mod tests {
                 assert_eq!(got, ["6/2/1"], "past it: weighed by what it moved");
             }
         }
-        // (The scheduler's state says what its job moved (task #993); one made from it, hearing no
-        // beats, weighs it by that, as the live one does: the forecast's run.)
-        let st: sched::State = serde_json::from_str(&serde_json::to_string(&c.sched_state()).unwrap()).unwrap();
-        let said = st.leases.iter().find(|l| l.step == "slope-hi").and_then(|l| l.nas_rate);
-        assert_eq!(said.map(|r| r.bytes_s.round()), Some((1u64 << 20) as f64), "1 MiB/s");
-        let weight = |s: &sched::State| {
-            // (An hour past its grant: past the ten minutes its targets predict.)
-            let (now, unix) = (Instant::now(), s.leases.iter().map(|l| l.granted_at).max().unwrap() + 3600);
-            let from = sched::Sched::from_state(s, sched::Clock { now, unix }, Duration::from_secs(7200));
-            from.nas_room(now, true).map(|r| r.1)
-        };
-        let mut unsaid = st.clone();
-        for l in &mut unsaid.leases {
-            l.nas_rate = None;
-        }
-        assert!(weight(&st).unwrap() < weight(&unsaid).unwrap(), "by what it moved, not its targets' rates");
     }
 
     /// Task #991: a job's beats count what it moved since it began, and a lease may be far younger
