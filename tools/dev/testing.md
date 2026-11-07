@@ -332,19 +332,24 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   taken over.
 - The copy: the tree's tracked and untracked-not-ignored files and symlinks (uncommitted edits
   included) rsync into `~/scenic-check/<key>/src`; files and symlinks not in that list, then empty
-  folders, are deleted there. By content (`--checksum`), times not kept (#983): a file sent is
-  dated when it arrives, after every build of its key there, so cargo rebuilds it; one whose
+  folders, are deleted there. Once the run has a slot, that copy goes into the slot's build folder
+  (below), whatever else was there deleted. Both by content (`--checksum`), times not kept (#983): a file written is
+  dated when it arrives, after every build in that folder, so cargo rebuilds it; one whose
   content is there already is left alone, its crate not rebuilt. (Kept times let a file edited
   during a run arrive at the next dated before that run's build: cargo took it for built and the
-  next run tested the old binary.) A copy without the `copy` stamp of this scheme has all its files
-  dated now once. Publish's two trees (`tree`, `tree-2`) share the key `publish`, so with kept times
-  a tree checked out before the other publish's build sent files dated before it (a stale build);
-  dated on arrival, that case is covered too. Costs ~0.1-0.5 s a run over `-a` (the 46 MB tree, M1
+  next run tested the old binary.) Costs ~0.1-0.5 s a run over `-a` (the 46 MB tree, M1
   to M4), ~0.3-0.8 s on a cold copy (~4 s with `-a`). Tested by
-  `tools/app/test/remote-tests.zsh` (a toy crate, an edit dated back). Build folder `~/scenic-check/<key>/target`, kept between runs, set by
-  `~/scenic-check/<key>/.cargo/config.toml`, not CARGO_TARGET_DIR (sccache hashes every CARGO_*
-  variable, so a per-key one missed the cache for every key: 0 % Rust hits on the mini, #887); rustc
-  through the test Mac's sccache, third-party crates shared between keys.
+  `tools/app/test/remote-tests.zsh` (a toy crate, an edit dated back, keys taking turns in one folder).
+- The build folders are the slots', not the keys' (#969): `~/scenic-check/.build/<slot>/{src,target}`,
+  one per test slot, the same paths whichever tree comes, kept between runs. A key takes the slot it
+  last used if it is free, else the least recently used. rustc's incremental state holds only for
+  the folder it was made in, so a folder per key compiled every workspace crate anew at a key's first run;
+  here a run compiles what differs from the slot's last tree, publish's too. The target is set by
+  `~/scenic-check/.build/<slot>/.cargo/config.toml`, not CARGO_TARGET_DIR (sccache hashes every CARGO_*
+  variable, so a value per folder missed the cache: 0 % Rust hits on the mini, #887); rustc
+  through the test Mac's sccache, third-party crates for an emptied folder. A folder holds one build's
+  worth (7.1 GB through the runs measured below), with a variant of the crates a package set
+  without pipeline changes the features of.
 - The run: nice 20 at utility priority (`taskpolicy -c utility`, as the pool's jobs, whose nice 0
   wins the CPU, #887; and so the lead's
   agent loop isn't starved: #700), 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
@@ -365,10 +370,11 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   `SCENIC_CHECK_LOCAL=1` (also `SCENIC_TESTS_LOCAL=1`).
 - Disk on the test Mac (#912): before a run, other keys' folders go until the test Mac has its
   agent's room target free (`room-target.json` in its agent's folder, set from the menu bar) plus
-  what the run needs (the key's last build folder; a new key, the largest there): first those
+  what the run needs (its build folder; an empty one, the largest there): first those
   whose worktree is gone (a worktree's key records its origin, the calling Mac and repo; each run
-  sends that repo's worktrees), then the least recently used. Never a locked key (a lock younger
-  than 6 h); a folder is removed by taking its lock first. The sweep also drops a removed
+  sends that repo's worktrees), then the least recently used, then the other slots' build folders,
+  least recently used first. Never a locked key (a lock younger
+  than 6 h) nor a slot in use; a folder is removed by taking its lock or slot first. The sweep also drops a removed
   worktree's key (`remote-tests.sh --drop <key>`). Tests: `tools/app/test/remote-tests.zsh`.
 fmt, clippy, guards, web, swift and python stay on this Mac.
 
@@ -567,3 +573,26 @@ clock), the tests parts run on the M4 only, against the same selection of 5 Nov'
   with a block kept (asserted); neither list pauses with two kept (17). Blocks 1 and 3 levels up
   differ from 0 and 2 only in `blocks`' shift.
 - **Publish** "Rust tests", the dev job records' passed runs: p50 1,184 s, p90 2,122 s (6, 4 and 5 Nov) → p50 802 s, p90 1,478 s (28, 6 Nov).
+
+#969's fourth part, measured 7 Nov on the M4:
+- **The tests part before it**, the dev job records of 6 Nov 01:30 to 7 Nov 01:00: p50 429 s, p90 1,340 s (123 runs),
+  the M4 less loaded than the third part's; the 4 since each test in a program linking a change runs again: p50 327 s.
+- **Why a new key rebuilt**: of a new key's 2,647 s of compiles, 2,042 s (77 %) were workspace crates (47 units; 296 third-party
+  units 606 s, 155 of it GEOS's build script), every one anew as rustc's incremental state
+  doesn't hold across working directories. So the build folders are the slots', above. The usual
+  check set, build only, beside others' runs: a new key's folder 576 s, CPU 2,674 s (load ~100); an empty slot's 300 s, 2,391 s (load ~50-85),
+  which only a first use or a removal for room meets; an older commit's tree (15 workspace crates changed or depending on one) in a slot
+  last used by another's 131 s, 599 s (load ~50); back again, with terrain's test edits, 101 s, 715 s (load ~40-70). Of those 101 s,
+  pipeline's lib and its tests are 150 s of the 296 s of compiles: the split (#916) is what shortens that.
+- **Features**: a package set with pipeline but not server (58 of 170 check.sh runs) built tower-http without
+  server's features, and so all of pipeline a second time; pipeline's manifest now names them, and the two
+  sets build the same units. A set without pipeline (7 of 170, each a second run before pipeline's) still
+  has its own variants of a few crates (serde_core, syn, the `testkit` features), kept in the folder after the first.
+  `resolver.feature-unification` would unify them, but cargo 1.98.1 ignores it without `-Z`.
+- **Tried and left**: roadcore, codecs and det at opt-level 3 gave terrain's slowest tests nothing (rivers and narrow water 5.7 s, 6.8 s of CPU, either way).
+- **Terrain's tests** (each alone, interleaved, wall and CPU): slope_pack's z6 tile 21.4 → 6.5 s, 20.4 → 5.4 s, its fixture's z12 tiles 64 → 16:
+  full parents at z11 and z10 as before, and a partial one at z9, all it had at a coarser level. polar's paused block 14.7 → 5.4 s, on the block with the fewest z8 tiles
+  over a chunk (two stops, not four): a stop with a chunk kept, one with all kept and the run after, the states the four gave; its progress test 3.4 → 0.9 s,
+  a level fewer (the same counts asserted). depth's fine source 12.1 → 6.8 s, 20.1 → 9.8 s, the survey 5 z14 tiles across, not 15:
+  each level's mean checked at the same point, at z12 and z14 as before. slope_pack's pyramid 2.2 → 0.6 s, 24.0 → 6.1 s, z0-4 not z0-5: three runs and the tops as before.
+- **Not touched**: the live-scale forecast (with #993) and a key names exactly its reads (agent/build.rs, with #916 6f2), the costliest left beside terrain_task's.
