@@ -72,6 +72,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/jobrt/src/phase_names.rs", "RENAMED", "CanVec", "phases' names from before task #844, as old timings records hold them (read as the new)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lakefill_step", "\"filling the lakes from CanVec's zips\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
     ("crates/bld/src/bld/overture.rs", "row_group", "Overture's columns changed", "the reader of Overture's GeoParquet schema (the `geoparquet` format is its layout): its messages name what they read"),
+    ("crates/bld/src/bld/overture.rs", "row_group_of", "Overture's columns changed", "the reader of Overture's GeoParquet schema, as above"),
     ("crates/bld/src/bld/overture.rs", "bbox_spans", "Overture's columns changed", "the reader of Overture's GeoParquet schema, as above"),
     ("crates/bld/src/bld/overture.rs", "boxes", "Overture's columns changed", "the reader of Overture's GeoParquet schema, as above"),
     ("crates/bld/src/bld/fetch.rs", "overture_jobs", "Overture's release", "the lister of Overture's release folders on S3, its layout: its message names what it reads"),
