@@ -5830,6 +5830,127 @@ pub(crate) mod tests {
         }
     }
 
+    /// `pass_work`'s holds and waits, apart from its works: what a held step leaves out of the jobs
+    /// the checklist still counts left (`PassWork::left`), and what's read only as far as it's asked.
+    #[test]
+    fn pass_work_holds_stay_apart_from_its_works() {
+        let date = "d";
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for st in crate::osmpass::SETS {
+            let l = crate::osmpass::set_name(date, st.0);
+            m.insert(l.clone(), format!("{l}.1111111111111111.osm.pbf"));
+        }
+        for l in [
+            format!("sources/osm/{date}/outlines"),
+            format!("sources/osm/{date}/pieces/6-28-16"),
+            format!("layers/basemap/world-{date}"),
+            format!("work/summits/{date}"),
+            crate::inputs::logical(crate::inputs::languages::UNIT),
+            crate::inputs::logical(crate::inputs::heritage::UNIT),
+            crate::inputs::logical(crate::inputs::translations::UNIT),
+            crate::inputs::logical(crate::inputs::descriptions::UNIT),
+        ] {
+            m.insert(l.clone(), format!("{l}.2222222222222222.bin"));
+        }
+        let run = |m: &BTreeMap<String, String>,
+                   keys: &Keys,
+                   lakefill: Result<Option<String>, String>,
+                   reach: Option<fn() -> crate::reach::LoadError>,
+                   failures: u32,
+                   names: Option<&dyn Fn() -> NamesTodo>| {
+            let reads = PassReads {
+                release: Some("r".into()),
+                lakefill,
+                reach: &|| reach.map(|e| e()),
+                failures: &|_| failures,
+            };
+            pass_work(Some(date), m, keys, reads, names)
+        };
+        let source = || Ok(Some("a.zip 1".to_string()));
+        let ids = |w: &PassWork| w.jobs.iter().map(|j| j.step).collect::<Vec<_>>();
+        let left_of = |w: &PassWork, s: &str| w.left[WORLDWIDE_STEPS.iter().position(|x| *x == s).unwrap()];
+        let no_names = || -> NamesTodo { panic!("names-to-do's gate asked under the outlines' hold") };
+
+        // The outlines have work: nothing else planned, names-to-do's gate not asked; all counted left.
+        let none = Keys::default();
+        let w = run(&m, &none, source(), None, 2, Some(&no_names));
+        assert!(w.outlines_hold);
+        assert_eq!(ids(&w), ["outlines"]);
+        assert!(w.waits.len() == 1 && w.waits[0].why.contains("outlines job"), "{:?}", w.waits);
+        assert!(!w.lakefill_held && !w.buildings_made);
+        for s in ["outlines", "trailends", "reach", "buildings", "labels", "lakefill", "water"] {
+            assert!(left_of(&w, s), "{s}");
+        }
+
+        // Failed enough with outlines to go on with: the rest planned, said; the summits apart.
+        let w = run(&m, &none, source(), None, 3, None);
+        assert!(!w.outlines_hold);
+        assert_eq!(
+            ids(&w),
+            ["outlines", "trailends", "regions-land", "reach", "buildings", "labels", "spoken", "lakefill", "water"]
+        );
+        assert!(w.waits.iter().any(|x| x.step.as_deref() == Some("outlines") && x.why.contains("failed 3 times")));
+        assert!(w.summits.is_some() && left_of(&w, "summits"));
+        assert!(w.waits.iter().any(|x| x.step.as_deref() == Some("lakefill")), "{:?}", w.waits);
+        assert!(!w.lakefill_held, "failed enough: the water goes without it");
+
+        // None to go on with: held, however often it failed.
+        let mut bare = m.clone();
+        bare.remove(&format!("sources/osm/{date}/outlines"));
+        let w = run(&bare, &none, source(), None, 3, None);
+        assert!(w.outlines_hold && left_of(&w, "outlines"));
+
+        // The outlines done: the lake fill holds the water, its job planned; unreadable, no job, held
+        // and left.
+        let mut keys = Keys::default();
+        let cx = PassCtx::default();
+        let o = outlines_work(&cx.ctx(date, &m), &keys).unwrap();
+        keys.record(&o.step, &o.targets);
+        let w = run(&m, &keys, source(), None, 0, None);
+        assert!(w.lakefill_held && ids(&w).contains(&"lakefill") && !w.outlines_hold);
+        let w = run(&m, &keys, Err("no folder".into()), None, 0, None);
+        assert!(w.lakefill_held && !ids(&w).contains(&"lakefill") && left_of(&w, "lakefill"));
+        assert!(w.waits.iter().any(|x| x.step.as_deref() == Some("lakefill") && x.why == "no folder"));
+        let w = run(&m, &keys, Ok(None), None, 0, None);
+        assert!(!w.lakefill_held && !left_of(&w, "lakefill"), "no source, no fill");
+
+        // The reaches made: asked only then; damaged, made again; unreadable, said alone.
+        m.insert(crate::reach::logical(date), "made".into());
+        let r = reach_work(&cx.ctx(date, &m), &keys).unwrap();
+        keys.record(&r.step, &r.targets);
+        let w = run(&m, &keys, source(), Some(|| crate::reach::LoadError::Bad("x".into())), 0, None);
+        assert!(ids(&w).contains(&"reach") && !left_of(&w, "reach"), "made, as the checklist counts it");
+        let w =
+            run(&m, &keys, source(), Some(|| crate::reach::LoadError::Io(std::io::ErrorKind::Other.into())), 0, None);
+        assert!(!ids(&w).contains(&"reach"));
+        assert!(w.waits.iter().any(|x| x.why.contains("can't be read now")), "{:?}", w.waits);
+
+        // The buildings' release: made, or none declared, its scan's parts may go.
+        let w = run(&m, &keys, source(), None, 0, None);
+        assert!(ids(&w).contains(&"buildings") && !w.buildings_made && left_of(&w, "buildings"));
+        let reads = |release| PassReads { release, lakefill: Ok(None), reach: &|| None, failures: &|_| 0 };
+        let w = pass_work(Some(date), &m, &keys, reads(None), None);
+        assert!(w.buildings_made && left_of(&w, "buildings"), "none readable: counted left, no job");
+        m.insert(crate::buildtiles::index_logical("r"), "made".into());
+        let w = pass_work(Some(date), &m, &keys, reads(Some("r".into())), None);
+        assert!(w.buildings_made && !left_of(&w, "buildings"));
+
+        // Names-to-do, pass or none: due, gated by time, or waiting for the inputs it reads.
+        let names = |since| move || NamesTodo { key: Some("map 7".into()), since, idle: false };
+        let step_is = |w: &PassWork| w.jobs.iter().any(|j| j.step == "names-todo" && j.args.len() == 4);
+        assert!(step_is(&pass_work(None, &m, &keys, reads(None), Some(&names(None)))));
+        let shut = pass_work(None, &m, &keys, reads(None), Some(&names(Some(60))));
+        assert!(shut.jobs.is_empty() && shut.waits.is_empty(), "{:?}", shut.jobs);
+        let due = pass_work(None, &m, &keys, reads(None), Some(&names(Some(NAMES_TODO_EVERY_S))));
+        assert!(step_is(&due));
+        m.remove(&crate::inputs::logical(crate::inputs::translations::UNIT));
+        let w = pass_work(None, &m, &keys, reads(None), Some(&names(None)));
+        assert!(w.jobs.is_empty() && w.waits[0].step.as_deref() == Some("names-todo"), "{:?}", w.waits);
+        // (Without its key, nothing said: no map yet.)
+        let w = pass_work(None, &m, &keys, reads(None), Some(&|| NamesTodo { key: None, since: None, idle: true }));
+        assert!(w.jobs.is_empty() && w.waits.is_empty());
+    }
+
     /// From nothing to built, every target the plan offers (and so records) is keyed as
     /// crate::agent::steps::key derives it (`keys_are_derived`), for every step it offers whose keys
     /// are derived.
