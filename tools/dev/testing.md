@@ -19,7 +19,11 @@ Not seen: a run through a shell function or alias, a script file, or a substitut
   out, and the integration tests naming it (a crate's whole targets on one line, one cargo run
   building them in parallel), and a module's own tests when a file it compiles in changed
   (`include_str!`, `include_bytes!` or `include!` outside a `#[test]` function: web/work's pages
-  in coord/mod.rs, #969). Run those, or narrower: the same `-p` and target, each
+  in coord/mod.rs, #969), and a crate's whole unit tests when its source compiles the file in from
+  another crate by `#[path]` (agentcore's tests, which run on the plan, after an edit of pipeline's
+  agent/build.rs, steps.rs, idents.rs, theplan.rs or tiles.rs: they reach it through
+  `seam::for_tests`, not by name). A moved file counts at its old path too (`--no-renames`, as in
+  check.sh's own triggers). Run those, or narrower: the same `-p` and target, each
   filter starting with one it prints. No Rust change, nothing to run. `affected-tests.sh <commit>`
   or `<a>..<b>` shows the set for past work.
 - Scan tests (#662): an integration test that reads the repo's own files (write_sets,
@@ -29,7 +33,10 @@ Not seen: a run through a shell function or alias, a script file, or a substitut
   passed and publish failed on write_sets, which nothing mapped to it.)
 - The tracing goes one level: `crate::<mod>`, the parent naming it, children using `super::`,
   the crate's own binaries, its `tests/`; other crates' modules naming `<crate>::<mod>`, or
-  `crate::<mod>` where their root re-exports it (`pub use <crate>::…`, #916), and their binaries.
+  `crate::<mod>` where their root re-exports it (`pub use <crate>::…`, #916) or a module of theirs
+  does by glob (`pub use agentcore::agent::*` in pipeline's agent.rs: `crate::agent::jobs` there is
+  agentcore's), and so on through their own re-exports (server's `pipeline::coord`), their binaries
+  and their integration tests.
   Users of those users aren't traced; publish's full run catches them. Python tests (dem/) are outside
   the script.
 - Filters name a module path (`agent::tests::`, `agent::tests::unit_key`), never a bare word: a filter starts with one of the crate's modules, so
@@ -42,7 +49,7 @@ Not seen: a run through a shell function or alias, a script file, or a substitut
 - Full suites run in `tools/app/publish.sh` before a publish, the PM's; and once by the PM on main
   after a merge batch, in the background, before publishing. Publish runs (#848):
   - `cargo nextest run --workspace`: every workspace crate's libraries, binaries and integration
-    tests (det, roadcore, pipeline, server, store, names, pyport, codecs, jobrt, buildstore, coordwire, offload, landmarks, mapview, inputs, terrain, trees, roads, bld, webpenc), on the test Mac;
+    tests (det, roadcore, pipeline, server, store, names, pyport, codecs, jobrt, buildstore, coordwire, offload, landmarks, mapview, inputs, terrain, trees, roads, bld, agentcore, webpenc), on the test Mac;
   - then `tools/app/other-tests.zsh`, on the publishing Mac, its parts at once: `node --test` of
     `web/test/*.test.{ts,mjs}` and `tools/check/*.test.mjs` (by glob), `tools/devtools/test/*.test.mjs`,
     `tools/dev/test/devjob.zsh`, the status app's `swiftc` build and `--test tools/status/test`, `tools/app/test/shell.zsh` and
@@ -104,8 +111,9 @@ one with the fewest own files, then the fewest in X. Neither part is reused when
 - for clippy, any Rust build input; for the tests, one, main's or the branch's own, other than a
   crate's source (a `.rs` file under `crates/<crate>/src`, its root too, not a build script or a
   proc macro's), an integration test's (under `crates/<crate>/tests`), an example (no test builds or
-  runs one; clippy checks it), or a file `include_str!`d or `include_bytes!`d; not one `include!`d,
-  `#[path]`ed or named in a macro, nor a crate `[patch]` names (its users' manifests name a version,
+  runs one; clippy checks it), a file `include_str!`d or `include_bytes!`d, or one a crate's source
+  declares a module by `#[path]` (a source of that crate too: the plan's files are agentcore's tests'
+  as well as pipeline's); not one `include!`d or named in a macro, nor a crate `[patch]` names (its users' manifests name a version,
   not its path). The inputs: `crates/`, Cargo.toml and Cargo.lock, rust-toolchain, mise.toml,
   clippy.toml, rustfmt.toml, `.cargo/`, `.config/`; the package folders (Cargo.toml's members and
   exclude, and the paths the manifests name: path dependencies, `[patch]`); any file a crate's
@@ -143,8 +151,8 @@ run says why it wasn't reused (no such pass, a lookup failing, the file that is 
 test reads, a module's change on main, a new file no module declares, the crate's root changed on
 main, a Cargo.lock change, a file the root includes, a file a module compiles in, a binary's root,
 an example, a module two levels from the test, a crate depending on the changed one directly, through
-others or by a dev-dependency, a dev-dependency of a dependency, a crate linking nothing changed, a
-binary's source and the integration test running it, a file an integration test compiles in, a
+others or by a dev-dependency, a dev-dependency of a dependency, a crate linking nothing changed, a file
+another crate's source names by `#[path]`, a binary's source and the integration test running it, a file an integration test compiles in, a
 patched crate, a source reading the environment, the runner changed, an unknown
 file, the branch changed after the rebase, its own edit of a module, of the crate's root, its
 manifest, an included file or an integration test, fewer or more tests than the pass ran, the pass
@@ -274,7 +282,7 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   for the pool. Once free disk falls below the room target (`room-target.json` in the agent's
   folder, the build page's "Disk room target") plus the sweep's margin (`sweep-margin.json` beside
   it, set on the build page's Machines tab, Settings, "Dev sweep margin"; none set:
-  `SWEEP_MARGIN_DEFAULT_GB` in crates/pipeline/src/agent/settings.rs, which the sweep reads from that
+  `SWEEP_MARGIN_DEFAULT_GB` in crates/agentcore/src/agent/settings.rs, which the sweep reads from that
   line), it removes the shared folder's entries (each profile's deps, incremental, build,
   .fingerprint and examples children, and the programs linked beside them), the least recently
   used (read or written) first, until free space is back above both; still below, it empties the compile cache.
