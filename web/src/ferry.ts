@@ -11,8 +11,7 @@ import { paletteRgb } from './palettes';
 import type { ThresholdDir } from './state';
 import { fadeAlpha, passes, scaleU } from './ui/scale';
 
-/** 'freq' is the metric colouring (its key predates the other metrics). */
-export type FerryColour = 'service' | 'freq' | 'season' | 'operator' | 'single';
+export type FerryColour = 'service' | 'metric' | 'season' | 'operator' | 'single';
 export type FerryMetric = 'freq' | 'months';
 
 type Expr = ExpressionSpecification;
@@ -134,7 +133,7 @@ export function ferryColourExpr(st: FerryScale, range: [number, number], cdf: Ui
       return ['get', 'oc'];
     case 'single':
       return single;
-    case 'freq': {
+    case 'metric': {
       const d = ferryMetricDef(st.metric);
       const stops: (number | string)[] = [];
       for (let i = 0; i <= 16; i++) stops.push(i / 16, paletteRgb(st.palette, i / 16));
@@ -149,7 +148,7 @@ export function ferryColourExpr(st: FerryScale, range: [number, number], cdf: Ui
 /** Line opacity: the low-end fade over the metric scale, dimmed and unknown lines fainter. */
 export function ferryOpacityExpr(st: FerryScale, range: [number, number], cdf: Uint8Array | null, o: number): Expr | number {
   if (st.colour === 'season') return ['case', ['==', ['get', 's'], 0], o * 0.6, o];
-  if (st.colour !== 'freq') return o;
+  if (st.colour !== 'metric') return o;
   const d = ferryMetricDef(st.metric);
   const stops: number[] = [];
   for (let i = 0; i <= 12; i++) stops.push(i / 12, o * fadeAlpha(i / 12, st.lowFade, st.lowSpan));
@@ -165,7 +164,7 @@ export function ferryColourOf(p: Record<string, any>, st: FerryScale, range: [nu
     case 'season': return SEASONS[p.s]?.[0] ?? UNKNOWN;
     case 'operator': return p.oc || UNKNOWN;
     case 'single': return st.single;
-    case 'freq': {
+    case 'metric': {
       const v = ferryMetricDef(st.metric).value(p);
       if (Number.isNaN(v)) return st.metric === 'freq' && Number(p.hw) > 0 ? HEADWAY_ONLY : UNKNOWN;
       if (!passes(v, st.threshold, range)) return DIMMED;

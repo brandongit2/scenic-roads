@@ -1,5 +1,5 @@
 import { CASING_Z, DEFAULT_WIDTHS, GROUPS, NCLASS, NGROUP, NRAIL, NROAD, WIDTH_RANGE, WIDTH_Z } from './config';
-import { RAIL_METRICS, RNCOMP, railMetricDef, type RailColour, type RailMetric } from './rail';
+import { RAIL_COMPONENTS, RAIL_METRICS, railMetricDef, type RailColour, type RailMetric } from './rail';
 import { CAT_KINDS, MAP_KINDS, MAP_SCHEMES, presetLook, type RoadMapLook } from './mapschemes';
 import { FERRY_METRICS, NFERRY, ferryMetricDef, type FerryColour, type FerryMetric } from './ferry';
 import { baseKey } from './palettes';
@@ -10,7 +10,7 @@ import type { BuildingColour, BuildingState } from './buildings';
 import { LAND_COLOUR, PLAIN } from './basecolours';
 import { cleanLooks, type LabelLook, type LabelLooks } from './labellook';
 import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
-import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
+import { MODES, addedWeights, isScenic, migrateWeights, modeDef, type Mode } from './scenic';
 import {
   FIT_LEN_DEFAULT, fitLensOfSaved, pairOf, pairsField, pairsOfField, perMetric, samePair, unitsField, unitsOfField, unitsOfSaved, validFit, validFitLen,
   withPair, type FitUnits, type Pair, type PerMetric,
@@ -295,11 +295,11 @@ export const topRanks = (lo: number, hi: number): [number, number] => {
 /** The display types; each keeps its own colour settings (the scenic metrics share one set). */
 export type ModeGroup = 'elev' | 'grade' | 'relief' | 'scenic' | 'map';
 const MODE_GROUPS: ModeGroup[] = ['elev', 'grade', 'relief', 'scenic', 'map'];
-export const modeGroup = (m: Mode): ModeGroup => (m === 'elev' || m === 'grade' || m === 'relief' || m === 'map' ? m : 'scenic');
+export const modeGroup = (m: Mode): ModeGroup => (isScenic(m) ? 'scenic' : (m as ModeGroup));
 
 /** The metrics that auto-fit by screen widths or percentiles of line length, each with its own
  * unit (fitUnits): the roads' scenic modes, rail's and ferries' ranked metrics (byLen). */
-export const ROAD_FIT_KEYS: Mode[] = MODES.filter((m) => modeGroup(m.key) === 'scenic').map((m) => m.key);
+export const ROAD_FIT_KEYS: Mode[] = MODES.filter((m) => isScenic(m.key)).map((m) => m.key);
 export const RAIL_FIT_KEYS: RailMetric[] = RAIL_METRICS.filter((m) => m.byLen).map((m) => m.key);
 export const FERRY_FIT_KEYS: FerryMetric[] = FERRY_METRICS.filter((m) => m.byLen).map((m) => m.key);
 /** Every rail and ferry metric (each keeps its own look). */
@@ -322,7 +322,6 @@ function fitLensOfFields<K extends string>(a: string | undefined, b: string | un
   const base = fitLenOf(a, b, FIT_LEN_DEFAULT), own = pairsOfField(rest, keys, validFitLen);
   return perMetric(keys, (k) => own[k] ?? base, FIT_LEN_DEFAULT);
 }
-const isScenic = (m: Mode) => modeGroup(m) === 'scenic';
 
 /** A metric colour scale's settings (rail and ferries), as kept per metric. */
 export interface MetricLook {
@@ -453,7 +452,14 @@ export interface RailState extends ScaleFields {
   stopSize: number;
   stopContrast: number;
 }
-const RAIL_COLOURS: RailColour[] = ['line', 'group', 'metric', 'single'];
+const RAIL_COLOURS: RailColour[] = ['line', 'service', 'metric', 'single'];
+/** A colouring by its key, older links' and saves' keys read as their new ones; else `fallback`. */
+function colourOf<C extends string>(v: unknown, keys: readonly C[], renamed: Record<string, C>, fallback: C): C {
+  const k = typeof v === 'string' ? renamed[v] ?? v : v;
+  return keys.includes(k as C) ? (k as C) : fallback;
+}
+/** Rail colourings' older keys: 'group' (by service). */
+const RAIL_COLOURS_WERE: Record<string, RailColour> = { group: 'service' };
 /** The ties' and stop dots' settings' ranges (the rail card's sliders). */
 export const TIES_RANGE: [number, number] = [1, 5];
 export const STOP_SIZE_RANGE: [number, number] = [0.25, 4];
@@ -487,7 +493,9 @@ export interface FerryState extends ScaleFields {
   /** What sailings a day auto-fits in, screen widths (its fitLens) or percentiles (its fit), as the roads' fitUnits. */
   fitUnits: FitUnits<FerryMetric>;
 }
-const FERRY_COLOURS: FerryColour[] = ['service', 'freq', 'season', 'operator', 'single'];
+const FERRY_COLOURS: FerryColour[] = ['service', 'metric', 'season', 'operator', 'single'];
+/** Ferry colourings' older keys: 'freq' (the metric colouring, from before its other metrics). */
+const FERRY_COLOURS_WERE: Record<string, FerryColour> = { freq: 'metric' };
 /** A display type's colour settings (free of units). */
 export interface Look {
   palette: string;
@@ -742,7 +750,7 @@ export const defaults: AppState = {
     on: true, flat: false, colour: 'plain', plain: PLAIN, opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1,
     height: scaleOfLook({ ...freshLook([0, 100], 0.6), fit: [5, 99.5], lowSpan: 0.4, thrValue: 50 }), heritage: true,
   },
-  ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
+  ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'metric', metric: 'freq', looks: {},
     ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }),
     opacity: 0.9, dashed: true, single: '#8fc8ff',
     freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLens: {}, fitUnits: {} },
@@ -927,9 +935,6 @@ export function groupMask(s: AppState): number {
 //  defaults; p=<palette>, hl=<levels>)
 
 const ob = (k: OverlayKey) => OVERLAYS.findIndex((o) => o[0] === k);
-/** The service-frequency weight given to rail weights from before the factor existed (then the
- * default preset's). */
-const FREQ_WEIGHT_ADDED = 0.3;
 const HM: HillshadeMethod[] = ['standard', 'basic', 'combined', 'igor', 'multidirectional'];
 
 /** The profile a link names (`p=<id>-<name>`): its permanent id, name and settings (fromProfile). */
@@ -1212,7 +1217,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
       ...r,
       on: rs[0] === '1',
       groups: rs[1].length === NRAIL ? [...rs[1]].map((c) => c === '1') : r.groups,
-      colour: RAIL_COLOURS.includes(rs[2] as RailColour) ? (rs[2] as RailColour) : r.colour,
+      colour: colourOf(rs[2], RAIL_COLOURS, RAIL_COLOURS_WERE, r.colour),
       metric,
       // The other metrics' palettes and percentiles (older links: none, as first picked).
       looks: looksOfField(rs[29], metric, RAIL_KEYS, railFreshLook),
@@ -1253,7 +1258,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
     s.ferry = {
       on: fy[0] === '1',
       groups: fy[1].length === NFERRY ? [...fy[1]].map((c) => c === '1') : f.groups,
-      colour: FERRY_COLOURS.includes(fy[2] as FerryColour) ? (fy[2] as FerryColour) : f.colour,
+      colour: colourOf(fy[2], FERRY_COLOURS, FERRY_COLOURS_WERE, f.colour),
       palette: fy[3] || f.palette,
       dashed: fy[5] === '1',
       single: /^[0-9a-f]{6}$/i.test(fy[6]) ? `#${fy[6]}` : f.single,
@@ -1347,9 +1352,9 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
   const bhv = buildings ? p.get('bh')?.split(',') : undefined;
   if (bhv) s.buildings = { ...s.buildings, height: parseScale(bhv, s.buildings.height) };
   const rw = p.get('rw')?.split(',').map(Number);
-  // Links from before the service-frequency factor carry one weight fewer.
-  if (rw && rw.length === RNCOMP - 1) rw.push(FREQ_WEIGHT_ADDED);
-  if (rw && rw.length === RNCOMP && rw.every(Number.isFinite)) s.rail = { ...s.rail, weights: rw };
+  // (Links from before the service-frequency factor carry one weight fewer: its def.)
+  const rwv = addedWeights(rw, RAIL_COMPONENTS);
+  if (rwv) s.rail = { ...s.rail, weights: rwv };
   // Rail preset: a link to one this browser has (else custom, keeping the weights), or the default.
   const rp = p.get('rp');
   if (rp !== null) s.rail = { ...s.rail, preset: rp !== 'custom' && railPresets.get(rp) ? rp : '' };
@@ -1553,9 +1558,10 @@ export function fromSaved(o: unknown): AppState {
   const { view, selected: _sel, stretch: _st, looks, scales, ...rest } = src;
   const w = migrateWeights(rest.weights);
   if (w) rest.weights = w;
-  // Rail weights saved before the service-frequency factor: one fewer.
+  // Rail weights saved before the service-frequency factor: one fewer (its def).
   const rs = rest.rail as { weights?: unknown } | undefined;
-  if (rs && Array.isArray(rs.weights) && rs.weights.length === RNCOMP - 1) rs.weights = [...rs.weights, FREQ_WEIGHT_ADDED];
+  const rsw = rs && addedWeights(rs.weights, RAIL_COMPONENTS);
+  if (rsw) rest.rail = { ...rs, weights: rsw };
   merge(s as unknown as Record<string, unknown>, rest);
   s.labelLooks = cleanLooks(rest.labelLooks);
   // Each metric's auto-fit unit (merge() only keeps keys the defaults have); saved before the unit
@@ -1621,10 +1627,10 @@ export function fromSaved(o: unknown): AppState {
   s.roadLook = cleanRoadLook(s.roadLook);
   const lt = s.landmarks.top as unknown;
   s.landmarks.top = Array.isArray(lt) && lt.length === 2 && lt.every((x) => Number.isFinite(x)) ? topRanks(lt[0], lt[1]) : defaults.landmarks.top;
-  if (!RAIL_COLOURS.includes(s.rail.colour)) s.rail.colour = defaults.rail.colour;
+  s.rail.colour = colourOf(s.rail.colour, RAIL_COLOURS, RAIL_COLOURS_WERE, defaults.rail.colour);
   s.rail = clampRailLook(s.rail);
   if (!RAIL_METRICS.some((m) => m.key === s.rail.metric)) s.rail.metric = defaults.rail.metric;
-  if (!FERRY_COLOURS.includes(s.ferry.colour)) s.ferry.colour = defaults.ferry.colour;
+  s.ferry.colour = colourOf(s.ferry.colour, FERRY_COLOURS, FERRY_COLOURS_WERE, defaults.ferry.colour);
   if (!['plain', 'height', 'source'].includes(s.buildings.colour)) s.buildings.colour = defaults.buildings.colour;
   s.buildings.opacity = Math.min(1, Math.max(0.1, s.buildings.opacity));
   s.buildings.scale = Math.min(3, Math.max(0, s.buildings.scale));

@@ -1,7 +1,8 @@
 // Weight presets for the scenic score (roads) and the ride score (rail). The built-in ones are
 // data (data/weight-presets.json, data/rail-presets.json: weights keyed by component). Once a list
 // is edited in the app (save, save as, rename, delete), the edited list is kept in localStorage
-// and used instead; "Built-ins" goes back to the file's.
+// (presets.roads, presets.rail) and used instead; "Built-ins" goes back to the file's. A list
+// saved under the older keys (weightPresets, railWeightPresets) is read until the next edit.
 import builtin from './data/weight-presets.json';
 import railBuiltin from './data/rail-presets.json';
 import * as prefs from './prefs';
@@ -16,7 +17,7 @@ export interface Preset {
 }
 
 type Stored = { id: string; name: string; weights: Record<string, number> };
-type Comp = { key: string; def?: number };
+type Comp = { key: string; was?: string; def?: number };
 
 export const sameWeights = (a: number[], b: number[]) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1e-6);
 
@@ -27,27 +28,32 @@ export class PresetList {
   readonly builtin: Preset[];
   private ls = new Set<() => void>();
 
-  constructor(private key: string, private comps: Comp[], data: unknown) {
+  /** `old`: the localStorage key an older app kept the edited list under, and the factors whose
+   * def it didn't have (it left them out at 0, as any factor without one). */
+  constructor(private key: string, private comps: Comp[], data: unknown, private old: { key: string; noDef?: string[] }) {
     this.builtin = this.parse(data)!;
-    const saved = this.parse(prefs.load<unknown>(key, null));
+    const saved = this.parse(prefs.load<unknown>(key, null)) ?? this.parse(prefs.load<unknown>(old.key, null), old.noDef);
     this.custom = !!saved;
     this.list = saved ?? this.builtin.map((p) => ({ ...p, w: [...p.w] }));
   }
 
   // A factor added later (with a default) keeps its default in presets saved before it existed, so
-  // it is stored even at 0.
-  private toVec(ws: Record<string, number>) {
-    return this.comps.map((c) => (Number.isFinite(Number(ws[c.key])) ? Number(ws[c.key]) : c.def ?? 0));
+  // it is stored even at 0. A factor's older key (`was`) is read as its own.
+  private toVec(ws: Record<string, number>, noDef: string[] = []) {
+    return this.comps.map((c) => {
+      const v = Number(c.key in ws || c.was === undefined ? ws[c.key] : ws[c.was]);
+      return Number.isFinite(v) ? v : noDef.includes(c.key) ? 0 : c.def ?? 0;
+    });
   }
   private toMap(w: number[]) {
     return Object.fromEntries(this.comps.map((c, i) => [c.key, +w[i].toFixed(2), c.def !== undefined] as const).filter(([, v, keep]) => v !== 0 || keep).map(([k, v]) => [k, v]));
   }
-  private parse(list: unknown): Preset[] | null {
+  private parse(list: unknown, noDef?: string[]): Preset[] | null {
     if (!Array.isArray(list)) return null;
     const out: Preset[] = [];
     for (const p of list as Stored[]) {
       if (!p || typeof p.id !== 'string' || typeof p.name !== 'string' || !p.weights || typeof p.weights !== 'object') return null;
-      out.push({ id: p.id, name: p.name, w: this.toVec(p.weights) });
+      out.push({ id: p.id, name: p.name, w: this.toVec(p.weights, noDef) });
     }
     return out;
   }
@@ -95,12 +101,14 @@ export class PresetList {
     this.list = this.builtin.map((p) => ({ ...p, w: [...p.w] }));
     this.custom = false;
     prefs.save(this.key, null);
+    prefs.remove(this.old.key);
     this.ls.forEach((f) => f());
   }
 
   private commit() {
     this.custom = true;
     prefs.save(this.key, this.list.map((p): Stored => ({ id: p.id, name: p.name, weights: this.toMap(p.w) })));
+    prefs.remove(this.old.key);
     this.ls.forEach((f) => f());
   }
 }
@@ -108,11 +116,11 @@ export class PresetList {
 /** The app's default preset: the file's `default`, else its first. */
 const defaultOf = (list: Preset[], id: string | undefined) => list.find((p) => p.id === id) ?? list[0];
 
-export const presets = new PresetList('weightPresets', COMPONENTS, builtin.presets);
+export const presets = new PresetList('presets.roads', COMPONENTS, builtin.presets, { key: 'weightPresets' });
 export const BUILTIN: Preset[] = presets.builtin;
 export const DEFAULT_PRESET = defaultOf(BUILTIN, builtin.default).id;
 export const DEFAULT_WEIGHTS = defaultOf(BUILTIN, builtin.default).w;
 
-export const railPresets = new PresetList('railWeightPresets', RAIL_COMPONENTS, railBuiltin.presets);
+export const railPresets = new PresetList('presets.rail', RAIL_COMPONENTS, railBuiltin.presets, { key: 'railWeightPresets', noDef: ['freq'] });
 export const RAIL_DEFAULT_PRESET = defaultOf(railPresets.builtin, railBuiltin.default).id;
 export const RAIL_DEFAULT_WEIGHTS = defaultOf(railPresets.builtin, railBuiltin.default).w;

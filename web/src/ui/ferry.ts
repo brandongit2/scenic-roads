@@ -9,7 +9,7 @@ import { ScaleControls } from './scale';
 
 const COLOURS: [FerryColour, string, string][] = [
   ['service', 'Service', 'By service group: urban & commuter, short crossings, long-distance & overnight, cable & chain'],
-  ['freq', 'Metric', 'By sailings a day or season length, through a colour map (grey: not known)'],
+  ['metric', 'Metric', 'By sailings a day or season length, through a colour map (grey: not known)'],
   ['season', 'Season', 'Year-round or seasonal, daily or some days only'],
   ['operator', 'Operator', 'Official line colours where published, else one colour per operator'],
   ['single', 'Single', 'One colour for every ferry'],
@@ -106,7 +106,7 @@ export class FerryCard {
     const f = this.store.s.ferry;
     this.el.classList.toggle('off', !f.on);
     this.colBtns.forEach((b, i) => b.classList.toggle('on', COLOURS[i][0] === f.colour));
-    this.freqBox.hidden = f.colour !== 'freq';
+    this.freqBox.hidden = f.colour !== 'metric';
     this.groupLegend.hidden = f.colour !== 'service';
     this.seasonLegend.hidden = f.colour !== 'season';
     this.note.hidden = f.colour !== 'operator';

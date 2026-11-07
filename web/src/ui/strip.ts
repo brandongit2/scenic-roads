@@ -365,7 +365,7 @@ export class Strip {
       const i = this.railBars[j];
       const c = RAIL_COMPONENTS[i];
       if (!c) return;
-      const measured = !none || ['altitude', 'viaduct', 'gradient'].includes(c.key);
+      const measured = !none || ['elev', 'viaduct', 'grade'].includes(c.key);
       bar.set(measured ? k[i] : 0, measured ? c.text(smp) : '–', tw, (w[i] ?? 0) < 0 ? '#ff8a7a' : 'var(--accent)');
     });
     this.trees.textContent = none ? '–' : `${Math.round(hov.ch[11] / 8)} m`;

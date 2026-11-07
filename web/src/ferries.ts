@@ -328,7 +328,7 @@ export class Ferries {
     const same = range[0] === this.range[0] && range[1] === this.range[1] && cdf === this.cdf;
     this.range = range;
     this.cdf = cdf;
-    if (!same && this.style?.colour === 'freq') this.paint();
+    if (!same && this.style?.colour === 'metric') this.paint();
   }
 
   /** The ground in view (inview.ts): its outline, or the bounds without one. */
@@ -483,7 +483,7 @@ export class Ferries {
     const fs = map.queryRenderedFeatures([[pt.x - 4, pt.y - 4], [pt.x + 4, pt.y + 4]], { layers: [LINE] });
     // With the highlight on, dimmed lines can't be hovered or clicked (as roads).
     const st = this.style;
-    if (st?.colour === 'freq' && st.threshold.on) {
+    if (st?.colour === 'metric' && st.threshold.on) {
       const d = ferryMetricDef(st.metric);
       return fs.find((f) => {
         const v = d.value(f.properties ?? {});

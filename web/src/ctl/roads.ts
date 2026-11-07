@@ -13,8 +13,8 @@ import { hexRgb, paletteRgb } from '../palettes';
 import { RAIL_GROUP_COLOURS, railMetricDef, railMetricOf } from '../rail';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from '../roads/layer';
 import { distFromSamples, viewStatsGen, type Dist, type ViewStats } from '../roads/stats';
-import { modeDef } from '../scenic';
-import { ROAD_WEIGHT, classMask, defaults, groupMask, lineWeight, modeGroup, railMask, roadLenM, surfaceMask, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Store } from '../state';
+import { isScenic, modeDef } from '../scenic';
+import { ROAD_WEIGHT, classMask, defaults, groupMask, lineWeight, railMask, roadLenM, surfaceMask, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Store } from '../state';
 import { tasks, type Task } from '../tasks';
 import { cdfOf, fadeAlpha, passes, scaleU } from '../ui/scale';
 import type { InViewExtra } from '../ui/stats';
@@ -172,7 +172,7 @@ export class RoadsRail implements FramePart {
     const r = s.rail, st: RoadStyle = this.rails.style;
     st.visible = r.on;
     st.railMask = railMask(s);
-    st.direct = r.colour === 'line' ? 2 : r.colour === 'group' ? 3 : r.colour === 'single' ? 4 : 0;
+    st.direct = r.colour === 'line' ? 2 : r.colour === 'service' ? 3 : r.colour === 'single' ? 4 : 0;
     st.scheme = this.railScheme;
     st.single = hexRgb(r.single);
     st.modeId = railMetricDef(r.metric).id;
@@ -309,7 +309,7 @@ export class RoadsRail implements FramePart {
       return e ? spread(e.quantile(0), e.quantile(1), 10) : this.cur;
     }
     if (!s.auto) return s.range;
-    if (modeGroup(s.mode) === 'scenic' && unitOf(s.fitUnits, s.mode) === 'widths') return mdist && mdist.total > 0 && stats && stats.totalKm > 0 ? this.byLen(mdist, stats.totalKm, pairOf(s.fitLens, s.mode, FIT_LEN_DEFAULT), d.step) : this.cur;
+    if (isScenic(s.mode) && unitOf(s.fitUnits, s.mode) === 'widths') return mdist && mdist.total > 0 && stats && stats.totalKm > 0 ? this.byLen(mdist, stats.totalKm, pairOf(s.fitLens, s.mode, FIT_LEN_DEFAULT), d.step) : this.cur;
     return mdist && mdist.total > 0 ? fitByPct(mdist, s.fit, d.step) : this.cur;
   }
 
@@ -532,7 +532,7 @@ export class RoadsRail implements FramePart {
     let fade = interp(FADE_Z, FADES[cls], this.map.getZoom()) * ((hv.style & 64) !== 0 ? 0.45 : 1);
     const lc = hv.tile.data!.lineColour[hv.hit.line];
     if (r.colour === 'line') col = lc ? hex(lc - 1) : RAIL_GROUP_COLOURS[cls - RAIL0];
-    else if (r.colour === 'group') col = RAIL_GROUP_COLOURS[cls - RAIL0];
+    else if (r.colour === 'service') col = RAIL_GROUP_COLOURS[cls - RAIL0];
     else if (r.colour === 'single') col = r.single;
     else {
       const v = railMetricOf(r.metric, { elev: hv.elev, grade: hv.grade, ground: hv.ground, bridge: (hv.style & 96) === 32, tunnel: (hv.style & 64) !== 0, ch: hv.ch, freq: hv.fq }, r.weights);

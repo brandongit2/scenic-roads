@@ -14,7 +14,8 @@ export const CLASS_LABELS = [
 export const NCLASS = 15;
 /** Road classes (and ferries) come first. */
 export const NROAD = 10;
-export const FERRY = 9;
+/** The road class of ferry routes carrying cars (roadcore::class::FERRY), not the passenger ferries layer (ferry.ts). */
+export const CAR_FERRY = 9;
 /** Minor road classes: service to unclassified (0–3). */
 export const MINOR_MAX_CLASS = 3;
 export const RAIL0 = 10;

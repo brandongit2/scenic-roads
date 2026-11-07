@@ -16,7 +16,7 @@
 //   20 u8 × 12               scenic channels (roadcore::scenic::ch order)
 
 import {
-  CELLS, CLASS_GROUP, EQ, GQ, GPU_EOL, LF_TOLL, LF_UNNAMED, MINOR_MAX_CLASS, NCLASS, NSG, SPRITE_MAXZ, SPRITE_SEG_PX, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNPAVED, FERRY,
+  CELLS, CLASS_GROUP, EQ, GQ, GPU_EOL, LF_TOLL, LF_UNNAMED, MINOR_MAX_CLASS, NCLASS, NSG, SPRITE_MAXZ, SPRITE_SEG_PX, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNPAVED, CAR_FERRY,
 } from '../config';
 import { levelZero, lodCells, lodSig, pieceLists, type LodFilter } from './lod';
 import { legibleRgb } from '../linecolour';
@@ -213,7 +213,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
     // Roads: toll (rail tiles use the bit for a service group; their stats count both).
     const toll = (lineFlags[l] & LF_TOLL) !== 0 ? 1 : 0;
     const group = (CLASS_GROUP[cls] * 2 + unp) * 2 + un;
-    const isBridge = (st & ST_BRIDGE) !== 0 && cls !== FERRY && (st & ST_TUNNEL) === 0;
+    const isBridge = (st & ST_BRIDGE) !== 0 && cls !== CAR_FERRY && (st & ST_TUNNEL) === 0;
     if (isBridge && bridgeStart === nverts) {
       bridgeStart = lineStart[l];
       firstBridgeLine = l;
@@ -337,7 +337,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
   // The minor classes among the roads: after the majors, before tunnels & ferries (a contiguous run,
   // as the roads go major → minor).
   const nBridgeLines = nlines - firstBridgeLine;
-  const lastGroup = (st: number) => (st & 15) === FERRY || (st & ST_TUNNEL) !== 0;
+  const lastGroup = (st: number) => (st & 15) === CAR_FERRY || (st & ST_TUNNEL) !== 0;
   let minorStart = nverts, minorEnd = nverts;
   for (let k = nBridgeLines; k < nlines; k++) {
     const st = nStyle[k];

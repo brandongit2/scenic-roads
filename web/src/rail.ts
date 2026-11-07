@@ -6,7 +6,7 @@
 import { fmt } from './fmt';
 import { u8Area } from './scenic';
 
-export type RailColour = 'line' | 'group' | 'metric' | 'single';
+export type RailColour = 'line' | 'service' | 'metric' | 'single';
 export type RailMetric = 'rscore' | 'freq' | 'elev' | 'grade' | 'viaduct' | 'view' | 'water' | 'vista' | 'drama' | 'ridge' | 'curvy';
 
 /** Trains a day each way, as a byte per line (log scale, 0.1 to 1000 a day; 0 = unknown). */
@@ -49,6 +49,10 @@ export const railMetricDef = (k: RailMetric) => RAIL_METRICS.find((m) => m.key =
 
 export interface RailComponent {
   key: string;
+  /** The key presets saved before the rename used (presets.ts reads both). */
+  was?: string;
+  /** Weight for weight lists and presets saved before this factor existed (else 0). */
+  def?: number;
   label: string;
   help: string;
   short: string;
@@ -72,17 +76,17 @@ export interface RailSample {
 const viaduct = (s: RailSample) => (s.bridge && !s.tunnel ? Math.max(0, s.elev - s.ground) : 0);
 
 export const RAIL_COMPONENTS: RailComponent[] = [
-  { key: 'views', label: 'Views', short: 'Views', unit: 'km²', help: 'Visible area from the window (trees & terrain block the view)', text: (s) => fmt.area(u8Area(s.ch[0])) },
+  { key: 'view', was: 'views', label: 'Views', short: 'Views', unit: 'km²', help: 'Visible area from the window (trees & terrain block the view)', text: (s) => fmt.area(u8Area(s.ch[0])) },
   { key: 'water', label: 'Water in view', short: 'Water', unit: 'km²', help: 'Visible lake / river / sea area', text: (s) => fmt.area(u8Area(s.ch[1])) },
   { key: 'vista', label: 'Long vistas', short: 'Vista', unit: 'km', help: 'Farthest visible distance (full at 15 km)', text: (s) => (s.ch[8] / 17).toFixed(1) },
-  { key: 'relief', label: 'Mountains', short: 'Mountains', unit: 'm', help: 'Terrain relief within 3 km (full at 600 m)', text: (s) => fmt.n(s.ch[2] * 3) },
-  { key: 'ledge', label: 'Ledges & gorges', short: 'Ledge', unit: 'm', help: 'Running high on a slope or deep in a gorge (full at ±60 m from the surroundings)', text: (s) => fmt.signed((s.ch[3] - 128) * 2) },
-  { key: 'altitude', label: 'Altitude', short: 'Altitude', unit: 'm', help: 'Track elevation (full at 1,500 m)', text: (s) => fmt.n(s.elev) },
+  { key: 'drama', was: 'relief', label: 'Mountains', short: 'Mountains', unit: 'm', help: 'Terrain relief within 3 km (full at 600 m)', text: (s) => fmt.n(s.ch[2] * 3) },
+  { key: 'ridge', was: 'ledge', label: 'Ledges & gorges', short: 'Ledge', unit: 'm', help: 'Running high on a slope or deep in a gorge (full at ±60 m from the surroundings)', text: (s) => fmt.signed((s.ch[3] - 128) * 2) },
+  { key: 'elev', was: 'altitude', label: 'Altitude', short: 'Altitude', unit: 'm', help: 'Track elevation (full at 1,500 m)', text: (s) => fmt.n(s.elev) },
   { key: 'viaduct', label: 'Viaducts', short: 'Viaduct', unit: 'm', help: 'Height above the ground on bridges and viaducts (full at 40 m)', text: (s) => fmt.n(viaduct(s)) },
   { key: 'tunnel', label: 'Tunnels', short: 'Tunnel', unit: '', help: 'Underground running (negative: you see nothing)', text: (s) => (s.tunnel ? 'yes' : 'no') },
-  { key: 'gradient', label: 'Gradient', short: 'Gradient', unit: '%', help: 'Climbing and descending (full at 4 %; rack railways max out)', text: (s) => s.grade.toFixed(1) },
+  { key: 'grade', was: 'gradient', label: 'Gradient', short: 'Gradient', unit: '%', help: 'Climbing and descending (full at 4 %; rack railways max out)', text: (s) => s.grade.toFixed(1) },
   { key: 'curvy', label: 'Curves', short: 'Curves', unit: '°/km', help: 'Curvature (full at 400 °/km)', text: (s) => fmt.n(s.ch[4] * 4) },
-  { key: 'freq', label: 'Service frequency', short: 'Trains', unit: '/day', help: 'Trains a day each way (full at 100 a day, log scale); tracks without a timetable leave it out of the score', text: (s) => (s.freq >= 0 ? fmt.perDayNum(s.freq) : '–') },
+  { key: 'freq', def: 0.3, label: 'Service frequency', short: 'Trains', unit: '/day', help: 'Trains a day each way (full at 100 a day, log scale); tracks without a timetable leave it out of the score', text: (s) => (s.freq >= 0 ? fmt.perDayNum(s.freq) : '–') },
 ];
 export const RNCOMP = RAIL_COMPONENTS.length;
 /** Index of the service-frequency factor (left out of the score where unknown). */
@@ -132,5 +136,5 @@ export function railMetricOf(m: RailMetric, s: RailSample, w: number[]): number 
   }
 }
 
-/** Colours per rail group (tram, metro, commuter, intercity, heritage) for "by service". */
+/** Colours per rail group (tram, metro, commuter, intercity, heritage) for the 'service' colouring. */
 export const RAIL_GROUP_COLOURS = ['#e0b43c', '#3fa9f5', '#8fd14f', '#f2555a', '#c77dff'];

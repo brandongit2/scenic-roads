@@ -4,7 +4,7 @@
 import type { Dist } from '../roads/stats';
 import { COMPONENTS, MODES, isScenic, modeDef, type Mode } from '../scenic';
 import { FIT_LEN_DEFAULT, pairOf, unitOf, withPair, withUnit } from '../autofit';
-import { modeGroup, type Store } from '../state';
+import type { Store } from '../state';
 import { h } from './dom';
 import { WeightGrid } from './controls';
 import { PresetBar } from './presets';
@@ -16,7 +16,7 @@ const BASE: [Mode, string][] = [
   ['grade', 'Grade'],
   ['relief', 'Relief'],
 ];
-const SCENIC = MODES.filter(isScenic);
+const SCENIC = MODES.filter((m) => isScenic(m.key));
 
 export class ColourCard {
   /** The panel's sticky top: the heading (and the profiles' dropdown, added by main.ts). */
@@ -52,7 +52,7 @@ export class ColourCard {
       fadeDefault: 0.7,
       spanDefault: 0.6,
       fixedCaption: () => (store.s.mode === 'relief' ? 'Lowest → highest road in view' : null),
-      len: { active: () => modeGroup(store.s.mode) === 'scenic', get: () => pairOf(store.s.fitLens, store.s.mode, FIT_LEN_DEFAULT),
+      len: { active: () => isScenic(store.s.mode), get: () => pairOf(store.s.fitLens, store.s.mode, FIT_LEN_DEFAULT),
         set: (v) => store.set({ fitLens: withPair(store.s.fitLens, store.s.mode, v, FIT_LEN_DEFAULT) }),
         unit: () => unitOf(store.s.fitUnits, store.s.mode), setUnit: (u) => store.set({ fitUnits: withUnit(store.s.fitUnits, store.s.mode, u) }) },
       onPreview: (k) => this.onPalettePreview(k),
@@ -109,7 +109,7 @@ export class ColourCard {
   sync() {
     const s = this.store.s;
     const d = modeDef(s.mode);
-    const scenic = isScenic(d);
+    const scenic = isScenic(s.mode);
     const map = s.mode === 'map';
     if (scenic) this.lastScenic = s.mode;
     this.modeBtns.forEach((b, i) => b.classList.toggle('on', BASE[i][0] === s.mode));

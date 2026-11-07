@@ -12,7 +12,7 @@ import { ScaleControls } from './scale';
 
 const COLOURS: [RailColour, string, string][] = [
   ['line', 'Line', 'Official line colours from OSM (the service type\'s colour where a line has none)'],
-  ['group', 'Service', 'By service type: trams, metro, commuter, intercity, heritage & mountain'],
+  ['service', 'Service', 'By service type: trams, metro, commuter, intercity, heritage & mountain'],
   ['metric', 'Metric', 'By scenic score or a ride factor, through a palette'],
   ['single', 'Single', 'One colour for every line'],
 ];
@@ -123,7 +123,7 @@ export class RailCard {
     this.el.classList.toggle('off', !r.on);
     this.colBtns.forEach((b, i) => b.classList.toggle('on', COLOURS[i][0] === r.colour));
     this.metricBox.hidden = r.colour !== 'metric';
-    this.groupLegend.hidden = r.colour !== 'group' && r.colour !== 'line';
+    this.groupLegend.hidden = r.colour !== 'service' && r.colour !== 'line';
     this.singleBox.hidden = r.colour !== 'single';
     this.note.hidden = r.colour !== 'line';
     this.note.textContent = 'Lines without an OSM colour use their service type\'s colour (above).';

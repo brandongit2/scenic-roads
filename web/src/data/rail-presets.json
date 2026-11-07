@@ -1,36 +1,36 @@
 {
-  "about": "Built-in rail ride-factor presets. Weights are keyed by factor (see RAIL_COMPONENTS in rail.ts); missing factors weigh 0. `default` is the app's default preset (else the first). Edits made in the app are kept in the browser and replace this list there.",
+  "about": "Built-in rail ride-factor presets. Weights are keyed by factor (see RAIL_COMPONENTS in rail.ts); a missing factor weighs its `def` there, else 0. `default` is the app's default preset (else the first). Edits made in the app are kept in the browser and replace this list there.",
   "default": "my-preset",
   "presets": [
     {
       "id": "balanced",
       "name": "Balanced",
-      "weights": { "views": 1, "water": 1.2, "vista": 0.8, "relief": 1, "ledge": 0.8, "altitude": 0.4, "viaduct": 0.8, "tunnel": -1, "gradient": 0.4, "curvy": 0.3, "freq": 0.3 }
+      "weights": { "view": 1, "water": 1.2, "vista": 0.8, "drama": 1, "ridge": 0.8, "elev": 0.4, "viaduct": 0.8, "tunnel": -1, "grade": 0.4, "curvy": 0.3, "freq": 0.3 }
     },
     {
       "id": "mountain",
       "name": "Mountain lines",
-      "weights": { "views": 1, "water": 0.4, "vista": 1, "relief": 2, "ledge": 1.5, "altitude": 1.5, "viaduct": 1, "tunnel": -0.8, "gradient": 1.2, "curvy": 0.8, "freq": 0 }
+      "weights": { "view": 1, "water": 0.4, "vista": 1, "drama": 2, "ridge": 1.5, "elev": 1.5, "viaduct": 1, "tunnel": -0.8, "grade": 1.2, "curvy": 0.8, "freq": 0 }
     },
     {
       "id": "coastal",
       "name": "Coastal & water",
-      "weights": { "views": 0.8, "water": 2, "vista": 1.2, "relief": 0.3, "ledge": 0.6, "altitude": 0, "viaduct": 0.6, "tunnel": -1.2, "gradient": 0, "curvy": 0.3, "freq": 0.2 }
+      "weights": { "view": 0.8, "water": 2, "vista": 1.2, "drama": 0.3, "ridge": 0.6, "elev": 0, "viaduct": 0.6, "tunnel": -1.2, "grade": 0, "curvy": 0.3, "freq": 0.2 }
     },
     {
       "id": "engineering",
       "name": "Viaducts & engineering",
-      "weights": { "views": 0.6, "water": 0.6, "vista": 0.6, "relief": 0.8, "ledge": 1.5, "altitude": 0.4, "viaduct": 2, "tunnel": 0.2, "gradient": 1.2, "curvy": 1, "freq": 0 }
+      "weights": { "view": 0.6, "water": 0.6, "vista": 0.6, "drama": 0.8, "ridge": 1.5, "elev": 0.4, "viaduct": 2, "tunnel": 0.2, "grade": 1.2, "curvy": 1, "freq": 0 }
     },
     {
       "id": "frequent",
       "name": "Frequent service",
-      "weights": { "views": 0.8, "water": 0.8, "vista": 0.5, "relief": 0.6, "ledge": 0.5, "altitude": 0.2, "viaduct": 0.4, "tunnel": -1, "gradient": 0.2, "curvy": 0.2, "freq": 1.5 }
+      "weights": { "view": 0.8, "water": 0.8, "vista": 0.5, "drama": 0.6, "ridge": 0.5, "elev": 0.2, "viaduct": 0.4, "tunnel": -1, "grade": 0.2, "curvy": 0.2, "freq": 1.5 }
     },
     {
       "id": "my-preset",
       "name": "My preset",
-      "weights": { "views": 0.7, "water": 0.3, "vista": 0.8, "relief": 1, "ledge": 2, "altitude": 0, "viaduct": 2, "tunnel": -1, "gradient": 0.3, "curvy": 0.3, "freq": 1 }
+      "weights": { "view": 0.7, "water": 0.3, "vista": 0.8, "drama": 1, "ridge": 2, "elev": 0, "viaduct": 2, "tunnel": -1, "grade": 0.3, "curvy": 0.3, "freq": 1 }
     }
   ]
 }
