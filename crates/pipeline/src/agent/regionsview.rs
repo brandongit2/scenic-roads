@@ -7,9 +7,9 @@
 //!   `@drawn` files) in Web Mercator, the world 0–1000 each way, simplified to `SIMPLIFY` (about
 //!   7 km at the equator; a ring or line smaller than `TINY` left out) at 0.1 (about 4 km): `fill`
 //!   the rings, outer and inner (an island in a water region is a hole of it), wound outer
-//!   positive and inner negative, to fill (even-odd); `edge` the lines to stroke, the stretches two of its
-//!   shapes share along a parallel or meridian (where an outline entry was cut by a tile's edge)
-//!   left out.
+//!   positive and inner negative, to fill nonzero (a hole unfilled, two shapes overlapping
+//!   filled); `edge` the lines to stroke, the stretches two of its shapes share along a parallel
+//!   or meridian (where an outline entry was cut by a tile's edge) left out.
 //! - **Crumbs**: the names of the folders it's in, from the top (their `_group.toml` names), then
 //!   its own (crate::inputs::regions::read::tree).
 //! - **Bytes**: the catalogue's files a download of it copies (crate::areafiles::files_of over the

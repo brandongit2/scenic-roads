@@ -166,7 +166,7 @@ test('map: two steps on one tile are two entries, running and finished (#615)', 
   assert.deepEqual(tileOf('marks 3/1/2'), { z: 3, x: 1, y: 2 });
 });
 
-test('map: a point in rings, even-odd', () => {
+test('map: a point in rings, nonzero', () => {
   const sq = [0, 0, 10, 0, 10, 10, 0, 10, 0, 0];
   assert.equal(inRings([sq], 5, 5), true);
   assert.equal(inRings([sq], 15, 5), false);
@@ -174,6 +174,9 @@ test('map: a point in rings, even-odd', () => {
   const hole = [4, 4, 4, 6, 6, 6, 6, 4, 4, 4];
   assert.equal(inRings([sq, hole], 5, 5), false);
   assert.equal(inRings([sq, hole], 2, 5), true);
+  // Two outer rings overlapping (wound alike): inside where they overlap too.
+  const over = [5, 0, 15, 0, 15, 10, 5, 10, 5, 0];
+  assert.equal(inRings([sq, over], 7, 5), true);
 });
 
 test('map: the one region a point picks (#831): holes not hit, the innermost of nested ones', () => {
