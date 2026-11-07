@@ -4338,4 +4338,82 @@ mod tests {
             std::fs::write(out, serde_json::to_vec(&tc.answer()).unwrap()).unwrap();
         }
     }
+
+    /// Every archived forecast input under a project folder (SCENIC_FORECAST_INPUTS: its
+    /// `state/coord/forecast-inputs`, read only; SCENIC_FORECAST_FROM and SCENIC_FORECAST_TO, unix s,
+    /// the span kept)
+    /// timed as the lead runs it, a line each: its listing's CPU time and each of its three runs'
+    /// (each on a thread of its own, as `forecast_by` runs them), cut or not at `BUDGET`
+    /// (SCENIC_FORECAST_LIMIT_S another), the items placed of all. With SCENIC_FORECAST_HASH, its
+    /// whole forecast made at that budget instead, a hash of its JSON and its wall time: two builds'
+    /// forecasts of the same inputs compared. For profiling at live scale (unset: nothing).
+    #[test]
+    fn archived_timing() {
+        let Ok(root) = std::env::var("SCENIC_FORECAST_INPUTS") else { return };
+        let from: u64 = std::env::var("SCENIC_FORECAST_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let budget = std::env::var("SCENIC_FORECAST_LIMIT_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map_or(BUDGET, Duration::from_secs);
+        let hash = std::env::var("SCENIC_FORECAST_HASH").is_ok();
+        let the_plan = crate::agent::seam::for_tests();
+        let cpu = |f: &dyn Fn() -> Sim| {
+            let c0 = thread_cpu();
+            let s = f();
+            (s, thread_cpu().saturating_sub(c0))
+        };
+        let (mut most, mut cuts, mut n) = (Duration::ZERO, 0, 0);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let to: u64 = std::env::var("SCENIC_FORECAST_TO").ok().and_then(|s| s.parse().ok()).unwrap_or(now);
+        for i in crate::agent::fcinputs::read(&store::nasfs::NasRoot::from_arg(&root), from, to) {
+            let r = i.record().unwrap();
+            let inp = &r.input;
+            if hash {
+                use std::hash::{Hash, Hasher};
+                let t = Instant::now();
+                let f = forecast_by(the_plan, inp, budget);
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                serde_json::to_vec(&f).unwrap().hash(&mut h);
+                let took = t.elapsed();
+                most = most.max(took);
+                (cuts, n) = (cuts + usize::from(f.partial), n + 1);
+                eprintln!(
+                    "{} term {}: hash {:016x}, {} ms, partial {}",
+                    i.at,
+                    i.term,
+                    h.finish(),
+                    took.as_millis(),
+                    f.partial
+                );
+                continue;
+            }
+            let c0 = thread_cpu();
+            let its = items(the_plan, inp);
+            let listing = thread_cpu().saturating_sub(c0);
+            let runs: Vec<(Sim, Duration)> = std::thread::scope(|s| {
+                let hs: Vec<_> = SCALINGS
+                    .iter()
+                    .map(|&sc| {
+                        let its = its.clone();
+                        s.spawn(move || cpu(&|| run_on(the_plan, inp, its.clone(), &scaled(sc), budget)))
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let slowest = runs.iter().map(|r| r.1).max().unwrap_or_default();
+            let cut = runs.iter().any(|r| r.0.cut);
+            (most, cuts, n) = (most.max(slowest), cuts + usize::from(cut), n + 1);
+            let placed = runs[0].0.items.iter().filter(|i| i.by.is_some()).count();
+            eprintln!(
+                "{} term {}: items {}, machines {}, listing {} ms, runs {} ms, cut {cut}, placed {placed}",
+                i.at,
+                i.term,
+                runs[0].0.items.len(),
+                inp.machines.len(),
+                listing.as_millis(),
+                runs.iter().map(|r| r.1.as_millis().to_string()).collect::<Vec<_>>().join("/"),
+            );
+        }
+        eprintln!("{n} inputs, {cuts} cut; the slowest {} ms", most.as_millis());
+    }
 }
