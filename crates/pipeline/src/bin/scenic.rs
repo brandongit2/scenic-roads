@@ -1592,7 +1592,9 @@ fn main() -> Result<()> {
             });
             let r = pipeline::timings::job("gc", || {
                 let asked = gc::Asked { dry_run, depth: keep.as_ref(), shadow: shadow_due.as_deref(), old_catalogues };
-                gc::run(&root(&r.root, true)?, days, &asked)
+                // (Each removal told the lead's GC queue first: gc::Tell.)
+                let root = root(&r.root, true)?;
+                gc::run(&root, days, &asked, &gc::TheLead::from_nas(&root))
             })?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())

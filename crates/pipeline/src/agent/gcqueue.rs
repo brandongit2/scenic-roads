@@ -13,13 +13,15 @@
 //!
 //! What the queue has been told was deleted, with the newest lease granted then, is what the merge
 //! refuses (`refusal`): a hand-off of a lease granted before the deletion that brings a deleted
-//! name may have found the file on the NAS and reused it; its targets are done again.
+//! name may have found the file on the NAS and reused it; its targets are done again. The `gc` job
+//! tells the lead each name before it removes it (crate::agent::gc::Tell, `/gc/removing`: step 8a,
+//! docs/maplog.md §11.4), so the refusal covers every removal from the moment it can happen.
 //!
-//! Shadow (step 7): nothing deletes by the queue. The `gc` job, which still deletes by its own
-//! rules, is given the queue's due set (`SHADOW_DUE`, written as its job is planned) and checks it
-//! against what it removes that day (crate::agent::gc::Report::shadow): the shadow's due set should
-//! be a part of today's deletions. Its check (`SHADOW_CHECK`) is read back at the next plan, and
-//! what today's GC removed or found gone is marked deleted in the queue.
+//! Shadow (step 7): nothing deletes by the queue. The `gc` job, which deletes by its own rules, is
+//! given the queue's due set (`SHADOW_DUE`, written as its job is planned) and checks it against
+//! what it removes that day (crate::agent::gc::Report::shadow): the shadow's due set should be a
+//! part of today's deletions. Its check (`SHADOW_CHECK`) is read back at the next plan: the due
+//! names it found gone already are marked deleted there (those it removed were, as it went).
 
 use crate::pool::journal::{Entry, LeaseId};
 use crate::pool::records::Records;
@@ -63,9 +65,8 @@ pub struct ShadowCheck {
     /// Due and kept by today's GC, by its reason. A holder the queue missed (`MISSED`): `records`
     /// (the manifest, the records or a hand-off not merged name it), `map` (the map now names it).
     /// Expected while today's GC keeps its 14-day window: `window` (freed within it, or an older
-    /// map snapshot on the NAS names it), `report-only` (crate::agent::gc::REPORT_ONLY: kept
-    /// until docs/maplog.md §8 step 8), `young` (younger than its window), `not swept` (in no
-    /// folder it sweeps: the queue covers more than its folders).
+    /// map snapshot on the NAS names it), `young` (younger than its window, or touched as it was to
+    /// go), `not swept` (in no folder it sweeps: the queue covers more than its folders).
     pub kept: BTreeMap<String, Vec<String>>,
 }
 
@@ -123,7 +124,7 @@ pub fn refusal(q: &GcQueue, e: &Entry) -> Option<String> {
     let h = &e.handoff;
     let (n, at) = q.deleted_under(h.changes.values().flatten().chain(h.pending.keys()), lease(e.lease))?;
     Some(format!(
-        "{n} was deleted from the NAS by GC (at {at}) after its lease {} was granted (its job may have found it there): its targets are done again",
+        "{n} was removed from the NAS by GC (told at {at}, before it went) after its lease {} was granted (its job may have found it there): its targets are done again",
         e.lease
     ))
 }

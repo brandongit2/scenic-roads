@@ -159,6 +159,43 @@ fn a_reuse_of_a_deleted_name_is_refused_and_redone() {
     assert!(refusal(&back, &entry(8, name)).is_none());
 }
 
+/// docs/maplog.md §11.4 (step 8a): the `gc` job tells the lead's coordinator each name before it
+/// removes it (`/gc/removing`, crate::agent::gc::TheLead): marked deleted in the lead's queue, the
+/// newest lease granted then theirs, at once and kept on its disk, so a hand-off (posted by HTTP or
+/// in the journal, merged whenever) of a lease granted before brings it refused, and its redo
+/// merges. A coordinator with no queue (not the lead, its log not open) marks nothing, and the job
+/// is told so: it removes nothing.
+#[test]
+fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
+    use crate::agent::gc::{Tell, TheLead};
+    let d = tempfile::tempdir().unwrap();
+    let name = "base/6-1-1.k0.base";
+    let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "m4", "");
+    let lead = || {
+        TheLead::at(crate::coord::client::Client::at(
+            vec![format!("http://127.0.0.1:{port}")],
+            c.contact.token.clone(),
+            "m4",
+        ))
+    };
+    let e = format!("{:#}", lead().removing(&[name.to_string()]).unwrap_err());
+    assert!(e.contains("503") || e.contains("no GC queue"), "{e}");
+    std::fs::create_dir_all(d.path().join("maplog")).unwrap();
+    let q = std::sync::Arc::new(GcQueue::default());
+    q.open(&d.path().join("maplog"), &map(1, &[]), T0).unwrap();
+    c.set_term(3);
+    c.set_maplog(store::map::feed::Feed::new(), q.clone());
+    lead().removing(&[name.to_string()]).unwrap();
+    // (A lease of term 2, granted before: refused; the redo's, granted after: merged.)
+    let reused = entry(5, name);
+    assert!(refusal(&q, &reused).is_some_and(|why| why.contains(name)));
+    let redo = Entry { lease: LeaseId { term: 4, n: 1 }, ..entry(8, name) };
+    assert!(refusal(&q, &redo).is_none());
+    let back = GcQueue::default();
+    back.open(&d.path().join("maplog"), &map(1, &[]), T0).unwrap();
+    assert!(refusal(&back, &reused).is_some(), "kept on the lead's disk");
+}
+
 /// A last line cut short is dropped (and cut off the file); a damaged earlier line is an error.
 #[test]
 fn a_torn_last_line_is_dropped() {

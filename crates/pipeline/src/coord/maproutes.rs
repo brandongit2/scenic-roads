@@ -131,7 +131,7 @@ mod tests {
         let (c, port) = crate::coord::start_for_test(&d.join("a"), "m4", "");
         let w = Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "server/m1");
         let feed = Feed::new();
-        c.set_maplog(feed.clone());
+        c.set_maplog(feed.clone(), Default::default());
         (c, w, feed)
     }
 

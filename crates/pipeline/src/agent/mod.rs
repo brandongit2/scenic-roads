@@ -7828,7 +7828,7 @@ impl Agent {
         }
         // (The map's log, which the servers follow: the lead's coordinator answers it.)
         if !coord.has_maplog() {
-            coord.set_maplog(here.feed.clone());
+            coord.set_maplog(here.feed.clone(), here.gc.clone());
         }
         // (Each map server's adoption of a newer map, its cursor moved, and its mirror's rounds:
         // in the history, for publishing's times, crate::pubtimes.)
@@ -13814,7 +13814,8 @@ mod tests {
         assert!(!gc_cmd(&mut a, false).iter().any(|c| c == "--old-catalogues"), "a member's app looks at catalog/");
         assert!(gc_cmd(&mut a, true).iter().any(|c| c == "--old-catalogues"));
         // The pass, as the job runs it: the old folders go, nothing else.
-        let r = gc::run(&nas, 14, &gc::Asked { old_catalogues: true, ..Default::default() }).unwrap();
+        let told = |_: &[String]| -> anyhow::Result<()> { Ok(()) };
+        let r = gc::run(&nas, 14, &gc::Asked { old_catalogues: true, ..Default::default() }, &told).unwrap();
         assert_eq!(r.old_catalogues, ["catalog", "catalog-held"], "(no old switch on this root)");
         assert!(!root.join("catalog").exists() && !root.join("catalog-held").exists());
         assert!(root.join(NAS_CHECK).is_dir() && root.join("state/build/manifest.json").exists());

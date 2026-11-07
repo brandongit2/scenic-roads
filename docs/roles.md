@@ -502,7 +502,7 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   `lead-member.json`, which stays) in that step.
 - **#883 (the map's log):** the log, its feed, GC and its queue are the mini's already; #882 moves
   none. 7b (built) gave the mirror its cursor; on 6 Nov only the mini runs a mirror, so no
-  laptop's cursor holds GC. 8a (not before 15 Nov) and 8b are the lead's. With 7a, a laptop's two
+  laptop's cursor holds GC. 8a (built) and 8b are the lead's. With 7a, a laptop's two
   cursors exist only while its map runs and `CURSOR_TTL_S` drops them, so it never holds GC more
   than 7 days. Step 9 (built) removes `catalog/` on every Mac, at its agent's start.
 

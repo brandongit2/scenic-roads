@@ -327,6 +327,17 @@ pub struct Worker {
     pub failed: u32,
 }
 
+/// The `gc` job's ask of `/gc/removing`: the content names it's about to remove.
+#[derive(Deserialize)]
+struct GcRemoving {
+    names: Vec<String>,
+}
+
+/// The newest lease granted (its term's, the next's number less one).
+fn newest_lease(s: &Shared) -> crate::pool::journal::LeaseId {
+    crate::pool::journal::LeaseId { term: s.leases.term, n: s.leases.next().saturating_sub(1) }
+}
+
 /// What the request handlers and the agent share.
 #[derive(Debug)]
 pub struct Shared {
@@ -438,6 +449,9 @@ pub struct Shared {
     /// The map and its log's batches (store::map::feed, the lead's log writer's): `/map/changes`,
     /// `/map/snapshot` (maproutes). None: not the lead (503).
     pub maplog: Option<Arc<store::map::feed::Feed>>,
+    /// GC's queue beside the map's log (store::map::gc, the lead's): the `gc` job's removals marked
+    /// deleted in it before they go (`/gc/removing`, crate::agent::gc::Tell). None: not the lead (503).
+    pub gc: Option<Arc<store::map::gc::GcQueue>>,
     /// The build page's map's finished tiles (crate::agent::builtview): `/work/built`. None: not
     /// given one (503).
     pub built: Option<Arc<crate::agent::builtview::BuiltView>>,
@@ -1535,6 +1549,7 @@ impl Coordinator {
             live: None,
             catalogues: None,
             maplog: None,
+            gc: None,
             built: None,
             regions: None,
             region_steps: None,
@@ -2404,8 +2419,7 @@ impl Coordinator {
     pub fn lease_bounds(&self) -> (Option<u64>, crate::pool::journal::LeaseId) {
         let s = self.shared.lock().unwrap();
         let oldest = s.leases.all(s.now()).iter().map(|l| l.granted_at).min();
-        let newest = crate::pool::journal::LeaseId { term: s.leases.term, n: s.leases.next().saturating_sub(1) };
-        (oldest, newest)
+        (oldest, newest_lease(&s))
     }
 
     /// The targets of `steps` leased now, every Mac's.
@@ -2850,9 +2864,11 @@ impl Coordinator {
         self.shared.lock().unwrap().catalogues = Some(cv);
     }
 
-    /// `/map/changes` and `/map/snapshot` answered from `feed` (maproutes) from here on.
-    pub fn set_maplog(&self, feed: Arc<store::map::feed::Feed>) {
-        self.shared.lock().unwrap().maplog = Some(feed);
+    /// `/map/changes` and `/map/snapshot` answered from `feed` (maproutes), and `/gc/removing`'s
+    /// names marked deleted in `gc`, from here on.
+    pub fn set_maplog(&self, feed: Arc<store::map::feed::Feed>, gc: Arc<store::map::gc::GcQueue>) {
+        let mut s = self.shared.lock().unwrap();
+        (s.maplog, s.gc) = (Some(feed), Some(gc));
     }
 
     /// Whether it answers the map's routes.
@@ -4440,6 +4456,25 @@ fn route(
             let status = status_beside(&dir, ask.status_at);
             Ok((200, pool_view(&shared.lock().unwrap(), &ask, status)))
         }
+        "/gc/removing" => {
+            // The `gc` job's content names about to be removed (crate::agent::gc::Tell, docs/maplog.md
+            // §11.4): marked deleted in GC's queue (written and fsynced), the newest lease granted now
+            // theirs, before the job removes any: the merge refuses a hand-off of an older lease
+            // bringing one from then on.
+            let b: GcRemoving = serde_json::from_slice(body)?;
+            let (q, lease) = {
+                let s = shared.lock().unwrap();
+                (s.gc.clone(), newest_lease(&s))
+            };
+            let Some(q) = q else {
+                return Ok((
+                    503,
+                    serde_json::json!({ "error": "no GC queue here: not the lead, or its map's log not open" }),
+                ));
+            };
+            q.deleted(&b.names, unix_now(), crate::agent::gcqueue::lease(lease));
+            Ok((200, serde_json::json!({ "marked": b.names.len() })))
+        }
         "/pool/release" => {
             // The owner's release of a member's leases (`scenic pool release <member>`).
             let v: serde_json::Value = serde_json::from_slice(body)?;
@@ -5359,6 +5394,7 @@ mod http {
             .route("/pool/settings", any(json))
             .route("/pool/beat", any(json))
             .route("/pool/release", any(json))
+            .route(crate::agent::gc::REMOVING, any(json))
             .route("/pool/view", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/out/{lease}/{*path}", put(output))

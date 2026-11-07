@@ -1,10 +1,10 @@
 # The map and its log
 
-**Task #883: steps 1 to 6, 7b and 9 of §8 built, step 7 in shadow; 8a, 8b and 10 planned (status and
+**Task #883: steps 1 to 6, 7b, 8a and 9 of §8 built, step 7 in shadow; 8b and 10 planned (status and
 what's left: §11).** This doc says how catalogues and GC give way to one current map of the served
 files plus an append-only log of its changes, which clients follow by cursor, and a GC that runs all
-the time in small steps it can resume. No catalogue is written or read since step 6. Until steps 8a
-to 10 land, docs/storage.md (GC) and the code are what is true of GC.
+the time in small steps it can resume. No catalogue is written or read since step 6. Until steps 8b
+and 10 land, docs/storage.md (GC) and the code are what is true of GC.
 
 **Built (steps 1 and 2):** `store::map` (entries ⇄ `Catalogue`, batches, the digest, applying a
 batch, the NAS snapshot) and `store::map::log` (the store: `snapshot.json.zst` and segments of
@@ -127,9 +127,8 @@ serves the map alone: the map this Mac kept (`current.json.zst`), else the NAS's
 its start (before it answers), then the lead's batches; a `--root` server or a test reads the root's
 newest snapshot. GC's roots are the map (every snapshot on the NAS, the lead's map now) and the names
 the lead's GC queue freed within its 14 days (`gcqueue::ShadowDue`'s `map` and `freed`, handed to the
-job), besides the records; no map at all, nothing is removed. Until step 8a those roots only
-report (`gc::REPORT_ONLY`, docs/storage.md GC): the queue holds frees since 31 Oct alone, and
-the roots would have removed 2,575 files (144 GB) the last 14 days' catalogues name. Where it departs from §6.7: the map is
+job), besides the records; no map at all, nothing is removed (step 8a: each removal told the lead
+first, §11.4). Where it departs from §6.7: the map is
 posted as a file the job leaves for its agent, not a `POST /map/publish`: the job runs on the lead,
 and the agent takes it when the job ends, which a request would only make sooner.
 
@@ -632,13 +631,13 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 | 6 (built) | **Catalogues stop** (after the gate: every server on the log a day): the step only posts; `catalog-held/` → `map-held/` | the catalogue writer and reader (`write`, `write_delta*`, `Delta`, `delta.rs`, `chain`, `whole_due`, `MAX_CHAIN`, `keep_read_in`/`kept_dir`, `latest*`, `read_n*`, `list`, `prune`, `next_n`), `state/pool/delta-catalog` and `Switches::delta`, the `catalog-stats:` sizes' look-ups of the last catalogue | `the_step_publishes_with_no_catalog_folder`; `a_held_batch_is_appended_whole_when_the_hold_lifts`; `a_posted_map_is_appended_once`; `the_maps_keep_their_files_however_old` (GC); test roots (`lakefill catalog-add`, `coastcheck water-packs`, the server's tests, `store::testkit::map_root`) on snapshots |
 | 7 (built: shadow) | **GC's queue, shadow:** the lead queues freed names (batches and records saves), leases and clients as holders; the merge's refusal of names deleted under a lease; a dry-run report beside today's GC, which still deletes | — | `a_name_freed_and_taken_again_leaves_the_queue`; `due_waits_for_every_cursor_the_grace_and_older_leases`; `a_reuse_of_a_deleted_name_is_refused_and_redone`; the shadow's due set ⊆ today's GC's deletions on the same day (a check job) |
 | 7b (built) | **The mirror is a client** (§6.2): the server's mirror sync asks `/map/changes` as `mirror/<host>` each round with the oldest `seq` whose files it still copies (its cursor, made from the downloads' pins and the files here), the map its round copies and the last it got through at (`&copying=`, `&synced=`); the lead keeps them on the cursor and notes them in the history (`mirror-start`, `mirror-end`) for `pubtimes`, as it does the adoptions; a reset moves the Updates of older maps on to the one served | `data::publish_event`, the mirror's `MIRROR_MARKS`, `pubtimes::SERVERS`, `SERVERS_MAX`, `append_server`, `read_servers`, `ServerEvent`, `MirrorMarks`, `state/publish/` | `a_mirror_copying_an_older_seq_holds_its_cursor` (an Update of an older map holds it while the map served moves on, through rounds cut short and a restart; caught up once its files are here); `a_cursor_older_than_the_log_resyncs_the_updates`; `a_client_is_answered_what_follows_its_seq_and_its_cursor_noted` (a mirror the lead didn't hold is reset); `mirror_times_come_from_the_history` |
-| 8a | **The map's roots remove** (§11.4): every name the `gc` job removes is marked deleted in the queue before it's removed, not only its due set's and not after the job, so the merge refuses a hand-off reusing any of them; then `REPORT_ONLY` and its assert go. Today's daily `gc` job and its 14-day window stay. Not before 15 Nov 2026 07:12 (the last catalogue, 1066, written 1 Nov 07:11:48, plus 14 days) | `REPORT_ONLY`, `REPORTS_ONLY`, the assert, `report_only*` in the report, the check's `report-only` reason | `every_removal_is_marked_deleted_before_it_goes`; `a_hand_off_by_http_reusing_a_removed_name_is_redone`; `the_map_s_roots_remove_what_nothing_names` |
+| 8a (built) | **The map's roots remove** (§11.4): every name the `gc` job removes is told the lead's coordinator first (`gc::Tell`, `POST /gc/removing`, `gc::TheLead`), 200 at a time, and marked deleted in its queue with the newest lease then, so the merge refuses a hand-off reusing any of them; `REPORT_ONLY` and its assert are gone. Today's daily `gc` job and its 14-day window stay. The date gate (15 Nov 07:12, the last catalogue plus 14 days) lifted by the owner, 7 Nov: no old browser tab or long-offline Mac holds an old catalogue | `REPORT_ONLY`, `REPORTS_ONLY`, the assert, `report_only*` in the report, the check's `report-only` reason, the job's marking of what it removed at the plan after it (`shadow_checked` marks only what it found gone) | `every_removal_is_marked_deleted_before_it_goes`; `a_hand_off_reusing_a_name_gc_removes_is_refused` (by HTTP to a lead's coordinator); `the_map_s_roots_remove_what_nothing_names` |
 | 8b | **GC runs by the queue:** chunks of 200 whenever quiet, resumable; the orphan sweep; today's other sweeps as chunked cursors | `run_once`'s catalogue reading and folder sweep, `remove_unless_touched` and `Out::put_file`'s touch, `TOMB` and `put_back`, the 14-day catalogue window, the `gc` job's daily schedule | `gc_resumes_mid_chunk_after_a_kill` (agent killed between two deletions; next chunk starts at the first not gone, nothing deleted twice or kept forever); `gc_yields_to_the_budget`; `an_orphan_is_queued_only_after_its_age`; `the_queue_rebuilds_after_a_lead_disk_restore` |
 | 9 (built; runs once every member is on it) | **The old catalogues go:** the lead's daily `gc` job, asked `--old-catalogues` once every member's heartbeat says its app's NAS check looks at `map/` (`Beat::checks_map`, `pool::Side::all_check_map`), removes `catalog/`, `catalog-held/` and the switches `state/pool/delta-catalog` and `state/pool/map-serve` on the NAS (`gc::remove_old_catalogues`: one `rm -rf` over SSH from the lead, else over SMB file by file, a safe point between folders); each Mac's agent removes its `catalog/` (the map server's, in the app's folder) and `~/Library/Caches/scenic/catalogue/` at its start (`gc::remove_this_macs_catalogues`: every Mac runs an agent, the map server runs on the mini alone and a laptop's on demand). Nothing reads a catalogue since step 6 and GC roots on none, so a file only an old catalogue named is GC's as any file nothing names (on 7 Nov, 5,827 of catalogue 1063's 21,233 files weren't in map 1689). The gate: the agent's NAS check looked at `catalog/` until this step (`agent::answers`, now `agent::NAS_CHECK`, `map/`), and an older app sees the NAS away without it | the folders and switches | `the_old_catalogues_folders_go_whole`; `the_old_catalogues_wait_for_every_member_s_map_check`; `the_old_catalogues_go_only_once_every_app_checks_by_the_map` (on a private root, after the pass an agent checking by `catalog/` sees the NAS away, this app's sees it); `this_macs_old_catalogues_go` |
 | 10 | docs: formats.md (Catalogue → the map and its snapshot), storage.md (GC), macs.md (the server's sync, the mirror), building.md (publishing, the switches), pool.md §7.2/§10; this doc folded in | — | — |
 
 Order: 1, 2, 3 in turn; 4 and 5 after 3, in either order; 6 after 3, 4 and 5 and the gate; 7 after
-2 (it needs the batches' `freed`); 8a after 6 and 7 and 14 days after the last catalogue (§11.4);
+2 (it needs the batches' `freed`); 8a after 6 and 7 (§11.4);
 7b after 3, any time; 8b after 8a and 7b (on every Mac: an older server's mirror says no cursor); 9 once every member's app checks the NAS by `map/`;
 10 with each. Steps 3 and 8b are what the owner sees: servers following each publish within a
 second, from home or away, and GC that keeps up; 8a frees the space held today (§11.4).
@@ -689,7 +688,7 @@ and the Macs go with step 9, GC's with steps 8a and 8b.
 
 ## 11. Where it stands (6 Nov 2026), and what's left
 
-**Status: steps 7b (6 Nov) and 9 (7 Nov) built; 8a, 8b and 10 planned.** The rest of this doc is the design; this section is
+**Status: steps 7b (6 Nov), 8a and 9 (7 Nov) built; 8b and 10 planned.** The rest of this doc is the design; this section is
 the walk of every reader and writer as the code is today (references at commit 36bb70a2), and the
 steps left.
 
@@ -705,7 +704,7 @@ steps left.
 | `/work/catalogs` | `crates/pipeline/src/coord/mod.rs:4900`; a member's port sends it to the lead (`crates/pipeline/src/coord/memberpage.rs:56`) | the view above | nothing |
 | `scenic catalogs` | `crates/pipeline/src/cli/scenic.rs:274` | the view this Mac's agent kept (`cataloguesview::KEPT`) | nothing |
 | publish.rs and coordwire | `crates/coordwire/src/lib.rs:39` (`map_now`: `/map/snapshot`, else the NAS's newest), `publish.rs:67` (`MapLog`), `:95` (`Here`: the head's catalogue, made of the map while read) | the lead's log | nothing |
-| gc.rs and the queue | `crates/pipeline/src/agent/gc.rs:42` (`REPORT_ONLY`), `:48` (its assert), `:742` (the map snapshots and the lead's map as roots; the phase keeps the name "reading the catalogs"), `:835` (the folder sweep), `:899` (`remove_unless_touched`); `crates/pipeline/src/agent/gcqueue.rs:55` (`ShadowCheck`), `crates/pipeline/src/agent/plan.rs:1099` (`shadow_checked`), `crates/store/src/map/gc.rs:26` (`GRACE_S`) | snapshots, the lead's map, the queue's `freed` within 14 days, the records | 8a, 8b |
+| gc.rs and the queue | `crates/pipeline/src/agent/gc.rs:801` (the map snapshots and the lead's map as roots; the phase keeps the name "reading the catalogs"), `:894` (the folder sweep), `:1049` (`Removals`: each chunk told, `:45` `Tell`, `:64` `TheLead`, then removed), `:1432` (`remove_unless_touched`); `crates/pipeline/src/coord/mod.rs:4459` (`/gc/removing`); `crates/pipeline/src/agent/gcqueue.rs:57` (`ShadowCheck`), `:123` (`refusal`), `crates/pipeline/src/agent/plan.rs:1140` (`shadow_checked`), `crates/store/src/map/gc.rs:26` (`GRACE_S`) | snapshots, the lead's map, the queue's `freed` within 14 days, the records | 8b |
 | The plan, names-todo, regions | `crates/pipeline/src/agent/plan.rs:2214` (`map_now`), `crates/landmarks/src/namestodo.rs:405` (`inputs_key`, keyed by the log's marks), `regionsview`, `builtview` | the head's catalogue (`Here`) | nothing |
 | The menu app | `tools/status/main.swift:445`-`467` | the status's regions' `map_at` alone | nothing: it never read catalogues |
 | Test roots | `lakefill catalog-add` (`crates/pipeline/src/cli/progs.rs:354`), `coastcheck`, `store::testkit::map_root` | they write a snapshot | nothing |
@@ -738,7 +737,8 @@ clients keep their map, and one with none reads the NAS's snapshot (§5.2).
 
 ### 11.3 What's left, each step alone
 
-1. **8a, the map's roots remove** (§11.4): small, on or after 15 Nov 2026 07:12.
+1. **8a, the map's roots remove** (§11.4; built): its first real run frees the ~623 GB nothing
+   names.
 2. **8b, GC by the queue**: chunks, the orphan sweep, the other sweeps as cursors; the daily job,
    the folder sweep, the 14-day window and the touch go. After 8a (7b, the mirror's cursor that
    makes it safe for offline downloads, is built).
@@ -765,42 +765,39 @@ to another Mac starts its log from the NAS's snapshot and loses its queue (§4.5
 
 ### 11.4 What frees the 623 GB
 
-About 623 GB of the NAS (the survey of 5 Nov; not measured again here) is held only by
-`REPORT_ONLY`: content-named files nothing names that today's `gc` job counts (`report_only`,
-`report_only_bytes`) and keeps. **Step 8a frees it**: the first `gc` run to reach the folders after
-8a is on removes it, one SMB deletion a file, in the run's folder sweep (709 s on 5 Nov without the
-deletions); a run paused at a safe point keeps what it deleted, and the next one goes on. 8b isn't
-needed for it.
+About 623 GB of the NAS is content-named files nothing names, old enough to go: the last full `gc`
+run before 8a (5 Nov, 29 min) counted 12,299 files, 623,038,314,801 bytes, and kept them (they were
+counted only, until 8a). **Step 8a frees them** (built 7 Nov): the first `gc` run after it removes
+them in its folder sweep (7 min 16 s on 5 Nov without the deletions), 200 at a time, each chunk told
+the lead first, with a safe point after each; a run paused there keeps what it removed and the next
+goes on. Each file costs a rename, a stat and a removal over SMB (`remove_unless_touched`): at the
+NAS's measured rates (`state/pool/nas-probes.json`, 68 probes over 5 and 6 Nov under the build's
+load: deletes 7.5 a second at the median, 1.9 at the tenth percentile, 388 at the ninetieth; stats
+67, 3.0 and 7,850) about an hour at the median, from a minute to some 4.7 hours at the ends. Not
+measured again since 5 Nov: a dry run on the live share is the owner's. 8b isn't needed for it.
 
-Why not today, and what 8a must carry:
+What 8a carries:
 
-- **The window.** Today's GC keeps a name a catalogue of the last 14 days named; since step 6 those
-  are the queue's names freed within 14 days, and the queue knows only what was freed since 31 Oct.
-  A file freed between 18 and 31 Oct is named by a catalogue of the window, which nothing reads now:
-  the roots alone would remove it early (2,575 files, 144 GB, on 1 Nov). The last catalogue was
-  written on 1 Nov 07:11:48 (`catalog/1066.delta.json.zst`; the old rule aged a catalogue by its
-  file's time), so from **15 Nov 2026 07:12** every catalogue but the newest is over 14 days old,
-  and the newest's names the map no longer holds were freed after it, so the queue knows them: the
-  roots remove only what the old rules would. Before that only the part outside the window could
-  safely go, and GC can't tell which without reading the catalogues, whose reader went with step 6.
-- **Hand-offs posted by HTTP and not merged** (the assert at `gc.rs:48`). Their files are kept only
-  by age (the 14 days; a reused file by its touch at reuse). A hand-off unmerged past that, reusing a
-  file GC then removes, would publish a name whose file is gone. The merge already refuses a
-  hand-off bringing a name deleted after its lease was granted (`crates/pipeline/src/agent/gcqueue.rs:122`,
-  `refusal`), and its targets are done again; but only the due set's removals are marked deleted
-  (`plan.rs:1109`-`1111`: `ShadowCheck`'s `removed` is the due names removed), and only at the
-  plan after the job ends (`shadow_checked`, read back from the job's check file): a hand-off merged
-  between a removal and that plan isn't refused. 8a marks every name the run removes, and before
-  it removes it (a chunk marked, then removed; a name marked and then kept only costs a hand-off
-  reusing it its redo), so the refusal covers all of them from their removal on; then the assert
-  and `REPORT_ONLY` go. A mark is kept `DELETIONS_KEPT_S` (7 days, `crates/store/src/map/gc.rs:33`);
-  a hand-off told later than that isn't refused, and its missing file is the pending uploads'
-  verification's to find.
-
-So 8a's code can ship any time, and the switch (`REPORT_ONLY` false) safely in a release on or
-after 15 Nov 07:12. Before it's on, one `scenic gc --dry-run` on the live state: its check names no
-holder the queue missed (`gcqueue::MISSED`: `records`, `map`), and its `report_only_bytes` is about
-the survey's.
+- **The window, lifted (the owner, 7 Nov).** Today's GC keeps a name freed within 14 days; since
+  step 6 it knows those by the queue, which knows only what was freed since 31 Oct, so a file freed
+  between 18 and 31 Oct that only a catalogue of the window named goes now rather than when the old
+  rule would have let it (2,575 files, 144 GB, on 1 Nov; 5,827 of catalogue 1063's 21,233 files
+  aren't in map 1689). The date gate (15 Nov 2026 07:12: catalogue 1066's file time plus 14 days)
+  was for a client still holding an old catalogue; the owner's call: no old browser tab or
+  long-offline Mac holds one.
+- **Hand-offs not merged.** A hand-off posted by HTTP and not merged yet keeps its files only by
+  their age (a reused file by its touch at reuse); one unmerged past that, reusing a file GC then
+  removes, would publish a name whose file is gone. Every name the `gc` job removes is told the
+  lead's coordinator first (`gc::Tell`, `POST /gc/removing`; the job's `gc::TheLead`), which marks
+  it deleted in GC's queue with the newest lease granted then (written and `fsync`ed before it
+  answers), and only then removed: the merge refuses a hand-off of an older lease bringing any of
+  them (`gcqueue::refusal`), and its targets are done again. A name told and then kept (touched as
+  it was to go, the run stopped) only costs a hand-off reusing it its redo; a lease granted after
+  the mark finds the file there or not, as before 8a (the touch, the tombstone). The lead not told
+  (no coordinator, not the lead, an older app answering 404), the job removes nothing more and
+  fails. A mark is kept `DELETIONS_KEPT_S` (7 days, `crates/store/src/map/gc.rs:33`); a hand-off
+  told later than that isn't refused, and its missing file is the pending uploads' verification's to
+  find.
 
 ## Decisions (PM, 30 Oct night)
 

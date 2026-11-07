@@ -1134,9 +1134,9 @@ impl Planner {
     }
 
     /// GC's queue in shadow (super::gcqueue; docs/maplog.md §8, step 7): the `gc` job's check of its
-    /// due set read back at each plan once written (what that GC removed or found gone marked
-    /// deleted, the newest lease then theirs; its result logged), so a deletion is marked within a
-    /// plan of the job's end. Only by the lead's agent that runs the jobs, its map's log open.
+    /// due set read back at each plan once written (what that GC found gone already marked deleted,
+    /// the newest lease then theirs: what it removed it told as it went, gc::Tell; its result
+    /// logged). Only by the lead's agent that runs the jobs, its map's log open.
     pub(super) fn shadow_checked(&self) {
         use super::gcqueue::{ShadowCheck, SHADOW_CHECK};
         let (Some(here), Some(co)) = (self.inp.map.as_ref().filter(|_| self.locked && !self.o.dry_run), &self.coord)
@@ -1148,8 +1148,7 @@ impl Planner {
         match serde_json::from_slice::<ShadowCheck>(&b) {
             Ok(c) => {
                 eprintln!("gc: {}", c.said());
-                let gone: Vec<String> = c.removed.iter().chain(&c.gone).cloned().collect();
-                here.gc.deleted(&gone, now_s(), super::gcqueue::lease(co.lease_bounds().1));
+                here.gc.deleted(&c.gone, now_s(), super::gcqueue::lease(co.lease_bounds().1));
             }
             Err(e) => eprintln!("gc: the shadow's check {} can't be read: {e}", check.display()),
         }
