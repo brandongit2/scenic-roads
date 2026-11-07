@@ -1255,11 +1255,12 @@ within the load. What the timings show:
 ### 7.2 7a, the map server off pipeline and agentcore (built, 7 Nov 2026)
 
 crates/server named pipeline's paths for crates below it (codecs, buildstore, inputs, terrain:
-~200 mentions, comments included) and agentcore's for six things; those moved below the runtime, each re-exported at
+~200 mentions, comments included) and agentcore's for seven things; those moved below the runtime, each re-exported at
 its old path, and the server names their crates:
 
 - appupdate: agentcore → jobrt (it prunes jobrt's pyenvs);
-- net: agentcore → coordwire (with axum and tokio), coordwire gaining a `TEST_START` and
+- net: agentcore → coordwire (with axum and tokio, and on buildstore now for its test flag: offload,
+  above coordwire, builds after buildstore, beside inputs and off the chain), coordwire gaining a `TEST_START` and
   `test_start` probe as the families have, so net's test-time branches (`names`, `urls`,
   `lan_urls`: none, loopback, none) are a test's in its own tests as in agentcore's;
 - the declared lead and this Mac's role (`LEAD`, `Declared`, `declared`, `Role`, `role`, `role_of`,
@@ -1276,7 +1277,8 @@ The server depends on buildstore, codecs, coordwire, inputs, jobrt and terrain; 
 dev-dependency (maplog's tests serve the lead's map routes, a download test sets the room).
 agentcore's build script says `rerun-if-changed=build.rs`, so it no longer runs again before each
 edit's compile. Cut: sha2 from server and agentcore (no user in either); agentcore's re-exports of
-appupdate, `read_member_id` and `settings::RoomTarget` (only the server named them there).
+appupdate, `read_member_id` and `settings::RoomTarget` (only the server named them there), and
+agent's `SERVER_CURSOR` and `MIRROR_CURSOR` (store's names; agent::mod reads them there).
 
 Measured as §7.1, main at 6f90a4df against this step, interleaved (this step, main; three times
 each), then the clean builds (main, 7a, 7a, main):
