@@ -431,7 +431,7 @@ impl Writer {
         if self.log.is_none() {
             let mut log = store::map::log::Log::open_watching(&self.dir, &watches(self.the_plan))
                 .with_context(|| format!("open the log in {}", self.dir.display()))?;
-            self.here.gc.open(&self.dir, &log.map(), unix(now())).context("open GC's queue")?;
+            self.here.gc.open(&self.dir, &log.map()).context("open GC's queue")?;
             if !log.map().is_empty() {
                 let (base, held) = log.replayed();
                 self.here.feed.set_marks(log.marks().clone());

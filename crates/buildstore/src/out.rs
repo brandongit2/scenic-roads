@@ -5,8 +5,8 @@
 //! the NAS, read back past the client's cache and checked against its hash, and renamed into place
 //! (`store::naming::write_atomic`). A file already there is reused as it is (one the manifest names
 //! under the same logical name with one look: `put_file`) and named in the hand-off's `reused`, which
-//! GC's queue and the merge go by (docs/maplog.md §7.4). An upload copied stays pending until `verify`
-//! checks it on the NAS itself (SHA-256 over SSH, a duty of the `gc` job).
+//! GC's queue and the merge go by (docs/maplog.md §7.4). An upload, copied or reused, stays pending
+//! until `verify` checks it on the NAS itself (SHA-256 over SSH, a duty of the `gc` job).
 //!
 //! Several steps may run at once on the lead (the agent's job and a manual one): each records
 //! its own changes and merges them into the manifest on disk under this Mac's lock (`BuildLock`)
@@ -145,8 +145,12 @@ struct Upload {
 struct Landed {
     logical: String,
     name: String,
-    /// Its SHA-256, when it was copied (not one already there): its check is pending.
+    /// Its SHA-256, its check pending: copied, or found there already and taken as it was (a
+    /// reuse is checked as an upload is: nothing touches it, docs/maplog.md §7.4). None: this run's
+    /// own upload again, pending already.
     sha: Option<String>,
+    /// Whether it was copied (else found there already).
+    copied: bool,
     size: u64,
     /// How long its copy took (ms; 0: none made).
     ms: u64,
@@ -431,7 +435,14 @@ impl Out {
         if self.uploaded.get(logical) == Some(&name) {
             // Uploaded under it by this very run already: nothing to look at again.
             std::fs::remove_file(local).ok();
-            return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size, ms: 0 }));
+            return Ok(self.landed(Landed {
+                logical: logical.to_string(),
+                name,
+                sha: None,
+                copied: false,
+                size,
+                ms: 0,
+            }));
         }
         if self.manifest.get(logical) == Some(&name) {
             // The records name this very file under it: one look (task #449: heritage-sites'
@@ -441,12 +452,19 @@ impl Out {
             let dest = self.root.join(&name);
             if dest.metadata().is_ok_and(|m| m.len() == size) {
                 std::fs::remove_file(local).ok();
-                return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size, ms: 0 }));
+                return Ok(self.landed(Landed {
+                    logical: logical.to_string(),
+                    name,
+                    sha: Some(sha),
+                    copied: false,
+                    size,
+                    ms: 0,
+                }));
             }
         }
         let landed = upload_hashed(&self.root, logical, ext, local, (h, sha), size)?;
         self.uploaded.insert(landed.logical.clone(), landed.name.clone());
-        if landed.sha.is_some() {
+        if landed.copied {
             crate::costin::wrote(&self.root.join(&landed.name), landed.size, landed.ms);
         }
         Ok(self.landed(landed))
@@ -481,15 +499,13 @@ impl Out {
     /// pending when it was copied, its bytes counted to the phase it's taken in (its target's cost
     /// line: `put_file` now, `claim_written` for one put off).
     fn landed(&mut self, l: Landed) -> String {
-        let made = if l.sha.is_some() { l.size } else { 0 };
+        let made = if l.copied { l.size } else { 0 };
         jobrt::timings::count(made, 1);
-        match l.sha {
-            Some(sha) => {
-                self.pending.insert(l.name.clone(), sha);
-            }
-            None => {
+        if let Some(sha) = l.sha {
+            if !l.copied {
                 self.reused.insert(l.name.clone());
             }
+            self.pending.insert(l.name.clone(), sha);
         }
         self.sizes.insert(l.name.clone(), l.size);
         self.manifest.insert(l.logical.clone(), l.name.clone());
@@ -608,7 +624,7 @@ impl Out {
             self.later.sizes.pop_front();
             let seq = self.later.landed;
             self.later.landed += 1;
-            if l.sha.is_some() {
+            if l.copied {
                 // (Its NAS file counted made as it lands, its bytes as store::naming wrote them;
                 // its cost line's as its target claims it.)
                 self.root.join(&l.name).count_made(l.size, l.ms);
@@ -670,9 +686,9 @@ impl Out {
         self.sizes.insert(name.clone(), bytes.len() as u64);
         if existed {
             self.reused.insert(name.clone());
-        } else {
-            self.pending.insert(name.clone(), format!("{:x}", sha2::Sha256::digest(bytes)));
         }
+        // (Its check pending whether copied or found there: a reuse is checked as an upload is.)
+        self.pending.insert(name.clone(), format!("{:x}", sha2::Sha256::digest(bytes)));
         Ok(name)
     }
 
@@ -980,16 +996,16 @@ fn upload_hashed(
 ) -> Result<Landed> {
     let name = store::naming::content_name(logical, &h, ext);
     let dest = root.join(&name);
-    // (There before: reused, nothing written to it. Removed between the look and the write, it's
-    // written afresh and still taken as reused: its check isn't pending, and the merge refuses the
-    // hand-off, GC having removed it under its lease, so the redo uploads it with its check.)
+    // (There before: reused, nothing written to it, its check pending as an upload's. Removed
+    // between the look and the write, it's written afresh and still taken as reused: the merge
+    // refuses the hand-off, GC having removed it under its lease.)
     let existed = dest.exists();
     let t = std::time::Instant::now();
     let got = store::naming::write_atomic_hashed(root, logical, ext, local, &h, size)?;
     anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
     std::fs::remove_file(local).ok();
     let ms = t.elapsed().as_millis() as u64;
-    Ok(Landed { logical: logical.to_string(), name, sha: (!existed).then_some(sha), size, ms })
+    Ok(Landed { logical: logical.to_string(), name, sha: Some(sha), copied: !existed, size, ms })
 }
 
 /// `upload`, tried again after each of `waits` while it fails transiently
@@ -1198,6 +1214,7 @@ mod tests {
             logical: "base/6-1-1".into(),
             name: "base/6-1-1.0123456789abcdef.base".into(),
             sha: None,
+            copied: true,
             size: 400 << 20,
             ms: 0,
         };
@@ -1246,7 +1263,7 @@ mod tests {
             std::fs::metadata(root.join(&a)).unwrap().modified().unwrap() <= old + std::time::Duration::from_secs(1),
             "not touched"
         );
-        assert!(out.reused.contains(&a));
+        assert!(out.reused.contains(&a) && out.pending.contains_key(&a), "its check pending as an upload's");
         // Gone from the NAS (a GC after an old snapshot): put back.
         std::fs::remove_file(root.join(&a)).unwrap();
         let mut out = open();
@@ -1376,7 +1393,8 @@ mod tests {
 
     /// A file there already is reused as it is, its time left (GC goes by its queue, not by
     /// files' times: docs/maplog.md §7.4), and handed off as `reused`, which the merge checks
-    /// against GC's deletions; it's no upload of this run's, so no check of it is pending.
+    /// against GC's deletions; its check is pending as an upload's (the uploads' verification finds
+    /// one missing, as it does an upload).
     #[test]
     fn a_file_reused_is_handed_off_as_reused_untouched() {
         let d = tempfile::tempdir().unwrap();
@@ -1401,8 +1419,7 @@ mod tests {
             std::fs::metadata(&dest).unwrap().modified().unwrap() <= old + std::time::Duration::from_secs(1),
             "not touched"
         );
-        assert!(out.pending.is_empty(), "reused, not uploaded");
-        assert!(out.reused.contains(&name));
+        assert!(out.reused.contains(&name) && out.pending.contains_key(&name), "reused, its check pending");
         // The gate's copies (`store_bytes`) likewise.
         let copy = out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap();
         out.pending.clear();
@@ -1413,7 +1430,7 @@ mod tests {
             std::fs::metadata(&cdest).unwrap().modified().unwrap() <= old + std::time::Duration::from_secs(1),
             "not touched"
         );
-        assert!(out.pending.is_empty() && out.reused.contains(&copy));
+        assert!(out.pending.contains_key(&copy) && out.reused.contains(&copy));
         // Gone (GC took it): written again, there, its check pending.
         std::fs::remove_file(&cdest).unwrap();
         out.reused.clear();

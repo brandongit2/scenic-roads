@@ -212,6 +212,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         ended(s, &gone, "its member's beat didn't list it: it doesn't hold it");
         a.released = released;
     }
+    owes(s, b);
     // (Its capacity, the one its asks carry, fresher; its running jobs' threads re-decided on it.)
     if let Some(cap) = b.cap.clone() {
         if let Some(w) = s.workers.get_mut(&b.member) {
@@ -220,6 +221,55 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         a.threads = s.regrant(&b.member, cap);
     }
     a
+}
+
+/// GC's queue told what each member may still hand off under (docs/maplog.md §7.4): the leases
+/// granted since (and every one out now) owed to their members, the lead's own Mac's but (its jobs
+/// hand off from its memory); the members the lead knows and its oldest job's lease. A deletion is
+/// kept for the merge's refusal while any lease up to its own is owed (store::map::gc::GcQueue).
+pub fn tell_gc(s: &mut Shared) {
+    let granted = s.leases.take_granted();
+    let Some(q) = s.gc.clone() else { return };
+    let me = crate::agent::host_of(&s.leases.me).to_string();
+    let mut oldest: Option<store::map::gc::Lease> = None;
+    for (worker, term, n) in granted {
+        let host = crate::agent::host_of(&worker);
+        let l = store::map::gc::Lease { term, n };
+        oldest = oldest.min(Some(l)).or(Some(l));
+        if host != me {
+            q.granted(host, l);
+        }
+    }
+    let known = s.keep.members().into_keys().filter(|m| *m != me).collect();
+    q.leases(known, oldest);
+}
+
+/// `b`'s member's beat said to GC's queue (`tell_gc`): when it speaks of its leases and its
+/// hand-offs, it owes the leases it holds, those it keeps a hand-off of (`Beat::handoffs`,
+/// `<day>/<lease>`), and those the lead still holds for it (one granted after its list); an older
+/// app's are owed as granted until its owner releases it.
+fn owes(s: &mut Shared, b: &Beat) {
+    tell_gc(s);
+    let Some(q) = s.gc.clone() else { return };
+    let speaks = |w: &str| b.speaks.iter().any(|x| x == w);
+    if !(speaks(SPEAKS) && speaks(super::beats::HANDOFF)) {
+        return;
+    }
+    let term = s.leases.term;
+    let mut leases: BTreeSet<store::map::gc::Lease> = s
+        .leases
+        .take_granted()
+        .into_iter()
+        .filter(|(w, _, _)| crate::agent::host_of(w) == b.member)
+        .map(|(_, term, n)| store::map::gc::Lease { term, n })
+        .collect();
+    leases.extend(b.held.iter().map(|&n| store::map::gc::Lease { term, n }));
+    for k in &b.handoffs {
+        if let Some(l) = k.rsplit('/').next().and_then(|l| l.parse::<crate::pool::journal::LeaseId>().ok()) {
+            leases.insert(crate::agent::gcqueue::lease(l));
+        }
+    }
+    q.beat(&b.member, leases);
 }
 
 /// The lead's line for its members' menu bars (`Answer::lead`): None until its agent says it.
@@ -244,6 +294,11 @@ pub fn release(s: &mut Shared, member: &str) -> Vec<lease::Lease> {
         .leases
         .drop_where(|l| matches!(l.work, lease::Work::Job { .. }) && crate::agent::host_of(&l.worker) == member);
     ended(s, &gone, "released by the owner");
+    // (Gone for good: it hands nothing off now, GC's queue keeps no deletion for it.)
+    tell_gc(s);
+    if let Some(q) = s.gc.clone() {
+        q.beat(member, BTreeSet::new());
+    }
     gone
 }
 

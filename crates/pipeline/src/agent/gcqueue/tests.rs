@@ -40,7 +40,7 @@ fn a_name_freed_and_taken_again_leaves_the_queue() {
     let d = tempfile::tempdir().unwrap();
     let m1 = map(1, &[("a", "a.1.pack"), ("b", "b.1.pack"), ("c", "c.1.pack")]);
     let q = GcQueue::default();
-    q.open(d.path(), &m1, T0).unwrap();
+    q.open(d.path(), &m1).unwrap();
     super::records(&q, &records(1, &[("c", "c.1.pack")]), T0);
     // (Batch 2 renames a, b and c: their old names freed; c's still the records'.)
     let (b2, m2) = to(&m1, &[("a", "a.2.pack"), ("b", "b.2.pack"), ("c", "c.2.pack")], 2);
@@ -60,7 +60,7 @@ fn a_name_freed_and_taken_again_leaves_the_queue() {
     assert!(q.queued("a.2.pack").is_some());
     // A lead restart: the same queue from its file.
     let back = GcQueue::default();
-    back.open(d.path(), &q_map(&m2, &b3), T0 + 40).unwrap();
+    back.open(d.path(), &q_map(&m2, &b3)).unwrap();
     for n in ["a.1.pack", "b.1.pack", "c.1.pack", "a.2.pack"] {
         assert_eq!(back.queued(n), q.queued(n), "{n}");
     }
@@ -79,7 +79,7 @@ fn due_waits_for_every_cursor_the_grace_and_older_leases() {
     let d = tempfile::tempdir().unwrap();
     let m1 = map(1, &[("a", "a.1.pack")]);
     let q = GcQueue::default();
-    q.open(d.path(), &m1, T0).unwrap();
+    q.open(d.path(), &m1).unwrap();
     let (b2, _) = to(&m1, &[("a", "a.2.pack")], 2);
     q.batch(&b2, T0);
     let cur = |seq: u64, heard: u64| Cursor { seq, heard, at: heard, ..Default::default() };
@@ -134,7 +134,7 @@ fn entry(n: u64, content: &str) -> Entry {
 fn a_reuse_of_a_deleted_name_is_refused_and_redone() {
     let d = tempfile::tempdir().unwrap();
     let q = GcQueue::default();
-    q.open(d.path(), &map(1, &[]), T0).unwrap();
+    q.open(d.path(), &map(1, &[])).unwrap();
     let name = "base/6-1-1.k0.base";
     super::records(&q, &records(1, &[]), T0);
     // (Told and removed while leases up to 2-7 were granted.)
@@ -160,7 +160,7 @@ fn a_reuse_of_a_deleted_name_is_refused_and_redone() {
     // A name not deleted: no refusal. And the deletion survives a restart.
     assert!(refusal(&q, &entry(3, "base/6-1-1.k1.base"), T0 + 150).is_none());
     let back = GcQueue::default();
-    back.open(d.path(), &map(1, &[]), T0 + 200).unwrap();
+    back.open(d.path(), &map(1, &[])).unwrap();
     assert!(refusal(&back, &entry(5, name), T0 + 200).is_some());
     assert!(refusal(&back, &entry(8, name), T0 + 200).is_none());
 }
@@ -176,7 +176,7 @@ fn a_reuse_of_a_name_being_removed_is_refused_and_a_merge_holds_its_names() {
     let d = tempfile::tempdir().unwrap();
     let m1 = map(1, &[("a", "a.1.pack"), ("b", "b.1.pack"), ("c", "c.1.pack")]);
     let q = GcQueue::default();
-    q.open(d.path(), &m1, T0).unwrap();
+    q.open(d.path(), &m1).unwrap();
     super::records(&q, &records(1, &[]), T0);
     let (b2, _) = to(&m1, &[], 2);
     q.batch(&b2, T0);
@@ -217,7 +217,7 @@ fn a_reuse_of_a_name_being_removed_is_refused_and_a_merge_holds_its_names() {
 fn an_older_member_s_hand_off_without_reused_is_refused_by_its_changes() {
     let d = tempfile::tempdir().unwrap();
     let q = GcQueue::default();
-    q.open(d.path(), &map(1, &[]), T0).unwrap();
+    q.open(d.path(), &map(1, &[])).unwrap();
     super::records(&q, &records(1, &[]), T0);
     let name = "base/6-1-1.k0.base";
     let old: Handoff = serde_json::from_value(json!({
@@ -248,7 +248,7 @@ fn a_chunk_told_again_keeps_what_is_held_now() {
     let d = tempfile::tempdir().unwrap();
     let m1 = map(1, &[("a", "a.1.pack"), ("b", "b.1.pack"), ("c", "c.1.pack"), ("e", "e.1.pack")]);
     let q = GcQueue::default();
-    q.open(d.path(), &m1, T0).unwrap();
+    q.open(d.path(), &m1).unwrap();
     super::records(&q, &records(1, &[]), T0);
     let (b2, m2) = to(&m1, &[], 2);
     q.batch(&b2, T0);
@@ -258,7 +258,7 @@ fn a_chunk_told_again_keeps_what_is_held_now() {
     assert_eq!(q.chunk(&h, l1, 3, &|_| true).unwrap(), ["a.1.pack", "b.1.pack", "c.1.pack"]);
     // (Killed; the lead restarts, its records naming b now.)
     let back = GcQueue::default();
-    back.open(d.path(), &m2, T0 + GRACE_S).unwrap();
+    back.open(d.path(), &m2).unwrap();
     assert_eq!(back.removing_now(), ["a.1.pack", "b.1.pack", "c.1.pack"]);
     super::records(&back, &records(2, &[("b", "b.1.pack")]), T0 + GRACE_S);
     assert_eq!(back.chunk(&h, l2, 3, &|_| true).unwrap(), ["a.1.pack", "c.1.pack", "e.1.pack"]);
@@ -269,7 +269,7 @@ fn a_chunk_told_again_keeps_what_is_held_now() {
     assert!(refusal(&back, &reuse, T0 + GRACE_S).is_some(), "a hand-off of an older lease bringing it");
     // (And across a restart.)
     let again = GcQueue::default();
-    again.open(d.path(), &m2, T0 + GRACE_S).unwrap();
+    again.open(d.path(), &m2).unwrap();
     assert!(again.deleted_under([&b].into_iter(), l1).is_some() && !again.removing_now().contains(&b));
     assert!(
         back.deleted_under([&"a.1.pack".to_string()].into_iter(), store::map::gc::Lease { term: 2, n: 8 }).is_some(),
@@ -281,7 +281,7 @@ fn a_chunk_told_again_keeps_what_is_held_now() {
     let ace: Vec<String> = ["a.1.pack", "c.1.pack", "e.1.pack"].map(String::from).to_vec();
     back.gone(&[], &ace, T0 + GRACE_S, l2).unwrap();
     let reopened = GcQueue::default();
-    reopened.open(d.path(), &m2, T0 + GRACE_S).unwrap();
+    reopened.open(d.path(), &m2).unwrap();
     for q in [&back, &reopened] {
         let marked = |n: &str| q.deleted_under([&n.to_string()].into_iter(), l1).is_some();
         assert!(marked("a.1.pack") && marked("c.1.pack") && !marked("e.1.pack"));
@@ -316,7 +316,7 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     assert!(e.contains("503") || e.contains("no GC queue"), "{e}");
     std::fs::create_dir_all(d.path().join("maplog")).unwrap();
     let q = std::sync::Arc::new(GcQueue::default());
-    q.open(&d.path().join("maplog"), &map(1, &[]), T0).unwrap();
+    q.open(&d.path().join("maplog"), &map(1, &[])).unwrap();
     c.set_term(3);
     c.set_maplog(store::map::feed::Feed::new(), q.clone());
     // (The records not seen yet, a holder unknown: nothing marked, the job told so.)
@@ -333,7 +333,7 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     let redo = Entry { lease: LeaseId { term: 4, n: 1 }, ..entry(8, name) };
     assert!(refusal(&q, &redo, T0).is_none());
     let back = GcQueue::default();
-    back.open(&d.path().join("maplog"), &map(1, &[]), T0).unwrap();
+    back.open(&d.path().join("maplog"), &map(1, &[])).unwrap();
     assert!(refusal(&back, &reused, T0).is_some(), "kept on the lead's disk");
     // The chunks and the orphans by HTTP alike: the records seen, nothing due, nothing queued.
     use crate::agent::gc::ChunkAsk;
@@ -352,7 +352,7 @@ fn the_lead_holds_back_what_is_held_as_gc_tells_it() {
     let d = tempfile::tempdir().unwrap();
     let m1 = map(1, &[("a", "a.1.pack"), ("b", "b.1.pack"), ("c", "c.1.pack")]);
     let q = GcQueue::default();
-    q.open(d.path(), &m1, T0).unwrap();
+    q.open(d.path(), &m1).unwrap();
     super::records(&q, &records(1, &[("r", "r.1.pack")]), T0);
     let (b2, _) = to(&m1, &[("a", "a.1.pack"), ("c", "c.1.pack"), ("n", "n.1.pack")], 2);
     q.batch(&b2, T0);
@@ -391,7 +391,7 @@ fn a_torn_last_line_is_dropped() {
     let d = tempfile::tempdir().unwrap();
     let m1 = map(1, &[("a", "a.1.pack"), ("b", "b.1.pack")]);
     let q = GcQueue::default();
-    q.open(d.path(), &m1, T0).unwrap();
+    q.open(d.path(), &m1).unwrap();
     super::records(&q, &records(1, &[]), T0);
     let (b2, m2) = to(&m1, &[("a", "a.2.pack"), ("b", "b.1.pack")], 2);
     q.batch(&b2, T0);
@@ -401,12 +401,84 @@ fn a_torn_last_line_is_dropped() {
     torn.extend_from_slice(b"{\"q\":\"b.1.pa");
     std::fs::write(&p, &torn).unwrap();
     let back = GcQueue::default();
-    back.open(d.path(), &m2, T0).unwrap();
+    back.open(d.path(), &m2).unwrap();
     assert!(back.queued("a.1.pack").is_some());
     assert_eq!(std::fs::read(&p).unwrap(), whole);
     let mut bad = whole.clone();
     bad[2] = b'#';
     bad.extend_from_slice(b"{\"taken\":\"x\"}\n");
     std::fs::write(&p, &bad).unwrap();
-    assert!(GcQueue::default().open(d.path(), &m2, T0).is_err());
+    assert!(GcQueue::default().open(d.path(), &m2).is_err());
+}
+
+/// docs/maplog.md §7.4: a member away 10 days (the M4 travelling) with a hand-off not yet told,
+/// whose job reused a name GC then removed: the deletion is kept for the merge as long as a lease
+/// older than it may still be handed off (owed: granted to that member, not left out of a beat of
+/// its since), however long, across a lead restart; its hand-off is refused and the redo merges.
+/// Once no lease that old is owed (its member back, its hand-off merged and no longer listed), the
+/// deletion is let go.
+#[test]
+fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
+    use crate::coord::{beats, held, lease::Work};
+    let d = tempfile::tempdir().unwrap();
+    let (c, _port) = crate::coord::start_for_test(&d.path().join("lead"), "m1", "");
+    let dir = d.path().join("maplog");
+    std::fs::create_dir_all(&dir).unwrap();
+    let q = std::sync::Arc::new(GcQueue::default());
+    q.open(&dir, &map(1, &[])).unwrap();
+    c.set_term(3);
+    c.set_maplog(store::map::feed::Feed::new(), q.clone());
+    super::records(&q, &records(1, &[]), T0);
+    let beat = |m: &str, held: &[u64], handoffs: &[String]| held::Beat {
+        member: m.into(),
+        speaks: vec![held::SPEAKS.into(), beats::HANDOFF.into()],
+        held: held.iter().copied().collect(),
+        handoffs: handoffs.to_vec(),
+        ..Default::default()
+    };
+    let grant = |worker: &str| {
+        let mut s = c.shared.lock().unwrap();
+        let now = s.now();
+        let work = Work::Job { step: "unit".into(), targets: vec![("6-1-1".into(), "k5".into())] };
+        s.leases.grant_at(worker, work, now, T0)
+    };
+    // m4's job holds a lease; it says so, and goes away. m2 stays, beating.
+    let id = grant("m4");
+    c.member_beat(&beat("m4", &[id], &[]));
+    c.member_beat(&beat("m2", &[], &[]));
+    // Its job reused `name`, which GC removes a day later (the mark's lease the newest then).
+    let name = "base/6-1-1.k0.base";
+    let none = BTreeMap::new();
+    let mark = lease(c.lease_bounds().1);
+    let h = Holders { cursors: &none, oldest_lease: None, now: T0 + 86400 };
+    assert!(q.removing(&[name.to_string()], &h, mark).unwrap().is_empty());
+    q.gone(&[name.to_string()], &[], T0 + 86400, mark).unwrap();
+    // Away: its lease released by the lead (12 h unheard), m2 beating all the while.
+    c.shared.lock().unwrap().leases.drop_where(|l| l.id == id);
+    for _ in 0..3 {
+        c.member_beat(&beat("m2", &[], &[]));
+    }
+    assert_eq!(q.deletions_kept(), 1, "kept: m4 may still hand off under its lease");
+    // A lead restart keeps what m4 owes.
+    let back = GcQueue::default();
+    back.open(&dir, &map(1, &[])).unwrap();
+    back.leases(["m2".to_string(), "m4".to_string()].into(), None);
+    assert_eq!(back.deletions_kept(), 1);
+    // 10 days on, m4 back: its hand-off (reusing `name`) refused, its targets done again.
+    let ten = T0 + 10 * 86400;
+    let reused = Entry {
+        lease: LeaseId { term: 3, n: id },
+        handoff: Handoff { reused: vec![name.to_string()], ..Default::default() },
+        ..entry(5, "base/6-1-1.k5.base")
+    };
+    let key = reused.key().unwrap();
+    c.member_beat(&beat("m4", &[], std::slice::from_ref(&key)));
+    let why = refusal(&q, &reused, ten).expect("refused");
+    assert!(why.contains(name), "{why}");
+    let redo = Entry { lease: LeaseId { term: 3, n: grant("m2") }, ..reused.clone() };
+    assert!(refusal(&q, &redo, ten).is_none(), "the redo merges");
+    assert_eq!(q.deletions_kept(), 1, "m4 still lists its hand-off");
+    // Its hand-off answered, m4 lists nothing: no lease as old as the deletion is owed, let go.
+    c.member_beat(&beat("m4", &[], &[]));
+    assert_eq!(q.deletions_kept(), 0);
 }

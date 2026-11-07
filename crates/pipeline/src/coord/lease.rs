@@ -295,6 +295,10 @@ pub struct Leases {
     /// (docs/coordination.md §6; crate::coord::held): never lapsing, released when their beat leaves
     /// them out, after 12 h unheard, or by the owner.
     pub by_word: BTreeSet<String>,
+    /// The jobs' leases granted since the coordinator last took them (`take_granted`: worker, term,
+    /// id), for GC's queue: each may be handed off under until its member says otherwise
+    /// (crate::coord::held::tell_gc). Not saved: a lease out at a restart is among those loaded.
+    granted: Vec<(String, u64, u64)>,
 }
 
 /// What's saved: the next id (ids never repeat across restarts), the jobs' leases and the holds.
@@ -328,6 +332,7 @@ impl Leases {
             cancels: BTreeMap::new(),
             cancelled: Vec::new(),
             by_word: BTreeSet::new(),
+            granted: Vec::new(),
         }
     }
 
@@ -563,6 +568,9 @@ impl Leases {
     pub fn grant_at(&mut self, worker: &str, work: Work, now: Instant, granted_at: u64) -> u64 {
         let id = self.next;
         self.next += 1;
+        if matches!(work, Work::Job { .. }) {
+            self.granted.push((worker.to_string(), self.term, id));
+        }
         self.by_id.insert(
             id,
             Lease {
@@ -742,6 +750,19 @@ impl Leases {
     pub fn expire(&mut self, now: Instant) -> Vec<Lease> {
         let gone: Vec<u64> = self.by_id.values().filter(|l| !self.lasts(l, now)).map(|l| l.id).collect();
         self.drop_where(|l| gone.contains(&l.id))
+    }
+
+    /// The jobs' leases granted since the last take (worker, term, id), and every job's lease held
+    /// now: what GC's queue keeps owed (crate::coord::held::tell_gc).
+    pub fn take_granted(&mut self) -> Vec<(String, u64, u64)> {
+        let mut v = std::mem::take(&mut self.granted);
+        v.extend(
+            self.by_id
+                .values()
+                .filter(|l| matches!(l.work, Work::Job { .. }))
+                .map(|l| (l.worker.clone(), l.term, l.id)),
+        );
+        v
     }
 
     /// Every live lease, for the status.

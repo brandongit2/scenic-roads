@@ -1608,7 +1608,7 @@ mod tests {
         let all: Vec<&str> = freed.iter().map(String::as_str).chain(kept.iter().copied()).collect();
         let m1 = map_of(1, &all);
         let q = GcQueue::default();
-        q.open(dir, &m1, at).unwrap();
+        q.open(dir, &m1).unwrap();
         q.records((2, 1), std::iter::empty(), at);
         let m2 = map_of(2, kept);
         q.batch(&m1.batch_to(m2.entries(), 2, "t2", "", ""), at);
@@ -1754,7 +1754,7 @@ mod tests {
         assert!(due[kill_at..].iter().all(|f| root.join(f).exists()));
         // The lead back from its disk: the second chunk still told, the first gone.
         let back = GcQueue::default();
-        back.open(q_dir.path(), &m2, now_s()).unwrap();
+        back.open(q_dir.path(), &m2).unwrap();
         back.records((2, 1), std::iter::empty(), now_s());
         assert_eq!(back.removing_now(), due[CHUNK_NAMES..], "the chunk it was in");
         assert_eq!(back.len(), 50);
@@ -2049,7 +2049,7 @@ mod tests {
         // (The lead's queue: its records hold the copy a hand-off just brought, `c`.)
         let q_dir = tempfile::tempdir().unwrap();
         let q = GcQueue::default();
-        q.open(q_dir.path(), &map_of(1, &[]), now_s()).unwrap();
+        q.open(q_dir.path(), &map_of(1, &[])).unwrap();
         let held = format!("{u}/c.9999999999999990.jsonl");
         q.records((2, 1), [held.clone()].iter(), now_s());
         let lead = InProcess { q: &q, now: Cell::new(now_s()) };

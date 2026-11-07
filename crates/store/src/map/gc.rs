@@ -28,10 +28,6 @@ pub const GRACE_S: u64 = 2 * 86400;
 /// A client unheard this long no longer holds anything: a laptop away a month doesn't hold GC; on
 /// its return it resets from the snapshot (PM's decision 3, 30 Oct; docs/maplog.md §5.4).
 pub const CURSOR_TTL_S: u64 = 7 * 86400;
-/// How long a deletion is kept for the merge's refusal: as long as a client is kept, the same
-/// bound on a member's absence (a hand-off told later than that, of a lease granted before the
-/// deletion, isn't refused; its files' absence is the pending uploads' verification's to find).
-pub const DELETIONS_KEPT_S: u64 = CURSOR_TTL_S;
 
 /// A lease's id as the pool numbers them (pipeline's `pool::journal::LeaseId`): its term, then its
 /// number there; later grants are greater.
@@ -89,6 +85,16 @@ enum Line {
     Kept {
         kept: Vec<String>,
     },
+    /// A member's beat (`GcQueue::beat`): the leases it may still hand off, all of them (seen).
+    Owed {
+        owed: String,
+        leases: Vec<Lease>,
+    },
+    /// A lease granted to a member: it may hand off under it until a beat of its says otherwise.
+    Granted {
+        granted: String,
+        lease: Lease,
+    },
 }
 
 /// What holds a name besides the map and the records, as `due` is asked.
@@ -122,8 +128,17 @@ struct Inner {
     /// Those of them told more than once (a chunk told again: the job before killed, or its gone
     /// not heard), which it may have removed: never released unmarked, only kept.
     retold: HashSet<String>,
-    /// Deleted (told) names: when, and the newest lease granted then (or when gone).
+    /// Deleted (told) names: when, and the newest lease granted then (or when gone). Each kept
+    /// while a lease up to its own may still be handed off (`floor`).
     deleted: HashMap<String, (u64, Lease)>,
+    /// The leases each member may still hand off under (granted to it, and not since left out of
+    /// a beat of its that listed neither it held nor a hand-off of it kept), and the members a beat
+    /// has said so of since the queue began keeping them (`seen`).
+    owed: BTreeMap<String, BTreeSet<Lease>>,
+    seen: BTreeSet<String>,
+    /// As the lead's coordinator last said (`GcQueue::leases`; memory alone, None until then): the
+    /// members it knows, and the oldest job's lease it has now.
+    known: Option<(BTreeSet<String>, Option<Lease>)>,
     /// The map's content names and its `seq`.
     map: HashSet<String>,
     map_seq: u64,
@@ -231,13 +246,40 @@ impl Inner {
                     self.retold.remove(&n);
                 }
             }
+            Line::Owed { owed, leases } => {
+                self.owed.insert(owed.clone(), leases.into_iter().collect());
+                self.seen.insert(owed);
+            }
+            Line::Granted { granted, lease } => {
+                self.owed.entry(granted).or_default().insert(lease);
+            }
         }
     }
 
+    /// The oldest lease any member may still hand off under (`owed`, and the coordinator's
+    /// leases): Some(None) when none may; None while that isn't known (the coordinator hasn't said
+    /// since the open, or a member it knows hasn't beaten since the queue began keeping what each
+    /// owes: it may hold any lease from before).
+    fn lease_floor(&self) -> Option<Option<Lease>> {
+        let (known, live) = self.known.as_ref()?;
+        if known.iter().any(|m| !self.seen.contains(m)) {
+            return None;
+        }
+        Some(self.owed.values().flatten().copied().chain(*live).min())
+    }
+
+    /// The deletions no lease that may still be handed off is as old as (`lease_floor`) let go: a hand-off
+    /// they'd refuse can't come any more (but those being removed, or kept and still queued).
+    fn prune(&mut self) {
+        let Some(floor) = self.lease_floor() else { return };
+        let (removing, queued) = (&self.removing, &self.queued);
+        self.deleted
+            .retain(|n, (_, l)| removing.contains(n) || queued.contains_key(n) || floor.is_some_and(|f| f <= *l));
+    }
+
     /// The lines made written and `fsync`ed (once per change); the file rewritten whole once it
-    /// has grown to four times what it holds, deletions older than `DELETIONS_KEPT_S` let go (but
-    /// those being removed). Whether they're on the disk.
-    fn flush(&mut self, now: u64) -> bool {
+    /// has grown to four times what it holds. Whether they're on the disk.
+    fn flush(&mut self) -> bool {
         if self.out.is_empty() {
             return true;
         }
@@ -258,9 +300,8 @@ impl Inner {
             eprintln!("maplog: GC's queue: can't write {}: {e:#} (held in memory)", path.display());
             self.file = None;
         }
-        if self.lines > 4 * (self.queued.len() + self.deleted.len()) + 10_000 {
-            let removing = &self.removing;
-            self.deleted.retain(|n, (at, _)| removing.contains(n) || now.saturating_sub(*at) < DELETIONS_KEPT_S);
+        if self.lines > 4 * (self.queued.len() + self.deleted.len() + self.owed.len()) + 10_000 {
+            self.prune();
             if let Err(e) = self.rewrite(&path) {
                 eprintln!("maplog: GC's queue: can't rewrite {}: {e:#}", path.display());
             }
@@ -349,6 +390,21 @@ impl Inner {
                 b.push(b'\n');
             }
         }
+        for (m, leases) in &self.owed {
+            let lines = if self.seen.contains(m) {
+                vec![Line::Owed { owed: m.clone(), leases: leases.iter().copied().collect() }]
+            } else {
+                leases.iter().map(|l| Line::Granted { granted: m.clone(), lease: *l }).collect()
+            };
+            for l in lines {
+                serde_json::to_writer(&mut b, &l)?;
+                b.push(b'\n');
+            }
+        }
+        for m in self.seen.iter().filter(|m| !self.owed.contains_key(*m)) {
+            serde_json::to_writer(&mut b, &Line::Owed { owed: m.clone(), leases: Vec::new() })?;
+            b.push(b'\n');
+        }
         self.file = None;
         crate::seglog::write_durable(path, &b)?;
         self.lines = b.iter().filter(|&&c| c == b'\n').count();
@@ -364,7 +420,7 @@ impl GcQueue {
     /// Opens the queue in `dir` (the map log's folder), its holders' index started from `map`.
     /// What was queued in memory before (a records save seen first) is kept and written. A last
     /// line cut short (a write stopped midway) is dropped; another that doesn't read is an error.
-    pub fn open(&self, dir: &Path, map: &Map, now: u64) -> Result<()> {
+    pub fn open(&self, dir: &Path, map: &Map) -> Result<()> {
         let path = dir.join(FILE);
         let text = match std::fs::read(&path) {
             Ok(b) => b,
@@ -410,7 +466,7 @@ impl GcQueue {
         for n in held {
             g.take(&n);
         }
-        g.flush(now);
+        g.flush();
         Ok(())
     }
 
@@ -434,7 +490,7 @@ impl GcQueue {
             g.map.remove(n);
             g.queue(n, b.seq, now);
         }
-        g.flush(now);
+        g.flush();
     }
 
     /// The records as saved now (`id`: their term and number; `names`: the content names they
@@ -470,7 +526,7 @@ impl GcQueue {
         for (n, at) in std::mem::take(&mut g.brought) {
             g.queue(&n, seq, at);
         }
-        g.flush(now);
+        g.flush();
     }
 
     /// The names due now (sorted): none while the records haven't been seen (a holder unknown),
@@ -523,7 +579,7 @@ impl GcQueue {
         if !out.is_empty() {
             g.put(Line::Removing { removing: out.clone(), at: h.now, lease });
         }
-        anyhow::ensure!(g.flush(h.now), "the marks aren't on the lead's disk");
+        anyhow::ensure!(g.flush(), "the marks aren't on the lead's disk");
         Ok(out)
     }
 
@@ -539,7 +595,7 @@ impl GcQueue {
         if !free.is_empty() {
             g.put(Line::Removing { removing: free, at: h.now, lease });
         }
-        anyhow::ensure!(g.flush(h.now), "the marks aren't on the lead's disk");
+        anyhow::ensure!(g.flush(), "the marks aren't on the lead's disk");
         Ok(held)
     }
 
@@ -558,7 +614,7 @@ impl GcQueue {
         if !released.is_empty() {
             g.put(Line::Released { released });
         }
-        anyhow::ensure!(g.flush(at), "what went isn't on the lead's disk");
+        anyhow::ensure!(g.flush(), "what went isn't on the lead's disk");
         Ok(())
     }
 
@@ -575,7 +631,7 @@ impl GcQueue {
             g.queue(n, seq, now);
         }
         let added = g.queued.len() - before;
-        g.flush(now);
+        g.flush();
         Ok(added)
     }
 
@@ -604,7 +660,7 @@ impl GcQueue {
             g.brought.insert(n.clone(), now);
             g.take(n);
         }
-        g.flush(now);
+        g.flush();
         None
     }
 
@@ -620,6 +676,45 @@ impl GcQueue {
             }
         }
         None
+    }
+
+    /// Lease `lease` granted to `member`: owed until a beat of its leaves it out.
+    pub fn granted(&self, member: &str, lease: Lease) {
+        let mut g = self.lock();
+        if g.owed.get(member).is_some_and(|o| o.contains(&lease)) {
+            return;
+        }
+        g.put(Line::Granted { granted: member.to_string(), lease });
+        g.flush();
+    }
+
+    /// `member`'s beat: `leases`, every lease it may still hand off under (those it
+    /// holds, those it keeps a hand-off of, those the coordinator holds for it), all it owes now.
+    /// Its owner's release of it (gone for good) says none.
+    pub fn beat(&self, member: &str, leases: BTreeSet<Lease>) {
+        let mut g = self.lock();
+        let empty = BTreeSet::new();
+        if g.seen.contains(member) && g.owed.get(member).unwrap_or(&empty) == &leases {
+            return;
+        }
+        g.put(Line::Owed { owed: member.to_string(), leases: leases.into_iter().collect() });
+        g.owed.retain(|_, o| !o.is_empty());
+        g.prune();
+        g.flush();
+    }
+
+    /// What the lead's coordinator holds now: the members it knows (each of which must have beaten
+    /// since the queue began keeping what each owes before any deletion is let go), and its oldest
+    /// job's lease. The deletions no lease that may still hand off is as old as then let go.
+    pub fn leases(&self, known: BTreeSet<String>, oldest: Option<Lease>) {
+        let mut g = self.lock();
+        g.known = Some((known, oldest));
+        g.prune();
+    }
+
+    /// How many deletions are kept for the merge's refusal.
+    pub fn deletions_kept(&self) -> usize {
+        self.lock().deleted.len()
     }
 
     /// The top folders of what the map and the records name (the orphan sweep's, §7.5).
@@ -665,7 +760,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let m = Map::new(1, "t1".into(), Default::default());
         let q = GcQueue::default();
-        q.open(d.path(), &m, 100).unwrap();
+        q.open(d.path(), &m).unwrap();
         q.records((1, 1), std::iter::empty(), 100);
         let names: Vec<String> = ["a", "b", "c", "d", "e"].map(|n| format!("{n}.0000000000000000.pack")).to_vec();
         q.orphans(&names, 100).unwrap();
@@ -684,7 +779,7 @@ mod tests {
             g.rewrite(&path).unwrap();
         }
         let back = GcQueue::default();
-        back.open(d.path(), &m, 100 + GRACE_S).unwrap();
+        back.open(d.path(), &m).unwrap();
         let (a, b) = (q.lock(), back.lock());
         assert_eq!(a.removing, b.removing);
         assert_eq!(a.retold, b.retold);
@@ -693,5 +788,45 @@ mod tests {
         assert_eq!(b.removing.iter().cloned().collect::<Vec<_>>(), [names[1].clone(), names[4].clone()]);
         assert!(b.retold.contains(&names[1]) && !b.retold.contains(&names[4]));
         assert!(b.deleted.contains_key(&names[2]) && b.queued.contains_key(&names[2]), "kept, still queued");
+    }
+
+    /// A deletion is kept while a lease up to its own may still be handed off: not known while a
+    /// member the coordinator knows hasn't beaten since the queue began keeping what each owes; a
+    /// lease granted owed until a beat of its member leaves it out; across a restart. Then let go.
+    #[test]
+    fn deletions_go_once_no_older_lease_is_owed() {
+        let d = tempfile::tempdir().unwrap();
+        let m = Map::new(1, "t1".into(), Default::default());
+        let q = GcQueue::default();
+        q.open(d.path(), &m).unwrap();
+        q.records((1, 1), std::iter::empty(), 100);
+        let x = vec!["x.0000000000000000.pack".to_string()];
+        let none = BTreeMap::new();
+        let h = Holders { cursors: &none, oldest_lease: None, now: 100 };
+        let mark = Lease { term: 1, n: 5 };
+        q.removing(&x, &h, mark).unwrap();
+        q.gone(&x, &[], 100, mark).unwrap();
+        let known: BTreeSet<String> = ["m2".to_string(), "m4".to_string()].into();
+        // (Not known yet: kept.)
+        q.leases(known.clone(), None);
+        assert_eq!(q.deletions_kept(), 1, "m2 and m4 not heard since");
+        q.granted("m4", Lease { term: 1, n: 3 });
+        q.beat("m2", BTreeSet::new());
+        assert_eq!(q.deletions_kept(), 1, "m4 not heard since");
+        q.beat("m4", [Lease { term: 1, n: 3 }].into());
+        assert_eq!(q.deletions_kept(), 1, "m4 owes 1-3, older than the mark");
+        // (A lease of the coordinator's as old holds it too.)
+        q.leases(known.clone(), Some(Lease { term: 1, n: 4 }));
+        q.beat("m4", BTreeSet::new());
+        assert_eq!(q.deletions_kept(), 1);
+        // Across a restart, what each owes: m4 granted 1-6 (newer), owes nothing older.
+        q.granted("m4", Lease { term: 1, n: 6 });
+        let back = GcQueue::default();
+        back.open(d.path(), &m).unwrap();
+        back.leases(known.clone(), None);
+        assert_eq!(back.deletions_kept(), 0, "no lease as old as it may be handed off");
+        assert_eq!(back.lock().owed.get("m4").cloned().unwrap_or_default(), [Lease { term: 1, n: 6 }].into());
+        q.leases(known, None);
+        assert_eq!(q.deletions_kept(), 0);
     }
 }
