@@ -3590,13 +3590,24 @@ mod tests {
 
     /// The frozen-plan check (docs/crates.md §6.3, 6f2): a planner's `region_jobs` and `checklist`
     /// on a private copy of the lead's state (`SCENIC_FROZEN_ROOT`: `state/` copied, every other
-    /// entry a symlink to the NAS's project folder, read only; never the NAS itself), its home
+    /// entry a symlink to the NAS's project folder; never the NAS itself), its home
     /// `SCENIC_FROZEN_HOME` (the coverage's cache and the terrain indexes kept there between runs),
-    /// with no coordinator, no gate watch, no failure counts and no record of past catalogues. What
-    /// it planned (the jobs with their commands, targets and keys, before and after the holds; the
-    /// waits; the holds; the offers; the checklist's lines), a line each, to `SCENIC_FROZEN_OUT`:
-    /// two builds' plans of one state diffed. The forecast is left out (its thread parked, never
-    /// run).
+    /// with no coordinator, no gate watch and no record of past catalogues. What it planned (the
+    /// jobs with their commands, targets and keys, before and after the holds; the waits; the
+    /// holds; the offers; the checklist's lines), a line each, to `SCENIC_FROZEN_OUT`: two builds'
+    /// plans of one state diffed. The forecast is left out (its thread parked, never run).
+    ///
+    /// It plans in a child of itself under `sandbox-exec`, whose profile denies every write under
+    /// /Volumes (the NAS's mount, which the symlinks lead to) and the app's own home: the planner's
+    /// writes through a symlink fail, never reach the NAS. It refuses a root that is, or leads to, a
+    /// live path, and a `state/` that isn't a folder of its own there.
+    ///
+    /// Knobs, for states where the pass's holds and waits fire (the records edited in the copy do
+    /// the rest): `SCENIC_FROZEN_PASS` the pass planned (`none`: before the first), else the
+    /// root's latest; `SCENIC_FROZEN_FAILURES` failures in a row by job id (`outlines <date>=3;…`);
+    /// `SCENIC_FROZEN_NAMES_SEQ` a map batch touching names-to-do's inputs (its key: none
+    /// without, as no map log is read); `SCENIC_FROZEN_NAMES_AGO` names-to-do last ran that many
+    /// seconds ago, at the key recorded (its gate shut under a day).
     #[test]
     #[ignore]
     fn frozen_plan_on_a_private_root() {
@@ -3607,7 +3618,30 @@ mod tests {
         ) else {
             return;
         };
-        let root = store::nasfs::NasRoot::local_for_test(PathBuf::from(root));
+        let real = std::fs::canonicalize(&root).unwrap();
+        assert!(!store::nasfs::is_live_path(&real), "the root leads to a live path: {}", real.display());
+        let state = std::fs::symlink_metadata(real.join("state")).unwrap();
+        assert!(state.is_dir(), "the root's state/ must be a copy, not a link: {}", real.display());
+        if std::env::var_os("SCENIC_FROZEN_SANDBOXED").is_none() {
+            let app_home = std::env::var("HOME").unwrap() + "/Library/Application Support/scenic";
+            let profile =
+                format!("(version 1)(allow default)(deny file-write* (subpath \"/Volumes\") (subpath \"{app_home}\"))");
+            let me = std::env::current_exe().unwrap();
+            std::fs::remove_file(&out).ok();
+            let st = store::spawn::status(
+                store::spawn::command("/usr/bin/sandbox-exec")
+                    .args(["-p", &profile])
+                    .arg(me)
+                    .args(["--exact", "agent::plan::tests::frozen_plan_on_a_private_root", "--ignored", "--nocapture"])
+                    .env("SCENIC_FROZEN_SANDBOXED", "1"),
+            )
+            .unwrap();
+            assert!(st.success(), "the sandboxed plan: {st}");
+            assert!(std::fs::metadata(&out).is_ok(), "the sandboxed plan wrote no {out}");
+            return;
+        }
+        let env = |k: &str| std::env::var(k).ok();
+        let root = store::nasfs::NasRoot::local_for_test(real);
         let o = Options {
             root: Some(root.clone()),
             home: PathBuf::from(home),
@@ -3616,16 +3650,37 @@ mod tests {
             once: true,
             member: false,
         };
-        let app = std::env::var("SCENIC_FROZEN_APP").unwrap_or_else(|_| "development".into());
+        let app = env("SCENIC_FROZEN_APP").unwrap_or_else(|| "development".into());
         let hold = bus::Snap::new(crate::control::HoldState::default());
-        let p = Planner::new(o, "frozen".into(), app, 0, None, false, hold, publish::LastCatalogue::default());
+        let mut last = publish::LastCatalogue::default();
+        if let Some(ago) = env("SCENIC_FROZEN_NAMES_AGO") {
+            let keys = crate::pool::records::Brief::now(&root).unwrap().keys;
+            let key = keys.lo.get("names-todo").cloned().unwrap_or_default();
+            last.ran.insert("names-todo".into(), publish::Ran { key, at: Some(now_s() - ago.parse::<u64>().unwrap()) });
+        }
+        let mut p = Planner::new(o, "frozen".into(), app, 0, None, false, hold, last);
+        for (id, n) in
+            env("SCENIC_FROZEN_FAILURES").iter().flat_map(|f| f.split(';')).filter_map(|f| f.rsplit_once('='))
+        {
+            p.inp.mem.retry.insert(id.to_string(), (n.parse().unwrap(), 0));
+        }
+        if let Some(seq) = env("SCENIC_FROZEN_NAMES_SEQ") {
+            let here = publish::Here::default();
+            let mark = store::map::Mark { seq: seq.parse().unwrap(), at: String::new() };
+            here.feed.set_marks(BTreeMap::from([(crate::namestodo::INPUTS[0].to_string(), mark)]));
+            p.inp.map = Some(std::sync::Arc::new(here));
+        }
         // (No forecast: a thread that never ends holds its place.)
         *p.forecasting.borrow_mut() = Some(std::thread::spawn(|| -> Forecasted {
             loop {
                 std::thread::park()
             }
         }));
-        let pass = p.latest_pass(&root);
+        let pass = match env("SCENIC_FROZEN_PASS") {
+            Some(d) if d == "none" => None,
+            Some(d) => Some(d),
+            None => p.latest_pass(&root),
+        };
         let (manifest, _) = p.planning_records(&root).unwrap();
         // (The coverage read first, on its own thread: the plan's regions wait for it.)
         let t = Instant::now();
