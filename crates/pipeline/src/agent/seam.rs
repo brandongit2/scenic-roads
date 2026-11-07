@@ -292,6 +292,8 @@ pub trait Plan: Send + Sync {
     fn output_names(&self, step: &str, target: &str) -> Option<Vec<String>>;
     /// Whether `l` is a file a job of `step` saves for `target`.
     fn saves(&self, step: &str, target: &str, l: &str) -> bool;
+    /// The table's write sets, as a step's `Out` checks what it writes against them.
+    fn writes(&self) -> crate::out::Writes;
     /// Why entry `e` has a change outside its step's outputs; None: it hasn't.
     fn outside(&self, e: &crate::pool::journal::Entry) -> Option<String>;
     /// `outside` by `writes` in place of the table's write sets.
@@ -326,6 +328,8 @@ pub trait Plan: Send + Sync {
     fn checklist_to_come(&self) -> Vec<Item>;
 
     // The families' items the runtime asks of.
+    /// The depth's layers: its packs', its classes' and its shading's.
+    fn depth_layers(&self) -> [&'static str; 3];
     /// The memory a terrain-hi run of `z6` tiles is expected to take (MB), before one has said: a z6
     /// tile's levels at a time, each z6 tile's quarters and its z10 tiles' deep mids taken in; beside
     /// them, the z6 tile before's uploads in flight.

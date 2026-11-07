@@ -83,6 +83,9 @@ impl Plan for ThePlan {
     fn saves(&self, step: &str, target: &str, l: &str) -> bool {
         steps::saves(step, target, l)
     }
+    fn writes(&self) -> crate::out::Writes {
+        steps::writes
+    }
     fn outside(&self, e: &crate::pool::journal::Entry) -> Option<String> {
         steps::outside(e)
     }
@@ -131,6 +134,9 @@ impl Plan for ThePlan {
     }
     fn checklist_to_come(&self) -> Vec<Item> {
         build::checklist_to_come()
+    }
+    fn depth_layers(&self) -> [&'static str; 3] {
+        [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER]
     }
     fn terrain_peak(&self, z6: usize) -> u64 {
         crate::terrain_pack::piece_peak_mb()

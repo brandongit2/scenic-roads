@@ -26,6 +26,7 @@
 //! (the inputs folders), state and the app are never touched. The lead not reached, nothing is
 //! removed.
 
+use super::seam::Plan;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -288,13 +289,12 @@ impl DepthKeep {
         self
     }
 
-    /// Whether logical name `l` is a depth pack (crate::depth's layers, a z6 tile's hi or a z3
-    /// tile's lo) of a tile no current target names.
-    pub fn orphan(&self, l: &str) -> bool {
-        use crate::depth::{CLASS_LAYER, LAYER, SHADE_LAYER};
+    /// Whether logical name `l` is a depth pack (the depth's layers, `Plan::depth_layers`, a z6
+    /// tile's hi or a z3 tile's lo) of a tile no current target names.
+    pub fn orphan(&self, the_plan: &dyn Plan, l: &str) -> bool {
         let Some(r) = l.strip_prefix("layers/") else { return false };
         let Some((ly, r)) = r.split_once('/') else { return false };
-        if ![LAYER, CLASS_LAYER, SHADE_LAYER].contains(&ly) {
+        if !the_plan.depth_layers().contains(&ly) {
             return false;
         }
         let tile = |r: &str, z: &str| -> Option<(u32, u32)> {
@@ -313,8 +313,8 @@ impl DepthKeep {
 
 /// Whether the clean-up drops logical name `l`: a removed step's (`RETIRED`), or a depth pack no
 /// current target names (`depth`).
-fn dropped(l: &str, depth: Option<&DepthKeep>) -> bool {
-    retired(l) || depth.is_some_and(|k| k.orphan(l))
+fn dropped(the_plan: &dyn Plan, l: &str, depth: Option<&DepthKeep>) -> bool {
+    retired(l) || depth.is_some_and(|k| k.orphan(the_plan, l))
 }
 
 /// The content names the build reads by `manifest`: its own, and the files each accepted inputs'
@@ -352,15 +352,16 @@ pub struct Dropped {
 /// the lead merges (its `checked`), else saved under the build lock. None of either, nothing
 /// written, so a run after is a no-op. A dry run counts them, writing nothing.
 pub fn drop_names(
+    the_plan: &dyn Plan,
     root: &store::nasfs::NasRoot,
     scratch: &std::path::Path,
     depth: Option<&DepthKeep>,
     dry_run: bool,
 ) -> Result<Dropped> {
     let crate::pool::records::Records { pending, manifest, .. } = crate::pool::records::Records::now(root)?;
-    let names: Vec<&String> = manifest.keys().filter(|l| dropped(l, depth)).collect();
+    let names: Vec<&String> = manifest.keys().filter(|l| dropped(the_plan, l, depth)).collect();
     let kept: BTreeMap<String, String> =
-        manifest.iter().filter(|(l, _)| !dropped(l, depth)).map(|(l, c)| (l.clone(), c.clone())).collect();
+        manifest.iter().filter(|(l, _)| !dropped(the_plan, l, depth)).map(|(l, c)| (l.clone(), c.clone())).collect();
     let named = read_by(root, &kept)?;
     let unpend: Vec<&String> = pending.keys().filter(|c| !named.contains(*c)).collect();
     let retired = names.iter().filter(|l| retired(l)).count();
@@ -368,7 +369,7 @@ pub fn drop_names(
     if dry_run || (names.is_empty() && unpend.is_empty()) {
         return Ok(r);
     }
-    let mut out = crate::out::open(root, scratch, STEP)?;
+    let mut out = crate::out::Out::open(root, scratch, STEP, the_plan.writes())?;
     for l in names {
         out.remove(l);
     }
@@ -423,6 +424,7 @@ fn verify_batches(todo: &[(String, Option<u64>)]) -> Vec<&[(String, Option<u64>)
 /// through its hand-off's `checked`); those that aren't stay, said. Each batch (`VERIFY_CHUNK`) saved
 /// as it ends, then a safe point (`yield_point`). A dry run counts them, checking nothing.
 pub fn verify_pending(
+    the_plan: &dyn Plan,
     root: &store::nasfs::NasRoot,
     scratch: &std::path::Path,
     ssh: &[&str],
@@ -443,7 +445,7 @@ pub fn verify_pending(
     if todo.is_empty() {
         return Ok(v);
     }
-    let mut out = crate::out::open(root, scratch, STEP)?;
+    let mut out = crate::out::Out::open(root, scratch, STEP, the_plan.writes())?;
     for chunk in verify_batches(&todo) {
         let batch: BTreeMap<String, Option<u64>> = chunk.iter().cloned().collect();
         let (ok, bad) = match crate::out::verify(ssh, nas_root, &batch) {
@@ -819,8 +821,10 @@ pub struct Asked<'a> {
     pub old_catalogues: bool,
 }
 
-/// What a run acts through: the lead, its safe points, a file's removal.
+/// What a run acts through: the plan (its write sets, the depth's layers), the lead, its safe
+/// points, a file's removal.
 pub struct Ways<'a> {
+    pub the_plan: &'a dyn Plan,
     pub lead: &'a dyn Lead,
     /// Whether to stop at this safe point (a job's: the agent asking it to, crate::control).
     pub yielding: &'a dyn Fn() -> bool,
@@ -896,7 +900,7 @@ fn run_counted(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Resu
             save(&sw)
         };
         let flow = match name {
-            "duties" => duties(root, asked, &mut rep),
+            "duties" => duties(root, asked, ways.the_plan, &mut rep),
             "copies" => inputs_walk(root, ways, dry_run, reached.as_deref(), &mut at, &mut rep),
             _ => orphan_walk(root, ways, dry_run, &tops, latest.as_deref(), reached.as_deref(), &mut at, &mut rep),
         }?;
@@ -1291,13 +1295,13 @@ fn age_s(t: SystemTime) -> u64 {
 /// the forecast inputs' old days, the old catalogues once asked, and the uploads still pending
 /// checked on the NAS, last. Each a failure said, never failing GC; each goes on where it stopped
 /// (what it did saved as it went), so a pass cut short at a safe point is taken again whole.
-fn duties(root: &store::nasfs::NasRoot, asked: &Asked, rep: &mut Report) -> Result<Flow> {
+fn duties(root: &store::nasfs::NasRoot, asked: &Asked, the_plan: &dyn Plan, rep: &mut Report) -> Result<Flow> {
     let dry_run = asked.dry_run;
     // (Its scratch only a folder: a removal writes nothing.)
     static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let scratch = std::env::temp_dir().join(format!("scenic-gc-{}-{n}", std::process::id()));
-    match drop_names(root, &scratch, asked.depth, dry_run) {
+    match drop_names(the_plan, root, &scratch, asked.depth, dry_run) {
         Ok(d) => (rep.retired_dropped, rep.depth_dropped, rep.pending_dropped) = (d.retired, d.depth, d.unpended),
         Err(e) => rep.warnings.push(format!("names not dropped: {e:#}")),
     }
@@ -1344,7 +1348,7 @@ fn duties(root: &store::nasfs::NasRoot, asked: &Asked, rep: &mut Report) -> Resu
     // The uploads still pending checked on the NAS itself, last. Not a project folder on the NAS's
     // share (a test's): none checked.
     if let Some(nas_root) = &nas_root {
-        match verify_pending(root, &scratch, &ssh, nas_root, dry_run) {
+        match verify_pending(the_plan, root, &scratch, &ssh, nas_root, dry_run) {
             Ok(v) => {
                 (rep.pending_verified, rep.pending_failed) = (v.ok, v.bad.len());
                 if let Some(why) = &v.stalled {
@@ -1523,7 +1527,7 @@ pub fn ways_for_tests(lead: &dyn Lead) -> Ways<'_> {
     fn never() -> bool {
         false
     }
-    Ways { lead, yielding: &never, remove: &unlink }
+    Ways { the_plan: super::seam::for_tests(), lead, yielding: &never, remove: &unlink }
 }
 
 /// Every sweep's pass ended now in the agent's home `home` (its map log folder's `SWEEPS_FILE`):
@@ -1823,7 +1827,12 @@ mod tests {
             unlink(p)
         };
         let yielding = || removed.borrow().len() >= 20;
-        let r = run(&nas, &asked, &Ways { yielding: &yielding, remove: &remove, lead: &lead }).unwrap();
+        let r = run(
+            &nas,
+            &asked,
+            &Ways { yielding: &yielding, remove: &remove, lead: &lead, the_plan: super::super::seam::for_tests() },
+        )
+        .unwrap();
         assert!(r.paused && r.removed == 20 && r.swept.is_empty(), "{r:?}");
         assert!(due[..20].iter().all(|f| !root.join(f).exists()) && due[20..].iter().all(|f| root.join(f).exists()));
         assert!(q.removing_now().is_empty(), "the rest let go");
@@ -2285,7 +2294,7 @@ mod tests {
         let ppath = root.join("state/build/pending.json");
         fs::write(&ppath, serde_json::json!({ferries: "a", poi: "b", rail: "c"}).to_string()).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(root);
-        let dr = drop_names(&nas, &d.path().join("s"), None, false).unwrap();
+        let dr = drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), None, false).unwrap();
         assert_eq!(dr.retired, 2);
         let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
         assert_eq!(p.keys().collect::<Vec<_>>(), [rail]);
@@ -2319,12 +2328,12 @@ mod tests {
         fs::write(&mpath, &text).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let k = keep();
-        let dr = drop_names(&nas, &d.path().join("s"), None, true).unwrap();
+        let dr = drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), None, true).unwrap();
         assert_eq!((dr.retired, dr.depth), (1, 0), "without the targets, no depth name");
-        let dr = drop_names(&nas, &d.path().join("s"), Some(&k), true).unwrap();
+        let dr = drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), Some(&k), true).unwrap();
         assert_eq!((dr.retired, dr.depth), (1, 3));
         assert_eq!(fs::read_to_string(&mpath).unwrap(), text, "a dry run writes nothing");
-        let dr = drop_names(&nas, &d.path().join("s"), Some(&k), false).unwrap();
+        let dr = drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), Some(&k), false).unwrap();
         assert_eq!((dr.retired, dr.depth), (1, 3));
         let m: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
         assert_eq!(
@@ -2332,7 +2341,10 @@ mod tests {
             ["layers/depth-shade/lo/3-0-4", "layers/depth/hi/6-1-33", "layers/terrain/hi/6-2-33"]
         );
         let before = fs::metadata(&mpath).unwrap().modified().unwrap();
-        assert_eq!(drop_names(&nas, &d.path().join("s"), Some(&k), false).unwrap(), Dropped::default());
+        assert_eq!(
+            drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), Some(&k), false).unwrap(),
+            Dropped::default()
+        );
         assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
     }
 
@@ -2417,7 +2429,8 @@ mod tests {
         fs::write(root.join("state/build/manifest.json"), manifest).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         let hand = d.path().join("handoff");
-        let mut out = crate::out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
+        let writes = super::super::seam::for_tests().writes();
+        let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP, writes).unwrap().handing_off(&hand);
         out.remove("sources/terrain-z8-v3");
         out.unpend("sources/terrain-z8-v3.3333333333333333.pack");
         out.save().unwrap();
@@ -2430,7 +2443,7 @@ mod tests {
             [("sources/terrain-z8-v3".to_string(), None)].into_iter().collect::<std::collections::BTreeMap<_, _>>()
         );
         assert_eq!(fs::read_to_string(root.join("state/build/manifest.json")).unwrap(), manifest);
-        let mut out = crate::out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
+        let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP, writes).unwrap().handing_off(&hand);
         out.remove("base/6-1-1");
         assert!(out.save().is_err());
     }
@@ -2447,10 +2460,10 @@ mod tests {
     fn a_depth_pack_is_an_orphan_only_when_no_target_names_its_tile() {
         let k = keep();
         for l in ["layers/depth/hi/6-1-33", "layers/depth-class/hi/6-1-33", "layers/depth-shade/hi/6-1-33"] {
-            assert!(!k.orphan(l), "{l}");
+            assert!(!k.orphan(super::super::seam::for_tests(), l), "{l}");
         }
         for l in ["layers/depth/lo/3-0-4", "layers/depth-class/lo/3-0-4", "layers/depth-shade/lo/3-0-4"] {
-            assert!(!k.orphan(l), "{l}");
+            assert!(!k.orphan(super::super::seam::for_tests(), l), "{l}");
         }
         for l in [
             "layers/depth/hi/6-2-33",
@@ -2458,7 +2471,7 @@ mod tests {
             "layers/depth-shade/lo/3-1-4",
             "layers/depth/lo/3-0-5",
         ] {
-            assert!(k.orphan(l), "{l}");
+            assert!(k.orphan(super::super::seam::for_tests(), l), "{l}");
         }
         // (Not a depth pack, or not a tile as the depth names them: never.)
         for l in [
@@ -2470,7 +2483,7 @@ mod tests {
             "layers/depth/root",
             "sources/depth/6-2-33",
         ] {
-            assert!(!k.orphan(l), "{l}");
+            assert!(!k.orphan(super::super::seam::for_tests(), l), "{l}");
         }
     }
 
@@ -2508,10 +2521,10 @@ mod tests {
             "layers/depth-class/lo/3-5-5",
             "layers/depth/hi/6-1-33",
         ] {
-            assert!(!k.orphan(l), "{l}");
+            assert!(!k.orphan(super::super::seam::for_tests(), l), "{l}");
         }
         for l in ["layers/depth/hi/6-9-9", "layers/depth/lo/3-7-7"] {
-            assert!(k.orphan(l), "{l}");
+            assert!(k.orphan(super::super::seam::for_tests(), l), "{l}");
         }
     }
 
@@ -2537,13 +2550,20 @@ mod tests {
         let pending = serde_json::json!({now: "a", was: "b", copy: "c"});
         fs::write(&ppath, pending.to_string()).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
-        let dr = drop_names(&nas, &d.path().join("s"), None, true).unwrap();
+        let dr = drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), None, true).unwrap();
         assert_eq!(dr, Dropped { retired: 0, depth: 0, unpended: 1 });
         assert_eq!(fs::read_to_string(&ppath).unwrap(), pending.to_string(), "a dry run writes nothing");
-        assert_eq!(drop_names(&nas, &d.path().join("s"), None, false).unwrap().unpended, 1);
+        assert_eq!(
+            drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), None, false).unwrap().unpended,
+            1
+        );
         let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
         assert_eq!(p.keys().collect::<Vec<_>>(), [now, copy], "the copy the accepted index lists stays for the check");
-        assert_eq!(drop_names(&nas, &d.path().join("s"), None, false).unwrap(), Dropped::default(), "a no-op after");
+        assert_eq!(
+            drop_names(super::super::seam::for_tests(), &nas, &d.path().join("s"), None, false).unwrap(),
+            Dropped::default(),
+            "a no-op after"
+        );
     }
 
     /// Task #781: the named uploads are checked on the NAS (here a shell on this Mac in its place):
@@ -2577,10 +2597,10 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         let at = root.to_str().unwrap();
         let s = d.path().join("s");
-        let v = verify_pending(&nas, &s, &["sh", "-c"], at, true).unwrap();
+        let v = verify_pending(super::super::seam::for_tests(), &nas, &s, &["sh", "-c"], at, true).unwrap();
         assert_eq!((v.ok, v.bad.len()), (4, 0));
         assert_eq!(fs::read_to_string(&ppath).unwrap(), pending.to_string(), "a dry run writes nothing");
-        let v = verify_pending(&nas, &s, &["sh", "-c"], at, false).unwrap();
+        let v = verify_pending(super::super::seam::for_tests(), &nas, &s, &["sh", "-c"], at, false).unwrap();
         assert_eq!((v.ok, v.bad), (2, vec![short.to_string(), gone.to_string()]));
         let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
         assert_eq!(p.keys().collect::<Vec<_>>(), [short, gone]);
@@ -2612,7 +2632,15 @@ mod tests {
         fs::write(&ppath, serde_json::to_vec(&pending).unwrap()).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         let before = YIELD_CHECKS.get();
-        let v = verify_pending(&nas, &d.path().join("s"), &["sh", "-c"], root.to_str().unwrap(), false).unwrap();
+        let v = verify_pending(
+            super::super::seam::for_tests(),
+            &nas,
+            &d.path().join("s"),
+            &["sh", "-c"],
+            root.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
         assert_eq!((v.ok, v.bad.len()), (n, 0));
         assert_eq!(YIELD_CHECKS.get() - before, 2, "a safe point after each of its two batches");
         let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
@@ -2656,7 +2684,15 @@ mod tests {
         // (The probe, `true`, answers; the check's call sleeps: exec, so the PID signalled is the sleeper's.)
         let hung = ["sh", "-c", "[ \"$1\" = true ] || exec sleep 300", "sh"];
         let t = std::time::Instant::now();
-        let v = verify_pending(&nas, &d.path().join("s"), &hung, root.to_str().unwrap(), false).unwrap();
+        let v = verify_pending(
+            super::super::seam::for_tests(),
+            &nas,
+            &d.path().join("s"),
+            &hung,
+            root.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
         store::testkit::ended_before(t, Duration::from_secs(300), "the hung call ends at its deadline");
         assert_eq!(v.ok, 0);
         assert!(v.stalled.as_deref().is_some_and(|s| s.contains("over 1 s")), "{:?}", v.stalled);

@@ -1613,7 +1613,12 @@ fn main() -> Result<()> {
                 let r = gc::run(
                     &root,
                     &asked,
-                    &gc::Ways { lead: &lead, yielding: &gc::job_yielding, remove: &gc::unlink },
+                    &gc::Ways {
+                        the_plan: agent::theplan::the_plan(),
+                        lead: &lead,
+                        yielding: &gc::job_yielding,
+                        remove: &gc::unlink,
+                    },
                 )?;
                 // (Its warnings the job's note in the status.)
                 for w in &r.warnings {
