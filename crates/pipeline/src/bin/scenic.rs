@@ -772,8 +772,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
                         "○"
                     },
                     agent::steps::current(&i.step),
-                    count_line(i.done, i.total, i.left, &noun)
-                        + &if i.empty > 0 { format!(" ({} with nothing to publish)", i.empty) } else { String::new() }
+                    count_line(i.done, i.total, i.left, &noun) + &apart(i.empty, i.nodata)
                 );
             }
             for (k, j) in l.next.iter().take(4).enumerate() {
@@ -942,6 +941,20 @@ fn count_line(done: usize, total: Option<usize>, left: Option<usize>, noun: &str
         (_, Some(0)) => "done".into(),
         (_, Some(l)) => format!("{l} {} left", if l == 1 { noun.trim_end_matches('s') } else { noun }),
         _ => "to come".into(),
+    }
+}
+
+/// A step's done said apart: those that made nothing to publish, those with no data (not run).
+fn apart(empty: usize, nodata: usize) -> String {
+    let said: Vec<String> = [(empty, "with nothing to publish"), (nodata, "with no data, not run")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}"))
+        .collect();
+    if said.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", said.join("; "))
     }
 }
 

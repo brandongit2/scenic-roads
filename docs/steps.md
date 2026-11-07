@@ -95,10 +95,19 @@ makes the same bytes on every Mac.
       pack, and its mid (`work/terrain-deep-mid/10-x-y`: its z13 tiles' means before rounding).
       A z10 tile, not its z6 tile: up to 5,440 tiles and GBs of a fine dataset's reads each. A tile
       of the band is kept only where some of its pixels came from a dataset reaching its zoom
-      (`terrain_zoom::codes_reaching`, the sampler's sources by pixel); one that would only upsample
+      (`terrain_zoom::reaching`, the sampler's sources by pixel); one that would only upsample
       a coarser dataset isn't, and its parent's quarter there is its own sample: so the next
       dataset's zoom holds there, as the depth's rule (§3, #804). The band is the long part of a
       rebuild: of the ~40 Mac-days estimated for a whole terrain rebuild, most are its targets.
+      A target none of whose sources reaching past z12 has data there (`terrain_zoom::hollow`,
+      #842: the input check's finer read found none, their `Measured::hollow`, docs/inputs.md §6.8;
+      or the source's regions' outlines leave none of the tile, a source there by its 1° cells
+      alone, `Cover::holds_none`) and with no deep or slope deep pack named is never run, nor its
+      slope-deep: such a run would keep no
+      tile (the rule above) and make an empty mid, which its z6 tile reads as none. It stays a
+      target keyed as before (no key moves, the pyramids-fill's and terrain-hi's included), settled
+      without a record (`TerrainTargets::deep_hollow`): nothing waits for it, the checklist counts
+      it "with no data, not run". One with a pack there runs as before, to drop it.
     - **terrain-hi**, a run per z6 tile near the coverage (`build_piece`): its z9–12 by the rule, its
       z12 tiles' quarters over its z10 tiles' deep mids, its hi pack, and its mid
       (`work/terrain-mid/6-x-y`: its z9 tiles' means). It waits for its own z10 tiles' terrain-deep

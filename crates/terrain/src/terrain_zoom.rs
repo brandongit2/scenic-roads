@@ -42,13 +42,27 @@ pub struct Set {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Presence {
     by_zoom: Vec<std::collections::HashSet<(u32, u32)>>,
+    /// Of its tiles at the deep packs' zoom, those a finer read found no data in
+    /// (`Measured::hollow`): the plan's alone (`hollow`), never a place's sources.
+    hollow: std::collections::HashSet<(u32, u32)>,
 }
 
 impl Presence {
     pub fn of(tiles: &[[u32; 2]]) -> Presence {
         let pz = crate::terrain_deep::PACK_Z;
         let by_zoom = (0..=pz).map(|z| tiles.iter().map(|t| (t[0] >> (pz - z), t[1] >> (pz - z))).collect()).collect();
-        Presence { by_zoom }
+        Presence { by_zoom, hollow: Default::default() }
+    }
+
+    /// With `hollow`'s tiles (`Measured::hollow`) known to hold no data.
+    pub fn with_hollow(mut self, hollow: &[[u32; 2]]) -> Presence {
+        self.hollow = hollow.iter().map(|t| (t[0], t[1])).collect();
+        self
+    }
+
+    /// Whether deep packs' tile `x`, `y` is one a finer read found no data in.
+    pub fn hollow(&self, x: u32, y: u32) -> bool {
+        self.hollow.contains(&(x, y))
     }
 
     /// Whether tile `z/x/y` has data under it (past the deep packs' zoom: its tile there has).
@@ -77,7 +91,9 @@ pub fn sets(ds: &[Accepted], read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<V
                 detail: Detail::of(d),
                 cut: d.measured.uncut.is_some().then(|| d.measured.clone()),
                 every_zoom: matches!(&d.declaration.data, Data::Tiles { every_zoom: true, .. }),
-                presence: d.measured.presence.as_deref().map(|p| std::sync::Arc::new(Presence::of(p))),
+                presence: d.measured.presence.as_deref().map(|p| {
+                    std::sync::Arc::new(Presence::of(p).with_hollow(d.measured.hollow.as_deref().unwrap_or_default()))
+                }),
             })
         })
         .collect()
@@ -159,6 +175,22 @@ pub fn reaching(sets: &[Set], z: u8, x: u32, y: u32) -> Vec<String> {
 pub fn finest(sets: &[Set], z: u8, x: u32, y: u32) -> u8 {
     let lat = poleward(roadcore::geo::tile_box(z, x, y));
     sources(sets, z, x, y).iter().map(|s| s.detail.zoom_at(lat)).max().unwrap_or(0).min(DEEPEST)
+}
+
+/// Whether the deep packs' tile `x`, `y` (crate::terrain_deep::PACK_Z) has no data past z12: each
+/// of its sources reaching z13 or finer there (at its poleward edge) has none in it, a finer read
+/// of its files having found nothing there (`Presence::hollow`) or its regions' outlines cutting it
+/// away there (`Cover::holds_none`: a source by its cells, read only inside them). A run of it
+/// would make no tile of the band (crate::terrain_pack::Fills::keep keeps only a source reaching a
+/// tile's zoom), so the plan runs none there (task #842); not one with no such source at all,
+/// which is no target. A place's sources stay as they are: no key moves by it.
+pub fn hollow(sets: &[Set], x: u32, y: u32) -> bool {
+    let z = crate::terrain_deep::PACK_Z;
+    let b = roadcore::geo::tile_box(z, x, y);
+    let lat = poleward(b);
+    let mut fine =
+        sources(sets, z, x, y).into_iter().filter(|s| s.detail.zoom_at(lat) >= crate::terrain_deep::FIRST_Z).peekable();
+    fine.peek().is_some() && fine.all(|s| s.presence.as_ref().is_some_and(|p| p.hollow(x, y)) || s.cover.holds_none(b))
 }
 
 /// What tile `z/x/y`'s key names of its sources: each one's line, where its regions cut it
@@ -287,6 +319,36 @@ mod tests {
         );
         assert_eq!(reaching(&sets, 14, x * 16, y * 16), ["a"], "a reaches z14 there");
         assert!(reaching(&sets, 14, x * 16 + 16, y * 16).is_empty(), "nothing past its data");
+    }
+
+    /// A deep tile is hollow when every source reaching past z12 there found no data in it on a
+    /// finer read; its sources and finest zoom stay its presence's (no key moves, task #842).
+    #[test]
+    fn a_deep_tile_is_hollow_only_when_every_fine_source_found_nothing() {
+        let pz = crate::terrain_deep::PACK_Z;
+        let (x, y) = tile_at(-74.5, 45.5, pz);
+        let measured = |hollow: &[[u32; 2]]| {
+            let mut s = set("a", Some(vec![[-75.0, 45.0, -74.0, 46.0]]), raster(1.0));
+            s.presence = Some(std::sync::Arc::new(Presence::of(&[[x, y], [x + 1, y]]).with_hollow(hollow)));
+            s
+        };
+        let world = set("w", None, raster(30.0));
+        let sets = vec![measured(&[[x, y]]), world.clone()];
+        assert!(hollow(&sets, x, y), "its one fine source found nothing there");
+        assert!(!hollow(&sets, x + 1, y), "data next door");
+        assert_eq!(
+            finest(&sets, pz, x, y),
+            finest(&vec![measured(&[]), world.clone()], pz, x, y),
+            "its places as before"
+        );
+        // (A second fine source with data there, or one not measured so: not hollow.)
+        let mut other = measured(&[]);
+        other.id = "b".into();
+        assert!(!hollow(&[measured(&[[x, y]]), other, world.clone()], x, y));
+        let unmeasured = set("c", Some(vec![[-75.0, 45.0, -74.0, 46.0]]), raster(1.0));
+        assert!(!hollow(&[measured(&[[x, y]]), unmeasured, world.clone()], x, y));
+        // (No source past z12 at all: no target, not hollow.)
+        assert!(!hollow(&[world], x, y));
     }
 
     #[test]

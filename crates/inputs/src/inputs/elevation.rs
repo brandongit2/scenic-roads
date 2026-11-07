@@ -224,20 +224,7 @@ pub fn presence_of(
     let mut out = Vec::new();
     for (x, y) in tiles {
         let b = roadcore::geo::tile_box(PACK_Z, x, y);
-        // (Its box in the files' units, from points along its edges.)
-        let mut nb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-        for k in 0..=8 {
-            let f = k as f64 / 8.0;
-            for (lon, lat) in [
-                (b[0] + f * (b[2] - b[0]), b[1]),
-                (b[0] + f * (b[2] - b[0]), b[3]),
-                (b[0], b[1] + f * (b[3] - b[1])),
-                (b[2], b[1] + f * (b[3] - b[1])),
-            ] {
-                let (px, py) = native(lon, lat);
-                nb = [nb[0].min(px), nb[1].min(py), nb[2].max(px), nb[3].max(py)];
-            }
-        }
+        let nb = native_box(&native, b);
         let near: Vec<usize> = (0..masks.len())
             .filter(|&i| bounds[i][0] < nb[2] && nb[0] < bounds[i][2] && bounds[i][1] < nb[3] && nb[1] < bounds[i][3])
             .collect();
@@ -262,6 +249,160 @@ pub fn presence_of(
         }
     }
     Ok(out)
+}
+
+/// Box `b` (w, s, e, n, degrees) in the files' units (`native`), from points along its edges.
+fn native_box(native: &dyn Fn(f64, f64) -> (f64, f64), b: [f64; 4]) -> [f64; 4] {
+    let mut nb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for k in 0..=8 {
+        let f = k as f64 / 8.0;
+        for (lon, lat) in [
+            (b[0] + f * (b[2] - b[0]), b[1]),
+            (b[0] + f * (b[2] - b[0]), b[3]),
+            (b[0], b[1] + f * (b[3] - b[1])),
+            (b[2], b[1] + f * (b[3] - b[1])),
+        ] {
+            let (px, py) = native(lon, lat);
+            nb = [nb[0].min(px), nb[1].min(py), nb[2].max(px), nb[3].max(py)];
+        }
+    }
+    nb
+}
+
+/// How many of its pixels a deep packs' tile spans at least (at the equator, its widest) in the
+/// level a hollow test reads (`hollow_of`): ~300 m pixels at z10.
+const HOLLOW_PX: f64 = 128.0;
+
+/// Of a dataset's presence (`presence`: `presence_of`'s tiles, `[x, y]` at the deep packs' zoom),
+/// the tiles where a finer read finds no valid pixel (`Measured::hollow`), sorted as given: each
+/// file meeting one read at the coarsest of its levels whose pixels are no wider than `HOLLOW_PX`
+/// of a tile's side (its full resolution where none is), over the tile's box in the files' units
+/// alone, a sparse block read as no data without a read, and data there only at a point of the
+/// tile itself (points no further apart than half a pixel). A tile some file holds data in isn't
+/// read further. A footprint narrower than a tile (which presence takes as data whole) is read so
+/// too. An overview's pixel holds data where any under it does (an average's; a nearest-neighbour
+/// overview could miss a sliver).
+pub fn hollow_of(
+    crs: u16,
+    files: &[(String, Option<[f64; 4]>)],
+    presence: &[[u32; 2]],
+    open: &(dyn Fn(&str) -> std::result::Result<buildstore::geotiff::Tiff, String> + Sync),
+) -> std::result::Result<Vec<[u32; 2]>, String> {
+    use crate::dem::zoom::PACK_Z;
+    let projected = crate::dem::proj::projected(crs);
+    let atlas = if projected { crate::dem::proj::Projection::of(crs) } else { None };
+    let native = |lon: f64, lat: f64| atlas.as_ref().map_or((lon, lat), |a| a.project(lon, lat));
+    let side = if projected {
+        crate::dem::generic::tile_resolution(PACK_Z as u32, 0.0) * 256.0
+    } else {
+        360.0 / (1u64 << PACK_Z) as f64
+    };
+    let boxes: Vec<[f64; 4]> =
+        presence.iter().map(|t| native_box(&native, roadcore::geo::tile_box(PACK_Z, t[0], t[1]))).collect();
+    let meets = |a: &[f64; 4], b: &[f64; 4]| a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    let data: Vec<AtomicBool> = presence.iter().map(|_| AtomicBool::new(false)).collect();
+    let file = |(w, fp): &(String, Option<[f64; 4]>)| -> std::result::Result<(), String> {
+        // (A file without a footprint is opened for its bounds; one with, only when it meets a tile
+        // not yet known to have data.)
+        let mut opened = None;
+        let bounds = match fp {
+            Some(b) => *b,
+            None => {
+                let t = open(w)?;
+                let b = file_bounds(&t).map_err(|e| format!("{w}: {e:#}"))?;
+                opened = Some(t);
+                b
+            }
+        };
+        let todo: Vec<usize> =
+            (0..presence.len()).filter(|&i| !data[i].load(Relaxed) && meets(&boxes[i], &bounds)).collect();
+        if todo.is_empty() {
+            return Ok(());
+        }
+        let t = match opened {
+            Some(t) => t,
+            None => open(w)?,
+        };
+        let level = hollow_level(&t, side / HOLLOW_PX).map_err(|e| format!("{w}: {e:#}"))?;
+        let gt = t.transform(level).map_err(|e| format!("{w}: {e:#}"))?;
+        let img = t.level(level).map_err(|e| format!("{w}: {e:#}"))?.clone();
+        // (Neighbouring tiles share blocks.)
+        let t = t.with_cache(64 << 20);
+        let nodata = t.nodata();
+        for i in todo {
+            if data[i].load(Relaxed) {
+                continue;
+            }
+            let nb = boxes[i];
+            // (The tile's box in the level's pixels, cut to the file.)
+            let (ca, cb) = ((nb[0] - gt[0]) / gt[1], (nb[2] - gt[0]) / gt[1]);
+            let (ra, rb) = ((nb[3] - gt[3]) / gt[5], (nb[1] - gt[3]) / gt[5]);
+            let c0 = (ca.min(cb).floor().max(0.0) as u32).min(img.width);
+            let c1 = (ca.max(cb).ceil().max(0.0) as u32).min(img.width);
+            let r0 = (ra.min(rb).floor().max(0.0) as u32).min(img.height);
+            let r1 = (ra.max(rb).ceil().max(0.0) as u32).min(img.height);
+            if c0 >= c1 || r0 >= r1 {
+                continue;
+            }
+            let px = t.read_window(level, c0, r0, c1 - c0, r1 - r0).map_err(|e| format!("{w}: {e:#}"))?;
+            if !px.iter().any(|&v| crate::dem::generic::valid(v, nodata)) {
+                continue;
+            }
+            // (Some pixel of the box holds data: one inside the tile itself? Its points no further
+            // apart than half a pixel, each in the files' units.)
+            let b = roadcore::geo::tile_box(PACK_Z, presence[i][0], presence[i][1]);
+            let k = ((2.0 * (nb[2] - nb[0]).max(nb[3] - nb[1]) / gt[1].abs()).ceil() as usize).max(2);
+            let (ww, wh) = ((c1 - c0) as i64, (r1 - r0) as i64);
+            let hit = (0..k).any(|j| {
+                (0..k).any(|q| {
+                    let lon = b[0] + (q as f64 + 0.5) / k as f64 * (b[2] - b[0]);
+                    let lat = b[1] + (j as f64 + 0.5) / k as f64 * (b[3] - b[1]);
+                    let (x, y) = native(lon, lat);
+                    let (c, r) = (
+                        ((x - gt[0]) / gt[1]).floor() as i64 - c0 as i64,
+                        ((y - gt[3]) / gt[5]).floor() as i64 - r0 as i64,
+                    );
+                    (0..ww).contains(&c)
+                        && (0..wh).contains(&r)
+                        && crate::dem::generic::valid(px[(r * ww + c) as usize], nodata)
+                })
+            });
+            if hit {
+                data[i].store(true, Relaxed);
+            }
+        }
+        Ok(())
+    };
+    // (The files' reads are network round trips: `HOLLOW_READERS` at once.)
+    use rayon::prelude::*;
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(HOLLOW_READERS).build().map_err(|e| e.to_string())?;
+    pool.install(|| files.par_iter().with_max_len(1).try_for_each(file))?;
+    Ok(presence.iter().zip(&data).filter(|(_, d)| !d.load(Relaxed)).map(|(t, _)| *t).collect())
+}
+
+/// How many files a hollow test reads at once (`hollow_of`).
+const HOLLOW_READERS: usize = 8;
+
+/// A file's bounds (w, s, e, n in its CRS), by its full resolution's transform.
+fn file_bounds(t: &buildstore::geotiff::Tiff) -> Result<[f64; 4]> {
+    let g = t.transform(0)?;
+    let i = t.level(0)?;
+    let (a, b) = (g[0] + g[1] * i.width as f64, g[3] + g[5] * i.height as f64);
+    Ok([g[0].min(a), g[3].min(b), g[0].max(a), g[3].max(b)])
+}
+
+/// The coarsest of a file's levels whose pixels are no wider than `px` (in its CRS's units), else
+/// its full resolution (`hollow_of`).
+fn hollow_level(t: &buildstore::geotiff::Tiff, px: f64) -> Result<usize> {
+    let mut best = 0;
+    for l in 0..t.images().len() {
+        let g = t.transform(l)?;
+        if g[1].abs().max(g[5].abs()) <= px {
+            best = l;
+        }
+    }
+    Ok(best)
 }
 
 impl Elevation {
@@ -342,6 +483,7 @@ impl Elevation {
                         outline: None,
                         bands: None,
                         presence: None,
+                        hollow: None,
                     });
                 }
                 if territory.is_empty() {
@@ -365,6 +507,7 @@ impl Elevation {
                     outline: None,
                     bands: None,
                     presence: None,
+                    hollow: None,
                 })
             }
             Data::Geotiff { urls, index, files, store } => {
@@ -403,8 +546,8 @@ impl Elevation {
                     sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
                 picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
                 // (A file opened: from the store, the network or the version's folder.)
-                let open = |w: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
-                    let src: Arc<dyn store::range::RangeRead> = if w.starts_with("http") && *store {
+                let remote = |w: &str| -> std::result::Result<Arc<dyn store::range::RangeRead>, String> {
+                    Ok(if *store {
                         let dir = self
                             .store
                             .as_ref()
@@ -414,16 +557,22 @@ impl Elevation {
                             .map_err(|e| format!("{e:#}"))?
                             .ok_or_else(|| format!("{w}: the store notes the source has no such file"))?
                             .read
-                    } else if w.starts_with("http") {
+                    } else {
                         crate::dem::generic::open_url(&**fetch, w)
                             .map_err(|e| format!("{w}: {e:#}"))?
                             .ok_or_else(|| format!("{w}: the server has no such file"))?
+                    })
+                };
+                let header = |w: &str, src: Arc<dyn store::range::RangeRead>| {
+                    buildstore::geotiff::Tiff::open(src).map_err(|e| format!("{w}: its header can't be read ({e:#})"))
+                };
+                let open = |w: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
+                    let src: Arc<dyn store::range::RangeRead> = if w.starts_with("http") {
+                        remote(w)?
                     } else {
                         Arc::new((v.read)(w).map_err(|e| format!("{w}: {e:#}"))?.as_ref().clone())
                     };
-                    let t = buildstore::geotiff::Tiff::open(src)
-                        .map_err(|e| format!("{w}: its header can't be read ({e:#})"))?;
-                    Ok(t)
+                    header(w, src)
                 };
                 let mut masks: Vec<Mask> = Vec::new();
                 // (Each geographic file's latitudes and cell: the dataset's bands.)
@@ -486,7 +635,25 @@ impl Elevation {
                     Some(c) => Some(presence_of(crs, &list, c, &open)?),
                     None => None,
                 };
-                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None, outline: None, bands, presence })
+                // (Of that, where a finer read finds nothing: the terrain-deep targets the plan never
+                // runs. Its files read at once, the version's own ones read first, as `open` reads them.)
+                let hollow = match &presence {
+                    Some(p) => {
+                        let mut local: BTreeMap<&str, Arc<Vec<u8>>> = BTreeMap::new();
+                        for (w, _) in list.iter().filter(|(w, _)| !w.starts_with("http")) {
+                            local.insert(w, (v.read)(w).map_err(|e| format!("{w}: {e:#}"))?);
+                        }
+                        let open = |w: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
+                            match local.get(w) {
+                                Some(b) => header(w, Arc::new(b.as_ref().clone())),
+                                None => header(w, remote(w)?),
+                            }
+                        };
+                        Some(hollow_of(crs, &list, p, &open)?)
+                    }
+                    None => None,
+                };
+                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None, outline: None, bands, presence, hollow })
             }
         }
     }
@@ -591,9 +758,10 @@ impl Checks for Elevation {
     /// 3: heights no geoid chain converts, or converts only in part, found (`el-geoid`). 4: a
     /// dataset's `regions` cut it to their outlines inside its cells (`Measured::outline`). 5: a
     /// GeoTIFF dataset's bands and presence (`Measured::bands`, `presence`), one accepted without
-    /// them measured again (`seed`).
+    /// them measured again (`seed`). 6: its hollow tiles (`Measured::hollow`), one accepted without
+    /// them measured again.
     fn version(&self) -> u32 {
-        5
+        6
     }
 
     fn recursive(&self) -> bool {
@@ -837,12 +1005,13 @@ impl Checks for Elevation {
             let Some(Ok(mut m)) = e.facts.get("measured").map(|v| serde_json::from_value::<Measured>(v.clone())) else {
                 continue;
             };
-            // (A GeoTIFF dataset with a coverage measured before its presence was (task #929): measured
-            // again, its presence and bands with it; else the terrain's places stay its cells.)
+            // (A GeoTIFF dataset with a coverage measured before its presence was (task #929), or its
+            // presence before its hollow tiles were (#842): measured again, its presence, hollow tiles
+            // and bands with it; else the terrain's places stay its cells, and every deep target runs.)
             let geotiff = e.facts.get("declaration").and_then(|d| d.get("data")).and_then(|d| d.get("format"))
                 == Some(&serde_json::json!("geotiff"));
             if geotiff
-                && m.presence.is_none()
+                && (m.presence.is_none() || m.hollow.is_none())
                 && m.uncut.as_ref().or(m.cover.as_ref()).is_some_and(|c| c.as_slice() != [declared::WORLD].as_slice())
             {
                 continue;
@@ -1057,8 +1226,16 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
             every_zoom: true,
         },
     };
-    let measured =
-        Measured { crs: None, resolution: 150.0, cover: None, uncut: None, outline: None, bands: None, presence: None };
+    let measured = Measured {
+        crs: None,
+        resolution: 150.0,
+        cover: None,
+        uncut: None,
+        outline: None,
+        bands: None,
+        presence: None,
+        hollow: None,
+    };
     let entry = |id: &str, d: &Declaration, measured: Measured, keyed: &str| {
         let mut facts = serde_json::Map::new();
         facts.insert("declaration".into(), serde_json::to_value(d).unwrap());
@@ -1093,7 +1270,16 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
     files.extend([entry(
         "terrarium",
         &base,
-        Measured { crs: None, resolution: 38.0, cover: None, uncut: None, outline: None, bands: None, presence: None },
+        Measured {
+            crs: None,
+            resolution: 38.0,
+            cover: None,
+            uncut: None,
+            outline: None,
+            bands: None,
+            presence: None,
+            hollow: None,
+        },
         "t",
     )]);
     let north = Declaration {
@@ -1116,6 +1302,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
             outline: None,
             bands: None,
             presence: None,
+            hollow: None,
         },
         "g",
     )]);

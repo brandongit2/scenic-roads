@@ -1137,6 +1137,13 @@ pub struct TerrainTargets {
     /// datasets can't be read (the terrain-hi keys are `UNKNOWN` then, and every z6 tile waits).
     #[serde(default)]
     pub terrain_deep: Vec<(String, String)>,
+    /// Of them, those with no data past z12 (crate::terrain_zoom::hollow: its sources' presence
+    /// read finer by the input check, `Measured::hollow`) and neither a deep pack nor a slope deep
+    /// pack named: no data, never run, and their slope-deep targets with them (task #842). Kept as
+    /// targets keyed as before, so no other key moves: a z6 tile over one reads no deep mid there,
+    /// as over a run of it that made none.
+    #[serde(default)]
+    pub deep_hollow: BTreeSet<String>,
     /// Slope-deep's, the same z10 tiles.
     #[serde(default)]
     pub slope_deep: Vec<(String, Option<String>)>,
@@ -1265,6 +1272,12 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
             for &t in d.targets_in(p).iter() {
                 deep.insert(t);
                 let ts = format!("{}/{}/{}", crate::terrain_deep::PACK_Z, t.0, t.1);
+                if crate::terrain_zoom::hollow(&d.sets, t.0, t.1)
+                    && crate::terrain_deep::named_under(m, crate::terrain_deep::PACK_Z, t.0, t.1).is_empty()
+                    && !m.contains_key(&crate::slope_pack::deep_logical(t.0, t.1))
+                {
+                    out.deep_hollow.insert(ts.clone());
+                }
                 out.terrain_deep.push((ts.clone(), key("terrain-deep", &ts)));
                 out.slope_deep.push((ts.clone(), super::steps::derived_key("slope-deep", &ts, x)));
             }
@@ -1719,7 +1732,10 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
     w.terrain_lo.extend(lo_none);
     // The deep levels: from the start (their base is made from the pool, no built tile read), each
     // z3 tile with one left waiting like one with terrain-hi left.
-    let dcurrent = |t: &str, k: &str| k != UNKNOWN && done.terrain_deep.get(t).map(String::as_str) == Some(k);
+    // (A target with no data past z12 is settled unrun: none waits for it, `TerrainTargets::deep_hollow`.)
+    let dcurrent = |t: &str, k: &str| {
+        tt.deep_hollow.contains(t) || (k != UNKNOWN && done.terrain_deep.get(t).map(String::as_str) == Some(k))
+    };
     w.terrain_deep_left = tt
         .terrain_deep
         .iter()
@@ -1785,7 +1801,9 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
         .chain(slo_none.iter().map(|l| l.0.clone()))
         .collect();
     // (Slope-deep: its z10 tiles' parts of the pyramid, which their z6 tiles' slope-hi runs take in.)
-    let sdcurrent = |t: &str, k: &Option<String>| k.as_ref().is_some_and(|k| done.slope_deep.get(t) == Some(k));
+    let sdcurrent = |t: &str, k: &Option<String>| {
+        tt.deep_hollow.contains(t) || k.as_ref().is_some_and(|k| done.slope_deep.get(t) == Some(k))
+    };
     let sdnone: Vec<(String, String)> =
         tt.slope_deep_none.iter().filter(|(t, k)| done.slope_deep.get(t) != Some(k)).cloned().collect();
     w.slope_deep_left = tt
@@ -4378,12 +4396,23 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
     let deep_empty =
         empty_of("terrain-deep", &mut ts.terrain_deep.iter().map(|(t, k)| (t, Some(k))), &done.terrain_deep);
     let slope_empty = empty_of("slope-deep", &mut ts.slope_deep.iter().map(|(t, k)| (t, k.as_ref())), &done.slope_deep);
+    // (Those with no data past z12, never run (`TerrainTargets::deep_hollow`): done, said apart. One
+    // recorded current is done as any other.)
+    let unrun = |all: &mut dyn Iterator<Item = (&String, Option<&String>)>, map: &BTreeMap<String, String>| {
+        all.filter(|(t, k)| ts.deep_hollow.contains(*t) && (k.is_none() || map.get(*t) != *k)).count()
+    };
+    let deep_nodata = unrun(&mut ts.terrain_deep.iter().map(|(t, k)| (t, Some(k))), &done.terrain_deep);
+    let slope_nodata = unrun(&mut ts.slope_deep.iter().map(|(t, k)| (t, k.as_ref())), &done.slope_deep);
     for it in out.iter_mut() {
-        it.empty = match it.step.as_str() {
-            "terrain-deep" => deep_empty,
-            "slope-deep" => slope_empty,
-            _ => it.empty,
+        let (empty, nodata) = match it.step.as_str() {
+            "terrain-deep" => (deep_empty, deep_nodata),
+            "slope-deep" => (slope_empty, slope_nodata),
+            _ => (it.empty, 0),
         };
+        it.empty = empty;
+        it.nodata = nodata;
+        it.done += nodata;
+        it.left = it.left.map(|l| l - nodata);
     }
     out.push(slope_of("slope-hi", &ts.slope, &done.slope_hi));
     out.push(sized("slope-lo", &ts.slope_lo, &done.slope_lo, true));
@@ -5220,6 +5249,38 @@ mod tests {
             &done3,
         );
         assert_eq!(w3.slope_deep, vec![(a.to_string(), "s".to_string())], "{w3:?}");
+    }
+
+    /// Task #842: a deep target with no data past z12 (`TerrainTargets::deep_hollow`) is run by no
+    /// job, its slope-deep with it, and nothing waits for it: neither its z6 tile's terrain-hi nor a
+    /// neighbour's slope-deep; the checklist counts it done, with no data, not run.
+    #[test]
+    fn a_hollow_deep_target_runs_no_job_and_holds_nothing() {
+        let k = |s: &str| (s.to_string(), "k".to_string());
+        let (a, b) = ("10/400/300", "10/401/300");
+        let tt = TerrainTargets {
+            terrain: vec![k("6/25/18")],
+            terrain_lo: vec![k("3/3/2")],
+            terrain_deep: vec![k(a), k(b)],
+            slope_deep: [a, b].iter().map(|t| (t.to_string(), Some("s".to_string()))).collect(),
+            deep_hollow: [a.to_string()].into(),
+            ..Default::default()
+        };
+        let tiles = crate::agent::tiles::TerrainTiles::default();
+        let (cov, m, inputs) = (crate::coverage::Coverage::default(), BTreeMap::new(), BTreeMap::new());
+        let x = KeyCtx::new(&cov, "d", &m, &inputs, None, &tiles);
+        let mut done = Keys::default();
+        let w = terrain_work(&tt, &x, &done);
+        assert_eq!(w.terrain_deep, vec![k(b)], "the one with data alone runs");
+        assert!(!w.terrain_deep_left.contains(a) && !w.slope_deep_left.contains(a), "{w:?}");
+        assert!(w.slope_deep.is_empty(), "b's slope waits for b, a's runs never");
+        // (b built: its slope-deep runs, not waiting on a, its edge neighbour.)
+        done.record("terrain-deep", &[k(b)]);
+        done.record("terrain-hi", &tt.terrain);
+        done.record("terrain-lo", &tt.terrain_lo);
+        let w = terrain_work(&tt, &x, &done);
+        assert!(w.terrain_deep.is_empty() && w.terrain_deep_left.is_empty(), "{w:?}");
+        assert_eq!(w.slope_deep, vec![(b.to_string(), "s".to_string())]);
     }
 
     /// Task #864: slope-hi's and slope-deep's declared reads (crate::agent::steps::read_targets) are
@@ -8016,6 +8077,7 @@ mod tests {
             outline: None,
             bands: None,
             presence: None,
+            hollow: None,
         };
         (
             crate::dem::declared::Accepted {

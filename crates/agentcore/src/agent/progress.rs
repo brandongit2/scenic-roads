@@ -34,6 +34,11 @@ pub struct Item {
     /// data there; crate::agent::steps::output_named), counted apart; 0 left out.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub empty: usize,
+    /// Of `done`, the targets settled without a run: no data there (task #842: a deep tile whose
+    /// fine datasets' presence a finer read found empty, crate::terrain_zoom::hollow), counted apart;
+    /// 0 left out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub nodata: usize,
     /// Its count in words (`count`) and whether it's done, as the status serves them (`said`,
     /// task #846): what the menu bar and the build page print.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -59,10 +64,16 @@ fn grouped(n: usize) -> String {
     out
 }
 
-/// "{done} of {total} {noun}s", and the done that made nothing to publish apart.
-fn of_total(done: usize, total: usize, empty: usize, nouns: &str) -> String {
-    let none = if empty > 0 { format!(" ({} with nothing to publish)", grouped(empty)) } else { String::new() };
-    format!("{} of {} {nouns}{none}", grouped(done), grouped(total))
+/// "{done} of {total} {noun}s", and the done that made nothing to publish and those with no data
+/// (not run) apart.
+fn of_total(done: usize, total: usize, empty: usize, nodata: usize, nouns: &str) -> String {
+    let apart: Vec<String> = [(empty, "with nothing to publish"), (nodata, "with no data, not run")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{} {what}", grouped(n)))
+        .collect();
+    let apart = if apart.is_empty() { String::new() } else { format!(" ({})", apart.join("; ")) };
+    format!("{} of {} {nouns}{apart}", grouped(done), grouped(total))
 }
 
 impl Item {
@@ -87,7 +98,7 @@ impl Item {
     pub fn count(&self, the_plan: &dyn crate::agent::seam::Plan) -> String {
         let noun = if self.noun.is_empty() { the_plan.noun(&self.step) } else { self.noun.as_str() };
         match (self.total, self.left) {
-            (Some(t), _) if t > 0 => of_total(self.done, t, self.empty, &format!("{noun}s")),
+            (Some(t), _) if t > 0 => of_total(self.done, t, self.empty, self.nodata, &format!("{noun}s")),
             (_, Some(0)) => "done".into(),
             (_, Some(l)) => format!("{} {noun}{} left", grouped(l), if l == 1 { "" } else { "s" }),
             _ => "to come".into(),
@@ -192,9 +203,10 @@ impl Line {
                     let (d, t): (usize, usize) =
                         (of.iter().map(|j| j.done).sum(), of.iter().map(|j| j.total.unwrap_or(0)).sum());
                     let e: usize = of.iter().map(|j| j.empty).sum();
+                    let n: usize = of.iter().map(|j| j.nodata).sum();
                     // (A noun past the line's own with nothing to do isn't said.)
                     if t > 0 || out.is_empty() {
-                        out.push(of_total(d, t, e, &format!("{noun}s")));
+                        out.push(of_total(d, t, e, n, &format!("{noun}s")));
                     }
                 } else {
                     out.push(format!("{noun}s to come"));
@@ -217,3 +229,21 @@ impl Line {
 
 /// The regions' steps' checklist: its items, and each stage's jobs to come (`checklist`).
 pub type Checklist = (Vec<Item>, BTreeMap<&'static str, Vec<String>>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The done that made nothing to publish (#839) and those with no data, not run (#842), said
+    /// apart; neither, nothing more.
+    #[test]
+    fn a_count_says_the_empty_and_the_unrun_apart() {
+        assert_eq!(of_total(318, 4244, 0, 0, "z10 tiles"), "318 of 4,244 z10 tiles");
+        assert_eq!(of_total(318, 4244, 47, 0, "z10 tiles"), "318 of 4,244 z10 tiles (47 with nothing to publish)");
+        assert_eq!(
+            of_total(1_018, 4244, 47, 700, "z10 tiles"),
+            "1,018 of 4,244 z10 tiles (47 with nothing to publish; 700 with no data, not run)"
+        );
+        assert_eq!(of_total(700, 4244, 0, 700, "z10 tiles"), "700 of 4,244 z10 tiles (700 with no data, not run)");
+    }
+}

@@ -1220,7 +1220,16 @@ there, lies in a file's data, each file narrower than such a tile by its index f
 other by its coarsest overview's valid pixels, every file of the dataset read so. The terrain's
 finest zoom and the roads' spacing count a dataset only where it has data so
 (crate::terrain_zoom::sources: a tile its cells merely touch, or whose files hold no data there,
-isn't one of its places); measured once a version, a version measured before it counts its cells. A tile pyramid's resolution comes from its zoom at its coverage's
+isn't one of its places); measured once a version, a version measured before it counts its cells.
+Of those, where a finer read finds no valid pixel (`hollow`, crate::inputs::elevation::hollow_of,
+task #842): each file meeting a presence tile (a narrow one's footprint opened too) read over the
+tile's box at the coarsest of its levels whose pixels are no wider than 1/128 of a z10 tile at the
+equator (~300 m; its full resolution where none is), its sparse blocks read as no data, eight
+files at once. Only the
+plan reads it: a terrain-deep target whose every source reaching past z12 is hollow there is never
+run (docs/steps.md §2, Terrain); a place's sources and every key stay `presence`'s, so a dataset
+measured again moves no key by it. Measured once a version with the presence; one accepted before
+it (checks version 5) is measured again. A tile pyramid's resolution comes from its zoom at its coverage's
 mid-latitude, and a tile is read to check it's 256 px (`generic::TILE_PX`). The coverage is also the
 credits' extent (§4.8).
 

@@ -810,7 +810,10 @@ fn a_dataset_accepted_before_its_presence_is_measured_again() {
         serde_json::from_value(d.index.files["whole.toml"].facts["measured"].clone()).unwrap()
     };
     let want = measured(&first);
-    assert!(want.presence.as_ref().is_some_and(|p| !p.is_empty()) && want.bands.is_some(), "{want:?}");
+    assert!(
+        want.presence.as_ref().is_some_and(|p| !p.is_empty()) && want.bands.is_some() && want.hollow.is_some(),
+        "{want:?}"
+    );
     // With its presence, as accepted: nothing read.
     let same = decide_with(&checks(MapFetch::default()), &files, Some(&first), &copies);
     assert!(same.report.is_none() && same.read.is_empty(), "{:?}", same.report);
@@ -827,4 +830,59 @@ fn a_dataset_accepted_before_its_presence_is_measured_again() {
     let again = decide_with(&checks(fetch()), &files, Some(&before), &copies);
     assert!(again.report.is_none(), "{:?}", again.report);
     assert_eq!(measured(&again), want);
+    // (As accepted before task #842: its presence, no hollow tiles: measured again too.)
+    let mut before = again;
+    before.index.checks = format!("{UNIT} 5");
+    let e = before.index.files.get_mut("whole.toml").unwrap();
+    e.facts.get_mut("measured").unwrap().as_object_mut().unwrap().remove("hollow");
+    let unread = decide_with(&checks(MapFetch::default()), &files, Some(&before), &copies);
+    assert!(unread.report.is_some(), "measured again, its data not served");
+    assert_eq!(measured(&decide_with(&checks(fetch()), &files, Some(&before), &copies)), want);
+}
+
+/// Task #842: of a dataset's presence, the deep tiles a finer read finds no valid pixel in are
+/// hollow; one with any is not, and a footprint narrower than a tile (presence's data whole) is
+/// read too.
+#[test]
+fn a_presence_tile_with_no_valid_pixel_is_hollow() {
+    use crate::dem::zoom::PACK_Z;
+    // (A 1° file at 2°E 48°N, 100″ pixels: data in its western sixth alone, its two westmost columns
+    // of z10 tiles; nodata elsewhere.)
+    let mut data = vec![-9999.0f32; 36 * 36];
+    for r in 0..36 {
+        for c in 0..6 {
+            data[r * 36 + c] = 40.0;
+        }
+    }
+    let gt = [2.0, 100.0 * PX, 0.0, 49.0, 0.0, -100.0 * PX];
+    let bytes = buildstore::geotiff::write_f32(36, 36, &data, 16, gt, 4326, Some(-9999.0)).unwrap();
+    let open = |_: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
+        buildstore::geotiff::Tiff::open(Arc::new(bytes.clone())).map_err(|e| format!("{e:#}"))
+    };
+    let files = vec![("f.tif".to_string(), Some([2.0, 48.0, 3.0, 49.0]))];
+    // (Every z10 tile inside the file, as a presence by footprints would have them.)
+    let presence: Vec<[u32; 2]> = (0u32..1 << PACK_Z)
+        .flat_map(|x| (0u32..1 << PACK_Z).map(move |y| [x, y]))
+        .filter(|t| {
+            let b = roadcore::geo::tile_box(PACK_Z, t[0], t[1]);
+            b[0] >= 2.0 && b[2] <= 3.0 && b[1] >= 48.0 && b[3] <= 49.0
+        })
+        .collect();
+    assert!(presence.len() > 4, "{presence:?}");
+    let hollow = hollow_of(4326, &files, &presence, &open).unwrap();
+    let west = |t: &[u32; 2]| roadcore::geo::tile_box(PACK_Z, t[0], t[1])[0] < 2.0 + 6.0 * 100.0 * PX;
+    assert!(!hollow.is_empty() && hollow.iter().all(|t| !west(t)), "{hollow:?}");
+    for t in &presence {
+        assert_eq!(hollow.contains(t), !west(t), "{t:?}: hollow only where no pixel holds data");
+    }
+    // (All nodata: every tile hollow, the file read though its footprint is narrower than a tile.)
+    let none = buildstore::geotiff::write_f32(36, 36, &[-9999.0f32; 36 * 36], 16, gt, 4326, Some(-9999.0)).unwrap();
+    let open_none = |_: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
+        buildstore::geotiff::Tiff::open(Arc::new(none.clone())).map_err(|e| format!("{e:#}"))
+    };
+    let t = presence[0];
+    let b = roadcore::geo::tile_box(PACK_Z, t[0], t[1]);
+    let small = vec![("s.tif".to_string(), Some([b[0] + 0.01, b[1] + 0.01, b[0] + 0.02, b[1] + 0.02]))];
+    assert_eq!(hollow_of(4326, &small, &[t], &open_none).unwrap(), vec![t]);
+    assert!(west(&t) && hollow_of(4326, &small, &[t], &open).unwrap().is_empty(), "its data read, not its footprint");
 }

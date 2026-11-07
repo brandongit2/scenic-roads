@@ -51,7 +51,7 @@ templated from its row (its `id`, `steps::said`, `counted`):
 |---|---|---|
 | a job's name (agent, menu bar) | `{id}: {n} {noun}s`; a worldwide step `{id}` | "terrain-hi: 8 z6 tiles", "outlines" |
 | a job's name (the build page) | its id: `{id} {first target}`; a worldwide step `{id}` | "terrain-deep 10/259/338", "outlines" |
-| a checklist count | `{done} of {total} {noun}s` (thousands grouped; the done that made nothing to publish apart), `{left} {noun}s left`, "done", "to come" (not sized yet): served as `counts`/`count` and `finished` (progress::Line::said), printed as is by the menu bar and the page | "156 of 284 z6 tiles", "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)" |
+| a checklist count | `{done} of {total} {noun}s` (thousands grouped; the done that made nothing to publish, and those with no data and not run, apart), `{left} {noun}s left`, "done", "to come" (not sized yet): served as `counts`/`count` and `finished` (progress::Line::said), printed as is by the menu bar and the page | "156 of 284 z6 tiles", "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)" |
 | a step waiting | `{id}: {why}` | "lakefill: failed 3 times in a row: …" |
 | an event | `{who} finished {job's name} in {time}` | "m4 finished unit 6/33/22 (unit: 6 z6 tiles) in 10 min" |
 
@@ -248,7 +248,10 @@ The Jobs tab's stages are the one exception.
     time is compared, as no catalogue will name it. Hidden until toggled on in the legend (counted
     there all the same, not in a step's count), then barely tinted under a hairline; its card says
     no files were made. The checklist counts them apart: "7,837 z10 tiles done (6,814 with
-    nothing to publish)", on the page and in `scenic status`.
+    nothing to publish)", on the page and in `scenic status`. A deep tile the plan knows has no
+    fine data (#842: its sources' hollow tiles, docs/steps.md §2) isn't run at all: no record, so
+    the map draws nothing there; the checklist counts it done and says it apart ("…; 306 with no
+    data, not run").
   A tile in two of them is the running one, else the queued one: built before and to be built
   again, its finished tile isn't drawn. It was published before (sums.js publishedBefore) when a
   catalogue kept published its step's own output there (#994: `/work/catalogs`' `steps`, the last

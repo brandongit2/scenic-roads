@@ -235,6 +235,7 @@ mod tests {
                 outline: None,
                 bands: None,
                 presence: None,
+                hollow: None,
             },
             keyed: "k".into(),
         };

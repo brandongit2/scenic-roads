@@ -317,6 +317,12 @@ pub struct Measured {
     /// presence was): its coverage's cells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence: Option<Vec<[u32; 2]>>,
+    /// Of `presence`, the tiles where a finer read of its files found no valid pixel, sorted
+    /// (crate::inputs::elevation::hollow_of): read by the plan alone, which runs no terrain-deep
+    /// target there that none but such datasets would fill (task #842), never by a place's sources
+    /// or a key. None: measured before it was (`presence` holds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hollow: Option<Vec<[u32; 2]>>,
     /// Where it has data: 1° cells merged into boxes (w, s, e, n); None: the world.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Vec<[f64; 4]>>,
@@ -621,6 +627,36 @@ impl Cover {
                     && (x + 1) as f64 >= b[0]
                     && (y as f64) <= b[3]
                     && (y + 1) as f64 >= b[1]
+            })
+        })
+    }
+
+    /// Whether box `b` (w, s, e, n, degrees) holds none of it once its regions' outlines cut it:
+    /// every cell of it the box meets (`meets`) is an edge cell whose outlines have nothing in the
+    /// box, their buffer included (`OutlineCut::within`). `meets` reads the cells alone, so a box
+    /// past the outlines in an edge cell meets it, and a sampler reads nothing of it there
+    /// (`contains`). Not cut: whether it meets none.
+    pub fn holds_none(&self, b: [f64; 4]) -> bool {
+        if !self.meets(b) {
+            return true;
+        }
+        let Some(o) = &self.outline else { return false };
+        let e7 = |v: f64| (v * 1e7).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+        let (x0, x1, y0, y1) =
+            (b[0].floor() as i32 - 1, b[2].floor() as i32, b[1].floor() as i32 - 1, b[3].floor() as i32);
+        (x0..=x1).all(|x| {
+            (y0..=y1).all(|y| {
+                let (fx, fy) = (x as f64, y as f64);
+                let meets = fx <= b[2] && fx + 1.0 >= b[0] && fy <= b[3] && fy + 1.0 >= b[1];
+                !meets
+                    || !self.cells.contains(&(x, y))
+                    || (o.edges.contains(&(x, y))
+                        && o.within([
+                            e7(b[0].max(fx)),
+                            e7(b[1].max(fy)),
+                            e7(b[2].min(fx + 1.0)),
+                            e7(b[3].min(fy + 1.0)),
+                        ]) == Within::Outside)
             })
         })
     }
@@ -1532,6 +1568,12 @@ mod tests {
         assert_eq!(m.cover, Some(vec![[18.0, 44.0, 21.0, 47.0]]));
         assert_eq!(m.outline.as_ref().unwrap().edges.iter().collect::<Vec<_>>(), ["20,44", "20,45", "20,46"]);
         assert!(c.contains(20.3, 45.5) && !c.contains(20.5, 45.5));
+        // (Task #842: a box past the border in the edge cell meets it by its cells and holds none
+        // of it; one across the border holds some, and one in a whole cell all.)
+        let past = [20.6, 45.2, 20.9, 45.5];
+        assert!(c.meets(past) && c.holds_none(past));
+        assert!(!c.holds_none([20.2, 45.2, 20.6, 45.5]) && !c.holds_none([19.2, 45.2, 19.6, 45.5]));
+        assert!(c.holds_none([22.2, 45.2, 22.6, 45.5]), "past its cells");
         let (both, c2) = outlined(&[[18.0, 44.0, 23.0, 47.0]], &["west", "east"], &[west, east]);
         assert!(c2.contains(20.3, 45.5) && c2.contains(20.5, 45.5) && c2.contains(21.5, 45.5));
         // (Two regions meeting inside a cell hold it whole together: their shared edge is none. The
@@ -1694,6 +1736,7 @@ encoding = "lerc"
                 outline: None,
                 bands: None,
                 presence: None,
+                hollow: None,
             },
             keyed: "k".into(),
             convert: None,
