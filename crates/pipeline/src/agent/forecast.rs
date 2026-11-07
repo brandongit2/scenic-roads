@@ -30,8 +30,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use super::steps::SHARED;
-
 /// A read target (`read_targets`): one target of a step, or a step's every target.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ReadTarget {
@@ -250,7 +248,7 @@ pub struct Noted {
 
 impl Noted {
     /// `inp`'s costs noted (at `inp.now`), those not seen for `STEP_PACE_S` dropped.
-    pub fn note(&mut self, inp: &Input) {
+    pub fn note(&mut self, the_plan: &dyn crate::agent::seam::Plan, inp: &Input) {
         let now = inp.now;
         for (step, ts) in &inp.costs {
             for (t, c) in ts {
@@ -258,7 +256,7 @@ impl Noted {
             }
         }
         for (step, t, c) in inp.chains.iter().chain(&inp.after).chain(&inp.idle) {
-            if SHARED.contains(&step.as_str()) {
+            if the_plan.shared().contains(&step.as_str()) {
                 self.costs.insert((step.clone(), t.clone()), (c.secs, now));
             }
         }
@@ -497,13 +495,14 @@ pub fn at_lead(
 /// (crate::coord::cost_version), weighed by crate::needs::time_weight (a PER_WORK step's by the
 /// work it did, task #830). A step's mean time a target is the one over the other.
 pub fn step_sums(
+    the_plan: &dyn crate::agent::seam::Plan,
     costs: &BTreeMap<String, crate::coord::Cost>,
     at: &dyn Fn(&crate::coord::Cost, &str) -> f64,
 ) -> BTreeMap<String, (f64, f64)> {
     let mut sums: BTreeMap<String, (f64, f64)> = BTreeMap::new();
     for (k, c) in costs {
         let step = crate::agent::memguard::step_of_key(k);
-        if c.v < crate::coord::cost_version(step) {
+        if c.v < the_plan.cost_version(step) {
             continue;
         }
         let Some(w) = crate::needs::time_weight(step, c) else { continue };
@@ -593,8 +592,8 @@ pub struct Record<'a> {
 
 impl Record<'_> {
     /// The forecast it holds: the lead's.
-    pub fn forecast(&self) -> Forecast {
-        let mut f = forecast(&self.input);
+    pub fn forecast(&self, the_plan: &'static dyn crate::agent::seam::Plan) -> Forecast {
+        let mut f = forecast(the_plan, &self.input);
         f.each_s = self.each_s.clone();
         f.waiting = self.waiting.clone();
         f
@@ -930,6 +929,7 @@ enum Phase {
 /// nothing in `free`: 6 Nov's record had some 1 M slope-deep parts the slope-hi tiles read, 2,300
 /// reads waiting in all; and each step's `may_wait`, with the items listed when it was worked out).
 struct Waits<'a> {
+    the_plan: &'static dyn crate::agent::seam::Plan,
     along: &'a crate::agent::seam::Along,
     whole: BTreeMap<&'static str, (usize, usize)>,
     held: std::collections::HashMap<u64, Deps>,
@@ -950,8 +950,9 @@ fn held_key(step: &str, t: &str) -> u64 {
 type Deps = (Vec<usize>, Vec<usize>);
 
 impl<'a> Waits<'a> {
-    fn new(inp: &'a Input) -> Self {
+    fn new(the_plan: &'static dyn crate::agent::seam::Plan, inp: &'a Input) -> Self {
         Waits {
+            the_plan,
             along: &inp.along,
             whole: BTreeMap::new(),
             held: Default::default(),
@@ -971,7 +972,7 @@ impl<'a> Waits<'a> {
     /// is listed waits on the steps it reads on (`read_steps`, the planner's `whole_left`).
     fn of(&mut self, by: &Index, groups: &mut Vec<Vec<usize>>, step: &str, t: &str) -> Deps {
         let (mut deps, mut gs) = (Vec::new(), Vec::new());
-        for (r, passes) in crate::agent::steps::read_targets_passing(step, t, Some(self.along)) {
+        for (r, passes) in self.the_plan.read_targets_passing(step, t, Some(self.along)) {
             match r {
                 ReadTarget::One(s, u) => match by.of.get(&(s.to_string(), u.clone())) {
                     Some(&i) => deps.push(i),
@@ -1030,9 +1031,8 @@ impl<'a> Waits<'a> {
         // (No cycle in the declared reads; marked first all the same.)
         self.may.insert(step, (n, false));
         let listed = |s: &str| by.of.range((s.to_string(), String::new())..).next().is_some_and(|((st, _), _)| st == s);
-        let m = crate::agent::steps::read_steps(step)
-            .into_iter()
-            .any(|(s, passes)| listed(s) || (passes && self.may_wait(by, s)));
+        let m =
+            self.the_plan.read_steps(step).into_iter().any(|(s, passes)| listed(s) || (passes && self.may_wait(by, s)));
         self.may.insert(step, (n, m));
         m
     }
@@ -1043,7 +1043,7 @@ impl<'a> Waits<'a> {
         match self.group(by, groups, step) {
             Some(g) => gs.push(g),
             None => {
-                for (s, passes) in crate::agent::steps::read_steps(step) {
+                for (s, passes) in self.the_plan.read_steps(step) {
                     if passes {
                         self.whole_left(by, groups, s, gs);
                     }
@@ -1157,7 +1157,7 @@ struct Items {
 }
 
 /// The work as items, each with the items it waits for.
-fn items(inp: &Input) -> Items {
+fn items(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input) -> Items {
     let mut out: Vec<Item> = Vec::new();
     let mut groups: Vec<Vec<usize>> = Vec::new();
     let mut by_target = Index::default();
@@ -1172,7 +1172,7 @@ fn items(inp: &Input) -> Items {
         if let Some(&i) = by.of.get(&(step.to_string(), target.to_string())) {
             return i;
         }
-        let shared = SHARED.contains(&step) && phase != Phase::Before;
+        let shared = the_plan.shared().contains(&step) && phase != Phase::Before;
         deps.shrink_to_fit();
         out.push(Item {
             step: step.into(),
@@ -1202,7 +1202,7 @@ fn items(inp: &Input) -> Items {
     // (its row's declaration, as the planner's waits: `Waits::of`).
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
     let item_of = |by: &Index, step: &str, t: &str| by.of.get(&(step.to_string(), t.to_string())).copied();
-    let mut waits = Waits::new(inp);
+    let mut waits = Waits::new(the_plan, inp);
     let mut reads = |by: &Index, groups: &mut Vec<Vec<usize>>, step: &str, t: &str| waits.of(by, groups, step, t);
     // (A set many wait for, listed once: its index in `groups`.)
     let group = |groups: &mut Vec<Vec<usize>>, mut v: Vec<usize>| -> usize {
@@ -1416,17 +1416,17 @@ impl Pool {
     /// job a lane: `Ask::want` 1), its room as with none of its jobs reserved (the scheduler counts
     /// the leases out), no load from outside the pool; a Mac whose ask isn't recorded with its room
     /// (`Input::macs`), else a lane's memory and cores past any job's.
-    fn new(inp: &Input, items: &[Item]) -> Pool {
+    fn new(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input, items: &[Item]) -> Pool {
         let t0 = Instant::now();
         let clock = Clock { now: t0, unix: inp.now };
         let mut pool = Pool {
-            sched: Sched::from_state(inp.sched.as_ref().unwrap_or(&State::default()), clock, RUN_TTL),
+            sched: Sched::from_state(the_plan, inp.sched.as_ref().unwrap_or(&State::default()), clock, RUN_TTL),
             asks: BTreeMap::new(),
             t0,
             now: inp.now,
             current: BTreeSet::new(),
         };
-        let v = |k: &str| crate::coord::cost_version(crate::agent::memguard::step_of_key(k));
+        let v = |k: &str| the_plan.cost_version(crate::agent::memguard::step_of_key(k));
         pool.current = pool
             .sched
             .costs
@@ -1469,7 +1469,7 @@ impl Pool {
             a.want = 1;
             // (Its cores less those busy outside the pool as its last ask said, as the coordinator
             // counts them (task #684): the run's jobs are packed into what's left, as granted.)
-            let cores = inp.sched.as_ref().map(|s| s.cores_left(&a));
+            let cores = inp.sched.as_ref().map(|s| s.cores_left(the_plan, &a));
             if let Some(c) = a.cap.as_mut() {
                 a.disk_mb = a.disk_mb.map(|d| d + c.reserved_mb);
                 c.cores = cores.unwrap_or(c.cores);
@@ -1495,7 +1495,7 @@ impl Pool {
     /// (one of an older `cost_version` is replaced, as a hand-off's is).
     fn learn(&mut self, it: &Item) {
         let k = cost_key(&it.step, &it.target);
-        let v = crate::coord::cost_version(&it.step);
+        let v = self.sched.the_plan.cost_version(&it.step);
         if self.sched.costs.get(&k).is_some_and(|c| c.v >= v) {
             return;
         }
@@ -1522,8 +1522,13 @@ fn mac_of(m: &Machine) -> String {
 
 /// `run_on` on `inp`'s items (the tests': a forecast lists them once for its three runs).
 #[cfg(test)]
-fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
-    run_on(inp, items(inp), scale, budget)
+fn run(
+    the_plan: &'static dyn crate::agent::seam::Plan,
+    inp: &Input,
+    scale: &dyn Fn(&Cost) -> f64,
+    budget: Duration,
+) -> Sim {
+    run_on(the_plan, inp, items(the_plan, inp), scale, budget)
 }
 
 /// One run through the work (`its`, `items`), each item's time `scale`d. As a lane frees, its Mac asks the
@@ -1534,13 +1539,19 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
 /// A lane given none asks again once a job ends (or `ASK_AGAIN_S`).
 /// Cut once its thread has computed `budget`, or after `BACKSTOP` times it on the wall clock
 /// (`Sim::cut`, `thread_cpu`).
-fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
+fn run_on(
+    the_plan: &'static dyn crate::agent::seam::Plan,
+    inp: &Input,
+    its: Items,
+    scale: &dyn Fn(&Cost) -> f64,
+    budget: Duration,
+) -> Sim {
     let (cpu0, wall0) = (thread_cpu(), Instant::now());
     let Items { mut items, region_items, groups } = its;
     for it in &mut items {
         it.cost.secs = (scale(&it.cost) * inp.step_pace.get(&it.step).copied().unwrap_or(1.0)).max(1.0);
     }
-    let mut pool = Pool::new(inp, &items);
+    let mut pool = Pool::new(the_plan, inp, &items);
     let n = inp.machines.len();
     let mut free: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(m.from_s).max(0.0)).collect();
     // What's being built now: done when its machine is free.
@@ -1765,7 +1776,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
                 order.extend(ready.steps(pi(p)));
             }
             let ask = Ask { want: lanes.len(), ..pool.asks[&g].clone() };
-            let offers = offers(&items, &order, &ask);
+            let offers = offers(the_plan, &items, &order, &ask);
             // (Every Mac with a lane free asking, as the live ones do each loop: placement draws
             // among those asking lately, which aged out as the run's seconds passed.)
             let idle = |g: &str| {
@@ -1857,7 +1868,7 @@ const GRANTS_S: f64 = 3600.0;
 /// (`OFFER_MAX` at most), where its work first comes, each once; the lead's own steps' each a
 /// planned job of its own (`Offer::job`); only the steps the Mac does (`Ask::can`, all when it says
 /// none).
-fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
+fn offers(the_plan: &dyn crate::agent::seam::Plan, items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
     let mut out: Vec<Offer> = Vec::new();
     let mut of_step: BTreeMap<&str, usize> = BTreeMap::new();
     // (Whether the last step seen is offered to every member: a group is one step's.)
@@ -1887,7 +1898,7 @@ fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
             let offered = match last {
                 Some((st, o)) if st == it.step => o,
                 _ => {
-                    let o = super::every::offered(&it.step);
+                    let o = super::every::offered(the_plan, &it.step);
                     last = Some((&it.step, o));
                     o
                 }
@@ -1962,12 +1973,12 @@ fn scaled((known, guess): (f64, f64)) -> impl Fn(&Cost) -> f64 {
 }
 
 /// The forecast for `inp`, within `BUDGET`.
-pub fn forecast(inp: &Input) -> Forecast {
-    forecast_by(inp, BUDGET)
+pub fn forecast(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input) -> Forecast {
+    forecast_by(the_plan, inp, BUDGET)
 }
 
 /// The forecast for `inp`, each run cut once it has computed `budget`.
-pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
+pub fn forecast_by(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input, budget: Duration) -> Forecast {
     // (Two machines under one name would share its lanes while `run_of` numbers both: task #816's
     // panic in `runs_of`. A bug upstream; keep each name's first, say so, and go on.)
     let mut seen = std::collections::BTreeSet::new();
@@ -1976,7 +1987,7 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
         let mut once = inp.clone();
         once.machines.retain(|m| seen.insert(m.name.clone()));
         eprintln!("forecast: machines listed twice under one name, kept the first of each (a bug)");
-        return forecast_by(&once, budget);
+        return forecast_by(the_plan, &once, budget);
     }
     if inp.paused {
         return Forecast {
@@ -1990,17 +2001,17 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
     let now = inp.now as f64;
     // (The three runs side by side, each on a thread of its own, on one listing of the work: its
     // waits are the most of its making, task #988.)
-    let its = items(inp);
+    let its = items(the_plan, inp);
     let (expected, soon, late) = std::thread::scope(|s| {
         let soon = s.spawn(|| {
             low_priority();
-            run_on(inp, its.clone(), &scaled(SCALINGS[1]), budget)
+            run_on(the_plan, inp, its.clone(), &scaled(SCALINGS[1]), budget)
         });
         let late = s.spawn(|| {
             low_priority();
-            run_on(inp, its.clone(), &scaled(SCALINGS[2]), budget)
+            run_on(the_plan, inp, its.clone(), &scaled(SCALINGS[2]), budget)
         });
-        let expected = run_on(inp, its.clone(), &scaled(SCALINGS[0]), budget);
+        let expected = run_on(the_plan, inp, its.clone(), &scaled(SCALINGS[0]), budget);
         let join =
             |h: std::thread::ScopedJoinHandle<'_, Sim>| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
         (expected, join(soon), join(late))
@@ -2381,6 +2392,7 @@ pub fn slot_lanes(slots: usize, running: &[usize]) -> usize {
 /// the lead's mean time a target over the member's (the last week's, three or more each),
 /// their middle; `default` where there's too little to tell.
 pub fn speeds(
+    the_plan: &dyn crate::agent::seam::Plan,
     events: &[crate::coord::history::Event],
     lead: &str,
     helpers: &[String],
@@ -2391,7 +2403,7 @@ pub fn speeds(
     for e in events {
         let (Some(w), Some(step), Some(secs)) = (&e.worker, &e.step, e.secs) else { continue };
         let ok = matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true) && !e.targets.is_empty();
-        if ok && SHARED.contains(&step.as_str()) {
+        if ok && the_plan.shared().contains(&step.as_str()) {
             per.entry((w.clone(), step.clone())).or_default().push(secs / e.targets.len() as f64);
         }
     }
@@ -2399,7 +2411,8 @@ pub fn speeds(
     helpers
         .iter()
         .map(|h| {
-            let mut ratios: Vec<f64> = SHARED
+            let mut ratios: Vec<f64> = the_plan
+                .shared()
                 .iter()
                 .filter_map(|s| {
                     let mine = per.get(&(h.clone(), s.to_string())).filter(|v| v.len() >= 3)?;
@@ -2427,8 +2440,8 @@ mod tests {
         let mut inp = two_macs(&regions, &c);
         let dup: Vec<Machine> = inp.machines[..4].to_vec();
         inp.machines.extend(dup);
-        let fc = forecast(&inp);
-        assert_eq!(fc, forecast(&two_macs(&regions, &c)));
+        let fc = forecast(crate::agent::seam::for_tests(), &inp);
+        assert_eq!(fc, forecast(crate::agent::seam::for_tests(), &two_macs(&regions, &c)));
         assert_eq!(fc.runs.targets.len(), fc.lanes.values().map(Vec::len).sum::<usize>());
     }
 
@@ -2446,7 +2459,7 @@ mod tests {
         let regions = many(40);
         let c = mixed(false);
         let inp = two_macs(&regions, &c);
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert!(!f.grants.is_empty());
         let runs: Vec<&Lane> = f.lanes.values().flatten().collect();
         assert_eq!(runs.len(), f.runs.targets.len());
@@ -2553,6 +2566,7 @@ mod tests {
     const CPU_BOUND_MS: u128 = 8000;
 
     use super::*;
+    use crate::agent::steps::SHARED;
     use std::collections::BTreeSet;
 
     fn region(id: &str, terrain: &[&str], units: &[&str], slope: &[&str]) -> RegionLeft {
@@ -2584,7 +2598,7 @@ mod tests {
             ("terrain-deep".into(), "10/100/252".into(), drop),
             ("terrain-deep".into(), "10/100/253".into(), drop),
         ];
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         let lanes: Vec<&Lane> = f.lanes.values().flatten().filter(|l| l.step == "terrain-deep").collect();
         assert_eq!(lanes.len(), 2, "{lanes:?}");
         assert!(lanes[0].drop && lanes[0].n == 2 && lanes[0].until - lanes[0].from <= 5, "{lanes:?}");
@@ -2656,12 +2670,12 @@ mod tests {
             [region("a", &["6/1/1", "6/1/2"], &["u1", "u2"], &["6/1/1"]), region("b", &["6/2/1"], &["u3", "u4"], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0), Machine { speed: 0.5, ..member("m1") }], &cost);
         inp.running.insert(("unit".into(), "u1".into()), 0);
-        let mut lead = forecast(&inp);
+        let mut lead = forecast(crate::agent::seam::for_tests(), &inp);
         lead.each_s.insert("unit".into(), 300.0);
         let rec = Record { input: inp, each_s: lead.each_s.clone(), waiting: BTreeMap::new() };
         let b = rec.bytes().unwrap();
         assert_eq!(b[0], b'{', "small: plain JSON");
-        assert_eq!(Record::from_bytes(&b).unwrap().forecast(), lead);
+        assert_eq!(Record::from_bytes(&b).unwrap().forecast(crate::agent::seam::for_tests()), lead);
         let z = zstd::encode_all(&b[..], 3).unwrap();
         assert_eq!(Record::from_bytes(&z).unwrap(), rec);
         // (An older lead's record, with the equal machines' lanes it no longer writes: read, the
@@ -2702,7 +2716,7 @@ mod tests {
         // (The member's slot, a lane of any work that fits.)
         let small = Machine { lead_steps: true, ..small };
         let machines = vec![Machine { mem_mb: u64::MAX, ..mac("m4", 1.0) }, small];
-        let f = forecast(&Input { machines, running, ..inp });
+        let f = forecast(crate::agent::seam::for_tests(), &Input { machines, running, ..inp });
         assert!(f.lanes["m1"].iter().all(|l| l.step != "unit" || l.n == 1), "{:?}", f.lanes["m1"]);
         assert!(
             f.next["m1"].iter().all(|n| n.step != "unit"),
@@ -2741,7 +2755,7 @@ mod tests {
         for ((t, _), m) in [("u1", ()), ("u2", ())].iter().zip(lanes) {
             running.insert(("unit".to_string(), t.to_string()), m.unwrap());
         }
-        let f = forecast(&Input { machines, running, ..inp });
+        let f = forecast(crate::agent::seam::for_tests(), &Input { machines, running, ..inp });
         let names: Vec<&String> = f.lanes.keys().collect();
         let run = |name: &str, k: usize| {
             let first: usize = names.iter().take_while(|n| n.as_str() != name).map(|n| f.lanes[*n].len()).sum();
@@ -2766,7 +2780,7 @@ mod tests {
         let long = |step: &str, t: &str| Cost { secs: 1000.0, ..cost(step, t) };
         let mut inp = input(&regions, vec![mac("m4", 1.0), Machine { speed: 0.5, ..member("m1") }], &long);
         inp.idle = vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, known: false, peak_mb: 1000 })];
-        let sim = run(&inp, &|c| c.secs, far());
+        let sim = run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far());
         let item = |step: &str, t: &str| sim.items.iter().find(|i| i.step == step && i.target == t).unwrap();
         // The assembly once its z6 tiles are made (the member takes some), by the lead alone.
         let lo = item("trees-lo", "3/3/2");
@@ -2776,7 +2790,7 @@ mod tests {
         // The mid last, after everything else.
         let idle = item("trees", "6/40/20");
         assert!(sim.items.iter().filter(|i| i.target != "6/40/20").all(|i| i.end <= idle.from + 1e-9));
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert_eq!((f.regions[0].left.get("trees"), f.regions[0].left.get("trees-lo")), (Some(&3), Some(&1)));
     }
 
@@ -2794,7 +2808,7 @@ mod tests {
         let mut inp = input(&regions, vec![mac("m4", 1.0), Machine { speed: 0.5, ..member("m1") }], &cost);
         busy(&mut inp);
         inp.running.insert(("labels".into(), "labels".into()), 0);
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert_ne!(f.why.as_deref(), Some(NOTHING_LEFT));
         assert_eq!(f.done_at, Some(1_000_000 + 3600));
         // As the agent has it now, a running item of its own: on the schedule, and its step's.
@@ -2803,7 +2817,7 @@ mod tests {
         inp.before =
             vec![("labels".into(), "labels 2026-09-28".into(), Cost { secs: 2200.0, known: true, peak_mb: 0 })];
         inp.running.insert(("labels".into(), "labels 2026-09-28".into()), 0);
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert_eq!((f.why.as_deref(), f.done_at), (None, Some(1_000_000 + 3600)));
         assert_eq!(
             f.lanes["m4"].iter().map(|l| (l.step.as_str(), l.until - 1_000_000)).collect::<Vec<_>>(),
@@ -2813,18 +2827,21 @@ mod tests {
         // A daily job (no item): not done until it ends either.
         let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         busy(&mut inp);
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert_eq!((f.why.as_deref(), f.done_at), (None, Some(1_000_000 + 3600)));
         // Free: nothing left.
         inp.machines[0].busy_s = 0.0;
-        assert_eq!(forecast(&inp).why.as_deref(), Some(NOTHING_LEFT));
+        assert_eq!(forecast(crate::agent::seam::for_tests(), &inp).why.as_deref(), Some(NOTHING_LEFT));
     }
 
     #[test]
     fn a_page_around_takes_each_unit_the_moment_its_job_gives_it() {
         // As below, a worker that takes tails around: each of the two z6 tiles 30 s longer.
         let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
-        let f = forecast(&input(&regions, vec![Machine { unit_extra_s: 30.0, ..mac("m4", 1.0) }], &cost));
+        let f = forecast(
+            crate::agent::seam::for_tests(),
+            &input(&regions, vec![Machine { unit_extra_s: 30.0, ..mac("m4", 1.0) }], &cost),
+        );
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1460));
     }
 
@@ -2834,7 +2851,7 @@ mod tests {
             packs: vec![tile("6/8/8", &["6/8/8"]), tile("6/8/9", &["6/8/9"])],
             ..region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])
         }];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
+        let f = forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0)], &cost));
         // Terrain 600, two z6 tiles 600, each z6 tile's map tile (100 s, measured per tile) drawn once
         // that z6 tile is built, before the next z6 tile (each tile waits for its own z6 tiles alone): on
         // the map a catalogue's minute after the last. Then its slope (200), then the landmarks (300).
@@ -2877,14 +2894,14 @@ mod tests {
         // One z6 tile stale, five more reading the stale terrain: three of them (0.6) counted too.
         let expected = ["6/9/8", "6/9/9", "6/10/8", "6/10/9", "6/11/8"].map(String::from).to_vec();
         let regions = [RegionLeft { expected, ..region("a", &["3/1/1"], &["6/8/8"], &[]) }];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
+        let f = forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0)], &cost));
         let unit = f.steps.iter().find(|s| s.step == "unit").unwrap();
         assert_eq!((unit.left, unit.work_s), (4, 1200));
         // The region's ready once they're built too: terrain 600, four z6 tiles 1200.
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1800));
         // None once the terrain's built (none expected).
         let regions = [region("a", &[], &["6/8/8"], &[])];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
+        let f = forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0)], &cost));
         assert_eq!(f.steps.iter().find(|s| s.step == "unit").unwrap().left, 1);
     }
 
@@ -2901,7 +2918,7 @@ mod tests {
             packs(region("b", &[], &["6/2/2"], &[]), "6/2/2"),
             packs(region("c", &[], &["6/3/3"], &[]), "6/3/3"),
         ];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
+        let f = forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0)], &cost));
         let on = |k: usize| f.regions[k].map_at.map(|t| t - 1_000_000);
         assert_eq!([on(0), on(1), on(2)], [Some(300 + 100 + 60), Some(800 + 60), Some(1200 + 60)]);
         assert_eq!(
@@ -2911,7 +2928,7 @@ mod tests {
         // A map tile two regions draw: with the first, and the second waits for it.
         let regions =
             [packs(region("a", &[], &["6/1/1"], &[]), "6/1/1"), packs(region("b", &[], &["6/2/2"], &[]), "6/1/1")];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
+        let f = forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0)], &cost));
         assert_eq!(f.steps.iter().find(|s| s.step == "pack").map(|s| s.left), Some(1));
         assert_eq!(f.regions[1].map_at, Some(1_000_000 + 700 + 60));
     }
@@ -2922,7 +2939,7 @@ mod tests {
         // not "in a minute" each time the forecast is made; nor one on the map as it is.
         let regions =
             [region("a", &[], &[], &["3/1/1"]), RegionLeft { on_map: Some(true), ..region("b", &[], &["6/2/2"], &[]) }];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
+        let f = forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0)], &cost));
         assert_eq!((f.regions[0].map_at, f.regions[1].map_at), (None, None));
         assert!(f.regions[0].ready_at.is_some());
     }
@@ -2939,7 +2956,7 @@ mod tests {
             targets: vec!["6/0/48".into()],
             until: ("terrain-root".into(), "terrain-root".into(), root),
         }];
-        let sim = run(&inp, &|c| c.secs, far());
+        let sim = run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far());
         let of = |s: &str, t: &str| sim.items.iter().find(|i| i.step == s && i.target == t).unwrap();
         let (r, held, free) = (of("terrain-root", "terrain-root"), of("slope-hi", "6/0/48"), of("slope-hi", "6/1/48"));
         assert_eq!((r.by, r.from), (Some(0), 0.0), "the root, the lead's, at once");
@@ -3003,7 +3020,7 @@ mod tests {
         let mut inp = input(&regions, vec![lead, lane(0), lane(1), lane(2), lane(3)], &c);
         inp.after.clear();
         inp.sched = Some(st);
-        let sim = run(&inp, &|c| c.secs, far());
+        let sim = run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far());
         let mut spans: Vec<(f64, f64)> =
             sim.items.iter().filter(|i| i.step == "slope-deep").map(|i| (i.from, i.end)).collect();
         spans.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -3127,7 +3144,11 @@ mod tests {
         let mut on_mini = |a: Asked| {
             st.workers = vec![a];
             inp.sched = Some(st.clone());
-            run(&inp, &|c| c.secs, far()).items.iter().filter(|i| i.by == Some(1)).count()
+            run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far())
+                .items
+                .iter()
+                .filter(|i| i.by == Some(1))
+                .count()
         };
         assert_eq!(on_mini(asked(None, true)), 0, "the brake on as it asked, no best said");
         assert_eq!(on_mini(asked(Some(MacRoom { mem_mb: 8000, cores: 8 }), true)), 6, "at its best");
@@ -3160,7 +3181,7 @@ mod tests {
         let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.cadence = Cadence { since_low: Some(3600), since_marks: Some(600), since_overlays: None };
         let at = |f: &Forecast| f.publishes.iter().map(|p| (p.what.clone(), p.at - 1_000_000)).collect::<Vec<_>>();
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert_eq!(
             at(&f),
             [("low".into(), LOW_EVERY_S - 3600), ("marks".into(), MARKS_EVERY_S - 600), ("overlays".into(), 0)]
@@ -3169,13 +3190,16 @@ mod tests {
         let regions = [region("a", &[], &refs[..2], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.cadence = Cadence { since_low: Some(3600), since_marks: Some(600), since_overlays: Some(0) };
-        assert_eq!(at(&forecast(&inp)), [("low".into(), 600), ("marks".into(), 600), ("overlays".into(), 600)]);
+        assert_eq!(
+            at(&forecast(crate::agent::seam::for_tests(), &inp)),
+            [("low".into(), 600), ("marks".into(), 600), ("overlays".into(), 600)]
+        );
     }
 
     #[test]
     fn regions_are_built_one_at_a_time() {
         let regions = [region("a", &["3/1/1"], &["6/8/8"], &[]), region("b", &["3/2/2"], &["6/16/16"], &[])];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
+        let f = forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0)], &cost));
         // a's terrain and z6 tile, then b's terrain and z6 tile: a done first.
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 900));
         assert_eq!(f.regions[1].ready_at, Some(1_000_000 + 900 + 900));
@@ -3192,7 +3216,7 @@ mod tests {
             &cost,
         );
         inp.running.insert(("terrain-hi".into(), "6/8/8".into()), 1);
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 900 + 300));
     }
 
@@ -3203,7 +3227,7 @@ mod tests {
         let regions = [region("a", &["6/8/8"], &["6/8/8", "6/8/9"], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 600.0, known: true, peak_mb: 0 })];
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         let steps: Vec<&str> = f.lanes["m4"].iter().map(|l| l.step.as_str()).collect();
         let at = |s: &str| steps.iter().position(|&x| x == s).unwrap() as u32;
         assert_eq!(f.runs.targets.len(), steps.len(), "{steps:?}");
@@ -3222,7 +3246,7 @@ mod tests {
         // Two Macs: the runs numbered by lane name, so a run on "m1" comes before "m4"'s.
         let mut two = input(&regions, vec![mac("m4", 1.0), member("m1")], &cost);
         two.before = inp.before.clone();
-        let f = forecast(&two);
+        let f = forecast(crate::agent::seam::for_tests(), &two);
         let n1 = f.lanes["m1"].len();
         assert_eq!(f.runs.targets.len(), n1 + f.lanes["m4"].len());
         let tc = ToCome { runs: f.runs.clone(), ..ToCome::default() }.answer();
@@ -3236,7 +3260,7 @@ mod tests {
         let none: [RegionLeft; 0] = [];
         let mut inp = input(&none, vec![mac("m4", 1.0)], &cost);
         inp.after = Vec::new();
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert_eq!((f.done_at, f.why.as_deref()), (None, Some("nothing left to build")));
         assert!(f.regions.is_empty());
         // A region on the map as it was (its outline changed): on the map as it is a minute after
@@ -3246,13 +3270,13 @@ mod tests {
             RegionLeft { on_map: Some(true), ..region("b", &[], &["6/9/8"], &[]) },
             RegionLeft { id: "c".into(), on_map: Some(true), ..Default::default() },
         ];
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0)], &cost));
+        let f = forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0)], &cost));
         let at = |k: usize| f.regions[k].map_at;
         assert_eq!((at(0), at(1), at(2)), (Some(1_000_000 + 300 + 60), None, None));
         // Work that can't all be listed: no finish, and why.
         let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.blind = Some("the z6 tiles wait for the pass's reaches".into());
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert_eq!((f.done_at, f.why.as_deref()), (None, Some("the z6 tiles wait for the pass's reaches")));
     }
 
@@ -3295,7 +3319,7 @@ mod tests {
         let regions = [region("a", &[], &refs, &[])];
         let lead2 = Machine { lead_steps: true, ..mac("m4 #2", 1.0) };
         let inp = input(&regions, vec![mac("m4", 1.0), lead2, member("m1"), member("m1 #2")], &cost);
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         let n = |lane: &str, step: &str| f.lanes[lane].iter().filter(|l| l.step == step).map(|l| l.n).sum::<usize>();
         assert_eq!(n("m1", "unit") + n("m1 #2", "unit"), 4, "{:?}", f.lanes);
         assert_eq!(n("m1", "marks") + n("m1 #2", "marks"), 0);
@@ -3313,7 +3337,7 @@ mod tests {
         one.after = Vec::new();
         let mut two = input(&regions, vec![mac("m4", 1.0), lead2(), member("m1"), member("m1 #2")], &cost);
         two.after = Vec::new();
-        let left = |i: &Input| (forecast(i).done_at.unwrap() - 1_000_000) as f64;
+        let left = |i: &Input| (forecast(crate::agent::seam::for_tests(), i).done_at.unwrap() - 1_000_000) as f64;
         let (a, b) = (left(&one), left(&two));
         assert_eq!(a, 20.0 * 300.0);
         assert!((b / a - 0.5).abs() < 0.05, "{b} of {a}");
@@ -3332,7 +3356,7 @@ mod tests {
             Machine { lead_steps: true, busy_s: 2400.0, running: Some(("depth".into(), 3)), ..mac("m4 #2", 1.0) };
         let mut inp = input(&regions, vec![mac("m4", 1.0), lead2, member("m1")], &cost);
         inp.chains = vec![("pois".into(), "6/8/0".into(), Cost { secs: 100.0, known: true, peak_mb: 1000 })];
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         let first = &f.lanes["m4 #2"][0];
         assert_eq!((first.step.as_str(), first.from, first.until, first.n), ("depth", 1_000_000, 1_002_400, 3));
         let pois = f.lanes.values().flatten().find(|l| l.step == "pois").unwrap();
@@ -3354,7 +3378,7 @@ mod tests {
         let mut inp = input(&regions, vec![lead, slot(0), slot(1), slot(2), slot(3)], &big);
         inp.after = Vec::new();
         inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 8 });
-        let sim = run(&inp, &|c| c.secs, far());
+        let sim = run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far());
         let most = |sim: &Sim| {
             (0..40)
                 .map(|k| k as f64 * 100.0 + 1.0)
@@ -3366,14 +3390,14 @@ mod tests {
         // By cores: 1 GB jobs at a thread each, four at once (its slots) on 8 cores; on 2 cores, two.
         let small = |step: &str, t: &str| Cost { peak_mb: 1000, ..cost(step, t) };
         inp.costs = cost_table(&regions, &small);
-        assert_eq!(most(&run(&inp, &|c| c.secs, far())), 4);
+        assert_eq!(most(&run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far())), 4);
         inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 2 });
-        assert_eq!(most(&run(&inp, &|c| c.secs, far())), 2);
+        assert_eq!(most(&run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far())), 2);
         // A step never measured: its first job alone on its Mac, nothing beside it (task #499);
         // once it ends its measure packs the rest as above.
         let cold = |step: &str, t: &str| Cost { known: false, ..small(step, t) };
         inp.costs = cost_table(&regions, &cold);
-        let sim = run(&inp, &|c| c.secs, far());
+        let sim = run(crate::agent::seam::for_tests(), &inp, &|c| c.secs, far());
         let first =
             sim.items.iter().filter(|i| i.by.is_some_and(|m| m > 0)).min_by(|a, b| a.from.total_cmp(&b.from)).unwrap();
         assert!(sim
@@ -3392,7 +3416,7 @@ mod tests {
         let regions = [region("a", &[], &refs, &[])];
         let lead2 = Machine { lead_steps: true, ..mac("m4 #2", 1.0) };
         let lead3 = Machine { lead_steps: true, from_s: 3600.0, ..mac("m4 #3", 1.0) };
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0), lead2, lead3], &cost));
+        let f = forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0), lead2, lead3], &cost));
         assert_eq!(f.lanes["m4 #3"].first().map(|l| l.from), Some(1_000_000 + 3600), "{:?}", f.lanes);
     }
 
@@ -3425,7 +3449,7 @@ mod tests {
         ]
         .into();
         let took = super::thread_cpu().as_millis();
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         let ms = super::thread_cpu().as_millis() - took;
         eprintln!("the forecast took {ms} ms (3,000 units, 3,000 map tiles, 8 lanes)");
         assert!(f.done_at.is_some() && f.regions.iter().all(|r| r.map_at.is_some()));
@@ -3490,7 +3514,7 @@ mod tests {
             let c = mixed(all_cold);
             let inp = two_macs(&regions, &c);
             let took = super::thread_cpu().as_millis();
-            let f = forecast(&inp);
+            let f = forecast(crate::agent::seam::for_tests(), &inp);
             let ms = super::thread_cpu().as_millis() - took;
             eprintln!(
                 "the forecast took {ms} ms (3,000 units, {})",
@@ -3508,13 +3532,17 @@ mod tests {
         let regions = [region("a", &[], &refs, &[])];
         let others = Machine { mem_mb: 12_000, ..mac("m4 #2", 1.0) };
         // Half the z6 tiles, whoever's at the Mac (the owner's choice: no rule for a Mac in use).
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0), others.clone()], &cost));
+        let f =
+            forecast(crate::agent::seam::for_tests(), &input(&regions, vec![mac("m4", 1.0), others.clone()], &cost));
         assert_eq!(
             f.lanes.get("m4 #2").map_or(0, |l| l.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()),
             4
         );
         // The lead's first job two hours from done: its other slots take the z6 tiles from now.
-        let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0) }, others], &cost));
+        let f = forecast(
+            crate::agent::seam::for_tests(),
+            &input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0) }, others], &cost),
+        );
         let lane = &f.lanes["m4 #2"];
         assert_eq!(
             (lane[0].step.as_str(), lane[0].from, lane.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()),
@@ -3606,7 +3634,7 @@ mod tests {
         inp.after = Vec::new();
         inp.macs.insert("m4".into(), MacRoom { mem_mb: 16_000, cores: 14 });
         inp.sched = Some(st);
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         let first: Vec<(String, Vec<String>, u32)> = f
             .grants
             .iter()
@@ -3671,7 +3699,7 @@ mod tests {
         inp.after = Vec::new();
         inp.macs.insert("m4".into(), MacRoom { mem_mb: 16_000, cores: 14 });
         inp.sched = Some(st);
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         let first: Vec<(String, Vec<String>)> =
             f.grants.iter().filter(|g| g.at as u64 == inp.now).map(|g| (g.mac.clone(), g.targets.clone())).collect();
         assert_eq!(first, real);
@@ -3725,11 +3753,11 @@ mod tests {
         let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.now = now - 3600;
         let mut noted = Noted::default();
-        noted.note(&inp);
+        noted.note(crate::agent::seam::for_tests(), &inp);
         assert_eq!(noted.cost("terrain-hi", "6/1/1"), Some(600.0));
         // (Later the targets are built: no longer work left, their noted costs stay.)
         let later = input(&[], vec![mac("m4", 1.0)], &cost);
-        noted.note(&Input { now, ..later });
+        noted.note(crate::agent::seam::for_tests(), &Input { now, ..later });
         // terrain-hi: three jobs at the lead's pace 300 s a 600 s target (m1 at half the pace in
         // 600 s); one too old; one with a target never noted. unit: one job, too few.
         let events = vec![
@@ -3746,7 +3774,7 @@ mod tests {
         // The run takes it: the terrain at 300 s a target.
         let mut inp = input(&regions, vec![mac("m4", 1.0)], &cost);
         inp.step_pace = p;
-        let f = forecast_by(&inp, far());
+        let f = forecast_by(crate::agent::seam::for_tests(), &inp, far());
         let t = f.placed.iter().find(|p| p.step == "terrain-hi").unwrap();
         assert_eq!(t.until - t.from, 300);
         // A step slower than its costs isn't said; a fast one never more than fourfold.
@@ -3755,7 +3783,7 @@ mod tests {
         let fast: Vec<Event> = (0..3).map(|k| job("m4", now - k, "unit", &["6/9/9"], 1.0)).collect();
         assert_eq!(step_pace(&fast, now, &noted, &speed)["unit"], STEP_PACE_MIN);
         // (A cost not seen for the span is dropped.)
-        noted.note(&Input { now: now + STEP_PACE_S + 1, ..input(&[], vec![], &cost) });
+        noted.note(crate::agent::seam::for_tests(), &Input { now: now + STEP_PACE_S + 1, ..input(&[], vec![], &cost) });
         assert_eq!(noted.cost("terrain-hi", "6/1/1"), None);
     }
 
@@ -3818,7 +3846,7 @@ mod tests {
         };
         let mut events = vec![e("m4", 300.0, 1), e("m4", 600.0, 2), e("m4", 300.0, 1)];
         events.extend([e("m1", 600.0, 1), e("m1", 600.0, 1), e("m1", 600.0, 1)]);
-        let s = speeds(&events, "m4", &["m1".into(), "ipad".into()], 0.5);
+        let s = speeds(crate::agent::seam::for_tests(), &events, "m4", &["m1".into(), "ipad".into()], 0.5);
         assert!((s["m1"].0 - 0.5).abs() < 1e-9 && s["m1"].1);
         assert_eq!(s["ipad"], (0.5, false));
     }
@@ -3995,8 +4023,8 @@ mod tests {
                 r.expected = r.terrain.iter().skip(3).take(next(6)).cloned().collect();
             }
             inp.regions = Cow::Owned(regions);
-            let groups = items(&inp);
-            let mut spread = items(&inp);
+            let groups = items(crate::agent::seam::for_tests(), &inp);
+            let mut spread = items(crate::agent::seam::for_tests(), &inp);
             for it in spread.items.iter_mut() {
                 for &g in &it.groups {
                     it.deps.extend(&spread.groups[g]);
@@ -4005,8 +4033,10 @@ mod tests {
             }
             spread.groups.clear();
             assert!(groups.groups.iter().any(|g| !g.is_empty()), "round {round}: no group");
-            let a = run_on(&inp, groups, &scaled(SCALINGS[0]), Duration::from_secs(600));
-            let b = run_on(&inp, spread, &scaled(SCALINGS[0]), Duration::from_secs(600));
+            let a =
+                run_on(crate::agent::seam::for_tests(), &inp, groups, &scaled(SCALINGS[0]), Duration::from_secs(600));
+            let b =
+                run_on(crate::agent::seam::for_tests(), &inp, spread, &scaled(SCALINGS[0]), Duration::from_secs(600));
             assert!(a.done && b.done && !a.cut && !b.cut, "round {round}");
             let at = |s: &Sim| s.items.iter().map(|i| (i.by, i.from.to_bits(), i.end.to_bits())).collect::<Vec<_>>();
             assert_eq!(at(&a), at(&b), "round {round}");
@@ -4019,7 +4049,7 @@ mod tests {
     #[test]
     fn a_live_scale_forecast_runs_whole_and_bounded() {
         let inp = live_scale_input(400, 1500);
-        let n = items(&inp).items.len();
+        let n = items(crate::agent::seam::for_tests(), &inp).items.len();
         assert!(n > 30_000, "{n} targets");
         // (Whole, its CPU time bounded well past what it takes (50 to 73 s for three runs in the
         // test build under load, a third each; 21 Oct's code took over 200 s in one run at a tenth
@@ -4029,13 +4059,13 @@ mod tests {
         // check.sh runs of three. The late one, the costliest: its costs scaled up the most, the
         // longest timeline (M1, 5 Nov: 28.5 s of CPU against the expected's 25.7, the soon's 25.3).)
         let cpu0 = thread_cpu();
-        let r = run(&inp, &scaled(SCALINGS[2]), Duration::from_secs(600));
+        let r = run(crate::agent::seam::for_tests(), &inp, &scaled(SCALINGS[2]), Duration::from_secs(600));
         let took = thread_cpu() - cpu0;
         eprintln!("live scale, {n} targets: {} ms of CPU", took.as_millis());
         assert!(r.done && !r.cut, "the run was cut or unfinished");
         assert!(took < Duration::from_secs(120), "{took:?}");
         // Past its budget: cut there, partial and said so.
-        let f = forecast_by(&inp, Duration::from_millis(50));
+        let f = forecast_by(crate::agent::seam::for_tests(), &inp, Duration::from_millis(50));
         assert!(f.partial && f.done_at.is_none(), "{:?}", f.why);
     }
 
@@ -4048,7 +4078,7 @@ mod tests {
         // Release, on the M1 at load 140: 48 s of wall, whole.)
         let budget = if cfg!(debug_assertions) { BUDGET * 4 } else { BUDGET };
         let t = Instant::now();
-        let f = forecast_by(&inp, budget);
+        let f = forecast_by(crate::agent::seam::for_tests(), &inp, budget);
         eprintln!("22 Oct's live scale: {} ms", t.elapsed().as_millis());
         assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
         let cpu0 = thread_cpu();
@@ -4139,17 +4169,17 @@ mod tests {
         let inp = Input { chains, ..base };
         let pair = |s: &str, t: &str| (s.to_string(), t.to_string());
         let waits = |inp: &Input, s: &str, t: &str| {
-            let its = items(inp);
+            let its = items(crate::agent::seam::for_tests(), inp);
             let w = waits_listed(&its);
             w[its.items.iter().position(|i| i.step == s && i.target == t).unwrap()].clone()
         };
         assert_eq!(waits(&inp, "bldfield-lo", "3/0/0"), BTreeSet::from([pair("bldprep", "6/2/2")]));
         assert_eq!(waits(&inp, "depth-root", "depth-root"), BTreeSet::from([pair("depth", "6/1/1")]));
-        let its = items(&inp);
+        let its = items(crate::agent::seam::for_tests(), &inp);
         for (i, it) in its.items.iter().enumerate().filter(|(_, it)| it.phase == Phase::Chain) {
             assert_eq!(waits_listed(&its)[i], declared_waits(&its, &inp.along, i), "{}", it.target);
         }
-        let f = forecast(&inp);
+        let f = forecast(crate::agent::seam::for_tests(), &inp);
         let at = |s: &str, t: &str| f.placed.iter().find(|p| p.step == s && p.target == t).map(|p| (p.from, p.until));
         let ((fl, _), (_, prep)) = (at("bldfield-lo", "3/0/0").unwrap(), at("bldprep", "6/2/2").unwrap());
         let ((root, _), (_, depth)) = (at("depth-root", "depth-root").unwrap(), at("depth", "6/1/1").unwrap());
@@ -4169,7 +4199,7 @@ mod tests {
         let base = input(&regions, vec![mac("m4", 1.0), mac("m1", 1.0)], &unit);
         let job = |s: &str, t: &str, secs: f64| (s.to_string(), t.to_string(), c(secs));
         let check = |inp: &Input| {
-            let its = items(inp);
+            let its = items(crate::agent::seam::for_tests(), inp);
             let listed = waits_listed(&its);
             for (i, it) in its.items.iter().enumerate() {
                 if matches!(it.phase, Phase::Before | Phase::After | Phase::Publish) {
@@ -4177,7 +4207,7 @@ mod tests {
                 }
                 assert_eq!(listed[i], declared_waits(&its, &inp.along, i), "{} {}", it.step, it.target);
             }
-            let f = forecast(inp);
+            let f = forecast(crate::agent::seam::for_tests(), inp);
             let at =
                 |s: &str, t: &str| f.placed.iter().find(|p| p.step == s && p.target == t).map(|p| (p.from, p.until));
             for (i, it) in its.items.iter().enumerate() {
@@ -4216,7 +4246,7 @@ mod tests {
         // (Waits as declared: the depth-lo assembly on its own z6 tile's depth, not 6/9/9's; the
         // polar slope on its own block and neighbours; the 3D tiles on their own normalized files
         // and neighbours'; the candidates on the hiking-route ends; the heritage chain beside them.)
-        let its = items(&inp);
+        let its = items(crate::agent::seam::for_tests(), &inp);
         let w = waits_listed(&its);
         let of = |s: &str, t: &str| &w[its.items.iter().position(|i| i.step == s && i.target == t).unwrap()];
         let pair = |s: &str, t: &str| (s.to_string(), t.to_string());
@@ -4250,7 +4280,7 @@ mod tests {
         let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
         let st = r.input.sched.as_ref().expect("the lead's scheduler's state");
         let clock = Clock { now: Instant::now(), unix: r.input.now };
-        let mut s = Sched::from_state(st, clock, RUN_TTL);
+        let mut s = Sched::from_state(crate::agent::seam::for_tests(), st, clock, RUN_TTL);
         let a = st.workers.iter().find(|w| w.ask.worker == st.lead_name).expect("the lead's ask").ask.clone();
         let (picks, why) = s.pack(&a, &st.offers, true, clock);
         for p in &picks {
@@ -4279,7 +4309,7 @@ mod tests {
                 }
             })
         };
-        let Items { items, groups, .. } = items(&r.input);
+        let Items { items, groups, .. } = items(crate::agent::seam::for_tests(), &r.input);
         let held: usize = items.iter().map(|i| i.deps.capacity() + i.groups.capacity()).sum::<usize>()
             + groups.iter().map(|g| g.capacity()).sum::<usize>();
         eprintln!(
@@ -4290,7 +4320,7 @@ mod tests {
         );
         drop(items);
         let t = Instant::now();
-        let f = forecast_by(&r.input, Duration::from_secs(limit));
+        let f = forecast_by(crate::agent::seam::for_tests(), &r.input, Duration::from_secs(limit));
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = watch.join();
         eprintln!(

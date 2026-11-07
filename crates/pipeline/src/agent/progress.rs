@@ -84,8 +84,8 @@ impl Item {
     }
 
     /// Its count in words: "156 of 284 z6 tiles", "3 runs left", "done", "to come".
-    pub fn count(&self) -> String {
-        let noun = if self.noun.is_empty() { super::steps::noun(&self.step) } else { self.noun.as_str() };
+    pub fn count(&self, the_plan: &dyn crate::agent::seam::Plan) -> String {
+        let noun = if self.noun.is_empty() { the_plan.noun(&self.step) } else { self.noun.as_str() };
         match (self.total, self.left) {
             (Some(t), _) if t > 0 => of_total(self.done, t, self.empty, &format!("{noun}s")),
             (_, Some(0)) => "done".into(),
@@ -144,12 +144,12 @@ pub struct Line {
 impl Line {
     /// Its counts and its items' said in its fields (`counts`, `finished`), as the status serves
     /// them: what every surface prints.
-    pub fn said(mut self) -> Line {
+    pub fn said(mut self, the_plan: &dyn crate::agent::seam::Plan) -> Line {
         for i in self.items.iter_mut() {
-            i.count = i.count();
+            i.count = i.count(the_plan);
             i.finished = i.finished();
         }
-        self.counts = self.counts();
+        self.counts = self.counts(the_plan);
         self.finished = self.finished();
         self
     }
@@ -177,16 +177,16 @@ impl Line {
     /// Its counts in words, a noun at a time in its items' order: "398 of 398 tiles", "18 of 18
     /// z3 tiles", "2 runs left"; "done" when nothing is left, "to come" while it isn't sized. (The
     /// line's own `done`/`total` are the first noun's: what readers of the line alone show.)
-    pub fn counts(&self) -> Vec<String> {
+    pub fn counts(&self, the_plan: &dyn crate::agent::seam::Plan) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let mut nouns: Vec<&str> = Vec::new();
         for i in &self.items {
-            let noun = super::steps::noun(&i.step);
+            let noun = the_plan.noun(&i.step);
             if nouns.contains(&noun) {
                 continue;
             }
             nouns.push(noun);
-            let of: Vec<&Item> = self.items.iter().filter(|j| super::steps::noun(&j.step) == noun).collect();
+            let of: Vec<&Item> = self.items.iter().filter(|j| the_plan.noun(&j.step) == noun).collect();
             if of.iter().any(|j| j.total.is_some()) {
                 if of.iter().all(|j| j.total.is_some()) {
                     let (d, t): (usize, usize) =

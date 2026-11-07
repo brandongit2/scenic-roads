@@ -148,11 +148,18 @@ impl Usual {
 }
 
 /// Every flag of the lead's status `st`, at `now`.
-pub fn of(st: &Status, open: &[Open], runs: &[Run], factor: f64, now: u64) -> Vec<Flag> {
+pub fn of(
+    the_plan: &dyn crate::agent::seam::Plan,
+    st: &Status,
+    open: &[Open],
+    runs: &[Run],
+    factor: f64,
+    now: u64,
+) -> Vec<Flag> {
     if st.pause.is_some() {
         return Vec::new();
     }
-    let mut v = idle(st, open);
+    let mut v = idle(the_plan, st, open);
     v.extend(stuck(st, runs, factor));
     // (A job stuck isn't slow too.)
     let moving: Vec<Run> =
@@ -191,7 +198,7 @@ fn held(st: &Status, mac: &str) -> bool {
 }
 
 /// The idle flags (the module's doc): one per Mac refused a job.
-pub fn idle(st: &Status, open: &[Open]) -> Vec<Flag> {
+pub fn idle(the_plan: &dyn crate::agent::seam::Plan, st: &Status, open: &[Open]) -> Vec<Flag> {
     let mut out: Vec<Flag> = Vec::new();
     for (worker, why) in &st.packing {
         let mac = crate::paces::mac_of(worker).to_string();
@@ -210,7 +217,7 @@ pub fn idle(st: &Status, open: &[Open]) -> Vec<Flag> {
                 steps.join(", ")
             )
         } else {
-            let waits = held_back(&st.waiting, lead);
+            let waits = held_back(the_plan, &st.waiting, lead);
             if waits.is_empty() {
                 continue;
             }
@@ -223,8 +230,8 @@ pub fn idle(st: &Status, open: &[Open]) -> Vec<Flag> {
 
 /// The plan's waits of work a Mac could take (any Mac's step; the lead's own too on the lead): each
 /// "<step> <why>", and where its wait names another step that waits too, that one's after it.
-fn held_back(waiting: &[Waiting], lead: bool) -> Vec<String> {
-    let takes = |s: &str| lead || super::every::place(s) == super::every::Place::Any;
+fn held_back(the_plan: &dyn crate::agent::seam::Plan, waiting: &[Waiting], lead: bool) -> Vec<String> {
+    let takes = |s: &str| lead || super::every::place(the_plan, s) == super::every::Place::Any;
     waiting
         .iter()
         .filter_map(|w| w.step.as_deref().filter(|s| takes(s)).map(|s| (s, w)))
@@ -415,16 +422,19 @@ mod tests {
         st.packing.insert("m4 #2".into(), "memory: 1.2 GB for a new job (6.0 GB floor)".into());
         st.packing.insert("m4".into(), "the same Mac's first slot".into());
         let open = [Open { step: "slope-deep".into(), targets: 12, own: false }];
-        let f = idle(&st, &open);
+        let f = idle(crate::agent::seam::for_tests(), &st, &open);
         assert_eq!(f.len(), 1, "one per Mac: {f:?}");
         assert_eq!(f[0].mac, "m4");
         assert!(f[0].said.contains("12 targets it could take wait (slope-deep 12)"), "{}", f[0].said);
         assert!(f[0].line().starts_with("idle: m4 has a slot free"), "{}", f[0].line());
         // (The lead's own job is no member's.)
         let own = [Open { step: "osm-pass".into(), targets: 1, own: true }];
-        assert!(idle(&st, &own).is_empty(), "nothing it could take, and nothing held back");
+        assert!(
+            idle(crate::agent::seam::for_tests(), &st, &own).is_empty(),
+            "nothing it could take, and nothing held back"
+        );
         st.packing.insert("mini".into(), "cores: 0 of 8 left, a job of osm-pass takes 2".into());
-        let f = idle(&st, &own);
+        let f = idle(crate::agent::seam::for_tests(), &st, &own);
         assert_eq!((f.len(), f[0].mac.as_str()), (1, "mini"), "{f:?}");
         assert!(f[0].said.contains("cores: 0 of 8 left"), "{}", f[0].said);
     }
@@ -440,7 +450,7 @@ mod tests {
             wait("terrain-root", "waits for the lead's NAS budget"),
             Waiting { what: "Building the regions".into(), why: "unreadable".into(), step: None },
         ];
-        let f = idle(&st, &[]);
+        let f = idle(crate::agent::seam::for_tests(), &st, &[]);
         assert_eq!(f.len(), 1, "{f:?}");
         let s = &f[0].said;
         assert!(s.contains("slope-hi: wait for terrain-root: 3 z3 tiles not current (terrain-root: waits for the lead's NAS budget)"), "{s}");
@@ -450,14 +460,14 @@ mod tests {
         assert!(!s.contains("; terrain-root:"), "{s}");
         // Nothing waits at all: the Mac has nothing it could do, no flag.
         st.waiting.clear();
-        assert!(idle(&st, &[]).is_empty());
+        assert!(idle(crate::agent::seam::for_tests(), &st, &[]).is_empty());
         // A Mac paused alone isn't flagged; nor is any while the build is paused.
         st.waiting = vec![wait("slope-hi", "wait for terrain-root")];
         st.helpers.push(Status { host: "m1".into(), held: Some(crate::control::Hold::new("t")), ..Default::default() });
-        assert!(idle(&st, &[]).is_empty());
+        assert!(idle(crate::agent::seam::for_tests(), &st, &[]).is_empty());
         st.helpers.clear();
         st.pause = Some(crate::control::Pause::new(crate::control::Mode::Drain, "t"));
-        assert!(of(&st, &[], &[], 3.0, 0).is_empty());
+        assert!(of(crate::agent::seam::for_tests(), &st, &[], &[], 3.0, 0).is_empty());
     }
 
     fn run(step: &str, secs: u64, usual: Option<u64>) -> Run {
@@ -492,18 +502,33 @@ mod tests {
     fn a_job_moving_slower_than_its_steps_slowest_tenth_by_the_factor_is_slow() {
         let st = lead();
         // (A crawl: 0.05 tiles a second, its step's slowest tenth 1.1.)
-        let f = of(&st, &[], &[paced(0.05, 1.1)], 3.0, 0);
+        let f = of(crate::agent::seam::for_tests(), &st, &[], &[paced(0.05, 1.1)], 3.0, 0);
         assert_eq!(
             f.iter().map(Flag::line).collect::<Vec<_>>(),
             ["slow: terrain-hi (lease 9) on m1: 3 tiles a minute over the last 30 min (6/55/26, sampling glo30), under its step's usual 66 a minute (the slowest tenth of its jobs at 4 threads or fewer) ÷ 3, 2 of 8 targets done, 4 threads"]
         );
-        assert!(of(&st, &[], &[paced(0.4, 1.1)], 3.0, 0).is_empty(), "within 3×");
-        assert!(of(&st, &[], &[paced(0.4, 1.1)], 2.5, 0).len() == 1, "a smaller factor set");
-        assert!(of(&st, &[], &[paced(0.0, 0.0)], 3.0, 0).is_empty(), "its step's slowest tenth said none either");
-        assert!(of(&st, &[], &[run("terrain-hi", 60, Some(240))], 3.0, 0).is_empty(), "not judged");
+        assert!(of(crate::agent::seam::for_tests(), &st, &[], &[paced(0.4, 1.1)], 3.0, 0).is_empty(), "within 3×");
+        assert!(
+            of(crate::agent::seam::for_tests(), &st, &[], &[paced(0.4, 1.1)], 2.5, 0).len() == 1,
+            "a smaller factor set"
+        );
+        assert!(
+            of(crate::agent::seam::for_tests(), &st, &[], &[paced(0.0, 0.0)], 3.0, 0).is_empty(),
+            "its step's slowest tenth said none either"
+        );
+        assert!(
+            of(crate::agent::seam::for_tests(), &st, &[], &[run("terrain-hi", 60, Some(240))], 3.0, 0).is_empty(),
+            "not judged"
+        );
         // (Nothing moved for 20 min against a usual 4: stuck, not slow as well.)
         let still = Run { pace: paced(0.0, 1.1).pace, ..run("terrain-hi", 20 * 60, Some(240)) };
-        assert_eq!(of(&st, &[], &[still], 3.0, 0).iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(), ["stuck"]);
+        assert_eq!(
+            of(crate::agent::seam::for_tests(), &st, &[], &[still], 3.0, 0)
+                .iter()
+                .map(|f| f.kind.as_str())
+                .collect::<Vec<_>>(),
+            ["stuck"]
+        );
         assert_eq!((per_min(0.0007), per_min(0.025), per_min(10.0)), ("0.042".into(), "1.5".into(), "600".into()));
     }
 
@@ -550,7 +575,7 @@ mod tests {
             still: Some(Still { secs: 0, usual: Some((120, Usual::Step)), ..Default::default() }),
             ..run("pyramids-fill", 0, None)
         };
-        assert!(of(&st, &[], &[fill], 3.0, 0).is_empty());
+        assert!(of(crate::agent::seam::for_tests(), &st, &[], &[fill], 3.0, 0).is_empty());
     }
 
     /// A catalogue due past the factor times the plan's most hold (11 min) and not going out is

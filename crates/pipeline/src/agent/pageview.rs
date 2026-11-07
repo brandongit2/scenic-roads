@@ -262,8 +262,8 @@ struct State {
 }
 
 /// The page's data on this Mac.
-#[derive(Default)]
 pub struct PageView {
+    the_plan: &'static dyn crate::agent::seam::Plan,
     asked: AtomicU64,
     inputs: Mutex<Inputs>,
     state: Mutex<State>,
@@ -281,8 +281,18 @@ impl std::fmt::Debug for PageView {
 }
 
 impl PageView {
-    pub fn new() -> Arc<PageView> {
-        Arc::new(PageView::default())
+    pub fn new(the_plan: &'static dyn crate::agent::seam::Plan) -> Arc<PageView> {
+        Arc::new(PageView::of(the_plan))
+    }
+
+    fn of(the_plan: &'static dyn crate::agent::seam::Plan) -> PageView {
+        PageView {
+            the_plan,
+            asked: Default::default(),
+            inputs: Default::default(),
+            state: Default::default(),
+            forecast: Default::default(),
+        }
     }
 
     /// A page asked: the reads go on (or start) for `ASKED_FOR_S`.
@@ -488,7 +498,7 @@ impl PageView {
                 .map(|n| (n.1, n.2, n.3))
                 .collect();
             let st = &mut *st;
-            let h = st.history.get_or_insert_with(|| History::load(None));
+            let h = st.history.get_or_insert_with(|| History::load(self.the_plan, None));
             for (m, seq, mut e) in fresh {
                 // (What it waited on in this numbering: a job not taken in here, dropped.)
                 e.after = e.after.iter().filter_map(|q| st.numbered.get(&(m.clone(), *q)).copied()).collect();
@@ -681,9 +691,10 @@ impl PageView {
         if save.is_some() {
             r.kept = Some(Instant::now());
         }
+        let the_plan = self.the_plan;
         match std::thread::Builder::new().name("pageview-forecast".into()).spawn(move || {
             super::forecast::low_priority();
-            let mut forecast = local_forecast(&rec, now, &own);
+            let mut forecast = local_forecast(the_plan, &rec, now, &own);
             let (mut tocome, item_job, jobs) = ToCome::take(&mut forecast, &rec.input.machines);
             let graph = std::mem::take(&mut forecast.graph);
             let (waits, epoch) = match basis {
@@ -722,7 +733,12 @@ fn keep_waits(p: &std::path::Path, k: &history::KeptWaits) {
 /// moved on by the time since it was made; this Mac's own lanes (`own`) as their slots are now,
 /// their time left worked out as the lead works out its own (forecast::SlotJob, each target's cost
 /// from the input's table, else its step's time a target: `each_s`).
-pub fn local_forecast(r: &Record, now: u64, own: &[OwnLane]) -> Forecast {
+pub fn local_forecast(
+    the_plan: &'static dyn crate::agent::seam::Plan,
+    r: &Record,
+    now: u64,
+    own: &[OwnLane],
+) -> Forecast {
     let mut r = r.clone();
     let dt = now.saturating_sub(r.input.now) as f64;
     let (costs, each) = (r.input.costs.clone(), r.each_s.clone());
@@ -746,7 +762,7 @@ pub fn local_forecast(r: &Record, now: u64, own: &[OwnLane]) -> Forecast {
         *x += dt_s;
     }
     r.input.now = now.max(r.input.now);
-    r.forecast()
+    r.forecast(the_plan)
 }
 
 /// The threads that read while a page asks, each second: the NAS's (`PageView::tick`, from `root`
@@ -952,7 +968,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
         assert!(pv.tocome(None).is_none());
         pv.touch_at(now);
@@ -982,7 +998,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs("1.2.3"));
         pv.touch_at(now);
         assert!(rd(&pv, &Dir(d.path().into(), AtomicUsize::new(0)), now));
@@ -1015,7 +1031,7 @@ pub(crate) mod tests {
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
         rd(&pv, &src, now);
@@ -1046,7 +1062,7 @@ pub(crate) mod tests {
         // This Mac's own lane as its slot is now (as the lead works its own out): its machine's
         // lane's work moves (and what the others take with it).
         let rec = record(now);
-        let theirs = local_forecast(&rec, now, &[]);
+        let theirs = local_forecast(crate::agent::seam::for_tests(), &rec, now, &[]);
         let job = SlotJob {
             step: "depth".into(),
             targets: vec![("6/9/9".into(), false), ("6/9/8".into(), true)],
@@ -1056,9 +1072,13 @@ pub(crate) mod tests {
         };
         assert_eq!(job.busy_s(&|_, _| 3000.0, 1.0), 3000.0, "one left, its time spent within the one done");
         let own = [OwnLane { name: "m1".into(), job: Some(job) }];
-        let mine = local_forecast(&rec, now, &own);
+        let mine = local_forecast(crate::agent::seam::for_tests(), &rec, now, &own);
         assert_ne!(theirs.lanes.get("m1"), mine.lanes.get("m1"));
-        assert_eq!(theirs, forecast::forecast(&rec.input), "nothing moved at the time it was made");
+        assert_eq!(
+            theirs,
+            forecast::forecast(crate::agent::seam::for_tests(), &rec.input),
+            "nothing moved at the time it was made"
+        );
     }
 
     #[test]
@@ -1067,7 +1087,7 @@ pub(crate) mod tests {
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
         assert!(!rd(&pv, &src, now));
         assert_eq!(src.1.load(Ordering::Relaxed), 0);
@@ -1091,12 +1111,12 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
-        let first = PageView::default();
+        let first = PageView::of(crate::agent::seam::for_tests());
         first.set_inputs(inputs(""));
         assert!(first.swarm().is_none() && first.history(0, 10).is_none(), "nothing before the first read");
         rd(&first, &Dir(d.path().into(), AtomicUsize::new(0)), now);
         let a = first.swarm().unwrap();
-        let again = PageView::default();
+        let again = PageView::of(crate::agent::seam::for_tests());
         again.set_inputs(inputs(""));
         again.touch_at(now);
         rd(&again, &Dir(d.path().into(), AtomicUsize::new(0)), now + 1);
@@ -1125,7 +1145,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
-        let pv = Arc::new(PageView::default());
+        let pv = Arc::new(PageView::of(crate::agent::seam::for_tests()));
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
         rd(&pv, &Dir(d.path().into(), AtomicUsize::new(0)), now);
@@ -1162,7 +1182,7 @@ pub(crate) mod tests {
         let lease = Event { seq: 41, t: now - 10, after: vec![40, 7], ..Event::new("lease") };
         let lines: String = [&done, &lease].iter().map(|e| serde_json::to_string(e).unwrap() + "\n").collect();
         put(&root, &format!("state/coord/history/{day}/m-b.jsonl"), lines.as_bytes());
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
         rd(&pv, &Dir(d.path().into(), AtomicUsize::new(0)), now);
@@ -1183,7 +1203,7 @@ pub(crate) mod tests {
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
         rd(&pv, &src, now);
@@ -1204,7 +1224,7 @@ pub(crate) mod tests {
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
         rd(&pv, &src, now);
@@ -1260,7 +1280,7 @@ pub(crate) mod tests {
                 put(&root, &format!("state/coord/history/{day}/m-a.jsonl"), text.as_bytes());
             }
             let src = Dir(d.path().into(), AtomicUsize::new(0));
-            let pv = PageView::default();
+            let pv = PageView::of(crate::agent::seam::for_tests());
             pv.set_inputs(inputs(""));
             pv.touch_at(now);
             rd(&pv, &src, now);
@@ -1303,7 +1323,7 @@ pub(crate) mod tests {
         }
         put(&store::nasfs::NasRoot::local_for_test(d.path()), "state/status.json", b"{}");
         let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
         rd(&pv, &src, now);
@@ -1330,7 +1350,7 @@ pub(crate) mod tests {
         text += &(serde_json::to_string(&Event { seq: 1, t: now - 5, ..Event::new("pause") }).unwrap() + "\n");
         std::fs::write(&p, text).unwrap();
         let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
         for _ in 0..3 {
@@ -1359,7 +1379,7 @@ pub(crate) mod tests {
         let keep = d.path().join("home/pageview-waits.json");
         let with_keep = |keep: Option<PathBuf>| Inputs { keep, ..inputs("") };
         let src = Dir(d.path().into(), AtomicUsize::new(0));
-        let first = PageView::default();
+        let first = PageView::of(crate::agent::seam::for_tests());
         first.set_inputs(with_keep(Some(keep.clone())));
         first.touch_at(now);
         rd(&first, &src, now);
@@ -1377,7 +1397,7 @@ pub(crate) mod tests {
             ev(1, now - 50, "start", None) + &ev(2, now - 20, "done", None) + &ev(3, now + 5, "done", Some("depth"));
         put(&root, &format!("state/coord/history/{day}/m-a.jsonl"), lines.as_bytes());
         let after_of = |keep: Option<PathBuf>| {
-            let pv = PageView::default();
+            let pv = PageView::of(crate::agent::seam::for_tests());
             pv.set_inputs(with_keep(keep));
             pv.touch_at(now + 10);
             rd(&pv, &src, now + 10);
@@ -1401,7 +1421,7 @@ pub(crate) mod tests {
         c.set_page_forecast(&record(now).bytes().unwrap());
         c.set_page_regions(Arc::new(serde_json::json!({ "catalog": 3 })));
         let c = Arc::new(c);
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(Inputs {
             root: Some(store::nasfs::NasRoot::local_for_test(&d.join("nas"))),
             lead: LeadAt(Some(c.clone())),
@@ -1487,7 +1507,7 @@ pub(crate) mod tests {
         let now = now_s();
         let (c, _) = lead_and_view(d.path(), now);
         let view = c.pool_view(&ViewAsk::default());
-        let pv = PageView::default();
+        let pv = PageView::of(crate::agent::seam::for_tests());
         ask_of(&pv, Fake(Ok(view)));
         pv.touch_at(now);
         assert!(pv.tick_lead(now));

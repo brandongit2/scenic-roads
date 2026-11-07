@@ -22,6 +22,7 @@
 //! Read only while a page asks (`ask`): a thread of its own reads the file again when it's older
 //! than `EVERY` (about 600 KB over SMB); the answer is the last read, never waiting on it.
 
+use super::seam::Plan;
 use crate::pool::records::Keys;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -38,7 +39,7 @@ pub const EVERY: Duration = Duration::from_secs(60);
 /// steps this app doesn't know (`Keys::other`: a retired step's, terrain_fine's) aren't drawn, and
 /// terrain-hi's, slope-hi's and tree cover's z3 records (whole runs from before their z6 tiles,
 /// `Keys`' docs; 18 each of terrain's and slope's on 26 Oct) aren't targets now: left out.
-pub fn tiles_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
+pub fn tiles_of(the_plan: &dyn Plan, keys: &Keys) -> BTreeMap<String, Vec<String>> {
     let tile = |t: &str| {
         let p: Vec<&str> = t.split('/').collect();
         p.len() == 3 && p.iter().all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
@@ -54,7 +55,7 @@ pub fn tiles_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
             // (A drop's record, its "none" key (build::is_none_key): the tile left coverage, its
             // packs dropped by design: not a tile built, left out (#839 review; 436 of terrain-hi's
             // 520 with no pack, 29 Oct).)
-            if k.as_str().is_some_and(|k| super::build::is_none_key(&step, t, k)) {
+            if k.as_str().is_some_and(|k| the_plan.is_none_key(&step, t, k)) {
                 continue;
             }
             if tile(t) && !(z3_old && t.starts_with("3/")) {
@@ -70,7 +71,7 @@ pub fn tiles_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
 /// Each step's tile targets whose record in `keys` is a drop's (its "none" key, build::is_none_key:
 /// the tile left coverage, its packs dropped), left out of `tiles_of`: the page leaves out a job end
 /// for one of them (the drop run's own), task #866 review: an exact signal, not a time guess.
-pub fn dropped_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
+pub fn dropped_of(the_plan: &dyn Plan, keys: &Keys) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let known = Keys { other: BTreeMap::new(), ..keys.clone() };
     let Ok(Value::Object(m)) = serde_json::to_value(&known) else { return out };
@@ -78,7 +79,7 @@ pub fn dropped_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
         let Value::Object(targets) = v else { continue };
         let step = name.replace('_', "-");
         for (t, k) in &targets {
-            if k.as_str().is_some_and(|k| super::build::is_none_key(&step, t, k)) {
+            if k.as_str().is_some_and(|k| the_plan.is_none_key(&step, t, k)) {
                 out.entry(step.clone()).or_default().push(t.clone());
             }
         }
@@ -89,13 +90,17 @@ pub fn dropped_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
 /// Each step's tiles in `steps` (`tiles_of`) that made nothing to publish: indexes into its list of
 /// the targets whose published files manifest `m` doesn't name (crate::agent::steps::output_named);
 /// a step whose files aren't told by name, or with none such, left out.
-pub fn empty_of(steps: &BTreeMap<String, Vec<String>>, m: &BTreeMap<String, String>) -> BTreeMap<String, Vec<usize>> {
+pub fn empty_of(
+    the_plan: &dyn Plan,
+    steps: &BTreeMap<String, Vec<String>>,
+    m: &BTreeMap<String, String>,
+) -> BTreeMap<String, Vec<usize>> {
     let mut out = BTreeMap::new();
     for (step, tiles) in steps {
         let none: Vec<usize> = tiles
             .iter()
             .enumerate()
-            .filter(|(_, t)| super::steps::output_named(step, t, m) == Some(false))
+            .filter(|(_, t)| the_plan.output_named(step, t, m) == Some(false))
             .map(|(i, _)| i)
             .collect();
         if !none.is_empty() {
@@ -118,13 +123,17 @@ struct Read {
 
 /// Each told step's tiles in `steps` (`tiles_of`) the latest catalogue publishes: indexes into its
 /// list of the targets one of whose published files (crate::agent::steps::output_names) `has` names.
-pub fn published_of(steps: &BTreeMap<String, Vec<String>>, has: impl Fn(&str) -> bool) -> BTreeMap<String, Vec<usize>> {
+pub fn published_of(
+    the_plan: &dyn Plan,
+    steps: &BTreeMap<String, Vec<String>>,
+    has: impl Fn(&str) -> bool,
+) -> BTreeMap<String, Vec<usize>> {
     let mut out = BTreeMap::new();
     for (step, tiles) in steps {
         let mut told = false;
         let mut on = vec![];
         for (i, t) in tiles.iter().enumerate() {
-            let Some(names) = super::steps::output_names(step, t) else { continue };
+            let Some(names) = the_plan.output_names(step, t) else { continue };
             told = true;
             if names.iter().any(|n| has(n)) {
                 on.push(i);
@@ -138,6 +147,7 @@ pub fn published_of(steps: &BTreeMap<String, Vec<String>>, has: impl Fn(&str) ->
 }
 
 pub struct BuiltView {
+    the_plan: &'static dyn crate::agent::seam::Plan,
     root: store::nasfs::NasRoot,
     /// The catalogues read (the latest's names publish a tile); None: not told.
     catalogues: Option<Arc<super::cataloguesview::CataloguesView>>,
@@ -155,10 +165,12 @@ impl BuiltView {
     /// `root` read on the server's short schedule (store::nasfs::NasRoot::short_retry): a page's
     /// answer, read again a minute on; a blip ridden out, an outage shown as the error at once.
     pub fn new(
+        the_plan: &'static dyn crate::agent::seam::Plan,
         root: &store::nasfs::NasRoot,
         catalogues: Option<Arc<super::cataloguesview::CataloguesView>>,
     ) -> Arc<Self> {
         Arc::new(BuiltView {
+            the_plan,
             root: root.short_retry(),
             catalogues,
             read: Mutex::new(Read::default()),
@@ -194,7 +206,7 @@ impl BuiltView {
             serde_json::json!({ "at": at, "steps": *steps, "empty": *empty, "dropped": *dropped, "error": error });
         if let Some((n, names)) = names {
             let has = |s: &str| names.contains(&super::cataloguesview::hash(s));
-            a["published"] = serde_json::json!(published_of(&steps, has));
+            a["published"] = serde_json::json!(published_of(self.the_plan, &steps, has));
             a["catalogue"] = n.into();
         }
         a
@@ -203,9 +215,9 @@ impl BuiltView {
     /// Reads the keys and the manifest (the last read kept when they can't be read now).
     pub fn refresh(&self) {
         let got = crate::pool::records::Brief::now(&self.root).map(|b| {
-            let steps = tiles_of(&b.keys);
-            let empty = empty_of(&steps, &b.manifest);
-            (steps, empty, dropped_of(&b.keys))
+            let steps = tiles_of(self.the_plan, &b.keys);
+            let empty = empty_of(self.the_plan, &steps, &b.manifest);
+            (steps, empty, dropped_of(self.the_plan, &b.keys))
         });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let mut r = self.read.lock().unwrap();
@@ -238,7 +250,7 @@ mod tests {
         k.record("outlines", &[("outlines".into(), "f".into())]);
         k.record("catalog", &[("catalog".into(), "g".into())]);
         k.other.insert("terrain_fine".into(), serde_json::json!({ "6/1/1": "h" }));
-        let t = tiles_of(&k);
+        let t = tiles_of(crate::agent::seam::for_tests(), &k);
         assert_eq!(t["terrain-deep"], ["10/257/342", "10/300/400"]);
         assert_eq!(t["terrain-hi"], ["6/16/21"]);
         assert_eq!(t["bldfield-lo"], ["3/2/2"]);
@@ -249,7 +261,7 @@ mod tests {
     #[test]
     fn read_from_the_keys_file_while_asked() {
         let d = tempfile::tempdir().unwrap();
-        let v = BuiltView::new(&store::nasfs::NasRoot::local_for_test(d.path()), None);
+        let v = BuiltView::new(crate::agent::seam::for_tests(), &store::nasfs::NasRoot::local_for_test(d.path()), None);
         v.refresh();
         assert_eq!(v.ask()["steps"], serde_json::json!({}), "no keys yet: none built");
         let mut k = Keys::default();
@@ -263,10 +275,17 @@ mod tests {
         assert!(a.get("published").is_none(), "no catalogues told: not said");
         let mut k = Keys::default();
         k.record("terrain-deep", &[("10/1/2".into(), "k1".into())]);
-        let none = crate::agent::steps::none_key("terrain-deep", "10/3/4").unwrap();
+        let none = super::super::steps::none_key("terrain-deep", "10/3/4").unwrap();
         k.record("terrain-deep", &[("10/3/4".into(), none)]);
-        assert_eq!(dropped_of(&k), BTreeMap::from([("terrain-deep".to_string(), vec!["10/3/4".to_string()])]));
-        assert_eq!(tiles_of(&k)["terrain-deep"], ["10/1/2"], "a drop's record: no tile");
+        assert_eq!(
+            dropped_of(crate::agent::seam::for_tests(), &k),
+            BTreeMap::from([("terrain-deep".to_string(), vec!["10/3/4".to_string()])])
+        );
+        assert_eq!(
+            tiles_of(crate::agent::seam::for_tests(), &k)["terrain-deep"],
+            ["10/1/2"],
+            "a drop's record: no tile"
+        );
     }
 
     #[test]
@@ -285,22 +304,22 @@ mod tests {
             ("layers/terrain/hi/6-1-2".into(), "z".into()),
         ]
         .into();
-        let steps = tiles_of(&k);
-        let e = empty_of(&steps, &m);
+        let steps = tiles_of(crate::agent::seam::for_tests(), &k);
+        let e = empty_of(crate::agent::seam::for_tests(), &steps, &m);
         assert_eq!(e["terrain-deep"], [0, 2], "10/1/2 and 10/5/6 made no pack");
         assert_eq!(e.len(), 1, "slope-deep's and terrain-hi's are named; the root's not told: {e:?}");
     }
 
     #[test]
     fn a_drops_record_is_no_tile_built() {
-        let none = |s: &str, t: &str| crate::agent::steps::none_key(s, t).unwrap();
+        let none = |s: &str, t: &str| super::super::steps::none_key(s, t).unwrap();
         let mut k = Keys::default();
         k.record("terrain-hi", &[("6/1/2".into(), none("terrain-hi", "6/1/2")), ("6/21/18".into(), "k".into())]);
         k.record("terrain-deep", &[("10/1/2".into(), none("terrain-deep", "10/1/2"))]);
-        let steps = tiles_of(&k);
+        let steps = tiles_of(crate::agent::seam::for_tests(), &k);
         assert_eq!(steps["terrain-hi"], ["6/21/18"], "the drop's left out: {steps:?}");
         assert!(!steps.contains_key("terrain-deep"), "a deep drop too");
-        let e = empty_of(&steps, &BTreeMap::new());
+        let e = empty_of(crate::agent::seam::for_tests(), &steps, &BTreeMap::new());
         assert_eq!(e["terrain-hi"], [0], "no hi tiles made: listed, nothing to publish");
     }
 
@@ -340,7 +359,7 @@ mod tests {
         .into();
         let (n, names) = cv.names().unwrap();
         assert_eq!(n, 1);
-        let p = published_of(&steps, |s| names.contains(&hash(s)));
+        let p = published_of(crate::agent::seam::for_tests(), &steps, |s| names.contains(&hash(s)));
         assert_eq!(p["terrain-deep"], [0, 1], "10/5/6 never named");
         assert_eq!(p["terrain-hi"], [0]);
         assert!(!p.contains_key("pack"), "a work step's files aren't told");
@@ -348,7 +367,7 @@ mod tests {
         cv.refresh();
         let (n, names) = cv.names().unwrap();
         assert_eq!(n, 2);
-        let p = published_of(&steps, |s| names.contains(&hash(s)));
+        let p = published_of(crate::agent::seam::for_tests(), &steps, |s| names.contains(&hash(s)));
         assert_eq!(p["terrain-deep"], [0], "the dropped pack's tile is published no more");
         assert_eq!(p["terrain-hi"], Vec::<usize>::new(), "told, none published");
     }

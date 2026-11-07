@@ -72,6 +72,7 @@ pub mod share;
 pub mod slots;
 pub mod steps;
 pub mod takeover;
+pub mod theplan;
 pub mod tiles;
 
 use crate::coord::client::LeaseCalls;
@@ -102,6 +103,8 @@ fn scratch_of(spec: &JobSpec) -> Option<PathBuf> {
 pub struct Options {
     /// The NAS project folder; None: find the share (and mount it when missing).
     pub root: Option<store::nasfs::NasRoot>,
+    /// The plan the runtime asks (seam::Plan): the program's.
+    pub the_plan: &'static dyn seam::Plan,
     /// The agent's local folder (`~/Library/Application Support/scenic/agent`).
     pub home: PathBuf,
     /// The folder of the programs jobs run (`scenic-build`, `extract`): the agent's own.
@@ -347,8 +350,8 @@ const UNPUBLISHED: &str = "waits for the pool's records to reflect the journal (
 /// Whether `spec` is an offered step's work in the plan (crate::agent::every::offered): it marks the
 /// step's place in the plan's order, its targets granted to any member (this Mac's own agent among
 /// them) as many as fit a quarter of an hour, never started as planned (`Agent::offer_plan`).
-fn offered_job(spec: &JobSpec) -> bool {
-    spec.record.as_ref().is_some_and(|w| every::offered(&w.step))
+fn offered_job(the_plan: &dyn seam::Plan, spec: &JobSpec) -> bool {
+    spec.record.as_ref().is_some_and(|w| every::offered(the_plan, &w.step))
 }
 
 /// The targets the lead's own planned job `spec` is offered with: its record's, or for a job of no
@@ -550,15 +553,15 @@ impl Tell {
 /// `disk`); a step's none of its own: their grant's measured disk is reserved for them
 /// (`reservation`), and the owner's room target stays free past it, with no fixed reserve (task
 /// #421).
-fn helper_need(step: &str) -> u64 {
-    steps::task(step).map_or(0, |t| t.disk)
+fn helper_need(the_plan: &dyn seam::Plan, step: &str) -> u64 {
+    the_plan.task_disk(step).unwrap_or(0)
 }
 
 /// Of the work a helper could ask for (`can`), what starts beside a running job (`try_start_said`):
 /// its need (`helper_need`) free past `held` (the owner's room target and the jobs' reservations),
 /// none made for it.
-fn room_beside(can: Vec<String>, free: u64, held: u64) -> Vec<String> {
-    can.into_iter().filter(|s| free >= held.saturating_add(helper_need(s))).collect()
+fn room_beside(the_plan: &dyn seam::Plan, can: Vec<String>, free: u64, held: u64) -> Vec<String> {
+    can.into_iter().filter(|s| free >= held.saturating_add(helper_need(the_plan, s))).collect()
 }
 
 /// What a granted task of `kind` does, for the status ("bldtile: z8 tile 8/4/5", "tail 6/1/1").
@@ -573,9 +576,9 @@ fn task_what(kind: &str, task: &serde_json::Value, unit: &str) -> String {
 
 /// A leased task's kind: its job id's step (`JobId`, "<kind> <unit>"); "tail", the most room, for
 /// an id naming no kind (a job adopted from an agent before task #849, "task <lease>").
-fn task_kind(spec: &JobSpec) -> &str {
+fn task_kind<'a>(the_plan: &dyn seam::Plan, spec: &'a JobSpec) -> &'a str {
     let step = JobId::parse(&spec.id).step;
-    if steps::task(step).is_some() {
+    if the_plan.task_disk(step).is_some() {
         step
     } else {
         "tail"
@@ -587,12 +590,16 @@ fn task_kind(spec: &JobSpec) -> &str {
 /// bytes, `cheap` what `make_room` can delete there: room::helper_cheap_bytes). A job granted that
 /// still can't have its room once the caches are emptied is given back (`run_once`). With the
 /// owner's disk room target (`floor`, room::Target), that much more stays free.
-fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
-    steps::SHARED
+fn helper_steps(the_plan: &dyn seam::Plan, free: u64, cheap: u64, floor: u64) -> Vec<String> {
+    the_plan
+        .shared()
         .iter()
         .copied()
-        .chain(steps::TASKS.iter().map(|t| t.name))
-        .filter(|s| free.saturating_add(cheap) >= floor.saturating_add(helper_need(s) + room::margin(helper_need(s))))
+        .chain(the_plan.task_kinds())
+        .filter(|s| {
+            free.saturating_add(cheap)
+                >= floor.saturating_add(helper_need(the_plan, s) + room::margin(helper_need(the_plan, s)))
+        })
         .map(str::to_string)
         .collect()
 }
@@ -1872,7 +1879,7 @@ impl Agent {
                     };
                     match side {
                         Some(side) => {
-                            let (r1, out) = pool::Run::start(side, &o.home);
+                            let (r1, out) = pool::Run::start(o.the_plan, side, &o.home);
                             role = role_by(&r1);
                             eprintln!(
                                 "agent: the pool is on: this Mac's member {} is {} (term {})",
@@ -1990,7 +1997,7 @@ impl Agent {
             settings_seen: BTreeMap::new(),
             settings_written: None,
             broker: None,
-            pageview: pageview::PageView::new(),
+            pageview: pageview::PageView::new(o.the_plan),
             catalogues_view: None,
             built_view: None,
             pageview_reading: false,
@@ -2356,10 +2363,10 @@ impl Agent {
                 return Vec::new();
             }
         }
-        let mut can = helper_steps(room::disk_free(&self.o.home).unwrap_or(0), cheap, self.floor());
+        let mut can = helper_steps(self.o.the_plan, room::disk_free(&self.o.home).unwrap_or(0), cheap, self.floor());
         // (Every step to every member: every step the lead may offer, its room by the measures at
         // the lead's coordinator, this Mac's disk room said with the ask; crate::agent::every.)
-        for s in steps::TABLE.iter().map(|r| r.name).filter(|s| every::offered(s)) {
+        for s in self.o.the_plan.step_names().into_iter().filter(|s| every::offered(self.o.the_plan, s)) {
             if !can.iter().any(|c| c == s) {
                 can.push(s.to_string());
             }
@@ -2383,7 +2390,7 @@ impl Agent {
         let floor = self.floor();
         if floor > 0 && self.running_jobs() > 0 {
             let (free, held) = (self.disk_free(), floor.saturating_add(self.reserved(None)));
-            can = room_beside(can, free, held);
+            can = room_beside(self.o.the_plan, can, free, held);
             if can.is_empty() {
                 waiting.push(Waiting {
                     step: None,
@@ -2398,7 +2405,7 @@ impl Agent {
             }
         }
         if can.is_empty() {
-            let need = helper_need(crate::trees::task::KIND);
+            let need = helper_need(self.o.the_plan, crate::trees::task::KIND);
             let floor = self.floor();
             let past =
                 if floor > 0 { format!(", past the disk room target's {}", room::size(floor)) } else { String::new() };
@@ -2508,12 +2515,13 @@ impl Agent {
         self.slots[k].reserve_mb = Some(grant.disk_mb).filter(|&d| d > 0);
         match grant {
             crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. }
-                if every::offered(&step) || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) =>
+                if every::offered(self.o.the_plan, &step)
+                    || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) =>
             {
                 // (A resumable job, its progress on this Mac: resumed in its own scratch folder,
                 // its step's whole hand-off as the lead's own job's, no done record: its target,
                 // the pass's date, is no step's target. crate::agent::resume.)
-                let resumed = resume::RESUMABLE.contains(&step.as_str()) && !every::offered(&step);
+                let resumed = resume::RESUMABLE.contains(&step.as_str()) && !every::offered(self.o.the_plan, &step);
                 // (In the pool, its folder is its lease's, `<term>-<lease>`, handed to the journal.)
                 let pooled = self.pool.is_some().then_some(crate::pool::journal::LeaseId { term, n: lease });
                 let dir = match pooled {
@@ -2570,7 +2578,7 @@ impl Agent {
                 cmd.extend(self.step_cmd(root, &step, &targets, &pass));
                 let n = targets.len();
                 let id = format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
-                let what = format!("{}, for the lead", steps::said(&step, n));
+                let what = format!("{}, for the lead", self.o.the_plan.said(&step, n));
                 self.slots[k].lease = Some(match pooled {
                     Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
                     None => Held::Leased { lease, dir },
@@ -2701,8 +2709,11 @@ impl Agent {
             return Vec::new();
         }
         nasread::phase("the grants: the lead's ask");
-        let mut skip: BTreeSet<String> =
-            jobs.iter().filter(|j| !offered_job(j) && self.wait_reason(j, c).is_some()).map(|j| j.id.clone()).collect();
+        let mut skip: BTreeSet<String> = jobs
+            .iter()
+            .filter(|j| !offered_job(self.o.the_plan, j) && self.wait_reason(j, c).is_some())
+            .map(|j| j.id.clone())
+            .collect();
         // (A catalogue while the pool's records don't reflect the journal (`Gates::publish`): not asked
         // for, said waiting here. Granted, it would only wait in `try_start_said`, and be granted,
         // logged and leased again every loop: 41 times in the 40 minutes of task #630. The gates as
@@ -2713,7 +2724,7 @@ impl Agent {
                 waiting.push(Waiting { step: step_of(&j.id), what: j.what.clone(), why: UNPUBLISHED.into() });
             }
         }
-        let mut can: Vec<String> = steps::TABLE.iter().map(|r| r.name.to_string()).collect();
+        let mut can: Vec<String> = self.o.the_plan.step_names().into_iter().map(str::to_string).collect();
         for j in jobs {
             let step = j.record.as_ref().map(|w| w.step.clone()).or_else(|| step_of(&j.id)).unwrap_or_default();
             if !can.contains(&step) {
@@ -2800,7 +2811,7 @@ impl Agent {
                 let n = targets.len();
                 Some(JobSpec {
                     id: format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or("")),
-                    what: steps::said(step, n),
+                    what: self.o.the_plan.said(step, n),
                     cmd: self.step_cmd(root, step, targets, pass),
                     needs: Needs { nas: true },
                     restart_after_sleep: true,
@@ -2915,7 +2926,7 @@ impl Agent {
             if no_floors {
                 return Vec::new();
             }
-            watch.floors(&costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>())
+            watch.floors(self.o.the_plan, &costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>())
         };
         // (And what they took on the disk at least, and the job over its run: learned whatever the
         // switch, docs/pool.md §7.7.)
@@ -2967,16 +2978,18 @@ impl Agent {
                 // would go to the lead as failed, with no reason, and be built again.)
                 let me = self.member_id.clone().or_else(|| crate::pool::member_id(&self.o.home).ok());
                 let entry = match (&kept, me.as_deref()) {
-                    (Some(w), Some(me)) => match pool::entry_of(&dir, me, w.lease, &w.step, done, now_s()) {
-                        Ok(e) => e,
-                        Err(e) => {
-                            eprintln!(
-                                "agent: {}'s hand-off can't be read ({e:#}); its work is done again",
-                                dir.display()
-                            );
-                            None
+                    (Some(w), Some(me)) => {
+                        match pool::entry_of(self.o.the_plan, &dir, me, w.lease, &w.step, done, now_s()) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                eprintln!(
+                                    "agent: {}'s hand-off can't be read ({e:#}); its work is done again",
+                                    dir.display()
+                                );
+                                None
+                            }
                         }
-                    },
+                    }
                     _ => None,
                 };
                 // (Through the lead wherever it is now, as `beat` does: this process's coordinator
@@ -4511,7 +4524,7 @@ impl Agent {
             Some(_) => {
                 waiting.extend(view.waiting.iter().cloned());
                 // (Why the lead's own planned jobs can't start now.)
-                for spec in view.jobs.iter().filter(|s| !offered_job(s)) {
+                for spec in view.jobs.iter().filter(|s| !offered_job(self.o.the_plan, s)) {
                     if let Some(why) = self.wait_reason(spec, &c) {
                         waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
                     }
@@ -4613,7 +4626,7 @@ impl Agent {
         let now_steps: Vec<String> =
             self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| step_of(&r.spec.id))).collect();
         annotate(&mut checklist, &now_steps, &helpers, &waiting);
-        let checklist: Vec<progress::Line> = checklist.into_iter().map(progress::Line::said).collect();
+        let checklist: Vec<progress::Line> = checklist.into_iter().map(|l| l.said(self.o.the_plan)).collect();
         let views: Vec<JobView> = (0..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
         let all_new = self.all_new();
         let capacity = self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default();
@@ -4700,7 +4713,7 @@ impl Agent {
         // needs a look, flags::of, the same in both.)
         if let Some(c) = &self.coord {
             let factor = c.overdue().0;
-            status.flags = flags::of(&status, &c.open_work(), &c.runs(factor), factor, status.beat);
+            status.flags = flags::of(self.o.the_plan, &status, &c.open_work(), &c.runs(factor), factor, status.beat);
             let build = status.build_said(status.beat);
             c.set_said(&status.host, build.clone(), status.flags.clone());
             status.build = Some(build);
@@ -4934,7 +4947,7 @@ impl Agent {
                 .spec
                 .record
                 .as_ref()
-                .is_some_and(|w| w.targets.iter().any(|(t, key)| build::is_none_key(&w.step, t, key)));
+                .is_some_and(|w| w.targets.iter().any(|(t, key)| self.o.the_plan.is_none_key(&w.step, t, key)));
             // The targets it finished: every one when it succeeded, else those it noted done as
             // each was saved (crate::control::done), whatever stopped it, so they aren't built
             // again: handed off with the job's lease (the journal has their saves).
@@ -5011,7 +5024,7 @@ impl Agent {
             // (Not a PER_WORK step's: its targets' times differ by the work each found, crate::needs.)
             if ok && of > 0 && !step.is_empty() && k == 0 && !is_per_work(&step) && !drops {
                 let each = secs as f64 / of as f64;
-                let e = self.mem.step_secs.entry(secs_key(&step)).or_insert(each);
+                let e = self.mem.step_secs.entry(secs_key(self.o.the_plan, &step)).or_insert(each);
                 *e = 0.7 * *e + 0.3 * each;
             }
             if ok && step == "catalog" {
@@ -5282,7 +5295,10 @@ impl Agent {
     /// member's its step's; else, beside another job, its measured disk; alone, none of its own.
     fn need_of(&self, k: usize, spec: &JobSpec) -> u64 {
         if self.is_member() {
-            helper_need(spec.record.as_ref().map_or_else(|| task_kind(spec), |w| w.step.as_str()))
+            helper_need(
+                self.o.the_plan,
+                spec.record.as_ref().map_or_else(|| task_kind(self.o.the_plan, spec), |w| w.step.as_str()),
+            )
         } else {
             // (Beside another job: what it was measured to take on the disk. Alone in the first
             // slot: nothing past the target, the disk guard its backstop, so a
@@ -5501,7 +5517,7 @@ impl Agent {
         // An offered step's targets recorded since this loop read the keys (another worker built
         // them meanwhile): not built again, its lease given back (the loop's).
         if let (Some(r), false, Some(w)) =
-            (root, self.is_member(), spec.record.as_ref().filter(|w| every::offered(&w.step)))
+            (root, self.is_member(), spec.record.as_ref().filter(|w| every::offered(self.o.the_plan, &w.step)))
         {
             let done = self
                 .planning_keys_here(r)
@@ -6315,7 +6331,7 @@ impl Agent {
             let eta_s = eta_s.filter(|_| r.paused.is_none());
             let step =
                 r.spec.record.as_ref().map_or_else(|| step_of(&r.spec.id).unwrap_or_default(), |w| w.step.clone());
-            JobProgress { done, total: n, unit: format!("{}s", steps::noun(&step)), eta_s, moved_at: None }
+            JobProgress { done, total: n, unit: format!("{}s", self.o.the_plan.noun(&step)), eta_s, moved_at: None }
         });
         let fresh = batch.is_none() && target.as_ref().is_some_and(|t| t.1);
         let mut progress = batch.or(target.map(|t| t.0));
@@ -7088,7 +7104,7 @@ impl Agent {
     /// What a target of `step` took here lately (`Memory::step_secs`); None for a PER_WORK step
     /// (crate::needs: its jobs' times mix in targets that found nothing to do, task #830).
     fn step_secs_here(&self, step: &str) -> Option<f64> {
-        step_secs_here(&self.mem, step)
+        step_secs_here(self.o.the_plan, &self.mem, step)
     }
 
     /// Slot `k`'s job under way, as its lane's time left is worked out (forecast::SlotJob): its
@@ -7847,7 +7863,10 @@ impl Agent {
             }
         }
         // (The map's finished tiles, the same: the build's keys on the NAS.)
-        let bv = self.built_view.get_or_insert_with(|| builtview::BuiltView::new(root, Some(cv.clone()))).clone();
+        let bv = self
+            .built_view
+            .get_or_insert_with(|| builtview::BuiltView::new(self.o.the_plan, root, Some(cv.clone())))
+            .clone();
         if !coord.has_built() {
             coord.set_built(bv);
         }
@@ -7921,7 +7940,7 @@ impl Agent {
             && self.pool.is_some()
             && brokers::stale(self.viewer_failed, now, brokers::HTTPS_EVERY)
         {
-            match make_viewer(self.port, &self.app, &self.host) {
+            match make_viewer(self.o.the_plan, self.port, &self.app, &self.host) {
                 Some(v) => {
                     eprintln!("agent: this Mac's port shows the lead's build page at {}", v.contact.urls.join(", "));
                     self.viewer = Some(std::sync::Arc::new(v));
@@ -8831,7 +8850,7 @@ impl Agent {
         } else {
             let costs = self.coord.as_ref().map(|c| c.for_forecast().0).unwrap_or_default();
             let paces = self.coord.as_ref().map(|c| c.paces()).unwrap_or_default();
-            let book = crate::needs::Book::new(&costs).paced(&paces);
+            let book = crate::needs::Book::new(self.o.the_plan, &costs).paced(&paces);
             let own = |step: &str| self.step_secs_here(step);
             // (On this Mac: at its pace.)
             let secs = |step: &str, t: &str| {
@@ -8964,8 +8983,8 @@ fn newer_app(o: &Options, app: &str) -> bool {
 
 /// What a target of `step` took here lately (`Memory::step_secs`); None for a PER_WORK step
 /// (crate::needs: its jobs' times mix in targets that found nothing to do, task #830).
-fn step_secs_here(mem: &Memory, step: &str) -> Option<f64> {
-    (!is_per_work(step)).then(|| mem.step_secs.get(&secs_key(step)).copied()).flatten()
+fn step_secs_here(the_plan: &dyn seam::Plan, mem: &Memory, step: &str) -> Option<f64> {
+    (!is_per_work(step)).then(|| mem.step_secs.get(&secs_key(the_plan, step)).copied()).flatten()
 }
 
 /// The most jobs this Mac runs at once (`job_slots` of its cores).
@@ -9213,12 +9232,17 @@ struct Holds {
 /// The jobs that read the declared sources (crate::inputs::sources, build::reads_sources) taken
 /// out of `jobs` while no version of them is accepted (`held`), each said in `waiting`: they wait
 /// for the input check to take the declarations in, rather than fail.
-fn hold_for_sources(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+fn hold_for_sources(
+    the_plan: &dyn seam::Plan,
+    jobs: Vec<JobSpec>,
+    held: bool,
+    waiting: &mut Vec<Waiting>,
+) -> Vec<JobSpec> {
     if !held {
         return jobs;
     }
     let (kept, out): (Vec<JobSpec>, Vec<JobSpec>) =
-        jobs.into_iter().partition(|j| !build::reads_sources(&step_of(&j.id).unwrap_or_default()));
+        jobs.into_iter().partition(|j| !the_plan.reads_sources(&step_of(&j.id).unwrap_or_default()));
     for j in out {
         waiting.push(Waiting {
             step: step_of(&j.id),
@@ -9234,12 +9258,17 @@ fn hold_for_sources(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>) 
 /// `jobs` while it `held`s them (the lakefill job has work and hasn't failed
 /// build::LAKEFILL_HOLDS times in a row, or its source can't be read), each said in `waiting`.
 /// Nothing reads a fill made from an older basemap meanwhile, and nothing is made twice.
-fn hold_for_lakefill(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+fn hold_for_lakefill(
+    the_plan: &dyn seam::Plan,
+    jobs: Vec<JobSpec>,
+    held: bool,
+    waiting: &mut Vec<Waiting>,
+) -> Vec<JobSpec> {
     if !held {
         return jobs;
     }
     let (kept, out): (Vec<JobSpec>, Vec<JobSpec>) =
-        jobs.into_iter().partition(|j| !build::reads_lakefill(&step_of(&j.id).unwrap_or_default()));
+        jobs.into_iter().partition(|j| !the_plan.reads_lakefill(&step_of(&j.id).unwrap_or_default()));
     for j in out {
         waiting.push(Waiting {
             step: step_of(&j.id),
@@ -9424,7 +9453,7 @@ fn make_coordinator_on(
     }
     // (On the listeners this process kept for the port, a test's from the start: no other process
     // can take it between.)
-    match crate::coord::Coordinator::start(&o.home.join("coord"), port, host, app) {
+    match crate::coord::Coordinator::start(o.the_plan, &o.home.join("coord"), port, host, app) {
         Ok(c) => {
             eprintln!("agent: coordinating at {}", c.contact.urls.join(", "));
             Some(c)
@@ -9449,7 +9478,7 @@ fn make_broker(o: &Options, run: &pool::Run, app: &str, host: &str, port: u16) -
     if let Err(e) = pool::seed(run.side.nas(), &o.home.join("coord")) {
         eprintln!("agent: the pool's token: {e:#}");
     }
-    match crate::coord::Broker::start(&o.home.join("coord"), port, host, app) {
+    match crate::coord::Broker::start(o.the_plan, &o.home.join("coord"), port, host, app) {
         Ok(b) => Some(b),
         Err(e) => {
             // (A test's would be waited on until its watchdog: it fails at once, #914.)
@@ -9466,9 +9495,14 @@ fn make_broker(o: &Options, run: &pool::Run, app: &str, host: &str, port: u16) -
 
 /// A viewer alone on this Mac's coordinator port `port` (crate::coord::Coordinator::viewer): a
 /// member's port with no broker, the lead's page sent there; None when it can't listen.
-fn make_viewer(port: u16, app: &str, host: &str) -> Option<crate::coord::Coordinator> {
+fn make_viewer(
+    the_plan: &'static dyn crate::agent::seam::Plan,
+    port: u16,
+    app: &str,
+    host: &str,
+) -> Option<crate::coord::Coordinator> {
     let l = crate::coord::listeners_on(port).map_err(anyhow::Error::from);
-    match l.and_then(|l| crate::coord::Coordinator::viewer(l, host, app)) {
+    match l.and_then(|l| crate::coord::Coordinator::viewer(the_plan, l, host, app)) {
         Ok(v) => Some(v),
         Err(e) => {
             #[cfg(test)]
@@ -9623,8 +9657,8 @@ fn seen(c: &store::catalogue::Catalogue) -> CatalogueSeen {
 /// What a step's time here is kept under (`Memory::step_secs`): its name, with the way it runs now
 /// once that's changed (crate::coord::cost_version), so a time measured another way (a z3 tile's
 /// tree cover, a z6 tile's now) is never taken for it.
-fn secs_key(step: &str) -> String {
-    match crate::coord::cost_version(step) {
+fn secs_key(the_plan: &dyn seam::Plan, step: &str) -> String {
+    match the_plan.cost_version(step) {
         0 => step.to_string(),
         v => format!("{step} v{v}"),
     }
@@ -9893,6 +9927,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -9936,6 +9971,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -10028,6 +10064,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home,
             bin: PathBuf::from("/app"),
@@ -10082,6 +10119,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -10249,6 +10287,7 @@ mod tests {
 
     fn agent(root: &store::nasfs::NasRoot, home: &Path) -> Agent {
         test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(root.clone()),
             home: home.to_path_buf(),
             bin: PathBuf::from("/nonexistent/bin"),
@@ -10404,16 +10443,25 @@ mod tests {
         let all = |tasks: &[&'static str]| [&steps::SHARED[..], tasks].concat();
         // The shared steps need no room of their own (their grant's measured disk is reserved
         // for them, and no fixed reserve: task #421); the tasks theirs and their margin.
-        assert_eq!(helper_steps(gb(20), gb(10), 0), all(&["tail", "terrainsub", "treeblock", "bldtile"]));
-        assert_eq!(helper_steps(gb(10), gb(5), 0), all(&["tail", "terrainsub", "treeblock", "bldtile"]));
+        assert_eq!(
+            helper_steps(crate::agent::seam::for_tests(), gb(20), gb(10), 0),
+            all(&["tail", "terrainsub", "treeblock", "bldtile"])
+        );
+        assert_eq!(
+            helper_steps(crate::agent::seam::for_tests(), gb(10), gb(5), 0),
+            all(&["tail", "terrainsub", "treeblock", "bldtile"])
+        );
         // (Tree cover's rows and terrain's subtrees need 1 GB.)
-        assert_eq!(helper_steps(gb(3), gb(2), 0), all(&["terrainsub", "treeblock"]));
-        assert_eq!(helper_steps(gb(1), 0, 0), all(&[]));
+        assert_eq!(helper_steps(crate::agent::seam::for_tests(), gb(3), gb(2), 0), all(&["terrainsub", "treeblock"]));
+        assert_eq!(helper_steps(crate::agent::seam::for_tests(), gb(1), 0, 0), all(&[]));
         // The owner's disk room target stays free past them: 70 GB free with a 60 GB target leaves
         // room for every one; with a 69 GB target, the shared steps alone; past what's free, none.
-        assert_eq!(helper_steps(gb(70), 0, gb(60)), all(&["tail", "terrainsub", "treeblock", "bldtile"]));
-        assert_eq!(helper_steps(gb(70), 0, gb(69)), all(&[]));
-        assert!(helper_steps(gb(70), 0, gb(71)).is_empty());
+        assert_eq!(
+            helper_steps(crate::agent::seam::for_tests(), gb(70), 0, gb(60)),
+            all(&["tail", "terrainsub", "treeblock", "bldtile"])
+        );
+        assert_eq!(helper_steps(crate::agent::seam::for_tests(), gb(70), 0, gb(69)), all(&[]));
+        assert!(helper_steps(crate::agent::seam::for_tests(), gb(70), 0, gb(71)).is_empty());
     }
     /// Beside a running job (#703): only the work whose need is free now past the room target and
     /// the jobs' reservations is asked for, so none is granted only to be given back. The M4, 35 GB
@@ -10424,9 +10472,12 @@ mod tests {
         let gb = |n: u64| n << 30;
         let all = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let can = all(&["bldtiles", "tail", "bldtile", "treeblock", "terrainsub"]);
-        assert_eq!(room_beside(can.clone(), gb(35), gb(32)), all(&["bldtiles", "treeblock", "terrainsub"]));
-        assert_eq!(room_beside(can.clone(), gb(35), gb(20)), can);
-        assert_eq!(room_beside(can, gb(19), gb(20)), all(&[]));
+        assert_eq!(
+            room_beside(crate::agent::seam::for_tests(), can.clone(), gb(35), gb(32)),
+            all(&["bldtiles", "treeblock", "terrainsub"])
+        );
+        assert_eq!(room_beside(crate::agent::seam::for_tests(), can.clone(), gb(35), gb(20)), can);
+        assert_eq!(room_beside(crate::agent::seam::for_tests(), can, gb(19), gb(20)), all(&[]));
     }
 
     /// A helper's task needs its kind's room, not a tail's whatever it is (#703: a terrainsub held
@@ -10448,13 +10499,22 @@ mod tests {
             .map(|k| {
                 let s = spec(k, "6/1/2");
                 assert_eq!(step_of(&s.id).as_deref(), Some(*k), "the Machines tab's step");
-                (task_kind(&s).to_string(), helper_need(task_kind(&s)) >> 30)
+                (
+                    task_kind(crate::agent::seam::for_tests(), &s).to_string(),
+                    helper_need(crate::agent::seam::for_tests(), task_kind(crate::agent::seam::for_tests(), &s)) >> 30,
+                )
             })
             .collect();
         assert_eq!(kinds, want.iter().zip([1, 1, 5, 5]).map(|(k, n)| (k.to_string(), n)).collect::<Vec<_>>());
         // A job adopted from an agent before #849, "task <lease>": a tail's room, the most.
         let old = JobSpec { id: "task 3".into(), ..spec("tail", "") };
-        assert_eq!((task_kind(&old), helper_need(task_kind(&old)) >> 30), ("tail", 5));
+        assert_eq!(
+            (
+                task_kind(crate::agent::seam::for_tests(), &old),
+                helper_need(crate::agent::seam::for_tests(), task_kind(crate::agent::seam::for_tests(), &old)) >> 30
+            ),
+            ("tail", 5)
+        );
     }
 
     /// The slow-plan fake (docs/agent-parts.md §7): a plan that sleeps first, as long as asked.
@@ -10485,6 +10545,7 @@ mod tests {
         let root = d.join("nas");
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: d.join("home"),
             bin: PathBuf::from("/nonexistent/bin"),
@@ -11038,6 +11099,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -11157,6 +11219,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -11204,6 +11267,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -11263,6 +11327,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // (A root of its own, no map/: the NAS away, the pool off.)
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -11307,6 +11372,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         assert!(!store::nasfs::is_live_path(d.path()));
         let o = |root: Option<store::nasfs::NasRoot>| Options {
+            the_plan: crate::agent::seam::for_tests(),
             root,
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -11324,10 +11390,14 @@ mod tests {
         );
         if let Some(h) = std::env::var_os("HOME") {
             let live = Options {
+                the_plan: crate::agent::seam::for_tests(),
                 home: Path::new(&h).join("Library/Application Support/scenic"),
                 ..o(Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))))
             };
-            assert!(std::panic::catch_unwind(|| test_agent(live)).is_err(), "the app's home");
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test_agent(live))).is_err(),
+                "the app's home"
+            );
         }
         assert!(
             std::panic::catch_unwind(|| store::nasfs::NasRoot::local_for_test("/Volumes/x/scenic-roads")).is_err(),
@@ -11345,6 +11415,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // (A root of its own, no map/: the NAS away, the pool off.)
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -11379,6 +11450,7 @@ mod tests {
             }],
         );
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -11429,6 +11501,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("nas")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -11460,6 +11533,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("nas")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -11494,6 +11568,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("nas")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -11576,6 +11651,7 @@ mod tests {
             }],
         );
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
@@ -11759,6 +11835,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -11820,6 +11897,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -11936,6 +12014,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -12070,6 +12149,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -12218,6 +12298,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/pool")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -12302,6 +12383,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -12423,6 +12505,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -12557,6 +12640,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -12692,6 +12776,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -12944,6 +13029,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::create_dir_all(&home).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -12965,6 +13051,7 @@ mod tests {
         // A dry run beside it (a second agent on this Mac, planning only): its record its own,
         // never the file.
         let mut dry = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -13006,6 +13093,7 @@ mod tests {
     /// An agent that runs jobs (no dry run), the NAS at `root`: the lead's, or a member's.
     fn running_agent(root: &store::nasfs::NasRoot, home: &Path, helper: bool) -> Agent {
         test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(root.clone()),
             home: home.to_path_buf(),
             bin: PathBuf::from("/app"),
@@ -13149,6 +13237,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         // (Not one loop at a time: the freeing isn't waited for.)
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -13246,6 +13335,7 @@ mod tests {
         let c = home.join("cache");
         put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -13416,6 +13506,7 @@ mod tests {
         // A dry run beside it (another agent runs the jobs) takes up no ask.
         room::request_clear(&home, "scenic clean on m4", room::Level::Caches).unwrap();
         let mut dry = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -14140,6 +14231,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
@@ -14195,6 +14287,7 @@ mod tests {
         }
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         let a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root)),
             home,
             bin: apps.join("current"),
@@ -14223,6 +14316,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
@@ -14298,6 +14392,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
@@ -14402,6 +14497,7 @@ mod tests {
         std::fs::create_dir_all(apps.join(new)).unwrap();
         std::os::unix::fs::symlink(old, apps.join("current")).unwrap();
         let opts = |bin: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join(bin),
@@ -14514,6 +14610,7 @@ mod tests {
             *r.borrow_mut() = Some(std::sync::Arc::new(move |_: &str, _: u16| Some(up_addr)));
         });
         let opts = || Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: d.path().join("bin"),
@@ -14585,6 +14682,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let opts = || Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: d.path().join("bin"),
@@ -14635,6 +14733,7 @@ mod tests {
         });
         std::fs::write(home.join("job.json"), rec.to_string()).unwrap();
         let o = Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root)),
             home: home.clone(),
             bin: d.path().join("bin"),
@@ -14667,6 +14766,7 @@ mod tests {
         std::fs::create_dir_all(apps.join(new)).unwrap();
         std::os::unix::fs::symlink(old, apps.join("current")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join(old),
@@ -14776,6 +14876,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
@@ -14849,7 +14950,7 @@ mod tests {
         update(&mut a, "v1");
         assert!(a.slots[0].update_wait.is_none() && !a.update_due());
         a.slots[0].target_eta = None;
-        a.mem.step_secs.insert(secs_key("elev"), 5.0 * 3600.0);
+        a.mem.step_secs.insert(secs_key(crate::agent::seam::for_tests(), "elev"), 5.0 * 3600.0);
         update(&mut a, "v2");
         let (wait, words) = a.slots[0].update_wait.clone().unwrap();
         assert_eq!(wait, Some(UPDATE_CAP), "{words}");
@@ -14857,7 +14958,7 @@ mod tests {
         // Its step's runs, its own not measured: their 90th percentile (a long tail's long jobs),
         // not the mean the jobs are sized by: 17 runs of 100 s and 3 of 2 h wait 2 h × 1.5, capped.
         update(&mut a, "v1");
-        a.mem.step_secs.remove(&secs_key("elev"));
+        a.mem.step_secs.remove(&secs_key(crate::agent::seam::for_tests(), "elev"));
         let co = crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0;
         let runs: Vec<(String, crate::coord::Cost)> = (0..20u64)
             .map(|i| {
@@ -14883,7 +14984,7 @@ mod tests {
         // A batch with a target done just now: the next timed from then, not from the job's start
         // (its whole run counted against it would leave it nothing).
         update(&mut a, "v1");
-        a.mem.step_secs.insert(secs_key("elev"), 3600.0);
+        a.mem.step_secs.insert(secs_key(crate::agent::seam::for_tests(), "elev"), 3600.0);
         a.slots[0].running.as_mut().unwrap().spec.record.as_mut().unwrap().targets.push(("6/55/26".into(), "k".into()));
         a.slots[0].running.as_mut().unwrap().started = now_s() - 2 * 3600;
         std::fs::write(a.done_path(0), "elev 6/55/25\n").unwrap();
@@ -14895,7 +14996,7 @@ mod tests {
         a.slots[0].running.as_mut().unwrap().started = now_s();
         // A short target: never less than the time a pause gives.
         update(&mut a, "v1");
-        a.mem.step_secs.insert(secs_key("elev"), 60.0);
+        a.mem.step_secs.insert(secs_key(crate::agent::seam::for_tests(), "elev"), 60.0);
         update(&mut a, "v2");
         let (wait, words) = a.slots[0].update_wait.clone().unwrap();
         assert_eq!(wait, Some(DRAIN_GRACE), "{words}");
@@ -14917,6 +15018,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
@@ -15057,7 +15159,14 @@ mod tests {
         assert!(expect_same(&w("trees-lo", &[("3/3/2", "d")]), &done).is_empty());
         assert!(expect_same(&w("unit", &[("6/28/16", "a")]), &done).is_empty());
         // The times kept here go by the way a step runs now: a z3 tile's tree cover isn't a z6 tile's.
-        assert_eq!([secs_key("trees"), secs_key("trees-lo"), secs_key("unit")], ["trees v3", "trees-lo v1", "unit v3"]);
+        assert_eq!(
+            [
+                secs_key(crate::agent::seam::for_tests(), "trees"),
+                secs_key(crate::agent::seam::for_tests(), "trees-lo"),
+                secs_key(crate::agent::seam::for_tests(), "unit")
+            ],
+            ["trees v3", "trees-lo v1", "unit v3"]
+        );
     }
 
     #[test]
@@ -15110,7 +15219,7 @@ mod tests {
         };
         let ids = |v: &[JobSpec]| v.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
         let mut waiting = Vec::new();
-        let kept = hold_for_lakefill(jobs(), true, &mut waiting);
+        let kept = hold_for_lakefill(crate::agent::seam::for_tests(), jobs(), true, &mut waiting);
         assert_eq!(ids(&kept), ["lakefill 2026-09-28", "labels 2026-09-28", "terrain-hi 6/18/20", "unit 6/1/2"]);
         assert_eq!(
             waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(),
@@ -15119,7 +15228,7 @@ mod tests {
         assert!(waiting.iter().all(|w| w.why.contains("lakefill")));
         // Not held (the fill made, or failed LAKEFILL_HOLDS times): all queued, nothing said.
         let mut waiting = Vec::new();
-        assert_eq!(ids(&hold_for_lakefill(jobs(), false, &mut waiting)), ids(&jobs()));
+        assert_eq!(ids(&hold_for_lakefill(crate::agent::seam::for_tests(), jobs(), false, &mut waiting)), ids(&jobs()));
         assert!(waiting.is_empty());
         // What holds: the lakefill job's work, until its failures reach LAKEFILL_HOLDS.
         assert!(
@@ -15156,7 +15265,7 @@ mod tests {
         let ids = |v: &[JobSpec]| v.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
         let mut waiting = Vec::new();
         assert_eq!(
-            ids(&hold_for_sources(jobs(), true, &mut waiting)),
+            ids(&hold_for_sources(crate::agent::seam::for_tests(), jobs(), true, &mut waiting)),
             ["labels 2026-09-28", "terrain-hi 6/18/20", "heritage-sites 2026-09-28"]
         );
         assert_eq!(
@@ -15165,7 +15274,7 @@ mod tests {
         );
         assert!(waiting.iter().all(|w| w.why.contains("inputs/sources/")));
         let mut waiting = Vec::new();
-        assert_eq!(ids(&hold_for_sources(jobs(), false, &mut waiting)), ids(&jobs()));
+        assert_eq!(ids(&hold_for_sources(crate::agent::seam::for_tests(), jobs(), false, &mut waiting)), ids(&jobs()));
         assert!(waiting.is_empty());
     }
 
@@ -15444,6 +15553,7 @@ mod pool_tests {
         let r = nas(d.path());
         assert!(!r.join("state/pool").exists());
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("app-folder/agent"),
             bin: PathBuf::from("/nonexistent/bin"),
@@ -15465,6 +15575,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("app-folder/agent"),
             bin,
@@ -15558,6 +15669,7 @@ mod pool_tests {
         let bin = app(d.path());
         let home = d.path().join("app-folder/agent");
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
             bin: bin.clone(),
@@ -15645,6 +15757,7 @@ mod pool_tests {
         ix.shards.insert("6-1-1".into(), vec![named.clone()]);
         ix.save(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("app-folder/agent"),
             bin,
@@ -15701,6 +15814,7 @@ mod pool_tests {
         // The lead (this Mac is the writer: term 1 is its), and a member, another process with a
         // folder (and member) of its own.
         let dry = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
@@ -15712,6 +15826,7 @@ mod pool_tests {
         assert!(dry.pool.is_none(), "a dry run takes no part");
         drop(dry);
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
@@ -15724,6 +15839,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.round().unwrap();
         let mut m = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
@@ -15794,6 +15910,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
@@ -15806,6 +15923,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.round().unwrap();
         let mut m = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
@@ -15905,6 +16023,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
@@ -15917,6 +16036,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.round().unwrap();
         let mut m = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
@@ -16000,6 +16120,7 @@ mod pool_tests {
         let pass = format!("osm-pass {date}");
         let bin = app(d.path());
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
@@ -16018,6 +16139,7 @@ mod pool_tests {
         std::fs::create_dir_all(r.join("sources/basemap")).unwrap();
         std::fs::write(r.join("sources/basemap/planetiler.jar"), "jar").unwrap();
         let mut m = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
@@ -16151,6 +16273,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
@@ -16163,6 +16286,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.round().unwrap();
         let mut m = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
@@ -16211,6 +16335,7 @@ mod pool_tests {
         let gate = d.path().join("gate");
         gate_step(&bin, "slope-hi", &gate);
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
@@ -16224,6 +16349,7 @@ mod pool_tests {
         lead.round().unwrap();
         let lport = lead.coord.as_ref().unwrap().port();
         let mut m = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
@@ -16409,6 +16535,7 @@ mod pool_tests {
         let cur = crate::pool::term::current(&root).unwrap();
         crate::pool::term::claim(&root, &cur, &other, "a test", now_s() - 30).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(root.clone()),
             home: d.path().join("m/agent"),
             bin: app(d.path()),
@@ -16437,6 +16564,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let o = |who: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join(who).join("agent"),
             bin: bin.clone(),
@@ -16515,6 +16643,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let o = |who: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join(who).join("agent"),
             bin: bin.clone(),
@@ -16559,6 +16688,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let o = |who: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join(who).join("agent"),
             bin: bin.clone(),
@@ -16659,6 +16789,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let o = |who: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join(who).join("agent"),
             bin: bin.clone(),
@@ -16695,6 +16826,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
@@ -16705,6 +16837,7 @@ mod pool_tests {
         .unwrap();
         lead.round().unwrap();
         let mut m = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin,
@@ -16727,6 +16860,7 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("agent"),
             bin: app(d.path()),
@@ -16764,6 +16898,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin,
@@ -16800,6 +16935,7 @@ mod pool_tests {
         let r = nas(d.path());
         let root = store::nasfs::NasRoot::local_for_test(r.clone());
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(root.clone()),
             home: d.path().join("l/agent"),
             bin: app(d.path()),
@@ -16865,9 +17001,17 @@ mod pool_tests {
                         went.recv().unwrap();
                     };
                     for _ in 0..20 {
-                        make_viewer(port, "", "m4").unwrap().stop();
+                        make_viewer(crate::agent::seam::for_tests(), port, "", "m4").unwrap().stop();
                         between(&stopped);
-                        crate::coord::Coordinator::start(&d.path().join("coord"), port, "m4", "").unwrap().stop();
+                        crate::coord::Coordinator::start(
+                            crate::agent::seam::for_tests(),
+                            &d.path().join("coord"),
+                            port,
+                            "m4",
+                            "",
+                        )
+                        .unwrap()
+                        .stop();
                         between(&stopped);
                     }
                 })
@@ -16904,6 +17048,7 @@ mod pool_tests {
         }
         std::os::unix::fs::symlink(&new, apps.join("current")).unwrap();
         let mut lead = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: old.clone(),
@@ -16926,6 +17071,7 @@ mod pool_tests {
         lead.round().unwrap();
         assert_eq!(lead.pending_app().as_deref(), Some("20261010-0200-bbbbbbb"));
         let mut m = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: new.clone(),
@@ -16965,6 +17111,7 @@ mod pool_tests {
             std::fs::copy(made.join(p), v.join(p)).unwrap();
         }
         let opts = |h: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join(h),
             bin: v.clone(),
@@ -17011,6 +17158,7 @@ mod pool_tests {
             std::fs::copy(made.join(p), v.join(p)).unwrap();
         }
         let opts = |h: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join(h),
             bin: v.clone(),
@@ -17108,7 +17256,7 @@ mod pool_tests {
             &Default::default(),
             &|_, _| 0,
         );
-        let fc = rec.forecast();
+        let fc = rec.forecast(crate::agent::seam::for_tests());
         let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
         assert!(
             named("busy-mac"),
@@ -17121,7 +17269,7 @@ mod pool_tests {
         let b = rec.bytes().unwrap();
         let back = forecast::Record::from_bytes(&b).unwrap();
         assert!(!back.input.machines.is_empty());
-        assert_eq!(back.forecast(), fc);
+        assert_eq!(back.forecast(crate::agent::seam::for_tests()), fc);
     }
 
     #[test]
@@ -17159,7 +17307,7 @@ mod pool_tests {
         unique.dedup();
         assert_eq!(unique.len(), names.len(), "each lane once: {names:?}");
         assert!(rec.input.machines.iter().filter(|m| m.name == a.host).all(|m| m.lead_steps));
-        let fc = rec.forecast();
+        let fc = rec.forecast(crate::agent::seam::for_tests());
         assert_eq!(fc.runs.targets.len(), fc.lanes.values().map(Vec::len).sum::<usize>());
     }
 
@@ -17188,7 +17336,7 @@ mod pool_tests {
             &|_, _| 0,
         );
         assert!(rec.input.machines.iter().all(|m| m.mac.as_deref() != Some(a.host.as_str())));
-        let fc = rec.forecast();
+        let fc = rec.forecast(crate::agent::seam::for_tests());
         let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
         assert!(named("busy-mac") && !named(&a.host), "{:?}", fc.lanes.keys().collect::<Vec<_>>());
     }
@@ -17200,6 +17348,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("app-folder/agent"),
             bin,
@@ -17263,6 +17412,7 @@ mod pool_tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let opts = || Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
@@ -17340,6 +17490,7 @@ mod pool_tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
@@ -17355,6 +17506,7 @@ mod pool_tests {
         let nas_: pool::SharedNas = std::sync::Arc::new(store::nasfs::NasRoot::local_for_test(&root));
         let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_).unwrap().unwrap();
         a.pool = Some(std::sync::Arc::new(std::sync::Mutex::new(pool::Run::new(
+            crate::agent::seam::for_tests(),
             side,
             pool::Role::Lead,
             pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() },
@@ -17398,6 +17550,7 @@ mod pool_tests {
         let nas_: pool::SharedNas = std::sync::Arc::new(store::nasfs::NasRoot::local_for_test(&r));
         let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_).unwrap().unwrap();
         a.pool = Some(std::sync::Arc::new(std::sync::Mutex::new(pool::Run::new(
+            crate::agent::seam::for_tests(),
             side,
             pool::Role::Lead,
             pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() },
@@ -17443,6 +17596,7 @@ mod pool_tests {
         let id = crate::pool::member_id(&home).unwrap();
         let held = crate::pool::MemberLock::take(&d.path().join("app-folder"), &id).unwrap().unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
@@ -17499,6 +17653,7 @@ mod pool_tests {
             drop(held);
         });
         let a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
@@ -17520,6 +17675,7 @@ mod pool_tests {
     fn a_member_s_beat_lists_its_jobs_and_owed_ends() {
         let d = tempfile::tempdir().unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -17596,6 +17752,7 @@ mod pool_tests {
             std::fs::remove_file(&gone).unwrap();
         });
         let a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
@@ -17616,6 +17773,7 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         // (A root of its own, no map/: the NAS away as it started, the pool off.)
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -17695,6 +17853,7 @@ mod pool_tests {
         let root = store::nasfs::NasRoot::local_for_test(&nas);
         std::fs::create_dir_all(nas.join("state")).unwrap();
         let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(root.clone()),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -17728,7 +17887,9 @@ mod pool_tests {
         // §1), its broker on the same port and token (crate::coord::Broker), term 539's lead (the M1)
         // publishing its contact.
         drop(old);
-        let old = crate::coord::Broker::start(&d.path().join("old"), old_port, "mini", "").unwrap();
+        let old =
+            crate::coord::Broker::start(crate::agent::seam::for_tests(), &d.path().join("old"), old_port, "mini", "")
+                .unwrap();
         old.set_member(Some("m-mini"));
         let (new, new_port) = crate::coord::start_for_test(&d.path().join("new"), "m1", "");
         (new.set_term(539), new.set_member(Some("m-m1")));
@@ -17812,6 +17973,7 @@ mod pool_tests {
 
     fn agent_dry(root: &store::nasfs::NasRoot, home: &Path) -> Agent {
         test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(root.clone()),
             home: home.to_path_buf(),
             bin: PathBuf::from("/nonexistent/bin"),

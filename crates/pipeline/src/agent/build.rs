@@ -6619,7 +6619,15 @@ pub(crate) mod tests {
                 handoff: h,
                 at: 1_791_500_000,
             };
-            assert_eq!(crate::agent::pool::check(&e, &crate::pool::records::Records::default()), Ok(()), "{step}");
+            assert_eq!(
+                crate::agent::pool::check(
+                    crate::agent::seam::for_tests(),
+                    &e,
+                    &crate::pool::records::Records::default()
+                ),
+                Ok(()),
+                "{step}"
+            );
             assert_eq!(crate::agent::steps::outside(&e), None, "{step}");
         }
     }
@@ -8364,7 +8372,7 @@ pub(crate) mod tests {
             "each step its own line"
         );
         assert_eq!(
-            line(&l, "terrain").counts(),
+            line(&l, "terrain").counts(crate::agent::seam::for_tests()),
             [format!("0 of {pieces} z6 tiles"), "0 of 1 z3 tiles".to_string()],
             "a noun at a time"
         );
@@ -8462,9 +8470,13 @@ pub(crate) mod tests {
         assert_eq!(Some(roads.next.len()), roads.left, "{:?}", roads.next);
         assert!(roads.next.iter().all(|n| !n.is_empty() && n != "catalog"), "{:?}", roads.next);
         assert_eq!(roads.unit, "runs");
-        assert!(roads.counts()[0].starts_with(&format!("{} run", roads.left.unwrap())), "{:?}", roads.counts());
+        assert!(
+            roads.counts(crate::agent::seam::for_tests())[0].starts_with(&format!("{} run", roads.left.unwrap())),
+            "{:?}",
+            roads.counts(crate::agent::seam::for_tests())
+        );
         assert_eq!(
-            line(&l, "terrain").counts(),
+            line(&l, "terrain").counts(crate::agent::seam::for_tests()),
             [format!("{pieces} of {pieces} z6 tiles"), "1 of 1 z3 tiles".to_string(), "1 of 1 runs".to_string()],
             "a done stage still says its counts"
         );
@@ -11441,7 +11453,7 @@ pub(crate) mod tests {
         );
         assert_eq!(b.left, Some(1 + tt.prep.len() + tt.tiles.len() + tt.lo.len()), "the fetch's run too");
         assert_eq!(
-            b.counts(),
+            b.counts(crate::agent::seam::for_tests()),
             [
                 "1 run left".to_string(),
                 format!("0 of {} z6 tiles", tt.prep.len() + tt.tiles.len()),
@@ -11461,7 +11473,10 @@ pub(crate) mod tests {
         let st = fold(&checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
         assert_eq!(st.iter().find(|x| x.id == "buildings").unwrap().shared.as_deref(), Some("bldprep and bldtiles"));
         assert!(st.iter().all(|x| x.left.is_none() && x.total.is_none() && !x.finished()), "to come: not sized");
-        assert_eq!(st.iter().find(|x| x.id == "roads").unwrap().counts(), ["z6 tiles to come"]);
+        assert_eq!(
+            st.iter().find(|x| x.id == "roads").unwrap().counts(crate::agent::seam::for_tests()),
+            ["z6 tiles to come"]
+        );
     }
 
     #[test]

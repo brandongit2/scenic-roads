@@ -2401,7 +2401,7 @@ fn write_cost_line(step: &str, target: &str, line: &serde_json::Value) {
 /// `note_cost`'s line (its inputs' measures taken: pipeline::costin).
 fn done_line(step: &str, target: &str, t0: std::time::Instant) -> serde_json::Value {
     let sizes = pipeline::costin::take();
-    serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::group_peak() >> 20, "secs": t0.elapsed().as_secs(), "v": pipeline::coord::cost_version(step), "disk_mb": disk_since_start(), "sizes": sizes })
+    serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::group_peak() >> 20, "secs": t0.elapsed().as_secs(), "v": pipeline::agent::theplan::the_plan().cost_version(step), "disk_mb": disk_since_start(), "sizes": sizes })
 }
 
 /// The raw tiles a job fetched, packed onto the NAS (pipeline::rawpack): an archive of their own an
@@ -4627,7 +4627,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         peak as f64 / 1e9
     );
     if let Some(p) = std::env::var_os("SCENIC_COSTS") {
-        let line = serde_json::json!({ "unit": u.slash(), "peak_mb": group.max(peak) >> 20, "secs": t.elapsed().as_secs(), "v": pipeline::coord::cost_version("unit"), "disk_mb": disk >> 20, "sizes": sizes });
+        let line = serde_json::json!({ "unit": u.slash(), "peak_mb": group.max(peak) >> 20, "secs": t.elapsed().as_secs(), "v": pipeline::agent::theplan::the_plan().cost_version("unit"), "disk_mb": disk >> 20, "sizes": sizes });
         let r = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

@@ -611,12 +611,21 @@ pub const STEP: &str = "gc";
 /// When this process's run began (`run`), for its cost line's time.
 static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+/// The way this run's step runs now (crate::agent::seam::Plan::cost_version), as the program said
+/// (`set_way`), for its cost's line.
+static WAY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Says `WAY`, before a run.
+pub fn set_way(v: u32) {
+    WAY.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Notes what this run cost so far in the job's costs file (`SCENIC_COSTS`, as scenic-build's steps
 /// do): its NAS work (crate::costin: bytes read, and the folder entries listed, files statted and
 /// deleted, `meta`) over its time, its memory: the clean-up's NAS weight (crate::budget::nas) as the
 /// coordinator weighs it from then on, measured, never guessed (docs/pool.md §7.7, task #451).
 pub fn note_cost() {
-    crate::agent::jobs::note_cost(STEP, STEP, STARTED.get().map_or(0, |t| t.elapsed().as_secs()));
+    crate::agent::jobs::note_cost(WAY.load(std::sync::atomic::Ordering::Relaxed), STEP, STEP, STARTED.get().map_or(0, |t| t.elapsed().as_secs()));
 }
 
 /// A safe point between folders: asked to stop (the build pausing, or the agent yielding the NAS

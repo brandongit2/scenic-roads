@@ -747,7 +747,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
             println!(
                 "  {mark} {}: {}{}",
                 l.what,
-                l.counts().join(" · "),
+                l.counts(agent::theplan::the_plan()).join(" · "),
                 l.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default()
             );
             if l.finished() {
@@ -756,7 +756,11 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
             for i in &l.items {
                 let noun = format!("{}s", agent::steps::noun(&i.step));
                 let here = now.iter().any(|n| n == &i.step);
-                let place = if agent::every::place(&i.step) == agent::every::Place::Any { " ⇄" } else { "" };
+                let place = if agent::every::place(agent::theplan::the_plan(), &i.step) == agent::every::Place::Any {
+                    " ⇄"
+                } else {
+                    ""
+                };
                 println!(
                     "      {} {}: {}{place}",
                     if i.finished() {
@@ -1300,7 +1304,7 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
         Records::newest(&r, cur.term, true)?.context("no records")
     };
     let rec = records()?;
-    for l in redo::said(&rec.keys, &rec.manifest, &step, &targets) {
+    for l in redo::said(agent::theplan::the_plan(), &rec.keys, &rec.manifest, &step, &targets) {
         println!("{l}");
     }
     let todo: Vec<String> = redo::clears(&rec.keys, &step, &targets)
@@ -1311,12 +1315,12 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
     // (A job's run, the lead's redo job, ends here: its cost noted, redo::note_cost.)
     if todo.is_empty() {
         println!("nothing to clear");
-        redo::note_cost(t0);
+        redo::note_cost(agent::theplan::the_plan().cost_version(redo::STEP), t0);
         return Ok(());
     }
     if !run {
         println!("a dry run: `scenic redo {step} {} --run` asks the lead to clear them", todo.join(" "));
-        redo::note_cost(t0);
+        redo::note_cost(agent::theplan::the_plan().cost_version(redo::STEP), t0);
         return Ok(());
     }
     let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
@@ -1368,6 +1372,7 @@ fn main() -> Result<()> {
             }
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let o = Options {
+                the_plan: agent::theplan::the_plan(),
                 home: home_or_default(&places.home),
                 root: places.root.map(store::nasfs::NasRoot::from_arg),
                 bin,
@@ -1455,7 +1460,15 @@ fn main() -> Result<()> {
                         .unwrap_or_default();
                     disks.extend(kept);
                     println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
-                    print!("{}", pipeline::needs::fit_table(&pipeline::needs::Book::with(&costs, None, Some(&disks))));
+                    print!(
+                        "{}",
+                        pipeline::needs::fit_table(&pipeline::needs::Book::with(
+                            agent::theplan::the_plan(),
+                            &costs,
+                            None,
+                            Some(&disks)
+                        ))
+                    );
                     // Where each step's memory peaks: the phase (a program it runs) that held the
                     // most over its last runs, from the build's timings beside the costs
                     // (pipeline::timings::peak_holders).
@@ -1591,6 +1604,7 @@ fn main() -> Result<()> {
                     .flatten()
             });
             let r = pipeline::timings::job("gc", || {
+                gc::set_way(agent::theplan::the_plan().cost_version(gc::STEP));
                 let asked = gc::Asked { dry_run, depth: keep.as_ref(), shadow: shadow_due.as_deref(), old_catalogues };
                 // (Each removal told the lead's GC queue first: gc::Tell.)
                 let root = root(&r.root, true)?;
@@ -1928,7 +1942,7 @@ fn forecast_check(
         anyhow::ensure!(!inputs.is_empty(), "no forecast input recorded in the span");
         let last = inputs.iter().map(|i| i.at).max().unwrap_or(to);
         let split = at(&split, last.saturating_sub(86_400))?;
-        let b = fccheck::backtest(&inputs, &events, from, to, split);
+        let b = fccheck::backtest(agent::theplan::the_plan(), &inputs, &events, from, to, split);
         if json {
             println!("{}", serde_json::to_string_pretty(&b)?);
         } else {

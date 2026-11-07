@@ -454,9 +454,9 @@ impl Watch {
 
     /// The floors its run teaches (cost key → floor), from what it held while each target was under
     /// way, but for the targets its run measured itself (`measured`: a measure takes a floor's place).
-    pub fn floors(&self, measured: &[String]) -> Vec<(String, Floor)> {
+    pub fn floors(&self, the_plan: &dyn crate::agent::seam::Plan, measured: &[String]) -> Vec<(String, Floor)> {
         let alone = self.targets.len() <= 1;
-        let v = crate::coord::cost_version(&self.step);
+        let v = the_plan.cost_version(&self.step);
         self.seen
             .iter()
             .filter(|(k, mb)| !measured.contains(k) && **mb > 0)
@@ -1615,7 +1615,7 @@ mod tests {
         };
         let v = crate::coord::cost_version("terrain");
         assert_eq!(
-            w.floors(&["terrain 6/1/2".to_string()]),
+            w.floors(crate::agent::seam::for_tests(), &["terrain 6/1/2".to_string()]),
             [("terrain 6/1/1".to_string(), Floor { mb: 9000, alone: false, v })]
         );
         let w = Watch {
@@ -1624,7 +1624,10 @@ mod tests {
             seen: [("water water".to_string(), 33000)].into(),
             ..Default::default()
         };
-        assert_eq!(w.floors(&[]), [("water water".to_string(), Floor { mb: 33000, alone: true, v: 0 })]);
+        assert_eq!(
+            w.floors(crate::agent::seam::for_tests(), &[]),
+            [("water water".to_string(), Floor { mb: 33000, alone: true, v: 0 })]
+        );
         assert_eq!((step_of_key("6/1/1"), step_of_key("terrain 6/1/1")), ("unit", "terrain"));
         // (A key of no space that isn't a z6 tile is no z6 tile's: task #849.)
         assert_eq!((step_of_key("gc"), step_of_key("3/1/1")), ("gc", "3/1/1"));

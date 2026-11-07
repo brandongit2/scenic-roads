@@ -25,14 +25,26 @@ pub struct Broker {
 
 impl Broker {
     /// Starts answering on `port`, its state in `dir` (the coordinator's); `me`: this Mac's name.
-    pub fn start(dir: &Path, port: u16, me: &str, app: &str) -> Result<Broker> {
+    pub fn start(
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        dir: &Path,
+        port: u16,
+        me: &str,
+        app: &str,
+    ) -> Result<Broker> {
         let listeners = anyhow::Context::with_context(super::listeners_on(port), || format!("listen on port {port}"))?;
-        Broker::start_on(dir, listeners, me, app)
+        Broker::start_on(the_plan, dir, listeners, me, app)
     }
 
     /// `start`, answering on `listeners`, already listening.
-    pub fn start_on(dir: &Path, listeners: impl Into<super::Listeners>, me: &str, app: &str) -> Result<Broker> {
-        Ok(Broker { c: Arc::new(Coordinator::start_with(dir, listeners.into(), me, app, Mode::Broker)?) })
+    pub fn start_on(
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        dir: &Path,
+        listeners: impl Into<super::Listeners>,
+        me: &str,
+        app: &str,
+    ) -> Result<Broker> {
+        Ok(Broker { c: Arc::new(Coordinator::start_with(the_plan, dir, listeners.into(), me, app, Mode::Broker)?) })
     }
 
     /// Its addresses and token (its jobs' token is `job_token`).
@@ -142,5 +154,5 @@ impl Brokering {
 #[cfg(test)]
 pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Broker, u16) {
     let (listener, port) = super::test_listener();
-    (Broker::start_on(dir, listener, me, app).unwrap(), port)
+    (Broker::start_on(crate::agent::seam::for_tests(), dir, listener, me, app).unwrap(), port)
 }

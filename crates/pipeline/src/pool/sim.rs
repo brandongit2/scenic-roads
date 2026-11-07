@@ -421,7 +421,7 @@ fn writes(step: &str, l: &str, removal: bool) -> Option<bool> {
 /// refuses (a stand-in for a check by the lead's state: its leases), so one a lead refused may be
 /// taken by the next.
 fn check(e: &Entry, r: &Records) -> std::result::Result<(), String> {
-    if let Some(why) = crate::agent::steps::outside_by(e, &|l, removal| writes(&e.step, l, removal)) {
+    if let Some(why) = crate::agent::seam::for_tests().outside_by(e, &|l, removal| writes(&e.step, l, removal)) {
         return Err(why);
     }
     match e.step.as_str() {
@@ -994,7 +994,10 @@ impl World {
         } else if let Some(key) = entry_of(path).filter(|_| !self.erroring.contains(path)) {
             if let Ok(en) = serde_json::from_slice::<Entry>(b) {
                 let kind = match en.step.as_str() {
-                    _ if crate::agent::steps::outside_by(&en, &|l, removal| writes(&en.step, l, removal)).is_some() => {
+                    _ if crate::agent::seam::for_tests()
+                        .outside_by(&en, &|l, removal| writes(&en.step, l, removal))
+                        .is_some() =>
+                    {
                         Kind::Refused
                     }
                     "flaky" => Kind::Either,

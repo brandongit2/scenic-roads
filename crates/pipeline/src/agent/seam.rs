@@ -5,8 +5,9 @@
 //! what its answer says is left; `PassWork`, the pass's worldwide steps' work. None names a family's
 //! type, and none reads the steps table.
 
+use super::forecast::ReadTarget;
 use super::jobs::Work;
-use super::progress::{Checklist, RegionState};
+use super::progress::{Checklist, Item, Line, RegionState};
 use super::publish::{PublishLine, Publishing};
 use crate::coverage::Coverage;
 use serde::{Deserialize, Serialize};
@@ -243,4 +244,92 @@ impl Left {
             self.whole.insert(step);
         }
     }
+}
+
+/// The plan as the runtime asks it (docs/crates.md §6.3, 6f2), held by the agent, the planner, the
+/// forecast, the simulator and coord's scheduler, passed by their entry points. Cut at the runtime's
+/// questions, not the plan's items: the table's rows (`Step`, `Read`, `Kind`, `Scope`) stay the
+/// plan's, and what they say is answered here.
+pub trait Plan: Send + Sync {
+    // The steps table.
+    /// Every step's name, in the table's order.
+    fn step_names(&self) -> Vec<&'static str>;
+    /// Whether the table has a step of this name.
+    fn is_step(&self, step: &str) -> bool;
+    /// The steps a worker takes a shared part of (their jobs given to helpers).
+    fn shared(&self) -> &'static [&'static str];
+    /// Whether `step` keeps the pass's answers.
+    fn answered(&self, step: &str) -> bool;
+    /// Whether `step` runs alone, a target to a job and none beside it.
+    fn alone(&self, step: &str) -> bool;
+    /// Whether `step` only writes the records (no file of its own).
+    fn records_only(&self, step: &str) -> bool;
+    /// Whether `step` is a fetch: its time is the network's.
+    fn fetches(&self, step: &str) -> bool;
+    /// The way `step` runs now: a cost measured another way says nothing of what a run takes now
+    /// (a task's kind, or a step the table doesn't know: 0).
+    fn cost_version(&self, step: &str) -> u32;
+    /// The steps whose targets `step`'s `target` reads by its own name, in its reads' order.
+    fn sources_naming(&self, step: &str, target: &str) -> Vec<&'static str>;
+    /// The noun `step`'s targets are counted in.
+    fn noun(&self, step: &str) -> &'static str;
+    /// `n` targets of `step` in words ("Terrain: 3 tiles").
+    fn said(&self, step: &str, n: usize) -> String;
+    /// The tasks' kinds, in the table's order.
+    fn task_kinds(&self) -> Vec<&'static str>;
+    /// The free space a job of task kind `kind` needs; None: no task of that kind.
+    fn task_disk(&self, kind: &str) -> Option<u64>;
+    /// Whether `key` is target `t` of `step`'s "none" key: a drop's.
+    fn is_none_key(&self, step: &str, t: &str, key: &str) -> bool;
+    /// Whether target `target` of `step` published its output in manifest `m`; None: not a step
+    /// whose output can be empty.
+    fn output_named(&self, step: &str, target: &str, m: &BTreeMap<String, String>) -> Option<bool>;
+    /// The published files of target `target` of `step`; None: not a told step's.
+    fn output_names(&self, step: &str, target: &str) -> Option<Vec<String>>;
+    /// Whether `l` is a file a job of `step` saves for `target`.
+    fn saves(&self, step: &str, target: &str, l: &str) -> bool;
+    /// Why entry `e` has a change outside its step's outputs; None: it hasn't.
+    fn outside(&self, e: &crate::pool::journal::Entry) -> Option<String>;
+    /// `outside` by `writes` in place of the table's write sets.
+    fn outside_by(
+        &self,
+        e: &crate::pool::journal::Entry,
+        writes: &dyn Fn(&str, bool) -> Option<bool>,
+    ) -> Option<String>;
+    /// The steps `step` reads, each with whether its reads pass through it.
+    fn read_steps(&self, step: &str) -> Vec<(&'static str, bool)>;
+    /// What target `t` of `step` reads, each with whether its read passes through it.
+    fn read_targets_passing(&self, step: &str, t: &str, along: Option<&Along>) -> Vec<(ReadTarget, bool)>;
+    /// The steps reading input `name`.
+    fn input_readers(&self, name: &str) -> Vec<&'static str>;
+    /// What the summits wait for by `left`; None: nothing.
+    fn summits_waits(&self, left: &Left) -> Option<String>;
+    /// The table and its stages for the build page's words and colours.
+    fn table_json(&self) -> serde_json::Value;
+    /// Whether `step` reads the declared sources (held while no version is accepted).
+    fn reads_sources(&self, step: &str) -> bool;
+    /// Whether `step` reads the pass's lake fill (held while it fails).
+    fn reads_lakefill(&self, step: &str) -> bool;
+    /// Whether a catalogue waits for `step`'s hand-offs to be merged.
+    fn catalogue_waits_for(&self, step: &str) -> bool;
+    /// A step's work as its jobs take it (the elevation pyramids' fill: a z6 tile).
+    fn job_of(&self, w: Work) -> Work;
+    /// The pass's worldwide steps, in the checklist's order.
+    fn worldwide_steps(&self) -> &'static [&'static str];
+    /// The checklist's items folded into its lines, a line per stage.
+    fn fold(&self, items: &[Item], next: &BTreeMap<&str, Vec<String>>, notes: &BTreeMap<&str, String>) -> Vec<Line>;
+    /// The regions' steps' items before anything sizes them.
+    fn checklist_to_come(&self) -> Vec<Item>;
+}
+
+impl std::fmt::Debug for dyn Plan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the plan")
+    }
+}
+
+/// The plan, for the runtime's tests that run on the real table.
+#[cfg(test)]
+pub fn for_tests() -> &'static dyn Plan {
+    super::theplan::the_plan()
 }

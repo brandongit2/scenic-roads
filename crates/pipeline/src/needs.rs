@@ -46,7 +46,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use crate::agent::memguard::{step_of_key, Floor};
-use crate::coord::{cost_key, cost_version, Cost};
+use crate::agent::seam::Plan;
+use crate::coord::{cost_key, Cost};
 
 /// The safety margin over a fit's envelope.
 pub const MARGIN: f64 = 1.1;
@@ -508,6 +509,7 @@ type Rates = std::collections::HashMap<String, std::collections::HashMap<String,
 /// the floors (crate::agent::memguard) and disk floors (MB, by cost key); the models made from them
 /// kept in `cache` as of change `rev` (a Book of its own, `new`, keeps its own).
 pub struct Book<'a> {
+    pub the_plan: &'static dyn Plan,
     pub costs: &'a BTreeMap<String, Cost>,
     pub floors: Option<&'a BTreeMap<String, Floor>>,
     pub disks: Option<&'a BTreeMap<String, u64>>,
@@ -649,7 +651,7 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
 /// first, b38: a share of the job's reads over the target's own time, often 0 s, so every job
 /// weighed the whole NAS) counts its writes alone. With the time (s) it is over: a job's rate is its
 /// targets' moves over their times together (`Book::nas_load`).
-fn nas_rate(step: &str, c: &Cost) -> Option<(crate::budget::nas::Rate, f64)> {
+fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(crate::budget::nas::Rate, f64)> {
     let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
     // (A halo step's writes are spread over its job's time too, not over its own write phase:
     // pack's `secs` is that phase's 0-1 s, which weighed a pack at the whole NAS, 25 Oct.)
@@ -660,7 +662,7 @@ fn nas_rate(step: &str, c: &Cost) -> Option<(crate::budget::nas::Rate, f64)> {
     } else {
         (g("bytes") - g("local")).max(0.0) / secs
     };
-    (c.v >= cost_version(step) && c.sizes.contains_key("bytes")).then(|| {
+    (c.v >= the_plan.cost_version(step) && c.sizes.contains_key("bytes")).then(|| {
         let r = crate::budget::nas::Rate {
             bytes_s: read_s + g("wrote") / secs,
             creates_s: g("creates") / secs,
@@ -720,28 +722,38 @@ pub const PRIOR_RUNS: usize = 20;
 
 impl<'a> Book<'a> {
     /// A Book over `costs` alone, keeping its own models.
-    pub fn new(costs: &'a BTreeMap<String, Cost>) -> Self {
-        Book { costs, floors: None, disks: None, paces: None, cache: CacheRef::Own(Cache::default()), rev: 0 }
+    pub fn new(the_plan: &'static dyn Plan, costs: &'a BTreeMap<String, Cost>) -> Self {
+        Book { the_plan, costs, floors: None, disks: None, paces: None, cache: CacheRef::Own(Cache::default()), rev: 0 }
     }
 
     /// A Book over all three, keeping its own models.
     pub fn with(
+        the_plan: &'static dyn Plan,
         costs: &'a BTreeMap<String, Cost>,
         floors: Option<&'a BTreeMap<String, Floor>>,
         disks: Option<&'a BTreeMap<String, u64>>,
     ) -> Self {
-        Book { costs, floors, disks, paces: None, cache: CacheRef::Own(Cache::default()), rev: 0 }
+        Book { the_plan, costs, floors, disks, paces: None, cache: CacheRef::Own(Cache::default()), rev: 0 }
     }
 
     /// A Book whose models are kept in `cache` while its owner's change count is `rev`.
     pub fn kept(
+        the_plan: &'static dyn Plan,
         costs: &'a BTreeMap<String, Cost>,
         floors: &'a BTreeMap<String, Floor>,
         disks: &'a BTreeMap<String, u64>,
         cache: &'a Cache,
         rev: u64,
     ) -> Self {
-        Book { costs, floors: Some(floors), disks: Some(disks), paces: None, cache: CacheRef::Kept(cache), rev }
+        Book {
+            the_plan,
+            costs,
+            floors: Some(floors),
+            disks: Some(disks),
+            paces: None,
+            cache: CacheRef::Kept(cache),
+            rev,
+        }
     }
 
     /// Its times and NAS rates put at the lead's pace by `paces` (its owner's change count, `rev`,
@@ -767,12 +779,12 @@ impl<'a> Book<'a> {
 
     /// The floor of `key` learned the way its step runs now (MB).
     fn current_floor(&self, step: &str, key: &str) -> Option<u64> {
-        self.floor(key).filter(|f| f.v >= cost_version(step)).map(|f| f.mb)
+        self.floor(key).filter(|f| f.v >= self.the_plan.cost_version(step)).map(|f| f.mb)
     }
 
     /// The step's runs measured the way it runs now, of `m`.
     fn runs(&self, step: &str, m: Measure) -> Vec<Run> {
-        let v = cost_version(step);
+        let v = self.the_plan.cost_version(step);
         let mut out = Vec::new();
         for (k, c) in self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v >= v && !is_drop(c)) {
             let y = match m {
@@ -835,7 +847,7 @@ impl<'a> Book<'a> {
         &self,
         step: &str,
     ) -> (Option<std::sync::Arc<BySource>>, std::sync::Arc<std::collections::BTreeSet<String>>) {
-        let v = cost_version(step);
+        let v = self.the_plan.cost_version(step);
         let mut by = BySource::default();
         let mut macs = std::collections::BTreeSet::new();
         // (Each run's Mac, bin, time as it ran and at the lead's pace, for the judging below.)
@@ -880,13 +892,12 @@ impl<'a> Book<'a> {
     /// The time target `target`'s source took (`BySource`), at the lead's pace (s): the same target's
     /// run, the way its step runs now, of the first step `step` reads that names it.
     fn source_secs(&self, step: &str, target: &str) -> Option<f64> {
-        use crate::agent::steps::Read;
-        crate::agent::steps::row(step)?.reads.iter().find_map(|r| match r {
-            Read::Targets { step: src, of, .. } if of(target).iter().any(|t| t == target) => {
-                let c = self.costs.get(&cost_key(src, target)).filter(|c| c.v >= cost_version(src) && !is_drop(c))?;
-                Some(self.lead_secs(src, c) as f64)
-            }
-            _ => None,
+        self.the_plan.sources_naming(step, target).into_iter().find_map(|src| {
+            let c = self
+                .costs
+                .get(&cost_key(src, target))
+                .filter(|c| c.v >= self.the_plan.cost_version(src) && !is_drop(c))?;
+            Some(self.lead_secs(src, c) as f64)
         })
     }
 
@@ -904,7 +915,7 @@ impl<'a> Book<'a> {
     /// The step's tile targets' memory measured the way it runs now, by tile (MB): each one's run,
     /// or its floor, the larger, as its prior counts them (a drop's measures say nothing of its builds).
     fn places(&self, step: &str) -> std::collections::HashMap<(u8, u32, u32), u64> {
-        let v = cost_version(step);
+        let v = self.the_plan.cost_version(step);
         let mut at = std::collections::HashMap::new();
         let runs = self
             .costs
@@ -927,7 +938,7 @@ impl<'a> Book<'a> {
     }
 
     fn prior_of(&self, step: &str, m: Measure) -> Option<u64> {
-        let v = cost_version(step);
+        let v = self.the_plan.cost_version(step);
         // (A drop's measures say nothing of its step's builds: `DROPS`.)
         let of = |k: &String| step_of_key(k) == step && !self.costs.get(k).is_some_and(is_drop);
         let vals: Vec<u64> = match m {
@@ -984,7 +995,7 @@ impl<'a> Book<'a> {
 
     /// `older_mem`'s way and its runs' 90th percentile.
     fn older_of(&self, step: &str) -> Option<(u32, u64)> {
-        let v = cost_version(step);
+        let v = self.the_plan.cost_version(step);
         let of = |k: &String, c: &Cost| step_of_key(k) == step && c.v < v && !is_drop(c) && c.peak_mb > 0;
         let way = self.costs.iter().filter(|(k, c)| of(k, c)).map(|(_, c)| c.v).max()?;
         p90(self.costs.iter().filter(|(k, c)| of(k, c) && c.v == way).map(|(_, c)| c.peak_mb).collect())
@@ -1022,7 +1033,7 @@ impl<'a> Book<'a> {
         };
         let key = cost_key(step, target);
         let floor = self.current_floor(step, &key);
-        if let Some(c) = self.costs.get(&key).filter(|c| c.v >= cost_version(step)) {
+        if let Some(c) = self.costs.get(&key).filter(|c| c.v >= self.the_plan.cost_version(step)) {
             return (c.peak_mb.max(floor.unwrap_or(0)), From::Measured);
         }
         if let Some(f) = floor {
@@ -1090,7 +1101,7 @@ impl<'a> Book<'a> {
         let key = cost_key(step, target);
         let md = self.model(step, Measure::Secs);
         let mac = worker.map(crate::paces::mac_of).filter(|m| md.macs.contains(*m));
-        let own = self.costs.get(&key).filter(|c| c.v >= cost_version(step));
+        let own = self.costs.get(&key).filter(|c| c.v >= self.the_plan.cost_version(step));
         let Some(mac) = mac else {
             if let Some(c) = own {
                 let other = worker.is_some_and(|w| c.worker.as_deref() != Some(w));
@@ -1131,7 +1142,7 @@ impl<'a> Book<'a> {
                 .iter()
                 .filter(|(k, c)| {
                     let s = step_of_key(k);
-                    only.is_none_or(|o| s == o) && c.v >= cost_version(s) && is_drop(c)
+                    only.is_none_or(|o| s == o) && c.v >= self.the_plan.cost_version(s) && is_drop(c)
                 })
                 .map(|(_, c)| c)
                 .collect()
@@ -1149,7 +1160,7 @@ impl<'a> Book<'a> {
     /// `update_wait`), where a long tail's long jobs must not be cut short.
     pub fn secs_p90(&self, step: &str, target: &str, threads: u32, worker: Option<&str>) -> Option<u64> {
         let key = cost_key(step, target);
-        let v = cost_version(step);
+        let v = self.the_plan.cost_version(step);
         if let Some(c) = self.costs.get(&key).filter(|c| c.v >= v) {
             return Some(c.secs);
         }
@@ -1182,7 +1193,7 @@ impl<'a> Book<'a> {
     /// `cores` by its busy cores alone (task #896), and whether it doesn't climb (each run it's read
     /// from didn't compute on every thread): its own run's, else its step's most.
     fn cores_busy(&self, step: &str, target: &str) -> Option<(Cores, bool)> {
-        let v = cost_version(step);
+        let v = self.the_plan.cost_version(step);
         let threads = |c: &Cost| c.sizes.get("threads").filter(|_| c.v >= v).map(|&t| t as u32);
         let of = |c: &Cost| {
             let t = threads(c)?.max(1);
@@ -1259,7 +1270,7 @@ impl<'a> Book<'a> {
             }
         }
         let fit = self.fits(step, Measure::Secs).into_iter().find(Fit::good);
-        let v = cost_version(step);
+        let v = self.the_plan.cost_version(step);
         let of_step = || self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v >= v && !is_drop(c));
         // (No good fit: its runs' bytes read (MB), where every one says some: a wait-bound step's
         // work; else the wall alone.)
@@ -1356,7 +1367,7 @@ impl<'a> Book<'a> {
 
     /// `nas`'s own run's rate alone.
     pub fn nas_own(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
-        self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(step, c)).map(|r| r.0)
+        self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(self.the_plan, step, c)).map(|r| r.0)
     }
 
     /// `nas_for` on `worker` (None: `nas`, at the lead's pace), with the time it lasts (s): its own
@@ -1369,7 +1380,8 @@ impl<'a> Book<'a> {
         target: &str,
         worker: Option<&str>,
     ) -> Option<(crate::budget::nas::Rate, Option<f64>)> {
-        if let Some((r, secs)) = self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(step, c)) {
+        if let Some((r, secs)) = self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(self.the_plan, step, c))
+        {
             return Some((r, Some(secs)));
         }
         let r = match worker {
@@ -1408,7 +1420,7 @@ impl<'a> Book<'a> {
             .iter()
             .filter(|(k, _)| step_of_key(k) == step)
             .filter_map(|(_, c)| {
-                let (r, secs) = nas_rate(step, c)?;
+                let (r, secs) = nas_rate(self.the_plan, step, c)?;
                 let pace = self.pace(c.worker.as_deref(), step);
                 Some((per_pace(r, 1.0 / pace), secs / pace))
             })
@@ -1428,10 +1440,7 @@ impl<'a> Book<'a> {
     /// offered it with, a z6 tile's extract-size guess).
     pub fn need(&self, step: &str, target: &str, threads: u32, guess: u64) -> Need {
         let (mem_mb, mem_from) = self.mem(step, target, threads, guess);
-        let io = match crate::agent::steps::row(step).map(|r| r.kind) {
-            Some(crate::agent::steps::Kind::Fetch) => Io::Net,
-            _ => Io::Nas,
-        };
+        let io = if self.the_plan.fetches(step) { Io::Net } else { Io::Nas };
         Need {
             mem_mb,
             mem_from,
@@ -1586,6 +1595,7 @@ pub fn read_costs(p: &std::path::Path) -> anyhow::Result<(BTreeMap<String, Cost>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coord::cost_version;
 
     fn cost(peak: u64, secs: u64, sizes: &[(&str, u64)]) -> Cost {
         Cost {
@@ -1620,7 +1630,8 @@ mod tests {
     #[test]
     fn the_knee_is_found_on_synthetic_curves() {
         let t6 = [1, 2, 3, 4, 5, 6];
-        let knee = |costs: &BTreeMap<String, Cost>| Book::new(costs).curve("slope").knee();
+        let knee =
+            |costs: &BTreeMap<String, Cost>| Book::new(crate::agent::seam::for_tests(), costs).curve("slope").knee();
         assert_eq!(knee(&curve_costs(&t6, 8, 0.0, |_| 100.0)), Some(1), "flat: one thread");
         assert_eq!(knee(&curve_costs(&t6, 8, 0.0, |t| 600.0 / f64::from(t))), Some(6), "linear: the most");
         // (#896's review on the M4: unit 6/46/16 at 121 s on 1 thread, 57 s on 3; 6 never beat 3.)
@@ -1640,7 +1651,7 @@ mod tests {
     fn exploring_is_bounded() {
         let sat = |t: u32| [121.0, 80.0, 57.0, 57.0, 57.0, 57.0][t as usize - 1];
         let count = |costs: &BTreeMap<String, Cost>| {
-            let b = Book::new(costs);
+            let b = Book::new(crate::agent::seam::for_tests(), costs);
             let mut n = BTreeMap::new();
             for i in 0..10_000 {
                 *n.entry(b.cores("slope", &format!("7/{i}/0")).unwrap().grant).or_insert(0u32) += 1;
@@ -1660,7 +1671,7 @@ mod tests {
         assert_eq!(count(&curve_costs(&[2, 3, 4], 30, 0.0, sat)).keys().copied().collect::<Vec<_>>(), [3]);
         // (The fourth thread, unmeasured, counts as a busy core besides 3's 0.3.)
         let costs = curve_costs(&[2, 3], 30, 0.0, sat);
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         let explorer = (0..).map(|i| format!("7/{i}/0")).find(|t| b.cores("slope", t).unwrap().grant == 4).unwrap();
         assert_eq!(b.cores("slope", &explorer), Some(Cores { grant: 4, busy_tenths: Some(13) }));
         // (A job whose runs computed on every thread climbs by its busy cores: the curve doesn't hold it.)
@@ -1677,7 +1688,10 @@ mod tests {
             };
             costs.insert(cost_key("slope", &format!("6/2/{i}")), c);
         }
-        assert_eq!(Book::new(&costs).cores("slope", "7/0/0").map(|c| c.grant), Some(4));
+        assert_eq!(
+            Book::new(crate::agent::seam::for_tests(), &costs).cores("slope", "7/0/0").map(|c| c.grant),
+            Some(4)
+        );
     }
 
     /// A job's cores: its target's run's, else the most of its step's; None when no run says.
@@ -1690,7 +1704,7 @@ mod tests {
         costs.insert(cost_key("slope", "6/1/2"), now("slope", cost(100, 5, &[("threads", 2)])));
         costs.insert(cost_key("slope", "6/1/3"), cost(100, 5, &[("threads", 8)]));
         costs.insert(cost_key("lo", "3/1/1"), now("lo", cost(100, 5, &[])));
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.cores("slope", "6/1/2"), c(2, None), "no CPU time said: its busy cores not known");
         assert_eq!(b.cores("slope", "6/1/9"), c(4, None), "an older way's run counts for nothing");
         assert_eq!(b.cores("lo", "3/1/1"), None);
@@ -1702,7 +1716,7 @@ mod tests {
         costs.insert(cost_key("pois", "6/1/2"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 80_000)])));
         // (Task #896: 7.6 cores busy of 8 is 8 to the nearest whole: its threads held it.)
         costs.insert(cost_key("pois", "6/1/3"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 76_000), w0])));
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(
             (b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2"), b.cores("pois", "6/1/3")),
             (c(2, Some(9)), c(9, Some(90)), c(9, Some(86))),
@@ -1720,7 +1734,7 @@ mod tests {
             cost_key("terrain-hi", "6/48/17"),
             Cost { v, ..cost(3700, 1000, &[("threads", 2), ("cpu_ms", 1_600_000), w0]) },
         );
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.cores("terrain-hi", "6/48/16"), c(2, Some(12)));
         assert_eq!(b.cores("terrain-hi", "6/48/17"), c(3, Some(26)), "1.6 of 2: climbs");
         assert_eq!(b.cores("terrain-hi", "6/48/18"), c(2, Some(12)), "its runs at the most threads, 3");
@@ -1731,7 +1745,11 @@ mod tests {
                 cost_key("terrain-hi", "6/48/19"),
                 Cost { v, ..cost(3700, 1000, &[("threads", t), ("cpu_ms", 2_400_000), w0]) },
             );
-            assert_eq!(Book::new(&costs).cores("terrain-hi", "6/48/19"), c(3, Some(24)), "{t}");
+            assert_eq!(
+                Book::new(crate::agent::seam::for_tests(), &costs).cores("terrain-hi", "6/48/19"),
+                c(3, Some(24)),
+                "{t}"
+            );
         }
         // (Task #896: 0.3 cores busy of 3 over 1000 s: waits not said, 1; waiting 500 s, 0.6
         // busy while it computed: 2; waiting 900 s, all 3 busy while it computed: it climbs one,
@@ -1745,7 +1763,11 @@ mod tests {
             let mut s = vec![("threads", 3), ("cpu_ms", 300_000)];
             s.extend(waited.map(|w| ("waited_ms", w)));
             costs.insert(cost_key("terrain-hi", "6/48/19"), Cost { v, ..cost(3700, 1000, &s) });
-            assert_eq!(Book::new(&costs).cores("terrain-hi", "6/48/19"), c(grant, Some(busy)), "{waited:?}");
+            assert_eq!(
+                Book::new(crate::agent::seam::for_tests(), &costs).cores("terrain-hi", "6/48/19"),
+                c(grant, Some(busy)),
+                "{waited:?}"
+            );
         }
         costs.remove(&cost_key("terrain-hi", "6/48/19"));
         // (Task #697: a run frozen by the memory guard for 420 of its 1000 s kept 2 cores busy over
@@ -1754,7 +1776,7 @@ mod tests {
             cost_key("terrain-hi", "6/48/16"),
             Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000), ("paused_ms", 420_000), w0]) },
         );
-        assert_eq!(Book::new(&costs).cores("terrain-hi", "6/48/16"), c(3, Some(20)));
+        assert_eq!(Book::new(crate::agent::seam::for_tests(), &costs).cores("terrain-hi", "6/48/16"), c(3, Some(20)));
     }
 
     /// A target's NAS rate: its own run's bytes (read and written) and creates over its time, else
@@ -1768,7 +1790,7 @@ mod tests {
             costs.insert(cost_key("slope", &format!("6/1/{i}")), now(cost(100, 10, &[("bytes", 100 * i)])));
         }
         costs.insert(cost_key("lo", "3/1/1"), cost(100, 5, &[("threads", 2)]));
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(
             b.nas("slope", "6/1/1"),
             Some(crate::budget::nas::Rate { bytes_s: 100.0, creates_s: 0.5, ..Default::default() })
@@ -1780,7 +1802,10 @@ mod tests {
         let mut costs = BTreeMap::new();
         let v = cost_version("depth");
         costs.insert(cost_key("depth", "6/1/1"), Cost { v, ..cost(100, 10, &[("bytes", 1000), ("local", 800)]) });
-        assert_eq!(Book::new(&costs).nas("depth", "6/1/1").map(|r| r.bytes_s), Some(20.0));
+        assert_eq!(
+            Book::new(crate::agent::seam::for_tests(), &costs).nas("depth", "6/1/1").map(|r| r.bytes_s),
+            Some(20.0)
+        );
     }
 
     /// Task #939: a step's 90th percentile weighs each run by its time, so many runs of a second
@@ -1798,7 +1823,7 @@ mod tests {
         for i in 8..10 {
             costs.insert(cost_key("slope-deep", &format!("10/0/{i}")), now(cost(100, 70, &[("bytes", 700_000_000)])));
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.nas_prior("slope-deep").map(|r| r.bytes_s), Some(10e6), "run by run it was 200 MB/s");
         // (Its own run's rate and time; a target not run, the step's rate over its predicted time.)
         let own = b.nas_load("slope-deep", "10/0/9", None).unwrap();
@@ -1829,7 +1854,7 @@ mod tests {
         let mut b38 = c;
         b38.sizes.insert("nas_read".into(), 959 << 20);
         costs.insert(cost_key("pack", "6/1/3"), Cost { v: cost_version("pack"), ..b38 });
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(
             b.nas("pack", "6/1/1"),
             Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5, ..Default::default() })
@@ -1861,7 +1886,7 @@ mod tests {
         disks.insert(cost_key("depth", "6/16/20"), 67_890);
         disks.insert(cost_key("depth", "6/1/0"), 100);
         disks.insert(cost_key("peaks", "6/1/1"), 67_890);
-        let b = Book::with(&costs, None, Some(&disks));
+        let b = Book::with(crate::agent::seam::for_tests(), &costs, None, Some(&disks));
         assert_eq!(b.disk("depth", "6/16/20", 0), Some(300), "the fill reserved apart, once per Mac");
         assert_eq!(b.disk("depth", "6/1/0", 0), Some(100), "its own when under the step's");
         assert_eq!(b.disk("depth", "6/9/9", 0), Some(300), "never measured: the step's");
@@ -1886,7 +1911,7 @@ mod tests {
             (c.worker, c.v) = (Some(worker.into()), cost_version("slope-hi"));
             costs.insert(format!("slope-hi 10/{k}/0"), c);
         }
-        let raw = Book::new(&costs);
+        let raw = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(raw.secs("slope-hi", "10/99/0", 0), Some(200), "as measured: mixed");
         let paces = crate::paces::Paces {
             lead: "mini".into(),
@@ -1894,7 +1919,7 @@ mod tests {
             macs: [("m1".to_string(), 3.0)].into(),
             ..Default::default()
         };
-        let b = Book::new(&costs).paced(&paces);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs).paced(&paces);
         assert_eq!(b.secs("slope-hi", "10/99/0", 0), Some(100), "at the lead's pace");
         assert_eq!(b.secs_for("slope-hi", "10/99/0", 0, Some("mini")), Some(100));
         assert_eq!(b.secs_for("slope-hi", "10/99/0", 0, Some("m1 #2")), Some(300), "at m1's");
@@ -1927,7 +1952,7 @@ mod tests {
         costs.insert("slope-deep 10/99/0".into(), run("m1", 500, v - 1));
         costs.insert("slope-deep 10/98/0".into(), run("m4", 500, v - 1));
         costs.insert("terrain-deep 10/99/0".into(), run("m1", 100, cost_version("terrain-deep") - 1));
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.secs_on("slope-deep", "10/99/0", 0, Some("m1")), Some((20, true)), "the step's runs, not its own");
         assert_eq!(b.source_secs("slope-deep", "10/99/0"), None, "its source's run of an older way");
         assert_eq!(b.secs_on("slope-deep", "10/98/0", 0, Some("m4")), Some((20, false)), "m4 has no run of the way");
@@ -1944,7 +1969,7 @@ mod tests {
             let km2 = crate::costin::tile_km2(6, 1, 2 + y);
             costs.insert(format!("bldprep {t}"), cost(100 + km2 / 100, 60, &[]));
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         let f = &b.fits("bldprep", Measure::Mem)[0];
         assert_eq!(f.size, "km2");
         // (Held out past its training's sizes, a run is capped at their most: a miss or two.)
@@ -1973,7 +1998,7 @@ mod tests {
         for i in 1..=10u64 {
             costs.insert(format!("peaks 6/{i}/1"), cost(500, if i == 10 { 1200 } else { 100 }, &[]));
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.prior("peaks", Measure::Secs), Some(210), "the mean: (9 × 100 + 1200) / 10");
         assert_eq!(b.secs("peaks", "6/99/1", 0), Some(210), "an unmeasured target takes it");
         assert_eq!(b.secs("peaks", "6/10/1", 0), Some(1200), "a measured one its own");
@@ -1986,7 +2011,7 @@ mod tests {
         for i in 1..=20u64 {
             costs.insert(format!("peaks 6/{i}/1"), cost(500, if i > 17 { 1200 } else { 100 }, &[]));
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.secs("peaks", "6/99/1", 0), Some(265));
         assert_eq!(b.secs_p90("peaks", "6/99/1", 0, None), Some(1200));
         assert_eq!(b.secs_p90("peaks", "6/1/1", 0, None), Some(100), "a measured one its own");
@@ -2005,23 +2030,31 @@ mod tests {
         for i in 1..=8u64 {
             costs.insert(format!("depth 6/{i}/2"), Cost { v, ..cost(500, 20, &[]) });
         }
-        assert_eq!(Book::new(&costs).prior("depth", Measure::Secs), Some(216), "8 quick runs: the earlier way's");
+        assert_eq!(
+            Book::new(crate::agent::seam::for_tests(), &costs).prior("depth", Measure::Secs),
+            Some(216),
+            "8 quick runs: the earlier way's"
+        );
         for i in 9..=PRIOR_RUNS as u64 {
             costs.insert(format!("depth 6/{i}/2"), Cost { v, ..cost(500, 20, &[]) });
         }
-        assert_eq!(Book::new(&costs).prior("depth", Measure::Secs), Some(20), "enough runs: their own mean");
+        assert_eq!(
+            Book::new(crate::agent::seam::for_tests(), &costs).prior("depth", Measure::Secs),
+            Some(20),
+            "enough runs: their own mean"
+        );
         // (The latest earlier way's alone: an older one's long runs don't count.)
         let mut two = BTreeMap::new();
         two.insert("unit 6/1/1".to_string(), Cost { v: 1, ..cost(500, 5000, &[]) });
         two.insert("unit 6/1/2".to_string(), Cost { v: 2, ..cost(500, 100, &[]) });
         two.insert("unit 6/1/3".to_string(), Cost { v: 3, ..cost(500, 50, &[]) });
         assert_eq!(cost_version("unit"), 3);
-        assert_eq!(Book::new(&two).prior("unit", Measure::Secs), Some(100));
+        assert_eq!(Book::new(crate::agent::seam::for_tests(), &two).prior("unit", Measure::Secs), Some(100));
         // (A new way slower than the old: its own, the larger.)
         let mut slow = BTreeMap::new();
         slow.insert("depth 6/1/1".to_string(), Cost { v: v - 1, ..cost(500, 10, &[]) });
         slow.insert("depth 6/1/2".to_string(), Cost { v, ..cost(500, 300, &[]) });
-        assert_eq!(Book::new(&slow).prior("depth", Measure::Secs), Some(300));
+        assert_eq!(Book::new(crate::agent::seam::for_tests(), &slow).prior("depth", Measure::Secs), Some(300));
     }
 
     /// Task #830: the lead's five pyramids-fill z6 tiles with nothing to fetch (17–37 s, as its
@@ -2036,7 +2069,7 @@ mod tests {
         for (t, s) in [("6/53/27", 37), ("6/54/25", 31), ("6/54/26", 17), ("6/54/27", 35), ("6/55/23", 29)] {
             costs.insert(format!("pyramids-fill {t}"), cost(2900, s, &[("km2", 300_000)]));
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.prior("pyramids-fill", Measure::Secs), None, "not said: before the measure");
         assert_eq!(b.secs("pyramids-fill", "6/55/25", 2), None);
         assert_eq!(b.secs_p90("pyramids-fill", "6/55/25", 2, None), None);
@@ -2044,10 +2077,14 @@ mod tests {
         for i in 1..=10u64 {
             costs.insert(format!("pyramids-fill 6/{i}/1"), cost(2900, 20, &[("fetched", 0), ("km2", 300_000)]));
         }
-        assert_eq!(Book::new(&costs).prior("pyramids-fill", Measure::Secs), None, "nothing fetched");
+        assert_eq!(
+            Book::new(crate::agent::seam::for_tests(), &costs).prior("pyramids-fill", Measure::Secs),
+            None,
+            "nothing fetched"
+        );
         costs.insert("pyramids-fill 6/56/23".into(), cost(2900, 4950, &[("fetched", 170_612)]));
         costs.insert("pyramids-fill 6/57/23".into(), cost(2900, 60, &[("fetched", 1_000)]));
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         // ((4950 × 170,612 + 60 × 1,000) / 171,612, rounded up.)
         assert_eq!(b.prior("pyramids-fill", Measure::Secs), Some(4922));
         assert_eq!(b.secs("pyramids-fill", "6/55/25", 2), Some(4922));
@@ -2069,13 +2106,13 @@ mod tests {
         for (t, s) in [("10/256/352", 236), ("10/256/353", 200), ("10/257/352", 260)] {
             costs.insert(format!("terrain-deep {t}"), at(cost(7000, s, &[("km2", 900)])));
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         let (prior_s, prior_mb) = (b.prior("terrain-deep", Measure::Secs), b.prior("terrain-deep", Measure::Mem));
         assert_eq!(b.drop_need("terrain-deep"), None, "no drop ran yet");
         for (t, s) in [("10/100/252", 2), ("10/100/253", 1), ("10/101/228", 3)] {
             costs.insert(format!("terrain-deep {t}"), at(cost(150, s, &[("km2", 900), (DROPS, 1)])));
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.prior("terrain-deep", Measure::Secs), prior_s, "the builds' time alone");
         assert_eq!(b.prior("terrain-deep", Measure::Mem), prior_mb, "the builds' memory alone");
         assert_eq!(b.secs("terrain-deep", "10/300/300", 0), prior_s);
@@ -2086,7 +2123,7 @@ mod tests {
         let sv = cost_version("slope-hi");
         let mut more = costs.clone();
         more.insert("slope-hi 6/10/20".into(), Cost { v: sv, ..cost(90, 5, &[(DROPS, 2)]) });
-        assert_eq!(Book::new(&more).drop_need("slope-hi"), Some((5, 90)));
+        assert_eq!(Book::new(crate::agent::seam::for_tests(), &more).drop_need("slope-hi"), Some((5, 90)));
         // (A drop's own measure is its own.)
         assert_eq!(b.secs("terrain-deep", "10/100/252", 0), Some(2));
         assert!(
@@ -2108,7 +2145,7 @@ mod tests {
             ("peaks 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }),
             ("terrain 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }),
         ]);
-        let b = Book::with(&costs, Some(&floors), None);
+        let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
         assert!(!b.fits("peaks", Measure::Mem).iter().any(Fit::good));
         assert_eq!(
             b.mem("peaks", "6/40/1", 0, 1),
@@ -2136,7 +2173,7 @@ mod tests {
             let c = Cost { v, ..cost(300 + rows * 100 / 1_000_000, 60, &[("rows", rows)]) };
             costs.insert(cost_key("bldprep", &format!("6/{i}/0")), c);
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert!(b.fits("bldprep", Measure::Mem).iter().any(|f| f.good() && f.size == "rows"));
         let (small, from) = b.mem("bldprep", "6/63/63", 0, 2_000_000);
         let (big, _) = b.mem("bldprep", "6/63/63", 0, 30_000_000);
@@ -2158,12 +2195,12 @@ mod tests {
         }
         costs.insert(cost_key("terrain-hi", "6/20/1"), Cost { v: v - 2, ..cost(50_000, 60, &[]) });
         let floors = BTreeMap::from([(cost_key("terrain-hi", "6/30/1"), Floor { mb: 40_000, alone: true, v: v - 1 })]);
-        let b = Book::with(&costs, Some(&floors), None);
+        let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
         assert_eq!(b.older_mem("terrain-hi", "6/40/1"), Some(900), "the 90th percentile");
         assert_eq!(b.older_mem("terrain-hi", "6/10/1"), Some(1000), "its own run");
         assert_eq!(b.older_mem("terrain-hi", "6/20/1"), Some(900), "an older way's: nothing");
         assert_eq!(b.mem("terrain-hi", "6/40/1", 0, 0).1, From::Table, "still a cold start");
-        assert_eq!(Book::new(&BTreeMap::new()).older_mem("terrain-hi", "6/1/1"), None);
+        assert_eq!(Book::new(crate::agent::seam::for_tests(), &BTreeMap::new()).older_mem("terrain-hi", "6/1/1"), None);
     }
 
     /// One dense z6 tile measured doesn't set the others': with no good fit, a z6 tile's extract-size guess
@@ -2171,7 +2208,7 @@ mod tests {
     #[test]
     fn a_dense_unit_leaves_the_others_their_piece_guess() {
         let costs = BTreeMap::from([("6/1/1".to_string(), Cost { v: cost_version("unit"), ..cost(14_000, 600, &[]) })]);
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(b.mem("unit", "6/1/2", 0, 3700), (3700, From::Guess));
         assert_eq!(b.mem("peaks", "6/1/2", 0, 3700).1, From::Table);
         // With no guess (a caller that has none), the prior.
@@ -2192,7 +2229,7 @@ mod tests {
                 },
             );
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         let f = b.fits("terrain-lo", Measure::Mem).into_iter().find(|f| f.size == "tiffs").unwrap();
         assert!(f.per_thread.is_some_and(|c| (c - 100.0).abs() < 1.0), "{f:?}");
         assert!(f.good());
@@ -2204,10 +2241,20 @@ mod tests {
         let cache = Cache::default();
         let (f, d) = (BTreeMap::new(), BTreeMap::new());
         let mut costs = BTreeMap::from([("peaks 6/1/1".to_string(), cost(1000, 5, &[]))]);
-        assert_eq!(Book::kept(&costs, &f, &d, &cache, 1).prior("peaks", Measure::Mem), Some(1000));
+        assert_eq!(
+            Book::kept(crate::agent::seam::for_tests(), &costs, &f, &d, &cache, 1).prior("peaks", Measure::Mem),
+            Some(1000)
+        );
         costs.insert("peaks 6/1/2".into(), cost(5000, 5, &[]));
-        assert_eq!(Book::kept(&costs, &f, &d, &cache, 1).prior("peaks", Measure::Mem), Some(1000), "kept");
-        assert_eq!(Book::kept(&costs, &f, &d, &cache, 2).prior("peaks", Measure::Mem), Some(5000));
+        assert_eq!(
+            Book::kept(crate::agent::seam::for_tests(), &costs, &f, &d, &cache, 1).prior("peaks", Measure::Mem),
+            Some(1000),
+            "kept"
+        );
+        assert_eq!(
+            Book::kept(crate::agent::seam::for_tests(), &costs, &f, &d, &cache, 2).prior("peaks", Measure::Mem),
+            Some(5000)
+        );
     }
 
     /// Task #931: a terrain-deep target's memory is its place's (3 GB where its fine data is sparse,
@@ -2229,7 +2276,7 @@ mod tests {
         for t in ["10/303/360", "10/315/360", "10/310/360"] {
             costs.remove(&format!("terrain-deep {t}"));
         }
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         let nr = b.model("terrain-deep", Measure::Mem).near.unwrap();
         assert!(nr.good() && nr.runs > 300, "{nr:?}");
         let prior = b.prior("terrain-deep", Measure::Mem).unwrap();
@@ -2247,7 +2294,7 @@ mod tests {
         assert_eq!(b.mem("terrain-deep", "10/100/100", 2, 0), (prior, From::Prior));
         // (A floor counts as its tile's measure: a sparse target's neighbour seen holding 12 GB.)
         let floors = BTreeMap::from([("terrain-deep 10/303/361".to_string(), Floor { mb: 12_000, alone: true, v })]);
-        let b = Book::with(&costs, Some(&floors), None);
+        let b = Book::with(crate::agent::seam::for_tests(), &costs, Some(&floors), None);
         assert!(b.mem("terrain-deep", "10/303/360", 2, 0).0 >= 12_000);
     }
 
@@ -2266,7 +2313,7 @@ mod tests {
             }
         }
         costs.remove("terrain-deep 10/305/360");
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         let nr = b.model("terrain-deep", Measure::Mem).near.unwrap();
         assert!(!nr.good(), "{nr:?}");
         assert_eq!(b.mem("terrain-deep", "10/305/360", 2, 0).1, From::Prior);
@@ -2303,7 +2350,7 @@ mod tests {
             }
         }
         costs.remove("6/20/20");
-        let b = Book::new(&costs);
+        let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert!(b.model("unit", Measure::Mem).near.is_none());
         assert_ne!(b.mem("unit", "6/20/20", 0, 5000).1, From::Near);
     }
@@ -2395,7 +2442,7 @@ mod tests {
                 book.insert(by_known[next].1.clone(), by_known[next].2.clone());
                 next += 1;
             }
-            let b = Book::new(&book);
+            let b = Book::new(crate::agent::seam::for_tests(), &book);
             for (_, k) in hour {
                 let step = step_of_key(k);
                 let target = k.rsplit(' ').next().unwrap_or_default();

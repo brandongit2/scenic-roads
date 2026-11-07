@@ -775,7 +775,7 @@ mod tests {
                 // (Its clocks virtual: time passes as the test says, `pass`, however slowly a busy
                 // Mac steps it.)
                 side.set_clock(store::clock::Virtual::new());
-                let mut run = Run::new(side, Role::Member, Gates::default());
+                let mut run = Run::new(crate::agent::seam::for_tests(), side, Role::Member, Gates::default());
                 // (Its tries of the others' coordinators in its step, answered at once: reached,
                 // unless a test says otherwise.)
                 run.prober.inline = true;

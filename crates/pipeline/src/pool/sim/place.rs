@@ -308,8 +308,12 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             cfg.member_slots
         }
     };
-    let offered_steps: Vec<String> =
-        cfg.steps.iter().filter(|s| every::offered(s.name)).map(|s| s.name.to_string()).collect();
+    let offered_steps: Vec<String> = cfg
+        .steps
+        .iter()
+        .filter(|s| every::offered(crate::agent::seam::for_tests(), s.name))
+        .map(|s| s.name.to_string())
+        .collect();
     let mut done: BTreeSet<(String, String)> = BTreeSet::new();
     let total: usize = cfg.steps.iter().map(|s| s.targets).sum();
     let mut running: Vec<Vec<Job>> = cfg.macs.iter().map(|_| Vec::new()).collect();
@@ -392,14 +396,14 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 .iter()
                 .flat_map(|s| {
                     let targets = open(s).into_iter().map(|tg| (tg.clone(), key_of(&tg), 0));
-                    if every::offered(s.name) && is_halo(s.name) {
+                    if every::offered(crate::agent::seam::for_tests(), s.name) && is_halo(s.name) {
                         // (A halo an offer, as the agent offers them: build::by_unit's groups.)
                         let mut by: BTreeMap<usize, Vec<(String, String, u64)>> = BTreeMap::new();
                         for t in targets {
                             by.entry(halo_of(&t.0, cfg.halo)).or_default().push(t);
                         }
                         by.into_values().map(|targets| Offer { step: s.name.into(), targets, job: None }).collect()
-                    } else if every::offered(s.name) {
+                    } else if every::offered(crate::agent::seam::for_tests(), s.name) {
                         vec![Offer { step: s.name.into(), targets: targets.collect(), job: None }]
                     } else {
                         targets
@@ -498,7 +502,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             if is_halo(step) && targets.iter().any(|t| halo_of(t, cfg.halo) != halo_of(&targets[0], cfg.halo)) {
                 return Err(format!("{} placed {step} {targets:?}, past one halo", cfg.macs[k].name));
             }
-            if k > 0 && (!every::offered(step) || every::LEAD_ONLY.contains(&step)) {
+            if k > 0 && (!every::offered(crate::agent::seam::for_tests(), step) || every::LEAD_ONLY.contains(&step)) {
                 return Err(format!("{} (a member) placed {step}, kept to the lead", cfg.macs[k].name));
             }
             if cold && running[k].iter().any(|j| j.cold) {
@@ -633,7 +637,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 let Granted::Job { step, targets, .. } = g.work else {
                     return Err("a task granted to the lead".into());
                 };
-                if g.job.is_some() == every::offered(&step) {
+                if g.job.is_some() == every::offered(crate::agent::seam::for_tests(), &step) {
                     return Err(format!("the lead granted {step} as {:?}", g.job));
                 }
                 out.lead_steps.insert(step.clone());
@@ -700,12 +704,13 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 out.calls += 1;
                 let Some(mut g) = w.ask(&a).map_err(|e| format!("ask: {e:#}"))? else {
                     // (Turned away with a measured target it could take open.)
-                    let open_measured = cfg.steps.iter().filter(|s| every::offered(s.name)).any(|s| {
-                        let held = c.held(s.name);
-                        open(s)
-                            .iter()
-                            .any(|tg| !held.contains(tg) && measured(s.name, std::slice::from_ref(tg)).is_some())
-                    });
+                    let open_measured =
+                        cfg.steps.iter().filter(|s| every::offered(crate::agent::seam::for_tests(), s.name)).any(|s| {
+                            let held = c.held(s.name);
+                            open(s)
+                                .iter()
+                                .any(|tg| !held.contains(tg) && measured(s.name, std::slice::from_ref(tg)).is_some())
+                        });
                     out.turned_away += usize::from(open_measured);
                     break;
                 };

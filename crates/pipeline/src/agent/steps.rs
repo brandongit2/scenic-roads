@@ -42,7 +42,8 @@
 //! in crate::agent::pool's check). A shared step's files for its targets (`saves`, which
 //! crate::coord's check of a member's hand-off and the merge's check use) are checked beside it.
 
-use super::every::{place, Place};
+use super::every::{self, Place};
+
 use super::forecast::ReadTarget;
 use super::seam::{Along, Left};
 use crate::legacy::TileId;
@@ -1657,7 +1658,7 @@ pub fn table() -> Vec<Info> {
         scope: s.scope,
         noun: s.scope.noun().into(),
         stage: s.stage.into(),
-        place: place(s.name),
+        place: every::place(super::theplan::the_plan(), s.name),
         of: None,
     });
     let tasks = TASKS.iter().map(|t| {
@@ -2776,10 +2777,10 @@ mod tests {
         // The place, from the pool's rules: the shared steps and the map tiles any member's, the
         // lead's own and the worldwide steps the lead's.
         for s in ["terrain-hi", "terrain-deep", "slope-deep", "slope-hi", "unit", "pack", "lo", "bldprep"] {
-            assert_eq!(place(s), Place::Any, "{s}");
+            assert_eq!(every::place(crate::agent::theplan::the_plan(), s), Place::Any, "{s}");
         }
         for s in ["catalog", "osm-pass", "items", "marks", "rail", "terrain-root", "gc", "inputs", "pyramids-fill"] {
-            assert_eq!(place(s), Place::Lead, "{s}");
+            assert_eq!(every::place(crate::agent::theplan::the_plan(), s), Place::Lead, "{s}");
         }
         // The view: a row per step then per task, serializable, the task's step named.
         let v = table();

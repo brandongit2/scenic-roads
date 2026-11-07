@@ -177,6 +177,7 @@ impl std::ops::Deref for Events {
 /// The events kept, the last week's, in order.
 #[derive(Debug)]
 pub struct History {
+    the_plan: &'static dyn crate::agent::seam::Plan,
     path: Option<PathBuf>,
     /// Shared with the copies `all` hands out: one is copied only when an event comes while
     /// another holds the last.
@@ -453,8 +454,9 @@ fn now_s() -> u64 {
 
 impl History {
     /// What's kept at `path` (None: in memory alone), the last week's.
-    pub fn load(path: Option<&Path>) -> History {
+    pub fn load(the_plan: &'static dyn crate::agent::seam::Plan, path: Option<&Path>) -> History {
         let mut h = History {
+            the_plan,
             path: path.map(Path::to_path_buf),
             events: Default::default(),
             seq: 0,
@@ -567,7 +569,7 @@ impl History {
             e.after = self.after(e.step.as_deref().unwrap_or(""), &e.targets);
         }
         if matches!(e.kind.as_str(), "end" | "done") && e.v.is_none() {
-            e.v = e.step.as_deref().map(crate::coord::cost_version);
+            e.v = e.step.as_deref().map(|s| self.the_plan.cost_version(s));
         }
         if finished(&e) {
             self.note_built(&e);
@@ -800,7 +802,7 @@ mod tests {
     /// no more threads than the job judged (one on fewer isn't held to runs on more).
     #[test]
     fn a_steps_usual_pace_is_its_jobs_slowest_tenth_from_enough_of_them() {
-        let mut h = History::load(None);
+        let mut h = History::load(crate::agent::seam::for_tests(), None);
         let done = |rate: f64, gap: u64, ok: bool, threads: u32| Event {
             step: Some("terrain-hi".into()),
             ok: Some(ok),
@@ -838,19 +840,19 @@ mod tests {
     fn events_are_kept_numbered_and_read_back() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("history.jsonl");
-        let mut h = History::load(Some(&p));
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
         assert_eq!(h.add(Event::new("agent")), 1);
         assert_eq!(h.add(Event { step: Some("unit".into()), ..Event::new("start") }), 2);
         // A line cut short (a crash) is passed over; numbers go on.
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         f.write_all(b"{\"seq\":3,\"t\":").unwrap();
-        let mut h = History::load(Some(&p));
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
         assert_eq!(h.seq(), 2);
         assert_eq!(h.since(1, 10).iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["start"]);
         assert_eq!(h.add(Event::new("end")), 3);
         assert_eq!(h.since(0, 2).len(), 2);
         // A week old: gone.
-        let mut old = History::load(None);
+        let mut old = History::load(crate::agent::seam::for_tests(), None);
         old.add(Event { t: now_s() - KEEP_S - 10, ..Event::new("agent") });
         old.add(Event::new("agent"));
         assert_eq!(old.since(0, 10).len(), 1);
@@ -860,7 +862,7 @@ mod tests {
     /// change it; and it reads in order as one slice after the oldest have gone (task #930).
     #[test]
     fn every_event_is_handed_out_shared() {
-        let mut h = History::load(None);
+        let mut h = History::load(crate::agent::seam::for_tests(), None);
         let now = now_s();
         for t in 0..4 {
             h.add_at(Event { t: now - KEEP_S + 10 + t, ..Event::new("lease") }, now);
@@ -882,7 +884,7 @@ mod tests {
 
     #[test]
     fn rates_by_the_hour() {
-        let mut h = History::load(None);
+        let mut h = History::load(crate::agent::seam::for_tests(), None);
         // (Hours of a day ago: kept, as the last week's are.)
         let t = (now_s() / 3600 - 24) * 3600;
         // The lead's job over the hour's end, a worker's lease within the first, a worker's task.
@@ -924,7 +926,7 @@ mod tests {
     fn a_start_names_what_it_waited_on() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("history.jsonl");
-        let mut h = History::load(Some(&p));
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
         let k = |s: &str, t: &str| (s.to_string(), t.to_string());
         let done = |h: &mut History, step: &str, targets: &[&str]| {
             h.add(Event {
@@ -967,7 +969,7 @@ mod tests {
         let e = h.since(start - 1, 1).remove(0);
         assert_eq!(e.after, [t2, s]);
         // Kept on disk, read back; a lease of a target nothing waits for names none.
-        let h2 = History::load(Some(&p));
+        let h2 = History::load(crate::agent::seam::for_tests(), Some(&p));
         assert_eq!(h2.since(start - 1, 1)[0].after, [t2, s]);
         let lease = h.add(Event { step: Some("trees".into()), targets: vec!["6/1/1".into()], ..ev("lease", 0, "m1") });
         assert!(h.since(lease - 1, 1)[0].after.is_empty());
@@ -980,7 +982,7 @@ mod tests {
     /// A forecast's run names the finished jobs its items waited on (task #797), per step the last.
     #[test]
     fn a_run_names_the_finished_jobs_its_items_waited_on() {
-        let mut h = History::load(None);
+        let mut h = History::load(crate::agent::seam::for_tests(), None);
         let k = |s: &str, t: &str| (s.to_string(), t.to_string());
         let g = || Graph {
             keys: vec![k("slope-deep", "10/1/1"), k("unit", "6/1/1"), k("unit", "6/1/2")],
@@ -1058,8 +1060,8 @@ mod tests {
         };
         // The slope's job of before the history was loaded (an earlier lead's: one since may have
         // been another's) is not what the unit waits on, through a later graph too.
-        History::load(Some(&p)).add(ev_of("end", "slope-deep", "10/1/1"));
-        let mut h = History::load(Some(&p));
+        History::load(crate::agent::seam::for_tests(), Some(&p)).add(ev_of("end", "slope-deep", "10/1/1"));
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
         set(&mut h, graph());
         set(&mut h, graph());
         let s = h.add(ev_of("start", "unit", "6/1/1"));

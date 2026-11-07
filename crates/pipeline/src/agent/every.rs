@@ -21,6 +21,7 @@
 //!   steps kept to the lead (`LEAD_ONLY`, the answer-keeping steps, the worldwide steps: those not
 //!   `offered`) and the lead's own planned jobs are granted to the current lead's member alone.
 
+use super::seam::Plan;
 use serde::{Deserialize, Serialize};
 
 /// The steps kept to the lead: the catalogues and prune (their gates:
@@ -49,12 +50,12 @@ pub const LEAD_ONLY: [&str; 13] = [
 /// table of targets by tile (not a worldwide one: `names_target` of its name, a run alone, the
 /// spoken languages) that isn't the lead's (`LEAD_ONLY`) and doesn't keep the pass's answers
 /// (crate::agent::steps::ANSWERED), the shared steps among them.
-pub fn offered(step: &str) -> bool {
-    super::steps::row(step).is_some()
+pub fn offered(the_plan: &dyn Plan, step: &str) -> bool {
+    the_plan.is_step(step)
         && !LEAD_ONLY.contains(&step)
-        && !super::steps::ANSWERED.contains(&step)
+        && !the_plan.answered(step)
         && names_target(step)
-        && !super::steps::alone(step)
+        && !the_plan.alone(step)
         && step != "spoken"
 }
 
@@ -69,8 +70,8 @@ pub enum Place {
 }
 
 /// Which Mac runs `step`: any member the lead offers it to (crate::agent::every), else the lead.
-pub fn place(step: &str) -> Place {
-    if offered(step) {
+pub fn place(the_plan: &dyn Plan, step: &str) -> Place {
+    if offered(the_plan, step) {
         Place::Any
     } else {
         Place::Lead
@@ -80,8 +81,8 @@ pub fn place(step: &str) -> Place {
 /// The authority rule: whether work of `step` may be granted to the asker, `lead` when it's the
 /// current lead's member (its own agent's ask, in process). The lead's own planned job (`own`) and a
 /// step not `offered` to every member go to the lead alone; an offered step to any member.
-pub fn grants(step: &str, own: bool, lead: bool) -> bool {
-    lead || (!own && offered(step))
+pub fn grants(the_plan: &dyn Plan, step: &str, own: bool, lead: bool) -> bool {
+    lead || (!own && offered(the_plan, step))
 }
 
 /// Whether a job's command names target `t` (a step's worldwide target, its own name or a world
@@ -113,10 +114,10 @@ mod tests {
     #[test]
     fn every_step_but_the_leads_and_the_answers_is_offered() {
         for s in ["pack", "lo", "terrain-lo", "slope-lo", "trees-lo", "bldfield-lo"] {
-            assert!(offered(s), "{s}");
+            assert!(offered(crate::agent::seam::for_tests(), s), "{s}");
         }
-        for s in super::super::steps::SHARED {
-            assert!(offered(s), "{s}");
+        for s in crate::agent::seam::for_tests().shared().iter().copied() {
+            assert!(offered(crate::agent::seam::for_tests(), s), "{s}");
         }
         for s in [
             "catalog",
@@ -146,19 +147,31 @@ mod tests {
             "spoken",
             "a step of a newer app",
         ] {
-            assert!(!offered(s), "{s}");
+            assert!(!offered(crate::agent::seam::for_tests(), s), "{s}");
         }
     }
 
     #[test]
     fn the_leads_steps_and_own_jobs_are_granted_to_the_lead_alone() {
         for s in ["catalog", "bld-fetch", "osm-pass", "gc", "items", "heritage", "roadunits", "terrain-root"] {
-            assert!(grants(s, true, true) && grants(s, false, true), "{s}");
-            assert!(!grants(s, false, false) && !grants(s, true, false), "{s}");
+            assert!(
+                grants(crate::agent::seam::for_tests(), s, true, true)
+                    && grants(crate::agent::seam::for_tests(), s, false, true),
+                "{s}"
+            );
+            assert!(
+                !grants(crate::agent::seam::for_tests(), s, false, false)
+                    && !grants(crate::agent::seam::for_tests(), s, true, false),
+                "{s}"
+            );
         }
         for s in ["pack", "lo", "slope", "unit"] {
-            assert!(grants(s, false, true) && grants(s, false, false), "{s}");
-            assert!(!grants(s, true, false), "{s}");
+            assert!(
+                grants(crate::agent::seam::for_tests(), s, false, true)
+                    && grants(crate::agent::seam::for_tests(), s, false, false),
+                "{s}"
+            );
+            assert!(!grants(crate::agent::seam::for_tests(), s, true, false), "{s}");
         }
     }
 

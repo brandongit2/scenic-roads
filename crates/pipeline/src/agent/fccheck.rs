@@ -373,7 +373,12 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 /// at its sustained best (`Rooms`, from the asks the inputs before it recorded) and each Mac's slots
 /// its lanes (`unhold`: no hold of the day before). Code 7 also has the NAS's own gate open once the
 /// jobs out then end; code 6, as recorded for the whole run.
-pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
+pub fn replay(
+    the_plan: &'static dyn crate::agent::seam::Plan,
+    inputs: &[Input],
+    events: &[Event],
+    code: u32,
+) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut rooms = Rooms::default();
     let mut out = Vec::new();
@@ -388,12 +393,12 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
         let inp = &mut r.input;
         inp.code = code;
         inp.step_pace.clear();
-        noted.note(inp);
-        rooms.note(inp);
+        noted.note(the_plan, inp);
+        rooms.note(the_plan, inp);
         rooms.set(inp);
         unhold(inp);
         inp.paused = forecast::paused(events, inp.now);
-        repace(inp, events);
+        repace(the_plan, inp, events);
         let paces = inp.sched.as_ref().map(|s| s.paces.clone()).unwrap_or_default();
         let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();
         let speed = |w: &str, step: &str| {
@@ -406,7 +411,7 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
         inp.step_pace = forecast::step_pace(events, inp.now, &noted, &speed);
         let longest = forecast::longest_jobs(events, inp.now);
         forecast::cap_busy(inp, &longest);
-        let f = r.forecast();
+        let f = r.forecast(the_plan);
         let mut e = Entry::of(&r, &f, "replay");
         e.code = code;
         out.push(e);
@@ -461,13 +466,13 @@ struct Rooms {
 
 impl Rooms {
     /// `inp`'s asks' rooms noted.
-    fn note(&mut self, inp: &forecast::Input) {
+    fn note(&mut self, the_plan: &'static dyn crate::agent::seam::Plan, inp: &forecast::Input) {
         let Some(st) = inp.sched.as_ref() else { return };
         for w in &st.workers {
             let Some(c) = w.ask.cap.as_ref().filter(|c| c.avail_mb > 0) else { continue };
             let mem = (c.held_mb + c.avail_mb).saturating_sub(c.mem_floor_mb) as f64;
             let mine = self.seen.entry(w.ask.worker.clone()).or_default();
-            mine.push((inp.now, mem, f64::from(st.cores_left(&w.ask))));
+            mine.push((inp.now, mem, f64::from(st.cores_left(the_plan, &w.ask))));
         }
     }
 
@@ -503,14 +508,14 @@ impl Rooms {
 /// by its step's mean. A cost its record doesn't hold the measures of (no scheduler, a step none
 /// of whose targets it holds) stays as recorded, as does a Mac's whose pace isn't known (taken
 /// at its lane's recorded speed, as the record made it).
-fn repace(inp: &mut forecast::Input, events: &[Event]) {
+fn repace(the_plan: &'static dyn crate::agent::seam::Plan, inp: &mut forecast::Input, events: &[Event]) {
     let Some(lead) = inp.machines.first().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())) else { return };
     let Some(st) = inp.sched.as_mut() else { return };
-    st.paces = crate::paces::Paces::of(events, &lead, inp.now).with_starts(events, &st.costs, inp.now);
+    st.paces = crate::paces::Paces::of(events, &lead, inp.now).with_starts(the_plan, events, &st.costs, inp.now);
     let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();
     let speed = |w: Option<&str>| w.and_then(|w| speeds.get(w)).copied().unwrap_or(1.0);
     let at = |c: &crate::coord::Cost, step: &str| forecast::at_lead(c, step, &st.paces, &speed);
-    let sums = forecast::step_sums(&st.costs, &at);
+    let sums = forecast::step_sums(the_plan, &st.costs, &at);
     let costs = &st.costs;
     let put = |step: &str, target: &str, c: &mut forecast::Cost| match costs.get(&crate::coord::cost_key(step, target))
     {
@@ -528,7 +533,7 @@ fn repace(inp: &mut forecast::Input, events: &[Event]) {
         }
     }
     for (step, t, c) in inp.chains.iter_mut().chain(inp.after.iter_mut()).chain(inp.idle.iter_mut()) {
-        if super::steps::SHARED.contains(&step.as_str()) {
+        if the_plan.shared().contains(&step.as_str()) {
             put(step, t, c);
         }
     }
@@ -578,11 +583,17 @@ impl Ratio {
 /// pace and jobs' start worked out from `events` to then as the lead does, crate::paces): its time
 /// (its end less its grant) over that, by step and Mac (task #927). A job of no time sized (a target
 /// measured at none) isn't counted.
-pub fn batches(inputs: &[Input], events: &[Event], from: u64, to: u64) -> Vec<Batches> {
+pub fn batches(
+    the_plan: &'static dyn crate::agent::seam::Plan,
+    inputs: &[Input],
+    events: &[Event],
+    from: u64,
+    to: u64,
+) -> Vec<Batches> {
     use crate::coord::sched::{Clock, Sched};
     let jobs: Vec<Actual> = actuals(events)
         .into_iter()
-        .filter(|a| (from..to).contains(&a.start) && super::steps::SHARED.contains(&a.step.as_str()))
+        .filter(|a| (from..to).contains(&a.start) && the_plan.shared().contains(&a.step.as_str()))
         .collect();
     let mut by: BTreeMap<(String, String), (Vec<f64>, Vec<f64>)> = BTreeMap::new();
     for (k, i) in inputs.iter().enumerate() {
@@ -598,8 +609,9 @@ pub fn batches(inputs: &[Input], events: &[Event], from: u64, to: u64) -> Vec<Ba
         } else {
             st.lead_name.clone()
         };
-        st.paces = crate::paces::Paces::of(events, &lead, i.at).with_starts(events, &st.costs, i.at);
+        st.paces = crate::paces::Paces::of(events, &lead, i.at).with_starts(the_plan, events, &st.costs, i.at);
         let s = Sched::from_state(
+            the_plan,
             &st,
             Clock { now: std::time::Instant::now(), unix: i.at },
             std::time::Duration::from_secs(86_400),
@@ -627,10 +639,18 @@ pub fn batches(inputs: &[Input], events: &[Event], from: u64, to: u64) -> Vec<Ba
 }
 
 /// The backtest of `inputs` (`replay`, old and new) against `events`, over `from`..`to`.
-pub fn backtest(inputs: &[Input], events: &[Event], from: u64, to: u64, split: u64) -> Backtest {
+pub fn backtest(
+    the_plan: &'static dyn crate::agent::seam::Plan,
+    inputs: &[Input],
+    events: &[Event],
+    from: u64,
+    to: u64,
+    split: u64,
+) -> Backtest {
     // (One code after the other: side by side, the M1's replay of 60 inputs peaked at a 4.7 GB
     // footprint, task #988; each forecast's three runs go side by side already.)
-    let (old, new) = (replay(inputs, events, forecast::VERSION - 1), replay(inputs, events, forecast::VERSION));
+    let (old, new) =
+        (replay(the_plan, inputs, events, forecast::VERSION - 1), replay(the_plan, inputs, events, forecast::VERSION));
     let part =
         |es: &[Entry], test: bool| -> Vec<Entry> { es.iter().filter(|e| (e.at >= split) == test).cloned().collect() };
     let rep = |es: &[Entry], test: bool| check(&part(es, test), events, if test { split } else { from }, to);
@@ -638,7 +658,7 @@ pub fn backtest(inputs: &[Input], events: &[Event], from: u64, to: u64, split: u
         split,
         train: [rep(&old, false), rep(&new, false)],
         test: [rep(&old, true), rep(&new, true)],
-        batches: batches(inputs, events, from, to),
+        batches: batches(the_plan, inputs, events, from, to),
     }
 }
 
@@ -1053,16 +1073,16 @@ mod tests {
             (es[1].code, p[0].until - p[0].from)
         };
         let (old, new) = (forecast::VERSION - 1, forecast::VERSION);
-        assert_eq!(span(&replay(&records, &es, old)), (old, 300));
-        assert_eq!(span(&replay(&records, &es, new)), (new, 300));
+        assert_eq!(span(&replay(crate::agent::seam::for_tests(), &records, &es, old)), (old, 300));
+        assert_eq!(span(&replay(crate::agent::seam::for_tests(), &records, &es, new)), (new, 300));
         // Paused by then (the history's pause, for every code): nothing placed.
         let mut paused = es.clone();
         paused.push(Event { t: 15_000, kind: "pause".into(), ..Default::default() });
-        let replayed = replay(&records, &paused, new);
+        let replayed = replay(crate::agent::seam::for_tests(), &records, &paused, new);
         assert!(replayed[1].placed().is_empty() && replayed[1].why.as_deref() == Some(forecast::PAUSED));
         assert_eq!(replayed[0].placed().len(), 3);
         // The backtest: the second record the test set's.
-        let b = backtest(&records, &es, 0, 30_000, 15_000);
+        let b = backtest(crate::agent::seam::for_tests(), &records, &es, 0, 30_000, 15_000);
         assert_eq!((b.train[0].forecasts, b.test[1].forecasts), (1, 1));
         assert!(backtest_text(&b).contains("Test (from 1970-01-01 04:10 UTC)"), "{}", backtest_text(&b));
     }

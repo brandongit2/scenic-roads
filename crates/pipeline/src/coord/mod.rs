@@ -191,16 +191,17 @@ fn is_zero64(v: &u64) -> bool {
 /// slope-hi 4: named so, their deep levels their own steps', task #639; terrain-hi 7 and terrain-lo
 /// 2: the pool's base tiles sampled up to 4 chunks at once, crate::terrain_base::sampling_mb, task
 /// #695). A task's kind, or a step the table doesn't know: 0.
+#[cfg(test)]
 pub fn cost_version(step: &str) -> u32 {
-    crate::agent::steps::row(step).map_or(0, |s| s.cost_v)
+    crate::agent::seam::for_tests().cost_version(step)
 }
 
 /// A z6 tile's predicted peak memory (MB): what it took last time, else about ten times its extract (the
 /// densest measured: 6.6 GB for 668 MB), and never under 3.7 GB (the canopy step's).
-pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 {
+pub fn unit_peak(unit_v: u32, costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 {
     costs
         .get(unit)
-        .filter(|c| c.v >= cost_version("unit"))
+        .filter(|c| c.v >= unit_v)
         .map(|c| c.peak_mb)
         .unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
@@ -251,8 +252,16 @@ impl std::fmt::Display for CostKey<'_> {
 
 /// The memory a job of `step` for `target` is predicted to take (MB), by its step's model
 /// (crate::needs, its costs alone; `size` sizes its first guess, `first_guess`).
-pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
-    crate::needs::Book::new(costs).need(step, target, 0, first_guess(costs, step, target, size)).mem_mb
+pub fn job_peak(
+    the_plan: &'static dyn crate::agent::seam::Plan,
+    costs: &BTreeMap<String, Cost>,
+    step: &str,
+    target: &str,
+    size: u64,
+) -> u64 {
+    crate::needs::Book::new(the_plan, costs)
+        .need(step, target, 0, first_guess(the_plan.cost_version("unit"), costs, step, target, size))
+        .mem_mb
 }
 
 /// The memory a job of `step` for `target` is guessed to take (MB) when none of its step has been
@@ -260,9 +269,9 @@ pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: 
 /// candidates' as the z6 tile's (they read the same extract, with one of the z6 tile's programs: `size` its
 /// bytes too); another step's `size`, the estimate it was offered with (a step offered by an input
 /// measure, crate::needs::OFFERED_BY: that measure, read by crate::needs::Book::mem as such).
-pub fn first_guess(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
+pub fn first_guess(unit_v: u32, costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
     match step {
-        "unit" | "pois" => unit_peak(costs, target, size),
+        "unit" | "pois" => unit_peak(unit_v, costs, target, size),
         _ => size,
     }
 }
@@ -1329,7 +1338,12 @@ impl Coordinator {
     /// from the live store; this Mac's settings and hold; every other call refused. No state of a coordinator's: nothing loaded nor kept (its token,
     /// the one thing it makes, in a scratch folder of its own, emptied as it starts), no history,
     /// no background loop, no page address written.
-    pub fn viewer(listeners: impl Into<Listeners>, me: &str, app: &str) -> Result<Coordinator> {
+    pub fn viewer(
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        listeners: impl Into<Listeners>,
+        me: &str,
+        app: &str,
+    ) -> Result<Coordinator> {
         let listeners = listeners.into();
         let dir = std::env::temp_dir().join(format!(
             "scenic-viewer-{}-{}",
@@ -1348,17 +1362,23 @@ impl Coordinator {
                 }
             }
         }
-        Coordinator::start_with(&dir, listeners, me, app, Mode::Viewer)
+        Coordinator::start_with(the_plan, &dir, listeners, me, app, Mode::Viewer)
     }
 
     /// Starts answering on `port`, keeping its state in `dir`; `app`: the app this Mac's agent
     /// runs, the one an agent asking for work must run too.
-    pub fn start(dir: &Path, port: u16, me: &str, app: &str) -> Result<Coordinator> {
+    pub fn start(
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        dir: &Path,
+        port: u16,
+        me: &str,
+        app: &str,
+    ) -> Result<Coordinator> {
         // (Listening first: a port in use writes nothing of its state. One a coordinator of this
         // process stopped on is free as its `stop` returned (a test's kept and taken over,
         // `listeners_on`); another process's is no reason to wait, and isn't waited for.)
         let listeners = anyhow::Context::with_context(listeners_on(port), || format!("listen on port {port}"))?;
-        Coordinator::start_on(dir, listeners, me, app)
+        Coordinator::start_on(the_plan, dir, listeners, me, app)
     }
 
     /// The loopback address beside a wildcard `listener`, on its port: its jobs' address
@@ -1410,8 +1430,14 @@ impl Coordinator {
 
     /// `start`, answering on `listeners`, already listening (a test's, on a port it held from the
     /// start: no other can take it between).
-    pub fn start_on(dir: &Path, listeners: impl Into<Listeners>, me: &str, app: &str) -> Result<Coordinator> {
-        let c = Coordinator::start_with(dir, listeners.into(), me, app, Mode::Lead)?;
+    pub fn start_on(
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        dir: &Path,
+        listeners: impl Into<Listeners>,
+        me: &str,
+        app: &str,
+    ) -> Result<Coordinator> {
+        let c = Coordinator::start_with(the_plan, dir, listeners.into(), me, app, Mode::Lead)?;
         c.open_store()?;
         Ok(c)
     }
@@ -1419,7 +1445,14 @@ impl Coordinator {
     /// `start_on`, a member's broker (`Broker`) or a viewer alone (`viewer`): a coordinator on a
     /// wildcard `listener` answers the same on 127.0.0.1 beside it (`loopback_beside`), its jobs'
     /// address.
-    fn start_with(dir: &Path, listeners: Listeners, me: &str, app: &str, mode: Mode) -> Result<Coordinator> {
+    fn start_with(
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        dir: &Path,
+        listeners: Listeners,
+        me: &str,
+        app: &str,
+        mode: Mode,
+    ) -> Result<Coordinator> {
         let viewer = mode == Mode::Viewer;
         let Listeners { listener, loopback } = listeners;
         let port = listener.local_addr()?.port();
@@ -1474,7 +1507,7 @@ impl Coordinator {
         };
         // (No later than a minute from now: an ask's time past that is passed over, `AHEAD_S`.)
         let pause_at = pause_at.min(unix_now() + AHEAD_S);
-        let mut history = history::History::load((!viewer).then(|| dir.join("history.jsonl")).as_deref());
+        let mut history = history::History::load(the_plan, (!viewer).then(|| dir.join("history.jsonl")).as_deref());
         if !viewer {
             history.add(history::Event {
                 worker: Some(me.to_string()),
@@ -1486,6 +1519,7 @@ impl Coordinator {
         std::fs::remove_file(dir.join("devices.json")).ok();
         let mut shared = Shared {
             sched: sched::Sched {
+                the_plan,
                 leases,
                 offers: Vec::new(),
                 offered: Default::default(),
@@ -1572,7 +1606,7 @@ impl Coordinator {
         if lead {
             // (Each step's use on each Mac, from the build's timings in the window: what a job is
             // granted threads by, crate::uses. A broker grants none, and keeps no timings here.)
-            shared.set_use_runs(crate::uses::Run::read_log(&dir.join("timings.jsonl"), unix_now()));
+            shared.set_use_runs(crate::uses::Run::read_log(the_plan, &dir.join("timings.jsonl"), unix_now()));
         }
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published; kept (`jobs-token`), so
@@ -2089,7 +2123,7 @@ impl Coordinator {
     /// `events` and the costs kept (`Paces::with_starts`, task #927).
     pub fn set_paces(&self, p: crate::paces::Paces, events: &[history::Event], now: u64) {
         let mut s = self.shared.lock().unwrap();
-        let p = p.with_starts(events, &s.sched.costs, now);
+        let p = p.with_starts(s.the_plan, events, &s.sched.costs, now);
         s.sched.set_paces(p);
     }
 
@@ -3433,7 +3467,10 @@ fn phase_sharer(
 /// (`cost_version`, as the lead stamps each end and done: `history::Event::v`), so a run of an
 /// older way of the step stops counting once the version is raised.
 fn keep_timings(shared: &Mutex<Shared>, rec: &crate::timings::RunRec) {
-    let rec = &crate::timings::RunRec { cost_v: rec.cost_v.or(Some(cost_version(&rec.kind))), ..rec.clone() };
+    let rec = &crate::timings::RunRec {
+        cost_v: rec.cost_v.or(Some(shared.lock().unwrap().the_plan.cost_version(&rec.kind))),
+        ..rec.clone()
+    };
     let dir = shared.lock().unwrap().dir.clone();
     if let Err(e) = crate::timings::append(&dir.join("timings.jsonl"), rec) {
         eprintln!("coordinator: keeping a run's timings: {e}");
@@ -3448,8 +3485,9 @@ pub fn folder(w: &str) -> String {
 
 /// Whether `l` is a file a job of `step` saves for `target` (the steps table's:
 /// crate::agent::steps::saves).
+#[cfg(test)]
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
-    crate::agent::steps::saves(step, target, l)
+    crate::agent::seam::for_tests().saves(step, target, l)
 }
 
 /// A job's hand-off, when it's its lease's: its done record is the lease's, every change is to one
@@ -3458,7 +3496,12 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
 /// on the NAS is named as packing names one for its shard. (Of any shard: a job packs every loose
 /// tile in the helper's cache, an earlier job's left there too, a job stopped before it packed:
 /// tiles of the NAS's own, whatever job fetched them.)
-fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
+fn check_handoff(
+    the_plan: &dyn crate::agent::seam::Plan,
+    h: &Handoff,
+    step: &str,
+    targets: &[(String, String)],
+) -> Result<()> {
     // (Its lease's targets, or some of them: a job paused at a safe point hands off what it did.)
     match &h.done {
         Some((s, ts)) => anyhow::ensure!(
@@ -3467,7 +3510,7 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
         ),
         None => anyhow::bail!("no done record"),
     }
-    anyhow::ensure!(crate::agent::steps::SHARED.contains(&step), "a hand-off of {step} isn't work a worker does");
+    anyhow::ensure!(the_plan.shared().contains(&step), "a hand-off of {step} isn't work a worker does");
     for (shard, p) in &h.raw {
         anyhow::ensure!(crate::rawpack::is_shard(shard), "{shard} isn't a shard of raw tiles");
         anyhow::ensure!(crate::rawpack::named_for(&p.name, shard), "{} isn't an archive of {shard}", p.name);
@@ -3475,7 +3518,10 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
     // (Of the targets it says it did: one it didn't finish may have saved part of its files.)
     let did: Vec<&(String, String)> = h.done.as_ref().map(|d| d.1.iter().collect()).unwrap_or_default();
     for (l, v) in &h.changes {
-        anyhow::ensure!(did.iter().any(|(t, _)| saves(step, t, l)), "{l} isn't one of the files of the targets it did");
+        anyhow::ensure!(
+            did.iter().any(|(t, _)| the_plan.saves(step, t, l)),
+            "{l} isn't one of the files of the targets it did"
+        );
         if let Some(c) = v {
             anyhow::ensure!(
                 store::naming::parse_content_name(c).is_some_and(|n| n.logical == l),
@@ -4650,9 +4696,11 @@ fn route(
                     let pooled = d.journaled && s.leases.term > 0;
                     // Refused (422): the worker gives the lease back as failed, and drops the work
                     // (but for its raw tiles' archives, as above).
-                    if let Err(e) =
-                        if pooled { check_pooled(&h, step, targets) } else { check_handoff(&h, step, targets) }
-                    {
+                    if let Err(e) = if pooled {
+                        check_pooled(&h, step, targets)
+                    } else {
+                        check_handoff(s.the_plan, &h, step, targets)
+                    } {
                         // (From a worker on a newer app than this Mac's, whose step may save what
                         // this one's doesn't know of: its lease ends, not held against its targets.)
                         if s.workers
@@ -5057,10 +5105,7 @@ fn route(
         "/work/steps" => {
             // The steps table (crate::agent::steps, docs/pipeline.md): every step's and task's row
             // and the stages, for the page's words and colours (read once a load).
-            Ok((
-                200,
-                serde_json::json!({ "steps": crate::agent::steps::table(), "stages": crate::agent::steps::STAGES }),
-            ))
+            Ok((200, shared.lock().unwrap().the_plan.table_json()))
         }
         "/work/redo" => {
             // The owner's ask to build `step`'s finished `targets` again (`scenic redo`, with the
@@ -6106,7 +6151,7 @@ fn test_listener() -> (std::net::TcpListener, u16) {
 #[cfg(test)]
 pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u16) {
     let (listener, port) = test_listener();
-    (Coordinator::start_on(dir, listener, me, app).unwrap(), port)
+    (Coordinator::start_on(crate::agent::seam::for_tests(), dir, listener, me, app).unwrap(), port)
 }
 
 #[cfg(test)]
@@ -6593,7 +6638,7 @@ mod tests {
         c.stop();
         // (Held meanwhile: another process's listen there is refused.)
         assert_eq!(port_free(port).unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
-        let next = Coordinator::start(&dir, port, "m4", "").unwrap();
+        let next = Coordinator::start(crate::agent::seam::for_tests(), &dir, port, "m4", "").unwrap();
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], next.contact.token.clone(), "m1");
         w.ask(&ask(4096)).unwrap();
     }
@@ -6725,7 +6770,14 @@ mod tests {
         let token = c.contact.token.clone();
         let port = c.port;
         drop(c);
-        let c = Coordinator::start_on(&d.path().join("coord"), listeners_on(port).unwrap(), "m4", "").unwrap();
+        let c = Coordinator::start_on(
+            crate::agent::seam::for_tests(),
+            &d.path().join("coord"),
+            listeners_on(port).unwrap(),
+            "m4",
+            "",
+        )
+        .unwrap();
         assert_eq!(c.contact.token, token);
         w.new_round();
         w.beat(1, None).unwrap();
@@ -6910,23 +6962,23 @@ mod tests {
             cost_key("terrain-hi", "3/0/2"),
             Cost { peak_mb: 32_900, secs: 3000, worker: None, v: 0, ..Default::default() },
         );
-        assert_eq!(job_peak(&costs, "terrain-hi", "3/0/2", 2400), 2400);
+        assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "terrain-hi", "3/0/2", 2400), 2400);
         costs.insert(
             cost_key("terrain-hi", "3/0/2"),
             Cost { peak_mb: 2100, secs: 3000, worker: None, v: cost_version("terrain-hi"), ..Default::default() },
         );
-        assert_eq!(job_peak(&costs, "terrain-hi", "3/0/2", 2400), 2100);
+        assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "terrain-hi", "3/0/2", 2400), 2100);
         // Slope likewise (written a z6 tile at a time too); other steps' measures stand.
         costs.insert(
             cost_key("slope-hi", "3/0/2"),
             Cost { peak_mb: 20_000, secs: 300, worker: None, v: 0, ..Default::default() },
         );
-        assert_eq!(job_peak(&costs, "slope-hi", "3/0/2", 2000), 2000);
+        assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "slope-hi", "3/0/2", 2000), 2000);
         costs.insert(
             cost_key("peaks", "6/1/1"),
             Cost { peak_mb: 5000, secs: 300, worker: None, v: 0, ..Default::default() },
         );
-        assert_eq!(job_peak(&costs, "peaks", "6/1/1", 2500), 5000);
+        assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "peaks", "6/1/1", 2500), 5000);
     }
 
     /// One dense z6 tile measured the way z6 tiles run now doesn't keep the others, not yet measured, off
@@ -7331,15 +7383,15 @@ mod tests {
         let cost = |mb: u64| Cost { peak_mb: mb, secs: 1, worker: None, v: cost_version("unit"), ..Default::default() };
         let mut costs = BTreeMap::new();
         // Before either ran: as a z6 tile on its extract would (ten times it, at least 3.7 GB).
-        assert_eq!(job_peak(&costs, "pois", "6/1/1", 500 << 20), 5000);
-        assert_eq!(job_peak(&costs, "pois", "6/1/1", 100 << 20), 3700);
+        assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "pois", "6/1/1", 500 << 20), 5000);
+        assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "pois", "6/1/1", 100 << 20), 3700);
         // The z6 tile's run, then its own.
         costs.insert("6/1/1".to_string(), cost(4200));
-        assert_eq!(job_peak(&costs, "pois", "6/1/1", 100 << 20), 4200);
+        assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "pois", "6/1/1", 100 << 20), 4200);
         costs.insert("pois 6/1/1".to_string(), cost(1200));
-        assert_eq!(job_peak(&costs, "pois", "6/1/1", 100 << 20), 1200);
+        assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "pois", "6/1/1", 100 << 20), 1200);
         // Another step: its own, else its offer's guess.
-        assert_eq!(job_peak(&costs, "slope-hi", "3/2/2", 3000), 3000);
+        assert_eq!(job_peak(crate::agent::seam::for_tests(), &costs, "slope-hi", "3/2/2", 3000), 3000);
     }
 
     #[test]
@@ -7589,7 +7641,7 @@ mod tests {
         assert_eq!(c.disks().get("depth-lo 3/1/3"), Some(&65));
         // Another step's measures stay as they were.
         assert_eq!(c.job_disk("peaks"), 35_000);
-        assert!(super::super::agent::every::offered("depth-lo"));
+        assert!(super::super::agent::every::offered(crate::agent::seam::for_tests(), "depth-lo"));
     }
 
     /// Task #381: `lo` a halo step (a pass's z3 tiles their owners' base packs): a job of them
@@ -9318,7 +9370,12 @@ mod tests {
     fn the_draw_weighs_the_pace_and_the_cache_held() {
         use crate::agent::placement::CACHE_PREFER;
         let cache = crate::localread::CACHE;
-        let mut s = sched::Sched::default();
+        let mut s = sched::Sched::from_state(
+            crate::agent::seam::for_tests(),
+            &sched::State::default(),
+            sched::Clock { now: Instant::now(), unix: 0 },
+            Duration::from_secs(60),
+        );
         s.fills.insert(cache.to_string(), 20_000);
         s.set_paces(crate::paces::Paces {
             lead: "m4".into(),
@@ -10000,7 +10057,7 @@ mod tests {
         assert_eq!(threads(&m2, &every_ask("m2", "slope-hi", 64_000, 100_000)), [4]);
         // Kept as the coordinator restarts: read from its timings log.
         let dir = c.shared.lock().unwrap().dir.clone();
-        let runs = crate::uses::Run::read_log(&dir.join("timings.jsonl"), unix_now());
+        let runs = crate::uses::Run::read_log(crate::agent::seam::for_tests(), &dir.join("timings.jsonl"), unix_now());
         assert_eq!(crate::uses::Uses::of(&runs), c.shared.lock().unwrap().uses);
         // Busy on all 8 of its threads (7.5): it climbs, within the 8 cores; its owner at it, within
         // the 6 the in-use share leaves.
@@ -10988,7 +11045,7 @@ mod tests {
         a.cap = Some(Capacity { at: unix_now(), cores: 12, cores_free: 0, ..Default::default() });
         assert_eq!(outside_cores(&a, 0), 6);
         // (The forecast packs it into the same: its cores less those (State::cores_left).)
-        assert_eq!(sched::State::default().cores_left(&a), 6);
+        assert_eq!(sched::State::default().cores_left(crate::agent::seam::for_tests(), &a), 6);
         let mut s = c.shared.lock().unwrap();
         let now = s.now();
         s.seen("m1", String::new(), Some(&a), now);
@@ -11368,6 +11425,7 @@ mod tests {
         };
         // A z3 tile's lo pack and its z6 tiles' hi packs; not another z3 tile's.
         assert!(check_handoff(
+            crate::agent::seam::for_tests(),
             &h(
                 "slope-hi",
                 "3/2/2",
@@ -11381,9 +11439,16 @@ mod tests {
         // Part of a lease's targets (a job paused at a safe point, or stopped): those it did, and
         // only their files.
         let two = vec![("3/2/2".to_string(), "k".to_string()), ("3/3/2".to_string(), "k".to_string())];
-        assert!(check_handoff(&h("slope-hi", "3/2/2", &["layers/slope/lo/3-2-2"], &[]), "slope-hi", &two).is_ok());
+        assert!(check_handoff(
+            crate::agent::seam::for_tests(),
+            &h("slope-hi", "3/2/2", &["layers/slope/lo/3-2-2"], &[]),
+            "slope-hi",
+            &two
+        )
+        .is_ok());
         assert!(
             check_handoff(
+                crate::agent::seam::for_tests(),
                 &h("slope-hi", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/lo/3-3-2"], &[]),
                 "slope-hi",
                 &two
@@ -11391,11 +11456,22 @@ mod tests {
             .is_err(),
             "a file of a target it didn't do"
         );
-        assert!(check_handoff(&h("slope-hi", "3/2/2", &["layers/slope/hi/6-24-16"], &[]), "slope-hi", &ts("3/2/2"))
-            .is_err());
-        assert!(check_handoff(&h("slope-hi", "3/2/2", &["layers/terrain/hi/6-16-16"], &[]), "slope-hi", &ts("3/2/2"))
-            .is_err());
         assert!(check_handoff(
+            crate::agent::seam::for_tests(),
+            &h("slope-hi", "3/2/2", &["layers/slope/hi/6-24-16"], &[]),
+            "slope-hi",
+            &ts("3/2/2")
+        )
+        .is_err());
+        assert!(check_handoff(
+            crate::agent::seam::for_tests(),
+            &h("slope-hi", "3/2/2", &["layers/terrain/hi/6-16-16"], &[]),
+            "slope-hi",
+            &ts("3/2/2")
+        )
+        .is_err());
+        assert!(check_handoff(
+            crate::agent::seam::for_tests(),
             &h("trees", "3/2/2", &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/lo/3-2-2"], &[]),
             "trees",
             &ts("3/2/2")
@@ -11404,6 +11480,7 @@ mod tests {
         // A tree cover z6 tile: its own hi packs and its mid, never its z3 tile's lo pack or another
         // z6 tile's; an assembly isn't a helper's.
         assert!(check_handoff(
+            crate::agent::seam::for_tests(),
             &h(
                 "trees",
                 "6/17/17",
@@ -11414,12 +11491,22 @@ mod tests {
             &ts("6/17/17")
         )
         .is_ok());
-        assert!(check_handoff(&h("trees", "6/17/17", &["layers/trees-cover/lo/3-2-2"], &[]), "trees", &ts("6/17/17"))
-            .is_err());
-        assert!(
-            check_handoff(&h("trees", "6/17/17", &["work/trees-mid/6-17-18"], &[]), "trees", &ts("6/17/17")).is_err()
-        );
         assert!(check_handoff(
+            crate::agent::seam::for_tests(),
+            &h("trees", "6/17/17", &["layers/trees-cover/lo/3-2-2"], &[]),
+            "trees",
+            &ts("6/17/17")
+        )
+        .is_err());
+        assert!(check_handoff(
+            crate::agent::seam::for_tests(),
+            &h("trees", "6/17/17", &["work/trees-mid/6-17-18"], &[]),
+            "trees",
+            &ts("6/17/17")
+        )
+        .is_err());
+        assert!(check_handoff(
+            crate::agent::seam::for_tests(),
             &h("trees-lo", "3/2/2", &["layers/trees-cover/lo/3-2-2"], &[]),
             "trees-lo",
             &ts("3/2/2")
@@ -11458,11 +11545,28 @@ mod tests {
             saves("terrain-hi", "3/2/2", "layers/terrain/lo/3-2-2")
                 && saves("terrain-hi", "3/2/2", "layers/terrain/hi/6-16-16")
         );
-        assert!(check_handoff(&h("pois", "6/1/3", &["work/pois/6-1-3"], &[]), "pois", &ts("6/1/3")).is_ok());
-        assert!(check_handoff(&h("pois", "6/1/3", &["work/peaks/6-1-3"], &[]), "pois", &ts("6/1/3")).is_err());
+        assert!(check_handoff(
+            crate::agent::seam::for_tests(),
+            &h("pois", "6/1/3", &["work/pois/6-1-3"], &[]),
+            "pois",
+            &ts("6/1/3")
+        )
+        .is_ok());
+        assert!(check_handoff(
+            crate::agent::seam::for_tests(),
+            &h("pois", "6/1/3", &["work/peaks/6-1-3"], &[]),
+            "pois",
+            &ts("6/1/3")
+        )
+        .is_err());
         // Raw tiles' archives: its own shards, named by their content.
         let terrain = |raw: &[(&str, &str)]| {
-            check_handoff(&h("terrain-hi", "3/2/2", &["layers/terrain/lo/3-2-2"], raw), "terrain-hi", &ts("3/2/2"))
+            check_handoff(
+                crate::agent::seam::for_tests(),
+                &h("terrain-hi", "3/2/2", &["layers/terrain/lo/3-2-2"], raw),
+                "terrain-hi",
+                &ts("3/2/2"),
+            )
         };
         assert!(terrain(&[("6-20-21", "6-20-21.0123456789abcdef.tiles"), ("3-2-2", "3-2-2.0123456789abcdef.tiles")])
             .is_ok());
@@ -11477,6 +11581,7 @@ mod tests {
         assert!(terrain(&[("6-20-21", "../6-20-21.0123456789abcdef.tiles")]).is_err());
         let peaks = |a: &str| {
             check_handoff(
+                crate::agent::seam::for_tests(),
                 &h("peaks", "6/20/21", &["work/peaks/6-20-21"], &[(a, &format!("{a}.0123456789abcdef.tiles"))]),
                 "peaks",
                 &ts("6/20/21"),
@@ -11489,7 +11594,13 @@ mod tests {
                 && peaks("../6-25-21").is_err()
         );
         // A step no worker does.
-        assert!(check_handoff(&h("catalog", "catalog", &[], &[]), "catalog", &ts("catalog")).is_err());
+        assert!(check_handoff(
+            crate::agent::seam::for_tests(),
+            &h("catalog", "catalog", &[], &[]),
+            "catalog",
+            &ts("catalog")
+        )
+        .is_err());
     }
 
     #[test]
@@ -11596,11 +11707,11 @@ mod tests {
     fn a_hand_off_may_touch_only_its_units_files() {
         let ts = vec![("6/1/3".to_string(), "k3".to_string())];
         let ok = handoff(&[("6/1/3", "k3")]);
-        assert!(check_handoff(&ok, "unit", &ts).is_ok());
+        assert!(check_handoff(crate::agent::seam::for_tests(), &ok, "unit", &ts).is_ok());
         let with = |l: &str, v: Option<&str>| {
             let mut h = ok.clone();
             h.changes.insert(l.into(), v.map(str::to_string));
-            check_handoff(&h, "unit", &ts)
+            check_handoff(crate::agent::seam::for_tests(), &h, "unit", &ts)
         };
         assert!(with("global/roads/6-1-3", Some("global/roads/6-1-3.0000000000000004.roads")).is_ok());
         assert!(with("layers/grid-canopy/hi/6-1-3", None).is_ok());
@@ -11612,13 +11723,19 @@ mod tests {
         // An upload it says it checked must be one of its own.
         let mut h = ok.clone();
         h.checked.push("base/6-9-9.0000000000000009.base".into());
-        assert!(check_handoff(&h, "unit", &ts).is_err());
+        assert!(check_handoff(crate::agent::seam::for_tests(), &h, "unit", &ts).is_err());
         let mut h = ok.clone();
         h.pending.insert("base/6-1-3.0000000000000003.base".into(), "ab".into());
         h.checked.push("base/6-1-3.0000000000000003.base".into());
-        assert!(check_handoff(&h, "unit", &ts).is_ok());
+        assert!(check_handoff(crate::agent::seam::for_tests(), &h, "unit", &ts).is_ok());
         // Not its lease's record.
-        assert!(check_handoff(&ok, "unit", &[("6/1/4".to_string(), "k4".to_string())]).is_err());
+        assert!(check_handoff(
+            crate::agent::seam::for_tests(),
+            &ok,
+            "unit",
+            &[("6/1/4".to_string(), "k4".to_string())]
+        )
+        .is_err());
     }
 
     #[test]
@@ -11766,7 +11883,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let l = store::spawn::listen(("0.0.0.0", 0)).unwrap();
         let port = l.local_addr().unwrap().port();
-        let c = Coordinator::start_on(&d.path().join("coord"), l, "m4", "").unwrap();
+        let c = Coordinator::start_on(crate::agent::seam::for_tests(), &d.path().join("coord"), l, "m4", "").unwrap();
         let taken = port_free(port).unwrap_err();
         assert_eq!(taken.kind(), std::io::ErrorKind::AddrInUse, "{taken}");
         let job = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.job_token.clone(), "job");
@@ -11774,7 +11891,7 @@ mod tests {
         c.stop();
         // (Both kept as it stops, held still: the next coordinator of this process takes both.)
         assert_eq!(port_free(port).unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
-        let next = Coordinator::start(&d.path().join("next"), port, "m4", "").unwrap();
+        let next = Coordinator::start(crate::agent::seam::for_tests(), &d.path().join("next"), port, "m4", "").unwrap();
         let job = client::Client::at(vec![format!("http://127.0.0.1:{port}")], next.job_token.clone(), "job");
         assert_eq!(job.post_json("/task/workers", &serde_json::json!({ "kind": "tail" })).unwrap().0, 200);
         next.stop();
@@ -11789,7 +11906,9 @@ mod tests {
         let other = store::spawn::listen(("127.0.0.1", 0)).unwrap();
         let port = other.local_addr().unwrap().port();
         let l = store::spawn::listen(("0.0.0.0", port)).unwrap();
-        let e = Coordinator::start_on(&d.path().join("coord"), l, "m4", "").err().expect("refused");
+        let e = Coordinator::start_on(crate::agent::seam::for_tests(), &d.path().join("coord"), l, "m4", "")
+            .err()
+            .expect("refused");
         assert!(format!("{e:#}").contains("doesn't wait"), "{e:#}");
         // (Its port no longer this process's: a test listening there anew is refused.)
         let refused = std::panic::catch_unwind(|| listeners_on(port).map(drop));
@@ -11814,7 +11933,7 @@ mod tests {
             lg.store(true, Ordering::SeqCst);
             store::spawn::sockets(|| drop(other));
         });
-        let c = Coordinator::start_on(&d.path().join("coord"), l, "m4", "").unwrap();
+        let c = Coordinator::start_on(crate::agent::seam::for_tests(), &d.path().join("coord"), l, "m4", "").unwrap();
         assert!(let_go.load(Ordering::SeqCst), "started beside the other process");
         t.join().unwrap();
         let job = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.job_token.clone(), "job");
@@ -12094,7 +12213,7 @@ mod tests {
         // store, settings and hold; every other call refused, its key's or not; nothing written
         // but its token, in its scratch.
         let (listener, port) = test_listener();
-        let v = Coordinator::viewer(listener, "m1", "1.2.3").unwrap();
+        let v = Coordinator::viewer(crate::agent::seam::for_tests(), listener, "m1", "1.2.3").unwrap();
         let addr = format!("127.0.0.1:{port}");
         let ask = |path: &str, key: Option<&str>| send(&addr, "POST", path, key, &[], &serde_json::json!({})).0;
         let get = || send(&addr, "GET", "/work/", None, &[], &serde_json::json!({}));
@@ -12138,7 +12257,7 @@ mod tests {
         let stale = std::env::temp_dir().join(format!("scenic-viewer-{}-1", i32::MAX - 7));
         std::fs::create_dir_all(&stale).unwrap();
         let (listener, _) = test_listener();
-        let next = Coordinator::viewer(listener, "m1", "1.2.3").unwrap();
+        let next = Coordinator::viewer(crate::agent::seam::for_tests(), listener, "m1", "1.2.3").unwrap();
         assert!(!stale.exists());
         next.stop();
     }
@@ -12152,7 +12271,7 @@ mod tests {
         let root = d.path().join("nas");
         std::fs::create_dir_all(&root).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
-        let pv = crate::agent::pageview::PageView::new();
+        let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
         pv.set_inputs(crate::agent::pageview::Inputs { root: Some(nas.clone()), ..Default::default() });
         pv.touch();
         assert!(crate::agent::pageview::tests::read(
@@ -12679,7 +12798,7 @@ mod tests {
         let root = d.path().join("nas");
         std::fs::create_dir_all(&root).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
-        let pv = crate::agent::pageview::PageView::new();
+        let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
         pv.set_inputs(crate::agent::pageview::Inputs {
             root: Some(nas.clone()),
             members: vec!["m-lead".into()],
@@ -12734,7 +12853,7 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         let now = unix_now();
         crate::agent::pageview::tests::fixture(&nas, now);
-        let pv = crate::agent::pageview::PageView::new();
+        let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
         pv.set_inputs(crate::agent::pageview::Inputs {
             root: Some(nas.clone()),
             members: vec!["m-a".into(), "m-b".into()],
@@ -12940,7 +13059,8 @@ mod tests {
         let st = r.input.sched.as_ref().expect("the lead's scheduler's state");
         let clock = sched::Clock { now: Instant::now(), unix: r.input.now };
         let fresh = || {
-            let mut s = sched::Sched::from_state(st, clock, Duration::from_secs(400 * 86_400));
+            let mut s =
+                sched::Sched::from_state(crate::agent::seam::for_tests(), st, clock, Duration::from_secs(400 * 86_400));
             s.set_offers(st.offers.clone());
             s
         };
@@ -12974,7 +13094,12 @@ mod tests {
         }
         for (said, state) in [("capacity said", st), ("grants'", &by_grant)] {
             for w in &state.workers {
-                let mut s = sched::Sched::from_state(state, clock, Duration::from_secs(400 * 86_400));
+                let mut s = sched::Sched::from_state(
+                    crate::agent::seam::for_tests(),
+                    state,
+                    clock,
+                    Duration::from_secs(400 * 86_400),
+                );
                 s.set_offers(state.offers.clone());
                 let (picks, why) = s.pack(&w.ask, &state.offers, w.ask.worker == state.lead_name, clock);
                 let steps: Vec<String> = picks.iter().map(|p| format!("{} ({})", p.step, p.targets.len())).collect();
@@ -13012,7 +13137,8 @@ mod tests {
         let st = &st;
         let clock = sched::Clock { now: Instant::now(), unix: r.input.now };
         let fresh = |st: &sched::State| {
-            let mut s = sched::Sched::from_state(st, clock, Duration::from_secs(400 * 86_400));
+            let mut s =
+                sched::Sched::from_state(crate::agent::seam::for_tests(), st, clock, Duration::from_secs(400 * 86_400));
             s.set_offers(st.offers.clone());
             s
         };

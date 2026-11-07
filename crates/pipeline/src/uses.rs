@@ -138,13 +138,13 @@ struct Line {
 impl Run {
     /// A record's runs: one at its threads, else one at each thread count its targets held
     /// (`Line::held`) and the rest of it at the threads it started on; each with the run's floor.
-    fn of_line(l: Line) -> Vec<Run> {
+    fn of_line(the_plan: &dyn crate::agent::seam::Plan, l: Line) -> Vec<Run> {
         let (Some(cpu_s), Some(threads)) = (l.cpu_s, l.threads.filter(|&t| t > 0)) else { return Vec::new() };
         if !(l.ok && l.wall_s > 0.0 && cpu_s.is_finite() && l.wall_s.is_finite()) {
             return Vec::new();
         }
         // (Of an older way of its step: its use says nothing of the way it runs now.)
-        if l.cost_v.unwrap_or(0) < crate::coord::cost_version(&l.kind) {
+        if l.cost_v.unwrap_or(0) < the_plan.cost_version(&l.kind) {
             return Vec::new();
         }
         let part = |threads: u32, cpu_s: f64, wall_s: f64| Run {
@@ -170,32 +170,35 @@ impl Run {
     }
 
     /// The runs a timings record says.
-    pub fn of(r: &crate::timings::RunRec) -> Vec<Run> {
+    pub fn of(the_plan: &dyn crate::agent::seam::Plan, r: &crate::timings::RunRec) -> Vec<Run> {
         let phases = r
             .phases
             .iter()
             .map(|p| Phase { wall_s: p.wall_s, cpu_s: p.cpu_s, overlapped: p.overlapped, background: p.background })
             .collect();
-        Run::of_line(Line {
-            kind: r.kind.clone(),
-            host: r.host.clone(),
-            start: r.start,
-            wall_s: r.wall_s,
-            cpu_s: r.cpu_s,
-            threads: r.threads,
-            held: r.held.clone(),
-            phases,
-            ok: r.ok,
-            cost_v: r.cost_v,
-        })
+        Run::of_line(
+            the_plan,
+            Line {
+                kind: r.kind.clone(),
+                host: r.host.clone(),
+                start: r.start,
+                wall_s: r.wall_s,
+                cpu_s: r.cpu_s,
+                threads: r.threads,
+                held: r.held.clone(),
+                phases,
+                ok: r.ok,
+                cost_v: r.cost_v,
+            },
+        )
     }
 
     /// The runs of a timings log ended in the window at `now`.
-    pub fn read_log(p: &std::path::Path, now: u64) -> Vec<Run> {
+    pub fn read_log(the_plan: &dyn crate::agent::seam::Plan, p: &std::path::Path, now: u64) -> Vec<Run> {
         let Ok(s) = std::fs::read_to_string(p) else { return Vec::new() };
         s.lines()
             .filter_map(|l| serde_json::from_str::<Line>(l).ok())
-            .flat_map(Run::of_line)
+            .flat_map(|l| Run::of_line(the_plan, l))
             .filter(|r| in_window(r, now))
             .collect()
     }
@@ -395,19 +398,22 @@ mod tests {
     }
 
     fn timed(step: &str, threads: u32, wall_s: f64, cpu_s: f64, phases: Vec<crate::timings::PhaseRec>) -> Vec<Run> {
-        Run::of(&crate::timings::RunRec {
-            v: 1,
-            kind: step.into(),
-            host: "m4".into(),
-            start: 1000,
-            wall_s,
-            cpu_s: Some(cpu_s),
-            threads: Some(threads),
-            ok: true,
-            phases,
-            cost_v: Some(crate::coord::cost_version(step)),
-            ..Default::default()
-        })
+        Run::of(
+            crate::agent::seam::for_tests(),
+            &crate::timings::RunRec {
+                v: 1,
+                kind: step.into(),
+                host: "m4".into(),
+                start: 1000,
+                wall_s,
+                cpu_s: Some(cpu_s),
+                threads: Some(threads),
+                ok: true,
+                phases,
+                cost_v: Some(crate::coord::cost_version(step)),
+                ..Default::default()
+            },
+        )
     }
 
     /// Task #948: the phases' floor. pack on the M4 (a run of 4 Nov): half an hour reading base packs
@@ -517,7 +523,7 @@ mod tests {
             cost_v: Some(crate::coord::cost_version("slope-deep")),
             ..Default::default()
         };
-        let runs = Run::of(&rec);
+        let runs = Run::of(crate::agent::seam::for_tests(), &rec);
         let parts: Vec<(u32, f64, f64)> = runs.iter().map(|r| (r.threads, r.wall_s, r.cpu_s)).collect();
         assert_eq!(parts, [(8, 30.0, 30.0), (2, 60.0, 110.0), (8, 10.0, 10.0)]);
         assert_eq!(runs.iter().filter(|r| !r.phases.is_empty()).count(), 1);
@@ -552,9 +558,12 @@ mod tests {
         ] {
             crate::timings::append(&p, &r).unwrap();
         }
-        let runs = Run::read_log(&p, now);
+        let runs = Run::read_log(crate::agent::seam::for_tests(), &p, now);
         assert_eq!(runs, vec![run_at("terrain-deep", "m4", 4, 200.0, now - 100)]);
-        assert_eq!(Run::of(&rec("terrain-deep", "m4 #3", now - 200, Some(200.0), true)), [runs[0].clone()]);
+        assert_eq!(
+            Run::of(crate::agent::seam::for_tests(), &rec("terrain-deep", "m4 #3", now - 200, Some(200.0), true)),
+            [runs[0].clone()]
+        );
     }
 
     /// Task #929 review: a run of an older way of its step (its record's cost version below the
@@ -577,18 +586,18 @@ mod tests {
             cost_v,
             ..Default::default()
         };
-        assert!(Run::of(&rec("slope-deep", None)).is_empty());
-        assert!(Run::of(&rec("slope-deep", Some(v - 1))).is_empty());
-        assert_eq!(Run::of(&rec("slope-deep", Some(v))).len(), 1);
+        assert!(Run::of(crate::agent::seam::for_tests(), &rec("slope-deep", None)).is_empty());
+        assert!(Run::of(crate::agent::seam::for_tests(), &rec("slope-deep", Some(v - 1))).is_empty());
+        assert_eq!(Run::of(crate::agent::seam::for_tests(), &rec("slope-deep", Some(v))).len(), 1);
         assert_eq!(crate::coord::cost_version("backup"), 0);
-        assert_eq!(Run::of(&rec("backup", None)).len(), 1);
+        assert_eq!(Run::of(crate::agent::seam::for_tests(), &rec("backup", None)).len(), 1);
         // (Read back from a log alike.)
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("timings.jsonl");
         for r in [rec("slope-deep", None), rec("slope-deep", Some(v))] {
             crate::timings::append(&p, &r).unwrap();
         }
-        assert_eq!(Run::read_log(&p, 1100).len(), 1);
+        assert_eq!(Run::read_log(crate::agent::seam::for_tests(), &p, 1100).len(), 1);
     }
 
     fn run_at(step: &str, mac: &str, threads: u32, cpu_s: f64, end: u64) -> Run {

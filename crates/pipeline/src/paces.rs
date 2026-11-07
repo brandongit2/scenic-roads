@@ -139,13 +139,19 @@ impl Paces {
     /// (slope-deep's 5 to 12 s a job on the lead's history to 5 Nov, its empty targets a second or
     /// less each). A job of an older way says nothing of it, as its runs size nothing (crate::needs,
     /// crate::uses): task #929 changed slope-deep's and terrain-deep's work.
-    pub fn with_starts(mut self, events: &[Event], costs: &BTreeMap<String, crate::coord::Cost>, now: u64) -> Paces {
+    pub fn with_starts(
+        mut self,
+        the_plan: &dyn crate::agent::seam::Plan,
+        events: &[Event],
+        costs: &BTreeMap<String, crate::coord::Cost>,
+        now: u64,
+    ) -> Paces {
         let from = now.saturating_sub(PACE_S);
         let mut by: BTreeMap<(&str, &str), Vec<f64>> = BTreeMap::new();
         for e in events.iter().filter(|e| e.t > from && e.t <= now && job(e)) {
             let (Some(w), Some(step), Some(secs)) = (e.worker.as_deref(), e.step.as_deref(), e.secs) else { continue };
             let mac = mac_of(w);
-            let Some(v) = e.v.filter(|&v| v >= crate::coord::cost_version(step)) else { continue };
+            let Some(v) = e.v.filter(|&v| v >= the_plan.cost_version(step)) else { continue };
             let own: Option<u64> = e
                 .targets
                 .iter()
@@ -322,10 +328,16 @@ mod tests {
             Event { v: Some(0), ..many(60, "m1", &["10/0/5"], 500.0) },
             Event { v: None, ..many(70, "m1", &["10/0/2"], 500.0) },
         ];
-        let p = Paces::default().with_starts(&ev, &costs, 100);
+        let p = Paces::default().with_starts(crate::agent::seam::for_tests(), &ev, &costs, 100);
         assert_eq!(p.start("m1 #2", "slope-deep"), 10.0, "of 10, 8 and 10");
         assert_eq!(p.start("m4", "slope-deep"), 0.0, "none measured");
         assert_eq!(p.start("m1", "pack"), 0.0);
-        assert!(Paces::default().with_starts(&ev, &costs, 100 + PACE_S + 100).starts.is_empty(), "out of the window");
+        assert!(
+            Paces::default()
+                .with_starts(crate::agent::seam::for_tests(), &ev, &costs, 100 + PACE_S + 100)
+                .starts
+                .is_empty(),
+            "out of the window"
+        );
     }
 }

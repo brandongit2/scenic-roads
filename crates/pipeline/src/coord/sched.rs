@@ -16,7 +16,7 @@
 //! (`State`), so its schedule is the coordinator's by construction.
 
 use super::lease::{Lease, Leases, Work};
-use super::{cost_key, cost_version, disk_words, first_guess, mem_words, Ask, Cost, Measured, Offer, Worker};
+use super::{cost_key, disk_words, first_guess, mem_words, Ask, Cost, Measured, Offer, Worker};
 use super::{AROUND, ASKING};
 use crate::agent::memguard::Floor;
 use serde::{Deserialize, Serialize};
@@ -54,8 +54,10 @@ pub struct Pick {
 /// What every grant is decided from: the leases out, the plan's offers, the work done and failed,
 /// the workers' last asks, the measures (costs, floors, disk floors, jobs' disks, caches' fills)
 /// and the NAS budget's limits and waits.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Sched {
+    /// The plan the steps are asked of (crate::agent::seam::Plan).
+    pub the_plan: &'static dyn crate::agent::seam::Plan,
     pub leases: Leases,
     /// The plan's work a worker that mounts the NAS may do, a step at a time in plan order, and the
     /// lead's own planned jobs (`Offer::job`). Set through `set_offers`, which keeps `offered`.
@@ -490,20 +492,28 @@ impl Sched {
     /// The floor of `target` of `step` that holds it off a Mac: one learned alone, the way its step
     /// runs now (crate::coord::cost_version).
     pub(super) fn holding_floor(&self, step: &str, target: &str) -> Option<Floor> {
-        self.floors.get(&cost_key(step, target)).filter(|f| f.v >= cost_version(step)).copied()
+        self.floors.get(&cost_key(step, target)).filter(|f| f.v >= self.the_plan.cost_version(step)).copied()
     }
 
     /// The memory a job of `step` for `target` is expected to take (MB), as `job_peak` sizes it from
     /// its costs and `size`, and never below its floor (one of an older way of its step too: the best
     /// estimate there is until it runs again).
     pub(super) fn peak_of(&self, step: &str, target: &str, size: u64, threads: u32) -> u64 {
-        self.book().mem(step, target, threads, first_guess(&self.costs, step, target, size)).0
+        self.book()
+            .mem(
+                step,
+                target,
+                threads,
+                first_guess(self.the_plan.cost_version("unit"), &self.costs, step, target, size),
+            )
+            .0
     }
 
     /// The measures crate::needs reads (the costs, the floors and the disk floors), its models kept
     /// in `needs` until they change (`needs_rev`; their counts too, for a change made in place).
     pub(super) fn book(&self) -> crate::needs::Book<'_> {
-        crate::needs::Book::kept(&self.costs, &self.floors, &self.disks, &self.needs, self.rev()).paced(&self.paces)
+        crate::needs::Book::kept(self.the_plan, &self.costs, &self.floors, &self.disks, &self.needs, self.rev())
+            .paced(&self.paces)
     }
 
     /// Where the measures stand: it moves with each cost, floor or disk floor taken or cleared
@@ -518,7 +528,8 @@ impl Sched {
     /// with), 0 when it isn't offered: for a step offered by an input measure
     /// (crate::needs::OFFERED_BY), that measure, which crate::needs::Book::mem reads as such.
     pub(super) fn offered_guess(&self, step: &str, target: &str) -> u64 {
-        self.offered_size(step, target).map_or(0, |size| first_guess(&self.costs, step, target, size))
+        self.offered_size(step, target)
+            .map_or(0, |size| first_guess(self.the_plan.cost_version("unit"), &self.costs, step, target, size))
     }
 
     /// The memory (MB) offered `target` of `step` was guessed at (`offered_guess`): none for a step
@@ -555,7 +566,7 @@ impl Sched {
             let of = self.offered.entry(o.step.clone()).or_default();
             for t in &o.targets {
                 of.entry(t.0.clone()).or_insert(t.2);
-                if crate::agent::build::is_none_key(&o.step, &t.0, &t.1) {
+                if self.the_plan.is_none_key(&o.step, &t.0, &t.1) {
                     self.drops.insert((o.step.clone(), t.0.clone()));
                 }
             }
@@ -635,7 +646,7 @@ impl Sched {
     /// when none of its step's has run the way it runs now.
     pub(super) fn target_most(&self, step: &str, target: &str, worker: &str, threads: u32) -> Option<u64> {
         let (s, _) = self.secs_on(step, target, worker, threads)?;
-        let own = self.costs.get(&cost_key(step, target)).is_some_and(|c| c.v >= cost_version(step));
+        let own = self.costs.get(&cost_key(step, target)).is_some_and(|c| c.v >= self.the_plan.cost_version(step));
         if own || self.drops.contains(&(step.to_string(), target.to_string())) {
             return Some(s);
         }
@@ -702,7 +713,7 @@ impl Sched {
         if !self.drops.contains(&(step.to_string(), target.to_string())) {
             return None;
         }
-        let own = self.costs.get(&cost_key(step, target)).is_some_and(|c| c.v >= cost_version(step));
+        let own = self.costs.get(&cost_key(step, target)).is_some_and(|c| c.v >= self.the_plan.cost_version(step));
         if own {
             return None;
         }
@@ -738,7 +749,7 @@ impl Sched {
         }
         // (A job of no targets of its own, the clean-up's lease: its step's measured weight, task #451.)
         let w = if any { nw.job(&j) } else { nw.weight(step, "", worker) };
-        (w, crate::agent::steps::row(step).is_some_and(|r| r.kind == crate::agent::steps::Kind::Fetch))
+        (w, nw.book.the_plan.fetches(step))
     }
 
     /// What leased job `l` weighs of the NAS budget now, and whether it downloads (`job_nas`): its
@@ -929,7 +940,7 @@ impl Sched {
         // (A step whose jobs only change build records (task #838): one thread counted for no cores
         // (it waits on the NAS), no disk; its memory measured as any step's (task #979), so once
         // measured it goes beside any jobs, a long one's included.)
-        if crate::agent::steps::records_only(step) {
+        if self.the_plan.records_only(step) {
             let cores = Some(crate::needs::Cores { grant: 1, busy_tenths: Some(0) });
             let (m, cold) = match self.job_need(step, targets) {
                 Some(m) => (m, false),
@@ -980,7 +991,7 @@ impl Sched {
     /// A job's timings `rec` come in at `now` (unix s): its runs among the uses' (crate::uses: one
     /// for each thread count it held), those ended before the window let go.
     pub fn add_use(&mut self, rec: &crate::timings::RunRec, now: u64) {
-        let runs = crate::uses::Run::of(rec);
+        let runs = crate::uses::Run::of(self.the_plan, rec);
         if runs.is_empty() {
             return;
         }
@@ -1015,7 +1026,7 @@ impl Sched {
 
     /// `need_cores` as a grant would have it now, whatever its lease counts.
     fn need_cores_as_granted(&self, step: &str, n: &Need, total: u32) -> (u32, u32) {
-        let (threads, busy) = if crate::agent::steps::records_only(step) {
+        let (threads, busy) = if self.the_plan.records_only(step) {
             (1, 0)
         } else if n.cold && !n.by_use && !THREADS_HONOURED.contains(&step) {
             (total, total * 10)
@@ -1247,7 +1258,7 @@ impl Sched {
             offers
                 .iter()
                 .find(|o| {
-                    crate::agent::every::grants(&o.step, true, lead)
+                    crate::agent::every::grants(self.the_plan, &o.step, true, lead)
                         && self.own_cold_waits(o, a, room.mem_mb, cold_here, now)
                 })
                 .cloned()
@@ -1287,7 +1298,7 @@ impl Sched {
             let mut waiting: Option<Backfill> = None;
             let mut held_why: Option<String> = None;
             for o in offers {
-                if !crate::agent::every::grants(&o.step, o.job.is_some(), lead) {
+                if !crate::agent::every::grants(self.the_plan, &o.step, o.job.is_some(), lead) {
                     continue;
                 }
                 // (A job reading a shared cache none here reads yet: its room less the cache's.)
@@ -1453,7 +1464,7 @@ impl Sched {
     /// the threads a job runs on now: past those it was measured at, that spreads the peak thinner
     /// than any thread of it is.
     fn per_thread_mb(&self, step: &str, targets: &[String], peak_mb: u64) -> (u64, u32) {
-        let v = crate::coord::cost_version(step);
+        let v = self.the_plan.cost_version(step);
         let measured = targets
             .iter()
             .map(|t| {
@@ -1776,7 +1787,7 @@ impl Sched {
             && (self.provisional(&o.step, &ts).is_none_or(|m| m.mem_mb > left)
                 || cold_held
                 || self.no_figure(&o.step, &ts)
-                || (!crate::agent::steps::records_only(&o.step)
+                || (!self.the_plan.records_only(&o.step)
                     && !THREADS_HONOURED.contains(&o.step.as_str())
                     && self.uses.cores(&o.step, crate::paces::mac_of(&a.worker)).is_none()))
             && self.own_open(o, a, now)
@@ -2203,8 +2214,8 @@ impl State {
     /// past the cores the jobs it holds here count for: each its step's use on the Mac's busy cores
     /// (crate::uses), else its targets' most kept busy (crate::needs::Cores::busy_tenths), summed in
     /// tenths, within its threads, else its threads): the forecast's room for its jobs (task #684).
-    pub fn cores_left(&self, a: &Ask) -> u32 {
-        let b = crate::needs::Book::new(&self.costs);
+    pub fn cores_left(&self, the_plan: &'static dyn crate::agent::seam::Plan, a: &Ask) -> u32 {
+        let b = crate::needs::Book::new(the_plan, &self.costs);
         let ours: u32 = self
             .leases
             .iter()
@@ -2317,7 +2328,12 @@ impl Sched {
 
     /// A scheduler in state `s` at `now` (`clock`), its leases lasting `ttl` without a beat: the
     /// leases out granted again (fresh ids), each worker's ask as it was.
-    pub fn from_state(s: &State, clock: Clock, ttl: Duration) -> Sched {
+    pub fn from_state(
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        s: &State,
+        clock: Clock,
+        ttl: Duration,
+    ) -> Sched {
         let now = clock.now;
         let mut leases = Leases::new(ttl);
         leases.app = s.app.clone();
@@ -2357,6 +2373,7 @@ impl Sched {
             })
             .collect();
         let mut sched = Sched {
+            the_plan,
             leases,
             offers: Vec::new(),
             offered: Default::default(),

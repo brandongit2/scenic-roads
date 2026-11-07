@@ -73,8 +73,8 @@ pub fn checked(step: &str, targets: &[String]) -> Result<(String, Vec<String>)> 
 /// Notes what a redo's run cost since `t0` (crate::agent::jobs::note_cost, in a job alone), under
 /// the step's own key ("redo redo", as GC's: each ask's targets are new, so its memory is its
 /// step's runs', crate::needs): a records-only step measured as any (task #979).
-pub fn note_cost(t0: std::time::Instant) {
-    super::jobs::note_cost(STEP, STEP, t0.elapsed().as_secs());
+pub fn note_cost(v: u32, t0: std::time::Instant) {
+    super::jobs::note_cost(v, STEP, STEP, t0.elapsed().as_secs());
 }
 
 /// A redo job's done target for `step`'s `target`.
@@ -188,6 +188,7 @@ pub fn ask_of(id: &str) -> Option<u64> {
 /// served until the targets are built again: what `scenic redo` prints (a dry run, and the job's
 /// log).
 pub fn said(
+    the_plan: &dyn crate::agent::seam::Plan,
     keys: &crate::pool::records::Keys,
     manifest: &BTreeMap<String, String>,
     step: &str,
@@ -200,7 +201,7 @@ pub fn said(
             Some(k) => {
                 n += 1;
                 let files: Vec<&str> =
-                    manifest.iter().filter(|(l, _)| super::steps::saves(step, t, l)).map(|(_, c)| c.as_str()).collect();
+                    manifest.iter().filter(|(l, _)| the_plan.saves(step, t, l)).map(|(_, c)| c.as_str()).collect();
                 out.push(format!(
                     "{step} {t}: key {k}{}",
                     if files.is_empty() {

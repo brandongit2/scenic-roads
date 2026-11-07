@@ -825,7 +825,7 @@ impl Planner {
     }
 
     pub(super) fn step_secs_here(&self, step: &str) -> Option<f64> {
-        step_secs_here(&self.inp.mem, step)
+        step_secs_here(self.o.the_plan, &self.inp.mem, step)
     }
 
     pub(super) fn due(&self, id: &str, every: Duration) -> bool {
@@ -866,7 +866,7 @@ impl Planner {
         let mut offers: Vec<crate::coord::Offer> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for spec in plan {
-            match spec.record.as_ref().filter(|w| every::offered(&w.step)) {
+            match spec.record.as_ref().filter(|w| every::offered(self.o.the_plan, &w.step)) {
                 Some(w) => {
                     // (Every offer of its step: a halo step's are one a halo, crate::needs::HALO_STEPS.)
                     if seen.insert(w.step.clone()) {
@@ -901,7 +901,7 @@ impl Planner {
         let largest = c.largest_limit().unwrap_or(0).max(limit);
         let gb = |mb: u64| mb as f64 / 1024.0;
         for w in works {
-            let most = if steps::SHARED.contains(&w.step.as_str()) { largest } else { limit };
+            let most = if self.o.the_plan.shared().contains(&w.step.as_str()) { largest } else { limit };
             let (mut n_here, mut n_all, mut need) = (0, 0, 0u64);
             for (t, _) in &w.targets {
                 let key = (w.step.clone(), t.clone());
@@ -921,7 +921,7 @@ impl Planner {
                     _ => {}
                 }
             }
-            if n_all > 0 && !steps::SHARED.contains(&w.step.as_str()) {
+            if n_all > 0 && !self.o.the_plan.shared().contains(&w.step.as_str()) {
                 // A step only the lead runs: judged against the lead's limit alone; it waits (the
                 // lead is fixed: the lead's memory or the step's is the owner's to see to).
                 let (s, v) = if n_all == 1 { ("", "s") } else { ("s", "") };
@@ -1368,10 +1368,11 @@ impl Planner {
         let jobs = self.region_jobs(root, pass, newer, waiting, &mut held);
         // (The offered steps' work held as their jobs are: not offered meanwhile.)
         self.offered.borrow_mut().1.retain(|o| {
-            !(held.sources && build::reads_sources(&o.step)) && !(held.lakefill && build::reads_lakefill(&o.step))
+            !(held.sources && self.o.the_plan.reads_sources(&o.step))
+                && !(held.lakefill && self.o.the_plan.reads_lakefill(&o.step))
         });
-        let jobs = hold_for_sources(jobs, held.sources, waiting);
-        hold_for_lakefill(jobs, held.lakefill, waiting)
+        let jobs = hold_for_sources(self.o.the_plan, jobs, held.sources, waiting);
+        hold_for_lakefill(self.o.the_plan, jobs, held.lakefill, waiting)
     }
 
     /// `region_work`'s jobs before the holds: `held.lakefill` set when the pass's lake fill holds
@@ -1718,10 +1719,7 @@ impl Planner {
         let summits = pw.summits.take();
         // (Held, they're the landmarks chain's first step in the forecast, after the terrain.)
         let mut summits_held = None;
-        let summits_waits = match steps::readiness("summits", "summits", &planned.left) {
-            steps::Ready::Waits(w) => Some(steps::wait_note(&w)),
-            _ => None,
-        };
+        let summits_waits = self.o.the_plan.summits_waits(&planned.left);
         if let Some(why) =
             summits_waits.filter(|_| summits.is_some() || manifest.contains_key(&format!("work/summits/{date}")))
         {
@@ -1758,8 +1756,7 @@ impl Planner {
         let unmerged = self.handoff_bases(root).iter().any(|b| {
             crate::handoff::waiting_in(b)
                 .map(|w| {
-                    w.iter()
-                        .any(|(_, h)| h.done.as_ref().is_some_and(|d| build::CATALOGUE_GATE.contains(&d.0.as_str())))
+                    w.iter().any(|(_, h)| h.done.as_ref().is_some_and(|d| self.o.the_plan.catalogue_waits_for(&d.0)))
                 })
                 .unwrap_or(false)
         });
@@ -1895,7 +1892,7 @@ impl Planner {
         // What other workers hold leases of isn't planned here, whatever the switch (one switched off
         // while a member runs a job of a step only it offered).
         if let Some(c) = &self.coord {
-            for w in plan.iter_mut().filter(|w| !steps::SHARED.contains(&w.step.as_str())) {
+            for w in plan.iter_mut().filter(|w| !self.o.the_plan.shared().contains(&w.step.as_str())) {
                 let others = c.held_by_others(&w.step);
                 w.targets.retain(|t| !others.contains(&t.0));
             }
@@ -1918,7 +1915,7 @@ impl Planner {
         // (What a terrain-hi job's process holds of the coverage it reads, `coverage_of`: added to
         // its bound, crate::coverage::Coverage::read_peak_mb.)
         let cov_read = cov.read_peak_mb();
-        for w in plan.iter_mut().filter(|w| every::offered(&w.step)) {
+        for w in plan.iter_mut().filter(|w| every::offered(self.o.the_plan, &w.step)) {
             // What another worker builds now isn't planned here: what it leased from this Mac's
             // coordinator.
             let mut others = BTreeSet::new();
@@ -1991,7 +1988,9 @@ impl Planner {
                 .collect();
             // (As the offers have it: the 3D buildings by their rows, crate::needs::OFFERED_BY.)
             let peak = |step: &str, t: &str| match step {
-                "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
+                "unit" | "pois" => {
+                    crate::coord::unit_peak(self.o.the_plan.cost_version("unit"), &BTreeMap::new(), t, size(t))
+                }
                 "terrain-hi" => {
                     terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }) + cov_read
                 }
@@ -2036,7 +2035,7 @@ impl Planner {
         // (A job a step's work in the plan: an offered step's is its place in the plan's order, its
         // targets granted as many as fit a quarter of an hour, `offer_plan`; the pyramids' fill a z6
         // tile, `build::job_of`.)
-        for w in plan.into_iter().map(build::job_of) {
+        for w in plan.into_iter().map(|w| self.o.the_plan.job_of(w)) {
             // Held for review: the map goes to the NAS's map-held/ (no server reads it), once.
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
@@ -2118,7 +2117,7 @@ impl Planner {
             let n = w.targets.len();
             // "Terrain: 3 tiles" (the checklist names the steps alike: crate::agent::steps::said); the
             // z6 tiles made again for their mids say so.
-            let mut what = steps::said(&w.step, n);
+            let mut what = self.o.the_plan.said(&w.step, n);
             if same.len() == n && matches!(w.step.as_str(), "trees" | "terrain-hi" | "slope-hi") {
                 what += ", their mids made and checked the same";
             }
@@ -2254,8 +2253,8 @@ impl Planner {
         let own_lanes = forecast::slot_lanes(self.job_slots(), &running);
         let own_names: Vec<String> = (1..own_lanes.max(2)).map(|k| self.worker_of(k)).collect();
         let names: Vec<String> = names.into_iter().collect();
-        let mut speeds = forecast::speeds(&events, &self.host, &names, 0.5);
-        speeds.extend(forecast::speeds(&events, &self.host, &own_names, 0.8));
+        let mut speeds = forecast::speeds(self.o.the_plan, &events, &self.host, &names, 0.5);
+        speeds.extend(forecast::speeds(self.o.the_plan, &events, &self.host, &own_names, 0.8));
         // (A time measured on a member, at the lead's pace; one measured here or by a page, as it is.)
         let pace = |worker: Option<&str>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
         // (Each Mac's pace at each step, the coordinator's (crate::paces, task #926): a time put at
@@ -2268,13 +2267,13 @@ impl Planner {
         // cover isn't a z6 tile's.)
         // (A step whose time is the work its target finds, crate::needs::PER_WORK, weighed by it: a
         // pyramids-fill z6 tile with nothing to fetch says nothing of one fetching for hours, task #830.)
-        let sums = forecast::step_sums(&costs, &at_lead);
+        let sums = forecast::step_sums(self.o.the_plan, &costs, &at_lead);
         let own_secs = |step: &str| self.step_secs_here(step).unwrap_or_else(|| first_secs(step));
         let per =
             |step: &str| -> f64 { sums.get(step).filter(|s| s.1 > 0.0).map_or_else(|| own_secs(step), |s| s.0 / s.1) };
         // (Its memory by its step's model, crate::needs: its own measure the way the step runs now,
         // else its step's fit or largest, else `peak`'s first guess.)
-        let book = crate::needs::Book::new(&costs);
+        let book = crate::needs::Book::new(self.o.the_plan, &costs);
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
         let cost = |step: &str, t: &str| -> Cost {
             match costs.get(&crate::coord::cost_key(step, t)) {
@@ -2331,7 +2330,7 @@ impl Planner {
         // else; and a catalogue after them with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
         for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()).chain(polar.iter()) {
-            let jobs: Vec<forecast::Job> = if steps::SHARED.contains(&w.step.as_str()) {
+            let jobs: Vec<forecast::Job> = if self.o.the_plan.shared().contains(&w.step.as_str()) {
                 w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))).collect()
             } else {
                 vec![(
@@ -2566,7 +2565,7 @@ impl Planner {
                 .unknown_for
                 .iter()
                 .flat_map(|(name, u)| {
-                    steps::input_readers(name).map(move |step| forecast::Unknown {
+                    self.o.the_plan.input_readers(name).into_iter().map(move |step| forecast::Unknown {
                         step: step.to_string(),
                         targets: u.targets.iter().cloned().collect(),
                         until: (u.until.0.to_string(), u.until.1.clone(), mine(u.until.0, 1)),
@@ -2577,7 +2576,7 @@ impl Planner {
         // (Each step's pace: its jobs of late against what the forecasts before them gave their
         // targets, at the lead's pace by their worker's speed.)
         let mut noted = self.noted.borrow_mut();
-        noted.note(&inp);
+        noted.note(self.o.the_plan, &inp);
         inp.step_pace = forecast::step_pace(&events, inp.now, &noted, &|w, step| {
             if paces.known() {
                 1.0 / paces.get(w, step)
@@ -2589,7 +2588,8 @@ impl Planner {
         // (Each lane's job under way held to its step's longest of late.)
         forecast::cap_busy(&mut inp, &forecast::longest_jobs(&events, now_s()));
         // (Each step's time a target, for the page to weigh the targets done: the headline.)
-        let each_s = steps::TABLE.iter().map(|r| (r.name.to_string(), (per(r.name) * 10.0).round() / 10.0)).collect();
+        let each_s =
+            self.o.the_plan.step_names().into_iter().map(|n| (n.to_string(), (per(n) * 10.0).round() / 10.0)).collect();
         // (A slot's job waiting on a worker holding its z6 tile's tail: said beside its machine.)
         let waiting =
             (0..self.inp.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
@@ -2604,10 +2604,11 @@ impl Planner {
         let app = self.app.clone();
         let coord = self.coord.clone();
         let host = self.host.clone();
+        let the_plan = self.o.the_plan;
         let run = std::thread::Builder::new().name("forecast".into()).spawn(move || {
             forecast::low_priority();
             let took = std::time::Instant::now();
-            let mut f = record.forecast();
+            let mut f = record.forecast(the_plan);
             let entry = fcarchive::Entry::of(&record, &f, &app);
             // (Each Mac's tiles to come, for the page's map (`/work/tocome`), and the schedule's runs
             // (their targets and dependencies); the rest of `placed` the archive's alone: neither
@@ -2690,10 +2691,14 @@ impl Planner {
         let Some(date) = have else {
             // Nothing to size the rest by until a pass is complete: its steps, to come.
             items.extend(
-                build::WORLDWIDE_STEPS.iter().map(|s| progress::Item { step: s.to_string(), ..Default::default() }),
+                self.o
+                    .the_plan
+                    .worldwide_steps()
+                    .iter()
+                    .map(|s| progress::Item { step: s.to_string(), ..Default::default() }),
             );
-            items.extend(build::checklist_to_come());
-            return build::fold(&items, &next, &notes);
+            items.extend(self.o.the_plan.checklist_to_come());
+            return self.o.the_plan.fold(&items, &next, &notes);
         };
         let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
         // Countries the pass couldn't assemble, kept as the previous pass's outlines: said on the
@@ -2723,14 +2728,21 @@ impl Planner {
             failures: &|_| 0,
         };
         let left = build::pass_work(Some(&date), &manifest, &keys, reads, None).left;
-        items.extend(build::WORLDWIDE_STEPS.iter().zip(left).map(|(s, l)| progress::Item {
+        items.extend(self.o.the_plan.worldwide_steps().iter().zip(left).map(|(s, l)| progress::Item {
             step: s.to_string(),
             left: Some(l as usize),
             ..Default::default()
         }));
         next.insert(
             "pass",
-            build::WORLDWIDE_STEPS.iter().zip(left).filter(|(_, l)| *l).map(|(s, _)| s.to_string()).collect(),
+            self.o
+                .the_plan
+                .worldwide_steps()
+                .iter()
+                .zip(left)
+                .filter(|(_, l)| *l)
+                .map(|(s, _)| s.to_string())
+                .collect(),
         );
         // The regions' steps as the plan found them, with its keys (none while no plan got that far:
         // the coverage unread, say).
@@ -2738,7 +2750,7 @@ impl Planner {
             items.extend(more);
             next.extend(more_next);
         }
-        build::fold(&items, &next, &notes)
+        self.o.the_plan.fold(&items, &next, &notes)
     }
 
     /// Each region's steps (build::region_steps) over the keying context (the coverage, the pass, the
@@ -3646,6 +3658,7 @@ mod tests {
         let env = |k: &str| std::env::var(k).ok();
         let root = store::nasfs::NasRoot::local_for_test(real);
         let o = Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(root.clone()),
             home: PathBuf::from(home),
             bin: PathBuf::from("/app"),
@@ -3698,7 +3711,12 @@ mod tests {
         let jobs = p.region_jobs(&root, pass.as_deref(), None, &mut waiting, &mut held);
         let mut lines = vec![format!("pass {pass:?}"), format!("held {held:?}")];
         lines.extend(jobs.iter().map(|j| format!("job {j:?}")));
-        let jobs = hold_for_lakefill(hold_for_sources(jobs, held.sources, &mut waiting), held.lakefill, &mut waiting);
+        let jobs = hold_for_lakefill(
+            crate::agent::seam::for_tests(),
+            hold_for_sources(crate::agent::seam::for_tests(), jobs, held.sources, &mut waiting),
+            held.lakefill,
+            &mut waiting,
+        );
         lines.extend(jobs.iter().map(|j| format!("held job {j:?}")));
         lines.extend(waiting.iter().map(|w| format!("waiting {w:?}")));
         let (date, offered) = p.offered.borrow().clone();

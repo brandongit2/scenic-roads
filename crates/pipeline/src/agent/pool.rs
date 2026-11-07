@@ -1087,7 +1087,7 @@ fn load_saved(p: &Path) -> (Saved, Vec<u8>) {
 /// every change is to a file its step saves for one of the targets it did, every upload it says
 /// is pending one of its saves, every one it says it checked one of those. (Not that its targets
 /// are its lease's: a lead after the one that granted it may not know the lease.)
-pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
+pub fn check(the_plan: &dyn crate::agent::seam::Plan, e: &Entry, _r: &Records) -> std::result::Result<(), String> {
     let h = &e.handoff;
     if let Some((s, ts)) = &h.done {
         if *s != e.step {
@@ -1107,7 +1107,7 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
             }
         }
     }
-    if let Some(why) = crate::agent::steps::outside(e) {
+    if let Some(why) = the_plan.outside(e) {
         return Err(why);
     }
     for (shard, p) in &h.raw {
@@ -1115,10 +1115,10 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
             return Err(format!("{} isn't an archive of {shard}", p.name));
         }
     }
-    if crate::agent::steps::SHARED.contains(&e.step.as_str()) {
+    if the_plan.shared().contains(&e.step.as_str()) {
         let did: &[(String, String)] = h.done.as_ref().map_or(&[], |d| &d.1);
         for l in h.changes.keys() {
-            if !did.iter().any(|(t, _)| crate::coord::saves(&e.step, t, l)) {
+            if !did.iter().any(|(t, _)| the_plan.saves(&e.step, t, l)) {
                 return Err(format!("{l} isn't one of the files of the targets it did"));
             }
         }
@@ -1156,13 +1156,14 @@ pub fn by_its_lead(e: &Entry, lead_of: &dyn Fn(u64) -> Option<String>) -> std::r
 /// member's app can't be read now is held too (that says nothing of it); one from a member on the
 /// lead's app, or an older one, is refused.
 pub fn check_from(
+    the_plan: &dyn crate::agent::seam::Plan,
     e: &Entry,
     r: &Records,
     lead_app: &str,
     app_of: &dyn Fn(&str) -> Option<String>,
 ) -> std::result::Result<(), String> {
-    match check(e, r) {
-        Err(why) if crate::agent::steps::outside(e).as_deref() == Some(why.as_str()) => match app_of(&e.member) {
+    match check(the_plan, e, r) {
+        Err(why) if the_plan.outside(e).as_deref() == Some(why.as_str()) => match app_of(&e.member) {
             Some(app) if app == lead_app || crate::pool::term::app_at_least(lead_app, &app) => Err(why),
             Some(app) => Err(format!(
                 "{}{why}; its member runs app {app}, newer than this lead's ({lead_app}): held until the lead runs it",
@@ -1261,6 +1262,7 @@ pub const DRAINED: u64 = 1 << 62;
 
 /// The agent's part in the pool while it's on, in this process.
 pub struct Run {
+    pub the_plan: &'static dyn crate::agent::seam::Plan,
     pub side: Side,
     pub role: Role,
     pub gates: Gates,
@@ -1544,9 +1546,10 @@ pub fn moving(g: &Gates, pending: bool) -> Option<String> {
 }
 
 impl Run {
-    pub fn new(side: Side, role: Role, gates: Gates) -> Run {
+    pub fn new(the_plan: &'static dyn crate::agent::seam::Plan, side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
         Run {
+            the_plan,
             side,
             role,
             gates,
@@ -1836,8 +1839,8 @@ impl Run {
 
     /// A process's first step, which says its part (`Role`). (The jobs an earlier process left are
     /// handed over later, `take_left`, once the agent has stopped any still running.)
-    pub fn start(side: Side, _home: &Path) -> (Run, Out) {
-        let mut r = Run::new(side, Role::Member, Gates::default());
+    pub fn start(the_plan: &'static dyn crate::agent::seam::Plan, side: Side, _home: &Path) -> (Run, Out) {
+        let mut r = Run::new(the_plan, side, Role::Member, Gates::default());
         let out = r.step();
         r.role = if out.leads.is_some() { Role::Lead } else { Role::Member };
         r.restart = out.stop.as_ref().map(|why| format!("this process left the pool: {why}"));
@@ -1887,7 +1890,7 @@ impl Run {
             if let Some(why) = gc.as_deref().and_then(|q| super::gcqueue::refusal(q, e)) {
                 return Err(why);
             }
-            check_from(e, r, &lead_app, &app_of)
+            check_from(self.the_plan, e, r, &lead_app, &app_of)
         };
         let out = self.side.step(give, &checked);
         // (Named and off the records now, or no longer leading: forgotten here.)
@@ -1948,7 +1951,7 @@ impl Run {
             return;
         }
         let me = self.side.member().id.clone();
-        self.entries.extend(left_jobs(home, &me, running).into_iter().map(|(e, d)| (e, Some(d))));
+        self.entries.extend(left_jobs(self.the_plan, home, &me, running).into_iter().map(|(e, d)| (e, Some(d))));
     }
 
     /// The next number for a drained hand-off (`DRAINED` on, by the clock).
@@ -2000,7 +2003,7 @@ impl Run {
             return;
         }
         let me = self.side.member().id.clone();
-        for (e, dir) in outbox_entries(outbox, &me) {
+        for (e, dir) in outbox_entries(self.the_plan, outbox, &me) {
             if self.drained.insert(dir.clone()) {
                 self.entries.push((e, Some(dir)));
             }
@@ -2073,6 +2076,7 @@ pub fn job_dir(home: &Path, lease: journal::LeaseId) -> PathBuf {
 /// own); another step's (the OSM pass's stages) all of them. None when it hands off nothing; an
 /// error when one of its saves is damaged.
 pub fn entry_of(
+    the_plan: &dyn crate::agent::seam::Plan,
     dir: &Path,
     member: &str,
     lease: journal::LeaseId,
@@ -2085,8 +2089,8 @@ pub fn entry_of(
     for x in saves {
         h.absorb(x);
     }
-    if crate::agent::steps::SHARED.contains(&step) {
-        h.changes.retain(|l, _| done.iter().any(|(t, _)| crate::coord::saves(step, t, l)));
+    if the_plan.shared().contains(&step) {
+        h.changes.retain(|l, _| done.iter().any(|(t, _)| the_plan.saves(step, t, l)));
         let kept: BTreeSet<String> = h.changes.values().flatten().cloned().collect();
         h.pending.retain(|c, _| kept.contains(c));
         h.sizes.retain(|c, _| kept.contains(c));
@@ -2113,7 +2117,12 @@ pub struct JobKept {
 /// folder; a folder of no job, or whose saves are damaged, removed. Those in `running` (the jobs
 /// this agent took over from the one before, still running: crate::agent::jobs::adopt) are left as
 /// they are.
-pub fn left_jobs(home: &Path, member: &str, running: &[PathBuf]) -> Vec<(Entry, PathBuf)> {
+pub fn left_jobs(
+    the_plan: &dyn crate::agent::seam::Plan,
+    home: &Path,
+    member: &str,
+    running: &[PathBuf],
+) -> Vec<(Entry, PathBuf)> {
     let Ok(rd) = std::fs::read_dir(home.join("pool/jobs")) else { return Vec::new() };
     let mut out = Vec::new();
     for d in rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && !running.contains(p)) {
@@ -2125,7 +2134,7 @@ pub fn left_jobs(home: &Path, member: &str, running: &[PathBuf]) -> Vec<(Entry, 
         };
         let names = crate::control::read_done(&d.join("done.txt"), &k.step);
         let done: Vec<(String, String)> = k.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect();
-        match entry_of(&d, member, k.lease, &k.step, &done, crate::agent::jobs::now_s()) {
+        match entry_of(the_plan, &d, member, k.lease, &k.step, &done, crate::agent::jobs::now_s()) {
             Ok(Some(e)) => out.push((e, d)),
             Ok(None) => {
                 std::fs::remove_dir_all(&d).ok();
@@ -2145,7 +2154,7 @@ pub fn left_jobs(home: &Path, member: &str, running: &[PathBuf]) -> Vec<(Entry, 
 /// `work.json`: its outputs went to its broker) is left to the outbox's own sending; a job that
 /// handed off nothing, or whose saves are damaged, is removed (its work is done again), or this
 /// member would never ask for a task again.
-fn outbox_entries(outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
+fn outbox_entries(the_plan: &dyn crate::agent::seam::Plan, outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
     let Ok(rd) = std::fs::read_dir(outbox) else { return Vec::new() };
     let mut out = Vec::new();
     for d in rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
@@ -2169,8 +2178,15 @@ fn outbox_entries(outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
                 w.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect()
             }
         };
-        match entry_of(&d, member, journal::LeaseId { term: 0, n: lease }, &w.step, &done, crate::agent::jobs::now_s())
-        {
+        match entry_of(
+            the_plan,
+            &d,
+            member,
+            journal::LeaseId { term: 0, n: lease },
+            &w.step,
+            &done,
+            crate::agent::jobs::now_s(),
+        ) {
             Ok(Some(e)) => out.push((e, d)),
             Ok(None) | Err(_) => {
                 std::fs::remove_dir_all(&d).ok();
@@ -3270,6 +3286,7 @@ mod tests {
         let lease = LeaseId { term: 1, n: 3 };
         // A shared step's: only the files of the targets it finished.
         let e = entry_of(
+            crate::agent::seam::for_tests(),
             &dir,
             "m-000000000000000a",
             lease,
@@ -3283,13 +3300,18 @@ mod tests {
         assert_eq!(e.handoff.pending.len(), 1);
         assert_eq!(e.handoff.done, Some(("unit".into(), vec![("6/1/1".into(), "k".into())])));
         // Another step's (the OSM pass's stages): all of them, done or not.
-        let e = entry_of(&dir, "m-000000000000000a", lease, "osm-pass", &[], 100_000).unwrap().unwrap();
+        let e = entry_of(crate::agent::seam::for_tests(), &dir, "m-000000000000000a", lease, "osm-pass", &[], 100_000)
+            .unwrap()
+            .unwrap();
         assert_eq!((e.handoff.changes.len(), e.handoff.done.clone()), (2, None));
         // Nothing done of a shared step: nothing to hand off.
-        assert!(entry_of(&dir, "m-000000000000000a", lease, "unit", &[], 100_000).unwrap().is_none());
+        assert!(entry_of(crate::agent::seam::for_tests(), &dir, "m-000000000000000a", lease, "unit", &[], 100_000)
+            .unwrap()
+            .is_none());
         // A damaged save: an error (its work is done again).
         std::fs::write(dir.join("00000000000000000009-1.json"), b"{").unwrap();
-        assert!(entry_of(&dir, "m-000000000000000a", lease, "osm-pass", &[], 100_000).is_err());
+        assert!(entry_of(crate::agent::seam::for_tests(), &dir, "m-000000000000000a", lease, "osm-pass", &[], 100_000)
+            .is_err());
     }
 
     #[test]
@@ -3297,7 +3319,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Lead, Gates::default());
+        let mut run = Run::new(
+            crate::agent::seam::for_tests(),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &home),
+            Role::Lead,
+            Gates::default(),
+        );
         let done = |u: &str, k: &str| Handoff {
             done: Some(("unit".into(), vec![(u.into(), k.into())])),
             ..Default::default()
@@ -3386,7 +3413,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Lead, Gates::default());
+        let mut run = Run::new(
+            crate::agent::seam::for_tests(),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &home),
+            Role::Lead,
+            Gates::default(),
+        );
         let me = run.side.member().id.clone();
         let pack = |n: u64, t: &str, names: &[&str]| {
             let dash = t.replace('/', "-");
@@ -3445,7 +3477,12 @@ mod tests {
         )
         .unwrap();
         let home = d.path().join("a/agent");
-        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Lead, Gates::default());
+        let mut run = Run::new(
+            crate::agent::seam::for_tests(),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &home),
+            Role::Lead,
+            Gates::default(),
+        );
         let me = run.side.member().id.clone();
         let gc = |n: u64, names: &[&str]| Entry {
             member: me.clone(),
@@ -3484,7 +3521,12 @@ mod tests {
         )
         .unwrap();
         let home = d.path().join("a/agent");
-        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Lead, Gates::default());
+        let mut run = Run::new(
+            crate::agent::seam::for_tests(),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &home),
+            Role::Lead,
+            Gates::default(),
+        );
         let me = run.side.member().id.clone();
         let entry = |n: u64, step: &str, changes: &[(&str, Option<&str>)]| Entry {
             member: me.clone(),
@@ -3520,8 +3562,14 @@ mod tests {
         );
         // Mixed versions: what this lead's gc may not remove, from a newer app, held.
         let on = |app: &'static str| move |_: &str| Some(app.to_string());
-        let held = check_from(&terrain, &Records::default(), "20261009-0000-bbbbbbb", &on("20261010-0000-ccccccc"))
-            .unwrap_err();
+        let held = check_from(
+            crate::agent::seam::for_tests(),
+            &terrain,
+            &Records::default(),
+            "20261009-0000-bbbbbbb",
+            &on("20261010-0000-ccccccc"),
+        )
+        .unwrap_err();
         assert!(held.starts_with(crate::pool::records::HOLD), "{held}");
     }
 
@@ -3557,7 +3605,7 @@ mod tests {
         std::fs::write(dir.join("done.txt"), "unit 6/1/1\n").unwrap();
         // (A folder of no job: gone.)
         std::fs::create_dir_all(home.join("pool/jobs/junk")).unwrap();
-        let left = left_jobs(&home, "m-000000000000000a", &[]);
+        let left = left_jobs(crate::agent::seam::for_tests(), &home, "m-000000000000000a", &[]);
         assert_eq!(left.len(), 1);
         let (e, d0) = &left[0];
         assert_eq!((e.lease, d0), (lease, &dir));
@@ -3591,28 +3639,32 @@ mod tests {
     fn the_merges_checks() {
         let e = unit_entry("m-000000000000000a", LeaseId { term: 1, n: 1 }, "6/1/2", "k2");
         let r = Records::default();
-        assert!(check(&e, &r).is_ok());
+        assert!(check(crate::agent::seam::for_tests(), &e, &r).is_ok());
         let mut other = e.clone();
         other.step = "pois".into();
-        assert!(check(&other, &r).unwrap_err().contains("done record is of unit"));
+        assert!(check(crate::agent::seam::for_tests(), &other, &r).unwrap_err().contains("done record is of unit"));
         let mut bad = e.clone();
         bad.handoff.changes.insert("base/6-1-3".into(), Some("base/6-1-4.3333333333333333.base".into()));
-        assert!(check(&bad, &r).unwrap_err().contains("isn't a content name of base/6-1-3"));
+        assert!(check(crate::agent::seam::for_tests(), &bad, &r)
+            .unwrap_err()
+            .contains("isn't a content name of base/6-1-3"));
         let mut raw = e.clone();
         raw.handoff
             .raw
             .push(("3-1-2".into(), crate::rawpack::Pack { name: "3-1-3.0123456789abcdef.tiles".into(), bytes: 1 }));
-        assert!(check(&raw, &r).is_err());
+        assert!(check(crate::agent::seam::for_tests(), &raw, &r).is_err());
         let mut none = e.clone();
         none.handoff.done = Some(("unit".into(), Vec::new()));
-        assert!(check(&none, &r).is_err());
+        assert!(check(crate::agent::seam::for_tests(), &none, &r).is_err());
         // A shared step's: only its targets' files, its own uploads.
         let mut other = e.clone();
         other.handoff.changes.insert("base/6-1-9".into(), Some("base/6-1-9.3333333333333333.base".into()));
-        assert!(check(&other, &r).unwrap_err().contains("isn't one of the files of the targets it did"));
+        assert!(check(crate::agent::seam::for_tests(), &other, &r)
+            .unwrap_err()
+            .contains("isn't one of the files of the targets it did"));
         let mut up = e.clone();
         up.handoff.pending.insert("base/6-1-9.3333333333333333.base".into(), "aa".into());
-        assert!(check(&up, &r).unwrap_err().contains("isn't one of its saves"));
+        assert!(check(crate::agent::seam::for_tests(), &up, &r).unwrap_err().contains("isn't one of its saves"));
         // Another step's (the OSM pass's stages): any name of its outputs, and none outside them
         // (the z6 tile's base pack, another step's).
         let mut pass = e;
@@ -3622,10 +3674,12 @@ mod tests {
             "sources/osm/2026-10-01/pass".into(),
             Some("sources/osm/2026-10-01/pass.4444444444444444.json".into()),
         );
-        assert!(check(&pass, &r).unwrap_err().contains("writes base/6-1-2, outside osm-pass's write-set"));
+        assert!(check(crate::agent::seam::for_tests(), &pass, &r)
+            .unwrap_err()
+            .contains("writes base/6-1-2, outside osm-pass's write-set"));
         pass.handoff.changes.remove("base/6-1-2");
         pass.handoff.pending.clear();
-        assert!(check(&pass, &r).is_ok());
+        assert!(check(crate::agent::seam::for_tests(), &pass, &r).is_ok());
     }
 
     /// An entry outside its step's write-set from a member on a newer app than the lead's is held,
@@ -3655,16 +3709,19 @@ mod tests {
         let mut e = unit_entry("m-000000000000000b", LeaseId { term: 1, n: 1 }, "6/1/2", "k2");
         e.handoff.changes.insert("work/new-output".into(), Some("work/new-output.0123456789abcdef.json".into()));
         let on = |app: Option<&'static str>| move |_: &str| app.map(str::to_string);
-        let held = check_from(&e, &r, lead, &on(Some("20261010-0000-ccccccc"))).unwrap_err();
+        let held =
+            check_from(crate::agent::seam::for_tests(), &e, &r, lead, &on(Some("20261010-0000-ccccccc"))).unwrap_err();
         assert!(
             held.starts_with(crate::pool::records::HOLD)
                 && held.contains("work/new-output")
                 && held.contains("20261010-0000-ccccccc"),
             "{held}"
         );
-        assert!(check_from(&e, &r, lead, &on(None)).unwrap_err().starts_with(crate::pool::records::HOLD));
+        assert!(check_from(crate::agent::seam::for_tests(), &e, &r, lead, &on(None))
+            .unwrap_err()
+            .starts_with(crate::pool::records::HOLD));
         for app in [lead, "20261008-0000-aaaaaaa"] {
-            let why = check_from(&e, &r, lead, &on(Some(app))).unwrap_err();
+            let why = check_from(crate::agent::seam::for_tests(), &e, &r, lead, &on(Some(app))).unwrap_err();
             assert!(
                 !why.starts_with(crate::pool::records::HOLD) && why.contains("outside unit's write-set"),
                 "{app}: {why}"
@@ -3673,11 +3730,12 @@ mod tests {
         // Another check's refusal (a content name not of its logical name): refused, newer or not.
         let mut bad = unit_entry("m-000000000000000b", LeaseId { term: 1, n: 2 }, "6/1/2", "k2");
         bad.handoff.changes.insert("base/6-1-2".into(), Some("base/6-1-3.3333333333333333.base".into()));
-        assert!(!check_from(&bad, &r, lead, &on(Some("20261010-0000-ccccccc")))
+        assert!(!check_from(crate::agent::seam::for_tests(), &bad, &r, lead, &on(Some("20261010-0000-ccccccc")))
             .unwrap_err()
             .starts_with(crate::pool::records::HOLD));
         assert_eq!(
             check_from(
+                crate::agent::seam::for_tests(),
                 &unit_entry("m-000000000000000b", LeaseId { term: 1, n: 3 }, "6/1/2", "k2"),
                 &r,
                 lead,
@@ -3792,6 +3850,7 @@ mod tests {
         let r = root(d.path());
         let home = d.path().join("a/agent");
         let shared: Shared = Arc::new(std::sync::Mutex::new(Run::new(
+            crate::agent::seam::for_tests(),
             side(&store::nasfs::NasRoot::local_for_test(&r), &home),
             Role::Member,
             Gates::default(),
@@ -3830,7 +3889,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Member, Gates::default());
+        let mut run = Run::new(
+            crate::agent::seam::for_tests(),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &home),
+            Role::Member,
+            Gates::default(),
+        );
         assert!(!run.tick_due(), "no NAS known yet: nothing to tick");
         run.cx = Cx {
             root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
@@ -3869,7 +3933,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let ha = d.path().join("a/agent");
-        let mut a = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &ha), Role::Member, Gates::default());
+        let mut a = Run::new(
+            crate::agent::seam::for_tests(),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &ha),
+            Role::Member,
+            Gates::default(),
+        );
         let (coord, port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
         let coord = Arc::new(coord);
         let end = Instant::now() + WATCHDOG;
@@ -3937,7 +4006,12 @@ mod tests {
         drop(a);
         // The next process: its driver from the saved state re-asserts (term 2), and its new
         // coordinator takes term 1's leases up.
-        let mut a = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &ha), Role::Member, Gates::default());
+        let mut a = Run::new(
+            crate::agent::seam::for_tests(),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &ha),
+            Role::Member,
+            Gates::default(),
+        );
         let mut took = Vec::new();
         let end = Instant::now() + WATCHDOG;
         let out = loop {

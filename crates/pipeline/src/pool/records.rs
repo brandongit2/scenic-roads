@@ -957,7 +957,7 @@ mod tests {
     fn a_redo_forgets_its_targets_keys_alone() {
         let nas = Mem::default();
         let mut r = Records { term: 3, ..Default::default() };
-        let check = |e: &Entry, r: &Records| crate::agent::pool::check(e, r);
+        let check = |e: &Entry, r: &Records| crate::agent::pool::check(crate::agent::seam::for_tests(), e, r);
         let keys: Vec<String> = [built(3, 1, "6-1-1", "k1"), built(3, 2, "6-1-2", "k2")]
             .iter()
             .map(|e| journal::write(&nas, e).unwrap())

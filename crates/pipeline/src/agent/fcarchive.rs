@@ -784,7 +784,7 @@ mod tests {
         let (mut n, mut raw, mut alone) = (0, 0, 0);
         for p in ps.split(':') {
             let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
-            let e = Entry::of(&r, &r.forecast(), "recorded");
+            let e = Entry::of(&r, &r.forecast(crate::agent::seam::for_tests()), "recorded");
             let one = serde_json::to_vec(&e).unwrap();
             (n, raw, alone) = (n + 1, raw + one.len(), alone + compress(&one).unwrap().len());
             eprintln!(

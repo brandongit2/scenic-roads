@@ -70,13 +70,13 @@ pub fn root_arg(root: &store::nasfs::NasRoot) -> String {
 /// crate::sys::group_peak), `secs`, its step's way (crate::coord::cost_version) and its inputs'
 /// measures (crate::costin). The clean-up's (crate::agent::gc) and a redo's (crate::agent::redo),
 /// run by the `scenic` program.
-pub fn note_cost(step: &str, target: &str, secs: u64) {
+pub fn note_cost(v: u32, step: &str, target: &str, secs: u64) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
     let line = serde_json::json!({
         "unit": crate::coord::cost_key(step, target),
         "peak_mb": crate::sys::group_peak() >> 20,
         "secs": secs,
-        "v": crate::coord::cost_version(step),
+        "v": v,
         "sizes": crate::costin::take(),
     });
     let r = std::fs::OpenOptions::new()

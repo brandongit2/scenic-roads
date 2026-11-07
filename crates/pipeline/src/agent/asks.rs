@@ -499,7 +499,7 @@ pub(crate) mod tests {
             ],
             ..Default::default()
         }
-        .said()];
+        .said(crate::agent::seam::for_tests())];
         let held =
             HoldState { held: Some(Hold { by: "the menu bar on m1".into(), at: 1_700_000_000 }), at: 1_700_000_000 };
         st.say(None, &held, false);
