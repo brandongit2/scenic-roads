@@ -1035,14 +1035,11 @@ pub fn host_of(worker: &str) -> &str {
 fn adopted(cursors: &BTreeMap<String, store::map::Cursor>) -> BTreeMap<String, CatalogueSeen> {
     cursors
         .iter()
-        .filter_map(|(id, c)| Some((id.strip_prefix(SERVER_CURSOR)?.to_string(), CatalogueSeen { n: c.seq, at: c.at })))
+        .filter_map(|(id, c)| {
+            Some((id.strip_prefix(store::map::feed::SERVER)?.to_string(), CatalogueSeen { n: c.seq, at: c.at }))
+        })
         .collect()
 }
-
-/// A map server's cursor's name in the map's log, before its host (crates/server's maplog).
-pub const SERVER_CURSOR: &str = store::map::feed::SERVER;
-/// A map server's mirror's, before its host (crates/server's maplog::MirrorLink).
-pub const MIRROR_CURSOR: &str = store::map::feed::MIRROR;
 
 /// Publishing's marks in the clients' cursors (docs/maplog.md §6.1, §6.2), for the history
 /// (crate::pubtimes): each Mac's map server's adoption of a `seq`, and its mirror's round begun at
@@ -1050,7 +1047,7 @@ pub const MIRROR_CURSOR: &str = store::map::feed::MIRROR;
 fn publish_marks(cursors: &BTreeMap<String, store::map::Cursor>) -> Vec<(&'static str, String, CatalogueSeen)> {
     let mut out: Vec<_> = adopted(cursors).into_iter().map(|(host, s)| (crate::pubtimes::ADOPT, host, s)).collect();
     for (id, c) in cursors {
-        let Some(host) = id.strip_prefix(MIRROR_CURSOR) else { continue };
+        let Some(host) = id.strip_prefix(store::map::feed::MIRROR) else { continue };
         for (kind, h) in [(crate::pubtimes::MIRROR_START, c.copying), (crate::pubtimes::MIRROR_END, c.synced)] {
             if let Some(h) = h {
                 out.push((kind, host.to_string(), CatalogueSeen { n: h.seq, at: h.at }));

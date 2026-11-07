@@ -144,7 +144,6 @@ pub mod testkit {
 mod tests {
     use super::*;
 
-    /// The NAS reserve: kept on the NAS, read back, its room the free space past it; off, none.
     #[test]
     fn the_room_target_is_read_once_then_held() {
         let home = tempfile::tempdir().unwrap();
@@ -157,6 +156,7 @@ mod tests {
         assert_eq!(t.bytes(), 1 << 30, "read again");
     }
 
+    /// The NAS reserve: kept on the NAS, read back, its room the free space past it; off, none.
     #[test]
     fn the_nas_reserve_is_kept_on_the_nas() {
         let d = tempfile::tempdir().unwrap();
