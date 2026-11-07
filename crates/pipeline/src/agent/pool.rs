@@ -183,10 +183,10 @@ pub fn http_courier() -> Courier {
 
 /// The addresses mail may be posted to: the tailnet's alone (a LAN's name or address is any
 /// device's on the network to claim, crate::coord::brokers::origins_of). Loopback only in a unit
-/// test, where every Mac's address is (net::urls); a real broker never lists it.
+/// test (`buildstore::out::testing`), where every Mac's address is (net::urls); a real broker never lists it.
 fn mail_urls(urls: &[String]) -> Vec<String> {
     use crate::coord::brokers::{origin, tailnet};
-    let ours = |o: &str| tailnet(o) || (cfg!(test) && o.starts_with("http://127.0.0.1:"));
+    let ours = |o: &str| tailnet(o) || (buildstore::out::testing() && o.starts_with("http://127.0.0.1:"));
     urls.iter().filter(|u| origin(u).is_some_and(|o| ours(&o))).cloned().collect()
 }
 
@@ -362,11 +362,15 @@ pub struct Side {
     clock: Arc<dyn store::clock::Clock>,
 }
 
-/// The waits between tries of a listing as a member opens (`list_patiently`).
-#[cfg(not(test))]
-const OPEN_BACKOFF: [Duration; 2] = [Duration::from_secs(10), Duration::from_secs(30)];
-#[cfg(test)]
-const OPEN_BACKOFF: [Duration; 2] = [Duration::from_millis(10), Duration::from_millis(30)];
+/// The waits between tries of a listing as a member opens (`list_patiently`): 10 and 30 s, ms in a
+/// unit test (`buildstore::out::testing`).
+fn open_backoff() -> [Duration; 2] {
+    if buildstore::out::testing() {
+        [Duration::from_millis(10), Duration::from_millis(30)]
+    } else {
+        [Duration::from_secs(10), Duration::from_secs(30)]
+    }
+}
 
 /// Folder `dir`'s names, the listing tried again after each wait of `backoff` while it fails (on a
 /// NAS under a deadline, crate::agent::nasread::Deadlined, one that hangs fails rather than
@@ -403,7 +407,8 @@ impl Side {
         // (A state from an earlier time the pool was on, its terms since moved aside: it names terms
         // no longer there, and would hold this member's view above them. Counted as lost: its jobs'
         // hand-offs not written yet alone kept, as the driver keeps another member's.)
-        if saved.term > 0 && list_patiently(&*nas, crate::pool::term::DIR, &OPEN_BACKOFF).is_ok_and(|t| t.is_empty()) {
+        if saved.term > 0 && list_patiently(&*nas, crate::pool::term::DIR, &open_backoff()).is_ok_and(|t| t.is_empty())
+        {
             eprintln!("pool: the NAS has no terms: this member's saved state, of term {}, is from an earlier time the pool was on; set aside", saved.term);
             std::fs::rename(dir.join("saved.json"), dir.join("saved.earlier.json")).ok();
             saved = Saved { mine: saved.mine.unwritten_only(), ..Default::default() };

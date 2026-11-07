@@ -124,19 +124,26 @@ pub struct Options {
 use crate::control::DRAIN_GRACE;
 /// Why an agent is out of the pool (`Status::out_of_pool`): the NAS not answering as it started.
 const NAS_AWAY: &str = "the NAS didn't answer as this agent started";
-/// Or this Mac's member's lock held by another process past `JOIN_WAIT`.
+/// Or this Mac's member's lock held by another process past `join_wait`.
 const LOCK_HELD: &str = "this Mac's member's lock is held by another process, most often the agent before this one still draining after an update";
 /// How long an agent starting tries for this Mac's member's lock, held by another process (the
-/// agent before it, draining after an update), before it starts out of the pool.
-#[cfg(not(test))]
-const JOIN_WAIT: Duration = Duration::from_secs(120);
-#[cfg(test)]
-const JOIN_WAIT: Duration = Duration::from_secs(3);
-/// The wait between its tries (`JOIN_WAIT`).
-#[cfg(not(test))]
-const JOIN_TRY: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const JOIN_TRY: Duration = Duration::from_millis(50);
+/// agent before it, draining after an update), before it starts out of the pool: 2 min, 3 s in a
+/// unit test (`buildstore::out::testing`).
+fn join_wait() -> Duration {
+    if buildstore::out::testing() {
+        Duration::from_secs(3)
+    } else {
+        Duration::from_secs(120)
+    }
+}
+/// The wait between its tries (`join_wait`): 1 s, 50 ms in a unit test.
+fn join_try() -> Duration {
+    if buildstore::out::testing() {
+        Duration::from_millis(50)
+    } else {
+        Duration::from_secs(1)
+    }
+}
 
 /// How often a member reads its hold on the NAS (crate::control::hold_path), set there by another
 /// Mac's `scenic pause <member>`.
@@ -1359,32 +1366,33 @@ extern "C" fn on_signal(_: i32) {
 pub(crate) use jobrt::control::stopping;
 
 /// The coordinator's port: `crate::coord::PORT`, or another for a test agent beside the real one
-/// (`SCENIC_COORD_PORT`). A unit test's agent: one of its own (crate::coord::test_port): never the
-/// pool's (#906), nor another agent's of the test (a lead and a member in one process once shared
-/// one, #914: the member's viewer could take the lead's port as its coordinator stopped).
+/// (`SCENIC_COORD_PORT`). A unit test's agent (`buildstore::out::testing`): one of its own
+/// (crate::coord::test_port): never the pool's (#906), nor another agent's of the test (a lead and
+/// a member in one process once shared one, #914: the member's viewer could take the lead's port as
+/// its coordinator stopped).
 fn coord_port() -> u16 {
-    #[cfg(test)]
-    return crate::coord::test_port();
-    #[cfg(not(test))]
+    if buildstore::out::testing() {
+        return crate::coord::test_port();
+    }
     std::env::var("SCENIC_COORD_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(crate::coord::PORT)
 }
 
-#[cfg(test)]
 thread_local! {
-    /// What `find_root` finds in a test: nothing unless a test sets it (never the real NAS).
+    /// What `find_root` finds in a unit test: nothing unless a test sets it (never the real NAS).
     static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The NAS project folder: the share's mount (store::nasfs::NasRoot::find, mounted first when
 /// `mount` is set).
 pub fn find_root(mount: bool) -> Option<NasRoot> {
-    // (A test never finds the mounted NAS: only a root a test set, never one on the NAS.)
-    #[cfg(test)]
-    {
-        let _ = mount;
-        TEST_ROOT.with(|t| t.borrow().clone()).map(NasRoot::local_for_test)
+    // (A unit test, `buildstore::out::testing`, never finds the mounted NAS: only a root a test
+    // set, never one on the NAS or the app's home, as `NasRoot::local_for_test` refuses.)
+    if buildstore::out::testing() {
+        return TEST_ROOT.with(|t| t.borrow().clone()).map(|d| {
+            assert!(!store::nasfs::is_live_path(&d), "a test's root is the real NAS: {}", d.display());
+            NasRoot::from_arg(d)
+        });
     }
-    #[cfg(not(test))]
     NasRoot::find(mount)
 }
 
@@ -1826,9 +1834,9 @@ impl Agent {
                         std::sync::Arc::new(nasread::Deadlined::new(std::sync::Arc::new(r.no_retry())));
                     let locks = o.home.parent().unwrap_or(&o.home).to_path_buf();
                     // (The member's lock held by another process, most often the agent before this
-                    // one still draining after an update: tried again each second for `JOIN_WAIT`,
+                    // one still draining after an update: tried again each second for `join_wait`,
                     // so this process joins as it goes rather than restarting into the pool later.)
-                    let until = Instant::now() + JOIN_WAIT;
+                    let until = Instant::now() + join_wait();
                     let mut said = false;
                     let mut said_err = false;
                     let side = loop {
@@ -1841,22 +1849,22 @@ impl Agent {
                                 if !said_err {
                                     eprintln!(
                                         "agent: opening this Mac's member in the pool: {e:#}; trying again for up to {} s",
-                                        JOIN_WAIT.as_secs()
+                                        join_wait().as_secs()
                                     );
                                     said_err = true;
                                 }
-                                std::thread::sleep(JOIN_TRY);
+                                std::thread::sleep(join_try());
                             }
                             Err(e) => return Err(e),
                             Ok(None) if Instant::now() < until && !stopping() => {
                                 if !said {
                                     eprintln!(
                                         "agent: this Mac's member's lock is held by another process; trying it again for up to {} s",
-                                        JOIN_WAIT.as_secs()
+                                        join_wait().as_secs()
                                     );
                                     said = true;
                                 }
-                                std::thread::sleep(JOIN_TRY);
+                                std::thread::sleep(join_try());
                             }
                             Ok(None) => break None,
                         }
@@ -1878,7 +1886,7 @@ impl Agent {
                             run = Some(r1);
                             first = Some((out, r.clone()));
                         }
-                        // (Its lock still held past `JOIN_WAIT`: this one starts nothing new, keeps
+                        // (Its lock still held past `join_wait`: this one starts nothing new, keeps
                         // the jobs it took over beating their leases, and tries the lock again each
                         // loop, restarting into the pool at once when it has it.)
                         None => {
@@ -1918,7 +1926,7 @@ impl Agent {
             Some(r) => std::sync::Arc::new(move |_| Some(r.clone())),
             None => std::sync::Arc::new(find_root),
         };
-        let nas = nas::Handle::new(finder, o.root.is_none() && !cfg!(test), probe);
+        let nas = nas::Handle::new(finder, o.root.is_none() && !buildstore::out::testing(), probe);
         let jobs_part = slots::Handle::new(o.home.clone(), control.jobs.clone());
         let pause: Option<crate::control::Pause> =
             std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
@@ -9365,14 +9373,10 @@ fn make_coordinator_on(
             Some(c)
         }
         Err(e) => {
-            // (A test's would be waited on until its watchdog: it fails at once, #914.)
-            #[cfg(test)]
-            panic!("agent: no coordinator ({e:#})");
-            #[cfg(not(test))]
-            {
-                eprintln!("agent: no coordinator ({e:#})");
-                None
-            }
+            // (A unit test's would be waited on until its watchdog: it fails at once, #914.)
+            assert!(!buildstore::out::testing(), "agent: no coordinator ({e:#})");
+            eprintln!("agent: no coordinator ({e:#})");
+            None
         }
     }
 }
@@ -9387,14 +9391,10 @@ fn make_broker(o: &Options, run: &pool::Run, app: &str, host: &str, port: u16) -
     match crate::coord::Broker::start(o.the_plan, &o.home.join("coord"), port, host, app) {
         Ok(b) => Some(b),
         Err(e) => {
-            // (A test's would be waited on until its watchdog: it fails at once, #914.)
-            #[cfg(test)]
-            panic!("agent: no broker ({e:#})");
-            #[cfg(not(test))]
-            {
-                eprintln!("agent: no broker ({e:#})");
-                None
-            }
+            // (A unit test's would be waited on until its watchdog: it fails at once, #914.)
+            assert!(!buildstore::out::testing(), "agent: no broker ({e:#})");
+            eprintln!("agent: no broker ({e:#})");
+            None
         }
     }
 }
@@ -9411,27 +9411,20 @@ fn make_viewer(
     match l.and_then(|l| crate::coord::Coordinator::viewer(the_plan, l, host, app)) {
         Ok(v) => Some(v),
         Err(e) => {
-            #[cfg(test)]
-            panic!("agent: no viewer on port {port} ({e:#})");
-            #[cfg(not(test))]
-            {
-                eprintln!("agent: no viewer on port {port} ({e:#})");
-                None
-            }
+            assert!(!buildstore::out::testing(), "agent: no viewer on port {port} ({e:#})");
+            eprintln!("agent: no viewer on port {port} ({e:#})");
+            None
         }
     }
 }
 
 /// A port's address over HTTPS, when `tailscale serve` proxies it (crate::net::served_https); none
-/// in a unit test (no Mac's own Tailscale decides it).
-#[cfg(not(test))]
+/// in a unit test (`buildstore::out::testing`: no Mac's own Tailscale decides it).
 fn served_https(port: u16) -> Option<String> {
+    if buildstore::out::testing() {
+        return None;
+    }
     crate::net::served_https(port)
-}
-
-#[cfg(test)]
-fn served_https(_port: u16) -> Option<String> {
-    None
 }
 
 /// The origins a proxy on this Mac serves its pages under (crate::net::names, "https://<name>"):
@@ -15635,7 +15628,7 @@ mod pool_tests {
         // The writer isn't named any more (its file as it was), the coordinator's state of its term
         // and its history are on the NAS, its heartbeat names it.
         assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), "another-mac");
-        // (The coordinator's store's backup, by its own thread each `store::BACKUP_EVERY` (a test's
+        // (The coordinator's store's backup, by its own thread each `store::backup_every` (a test's
         // shorter), once the lead's step has started it.)
         until(&mut a, |a| {
             a.pooled().and_then(|p| p.gates.leads).is_some() && r.join(crate::pool::store::BACKUP_PATH).exists()
@@ -17560,7 +17553,7 @@ mod pool_tests {
     }
 
     /// Task #423: an agent started while the one before it holds this Mac's member's lock (still
-    /// draining after an update) joins the pool as it starts, within `JOIN_WAIT` of the lock's
+    /// draining after an update) joins the pool as it starts, within `join_wait` of the lock's
     /// release, not once a job it took over ends.
     #[test]
     fn an_agent_started_while_the_lock_is_held_joins_once_it_is_let_go() {
@@ -17584,7 +17577,7 @@ mod pool_tests {
         })
         .unwrap();
         let_go.join().unwrap();
-        // (In the pool at all means the retry loop got the lock before its own `JOIN_WAIT` ran
+        // (In the pool at all means the retry loop got the lock before its own `join_wait` ran
         // out; the test's wall time, which a loaded machine stretches, isn't what's checked.)
         assert!(a.pool.is_some(), "in the pool as it starts");
         assert!(a.out_of_pool().is_none() && a.restart_now().is_none());
@@ -17657,7 +17650,7 @@ mod pool_tests {
     }
 
     /// #423 follow-up: a passing error opening the member (its pool folder can't be made a moment)
-    /// is tried again within `JOIN_WAIT`, not a failed start.
+    /// is tried again within `join_wait`, not a failed start.
     #[test]
     fn a_passing_error_opening_the_member_is_tried_again() {
         let d = tempfile::tempdir().unwrap();

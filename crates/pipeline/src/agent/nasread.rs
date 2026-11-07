@@ -35,13 +35,27 @@ pub const LIST_DEADLINE: Duration = Duration::from_secs(60);
 /// How long a create in the terms' folder may take: a term made but its bytes not landed comes back
 /// as `Created::Unwritten` for the driver to finish, which a timeout would lose.
 pub const TERM_CREATE_DEADLINE: Duration = Duration::from_secs(300);
-/// The switches' readers. (A unit test's process runs many agents at once, each a Mac's, sharing
-/// the pools: more threads there.)
-pub const SWITCH_READERS: usize = if cfg!(test) { 64 } else { 2 };
+/// The switches' readers (`threads`).
+const SWITCH_READERS: usize = 2;
 /// The records' readers.
-pub const READERS: usize = if cfg!(test) { 64 } else { 4 };
+const READERS: usize = 4;
 /// The writers.
-pub const WRITERS: usize = if cfg!(test) { 64 } else { 4 };
+const WRITERS: usize = 4;
+
+/// A pool's threads: `n`; 64 in a unit test (`buildstore::out::testing`), whose process runs many
+/// agents at once, each a Mac's, sharing the pools.
+fn threads(n: usize) -> usize {
+    if buildstore::out::testing() {
+        64
+    } else {
+        n
+    }
+}
+
+/// The threads of the three pools, together (the status's `nas_threads`).
+pub fn threads_in_all() -> usize {
+    threads(SWITCH_READERS) + threads(READERS) + threads(WRITERS)
+}
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -219,15 +233,15 @@ static RECORD_CALLS: OnceLock<Calls> = OnceLock::new();
 static WRITE_CALLS: OnceLock<Calls> = OnceLock::new();
 
 fn switches() -> &'static Calls {
-    SWITCH_CALLS.get_or_init(|| Calls::new("nas-switch", SWITCH_READERS))
+    SWITCH_CALLS.get_or_init(|| Calls::new("nas-switch", threads(SWITCH_READERS)))
 }
 
 fn records() -> &'static Calls {
-    RECORD_CALLS.get_or_init(|| Calls::new("nas-read", READERS))
+    RECORD_CALLS.get_or_init(|| Calls::new("nas-read", threads(READERS)))
 }
 
 fn writers() -> &'static Calls {
-    WRITE_CALLS.get_or_init(|| Calls::new("nas-write", WRITERS))
+    WRITE_CALLS.get_or_init(|| Calls::new("nas-write", threads(WRITERS)))
 }
 
 /// The process's NAS calls through the three pools (the live store's, crate::agent::live): those in
@@ -462,13 +476,20 @@ pub fn with<T: Send + 'static>(p: &NasPath, f: impl FnOnce() -> io::Result<T> + 
     noted(p, records().call(p, DEADLINE, f))
 }
 
-/// How long a big read may take (the build's keys: the manifest and its records).
-pub const BIG_READ_DEADLINE: Duration = if cfg!(test) { Duration::from_secs(20) } else { Duration::from_secs(300) };
+/// How long a big read may take (the build's keys: the manifest and its records): 5 min, 20 s in a
+/// unit test (`buildstore::out::testing`).
+fn big_read_deadline() -> Duration {
+    if buildstore::out::testing() {
+        Duration::from_secs(20)
+    } else {
+        Duration::from_secs(300)
+    }
+}
 
-/// `with`, for a big read of what's under `p` (the build's keys), within `BIG_READ_DEADLINE`.
+/// `with`, for a big read of what's under `p` (the build's keys), within `big_read_deadline`.
 pub fn with_big<T: Send + 'static>(p: &NasPath, f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
     let p = &label(p);
-    noted(p, records().call(p, BIG_READ_DEADLINE, f))
+    noted(p, records().call(p, big_read_deadline(), f))
 }
 
 /// How long the NAS takes to list folder `p` (the latency series, crate::agent::live: a listing,

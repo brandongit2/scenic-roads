@@ -1,7 +1,7 @@
 //! **nas**, the agent's part that owns the NAS's mount (docs/agent-parts.md §4.3, task #871 step
 //! 4): finding the share's project folder, mounting it (every `MOUNT_EVERY` at most), probing it,
 //! the LAN remount when home again and the self-heal's remount (crate::agent::heal), each look on a
-//! worker of its own under `DEADLINE`. Past it the worker is left to the kernel (the one look
+//! worker of its own under `deadline`. Past it the worker is left to the kernel (the one look
 //! running for this part, no second started while it hangs) and the view says "mounting (stuck
 //! since …)". The loop and the other parts read the view (`NasView`) and never wait on a mount:
 //! only work that needs the NAS waits (`Needs { nas: true }`, the plan, the pool).
@@ -16,8 +16,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use store::nasfs::NasRoot;
 
-/// How long a look (find, mount, probe) may take before the view says it's stuck.
-pub const DEADLINE: Duration = if cfg!(test) { Duration::from_millis(300) } else { Duration::from_secs(30) };
+/// How long a look (find, mount, probe) may take before the view says it's stuck: 30 s, 300 ms in a
+/// unit test (`buildstore::out::testing`).
+pub fn deadline() -> Duration {
+    if buildstore::out::testing() {
+        Duration::from_millis(300)
+    } else {
+        Duration::from_secs(30)
+    }
+}
 /// A look this often, whatever is asked.
 pub const EVERY: Duration = Duration::from_secs(20);
 /// A mount tried at most this often while the share isn't mounted.
@@ -35,7 +42,7 @@ pub enum NasState {
     Up,
     /// Not mounted, or not answering.
     Away,
-    /// A look (a mount, a probe) still under way past `DEADLINE`, since (Unix s).
+    /// A look (a mount, a probe) still under way past `deadline`, since (Unix s).
     Stuck { since: u64 },
 }
 
@@ -87,7 +94,7 @@ struct Nas {
 }
 
 impl Nas {
-    /// One look: a worker's find (mounted when due) and probe, waited for `DEADLINE`; a look still
+    /// One look: a worker's find (mounted when due) and probe, waited for `deadline`; a look still
     /// stuck from before waited for again rather than a second started.
     fn look(&mut self) {
         let rx = match self.pending.take() {
@@ -111,7 +118,7 @@ impl Nas {
                 (rx, super::jobs::now_s())
             }
         };
-        match rx.0.recv_timeout(DEADLINE) {
+        match rx.0.recv_timeout(deadline()) {
             Ok(root) => {
                 if root.is_some() {
                     self.last_mount_try = None;
@@ -122,7 +129,7 @@ impl Nas {
             Err(RecvTimeoutError::Timeout) => {
                 let since = rx.1;
                 if self.view.get().state != (NasState::Stuck { since }) {
-                    eprintln!("agent: the NAS's mount or probe hasn't answered in {DEADLINE:?}: NAS work waits");
+                    eprintln!("agent: the NAS's mount or probe hasn't answered in {:?}: NAS work waits", deadline());
                 }
                 self.publish(NasView { root: None, state: NasState::Stuck { since }, at: super::jobs::now_s() });
                 self.pending = Some(rx);
@@ -317,7 +324,7 @@ mod tests {
             assert!(h.root().is_none());
         }
         // (In line, each read would wait out the hung look's deadline: #910, not a "fast" bound.)
-        store::testkit::ended_before(t, DEADLINE * 100, "a hundred reads of the view");
+        store::testkit::ended_before(t, deadline() * 100, "a hundred reads of the view");
         drop(release);
         store::testkit::wait_for("the root back", || h.root());
     }

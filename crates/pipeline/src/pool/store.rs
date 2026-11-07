@@ -17,7 +17,7 @@
 //!   mid-append: never answered) is cut. `restore` rebuilds a lost store from the NAS backup, its
 //!   epoch past the backup's by `RESTORE_EPOCHS`.
 //! - **The backup** (`back_up`): the snapshot written whole to the NAS (`BACKUP_PATH`) each
-//!   `BACKUP_EVERY` while it changed, off the writer's thread and every handler's.
+//!   `backup_every` while it changed, off the writer's thread and every handler's.
 
 use crate::pool::nas::Nas;
 use anyhow::{ensure, Context, Result};
@@ -38,9 +38,17 @@ pub const COMPACT_BYTES: u64 = 10 << 20;
 pub const COMPACT_AGE: Duration = Duration::from_secs(3600);
 /// A handler waits this long for its change to be durable; past it, 503 (§4.1).
 pub const DURABLE_WAIT: Duration = Duration::from_secs(2);
-/// The store's backup on the NAS (§3.2), and how often it's written while the store changes.
+/// The store's backup on the NAS (§3.2).
 pub const BACKUP_PATH: &str = "state/lead/store.json";
-pub const BACKUP_EVERY: Duration = if cfg!(test) { Duration::from_millis(200) } else { Duration::from_secs(600) };
+/// How often it's written while the store changes: 10 min; 200 ms in a unit test
+/// (`buildstore::out::testing`).
+pub fn backup_every() -> Duration {
+    if buildstore::out::testing() {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_secs(600)
+    }
+}
 /// A store restored from the backup starts this many epochs past it: no lease id repeats (§4.4).
 pub const RESTORE_EPOCHS: u64 = 1000;
 

@@ -349,11 +349,12 @@ impl Running {
         // its progress, parts and last lines.)
         std::io::Write::write_all(&mut out, format!("{RUN_START}{} ({}) ===\n", spec.id, now_s()).as_bytes())?;
         let err = out.try_clone()?;
-        // (In the tests, every job's command as the agent made it, checked against its program's
-        // table: one the program would refuse fails the test.)
-        #[cfg(test)]
-        if let Some(Err(e)) = crate::cli::check_command(&spec.cmd) {
-            panic!("{e}");
+        // (In a unit test, `buildstore::out::testing`, every job's command as the agent made it,
+        // checked against its program's table: one the program would refuse fails the test.)
+        if buildstore::out::testing() {
+            if let Some(Err(e)) = crate::cli::check_command(&spec.cmd) {
+                panic!("{e}");
+            }
         }
         let (prog, args) = spec.cmd.split_first().context("empty command")?;
         // (Its status written by the shell at its group's head, `HEAD`: read by an agent that
@@ -379,8 +380,9 @@ impl Running {
         crate::sys::own_group(&mut c);
         let child = store::spawn::spawn(&mut c).with_context(|| format!("start {}", spec.id))?;
         let pgid = child.id() as i32;
-        #[cfg(test)]
-        test_groups::track(pgid);
+        if buildstore::out::testing() {
+            test_groups::track(pgid);
+        }
         let caffeinate = keep_awake(child.id());
         let started = now_s();
         let leader_start = process_start(pgid).unwrap_or(0);
@@ -791,11 +793,10 @@ fn stop_orphan_within(record: &Path, grace: Duration) -> Orphan {
     found
 }
 
-/// Test builds: every job group a test starts, killed (by its exact group id) when the test
-/// process exits, however its test ended (#654: a panicking test left its job running 16.5 h).
-/// Not run if the process is killed outright; the stand-in programs also end when their temp
-/// folder is gone. A group still alive then is reported on stderr.
-#[cfg(test)]
+/// A unit test's (`buildstore::out::testing`): every job group a test starts, killed (by its exact
+/// group id) when the test process exits, however its test ended (#654: a panicking test left its
+/// job running 16.5 h). Not run if the process is killed outright; the stand-in programs also end
+/// when their temp folder is gone. A group still alive then is reported on stderr.
 mod test_groups {
     use std::sync::Mutex;
 

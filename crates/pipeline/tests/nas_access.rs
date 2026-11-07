@@ -92,6 +92,8 @@ const FROM_ARG: &[(&str, &str)] = &[
     // (`--root <test root>`: its map's snapshot read and written, never the NAS's.)
     ("crates/pipeline/src/bin/tools/coastcheck.rs", "main"),
     ("crates/pipeline/src/bin/tools/lakefill.rs", "catalogue_add"),
+    // (A unit test's root, `TEST_ROOT`, only while `buildstore::out::testing`: refused when live.)
+    ("crates/pipeline/src/agent/mod.rs", "find_root"),
     ("crates/server/src/main.rs", "main"),
     ("crates/server/src/data.rs", "find_nas"),
     ("crates/pipeline/examples/checklist.rs", "main"),

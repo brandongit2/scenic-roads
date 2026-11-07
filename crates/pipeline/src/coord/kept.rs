@@ -311,7 +311,7 @@ impl Kept {
         self.store.get().is_none_or(|s| s.wait(seq, store::DURABLE_WAIT))
     }
 
-    /// Backs the store up to the NAS each `store::BACKUP_EVERY`, as `member` (started once).
+    /// Backs the store up to the NAS each `store::backup_every`, as `member` (started once).
     pub fn back_up(&self, nas: Arc<dyn Nas + Send + Sync>, member: &str, every: Duration) {
         let Some(s) = self.store.get() else { return };
         if !self.backing.swap(true, std::sync::atomic::Ordering::Relaxed) {

@@ -254,7 +254,7 @@ impl Handle {
                 nasread::clock(now),
                 now - since
             );
-            if !cfg!(test) {
+            if !buildstore::out::testing() {
                 sample_self(Path::new("/usr/bin/sample"), home, now);
             }
         }
@@ -1098,11 +1098,13 @@ impl Planner {
             std::thread::sleep(d);
         }
         let jobs = self.plan_unchecked(root, c, waiting);
-        // (In the tests, every planned command checked against its program's table, crate::cli.)
-        #[cfg(test)]
-        for j in &jobs {
-            if let Some(Err(e)) = crate::cli::check_command(&j.cmd) {
-                panic!("{e}");
+        // (In a unit test, `buildstore::out::testing`, every planned command checked against its
+        // program's table, crate::cli.)
+        if buildstore::out::testing() {
+            for j in &jobs {
+                if let Some(Err(e)) = crate::cli::check_command(&j.cmd) {
+                    panic!("{e}");
+                }
             }
         }
         jobs

@@ -295,7 +295,7 @@ fn mac() -> &'static serde_json::Value {
             "cores_e": crate::sys::efficiency_cores(),
             "mem_gb": crate::sys::memsize().map(|b| round(b as f64 / GB)),
             // (Its NAS call threads, crate::agent::nasread: the most calls in flight at once.)
-            "nas_threads": crate::agent::nasread::SWITCH_READERS + crate::agent::nasread::READERS + crate::agent::nasread::WRITERS,
+            "nas_threads": crate::agent::nasread::threads_in_all(),
             // (How long without a touch makes the owner away.)
             "away_s": super::cond::AWAY_S,
         })

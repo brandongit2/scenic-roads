@@ -61,10 +61,16 @@ use std::time::{Duration, Instant};
 /// The coordinator's port.
 pub const PORT: u16 = 8090;
 /// The address a coordinator (or a member's broker, or viewer) listens on: every interface, for
-/// the other Macs; loopback alone in a unit test, whose members are in the same process and reach
-/// it at 127.0.0.1 (crate::net::urls): a freshly built test binary is no app a Mac's firewall lets
-/// its Tailscale or LAN addresses reach (#596).
-pub const LISTEN: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
+/// the other Macs; loopback alone in a unit test (`buildstore::out::testing`), whose members are in
+/// the same process and reach it at 127.0.0.1 (crate::net::urls): a freshly built test binary is no
+/// app a Mac's firewall lets its Tailscale or LAN addresses reach (#596).
+pub fn listen_ip() -> &'static str {
+    if buildstore::out::testing() {
+        "127.0.0.1"
+    } else {
+        "0.0.0.0"
+    }
+}
 /// How often a coordinator whose 127.0.0.1 is held tries again (`Coordinator::loopback_beside`).
 const LOOPBACK_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -88,16 +94,15 @@ impl From<std::net::TcpListener> for Listeners {
 /// coordinator, which then never started: #914.) A test only: a Mac's agent changes role by
 /// restarting its process (docs/roles.md), and a port kept open with nothing taking its
 /// connections would leave every member's, page's and job's connection to a Mac that just
-/// stopped hanging in its backlog where it is refused at once.
-#[cfg(test)]
+/// stopped hanging in its backlog where it is refused at once. (So filled only in a unit test,
+/// `buildstore::out::testing`.)
 static KEPT: Mutex<BTreeMap<u16, Listeners>> = Mutex::new(BTreeMap::new());
 
 /// The listeners for `port`, listened on anew; in a test program, the ones it kept for the port
 /// (`KEPT`), and it never listens anew on a port of its own choosing (another test running beside
 /// may hold it by now): refused, loudly, at once (#914; port 0 is any free port).
 pub fn listeners_on(port: u16) -> std::io::Result<Listeners> {
-    #[cfg(test)]
-    {
+    if buildstore::out::testing() {
         if let Some(l) = KEPT.lock().unwrap_or_else(|e| e.into_inner()).remove(&port) {
             return Ok(l);
         }
@@ -107,24 +112,23 @@ pub fn listeners_on(port: u16) -> std::io::Result<Listeners> {
              hold it by now (#914); take a port from coord::test_port, which this process keeps"
         );
     }
-    Ok(store::spawn::listen((LISTEN, port))?.into())
+    Ok(store::spawn::listen((listen_ip(), port))?.into())
 }
 
 /// A stopped coordinator's listeners: a test program keeps them for the next of it on their port
-/// (`KEPT`); else closed, so a connection to the port is refused at once.
+/// (`KEPT`); else closed (dropped), so a connection to the port is refused at once.
 fn keep_listeners(l: Listeners) {
-    #[cfg(test)]
-    if let Ok(a) = l.listener.local_addr() {
-        KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(a.port(), l);
+    if buildstore::out::testing() {
+        if let Ok(a) = l.listener.local_addr() {
+            KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(a.port(), l);
+        }
     }
-    #[cfg(not(test))]
-    drop(l);
 }
 
-#[cfg(test)]
 thread_local! {
-    /// Whether a test's coordinator waits for its 127.0.0.1 held by another process
-    /// (`loopback_beside`): only the test of that wait says so; any other fails at once.
+    /// Whether a unit test's coordinator (`buildstore::out::testing`) waits for its 127.0.0.1 held
+    /// by another process (`loopback_beside`): only the test of that wait says so; any other fails
+    /// at once.
     static LOOPBACK_WAITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 /// How long `/work/hold` waits for this Mac's agent to answer (its control takes this Mac's own up
@@ -1427,8 +1431,7 @@ impl Coordinator {
                 Err(e) if !said => {
                     // (A test's doesn't wait: one beside it holding the port would leave it
                     // waiting for good, #914.)
-                    #[cfg(test)]
-                    if !LOOPBACK_WAITS.with(|w| w.get()) {
+                    if buildstore::out::testing() && !LOOPBACK_WAITS.with(|w| w.get()) {
                         anyhow::bail!(
                             "127.0.0.1:{} is another process's ({e}): a test's coordinator doesn't wait for it",
                             at.port()
@@ -2956,10 +2959,10 @@ impl Coordinator {
         pool_state_of(&self.shared.lock().unwrap())
     }
 
-    /// Backs its store up to the NAS each `pool::store::BACKUP_EVERY` from now on, off every
+    /// Backs its store up to the NAS each `pool::store::backup_every` from now on, off every
     /// handler's thread (docs/coordination.md §3.2): each lead's step says so.
     pub fn back_up(&self, nas: Arc<dyn crate::pool::nas::Nas + Send + Sync>) {
-        self.back_up_every(nas, crate::pool::store::BACKUP_EVERY);
+        self.back_up_every(nas, crate::pool::store::backup_every());
     }
 
     pub fn back_up_every(&self, nas: Arc<dyn crate::pool::nas::Nas + Send + Sync>, every: Duration) {
@@ -6190,7 +6193,7 @@ mod http {
 /// A port for a test's coordinator that no other test in this process has been given (the system's
 /// pick, once), its listener kept open (`KEPT`) for the coordinator, broker or viewer the test
 /// starts on it (`listeners_on`): no other process can take it between, for the process's life.
-#[cfg(test)]
+/// Asked only in a unit test (`buildstore::out::testing`: crate::agent's `coord_port`).
 pub(crate) fn test_port() -> u16 {
     let (l, port) = test_listener();
     keep_listeners(l.into());
@@ -6210,18 +6213,17 @@ pub(crate) fn port_kept(port: u16) -> bool {
 /// the listener.
 #[cfg(test)]
 pub(crate) fn port_free(port: u16) -> std::io::Result<()> {
-    store::spawn::listen((crate::coord::LISTEN, port)).map(|l| store::spawn::sockets(|| drop(l)))
+    store::spawn::listen((crate::coord::listen_ip(), port)).map(|l| store::spawn::sockets(|| drop(l)))
 }
 
-/// A listener on a port no other test of this process has been given, and its port.
-#[cfg(test)]
+/// A listener on a port no other test of this process has been given, and its port (`test_port`).
 fn test_listener() -> (std::net::TcpListener, u16) {
     static GIVEN: std::sync::Mutex<BTreeSet<u16>> = std::sync::Mutex::new(BTreeSet::new());
     // (A test that panicked here poisons it for none of the rest.)
     let mut g = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
     // (Each turn a port given before: not time, but ports.)
     for _ in 0..1000 {
-        let l = store::spawn::listen((crate::coord::LISTEN, 0)).unwrap();
+        let l = store::spawn::listen((crate::coord::listen_ip(), 0)).unwrap();
         let port = l.local_addr().unwrap().port();
         if g.insert(port) {
             return (l, port);
