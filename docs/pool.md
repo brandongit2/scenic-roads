@@ -1681,11 +1681,12 @@ seconds, `YYYY-MM-DD[THH:MM]` UTC, or back from now: `12h`, `3d`) to the history
 in it (the history's events once each: a member that led before keeps the same events in its own
 file, `fccheck::dedup`). A job's targets in one forecast are taken together (its forecast start the
 earliest of theirs, its end the latest), so each (forecast, job) is a sample: its end's error where
-the job ended after the forecast, its start's where it started after it, the error forecast less
-actual (+ the forecast was late). It reports, for the end and the start, n, bias (the mean), and
-the median and 90th percentile of the absolute error, overall and by horizon (the forecast's time
-until it: under 15 min, to 1 h, 4 h, 12 h, more), by step, by the Mac that ran it and by code
-version; how many jobs some forecast placed, how often it had the right Mac and the right slot
+the job ended after the forecast; where it started after it, its start's (the start delay's
+error) and its run's (its start to its end; task #988), so the end's error is the two summed; the
+error forecast less actual (+ the forecast was late). It reports, for the end, the start and the
+run, n, bias (the mean), and the median and 90th percentile of the absolute error, overall and by
+horizon (the forecast's time until it, a run's until its end: under 15 min, to 1 h, 4 h, 12 h,
+more), by step, by the Mac that ran it and by code version; how many jobs some forecast placed, how often it had the right Mac and the right slot
 (its lane's name the history's worker); the **order**: of each forecast's pairs of jobs that both
 started after it (neither at the same time, nor forecast to), the share that started in the
 forecast's order, overall and of the pairs both forecast to start within 4 h (`fccheck::NEAR_S`);

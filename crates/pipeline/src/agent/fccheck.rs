@@ -8,10 +8,11 @@
 //! after the forecast was made. The targets of one job are taken together: the forecast's start the
 //! earliest of theirs, its end the latest, its Mac the first's lane's. So each (forecast, job) is a
 //! sample: its end's error (forecast less actual: + late, − early) where the job ended after the
-//! forecast, its start's where it started after it; its horizon the forecast's time until it
-//! (from when it was made). Errors are said by step, by Mac (the Mac that ran it), by horizon and
-//! by the forecast's code version: n, bias (the mean), the median and the 90th percentile of the
-//! absolute error.
+//! forecast; where it started after it, its start's (its start delay's error) and its run's (the
+//! time from its start to its end, forecast less actual), the end's error the sum of the two; its
+//! horizon the forecast's time until it (from when it was made; a run's, its end's). Errors are
+//! said by step, by Mac (the Mac that ran it), by horizon and by the forecast's code version: n,
+//! bias (the mean), the median and the 90th percentile of the absolute error.
 
 use super::fcarchive::Entry;
 use super::fcinputs::Input;
@@ -64,10 +65,18 @@ pub fn actuals(events: &[Event]) -> Vec<Actual> {
     out
 }
 
-/// A forecast's error on a job's start or end.
+/// What a sample's error is of: a job's end, its start, or its run (its start to its end).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Of {
+    End,
+    Start,
+    Run,
+}
+
+/// A forecast's error on a job's start, end or run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sample {
-    pub end: bool,
+    pub of: Of,
     pub step: String,
     pub mac: String,
     pub code: u32,
@@ -183,7 +192,11 @@ pub struct Report {
     /// before the history's last event, the targets each forecast to end within `WORK_S` of it,
     /// and the targets the jobs that ended then did, by step (summed over the forecasts).
     pub work: BTreeMap<String, [u64; 2]>,
+    /// The start's errors (its delay), the run's (its start to its end, by its end's horizon; a
+    /// job started after the forecast) and the end's: of a job started after it, the end's error
+    /// is its start's and its run's.
     pub start: Errors,
+    pub run: Errors,
     pub end: Errors,
 }
 
@@ -253,17 +266,20 @@ fn matched(entries: &[Entry], jobs: &[Actual], last: u64) -> Matched {
             let l = e.lanes.get(lane);
             m.same_mac += usize::from(l.is_some_and(|l| l.mac == a.mac));
             m.same_slot += usize::from(l.is_some_and(|l| l.name == a.worker));
-            let s = |end: bool, horizon_s: u64, err_s: f64| Sample {
-                end,
+            let s = |of: Of, horizon_s: u64, err_s: f64| Sample {
+                of,
                 step: a.step.clone(),
                 mac: a.mac.clone(),
                 code: e.code,
                 horizon_s,
                 err_s,
             };
-            m.samples.push(s(true, until.saturating_sub(e.at), until as f64 - a.end as f64));
+            let horizon = until.saturating_sub(e.at);
+            m.samples.push(s(Of::End, horizon, until as f64 - a.end as f64));
             if a.start > e.at {
-                m.samples.push(s(false, from.saturating_sub(e.at), from as f64 - a.start as f64));
+                m.samples.push(s(Of::Start, from.saturating_sub(e.at), from as f64 - a.start as f64));
+                let ran = a.end.saturating_sub(a.start) as f64;
+                m.samples.push(s(Of::Run, horizon, until.saturating_sub(from) as f64 - ran));
                 starts.push((from, a.start));
             }
         }
@@ -292,8 +308,8 @@ pub fn check(entries: &[Entry], events: &[Event], from: u64, to: u64) -> Report 
     let jobs: Vec<Actual> = actuals(events).into_iter().filter(|a| a.end >= from && a.end < to).collect();
     let last = events.iter().map(|e| e.t).max().unwrap_or(0).min(to);
     let m = matched(entries, &jobs, last);
-    let ends: Vec<&Sample> = m.samples.iter().filter(|x| x.end).collect();
-    let starts: Vec<&Sample> = m.samples.iter().filter(|x| !x.end).collect();
+    let of = |o: Of| -> Vec<&Sample> { m.samples.iter().filter(|x| x.of == o).collect() };
+    let ends = of(Of::End);
     let share = |n: u64, of: u64| if of == 0 { 0.0 } else { (n as f64 / of as f64 * 100.0).round() / 100.0 };
     Report {
         from,
@@ -312,7 +328,8 @@ pub fn check(entries: &[Entry], events: &[Event], from: u64, to: u64) -> Report 
         not_done: m.not_done.values().sum(),
         not_done_by_step: m.not_done,
         work: m.work,
-        start: Errors::of(&starts),
+        start: Errors::of(&of(Of::Start)),
+        run: Errors::of(&of(Of::Run)),
         end: Errors::of(&ends),
     }
 }
@@ -691,7 +708,9 @@ pub fn backtest_text(b: &Backtest) -> String {
             r[0].order.near_in_order * 100.0,
             r[1].order.near_in_order * 100.0,
         );
-        for (what, old, new) in [("End", &r[0].end, &r[1].end), ("Start", &r[0].start, &r[1].start)] {
+        for (what, old, new) in
+            [("End", &r[0].end, &r[1].end), ("Start", &r[0].start, &r[1].start), ("Run", &r[0].run, &r[1].run)]
+        {
             let _ = writeln!(
                 o,
                 "  {what:<22} {:>6} {:>8} {:>8} {:>8} | {:>6} {:>8} {:>8} {:>8}",
@@ -740,7 +759,7 @@ pub fn backtest_text(b: &Backtest) -> String {
     o
 }
 
-/// The report as text: a table each for the end and the start, in minutes.
+/// The report as text: a table each for the end, the start and the run, in minutes.
 pub fn text(r: &Report) -> String {
     let day = |t: u64| {
         let d = super::backup::format_day(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t));
@@ -794,7 +813,7 @@ pub fn text(r: &Report) -> String {
             m(s.p90_abs_s)
         );
     };
-    for (what, e) in [("End", &r.end), ("Start", &r.start)] {
+    for (what, e) in [("End", &r.end), ("Start", &r.start), ("Run (start to end)", &r.run)] {
         let _ = writeln!(o, "\n{what:<28} {:>7} {:>8} {:>8} {:>8}", "n", "bias", "median", "p90");
         row(&mut o, "all", &e.all);
         let _ = writeln!(o, "  by horizon");
@@ -942,6 +961,11 @@ mod tests {
         // Starts: a+b 700 against 1000 (-300); x 1500 against 1700 (-200).
         assert_eq!(r.start.all.bias_s, -250.0);
         assert_eq!(r.start.all.p90_abs_s, 300.0);
+        // Runs: a+b 1200 s against 600 (+600), x 600 against 300 (+300): each end's error its
+        // start's and its run's (+300 = -300 + 600; +100 = -200 + 300), by the end's horizon.
+        assert_eq!((r.run.all.n, r.run.all.bias_s, r.run.by_step["unit"].bias_s), (2, 450.0, 600.0));
+        assert_eq!(r.run.by_horizon[0].0, "15 min-1 h");
+        assert!(text(&r).contains("Run (start to end)"), "{}", text(&r));
         // Horizons: the ends 1500 s and 1700 s out: 15 min-1 h.
         assert_eq!(r.end.by_horizon, [("15 min-1 h".to_string(), r.end.all.clone())]);
         let t = text(&r);
