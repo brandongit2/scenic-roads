@@ -852,11 +852,10 @@ ring (`live::Store::best`, worked out at most once a minute). Each Mac's ask car
 it, and the live coordinator packs by each ask's room now. In the run a Mac with one has that
 memory and those cores, no brake, no owner's use; one without (not 30 minutes sampled yet, an
 older app) has its room as it last asked. The NAS budget is taken as recorded: its limits the best
-of the day's probes (§7.7), each job under way weighing what its beats said it moved once past its
-predicted time (`Leased::nas_rate`), and the NAS's own gate (`Limits::held`, a reading of now) as
-recorded while the jobs out then run, open after them. A job the run grants has no beats: it weighs
-its targets' measured rates throughout (nothing for a step none of whose runs measured one, where
-the live scheduler weighs it by its beats once it has run its predicted time). No use of the owner's or passing load is foreseen: the build page says
+of the day's probes (§7.7), and the NAS's own gate (`Limits::held`, a reading of now) as recorded while
+the jobs out then run, open after them. A job, under way or granted in the run, weighs its targets'
+measured rates throughout (no beats to weigh it by, where the live scheduler weighs one past its predicted
+time by them, §7.7). No use of the owner's or passing load is foreseen: the build page says
 the finish is a best case ("each Mac at its quietest sustained state over the last 48 h"). Its
 **live error** (`forecast::pace`, `Forecast::pace`): the oldest
 forecast of the last 1–6 h (the lead keeps their runs' progress, `Forecast::curve`, a point each
@@ -2079,41 +2078,50 @@ while the pois' start p90 within 15 min to 1 h goes from 918 to 217. Why they st
 #993, below. What's left near: the run's error stays under 10 min at p90; the start's is the order
 and room of the work (the replay's near-term p90 is above the live forecasts' 247 on the same days).
 
-**Was it the NAS budget? (task #993).** Mostly not. #988's review took those early starts for the
-budget's holds, which the run was said not to model. It does: it asks `Sched::pack`, so its grants
-go through `nas_room`, `job_nas` and the fits of §7.7, on the leases and limits recorded (its asks say
-"the NAS budget: N targets wait" in the replays, its weight staying within the whole). Measured on
-the span below:
+**Was it the NAS budget? (task #993).** No. #988's review took those early starts for the budget's
+holds, which the run was said not to model. It does: it asks `Sched::pack`, so its grants go through
+`nas_room`, `job_nas` and the fits of §7.7, on the leases and limits recorded. The live budget seldom
+bound: the pool's own NAS traffic (the lead's `pool_nas_*` series, 20-minute means, as weight) had a
+median of 180 and a p90 of 738 of the 1,000 on the train set, 128 and 355 on the test set.
 
-- **The live budget seldom bound.** The pool's own NAS traffic (the lead's `pool_nas_*` series, 20-minute
-  means, as weight) had a median of 180 and a p90 of 738 of the 1,000 on the train set, 128 and 355 on
-  the test set. Targets passed over for the budget in the two minutes before an input: 9 of 40 train
-  inputs, 11 of 20 test.
-- **The pool ran fewer jobs than the run's lanes:** 6.8 jobs an input against 11.4 lanes on train,
-  5.2 against 16.6 on test, 57-63 % of the Macs' asks with under 1.5 GB of room, the memory
-  brake on in 7-11 %. The run has each Mac at its sustained best (§7.2, the owner's choice), so
-  it fills lanes the live Macs had no memory for: the input of 6 Nov 01:10 UTC, the mini's brake on,
-  three terrain-hi jobs live, the run granting trees and bldprep in the first two minutes.
-- **What the run did lack,** two things, code 7 below. Neither moves the near term on the archive.
-  The upper bound of the first: replayed with each job's rate taken from that pool traffic, split
-  evenly among the jobs out (the archive holds no job's beats; a throwaway run, not in the code), on the
-  20 inputs with such waits, the end under 15 min is 55 / 430 to 54 / 419 on train, 64 / 280 to 72 /
-  280 on test (15 min to 1 h: 76 / 765 to 82 / 583, 120 / 251 to 126 / 255).
+**Nor the room, nor the lanes' time left.** Measured on the span below, code 7's run at 15 s against the
+history:
 
-**What changed (code 7).** The grant rule stays the scheduler's alone (`tests/grant_rules.rs`); what
-it weighs is now the live scheduler's in two more ways, no figure typed:
+- **The run fills about the lanes the pool did:** lanes busy over a forecast's first 15 minutes, 7.3
+  against 6.8 on train, 6.8 against 6.2 on test. Most of the Macs' asks have under 1.5 GB of room (57-63 %),
+  but that is the room left past their jobs' needs more than a smaller Mac: what the jobs may hold together
+  (`build_mb`) is under 70 % of the sustained best in 24-32 % of the asks that say one, and the memory brake is
+  on in 6-11 %.
+- **Each Mac as it asked gives about one job an input fewer at the start, half of it memory:** the jobs a
+  run's first asks are granted, an input, with the sustained best 3.0 on train and 2.8 on test; with
+  its memory as asked 2.4 and 2.0; with its cores as asked (its load outside the pool) 2.4 and 1.9;
+  with both 2.1 and 1.5.
+- **Replayed so, it doesn't hold on the test set:** each Mac's memory and cores as it asked while its
+  jobs out at the record run, its best after (a throwaway run, each at 4 s a run; end under 15 min): train
+  115 / 587 to 78 / 460, test 49 / 265 to 63 / 290; the start's bias stays -219 to -183 min on
+  train, -100 to -111 on test. Its memory alone, at 15 s: train 105 / 582 to 70 / 472, test 50 / 280
+  to 68 / 318. So the sustained best stays.
+- **Each lane's job's true end** from the history in place of its `busy_s`, an upper bound: train 96 /
+  568, test 49 / 279.
+- **What's left is work the input doesn't hold:** of the lane time on the jobs the pool started in a
+  forecast's first hour, about half went to jobs none of whose targets that forecast placed: 3.1
+  lanes against 3.2 on the 23 train inputs whose run finished (polar-terrain, trees, terrain-hi,
+  terrain-deep: what the plan listed only later; 22 of the 89 inputs of 5-6 Nov say `blind` and list no
+  regions at all), 2.5 against 1.9 on test (cut runs, so some of it is the cut's).
+  The placed work that lane time displaces starts late against the forecast. That's the plan's work to
+  come, which no change to the run's room can show: a forecast is as near as its input is whole.
 
-- **A job under way weighs what it moved.** `Sched::job_weight` weighs a job past its predicted time by
-  its beats (§7.7), but `sched::State` didn't carry them, so the run weighed it by its targets'
-  predicted rates: against the pool's traffic above, 1,090 where it moved 161 (5 Nov 22:04 UTC's
-  input), 0 for a bld-fetch no target's rate weighs while 472 bldtiles aged behind it live (6 Nov
-  23:27 UTC; #991 has since fixed how much that job weighed). `Leased::nas_rate` now
-  says it, as `job_weight` reads it (`moved_rate`). Records have it from this code on, so the archive's
-  replay can't show it: `forecast::tests::a_job_under_way_holds_the_nas_by_what_it_moved`.
-- **The NAS's own gate opens.** `Limits::held` is a reading of the NAS's disks now (§7.7). Recorded
-  shut, it stayed so for the whole run, every job that weighs anything going one at a time (two train
-  inputs, 5 Nov 19:36 and 19:53 UTC, their depth placed a day late). It now holds while the jobs out at
-  the record run; no passing load is foreseen after them, as for the Macs (§7.2).
+**What changed (code 7).** `Limits::held` is a reading of the NAS's disks now (§7.7). Recorded shut, it
+stayed so for the whole run, every job that weighs anything going one at a time (two of the 113 inputs
+archived, 5 Nov 19:36 and 19:53 UTC, their depth placed a day late). It now holds while the jobs out at
+the record run; no passing load is foreseen after them, as for the Macs (§7.2). Those two inputs' end, code 6
+against 7: 838 / 4,191 to 88 / 518.
+
+Tried and left out: each job under way weighing what its beats said it moved, carried in the record
+as the live scheduler weighs it. The archive holds no beats, so no replay can show it; with each job's rate
+taken from the pool's traffic, split evenly among the jobs out (an upper bound, a throwaway run), on the
+20 inputs with such waits, the end under 15 min is 55 / 430 to 54 / 419 on train, 64 / 280 to 72 / 280
+on test. A field in every record wasn't worth that.
 
 **The backtest, code 6 against 7** (the same command and copy as below, `--replay --from
 2026-11-05T12:00 --to 2026-11-07T00:40 --split 2026-11-06T06:00`, release build on the M1, 51 min). Minutes; median / p90 of the absolute error:
@@ -2132,19 +2140,25 @@ it weighs is now the live scheduler's in two more ways, no figure typed:
 | end, bldprep | 21 / 84 | 21 / 84 | 154 / 298 | 156 / 299 |
 | in order within 4 h | 70 % | 70 % | 63 % | 63 % |
 
-The near term doesn't move, and train's under-15-minute p90 stays 582: the budget wasn't what raised
-it. The depth on train gains most, from the two inputs whose gate was shut: alone, their end is
-1,082 / 3,845 to 90 / 390, their 221 samples at 12 h + (error about 1,100) all coming within 1 to 4 h.
-That is why train's 12 h + row and its whole p90 read worse (8,647 to 10,459, 7,287 to 7,558): those
-samples left a row of larger errors, not that any got worse. Elsewhere the two codes' columns differ
-only by where a cut run stops (34 of the 60 inputs' runs cut at `BUDGET`, under either code on the M1 under
-load): bldtiles' p90 537 to 543 on test is that.
+The near term doesn't move, and train's under-15-minute p90 stays 582: the gate wasn't what raised
+it, nor the budget. The depth on train gains most, from the two inputs whose gate was shut, its 221 samples
+at 12 h + (error about 1,100) all coming within 1 to 4 h. That is why train's 12 h + row and its whole p90
+read worse (8,647 to 10,459, 7,287 to 7,558): those samples left a row of larger errors, not that any got
+worse. Elsewhere the two codes' columns differ only by where a cut run stops: bldtiles' p90 537 to 543 on
+test is that.
 
-**Its cost:** a rate on each lease of the record, and a look at the leases out as each lane asks while
-the gate holds: none to see. The three largest inputs no run was cut on, each replayed three times under
-both codes one after the other on the M1, median wall of the forecast, code 6 against 7: 13.0 and 15.1 s,
-18.5 and 18.5 s, 22.5 and 21.3 s, the spread within a code up to 5 s. The forecast is cut as before: 34 of
-the 60 inputs under either code.
+**Where the forecast's time goes** (a 45 s `sample` of three inputs of 7 Nov 06:00-07:00 UTC replayed, on the
+M1). 34-37 of the 60 inputs' runs are cut at `BUDGET`, whichever the code. Of the samples, three quarters are
+`Sched::pack` and a fifth the listing (`Waits::of`, `items`: outside the budget, one listing for the three
+runs, the rest of it `steps::declared`). Of `pack`, nearly all of it, in two equal parts:
+
+- `Book::secs_p90`: a target with no measure of its own and no fit scans every cost for its step's 90th
+  percentile (`self.costs`, some 40,000 on 5-6 Nov), for each such target offered, at each ask.
+- `Sched::nas_room_heaviest` over `job_weight` for each lease out, then `Book::nas_load`, `secs_on` and
+  `source_secs` for each of its targets, most of that `steps::sh_deep` making the strings of what a target
+  reads (Book's `source_secs`), again at each ask, though the leases out change only when one is granted or ends.
+
+Both are the live scheduler's own code; neither depends on the gate.
 
 ## 8. Tasks
 
