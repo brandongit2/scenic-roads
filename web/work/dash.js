@@ -23,7 +23,7 @@ import { poolSection, termText } from "./pool.js";
 import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobLinks, jobNumbers, jobRelations, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { h } from "./dom.js";
-import { n, plural } from "./words.js";
+import { n, pad, plural } from "./words.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
 import { SPAN0, createTimeline } from "./timeline.js";
@@ -1819,7 +1819,7 @@ function hours(m) {
     }
     return col;
   }));
-  const axis = h("div", "hoursx", rows.map((r, i) => h("span", null, i % 6 === 0 ? String(new Date(r.t * 1000).getHours()).padStart(2, "0") : "")));
+  const axis = h("div", "hoursx", rows.map((r, i) => h("span", null, i % 6 === 0 ? pad(new Date(r.t * 1000).getHours()) : "")));
   // The day's totals by machine, each step counted in its noun.
   const sum = {};
   for (const r of rows) for (const [w, s] of Object.entries(r.done || {})) for (const [st, k] of Object.entries(s)) { sum[w] ??= {}; sum[w][st] = (sum[w][st] || 0) + k; }

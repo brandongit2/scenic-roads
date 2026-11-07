@@ -10,7 +10,7 @@
 // The page's address keeps what's open (?range=24h&run=<id>&kind=test). Live: the app's event
 // stream says when a Mac sent more.
 import { createTimeline } from "../lib/work/timeline.js";
-import { h } from "../lib/work/dom.js";
+import { h, token } from "../lib/work/dom.js";
 import { pad } from "../lib/work/words.js";
 
 const API = "../api/jobs/";
@@ -56,7 +56,7 @@ const took = (s, now) => (s.t1 ?? now) - s.t0;
 const macName = (mac, macs) => { const c = macs?.[mac]?.chip?.replace(/^Apple /, ""); return c ? `${c} · ${mac}` : mac; };
 // A colour from green to red by a share (0 fine, 1 bad), in ten steps, as rgb() from the theme's
 // --ok, --warn and --bad (#rrggbb): what any canvas takes, Safari's too.
-const rgbOf = (name) => { const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); return [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16)); };
+const rgbOf = (name) => { const v = token(name); return [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16)); };
 const heats = new Map(); // (each step's, for the theme now)
 const heat = (x) => {
   const v = Math.round(Math.max(0, Math.min(1, x)) * 10) / 10;

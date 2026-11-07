@@ -50,4 +50,6 @@ done
 print "long runs (tools/dev/longrun.sh; flags: gone without a final line, log quiet, restarting repeatedly):"
 tools/dev/longrun.sh check
 print "this Mac's own scenic-build jobs:"
-ps -axo pid,lstart,command | grep "[a]pp/current/scenic-build\|[s]cenic/app/.*/scenic-build" | awk '{printf "  pid %s since %s %s %s  ", $1, $3, $4, $5; for(i=7;i<=9;i++) printf "%s ", $i; print ""}' | cut -c1-160
+# (None is no failure: grep finding nothing fails the pipeline under pipefail, so it's said.)
+own=$(ps -axo pid,lstart,command | grep "[a]pp/current/scenic-build\|[s]cenic/app/.*/scenic-build" | awk '{printf "  pid %s since %s %s %s  ", $1, $3, $4, $5; for(i=7;i<=9;i++) printf "%s ", $i; print ""}' | cut -c1-160)
+print -r -- "${own:-  none}"

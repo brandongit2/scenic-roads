@@ -108,7 +108,7 @@ let queued = false;
 const bytes = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${Math.round(b / 1e3)} kB` : `${b} B`);
 const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 const short = (host) => host.replace(/\.local$/, "");
-// A Mac's chip: in its colour on the build page (dash.js's MACHINE_COLOURS), its name its chip's
+// A Mac's chip: in its colour on the build page (dash.js's macColours), its name its chip's
 // (M4 Pro), else its host's.
 function macChip(host) {
   const m = cfg?.machines?.().find((x) => x.name === host);
