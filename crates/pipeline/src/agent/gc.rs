@@ -625,7 +625,12 @@ pub fn set_way(v: u32) {
 /// deleted, `meta`) over its time, its memory: the clean-up's NAS weight (crate::budget::nas) as the
 /// coordinator weighs it from then on, measured, never guessed (docs/pool.md §7.7, task #451).
 pub fn note_cost() {
-    crate::agent::jobs::note_cost(WAY.load(std::sync::atomic::Ordering::Relaxed), STEP, STEP, STARTED.get().map_or(0, |t| t.elapsed().as_secs()));
+    crate::agent::jobs::note_cost(
+        WAY.load(std::sync::atomic::Ordering::Relaxed),
+        STEP,
+        STEP,
+        STARTED.get().map_or(0, |t| t.elapsed().as_secs()),
+    );
 }
 
 /// A safe point between folders: asked to stop (the build pausing, or the agent yielding the NAS

@@ -13794,6 +13794,7 @@ mod tests {
         put(&root.join("catalog-held/1060.json.zst"), b"old");
         let old_check: fn(&NasRoot) -> bool = |r| r.join("catalog").is_dir();
         let opts = |home: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
             root: Some(nas.clone()),
             home: d.path().join(home),
             bin: PathBuf::from("/nonexistent/bin"),
