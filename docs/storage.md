@@ -64,20 +64,30 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   keys alone in `brief.json` beside it, for the readers needing no more). Before the pool they were `state/build/manifest.json`, `jobs.json`, `pending.json` and
   `sizes.json`, which the lead still writes while a member's older app reads them (docs/pool.md
   §6.2).
-- **Unverified uploads** (content name → SHA-256): a file a job copied to the NAS is read back
-  past the client's cache as it lands, and stays pending until checked on the NAS itself; one a job
-  found there and reused is pending too (nothing touches it, so its check is what finds it gone). The records hold pending files as they hold the manifest's. GC's
-  daily duties drain them (`agent::gc`): first every pending upload the build doesn't read (neither a manifest name nor a
-  file an accepted inputs' index it names lists: replaced or dropped since) leaves the pending
-  unchecked, its file then GC's queue's as any the records stop naming; then every one it reads is hashed on the NAS over
-  SSH (`out::verify`, 200 a call, each call held to a deadline of 3 minutes and a second per 16 MB it hashes: past it the call is stopped (SIGTERM, SIGKILL 10 s later) and the run ends there, said in GC's warnings, the rest left to the next duties' pass; each call's result saved and a safe point after it, so a run
-  stopped midway keeps what it checked; the bytes hashed count as the job's NAS reads, its weight).
-  A match leaves the pending; a file that doesn't match or isn't there stays pending, nothing
-  removed, and the job's warnings name it (its target is done under its key, so nothing builds it
-  again but `scenic redo` of it). Both are the `gc` job's change through `Out`: in the pool its
-  hand-off's `checked`, which the lead takes out of its records' pending. A root not on the NAS's
-  share (a test's) is never hashed. `scenic gc --dry-run` counts both, and the bytes it would
-  hash, writing nothing.
+- **Unverified uploads** (content name → its SHA-256, recorded as it lands): a file a job copied to
+  the NAS is read back past the client's cache as it lands and checked against its hash, and stays
+  pending until checked on the NAS itself; one a job found there and reused is pending too (nothing
+  touches it, so its check is what finds it gone). The records hold pending files as they hold the
+  manifest's. GC's daily duties drain them (`agent::gc`): first every pending upload the build
+  doesn't read (neither a manifest name nor a file an accepted inputs' index it names lists:
+  replaced or dropped since) leaves the pending unchecked, its file then GC's queue's as any the
+  records stop naming; then every one it reads is checked on the NAS over SSH to be there at the
+  records' size (`out::verify`: `wc -c` there, a file's size from its metadata and its last block
+  read at most; one the records hold no size of, written before they kept sizes, to be there). Its
+  bytes aren't hashed again: the read-back checked them as they landed, and the NAS's file system
+  (Btrfs, data checksums on: no `C` attribute on the share) checks every block it reads, so a
+  reader of a damaged file gets an error, never other bytes. What is left is whether the file is
+  still there, whole (task #1001: hashed on the NAS, 57,444 pending uploads of 2.2 TB or more,
+  most of a week's writes, kept its disks at the whole NAS budget for hours). 500 a call, each held
+  to a deadline of 3 minutes (past it the call is stopped, SIGTERM, SIGKILL 10 s later, and the run
+  ends there, said in GC's warnings, the rest left to the next duties' pass); each call's result
+  saved and a safe point after it, so a run stopped midway keeps what it checked; each file looked
+  up counts as one of the job's NAS stats, its weight. One there at its size leaves the pending; one
+  of another size or not there stays pending, nothing removed, and the job's warnings name it (its
+  target is done under its key, so nothing builds it again but `scenic redo` of it). Both are the
+  `gc` job's change through `Out`: in the pool its hand-off's `checked`, which the lead takes out of
+  its records' pending. A root not on the NAS's share (a test's) is never checked. `scenic gc
+  --dry-run` counts both, writing nothing.
 
 **Copies carry the bytes and permissions, nothing else** (`store::sys::copy_data`; `cp -X` in
 scripts): the share refuses a copy that sets a `com.apple.provenance` attribute differing from its

@@ -165,10 +165,9 @@ pub struct Report {
     /// Unverified uploads the build doesn't read (`read_by`), dropped from the records' pending
     /// (`drop_names`; a dry run: would drop).
     pub pending_dropped: usize,
-    /// Those it names checked on the NAS (`verify_pending`; a dry run: would check) and their
-    /// bytes, and those that didn't match (left pending, named in the warnings).
+    /// Those it names checked on the NAS, there at their size (`verify_pending`; a dry run: would
+    /// check), and those that weren't (left pending, named in the warnings).
     pub pending_verified: usize,
-    pub pending_verify_bytes: u64,
     pub pending_failed: usize,
     /// Days of the history packed into `state/coord/history-archive/<day>.tar` this run.
     pub history_days_archived: usize,
@@ -383,25 +382,27 @@ pub fn drop_names(
 /// What `verify_pending` checked (a dry run: would check).
 #[derive(Debug, Default, PartialEq)]
 pub struct Verified {
-    /// Uploads the build reads (`read_by`), checked and out of the pending.
+    /// Uploads the build reads (`read_by`), there at their size and out of the pending.
     pub ok: usize,
-    /// Those whose file doesn't match its SHA-256, or isn't there: left pending, nothing removed
-    /// (their targets are done under their keys, so only `scenic redo` of them replaces them).
+    /// Those of another size, or not there: left pending, nothing removed (their targets are done
+    /// under their keys, so only `scenic redo` of them replaces them).
     pub bad: Vec<String>,
-    /// The bytes hashed (a dry run: it would hash), by the records' sizes, else the files'.
-    pub bytes: u64,
     /// Why the run ended before the last batch: a call that stalled past its deadline and was
     /// stopped (the batches before it are saved; the next duties' pass takes up the rest).
     pub stalled: Option<String>,
 }
 
-/// How many uploads one `ssh` hashes (its command line's length, and the safe points between).
-const VERIFY_CHUNK: usize = 200;
+/// How many uploads one call on the NAS checks (crate::out::verify; a safe point between calls).
+/// Its command line names each (a pending name 50 bytes, at most 120 on 7 Nov: 500 of the longest
+/// are 62 KB, half the 128 KB a single argument may take on the NAS's Linux); each a stat and a
+/// block read there, so a call takes seconds.
+const VERIFY_CHUNK: usize = 500;
 
-/// Checks the records' unverified uploads the build reads (`read_by`) on the NAS itself (crate::out::verify:
-/// `ssh`, `nas_root` the project folder as the NAS sees it), as the `gc` step's job (`scratch` its
-/// `Out`'s): those that match leave the pending (in the pool through its hand-off's `checked`);
-/// those that don't stay, said. Each batch saved as it ends, then a safe point (`yield_point`). A dry run counts them and their bytes, hashing nothing.
+/// Checks the records' unverified uploads the build reads (`read_by`) on the NAS itself, there at
+/// the records' size (crate::out::verify: `ssh`, `nas_root` the project folder as the NAS sees it),
+/// as the `gc` step's job (`scratch` its `Out`'s): those that are leave the pending (in the pool
+/// through its hand-off's `checked`); those that aren't stay, said. Each batch (`VERIFY_CHUNK`) saved
+/// as it ends, then a safe point (`yield_point`). A dry run counts them, checking nothing.
 pub fn verify_pending(
     root: &store::nasfs::NasRoot,
     scratch: &std::path::Path,
@@ -411,18 +412,13 @@ pub fn verify_pending(
 ) -> Result<Verified> {
     let crate::pool::records::Records { pending, manifest, sizes, .. } = crate::pool::records::Records::now(root)?;
     let named = read_by(root, &manifest)?;
-    let todo: Vec<(&String, &String)> = pending.iter().filter(|(c, _)| named.contains(*c)).collect();
+    // (Each with its size by the records: none for a file named before they kept sizes, 17,166 of
+    // the pending on 7 Nov, checked as there.)
+    let todo: Vec<(String, Option<u64>)> =
+        pending.keys().filter(|c| named.contains(*c)).map(|c| (c.clone(), sizes.get(c).copied())).collect();
     let mut v = Verified::default();
-    // (Their sizes by the records', else looked at: the records hold none for a file named before
-    // they kept sizes, 9,474 of the named pending on 26 Oct; one not there counts 0.)
-    let bytes = |cs: &[(&String, &String)]| {
-        cs.iter()
-            .map(|(c, _)| sizes.get(*c).copied().or_else(|| root.join(c).metadata().ok().map(|m| m.len())).unwrap_or(0))
-            .sum::<u64>()
-    };
     if dry_run {
         v.ok = todo.len();
-        v.bytes = bytes(&todo);
         return Ok(v);
     }
     if todo.is_empty() {
@@ -430,9 +426,8 @@ pub fn verify_pending(
     }
     let mut out = crate::out::open(root, scratch, STEP)?;
     for chunk in todo.chunks(VERIFY_CHUNK) {
-        let batch: BTreeMap<String, String> = chunk.iter().map(|(c, h)| ((*c).clone(), (*h).clone())).collect();
-        let n = bytes(chunk);
-        let (ok, bad) = match crate::out::verify(ssh, nas_root, &batch, n) {
+        let batch: BTreeMap<String, Option<u64>> = chunk.iter().cloned().collect();
+        let (ok, bad) = match crate::out::verify(ssh, nas_root, &batch) {
             Ok(r) => r,
             // (Stopped past its deadline: what the batches before it checked is saved already; the
             // rest stays pending for the next run.)
@@ -446,10 +441,10 @@ pub fn verify_pending(
             }
             Err(e) => return Err(e),
         };
-        // (The NAS read them to hash them: its weight counts them as read, crate::budget::nas, so
-        // the clean-up waits for a quiet NAS and yields by what it really does.)
-        store::nasio::add(store::nasio::Count::ReadBytes, n);
-        v.bytes += n;
+        // (The NAS looked each up: counted as stats, in its cost line and its live counts, which
+        // its weight goes by, crate::budget::nas.)
+        meta(0, batch.len() as u64, 0);
+        store::nasio::add(store::nasio::Count::Stats, batch.len() as u64);
         v.ok += ok.len();
         for c in &ok {
             out.unpend(c);
@@ -1327,12 +1322,12 @@ fn duties(root: &store::nasfs::NasRoot, asked: &Asked, rep: &mut Report) -> Resu
             Err(e) => rep.warnings.push(format!("old catalogues not removed: {e:#}")),
         }
     }
-    // The uploads still pending checked on the NAS itself, last (the longest, hashing on the NAS).
-    // Not a project folder on the NAS's share (a test's): none checked.
+    // The uploads still pending checked on the NAS itself, last. Not a project folder on the NAS's
+    // share (a test's): none checked.
     if let Some(nas_root) = &nas_root {
         match verify_pending(root, &scratch, &ssh, nas_root, dry_run) {
             Ok(v) => {
-                (rep.pending_verified, rep.pending_verify_bytes, rep.pending_failed) = (v.ok, v.bytes, v.bad.len());
+                (rep.pending_verified, rep.pending_failed) = (v.ok, v.bad.len());
                 if let Some(why) = &v.stalled {
                     rep.warnings.push(format!(
                         "uploads' verification stopped: {why} (the batches before it are saved; the next pass takes up the rest)"
@@ -1340,7 +1335,7 @@ fn duties(root: &store::nasfs::NasRoot, asked: &Asked, rep: &mut Report) -> Resu
                 }
                 if let Some(first) = v.bad.first() {
                     rep.warnings.push(format!(
-                        "{} uploads don't match their SHA-256 on the NAS, or aren't there (left pending; `scenic redo` their targets): {first}{}",
+                        "{} uploads aren't on the NAS at their size (left pending; `scenic redo` their targets): {first}{}",
                         v.bad.len(),
                         if v.bad.len() > 1 { " …" } else { "" }
                     ));
@@ -2533,48 +2528,78 @@ mod tests {
     }
 
     /// Task #781: the named uploads are checked on the NAS (here a shell on this Mac in its place):
-    /// one that matches leaves the pending; one whose bytes differ, or that isn't there, stays, said,
-    /// nothing removed. A dry run counts them and their bytes by the records' sizes, hashing nothing.
+    /// one there at the records' size leaves the pending, as does one there they hold no size of;
+    /// one of another size, or not there, stays, said, nothing removed. Task #1001: by their sizes
+    /// alone, nothing read but their metadata (the NAS had hashed 207 GB, its disks the whole budget).
+    /// A dry run counts them, checking nothing.
     #[test]
-    fn named_uploads_are_checked_and_only_the_matching_leave() {
-        use sha2::Digest;
+    fn named_uploads_are_checked_and_only_those_there_whole_leave() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::create_dir_all(root.join("base")).unwrap();
-        let (good, spoilt, gone) = (
+        let (good, no_size, short, gone) = (
             "base/6-1-1.1111111111111111.sect",
+            "base/6-1-4.4444444444444444.sect",
             "base/6-1-2.2222222222222222.sect",
             "base/6-1-3.3333333333333333.sect",
         );
         fs::write(root.join(good), b"good").unwrap();
-        fs::write(root.join(spoilt), b"spoilt").unwrap();
-        let sha = |b: &[u8]| format!("{:x}", sha2::Sha256::digest(b));
-        let manifest = serde_json::json!({"base/6-1-1": good, "base/6-1-2": spoilt, "base/6-1-3": gone});
+        fs::write(root.join(no_size), b"named before sizes").unwrap();
+        fs::write(root.join(short), b"cut").unwrap();
+        let manifest =
+            serde_json::json!({"base/6-1-1": good, "base/6-1-2": short, "base/6-1-3": gone, "base/6-1-4": no_size});
         fs::write(root.join("state/build/manifest.json"), manifest.to_string()).unwrap();
         let ppath = root.join("state/build/pending.json");
-        let pending = serde_json::json!({good: sha(b"good"), spoilt: sha(b"as uploaded"), gone: sha(b"x")});
+        let pending = serde_json::json!({good: "a", no_size: "b", short: "c", gone: "d"});
         fs::write(&ppath, pending.to_string()).unwrap();
-        fs::write(root.join(crate::out::SIZES), serde_json::json!({good: 4, spoilt: 11}).to_string()).unwrap();
+        fs::write(root.join(crate::out::SIZES), serde_json::json!({good: 4, short: 11, gone: 1}).to_string()).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         let at = root.to_str().unwrap();
         let s = d.path().join("s");
         let v = verify_pending(&nas, &s, &["sh", "-c"], at, true).unwrap();
-        assert_eq!((v.ok, v.bytes, v.bad.len()), (3, 15, 0));
+        assert_eq!((v.ok, v.bad.len()), (4, 0));
         assert_eq!(fs::read_to_string(&ppath).unwrap(), pending.to_string(), "a dry run writes nothing");
         let v = verify_pending(&nas, &s, &["sh", "-c"], at, false).unwrap();
-        assert_eq!((v.ok, v.bad), (1, vec![spoilt.to_string(), gone.to_string()]));
-        // (What the NAS read to hash them counted as read: the clean-up's NAS weight.)
-        assert_eq!(v.bytes, 15);
+        assert_eq!((v.ok, v.bad), (2, vec![short.to_string(), gone.to_string()]));
         let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
-        assert_eq!(p.keys().collect::<Vec<_>>(), [spoilt, gone]);
-        assert!(root.join(good).exists() && root.join(spoilt).exists());
+        assert_eq!(p.keys().collect::<Vec<_>>(), [short, gone]);
+        assert!(root.join(good).exists() && root.join(short).exists());
         let m: BTreeMap<String, String> =
             serde_json::from_slice(&fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
-        assert_eq!(m.len(), 3, "nothing unnamed");
+        assert_eq!(m.len(), 4, "nothing unnamed");
     }
 
-    /// A hashing call that hangs is stopped at its deadline (that child alone), said in `stalled`;
+    /// Task #1001: the check goes in batches of `VERIFY_CHUNK`, each saved and a safe point after it
+    /// (on 7 Nov one call hashed 200 packs, tens of GB, with no safe point inside: the clean-up
+    /// couldn't yield to the jobs it held back).
+    #[test]
+    fn verify_pending_goes_in_batches_each_a_safe_point() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        fs::create_dir_all(root.join("base")).unwrap();
+        let n = VERIFY_CHUNK + 3;
+        let names: Vec<String> = (0..n).map(|i| format!("base/6-1-{i}.{i:016x}.sect")).collect();
+        let manifest: BTreeMap<String, &String> =
+            names.iter().enumerate().map(|(i, c)| (format!("base/6-1-{i}"), c)).collect();
+        for c in &names {
+            fs::write(root.join(c), b"x").unwrap();
+        }
+        fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let pending: BTreeMap<&String, &str> = names.iter().map(|c| (c, "-")).collect();
+        let ppath = root.join("state/build/pending.json");
+        fs::write(&ppath, serde_json::to_vec(&pending).unwrap()).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let before = YIELD_CHECKS.get();
+        let v = verify_pending(&nas, &d.path().join("s"), &["sh", "-c"], root.to_str().unwrap(), false).unwrap();
+        assert_eq!((v.ok, v.bad.len()), (n, 0));
+        assert_eq!(YIELD_CHECKS.get() - before, 2, "a safe point after each of its two batches");
+        let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
+        assert!(p.is_empty(), "{p:?}");
+    }
+
+    /// A call on the NAS that hangs is stopped at its deadline (that child alone), said in `stalled`;
     /// the rest stays pending.
     #[test]
     fn verify_pending_stops_a_hung_call_and_keeps_the_rest() {
@@ -2588,7 +2613,7 @@ mod tests {
         let pending = serde_json::json!({name: "00"});
         fs::write(&ppath, pending.to_string()).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
-        // (The probe, `true`, answers; the hashing call sleeps: exec, so the PID signalled is the sleeper's.)
+        // (The probe, `true`, answers; the check's call sleeps: exec, so the PID signalled is the sleeper's.)
         let hung = ["sh", "-c", "[ \"$1\" = true ] || exec sleep 300", "sh"];
         let t = std::time::Instant::now();
         let v = verify_pending(&nas, &d.path().join("s"), &hung, root.to_str().unwrap(), false).unwrap();

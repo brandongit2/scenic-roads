@@ -6,7 +6,8 @@
 //! (`store::naming::write_atomic`). A file already there is reused as it is (one the manifest names
 //! under the same logical name with one look: `put_file`) and named in the hand-off's `reused`, which
 //! GC's queue and the merge go by (docs/maplog.md §7.4). An upload, copied or reused, stays pending
-//! until `verify` checks it on the NAS itself (SHA-256 over SSH, a duty of the `gc` job).
+//! until `verify` checks it on the NAS itself (there at its size, by one call over SSH a batch: a
+//! duty of the `gc` job).
 //!
 //! Several steps may run at once on the lead (the agent's job and a manual one): each records
 //! its own changes and merges them into the manifest on disk under this Mac's lock (`BuildLock`)
@@ -31,8 +32,8 @@ use store::nasfs::NasPath;
 pub type Writes = fn(step: &str, logical: &str, removal: bool) -> Option<bool>;
 
 /// Whether this process is a crate's unit tests (`go_testing`, from their start-up constructor;
-/// buildstore's own from the start): an `Out`'s retries wait 1 ms (`upload_waits`), `verify`'s
-/// floor and grace are short (`verify_deadline`), and a disk's free space is the test's own
+/// buildstore's own from the start): an `Out`'s retries wait 1 ms (`upload_waits`), a call on
+/// the NAS's deadline and grace are short (`nas_call_deadline`), and a disk's free space is the test's own
 /// (`room::disk_free`). Never a feature's: an example, a binary or another
 /// crate's test built with the dev-dependencies is no test of it (pipeline's tests/test_mode.rs).
 pub fn testing() -> bool {
@@ -240,7 +241,7 @@ pub const UPLOAD_HELD: u64 = HASH_BUF as u64;
 
 const _: () = assert!(HASH_BUF >= store::naming::CHUNK, "an upload's copy buffer is its largest");
 
-/// A file's `hash16` (BLAKE3, its content name's) and SHA-256 (the NAS's check, `verify`), from one
+/// A file's `hash16` (BLAKE3, its content name's) and SHA-256 (the records' pending holds it), from one
 /// read of it: each chunk hashed both ways at once, on two threads.
 fn hashes_of(p: &Path) -> Result<(String, String)> {
     let mut f = std::fs::File::open(p)?;
@@ -849,16 +850,14 @@ impl Out {
     }
 }
 
-/// How long one hashing call (`verify`) may take: three minutes (the call's own authentication, and a
-/// NAS busy with others' reads), and a second for each 16 MB it hashes (the NAS's disks and CPU
-/// give far more; this is the rate it would have to fall below to be stopped). Its floor and
-/// grace are short in a test (`testing`).
-pub fn verify_deadline(bytes: u64, testing: bool) -> std::time::Duration {
-    std::time::Duration::from_secs(if testing { 1 } else { 180 } + (bytes >> 24))
+/// How long one call on the NAS (`verify`, `remove_on_nas`) may take: three minutes (the call's own
+/// authentication, and a NAS busy with others' work); a second in a test (`testing`).
+pub fn nas_call_deadline(testing: bool) -> std::time::Duration {
+    std::time::Duration::from_secs(if testing { 1 } else { 180 })
 }
 
 /// How long a call past its deadline has to end after SIGTERM before it's killed (`testing`).
-fn verify_grace(testing: bool) -> std::time::Duration {
+fn nas_call_grace(testing: bool) -> std::time::Duration {
     if testing {
         std::time::Duration::from_millis(300)
     } else {
@@ -914,50 +913,62 @@ fn output_within(
     Ok(std::process::Output { status, stdout, stderr })
 }
 
-/// Checks unverified uploads `uploads` (content name → SHA-256) on the NAS itself: SHA-256 computed
-/// there over SSH (`ssh` runs a command on the NAS; `nas_root` is the project folder as the NAS sees
-/// it). The names that match, and those that don't or aren't there; nothing is removed or written
-/// (GC's job takes the matching ones out of the records' pending: pipeline::agent::gc::verify_pending).
-/// Its deadline and grace are short in a test (`testing`).
+/// Checks unverified uploads `uploads` (content name → its size by the records; None where they hold
+/// none) on the NAS itself, by one call over SSH (`ssh` runs a command on the NAS; `nas_root` is the
+/// project folder as the NAS sees it): each file's size as the NAS has it (`wc -c`, which takes a
+/// regular file's from its metadata and reads its last block at most), no SMB client's cache between.
+/// The names there at their size (any size, for one the records hold none of), and those of another
+/// size or not there; nothing is removed or written (GC's job takes the first out of the records'
+/// pending: pipeline::agent::gc::verify_pending). Its bytes were hashed as they landed, read back
+/// past this Mac's cache (`store::naming::write_atomic`), and the NAS's file system checksums them as
+/// it reads them; what is left to check is that the file is still there, whole.
 pub fn verify(
     ssh: &[&str],
     nas_root: &str,
-    uploads: &BTreeMap<String, String>,
-    bytes: u64,
+    uploads: &BTreeMap<String, Option<u64>>,
 ) -> Result<(Vec<String>, Vec<String>)> {
     if uploads.is_empty() {
         return Ok(Default::default());
     }
     // (A first call, bounded: it authenticates, which may wait on the SSH agent unbounded
-    // (crate::nasssh::SSH_START), and opens the shared connection the hashes' calls then take.)
+    // (crate::nasssh::SSH_START), and opens the shared connection the check's call then takes.)
     crate::nasssh::ssh_opened(ssh)?;
     let mut cmd = store::spawn::command(ssh[0]);
     cmd.args(&ssh[1..]);
     let quoted: Vec<String> = uploads.keys().map(|n| format!("'{}'", n.replace('\'', "'\\''"))).collect();
-    // (A file not there: sha256sum says so on stderr and goes on; it's among those that don't match.)
-    cmd.arg(format!("cd '{nas_root}' && {{ sha256sum {} 2>/dev/null; true; }}", quoted.join(" ")));
+    // (A file not there: wc says so on stderr and goes on; it's among those that don't match.)
+    cmd.arg(format!("cd '{nas_root}' && {{ wc -c -- {} 2>/dev/null; true; }}", quoted.join(" ")));
     // (The call itself bounded too: its authentication, outside the probe's, may stall on the SSH
-    // agent again, and a `sha256sum` on the NAS may hang; past `verify_deadline` it is stopped.)
-    let deadline = verify_deadline(bytes, testing());
-    let out = output_within(&mut cmd, deadline, verify_grace(testing())).map_err(|e| {
+    // agent again, and the NAS may hang; past `nas_call_deadline` it is stopped.)
+    let deadline = nas_call_deadline(testing());
+    let out = output_within(&mut cmd, deadline, nas_call_grace(testing())).map_err(|e| {
         if e.kind() == std::io::ErrorKind::TimedOut {
-            anyhow::Error::new(e)
-                .context(format!("ssh to the NAS hashing {bytes} bytes: over {} s", deadline.as_secs()))
+            anyhow::Error::new(e).context(format!(
+                "ssh to the NAS checking {} uploads: over {} s",
+                uploads.len(),
+                deadline.as_secs()
+            ))
         } else {
             anyhow::Error::new(e).context("ssh to the NAS")
         }
     })?;
     anyhow::ensure!(out.status.success(), "ssh to the NAS: {}", String::from_utf8_lossy(&out.stderr).trim());
     let text = String::from_utf8_lossy(&out.stdout);
-    let got: BTreeMap<&str, &str> = text.lines().filter_map(|l| l.split_once("  ")).map(|(h, n)| (n, h)).collect();
-    let (ok, bad): (Vec<_>, Vec<_>) = uploads.iter().partition(|(n, h)| got.get(n.as_str()) == Some(&h.as_str()));
+    // (Each line its size, a space and its name, the size padded on the left; a last `total` line,
+    // which names no upload.)
+    let got: BTreeMap<&str, u64> = text
+        .lines()
+        .filter_map(|l| l.trim_start().split_once(' '))
+        .filter_map(|(n, name)| Some((name, n.parse().ok()?)))
+        .collect();
+    let (ok, bad): (Vec<_>, Vec<_>) =
+        uploads.iter().partition(|(n, want)| got.get(n.as_str()).is_some_and(|g| want.is_none_or(|w| w == *g)));
     Ok((ok.into_iter().map(|(n, _)| n.clone()).collect(), bad.into_iter().map(|(n, _)| n.clone()).collect()))
 }
 
 /// Removes folders `dirs` (relative to the project folder) on the NAS itself, whole, by one `rm -rf`
 /// over SSH (`ssh`, `nas_root` as for `verify`): a folder of many small files goes in one call, not
-/// one SMB deletion a file (the share takes some tens a second). Bounded as `verify`'s call is (its
-/// deadline that of a call hashing nothing).
+/// one SMB deletion a file (the share takes some tens a second). Bounded as `verify`'s call is.
 pub fn remove_on_nas(ssh: &[&str], nas_root: &str, dirs: &[&str]) -> Result<()> {
     if dirs.is_empty() {
         return Ok(());
@@ -967,8 +978,7 @@ pub fn remove_on_nas(ssh: &[&str], nas_root: &str, dirs: &[&str]) -> Result<()> 
     cmd.args(&ssh[1..]);
     let quoted: Vec<String> = dirs.iter().map(|d| format!("'{}'", d.replace('\'', "'\\''"))).collect();
     cmd.arg(format!("cd '{nas_root}' && rm -rf -- {}", quoted.join(" ")));
-    let deadline = verify_deadline(0, testing());
-    let out = output_within(&mut cmd, deadline, verify_grace(testing()))
+    let out = output_within(&mut cmd, nas_call_deadline(testing()), nas_call_grace(testing()))
         .map_err(|e| anyhow::Error::new(e).context(format!("ssh to the NAS removing {}", dirs.join(", "))))?;
     anyhow::ensure!(out.status.success(), "ssh to the NAS: {}", String::from_utf8_lossy(&out.stderr).trim());
     Ok(())
