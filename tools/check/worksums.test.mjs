@@ -132,14 +132,17 @@ test('map: the view keeps tiles by state, member, tile area and solo (#615, #627
   assert.deepEqual(keys(mapTiles(running, queued, done, { tiles: { queued: false } }, { pubAt: 200 })), { running: ['slope 6/1/3', 'unit 6/1/2'], queued: [], finished: [], published: ['pack 3/0/0', 'unit 6/4/4'] });
   // (A queued tile built before, whenever, published or not: `built` (#833, the page then asks the catalogues when it was last published); one never built, not.)
   for (const pubAt of [400, 200, null]) assert.deepEqual([...mapTiles(running, queued, done, {}, { pubAt }).queued].map(([k, v]) => `${k}:${!!v.built}`).sort(), ['unit 6/2/2:true', 'unit 6/3/3:false']);
-  // (Published before (#833 review): a deep tile when a catalogue kept published its own packs,
-  // record or not; a shallower one only when built too (its z6 tile's catalogue is any step's).)
-  const at = (t) => (t.z === 10 && t.x === 259 ? { t: 7, n: 734 } : t.z === 6 ? { t: 5, n: 514 } : null);
-  assert.deepEqual(publishedBefore('terrain-deep 10/259/349', {}, at), { t: 7, n: 734 });
-  assert.equal(publishedBefore('terrain-deep 10/271/349', { built: true }, at), null);
-  assert.deepEqual(publishedBefore('unit 6/2/2', { built: true }, at), { t: 5, n: 514 });
-  assert.equal(publishedBefore('unit 6/3/3', {}, at), null);
-  assert.equal(publishedBefore('worldwide', { built: true }, at), null);
+  // (Published before (#833 review, #994): by the step's own outputs when a catalogue kept
+  // published them, record or not; by any step's at its tile (a step whose files aren't told by
+  // name) only when built too. Asked by its step.)
+  const at = (t, step) => (step === 'terrain-deep' && t.x === 259 ? { t: 7, n: 734, own: true } : step === 'unit' && t.z === 6 ? { t: 6, n: 600, own: true } : step === 'pack' ? { t: 5, n: 514 } : null);
+  assert.deepEqual(publishedBefore('terrain-deep 10/259/349', { step: 'terrain-deep' }, at), { t: 7, n: 734, own: true });
+  assert.equal(publishedBefore('terrain-deep 10/271/349', { step: 'terrain-deep', built: true }, at), null);
+  assert.equal(publishedBefore('slope-deep 10/259/349', { step: 'slope-deep', built: true }, at), null);
+  assert.deepEqual(publishedBefore('unit 6/3/3', { step: 'unit' }, at), { t: 6, n: 600, own: true });
+  assert.deepEqual(publishedBefore('pack 6/2/2', { step: 'pack', built: true }, at), { t: 5, n: 514 });
+  assert.equal(publishedBefore('pack 6/3/3', { step: 'pack' }, at), null);
+  assert.equal(publishedBefore('worldwide', { step: 'unit', built: true }, at), null);
   // (No catalogue yet: nothing published, every finish completed.)
   assert.deepEqual(states(mapTiles(new Map(), new Map(), done, {})), ['pack 3/0/0:completed', 'unit 6/1/2:completed', 'unit 6/2/2:completed', 'unit 6/4/4:completed']);
   const macOf = (w) => w.split(' #')[0];

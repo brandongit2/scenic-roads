@@ -8,7 +8,8 @@
 //   node tools/dev/touch-test.mjs [--out DIR] [--port N]   the Chrome run
 //   node tools/dev/touch-test.mjs --serve [--port N]       only the server (for Mobile Safari)
 //   --catalogs FILE   /work/catalogs answered from FILE (`scenic catalogs > FILE`: an agent before
-//                     #629 hasn't the call), `after` honoured; else forwarded as the other reads
+//                     #629 hasn't the call), `after` honoured, `steps` not (a solo then aged by any
+//                     step's times); else forwarded as the other reads
 //   --tocome FILE     /work/tocome answered from FILE ({at, macs: {mac: {step: [[tile, s]…]}}}, the
 //                     lead's forecast::ToCome, the map's queue); without it an agent before #685,
 //                     which answers one Mac at a time, is asked for each and the answers put together
@@ -83,7 +84,7 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "inputs", "activ
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).
-const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["raw", "renumber", "at"], built: [] };
+const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after", "steps"], tocome: ["raw", "renumber", "at"], built: [] };
 const CATS = arg("--catalogs", null);
 const TOCOME = arg("--tocome", null);
 const BUILT = arg("--built", null);

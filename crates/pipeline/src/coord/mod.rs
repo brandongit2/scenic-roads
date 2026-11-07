@@ -5014,10 +5014,17 @@ fn route(
         }
         "/work/catalogs" => {
             // The build page's Catalogues map (crate::agent::cataloguesview): the catalogues after
-            // `after` as read so far (its reader started, the folder listed again, when due).
-            let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            // `after` as read so far (its reader started, the folder listed again, when due), with
+            // the times of `steps`' own outputs (a solo's) when asked.
+            #[derive(serde::Deserialize, Default)]
+            struct Ask {
+                after: Option<u64>,
+                #[serde(default)]
+                steps: Vec<String>,
+            }
+            let a: Ask = serde_json::from_slice(body).unwrap_or_default();
             let cv = shared.lock().unwrap().catalogues.clone();
-            Ok(cv.map_or_else(not_ready, |cv| (200, cv.ask(b["after"].as_u64()))))
+            Ok(cv.map_or_else(not_ready, |cv| (200, cv.ask(a.after, &a.steps))))
         }
         "/work/built" => {
             // The build page's map's finished tiles (crate::agent::builtview): every tile target the

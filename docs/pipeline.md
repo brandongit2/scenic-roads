@@ -251,10 +251,10 @@ The Jobs tab's stages are the one exception.
     nothing to publish)", on the page and in `scenic status`.
   A tile in two of them is the running one, else the queued one: built before and to be built
   again, its finished tile isn't drawn. It was published before (sums.js publishedBefore) when a
-  catalogue kept published its output: a deep (z10) tile's, the last catalogue naming a new file of
-  its own packs (`/work/catalogs`' `z10`), record or not; a shallower one's, its z3 or z6 tile's
-  last catalogue (any step's files there), counted only when its step's key records it built
-  (current or not, or an end held names it). A solo then draws the queued tile in that catalogue's
+  catalogue kept published its step's own output there (#994: `/work/catalogs`' `steps`, the last
+  catalogue giving one of its names or a new file of it), record or not; for a step whose files
+  aren't told by name, its tile's last catalogue (any step's files there), counted only when its
+  step's key records it built (current or not, or an end held names it). A solo then draws the queued tile in that catalogue's
   age colour, fainter than a published one, under its dotted queued outline, and its card says when
   it was last published. Nothing new is in the status for it: `/work/built` and `/work/catalogs`
   hold both (the page asks `/work/built` again within seconds while the agent's first read is
@@ -282,8 +282,11 @@ The Jobs tab's stages are the one exception.
   step's tiles alone are drawn while the pointer's on it; a click or a tap holds the solo until
   it's clicked again (a stage's item: its steps). Soloed, no other step's tiles show; the step's
   queued, in progress and completed tiles look as above, and its published tiles, the whole
-  world's, are painted by when a catalogue last published each (`catalogues.js` publishedAt: the
-  tile's own z3 or z6 time, a deeper tile's z6 one, the root's newest z3 one). Then "Show only
+  world's, are painted by when a catalogue last published that step's own outputs there
+  (`catalogues.js` stepPublishedAt, #994: `/work/catalogs`' `steps`, asked for as a solo first
+  needs a step; a slope-deep pack published leaves terrain-deep's tile as old as it was). A step
+  whose files aren't told by name (pack, lo, peaks, pois, bldprep, pyramids-fill, the roots) takes
+  any step's time at its tile (publishedAt: the tile's own z3 or z6 time, a deeper tile's z6 one, the root's newest z3 one). Then "Show only
   for" one pool member (the tiles it ran, runs or will run: the history's ends, its running jobs
   and leases, the queue's placed on it).
   Then the **age controls** (`catalogues.js`, #629; top-level since #685, applying the same to
@@ -304,7 +307,7 @@ The Jobs tab's stages are the one exception.
   tiles on the map in magenta, apart from the ramp, solo or not, whatever the hide box: z6 tiles
   filled, z3 outlined. Its data: `/work/catalogs` (docs/pool.md §10), the catalogues after the
   last the page has, every 30 s while the page is seen, every 2 s while the agent is reading. The
-  sums (`parseWhen`, `commit`, `tileTimes`, `publishedAt`, `paint`, `labelled`, the axis) are
+  sums (`parseWhen`, `commit`, `tileTimes`, `publishedAt`, `stepPublishedAt`, `paint`, `labelled`, the axis) are
   tested by web/test/catalogues.test.mjs.
   The view (states, areas, solo, member) and the age controls' range and hide box are this
   browser's own (localStorage). On a touch screen, zoomed out, a finger moves the map sideways

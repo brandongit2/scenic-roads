@@ -2604,7 +2604,8 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   thread of its own while a page asks, again a minute after the last read at most (~600 KB over
   SMB), the last read kept when the file can't be read now. The page asks each minute while the
   map is drawn.
-  Every Mac's port also answers `POST /work/catalogs` (`{"after": n}` optional; no key) for the
+  Every Mac's port also answers `POST /work/catalogs` (`{"after": n, "steps": [step…]}`, both
+  optional; no key) for the
   map's age controls (task #629, `agent::cataloguesview`; the page asks the lead's): each batch of
   the map's log (docs/maplog.md §6.6; its `seq` the catalogue's number) as
   `{n, t, first?, z3, z6, z3_gone?, z6_gone?, z10?, z10_gone?}`, the tiles as `y * 2^z + x`, with
@@ -2613,14 +2614,24 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   terrain under it) or changes the file (`f/<name>`, its content name) of a name such a key gives,
   a z10 tile by its deep packs alone, a z3 tile by its layers' lo packs and area overlays (a pack
   built again keeps its name and gets a new file: #833 review). `first` marks the view's start: with
-  nothing kept, it takes the map whole and names everything it has. The agent follows the log on a
-  thread of its own, each loop and each ask (20 s apart at most): on the lead, its log's feed in
-  process; on a member, the lead's `GET /map/changes` (and `/map/snapshot` to start). Told to reset
+  nothing kept, it takes the map whole and names everything it has. Those entries are every step's
+  (the timeline's marks). A soloed step's tiles are aged by its own outputs instead (task #994): with
+  `steps`, the answer adds `steps: {step: [{n, t, first?, z3|z6|z10: [i…]}] | null}`, each tile the
+  map names at the step's zoom grouped by the newest last publish of its names there
+  (`agent::steps::output_names`; a step making several layers' packs: the newest of them; the view
+  keeps each `f/` name's last publish, the batch that gave a key that name or changed its file);
+  null for a step whose files aren't told by name, which the page ages by any step's entries. The
+  page asks for a step as the map first needs it (a solo, a queued tile's card) and again after a
+  new catalogue: terrain-deep's is 35 KB of JSON (7 Nov), the answer without `steps` the same as
+  before (146 KB whole, 45 KB gzipped, read once a page; then the batches after its last). The
+  agent follows the log on a thread of its own, each loop and each ask (20 s apart at most): the
+  lead's log's feed in process, on the lead alone. Told to reset
   (the log no longer holds its batches: a new lead's log), it takes the map again and says in
   `error` that the batches it missed aren't shown. Kept in the agent's folder
   (`catalogues-view.json.zst`, written when a batch was applied): the entries, each tile section's
   key with its name's hash, and each `f/` name's hash with its file's (what `/work/built`'s
-  `published` reads, #866), never a catalogue; so a restarted agent goes on from where it was, as
+  `published` reads, #866) and its last publish (a view kept before #994 takes each name's from its
+  deepest tile's newest entry, any layer's), never a catalogue; so a restarted agent goes on from where it was, as
   deep as it has followed the log. `scenic catalogs [--after N]` prints the same JSON from this
   Mac's kept file. 503 until the agent has made it.
   The page's own files carry the world's countries' outlines for the same map (`countries.json`,

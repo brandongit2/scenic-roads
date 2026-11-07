@@ -88,7 +88,8 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
   ask (20 s apart at most): the lead's feed in process, on the lead alone (the build page is the
   lead's; a member's port sends `/work/catalogs` to it, `coord::memberpage::answer`). It keeps, in the agent's folder
   (`catalogues-view.json.zst`), its entries, the `seq` they reach, each tile section's key with its
-  name's hash and each `f/` name's hash with its file's: a batch setting a file again unchanged (its
+  name's hash and each `f/` name's hash with its file's and last publish (a soloed step's tiles' ages,
+  #994): a batch setting a file again unchanged (its
   size alone) publishes nothing, as before. It reads no catalogue and keeps no hashed file name per
   tile key; `whole` goes from its entries. Where it departs from §6.6: a view with nothing kept
   starts at the map's `seq` with one `first` entry (every tile the map names: what was there before

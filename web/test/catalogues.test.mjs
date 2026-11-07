@@ -2,7 +2,7 @@
 // (web/work/catalogues.js): the range's inputs (parsing, the sides' signs, one span at a time, the
 // swap), the tiles' times, the colour map, the timeline.
 import assert from "node:assert/strict";
-import { axisTicks, commit, formatWhen, keyOf, labelled, markLabels, mergeCatalogues, pairAt, paint, parseWhen, publishedAt, RAMP, rampColour, rangeOf, tileTimes, timelineSpan } from "../work/catalogues.js";
+import { axisTicks, commit, formatWhen, keyOf, labelled, markLabels, mergeCatalogues, pairAt, paint, parseWhen, publishedAt, RAMP, rampColour, rangeOf, stepPublishedAt, tablesOf, tileTimes, timelineSpan } from "../work/catalogues.js";
 
 process.env.TZ = "UTC";
 const NOW = Date.UTC(2026, 9, 24, 12, 0, 0) / 1000;
@@ -69,21 +69,39 @@ assert.deepEqual([...tileTimes(cats, 6)], [["6/1/1", { t: 200, n: 2, first: fals
 assert.deepEqual([...tileTimes(cats, 3)], [["3/0/0", { t: 100, n: 1, first: true }]]);
 // A tile's last publish (#685): its own at z3 or z6, a deeper one's z6 tile's, the root's newest z3.
 const t3 = new Map([["3/0/0", { t: 100, n: 1 }], ["3/7/7", { t: 300, n: 3 }]]), t6 = new Map([["6/1/1", { t: 200, n: 2 }]]);
-assert.equal(publishedAt(t3, t6, { z: 6, x: 1, y: 1 }).n, 2);
-assert.equal(publishedAt(t3, t6, { z: 10, x: 16, y: 31 }).n, 2);
-assert.equal(publishedAt(t3, t6, { z: 3, x: 0, y: 0 }).n, 1);
-assert.equal(publishedAt(t3, t6, { z: 0, x: 0, y: 0 }).n, 3);
-assert.equal(publishedAt(t3, t6, { z: 2, x: 0, y: 0 }).n, 1);
-assert.equal(publishedAt(t3, t6, { z: 6, x: 9, y: 9 }), null);
-// (A deep tile by its own packs' catalogue when the agent sends z10 tiles (#833 review): not its
-// z6 tile's newer one for a neighbour's pack; none named, null, whatever its z6 tile says.)
+// (A deep tile by its own packs' catalogue (#833 review): not its z6 tile's newer one for a
+// neighbour's pack; none named, null, whatever its z6 tile says.)
 const t10 = tileTimes([{ n: 1, t: 100, first: true, z3: [], z6: [], z10: [31 * 1024 + 16, 31 * 1024 + 17] }, { n: 2, t: 200, z3: [], z6: [], z10: [31 * 1024 + 17] }], 10);
 assert.deepEqual([...t10.keys()].sort(), ["10/16/31", "10/17/31"]);
-assert.equal(publishedAt(t3, t6, { z: 10, x: 16, y: 31 }, t10).n, 1);
-assert.equal(publishedAt(t3, t6, { z: 10, x: 17, y: 31 }, t10).n, 2);
-assert.equal(publishedAt(t3, t6, { z: 12, x: 64, y: 124 }, t10).n, 1);
-assert.equal(publishedAt(t3, t6, { z: 10, x: 18, y: 31 }, t10), null);
-assert.equal(publishedAt(t3, t6, { z: 10, x: 18, y: 31 }, new Map()).n, 2, "no z10 tiles sent: its z6 tile's");
+const any = { t3, t6, t10 };
+assert.equal(publishedAt(any, { z: 6, x: 1, y: 1 }).n, 2);
+assert.equal(publishedAt(any, { z: 8, x: 4, y: 4 }).n, 2);
+assert.equal(publishedAt(any, { z: 3, x: 0, y: 0 }).n, 1);
+assert.equal(publishedAt(any, { z: 0, x: 0, y: 0 }).n, 3);
+assert.equal(publishedAt(any, { z: 2, x: 0, y: 0 }).n, 1);
+assert.equal(publishedAt(any, { z: 6, x: 9, y: 9 }), null);
+assert.equal(publishedAt(any, { z: 10, x: 16, y: 31 }).n, 1);
+assert.equal(publishedAt(any, { z: 10, x: 17, y: 31 }).n, 2);
+assert.equal(publishedAt(any, { z: 12, x: 64, y: 124 }).n, 1);
+assert.equal(publishedAt(any, { z: 10, x: 18, y: 31 }), null);
+
+// A step's tile by its own outputs (#994): `/work/catalogs`' `steps` answer for it, not any step's.
+// Catalogue 2 published slope-deep's pack at 10/17/31 alone: terrain-deep's there stays 1's.
+const both = tablesOf([{ n: 1, t: 100, first: true, z10: [31 * 1024 + 17] }, { n: 2, t: 200, z10: [31 * 1024 + 17] }]);
+const steps = { "terrain-deep": [{ n: 1, t: 100, first: true, z10: [31 * 1024 + 17] }], "slope-deep": [{ n: 2, t: 200, z10: [31 * 1024 + 17] }], "terrain-hi": [{ n: 1, t: 100, first: true, z6: [1 * 64 + 1] }] };
+const own = (s) => (steps[s] ? tablesOf(steps[s]) : steps[s] === null ? null : undefined);
+const deep = { z: 10, x: 17, y: 31 };
+assert.deepEqual(stepPublishedAt(own("terrain-deep"), both, deep), { t: 100, n: 1, first: true, own: true });
+assert.deepEqual(stepPublishedAt(own("slope-deep"), both, deep), { t: 200, n: 2, first: false, own: true });
+assert.equal(publishedAt(both, deep).n, 2, "any step's: the newest");
+// (A z6 step's tile isn't freshened by the deep packs under it; one it hasn't, null.)
+assert.equal(stepPublishedAt(own("terrain-hi"), any, { z: 6, x: 1, y: 1 }).n, 1);
+assert.equal(stepPublishedAt(own("terrain-hi"), any, { z: 6, x: 2, y: 1 }), null);
+// (A step whose files aren't told by name (null): any step's; one not read yet (undefined): null.)
+steps.pack = null;
+assert.equal(stepPublishedAt(own("pack"), any, { z: 6, x: 1, y: 1 }).n, 2);
+assert.equal(stepPublishedAt(own("pack"), any, { z: 6, x: 1, y: 1 }).own, undefined);
+assert.equal(stepPublishedAt(own("trees"), any, { z: 6, x: 1, y: 1 }), null);
 
 // The colour map: its ends, clamped beyond; hidden outside with the box ticked.
 assert.equal(rampColour(0, 0, 10), "rgb(63,79,168)");

@@ -1,8 +1,9 @@
 // The world map's age controls (task #629; top-level since #685; docs/pipeline.md §5): a soloed
-// step's published tiles coloured by when a catalogue last published each, over a range set by a
-// pair of inputs, and a timeline of every catalogue (hovering one lights the tiles it published).
-// Its data: /work/catalogs (crate::agent::cataloguesview: the map log's batches, each numbered as
-// its catalogue), the catalogues after the last one this page has. The sums are apart from the DOM so Node tests them (web/test/catalogues.test.mjs).
+// step's published tiles coloured by when a catalogue last published that step's own outputs there,
+// over a range set by a pair of inputs, and a timeline of every catalogue (hovering one lights the
+// tiles it published, any step's). Its data: /work/catalogs (crate::agent::cataloguesview: the map
+// log's batches, each numbered as its catalogue), the catalogues after the last one this page has,
+// and a step's own times (`steps`, #994) as the map needs them. The sums are apart from the DOM so Node tests them (web/test/catalogues.test.mjs).
 import { hhmm, timeTicks } from "./chartmath.js";
 
 // ---- The range's inputs ---------------------------------------------------------------------------
@@ -105,14 +106,16 @@ export function tileTimes(cats, z) {
   return out;
 }
 
-/** When a tile ({z, x, y}) was last published, from the z3, z6 and z10 tiles' times (`tileTimes`):
- * its own at z3 or z6; a deep one's (z10 and past) its z10 tile's own (the catalogue that last named
- * a new file of its packs: #833 review), its z6 tile's when the agent sends no z10 tiles (one before
- * them); z7–9, its z6 tile's; a shallower one's (the root), the latest of the z3 tiles under it.
- * {t, n, first} or null (no catalogue kept names it). */
-export function publishedAt(t3, t6, { z, x, y }, t10 = null) {
+/** A list of catalogues' tiles' times at each zoom (`tileTimes`): {t3, t6, t10}. */
+export const tablesOf = (cats) => ({ t3: tileTimes(cats, 3), t6: tileTimes(cats, 6), t10: tileTimes(cats, 10) });
+
+/** When a tile ({z, x, y}) was last published, from times `{t3, t6, t10}` (`tablesOf`): its own at
+ * z3 or z6; a deep one's (z10 and past) its z10 tile's own (the catalogue that last named a new file
+ * of its packs: #833 review); z7–9, its z6 tile's; a shallower one's (the root), the latest of the z3
+ * tiles under it. {t, n, first} or null (none kept names it). */
+export function publishedAt({ t3, t6, t10 }, { z, x, y }) {
   if (z === 3) return t3.get(`3/${x}/${y}`) || null;
-  if (z >= 10 && t10?.size) return t10.get(`10/${x >> (z - 10)}/${y >> (z - 10)}`) || null;
+  if (z >= 10) return t10.get(`10/${x >> (z - 10)}/${y >> (z - 10)}`) || null;
   if (z >= 6) return t6.get(`6/${x >> (z - 6)}/${y >> (z - 6)}`) || null;
   let best = null;
   for (const [k, v] of t3) {
@@ -120,6 +123,17 @@ export function publishedAt(t3, t6, { z, x, y }, t10 = null) {
     if (kx >> (3 - z) === x && ky >> (3 - z) === y && !(best?.t >= v.t)) best = v;
   }
   return best;
+}
+
+/** When a step's output at `tile` was last published (#994): by its own outputs' times (`own`:
+ * `/work/catalogs`' `steps` answer for it, `tablesOf`), marked `own`; for a step whose files aren't
+ * told by name (`own` null), by any step's at that tile (`any`: every catalogue's, `tablesOf`).
+ * Null when none kept names it, or the step's times aren't read (`own` undefined). */
+export function stepPublishedAt(own, any, tile) {
+  if (own === undefined) return null;
+  if (own === null) return publishedAt(any, tile);
+  const p = publishedAt(own, tile);
+  return p && { ...p, own: true };
 }
 
 // The colour map, oldest to newest: one hue path from a deep blue to a light yellow, which reads on
@@ -231,14 +245,19 @@ const svg = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); fo
 const plural = (k, one) => `${Number(k).toLocaleString("en-US")} ${one}${k === 1 ? "" : "s"}`;
 
 /** The age controls: `el` (kept across the page's renders), `view()` what they say now ({from,
- * to, hide, lit (the "z/x/y" keys a hovered or held catalogue published), at(tile) its last
- * publish, publishedAt}); `onChange()` called as any of it changes. `call(path, body)` asks the
+ * to, hide, lit (the "z/x/y" keys a hovered or held catalogue published), at(tile, step) when
+ * that step's output there was last published (`stepPublishedAt`), stamp (moved on as those
+ * times change)}); `onChange()` called as any of it changes. `call(path, body)` asks the
  * lead; `store` this browser's own. Reads the catalogues while the page is seen. */
 export function createAges({ call, store, onChange }) {
   const now = () => Math.floor(Date.now() / 1000);
   const kept = store.get("catalogues", {}) || {};
   const st = { hide: !!kept.hide, pair: pairAt(kept, now()), keepRight: kept.right ? kept.right : null };
-  let cats = [], t3 = new Map(), t6 = new Map(), t10 = new Map(), latest = null, reading = false, error = "", timer = 0, hovered = null, pinnedN = null;
+  let cats = [], any = tablesOf([]), latest = null, reading = false, error = "", timer = 0, hovered = null, pinnedN = null;
+  // (Each step's own times as last read, {at: the latest catalogue then, tables}; those being asked
+  // for; those whose ask failed, at which latest.)
+  const own = new Map(), asking = new Set(), failed = new Map();
+  let askTimer = 0, stamp = 0; // (`stamp`: moved on as any times change, what the map's paint is kept by)
   const save = () => store.set("catalogues", { hide: st.hide, left: st.pair.left, right: st.keepRight });
 
   const input = (side) => {
@@ -285,7 +304,37 @@ export function createAges({ call, store, onChange }) {
     const lit = new Set();
     const hc = cats.find((c) => c.n === (hovered ?? pinnedN));
     if (hc) for (const z of [3, 6, 10]) for (const i of hc[`z${z}`] || []) lit.add(keyOf(z, i));
-    return { from, to, hide: st.hide, lit, at: (tile) => publishedAt(t3, t6, tile, t10) };
+    return { from, to, hide: st.hide, lit, at, stamp };
+  }
+  // (A step's own times (#994), asked for as the map needs them (a solo's tiles, a queued tile's
+  // card) and again once a catalogue comes: the last read used meanwhile, none before the first.)
+  function at(tile, step) {
+    const o = own.get(step);
+    if (o?.at !== latest && failed.get(step) !== latest) want(step);
+    return stepPublishedAt(o?.tables, any, tile);
+  }
+  function want(step) {
+    if (asking.has(step)) return;
+    asking.add(step);
+    if (!askTimer) askTimer = setTimeout(askSteps, 0);
+  }
+  async function askSteps() {
+    askTimer = 0;
+    const steps = [...asking];
+    let got = false;
+    try {
+      const [code, a] = await call("/work/catalogs", { ...(latest == null ? {} : { after: latest }), steps });
+      if (code === 200 && a) {
+        take(a);
+        // (An agent before #994 sends no `steps`: any step's times, as for a step not told by name.)
+        for (const s of steps) own.set(s, { at: latest, tables: a.steps?.[s] ? tablesOf(a.steps[s]) : null });
+        stamp++;
+        got = true;
+      } else error = `answer ${code}`;
+    } catch (e) { error = e.message; }
+    // (Not read: asked again once another catalogue comes, not at every paint.)
+    for (const s of steps) { asking.delete(s); if (!got) failed.set(s, latest); }
+    changed();
   }
 
   function draw() {
@@ -363,19 +412,22 @@ export function createAges({ call, store, onChange }) {
     changed();
   });
 
+  // (An answer's catalogues after the last kept added, with its state.)
+  function take(a) {
+    const had = cats.length;
+    cats = mergeCatalogues(cats, a.catalogs);
+    if (cats.length !== had) { any = tablesOf(cats); stamp++; }
+    latest = cats.length ? cats[cats.length - 1].n : null;
+    reading = !!a.reading;
+    error = a.error || "";
+  }
   async function load() {
     clearTimeout(timer);
     if (document.visibilityState !== "visible") return;
     try {
       const [code, a] = await call("/work/catalogs", latest == null ? {} : { after: latest });
-      if (code === 200 && a) {
-        const had = cats.length;
-        cats = mergeCatalogues(cats, a.catalogs);
-        if (cats.length !== had) { t3 = tileTimes(cats, 3); t6 = tileTimes(cats, 6); t10 = tileTimes(cats, 10); }
-        latest = cats.length ? cats[cats.length - 1].n : null;
-        reading = !!a.reading;
-        error = a.error || "";
-      } else error = code === 503 ? "this Mac hasn't made the view yet" : `answer ${code}`;
+      if (code === 200 && a) take(a);
+      else error = code === 503 ? "this Mac hasn't made the view yet" : `answer ${code}`;
     } catch (e) { error = e.message; }
     // ("now" at render: the right input moves on with the clock while kept as now.)
     if (st.keepRight == null) { st.pair = pairAt({ left: st.pair.left, right: null }, now()); if (document.activeElement !== rightIn && document.activeElement !== leftIn) fill(); }

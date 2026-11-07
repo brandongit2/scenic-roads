@@ -9,15 +9,21 @@
 //! pack, road values, hi data, landmark points, its layers' hi packs and the deep packs under it
 //! (z10 keys, their z6 tile's); a z10 tile by its deep packs alone; a z3 tile by its layers' lo
 //! packs and area overlays' details. Its entry: its number, time (the batch's `at`), and the z3, z6
-//! and z10 tiles it published (`y * 2^z + x`), and those no key names any more. A tile's age on the
-//! page is the newest entry naming it.
+//! and z10 tiles it published (`y * 2^z + x`), and those no key names any more: the timeline's
+//! marks and a hovered one's tiles, every step's alike.
 //!
-//! It follows the log (`Source`): on the lead, the log's feed in process; on a member, the lead's
-//! `GET /map/changes` (and `/map/snapshot` to start). What it keeps, in the agent's folder
+//! A step's tiles' ages (a solo's, task #994) are its own outputs' instead: each `f/` name's last
+//! publish (`Published`: the batch that gave a key that name or changed its file) is kept too, and
+//! a page asking for `steps` is answered each one's tiles by the newest of their names
+//! (crate::agent::steps::output_names: `step_times`), so a slope-deep pack published leaves
+//! terrain-deep's tile under it as old as it was.
+//!
+//! It follows the log (`Source`): the lead's feed in process, on the lead alone (a member's page asks
+//! the lead's, docs/maplog.md). What it keeps, in the agent's folder
 //! (`KEPT`), saved once a refresh applied a batch: its entries, the `seq` they reach, each tile
 //! section's key with its name (hashed), and every `f/` name with its file (both hashed: a file
 //! set again unchanged, its size alone, publishes nothing; the names are what the map's finished
-//! tiles are published by, crate::agent::builtview, task #866). Never a catalogue. So it goes on from where it was after a restart, as deep as it has
+//! tiles are published by, crate::agent::builtview, task #866) and its last publish. Never a catalogue. So it goes on from where it was after a restart, as deep as it has
 //! followed the log. A view with nothing kept starts at the map's `seq` with one entry, `first`,
 //! publishing every tile the map names (what was there before isn't known); one told to reset (the
 //! log no longer holds the batches after its `seq`: a new lead's log) takes the map again and adds
@@ -125,7 +131,13 @@ struct Kept {
     keys: HashMap<String, u64>,
     /// Every `f/` name and its file, hashed.
     files: HashMap<u64, u64>,
+    /// Every `f/` name's last publish (hashed).
+    #[serde(default)]
+    published: HashMap<u64, Published>,
 }
+
+/// When a name was last published: a batch's number and its time, unix seconds (task #994).
+type Published = (u64, u64);
 
 /// The tiles each name is given for, and how many keys name each tile: `Kept::keys` turned about.
 #[derive(Default)]
@@ -139,6 +151,8 @@ struct Index {
 struct Change {
     set: BTreeSet<Tile>,
     dropped: BTreeSet<Tile>,
+    /// The names it published: a key given one, or a name's file changed (hashed).
+    names: BTreeSet<u64>,
 }
 
 /// The view's state with its index.
@@ -149,7 +163,7 @@ struct State {
 }
 
 impl State {
-    fn of(kept: Kept) -> State {
+    fn of(mut kept: Kept) -> State {
         let mut index = Index::default();
         for (k, nh) in &kept.keys {
             let ts = tile_key(k).map(tiles_of).unwrap_or_default();
@@ -157,6 +171,9 @@ impl State {
                 *index.count.entry(*t).or_default() += 1;
             }
             index.by_name.entry(*nh).or_default().extend(ts);
+        }
+        if kept.published.is_empty() && !kept.files.is_empty() {
+            kept.published = published_of_entries(&kept);
         }
         State { kept, index }
     }
@@ -176,6 +193,7 @@ impl State {
         }
         self.index.by_name.entry(nh).or_default().extend(ts.iter().copied());
         ch.set.extend(ts);
+        ch.names.insert(nh);
     }
 
     /// Entry key `k` gone (its tiles dropped once no key names them).
@@ -206,9 +224,11 @@ impl State {
         }
     }
 
-    /// The map whole: what's kept made again from it (`first`: its entry added).
+    /// The map whole: what's kept made again from it (`first`: its entry added). A name kept with
+    /// the same file keeps its time; any other is published by the map's `seq`.
     fn take_map(&mut self, m: &Map, first: bool) {
         let entries = std::mem::take(&mut self.kept.entries);
+        let (files, published) = (std::mem::take(&mut self.kept.files), std::mem::take(&mut self.kept.published));
         *self = State::default();
         let mut ch = Change::default();
         for (k, v) in m.entries() {
@@ -218,11 +238,16 @@ impl State {
                 self.link(k, &name, &mut ch);
             }
         }
+        let now = (m.seq, unix_of(&m.at).unwrap_or(0));
+        for (nh, fh) in &self.kept.files {
+            let was = published.get(nh).filter(|_| files.get(nh) == Some(fh));
+            self.kept.published.insert(*nh, *was.unwrap_or(&now));
+        }
         self.kept.entries = entries;
         self.kept.seq = Some(m.seq);
         if first {
             ch.dropped.clear();
-            self.kept.entries.push(entry(m.seq, unix_of(&m.at).unwrap_or(0), true, ch));
+            self.kept.entries.push(entry(now.0, now.1, true, ch));
         }
     }
 
@@ -234,6 +259,7 @@ impl State {
             match k.strip_prefix("f/") {
                 Some(name) => {
                     self.kept.files.remove(&hash(name));
+                    self.kept.published.remove(&hash(name));
                     refiled.insert(hash(name));
                 }
                 None => self.unlink(k, &mut ch),
@@ -256,10 +282,40 @@ impl State {
         // (A name's file changed: the tiles given it published again.)
         for nh in refiled {
             ch.set.extend(self.index.by_name.get(&nh).into_iter().flatten().copied());
+            ch.names.insert(nh);
+        }
+        let t = unix_of(&b.at).unwrap_or(0);
+        for nh in &ch.names {
+            if self.kept.files.contains_key(nh) {
+                self.kept.published.insert(*nh, (b.seq, t));
+            }
         }
         self.kept.seq = Some(b.seq);
-        self.kept.entries.push(entry(b.seq, unix_of(&b.at).unwrap_or(0), false, ch));
+        self.kept.entries.push(entry(b.seq, t, false, ch));
     }
+}
+
+/// Each name's time from the tiles its keys give it for (the newest entry naming its deepest
+/// tile): for a view kept before names' times were (#994), whose entries don't tell layers apart.
+fn published_of_entries(k: &Kept) -> HashMap<u64, Published> {
+    let mut at: HashMap<Tile, Published> = HashMap::new();
+    for e in &k.entries {
+        for (z, set, gone) in [(3, &e.z3, &e.z3_gone), (6, &e.z6, &e.z6_gone), (10, &e.z10, &e.z10_gone)] {
+            at.extend(set.iter().map(|i| ((z, *i), (e.n, e.t))));
+            for i in gone {
+                at.remove(&(z, *i));
+            }
+        }
+    }
+    let mut out: HashMap<u64, Published> = HashMap::new();
+    for (key, nh) in &k.keys {
+        let deepest = tile_key(key).map(tiles_of).and_then(|ts| ts.last().copied());
+        if let Some(p) = deepest.and_then(|t| at.get(&t)).filter(|_| k.files.contains_key(nh)) {
+            let o = out.entry(*nh).or_insert(*p);
+            *o = (*o).max(*p);
+        }
+    }
+    out
 }
 
 /// An `f/` entry's file (its content name).
@@ -284,7 +340,7 @@ fn entry(n: u64, t: u64, first: bool, ch: Change) -> Entry {
     }
 }
 
-/// Where the log is read: the lead's feed in process, the lead's routes from a member, a test's.
+/// Where the log is read: the lead's feed in process, a test's.
 pub trait Source: Send + Sync {
     /// The batches after `since` (`GET /map/changes`' answer), or a reset.
     fn changes(&self, since: u64) -> anyhow::Result<Answer>;
@@ -315,12 +371,57 @@ struct Shown {
     error: Option<String>,
     /// The `f/` names at `latest` (`names`).
     names: Arc<HashSet<u64>>,
+    times: Arc<Times>,
+}
+
+/// What a step's times are made from (`step_times`), at `latest`.
+#[derive(Default)]
+struct Times {
+    /// Every tile a key names, sorted.
+    tiles: Vec<Tile>,
+    /// Each `f/` name's last publish (`Kept::published`).
+    published: HashMap<u64, Published>,
+}
+
+/// Step `step`'s published tiles by when each was last published (task #994): every tile the map
+/// names at a zoom the step's files are told by name for (crate::agent::steps::output_names), its
+/// time the newest of its names' (a step making several layers' packs: the newest of them); a tile
+/// where the map has none of them, left out. Grouped by that time, oldest first: `[{n, t, first?,
+/// z3|z6|z10: [i…]}]` (`first`: the view's start's). None for a step whose files aren't told by
+/// name. Asked for a solo, never sent to every page: terrain-deep's is 35 KB of JSON (3,546 z10 tiles in 291 times, 7 Nov).
+fn step_times(step: &str, times: &Times, first: Option<u64>) -> Option<Value> {
+    let zooms: Vec<u8> =
+        [3, 6, 10].into_iter().filter(|z| super::steps::output_names(step, &format!("{z}/0/0")).is_some()).collect();
+    if zooms.is_empty() {
+        return None;
+    }
+    let mut by: std::collections::BTreeMap<Published, std::collections::BTreeMap<u8, Vec<u32>>> = Default::default();
+    for &(z, i) in times.tiles.iter().filter(|t| zooms.contains(&t.0)) {
+        let names = super::steps::output_names(step, &format!("{z}/{}/{}", i % (1 << z), i >> z)).unwrap_or_default();
+        if let Some(p) = names.iter().filter_map(|n| times.published.get(&hash(n))).max() {
+            by.entry(*p).or_default().entry(z).or_default().push(i);
+        }
+    }
+    let list: Vec<Value> = by
+        .into_iter()
+        .map(|((n, t), zs)| {
+            let mut e = serde_json::json!({ "n": n, "t": t });
+            if first == Some(n) {
+                e["first"] = true.into();
+            }
+            for (z, is) in zs {
+                e[format!("z{z}")] = is.into();
+            }
+            e
+        })
+        .collect();
+    Some(list.into())
 }
 
 /// The view: its source, what it shows, and its reader with its state (that thread's alone while it
 /// runs, kept between its runs).
 pub struct CataloguesView {
-    src: Arc<Snap<Arc<dyn Source>>>,
+    src: Arc<dyn Source>,
     /// Where it's kept (None: not kept).
     keep: Option<PathBuf>,
     shown: Arc<Snap<Shown>>,
@@ -373,7 +474,7 @@ impl CataloguesView {
     /// A view of the log `src`, kept at `keep`.
     pub fn new(src: Arc<dyn Source>, keep: Option<PathBuf>) -> Arc<Self> {
         Arc::new(CataloguesView {
-            src: Snap::new(src),
+            src,
             keep,
             shown: Snap::new(Shown::default()),
             state: Mutex::new(None),
@@ -383,15 +484,10 @@ impl CataloguesView {
         })
     }
 
-    /// The log read from `src` from now on (this Mac took the lead, or let it go).
-    pub fn set_source(&self, src: Arc<dyn Source>) {
-        self.src.set(src);
-    }
-
-    /// A page's ask: the reader woken (`wake`); the batches after `after` as applied so far.
-    pub fn ask(self: &Arc<Self>, after: Option<u64>) -> Value {
+    /// A page's ask: the reader woken (`wake`); the answer as applied so far (`answer`).
+    pub fn ask(self: &Arc<Self>, after: Option<u64>, steps: &[String]) -> Value {
         self.wake();
-        self.answer(after)
+        self.answer(after, steps)
     }
 
     /// The reader started when it isn't running and the log wasn't asked in the last `EVERY`.
@@ -418,10 +514,18 @@ impl CataloguesView {
     }
 
     /// The answer now: `catalogs` after `after` (all with none), the last applied (`latest`),
-    /// whether the reader is running (`reading`), its last error.
-    pub fn answer(&self, after: Option<u64>) -> Value {
+    /// whether the reader is running (`reading`), its last error; and `steps`' times (`step_times`)
+    /// as `steps: {step: [...] | null}` when any are asked.
+    pub fn answer(&self, after: Option<u64>, steps: &[String]) -> Value {
         let s = self.shown.get();
-        answer_of(&s.entries, s.latest, self.reading.load(Ordering::SeqCst), s.error.as_deref(), after)
+        let mut a = answer_of(&s.entries, s.latest, self.reading.load(Ordering::SeqCst), s.error.as_deref(), after);
+        if !steps.is_empty() {
+            let first = s.entries.iter().find(|e| e.first).map(|e| e.n);
+            let by: serde_json::Map<String, Value> =
+                steps.iter().map(|st| (st.clone(), step_times(st, &s.times, first).unwrap_or(Value::Null))).collect();
+            a["steps"] = by.into();
+        }
+        a
     }
 
     /// What's kept at `path` as `/work/catalogs` answers it (`scenic catalogs`: this Mac's agent's
@@ -436,7 +540,7 @@ impl CataloguesView {
     /// moved.
     pub fn refresh(&self) {
         self.asked.store(self.born.elapsed().as_millis() as u64 + 1, Ordering::SeqCst);
-        let src = self.src.get();
+        let src = &self.src;
         // (The state is this thread's alone while it runs: an answer reads what's shown, never
         // waiting on the log.)
         let taken = self.state.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -490,7 +594,14 @@ impl CataloguesView {
             } else {
                 Arc::new(st.kept.files.keys().copied().collect())
             };
-            self.shown.set(Shown { entries: st.kept.entries.clone(), latest: st.kept.seq, error, names });
+            let times = if st.kept.seq == shown.latest {
+                shown.times.clone()
+            } else {
+                let mut tiles: Vec<Tile> = st.index.count.keys().copied().collect();
+                tiles.sort_unstable();
+                Arc::new(Times { tiles, published: st.kept.published.clone() })
+            };
+            self.shown.set(Shown { entries: st.kept.entries.clone(), latest: st.kept.seq, error, names, times });
         }
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(st);
     }
@@ -569,7 +680,7 @@ mod tests {
         let keep = lead.d.path().join(KEPT);
         let v = CataloguesView::new(lead.source(), Some(keep.clone()));
         v.refresh();
-        let a = v.answer(None);
+        let a = v.answer(None, &[]);
         assert_eq!(a["latest"], 1, "{a}");
         let cs = a["catalogs"].as_array().unwrap();
         assert_eq!(cs.len(), 1);
@@ -585,7 +696,7 @@ mod tests {
         c2.layers.get_mut("terrain").unwrap().deep.insert("10/48/48".into(), "t/f/b".into());
         lead.publish(&c2);
         v.refresh();
-        let a = v.answer(Some(1));
+        let a = v.answer(Some(1), &[]);
         assert_eq!(
             a["catalogs"],
             json!([{"n": 2, "t": 1_792_717_200, "z3": [], "z6": [65, 195], "z6_gone": [130], "z10": [48 * 1024 + 48]}])
@@ -598,7 +709,7 @@ mod tests {
         lead.publish(&c3);
         let again = CataloguesView::new(lead.source(), Some(keep.clone()));
         again.refresh();
-        let a = again.answer(None);
+        let a = again.answer(None, &[]);
         let ns: Vec<u64> = a["catalogs"].as_array().unwrap().iter().map(|e| e["n"].as_u64().unwrap()).collect();
         assert_eq!(ns, [1, 2, 3]);
         assert_eq!(a["catalogs"][2]["z3"], json!([9]));
@@ -612,9 +723,9 @@ mod tests {
         c5.n = 5;
         c5.created = "2026-10-23T04:00:00Z".into();
         other.publish(&c5);
-        again.set_source(other.source());
+        let again = CataloguesView::new(other.source(), Some(keep.clone()));
         again.refresh();
-        let a = again.answer(None);
+        let a = again.answer(None, &[]);
         assert_eq!(a["latest"], 5);
         assert_eq!(a["catalogs"].as_array().unwrap().len(), 3);
         assert!(a["error"].as_str().is_some_and(|e| e.contains("after 3")), "{a}");
@@ -625,7 +736,7 @@ mod tests {
         c6.base.insert("6/2/2".into(), "base/6-2-2".into());
         other.publish(&c6);
         again.refresh();
-        let a = again.answer(Some(5));
+        let a = again.answer(Some(5), &[]);
         assert_eq!(a["catalogs"][0]["z6"], json!([130]));
         assert!(a["error"].is_null());
     }
@@ -668,7 +779,7 @@ mod tests {
             lead.publish(&c);
         }
         v.refresh();
-        let a = v.answer(None);
+        let a = v.answer(None, &[]);
         let cs: Vec<Entry> = serde_json::from_value(a["catalogs"].clone()).unwrap();
         assert_eq!(cs.len(), 4, "{a}");
         let (t259, t271, z6) = (349 * 1024 + 259, 349 * 1024 + 271, 21 * 64 + 16);
@@ -742,7 +853,7 @@ mod tests {
             lead.publish(c);
         }
         v.refresh();
-        let got: Vec<Entry> = serde_json::from_value(v.answer(None)["catalogs"].clone()).unwrap();
+        let got: Vec<Entry> = serde_json::from_value(v.answer(None, &[])["catalogs"].clone()).unwrap();
         let first = Change { set: tiles(&named(&chain[0])), ..Default::default() };
         let mut want = vec![entry(chain[0].n, unix_of(&chain[0].created).unwrap(), true, first)];
         want.extend(chain.windows(2).map(|w| from_catalogues(&w[0], &w[1])));
@@ -751,5 +862,69 @@ mod tests {
         for (g, w) in got.iter().zip(&want) {
             assert_eq!(g, w, "catalogue {}", w.n);
         }
+    }
+
+    /// A step's tiles' ages are its own outputs' (task #994): a slope-deep pack published leaves
+    /// terrain-deep's tile under it as old as it was, and a z6 tile's hi pack isn't freshened by the
+    /// deep packs under it. Kept across a restart; a view kept before names' times takes its tiles'
+    /// entries' (which don't tell the layers apart); a reset keeps an unchanged file's time.
+    #[test]
+    fn a_steps_tiles_are_aged_by_its_own_outputs() {
+        let mut lead = Log::new();
+        let (td, sd, th) =
+            ("layers/terrain/deep/10-259-349", "layers/slope/deep/10-259-349", "layers/terrain/hi/6-16-21");
+        let f = |n: &str, h: &str| json!({"file": format!("{n}.{h}.pack"), "size": 1, "fmt": 1});
+        let c1 = cat(
+            1,
+            "2026-10-23T00:00:00Z",
+            json!({"base": {"6/16/21": "base/6-16-21"},
+            "layers": {"terrain": {"deep": {"10/259/349": td}, "hi": {"6/16/21": th}}, "slope": {"deep": {"10/259/349": sd}}},
+            "files": {td: f(td, "a"), sd: f(sd, "a"), th: f(th, "a"), "base/6-16-21": f("base/6-16-21", "a")}}),
+        );
+        lead.publish(&c1);
+        let keep = lead.d.path().join(KEPT);
+        let v = CataloguesView::new(lead.source(), Some(keep.clone()));
+        v.refresh();
+        // 2: slope-deep's pack built again. 3: terrain-hi's.
+        let mut c = c1.clone();
+        for (n, name) in [(2, sd), (3, th)] {
+            c.n = n;
+            c.created = format!("2026-10-23T0{}:00:00Z", n - 1);
+            c.files.get_mut(name).unwrap().file = format!("{name}.b.pack");
+            lead.publish(&c);
+        }
+        v.refresh();
+        let steps: Vec<String> = ["terrain-deep", "slope-deep", "terrain-hi", "pack"].map(String::from).into();
+        let (t10, t6) = (349 * 1024 + 259, 21 * 64 + 16);
+        let hour = |h: u64| unix_of("2026-10-23T00:00:00Z").unwrap() + h * 3600;
+        let want = json!({
+            "terrain-deep": [{"n": 1, "t": hour(0), "first": true, "z10": [t10]}],
+            "slope-deep": [{"n": 2, "t": hour(1), "z10": [t10]}],
+            "terrain-hi": [{"n": 3, "t": hour(2), "z6": [t6]}],
+            "pack": null,
+        });
+        assert_eq!(v.answer(None, &steps)["steps"], want);
+        // (Every step's entries as before: 2 published the z10 tile and its z6 one.)
+        assert_eq!(v.answer(Some(1), &[])["catalogs"][0]["z10"], json!([t10]));
+        assert!(v.answer(None, &[]).get("steps").is_none(), "none asked, none sent");
+        // A restart: the times kept.
+        let again = CataloguesView::new(lead.source(), Some(keep.clone()));
+        again.refresh();
+        assert_eq!(again.answer(None, &steps)["steps"], want);
+        // Kept before names' times: each name takes its deepest tile's newest entry, any layer's.
+        let mut old = read_kept(&keep);
+        old.published.clear();
+        let st = State::of(old);
+        let p = |n: &str| st.kept.published.get(&hash(n)).copied();
+        assert_eq!((p(td), p(sd), p(th)), (Some((2, hour(1))), Some((2, hour(1))), Some((3, hour(2)))));
+        // A reset (the map taken again at 5): an unchanged file keeps its time, a changed one is 5's.
+        let mut st = State::of(read_kept(&keep));
+        let mut c5 = c.clone();
+        c5.n = 5;
+        c5.created = "2026-10-23T04:00:00Z".into();
+        c5.files.get_mut(td).unwrap().file = format!("{td}.c.pack");
+        st.take_map(&Map::of(&c5).unwrap(), false);
+        let p = |n: &str| st.kept.published.get(&hash(n)).copied();
+        assert_eq!((p(td), p(sd), p(th)), (Some((5, hour(4))), Some((2, hour(1))), Some((3, hour(2)))));
     }
 }

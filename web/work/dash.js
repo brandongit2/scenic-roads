@@ -612,7 +612,8 @@ function steadyRunning(next) {
 
 // What the map draws now (sums.js mapTiles): the view's tiles, the published ones only for a solo
 // (#833); a solo's published tiles, and its queued ones built before (`built`) that a catalogue
-// kept names (published before), painted by when a catalogue last published each (the age controls' range, catalogues.js); a catalogue's tiles lit;
+// kept names (published before), painted by when a catalogue last published each one's step's own
+// outputs there (the age controls' range and times, catalogues.js); a catalogue's tiles lit;
 // with each tile's card and the stack's.
 let ageLit = null; // the age controls' lit tiles in the last view (a catalogue's hovered)
 // (The queued, finished and published tiles and their cards kept while their inputs and the
@@ -626,9 +627,9 @@ function mapView(md) {
   const rest = keepView([md.runKeys, md.queued, md.done, md.pubAt, md.hostsKey, JSON.stringify([fl, solo])], () => mapTiles(md.running, md.queued, md.done, fl, opts));
   const running = mapTiles(md.running, NONE, NONE, fl, opts).running;
   // (A solo's published tiles and queued ones published before painted by when: none without one.)
-  const painted = !solo ? NONE : keepPaint([rest.published, rest.queued, age.from, age.to, age.hide, age.at], () => {
+  const painted = !solo ? NONE : keepPaint([rest.published, rest.queued, age.from, age.to, age.hide, age.stamp], () => {
     const when = new Map();
-    for (const [k, v] of rest.published) when.set(k, { t: age.at(tileOf(k))?.t ?? -Infinity, v });
+    for (const [k, v] of rest.published) when.set(k, { t: age.at(tileOf(k), v.step)?.t ?? -Infinity, v });
     for (const [k, v] of rest.queued) { const p = publishedBefore(k, v, age.at); if (p) when.set(k, { t: p.t, v }); }
     return agePaint(when, age.from, age.to, age.hide).paint;
   });
@@ -696,19 +697,19 @@ function tileCards(t, painted, age, kinds) {
     ], worldMap.minimap(key)));
   }
   for (const [key, d] of kinds.includes("queued") ? t.queued : []) {
-    const p = publishedBefore(key, d, age.at);
-    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, p ? "queued, published before" : "queued"),
+    // (Asked when shown: a step's own times are read as they're first needed, catalogues.js.)
+    cards.set(`mt ${key}`, () => { const p = publishedBefore(key, d, age.at); return cardBody({ ...head(key, d.step, p ? "queued, published before" : "queued"),
       stats: [[`≈ ${clock(d.at)}`, "to begin"], [d.mac, "on"], ...(p ? [[ago(cardNow(), p.t), `last published (catalogue ${p.n})`]] : [])],
       bar: { frac: 0, label: `to come at ≈ ${clock(d.at)} on ${d.mac}` },
       foot: `the forecast's · ${key}` }, [
       ["stage", S.stage(d.step)],
       ["on", d.mac],
       ["covers", tileCovers(tileOf(key))],
-    ], worldMap.minimap(key)));
+    ], worldMap.minimap(key)); });
   }
   for (const [key, d] of kinds.includes("published") ? t.published : []) {
     if (!painted.has(key)) continue;
-    const p = age.at(tileOf(key));
+    const p = age.at(tileOf(key), d.step);
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "published"),
       stats: [[p ? ago(cardNow(), p.t) : "–", "last published"], [p ? `${p.n}` : "–", "catalogue"]],
       bar: { frac: 1, colour: painted.get(key), label: p ? `catalogue ${p.n}, ${whenText(p.t)}${p.first ? " (the oldest kept: or before)" : ""}` : "in no catalogue kept" },
@@ -795,7 +796,7 @@ let mapRoot = null, legendHost = null, legendSaid = "";
 function mapSection(md) {
   if (!mapRoot) {
     worldMap = createMap({ pick: mapPick });
-    ages = createAges({ call: ctx.call, store: ctx.store, onChange: paintMap });
+    ages = createAges({ call: ctx.call, store: ctx.store, onChange: () => { paintMap(); refreshPin(); if (hoverCard) hoverCard.dataset.key = ""; } });
     legendHost = h("div", "wmap-lgs");
     // (A solo hovered: the item under the pointer; none once it leaves the legend. A touch solos
     // nothing: its tap holds one.)
