@@ -1019,19 +1019,34 @@ commit; re-exports at the old paths as before.
           `Default` of `Sched` and `PageView`, no plan being a default.
         - **What's left of the runtime's names:** the runtime's lines naming the plan's modules
           (`build::`, `steps::`, `idents::`, `tiles::`; comments aside, tests and plan.rs included)
-          145 → 26: 25 in tests (they go at 6f3), and `out::open`'s write sets, which pipeline keeps (6f4). A family's name in non-test runtime code: gc's depth layers
-          (`DepthKeep::orphan`), left for 6f4, as #883 was changing gc.rs.
-        - **Check of the trait** (7 Nov, the lead's term 771 on the M4, test profile; main at 72b6eb58
-          against the trait on it, each pair side by side, a run's own folder named alike before
-          comparing): the same bytes on the nine states the merge's check used, 1.7 KB to 1.0 MB,
-          each edited from that copy's brief and records: as it stands (43 jobs, 11 waits, 9 offers); the
-          outlines with work, held; the outlines unmade, 5 failures, held; every worldwide step
-          unmade, a set, the buildings' index and the heritage input gone, the outlines failed 3
+          145 → 26: 25 in tests (they go at 6f3), and `out::open`'s write sets, which pipeline keeps (6f4).
+          With the plan's modules and the crates above inputs taken out of a copy of pipeline's lib
+          (`cargo check`, not the tests), it fails on these alone, and then compiles: offload.rs's
+          `run_task` and `task_kind`, which pipeline keeps; gc's depth layers (`DepthKeep::orphan`,
+          `crate::depth`); and gc's two `out::open` calls compile only against pipeline's `out`, so at
+          6f4 they need the write set from the plan. The last two are left for 6f4, as #883 is changing gc.rs.
+        - **Check of the trait** (7 Nov, the lead's term 773 on the M4, test profile; main at 9e7c66f6
+          against the trait on it at 18b1452c, each pair side by side, a run's own folder named alike
+          before comparing): the same bytes on the nine states the merge's check used, 1.7 KB to
+          1.0 MB, each edited from that copy's brief and records: as it stands (42 jobs, 11 waits, 16
+          offers); the outlines with work, held; the outlines unmade, 5 failures, held; every worldwide
+          step unmade, a set, the buildings' index and the heritage input gone, the outlines failed 3
           times, names-to-do due; the lake fill failed 3 times, the languages and translations gone,
           the reaches unreadable; the sources gone (both holds), the reaches damaged, names-to-do's
           gate shut; no pass, names-to-do due and shut; a pass with no outputs yet. A run's most was
-          4.8 GB (phys_footprint). The forecast is outside this check (its thread parked): its
-          tests cover it.
+          4.6 GB (phys_footprint).
+        - **The plan's time:** no cost from the trait in a release build (`cargo test --release`,
+          the same check, side by side, three times each, main against the trait): a pass with no
+          outputs yet 139.7/139.5, 133.9/134.1, 142.0/142.4 s; every worldwide step unmade
+          154.3/153.9, 144.3/143.8, 150.9/150.6 s; the same bytes again. In the test profile the trait
+          was ~6 s slower on such a plan (154 → 160 s), all of it in "build::plan: the terrain and
+          slope", code the trait doesn't touch, and gone in release: the test profile's opt-level 1.
+        - **The forecast**, outside that check (its thread parked), checked apart: all 113 inputs of the
+          archive then (4-7 Nov, 40 with `Along` data), read and written back, the same bytes by main
+          and the trait. `forecast-check --replay` on one input, twice by each: the same bytes. On
+          four inputs it differs from run to run on either side, as a run past `BUDGET` is cut by its
+          CPU time; with `BUDGET` raised in both copies (900 s), each
+          input's replay by codes 5 and 6 the same bytes by main and the trait.
         Moving the planner up with the plan instead was
       weighed and is the larger cut: its pass names ~150 of the runtime's items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
       API. `timetables::View` went
