@@ -229,7 +229,7 @@ export function createMap({ pick = () => {} } = {}) {
       const col = regionColour[r.state] || tokens.dim, f = faint(regionRel(r));
       c.globalAlpha = (r.state === "on" ? 0.16 : r.state === "building" ? 0.14 : 0.07) * f;
       c.fillStyle = col;
-      c.fill(p.fill);
+      c.fill(p.fill, "evenodd");
       c.globalAlpha = (r.state === "queued" ? 0.55 : 0.85) * f;
       c.strokeStyle = col;
       c.lineWidth = px * 0.8;
@@ -339,7 +339,7 @@ export function createMap({ pick = () => {} } = {}) {
         if (!p) continue;
         c.globalAlpha = 0.18;
         c.fillStyle = tokens.accent;
-        c.fill(p.fill);
+        c.fill(p.fill, "evenodd");
         c.globalAlpha = 1;
         c.strokeStyle = tokens.accent;
         c.lineWidth = px * 1.8;

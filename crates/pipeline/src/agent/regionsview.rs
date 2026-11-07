@@ -6,7 +6,8 @@
 //! - **Outlines** (`fill`, `edge`): the region's drawn shapes (the regions' accepted version's
 //!   `@drawn` files) in Web Mercator, the world 0–1000 each way, simplified to `SIMPLIFY` (about
 //!   7 km at the equator; a ring or line smaller than `TINY` left out) at 0.1 (about 4 km): `fill`
-//!   the outer rings, to fill (nonzero); `edge` the lines to stroke, the stretches two of its
+//!   the rings, outer and inner (an island in a water region is a hole of it), wound outer
+//!   positive and inner negative, to fill (even-odd); `edge` the lines to stroke, the stretches two of its
 //!   shapes share along a parallel or meridian (where an outline entry was cut by a tile's edge)
 //!   left out.
 //! - **Crumbs**: the names of the folders it's in, from the top (their `_group.toml` names), then
@@ -191,6 +192,12 @@ fn flat(pts: &[[f64; 2]], min: usize) -> Option<Vec<f64>> {
 
 type Seg = ([i64; 2], [i64; 2]);
 
+/// Twice the signed area of a ring (the shoelace sum).
+fn area2(pts: &[[f64; 2]]) -> f64 {
+    let n = pts.len();
+    (0..n).map(|i| pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]).sum()
+}
+
 /// A region's `fill` and `edge` (module doc).
 fn outline(d: &DrawnRegion) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
     // (Points to 1e-5 degrees, as the drawn files hold them, so shared edges match exactly.)
@@ -198,15 +205,20 @@ fn outline(d: &DrawnRegion) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
     let mut fill = Vec::new();
     let mut segs: Vec<Seg> = Vec::new();
     for poly in d.shapes.values().flatten() {
-        let Some(ring) = poly.first().filter(|r| r.len() >= 3) else { continue };
-        let mut r: Vec<[i64; 2]> = ring.iter().map(key).collect();
-        if r.first() != r.last() {
-            r.push(r[0]);
-        }
-        segs.extend(r.windows(2).filter(|w| w[0] != w[1]).map(|w| (w[0], w[1])));
-        let pts: Vec<[f64; 2]> = ring.iter().map(|&p| merc(p)).collect();
-        if let Some(f) = flat(&pts, 4) {
-            fill.push(f);
+        // (A polygon's rings: its outer one first, then its holes.)
+        for (i, ring) in poly.iter().enumerate().filter(|(_, r)| r.len() >= 3) {
+            let mut r: Vec<[i64; 2]> = ring.iter().map(key).collect();
+            if r.first() != r.last() {
+                r.push(r[0]);
+            }
+            segs.extend(r.windows(2).filter(|w| w[0] != w[1]).map(|w| (w[0], w[1])));
+            let mut pts: Vec<[f64; 2]> = ring.iter().map(|&p| merc(p)).collect();
+            if (area2(&pts) > 0.0) != (i == 0) {
+                pts.reverse();
+            }
+            if let Some(f) = flat(&pts, 4) {
+                fill.push(f);
+            }
         }
     }
     let lines = chain(&edges(segs));
@@ -336,6 +348,24 @@ mod tests {
         let c = &v["regions"][1];
         assert_eq!((c["crumbs"].clone(), c["bytes"].clone()), (json!(["Gamma"]), Value::Null));
         assert_eq!((c["fill"].clone(), c["edge"].clone()), (json!([]), json!([])));
+    }
+
+    #[test]
+    fn a_hole_is_carried_wound_against_its_outer_ring() {
+        // An island (a hole) in a water region, wound the same way as the outer ring as drawn,
+        // and a speck of a hole.
+        let hole = square(4.0, 44.0, 6.0, 46.0).remove(0);
+        let speck = square(8.0, 48.0, 8.000_1, 48.000_1).remove(0);
+        let mut poly = square(0.0, 40.0, 10.0, 50.0);
+        poly.extend([hole, speck]);
+        let mut shapes = BTreeMap::new();
+        shapes.insert("x".to_string(), vec![poly]);
+        let (fill, edge) = outline(&DrawnRegion { id: "w".into(), shapes, ..Default::default() });
+        assert_eq!(fill.len(), 2, "the outer ring and the island, the speck left out");
+        let signed = |f: &Vec<f64>| area2(&f.chunks(2).map(|c| [c[0], c[1]]).collect::<Vec<_>>());
+        assert!(signed(&fill[0]) > 0.0 && signed(&fill[1]) < 0.0, "outer positive, hole negative");
+        assert!(signed(&fill[0]) > -signed(&fill[1]));
+        assert_eq!(edge.len(), 2, "the border and the island's, not the speck's: {edge:?}");
     }
 
     #[test]

@@ -416,32 +416,30 @@ export function publishedBefore(key, q, at) {
   return at(tile) || null;
 }
 
-// Whether point (x, y) is inside rings (flat [x0, y0, x1, y1, …] each, closed), nonzero, as the
-// map fills them.
+// Whether point (x, y) is inside rings (flat [x0, y0, x1, y1, …] each, closed), even-odd, as the
+// map fills them: a hole (an island in a water region) is outside.
 export function inRings(rings, x, y) {
-  let wind = 0;
+  let inside = false;
   for (const r of rings || []) {
     for (let i = 0; i + 3 < r.length; i += 2) {
       const [ax, ay, bx, by] = [r[i], r[i + 1], r[i + 2], r[i + 3]];
-      const side = (bx - ax) * (y - ay) - (x - ax) * (by - ay);
-      if (ay <= y) { if (by > y && side > 0) wind++; } else if (by <= y && side < 0) wind--;
+      if ((ay > y) !== (by > y) && x < ax + ((y - ay) / (by - ay)) * (bx - ax)) inside = !inside;
     }
   }
-  return wind !== 0;
+  return inside;
 }
 
-// The area a region's fill rings cover (flat, as inRings): each ring's own, summed. A region's
-// fill holds its shapes' outer rings only (agent::regionsview outline), wound as each source
-// wound them, so each ring counts whole whatever its winding (a signed sum let shapes wound
-// opposite ways cancel out).
+// The area a region's fill rings cover (flat, as inRings): their signed areas summed, a region's
+// outer rings wound positive and its holes negative (agent::regionsview outline), so a hole takes
+// its area off.
 export function ringsArea(rings) {
   let sum = 0;
   for (const r of rings || []) {
     let a = 0;
     for (let i = 0; i + 3 < r.length; i += 2) a += r[i] * r[i + 3] - r[i + 2] * r[i + 1];
-    sum += Math.abs(a / 2);
+    sum += a / 2;
   }
-  return sum;
+  return Math.max(0, sum);
 }
 
 // The one region a point picks among those whose rings hold it (#831): the innermost, the

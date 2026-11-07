@@ -166,10 +166,14 @@ test('map: two steps on one tile are two entries, running and finished (#615)', 
   assert.deepEqual(tileOf('marks 3/1/2'), { z: 3, x: 1, y: 2 });
 });
 
-test('map: a point in rings, nonzero', () => {
+test('map: a point in rings, even-odd', () => {
   const sq = [0, 0, 10, 0, 10, 10, 0, 10, 0, 0];
   assert.equal(inRings([sq], 5, 5), true);
   assert.equal(inRings([sq], 15, 5), false);
+  // A hole (wound the other way) is outside; the ring round it is not.
+  const hole = [4, 4, 4, 6, 6, 6, 6, 4, 4, 4];
+  assert.equal(inRings([sq, hole], 5, 5), false);
+  assert.equal(inRings([sq, hole], 2, 5), true);
 });
 
 test('map: the one region a point picks (#831): holes not hit, the innermost of nested ones', () => {
@@ -192,10 +196,10 @@ test('map: the one region a point picks (#831): holes not hit, the innermost of 
   assert.equal(at([it, va], 50.05, 50.05), 'va');
   assert.equal(at([it, va], 20, 20), 'it');
   assert.equal(at([za, ls], 200, 200), null);
-  // Each ring counts whole whatever its winding: shapes wound opposite ways don't cancel.
-  assert.equal(ringsArea([sq(0, 0, 10), sq(20, 0, 10, true)]), 200);
-  const mixed = { id: 'waters', rings: [sq(0, 0, 100), sq(200, 0, 100, true)] };
-  assert.equal(at([mixed, island], 50, 50), 'newfoundland');
+  // A hole takes its area off (negative); two outer rings add.
+  assert.equal(ringsArea([sq(0, 0, 10), sq(20, 0, 10)]), 200);
+  assert.equal(ringsArea([sq(0, 0, 10), sq(2, 2, 4, true)]), 84);
+  assert.equal(ringsArea([sq(2, 2, 4, true)]), 0);
 });
 
 test('lanes: only those with a bar in the window, in their order', () => {

@@ -2528,7 +2528,8 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   server's downloads count them; not the basemap's pieces nor its terrain detail; null while the
   catalogue lacks it), and its outline for the world maps of the Overview and Regions tabs: its
   drawn shapes in Web Mercator, the world 0–1000 each way, simplified to about 7 km, `fill` the
-  outer rings and `edge` the lines to stroke (a stretch two of its shapes share along a parallel
+  rings, outer and inner (an island in a water region is a hole of it; outer wound positive, inner
+  negative, filled even-odd) and `edge` the lines to stroke (a stretch two of its shapes share along a parallel
   or meridian left out). Made by the lead, on a thread of its own, once per regions' accepted
   version and served catalogue (the status's `catalog`; a failed read not tried again until one
   of them changes): the drawn files read then, the catalogue's sizes once per catalogue, from
