@@ -3,9 +3,9 @@
 **Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
 (`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a to 6d (§6, 6c
 `crates/coordwire`, 6d `crates/inputs`) and 6e (`crates/offload`, `crates/terrain`, `crates/trees`,
-`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1 and
-6f2 (§6.3: `build::pass_work`, the frozen-plan check and the `Plan` trait); every later step
-below is planned (6f3 and 6f4: §6).
+`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1 to
+6f3 (§6.3: `build::pass_work`, the frozen-plan check, the `Plan` trait, test time); every later step
+below is planned (6f4: §6).
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -508,9 +508,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1 and 6f2 built, 6f3 and 6f4 planned)
+## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1 to 6f3 built, 6f4 planned)
 
-**Status: 6a-6e, 6f1 and 6f2 built; 6f3 and 6f4 planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6e and 6f1 to 6f3 built; 6f4 planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -1011,7 +1011,7 @@ commit; re-exports at the old paths as before.
           `step_sums`), fccheck's `replay` and `backtest`, `flags::of`, progress's sayings,
           `room::Hints`, `redo::said`, `every`'s functions, `uses::Run`, `Paces::with_starts`,
           `memguard::Watch::floors`. `jobs::note_cost` takes the step's way as a number (`gc::set_way`).
-          For the runtime's tests until 6f3, `seam::for_tests()` and coord's `cfg(test)`
+          For the runtime's tests until 6f4, `seam::for_tests()` and coord's `cfg(test)`
           `cost_version` and `saves`.
         - **Cut:** the planner's `tiles`, `reach`, `kept`, `terrain_tiles`, `current_reach`,
           `as_built_parts`; `agent::terrain_peak`, `task_what`, `key_inputs`, `input_digests` and
@@ -1019,7 +1019,7 @@ commit; re-exports at the old paths as before.
           `Default` of `Sched` and `PageView`, no plan being a default.
         - **What's left of the runtime's names:** the runtime's lines naming the plan's modules
           (`build::`, `steps::`, `idents::`, `tiles::`; comments aside, tests and plan.rs included)
-          145 → 26: 25 in tests (they go at 6f3), and `out::open`'s write sets, which pipeline keeps (6f4).
+          145 → 26: 25 in tests (they go at 6f4), and `out::open`'s write sets, which pipeline keeps (6f4).
           With the plan's modules and the crates above inputs taken out of a copy of pipeline's lib
           (`cargo check`, not the tests), it fails on these alone, and then compiles: offload.rs's
           `run_task` and `task_kind`, which pipeline keeps; gc's depth layers (`DepthKeep::orphan`,
@@ -1053,27 +1053,63 @@ commit; re-exports at the old paths as before.
       API. `timetables::View` went
       below both (6f1). `Keys` (6f1) names every per-target step, as the records' format
       `jobs.json` does; `per_target` and `recorded` are that format's table, so they stay with it.
-   3. **6f3, test time** (planned): the runtime's `cfg(test)` behaviours (the waits `JOIN_WAIT`
-      and `JOIN_TRY`, coord's `LISTEN` and loopback waits, the panics where a test wants one;
-      first the guards keeping a test off the real NAS and the pool's port, `find_root` with its
-      `TEST_ROOT` and `coord_port` with `test_port`, #906) read the process flag
-      (`buildstore::out::testing`), as `disk_free` does since 6e: what they read is then built
-      always. 6f3 lands before 6f4: a guard left on `cfg(test)` in agentcore is off in pipeline's
-      tests. Safe by the rule 6e's review set: `testing()` is true exactly in a crate's unit tests'
-      process (`TEST_START`), and the runtime's code runs under `cfg(test)` today only in
-      pipeline's, which keeps its `TEST_START`; agentcore gets its own for its own tests, and no
-      crate with a `TEST_START` below agentcore calls it. The rest are not behaviours and don't
-      switch: test-only items (`Options::member`, `test_agent`, `planner`, coord's
-      `start_for_test`, the `/work/test-block` route, `pool_state`) stay `cfg(test)`
-      where only agentcore's own tests use them, and go to pipeline's test side (accessors, as 6e's
-      `task::testkit`) where the tests needing the plan use them; a test route never ships behind
-      the flag. Those tests (the real table, the families) go to a pipeline test module, as the
-      families' went.
+   3. **6f3, test time** (built, 7 Nov 2026): the runtime's `cfg(test)` behaviours read the
+      process flag (`buildstore::out::testing`), as `disk_free` does since 6e, and what they read
+      is built always; 6f3 lands before 6f4, as a guard left on `cfg(test)` in agentcore would be
+      off in pipeline's tests. Switched, the guards first (one commit, then the rest):
+      - **The guards** (#906, #914): `find_root` finds only a unit test's `TEST_ROOT` (now built
+        always), made by `NasRoot::from_arg` after the same live-path check `local_for_test` makes
+        (that constructor is store's `testkit`, absent from a release build; tests/nas_access.rs
+        lists the item); `coord_port` gives `coord::test_port`; coord's listeners (`LISTEN` became
+        `listen_ip()`: loopback in a unit test), the ports kept (`KEPT`, `test_port`,
+        `test_listener`, `listeners_on`'s refusal of a port of its own, `keep_listeners`).
+      - **The rest:** agent's `join_wait`/`join_try` (were `JOIN_WAIT`/`JOIN_TRY`), the NAS part's
+        no mounting, the panics on no coordinator, broker or viewer, `served_https`; `nas::deadline`
+        (was `DEADLINE`); nasread's pools' threads (`threads`, `threads_in_all` for the status) and
+        `big_read_deadline`; the planner's `sample` of a stuck plan and its check of every planned
+        command (`cli::check_command`), the jobs' check of each command and `test_groups` (the
+        reaper of a test's job groups); the pool's loopback mail addresses and `open_backoff`;
+        coord's `LOOPBACK_WAITS`; net's `names`, `urls`, `lan_urls`; the store's `backup_every`
+        (was `BACKUP_EVERY`).
+      - **Safety:** `testing()` is true exactly where pipeline's `cfg(test)` applied. It turns true
+        only by `go_testing`, called only from a lib.rs's `#[cfg(test)]` `TEST_START` (or in
+        buildstore's own unit tests, its initial value), so only in some crate's unit tests; of the
+        crates linking pipeline (it and server), only pipeline has a `TEST_START`. So in every
+        binary, example and integration test, and in server's tests, each switched site takes its
+        production branch, as it did built without `cfg(test)`. tests/test_mode.rs checks both
+        halves: `a_build_with_the_dev_dependencies_has_no_test_time_behaviour` (false in an
+        integration test) and `only_pipeline_s_unit_tests_run_its_code_testing` (every
+        `go_testing` call in a `#[cfg(test)]` `TEST_START`, and no crate with one linking pipeline
+        but pipeline). No production value changed: each function's other branch is the old
+        `not(test)` constant.
+      - **Cut:** the consts' `cfg` pairs; nasread's `SWITCH_READERS`, `READERS`, `WRITERS` and the
+        big reads' deadline no longer public (the status sums them through `threads_in_all`).
+      - **Left on `cfg(test)`** (not behaviours of their own: each reads a test-only item): the
+        role a test agent starts in (`Options::member`), nasread's slow-NAS gate (`fake::gate`),
+        the planner's `slow_plan`, gc's `YIELD_CHECKS` count, and the `/work/test-block` route
+        (a test route never ships behind the flag). forecast.rs, coord/sched.rs and fccheck.rs hold
+        no behaviour site (forecast's `run` is a test helper); they were left alone for #995.
    4. **6f4, the move** (planned): the runtime (agent but build, steps, idents and tiles; coord, pool,
       needs, paces, uses, pubtimes, answers, menu, appupdate, cli, net) into `crates/agentcore`,
       on inputs and the crates below it, beside the families; pipeline keeps the plan, offload's
       `run_task` and `task_kind` (through `Plan`), `out::open`, the binaries and the re-exports.
-      Measured as §5 does.
+      agentcore gets its own `TEST_START` for its own unit tests, and test_mode.rs's check then
+      allows it beside pipeline. Measured as §5 does. What stands in its way (counted 7 Nov after
+      6f3, main at 19b13986):
+      - **The plan's names in the runtime:** 25 lines naming the plan's `build::`, `steps::`,
+        `idents::` or `tiles::` (comments and strings aside, plan.rs included; cli's own `build`
+        module isn't the plan's): 23 in tests (agent/mod.rs 17, coord/mod.rs 3, builtview 2,
+        forecast 1), going to a pipeline test module as the families' tests went, and 2 in
+        non-test code, new since 6f2:
+        cataloguesview's `step_times` calls `steps::output_names` (#994), a question for
+        `Plan::output_names`. Besides, gc's depth layers and `out::open` (6f2).
+      - **Test-only items pipeline's tests would need** once the runtime is agentcore's: the five
+        hooks above, and the items its tests use (`Options::member`, `test_agent`,
+        `test_agent_with`, `planner`, `seam::for_tests`, coord's `start_for_test`, `cost_version`,
+        `saves`, `pool_state`, `port_kept`, `port_free`, nasread's `fake`, asks' `never_sweep`,
+        beat's `never_tick`, gc's `Idle`, `ways_for_tests`, `sweeps_done_for_tests`): those of
+        tests that stay in agentcore stay `cfg(test)`; those of tests moving to pipeline become
+        accessors on agentcore's test side (as 6e's `task::testkit`, a `testkit` feature).
    Before it, pipeline holds ~120k lines (the cycle's 108.0k, the binaries' 14.2k).
 
 ### 6.4 Expected gain

@@ -1241,7 +1241,7 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   `agent::pool::tests::the_leads_restart_keeps_its_leases`). Renewals aren't saved (a loaded lease
   gets a fresh deadline).
 - **Its backup on the NAS** (`state/lead/store.json`, the store's snapshot whole) is written by a
-  thread of its own each `pool::store::BACKUP_EVERY` (10 min) while the store changed, started by
+  thread of its own each `pool::store::backup_every` (10 min) while the store changed, started by
   the lead's step, never on a handler's path. The owner's move of the lead (§6.1) takes it up there
   (`took_up`, the backup naming another member): a lease granted since it is unknown to the new lead,
   its worker's next renewal refused, its job stopped and its targets out again (the work, never the

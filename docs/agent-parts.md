@@ -143,7 +143,7 @@ writes fail shows on the lead's page as "status not reaching the NAS" from the b
 at most), probing it (`answers`), the LAN remount when home again (`nas::Req::Lan`) and the
 self-heal's remount (`nas::Req::Remount`, under the pool's lock taken when free, a minute at most),
 on a thread of its own (looking every 20 s and at each ask). Each look (find, mount, probe) runs on
-a worker waited for 30 s (`nas::DEADLINE`); past it the worker is left to the kernel, no second look
+a worker waited for 30 s (`nas::deadline`); past it the worker is left to the kernel, no second look
 starts while it hangs, and the view (`Snap<NasView>`: the root, `Up`, `Away` or `Stuck { since }`)
 says it. The loop's `root` only reads that view, so a hung mount holds neither the loop, control nor
 the beat: the round says "the NAS is mounting (stuck since …): only work on the NAS waits" (a

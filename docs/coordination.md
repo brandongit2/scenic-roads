@@ -89,7 +89,7 @@ never "beating" in one and "out of touch" in the other.
   folder: `state/build/records.json` and `brief.json`, each naming the store's epoch and `seq`.
   Readers that are agents may instead `GET /pool/brief` (open decision 2).
 - **The store's backup:** `state/lead/store.json`, the store's snapshot written whole every
-  `BACKUP_EVERY` (10 min) and at a clean stop; one file of a few MB. Read only to rebuild a lost
+  `backup_every` (10 min) and at a clean stop; one file of a few MB. Read only to rebuild a lost
   lead disk (§4.4).
 - **History archives:** `state/coord/history-archive/<day>.tar`, one big file a day.
 - **The token** (`state/coord/token`): read once at start by every agent, written never by the
@@ -153,7 +153,7 @@ rule); every answer carries `x-pool-epoch`; a member seeing a new epoch re-sends
   member's first beat lists the leases it holds, confirming them, and those of that member it
   doesn't list are released at once (§6.2).
 - **The lead's disk lost** (the mini's disk replaced, `agent/` deleted): the store is rebuilt from
-  the NAS backup (`state/lead/store.json`, at most `BACKUP_EVERY` old), the epoch set past it by
+  the NAS backup (`state/lead/store.json`, at most `backup_every` old), the epoch set past it by
   1000 (no lease id repeats), then members' first beats fill in what the backup missed: their held
   leases (adopted as granted, with their ids; planned: today a beat's lease the lead doesn't know is
   answered released, and its job stops) and their unmerged hand-offs (re-posted, §5.3; planned). What
@@ -387,7 +387,7 @@ Once every step has landed and its gate has passed, the pool writes nothing smal
 3. **The store's format:** JSON lines plus a JSON snapshot (proposed: no new dependency, readable
    by hand, a few MB) against an embedded database (SQLite: a new dependency, fewer hand-written
    recovery paths).
-4. **`BACKUP_EVERY`:** 10 min proposed; it bounds only the owner's settings lost with the lead's
+4. **`backup_every`:** 10 min proposed; it bounds only the owner's settings lost with the lead's
    disk (everything else members re-send).
 5. **The history:** members' events in the beat to the lead's one file (proposed) against members
    keeping their own files on the NAS as today (appends, which SMB handles less badly than creates).

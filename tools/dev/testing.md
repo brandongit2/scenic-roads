@@ -428,8 +428,8 @@ through their dev-dependency on store, `features = ["testkit"]`):
   is CPU work per call, by this thread's CPU clock (`testkit::thread_cpu_ns`), never a wall-clock loop.
 - **Process-wide settings:** pass the value in. Where the code reads an environment variable, a
   test sets it with `EnvVar::set(k, v)` (restored on drop, tests taking turns), and only for a
-  variable no other test in that binary reads. A static a test changes is thread-local in test
-  builds where it can be (the agent's `TEST_ROOT`), so tests in one process can't see
+  variable no other test in that binary reads. A static a test changes is thread-local where
+  it can be (the agent's `TEST_ROOT`), so tests in one process can't see
   each other's; the one that can't, the plain-open cap, is set through a guard
   (`store::range::cap_plain_opens`) that tests take in turn and that restores it on drop (other
   tests in a `cargo test` process run under it meanwhile: a lower cap only closes files sooner).

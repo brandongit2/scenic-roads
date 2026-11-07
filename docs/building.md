@@ -335,7 +335,7 @@ join (why)" (`Status::role`, `out_of_pool`). The map is served by the M6 alone (
 https://map.brandontsang.net, docs/macs.md, Devices; task #874).
 - **Joining after an update** (task #423): the agent before may still hold the member lock while it
   drains, so a new agent tries the lock each second for up to two minutes as it starts
-  (`JOIN_WAIT`), and joins as it starts once the lock is let go. Still held past that, it starts
+  (`join_wait`), and joins as it starts once the lock is let go. Still held past that, it starts
   out of the pool: the jobs it took over beat their leases with the lead over HTTP as before, and
   a member's job that ends well there gives its hand-off to the lead to journal (told done,
   `journaled: false`), its folder removed once the lead takes it (kept if the lead refuses it or
