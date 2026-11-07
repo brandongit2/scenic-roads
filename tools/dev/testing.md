@@ -304,7 +304,9 @@ measurement run, an example or a release run, and a backtest, `--replay` or a ba
 named; in the main checkout: the build and its crates). A span started inside another's (a cargo in a check's part) is part of it: each job exports
 its id as `SCENIC_DEVJOB_PARENT`. A run of its own says who ran it: its checkout, branch, commit,
 task (`SCENIC_TASK`, else the latest `#<n>` in the branch's commits since main) and whether an agent
-did (Claude Code's `CLAUDECODE`).
+did (Claude Code's `CLAUDECODE`). A span is on the Mac it ran on (#1086): remote-tests.sh's run on
+the test Mac and its compiles, suites and tests are that Mac's; the job says the test Mac's name
+(`ran_on`) as soon as its run starts there.
 - The scripts record through `tools/dev/devjob.zsh` (`dj_start`, `dj_end`, `dj_span`, `dj_attr`,
   `dj_wrap`) and `tools/dev/devjob.py` (`wrap`: a command run as a span, its output passed on as it
   comes and read after; `sampler`). Each event is a JSON line appended to this Mac's spool,

@@ -101,7 +101,7 @@ remote-tests: exit 0 on the test Mac (load 12.00)
         self.assertEqual((run["t0"], run["t1"]), (T + 10 - 5.0, T + 10))
         self.assertEqual(sorted(k["kind"] for k in run["kids"]), ["compile", "suite"])
         self.assertEqual(run["attrs"]["ran_on"], "Mac-mini-M4")
-        self.assertEqual(attrs, {"ran_on": "Mac-mini-M4", "exit_on_test_mac": "0", "load_after": "12.00"})
+        self.assertEqual(attrs, {"exit_on_test_mac": "0", "load_after": "12.00"})
 
 
 class Timings(unittest.TestCase):
@@ -167,6 +167,38 @@ class Wrap(unittest.TestCase):
         end = [e for e in Board.got if e["op"] == "end"][0]
         self.assertEqual((end["status"], end["attrs"]["exit"]), ("fail", "3"))
         self.assertTrue(any(e["op"] == "sample" and e["mac"] == "toy" for e in Board.got), "a sample of the Mac")
+
+    def test_a_test_mac_run_is_that_macs_and_the_job_says_where_it_ran_as_it_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = dict(os.environ, SCENIC_DEVJOB_DIR=d, SCENIC_BOARD="http://127.0.0.1:9", SCENIC_DEVJOB_MAC="here")
+            env.pop("SCENIC_DEVJOB", None)
+            env.pop("SCENIC_DEVJOB_PARENT", None)
+            script = ("echo 'remote-tests: on the test Mac there (load 1.00, slot 1, /x)'; sleep 0.2; "
+                      "echo '     Running unittests src/lib.rs (/x/target/debug/deps/store-0123456789abcdef)'; "
+                      "echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s'; "
+                      "echo 'remote-tests: the run took 0.30s on the test Mac, cpu 0.10s user + 0.10s sys'; "
+                      "echo 'remote-tests: the test Mac run ended without a result (x): running here'; "
+                      "echo '--- remote result discarded, local rerun ---'")
+            r = subprocess.run([sys.executable, devjob.__file__, "wrap", "--kind", "tests", "--name", "t", "--parse", "remote,tests", "--", "sh", "-c", script], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            for _ in range(600):
+                try:
+                    with open(os.path.join(d, "sampler.lock")) as f:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            ev = []
+            for f in sorted(os.listdir(d)):
+                if f.startswith(("sending-", "spool")):
+                    with open(os.path.join(d, f)) as o:
+                        ev += [json.loads(x) for x in o if '"sample"' not in x]
+        job = ev[0]["id"]
+        self.assertEqual([e["op"] for e in ev], ["start", "attr", "attr", "span", "span", "end"])
+        self.assertEqual([e["attrs"] for e in ev[1:3]], [{"ran_on": "there"}, {"rerun_here": "the test Mac's run ended without a result"}], "said as the lines come, before the job ends")
+        self.assertEqual({e["op"] == "attr" and e["id"] for e in ev[1:3]}, {job})
+        self.assertEqual([(e["kind"], e["mac"]) for e in ev if e["op"] in ("start", "span")], [("tests", "here"), ("run", "there"), ("suite", "there")],
+                         "the job on this Mac; the run on the test Mac and its suite on that Mac")
 
     def test_a_command_that_cant_run_is_127_and_its_span_ended(self):
         with tempfile.TemporaryDirectory() as d:

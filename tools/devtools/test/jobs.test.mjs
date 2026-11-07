@@ -115,3 +115,49 @@ test("only POST events writes; a span that isn't there is a 404", async () => {
   assert.equal((await get("/api/jobs/runs/nope")).status, 404);
   assert.equal((await get("/api/jobs/runs?from=10&to=5")).status, 400);
 });
+
+test("a test run is on the Mac it ran on: the tests job while its run is remote, the test Mac's run and its parts", async () => {
+  const U = now - 1800;
+  await send([
+    // (remote-tests.sh on its own, its run on m4; then check.sh with its tests part's run on m4; then one run here, one rerun here.)
+    { op: "start", id: "r-1", kind: "tests", name: "tests k", mac: "m1", t: U, attrs: { checkout: "k" } },
+    { op: "attr", id: "r-1", attrs: { ran_on: "m4" } },
+    { op: "sample", mac: "m4", t: U + 5, load: 9, memfree: 40, swap: 0, ncpu: 14, live: [] },
+    { op: "start", id: "c-1", kind: "check", name: "check k", mac: "m1", t: U, attrs: { checkout: "k" } },
+    { op: "start", id: "c-1-tests", parent: "c-1", kind: "tests", name: "tests k", mac: "m1", t: U + 1, attrs: { ran_on: "m4" } },
+    { op: "span", id: "c-1-run", parent: "c-1-tests", kind: "run", name: "run on the test Mac", mac: "m4", t0: U + 2, t1: U + 8, status: "ok", attrs: { ran_on: "m4" } },
+    { op: "span", id: "c-1-suite", parent: "c-1-run", kind: "suite", name: "store", mac: "m4", t0: U + 3, t1: U + 7, status: "ok" },
+    { op: "start", id: "h-1", kind: "tests", name: "tests h", mac: "m1", t: U, attrs: { ran_here: "SCENIC_CHECK_LOCAL set" } },
+    { op: "start", id: "b-1", kind: "tests", name: "tests b", mac: "m1", t: U, attrs: { ran_on: "m4", rerun_here: "the test Mac's run ended without a result" } },
+  ]);
+  const d = (await get(`/api/jobs/runs?from=${U - 60}&to=${U + 60}`)).body;
+  const by = Object.fromEntries(d.runs.map((x) => [x.id, x]));
+  assert.deepEqual([by["r-1"].mac, by["r-1"].on], ["m1", "m4"], "started on m1, shown on m4 while its run is there");
+  assert.deepEqual([by["h-1"].on, by["b-1"].on], ["m1", "m1"], "a run here, and one rerun here, stay on their Mac");
+  assert.deepEqual([by["c-1"].on, by["c-1"].macs], ["m1", ["m1", "m4"]], "check.sh on its Mac, naming the Macs its parts ran on");
+  assert.deepEqual(d.away.map((x) => [x.id, x.root, x.on]), [["c-1-tests", "c-1", "m4"]], "check's tests job on the test Mac, with its run");
+  assert.deepEqual((await get(`/api/jobs/runs?from=${U - 60}&to=${U + 60}&kind=check`)).body.away, []);
+  const r = (await get("/api/jobs/runs/r-1")).body;
+  assert.deepEqual(Object.keys(r.samples).sort(), ["m1", "m4"], "the test Mac's load beside its own, before the run's spans come");
+  const c = (await get("/api/jobs/runs/c-1-suite")).body;
+  assert.deepEqual(c.spans.map((s) => [s.id, s.mac, s.on]), [["c-1-tests", "m1", "m4"], ["c-1-run", "m4", "m4"], ["c-1-suite", "m4", "m4"]]);
+});
+
+test("a stored history's test-Mac runs move to the Mac they name, once (jobs.db before #1086)", () => {
+  const file = path.join(dir, "old.db");
+  const old = openJobs(file);
+  const ins = old.db.prepare(`INSERT INTO spans (id, parent, root, kind, name, mac, t0, t1, status, attrs) VALUES (?, ?, 'o', ?, ?, 'm1', 1, 2, 'ok', ?)`);
+  ins.run("o", null, "check", "check", "{}");
+  ins.run("o-t", "o", "tests", "tests", JSON.stringify({ ran_on: "m4" }));
+  ins.run("o-copy", "o-t", "copy", "copy to the test Mac", "{}");
+  ins.run("o-run", "o-t", "run", "run on the test Mac", JSON.stringify({ ran_on: "m4" }));
+  ins.run("o-suite", "o-run", "suite", "store", "{}");
+  ins.run("o-test", "o-suite", "test", "a::b", "{}");
+  old.db.exec("PRAGMA user_version = 0");
+  old.close();
+  const again = openJobs(file);
+  const macs = Object.fromEntries(again.db.prepare(`SELECT id, mac FROM spans`).all().map((r) => [r.id, r.mac]));
+  assert.deepEqual(macs, { o: "m1", "o-t": "m1", "o-copy": "m1", "o-run": "m4", "o-suite": "m4", "o-test": "m4" });
+  assert.equal(again.db.prepare("PRAGMA user_version").get().user_version, 1);
+  again.close();
+});

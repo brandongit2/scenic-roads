@@ -10,7 +10,9 @@ network, and nothing is lost while the app is away: what wasn't sent is sent by 
       runs the command as a span (its exit status is the command's), its output passed on as it
       comes, each line's time noted; its children record under it (SCENIC_DEVJOB_PARENT). After,
       what --parse names is read from the output: cargo's compiles, the test suites and each test
-      (cargo test's and nextest's), remote-tests.sh's phases.
+      (cargo test's and nextest's), remote-tests.sh's phases. A span's Mac is the one it ran on: the
+      run on the test Mac and its compiles, suites and tests are that Mac's (its `ran_on`); the job
+      itself is this Mac's, which says the test Mac's name (ran_on) as soon as the run starts there.
   devjob.py sampler      (started by the first live span; one a Mac) every TICK_S: sends the spool,
       reads cargo's timing reports; every SAMPLE_S: the Mac's load, memory and swap, naming the live
       spans, and ends those whose process is gone ("gone"). It exits once no span is live.
@@ -179,7 +181,7 @@ RT_TOOK = re.compile(r"^remote-tests: the run took ([\d.]+)s on the test Mac, cp
 RT_EXIT = re.compile(r"^remote-tests: exit (\d+) on the test Mac \(load ([\d.]+)\)")
 RT_HERE = re.compile(r"^remote-tests: running here \((.*)\)$")
 RT_RERUN = "--- remote result discarded, local rerun ---"
-WANT = re.compile(r"^(\s+(Compiling|Checking|Documenting|Finished|Blocking|Running|Doc-tests|Starting|Summary|PASS|FAIL|FLAKY|SIG|ABORT|TIMEOUT|LEAK|TRY)|test |error: could not compile|remote-tests: |--- remote)")
+WANT = re.compile(r"^(\s+(Compiling|Checking|Documenting|Finished|Blocking|Running|Doc-tests|Starting|Summary|PASS|FAIL|FLAKY|SIG|ABORT|TIMEOUT|LEAK|TRY)|test |error: could not compile|remote-tests: )")
 
 
 def span(kind, name, t0, t1, status="ok", **attrs):
@@ -282,7 +284,7 @@ def parse(lines, kinds, t_start, t_end):
     if "remote" in kinds:
         key_wait = slot_wait = on = None
         for t, l in lines:
-            if not l.startswith(RT) and l != RT_RERUN:
+            if not l.startswith(RT):
                 continue
             if m := RT_KEY_WAIT.match(l):
                 key_wait = (t, m.group(1))
@@ -298,7 +300,6 @@ def parse(lines, kinds, t_start, t_end):
                 slot_wait = None
             elif m := RT_ON.match(l):
                 on = (t, m.group(1), m.group(2), m.group(3))
-                attrs["ran_on"] = m.group(1)
             elif (m := RT_TOOK.match(l)) and on:
                 wall = float(m.group(1))
                 run = span("run", "run on the test Mac", max(on[0], t - wall), t, ran_on=on[1], load=on[2], slot=on[3],
@@ -309,8 +310,6 @@ def parse(lines, kinds, t_start, t_end):
                 attrs["load_after"] = m.group(2)
             elif m := RT_HERE.match(l):
                 attrs["ran_here"] = m.group(1)
-            elif l == RT_RERUN:
-                attrs["rerun_here"] = "the test Mac's run ended without a result"
         # The compiles and tests on the test Mac go under its run.
         runs = [s for s in out if s["kind"] == "run"]
         for r in runs:
@@ -321,13 +320,25 @@ def parse(lines, kinds, t_start, t_end):
     return out, attrs
 
 
+def live_attrs(line):
+    """What a remote-tests.sh line says of the job as it runs (an attr event at once, so the page
+    shows it on the test Mac while it runs there, and back here when it reruns here)."""
+    if m := RT_ON.match(line):
+        return {"ran_on": m.group(1)}
+    if line == RT_RERUN:
+        return {"rerun_here": "the test Mac's run ended without a result"}
+    return None
+
+
 def emit_spans(spans, parent, m):
+    """Each span on the Mac it ran on: one naming `ran_on` (the run on the test Mac) and its parts
+    on that Mac, the rest on `m`."""
     for s in spans:
-        sid = new_id()
-        emit({"op": "span", "id": sid, "parent": parent, "kind": s["kind"], "name": s["name"], "mac": m,
+        sid, sm = new_id(), s["attrs"].get("ran_on") or m
+        emit({"op": "span", "id": sid, "parent": parent, "kind": s["kind"], "name": s["name"], "mac": sm,
               "t0": round(s["t0"], 3), "t1": round(max(s["t0"], s["t1"]), 3), "status": s["status"],
               "attrs": {k: v if isinstance(v, (list, str)) else str(v) for k, v in s["attrs"].items()}})
-        emit_spans(s["kids"], sid, m)
+        emit_spans(s["kids"], sid, sm)
 
 
 def wrap(argv):
@@ -395,6 +406,8 @@ def wrap(argv):
         part = lines.pop()
         for ln in lines:
             s = ln.decode("utf-8", "replace").rstrip("\r")
+            if "remote" in kinds and (a := live_attrs(s)):
+                emit({"op": "attr", "id": sid, "attrs": a})
             if kinds and WANT.match(s):
                 kept.append((t, s))
     # (Its CPU and its largest process's memory: what wait4 says of it and the processes it waited for.)

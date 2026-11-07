@@ -2,7 +2,9 @@
 // Macs record (tools/dev/devjob.zsh, devjob.py), from the app's /api/jobs (jobs.mjs).
 //   Runs     each Mac's runs on a timeline, a lane a kind (check, publish, tests, cargo, a
 //            measurement, a backtest), with the Mac's load and memory under them; the build page's
-//            timeline (web/work/timeline.js), moved and zoomed the same way.
+//            timeline (web/work/timeline.js), moved and zoomed the same way. A run is on the Mac it
+//            ran on (jobs.mjs `on`): a tests job whose run went to the test Mac on that Mac, check's
+//            and publish's too (the API's `away`).
 //   Run      one run opened: what it is (who, task, commit, its Mac's load), its spans on a timeline
 //            of their own (a lane a kind, deepest last: parts or steps, compiles, the test Mac's
 //            run, suites, tests, crates), where its time went, its longest and failed spans.
@@ -54,6 +56,9 @@ const statusClass = (s) => (bad(s) ? "bad" : s.status === "running" ? "run" : s.
 const took = (s, now) => (s.t1 ?? now) - s.t0;
 // A Mac's short name: its chip ("M1 Pro"), then its host name.
 const macName = (mac, macs) => { const c = macs?.[mac]?.chip?.replace(/^Apple /, ""); return c ? `${c} · ${mac}` : mac; };
+const theMac = (mac, macs) => { const c = macs?.[mac]?.chip?.replace(/^Apple /, ""); return c ? `the ${c}` : mac; };
+// Where a span ran: its Mac, or "started on the M1 Pro, ran on the M4 Pro" (a tests job whose run went to the test Mac).
+const whereRan = (s, macs) => (s.on && s.on !== s.mac ? `started on ${theMac(s.mac, macs)}, ran on ${theMac(s.on, macs)}` : macName(s.mac, macs));
 // A colour from green to red by a share (0 fine, 1 bad), in ten steps, as rgb() from the theme's
 // --ok, --warn and --bad (#rrggbb): what any canvas takes, Safari's too.
 const rgbOf = (name) => { const v = token(name); return [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16)); };
@@ -118,15 +123,16 @@ function showTip(content, x, y, pin = false) {
 const hideTip = () => { tip.hidden = true; pinned = null; };
 document.addEventListener("pointerdown", (e) => { if (pinned && !tip.contains(e.target) && !e.target.closest?.(".lanewrap")) hideTip(); });
 const facts = (rows) => h("dl", null, rows.filter((r) => r && r[1] != null && r[1] !== "").map(([k, v]) => [h("dt", null, k), h("dd", null, v)]));
-// Who and what a run is, for its card and its header.
-function runFacts(r, now, macs) {
+// Who and what a run is, for its card and its header; `ranOn`, the Macs its spans ran on.
+function runFacts(r, now, macs, ranOn = []) {
   const a = r.attrs || {};
+  const also = ranOn.filter((m) => m !== r.mac && m !== r.on);
   return [
     ["status", h("span", statusClass(r), statusText(r))],
     ["began", clock(r.t0)],
     ["took", r.t1 != null ? dur(r.t1 - r.t0) : `${dur(now - r.t0)} so far`],
-    ["Mac", macName(r.mac, macs)],
-    a.ran_on && ["tests ran on", macName(a.ran_on, macs)],
+    ["Mac", whereRan(r, macs)],
+    also.length ? ["parts ran on", also.map((m) => theMac(m, macs)).join(", ")] : null,
     ["checkout", [a.checkout, a.by && `(${a.by === "agent" ? `an agent${a.session ? ` ${a.session}` : ""}` : "a terminal"})`].filter(Boolean).join(" ")],
     a.task && ["task", h("a", { href: `../task-board/${a.task}`, target: "_blank" }, `#${a.task}`)],
     a.branch && ["branch", a.branch],
@@ -146,7 +152,7 @@ function runFacts(r, now, macs) {
 }
 
 // ---- the runs' timeline ---------------------------------------------------------------------------------
-let main = null; // {from, to, now, runs, samples, macs}
+let main = null; // {from, to, now, runs, away, samples, macs}
 let tl = null, tlRange = null;
 const cards = new Map(); // a segment's key → its card's content
 // (Each render's own dropped first: the runs' timeline's keys "r", "l", "m", a run's "s", "x".)
@@ -163,7 +169,7 @@ async function loadMain() {
   if (from == null) from = Math.min(now - 3600, ...runs.runs.map((r) => r.t0));
   const w = Math.max(200, Math.round($("runs").clientWidth || 800));
   const samples = await get(`samples?from=${from}&to=${now + 60}&n=${w}`);
-  main = { from, to: now, now: runs.now, runs: runs.runs, samples: samples.samples, step: samples.step, macs: { ...samples.macs, ...runs.macs } };
+  main = { from, to: now, now: runs.now, runs: runs.runs, away: runs.away, samples: samples.samples, step: samples.step, macs: { ...samples.macs, ...runs.macs } };
   renderMain();
 }
 function mainRelations(key) {
@@ -172,10 +178,13 @@ function mainRelations(key) {
     const c = key.slice(3);
     return { on: [...segs.values()].filter((s) => s.cls === c), arrows: [] };
   }
-  // (A run pointed at: the checkout's other runs lit, an agent's jobs across the lanes.)
-  if (!r?.attrs?.checkout) return null;
-  return { on: [...segs.values()].filter((s) => s.run?.attrs?.checkout === r.attrs.checkout), arrows: [] };
+  // (A run pointed at: the checkout's other runs lit, an agent's jobs across the lanes and Macs.)
+  const ck = checkoutOf(r);
+  if (!ck) return null;
+  return { on: [...segs.values()].filter((s) => s.run && checkoutOf(s.run) === ck), arrows: [] };
 }
+// (A tests job inside another run: its run's.)
+const checkoutOf = (r) => r?.attrs?.checkout ?? r?.of?.attrs?.checkout;
 const segs = new Map(), segRuns = new Map();
 function renderMain() {
   if (!main) return;
@@ -193,8 +202,11 @@ function renderMain() {
   const gap = (span / width) * 3;
   segs.clear(); segRuns.clear(); dropCards("r", "l", "m");
   const shown = main.runs.filter((r) => !st.hide.has(classOf(r)));
+  // (Each on the Mac it ran on; a tests job inside another run beside them, with its run.)
+  const runById = new Map(main.runs.map((r) => [r.id, r]));
+  const away = (main.away || []).filter((r) => !st.hide.has(classOf(r))).map((r) => ({ ...r, of: runById.get(r.root) }));
   const byMac = new Map();
-  for (const r of shown) (byMac.get(r.mac) || byMac.set(r.mac, []).get(r.mac)).push(r);
+  for (const r of [...shown, ...away]) (byMac.get(r.on) || byMac.set(r.on, []).get(r.on)).push(r);
   for (const m of Object.keys(main.samples)) if (!byMac.has(m)) byMac.set(m, []);
   const lanes = h("div", "lanes"), tracks = [];
   const track = (cls) => { const t = tl.track(); if (cls) t.el.classList.add(cls); tracks.push(t); return t; };
@@ -213,11 +225,12 @@ function renderMain() {
         const t = track();
         for (const r of row) {
           const key = `r ${r.id}`;
-          if (r.status === "running" && r.lost == null) running++;
-          if (bad(r)) failed++;
+          if (!r.of && r.status === "running" && r.lost == null) running++;
+          if (!r.of && bad(r)) failed++;
           const s = t.add({ key, from: r.t0, until: r.t1 ?? now, colour: colourOf(cls), kind: r.status === "running" && r.lost == null ? "running" : "past", failed: bad(r), cls, run: r });
           segs.set(key, s); segRuns.set(key, r);
-          cards.set(key, () => [h("b", null, r.name), facts([...runFacts(r, now, macs), r.spans ? ["spans", `${r.spans}${r.failed ? `, ${r.failed} failed` : ""}`] : null, ["Mac's load then", sampleAt(mac, r.t0)]]), h("div", "go", "click to open it")]);
+          cards.set(key, () => [h("b", null, r.name), facts([...runFacts(r, now, macs, r.macs), r.of ? ["part of", `${r.of.name} (${CLASS_LABEL[classOf(r.of)] || r.of.kind})`] : null,
+            r.spans ? ["spans", `${r.spans}${r.failed ? `, ${r.failed} failed` : ""}`] : null, ["Mac's load then", sampleAt(mac, r.t0)]]), h("div", "go", r.of ? "click to open its run" : "click to open it")]);
         }
         lanes.append(h("div", { class: "ln", title: CLASS_LABEL[cls] || cls }, i ? "" : `${CLASS_LABEL[cls] || cls} (${mine.length})`), t.el);
       });
@@ -240,7 +253,7 @@ function renderMain() {
   $("runs-sum").textContent = `${shown.length} in ${st.range === "all" ? "all time" : `the last ${st.range}`}${running ? ` · ${running} running` : ""}${failed ? ` · ${failed} failed` : ""}`;
   $("state").textContent = running ? `${running} running` : "";
   const legend = h("div", "legend",
-    CLASSES.filter((c) => shown.some((r) => classOf(r) === c)).map((c) => h("span", { class: "lgi", "data-lg": `lg ${c}` }, h("i", { style: { background: colourOf(c) } }), CLASS_LABEL[c])),
+    CLASSES.filter((c) => shown.some((r) => classOf(r) === c) || away.some((r) => classOf(r) === c)).map((c) => h("span", { class: "lgi", "data-lg": `lg ${c}` }, h("i", { style: { background: colourOf(c) } }), CLASS_LABEL[c])),
     h("span", "lgi", h("i", "k-fail"), "failed, gone or lost"), h("span", "lgi", h("i", "k-run"), "running"),
     h("span", "lgi", h("i", "heat"), "load (to twice the cores), memory (50 % free to 10 %)"),
     h("span", "hint", "drag to move · pinch or ⌥ scroll to zoom · a run pointed at lights its checkout's"));
@@ -334,7 +347,8 @@ function renderRun() {
   // The run itself, then a lane a kind at each depth.
   const top = track();
   top.add({ key: `s ${run.id}`, from: t0, until: t1, colour: colourOf(classOf(run)), kind: run.status === "running" && run.lost == null ? "running" : "past", failed: bad(run) });
-  cards.set(`s ${run.id}`, () => [h("b", null, run.name), facts(runFacts(run, now, macs))]);
+  const ranOn = [...new Set([run.mac, ...spans.map((s) => s.mac)])].filter(Boolean);
+  cards.set(`s ${run.id}`, () => [h("b", null, run.name), facts(runFacts(run, now, macs, ranOn))]);
   lanes.append(h("div", "ln", "the run"), top.el);
   const maxDepth = Math.max(0, ...depth.values());
   for (let d = 1; d <= maxDepth; d++) {
@@ -353,7 +367,7 @@ function renderRun() {
           const seg = t.add({ key, from: s.t0, until: s.t1 ?? now, colour: colourOf(k), kind: untimed ? "mark" : s.status === "running" && s.lost == null ? "running" : "past", failed: bad(s) });
           runSegs.set(key, seg); runSpans.set(key, s);
           cards.set(key, () => [h("b", null, s.name), facts([["kind", s.kind], s.parent !== run.id && byId.get(s.parent) ? ["in", byId.get(s.parent).name] : null, ["status", h("span", statusClass(s), statusText(s))], untimed ? ["ended", clock(s.t1)] : ["began", clock(s.t0)], ["took", untimed ? "– (cargo test says when a test ended, not when it began)" : s.t1 != null ? dur(s.t1 - s.t0) : `${dur(now - s.t0)} so far`],
-            s.mac !== run.mac ? ["Mac", macName(s.mac, macs)] : null, ...Object.entries(s.attrs || {}).filter(([a]) => a !== "untimed").map(([a, v]) => [a, Array.isArray(v) ? `${v.length}: ${v.slice(0, 40).join(", ")}${v.length > 40 ? "…" : ""}` : v])])]);
+            s.mac !== run.mac || s.on !== s.mac ? ["Mac", whereRan(s, macs)] : null, ...Object.entries(s.attrs || {}).filter(([a]) => a !== "untimed" && a !== "ran_on").map(([a, v]) => [a, Array.isArray(v) ? `${v.length}: ${v.slice(0, 40).join(", ")}${v.length > 40 ? "…" : ""}` : v])])]);
         }
         lanes.append(h("div", { class: "ln", title: k }, i ? "" : `${"· ".repeat(d - 1)}${k} (${mine.length})`), t.el);
       });
@@ -396,7 +410,7 @@ function renderRun() {
       byKind.size ? [h("h3", { style: { marginTop: "10px" } }, "Time by kind (summed; parallel spans count each)"), table([["kind", null], ["total", "num"]], [...byKind].sort((a, b) => b[1] - a[1]).map(([k, v]) => h("tr", null, h("td", "nm", h("i", { class: "sw", style: { background: colourOf(k), marginRight: "5px" } }), k), h("td", "num", dur(v)))))] : null),
     h("div", null, h("h3", null, "Longest"), longest.length ? table([["", null], ["kind", null], ["took", "num"]], longest.map((s) => row(s, took(s, now)))) : h("div", "empty", "–")),
     h("div", null, h("h3", null, `Failed (${fails.length})`), fails.length ? table([["", null], ["kind", null], ["took", "num"]], fails.slice(0, ROWS_SHOWN).map((s) => row(s, took(s, now)))) : h("div", "empty", "Nothing failed.")));
-  const f = runFacts(run, now, macs).filter((r) => r && r[1] != null && r[1] !== "");
+  const f = runFacts(run, now, macs, ranOn).filter((r) => r && r[1] != null && r[1] !== "");
   $("run").replaceChildren(h("div", "facts", f.map(([k, v]) => h("span", null, h("b", null, k), v))), h("div", "sched", runTl.el), cols);
   runTl.placed(lanes, tracks, span);
 }

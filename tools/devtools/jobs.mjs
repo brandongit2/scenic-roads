@@ -12,6 +12,10 @@
 //   {op: "sample", mac, t, load, memfree, swap, ncpu, chip?, mem?, live: [ids]}   a Mac, every 10 s
 // A running span its Mac's sampler hasn't named live for LOST_S is shown as lost (the Mac asleep,
 // away or restarted); the sampler itself ends one whose process is gone (status "gone").
+// A span's `mac` is the Mac it ran on: a test-Mac run (kind "run", attrs.ran_on) and its parts are
+// the test Mac's. A tests job (remote-tests.sh's) is the Mac's it started on, its attrs.ran_on the
+// test Mac its run went to (said as it starts there; attrs.rerun_here when it ran here after all):
+// a span read is `on` the Mac it ran on, what the page groups by.
 import { DatabaseSync } from "node:sqlite";
 import { refuse, send, fail, readBody } from "./http.mjs";
 
@@ -34,7 +38,7 @@ export function openJobs(file) {
       parent TEXT,               -- the span it is part of ('' or null: a run of its own)
       root TEXT NOT NULL,        -- the run it is part of: the top of its parents (itself for a run)
       kind TEXT, name TEXT,
-      mac TEXT,                  -- the Mac that recorded it (LocalHostName)
+      mac TEXT,                  -- the Mac it ran on (LocalHostName)
       t0 REAL, t1 REAL,          -- unix s; t1 null while it runs
       status TEXT,               -- jobs.mjs STATUSES
       attrs TEXT NOT NULL DEFAULT '{}',   -- JSON object
@@ -53,9 +57,30 @@ export function openJobs(file) {
     CREATE INDEX IF NOT EXISTS samples_t ON samples(t);
     CREATE TABLE IF NOT EXISTS macs (mac TEXT PRIMARY KEY, chip TEXT, mem REAL, ncpu INTEGER, seen REAL);
   `);
+  // (Version 1, #1086: before it, a test-Mac run and its parts were the recording Mac's; moved to
+  // the Mac their run names.)
+  if (db.prepare("PRAGMA user_version").get().user_version < 1) {
+    db.exec("BEGIN IMMEDIATE");
+    try { onTheirMac(db); db.exec("PRAGMA user_version = 1; COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; }
+  }
   const stmts = {};
   const stmt = (sql) => (stmts[sql] ||= db.prepare(sql));
   return { db, stmt, close: () => db.close() };
+}
+// Every test-Mac run (a span naming `ran_on`, kind "run") and its parts put on that Mac.
+function onTheirMac(db) {
+  const remote = db.prepare(`SELECT id, root, json_extract(attrs, '$.ran_on') AS on_ FROM spans WHERE kind = 'run' AND json_extract(attrs, '$.ran_on') IS NOT NULL`).all();
+  const inRun = db.prepare(`SELECT id, parent FROM spans WHERE root = ?`), set = db.prepare(`UPDATE spans SET mac = ? WHERE id = ?`);
+  const kidsOf = new Map(); // a run's root → its spans' kids by parent
+  for (const r of remote) {
+    if (!kidsOf.has(r.root)) {
+      const kids = new Map();
+      for (const s of inRun.all(r.root)) (kids.get(s.parent) || kids.set(s.parent, []).get(s.parent)).push(s.id);
+      kidsOf.set(r.root, kids);
+    }
+    const kids = kidsOf.get(r.root);
+    for (const todo = [r.id]; todo.length;) { const id = todo.pop(); set.run(r.on_, id); todo.push(...(kids.get(id) || [])); }
+  }
 }
 
 // Why event `e` can't be taken, or null.
@@ -164,7 +189,8 @@ export function makeJobs(jobs, changed) {
 
   const now = () => Date.now() / 1000;
   const row = (r) => {
-    const out = { id: r.id, parent: r.parent || null, kind: r.kind, name: r.name, mac: r.mac, t0: r.t0, t1: r.t1, status: r.status, attrs: JSON.parse(r.attrs || "{}") };
+    const attrs = JSON.parse(r.attrs || "{}");
+    const out = { id: r.id, parent: r.parent || null, kind: r.kind, name: r.name, mac: r.mac, on: (!attrs.rerun_here && attrs.ran_on) || r.mac, t0: r.t0, t1: r.t1, status: r.status, attrs };
     if (r.status === "running" && Math.max(r.seen || 0, r.t0 || 0) < now() - LOST_S) out.lost = Math.max(r.seen || 0, r.t0 || 0);
     return out;
   };
@@ -174,32 +200,37 @@ export function makeJobs(jobs, changed) {
     if (!(from < to)) refuse(400, "invalid_argument", "from: before to (unix s)");
     return { from, to };
   };
-  // The runs (spans of no other) overlapping [from, to], each with how many spans it holds and how
-  // many of them failed. (A span whose parent hasn't come is part of that parent's run, shown once it
-  // comes: a Mac sends a run's start before its parts'.)
+  // The runs (spans of no other) overlapping [from, to], each with how many spans it holds, how
+  // many of them failed and the Macs they ran on. (A span whose parent hasn't come is part of that
+  // parent's run, shown once it comes: a Mac sends a run's start before its parts'.) And `away`: the
+  // tests jobs inside other runs (check.sh's, publish's) whose run went to another Mac, each with
+  // its run's id (`root`), shown on that Mac.
   function runs(url) {
     const { from, to } = range(url);
     const kind = url.searchParams.get("kind");
     const rs = stmt(`SELECT * FROM spans WHERE root = id AND t0 <= ? AND (t1 IS NULL OR t1 >= ?) ${kind ? "AND kind = ?" : ""} ORDER BY t0`)
       .all(...[to, from, ...(kind ? [kind] : [])]);
-    const counts = new Map(stmt(`SELECT root, COUNT(*) AS n, SUM(status IN ('fail', 'gone')) AS bad FROM spans WHERE root IN (SELECT value FROM json_each(?)) GROUP BY root`)
+    const counts = new Map(stmt(`SELECT root, COUNT(*) AS n, SUM(status IN ('fail', 'gone')) AS bad, json_group_array(DISTINCT mac) AS ms FROM spans WHERE root IN (SELECT value FROM json_each(?)) GROUP BY root`)
       .all(JSON.stringify(rs.map((r) => r.root))).map((c) => [c.root, c]));
+    const away = !kind || kind === "tests" ? stmt(`SELECT * FROM spans WHERE kind = 'tests' AND root <> id AND t0 <= ? AND (t1 IS NULL OR t1 >= ?)
+      AND json_extract(attrs, '$.ran_on') <> mac AND json_extract(attrs, '$.rerun_here') IS NULL ORDER BY t0`).all(to, from) : [];
     return {
       now: now(), from, to,
-      runs: rs.map((r) => ({ ...row(r), spans: (counts.get(r.root)?.n || 1) - 1, failed: counts.get(r.root)?.bad || 0 })),
+      runs: rs.map((r) => { const c = counts.get(r.root); return { ...row(r), spans: (c?.n || 1) - 1, failed: c?.bad || 0, macs: c ? JSON.parse(c.ms).filter(Boolean).sort() : [r.mac] }; }),
+      away: away.map((r) => ({ ...row(r), root: r.root })),
       macs: macs(),
     };
   }
   const macs = () => Object.fromEntries(stmt(`SELECT * FROM macs`).all().map((m) => [m.mac, { chip: m.chip, mem: m.mem, ncpu: m.ncpu, seen: m.seen }]));
-  // The run a span is part of, whole: the run, its spans, and the load and memory of its Macs (the
-  // one it ran on and any its spans name in `ran_on`, the test Mac) over its time.
+  // The run a span is part of, whole: the run, its spans, and the load and memory of the Macs they
+  // ran on (a tests job's test Mac too, before its run there has come) over its time.
   function run(id) {
     const r = stmt(`SELECT * FROM spans WHERE id = ?`).get(id);
     if (!r) refuse(404, "not_found", `no span ${JSON.stringify(id)}`);
     const top = stmt(`SELECT * FROM spans WHERE id = ?`).get(r.root) || r;
     const spans = stmt(`SELECT * FROM spans WHERE root = ? AND id <> ? ORDER BY t0`).all(top.root, top.id).map(row);
     const t0 = top.t0 ?? Math.min(...spans.map((s) => s.t0 ?? Infinity)), t1 = top.t1 ?? now();
-    const ms = new Set([top.mac, ...spans.map((s) => s.mac), ...spans.map((s) => s.attrs.ran_on)].filter(Boolean));
+    const ms = new Set([row(top), ...spans].flatMap((s) => [s.mac, s.on]).filter(Boolean));
     const samples = {};
     for (const m of ms) samples[m] = stmt(`SELECT t, load, memfree, swap FROM samples WHERE mac = ? AND t >= ? AND t <= ? ORDER BY t`).all(m, t0 - 60, t1 + 60).map((s) => [s.t, s.load, s.memfree, s.swap]);
     return { now: now(), run: row(top), spans, samples, macs: macs() };

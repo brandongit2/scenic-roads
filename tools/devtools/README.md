@@ -46,6 +46,13 @@ suite and test, and every cargo build through `tools/dev/bin/cargo` (builds, cli
 (`tools/dev/devjob.zsh` and `devjob.py`, tools/dev/testing.md, "Dev jobs"); this app keeps and shows
 them.
 
+- **Where it ran (#1086):** a span's Mac is the one it ran on. A test-Mac run (`run`, its `ran_on`)
+  and its compiles, suites and tests are the test Mac's; the `tests` job holding it is the Mac's it
+  started on, its `ran_on` naming the test Mac as soon as the run starts there (`rerun_here` when it
+  ran here after all). The API reads each span `on` the Mac it ran on: a tests job whose run is on the
+  test Mac shows on that Mac, "started on the M1 Pro, ran on the M4 Pro"; one run here stays on its
+  own. `jobs.db` from before #1086 (its `user_version` 0) has its test-Mac runs moved to their Mac
+  once, as the app opens it.
 - **What a run is:** a tree of spans (`jobs.db`'s `spans`): each a kind, a name, its Mac, its start
   and end, a status (`running`, `ok`, `fail`, `stopped`, `gone`: its process ended without saying
   how, `skip`, `reuse`) and attributes (a run of its own: its checkout, branch, commit, task, whether
@@ -58,7 +65,8 @@ them.
 - **Each Mac's load** (1-minute load average), memory free (`kern.memorystatus_level`, %) and swap
   used, every 10 s while any recorded job runs on it (`samples`), and its chip, memory and cores
   (`macs`). The test Mac is sampled during its runs too (remote-tests.sh starts its sampler there).
-- **The page** (`public/jobs/`): the runs on a timeline, a group a Mac, a lane a kind (a cargo
+- **The page** (`public/jobs/`): the runs on a timeline, a group a Mac (the one each ran on; a
+  check's or publish's tests job on the test Mac too, opening its run), a lane a kind (a cargo
   measurement or backtest its own), each Mac's load and memory as heat strips under them; a run
   pointed at shows its card and lights its checkout's other runs, a click opens it. A run opened:
   its facts, its spans on a timeline of their own (a lane a kind at each depth, deepest last), where
@@ -76,8 +84,9 @@ its span by its id, so they may come in any order and again: `start` (`id`, `par
 `t1`), `attr` (`id`, `attrs`), `sample` (`mac`, `t`, `load`, `memfree`, `swap`, `ncpu`, `chip`,
 `mem`, `live`: the ids of the spans live on it). Times are unix seconds. Each line that fits is
 taken; one that doesn't is answered in `refused` (`{line, why}`), the rest kept. Reads:
-`GET /api/jobs/runs?from=&to=[&kind=]` (the runs overlapping it, each with its span count and failed
-count, and the Macs), `GET /api/jobs/runs/<id>` (the run a span is part of, whole, with its Macs'
+`GET /api/jobs/runs?from=&to=[&kind=]` (the runs overlapping it, each with its span count, failed
+count and the Macs its spans ran on, `macs`; `away`, the tests jobs inside other runs whose run went
+to another Mac, each with its run's id, `root`; and the Macs), every span read with `on`, `GET /api/jobs/runs/<id>` (the run a span is part of, whole, with its Macs'
 samples), `GET /api/jobs/samples?from=&to=&n=` (each Mac's samples in at most `n` buckets: the most
 load, the least memory free, the most swap), `GET /api/jobs/stats?kind=[&from=&to=]` (each name's
 runs, failures, p50, p90, longest, total and last 40 times), `GET /api/jobs/kinds`.
