@@ -73,6 +73,7 @@ versions() {  # the toolchain this side runs
 # --- The test Mac's side ---------------------------------------------------------------------------------
 
 stale_after=$(( 6 * 3600 ))
+term_wait=${SCENIC_TESTS_TERM_WAIT:-15}  # (seconds from a run's TERM to its KILL; shorter in this script's test)
 remote_lock() {  # <key> <owner>: 0 taken, 1 busy (prints its owner)
   local d=~/scenic-check/$1 owner=$2
   mkdir -p $d || exit 2
@@ -244,8 +245,9 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   # On any exit, by a signal too (a TERM stops the whole run, cargo's rustc and test binaries, a
   # test's server): the watcher stopped (by its PID), then all else in this connection's process
   # group (only this run is in it, its leader this process), and only then the slot freed, while
-  # still this run's: the slot is the build folder's lock. TERM, 5 s, then KILL, this process too:
-  # the next run frees the slot, no process of this one left.
+  # still this run's: the slot is the build folder's lock. TERM, then KILL past term_wait, this
+  # process too: the next run frees the slot, no process of this one left. (Nextest runs each test in
+  # a group of its own and stops them on a TERM, 10 s for one ignoring it: it must outlast that.)
   typeset -g g_wd= g_cpid= g_slotdir=$base/.slots/$slot g_mine=$mine
   typeset -g g_pgid=$(ps -o pgid= -p $$ | tr -d ' ')
   end_run() {
@@ -253,11 +255,11 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
     [[ -n $g_wd ]] && kill $g_wd 2>/dev/null
     local i; local -a left
     if [[ $g_pgid == $$ ]]; then
-      for i in {1..100}; do
+      for i in {1..$(( term_wait * 10 + 50 ))}; do
         left=(${(f)"$(pgrep -g $g_pgid 2>/dev/null)"}); left=(${left:#$$})
         (( ${#left} )) || break
         (( i == 1 )) && kill -TERM -- -$g_pgid 2>/dev/null
-        (( i == 50 )) && kill -KILL -- -$g_pgid 2>/dev/null
+        (( i == term_wait * 10 )) && kill -KILL -- -$g_pgid 2>/dev/null
         sleep 0.1
       done
     fi
@@ -300,11 +302,11 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   local pgid=$(ps -o pgid= -p $$ | tr -d ' ') wd=
   # (And it keeps the key's lock and stamp fresh, so a run past 6 h isn't taken for stale or
   # evicted.)
-  # (This process killed outright, no trap run: what it started goes too, TERM, 5 s, then KILL.)
+  # (This process killed outright, no trap run: what it started goes too, TERM, then KILL.)
   local main=$$
   ( while sleep 3; do
       [[ -z $sshd ]] || kill -0 $sshd 2>/dev/null || { kill -TERM -- -$pgid; exit; }
-      kill -0 $main 2>/dev/null || { trap '' TERM; kill -TERM -- -$pgid; sleep 5; kill -KILL -- -$pgid; exit; }
+      kill -0 $main 2>/dev/null || { trap '' TERM; kill -TERM -- -$pgid; sleep $term_wait; kill -KILL -- -$pgid; exit; }
       [[ -d $dir/.busy ]] && touch -c $dir/.busy $dir/stamp 2>/dev/null
     done ) </dev/null >/dev/null 2>&1 &
   wd=$!; g_wd=$wd

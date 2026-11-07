@@ -354,7 +354,7 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   features of. Cargo never deletes what it built, so it can grow as dependencies change (a key's folder kept for
   publishes reached 14 GB); only the room rule below removes one, and never the one a run is building in.
 - A slot is its build folder's lock: mkdir takes it, and it's freed only once nothing the run started is
-  left. As a run ends or is stopped, its process group goes first (TERM, 5 s, then KILL); a run killed outright has
+  left. As a run ends or is stopped, its process group goes first (TERM, 15 s, then KILL; nextest stops the tests, each in a group of its own, within 10 s); a run killed outright has
   its watcher do that, and the next run takes the slot only when the group is gone. A run whose slot isn't its own at the end gives no result.
   Tests: `remote-tests.zsh`, `remote_main` itself in a fake home (each of these, five runs at once on three slots). The dev job sampler
   leaves the group as it starts (it's the Mac's, not the run's).

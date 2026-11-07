@@ -123,7 +123,7 @@ run_setup() {  # <key>: a tree and its lock
   mkdir -p $fb/$1/src $fb/$1/.busy; print -r -- tree > $fb/$1/src/f; print -rn -- $'f\0' > $fb/$1/files.list; print -r -- o > $fb/$1/.busy/owner
 }
 run_remote() {  # <key> <command>: a run, the group's leader
-  HOME=$fh own_group zsh $self --remote $1 o $2 "" ""
+  HOME=$fh SCENIC_TESTS_TERM_WAIT=2 own_group zsh $self --remote $1 o $2 "" ""
 }
 wait_for() { local i; for i in {1..300}; do [[ -e $1 ]] && return 0; sleep 0.1; done; return 1 }
 hold_two() { mkdir -p $fb/.slots/{2,3}; print -r -- $holdme > $fb/.slots/2/owner; print -r -- $holdme > $fb/.slots/3/owner }
