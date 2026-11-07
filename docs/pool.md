@@ -1074,7 +1074,9 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   starting jobs and writing the status never wait on it. Its three runs go side by side (three
   threads, each at the utility QoS: `forecast::low_priority`), each cut once it has computed
   `forecast::BUDGET` (15 s of its thread's CPU time, not wall time, #584: a loaded Mac starves
-  utility threads, 4 s of CPU took 15 s on the mini at load 34; a live run computes 1-4 s), or
+  utility threads, 4 s of CPU took 15 s on the mini at load 34; a run of 7 Nov's worldwide queue,
+  some 19,000 items on 30 lanes, computes 5-12 s on the M4 under load: §7.9, Where the forecast's
+  time goes), or
   after 120 s of wall time (a backstop, so a starved run can't hold the next forecast or the NAS
   self-heal); the trade-off: the three runs may take up to 3 × 15 s of CPU together: one
   cut is `partial`, its `why` says so, no finish shown, and the build page marks its lanes and next
@@ -2148,18 +2150,40 @@ read worse (8,647 to 10,459, 7,287 to 7,558): those samples left a row of larger
 worse. Elsewhere the two codes' columns differ only by where a cut run stops: bldtiles' p90 537 to 543 on
 test is that.
 
-**Where the forecast's time goes** (a 45 s `sample` of three inputs of 7 Nov 06:00-07:00 UTC replayed, on the
-M1). 34-37 of the 60 inputs' runs are cut at `BUDGET`, whichever the code. Of the samples, three quarters are
-`Sched::pack` and a fifth the listing (`Waits::of`, `items`: outside the budget, one listing for the three
-runs, the rest of it `steps::declared`). Of `pack`, nearly all of it, in two equal parts:
+**Where the forecast's time goes** (task #995; `sample` of `forecast::tests::archived_timing`, the archive's
+inputs as the lead recorded them, release build on the M4, its load 20-90 from the pool's tests). A run
+asks the scheduler some 50,000 times, 88 % of them refused: a lane idle for its room asks again at each
+item's end anywhere in the pool. Each ask weighs every target of every offer (up to `OFFER_MAX` a step)
+and every job its Mac holds, through the live scheduler's own `Sched::pack`. What it looked up again at
+each ask, and now keeps:
 
-- `Book::secs_p90`: a target with no measure of its own and no fit scans every cost for its step's 90th
-  percentile (`self.costs`, some 40,000 on 5-6 Nov), for each such target offered, at each ask.
-- `Sched::nas_room_heaviest` over `job_weight` for each lease out, then `Book::nas_load`, `secs_on` and
-  `source_secs` for each of its targets, most of that `steps::sh_deep` making the strings of what a target
-  reads (Book's `source_secs`), again at each ask, though the leases out change only when one is granted or ends.
+- in the cost book (`needs::Book`), with its models while the measures stand: each step's 90th
+  percentile time (`step_p90`, which scanned every cost, some 45,000, for each target with no measure of
+  its own: 70 % of `pack`), each target's source's time (`source_secs`, its source's names worked out from
+  the steps table each time, slope-hi's 256 deep packs among them), each `secs_on` asked, and each
+  target's own run's NAS rate (`own_rate`); the models themselves behind an `Arc`;
+- in the scheduler: each leased job's NAS weight and its packing need and time (`Sched::kept_leases`), and,
+  within one `pack`, the NAS budget's sums and each step's targets held (`Sched::packing`, made again at
+  each grant); a cold target's provisional need (`provisional_at`, as `measured_of` is);
+- in the run: each Mac's offers, until the work ready changes (`Ready::rev`).
 
-Both are the live scheduler's own code; neither depends on the gate.
+The per-target maps are looked up by FxHash (`roadcore::fx`), not SipHash. Each answer is the one the code
+worked out before, as of the same measures: every forecast below is the same bytes before and after.
+
+| 7 Nov 09:35 UTC's input (19,365 items, 30 lanes) | before | after |
+|---|---|---|
+| runs at `BUDGET` | cut, 640-1,146 items placed | whole, 7.3-8.5 s each |
+| each run without a budget, wall | 607 s | 23 s, its listing (13 s) among it |
+
+Over the 64 inputs of 6 Nov 00:50 to 7 Nov 11:41 UTC (all regions on), each run's CPU time at `BUDGET`:
+before, 59 of the 60 cut (a median 4 % of their items placed); after, none cut, the slowest run of each
+input a median 6.5 s, p90 8.4 s, at most 12.3 s (7 Nov 05:10 UTC's input, 20,300 items). Its listing, once
+for the three runs and outside the budget, a median 21 s before and 13 s after, at most 18 s: most of it
+`steps::declared` making and sorting the names of what each target reads. The same forecast (its JSON,
+`SCENIC_FORECAST_HASH`) at no budget before and after: the 61 inputs of 4 Nov 21:43 to 5 Nov 23:56 UTC (the
+slowest 206 s before, 7 s after) and four with all regions on (6 Nov 19:18-19:50 and 7 Nov 09:35 UTC: 383-607
+s before, 23-29 s after). `forecast-check --replay` of those 61, `BUDGET` raised in both
+copies: the same report byte for byte (codes 6 and 7, train and test), 46 minutes before and 7 after.
 
 ## 8. Tasks
 
