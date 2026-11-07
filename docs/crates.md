@@ -847,7 +847,7 @@ commit; re-exports at the old paths as before.
    - **plan.rs is the planner, not the plan**: the **plan** part's thread (`Planner`, `Handle`,
      its messages `Msg`, `Inputs`, `PlanView`, `Out`). It names coord (19 mentions), pool, needs,
      pubtimes and control, and the runtime's items in agent/mod.rs (`Holds`, `Coverages`,
-     `GuardHolds`, `edit_held`, `write_published`, `load_regions`, `WORLDWIDE_STEPS`,
+     `GuardHolds`, `edit_held`, `write_published`, `load_regions`,
      `PASS_SPACE`, `PROXY_REPLAN`, `Forecasted`), forecast's lanes and redo's `done_of`, so it goes
      down with the runtime, its calls of the plan through `Plan`. The plan that stays in pipeline
      is build.rs, steps.rs, idents.rs and tiles.rs (17.3k lines with their tests), not §6.1's
@@ -943,23 +943,50 @@ commit; re-exports at the old paths as before.
         runs a planner's `region_jobs` and `checklist` on a private root (`SCENIC_FROZEN_ROOT`:
         the lead's `state/` copied, every other entry of the NAS's project folder a symlink;
         `SCENIC_FROZEN_HOME` keeps the coverage's cache and the terrain indexes between runs;
-        `SCENIC_FROZEN_APP` the lead's app), with no coordinator, gate watch, failure counts or
-        record of past catalogues, the forecast's thread parked, and writes the jobs (commands,
-        targets, keys) before and after the holds, the waits, the holds, the offers and the
-        checklist's lines to `SCENIC_FROZEN_OUT`, a line each. The state copied by tar over ssh
-        from the NAS to the M4 (its `state/` without coord, backups, journal, live-archive,
-        pool-shadow and the status's temporary files, and only the current term's records:
-        68 MB). Check of the merge (the lead's term 770, seq 26, 6 Nov; the M4, test profile; on it
-        every worldwide step made but the summits, counted left):
-        main (the check's commit, 550e28db) and the merge wrote the same 1,013,213 bytes (50 jobs
-        before the holds and 50 after, 11 waits, 11 offers, 13 checklist lines; SHA-256 2f8029c9…).
-        A run: 6 to 18 min, most of it the offers' extract sizes, a stat each over SMB the lead
-        keeps between plans; 4.5 GB of footprint at most.
-      - **The trait** (planned): what is left of 6f2. The planner holds the plan's own types
-        (`build::Plan` and `KeyMemo` kept for a lease change's filtering, `KeyCtx` made in
-        `region_jobs`, `Publish`), so the trait's questions either take and give the runtime's
-        types or keep those behind it (the plan making its context and memo, the planner holding
-        them opaque): a design to settle before the trait lands. Moving the planner up with the plan instead was
+        `SCENIC_FROZEN_APP` the lead's app), with no coordinator, gate watch or record of past
+        catalogues, the forecast's thread parked, and writes the jobs (commands, targets, keys)
+        before and after the holds, the waits, the holds, the offers and the checklist's lines to
+        `SCENIC_FROZEN_OUT`, a line each. The symlinks are writable by themselves, so it plans in a
+        child of itself under `sandbox-exec`, denying every write under /Volumes and the app's home,
+        and refuses a root leading to a live path or a `state/` that is a link. Knobs for states the
+        records alone can't make: `SCENIC_FROZEN_PASS`, `SCENIC_FROZEN_FAILURES`,
+        `SCENIC_FROZEN_NAMES_SEQ`, `SCENIC_FROZEN_NAMES_AGO`. The state is copied by tar to the M4
+        (its `state/` without coord, backups, journal, live-archive, pool-shadow, taskboard and the
+        status's temporary files, and only the current term's records: 63 MB). The gate's own jobs
+        (`gate_work`, not changed by the merge) stay out of it: no gate watch.
+      - **Check of the merge** (7 Nov, the lead's term 771 seq 67 on the M4, test profile; the check's
+        commit with these knobs against the merge, each pair side by side, a run's own
+        folder named alike before comparing): the same bytes on all nine states, 1.7 KB to 1.0 MB,
+        each edited from that copy's brief and records. As it stands (51 jobs, 11 waits, 10 offers);
+        the outlines with work, held; the outlines unmade, 5 failures, held; every worldwide step
+        unmade, a set, the buildings' index and the heritage input gone, the outlines failed 3 times,
+        names-to-do due (19 jobs, 18 after the lake fill's hold); the lake fill failed 3 times,
+        the languages and translations gone, the reaches unreadable; the sources gone (the lake fill
+        unreadable, held), the reaches damaged, names-to-do's gate shut; no pass, names-to-do due and
+        shut; a pass with no outputs yet. `pass_work_holds_stay_apart_from_its_works` keeps these
+        branches on every run. One difference no plan shows: `PassReads`'s release and lake-fill
+        source are read before the outlines' hold, where the planner read neither under it (the
+        checklist needs them either way): a file and a folder's listing more per plan, while
+        the outlines have work. A full plan's run took 4.5 to 22 min.
+      - **The trait** (planned, its shape decided 6 Nov 2026): what is left of 6f2. What the
+        planner carries for the plan stays opaque; what it reads, or hands in, is the runtime's data.
+        `KeyCtx` can't be the runtime's: it borrows `TerrainTiles` (which names `terrain_water` and
+        `depth::grids` types) and `Reaches` (crates/roads), both above agentcore, and `KeyMemo` holds
+        `TerrainTargets` built from them; a `&'static dyn Plan` carries no associated types either.
+        - **Opaque, one object:** `Plan::held(home) -> Box<dyn PlanHeld>` (`Send`), which the planner
+          keeps for its life in place of its `tiles`, `reach` and `kept` fields. It owns those caches,
+          the memo and `KeyCtx`. `PlanHeld::plan(args, refilter)` answers a plan, reusing the kept one
+          under `refilter` while `KeyMemo::serves` holds; the questions that share its keys go to the
+          same object (`timetables_todo_work`, `heritage_awaits_acceptance`, `chains_left`,
+          `depth_kept`, `restaled_by`'s owners, why the elevation keys are unknown), so `region_jobs`
+          makes no `KeyCtx`. The off-loop counts (`start_region_steps`) ask it for a `Send` closure.
+        - **Data, moved down with agentcore:** `build::Plan` (`Work`, strings, `RegionLeft`,
+          `PublishLine`, `RegionState`, `Checklist`, `Left`: no family type among them), so the planner
+          goes on reading and editing its fields, and `Publish` as the arguments (`Coverage`, maps, the
+          runtime's `Publishing`).
+        - **`pass_work`:** `PassReads` loses `reach` (its `LoadError` is roads') and `release` (bld's):
+          the plan reads both itself; the planner still gives the failure counts and `NamesTodo`.
+        Moving the planner up with the plan instead was
       weighed and is the larger cut: its pass names ~150 of the runtime's items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
       API. The family items above go through `Plan` too: `input_digests` and `key_inputs` (they
       name heritage and bld) and `terrain_peak` move to the plan, called through it, as are the
