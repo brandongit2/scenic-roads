@@ -21,8 +21,8 @@ and coloured by elevation, grade or one of a dozen scenic metrics computed from 
 
 ---
 
-- **Roads** coloured by elevation, grade, relief, a street map's look, or scenic metrics from 15 km
-  viewsheds over terrain and **tree canopy heights**.
+- **Roads** coloured by elevation, grade, relief, a street map's look, or scenic metrics whose
+  viewsheds see over terrain and **tree canopy heights**.
 - **Passenger rail** scored for the view from the carriage window, or coloured by official line
   colour, service or trains a day; **ferries** by sailings a day or season.
 - **Landmarks** (peaks, waterfalls, lighthouses, viewpoints, heritage sites, parks…) sized by
@@ -52,8 +52,8 @@ Equalise, a colour map, a low-end fade and a threshold highlight.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/img/readme/grade.webp" alt="Stelvio Pass by grade with the Turbo colours, the Drives list open"></td>
-    <td width="50%"><img src="docs/img/readme/street-map.webp" alt="Paris in the Map mode with the Michelin preset"></td>
+    <td><img width="400" src="docs/img/readme/grade.webp" alt="Stelvio Pass by grade with the Turbo colours, the Drives list open"></td>
+    <td><img width="400" src="docs/img/readme/street-map.webp" alt="Paris in the Map mode with the Michelin preset"></td>
   </tr>
   <tr>
     <td><b>Grade</b> around the Stelvio Pass, Turbo colours, the <b>Drives</b> list: the best 5 km stretch of each road in view by your weights.</td>
@@ -63,21 +63,21 @@ Equalise, a colour map, a low-end fade and a threshold highlight.
 
 ## Layers
 
-Each layer has its section in the settings panel: Roads, Passenger rail, Ferries, Stops & sights,
-Terrain, Trees, Depth, Buildings, Map, Labels, Tools, Regions.
+The settings panel has a section per layer (Roads, Passenger rail, Ferries, Stops & sights, Terrain,
+Trees, Depth, Buildings, Map, Labels), then Tools and Regions.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/img/readme/rail.webp" alt="Tokyo's passenger rail in each line's official colour, the Rail lines list open"></td>
-    <td width="50%"><img src="docs/img/readme/buildings.webp" alt="Midtown Manhattan in 3D, buildings coloured by height"></td>
+    <td><img width="400" src="docs/img/readme/rail.webp" alt="Tokyo's passenger rail in each line's official colour, the Rail lines list open"></td>
+    <td><img width="400" src="docs/img/readme/buildings.webp" alt="Midtown Manhattan in 3D, buildings coloured by height"></td>
   </tr>
   <tr>
     <td><b>Passenger rail</b> in Tokyo, each line in its official colour, roads dimmed; the <b>Rail lines</b> list ranks the lines in view by ride score, trains a day or length.</td>
     <td><b>3D buildings</b> in Midtown Manhattan coloured by height; the <b>Sights</b> list ranks the landmarks in view by prominence.</td>
   </tr>
   <tr>
-    <td><img src="docs/img/readme/terrain.webp" alt="Yosemite Valley in 3D with a slope tint and contour lines, roads by curviness"></td>
-    <td><img src="docs/img/readme/viewshed.webp" alt="The viewshed from the Pic du Midi de Bigorre, the settings panel folded away"></td>
+    <td><img width="400" src="docs/img/readme/terrain.webp" alt="Yosemite Valley in 3D with a slope tint and contour lines, roads by curviness"></td>
+    <td><img width="400" src="docs/img/readme/viewshed.webp" alt="The viewshed from the Pic du Midi de Bigorre, the settings panel folded away"></td>
   </tr>
   <tr>
     <td><b>Terrain</b> in Yosemite Valley: tinted by slope (slope classes), contour lines, tree cover off, roads by <b>Curviness</b>.</td>
@@ -102,24 +102,24 @@ Six places, each with different settings.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/img/readme/tour-mountains.webp" alt="The Grossglockner High Alpine Road in 3D, roads by elevation in Turbo colours, the interface hidden"></td>
-    <td width="50%"><img src="docs/img/readme/tour-coast.webp" alt="Big Sur's coast in 3D, roads by water views in Viridis, the Drives list open"></td>
+    <td><img width="400" src="docs/img/readme/tour-mountains.webp" alt="The Grossglockner High Alpine Road in 3D, roads by elevation in Turbo colours, the interface hidden"></td>
+    <td><img width="400" src="docs/img/readme/tour-coast.webp" alt="Big Sur's coast in 3D, roads by water views in Viridis, the Drives list open"></td>
   </tr>
   <tr>
     <td><b>Mountains</b>: the Grossglockner High Alpine Road, Austria. Elevation, Turbo, roads drawn heavier, the interface hidden (<b>I</b>).</td>
     <td><b>Coast</b>: Big Sur, California. Water views, Viridis, the Drives list along Highway 1.</td>
   </tr>
   <tr>
-    <td><img src="docs/img/readme/tour-polar.webp" alt="Longyearbyen, Svalbard, the terrain tinted by elevation in glacier blues"></td>
-    <td><img src="docs/img/readme/tour-city.webp" alt="Hong Kong in 3D with the Neon street-map preset, buildings by height and rail in line colours"></td>
+    <td><img width="400" src="docs/img/readme/tour-polar.webp" alt="Longyearbyen, Svalbard, the terrain tinted by elevation in glacier blues"></td>
+    <td><img width="400" src="docs/img/readme/tour-city.webp" alt="Hong Kong in 3D with the Neon street-map preset, buildings by height and rail in line colours"></td>
   </tr>
   <tr>
-    <td><b>The high Arctic</b>: Longyearbyen, Svalbard, at 78° N. Terrain drama, Magma, the terrain tinted by elevation in glacier blues, the settings panel folded.</td>
+    <td><b>The high Arctic</b>: Longyearbyen, Svalbard, at 78° N. Terrain drama, Magma, the terrain tinted by elevation in glacier blues, the settings panel folded, the Sights list.</td>
     <td><b>City</b>: Victoria Harbour, Hong Kong. The Map mode's <b>Neon</b> preset, 3D buildings by height in Magma, rail in line colours.</td>
   </tr>
   <tr>
-    <td><img src="docs/img/readme/tour-lake.webp" alt="Lac Memphrémagog, Québec, its surveyed floor coloured by depth with depth contours"></td>
-    <td><img src="docs/img/readme/tour-desert.webp" alt="Death Valley in 3D, the terrain tinted by elevation in earth tones, roads by relief"></td>
+    <td><img width="400" src="docs/img/readme/tour-lake.webp" alt="Lac Memphrémagog, Québec, its surveyed floor coloured by depth with depth contours"></td>
+    <td><img width="400" src="docs/img/readme/tour-desert.webp" alt="Death Valley in 3D, the terrain tinted by elevation in earth tones, roads by relief"></td>
   </tr>
   <tr>
     <td><b>Lake</b>: Lac Memphrémagog, Québec. Its surveyed floor (GBLQ) by depth with depth contours, roads by Unblocked views in Viridis, the Sights list.</td>
