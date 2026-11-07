@@ -931,7 +931,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md ย
   and the big job waits only for jobs expected to end no later than those it first waited for,
   until one overruns: never starved. The refusal
   names the jobs it waits for and when they're expected to end. The forecast packs by the same
-  rule, its leases run as long as the record says (`Leased::granted_at`). With placement on, a member holding a job whose cores, as its last ask
+  rule, its leases run as long as the record says (`Leased::granted_at`: its grant, or its job's start when that's before, `Lease::began`). With placement on, a member holding a job whose cores, as its last ask
   showed, are filled by load from outside the pool with its jobs' (`Shared::swamped`; its own
   jobs alone filling them don't count) isn't among those a target is drawn to: the others take it. Each job is as many targets as fit the batch length by their measured
   times on its Mac (ยง7.7, Batch length; a target of no run of its own nor source: its step's mean, the latest earlier way's when larger while the way it

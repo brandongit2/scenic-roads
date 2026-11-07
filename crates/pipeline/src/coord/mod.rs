@@ -1827,7 +1827,8 @@ impl Coordinator {
     /// as set.
     pub fn sched_state(&self) -> sched::State {
         let s = self.shared.lock().unwrap();
-        let mut st = s.sched.state(s.now());
+        let now = s.now();
+        let mut st = s.sched.state(sched::Clock { now, unix: unix_of(now) });
         st.batch_s = s.asks.settings.batch_s().unwrap_or(0);
         for w in st.workers.iter_mut().filter(|w| w.ask.worker == self.me) {
             w.ask.cap = s.own_cap.clone();
@@ -6370,8 +6371,9 @@ mod tests {
 
     /// Task #992: a job's run is from its start as its beats say it (its process's, carried through
     /// a take-over), not its lease's grant: a lease read back at a lead's restart is younger than
-    /// its job. Its end's time, the forecast's and the status's time run say its run; the view its
-    /// lease shows leaves its run out (its work moved or not by what it does).
+    /// its job. Its end's time, the forecast's, the scheduler's record's and the status's time run
+    /// say its run; the view its lease shows leaves its run out (its work moved or not by what it
+    /// does).
     #[test]
     fn a_job_s_run_is_from_its_start_not_its_lease() {
         let (_d, c, w) = start();
@@ -6382,6 +6384,9 @@ mod tests {
         assert!(w.beat_told(g.lease, None, Some(live(600)), None).unwrap().0);
         let (_, leased, _, _) = c.for_forecast();
         assert!((600..700).contains(&leased[0].3), "{leased:?}");
+        // (The scheduler's record, which the forecast packs from, has it running since its start.)
+        let ran = unix_now() - c.sched_state().leases[0].granted_at;
+        assert!((600..700).contains(&ran), "{ran}");
         let s = c.shared.lock().unwrap();
         let l = s.leases.of(g.lease).unwrap();
         assert!(l.taken_up() && l.live.as_ref().unwrap().ran_s.is_none());

@@ -2230,9 +2230,10 @@ pub struct Leased {
     pub step: String,
     pub targets: Vec<(String, String)>,
     pub threads: u32,
-    /// When it was granted (`Lease::granted_at`, unix s; 0: not said, a record before task #973):
-    /// a scheduler made from the state has its job run that long (what room held for a waiting
-    /// job weighs, `Backfill`), not just started.
+    /// When it was granted (`Lease::granted_at`, unix s; 0: not said, a record before task #973),
+    /// or when its job began if that's before (a lease taken up: `Lease::began`, task #992): a
+    /// scheduler made from the state has its job run that long (what room held for a waiting job
+    /// weighs, `Backfill`), not just started.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub granted_at: u64,
 }
@@ -2253,19 +2254,24 @@ fn ago(now: Instant, age: u64) -> Instant {
 }
 
 impl Sched {
-    /// Its state as data at `now` (`State`).
-    pub fn state(&self, now: Instant) -> State {
+    /// Its state as data at `clock` (`State`).
+    pub fn state(&self, clock: Clock) -> State {
+        let now = clock.now;
         let age = |t: Instant| now.saturating_duration_since(t).as_secs();
         State {
             leases: self
                 .leases
                 .all(now)
                 .into_iter()
-                .filter_map(|l| match l.work {
-                    Work::Job { step, targets } => {
-                        Some(Leased { worker: l.worker, step, targets, threads: l.threads, granted_at: l.granted_at })
+                .filter_map(|l| {
+                    // (Its job's start when it's older than its lease: `Lease::began`, task #992.)
+                    let granted_at = l.granted_at.min(clock.unix.saturating_sub(l.ran(now).as_secs()));
+                    match l.work {
+                        Work::Job { step, targets } => {
+                            Some(Leased { granted_at, worker: l.worker, step, targets, threads: l.threads })
+                        }
+                        Work::Task { .. } => None,
                     }
-                    Work::Task { .. } => None,
                 })
                 .collect(),
             offers: self.offers.clone(),
