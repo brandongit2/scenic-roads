@@ -1210,8 +1210,8 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   those 40 minutes, in the same process; the agent's restart read it at once. Meanwhile the
   catalogue isn't asked of the lead's coordinator (it was granted, leased and logged about once a
   minute, only to wait).
-- **A removed step's names leave the records the same way** (task #701): the lead's daily `gc`
-  job removes from the manifest every name under `agent::gc::RETIRED` (a removed step's outputs'
+- **A removed step's names leave the records the same way** (task #701): the `gc` job's daily
+  duties remove from the manifest every name under `agent::gc::RETIRED` (a removed step's outputs'
   prefixes), its write-set these removals alone, so its one hand-off is merged as any entry, in
   one save of the records; none left, it hands off nothing. A lead on an app without them refuses
   the entry (outside `gc`'s write-set then), and the next run's hand-off tries again. The files
@@ -1265,7 +1265,7 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   coordinator's start (its "agent" event: how `history::mend_runs` knows a restart; until task #988
   the NAS's files had none, so their readers took the runs across a restart as written). A
   day before them is packed as one tar, `state/coord/history-archive/<day>.tar` (members
-  `<day>/<member>.jsonl`), by the daily `gc` job, so the lead alone, outside its loop and the
+  `<day>/<member>.jsonl`), by the `gc` job's daily duties, so the lead alone, outside its loop and the
   pool's lock (`agent::histarchive`, task #531). Per day: its files read whole and merged into
   what the day's tar holds already (a late write, an old day's event appended after the day was
   packed, is added to the tar, never written over it; a tar that can't be read is never
@@ -1669,7 +1669,7 @@ Every forecast the lead makes is kept, so its times can be held to what happened
   each step's time and code version are those of the last one written, its times in the same
   2-minute buckets (`fcarchive::GRAIN`), isn't written (a time either side of a bucket's edge
   differs: a repeat is sometimes written, a changed forecast never skipped).
-- **Kept for good:** the daily `gc` job packs each day the history's window no longer holds
+- **Kept for good:** the `gc` job's daily duties pack each day the history's window no longer holds
   (§7.5's cutoff, 7 days) into its month's tar, `state/coord/forecasts-archive/<YYYY-MM>.tar`
   (members `<day>.jsonl.zst`), as the history's days are packed (merged into the tar, never over
   it; written to a temporary name, read back, renamed), then removes the day's file if its size is
@@ -1726,7 +1726,7 @@ stays.)
   whose write landed after its deadline is then there twice, read once); the
   frame waiting when the agent stops is lost (an hour at most), as the forecasts' batch is.
 - **Kept:** 7 days (`fcinputs::KEEP_S`, the span `forecast-check` reads by default,
-  `fccheck::SPAN_S`): the daily `gc` job removes the days before it (8 day files, about 190 MB).
+  `fccheck::SPAN_S`): the `gc` job's daily duties remove the days before it (8 day files, about 190 MB).
 
 **The backtest** (`--replay`, `fccheck::backtest`): each forecast input made in the span (the
 archive's, and the terms' at times it hasn't: `fccheck::inputs`), read one at a time as it's rerun,

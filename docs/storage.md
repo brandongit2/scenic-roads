@@ -39,11 +39,12 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
 **Immutable, content-named files.**
 - Every built file is `<logical>.<hash16>.<ext>`, never rewritten. A write goes to `<name>.tmp`, is
   read back and checked against its hash, then renamed. An unchanged file keeps its name, so a
-  rebuild uploads only what changed; one already there is reused and touched (GC's age rule). One
-  the manifest already names under the same logical name takes one look (`Out::put_file`, task
-  #449: heritage-sites' slices, hundreds of small files nearly all unchanged): there at its size, it
-  is touched and taken; missing, put again; of another size, the put fails (a damaged file is
-  removed by hand).
+  rebuild uploads only what changed; one already there is reused as it is, nothing written to it,
+  and named in the job's hand-off (`Handoff::reused`), which the merge checks against GC's deletions
+  (docs/maplog.md §7.4). One the manifest already names under the same logical name takes one look
+  (`Out::put_file`, task #449: heritage-sites' slices, hundreds of small files nearly all
+  unchanged): there at its size, it is taken; missing, put again; of another size, the put fails (a
+  damaged file is removed by hand).
 - **Uploads beside the work** (`Out::put_file_later`): slope and terrain z6 tiles, slope's z10 tiles, map tiles (`pack`)
   and the 3D buildings' tiles upload a target's files on a thread of their own while the job works
   on its next target, and a z6 tile its grids and base pack while it makes its road values. A file is
@@ -65,12 +66,11 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   §6.2).
 - **Unverified uploads** (content name → SHA-256): a file a job copied to the NAS
   (one reused isn't) is read back past the client's cache as it lands, and stays pending until
-  checked on the NAS itself. GC counts pending files as referenced. GC's daily job drains them
-  (`agent::gc`): first every pending upload the build doesn't read (neither a manifest name nor a
+  checked on the NAS itself. The records hold pending files as they hold the manifest's. GC's
+  daily duties drain them (`agent::gc`): first every pending upload the build doesn't read (neither a manifest name nor a
   file an accepted inputs' index it names lists: replaced or dropped since) leaves the pending
-  unchecked, its file then kept only as any other is (the map, a name freed within the window,
-  the records, an entry not merged, or its age); then every one it reads is hashed on the NAS over
-  SSH (`out::verify`, 200 a call, each call held to a deadline of 3 minutes and a second per 16 MB it hashes: past it the call is stopped (SIGTERM, SIGKILL 10 s later) and the run ends there, said in GC's warnings, the rest left to the next daily run; each call's result saved and a safe point after it, so a run
+  unchecked, its file then GC's queue's as any the records stop naming; then every one it reads is hashed on the NAS over
+  SSH (`out::verify`, 200 a call, each call held to a deadline of 3 minutes and a second per 16 MB it hashes: past it the call is stopped (SIGTERM, SIGKILL 10 s later) and the run ends there, said in GC's warnings, the rest left to the next duties' pass; each call's result saved and a safe point after it, so a run
   stopped midway keeps what it checked; the bytes hashed count as the job's NAS reads, its weight).
   A match leaves the pending; a file that doesn't match or isn't there stays pending, nothing
   removed, and the job's warnings name it (its target is done under its key, so nothing builds it
@@ -109,64 +109,81 @@ on the NAS, which the lead merges; no step writes the records directly once a te
 (`crate::out::check_writer`). Other writers: the map's server (`settings/profiles.json` alone), the owner's inputs folders, `tools/app/publish.sh`, and the
 NAS's own planet fetch.
 
-**GC** runs daily, in the agent, when the NAS is quiet: only beside leased jobs that leave its
-measured weight room (pool.md §7.2, `Limits::fits_quiet`), or, held back 24 hours, as an aged job
-of the lead's own (`QUIET_AGE`); running, it yields to a target held back for the budget.
-- **Roots:** the map (each snapshot of it on the NAS, `map/`, and the lead's map now), the names the
-  lead's GC queue freed in the last 14 days (the window older maps kept: both handed to the job by the
-  lead's agent, `--shadow-due`), the build manifest, and (with the pool) its newest records and the
-  journal entries they don't reflect yet. No map at all (no snapshot, no lead's): nothing removed.
-- An unreferenced content-named file goes once older than 14 days; stray `.tmp` files after 2 days.
-  (No catalogue is read; their old folders go by a pass of their own: docs/maplog.md §8, step 9.)
-  Each such file is told to the lead first, 200 at a time (`gc::Tell`, `POST /gc/removing` to the
-  lead's coordinator, which answers those something holds now, kept this run, and marks the rest
-  deleted in GC's queue), then removed, with a safe point after each 200: the merge refuses a
-  hand-off of an older lease bringing one (docs/maplog.md §11.4). The lead not told (no coordinator,
-  not the lead, an older app, the marks not on its disk) or the queue's due set not read, nothing
-  more is removed and the job fails.
-  No sweep goes through a link (a file reached by one has a path no root names).
-- Retired passes' sources (`sources/osm/<date>/`, `sources/items/<date>/`) go by the same rule, their
-  other files 14 days after the newer pass completed.
-- The input check's checked copies (`sources/inputs/`, inputs.md §4.9) are kept while the manifest,
-  an accepted index, an unmerged journal entry or an index of the last 14 days names them; an
-  index names its files' copies and every content name under `sources/inputs/` in their facts,
-  nested ones too (`FileEntry::stored`: a region's `.rgeo`, and the regions' `.rgeo` an elevation
-  dataset's `measured.outline` was cut by, which its plans read while that index is accepted).
+**GC** (`agent::gc`, docs/maplog.md §7) is the lead's `gc` job, planned whenever GC's queue has a
+chunk for it or one of its sweeps is due, and run when the NAS is quiet: only beside leased jobs
+that leave its measured weight room (pool.md §7.2, `Limits::fits_quiet`), or, held back 24 hours,
+as an aged job of the lead's own (`QUIET_AGE`); running, it yields at its next safe point (between
+two removals, or two folders) to a target held back for the budget, and the next run goes on where
+it stopped.
+- **What holds a file:** the map at any `seq` a client still holds, the records (the manifest and
+  the pending uploads), and a hand-off the merge has taken until the records after it are seen
+  (its changes, its uploads and the files its job reused, `Handoff::reused`). The lead's agent
+  queues each content name the map's log or the records stop naming (`agent::gcqueue`,
+  `agent/maplog/gc.jsonl`); a name is due once every client's cursor is past the map that freed it,
+  2 days have passed (`GRACE_S`) and every live lease was granted after it was freed.
+- **By the queue:** each run first takes the due names from the lead's coordinator 200 at a time
+  (`POST /gc/chunk`; `gc::CHUNK_NAMES`): the lead checks each against its holders as of then and
+  marks the rest deleted in its queue, the newest lease granted then theirs, on its disk before it
+  answers; the job removes them one by one over SMB (a file not there counts as gone), then says
+  them gone (`POST /gc/gone`, the marks' lease renewed to the newest then). The merge refuses a
+  hand-off bringing a name being removed, or one removed after its lease was granted: its targets
+  are done again (docs/maplog.md §7.4). Killed mid-chunk, the next run's first chunk is the same,
+  told again; yielding mid-chunk, the job says what went and lets the rest go back to the queue,
+  unmarked. Nothing is listed for it. A chunk takes a name in a folder the map indexes, a removed
+  step's, or a source of a pass older than the newest complete one (`gc::by_the_queue`); the
+  gate's copies are the inputs sweep's below, and the rest of `sources/` is never GC's. The lead
+  not reached, or not able to put its marks on its disk, nothing is removed and the job fails.
+- **The sweeps**, each a pass with its own cursor in the lead's map log folder
+  (`agent/maplog/gc-sweeps.json`, `gc::Sweeps`: the folder each walk reached, so a run stopped
+  goes on after it), run after the queue's chunks:
+  - **The duties**, once a day: the names to drop (below), the history's and the forecasts'
+    archives, the forecast inputs' old days, the old catalogues once asked, and the pending
+    uploads' check (above), last.
+  - **The orphan sweep** (docs/maplog.md §7.5), a pass every 14 days (`ORPHAN_AGE_S`): it lists,
+    a folder at a time, the top folders of what the map and the records name, the removed steps'
+    folders and the retired passes' (`sources/osm/<date>/`, `sources/items/<date>/` older than the
+    newest complete pass), and sends the lead each content-named file at least 14 days old (no job
+    runs that long between its upload and its hand-off), which queues those nothing holds, freed
+    as it finds them (so a lease older than that holds them, and they wait their grace). So what
+    a lost queue held, or a job uploaded and never handed off, goes too. It removes stray `.tmp`
+    files after 2 days, and a retired pass's other files (the planet download) once the newer
+    pass has been complete 14 days, with its folders left empty.
+  - **The inputs sweep**, a pass every 14 days: the input check's checked copies (`sources/inputs/`,
+    inputs.md §4.9) are kept while the manifest, an accepted index, an unmerged journal entry or
+    an index of the last 14 days names them; an index names its files' copies and every content
+    name under `sources/inputs/` in their facts, nested ones too (`FileEntry::stored`: a region's
+    `.rgeo`, and the regions' `.rgeo` an elevation dataset's `measured.outline` was cut by, which
+    its plans read while that index is accepted). The rest, 14 days old, is told the lead 200 at a
+    time (`POST /gc/removing`), which answers those something holds now (kept) and marks the rest,
+    removed then as a chunk is. None is swept while what keeps them can't be read (said).
+  No sweep goes through a link (a file reached by one has a path no holder names).
 - **Removed steps' data** (`agent::gc::RETIRED`, logical-name prefixes; today `sources/terrain-z8-`,
-  the worldwide z8 terrain removed by task #670, and `global/legacy/`, the old pipeline's converted
-  data, read by nothing since): each run first drops every manifest name under one (their uploads
-  still pending then leave the pending with every other one the manifest doesn't name, above),
-  as the `gc` job's own change through `Out` (its write-set: these removals and the depth packs'
-  below, `agent::steps`): in the pool a hand-off the lead merges into its records in one save, as any
-  job's (pool.md §7.3). With nothing left to drop it writes nothing. The files then go by the rule
-  above (in each prefix's folder; outside `sources/` by the folder sweep, which lists only that
-  folder when nothing else names a file of its top folder): kept while the map, a name freed within the window,
-  the manifest, the records or an unmerged entry names them. A step whose code is deleted adds its outputs' prefix there, so
-  "removed" means its data deleted too; no step may make a name under one.
+  the worldwide z8 terrain removed by task #670, `global/legacy/`, the old pipeline's converted
+  data, read by nothing since, and `work/terrain-lakes/`): the duties first drop every manifest
+  name under one (their uploads still pending then leave the pending with every other one the
+  manifest doesn't name, above), as the `gc` job's own change through `Out` (its write-set: these
+  removals and the depth packs' below, `agent::steps`): in the pool a hand-off the lead merges into
+  its records in one save, as any job's (pool.md §7.3). With nothing left to drop it writes
+  nothing. Their files then go as GC's queue frees them, and those named before the queue was by
+  the orphan sweep. A step whose code is deleted adds its outputs' prefix there, so "removed"
+  means its data deleted too; no step may make a name under one.
 - **Depth packs no target names** (task #679): in the same drop, every depth pack (the `depth`,
   `depth-class` and `depth-shade` layers' z6 hi and z3 lo packs) whose tile no current depth
   target names: the z6 tiles and z3 tiles the coverage and the declared depth sources make
   targets (`build::depth_kept`, as the planner's `depth_tiles`, whatever their water's keys), and
-  those leased now. The agent writes them to its home (`gc-depth-keep.json`) as each plan finds
-  GC due and passes them (`scenic gc --depth-keep`); none found (sources or coverage unreadable, no
-  source declared, an empty coverage), or the file over an hour old (`DEPTH_KEEP_FRESH_S`), no
-  depth name is dropped that run. That covers the targets the coverage left and those the depth's
-  rules no longer make (a z6 tile no source finer than z8 meets). Their files then go by the rule
-  above (`layers/` is swept). `scenic gc --dry-run` counts them, writing nothing.
-- **GC's queue, in shadow** (docs/maplog.md §7, §8 step 7): the lead's agent queues each content
-  name the map's log or the records stop naming (`agent::gcqueue`, `agent/maplog/gc.jsonl`) and,
-  as each plan finds GC due, writes the names due by the queue's rules to `agent/maplog/gc-shadow.json`
-  and passes them (`scenic gc --shadow-due`). Nothing is deleted by them: the run checks them
-  against what it removes (each removed, gone already, or kept for its reason), writes the check beside them
-  (`gc-shadow-check.json`) and says it in its report (`shadow`). Names kept for the 14-day window
-  (freed within it or named by an older snapshot, too young, not swept) are counted only: expected
-  daily. A warning only when one is held, a holder the queue missed: the records, an unmerged entry
-  or the map now name it.
-  The next plan marks what the run removed or found gone deleted in the queue, which the merge
-  refuses for a hand-off whose lease was granted before (§7.4).
+  those leased now. The agent writes them to its home (`gc-depth-keep.json`) as each plan plans
+  the `gc` job and passes them (`scenic gc --depth-keep`); none found (sources or coverage
+  unreadable, no source declared, an empty coverage), or the file over an hour old
+  (`DEPTH_KEEP_FRESH_S`), no depth name is dropped that run. That covers the targets the coverage
+  left and those the depth's rules no longer make (a z6 tile no source finer than z8 meets).
+  Their files then go as GC's queue frees them. `scenic gc --dry-run` counts them, writing nothing.
+- `scenic gc --dry-run` says what's due by the queue, what each sweep would find and drop, and
+  marks, sends and removes nothing; without `--sweeps` every sweep runs whole.
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,
   state, app and nas. The packed tile stores (`sources/aws-terrarium/`, `sources/pyramids/`), whose
-  archives no manifest names, are kept by their own indexes (macs.md, Downloads), never by GC.
+  archives no manifest names, are kept by their own indexes (macs.md, Downloads), never by GC. A
+  tombstone the GC before step 8b left (a file renamed `….gc-tomb` by a run stopped between its
+  rename and its removal) is never taken for a content-named file and stays.
 
 **Backups.** Daily, the agent copies `inputs/` and the input check's acceptances
 (`state/inputs/accepted/`) into a content-addressed store under `state/backups/`, with a dated list

@@ -399,9 +399,10 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   it alone writes.
 - **A job that fails** hands off the targets it finished; the rest are held against it.
 - **A catalogue** goes out only once the lead's records reflect the journal. **GC** runs only on a
-  step that re-asserted the lead's term; it keeps every file the newest records or an unmerged
-  journal entry names (`agent::gc::unmerged`), and renames a file to a tombstone first, putting it
-  back if touched since.
+  step that re-asserted the lead's term; it removes only what its queue on the lead frees (no
+  map a client holds, nor the records, name it, past its grace and every older lease), each name
+  marked deleted on the lead before it goes, and the merge refuses a hand-off that brings or reused
+  one being removed or removed under its lease (docs/maplog.md §7.4).
 - **Temporary names** are each Mac's and each process's own.
 
 **Order:**

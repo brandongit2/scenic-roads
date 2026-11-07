@@ -783,7 +783,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   tried again after its write passed the NAS's deadline may be there twice; a reader keeps the
   first input at each time.
 - An input at most every 15 minutes (`fcinputs::EVERY_S`); days before the backtest's default span
-  (7 days, `fcinputs::KEEP_S`) are removed by the daily `gc` job.
+  (7 days, `fcinputs::KEEP_S`) are removed by the `gc` job's daily duties.
 
 ## Server API
 
