@@ -4,6 +4,7 @@
 // reference lines (a Mac's cores), the gaps where its Mac was silent shaded, the time below when
 // asked; under the pointer, the time and each series' value there.
 import { fmt, gapOver, hhmm, runs, short, topOf } from "./chartmath.js";
+import { el, token } from "./dom.js";
 
 const opts = new WeakMap();
 // The scales' gutters (px), left and right: the same in every chart, so their plots start and end at
@@ -18,10 +19,9 @@ const ago = (a) =>
 const hover = new WeakMap();
 
 // The page's colours (index.html's tokens), read once a draw.
-function tokens(el) {
-  const cs = getComputedStyle(el);
-  const v = (k, d) => cs.getPropertyValue(k).trim() || d;
-  return { line: v("--line", "#262c33"), grid: v("--grid", "#1c2127"), warn: v("--warn", "#e0b45a"), dim: v("--dim", "#8a939c"), text: v("--text", "#d7dce2"), panel: v("--panel", "#161a1f"), bad: v("--bad", "#e5534b") };
+function tokens(at) {
+  const v = (k) => token(`--${k}`, at);
+  return { line: v("line"), grid: v("grid"), warn: v("warn"), dim: v("dim"), text: v("text"), panel: v("panel"), bad: v("bad") };
 }
 
 // The canvas sized to its box at the screen's pixels: [context, width, height] in CSS pixels.
@@ -364,7 +364,6 @@ function tagDrag(c, n) {
 function openEditor(c, edit, v) {
   const host = c.parentNode;
   host.querySelector(":scope > .cfg")?.remove();
-  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
   const pnl = el("div", "cfg");
   const inp = el("input");
   Object.assign(inp, { type: "number", min: edit.min, max: edit.max, step: 1, value: v });

@@ -293,7 +293,7 @@ test("routes: nothing else is open", async () => {
 
 test("the app's pages, the board's schema and the dashboard's timeline are served", async () => {
   for (const [url, type] of [["/", /text\/html/], ["/task-board/", /text\/html/], ["/task-board/709", /text\/html/], ["/task-board/shim.js", /javascript/],
-    ["/task-board/schema.mjs", /javascript/], ["/jobs/", /text\/html/], ["/jobs/jobs.js", /javascript/], ["/lib/work/timeline.js", /javascript/], ["/favicon.svg", /svg/]]) {
+    ["/task-board/schema.mjs", /javascript/], ["/jobs/", /text\/html/], ["/jobs/jobs.js", /javascript/], ["/lib/work/timeline.js", /javascript/], ["/lib/work/dom.js", /javascript/], ["/lib/work/words.js", /javascript/], ["/favicon.svg", /svg/]]) {
     const r = await fetch(base + url);
     assert.equal(r.status, 200, url);
     assert.match(r.headers.get("content-type"), type, url);

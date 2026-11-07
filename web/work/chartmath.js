@@ -1,6 +1,7 @@
 // The charts' sums, apart from the canvas so Node tests them (web/test/chartmath.test.mjs): scales,
 // units, time ticks, the gaps where a Mac slept, a chart's footer, and merging /work/live's
 // answers (docs/pool.md §10, Live: a point is [t, least, mean, most]).
+import { pad } from "./words.js";
 
 // A scale's top: the next of 1, 2, 2.5, 5 times a power of ten at or above `v` (1 for none).
 export function niceMax(v) {
@@ -108,7 +109,6 @@ export function runs(points, step) {
   return out;
 }
 
-const pad = (v) => String(v).padStart(2, "0");
 // A time of day for an axis: "14:05", or "14:05:30" when the ticks are under a minute apart
 // (local time: `tz` minutes east of UTC, the browser's when left out).
 export function hhmm(t, withS = false, tz = null) {

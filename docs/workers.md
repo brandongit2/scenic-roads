@@ -183,7 +183,7 @@ Common rules:
   leaves the good one set; the page sends one at a time. A bad value is refused (400) with the check's words. They change only when a person
   presses Set or Off, in a row or a chart's limit editor, or lets go of a chart's limit line dragged (docs/pipeline.md §5). The menu bar's settings are unchanged. (The battery floor went with
   the elected lead, task #881: it only ever decided who could lead.)
-- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `activity.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
+- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `activity.js`, `chart.js`, `chartmath.js`, `worldmap.js`, their elements and words `dom.js` and `words.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when; Pause, Freeze, Resume), the world map in a left
   panel beside the tabs (`worldmap.js`: regions, the queue, running and finished tiles; a step
   soloed from its legend, its published tiles by age, `catalogues.js`; a card of the whole stack

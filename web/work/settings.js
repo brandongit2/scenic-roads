@@ -4,18 +4,7 @@
 // `/work/settings`, which sets each through the same function as its `scenic` command
 // (`scenic in-use`, `memory`, `room`, `nas-room`, `pool set batch-minutes`; the sweep's margin has none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
-function h(tag, attrs, ...kids) {
-  const e = document.createElement(tag);
-  if (typeof attrs === "string") e.className = attrs;
-  else if (attrs) for (const [k, v] of Object.entries(attrs)) {
-    if (v == null || v === false) continue;
-    if (k === "class") e.className = v;
-    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
-    else e.setAttribute(k, v === true ? "" : v);
-  }
-  for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
-  return e;
-}
+import { h } from "./dom.js";
 
 const GiB = 2 ** 30;
 const gb = (b) => `${(b / GiB).toFixed(1)} GB`;

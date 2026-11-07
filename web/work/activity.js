@@ -9,6 +9,7 @@
 // (crate::budget::net::Robots), the newest told of any Mac; one never told is an API's or a data
 // download's, which follow their provider's policy: no robots.txt applies (docs/inputs.md §6.9).
 import { remote } from "./live.js";
+import { el } from "./dom.js";
 
 const EVERY_MS = 2000;
 // The span the websites' rates are taken over (s).
@@ -17,7 +18,6 @@ const RATE_S = 30;
 const ROWS = 60;
 const MB = 1e6;
 
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
 let cfg = null;
 // Per host: {files, net, hist: [[t (ms), hosts]], error, asking, url}.

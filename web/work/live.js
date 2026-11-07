@@ -14,6 +14,7 @@
 import { draw } from "./chart.js";
 import { commonGaps, fmt, footer, hhmm, latest, merge, pressureClass, pressureWord, recentMean } from "./chartmath.js";
 import { putSetting } from "./settings.js";
+import { el, token } from "./dom.js";
 
 const EVERY_MS = 1500;
 // How old a reading of the agent's loop (power, idleness, limits) may be and still be said.
@@ -34,8 +35,6 @@ let ownHost = null;
 // Limits set from a chart, by "host|key" ("|key" the pool's): {v, at (ms)}, drawn till the loop reads them.
 const pending = new Map();
 
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-const css = (k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
 
 /** Starts asking: `call(path, body)` this page's own Mac ([status, json]); `store` the browser's
  * own (the footer's `range`); `macs()` the swarm's members' addresses; `active()` whether the
@@ -249,8 +248,8 @@ function paint(host) {
   } });
   const base = { from, to: now, step, gaps: gapList, axis: true, times: true };
   const loopBase = { ...base, step: Math.max(step, LOOP_FRESH_S / 2) };
-  const nr = css("--nas-r"), nw = css("--nas-w"), nd = css("--net-d"), nu = css("--net-u"), acc = css("--accent"), dim = css("--dim");
-  const ok = css("--ok"), warn = css("--warn"), bad = css("--bad");
+  const nr = token("--nas-r"), nw = token("--nas-w"), nd = token("--net-d"), nu = token("--net-u"), acc = token("--accent"), dim = token("--dim");
+  const ok = token("--ok"), warn = token("--warn"), bad = token("--bad");
   const mac = st.mac || {};
 
   // Cores now: each core's share busy over the last second, efficiency cores first.

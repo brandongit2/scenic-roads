@@ -10,6 +10,8 @@
 // The page's address keeps what's open (?range=24h&run=<id>&kind=test). Live: the app's event
 // stream says when a Mac sent more.
 import { createTimeline } from "../lib/work/timeline.js";
+import { h } from "../lib/work/dom.js";
+import { pad } from "../lib/work/words.js";
 
 const API = "../api/jobs/";
 const RANGES = [["6h", 6 * 3600], ["24h", 86400], ["7d", 7 * 86400], ["30d", 30 * 86400], ["all", null]];
@@ -23,18 +25,6 @@ const ROWS_SHOWN = 150; // a table's rows before "show all"
 
 // ---- small things ---------------------------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
-function h(tag, attrs, ...kids) {
-  const e = document.createElement(tag);
-  if (typeof attrs === "string") e.className = attrs;
-  else if (attrs) for (const [k, v] of Object.entries(attrs)) {
-    if (v == null || v === false) continue;
-    if (k === "style" && typeof v === "object") Object.assign(e.style, v);
-    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
-    else e.setAttribute(k, v === true ? "" : v);
-  }
-  for (const k of kids.flat(Infinity)) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
-  return e;
-}
 const get = async (path) => {
   const r = await fetch(API + path, { cache: "no-store" });
   const j = await r.json().catch(() => ({}));
@@ -50,7 +40,6 @@ export function dur(s) {
   const hr = Math.floor(s / 3600); return `${hr} h ${String(Math.round((s - hr * 3600) / 60)).padStart(2, "0")} min`;
 }
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const pad = (n) => String(n).padStart(2, "0");
 function clock(t, secs = true) {
   const d = new Date(t * 1000), today = new Date();
   const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}${secs ? `:${pad(d.getSeconds())}` : ""}`;

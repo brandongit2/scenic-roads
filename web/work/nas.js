@@ -11,12 +11,11 @@
 import { draw } from "./chart.js";
 import { commonGaps, fmt, footer, latest, short, spanText } from "./chartmath.js";
 import { liveOf, onLive, row, words } from "./live.js";
+import { el, token } from "./dom.js";
 
 const MB = 1048576;
 // The pool's series are the lead's coordinator's, every 10 s: a point stands for that much.
 const POOL_EVERY = 10;
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-const css = (k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
 
 // Built once and filled in place on every render and live answer.
 const root = el("section", "d-nas");
@@ -79,7 +78,7 @@ function paint() {
   const base = { from: now - st.range, to: now, step: st.step, gaps: gl, axis: true, times: true };
   // (The pool's series a point every 10 s: their lines joined over that.)
   const pool = { ...base, step: Math.max(st.step, POOL_EVERY) };
-  const acc = css("--accent"), nr = css("--nas-r"), nw = css("--nas-w"), warn = css("--warn"), bad = css("--bad");
+  const acc = token("--accent"), nr = token("--nas-r"), nw = token("--nas-w"), warn = token("--warn"), bad = token("--bad");
   const at = (k, fresh = 30) => latest(s[k], now, fresh);
 
   // Response time: the lead's listing.

@@ -5,6 +5,8 @@
 // log's batches, each numbered as its catalogue), the catalogues after the last one this page has,
 // and a step's own times (`steps`, #994) as the map needs them. The sums are apart from the DOM so Node tests them (web/test/catalogues.test.mjs).
 import { hhmm, timeTicks } from "./chartmath.js";
+import { h } from "./dom.js";
+import { pad, plural } from "./words.js";
 
 // ---- The range's inputs ---------------------------------------------------------------------------
 const UNITS = [["week", 604800], ["day", 86400], ["hour", 3600], ["minute", 60]];
@@ -35,7 +37,6 @@ export function parseWhen(text, side, now) {
   return null;
 }
 
-const pad = (v) => String(v).padStart(2, "0");
 /** A value as its input shows it: "-48 hours" / "+7 days" (the largest unit it's a whole number
  * of), or "2026-10-23 14:05" (local, to the minute). */
 export function formatWhen(v) {
@@ -230,19 +231,7 @@ export function axisTicks(from, to, most = 6) {
 
 // ---- The tab ------------------------------------------------------------------------------------------
 const SVGNS = "http://www.w3.org/2000/svg";
-function el(tag, attrs, ...kids) {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v == null || v === false) continue;
-    if (k === "class") e.className = v;
-    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
-    else e.setAttribute(k, v === true ? "" : v);
-  }
-  for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
-  return e;
-}
 const svg = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v); return e; };
-const plural = (k, one) => `${Number(k).toLocaleString("en-US")} ${one}${k === 1 ? "" : "s"}`;
 
 /** The age controls: `el` (kept across the page's renders), `view()` what they say now ({from,
  * to, hide, lit (the "z/x/y" keys a hovered or held catalogue published), at(tile, step) when
@@ -261,7 +250,7 @@ export function createAges({ call, store, onChange }) {
   const save = () => store.set("catalogues", { hide: st.hide, left: st.pair.left, right: st.keepRight });
 
   const input = (side) => {
-    const i = el("input", { type: "text", class: "cat-when", spellcheck: "false", autocomplete: "off", "aria-label": side === "left" ? "From (a time, or a span back from the other)" : "To (a time, or a span on from the other)" });
+    const i = h("input", { type: "text", class: "cat-when", spellcheck: "false", autocomplete: "off", "aria-label": side === "left" ? "From (a time, or a span back from the other)" : "To (a time, or a span on from the other)" });
     const go = () => {
       const r = commit(st.pair, side, i.value, now());
       if (r.error) { msg.textContent = r.error; msg.hidden = false; fill(); return; }
@@ -281,19 +270,19 @@ export function createAges({ call, store, onChange }) {
   const leftIn = input("left"), rightIn = input("right");
   const fill = () => { leftIn.value = formatWhen(st.pair.left); rightIn.value = formatWhen(st.pair.right); };
   fill();
-  const msg = el("div", { class: "cat-msg small", role: "alert", hidden: true });
-  const hide = el("input", { type: "checkbox", checked: st.hide, onchange: (e) => { st.hide = e.target.checked; save(); changed(); } });
-  const controls = el("div", { class: "wmap-filters cat-ctl small" },
-    el("div", { class: "mfrow" },
-      el("span", { class: "cat-pair" }, el("span", { class: "dim" }, "Published from"), leftIn, el("span", { class: "dim" }, "to"), rightIn),
-      el("label", { class: "mf" }, hide, "Hide tiles outside the date range")),
+  const msg = h("div", { class: "cat-msg small", role: "alert", hidden: true });
+  const hide = h("input", { type: "checkbox", checked: st.hide, onchange: (e) => { st.hide = e.target.checked; save(); changed(); } });
+  const controls = h("div", { class: "wmap-filters cat-ctl small" },
+    h("div", { class: "mfrow" },
+      h("span", { class: "cat-pair" }, h("span", { class: "dim" }, "Published from"), leftIn, h("span", { class: "dim" }, "to"), rightIn),
+      h("label", { class: "mf" }, hide, "Hide tiles outside the date range")),
     msg);
-  const legend = el("div", { class: "cat-legend small dim" });
+  const legend = h("div", { class: "cat-legend small dim" });
   const line = svg("svg", { class: "cat-tl", role: "img", "aria-label": "Timeline of the catalogues" });
-  const tip = el("div", { class: "cat-tip small", hidden: true });
-  const status = el("div", { class: "small dim cat-status" });
-  const tlBox = el("div", { class: "cat-tlbox" }, line, tip);
-  const root = el("div", { class: "cat" }, controls, legend, tlBox, status);
+  const tip = h("div", { class: "cat-tip small", hidden: true });
+  const status = h("div", { class: "small dim cat-status" });
+  const tlBox = h("div", { class: "cat-tlbox" }, line, tip);
+  const root = h("div", { class: "cat" }, controls, legend, tlBox, status);
   new ResizeObserver(() => drawLine()).observe(tlBox);
 
   const range = () => rangeOf(st.pair.left, st.pair.right) || [now() - 48 * 3600, now()];
@@ -341,10 +330,10 @@ export function createAges({ call, store, onChange }) {
     const [from, to] = range();
     const grad = `linear-gradient(to right, ${RAMP.join(", ")})`;
     legend.replaceChildren(
-      el("span", null, "A soloed step's published tiles, by when:"),
-      el("span", { class: "cat-scale" }, el("span", null, whenText(from)), el("i", { style: `background:${grad}` }), el("span", null, whenText(to))),
-      el("span", null, st.hide ? "(the rest hidden)" : "(the rest at the nearer end's colour)"),
-      el("span", { class: "lg" }, el("i", { style: `background:${HIGHLIGHT};border-color:${HIGHLIGHT}` }), "a catalogue's tiles, its mark hovered"));
+      h("span", null, "A soloed step's published tiles, by when:"),
+      h("span", { class: "cat-scale" }, h("span", null, whenText(from)), h("i", { style: `background:${grad}` }), h("span", null, whenText(to))),
+      h("span", null, st.hide ? "(the rest hidden)" : "(the rest at the nearer end's colour)"),
+      h("span", { class: "lg" }, h("i", { style: `background:${HIGHLIGHT};border-color:${HIGHLIGHT}` }), "a catalogue's tiles, its mark hovered"));
     status.textContent = error ? `Can't read the catalogues: ${error}` : reading && !cats.length ? "Reading the map's log…" : `${plural(cats.length, "catalogue")} in the map's log${latest != null ? `, the last ${latest}` : ""}${reading ? " · reading" : ""} · times local`;
     drawLine();
   }

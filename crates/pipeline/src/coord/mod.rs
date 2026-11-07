@@ -5401,6 +5401,9 @@ mod http {
         // The Jobs tab's schedule: its view, gestures and arrows (task #787).
         ("timeline.js", "text/javascript", include_bytes!("../../../../web/work/timeline.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
+        // Every module's elements and words (one way to make an element, a count, a token's value).
+        ("dom.js", "text/javascript", include_bytes!("../../../../web/work/dom.js")),
+        ("words.js", "text/javascript", include_bytes!("../../../../web/work/words.js")),
         // The overview's world map, and the world's countries' outlines it draws (Natural Earth
         // 1:50m, public domain): rings in Web Mercator, the world 0–1000 each way.
         ("worldmap.js", "text/javascript", include_bytes!("../../../../web/work/worldmap.js")),

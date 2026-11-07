@@ -22,6 +22,8 @@
 import { poolSection, termText } from "./pool.js";
 import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobLinks, jobNumbers, jobRelations, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
 import { fmt } from "./chartmath.js";
+import { h } from "./dom.js";
+import { n, plural } from "./words.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
 import { SPAN0, createTimeline } from "./timeline.js";
@@ -40,7 +42,6 @@ const OUT_OF_TOUCH_S = 600;
 const STUCK_S = 900;
 
 // ---- Words and numbers ------------------------------------------------------------------------
-const n = (v) => Number(v).toLocaleString("en-US");
 const dur = (s) => {
   s = Math.max(0, Math.round(s));
   if (s < 90) return `${s} s`;
@@ -61,7 +62,6 @@ function clock(t) {
   return `${d.getDate()} ${d.toLocaleString("en-GB", { month: "short" })} ${hm}`;
 }
 const ago = (now, t) => (t ? `${dur(now - t)} ago` : "never");
-const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : many}`;
 
 // ---- The steps table (crates/pipeline/src/agent/steps.rs, served at /work/steps) ---------------
 // Every word about a step comes from its row: the noun its targets are counted in, its stage (its
@@ -121,23 +121,23 @@ function countsOf(l) {
   return out.join(" · ");
 }
 const fraction = (x) => (x.total ? x.done / x.total : x.left != null ? (x.left ? 0 : 1) : 0);
-// Machines' colours, the lead first.
-const MACHINE_COLOURS = ["#5b8fd8", "#b48ae8", "#e0a36a", "#e07a9a", "#6cc28a"];
+// Machines' colours (index.html's --mac-0 … --mac-4): a Mac's by a stable hash of its name (FNV-1a),
+// so it keeps its colour whatever the order and whichever Macs are in touch; of two whose hashes
+// meet, the later by name takes the next free one. `names`: every Mac the build knows.
+const MAC_COLOURS = 5;
+const nameHash = (s) => { let x = 2166136261; for (const c of s) x = Math.imul(x ^ c.codePointAt(0), 16777619); return x >>> 0; };
+export function macColours(names) {
+  const taken = new Set(), out = new Map();
+  for (const name of [...new Set(names)].sort()) {
+    let k = nameHash(name) % MAC_COLOURS;
+    for (let i = 0; i < MAC_COLOURS && taken.has(k); i++) k = (k + 1) % MAC_COLOURS;
+    taken.add(k);
+    out.set(name, `var(--mac-${k})`);
+  }
+  return out;
+}
 
 // ---- Elements -----------------------------------------------------------------------------------
-function h(tag, attrs, ...kids) {
-  const e = document.createElement(tag);
-  if (typeof attrs === "string") e.className = attrs;
-  else if (attrs) for (const [k, v] of Object.entries(attrs)) {
-    if (v == null || v === false) continue;
-    if (k === "class") e.className = v;
-    else if (k === "style") for (const [p, x] of Object.entries(v)) p.startsWith("--") ? e.style.setProperty(p, x) : (e.style[p] = x);
-    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
-    else e.setAttribute(k, v === true ? "" : v);
-  }
-  for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
-  return e;
-}
 const pbar = (frac, cls = "", colour) => { const i = h("i"); i.style.width = `${Math.round(Math.max(0, Math.min(1, frac)) * 100)}%`; if (colour) i.style.background = colour; return h("div", `pbar ${cls}`, i); };
 const chip = (text, cls = "", title) => h("span", { class: `chip ${cls}`, title }, text);
 const swatch = (colour) => h("i", { class: "sw", style: { background: colour } });
@@ -167,10 +167,11 @@ function model(sw) {
   const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < touch && x.host !== a.host);
   const leasesOf = (name) => (sw.leases || []).filter((l) => l.worker === name);
   // Every machine: the lead, then its helpers.
+  const colours = macColours([a.host, ...helpers.map((x) => x.host), ...(sw.workers || []).filter((w) => w.kind === "native").map((w) => w.name)].filter(Boolean));
   const macs = [];
-  if (a.host) macs.push({ name: a.host, role: "lead", status: a, fresh: fresh(a.beat), colour: MACHINE_COLOURS[0] });
-  helpers.forEach((x, i) => macs.push({ name: x.host, role: "helper", status: x, fresh: fresh(x.beat), worker: (sw.workers || []).find((w) => w.name === x.host), colour: MACHINE_COLOURS[(i + 1) % MACHINE_COLOURS.length] }));
-  const colourOf = (name) => macs.find((m) => m.name === name)?.colour || "#7b8590";
+  if (a.host) macs.push({ name: a.host, role: "lead", status: a, fresh: fresh(a.beat), colour: colours.get(a.host) });
+  helpers.forEach((x) => macs.push({ name: x.host, role: "helper", status: x, fresh: fresh(x.beat), worker: (sw.workers || []).find((w) => w.name === x.host), colour: colours.get(x.host) }));
+  const colourOf = (name) => macs.find((m) => m.name === name)?.colour || "var(--mac-none)";
   const tasks = typeof sw.tasks === "object" && sw.tasks ? sw.tasks : { all: sw.tasks || 0 };
   // (A helper Mac that's stopped reporting (its status ten minutes old): the coordinator's word of
   // it, when it last asked.)
@@ -275,10 +276,16 @@ function alerts(m) {
       const k = j.slot, p = j.progress, which = k ? `job in slot ${k + 1}` : "job";
       if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) out.push({ cls: "warn", text: `${short}'s ${which} hasn't moved on for ${dur(now - p.moved_at)}`, to: "machines" });
     }
-    if (c.ac === false) out.push({ cls: c.battery != null && c.battery < 40 ? "warn" : "info", text: `${short} on battery${c.battery != null ? ` (${c.battery}%)` : ""}`, to: "machines" });
+    // (On battery is news, not a worry: nothing in the build acts on the charge since the battery
+    // floor went, task #881.)
+    if (c.ac === false) out.push({ cls: "info", text: `${short} on battery${c.battery != null ? ` (${c.battery}%)` : ""}`, to: "machines" });
     if (c.nas === false) out.push({ cls: "bad", text: `${short} can't reach the NAS`, to: "machines" });
     else if (c.home === false) out.push({ cls: "info", text: `${short} reaches the NAS through Tailscale (slowly)`, to: "machines" });
-    if (r.disk_free_gb != null && r.disk_free_gb < 20) out.push({ cls: r.disk_free_gb < 10 ? "bad" : "warn", text: `${short}: ${r.disk_free_gb} GB free on its disk`, to: "machines" });
+    // Its disk under the room target its owner set, the build's only floor (its status's
+    // `caches.room`: none set, none to be under); bad when its agent says it can't free toward it
+    // (`short`).
+    const room = st.caches?.room;
+    if (room?.target?.bytes && room.free != null && room.free < room.target.bytes) out.push({ cls: room.short ? "bad" : "warn", text: `${short}: ${r.disk_free_gb ?? Math.round(room.free / 1e8) / 10} GB free on its disk`, to: "machines" });
     if (x.role !== "lead" && st.app && a.app && st.app !== a.app) out.push({ cls: "warn", text: `${short} runs another app (${st.app})`, to: "machines" });
   }
   // What the lead flags (crates/pipeline/src/agent/flags.rs: a Mac idle while work it could take
@@ -1240,7 +1247,7 @@ function laneChips(x) {
   return [
     st.hold ? chip(st.hold.stage, "warn", st.hold.said) : st.held && chip(jobsOf(st).length ? "pausing" : "paused", "warn", `Paused alone, from ${st.held.by}: it takes no new work; the other Macs go on`),
     !x.fresh && chip("out of touch", "bad", `Last heard from ${clock(st.beat)}`),
-    c.ac === false && chip(`on battery${c.battery != null ? ` ${c.battery}%` : ""}`, c.battery != null && c.battery < 40 ? "warn" : ""),
+    c.ac === false && chip(`on battery${c.battery != null ? ` ${c.battery}%` : ""}`),
   ].filter(Boolean);
 }
 

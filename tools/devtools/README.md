@@ -65,7 +65,7 @@ them.
   its time went, its longest and failed spans, the time by kind; its Macs' load and memory over it.
   By name: one kind of span over all time, each name's runs, failures, median, p90, longest, total
   and recent times. Both timelines are the build page's (`web/work/timeline.js`, served at
-  `/lib/work/`): dragged or scrolled sideways to move, pinched or ⌥-scrolled to zoom, down to 20 s.
+  `/lib/work/`, as are the page's elements and words, `dom.js` and `words.js`, the dashboard's too): dragged or scrolled sideways to move, pinched or ⌥-scrolled to zoom, down to 20 s.
   The page's address keeps what's open (`?range=24h&run=<id>&kind=test&hide=cargo`).
 - **Lost:** a running span its Mac's sampler hasn't named for a minute (`jobs.mjs` LOST_S) shows as
   lost: the Mac asleep, away or restarted. The sampler ends one whose process is gone as `gone`.
