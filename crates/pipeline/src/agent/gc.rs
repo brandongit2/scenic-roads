@@ -928,7 +928,8 @@ fn drain(
 }
 
 /// Names the lead has marked deleted (a chunk, or a sweep's told), removed one by one in their
-/// order, a safe point before each; one not there is gone already. Then said gone to the lead. At
+/// order, a safe point before each; one not there is gone already (while the share answers:
+/// `share_answers`, else it fails as a removal does). Then said gone to the lead. At
 /// a safe point asked to stop: what went said gone and the rest let go (back to the queue,
 /// unmarked). A removal that fails stops it: what went said, the rest let go but that one, whose
 /// outcome isn't known (the next chunk takes it again), and the run fails.
@@ -947,8 +948,18 @@ fn remove_told(
         }
         match (ways.remove)(&root.join(n)) {
             Ok(()) => *removed += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => *already += 1,
+            // (Gone already only while the share answers: a mount lost or stale finds no file, and
+            // what it didn't remove would leave the queue, kept for ever.)
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && share_answers(root) => *already += 1,
             Err(e) => {
+                let e = if e.kind() == std::io::ErrorKind::NotFound {
+                    std::io::Error::other(format!(
+                        "not there, and the share doesn't answer (no {}/)",
+                        crate::agent::NAS_CHECK
+                    ))
+                } else {
+                    e
+                };
                 if let Err(g) = ways.lead.gone(&gone, &names[i + 1..]) {
                     eprintln!(
                         "gc: what went not said to GC's queue on the lead: {g:#} (the next chunk takes it again)"
@@ -963,6 +974,13 @@ fn remove_told(
         .gone(&gone, &[])
         .context("what went not said to GC's queue on the lead (the next chunk takes it again)")?;
     Ok(Flow::Done)
+}
+
+/// Whether the share answers (its `NAS_CHECK` folder there): a file not found counts as gone only
+/// then.
+fn share_answers(root: &store::nasfs::NasRoot) -> bool {
+    meta(0, 1, 0);
+    root.join(crate::agent::NAS_CHECK).metadata().is_ok_and(|m| m.is_dir())
 }
 
 /// A folder a walk starts at: listed whole, or only its own files whose path starts with `only`
@@ -1149,8 +1167,9 @@ fn orphan_walk(
 }
 
 /// The gate's checked copies (`sources/inputs/`, docs/inputs.md §4.9), a folder at a time from the
-/// one it reached: a content-named file nothing keeps (`inputs_kept`, read as the walk starts: the
-/// lead's holders as each is told cover what was accepted since) and `INPUTS_KEEP_S` old told the
+/// one it reached: a content-named file nothing keeps (`inputs_kept`, read as the walk starts and
+/// again once `KEEP_FRESH_S` old: the lead's holders as each is told cover what was accepted
+/// since) and `INPUTS_KEEP_S` old told the
 /// lead (`Lead::removing`), `CHUNK_NAMES` at a time, those it doesn't hold removed (`remove_told`);
 /// a `.tmp` file `TMP_AGE_S` old removed. None swept while what keeps them can't be read (said).
 fn inputs_walk(
@@ -1162,16 +1181,15 @@ fn inputs_walk(
     rep: &mut Report,
 ) -> Result<Flow> {
     let _p = crate::timings::phase("sweeping the inputs' copies");
-    let now = SystemTime::now();
-    let keep = (|| -> Result<BTreeSet<String>> {
+    let read_keep = |rep: &mut Report| -> Result<BTreeSet<String>> {
         let m = crate::out::read_manifest(root).context("the build manifest")?;
         let um = unmerged(root, crate::agent::jobs::now_s()).context("the pool's records or journal")?;
         rep.unmerged = um.entries;
         rep.warnings.extend(um.warnings.iter().cloned());
-        inputs_kept(root, &m, &um, Duration::from_secs(INPUTS_KEEP_S), now)
-    })();
-    let keep = match keep {
-        Ok(k) => k,
+        inputs_kept(root, &m, &um, Duration::from_secs(INPUTS_KEEP_S), SystemTime::now())
+    };
+    let mut keep = match read_keep(rep) {
+        Ok(k) => (k, std::time::Instant::now()),
         Err(e) => {
             rep.inputs_skipped = Some(format!("{e:#}"));
             return Ok(Flow::Done);
@@ -1179,6 +1197,14 @@ fn inputs_walk(
     };
     let roots = [Root { dir: "sources/inputs".into(), only: None, pass: false }];
     walk(root, &roots, reached, &mut |_, dir, entries| {
+        // (What keeps them read again once half the queue's grace old: a copy a hand-off merged
+        // since brings is held by the lead only that long, after the records naming its index are
+        // seen, and nothing touches a copy reused.)
+        if keep.1.elapsed() >= Duration::from_secs(KEEP_FRESH_S) {
+            let k = read_keep(rep).context("nothing more removed: what keeps the inputs' copies not read again")?;
+            keep = (k, std::time::Instant::now());
+        }
+        let keep = &keep.0;
         let mut due = Vec::new();
         for e in entries {
             meta(1, 1, 0);
@@ -1222,6 +1248,11 @@ fn inputs_walk(
         Ok(if (ways.yielding)() { Flow::Paused } else { Flow::Done })
     })
 }
+
+/// How old what keeps the gate's copies (`inputs_kept`) may be as `inputs_walk` tells the lead a
+/// folder's: half GC's grace (store::map::gc::GRACE_S), so a copy the merge took since, which the
+/// lead holds that long, is among them by then.
+pub const KEEP_FRESH_S: u64 = store::map::gc::GRACE_S / 2;
 
 /// A file no content name is (a stray `.tmp`, a retired pass's planet) removed (a dry run: said);
 /// one gone already is.
@@ -1596,8 +1627,10 @@ mod tests {
         p
     }
 
-    /// `n` due files, `layers/a/hi/<i % 3>/6-1-<i>.<hash>.pack`, sorted as the queue orders them.
+    /// `n` due files, `layers/a/hi/<i % 3>/6-1-<i>.<hash>.pack`, sorted as the queue orders them,
+    /// on a root that answers as the share does (its `NAS_CHECK` folder).
     fn due_files(root: &Path, n: usize) -> Vec<String> {
+        fs::create_dir_all(root.join(crate::agent::NAS_CHECK)).unwrap();
         let mut v: Vec<String> =
             (0..n).map(|i| format!("layers/a/hi/{}/6-1-{i}.{:016x}.pack", i % 3, i + 0x100)).collect();
         for f in &v {
@@ -1686,8 +1719,9 @@ mod tests {
 
     /// docs/maplog.md §8 step 8b: the job killed between two deletions mid-chunk: the next run's
     /// first chunk is the one it was in, told again; the next deletion is of the first file not
-    /// gone (those gone count as gone already), nothing is deleted twice, nothing kept for ever, and
-    /// the queue, back from its file (a lead restart), ends empty.
+    /// gone (those gone count as gone already, but not while the share doesn't answer: a lost mount
+    /// finds no file), nothing is deleted twice, nothing kept for ever, and the queue, back from its
+    /// file (a lead restart), ends empty.
     #[test]
     fn gc_resumes_mid_chunk_after_a_kill() {
         let (d, q_dir, home) =
@@ -1731,6 +1765,18 @@ mod tests {
             r
         };
         let lead = InProcess { q: &back, now: Cell::new(now_s()) };
+        // (The share lost first, its mount gone: no file is found, and none counts as gone.)
+        let map_dir = root.join(crate::agent::NAS_CHECK);
+        fs::rename(&map_dir, root.join("map-away")).unwrap();
+        let e = format!("{:#}", run(&nas, &asked, &Ways { remove: &counting, ..ways_for_tests(&lead) }).unwrap_err());
+        assert!(e.contains("doesn't answer"), "{e}");
+        assert_eq!(back.removing_now(), [due[CHUNK_NAMES].clone()], "nothing said gone");
+        assert!(
+            due[CHUNK_NAMES..].iter().all(|f| back.deleted_under([f].into_iter(), OLDER).is_some()),
+            "the rest let go but still marked: the killed run may have removed them"
+        );
+        tried.take();
+        fs::rename(root.join("map-away"), &map_dir).unwrap();
         let r = run(&nas, &asked, &Ways { remove: &counting, ..ways_for_tests(&lead) }).unwrap();
         assert_eq!((r.chunks, r.removed, r.gone_already), (1, 20, 30), "{r:?}");
         let tried = tried.take();

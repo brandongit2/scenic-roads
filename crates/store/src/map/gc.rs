@@ -83,6 +83,12 @@ enum Line {
     Released {
         released: Vec<String>,
     },
+    /// Told again (the job killed, or its gone not heard) and held now: no longer being removed,
+    /// but still marked, since the job before may have removed them (the merge goes on refusing
+    /// a hand-off of an older lease bringing one).
+    Kept {
+        kept: Vec<String>,
+    },
 }
 
 /// What holds a name besides the map and the records, as `due` is asked.
@@ -113,6 +119,9 @@ struct Inner {
     queued: HashMap<String, Queued>,
     /// Told and not yet gone: the chunk in progress, in its order.
     removing: BTreeSet<String>,
+    /// Those of them told more than once (a chunk told again: the job before killed, or its gone
+    /// not heard), which it may have removed: never released unmarked, only kept.
+    retold: HashSet<String>,
     /// Deleted (told) names: when, and the newest lease granted then (or when gone).
     deleted: HashMap<String, (u64, Lease)>,
     /// The map's content names and its `seq`.
@@ -196,20 +205,30 @@ impl Inner {
                 for n in names {
                     self.queued.remove(&n);
                     self.removing.remove(&n);
+                    self.retold.remove(&n);
                     self.deleted.insert(n, (at, lease));
                 }
             }
             Line::Removing { removing, at, lease } => {
                 for n in removing {
                     self.deleted.insert(n.clone(), (at, lease));
-                    self.removing.insert(n);
+                    if !self.removing.insert(n.clone()) {
+                        self.retold.insert(n);
+                    }
                 }
             }
             Line::Released { released } => {
                 for n in released {
-                    if self.removing.remove(&n) {
+                    // (One told again may have been removed by the job before: kept, still marked.)
+                    if self.removing.remove(&n) && !self.retold.remove(&n) {
                         self.deleted.remove(&n);
                     }
+                }
+            }
+            Line::Kept { kept } => {
+                for n in kept {
+                    self.removing.remove(&n);
+                    self.retold.remove(&n);
                 }
             }
         }
@@ -292,19 +311,43 @@ impl Inner {
             serde_json::to_writer(&mut b, &Line::Queued { q: n.clone(), seq: x.seq, at: x.at })?;
             b.push(b'\n');
         }
-        let mut by: BTreeMap<(bool, u64, Lease), Vec<String>> = BTreeMap::new();
-        for (n, (at, lease)) in &self.deleted {
-            by.entry((self.removing.contains(n), *at, *lease)).or_default().push(n.clone());
+        // (Each mark as the lines that make it: gone, a `Deleted`; being removed, a `Removing`, twice
+        // when told again; kept and still queued, a `Removing` and a `Kept`.)
+        #[derive(PartialEq, Eq, PartialOrd, Ord)]
+        enum Is {
+            Gone,
+            Removing,
+            Retold,
+            Kept,
         }
-        for ((removing, at, lease), mut names) in by {
-            names.sort();
-            let l = if removing {
-                Line::Removing { removing: names, at, lease }
+        let mut by: BTreeMap<(Is, u64, Lease), Vec<String>> = BTreeMap::new();
+        for (n, (at, lease)) in &self.deleted {
+            let is = if self.retold.contains(n) {
+                Is::Retold
+            } else if self.removing.contains(n) {
+                Is::Removing
+            } else if self.queued.contains_key(n) {
+                Is::Kept
             } else {
-                Line::Deleted { deleted: names, at, lease }
+                Is::Gone
             };
-            serde_json::to_writer(&mut b, &l)?;
-            b.push(b'\n');
+            by.entry((is, *at, *lease)).or_default().push(n.clone());
+        }
+        for ((is, at, lease), mut names) in by {
+            names.sort();
+            let lines = match is {
+                Is::Gone => vec![Line::Deleted { deleted: names, at, lease }],
+                Is::Removing => vec![Line::Removing { removing: names, at, lease }],
+                Is::Retold => vec![
+                    Line::Removing { removing: names.clone(), at, lease },
+                    Line::Removing { removing: names, at, lease },
+                ],
+                Is::Kept => vec![Line::Removing { removing: names.clone(), at, lease }, Line::Kept { kept: names }],
+            };
+            for l in lines {
+                serde_json::to_writer(&mut b, &l)?;
+                b.push(b'\n');
+            }
         }
         self.file = None;
         crate::seglog::write_durable(path, &b)?;
@@ -446,7 +489,9 @@ impl GcQueue {
     /// gone (the job killed, or its gone not heard), told again, the rest of the chunk the names
     /// due that `take` lets it take. Each is checked against its holders as of now (the map, the
     /// records, a hand-off being merged, or queued and not outlasted `h`): held, a name of a chunk
-    /// before is let go (unmarked, taken); the others are marked deleted, `lease` the newest
+    /// before is kept (no longer being removed, taken off the queue when the map or the records
+    /// name it, but still marked: the job before may have removed it, so a hand-off of an older
+    /// lease bringing it is still refused); the others are marked deleted, `lease` the newest
     /// granted now, on the disk before this answers. An error, nothing marked, while the records
     /// haven't been seen (a holder unknown) or the marks can't be written.
     pub fn chunk(&self, h: &Holders, lease: Lease, max: usize, take: &dyn Fn(&str) -> bool) -> Result<Vec<String>> {
@@ -465,7 +510,8 @@ impl GcQueue {
             }
         }
         if !freed.is_empty() {
-            g.put(Line::Released { released: freed.clone() });
+            // (Not released: the job before may have removed them, so their marks stay.)
+            g.put(Line::Kept { kept: freed.clone() });
             for n in &freed {
                 if g.held(n) {
                     g.take(n);
@@ -499,7 +545,8 @@ impl GcQueue {
 
     /// The job's `gone`, removed (or not there), at `at`: off the queue, each mark's lease
     /// `lease`, the newest granted now (a lease granted while it went refused too); and its
-    /// `released`, told and not removed (it yielded first): queued again, unmarked. An error when
+    /// `released`, told and not removed (it yielded first): queued again, unmarked, but those told
+    /// more than once, which the job before may have removed, kept marked. An error when
     /// that can't be on the disk (the names then stay being removed: the next chunk takes them
     /// again).
     pub fn gone(&self, gone: &[String], released: &[String], at: u64, lease: Lease) -> Result<()> {
@@ -604,5 +651,47 @@ impl GcQueue {
     /// Whether `n` is queued.
     pub fn queued(&self, n: &str) -> Option<Queued> {
         self.lock().queued.get(n).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The file rewritten whole keeps every mark as it was: gone, being removed, told again (never
+    /// released unmarked), and kept while still queued.
+    #[test]
+    fn a_rewrite_keeps_every_mark() {
+        let d = tempfile::tempdir().unwrap();
+        let m = Map::new(1, "t1".into(), Default::default());
+        let q = GcQueue::default();
+        q.open(d.path(), &m, 100).unwrap();
+        q.records((1, 1), std::iter::empty(), 100);
+        let names: Vec<String> = ["a", "b", "c", "d", "e"].map(|n| format!("{n}.0000000000000000.pack")).to_vec();
+        q.orphans(&names, 100).unwrap();
+        let none = BTreeMap::new();
+        let h = Holders { cursors: &none, oldest_lease: None, now: 100 + GRACE_S };
+        let (l1, l2) = (Lease { term: 1, n: 1 }, Lease { term: 1, n: 2 });
+        assert_eq!(q.chunk(&h, l1, 4, &|_| true).unwrap(), names[..4]);
+        // (a gone; b, c, d told again, e first told; then c let go (kept: told twice) and d kept.)
+        q.gone(&names[..1], &[], 100 + GRACE_S, l1).unwrap();
+        assert_eq!(q.chunk(&h, l2, 4, &|_| true).unwrap(), names[1..]);
+        q.gone(&[], &names[2..3], 100 + GRACE_S, l2).unwrap();
+        {
+            let mut g = q.lock();
+            g.put(Line::Kept { kept: vec![names[3].clone()] });
+            let path = g.path.clone().unwrap();
+            g.rewrite(&path).unwrap();
+        }
+        let back = GcQueue::default();
+        back.open(d.path(), &m, 100 + GRACE_S).unwrap();
+        let (a, b) = (q.lock(), back.lock());
+        assert_eq!(a.removing, b.removing);
+        assert_eq!(a.retold, b.retold);
+        assert_eq!(a.deleted, b.deleted);
+        assert_eq!(a.queued, b.queued);
+        assert_eq!(b.removing.iter().cloned().collect::<Vec<_>>(), [names[1].clone(), names[4].clone()]);
+        assert!(b.retold.contains(&names[1]) && !b.retold.contains(&names[4]));
+        assert!(b.deleted.contains_key(&names[2]) && b.queued.contains_key(&names[2]), "kept, still queued");
     }
 }

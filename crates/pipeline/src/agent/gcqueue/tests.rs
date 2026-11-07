@@ -208,11 +208,43 @@ fn a_reuse_of_a_name_being_removed_is_refused_and_a_merge_holds_its_names() {
     assert!(q.due(&h).is_empty(), "their grace from then");
 }
 
-/// A chunk told and not said gone (the job killed) is the next chunk's first, told again against
-/// the holders as of then: one the records now name let go and taken off the queue, the rest marked
-/// again with the newest lease; the queue's file keeps it across a lead restart.
+/// docs/maplog.md §8 step 8b's deploy: a hand-off from a member on an app before it says no
+/// `reused` (its app touched the file instead); every file its job put under a logical name, reused
+/// or not, is among its changes, which the merge checks as it does `reused`, so one bringing a name
+/// being removed, or removed under its lease, is refused all the same. (The gate's copies, the one
+/// reuse no change names, are the lead's `inputs` step's: on the lead's app.)
 #[test]
-fn a_chunk_told_again_lets_go_what_is_held_now() {
+fn an_older_member_s_hand_off_without_reused_is_refused_by_its_changes() {
+    let d = tempfile::tempdir().unwrap();
+    let q = GcQueue::default();
+    q.open(d.path(), &map(1, &[]), T0).unwrap();
+    super::records(&q, &records(1, &[]), T0);
+    let name = "base/6-1-1.k0.base";
+    let old: Handoff = serde_json::from_value(json!({
+        "changes": { "base/6-1-1": name },
+        "pending": {},
+        "checked": [],
+        "sizes": {},
+        "done": ["unit", [["6-1-1", "k5"]]],
+    }))
+    .unwrap();
+    assert!(old.reused.is_empty());
+    let e = Entry { handoff: old, ..entry(5, name) };
+    let none = BTreeMap::new();
+    let h = Holders { cursors: &none, oldest_lease: None, now: T0 + 100 };
+    assert!(q.removing(&[name.to_string()], &h, lease(LeaseId { term: 2, n: 7 })).unwrap().is_empty());
+    assert!(refusal(&q, &e, T0 + 100).is_some_and(|w| w.contains("being removed")));
+    q.gone(&[name.to_string()], &[], T0 + 100, lease(LeaseId { term: 2, n: 7 })).unwrap();
+    assert!(refusal(&q, &e, T0 + 100).is_some_and(|w| w.contains("removed from the NAS")));
+}
+
+/// A chunk told and not said gone (the job killed) is the next chunk's first, told again against
+/// the holders as of then: one the records now name kept (off the chunk and the queue, but still
+/// marked: the killed job may have removed it, so a hand-off of a lease granted before it was told
+/// is still refused), the rest marked again with the newest lease; the queue's file keeps it across
+/// a lead restart.
+#[test]
+fn a_chunk_told_again_keeps_what_is_held_now() {
     let d = tempfile::tempdir().unwrap();
     let m1 = map(1, &[("a", "a.1.pack"), ("b", "b.1.pack"), ("c", "c.1.pack"), ("e", "e.1.pack")]);
     let q = GcQueue::default();
@@ -230,14 +262,33 @@ fn a_chunk_told_again_lets_go_what_is_held_now() {
     assert_eq!(back.removing_now(), ["a.1.pack", "b.1.pack", "c.1.pack"]);
     super::records(&back, &records(2, &[("b", "b.1.pack")]), T0 + GRACE_S);
     assert_eq!(back.chunk(&h, l2, 3, &|_| true).unwrap(), ["a.1.pack", "c.1.pack", "e.1.pack"]);
-    assert!(
-        back.queued("b.1.pack").is_none() && back.deleted_under([&"b.1.pack".to_string()].into_iter(), l1).is_none()
-    );
+    assert!(back.queued("b.1.pack").is_none() && !back.removing_now().contains(&"b.1.pack".to_string()));
+    let b = "b.1.pack".to_string();
+    assert!(back.deleted_under([&b].into_iter(), l1).is_some(), "still marked: it may be gone");
+    let reuse = Entry { handoff: Handoff { reused: vec![b.clone()], ..Default::default() }, ..entry(1, "x.9.pack") };
+    assert!(refusal(&back, &reuse, T0 + GRACE_S).is_some(), "a hand-off of an older lease bringing it");
+    // (And across a restart.)
+    let again = GcQueue::default();
+    again.open(d.path(), &m2, T0 + GRACE_S).unwrap();
+    assert!(again.deleted_under([&b].into_iter(), l1).is_some() && !again.removing_now().contains(&b));
     assert!(
         back.deleted_under([&"a.1.pack".to_string()].into_iter(), store::map::gc::Lease { term: 2, n: 8 }).is_some(),
         "marked again, newer"
     );
-    back.gone(&["a.1.pack".into(), "c.1.pack".into(), "e.1.pack".into()], &[], T0 + GRACE_S, l2).unwrap();
+    // Yielding at once on it: e (told the first time) let go unmarked; a and c, which the killed
+    // job may have removed, kept marked (still queued, taken again by the next chunk), across a
+    // restart too.
+    let ace: Vec<String> = ["a.1.pack", "c.1.pack", "e.1.pack"].map(String::from).to_vec();
+    back.gone(&[], &ace, T0 + GRACE_S, l2).unwrap();
+    let reopened = GcQueue::default();
+    reopened.open(d.path(), &m2, T0 + GRACE_S).unwrap();
+    for q in [&back, &reopened] {
+        let marked = |n: &str| q.deleted_under([&n.to_string()].into_iter(), l1).is_some();
+        assert!(marked("a.1.pack") && marked("c.1.pack") && !marked("e.1.pack"));
+        assert!(q.removing_now().is_empty() && ace.iter().all(|n| q.queued(n).is_some()));
+    }
+    assert_eq!(back.chunk(&h, l2, 3, &|_| true).unwrap(), ace);
+    back.gone(&ace, &[], T0 + GRACE_S, l2).unwrap();
     assert!(back.is_empty() && back.removing_now().is_empty());
     assert!(back.chunk(&h, l2, 3, &|_| true).unwrap().is_empty());
 }
