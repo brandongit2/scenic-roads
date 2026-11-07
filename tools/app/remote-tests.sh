@@ -15,17 +15,23 @@
 # The tree: the source dir's tracked files and its untracked, not-ignored ones (as on disk,
 # uncommitted edits and symlinks included) are copied by rsync into the test Mac's
 # ~/scenic-check/<key>/src; any file or symlink there not in that list, and then any empty folder,
-# is deleted, so the test Mac builds exactly what's here. Compared by content (rsync --checksum),
-# times not kept (#983): a file sent is dated when it arrives there, after every build of its key,
-# so cargo (which takes a source older than its last build's output for built) rebuilds it; a file
-# whose content is there already is left as it is, its crate not rebuilt. (Kept times let a file
-# edited during a run arrive at the next dated before that run's build, and the next run test the
-# old binary.) A key's copy without the `copy` stamp of this scheme has every file dated now, once.
+# is deleted. Once the run has a slot, that copy goes into the slot's build folder (into_build), so
+# the test Mac builds exactly what's here. Each copy is by content (rsync --checksum), times not
+# kept (#983): a file written is dated when it arrives, after every build in that folder, so cargo
+# (which takes a source older than its last build's output for built) rebuilds it; a file whose
+# content is there already is left as it is, its crate not rebuilt. (Kept times let a file edited
+# during a run arrive at the next dated before that run's build, and the next run test the old
+# binary.)
 # A tree holding ignored test data (data/build, which tests read when present and skip without)
 # runs here, where that data is.
-# The build folder, ~/scenic-check/<key>/target, is kept between runs (only what changed rebuilds),
-# set by ~/scenic-check/<key>/.cargo/config.toml, and rustc goes through the test Mac's sccache when it
-# has one (third-party crates shared between keys).
+# The build folders are the slots', not the keys' (#969): ~/scenic-check/.build/<slot>/{src,target},
+# the same paths whichever tree comes, kept between runs, the target set by that folder's
+# .cargo/config.toml. A key's first run is so no new build: rustc's incremental state holds only
+# for the folder it was made in (its working directory is part of what it checks), and a folder per
+# key compiled every workspace crate anew (77 % of a new key's compile, M4, 7 Nov); only what
+# differs from the slot's last tree rebuilds. A key takes the slot it last used if free, else the
+# one least recently used (slot_order). rustc goes through the test Mac's sccache when it has one
+# (third-party crates, for an emptied folder).
 # The command runs at nice 20 and utility priority (`taskpolicy -c utility`, as the pool's jobs: the
 # agent's loop first, task #700; the lowest nice, so the pool's jobs at nice 0 win the CPU, #887),
 # timed (a line with its wall and CPU), under `mise env` of the tree, with 8192
@@ -40,9 +46,9 @@
 # "--- remote result discarded, local rerun ---" and runs the command here: what follows the last
 # such line is the result.
 # Disk (#912, make_room): before a run, other keys' folders not in use go, a gone worktree's first,
-# then the least recently used, until the test Mac has its agent's room target free plus what this
-# run needs (this key's last build folder; never one locked). tools/dev/sweep-targets.sh drops a
-# removed worktree's key too.
+# then the least recently used, and last the other slots' build folders not in use, until the test
+# Mac has its agent's room target free plus what this run needs (its build folder; never one
+# locked). tools/dev/sweep-targets.sh drops a removed worktree's key too.
 # Each run is recorded for the dev job dashboard (tools/dev/devjob.py wrap, the script run again
 # under it): its waits for the key and a slot, the copy, the run on the test Mac (which it names, and
 # whose load and memory the test Mac's own sampler records meanwhile), the compiles, each suite and
@@ -94,11 +100,12 @@ remote_unlock() {  # <key> <owner>: removes the lock only while it is still <own
 # from the menu bar or `scenic room`); the copies here mustn't eat into it, or the pool's jobs there
 # wait. Before a run, other keys' copies not in use go: first those whose worktree is gone (their
 # requests named an origin, the calling Mac and its repo, whose latest request no longer lists them
-# among its worktrees), then the least recently used, until the disk has the room target free plus
-# what this run needs (this key's build folder as it was, or, a new key, the largest one there: a
-# full build). A copy in use (its lock, .busy, held: younger than 6 h, as the takeover rule) is never
-# removed; one is removed by taking its lock first (mkdir, atomic), then moved aside and deleted, so
-# no run takes it meanwhile.
+# among its worktrees), then the least recently used, then the other slots' build folders, least
+# recently used first, until the disk has the room target free plus what this run needs (its build
+# folder as it was, or, an empty one, the largest there: a full build). A copy in use (its lock,
+# .busy, held: younger than 6 h, as the takeover rule) is never removed; one is removed by taking
+# its lock first (mkdir, atomic), then moved aside and deleted, so no run takes it meanwhile. A
+# build folder is removed by taking its slot, as a run does.
 agent_home=~/"Library/Application Support/scenic/agent"
 free_kb() { df -k $1 | awk 'NR==2 {print $4}'; }  # the free space on <path>'s disk (KB)
 room_target_kb() {  # the agent's room target (KB; 0 without one)
@@ -120,9 +127,20 @@ drop_copy() {  # <base> <key folder> <why>: 0 removed, 1 in use
   rm -rf $gone
   print "remote-tests: removed ${d:t} on the test Mac ($3; $(( ${sz:-0} / 1024 )) MB)"
 }
-make_room() {  # <base> <this key> <origin> <live keys>
-  local base=$1 key=$2 origin=$3 d f sz need=0 want
-  local -a live=(${=4}) keys=()
+drop_build() {  # <base> <build folder> <why>: 0 removed, 1 in use
+  local base=$1 d=$2 sz gone=$base/.gone-build-${2:t}-$$ taken=$base/.slots/${2:t}
+  mkdir -p $base/.slots
+  mkdir $taken 2>/dev/null || return 1
+  # (Its owner written at once, this process: a slot without one is freed after 10 s.)
+  print -r -- "$$ $(ps -o lstart= -p $$) make_room" > $taken/owner
+  mv $d $gone 2>/dev/null || { rm -rf $taken; return 1; }
+  sz=$(du -sk $gone 2>/dev/null | cut -f1)
+  rm -rf $gone $taken
+  print "remote-tests: removed the build folder of slot ${d:t} on the test Mac ($3; $(( ${sz:-0} / 1024 )) MB)"
+}
+make_room() {  # <base> <this key> <origin> <live keys> <this run's build folder>
+  local base=$1 key=$2 origin=$3 build=$5 d f sz need=0 want
+  local -a live=(${=4}) keys=() builds=()
   setopt localoptions nullglob
   rm -rf $base/.gone-*  # (removals cut short)
   if [[ -n $origin ]]; then
@@ -132,8 +150,8 @@ make_room() {  # <base> <this key> <origin> <live keys>
       drop_copy $base $d "its worktree is gone"
     done
   fi
-  if [[ -d $base/$key/target ]]; then need=$(du -sk $base/$key/target | cut -f1)
-  else for d in $base/*/target(/); do sz=$(du -sk $d | cut -f1); (( sz > need )) && need=$sz; done
+  if [[ -d $build/target ]]; then need=$(du -sk $build/target | cut -f1)
+  else for d in $base/.build/*/target(/); do sz=$(du -sk $d | cut -f1); (( sz > need )) && need=$sz; done
   fi
   want=$(( $(room_target_kb) + need ))
   for d in $base/*(/); do
@@ -145,18 +163,30 @@ make_room() {  # <base> <this key> <origin> <live keys>
     (( $(free_kb $base) >= want )) && return 0
     drop_copy $base $d "room target $(( $(room_target_kb) / 1048576 )) GB + this run's $(( need / 1024 )) MB not free"
   done
+  for d in $base/.build/*(/); do
+    [[ $d == $build ]] || builds+=("$(stat -f %m $d/stamp 2>/dev/null || print 0) $d")
+  done
+  for d in ${${(on)builds}#* }; do
+    (( $(free_kb $base) >= want )) && return 0
+    drop_build $base $d "room target $(( $(room_target_kb) / 1048576 )) GB + this run's $(( need / 1024 )) MB not free"
+  done
   (( $(free_kb $base) >= want )) || print "remote-tests: the test Mac has less free than its room target + this run's $(( need / 1024 )) MB, the other copies in use"
   return 0
 }
 
-# A key's copy not stamped as dated by arrival (made with times kept) may hold a file dated before
-# a build that didn't take it in: every file dated now, once, then stamped.
-copy_scheme="arrival-dated 1"
-arrival_dates() {  # <key folder>
-  [[ $(cat $1/copy 2>/dev/null) == "$copy_scheme" ]] && return 0
-  find $1/src -type f -exec touch -c {} + 2>/dev/null
-  print -r -- "$copy_scheme" > $1/copy
-  print "remote-tests: the test Mac's copy wasn't dated by arrival: every file dated now, its crates built again"
+slot_order() {  # <base> <slots> <key folder>: the slots to try, the key's last, then the least recently used
+  local s last=$(cat $3/slot 2>/dev/null)
+  local -a rest
+  for s in {1..$2}; do
+    [[ $s == $last ]] || rest+=("$(stat -f %m $1/.build/$s/stamp 2>/dev/null || print 0) $s")
+  done
+  (( ${#rest} < $2 )) && print -r -- $last
+  print -rl -- ${${(on)rest}#* }
+}
+
+into_build() {  # <key's copy> <build folder's copy>: the tree a slot builds (none other's left there)
+  # (Tests that write into the tree are undone too: what differs from the copy is written again.)
+  mkdir -p $2 && rsync -rlpD --checksum --delete $1/ $2/
 }
 
 remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
@@ -174,11 +204,10 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   comm -23 <(find . \( -type f -o -type l \) | sed 's|^\./||' | LC_ALL=C sort) \
            <(tr '\0' '\n' < $dir/files.list | LC_ALL=C sort) | while IFS= read -r f; do rm -f -- "$f"; done
   find . -mindepth 1 -type d -empty -delete 2>/dev/null
-  arrival_dates $dir
-  mkdir -p $base/.slots
+  mkdir -p $base/.slots $base/.build
   mine="$$ $(ps -o lstart= -p $$) $key"
   while true; do
-    for s in {1..$slots}; do
+    for s in $(slot_order $base $slots $dir); do
       if mkdir $base/.slots/$s 2>/dev/null; then
         print -r -- "$mine" > $base/.slots/$s/owner; slot=$s; break 2
       fi
@@ -222,16 +251,24 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   trap on_signal TERM HUP INT
   (( waited )) && print "remote-tests: got a test-Mac slot after ${waited} s"
   touch $dir $dir/stamp
-  make_room $base $key "$origin" "$live"
+  # (The folder a run builds in, the same whichever key: its path is in rustc's incremental state.
+  # A key's own build folder and config, from before #969's slots, go.)
+  local build=$base/.build/$slot
+  rm -rf $dir/target $dir/.cargo $dir/copy
+  make_room $base $key "$origin" "$live" $build
+  into_build $dir/src $build/src || none "can't copy the tree into $build"
+  print -r -- $slot > $dir/slot
+  touch $build/stamp
+  cd $build/src || none "no tree in $build"
   # (ssh's non-login shell has only the system's PATH: brew's, where mise is, first.)
   path=(/opt/homebrew/bin ~/.cargo/bin $path)
   mise trust -q 2>/dev/null
   eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
-  # The build folder set by a cargo config in the key's folder (cargo reads each parent's), not by
-  # CARGO_TARGET_DIR: sccache hashes every CARGO_* variable a rustc sees, so a per-key value made
-  # every key miss the shared cache (#887: 0 % Rust hits on the mini, 82 % on the M1).
-  mkdir -p $dir/.cargo
-  print -r -- "[build]"$'\n'"target-dir = \"$dir/target\"" > $dir/.cargo/config.toml
+  # The target set by a cargo config in the slot's folder (cargo reads each parent's), not by
+  # CARGO_TARGET_DIR: sccache hashes every CARGO_* variable a rustc sees, so a value per folder
+  # missed the shared cache (#887: 0 % Rust hits on the mini, 82 % on the M1).
+  mkdir -p $build/.cargo
+  print -r -- "[build]"$'\n'"target-dir = \"$build/target\"" > $build/.cargo/config.toml
   unset CARGO_TARGET_DIR
   if [[ -x /opt/homebrew/bin/sccache ]]; then
     export RUSTC_WRAPPER=/opt/homebrew/bin/sccache SCCACHE_DIR=~/Library/Caches/scenic-sccache SCCACHE_CACHE_SIZE=10G
@@ -254,7 +291,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   versions "the test Mac"
   # (The test Mac sampled meanwhile, by the tree's own recorder: tools/dev/devjob.zsh.)
   [[ -f tools/dev/devjob.zsh ]] && { source tools/dev/devjob.zsh && dj_sampling } >/dev/null 2>&1
-  print "remote-tests: on the test Mac $(scutil --get LocalHostName 2>/dev/null) (load $(loadavg), slot $slot, $dir)"
+  print "remote-tests: on the test Mac $(scutil --get LocalHostName 2>/dev/null) (load $(loadavg), slot $slot, $build)"
   # (In the background, waited for: a TERM's trap runs at once, not when the command ends.)
   # (Timed: the run's wall and CPU on the test Mac, a line at its end.)
   nice -n 20 /usr/sbin/taskpolicy -c utility zsh -c 'TIMEFMT="remote-tests: the run took %E on the test Mac, cpu %U user + %S sys"; time ( eval "$1" )' zsh "$cmd" </dev/null 2>&1 &
