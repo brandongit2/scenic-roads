@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     let reach = pipeline::reach::Reaches::load(&nr, &m, &date).ok().flatten();
     let mut tiles = TerrainTiles::new(Some(PathBuf::from(idx)));
     tiles.load(&nr, &m);
-    let inputs = pipeline::agent::theplan::key_inputs(&nr, &m);
+    let inputs = pipeline::agent::theplan::the_plan().key_inputs(&nr, &m);
 
     let x = KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles);
     let (items, next) = checklist(&x, &keys, root.join("inputs/hold-catalog").exists(), &[]);

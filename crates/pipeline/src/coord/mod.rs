@@ -5105,7 +5105,8 @@ fn route(
         "/work/steps" => {
             // The steps table (crate::agent::steps, docs/pipeline.md): every step's and task's row
             // and the stages, for the page's words and colours (read once a load).
-            Ok((200, shared.lock().unwrap().the_plan.table_json()))
+            let the_plan = shared.lock().unwrap().the_plan;
+            Ok((200, the_plan.table_json()))
         }
         "/work/redo" => {
             // The owner's ask to build `step`'s finished `targets` again (`scenic redo`, with the

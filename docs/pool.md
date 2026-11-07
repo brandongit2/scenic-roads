@@ -1396,7 +1396,7 @@ percentile of their memory), before any of its step's ran by every step's drops 
 step reads the manifest alone), and before any drop at all by its step's model, as a build: one
 job, after which it is measured (no figure is typed in for it). The scheduler marks them as
 offered (`Sched::drops`); the plan puts every step's drops first of the terrain, slope and tree cover work
-(`Plan::drops`), the forecast lists them first as runs of their own (`Lane::drop`, never merged
+(`seam::Planned::drops`), the forecast lists them first as runs of their own (`Lane::drop`, never merged
 with a build's run), shown "drop to come" on the build page. A drop never runs under a job that
 reads what it drops: what reads its tile waits for it as before (the z3 tiles with a none target
 left are terrain or slope left), it has one key per target so it is never leased beside a build of

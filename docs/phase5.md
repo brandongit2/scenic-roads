@@ -157,7 +157,7 @@ summits, every terrain lo pack and the terrain hi packs within U + 30 km, not th
 (their declared reads, `Read::Whole`: docs/readiness.md).
 
 Every step with work left (stale against what's built now) that is held for another step's
-targets says so in the status's `waiting` list (`Plan::held`, in the summits' form: "wait for …"),
+targets says so in the status's `waiting` list (`seam::Planned::held`, in the summits' form: "wait for …"),
 shown on the build page's Waiting table and in `scenic status`, and gone once the step is offered or
 done: terrain-lo, slope-deep, slope-hi and slope-lo (for the terrain, z3 tile by z3 tile; slope-hi
 also for its z10 tiles' slope-deep), trees-lo, peaks, items, heritage, marks and overlays, and the

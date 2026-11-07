@@ -206,7 +206,7 @@ fn version() -> u32 {
     VERSION
 }
 
-/// Targets of `step` the plan holds until `until` is made (crate::agent::steps::UnknownFor: an
+/// Targets of `step` the plan holds until `until` is made (crate::agent::seam::UnknownFor: an
 /// input of theirs can't be worked out before it, a slope tile reading the terrain's root while it's
 /// stale): each waits for it, a job of its own in the run once what it reads is built.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

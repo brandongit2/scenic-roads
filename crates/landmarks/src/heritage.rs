@@ -78,7 +78,7 @@ pub fn parse_registers(s: &str) -> Vec<(String, String, Option<[f64; 4]>)> {
 }
 
 /// The accepted registers as the records now name them (`registers_line`), for the agent's plan
-/// (pipeline::agent::input_digests): None without an accepted version.
+/// (pipeline::agent::theplan): None without an accepted version.
 pub fn registers_now(root: &store::nasfs::NasRoot) -> Result<Option<String>> {
     let m = buildstore::records::read_manifest(root)?;
     Ok(inputs::inputs::open(root, &m, inputs::inputs::heritage::UNIT)?

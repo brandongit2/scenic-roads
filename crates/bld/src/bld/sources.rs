@@ -231,7 +231,7 @@ impl Memo {
     }
 }
 
-/// The sources as the agent's plan reads them (pipeline::agent::input_digests): "bld-release" (the release
+/// The sources as the agent's plan reads them (pipeline::agent::theplan): "bld-release" (the release
 /// when its indexes read, "?" when they can't be read now, "" before anything was downloaded),
 /// and for each z6 tile that reads anything, "bldprep 6/x/y" (`Sources::read_for`, hashed) and
 /// "bldprep-rows 6/x/y" (`Sources::rows_for`). Worked out again only when an index changes.

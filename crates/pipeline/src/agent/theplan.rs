@@ -17,10 +17,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use store::nasfs::{NasPath, NasRoot};
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
 /// The plan, as the runtime holds it.
 pub fn the_plan() -> &'static dyn Plan {
     &ThePlan
@@ -195,7 +191,10 @@ impl Plan for ThePlan {
 /// and rail-feeds waits) and the declared elevation datasets' spacing, which the rail and
 /// candidates keys name ("?" while it can't be read, and they wait: crate::dem::spacing). Every
 /// reader keying targets reads these (the plan, the checklist, the regions' counts).
-pub fn key_inputs(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+pub(super) fn key_inputs(
+    root: &store::nasfs::NasRoot,
+    manifest: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     let mut inputs = input_digests(root);
     if let Some(ix) = manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
         let d = crate::inputs::feeds::declared(root, ix);
@@ -212,7 +211,7 @@ pub fn key_inputs(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, Stri
 /// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds
 /// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bld-key", "bldprep 6/x/y",
 /// "bldprep-rows 6/x/y": crate::bld::sources::digests).
-pub fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
+pub(super) fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     // The heritage registers as the heritage sites' key names them (crate::heritage::registers_line);
     // "?" when they can't be read now (the heritage sites then wait), none without an accepted version.
@@ -386,7 +385,8 @@ impl PlanHeld for Held {
                 &self.terrain_tiles(r.root, r.manifest),
             ))
         });
-        let depth = build::depth_kept(r.cov, r.manifest, &self.terrain_tiles(r.root, r.manifest), r.done, unix_now());
+        let depth =
+            build::depth_kept(r.cov, r.manifest, &self.terrain_tiles(r.root, r.manifest), r.done, super::jobs::now_s());
         let (planned, memo) = match reused {
             Some(k) => k,
             None => {

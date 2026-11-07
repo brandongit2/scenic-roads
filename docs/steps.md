@@ -788,7 +788,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **Drops:** a target under any of these "none" keys (`agent::build::is_none_key`) drops its packs
   and reads nothing; its run notes a `drops` measure (`needs::DROPS`, docs/pool.md §7.7) so it is
   sized as a drop, never as its step's build (each through scenic-build's `run_drop`), and the plan
-  runs every step's drops first of the terrain, slope and tree cover work (`Plan::drops`), the
+  runs every step's drops first of the terrain, slope and tree cover work (`seam::Planned::drops`), the
   forecast and build page showing them as drops.
 - **terrain-lo (an assembly):** its z6 tiles' mids by content ("-" for a z6 tile without one) and the
   pool's datasets meeting it; `TERRAIN_LO_V` and the codec. "none" likewise (`none_lo_key`).

@@ -1906,7 +1906,7 @@ pub struct TreeWork {
     pub stale_lo: BTreeSet<String>,
     /// The stale assemblies that can't run yet wait for their z6 tiles' mids: their waiting note.
     pub lo_held: Option<String>,
-    /// The z6 tiles an assembly waits for: not current with their mid (crate::agent::steps::Left's
+    /// The z6 tiles an assembly waits for: not current with their mid (crate::agent::seam::Left's
     /// `mids`).
     pub unmid: BTreeSet<String>,
 }
@@ -2896,7 +2896,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
 /// The map tiles `targets` to draw, a z6 tile's together, a group a halo (task #260: a job of the map
 /// tiles takes one group, its base packs opened once, crate::needs::HALO_STEPS): grouped by the z6 tile
 /// whose change made each stale (its base pack or road values in `m` not what the served catalogue
-/// `served` has: the owners as crate::pubtimes::restaled_by takes them), the z6 tiles in the order
+/// `served` has: the owners as `restaled_by` takes them), the z6 tiles in the order
 /// they're built (`spatial_order`), a tile two z6 tiles made stale with the first; those no z6 tile's
 /// change explains (a version's change, a reach's) last, in their order, grouped by their z3 tile
 /// (the base packs near it). And how many z6 tiles.
@@ -10202,7 +10202,7 @@ pub(crate) mod tests {
         assert_ne!(key(&m), k);
     }
 
-    /// The 3D buildings' sources as agent::input_digests has them: every z6 tile within 1 km of
+    /// The 3D buildings' sources as agent::theplan's input_digests has them: every z6 tile within 1 km of
     /// `c` reading something (its digest `d`), and their rows.
     fn bld_inputs(c: &Coverage, d: &str) -> BTreeMap<String, String> {
         let mut inputs = BTreeMap::from([

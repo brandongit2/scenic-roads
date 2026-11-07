@@ -197,7 +197,7 @@ pub enum Read {
     Along { step: &'static str, of: fn(&str, &crate::reach::Reach) -> Vec<String> },
     /// Some targets of another step that a target reads where what's built says, not its name (the
     /// terrain's lo packs under an enclosed sea, which the water step finds: task #982): worked out
-    /// by the caller from what it holds into its view (`Along::add_built`: the planner's
+    /// by the caller from what it holds into its view (`along_add_built`: the planner's
     /// `Left::along`, the forecast's input), none where it hasn't. Waited for as an `Along`; keyed
     /// by `grain`, as a `Targets` read of the targets `of` names.
     Built { step: &'static str, of: fn(&str, &super::build::KeyCtx) -> Vec<String>, grain: Grain },
@@ -588,7 +588,7 @@ pub fn ready(step: &str, t: &str, view: &dyn View) -> bool {
     readiness(step, t, view) == Ready::Yes
 }
 
-/// The waiting note of a step's targets held (`Plan::held`, the status's `waiting` list, the
+/// The waiting note of a step's targets held (`seam::Planned::held`, the status's `waiting` list, the
 /// checklist's notes), from what they wait for (their `Ready::Waits`, any number of targets'):
 /// "wait for terrain-hi (12), terrain-lo 3/1/2, summits". Never hand-written: what a target waits
 /// for is its declared reads.

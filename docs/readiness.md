@@ -200,7 +200,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      with its mid (made again for it alone, its packs unchanged); what reads the packs (slope, the
      z6 tiles, the summits and peaks) waits only for those stale. `View` is `left`, `mid_left`
      (a `Mids` read), `any_left` (a `Whole` read) and `known` (an `Input`); `seam::Left` is the
-     planner's view (`Plan::left`).
+     planner's view (`seam::Planned::left`).
    - `steps::readiness` gives `Yes`, `Waits` (with targets) or `Unknown`; `steps::read_targets`
      lists what a target waits for; `steps::wait_note` words the holds ("wait for terrain-hi (12)").
      The planner holds every target through it (terrain, slope, trees, the z6 tiles' wait for

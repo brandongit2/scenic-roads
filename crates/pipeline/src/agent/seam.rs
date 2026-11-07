@@ -71,7 +71,7 @@ pub struct Publish<'a> {
     /// Seconds since the last catalogue went out (or one last started); None when none has.
     pub since_catalogue: Option<u64>,
     /// Seconds since a catalogue was first held back by the map tiles or the road index to draw
-    /// (`Plan::catalogue_held`), or by their hand-offs waiting to be merged (the agent's), since the
+    /// (`Planned::catalogue_held`), or by their hand-offs waiting to be merged (the agent's), since the
     /// last catalogue; None while none is. Past `CATALOGUE_CAP_S`, one goes out with what's drawn.
     pub held_for: Option<u64>,
     /// Catalogues are held for review (`inputs/hold-catalog`): what's new is weighed against the last
@@ -131,7 +131,7 @@ pub struct Planned {
     pub built: BTreeMap<String, RegionState>,
 }
 
-/// A region's work left (`Plan::regions`), as targets.
+/// A region's work left (`Planned::regions`), as targets.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RegionLeft {
     pub id: String,
@@ -182,7 +182,8 @@ pub struct RegionLeft {
 }
 
 /// What targets read along their long ways (`Read::Along`), as a caller with the pass's reaches
-/// works them out (`Along::add`), and where what's built says (`Read::Built`, `Along::add_built`):
+/// works them out (`steps::along_add`), and where what's built says (`Read::Built`,
+/// `steps::along_add_built`):
 /// by step, target and step read, the targets read.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Along(
@@ -249,8 +250,8 @@ impl Left {
     }
 }
 
-/// The plan as the runtime asks it (docs/crates.md §6.3, 6f2), held by the agent, the planner, the
-/// forecast, the simulator and coord's scheduler, passed by their entry points. Cut at the runtime's
+/// The plan as the runtime asks it (docs/crates.md §6.3, 6f2), held by the agent, the planner and
+/// coord's scheduler, passed to the forecast and by their entry points. Cut at the runtime's
 /// questions, not the plan's items: the table's rows (`Step`, `Read`, `Kind`, `Scope`) stay the
 /// plan's, and what they say is answered here.
 pub trait Plan: Send + Sync {
