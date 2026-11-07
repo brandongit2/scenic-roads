@@ -272,8 +272,8 @@ the centroid's elevation), tiles and data-driven paint. An opacity under 1 draws
 
 ### 4.2 Where in the style
 
-- `addBuildings(map, 'water-name-line', …)` after `rails` (main.ts), when the catalogue has the layer
-  or once a new catalogue brings it: among the 3D layers, since between the draped layers it would
+- `addBuildings(map, 'water-name-line', …)` after `rails` (`Buildings.add`, web/src/ctl/buildings.ts,
+  from main.ts's attach), when the catalogue has the layer or once a new catalogue brings it: among the 3D layers, since between the draped layers it would
   split the terrain's drape. `buildings-flat` and `buildings-pick` among the draped layers, after
   water and parks, before `boundary-county`.
 - **Occlusion:** extrusions test and write depth against the terrain's. The road and rail layers
@@ -358,7 +358,7 @@ gabled roofs inferred for small houses); distance-based detail under our control
 
 The aim: buildings at every zoom looking as full detail would, rendered at high resolution and
 downsampled. Builder `pipeline::bld::field` (in `bldtiles` and `bldfield-lo`); renderer
-`web/src/bldfield.ts` with `bldfield.worker.ts`, loaded by `import()` from `main.ts` where the
+`web/src/bldfield.ts` with `bldfield.worker.ts`, loaded by `import()` from `ctl/buildings.ts` where the
 catalogue has the layer `buildings-field` (`?bldfield=off`: off; `?bldfield=<url>`: tiles from there).
 `web/src/bldcmp.ts` (`?bldcmp`) and `tools/bldcheck/` compare it with full detail.
 

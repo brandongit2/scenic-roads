@@ -84,7 +84,7 @@ export function tintCss(t: Terrain, sc: ScaleFields, range: [number, number], ro
 
 let tintSig = '';
 
-/** Update the colour-relief layer for the range in use (eased by the caller, main.ts); cheap to
+/** Update the colour-relief layer for the range in use (eased by the caller, ctl/tint.ts); cheap to
  * call every frame: a no-op when nothing changed, else the ramp without style validation. */
 export function applyTint(map: MLMap, t: Terrain, sc: ScaleFields, range: [number, number], cdf: Uint8Array | null, roadPalette: string, cdfKey = '') {
   if (!map.getLayer('tint') || !map.getLayer('tint-slope')) return;

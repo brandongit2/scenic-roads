@@ -46,7 +46,7 @@ export interface BuildingState {
 }
 
 /** The height scale as the frame has it: its range (metres; auto-fit or the user's) and, when
- * equalised, its lookup over the buildings in view (main.ts). */
+ * equalised, its lookup over the buildings in view (ctl/buildings.ts). */
 export interface HeightLook {
   range: [number, number];
   cdf: Uint8Array | null;
@@ -264,7 +264,7 @@ export function addBuildings(map: MLMap, before: string, flatBefore: string) {
 
 /** The settings applied: visibility, colour, opacity, scale, filters, light. `exaggeration`: the
  * terrain's (0: no 3D terrain, the footprints then drawn flat); `light`: the hill-shading's
- * azimuth (degrees); `look`: the height scale's range now (main.ts). */
+ * azimuth (degrees); `look`: the height scale's range now (ctl/buildings.ts). */
 export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: number, light: number, look: HeightLook) {
   if (!map.getLayer(LAYER)) return;
   const flat = b.flat || exaggeration <= 0;

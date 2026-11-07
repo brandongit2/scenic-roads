@@ -1,8 +1,7 @@
-// The terrain tint's controller (main.ts's first per-layer controller): a colour scale like the
-// roads' (ui/scale.ts) over the terrain in view, its histogram from the DEM tiles drawn
-// (terrainstats.ts). Its range eases to the target as the road colours' does (main.ts's frame
-// loop calls `tick`), and the terrain is measured again every few hundred milliseconds while the
-// view changes, mid-gesture too.
+// The terrain tint's controller: a colour scale like the roads' (ui/scale.ts) over the terrain in
+// view, its histogram from the DEM tiles drawn (terrainstats.ts). Its range eases to the target as
+// the road colours' does (the frame loop, ctl/frame.ts, calls `tick`), and the terrain is measured
+// again every few hundred milliseconds while the view changes, mid-gesture too.
 import type { Map as MLMap } from 'maplibre-gl';
 import { spread } from '../autofit';
 import { SLOPE_MAX } from '../basemap';

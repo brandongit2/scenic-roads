@@ -2024,7 +2024,7 @@ export class RoadLayer implements CustomLayerInterface {
   /**
    * Bridges and elevated rail drawn apart, after the 3D buildings (docs/buildings3d.md §4.2): the
    * buildings, drawn after the road and rail layers, painted over a viaduct in front of them. While
-   * on (main.ts: buildings shown in 3D), this layer leaves out its zoomed-in tiles' bridge pieces
+   * on (ctl/buildings.ts: buildings shown in 3D), this layer leaves out its zoomed-in tiles' bridge pieces
    * and the layer `bridgeLayer` gives, placed after the buildings, draws them: tested against the
    * terrain as before and against the buildings' depth too, so one in front of a tower stays in
    * front and one behind it stays hidden. (Zoomed out, where pieces are drawn as points, nothing
@@ -3054,7 +3054,7 @@ export class RoadLayer implements CustomLayerInterface {
     return drain(this.sampleWithGen(fns, maxSamples));
   }
 
-  /** sampleWith a tile at a time (yields between tiles: stats spread over frames, main.ts). */
+  /** sampleWith a tile at a time (yields between tiles: stats spread over frames, ctl/roads.ts). */
   *sampleWithGen(fns: SampleFn[], maxSamples = 90_000): Generator<void, { v: Float32Array[]; w: Float32Array }> {
     const tiles = this.viewTiles();
     const area = this.inView();

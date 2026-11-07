@@ -1,6 +1,7 @@
 // Auto-fitting a colour range to the lines in view (roads, rail, ferries): by screen widths of
 // line (a fixed amount of line at the view centre's scale) or by percentiles of line length (a
-// share of what's in view). Pure; main.ts feeds it the distributions and the view's scale.
+// share of what's in view). Pure; the controllers (ctl/roads.ts, ctl/ferries.ts) feed it the distributions and the view's
+// scale.
 
 /** The unit a colour range auto-fits in: screen widths of line, or percentiles of its length. */
 export type FitUnit = 'widths' | 'pct';

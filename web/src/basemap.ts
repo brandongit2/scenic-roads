@@ -1139,7 +1139,7 @@ export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDe
         'symbol-sort-key': ['get', 'rank'],
       }) as LayerSpecification,
       // A ring around a road or line hovered in a list that is too small on screen to see at a
-      // glance (main.ts ringAround): white over a dark halo, no fill; radius r (px).
+      // glance (ctl/marks.ts ringAround): white over a dark halo, no fill; radius r (px).
       {
         id: 'marks-ring-halo',
         type: 'circle',

@@ -1,7 +1,7 @@
 // Layers → Roads → Style → Widths by zoom: the line width table (config.ts WIDTHS, CSS px at
 // weight 1 at the zooms WIDTH_Z, per class) as a grid of numbers. Typing sets a cell (Enter or
 // leaving it); scrolling over the one being edited (trackpad or wheel) nudges it by 5 % a step. Edits are
-// a setting (AppState.roadLook.widths: in profiles and links), which main.ts puts into WIDTHS for the
+// a setting (AppState.roadLook.widths: in profiles and links), which ctl/roads.ts puts into WIDTHS for the
 // next frame; no tile reload.
 import { CLASS_LABELS, DEFAULT_WIDTHS, NCLASS, WIDTH_RANGE, WIDTH_Z } from '../config';
 import { h } from './dom';

@@ -141,7 +141,7 @@ function lenIn(d: DecodedTile, k: number, lenRange: [number, number] | null): nu
 }
 
 /** The roads (or rail) in view: km by class, group, surface and toll, elevation and grade
- * distributions, extremes. A tile at a time: a generator, which main.ts runs a few milliseconds a
+ * distributions, extremes. A tile at a time: a generator, which ctl/roads.ts runs a few milliseconds a
  * frame. `unnamedHide`: groups (bits) whose unnamed roads are hidden. `lenRange`: whole-road length
  * filter (m) and `tollMask` (bit 0 toll-free, bit 1 toll) for the km counts; the elevation /
  * grade distributions ignore both. The surface and toll km count either side of their own
