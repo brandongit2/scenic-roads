@@ -285,7 +285,7 @@ rm -rf $dest.tmp; mkdir -p $dest.tmp/web $dest.tmp/fonts
 # The server, and the agent with the programs its jobs run (each Mac runs them from here):
 # the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
 # (The step programs a job or task runs are scenic-build's tools: `scenic-build tool <name>`, #917.)
-cp -X target/release/server target/release/scenic target/release/scenic-build $dest.tmp/
+cp -X target/release/$^app_programs $dest.tmp/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp -X "$f" "$dest.tmp/$f"; done
 cp -RX "$sb/Scenic.app" "$dest.tmp/"  # (Scenic.app, signed above)

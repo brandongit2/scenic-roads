@@ -117,7 +117,7 @@ fi
 # A run itself, remote_main in a fake home: its own process group (as ssh gives it), slots 2 and 3
 # held, so every run here is in build folder 1.
 fh=$tmp/home; fb=$fh/scenic-check
-holdme="$$ $(ps -o lstart= -p $$) test"
+holdme="$(proc_id) test"
 own_group() { perl -e 'setpgrp(0,0); exec @ARGV' "$@" }
 run_setup() {  # <key>: a tree and its lock
   mkdir -p $fb/$1/src $fb/$1/.busy; print -r -- tree > $fb/$1/src/f; print -rn -- $'f\0' > $fb/$1/files.list; print -r -- o > $fb/$1/.busy/owner
@@ -135,7 +135,7 @@ left=$(<$tmp/left)
 [[ $(<$tmp/where) == *"/.build/1/src" && $out == *"@@remote-tests-status 0"* ]] && ok "a run in its slot's folder" || no "a run in its slot's folder" "$(<$tmp/where): $out"
 ! kill -0 $left 2>/dev/null && [[ ! -e $fb/.slots/1 ]] && ok "what a run left goes, then its slot" || no "what a run left goes, then its slot" "$left, $(ls $fb/.slots)"
 
-main_of() { print -r -- ${$(<$fb/.slots/1/owner)%% *} }  # (the run itself, the group's leader: the owner its slot names)
+main_of() { local o=$(<$fb/.slots/1/owner); print -r -- ${o%% *} }  # (the run itself, the group's leader: the owner its slot names)
 gone() { local i; for i in {1..100}; do kill -0 $1 2>/dev/null || return 0; sleep 0.1; done; return 1 }
 
 # Stopped by a signal, a child ignoring it: killed, nothing left, and the slot usable by the next.

@@ -28,6 +28,7 @@ cmd=$1 dir=$2
 dir=${dir:A}
 home=$dir/home
 src=${0:A:h}
+source $src:h/app/lib.zsh  # (stop_program)
 page_plist=~/Library/LaunchAgents/local.scenic-sandbox.page.plist
 case $cmd in
 setup)
@@ -122,7 +123,7 @@ update)
   echo "current: v2"
   ;;
 clean)
-  pkill -f "$dir/Applications/Scenic Sandbox.app/Contents/MacOS/scenic-status" 2>/dev/null || true
+  stop_program "$dir/Applications/Scenic Sandbox.app/Contents/MacOS/scenic-status"
   [[ -x "$dir/Applications/Scenic Sandbox.app/Contents/MacOS/scenic-status" ]] && "$dir/Applications/Scenic Sandbox.app/Contents/MacOS/scenic-status" --unregister || true
   launchctl bootout gui/$(id -u)/local.scenic-sandbox.build 2>/dev/null || true
   launchctl bootout gui/$(id -u)/local.scenic-sandbox.page 2>/dev/null || true

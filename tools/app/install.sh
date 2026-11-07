@@ -22,6 +22,7 @@ case $#:${1:-} in
   1:-h|1:--help) print -r -- $usage; exit 0 ;;
   *) print -ru2 -- "install.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
+source ${0:A:h}/lib.zsh  # (app_programs, stop_program)
 NAS=/Volumes/personal/projects/scenic-roads
 HOME_S="$HOME/Library/Application Support/scenic"
 uid=$(id -u)
@@ -55,7 +56,7 @@ version=$(python3 -c "import json;print(json.load(open('$NAS/app/current.json'))
 mkdir -p "$HOME_S/app" "$HOME_S/run" "$HOME/Library/Logs/scenic" "$HOME/Library/LaunchAgents"
 if [[ ! -d "$HOME_S/app/$version" ]]; then
   rsync -a "$NAS/app/$version/" "$HOME_S/app/$version.tmp/"
-  for b in server scenic scenic-build; do
+  for b in $app_programs; do
     if [[ -f "$HOME_S/app/$version.tmp/$b" ]]; then chmod +x "$HOME_S/app/$version.tmp/$b"; fi
   done
   mv "$HOME_S/app/$version.tmp" "$HOME_S/app/$version"
@@ -89,9 +90,9 @@ else
   rm -f "$server_plist" "$HOME_S/run/server"
   map_said="the map is the Mac mini's (docs/macs.md, Devices)"
 fi
-# A running Scenic ended before it's replaced or removed (SIGTERM: it quits without asking, its build
-# service left as it is).
-pkill -f /Applications/Scenic.app/Contents/MacOS/scenic-status 2>/dev/null || true
+# A running Scenic ended before it's replaced or removed (SIGTERM, by its PID: it quits without
+# asking, its build service left as it is).
+stop_program /Applications/Scenic.app/Contents/MacOS/scenic-status
 if (( legacy )); then
   # The way back: Scenic's build service and login item unregistered, the app removed, and the two
   # login items as they were (the launcher running the agent, and the menu bar item from `current`).

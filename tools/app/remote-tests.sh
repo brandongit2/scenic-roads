@@ -62,6 +62,10 @@
 host=${SCENIC_TEST_HOST:-m4}  # the test Mac: the M4 by default (owner, 31 Oct); any ssh alias, or this Mac itself (then it runs here)
 self=${0:A}
 setopt extendedglob
+# Owner ids (proc_id, proc_alive) are tools/app/lib.zsh's: sourced here, and sent ahead of this
+# script to the test Mac's side (`< <(cat $lib $self)`), where they are defined already.
+lib=${self:h}/lib.zsh
+(( $+functions[proc_id] )) || source $lib
 [[ -n ${SCENIC_TESTS_TRACE:-} ]] && set -x
 marker='--- remote result discarded, local rerun ---'
 
@@ -134,7 +138,7 @@ drop_build() {  # <base> <build folder> <why>: 0 removed, 1 in use
   mkdir -p $base/.slots
   mkdir $taken 2>/dev/null || return 1
   # (Its owner written at once, this process: a slot without one is freed after 10 s.)
-  print -r -- "$$ $(ps -o lstart= -p $$) make_room" > $taken/owner
+  print -r -- "$(proc_id) make_room" > $taken/owner
   mv $d $gone 2>/dev/null || { rm -rf $taken; return 1; }
   sz=$(du -sk $gone 2>/dev/null | cut -f1)
   rm -rf $gone $taken
@@ -193,7 +197,7 @@ into_build() {  # <key's copy> <build folder's copy>: the tree a slot builds (no
 
 remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   local key=$1 owner=$2 cmd=$3 origin=$4 live=$5 base=~/scenic-check slots=3
-  local dir=$base/$key slot= waited=0 s held pid start mine
+  local dir=$base/$key slot= waited=0 s held pid mine
   setopt nullglob
   # (At once: the calling side's first-line bound (120 s) is for connecting, not the prune and
   # disk sweep below.)
@@ -207,7 +211,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
            <(tr '\0' '\n' < $dir/files.list | LC_ALL=C sort) | while IFS= read -r f; do rm -f -- "$f"; done
   find . -mindepth 1 -type d -empty -delete 2>/dev/null
   mkdir -p $base/.slots $base/.build
-  mine="$$ $(ps -o lstart= -p $$) $key"
+  mine="$(proc_id) $key"
   while true; do
     for s in $(slot_order $base $slots $dir); do
       if mkdir $base/.slots/$s 2>/dev/null; then
@@ -223,8 +227,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
       # watcher stops them): a build folder is one run's at a time.
       held=$(cat $base/.slots/$s/owner 2>/dev/null); pid=${held%% *}
       if [[ -n $held ]]; then
-        start=${${held#* }% *}
-        kill -0 $pid 2>/dev/null && [[ "$(ps -o lstart= -p $pid)" == "$start" ]] && continue
+        proc_alive "${held% *}" && continue
         [[ -n $(pgrep -g $pid 2>/dev/null) ]] && continue
       elif [[ -z $(find $base/.slots/$s -maxdepth 0 ! -newermt '10 seconds ago' 2>/dev/null) ]]; then continue
       fi
@@ -361,7 +364,7 @@ bounded() {  # <seconds> <command...>: the command, stopped (by its PID) past <s
 }
 
 on_test_mac() {  # <args...>: this script's test Mac side, over ssh (the shared connection), within 60 s
-  bounded 60 ssh -o ConnectTimeout=10 -o BatchMode=yes $host zsh -s -- ${(q)@} < $self
+  bounded 60 ssh -o ConnectTimeout=10 -o BatchMode=yes $host zsh -s -- ${(q)@} < <(cat $lib $self)
 }
 
 local_main() {  # <key> <source dir> <command>
@@ -382,7 +385,7 @@ local_main() {  # <key> <source dir> <command>
   fi
   # The key's lock, held until this script exits.
   local me=$(scutil --get LocalHostName 2>/dev/null) owner held waited=0 out rc
-  owner="$me $$ $(ps -o lstart= -p $$ | tr -s ' ') $RANDOM$RANDOM"
+  owner="$me $(proc_id) $RANDOM$RANDOM"
   while true; do
     out=$(on_test_mac --remote-lock $key "$owner" 2>&1); rc=$?
     (( rc == 0 )) && break
@@ -392,8 +395,7 @@ local_main() {  # <key> <source dir> <command>
     fi
     held=$out
     # Held by a process on this Mac that is gone (or a different process under its PID): taken over.
-    local hp=${${held#$me }%% *}
-    if [[ $held == "$me "* ]] && { ! kill -0 $hp 2>/dev/null || [[ "$me $hp $(ps -o lstart= -p $hp | tr -s ' ') " != "${held% *} " ]]; }; then
+    if [[ $held == "$me "* ]] && ! proc_alive "${${held#$me }% *}"; then
       on_test_mac --remote-unlock $key "$held" >/dev/null 2>&1; continue
     fi
     (( waited == 0 )) && print "remote-tests: key $key is in use on the test Mac ($held): waiting"
@@ -451,10 +453,10 @@ local_main() {  # <key> <source dir> <command>
     wts=(${(M)wts:#worktree *}); wts=(${wts##*/})
     if (( ${wts[(Ie)$key]} )); then origin="$me:$common"; live=${(j: :)wts}; fi
   fi
-  # (No MULTIOS here: a coprocess's stdin plus `< $self` would be joined into one never-ending input.)
+  # (No MULTIOS here: a coprocess's stdin plus the script's would be joined into one never-ending input.)
   setopt localoptions nomultios
   coproc ssh -o BatchMode=yes -o ControlPath=none -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
-      $host zsh -s -- --remote $key ${(q)owner} ${(q)full} ${(q)origin} ${(q)live} < $self 2>&1
+      $host zsh -s -- --remote $key ${(q)owner} ${(q)full} ${(q)origin} ${(q)live} < <(cat $lib $self) 2>&1
   local sp=$! first=-t120 t1=$SECONDS
   trap "kill $sp 2>/dev/null; exit 143" INT TERM HUP
   # (Its first line within 120 s, or the connection is stopped: hung connecting.)

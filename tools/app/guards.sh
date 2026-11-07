@@ -3,8 +3,8 @@
 # their accessor and no data source named in the app's code (the pipeline's inputs_accessor and
 # source_names tests), then the Python steps the agent runs loaded from the app's dem/ placed in a
 # stand-in NAS root whose inputs folders can't be read: a step that reads one as it loads, around
-# dem/inputs.py's arg, fails there. Needs cargo and uv on the PATH (tools/app/publish.sh runs it
-# so); exits non-zero, saying why, on a failure. The tests' whole output is kept
+# dem/inputs.py's arg, fails there; and tools/dev's programs under one strict mode. Needs cargo and
+# uv on the PATH (tools/app/publish.sh runs it so); exits non-zero, saying why, on a failure. The tests' whole output is kept
 # (~/Library/Logs/scenic/guards-<time>.log); shown on a failure: each failed test's own.
 set -euo pipefail
 case $#:${1:-} in
@@ -27,6 +27,14 @@ in_check=${SCENIC_GUARDS_IN_CHECK:-}
 # No test measures the machine (#441): no short elapsed() bound asserted, no fixed sleep then an
 # assert (tools/app/test_timing.py says why and what instead).
 python3 tools/app/test_timing.py || exit 1
+# One strict mode for tools/dev's programs (consistency T13): each runs under `set -uo pipefail`
+# (unset names and failed pipelines are errors; no errexit: each says itself why it stops), set
+# before its first command or, one its test sources, after its source guard. A file only sourced
+# (no #! line: board.sh) sets none.
+for f in tools/dev/*.sh; do
+  [[ $(head -c2 $f) == '#!' ]] || continue
+  grep -qx 'set -uo pipefail' $f || { echo "$f: a tools/dev program sets 'set -uo pipefail' (tools/app/guards.sh says where)"; exit 1; }
+done
 # A test reading the repo's own files says which (#662): `//! scans: <path prefix> …`, so
 # tools/dev/affected-tests.sh runs it when any of them changes (write_sets missed #660's room.rs).
 python3 - <<'PY' || exit 1

@@ -98,6 +98,27 @@ out=$(r "hold $H || echo \"held: \$lock_held\"; unhold $H; [[ -d $H ]] && echo k
 kill $hp; wait $hp 2>/dev/null
 out=$(r "hold $H && echo taken; unhold $H; [[ -d $H ]] || echo freed")
 [[ $out == $'taken\nfreed' ]] && ok "hold taken over from a gone process" || no "hold gone" "$out"
+# (An owner id naming a live PID with another start time is another process's: not alive.)
+out=$(r "id=\$(proc_id); proc_alive \$id && echo live; proc_alive \"\${id%% *} Thu Jan  1 00:00:00 1970\" || echo other")
+[[ $out == $'live\nother' ]] && ok "proc_alive: the process, not its PID" || no "proc_alive" "$out"
+
+# stop_program: only the processes running that very program, by PID; one whose arguments merely
+# name it (what `pkill -f` would also stop) and another program are left.
+# (A program of its own: a copy of a system one, /bin/sleep, is stopped by macOS as it starts.)
+mkdir -p $tmp/a $tmp/b
+print -r -- '#include <unistd.h>
+int main(void) { sleep(30); return 0; }' > $tmp/napper.c
+cc -o $tmp/a/napper $tmp/napper.c && cp $tmp/a/napper $tmp/b/napper
+$tmp/a/napper 30 & pa=$!
+$tmp/b/napper 30 & pb=$!
+sh -c 'sleep 30' $tmp/a/napper & pn=$!
+out=$(r "stop_program $tmp/a/napper; echo done")
+for i in {1..50}; do kill -0 $pa 2>/dev/null || break; sleep 0.1; done
+if [[ $out != done ]]; then no "stop_program" "$out"
+elif kill -0 $pa 2>/dev/null; then no "stop_program" "the program's process still runs"
+elif ! kill -0 $pb 2>/dev/null || ! kill -0 $pn 2>/dev/null; then no "stop_program" "stopped another"
+else ok "stop_program: that program's processes alone"; fi
+kill $pa $pb $pn 2>/dev/null; wait $pa $pb $pn 2>/dev/null
 
 # fast_forward: in a stand-in repository, live = b; c builds on it, a is older, d diverged.
 g=$tmp/repo; git init -q $g

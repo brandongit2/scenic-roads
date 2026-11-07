@@ -1,5 +1,26 @@
 # The shell steps publish.sh runs, as functions it sources, so each can be tested in a stand-in tree
-# (tools/app/test/shell.zsh, run by tools/dev/check.sh when tools/app changes).
+# (tools/app/test/shell.zsh, run by tools/dev/check.sh when tools/app changes); install.sh and
+# remote-tests.sh (on both of its sides) source it too.
+
+# The app's programs, built by publish.sh (target/release) and installed beside each other in the
+# NAS's app/<version>/ (install.sh copies them to each Mac).
+app_programs=(server scenic scenic-build)
+
+# proc_id [<pid>]: a process's owner id, "<pid> <its start time>" (ps's lstart, as ps prints it): a
+# lock names its holder so, as the PID alone may be another process's later. This process by default.
+# proc_alive <id>: 0 while the process an owner id names still runs (its PID, started then).
+proc_id() { local p=${1:-$$}; print -r -- "$p $(ps -o lstart= -p $p 2>/dev/null)"; }
+proc_alive() { kill -0 ${1%% *} 2>/dev/null && [[ $(proc_id ${1%% *}) == "$1" ]]; }
+
+# stop_program <executable>: a TERM to each process running exactly <executable> (its whole path, as
+# ps names it), by its PID: never by a pattern (`pkill -f` also matches a process whose arguments
+# merely name it). None running is no failure.
+stop_program() {
+  local pid exe
+  ps -axo pid=,comm= | while read -r pid exe; do
+    if [[ $exe == "$1" ]]; then kill $pid 2>/dev/null || true; fi
+  done
+}
 
 # at_end <function>: runs <function> once as this script ends, however it ends: an exit, a command
 # failing under errexit (inside a function too), a failed subshell, or INT, TERM or HUP (exit 130).
@@ -84,12 +105,12 @@ nas_unlock() { [[ $(cat $1 2>/dev/null) == "$2" ]] && rm -f $1; return 0; }
 # written (10 s on), is moved aside, checked unchanged, and taken.
 # unhold <dir>: removes it while it is still this process's.
 hold() {
-  local d=$1 me="$$ $(ps -o lstart= -p $$)" held pid
+  local d=$1 me=$(proc_id) held
   typeset -g lock_held=
   until mkdir $d 2>/dev/null; do
-    held=$(cat $d/owner 2>/dev/null); pid=${held%% *}
+    held=$(cat $d/owner 2>/dev/null)
     if [[ -n $held ]]; then
-      kill -0 $pid 2>/dev/null && [[ "$pid $(ps -o lstart= -p $pid)" == "$held" ]] && { lock_held="process $held"; return 1; }
+      proc_alive $held && { lock_held="process $held"; return 1; }
     elif [[ -n $(found $d -maxdepth 0 -newermt '10 seconds ago') ]]; then lock_held="being taken"; return 1
     fi
     mv $d $d.aside-$$ 2>/dev/null || continue
@@ -103,7 +124,7 @@ hold() {
   done
   print -r -- "$me" > $d/owner
 }
-unhold() { [[ $(cat $1/owner 2>/dev/null) == "$$ $(ps -o lstart= -p $$)" ]] && rm -rf $1; return 0; }
+unhold() { [[ $(cat $1/owner 2>/dev/null) == "$(proc_id)" ]] && rm -rf $1; return 0; }
 
 # claim_tree <cache>: takes the first free of <cache>/tree and tree-2 (hold, above) into $snap,
 # waiting while both are held: says so once, naming both holders, and polls every $tree_poll
