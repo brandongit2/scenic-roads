@@ -57,6 +57,8 @@ const KEPT: &[&str] = &["OSM planet", "Planetiler and its data"];
 
 /// Lines naming a source that may: by file, item, anchor (a part of the line), with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
+    // A query service's vocabulary.
+    ("crates/landmarks/src/wikiask.rs", "GENID", "/.well-known/genid/", "the IRIs Wikidata's query services answer an unknown value with: their RDF vocabulary's, as `<http://www.wikidata.org/entity/>` is, read in answers, never asked"),
     // The credits.
     ("crates/inputs/src/rules.rs", "CREDITS", "source: \"", "the credits' fallback (§4.8): each entry of a declared source is replaced by its declaration's credit once one is accepted (crate::inputs::credits), and stands in until then, so a catalogue never lacks a licence's notice"),
     ("crates/inputs/src/rules.rs", "CREDITS", "open.canada.ca/en/open-government-licence-canada", "the credits' fallback (§4.8): the licence's own notice"),
