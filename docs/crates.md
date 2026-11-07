@@ -1056,7 +1056,7 @@ commit; re-exports at the old paths as before.
    3. **6f3, test time** (built, 7 Nov 2026): the runtime's `cfg(test)` behaviours read the
       process flag (`buildstore::out::testing`), as `disk_free` does since 6e, and what they read
       is built always; 6f3 lands before 6f4, as a guard left on `cfg(test)` in agentcore would be
-      off in pipeline's tests. Switched, the guards first (one commit, then the rest):
+      off in pipeline's tests. Switched:
       - **The guards** (#906, #914): `find_root` finds only a unit test's `TEST_ROOT` (now built
         always), made by `NasRoot::from_arg` after the same live-path check `local_for_test` makes
         (that constructor is store's `testkit`, absent from a release build; tests/nas_access.rs
@@ -1078,9 +1078,11 @@ commit; re-exports at the old paths as before.
         binary, example and integration test, and in server's tests, each switched site takes its
         production branch, as it did built without `cfg(test)`. tests/test_mode.rs checks both
         halves: `a_build_with_the_dev_dependencies_has_no_test_time_behaviour` (false in an
-        integration test) and `only_pipeline_s_unit_tests_run_its_code_testing` (every
-        `go_testing` call in a `#[cfg(test)]` `TEST_START`, and no crate with one linking pipeline
-        but pipeline). No production value changed: each function's other branch is the old
+        integration test) and `only_pipeline_s_unit_tests_run_its_code_testing` (in every file of
+        every crate, `go_testing` named only in a lib.rs's `#[cfg(test)]` `TEST_START`; the flag
+        private to buildstore's out.rs, starting as `cfg!(test)`, read by `testing` and written by
+        `go_testing` alone, so no environment variable, file or argument sets it; and no crate with
+        a `TEST_START` linking pipeline but pipeline). No production value changed: each function's other branch is the old
         `not(test)` constant.
       - **Cut:** the consts' `cfg` pairs; nasread's `SWITCH_READERS`, `READERS`, `WRITERS` and the
         big reads' deadline no longer public (the status sums them through `threads_in_all`).

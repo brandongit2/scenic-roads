@@ -18,10 +18,12 @@ fn a_build_with_the_dev_dependencies_has_no_test_time_behaviour() {
 /// `buildstore::out::testing` is true exactly where pipeline's `cfg(test)` applied: its unit tests.
 /// The agent's runtime reads it for its test-time behaviours (the NAS and port guards, its short
 /// waits, the panics a test wants; task #916 step 6f3), so a process seeing it true uses a test's
-/// stand-ins. It turns true only by a crate's `#[cfg(test)]` start-up constructor (`TEST_START`,
-/// calling `go_testing`) or in buildstore's own unit tests, so it is true only in some crate's
-/// unit tests; and no crate with a `TEST_START` links pipeline but pipeline itself (server's unit
-/// tests, which do link it, have none). Binaries and integration tests: the test above.
+/// stand-ins. Its flag is written only by `go_testing` (no environment variable, file or argument
+/// reads it), which is named only in a crate's `#[cfg(test)]` start-up constructor (`TEST_START`):
+/// in any file of a crate (its library, binaries, tests, examples, build script); else it is true
+/// only in buildstore's own unit tests, its initial value. So it is true only in some crate's unit
+/// tests; and no crate with a `TEST_START` links pipeline but pipeline itself (server's unit tests,
+/// which do link it, have none). Binaries and integration tests: the test above.
 #[test]
 fn only_pipeline_s_unit_tests_run_its_code_testing() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -48,9 +50,10 @@ fn only_pipeline_s_unit_tests_run_its_code_testing() {
             }
         }
         deps.push((name.clone(), on));
-        // Who calls `go_testing`: only a lib.rs's `#[cfg(test)]` TEST_START.
+        // Who names `go_testing`: only a lib.rs's `#[cfg(test)]` TEST_START, in any of the crate's
+        // files; and buildstore's flag is written by it alone.
         let mut files = Vec::new();
-        rs_files(&e.path().join("src"), &mut files);
+        rs_files(&e.path(), &mut files);
         for f in files {
             let text = std::fs::read_to_string(&f).unwrap();
             let lines: Vec<&str> = text.lines().collect();
@@ -61,13 +64,31 @@ fn only_pipeline_s_unit_tests_run_its_code_testing() {
                 }
                 starts.push(name.clone());
             }
+            let out_rs = f.ends_with("buildstore/src/out.rs");
             for (i, l) in lines.iter().enumerate() {
-                let code = l.split("//").next().unwrap_or("");
-                if code.contains("go_testing()") && !code.contains("pub fn go_testing()") {
-                    let in_start = start.is_some_and(|s| i > s && i < s + 8);
-                    if !in_start {
-                        bad.push(format!("{}:{}: go_testing() outside a TEST_START", f.display(), i + 1));
-                    }
+                let code = code_of(l);
+                let defined = out_rs && code.trim() == "pub fn go_testing() {";
+                let in_start = start.is_some_and(|s| i > s && i < s + 8);
+                if names(&code, "go_testing") && !defined && !in_start {
+                    bad.push(format!("{}:{}: go_testing named outside a TEST_START", f.display(), i + 1));
+                }
+                // (The flag itself: private to out.rs, read by `testing`, written by `go_testing`.)
+                let flag = [
+                    "TESTING.load(std::sync::atomic::Ordering::Relaxed)",
+                    "TESTING.store(true, std::sync::atomic::Ordering::Relaxed);",
+                ];
+                // (Its initial value: true only in buildstore's own unit tests.)
+                let declared = out_rs && code == "static TESTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(test));";
+                if name == "buildstore"
+                    && names(&code, "TESTING")
+                    && !declared
+                    && !(out_rs && flag.contains(&code.trim()))
+                {
+                    bad.push(format!(
+                        "{}:{}: buildstore's TESTING used outside testing/go_testing",
+                        f.display(),
+                        i + 1
+                    ));
                 }
             }
         }
@@ -97,9 +118,52 @@ fn only_pipeline_s_unit_tests_run_its_code_testing() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
+/// Line `l`'s code: its string literals' contents and its comment left out.
+fn code_of(l: &str) -> String {
+    let (mut out, mut quoted, mut escaped) = (String::new(), false, false);
+    let mut chars = l.chars().peekable();
+    while let Some(c) = chars.next() {
+        if quoted {
+            match (escaped, c) {
+                (true, _) => escaped = false,
+                (false, '\\') => escaped = true,
+                (false, '"') => {
+                    quoted = false;
+                    out.push('"');
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if c == '/' && chars.peek() == Some(&'/') {
+            break;
+        }
+        // (A quote as a character, `'"'`, starts no string.)
+        if c == '\'' && chars.peek() == Some(&'"') {
+            out.push(c);
+            out.push(chars.next().unwrap());
+            continue;
+        }
+        quoted = c == '"';
+        out.push(c);
+    }
+    out
+}
+
+/// Whether `code` names identifier `id` (not as part of a longer one).
+fn names(code: &str, id: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    code.match_indices(id).any(|(i, _)| {
+        !code[..i].chars().next_back().is_some_and(word) && !code[i + id.len()..].chars().next().is_some_and(word)
+    })
+}
+
 fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let p = e.path();
+        if p.file_name().is_some_and(|n| n == "target") {
+            continue;
+        }
         if p.is_dir() {
             rs_files(&p, out);
         } else if p.extension().is_some_and(|x| x == "rs") {
