@@ -16,7 +16,7 @@ import { filterHists, stopFilterExpr, stopFilterPass } from './stopfilters';
 import type { KindQuery, LandmarkItem, LandmarkRequest, LandmarkResponse, TileNames } from './landmarks.worker';
 import { NameFader } from './namefade';
 import type { LandmarkDots } from './dots';
-import { fitPopup } from './popupfit';
+import { MapPopup, kv, link } from './popup';
 import { cap, h } from './ui/dom';
 import { fmt } from './fmt';
 import type { LayersCard } from './ui/layers';
@@ -192,7 +192,7 @@ export class Overlays {
   private marks: MarksCfg | null | undefined = undefined;
   private top: LandmarkItem[] = [];
   private topByKind: Record<string, LandmarkItem[]> = {};
-  private popup: maplibregl.Popup | null = null;
+  private popup: MapPopup;
   /** Layers' own filters (kinds, names), which the Stops & sights filters are added to. */
   private baseFilters = new Map<string, unknown>();
   private state: AppState | null = null;
@@ -201,6 +201,7 @@ export class Overlays {
   private names: NameFader;
 
   constructor(private map: MLMap, private layers: LayersCard, private dots: LandmarkDots) {
+    this.popup = new MapPopup(map);
     this.names = new NameFader(map, dots);
     tileScale = () => dots.nameScale();
     tileNames = (src, z, x, y, names) => this.names.tile(src, z, x, y, names);
@@ -725,8 +726,7 @@ export class Overlays {
   }
 
   closePopup() {
-    this.popup?.remove();
-    this.popup = null;
+    this.popup.close();
   }
 
   /** A popup with a section per feature (at most a few), details filled in as they load. */
@@ -739,12 +739,7 @@ export class Overlays {
       if (i) box.append(h('div', { class: 'pop-sep' }));
       box.append(b);
     });
-    this.closePopup();
-    // Kept inside the map: the side of the point with room, capped and scrolling (popupfit.ts).
-    const popup = new maplibregl.Popup({ closeButton: true, maxWidth: '320px', className: 'dark-pop', offset: 8 });
-    const fit = fitPopup(this.map, popup, box);
-    this.popup = popup.setLngLat(at).setDOMContent(fit.el).addTo(this.map);
-    fit.fit();
+    this.popup.show(at, box);
   }
 
   private section(f: MapGeoJSONFeature, at: maplibregl.LngLat): HTMLElement | null {
@@ -753,9 +748,6 @@ export class Overlays {
     const lid = isWhs(f.layer.id) ? 'heritage-pt' : f.layer.id;
     const body = h('div', { class: 'pop' });
     const put = (...xs: (Node | string | null)[]) => body.append(...(xs.filter((x) => x !== null) as (Node | string)[]));
-    const link = (url: string | undefined, label: string) =>
-      url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, `${label} ↗`) : null;
-    const kv = (k: string, v: unknown) => (v === undefined || v === null || v === '' ? null : h('div', { class: 'kv' }, h('span', {}, k), h('b', {}, String(v))));
     if (lid === 'heritage-pt' || lid === 'heritage-part') {
       const dot = h('span', { class: 'dot' });
       dot.style.background = heritageGroupOf(heritageTierOf(p)).colour;

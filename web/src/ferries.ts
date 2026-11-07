@@ -6,7 +6,7 @@ import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'mapli
 import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
 import { tasks } from './tasks';
-import { fitPopup } from './popupfit';
+import { MapPopup, kv, link } from './popup';
 import { legibleCss } from './linecolour';
 import { displayName } from './names';
 import {
@@ -123,7 +123,7 @@ export class Ferries {
   /** Per line (id), its name's main and sub (names.ts): the line records carry none, but a way of
    * the line carries its first named line's name (`n`) with them. */
   private lineNames = new Map<string, { main?: string; sub?: string }>();
-  private popup: maplibregl.Popup | null = null;
+  private popup: MapPopup;
   private style: FerryState | null = null;
   /** The metric colouring's range in use (auto-fitted or fixed) and equalisation lookup. */
   private range: [number, number] = [0, 1];
@@ -144,6 +144,7 @@ export class Ferries {
   }
 
   constructor(private map: MLMap) {
+    this.popup = new MapPopup(map);
     // New ferry blocks (a new catalogue): asked for again.
     onVersions(['ferries.tiles'], () => {
       this.blocks.clear();
@@ -539,8 +540,6 @@ export class Ferries {
     const ls = String(f.properties?.lines ?? '').split(',').map((id) => [id, this.lines[id]] as const).filter(([, l]) => l);
     if (!ls.length) return false;
     const body = h('div', { class: 'pop' });
-    const kv = (k: string, v: unknown) => (v === undefined || v === null || v === '' ? null : h('div', { class: 'kv' }, h('span', {}, k), h('b', {}, String(v))));
-    const link = (url: string | undefined, label: string) => (url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, `${label} ↗`) : null);
     ls.forEach(([id, l], i) => {
       const dot = h('span', { class: 'dot' });
       dot.style.background = legibleCss(l.colour) ?? FERRY_GROUP_COLOURS[l.group];
@@ -562,17 +561,12 @@ export class Ferries {
       if (i > 0) body.append(h('hr'));
       body.append(...(items.filter((x) => x !== null) as Node[]));
     });
-    this.popup?.remove();
-    const popup = new maplibregl.Popup({ closeButton: true, maxWidth: '320px', className: 'dark-pop', offset: 8 });
-    const fit = fitPopup(this.map, popup, body);
-    this.popup = popup.setLngLat(at).setDOMContent(fit.el).addTo(this.map);
-    fit.fit();
+    this.popup.show(at, body);
     return true;
   }
 
   closePopup() {
-    this.popup?.remove();
-    this.popup = null;
+    this.popup.close();
   }
 }
 

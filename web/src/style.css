@@ -315,9 +315,9 @@ input.switch:checked::after { transform: translateX(11px); background: #0b0e13; 
 /* Over the controls and the lists (a phone's sheet too), what was just tapped: its close button
    never under them; under the menus, the panel and the toasts. */
 .maplibregl-popup { z-index: 5; }
-/* Moved inside a narrow map, off its point: no tip pointing elsewhere (popupfit.ts). */
+/* Moved inside a narrow map, off its point: no tip pointing elsewhere (popup.ts). */
 .pop-shifted .maplibregl-popup-tip { visibility: hidden; }
-/* Capped to the room in the map (popupfit.ts); the rest scrolls. */
+/* Capped to the room in the map (popup.ts); the rest scrolls. */
 .dark-pop .pop-scroll { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .pop .ttl { font-weight: 600; font-size: 13px; color: #fff; padding-right: 14px; line-height: 1.3; }
 .pop .sub { color: var(--muted); margin: 2px 0 6px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
