@@ -102,7 +102,7 @@ export class Lists {
     private panes: ListPanes,
     overlays: Overlays,
     rd: RoadsRail,
-    private marks: Marks,
+    marks: Marks,
     private host: ListsHost,
   ) {
     const { drives, rides, lines, sights } = panes;
@@ -273,6 +273,9 @@ export class Lists {
     }
     const abort = (this.profileAbort = new AbortController());
     const info = peekWay(sel.way) ?? (await getWay(sel.way, sel.at));
+    // Another selection (or none) while the name was asked for: this one is done, its loading
+    // line never shown (it had reopened a closed panel, or named the wrong road).
+    if (abort.signal.aborted) return;
     profile.loading((info && (info.ref || displayName(info.main, info.name, info.sub))) || 'this road');
     try {
       const p = await getProfile(sel.way, sel.at, abort.signal);
