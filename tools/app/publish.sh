@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Publish the app (docs/building.md §2, App publishing): build the server and the web app, run the
-# tests, smoke-test the new server on a spare port against the NAS's current catalogue, then copy it
+# tests, smoke-test the new server on a spare port against the map (as this Mac's server reads it), then copy it
 # to the NAS (app/<version>/) and point app/current.json at it. Every Mac's agent copies it within
 # five minutes (pipeline::appupdate) and restarts into it by its update drain; the Mac mini's map
 # server, the only one, restarts into it once the map has been idle a minute.
@@ -239,14 +239,15 @@ step "web build"
 fonts=$repo/data/fonts
 [[ -d $fonts ]] || fonts=$NAS/app/fonts
 [[ -d $fonts ]] || { echo "no fonts folder (data/fonts or the NAS's app/fonts)"; exit 1; }
-# Smoke test: the new server, its own empty home (no mirror), the NAS's catalogue.
+# Smoke test: the new server, its own empty home (no mirror), the map this Mac kept (else the NAS's
+# newest snapshot) and the lead's batches after it.
 # (Its port its tree's, so two publishes' smoke tests can run at once.)
 step "smoke test"
 home=$(mktemp -d); port=18080; [[ $snap == $spare ]] && port=18081
 ./target/release/server --port $port --home $home --no-mirror --web web/dist-publish --fonts $fonts > $home/server.log 2>&1 &
 pid=$!
 cleanup+=("kill $pid 2>/dev/null; rm -rf $home")
-# Up to 10 min for its first answer: its catalogue is read from the NAS first, which a busy NAS, or
+# Up to 10 min for its first answer: it reads the map first (from the NAS without a copy here), which a busy NAS, or
 # this Mac under a second publish's build, slows (21 Oct: 19 s+ under the depth repack; 26 Oct:
 # past 2 min beside another publish's build, task #698). The shading layers' tiles too, as stored and
 # made from an ancestor (z16): every slope tile once answered 503, its packs' tiles undecodable.

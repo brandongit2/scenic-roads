@@ -212,13 +212,14 @@ rm -f $nas/app/previous.json
 
 # smoke: two publishes' smoke tests at once (task #698), each its own port and fake server (a
 # Python stand-in that listens only once its gate file exists, as the server listens only once its
-# catalogue is read). No timing (task #956: a fixed 3 s start against a 20 s wait failed a publish at
+# map is read). No timing (task #956: a fixed 3 s start against a 20 s wait failed a publish at
 # a load of 29): the first's server opens only after the second's smoke test has passed, so the
 # first's is waited for (saying once that it is still starting), not reported as six 000s, however
 # slow the Mac. One never opened, past the wait, and one that exits, are each said so, with whether
 # it printed anything.
 fake=$tmp/fake.py
 print -r -- 'import os, sys, time, http.server
+if len(sys.argv) > 3: print(sys.argv[3], flush=True)
 while not os.path.exists(sys.argv[2]):
     if not os.path.isdir(os.path.dirname(sys.argv[2])): sys.exit("its folder is gone")
     time.sleep(0.05)
@@ -244,7 +245,13 @@ elif (( waiting )); then no "smoke two at once" "the first's ended before its se
 elif [[ $(grep -c 'still starting' $tmp/smoke-first) != 1 ]]; then no "smoke two at once" "the first's didn't say once it waited: $(<$tmp/smoke-first)"
 else ok "smoke: two at once, the first's server opened after the second passed, both pass"; fi
 sm slow $p1 1 && no "smoke still starting" "passed" || {
-  [[ $(<$tmp/smoke-slow) == *"didn't answer"*'still reading its catalogue'*'printed nothing'* && $(<$tmp/smoke-slow) != *000* ]] && ok "smoke: a server still starting past the wait said so" || no "smoke still starting" "$(<$tmp/smoke-slow)"; }
+  [[ $(<$tmp/smoke-slow) == *"didn't answer"*'still reading the map'*'printed nothing'* && $(<$tmp/smoke-slow) != *000* ]] && ok "smoke: a server still starting past the wait said so" || no "smoke still starting" "$(<$tmp/smoke-slow)"; }
+# One that said it has read the map ("map <seq> · NAS …", the server's line) and isn't listening yet:
+# said so.
+python3 -I $fake $p1 $tmp/go-read 'map 1689 · NAS /Volumes/personal/projects/scenic-roads' > $tmp/log-read 2>&1 & fp=$!
+out=$(zsh -c "source ${(q)lib}; smoke $p1 $fp $tmp/log-read 3 /api/ping")
+kill $fp 2>/dev/null; wait $fp 2>/dev/null
+[[ $out == *"didn't answer"*'its map read, not yet listening'* ]] && ok "smoke: a server that read the map but isn't listening said so" || no "smoke map read" "$out"
 # A port another process holds (a server a killed publish left) answers for one that couldn't
 # listen: said so, not passed.
 touch $tmp/go-other

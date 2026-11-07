@@ -159,8 +159,9 @@ fast_forward() {
 live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }
 
 # smoke <port> <pid> <log> <seconds> <path>...: the smoke test of the server <pid> started on <port>,
-# its output in <log>. It waits up to <seconds> for /api/ping (the server listens only once its
-# catalogue is read from the NAS; its first line, "catalogue <n> · NAS …", says the read is done), then asks each path, a few tries
+# its output in <log>. It waits up to <seconds> for /api/ping (the server listens only once it has
+# read the map, its own Mac's kept copy or else the NAS's newest snapshot; it prints "map <seq> ·
+# NAS …" once it has), then asks each path, a few tries
 # on 503 (a busy NAS's slow read), and wants 200 or 204. 0 when all answered so; else says which
 # didn't and returns 1. A server that never answered is told apart, its paths not asked: exited
 # (its status), or still starting after <seconds> (task #698: under a second publish's build the
@@ -177,8 +178,8 @@ smoke() {
       print -r -- "smoke test: the server exited (status $rc) after $(( SECONDS - t0 )) s without answering"
       ok=0; break
     fi
-    where="still reading its catalogue from the NAS"
-    grep -q '^catalogue ' $log 2>/dev/null && where="its catalogue read, not yet listening"
+    where="still reading the map"
+    grep -q '^map [0-9]* · NAS ' $log 2>/dev/null && where="its map read, not yet listening"
     if (( SECONDS - t0 >= wait )); then
       print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s, $where"
       ok=0; break

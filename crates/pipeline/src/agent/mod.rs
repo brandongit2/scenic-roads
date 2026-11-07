@@ -1392,10 +1392,15 @@ pub fn find_root(mount: bool) -> Option<NasRoot> {
     NasRoot::find(mount)
 }
 
-/// Whether `root` answers: a stat of its catalogue, on **nas**'s look worker under its deadline
+/// The folder whose stat says the NAS answers (`answers`): the map's snapshots (docs/maplog.md
+/// §4.4), there while the map is. (An app before #883 step 9 stats `catalog/` instead, which is
+/// why that step's removal waits for every member's app: crate::agent::gc::OLD_CATALOGUES.)
+pub const NAS_CHECK: &str = store::map::NAS_DIR;
+
+/// Whether `root` answers: a stat of `NAS_CHECK`, on **nas**'s look worker under its deadline
 /// (crate::agent::nas: one look at a time, a hung one left to the kernel).
 fn answers(root: &store::nasfs::NasRoot) -> bool {
-    root.join("catalog").metadata().is_ok()
+    root.join(NAS_CHECK).metadata().is_ok()
 }
 
 /// `probe`'s answer within eight seconds, at the start before **nas** runs (a hung share counts as
@@ -9710,7 +9715,7 @@ fn test_agent(o: Options) -> Result<Agent> {
     // threads can't make a test's NAS look away.)
     // (Its jobs go out through the budgets' proxy, as every agent's: started as its first loop
     // would.)
-    Agent::new_with(o, |r| r.join("catalog").is_dir()).map(|mut a| {
+    Agent::new_with(o, |r| r.join(NAS_CHECK).is_dir()).map(|mut a| {
         a.mac = cond::Mac::TEST;
         if let (Some(r), true, false) = (a.o.root.clone(), a._lock.is_some(), a.o.dry_run) {
             a.tend_proxy(&r);
@@ -9875,7 +9880,7 @@ mod tests {
     fn a_timed_wait_sets_when_to_plan_again() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let mut a = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
@@ -9916,7 +9921,7 @@ mod tests {
     fn the_plans_digest_follows_what_it_depends_on() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         let mut a = test_agent(Options {
@@ -10064,7 +10069,7 @@ mod tests {
     fn the_agents_commands_pass_the_steps_table() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let a = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
@@ -10467,7 +10472,7 @@ mod tests {
     /// taken, a single loop's (its parts started by the test).
     fn parts_agent(d: &Path) -> (Agent, PathBuf) {
         let root = d.join("nas");
-        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let a = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: d.join("home"),
@@ -11245,7 +11250,7 @@ mod tests {
     #[test]
     fn an_end_the_lead_doesnt_take_is_owed() {
         let d = tempfile::tempdir().unwrap();
-        // (A root of its own, no catalog/: the NAS away, the pool off.)
+        // (A root of its own, no map/: the NAS away, the pool off.)
         let mut a = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
@@ -11327,7 +11332,7 @@ mod tests {
     #[test]
     fn a_loop_begins_a_round() {
         let d = tempfile::tempdir().unwrap();
-        // (A root of its own, no catalog/: the NAS away, the pool off.)
+        // (A root of its own, no map/: the NAS away, the pool off.)
         let mut a = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
@@ -13452,7 +13457,7 @@ mod tests {
     /// `rekey_root`, the z6 tile's ways where `owned` says (E7).
     fn rekey_root_with(root: &store::nasfs::NasRoot, owned: [i32; 4]) {
         let date = "2026-09-28";
-        root.join("catalog").create_dir_all().unwrap();
+        root.join(NAS_CHECK).create_dir_all().unwrap();
         put(&root.unchecked_path().join(format!("sources/osm/{date}/pass.1111111111111111.json")), b"{}");
         let recipes =
             vec![recipes::Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:-21.9,64.13,20".into()] }];
@@ -13717,7 +13722,7 @@ mod tests {
     fn plans_daily_jobs_and_writes_a_heartbeat() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let mut m = BTreeMap::new();
         crate::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
@@ -13755,7 +13760,7 @@ mod tests {
     fn the_gate_plans_a_check_first_and_shows_in_the_status() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let unit = crate::inputs::TEST_UNIT;
         let inputs_dir = root.join("inputs").join(unit);
@@ -14053,7 +14058,7 @@ mod tests {
     fn a_newer_app_starts_nothing() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         // The agent runs from app/v1; app/current points at v2.
         let apps = d.path().join("app");
         std::fs::create_dir_all(apps.join("v1")).unwrap();
@@ -14108,7 +14113,7 @@ mod tests {
     fn a_job_started_through_current_keeps_its_version_listed() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let apps = d.path().canonicalize().unwrap().join("app");
         for v in ["v1", "v2", "v3"] {
             std::fs::create_dir_all(apps.join(v)).unwrap();
@@ -14481,7 +14486,7 @@ mod tests {
         a.hand_over_jobs();
         drop(a);
         // (The next agent's proxy started as it's made, before its loop's first `tend_proxy`.)
-        let mut b = Agent::new_with(opts(), |r| r.join("catalog").is_dir()).unwrap();
+        let mut b = Agent::new_with(opts(), |r| r.join(NAS_CHECK).is_dir()).unwrap();
         b.mac = cond::Mac::TEST;
         assert!(b.slots[0].running.as_ref().is_some_and(|r| r.adopted && r.pgid == pgid));
         let p = b.proxy.as_ref().expect("the next agent's proxy, at once");
@@ -15270,7 +15275,7 @@ mod pool_tests {
     fn nas(d: &Path) -> PathBuf {
         let r = d.join("nas");
         std::fs::create_dir_all(r.join("state/build")).unwrap();
-        std::fs::create_dir_all(r.join("catalog")).unwrap();
+        std::fs::create_dir_all(r.join(NAS_CHECK)).unwrap();
         std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#)
             .unwrap();
         std::fs::write(r.join("state/build/jobs.json"), r#"{"unit": {"6/1/1": "k1"}}"#).unwrap();
@@ -17534,7 +17539,7 @@ mod pool_tests {
     #[test]
     fn a_job_out_of_the_pool_keeps_its_lease_and_ends_done() {
         let d = tempfile::tempdir().unwrap();
-        // (A root of its own, no catalog/: the NAS away as it started, the pool off.)
+        // (A root of its own, no map/: the NAS away as it started, the pool off.)
         let mut a = test_agent(Options {
             root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),

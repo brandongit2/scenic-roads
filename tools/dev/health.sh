@@ -25,7 +25,7 @@ since=$(cat .claude/health-stamp 2>/dev/null)
 date +%s > .claude/health-stamp
 print "== health $(date '+%F %T')"
 df -h / | awk 'NR==2{print "disk: "$4" free of "$2}'
-print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/catalog ]] && echo mounted || echo NOT MOUNTED)"
+print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/map ]] && echo mounted || echo NOT MOUNTED)"
 from="6 h ago"; [[ -n $since ]] && from=$(date -r $since '+%F %T')
 print "the build (scenic status --flags, failures since $from):"
 if out=$(scenic status --flags ${since:+--since} ${since:+$since} 2>&1); then

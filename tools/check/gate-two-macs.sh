@@ -105,7 +105,7 @@ case $cmd in
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
     [[ -e $r ]] && { print -u2 "$r exists"; exit 1; }
-    mkdir -p $r/catalog $r/sources $r/state/build $r/state/pool $r/state/inputs $r/inputs/$U
+    mkdir -p $r/map $r/sources $r/state/build $r/state/pool $r/state/inputs $r/inputs/$U
     print -n '{}' > $r/state/build/manifest.json
     print -n '{}' > $r/state/build/jobs.json
     print -n '{}' > $r/state/build/pending.json

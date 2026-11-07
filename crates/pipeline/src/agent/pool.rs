@@ -2343,7 +2343,7 @@ mod tests {
     fn root(d: &Path) -> PathBuf {
         let r = d.join("nas");
         std::fs::create_dir_all(r.join("state/build")).unwrap();
-        std::fs::create_dir_all(r.join("catalog")).unwrap();
+        std::fs::create_dir_all(r.join(crate::agent::NAS_CHECK)).unwrap();
         std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#)
             .unwrap();
         std::fs::write(r.join("state/build/jobs.json"), r#"{"unit": {"6/1/1": "k1"}}"#).unwrap();
