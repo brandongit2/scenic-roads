@@ -5100,7 +5100,31 @@ fn route(
                 Some(p) => p.regions(),
                 None => shared.lock().unwrap().regions.clone(),
             };
-            Ok(v.map_or_else(|| making("this Mac's agent is reading the regions"), |v| (200, (*v).clone())))
+            let Some(v) = v else { return Ok(making("this Mac's agent is reading the regions")) };
+            // A page that has this version's outlines (`have`: its version) is answered without
+            // them: they change only with the version (the regions' outlines and which are
+            // enabled), and the page asks again with each new catalogue (its sizes), as often as
+            // each poll while the lead publishes.
+            if b["have"].as_str().is_some_and(|h| v["version"].as_str() == Some(h)) {
+                let mut a = serde_json::Map::new();
+                for (k, x) in v.as_object().into_iter().flatten() {
+                    let x = match (k.as_str(), x.as_array()) {
+                        ("regions", Some(rs)) => rs
+                            .iter()
+                            .map(|r| {
+                                let mut r = r.as_object().cloned().unwrap_or_default();
+                                r.remove("fill");
+                                r.remove("edge");
+                                serde_json::Value::Object(r)
+                            })
+                            .collect(),
+                        _ => x.clone(),
+                    };
+                    a.insert(k.clone(), x);
+                }
+                return Ok((200, serde_json::Value::Object(a)));
+            }
+            Ok((200, (*v).clone()))
         }
         "/work/steps" => {
             // The steps table (crate::agent::steps, docs/pipeline.md): every step's and task's row
@@ -12715,7 +12739,8 @@ mod tests {
     }
 
     /// `/work/regions` (docs/pool.md §10, Regions) out of the pool, with no key: 200 with `making`
-    /// (never an error) until this Mac's agent made them, then theirs.
+    /// (never an error) until this Mac's agent made them, then theirs, without the outlines for a
+    /// page that has their version's.
     #[test]
     fn the_regions_answer_the_page_once_the_agent_made_them() {
         let (_d, c, w) = start();
@@ -12733,6 +12758,17 @@ mod tests {
         let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!((a["catalog"].as_u64(), a["regions"][0]["id"].as_str()), (Some(4), Some("a")));
         assert_eq!(making(&r), None);
+        // A page with this version's outlines: answered without them; another version's: whole.
+        c.set_regions(Arc::new(serde_json::json!({ "version": "v2", "catalog": 5, "regions": [
+            { "id": "a", "bytes": 7, "fill": [[0, 0, 1, 0, 1, 1]], "edge": [[0, 0, 1, 0]] }
+        ] })));
+        let have = |v: &str| {
+            let r = raw(&addr, "POST", "/work/regions", &[("Content-Type", "application/json")], v.as_bytes());
+            serde_json::from_str::<serde_json::Value>(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+        };
+        let a = have(r#"{"have":"v2"}"#);
+        assert_eq!(a, serde_json::json!({ "version": "v2", "catalog": 5, "regions": [{ "id": "a", "bytes": 7 }] }));
+        assert_eq!(have(r#"{"have":"v1"}"#)["regions"][0]["fill"], serde_json::json!([[0, 0, 1, 0, 1, 1]]));
         // The steps: asked (so counted from now), `making` until counted, then theirs alone.
         let steps =
             || raw(&addr, "POST", "/work/regions", &[("Content-Type", "application/json")], br#"{"steps":true}"#);

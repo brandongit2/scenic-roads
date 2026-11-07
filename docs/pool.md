@@ -2542,7 +2542,10 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   136 s on 26 Oct). regions.json is about 0.96 MB. Written by
   the lead's pool step as `state/build/term/<E>/regions.json` (again in each new term), read by
   each Mac's page data when its time changes. Every Mac's port answers `POST /work/regions` with
-  no key: in the pool from that read, out of it from this Mac's agent's. Until there is one it answers 200 with `{making: why}` (task #798: never an error
+  no key: in the pool from that read, out of it from this Mac's agent's; a page that has the
+  outlines of the answer's version says so (`{"have": version}`) and gets it without `fill` and
+  `edge` (asked again with each catalogue for its sizes, as often as each poll while the lead
+  publishes; on 7 Nov's 1,025 regions 0.1 MB without them, 3.1 MB with them). Until there is one it answers 200 with `{making: why}` (task #798: never an error
   while the agent is busy; the lead's loop can take minutes after a restart before it makes them), and
   the Regions tab says why in place of its rows.
   Steps (task #636): `POST /work/regions` with `{"steps": true}` answers each region's targets

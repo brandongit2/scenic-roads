@@ -2204,14 +2204,15 @@ async function loadTable() {
 }
 
 // The regions as `/work/regions` has them: again when the lead's last catalogue changes, else every
-// ten minutes (a region's folder or outline changes with the regions' accepted version); not yet
-// made (`making`: why, shown while there are none): asked again next poll.
+// ten minutes (a region's folder or outline changes with the regions' accepted version), without
+// the outlines while the page has that version's (`have`); not yet made (`making`: why, shown while
+// there are none): asked again next poll.
 async function loadRegions(sw) {
   const n = sw.agent?.catalog?.n ?? null;
   if (drawn.asking || (drawn.at && drawn.catalogue === n && Date.now() - drawn.at < REGIONS_EVERY_MS)) return;
   drawn.asking = true;
   try {
-    const [code, v] = await ctx.call("/work/regions", {});
+    const [code, v] = await ctx.call("/work/regions", drawn.version ? { have: drawn.version } : {});
     drawn.making = code === 200 && !v?.regions ? v?.making : undefined;
     if (code !== 200 || !v?.regions) return;
     // (The same answer as the last, asked again while the lead's catalogue is ahead of it: nothing
