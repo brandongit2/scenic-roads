@@ -7855,7 +7855,7 @@ impl Agent {
         let keep = self.o.home.join(cataloguesview::KEPT);
         let cv = self
             .catalogues_view
-            .get_or_insert_with(|| cataloguesview::CataloguesView::new(here.feed.clone(), Some(keep)))
+            .get_or_insert_with(|| cataloguesview::CataloguesView::new(self.o.the_plan, here.feed.clone(), Some(keep)))
             .clone();
         cv.wake();
         if !coord.has_catalogues() {

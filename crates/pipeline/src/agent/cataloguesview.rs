@@ -15,7 +15,7 @@
 //! A step's tiles' ages (a solo's, task #994) are its own outputs' instead: each `f/` name's last
 //! publish (`Published`: the batch that gave a key that name or changed its file) is kept too, and
 //! a page asking for `steps` is answered each one's tiles by the newest of their names
-//! (crate::agent::steps::output_names: `step_times`), so a slope-deep pack published leaves
+//! (`Plan::output_names`: `step_times`), so a slope-deep pack published leaves
 //! terrain-deep's tile under it as old as it was.
 //!
 //! It follows the log (`Source`): the lead's feed in process, on the lead alone (a member's page asks
@@ -34,6 +34,7 @@
 //! far, never waiting on it.
 
 use super::bus::Snap;
+use super::seam::Plan;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -384,20 +385,20 @@ struct Times {
 }
 
 /// Step `step`'s published tiles by when each was last published (task #994): every tile the map
-/// names at a zoom the step's files are told by name for (crate::agent::steps::output_names), its
+/// names at a zoom the step's files are told by name for (`Plan::output_names`), its
 /// time the newest of its names' (a step making several layers' packs: the newest of them); a tile
 /// where the map has none of them, left out. Grouped by that time, oldest first: `[{n, t, first?,
 /// z3|z6|z10: [i…]}]` (`first`: the view's start's). None for a step whose files aren't told by
 /// name. Asked for a solo, never sent to every page: terrain-deep's is 35 KB of JSON (3,546 z10 tiles in 291 times, 7 Nov).
-fn step_times(step: &str, times: &Times, first: Option<u64>) -> Option<Value> {
+fn step_times(the_plan: &dyn Plan, step: &str, times: &Times, first: Option<u64>) -> Option<Value> {
     let zooms: Vec<u8> =
-        [3, 6, 10].into_iter().filter(|z| super::steps::output_names(step, &format!("{z}/0/0")).is_some()).collect();
+        [3, 6, 10].into_iter().filter(|z| the_plan.output_names(step, &format!("{z}/0/0")).is_some()).collect();
     if zooms.is_empty() {
         return None;
     }
     let mut by: std::collections::BTreeMap<Published, std::collections::BTreeMap<u8, Vec<u32>>> = Default::default();
     for &(z, i) in times.tiles.iter().filter(|t| zooms.contains(&t.0)) {
-        let names = super::steps::output_names(step, &format!("{z}/{}/{}", i % (1 << z), i >> z)).unwrap_or_default();
+        let names = the_plan.output_names(step, &format!("{z}/{}/{}", i % (1 << z), i >> z)).unwrap_or_default();
         if let Some(p) = names.iter().filter_map(|n| times.published.get(&hash(n))).max() {
             by.entry(*p).or_default().entry(z).or_default().push(i);
         }
@@ -421,6 +422,8 @@ fn step_times(step: &str, times: &Times, first: Option<u64>) -> Option<Value> {
 /// The view: its source, what it shows, and its reader with its state (that thread's alone while it
 /// runs, kept between its runs).
 pub struct CataloguesView {
+    /// What tells a step's files by name (`step_times`).
+    the_plan: &'static dyn Plan,
     src: Arc<dyn Source>,
     /// Where it's kept (None: not kept).
     keep: Option<PathBuf>,
@@ -472,8 +475,9 @@ const MISSED: &str = "the log no longer holds the batches after";
 
 impl CataloguesView {
     /// A view of the log `src`, kept at `keep`.
-    pub fn new(src: Arc<dyn Source>, keep: Option<PathBuf>) -> Arc<Self> {
+    pub fn new(the_plan: &'static dyn Plan, src: Arc<dyn Source>, keep: Option<PathBuf>) -> Arc<Self> {
         Arc::new(CataloguesView {
+            the_plan,
             src,
             keep,
             shown: Snap::new(Shown::default()),
@@ -521,8 +525,10 @@ impl CataloguesView {
         let mut a = answer_of(&s.entries, s.latest, self.reading.load(Ordering::SeqCst), s.error.as_deref(), after);
         if !steps.is_empty() {
             let first = s.entries.iter().find(|e| e.first).map(|e| e.n);
-            let by: serde_json::Map<String, Value> =
-                steps.iter().map(|st| (st.clone(), step_times(st, &s.times, first).unwrap_or(Value::Null))).collect();
+            let by: serde_json::Map<String, Value> = steps
+                .iter()
+                .map(|st| (st.clone(), step_times(self.the_plan, st, &s.times, first).unwrap_or(Value::Null)))
+                .collect();
             a["steps"] = by.into();
         }
         a
@@ -678,7 +684,7 @@ mod tests {
         );
         lead.publish(&c1);
         let keep = lead.d.path().join(KEPT);
-        let v = CataloguesView::new(lead.source(), Some(keep.clone()));
+        let v = CataloguesView::new(crate::agent::seam::for_tests(), lead.source(), Some(keep.clone()));
         v.refresh();
         let a = v.answer(None, &[]);
         assert_eq!(a["latest"], 1, "{a}");
@@ -707,7 +713,7 @@ mod tests {
         c3.created = "2026-10-23T02:00:00Z".into();
         c3.ovdata.insert("3/1/1".into(), "ov/a".into());
         lead.publish(&c3);
-        let again = CataloguesView::new(lead.source(), Some(keep.clone()));
+        let again = CataloguesView::new(crate::agent::seam::for_tests(), lead.source(), Some(keep.clone()));
         again.refresh();
         let a = again.answer(None, &[]);
         let ns: Vec<u64> = a["catalogs"].as_array().unwrap().iter().map(|e| e["n"].as_u64().unwrap()).collect();
@@ -723,7 +729,7 @@ mod tests {
         c5.n = 5;
         c5.created = "2026-10-23T04:00:00Z".into();
         other.publish(&c5);
-        let again = CataloguesView::new(other.source(), Some(keep.clone()));
+        let again = CataloguesView::new(crate::agent::seam::for_tests(), other.source(), Some(keep.clone()));
         again.refresh();
         let a = again.answer(None, &[]);
         assert_eq!(a["latest"], 5);
@@ -759,7 +765,7 @@ mod tests {
             "files": {deep: f(deep, "a"), other: f(other, "b"), "base/6-16-21": f("base/6-16-21", "c")}}),
         );
         lead.publish(&c1);
-        let v = CataloguesView::new(lead.source(), None);
+        let v = CataloguesView::new(crate::agent::seam::for_tests(), lead.source(), None);
         v.refresh();
         // 2: 10/259/349 built again (its file alone). 3: 10/271/349's size alone changing, no new
         // file: nothing. 4: 10/271/349 built again, and the base pack's name (a key) changes.
@@ -847,7 +853,7 @@ mod tests {
         };
         let mut lead = Log::new();
         lead.publish(&chain[0]);
-        let v = CataloguesView::new(lead.source(), None);
+        let v = CataloguesView::new(crate::agent::seam::for_tests(), lead.source(), None);
         v.refresh();
         for c in &chain[1..] {
             lead.publish(c);
@@ -883,7 +889,7 @@ mod tests {
         );
         lead.publish(&c1);
         let keep = lead.d.path().join(KEPT);
-        let v = CataloguesView::new(lead.source(), Some(keep.clone()));
+        let v = CataloguesView::new(crate::agent::seam::for_tests(), lead.source(), Some(keep.clone()));
         v.refresh();
         // 2: slope-deep's pack built again. 3: terrain-hi's.
         let mut c = c1.clone();
@@ -908,7 +914,7 @@ mod tests {
         assert_eq!(v.answer(Some(1), &[])["catalogs"][0]["z10"], json!([t10]));
         assert!(v.answer(None, &[]).get("steps").is_none(), "none asked, none sent");
         // A restart: the times kept.
-        let again = CataloguesView::new(lead.source(), Some(keep.clone()));
+        let again = CataloguesView::new(crate::agent::seam::for_tests(), lead.source(), Some(keep.clone()));
         again.refresh();
         assert_eq!(again.answer(None, &steps)["steps"], want);
         // Kept before names' times: each name takes its deepest tile's newest entry, any layer's.

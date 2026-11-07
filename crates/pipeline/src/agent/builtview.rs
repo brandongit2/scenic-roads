@@ -349,7 +349,7 @@ mod tests {
         let mut w =
             super::super::publish::Writer::new(crate::agent::seam::for_tests(), d.path().join("maplog"), here.clone());
         w.publish(Some(&root), c1, false, std::time::SystemTime::now());
-        let cv = CataloguesView::new(here.feed.clone(), None);
+        let cv = CataloguesView::new(crate::agent::seam::for_tests(), here.feed.clone(), None);
         assert!(cv.names().is_none(), "nothing read yet");
         cv.refresh();
         let steps: BTreeMap<String, Vec<String>> = [
