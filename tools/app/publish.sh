@@ -197,7 +197,42 @@ done
 cleanup+=("unhold $cache/tests.busy")
 step "Rust tests"
 dj_attr $djrun tests_log $tests_log
-zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok=$?
+# A tree whose Rust build inputs are a passed publish's (#969: on 6 Nov 4 of 27 publishes had no release
+# build to do and ran the suite whole, 247-1171 s): tools/dev/check-reuse.py weighs the trees whose suite
+# and clippy passed here (suite-passed in the cache, the same suite line's) against every workspace
+# target, as check.sh's rule does. Taken only when clippy's verdict holds, no Rust build input
+# differing (the test programs are the same): then the tests reading a changed file as they run
+# (the scan tests, a #[test] reading the repo) run again, and the rest stand. Any Rust change: the
+# whole suite.
+sp=$cache/suite-passed sh=$(print -rn -- $suite | shasum | cut -c1-12) ws=$cache/suite.$$
+cleanup+=("rm -f $ws $ws.passed $ws.run")
+cargo metadata --no-deps --format-version 1 --offline | python3 -c '
+import json, sys
+lib = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+for p in json.load(sys.stdin)["packages"]:
+    t = sorted("--lib" if lib & set(x["kind"]) else "--%s %s" % (x["kind"][0], x["name"])
+               for x in p["targets"] if lib & set(x["kind"]) or x["kind"] in (["bin"], ["test"]))
+    if t: print("cargo test -p %s %s" % (p["name"], " ".join(t)))' > $ws
+grep -F " suite $sh" $sp > $ws.passed 2>/dev/null || true
+vc= vt= from= why= again=() reused=
+for l in ${(f)"$(python3 tools/dev/check-reuse.py $ws.passed $ws 2>>$tests_log)"}; do
+  f=( "${(@ps:\t:)l}" )
+  case $f[1]:$f[2] in clippy:*) vc=$f[2] ;; tests:cmd) again+=$f[4] ;; tests:*) vt=$f[2] from=$f[3] why=$f[4] ;; esac
+done
+if [[ $vc == reuse && $vt == reuse ]]; then
+  print -r -- "Rust tests: reused, the suite and clippy passed at ${from:0:7}: $why" | tee $tests_log
+  reused=" reused all=$from"
+elif [[ $vc == reuse && $vt == partial ]] && print -lr -- $again > $ws.run &&
+    nx=( ${(f)"$(tools/dev/affected-tests.sh --nextest $ws.run)"} ) && (( $#nx )); then
+  print -r -- "Rust tests: only these, the rest and clippy reused from ${from:0:7}: $why" | tee $tests_log
+  reused=" reused tests=$from/partial"
+  run='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || { mise install -q; eval "$(mise env -s zsh)"; }; rc=0'
+  for l in $nx; do run+="; $l || rc=\$?"; done
+  zsh tools/app/remote-tests.sh publish $snap "$run; exit \$rc" >> $tests_log 2>&1 || tests_ok=$?
+else
+  print -r -- "Rust tests: the whole suite (not reused: ${why:-no verdict})" | tee $tests_log
+  zsh tools/app/remote-tests.sh publish $snap $suite >> $tests_log 2>&1 || tests_ok=$?
+fi
 # Then every test outside the Rust workspace (tools/app/other-tests.zsh, #848: web/test and
 # tools/check/*.test.mjs by glob, the dev tools app's, the dev jobs' recorder's, the status app's
 # Swift self-test, shell.zsh and test-guard.zsh; their parts at once, ~1 min, most of it swiftc),
@@ -210,8 +245,11 @@ zsh tools/app/other-tests.zsh >> $tests_log 2>&1 || other_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
 # clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
 step clippy $(( other_ok ? 1 : 0 ))
-dj_wrap cargo "cargo clippy" --parse cargo
-$reply cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
+if [[ -n $reused ]]; then print "clippy: reused from ${from:0:7} (no Rust build input changed)" >> $tests_log
+else
+  dj_wrap cargo "cargo clippy" --parse cargo
+  $reply cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
+fi
 unhold $cache/tests.busy
 # (Only the final result counts: when the M4's run ended without one and the suite ran again here,
 # remote-tests.sh marked where the rerun starts.)
@@ -225,6 +263,12 @@ if (( tests_ok != 0 )); then
   echo "tests failed; their whole output: $tests_log"
   exit $tests_ok
 fi
+# The pass recorded for a later publish's reuse (above): the tree, its suite line, its targets'
+# hash (the targets kept beside it, 30 days) and what it reused.
+th=$(shasum $ws | cut -d' ' -f1)
+mkdir -p $cache/check-tests && cp $ws $cache/check-tests/$th.$$ && mv -f $cache/check-tests/$th.$$ $cache/check-tests/$th
+find $cache/check-tests -type f -mtime +30 -delete 2>/dev/null || true
+print -r -- "$(git rev-parse HEAD) $(date -u +%FT%TZ) tree $(git rev-parse 'HEAD^{tree}') at $(git rev-parse HEAD) tests $th suite $sh$reused" >> $sp
 # The build folder kept small (task #660): cargo never deletes what it built, so each change of the
 # dependencies or a profile left every workspace crate's old build behind (the mini's target/ grew
 # by ~35 GB a day, to 127 GB). What these builds use is read at each publish, so only an entry a
