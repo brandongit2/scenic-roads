@@ -2,7 +2,7 @@
 # The PM's health check of the build and the agents. Prints what needs attention, and stamps the
 # time (.claude/health-stamp): the next check's failures are those since this one.
 #
-# The build's part is one `scenic status --flags` (crates/pipeline/src/agent/flags.rs): the lead's
+# The build's part is one `scenic status --flags` (crates/agentcore/src/agent/flags.rs): the lead's
 # status covers every Mac, and it prints only what needs a look, a line each: its flags ("idle:" a
 # Mac with a slot free while work it could take waits, with what in its capacity held the job back,
 # or the waits its remaining work is held behind; "stuck:" a job whose work hasn't moved, by its

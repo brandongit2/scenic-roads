@@ -257,7 +257,7 @@ final class BuildService {
     /// and exits). Unregistering doesn't always end the job's process (the M1, 22 Oct): left, its
     /// agent holds the lock under no registered job. launchd's state read afresh first, and only
     /// launchers that started before the job's own (a launcher launchd has just started is never
-    /// one). The agent ends such a holder too (crates/pipeline/src/agent/takeover.rs); this ends
+    /// one). The agent ends such a holder too (crates/agentcore/src/agent/takeover.rs); this ends
     /// the launcher, which would start it again. Each pid logged once.
     func endStaleLaunchers() {
         refresh()
@@ -810,7 +810,7 @@ func selfTest(_ dir: String) -> Never {
     let oldPrinted = lines(old, oldLine).map(\.text)
     check("an older agent's loop never said stuck", !oldPrinted.contains { $0.contains("loop stuck") })
     check("an older lead's counts from its older fields", oldPrinted.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles") } && oldPrinted.contains { $0.contains("outlines: done") } && oldPrinted.contains { $0.contains("unit: 1,234 of 2,000 z6 tiles") })
-    // A member's answer (docs/roles.md §3.4: crates/pipeline/src/menu.rs, its `lead` pinned by
+    // A member's answer (docs/roles.md §3.4: crates/agentcore/src/menu.rs, its `lead` pinned by
     // lead-view-said.json, which menu.rs's test writes): its own status, and the build as its lead
     // last said it, heard 5 s before; the lead heard an hour ago, or not yet; this Mac's agent
     // out of touch.

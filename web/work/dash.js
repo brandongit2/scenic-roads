@@ -288,7 +288,7 @@ function alerts(m) {
     if (room?.target?.bytes && room.free != null && room.free < room.target.bytes) out.push({ cls: room.short ? "bad" : "warn", text: `${short}: ${r.disk_free_gb ?? Math.round(room.free / 1e8) / 10} GB free on its disk`, to: "machines" });
     if (x.role !== "lead" && st.app && a.app && st.app !== a.app) out.push({ cls: "warn", text: `${short} runs another app (${st.app})`, to: "machines" });
   }
-  // What the lead flags (crates/pipeline/src/agent/flags.rs: a Mac idle while work it could take
+  // What the lead flags (crates/agentcore/src/agent/flags.rs: a Mac idle while work it could take
   // waits, a job stuck (its work still past the overdue factor times its step's usual), the catalogue stale), as `scenic status`
   // and the menu bar.
   for (const f of a.flags || []) out.push({ cls: "warn", text: `${f.kind[0].toUpperCase()}${f.kind.slice(1)}: ${f.said}`, to: "machines" });

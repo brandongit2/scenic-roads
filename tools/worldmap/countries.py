@@ -9,7 +9,7 @@
 #
 # Defaults: the NAS's zip (read only; its 850 MB sqlite is unpacked to a temporary folder, removed
 # at the end) and web/work/countries.json. The page serves the file from the pipeline binary
-# (crates/pipeline/src/coord/mod.rs include_bytes), so rebuild after a change.
+# (crates/agentcore/src/coord/mod.rs include_bytes), so rebuild after a change.
 import struct, sys, math, json, os, sqlite3, tempfile, zipfile
 
 NAS = '/Volumes/personal/projects/scenic-roads/sources/basemap/natural_earth_vector.sqlite.zip'

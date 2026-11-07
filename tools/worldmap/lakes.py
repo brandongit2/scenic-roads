@@ -6,7 +6,7 @@
 #   python3 -I tools/worldmap/lakes.py [ne_10m_lakes.zip] [out.json]
 #
 # Defaults: the NAS's zip (read only) and web/work/lakes.json. The page serves the file from the
-# pipeline binary (crates/pipeline/src/coord/mod.rs include_bytes), so rebuild after a change.
+# pipeline binary (crates/agentcore/src/coord/mod.rs include_bytes), so rebuild after a change.
 import struct, sys, math, json, os, zipfile
 
 NAS = '/Volumes/personal/projects/scenic-roads/sources/fetched/natural-earth-lakes-10m/ne_10m_lakes.zip'

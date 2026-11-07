@@ -4,11 +4,11 @@
 // only), and a right-click, or the panel's "⋯", the menu: the state in a line, this Mac's downloads
 // and build caches, and the controls below. Its timers run in
 // the run loop's common modes, so the polls and the icon go on while a menu is
-// open. It asks `scenic menu` (crates/pipeline/src/menu.rs, the installed app's), which answers
+// open. It asks `scenic menu` (crates/agentcore/src/menu.rs, the installed app's), which answers
 // from this Mac's disk alone, never the NAS (docs/roles.md §3.4): this Mac's own agent's status,
 // and on a member the lead's line as the lead's last beat answer carried it. This Mac's own agent's status, read
 // from its file, says what its build caches hold, whether they can be cleared now,
-// and the last clears (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
+// and the last clears (crates/agentcore/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear what later jobs copy back cheaply from the NAS, Clear Caches Deeply that
 // and what's costly to make again, at any moment; and this Mac's memory against its floor, as its agent says it (the brake
 // first when it's on). (The disk room target and the memory floor are set on the build page.) With
@@ -65,14 +65,14 @@ func fetchReply(timeout: TimeInterval = 10) -> Reply? {
 }
 /// Without a heartbeat for this long, a Mac counts as out of touch (asleep, off, away, or its
 /// agent stuck): the agent's own threshold, served in its status (`out_of_touch_s`, task #846:
-/// crates/pipeline/src/pool/beat.rs OUT_OF_TOUCH_S), this from an agent before it.
+/// crates/agentcore/src/pool/beat.rs OUT_OF_TOUCH_S), this from an agent before it.
 let outOfTouchDefault = 600
 
 /// The out-of-touch threshold of an answer's status.
 func outOfTouch(_ r: Reply?) -> Int { r?.status?.out_of_touch_s ?? outOfTouchDefault }
 
-// What `scenic menu` answers (crates/pipeline/src/menu.rs): this Mac's agent's status
-// (crates/pipeline/src/agent/mod.rs Status), and on a member its lead's line.
+// What `scenic menu` answers (crates/agentcore/src/menu.rs): this Mac's agent's status
+// (crates/agentcore/src/agent/mod.rs Status), and on a member its lead's line.
 struct Reply: Decodable {
     let status: Status?
     let now: Int
@@ -86,25 +86,25 @@ struct Reply: Decodable {
     let lead: LeadView?
 }
 
-/// The lead's line as this member last heard it (crates/pipeline/src/coord/beats.rs LeadView):
+/// The lead's line as this member last heard it (crates/agentcore/src/coord/beats.rs LeadView):
 /// when the lead last answered its beat (0: not yet), and its line (none from an older lead).
 struct LeadView: Decodable {
     let at: Int
     let lead: LeadLine?
 }
 
-/// The build in a line, from the lead (crates/pipeline/src/coord/held.rs LeadLine): its Mac, its
+/// The build in a line, from the lead (crates/agentcore/src/coord/held.rs LeadLine): its Mac, its
 /// app, the build's state as it says it, the build's pause.
 struct LeadLine: Decodable {
     let host: String
     let app: String
     let said: Verdict
     let pause: PauseInfo?
-    /// What needs a look, as the lead's status flags it (crates/pipeline/src/agent/flags.rs).
+    /// What needs a look, as the lead's status flags it (crates/agentcore/src/agent/flags.rs).
     let flags: [Flag]?
 }
 
-/// A flag of the lead's status (crates/pipeline/src/agent/flags.rs Flag): "idle", "stuck", "slow" or "stale", the
+/// A flag of the lead's status (crates/agentcore/src/agent/flags.rs Flag): "idle", "stuck", "slow" or "stale", the
 /// Mac it's about, what it says.
 struct Flag: Decodable {
     let kind: String
@@ -156,13 +156,13 @@ struct Status: Decodable {
     /// The build's pause, while it's paused (agents from 2026-10-05 on).
     let pause: PauseInfo?
     /// The regions (their names), and when the build will be done and the map next updated (the
-    /// forecast: crates/pipeline/src/agent/forecast.rs; agents from 2026-10-05 on).
+    /// forecast: crates/agentcore/src/agent/forecast.rs; agents from 2026-10-05 on).
     let regions: [Recipe]?
     let forecast: Forecast?
-    /// What needs a look (the lead's: crates/pipeline/src/agent/flags.rs).
+    /// What needs a look (the lead's: crates/agentcore/src/agent/flags.rs).
     let flags: [Flag]?
     /// The owner's asks this Mac passed on that the lead refused, not yet seen on the build page
-    /// (crates/pipeline/src/agent/answered.rs; agents from task #922 on).
+    /// (crates/agentcore/src/agent/answered.rs; agents from task #922 on).
     let refused: [RefusedAsk]?
 
     /// Its running jobs, every slot's in order (`jobs`, else the old fields).
@@ -170,7 +170,7 @@ struct Status: Decodable {
     /// The gate's units (docs/inputs.md §4.7; agents from #134 on): a held one badges the icon.
     let inputs: [InputUnit]?
     /// Its Mac's own pause's stage, its state in a word and a line, and the out-of-touch threshold,
-    /// as its agent says them (task #846: crates/pipeline/src/agent/mod.rs Status::say); the menu
+    /// as its agent says them (task #846: crates/agentcore/src/agent/mod.rs Status::say); the menu
     /// prints them, working none of them out.
     let hold: HoldStage?
     let verdict: Verdict?
@@ -186,7 +186,7 @@ struct Status: Decodable {
     let loop_phase: String?
 
     /// Its verdict; an agent's before #846 (a rollout: the pool's Macs update one by one), worked
-    /// out from its older fields as crates/pipeline/src/agent/mod.rs Status::verdict_of does.
+    /// out from its older fields as crates/agentcore/src/agent/mod.rs Status::verdict_of does.
     var said: Verdict {
         if let v = verdict { return v }
         let jobs = allJobs
@@ -204,7 +204,7 @@ struct Status: Decodable {
     }
 }
 
-/// An ask the lead refused (crates/pipeline/src/agent/answered.rs Answered): what was asked, when,
+/// An ask the lead refused (crates/agentcore/src/agent/answered.rs Answered): what was asked, when,
 /// and the lead's reason.
 struct RefusedAsk: Decodable {
     let what: String
@@ -224,7 +224,7 @@ struct HoldStage: Decodable {
     let said: String
 }
 
-/// A Mac's state as its agent says it (crates/pipeline/src/agent/mod.rs Verdict): a word and a line.
+/// A Mac's state as its agent says it (crates/agentcore/src/agent/mod.rs Verdict): a word and a line.
 struct Verdict: Decodable {
     let state: String
     let said: String
@@ -300,7 +300,7 @@ struct Own: Decodable {
     let app: String?
     let beat: Int
     let caches: Caches?
-    /// This Mac in the pool, while it's on (crates/pipeline/src/agent/mod.rs PoolView).
+    /// This Mac in the pool, while it's on (crates/agentcore/src/agent/mod.rs PoolView).
     let pool: OwnPool?
     /// This Mac's own pause's stage and the out-of-touch threshold (task #846).
     let hold: HoldStage?
@@ -329,7 +329,7 @@ struct Own: Decodable {
     }
 }
 
-/// This Mac's memory against its floor (crates/pipeline/src/agent/memguard.rs View, task #932): its
+/// This Mac's memory against its floor (crates/agentcore/src/agent/memguard.rs View, task #932): its
 /// line as the agent words it (available, what compressing frees among it, the floor, what's
 /// reserved, why no job starts: the brake, the floor, a give-back's cool-down),
 /// the menu printing it as said; and the memory brake, when it's on.
@@ -339,7 +339,7 @@ struct OwnMemory: Decodable {
 }
 
 /// This Mac in the pool: its member, and the pool as the controls show it (docs/pool.md §10, §11;
-/// crates/pipeline/src/agent/lead.rs View; agents from 2026-10-08 on).
+/// crates/agentcore/src/agent/lead.rs View; agents from 2026-10-08 on).
 struct OwnPool: Decodable {
     let member: String
     let lead: PoolView?
@@ -414,7 +414,7 @@ func poolLines(_ v: PoolView, now: Int) -> [Line] {
     return out
 }
 
-/// This Mac's build caches (crates/pipeline/src/agent/room.rs Caches): what a clear and a deep
+/// This Mac's build caches (crates/agentcore/src/agent/room.rs Caches): what a clear and a deep
 /// clear would free (bytes, and cache by cache with how each comes back), why they can't be cleared
 /// now (none: they can), and the last clear of each level.
 struct Caches: Decodable {
@@ -503,9 +503,9 @@ struct Helper: Decodable {
 }
 
 /// A Mac's loop stuck (task #899): its round older than its agent's own watchdog threshold
-/// (`loop_stuck_s`, crates/pipeline/src/agent/beat.rs LOOP_STUCK), with the phase it's in; nil
+/// (`loop_stuck_s`, crates/agentcore/src/agent/beat.rs LOOP_STUCK), with the phase it's in; nil
 /// while it isn't, and from an agent that doesn't say both (before #871 and #899). Its status still
-/// beats on a timer of its own (crates/pipeline/src/agent/beat.rs), so it isn't out of touch. The
+/// beats on a timer of its own (crates/agentcore/src/agent/beat.rs), so it isn't out of touch. The
 /// age as of `now`: as the beat (at `beat`) said it, plus the time since.
 func loopStuck(age: Int?, limit: Int?, phase: String?, beat: Int, now: Int) -> String? {
     guard let said = age, let limit = limit, limit > 0 else { return nil }
@@ -1499,7 +1499,7 @@ func cachesItems(_ own: Own?, now: Int, asked: Bool) -> [(title: String, enabled
     }
 }
 
-/// The ask's file as the menu bar writes it (crates/pipeline/src/agent/room.rs request_clear,
+/// The ask's file as the menu bar writes it (crates/agentcore/src/agent/room.rs request_clear,
 /// ClearRequest). Pinned on both sides by tools/status/test/clear-request-*.json (selfTest,
 /// room.rs's tests).
 func clearRequestJSON(by: String, at: Int, deep: Bool) -> Data {
@@ -1897,7 +1897,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alt.toolTip = "Stopped and given back as with Cancel, and held until the lead runs a newer app than this one"
             m.addItem(alt)
         }
-        // This Mac's build caches, cleared on an ask to its agent (crates/pipeline/src/agent/
+        // This Mac's build caches, cleared on an ask to its agent (crates/agentcore/src/agent/
         // room.rs), which does it at once, to the item's level, and says what it freed and kept.
         for c in cachesItems(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
             let it = NSMenuItem(title: c.title, action: c.enabled ? #selector(clearCaches) : nil, keyEquivalent: "")
