@@ -365,20 +365,16 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 
 /// `inputs` rerun (in time order, each read as it comes: one that doesn't read is skipped, said)
 /// and archived as the lead archives its forecasts (`Entry::of`), as forecast code `code` made them
-/// (3 to the code now): each step's pace (`forecast::step_pace`) from the history before it and the
-/// costs the records before it (and it) noted, each lane's job under way held to its step's
-/// longest of late (`forecast::cap_busy`; a record holds its lanes' `busy_s` capped already), and
-/// the build's pause (`forecast::paused`) read from the history. Code 4 also each Mac's pace at
-/// each step from the history (crate::paces: the scheduler's, its costs and its lanes' times by it,
-/// `repace`); before it, none. Code 5 also each Mac's room at its sustained best (`Rooms`, from the
-/// asks the inputs before it recorded) and each Mac's slots its lanes (`unhold`: no hold of the day
-/// before); before it, each Mac's room as its last ask said and the record's lanes (a record before
-/// code 3, its lanes slowed by its Mac's hold of the day before as it was made). Code 6 also has a
-/// target wait through a read built as it stands for what that read waits on, as the plan holds it
-/// (`Input::code`: crate::agent::forecast's `Waits`); before it, for the reads listed alone. Code 7
-/// also has each job under way weigh what its beats said it moved (a record of task #993 on:
-/// `Leased::nas_rate`) and the NAS's own gate open once the jobs out then end; before it, its targets'
-/// predicted rates (`nas_rate` cleared) and the gate as recorded for the whole run.
+/// (`VERSION`, or the one before it, `Input::code`): each step's pace (`forecast::step_pace`) from the
+/// history before it and the costs the records before it (and it) noted, each lane's job under way
+/// held to its step's longest of late (`forecast::cap_busy`; a record holds its lanes' `busy_s` capped
+/// already), the build's pause (`forecast::paused`) and each Mac's pace at each step (crate::paces: the
+/// scheduler's, its costs and its lanes' times by it, `repace`) read from the history, each Mac's room
+/// at its sustained best (`Rooms`, from the asks the inputs before it recorded) and each Mac's slots
+/// its lanes (`unhold`: no hold of the day before). Code 7 also has each job under way weigh what its
+/// beats said it moved (a record of task #993 on: `Leased::nas_rate`) and the NAS's own gate open once
+/// the jobs out then end; code 6, its targets' predicted rates (`nas_rate` cleared) and the gate as
+/// recorded for the whole run.
 pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut rooms = Rooms::default();
@@ -396,21 +392,15 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
         inp.step_pace.clear();
         noted.note(inp);
         rooms.note(inp);
-        rooms.set(inp, code >= 5);
-        if code >= 5 {
-            unhold(inp);
-        }
+        rooms.set(inp);
+        unhold(inp);
         inp.paused = forecast::paused(events, inp.now);
         if code < 7 {
             for l in inp.sched.iter_mut().flat_map(|s| &mut s.leases) {
                 l.nas_rate = None;
             }
         }
-        if code >= 4 {
-            repace(inp, events);
-        } else if let Some(st) = inp.sched.as_mut() {
-            st.paces = Default::default();
-        }
+        repace(inp, events);
         let paces = inp.sched.as_ref().map(|s| s.paces.clone()).unwrap_or_default();
         let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();
         let speed = |w: &str, step: &str| {
@@ -488,20 +478,16 @@ impl Rooms {
         }
     }
 
-    /// Each of `inp`'s asks' room at its sustained best (`Capacity::best`), when `best` and none was
-    /// said: over the inputs noted to it (`forecast::sustained`), each standing until the next. An input is
+    /// Each of `inp`'s asks' room at its sustained best (`Capacity::best`), when none was said: over
+    /// the inputs noted to it (`forecast::sustained`), each standing until the next. An input is
     /// archived every `fcinputs::EVERY_S` at most (the first forecast after), so two more
     /// than twice that apart had one lost between them, and the run breaks there (the live one reads
-    /// its Mac's minute samples). Not `best`: none, its room as it asked.
-    fn set(&self, inp: &mut forecast::Input, best: bool) {
+    /// its Mac's minute samples).
+    fn set(&self, inp: &mut forecast::Input) {
         let now = inp.now;
         let Some(st) = inp.sched.as_mut() else { return };
         for w in st.workers.iter_mut() {
             let Some(c) = w.ask.cap.as_mut() else { continue };
-            if !best {
-                c.best = None;
-                continue;
-            }
             let Some(seen) = self.seen.get(&w.ask.worker) else { continue };
             let pts =
                 |k: usize| -> Vec<(u64, f64)> { seen.iter().map(|x| (x.0, if k == 0 { x.1 } else { x.2 })).collect() };
@@ -1073,14 +1059,15 @@ mod tests {
             let p = es[1].placed();
             (es[1].code, p[0].until - p[0].from)
         };
-        assert_eq!(span(&replay(&records, &es, 2)), (2, 300));
-        assert_eq!(span(&replay(&records, &es, 3)), (3, 300));
+        let (old, new) = (forecast::VERSION - 1, forecast::VERSION);
+        assert_eq!(span(&replay(&records, &es, old)), (old, 300));
+        assert_eq!(span(&replay(&records, &es, new)), (new, 300));
         // Paused by then (the history's pause, for every code): nothing placed.
         let mut paused = es.clone();
         paused.push(Event { t: 15_000, kind: "pause".into(), ..Default::default() });
-        let new = replay(&records, &paused, 3);
-        assert!(new[1].placed().is_empty() && new[1].why.as_deref() == Some(forecast::PAUSED));
-        assert_eq!(new[0].placed().len(), 3);
+        let replayed = replay(&records, &paused, new);
+        assert!(replayed[1].placed().is_empty() && replayed[1].why.as_deref() == Some(forecast::PAUSED));
+        assert_eq!(replayed[0].placed().len(), 3);
         // The backtest: the second record the test set's.
         let b = backtest(&records, &es, 0, 30_000, 15_000);
         assert_eq!((b.train[0].forecasts, b.test[1].forecasts), (1, 1));

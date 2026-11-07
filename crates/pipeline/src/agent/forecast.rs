@@ -926,12 +926,11 @@ enum Phase {
 /// read whole as one set in `groups`, shared by every item reading it (`whole`: by step, the set's
 /// length when made and its index; task #867: 1,328 peaks each listing the 568 candidates were
 /// 0.75M of the kept waits' 1.07M deps), and what a target read that isn't listed waits on
-/// (code 6 on, `passes`: `held`, by its step and target's hash, `held_key`; those that wait on
+/// (`held`, by its step and target's hash, `held_key`; those that wait on
 /// nothing in `free`: 6 Nov's record had some 1 M slope-deep parts the slope-hi tiles read, 2,300
 /// reads waiting in all; and each step's `may_wait`, with the items listed when it was worked out).
 struct Waits<'a> {
     along: &'a crate::agent::steps::Along,
-    passes: bool,
     whole: BTreeMap<&'static str, (usize, usize)>,
     held: std::collections::HashMap<u64, Deps>,
     free: std::collections::HashSet<u64>,
@@ -954,7 +953,6 @@ impl<'a> Waits<'a> {
     fn new(inp: &'a Input) -> Self {
         Waits {
             along: &inp.along,
-            passes: inp.code >= 6,
             whole: BTreeMap::new(),
             held: Default::default(),
             free: Default::default(),
@@ -977,14 +975,14 @@ impl<'a> Waits<'a> {
             match r {
                 ReadTarget::One(s, u) => match by.of.get(&(s.to_string(), u.clone())) {
                     Some(&i) => deps.push(i),
-                    None if passes && self.passes => {
+                    None if passes => {
                         let (d, g) = self.held(by, groups, s, u);
                         deps.extend(d);
                         gs.extend(g);
                     }
                     None => {}
                 },
-                ReadTarget::Whole(s) if passes && self.passes => self.whole_left(by, groups, s, &mut gs),
+                ReadTarget::Whole(s) if passes => self.whole_left(by, groups, s, &mut gs),
                 ReadTarget::Whole(s) => gs.extend(self.group(by, groups, s)),
             }
         }
@@ -4188,9 +4186,6 @@ mod tests {
         let ((fl, _), (_, prep)) = (at("bldfield-lo", "3/0/0").unwrap(), at("bldprep", "6/2/2").unwrap());
         let ((root, _), (_, depth)) = (at("depth-root", "depth-root").unwrap(), at("depth", "6/1/1").unwrap());
         assert!(fl >= prep && root >= depth, "{fl} {prep} {root} {depth}");
-        // Code 5: for the reads listed alone.
-        let old = Input { code: 5, ..inp.clone() };
-        assert!(waits(&old, "bldfield-lo", "3/0/0").is_empty() && waits(&old, "depth-root", "depth-root").is_empty());
     }
 
     /// Docs/readiness.md §7 (supersedes task #867's held-chain guard): the forecast waits for what
