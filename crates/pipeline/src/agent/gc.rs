@@ -392,11 +392,30 @@ pub struct Verified {
     pub stalled: Option<String>,
 }
 
-/// How many uploads one call on the NAS checks (crate::out::verify; a safe point between calls).
-/// Its command line names each (a pending name 50 bytes, at most 120 on 7 Nov: 500 of the longest
-/// are 62 KB, half the 128 KB a single argument may take on the NAS's Linux); each a stat and a
-/// block read there, so a call takes seconds.
+/// How many uploads one call on the NAS checks at most (crate::out::verify; a safe point between
+/// calls): each a stat and a block read there, so a call takes seconds. Its command line names
+/// each, so a batch also ends before its quoted names pass `out::NAS_NAMES_MAX` (`verify_batches`).
 const VERIFY_CHUNK: usize = 500;
+
+/// `todo` in batches of at most `VERIFY_CHUNK` names, each within `crate::out::NAS_NAMES_MAX`
+/// bytes quoted and joined (one name longer than that alone in its batch, which `verify` refuses).
+fn verify_batches(todo: &[(String, Option<u64>)]) -> Vec<&[(String, Option<u64>)]> {
+    let mut batches = Vec::new();
+    let (mut start, mut len) = (0, 0);
+    for (i, (c, _)) in todo.iter().enumerate() {
+        // (Its quoted name and the space before the next.)
+        let n = crate::out::sh_quoted(c).len() + 1;
+        if i > start && (i - start == VERIFY_CHUNK || len + n > crate::out::NAS_NAMES_MAX + 1) {
+            batches.push(&todo[start..i]);
+            (start, len) = (i, 0);
+        }
+        len += n;
+    }
+    if start < todo.len() {
+        batches.push(&todo[start..]);
+    }
+    batches
+}
 
 /// Checks the records' unverified uploads the build reads (`read_by`) on the NAS itself, there at
 /// the records' size (crate::out::verify: `ssh`, `nas_root` the project folder as the NAS sees it),
@@ -425,7 +444,7 @@ pub fn verify_pending(
         return Ok(v);
     }
     let mut out = crate::out::open(root, scratch, STEP)?;
-    for chunk in todo.chunks(VERIFY_CHUNK) {
+    for chunk in verify_batches(&todo) {
         let batch: BTreeMap<String, Option<u64>> = chunk.iter().cloned().collect();
         let (ok, bad) = match crate::out::verify(ssh, nas_root, &batch) {
             Ok(r) => r,
@@ -2538,8 +2557,9 @@ mod tests {
         let root = d.path().join("nas");
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::create_dir_all(root.join("base")).unwrap();
+        // (Task #1001 review: an odd name, a space and a quote in it, read back from `wc`'s lines.)
         let (good, no_size, short, gone) = (
-            "base/6-1-1.1111111111111111.sect",
+            "base/6-1-1 it's.1111111111111111.sect",
             "base/6-1-4.4444444444444444.sect",
             "base/6-1-2.2222222222222222.sect",
             "base/6-1-3.3333333333333333.sect",
@@ -2597,6 +2617,26 @@ mod tests {
         assert_eq!(YIELD_CHECKS.get() - before, 2, "a safe point after each of its two batches");
         let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
         assert!(p.is_empty(), "{p:?}");
+    }
+
+    /// Task #1001 review: a batch ends at `VERIFY_CHUNK` names or before its quoted names pass what
+    /// one command takes on the NAS, whichever comes first; none is empty, and all are covered.
+    #[test]
+    fn verify_batches_end_at_their_count_or_their_bytes() {
+        let short: Vec<(String, Option<u64>)> = (0..VERIFY_CHUNK * 2 + 1).map(|i| (format!("a/{i}"), None)).collect();
+        let b = verify_batches(&short);
+        assert_eq!(b.iter().map(|b| b.len()).collect::<Vec<_>>(), [VERIFY_CHUNK, VERIFY_CHUNK, 1]);
+        // (Names of quotes, each four times its length quoted: the bytes end the batch first.)
+        let long: Vec<(String, Option<u64>)> =
+            (0..VERIFY_CHUNK).map(|i| (format!("{i:03}{}", "'".repeat(200)), None)).collect();
+        let b = verify_batches(&long);
+        assert!(b.len() > 1 && b.iter().all(|b| !b.is_empty()));
+        assert_eq!(b.iter().map(|b| b.len()).sum::<usize>(), long.len());
+        for b in &b {
+            let joined = b.iter().map(|(c, _)| crate::out::sh_quoted(c)).collect::<Vec<_>>().join(" ");
+            assert!(joined.len() <= crate::out::NAS_NAMES_MAX, "{}", joined.len());
+        }
+        assert!(verify_batches(&[]).is_empty());
     }
 
     /// A call on the NAS that hangs is stopped at its deadline (that child alone), said in `stalled`;

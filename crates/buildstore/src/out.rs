@@ -913,6 +913,16 @@ fn output_within(
     Ok(std::process::Output { status, stdout, stderr })
 }
 
+/// The most bytes of quoted names one `verify` call sends (`sh_quoted`, joined by spaces): the shell
+/// on the NAS takes the whole command as one argument, which Linux holds to 128 KB
+/// (MAX_ARG_STRLEN), and the folder and the rest of the command fit in what's left.
+pub const NAS_NAMES_MAX: usize = 96 * 1024;
+
+/// `s` quoted for the NAS's shell: in single quotes, each of its own as `'\''`.
+pub fn sh_quoted(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Checks unverified uploads `uploads` (content name → its size by the records; None where they hold
 /// none) on the NAS itself, by one call over SSH (`ssh` runs a command on the NAS; `nas_root` is the
 /// project folder as the NAS sees it): each file's size as the NAS has it (`wc -c`, which takes a
@@ -935,9 +945,16 @@ pub fn verify(
     crate::nasssh::ssh_opened(ssh)?;
     let mut cmd = store::spawn::command(ssh[0]);
     cmd.args(&ssh[1..]);
-    let quoted: Vec<String> = uploads.keys().map(|n| format!("'{}'", n.replace('\'', "'\\''"))).collect();
+    let quoted: Vec<String> = uploads.keys().map(|n| sh_quoted(n)).collect();
+    let names = quoted.join(" ");
+    anyhow::ensure!(
+        names.len() <= NAS_NAMES_MAX,
+        "{} uploads' names are {} bytes, over the {NAS_NAMES_MAX} one call takes",
+        uploads.len(),
+        names.len()
+    );
     // (A file not there: wc says so on stderr and goes on; it's among those that don't match.)
-    cmd.arg(format!("cd '{nas_root}' && {{ wc -c -- {} 2>/dev/null; true; }}", quoted.join(" ")));
+    cmd.arg(format!("cd '{nas_root}' && {{ wc -c -- {names} 2>/dev/null; true; }}"));
     // (The call itself bounded too: its authentication, outside the probe's, may stall on the SSH
     // agent again, and the NAS may hang; past `nas_call_deadline` it is stopped.)
     let deadline = nas_call_deadline(testing());
@@ -976,7 +993,7 @@ pub fn remove_on_nas(ssh: &[&str], nas_root: &str, dirs: &[&str]) -> Result<()> 
     crate::nasssh::ssh_opened(ssh)?;
     let mut cmd = store::spawn::command(ssh[0]);
     cmd.args(&ssh[1..]);
-    let quoted: Vec<String> = dirs.iter().map(|d| format!("'{}'", d.replace('\'', "'\\''"))).collect();
+    let quoted: Vec<String> = dirs.iter().map(|d| sh_quoted(d)).collect();
     cmd.arg(format!("cd '{nas_root}' && rm -rf -- {}", quoted.join(" ")));
     let out = output_within(&mut cmd, nas_call_deadline(testing()), nas_call_grace(testing()))
         .map_err(|e| anyhow::Error::new(e).context(format!("ssh to the NAS removing {}", dirs.join(", "))))?;

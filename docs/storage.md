@@ -78,7 +78,7 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   (Btrfs, data checksums on: no `C` attribute on the share) checks every block it reads, so a
   reader of a damaged file gets an error, never other bytes. What is left is whether the file is
   still there, whole (task #1001: hashed on the NAS, 57,444 pending uploads of 2.2 TB or more,
-  most of a week's writes, kept its disks at the whole NAS budget for hours). 500 a call, each held
+  most of a week's writes, kept its disks at the whole NAS budget for hours). 500 a call at most, fewer when their quoted names would pass 96 KB (`out::NAS_NAMES_MAX`: the NAS's shell takes the command as one argument, 128 KB at most), each held
   to a deadline of 3 minutes (past it the call is stopped, SIGTERM, SIGKILL 10 s later, and the run
   ends there, said in GC's warnings, the rest left to the next duties' pass); each call's result
   saved and a safe point after it, so a run stopped midway keeps what it checked; each file looked
