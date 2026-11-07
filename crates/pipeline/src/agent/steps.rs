@@ -315,23 +315,50 @@ pub fn read_targets(step: &str, t: &str, along: Option<&Along>) -> Vec<ReadTarge
     v
 }
 
-/// `read_targets`, each with whether a wait passes on through it (`readiness`): a target read
-/// that isn't left still holds its reader while it waits itself (`held`: a `Read::Targets` of a
-/// grain that `passes_on`, a `Read::Mids`), and so does a step read whole none of whose targets is
-/// left while anything it reads is (`whole_left`: a `Read::Whole` of a grain that passes on); an
-/// `Along` or `Built` read holds it only while left. Sorted, no repeats.
+/// `read_targets`, each with whether a wait passes on through it (`passes_on`): sorted, no
+/// repeats.
 pub fn read_targets_passing(step: &str, t: &str, along: Option<&Along>) -> Vec<(ReadTarget, bool)> {
-    let mut v: Vec<(ReadTarget, bool)> = Vec::new();
+    let mut v: Vec<(ReadTarget, bool)> =
+        declared(step, t, along).into_iter().map(|(r, passes, _)| (r, passes)).collect();
+    v.dedup();
+    v
+}
+
+/// Whether a wait passes on through read `r` (`readiness`): a target read that isn't left still
+/// holds its reader while it waits itself (`held`: a `Read::Targets` of a grain that `passes_on`,
+/// a `Read::Mids`), and so does a step read whole none of whose targets is left while anything it
+/// reads is (`whole_left`: a `Read::Whole` of a grain that passes on); an `Along` or `Built` read
+/// holds it only while left. The one rule `readiness` and the forecast (crate::agent::forecast's
+/// `Waits`, through `read_targets_passing` and `read_steps`) wait by.
+fn passes_on(r: &Read) -> bool {
+    match *r {
+        Read::Targets { grain, .. } | Read::Whole { grain, .. } => grain.passes_on(),
+        Read::Mids { .. } => true,
+        Read::Along { .. } | Read::Built { .. } | Read::Input { .. } => false,
+    }
+}
+
+/// Target `t`'s declared reads of other steps' targets (`readiness`'s list, its reads along its
+/// long ways from `along`): each with whether a wait passes on through it (`passes_on`) and
+/// whether it's of a mid (`Read::Mids`: left by `View::mid_left`). Sorted, no repeats.
+fn declared(step: &str, t: &str, along: Option<&Along>) -> Vec<(ReadTarget, bool, bool)> {
+    let mut v: Vec<(ReadTarget, bool, bool)> = Vec::new();
     for r in row(step).map_or(&[][..], |r| r.reads) {
+        let passes = passes_on(r);
         match *r {
-            Read::Targets { step, of, grain } => {
-                v.extend(of(t).into_iter().map(|u| (ReadTarget::One(step, u), grain.passes_on())))
+            Read::Targets { step, of, .. } => {
+                v.extend(of(t).into_iter().map(|u| (ReadTarget::One(step, u), passes, false)))
             }
-            Read::Mids { step, of, .. } => v.extend(of(t).into_iter().map(|u| (ReadTarget::One(step, u), true))),
+            Read::Mids { step, of, .. } => {
+                v.extend(of(t).into_iter().map(|u| (ReadTarget::One(step, u), passes, true)))
+            }
             Read::Along { step: s, .. } | Read::Built { step: s, .. } => v.extend(
-                along.map_or(&[][..], |a| a.get(step, t, s)).iter().map(|u| (ReadTarget::One(s, u.clone()), false)),
+                along
+                    .map_or(&[][..], |a| a.get(step, t, s))
+                    .iter()
+                    .map(|u| (ReadTarget::One(s, u.clone()), passes, false)),
             ),
-            Read::Whole { step, grain } => v.push((ReadTarget::Whole(step), grain.passes_on())),
+            Read::Whole { step, .. } => v.push((ReadTarget::Whole(step), passes, false)),
             Read::Input { .. } => {}
         }
     }
@@ -340,18 +367,20 @@ pub fn read_targets_passing(step: &str, t: &str, along: Option<&Along>) -> Vec<(
     v
 }
 
-/// The steps `step`'s row reads targets of, each with whether a wait passes on through it (as
-/// `read_targets_passing` says of its targets). Those that pass on are what `whole_left` reads on
-/// from `step` read whole: any of their targets left holds what reads `step` whole while none of
-/// `step`'s own is. Sorted, no repeats.
+/// The steps `step`'s row reads targets of, each with whether a wait passes on through it
+/// (`passes_on`). Those that pass on are what `whole_left` reads on from `step` read whole: any of
+/// their targets left holds what reads `step` whole while none of `step`'s own is. Sorted, no
+/// repeats.
 pub fn read_steps(step: &str) -> Vec<(&'static str, bool)> {
     let mut v: Vec<(&'static str, bool)> = row(step)
         .map_or(&[][..], |r| r.reads)
         .iter()
         .filter_map(|r| match *r {
-            Read::Targets { step: s, grain, .. } | Read::Whole { step: s, grain } => Some((s, grain.passes_on())),
-            Read::Mids { step: s, .. } => Some((s, true)),
-            Read::Along { step: s, .. } | Read::Built { step: s, .. } => Some((s, false)),
+            Read::Targets { step: s, .. }
+            | Read::Whole { step: s, .. }
+            | Read::Mids { step: s, .. }
+            | Read::Along { step: s, .. }
+            | Read::Built { step: s, .. } => Some((s, passes_on(r))),
             Read::Input { .. } => None,
         })
         .collect();
@@ -363,30 +392,20 @@ pub fn read_steps(step: &str) -> Vec<(&'static str, bool)> {
 /// Whether target `t` of `step` may run in `view` (docs/readiness.md §3): `Waits` while a target or
 /// step it reads is left or itself waits for one (`held`, `whole_left`), else `Unknown` while an input it reads can't be worked out, else `Yes`.
 pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
-    let reads = row(step).map_or(&[][..], |r| r.reads);
     let mut waits: Vec<(&'static str, String)> = Vec::new();
-    for r in reads {
-        match *r {
-            Read::Targets { step, of, grain } => waits.extend(
-                of(t)
-                    .into_iter()
-                    .filter(|u| view.left(step, u) || (grain.passes_on() && held(step, u, view)))
-                    .map(|u| (step, u)),
-            ),
-            Read::Mids { step, of, .. } => waits
-                .extend(of(t).into_iter().filter(|u| view.mid_left(step, u) || held(step, u, view)).map(|u| (step, u))),
-            Read::Along { step: s, .. } | Read::Built { step: s, .. } => waits.extend(
-                view.along()
-                    .map_or(&[][..], |a| a.get(step, t, s))
-                    .iter()
-                    .filter(|u| view.left(s, u))
-                    .map(|u| (s, u.clone())),
-            ),
-            Read::Whole { step, grain } => waits.extend(
-                (view.any_left(step) || (grain.passes_on() && whole_left(step, view)))
-                    .then(|| (step, step.to_string())),
-            ),
-            Read::Input { .. } => {}
+    for (r, passes, mid) in declared(step, t, view.along()) {
+        match r {
+            ReadTarget::One(s, u) => {
+                let left = if mid { view.mid_left(s, &u) } else { view.left(s, &u) };
+                if left || (passes && held(s, &u, view)) {
+                    waits.push((s, u));
+                }
+            }
+            ReadTarget::Whole(s) => {
+                if view.any_left(s) || (passes && whole_left(s, view)) {
+                    waits.push((s, s.to_string()));
+                }
+            }
         }
     }
     waits.sort_unstable();
@@ -394,7 +413,8 @@ pub fn readiness(step: &str, t: &str, view: &dyn View) -> Ready {
     if !waits.is_empty() {
         return Ready::Waits(waits);
     }
-    let unknown: Vec<&'static str> = reads
+    let unknown: Vec<&'static str> = row(step)
+        .map_or(&[][..], |r| r.reads)
         .iter()
         .filter_map(|r| match *r {
             Read::Input { name, .. } => (!view.known(name, t)).then_some(name),

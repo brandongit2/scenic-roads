@@ -91,9 +91,10 @@ Callers, each supplying only its `View`:
 | the forecast (`forecast::items`) | not given its own `View`: it calls `read_targets_passing` (with its input's `along`, the plan's) and maps each to an item index (a `Whole` read to one shared group per step, as #867's `shared_waits`); a read not in the plan that passes waits on, to what it waits on in turn (`forecast::Waits`, the planner's `held` and `whole_left`) | `chain_deps`, `UNITS_NEED`, `reads_terrain`, the held-chain guard |
 | the page and `scenic status` | the planner's | `wait_note`'s fallbacks |
 
-The planner and the forecast agree by construction: both enumerate the same declared reads; the
-forecast's deps are the reads still in the plan, and through a read not in it that passes waits on
-(3b below), what that read waits on (task #988: until then the forecast stopped at such a read, and
+The planner and the forecast agree by construction: both enumerate the same declared reads
+(`steps::readiness` and `read_targets_passing` both list them through one function, whether a wait
+passes on through each read one rule, `steps::passes_on`); the forecast's deps are the reads still
+in the plan, and through a read not in it that passes waits on (3b below), what that read waits on (task #988: until then the forecast stopped at such a read, and
 ran at once the depth tiles the plan held for the terrain under their lakes' estimates). The #867 guard existed because the planner held
 chain jobs for reasons it never declared. Under this design the planner may hold a target only
 through `readiness`, and a test enforces that (§7). The guard and its "offers lack it" inference go.
