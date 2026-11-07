@@ -1019,9 +1019,19 @@ commit; re-exports at the old paths as before.
           `Default` of `Sched` and `PageView`, no plan being a default.
         - **What's left of the runtime's names:** the runtime's lines naming the plan's modules
           (`build::`, `steps::`, `idents::`, `tiles::`; comments aside, tests and plan.rs included)
-          RUNTIME_COUNT. A family's name in non-test runtime code: gc's depth layers
+          145 → 26: 25 in tests (they go at 6f3), and `out::open`'s write sets, which pipeline keeps (6f4). A family's name in non-test runtime code: gc's depth layers
           (`DepthKeep::orphan`), left for 6f4, as #883 was changing gc.rs.
-        - **Check of the trait** (FROZEN_RESULT).
+        - **Check of the trait** (7 Nov, the lead's term 771 on the M4, test profile; main at 72b6eb58
+          against the trait on it, each pair side by side, a run's own folder named alike before
+          comparing): the same bytes on the nine states the merge's check used, 1.7 KB to 1.0 MB,
+          each edited from that copy's brief and records: as it stands (43 jobs, 11 waits, 9 offers); the
+          outlines with work, held; the outlines unmade, 5 failures, held; every worldwide step
+          unmade, a set, the buildings' index and the heritage input gone, the outlines failed 3
+          times, names-to-do due; the lake fill failed 3 times, the languages and translations gone,
+          the reaches unreadable; the sources gone (both holds), the reaches damaged, names-to-do's
+          gate shut; no pass, names-to-do due and shut; a pass with no outputs yet. A run's most was
+          4.8 GB (phys_footprint). The forecast is outside this check (its thread parked): its
+          tests cover it.
         Moving the planner up with the plan instead was
       weighed and is the larger cut: its pass names ~150 of the runtime's items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
       API. `timetables::View` went
