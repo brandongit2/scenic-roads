@@ -3,8 +3,9 @@
 **Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
 (`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a to 6d (§6, 6c
 `crates/coordwire`, 6d `crates/inputs`) and 6e (`crates/offload`, `crates/terrain`, `crates/trees`,
-`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1
-(§6.3); every later step below is planned (the rest of 6f: §6).
+`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1 and
+6f2's first two parts, `build::pass_work` and the frozen-plan check (§6.3); every later step
+below is planned (the rest of 6f: §6).
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -507,9 +508,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1 built)
+## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1 and part of 6f2 built)
 
-**Status: 6a-6e and 6f1 built; the rest of 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6e, 6f1 and 6f2's merge and frozen-plan check built; the rest of 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -909,27 +910,56 @@ commit; re-exports at the old paths as before.
       What the runtime asks of them (a step's kind a fetch: needs' `Io`, sched's
       downloads; the first read naming a target: needs' `source_secs`; a row's `cost_v`; a
       target's reads along its ways) are `Plan`'s questions (6f2).
-   2. **6f2, `Plan`** (planned): the trait, in the runtime, implemented by the plan; `&'static dyn
+   2. **6f2, `Plan`** (in parts: the merge and the frozen-plan check built, 6 Nov 2026; the trait
+      planned): the trait, in the runtime, implemented by the plan; `&'static dyn
       Plan` held by the agent, the planner, the forecast, the simulator and coord's scheduler,
       passed by their entry points. Cut at the planner's questions, not at the plan's items: of
-      plan.rs's ~60, many are `Planner::region_jobs` (~900 lines) and `checklist` composing the
-      worldwide steps one by one (`outlines_work` … `names_todo_work`, `timetables_todo_work`, their
-      holds and waits), and `checklist` asks the same `*_work` calls again for its lines. That
-      composition is the plan's: it moves to build.rs first, as one function over what the
-      planner knows (the pass, the manifest, the keys, its failure counts and holds) answering the
-      worldwide jobs and the checklist's lines from one place, so `Plan` carries that, `plan_with`,
-      the regions' steps and the table's queries rather than ~60 items. That function
-      (`build::pass_work`, planned) takes as arguments what the planner reads from the root today
-      (lakefill's planned source, the tiles' release, the failure counts, names-to-do's `since`
-      and `idle`) and answers each worldwide step's work and, apart, its hold or wait: the jobs
-      leave a held work out, the checklist still counts it left, and keeps its own checks of an
-      output missing from the manifest (the pass's sets, outlines, hikes, summits, the tiles'
-      index), as today. It is not a pure move, so it is checked on a frozen plan (planned, as
-      docs/incremental-planning.md §1.2): an ignored test, as `bench_plan_on_a_real_root`, runs a
-      planner's `region_jobs` and `checklist` on a private copy of the lead's records (everything
-      else symlinked read-only; no coordinator; the clock and failure counts fixed), before and
-      after, and compares the jobs, waits, holds and lines byte for byte. No such harness exists
-      yet: the bench runs `build::plan` alone. Moving the planner up with the plan instead was
+      plan.rs's ~60, many were `Planner::region_jobs` (~900 lines) and `checklist` composing the
+      worldwide steps one by one (`outlines_work` … `names_todo_work`, their holds and waits), and
+      `checklist` asked the same `*_work` calls again for its lines. That composition is the
+      plan's, so `Plan` carries it, `plan_with`, the regions' steps and the table's queries rather
+      than ~60 items.
+      - **The merge** (built): `build::pass_work`, one function answering the pass's worldwide
+        jobs and the checklist's lines (`PassWork::left`, over `build::WORLDWIDE_STEPS`, moved
+        from agent/mod.rs) from one place. It takes what the planner reads from the root
+        (`PassReads`: the 3D buildings' release, lakefill's planned source, why the made reaches
+        don't load, asked only when the reach job has no work, and the failure counts) and
+        names-to-do's gate (`NamesTodo`: its inputs' key, `since`, `idle`, asked only once the
+        outlines hold nothing, as the planner did), and answers each step's job (`PassJob`: id,
+        step, the arguments after `--root` and `--scratch`, work) and apart its holds and waits
+        (`lakefill_held`, `outlines_hold`, `waits`), the summits' work (placed after the regions'
+        plan, which says whether their terrain is built) and whether the buildings' release is
+        made (the planner then removes the scan's parts from its scratch). The jobs leave a held
+        work out; the checklist still counts it left, with its own checks of an output missing
+        from the manifest (the pass's sets, outlines, hikes, summits, the tiles' index), as before.
+        The planner turns each `PassJob` into its `JobSpec` (its program, root and scratch);
+        `timetables_todo_work` stays where the planner calls it, after the regions' plan (it
+        reads the plan's key memo). Cut: `outlines_hold`, `OUTLINES_HOLDS`, `trailends_work`,
+        `regions_land_work`, `labels_work`, `spoken_work`, `names_todo_work` and `summits_work`
+        made private (only `pass_work` and build's tests call them); plan.rs's `PassCtx` (the
+        checklist's and the jobs' each). steps' `every_step_the_agent_runs_has_a_row` also reads
+        build.rs's job names (`job("…`, `id: format!("…`).
+      - **The frozen-plan check** (built): `plan::tests::frozen_plan_on_a_private_root`, ignored,
+        runs a planner's `region_jobs` and `checklist` on a private root (`SCENIC_FROZEN_ROOT`:
+        the lead's `state/` copied, every other entry of the NAS's project folder a symlink;
+        `SCENIC_FROZEN_HOME` keeps the coverage's cache and the terrain indexes between runs;
+        `SCENIC_FROZEN_APP` the lead's app), with no coordinator, gate watch, failure counts or
+        record of past catalogues, the forecast's thread parked, and writes the jobs (commands,
+        targets, keys) before and after the holds, the waits, the holds, the offers and the
+        checklist's lines to `SCENIC_FROZEN_OUT`, a line each. The state copied by tar over ssh
+        from the NAS to the M4 (its `state/` without coord, backups, journal, live-archive,
+        pool-shadow and the status's temporary files, and only the current term's records:
+        68 MB). Check of the merge (the lead's term 770, seq 26, 6 Nov; the M4, test profile; on it
+        every worldwide step made but the summits, counted left):
+        main (the check's commit, 550e28db) and the merge wrote the same 1,013,213 bytes (50 jobs
+        before the holds and 50 after, 11 waits, 11 offers, 13 checklist lines; SHA-256 2f8029c9…).
+        A run: 6 to 18 min, most of it the offers' extract sizes, a stat each over SMB the lead
+        keeps between plans; 4.5 GB of footprint at most.
+      - **The trait** (planned): what is left of 6f2. The planner holds the plan's own types
+        (`build::Plan` and `KeyMemo` kept for a lease change's filtering, `KeyCtx` made in
+        `region_jobs`, `Publish`), so the trait's questions either take and give the runtime's
+        types or keep those behind it (the plan making its context and memo, the planner holding
+        them opaque): a design to settle before the trait lands. Moving the planner up with the plan instead was
       weighed and is the larger cut: its pass names ~150 of the runtime's items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
       API. The family items above go through `Plan` too: `input_digests` and `key_inputs` (they
       name heritage and bld) and `terrain_peak` move to the plan, called through it, as are the
