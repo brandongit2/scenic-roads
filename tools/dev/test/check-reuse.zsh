@@ -52,7 +52,8 @@ mod tests {
         let _ = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/helper");
     }
 }'
-w crates/a/src/m.rs '#[cfg(test)]
+w crates/a/src/m.rs 'pub const Y: &[u8] = include_bytes!("../../../web/y.txt");
+#[cfg(test)]
 mod tests {
     #[test]
     fn t() {}
@@ -64,7 +65,7 @@ mod tests {
 w crates/a/tests/scan.rs '//! scans: docs/a.md
 #[test]
 fn t() {}'
-for f in docs/a.md docs/b.md docs/c.md tools/dev/x.sh tools/data/y tools/helper/z web/x.txt README.md; do w $f 1; done
+for f in docs/a.md docs/b.md docs/c.md tools/dev/x.sh tools/data/y tools/helper/z web/x.txt web/y.txt README.md; do w $f 1; done
 g add -A; g commit -m b0; b0=$(git rev-parse HEAD)
 g checkout -q -b br
 print '// branch' >> crates/a/src/lib.rs; g commit -am branch; P=$(git rev-parse HEAD)
@@ -104,12 +105,19 @@ edit() { print 2 >> tools/data/y }
 case_ "a file a #[test] function reads" reuse partial 'cargo test -p a --lib -- tests::reads_data'
 edit() { print 2 >> tools/helper/z }
 case_ "a file read outside a #[test] function" reuse run
+# (#969: main's Rust changes since the pass traced as the branch's own are.)
+edit() { print '// 2' >> crates/a/src/m.rs }
+case_ "a module's change on main" run partial 'cargo test -p a --lib -- m::'
 edit() { w crates/a/src/b.rs 'pub fn b() {}' }
-case_ "a Rust change on main" run run
+case_ "a new file on main no module declares" run reuse
+edit() { { print '// 2'; cat crates/a/src/lib.rs } > $tmp/lib.rs && mv $tmp/lib.rs crates/a/src/lib.rs }   # (at its top: the branch's edit is at its end)
+case_ "the crate's root changed on main" run run
 edit() { print v2 > Cargo.lock }
 case_ "a Cargo.lock change on main" run run
 edit() { print 2 >> web/x.txt }
-case_ "a file the Rust build includes" run run
+case_ "a file the crate's root includes" run run
+edit() { print 2 >> web/y.txt }
+case_ "a file a module compiles in" run partial 'cargo test -p a --lib -- m::'
 edit() { print 2 >> tools/dev/check.sh }
 case_ "the script running the parts" run run
 edit() { w newthing/z 1 }
@@ -219,6 +227,15 @@ fresh "a [patch] path in the root manifest" s m 'cargo test -p a --lib -- t' run
 s() { w crates/a/src/lib.rs '#[derive(Embed)] #[folder = "../../web/dist"] struct S;'; w web/dist/i.html 1 }
 m() { print 2 >> web/dist/i.html }
 fresh "a folder a macro attribute names" s m 'cargo test -p a --lib -- t' run run
+s() { rm crates/a/src/lib.rs; w crates/a/src/main.rs '#[test]
+fn t() {}
+fn main() {}'; w crates/a/tests/i.rs '#[test]
+fn i() {}' }
+m() { print '// 2' >> crates/a/src/main.rs }
+fresh "a binary's root changed on main: its crate's every target" s m 'cargo test -p a --bin a --test i' run partial 'cargo test -p a --bin a --test i'
+s() { w crates/a/examples/e.rs 'fn main() {}' }
+m() { print '// 2' >> crates/a/examples/e.rs }
+fresh "an example changed on main: no test builds it" s m 'cargo test -p a --lib -- t' run reuse
 
 # -- affected-tests.sh --nextest: check.sh's tests lines as one nextest run (#969), a lib's unit
 # tests built only for the packages asking for them

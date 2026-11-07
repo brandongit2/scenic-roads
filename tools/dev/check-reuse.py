@@ -23,10 +23,12 @@ in X) is weighed. It holds for a part here only when
     members, excludes and the paths its manifests name; the files their sources include_*!,
     #[path] or name as a macro's first "../" literal; what build scripts and proc macros read; the
     scripts that run the part, RUNNER);
-  - tests: none of main's is such an input, and each own one that is, is a module's source (a .rs
-    file under crates/<crate>/src or tests, not a crate's root, build script or proc macro) or a
-    file include_str!d or include_bytes!d only inside #[test] functions (those tests), nothing
-    include!ing it, naming it by #[path] or in a macro; then run again: the tests HEAD's commands run that P's didn't, and of those
+  - tests: each one that is such an input, main's or the branch's own (#969), is a module's source
+    (a .rs file under crates/<crate>/src or tests, not a crate's root, build script or proc
+    macro), a binary's root (its crate's every target), an example (none) or a file
+    include_str!d or include_bytes!d inside #[test] functions (those tests) or outside them by a
+    module's source (that module's own tests), nothing include!ing it, naming it by #[path] or in a
+    macro; then run again: the tests HEAD's commands run that P's didn't, and of those
     both run, the tests affected-tests.sh gives for P..HEAD (the plain sources' modules traced
     as for the branch, the scan tests whose `//! scans:` line covers a file in X) and the tests
     reading a file in X at run time (a source's CARGO_MANIFEST_DIR or ".." path inside a #[test]
@@ -204,26 +206,60 @@ PLAIN = "the Rust build"   # (the reason a file inside a package folder, and not
 DATA = " reads it as it compiles"
 
 
-def traced(f, whys, scripts, macros, data, files):
-    """The test units an own change of f, a Rust build input, affects beyond what affected-tests.sh
-    traces for it ([] none more); None when they can't be told. Traced: a module's source (a .rs
-    file under crates/<crate>/src or tests, not the crate's root, whose own tests no filter
-    isolates nor its users are traced, nor a build script or a proc macro's), and a file
-    include_str!d or include_bytes!d inside #[test] functions (those tests: a source test reading
-    agent/build.rs). Not: one include!d, named by #[path] or in a macro, or read by a build script."""
+def plain(f, scripts, macros):
+    """A module's source: a .rs file under crates/<crate>/src or tests, not the crate's root (whose
+    own tests no filter isolates, nor its users are traced), a build script or a proc macro's."""
     p = f.split("/")
+    return (len(p) >= 4 and p[0] == "crates" and p[2] in ("src", "tests") and f.endswith(".rs")
+            and f not in scripts and not any(under(f, k) for k in macros)
+            and "/".join(p[2:]) not in ("src/lib.rs", "src/main.rs"))
+
+
+def crate_targets(c, files):
+    """The test units of crate c's every target, as cargo's defaults lay them out."""
+    d = "crates/%s/" % c
+    out = [(c, "--lib", None)] if d + "src/lib.rs" in files else []
+    for f in files:
+        r = f[len(d):] if f.startswith(d) else ""
+        if r == "src/main.rs": out.append((c, "--bin " + c, None))
+        elif re.fullmatch(r"src/bin/[^/]+\.rs", r): out.append((c, "--bin " + r[8:-3], None))
+        elif re.fullmatch(r"src/bin/[^/]+/main\.rs", r): out.append((c, "--bin " + r.split("/")[2], None))
+        elif re.fullmatch(r"tests/[^/]+\.rs", r): out.append((c, "--test " + r[6:-3], None))
+        elif re.fullmatch(r"tests/[^/]+/main\.rs", r): out.append((c, "--test " + r.split("/")[1], None))
+    return out
+
+
+def traced(f, whys, scripts, macros, data, files):
+    """The test units a change of f since the pass (main's or the branch's own), a Rust build
+    input, affects beyond what affected-tests.sh traces for it ([] none more); None when they can't
+    be told. Traced: a module's source (plain); a binary's root, crates/<c>/src/main.rs (no other
+    crate links a binary: its crate's every target, #969); an example (no test builds or runs one;
+    clippy checks it); a file include_str!d or include_bytes!d inside #[test] functions (those
+    tests: a source test reading agent/build.rs), or outside them by a module's source (that
+    module's own tests, which affected-tests.sh gives: web/work's pages in coord/mod.rs, #969). Not:
+    one include!d, named by #[path] or in a macro, or read by a build script, nor a library's root."""
+    p, units = f.split("/"), []
     for w in set(whys):
         if w == PLAIN:
-            if not (len(p) >= 4 and p[0] == "crates" and p[2] in ("src", "tests") and f.endswith(".rs")
-                    and f not in scripts and not any(under(f, k) for k in macros)
-                    and "/".join(p[2:]) not in ("src/lib.rs", "src/main.rs")):
+            if plain(f, scripts, macros):
+                continue
+            if len(p) == 4 and p[0] == "crates" and p[2:] == ["src", "main.rs"] and f not in scripts:
+                units += crate_targets(p[1], files)
+            elif len(p) >= 4 and p[0] == "crates" and p[2] == "examples" and f.endswith(".rs") \
+                    and not any(under(f, k) for k in macros):
+                continue
+            else:
                 return None
         elif not w.endswith(DATA):
             return None
-    units = []
     for g, at in data.get(f, []):
+        src = read(g)
+        if enclosing(src, at) is None:   # (compiled into g's code: g's own tests, by affected-tests.sh)
+            if not plain(g, scripts, macros):
+                return None
+            continue
         try:
-            units += units_of(g, at, read(g), files)
+            units += units_of(g, at, src, files)
         except Doubt:
             return None
     return units
@@ -496,18 +532,18 @@ def decide(passed, tests_file):
         out.append(("clippy", "reuse", p, how + "; none is a Rust build input"))
     if not tests:
         return out
-    hit_main = [f for f in hit if f in mains]
-    if hit_main:
-        out.append(("tests", "run", "-", "main changed Rust build inputs since %s: %s" % (sp, say(hit_main))))
-        return out
+    # (Main's changes since P are traced as the branch's own are, #969: on 6 Nov, 40 of 92 checks
+    # running every test did so for any Rust file main changed.)
     extra, odd = [], []
     for f in hit:
         u = traced(f, hit[f], scripts, macros, data, files)
         if u is None: odd.append(f)
         else: extra += [(c, g, flt, f) for c, g, flt in u]
     if odd:
-        out.append(("tests", "run", "-", "the branch changed Rust build inputs since %s that the "
-                    "test set doesn't trace: %s" % (sp, say(odd))))
+        whose = " and ".join(w for w, fs in (("main", [f for f in odd if f in mains]),
+                                             ("the branch", [f for f in odd if f not in mains])) if fs)
+        out.append(("tests", "run", "-", "%s changed Rust build inputs since %s that the test set "
+                    "doesn't trace: %s" % (whose, sp, say(odd))))
         return out
     if kv.get("tests") == th:
         theirs = tests
@@ -526,7 +562,7 @@ def decide(passed, tests_file):
                 sp, "" if b is None else " whole (check-tests/%s isn't their hash)" % kv["tests"][:7])))
             return out
         theirs = [l for l in b.decode("utf-8", "replace").splitlines() if l.strip()]
-    how += "; none is a Rust build input" if not hit else "; the Rust ones the branch's own modules"
+    how += "; none is a Rust build input" if not hit else "; the Rust ones traced"
     try:
         out += tests_part(tests, theirs, x, files, p, how, extra)
     except Doubt as e:
@@ -559,7 +595,7 @@ def tests_part(tests, theirs, x, files, p, how, extra):
     for c, g, flt, f in extra:   # (the tests include_str!ing a changed file)
         if (c, g) in hits and hits[(c, g)] is None: continue
         hits[(c, g)] = None if flt is None else hits.get((c, g), []) + [flt]
-        why.append("%s (reads %s as it compiles)" % (flt or g, f))
+        why.append("%s (%s changed)" % (flt or g, f))
     for f in files:
         if not (f.startswith("crates/") and f.endswith(".rs")):
             continue

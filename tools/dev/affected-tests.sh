@@ -10,7 +10,8 @@
 # `<crate>::<mod>`, the parent naming `<leaf>::`, a child using `super::`); the integration tests
 # under crates/<crate>/tests/ that name it, or that changed; other crates' modules naming
 # `<crate>::<mod>`, or `crate::<mod>` where their root re-exports it (`pub use <crate>::…`, #916).
-# Modules without tests are left out.
+# A file a module compiles in (include_str!, include_bytes! or include! outside a #[test] function)
+# runs that module's own tests. Modules without tests are left out.
 # Lines starting with # explain; the others are the commands. No command for doc-only or non-Rust
 # changes. A `#[path]` module's file maps to its declared module (dem/generic_tests.rs → dem::generic::tests).
 # tools/dev/test-guard.sh holds agents' cargo test to this set.
@@ -22,7 +23,7 @@ case $#:${1:-} in
   0:|1:[^-]*|2:--nextest) ;;
   *) print -ru2 -- "affected-tests.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
-exec python3 - "$@" <<'PY'
+SCENIC_AFFECTED_HERE=${0:A:h} exec python3 - "$@" <<'PY'
 import glob, os, re, subprocess, sys
 from collections import OrderedDict
 args = sys.argv[1:]
@@ -106,10 +107,25 @@ for t in sorted(glob.glob("crates/*/tests/*.rs")):
     pre = m.group(1).split()
     hit = next((f for f in dict.fromkeys(changed) if any(f == q or f.startswith(q.rstrip("/") + "/") for q in pre)), None)
     if hit: scan_hits.append((t.split("/")[1], "--test " + os.path.basename(t).removesuffix(".rs"), "scans " + hit))
+# A file compiled into a module's code (include_str!, include_bytes! or include! outside a #[test]
+# function: web/work's pages in coord/mod.rs) runs that module's own tests (#969): its users see it
+# only through what the module makes of it. (One a #[test] function includes is that test's read:
+# check-reuse.py runs it again after a pass.)
+import importlib.util
+spec = importlib.util.spec_from_file_location("check_reuse", os.environ["SCENIC_AFFECTED_HERE"] + "/check-reuse.py")
+reuse = importlib.util.module_from_spec(spec); spec.loader.exec_module(reuse)
+cs, included = set(changed), []
+r = subprocess.run(["rg", "-l", "--type", "rust", r"include(_str|_bytes)?!", "crates"], capture_output=True, text=True)
+for f in sorted(r.stdout.split()):
+    src = open(f, encoding="utf-8", errors="replace").read()
+    for m in re.finditer(r'\binclude(?:_str|_bytes)?!\s*\(\s*"([^"\\]*)"', src):
+        p = os.path.normpath(os.path.join(os.path.dirname(f), m.group(1)))
+        if p in cs and reuse.enclosing(src, m.start()) is None:
+            included.append((f, p)); break
 # Files as they are in this checkout (a deleted file's module is gone; its users' own changes show).
 changed = [f for f in dict.fromkeys(changed) if f.endswith(".rs") and f.startswith("crates/") and os.path.exists(f)]
 print("# affected tests: " + what)
-if not changed and not scan_hits:
+if not changed and not scan_hits and not included:
     print("# no Rust file changed and no scan test's files: no tests to run"); sys.exit()
 
 _cache = {}
@@ -249,6 +265,7 @@ for f in changed:
         else: add(c, "--test " + rel.removesuffix(".rs"), None, "names " + path)
 
 for c, tgt, reason in scan_hits: add(c, tgt, None, reason)
+for f, p in included: add_file(f, "compiles in " + p)
 if not want:
     print("# the changed Rust files have no tests and no tested users: nothing to run"); sys.exit()
 print("# why:"); print("\n".join(dict.fromkeys(why)))
