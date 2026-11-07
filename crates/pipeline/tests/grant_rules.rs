@@ -30,22 +30,22 @@ const RULES: &[&str] = &[
 ];
 
 /// Where they may be named: the scheduler, and the budget's limits where they're defined.
-const HOME: &[&str] = &["pipeline/src/coord/sched.rs", "jobrt/src/budget/nas.rs"];
+const HOME: &[&str] = &["agentcore/src/coord/sched.rs", "jobrt/src/budget/nas.rs"];
 
 /// Lines naming one elsewhere, by file and what the line says, with why.
 const EXEMPT: &[(&str, &str, &str)] = &[
     (
-        "pipeline/src/coord/mod.rs",
+        "agentcore/src/coord/mod.rs",
         "s.leases.set_threads(lease, ask_cores(&a));",
         "a page's or worker's task (not a job): its threads, the Mac's cores",
     ),
     (
-        "pipeline/src/coord/mod.rs",
+        "agentcore/src/coord/mod.rs",
         "threads: ask_cores(&a),",
         "a task's grant (not a job): its threads, the Mac's cores",
     ),
     (
-        "pipeline/src/pool/sim/place.rs",
+        "agentcore/src/pool/sim/place.rs",
         "if !crate::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true) {",
         "the simulator's outcome check of a start the scheduler made (task #539), not a grant",
     ),
