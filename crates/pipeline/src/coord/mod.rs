@@ -336,10 +336,31 @@ pub struct Worker {
     pub failed: u32,
 }
 
-/// The `gc` job's ask of `/gc/removing`: the content names it's about to remove.
+/// The `gc` job's ask of `/gc/removing` (the content names a sweep is about to remove) and of
+/// `/gc/orphans` (those the orphan sweep found).
 #[derive(Deserialize)]
 struct GcRemoving {
     names: Vec<String>,
+}
+
+/// The `gc` job's ask of `/gc/chunk` (crate::agent::gc::Lead::chunk).
+#[derive(Deserialize)]
+struct GcChunk {
+    max: usize,
+    /// The newest complete OSM pass: the older passes' sources are the queue's (`by_the_queue`).
+    #[serde(default)]
+    passes_before: Option<String>,
+    #[serde(default)]
+    dry: bool,
+}
+
+/// The `gc` job's word of `/gc/gone`: what it removed, and what it was told and didn't (it yielded).
+#[derive(Deserialize)]
+struct GcGone {
+    #[serde(default)]
+    gone: Vec<String>,
+    #[serde(default)]
+    released: Vec<String>,
 }
 
 /// The newest lease granted (its term's, the next's number less one).
@@ -458,8 +479,9 @@ pub struct Shared {
     /// The map and its log's batches (store::map::feed, the lead's log writer's): `/map/changes`,
     /// `/map/snapshot` (maproutes). None: not the lead (503).
     pub maplog: Option<Arc<store::map::feed::Feed>>,
-    /// GC's queue beside the map's log (store::map::gc, the lead's): the `gc` job's removals marked
-    /// deleted in it before they go (`/gc/removing`, crate::agent::gc::Tell). None: not the lead (503).
+    /// GC's queue beside the map's log (store::map::gc, the lead's): the `gc` job's chunks taken and
+    /// marked deleted in it before they go (`/gc/chunk`, crate::agent::gc::Lead). None: not the
+    /// lead (503).
     pub gc: Option<Arc<store::map::gc::GcQueue>>,
     /// The build page's map's finished tiles (crate::agent::builtview): `/work/built`. None: not
     /// given one (503).
@@ -2898,8 +2920,8 @@ impl Coordinator {
         self.shared.lock().unwrap().catalogues = Some(cv);
     }
 
-    /// `/map/changes` and `/map/snapshot` answered from `feed` (maproutes), and `/gc/removing`'s
-    /// names marked deleted in `gc`, from here on.
+    /// `/map/changes` and `/map/snapshot` answered from `feed` (maproutes), and the `gc` job's
+    /// asks (`/gc/chunk`, crate::agent::gc::Lead) of `gc`, from here on.
     pub fn set_maplog(&self, feed: Arc<store::map::feed::Feed>, gc: Arc<store::map::gc::GcQueue>) {
         let mut s = self.shared.lock().unwrap();
         (s.maplog, s.gc) = (Some(feed), Some(gc));
@@ -4502,16 +4524,18 @@ fn route(
             let status = status_beside(&dir, ask.status_at);
             Ok((200, pool_view(&shared.lock().unwrap(), &ask, status)))
         }
-        "/gc/removing" => {
-            // The `gc` job's content names about to be removed (crate::agent::gc::Tell, docs/maplog.md
-            // §11.4): those still held answered, to keep; the rest marked deleted in GC's queue (written
-            // and fsynced), the newest lease granted now theirs, before the job removes any: the merge
-            // refuses a hand-off of an older lease bringing one from then on.
-            let b: GcRemoving = serde_json::from_slice(body)?;
+        p @ (crate::agent::gc::CHUNK
+        | crate::agent::gc::GONE
+        | crate::agent::gc::ORPHANS
+        | crate::agent::gc::REMOVING) => {
+            // The `gc` job's asks of GC's queue (crate::agent::gc::Lead, docs/maplog.md §7.3): every
+            // name it removes marked deleted first (written and fsynced), the newest lease granted
+            // now its, so the merge refuses a hand-off of an older lease bringing one from then on;
+            // each checked against its holders as of now.
             let (q, feed, oldest_lease, lease) = {
                 let s = shared.lock().unwrap();
                 let oldest = s.leases.all(s.now()).iter().map(|l| l.granted_at).min();
-                (s.gc.clone(), s.maplog.clone(), oldest, newest_lease(&s))
+                (s.gc.clone(), s.maplog.clone(), oldest, crate::agent::gcqueue::lease(newest_lease(&s)))
             };
             let (Some(q), Some(feed)) = (q, feed) else {
                 return Ok((
@@ -4520,9 +4544,34 @@ fn route(
                 ));
             };
             let cursors = feed.cursors();
-            let holders = store::map::gc::Holders { cursors: &cursors, oldest_lease, now: unix_now() };
-            match q.removing(&b.names, &holders, crate::agent::gcqueue::lease(lease)) {
-                Ok(held) => Ok((200, serde_json::json!({ "held": held }))),
+            let now = unix_now();
+            let holders = store::map::gc::Holders { cursors: &cursors, oldest_lease, now };
+            let answer = match p {
+                crate::agent::gc::CHUNK => {
+                    // The next chunk (a dry run's: every name due, nothing marked), and the
+                    // folders the orphan sweep lists.
+                    let b: GcChunk = serde_json::from_slice(body)?;
+                    let take = |n: &str| crate::agent::gc::by_the_queue(n, b.passes_before.as_deref());
+                    let names =
+                        if b.dry { Ok(q.due_by(&holders, &take)) } else { q.chunk(&holders, lease, b.max, &take) };
+                    names.map(|names| serde_json::json!({ "names": names, "tops": q.tops() }))
+                }
+                crate::agent::gc::GONE => {
+                    let b: GcGone = serde_json::from_slice(body)?;
+                    q.gone(&b.gone, &b.released, now, lease).map(|()| serde_json::json!({}))
+                }
+                crate::agent::gc::ORPHANS => {
+                    let b: GcRemoving = serde_json::from_slice(body)?;
+                    q.orphans(&b.names, now).map(|n| serde_json::json!({ "queued": n }))
+                }
+                _ => {
+                    // A sweep's names by its own rules (the gate's copies): those held answered.
+                    let b: GcRemoving = serde_json::from_slice(body)?;
+                    q.removing(&b.names, &holders, lease).map(|held| serde_json::json!({ "held": held }))
+                }
+            };
+            match answer {
+                Ok(v) => Ok((200, v)),
                 Err(e) => Ok((503, serde_json::json!({ "error": format!("{e:#}") }))),
             }
         }
@@ -5477,6 +5526,9 @@ mod http {
             .route("/pool/beat", any(json))
             .route("/pool/release", any(json))
             .route(crate::agent::gc::REMOVING, any(json))
+            .route(crate::agent::gc::CHUNK, any(json))
+            .route(crate::agent::gc::GONE, any(json))
+            .route(crate::agent::gc::ORPHANS, any(json))
             .route("/pool/view", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/out/{lease}/{*path}", put(output))

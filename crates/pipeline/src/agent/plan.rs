@@ -1125,48 +1125,24 @@ impl Planner {
         keep
     }
 
-    /// GC's queue in shadow (super::gcqueue; docs/maplog.md §8, step 7): the `gc` job's check of its
-    /// due set read back at each plan once written (what that GC found gone already marked deleted,
-    /// the newest lease then theirs: what it removed it told as it went, gc::Tell; its result
-    /// logged). Only by the lead's agent that runs the jobs, its map's log open.
-    pub(super) fn shadow_checked(&self) {
-        use super::gcqueue::{ShadowCheck, SHADOW_CHECK};
-        let (Some(here), Some(co)) = (self.inp.map.as_ref().filter(|_| self.locked && !self.o.dry_run), &self.coord)
-        else {
-            return;
-        };
-        let check = self.o.home.join(super::publish::MAPLOG).join(SHADOW_CHECK);
-        let Ok(b) = std::fs::read(&check) else { return };
-        match serde_json::from_slice::<ShadowCheck>(&b) {
-            Ok(c) => {
-                eprintln!("gc: {}", c.said());
-                here.gc.deleted(&c.gone, now_s(), super::gcqueue::lease(co.lease_bounds().1));
-            }
-            Err(e) => eprintln!("gc: the shadow's check {} can't be read: {e}", check.display()),
-        }
-        std::fs::remove_file(&check).ok();
-    }
-
-    /// The queue's due set now, with the map's names and the names it freed (GC's roots besides the
-    /// records), written to the map log's folder as the `gc` job is planned, for the job to keep
-    /// and to check against what it removes (`--shadow-due`). Its path (None: not the lead's agent
-    /// running the jobs, or not written).
-    pub(super) fn shadow_gc(&self) -> Option<PathBuf> {
-        use super::gcqueue::{Holders, ShadowDue, SHADOW_DUE};
-        let here = self.inp.map.as_ref().filter(|_| self.locked && !self.o.dry_run)?;
-        let (oldest_lease, _) = self.coord.as_ref()?.lease_bounds();
+    /// Whether the `gc` job has work (docs/maplog.md §7.3, step 8b): a chunk GC's queue would hand
+    /// it (one told and not gone, or a name due that a chunk takes: `gc::by_the_queue`, the older
+    /// passes before `latest`), only the lead's agent running the jobs knowing; or a sweep's pass
+    /// under way or due (`gc::Sweeps`, `sweeps` its file). In words, for the job's card.
+    pub(super) fn gc_work(&self, sweeps: &Path, latest: Option<&str>) -> Option<String> {
         let now = now_s();
-        let cursors = here.feed.cursors();
-        let names = here.gc.due(&Holders { cursors: &cursors, oldest_lease, now });
-        let due = ShadowDue { at: now, queued: here.gc.len(), names, map: here.gc.map_names(), freed: here.gc.freed() };
-        let p = self.o.home.join(super::publish::MAPLOG).join(SHADOW_DUE);
-        match store::whole::write(&p, &serde_json::to_vec(&due).unwrap_or_default()) {
-            Ok(()) => Some(p),
-            Err(e) => {
-                eprintln!("gc: the shadow's due set not written: {e:#}");
-                None
+        let here = self.inp.map.as_ref().filter(|_| self.locked && !self.o.dry_run);
+        if let (Some(here), Some(co)) = (here, &self.coord) {
+            let told = here.gc.removing_now().len();
+            let cursors = here.feed.cursors();
+            let holders = super::gcqueue::Holders { cursors: &cursors, oldest_lease: co.lease_bounds().0, now };
+            let due = told + here.gc.due_by(&holders, &|n| gc::by_the_queue(n, latest)).len();
+            if due > 0 {
+                return Some(format!("Removing {due} files nothing holds (GC's queue)"));
             }
         }
+        let s = gc::Sweeps::read(sweeps);
+        gc::SWEEPS.iter().find(|(n, _)| s.due(n, now)).map(|(n, _)| format!("Sweeping the NAS ({n})"))
     }
 
     pub(super) fn plan_unchecked(
@@ -1263,21 +1239,27 @@ impl Planner {
         if self.coord.is_some() {
             out.extend(self.redo_jobs(root));
         }
-        self.shadow_checked();
-        if self.due("gc", Duration::from_secs(86400)) {
+        // GC, whenever it has work (docs/maplog.md §7.3): the NAS budget grants it when quiet.
+        let sweeps = self.o.home.join(super::publish::MAPLOG).join(gc::SWEEPS_FILE);
+        if let Some(what) = self.gc_work(&sweeps, have.as_deref()) {
             let keep = self.keep_depth_targets();
-            let mut cmd =
-                vec![s(&me), "gc".into(), "--root".into(), jobs::root_arg(root), "--depth-keep".into(), s(&keep)];
-            if let Some(due) = self.shadow_gc() {
-                cmd.extend(["--shadow-due".into(), s(&due)]);
-            }
+            let mut cmd = vec![
+                s(&me),
+                "gc".into(),
+                "--root".into(),
+                jobs::root_arg(root),
+                "--depth-keep".into(),
+                s(&keep),
+                "--sweeps".into(),
+                s(&sweeps),
+            ];
             // (docs/maplog.md §8 step 9: once every member's app checks the NAS by map/.)
             if self.inp.pool_seen.as_ref().is_some_and(|p| p.all_check_map) {
                 cmd.push("--old-catalogues".into());
             }
             out.push(JobSpec {
                 id: "gc".into(),
-                what: "gc".into(),
+                what,
                 cmd,
                 needs: Needs { nas: true },
                 restart_after_sleep: true,

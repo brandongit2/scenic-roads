@@ -117,14 +117,15 @@ pub fn valid_logical(s: &str) -> bool {
     !s.is_empty() && !s.contains(['.', '\0', '\\']) && s.split('/').all(|c| !c.is_empty())
 }
 
-/// An extension: non-empty dot-separated parts, no `/`, NUL or backslash, and not GC's tombstone
-/// (`TOMB`: a file it's about to remove, renamed aside, isn't a content-named file).
+/// An extension: non-empty dot-separated parts, no `/`, NUL or backslash, and not a tombstone of the
+/// GC before docs/maplog.md §8 step 8b (`TOMB`, which no sweep takes for a content-named file).
 fn valid_ext(s: &str) -> bool {
     !s.is_empty() && !s.contains(['/', '\0', '\\']) && s.split('.').all(|c| !c.is_empty()) && !s.ends_with(TOMB)
 }
 
-/// What GC renames a content-named file it's about to remove to: its name and this (crate::agent's
-/// gc: removed only if no job reused it meanwhile).
+/// What the GC before step 8b renamed a content-named file to before it removed it (removed unless
+/// a job had touched it meanwhile): one left by a run stopped between, its bytes perhaps a reused
+/// file's, stays on the share, never taken for a content-named file, so no sweep removes it.
 pub const TOMB: &str = ".gc-tomb";
 
 fn is_hash16(s: &str) -> bool {

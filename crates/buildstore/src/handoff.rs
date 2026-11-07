@@ -38,6 +38,12 @@ pub struct Handoff {
     /// writes; a pyramid's shard after its store's folder (crate::rawpack::handed_place).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub raw: Vec<(String, crate::rawpack::Pack)>,
+    /// The content names the job found on the NAS already and took as they were (crate::out::Out:
+    /// an upload of bytes there before, a gate's copy among them, which no manifest change names):
+    /// the merge refuses the hand-off when GC removed one under its lease, and holds them from
+    /// GC's chunks until the records after it are seen (pipeline's agent::gcqueue::refusal).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reused: Vec<String>,
 }
 
 impl Handoff {
@@ -57,6 +63,11 @@ impl Handoff {
         for r in later.raw {
             if !self.raw.contains(&r) {
                 self.raw.push(r);
+            }
+        }
+        for c in later.reused {
+            if !self.reused.contains(&c) {
+                self.reused.push(c);
             }
         }
     }

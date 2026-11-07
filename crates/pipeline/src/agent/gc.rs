@@ -1,69 +1,86 @@
-//! Removing replaced files from the NAS (docs/storage.md, GC): every content-named file that
-//! neither the map (the lead's now, and its snapshots on the NAS), nor a name the lead's GC queue
-//! freed within the last `keep_days`, nor the build's manifest nor (with the pool) its newest
-//! records or a journal entry they don't reflect yet (`unmerged`) references, and that is itself
-//! older than `keep_days`; abandoned `.tmp` files. (No catalogue is read: none is written since
-//! docs/maplog.md §8, step 6. Their old folders, `OLD_CATALOGUES`, go by a pass of their own once
-//! every member's app checks the NAS by `map/`: `remove_old_catalogues`, step 9.)
-//! So it runs beside other jobs: a job's files are young, or named by its entry once it's written.
+//! Removing what nothing holds from the NAS (docs/storage.md, GC; docs/maplog.md §7, step 8b): the
+//! `gc` job, the lead's own, run whenever GC's queue has a chunk or a sweep's pass is due and the
+//! NAS budget leaves it room (crate::agent::plan).
+//!
+//! - **By the queue** (`drain`, first each run): the content names GC's queue on the lead frees
+//!   (crate::agent::gcqueue: no map a client holds, nor the records, name them, past its grace and
+//!   every older lease), taken from the lead's coordinator `CHUNK_NAMES` at a time (`Lead::chunk`):
+//!   the lead checks each against its holders as of then and marks it deleted before it answers,
+//!   so the merge refuses a hand-off reusing one; the job removes them one by one over SMB, then
+//!   says them gone (`Lead::gone`). Killed mid-chunk, the next run's first chunk is the same one,
+//!   told again (a name not there counts as gone); yielding mid-chunk, it says what went and lets
+//!   the rest go back to the queue, which the next chunk takes up first. Nothing is listed.
+//! - **Sweeps, each a pass with its own cursor** (`Sweeps`, in the lead's map log folder, the
+//!   folder each walk reached), run after the queue when due: the duties (`duties`: the names to
+//!   drop, the archives, the old catalogues, the uploads' checks, once a day); the gate's checked
+//!   copies (`inputs_walk`, by their own holders: the accepted indexes); and the orphan sweep
+//!   (`orphan_walk`, §7.5), which lists the folders the map and the records name, the removed
+//!   steps' and the retired passes', a folder at a time, and queues on the lead what's old enough
+//!   that no job still holds it by its upload (`ORPHAN_AGE_S`), with the stray `.tmp` files and a
+//!   retired pass's planet removed as it meets them.
 //!
 //! Deletions go through SMB: on this share they're permanent (no Recycle Bin entry; tested
-//! 2026-10-02), and the M4 can't use SSH unattended (1Password asks each session).
-//!
-//! Only the folders the map indexes are swept (`base/`, `global/`, `layers/`, `hidata/`, …: the
-//! first path component of every referenced file), and the sources of passes older than the newest
-//! complete one (`sources/osm/<date>/`, `sources/items/<date>/`): their content-named files by the
-//! same rule, the rest (the planet download) once the newer pass has been complete for `keep_days`.
-//! The gate's checked copies (`sources/inputs/`, docs/inputs.md §4.9) by the same rule, kept while
-//! the manifest (or the newest records) names them, an accepted index it names lists them, a
-//! journal entry not yet merged does, or an index made or replaced within `keep_days` lists them
-//! (`inputs_kept`; none swept when one of those can't be read).
-//! What removed steps made (`RETIRED`) and the depth packs of tiles no current depth target names
-//! (`DepthKeep`): the run first drops their names from the manifest through the records
-//! (`drop_names`), then their files go by the same rule as any content-named file.
-//! The records' unverified uploads: those the build doesn't read (`read_by`: the manifest's names
-//! and its inputs' indexes' files) leave the pending unchecked (`drop_names`), those it reads are
-//! checked on the NAS over SSH, last (`verify_pending`).
-//! The newest pass, a planet waiting for its pass, the rest of `sources/` (the packed tile stores,
-//! `aws-terrarium/` and `pyramids/`, among them: kept by their own indexes, crate::rawpack), the
-//! user's folders (the inputs folders), state and the app are never touched. With no map (neither a
-//! snapshot on the NAS nor the lead's) nothing is deleted.
+//! 2026-10-02), and the M4 can't use SSH unattended (1Password asks each session). The newest
+//! pass, a planet waiting for its pass, the rest of `sources/` (the packed tile stores,
+//! `aws-terrarium/` and `pyramids/`, kept by their own indexes, crate::rawpack), the user's folders
+//! (the inputs folders), state and the app are never touched. The lead not reached, nothing is
+//! removed.
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 use store::nasfs::NasPath;
 
-/// Where a run tells the content names it's about to remove (docs/maplog.md §11.4): GC's queue on
-/// the lead, which answers those something holds now (the run's roots are as old as the run:
-/// store::map::gc::GcQueue::removing), kept this run, and marks the rest deleted, the newest lease
-/// granted then theirs, so the merge refuses a hand-off of an older lease bringing one
-/// (crate::agent::gcqueue::refusal), a hand-off posted by HTTP and not merged among them (its files
-/// kept by nothing else but their age). Told a chunk at a time (`TELL_CHUNK`), before any of the
-/// chunk goes: a name told and then kept (touched meanwhile, the run stopped) only costs a hand-off
-/// reusing it its redo. A tell that fails stops the run's removals (the job fails, and is tried
-/// again).
-pub trait Tell {
-    /// Those of `names` the lead holds, not to go.
+/// The lead's coordinator's routes the `gc` job asks GC's queue by (crate::coord).
+pub const CHUNK: &str = "/gc/chunk";
+pub const GONE: &str = "/gc/gone";
+pub const ORPHANS: &str = "/gc/orphans";
+pub const REMOVING: &str = "/gc/removing";
+
+/// How many names a chunk takes (the design's, docs/maplog.md §7.3). What bounds it: a chunk's
+/// names are refused to every hand-off while they're being removed, and at the share's measured
+/// deletion rates (`state/pool/nas-probes.json`: 8.4 a second at the median, 2.5 at the tenth
+/// percentile) 200 are some 24 s of deletions, 80 s at the slow end; its two asks of the lead and
+/// one `fsync` there are noise beside 200 SMB calls; and 200 names make a request of some 15 kB.
+/// A yield doesn't wait for a chunk's end (the job looks at each name), so it bounds nothing there.
+pub const CHUNK_NAMES: usize = 200;
+
+/// How GC's queue on the lead is asked (`TheLead`; a test's queue in process).
+pub trait Lead {
+    /// The next chunk (`ask`), marked deleted on the lead before it answers; a dry run's, every
+    /// name due, nothing marked.
+    fn chunk(&self, ask: &ChunkAsk) -> Result<Chunk>;
+    /// What a chunk removed (or found gone), and what it was told and didn't remove (it yielded).
+    fn gone(&self, gone: &[String], released: &[String]) -> Result<()>;
+    /// What the orphan sweep found: how many the lead queued.
+    fn orphans(&self, names: &[String]) -> Result<usize>;
+    /// A sweep's names about to be removed by its own rules (the gate's copies): those held now,
+    /// to keep; the rest marked as a chunk is.
     fn removing(&self, names: &[String]) -> Result<Vec<String>>;
 }
 
-impl<F: Fn(&[String]) -> Result<()>> Tell for F {
-    fn removing(&self, names: &[String]) -> Result<Vec<String>> {
-        self(names).map(|()| Vec::new())
-    }
+/// A chunk asked of the lead.
+#[derive(Clone, Copy, Debug)]
+pub struct ChunkAsk<'a> {
+    pub max: usize,
+    /// The newest complete OSM pass (`by_the_queue`).
+    pub passes_before: Option<&'a str>,
+    pub dry: bool,
 }
 
-/// The lead's coordinator's route a run tells its removals by (crate::coord).
-pub const REMOVING: &str = "/gc/removing";
+/// The lead's answer: the chunk's names (those of a chunk told before first), and the top folders
+/// the map and the records name (the orphan sweep's).
+#[derive(Debug, Default, Deserialize)]
+pub struct Chunk {
+    pub names: Vec<String>,
+    #[serde(default)]
+    pub tops: BTreeSet<String>,
+}
 
-/// How many names a run tells at once, then removes.
-const TELL_CHUNK: usize = 200;
-
-/// `Tell` by the lead's coordinator (`POST /gc/removing`), reached as the NAS says
-/// (`state/coordinator.json`): the `gc` job's. No coordinator, or one that doesn't mark them (not
-/// the lead, an older app), and nothing is removed.
+/// `Lead` by the lead's coordinator, reached as the NAS says (`state/coordinator.json`): the `gc`
+/// job's. No coordinator, or one that doesn't answer (not the lead, an older app), and nothing is
+/// removed.
 pub struct TheLead(Result<crate::coord::client::Client, String>);
 
 impl TheLead {
@@ -79,32 +96,67 @@ impl TheLead {
     pub fn at(c: crate::coord::client::Client) -> TheLead {
         TheLead(Ok(c))
     }
+
+    fn ask(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let c = self.0.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let (code, v) = c.post_json(path, body)?;
+        anyhow::ensure!(code == 200, "the lead's coordinator answered {code} to {path}: {}", v["error"]);
+        Ok(v)
+    }
 }
 
-impl Tell for TheLead {
+impl Lead for TheLead {
+    fn chunk(&self, a: &ChunkAsk) -> Result<Chunk> {
+        let v =
+            self.ask(CHUNK, &serde_json::json!({ "max": a.max, "passes_before": a.passes_before, "dry": a.dry }))?;
+        serde_json::from_value(v).context("the lead's chunk")
+    }
+
+    fn gone(&self, gone: &[String], released: &[String]) -> Result<()> {
+        self.ask(GONE, &serde_json::json!({ "gone": gone, "released": released })).map(drop)
+    }
+
+    fn orphans(&self, names: &[String]) -> Result<usize> {
+        let v = self.ask(ORPHANS, &serde_json::json!({ "names": names }))?;
+        v["queued"].as_u64().map(|n| n as usize).context("the lead's answer names no count")
+    }
+
     fn removing(&self, names: &[String]) -> Result<Vec<String>> {
-        let c = self.0.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let (code, v) = c.post_json(REMOVING, &serde_json::json!({ "names": names }))?;
-        anyhow::ensure!(code == 200, "the lead's coordinator answered {code} to {REMOVING} (an older app's?)");
+        let v = self.ask(REMOVING, &serde_json::json!({ "names": names }))?;
         serde_json::from_value(v["held"].clone()).context("the lead's answer names no held names")
     }
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
-    /// The maps whose files were kept: the NAS's snapshots read, and the lead's map. (The JSON key
-    /// keeps its old spelling, task #547: scripts read `scenic gc`.)
-    #[serde(rename = "catalogs_kept")]
-    pub catalogues_kept: usize,
-    pub referenced: usize,
-    pub files_seen: usize,
+    pub dry_run: bool,
+    /// It yielded at a safe point (the build pausing, or a job held back for the NAS): what it did
+    /// stands, the rest goes on at its next run.
+    pub paused: bool,
+    /// By the queue: the chunks taken, the files removed and those not there already. A dry run:
+    /// the names due now (`due`).
+    pub chunks: usize,
     pub removed: usize,
-    pub removed_bytes: u64,
+    pub gone_already: usize,
+    pub due: usize,
+    /// The sweeps run this time (their passes' names), and the folders they listed.
+    pub swept: Vec<String>,
+    pub folders: usize,
+    /// The orphan sweep: content-named files old enough found, and of them those the lead queued
+    /// (nothing held them).
+    pub orphans_found: usize,
+    pub orphans_queued: usize,
     pub tmp_removed: usize,
-    /// Unreferenced but too young to remove.
-    pub young: usize,
-    /// Due by this run's roots, kept as the lead holds them now (`Tell`).
-    pub held: usize,
+    /// A retired pass's other files (the planet download) removed.
+    pub retired_removed: usize,
+    /// The gate's checked copies removed, and those the lead held as they were told; why none were
+    /// swept, when they weren't.
+    pub inputs_removed: usize,
+    pub inputs_held: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inputs_skipped: Option<String>,
+    /// The pool's journal entries its records don't reflect yet (the gate's copies they name kept).
+    pub unmerged: usize,
     /// The names removed steps made (`RETIRED`) this run dropped from the manifest.
     pub retired_dropped: usize,
     /// The depth packs no current depth target names (`DepthKeep`) this run dropped from the
@@ -118,17 +170,6 @@ pub struct Report {
     pub pending_verified: usize,
     pub pending_verify_bytes: u64,
     pub pending_failed: usize,
-    /// Of the removed, files of retired passes' sources and of removed steps (and their bytes).
-    pub retired_removed: usize,
-    pub retired_bytes: u64,
-    /// Of the removed, the gate's checked copies; and why none were swept, when they weren't.
-    pub inputs_removed: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inputs_skipped: Option<String>,
-    /// The pool's journal entries its records don't reflect yet, whose files were kept.
-    pub unmerged: usize,
-    /// Tombstones found and put back (or, their name taken again, removed).
-    pub tombs: usize,
     /// Days of the history packed into `state/coord/history-archive/<day>.tar` this run.
     pub history_days_archived: usize,
     /// Days of the forecasts' archive packed into `state/coord/forecasts-archive/<YYYY-MM>.tar`.
@@ -139,33 +180,22 @@ pub struct Report {
     /// remove), asked (`Asked::old_catalogues`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub old_catalogues: Vec<String>,
-    /// GC's queue's due set (shadow, crate::agent::gcqueue) checked against this run's removals, in
-    /// words; the check itself, written beside the due set for the lead's agent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shadow: Option<String>,
-    #[serde(skip)]
-    pub shadow_check: Option<super::gcqueue::ShadowCheck>,
-    /// The files put back this run: left alone by its sweeps (the next run decides).
-    #[serde(skip)]
-    pub restored: BTreeSet<NasPath>,
     /// What it passed over and why (the agent's status says them as the job's note).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-    pub dry_run: bool,
 }
 
-/// Folders never swept, whatever the map names (`sources/` but its retired passes and the gate's
-/// checked copies, `sources/inputs/`, swept on their own rules).
+/// Top folders no chunk or walk takes a file of, whatever the map names (`sources/` but its
+/// retired passes, the removed steps' names and the gate's checked copies, each on its own rules).
 const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "app", "nas", "sources"];
 
-/// The logical-name prefixes of what removed steps made (removed means deleted): GC's run drops
-/// every name the manifest has under one, in one save of the records (`drop_names`: a hand-off
-/// of the `gc` job's, merged by the lead as any job's, its write-set these removals alone,
-/// crate::agent::steps), and its files then go as any the map, manifest or records don't name, once
-/// old: a name freed within `keep_days` keeps it. Under a folder GC sweeps anyway
-/// (not `NEVER`) the sweep of the folders takes them; under `sources/` only their prefix's folder
-/// is looked in (`sweep_retired_names`). A step whose code is deleted adds its outputs' prefix
-/// here; no step of the table may make a name under one. A prefix ends in `/` for a folder.
+/// The logical-name prefixes of what removed steps made (removed means deleted): GC's duties drop
+/// every name the manifest has under one, in one save of the records (`drop_names`: a hand-off of
+/// the `gc` job's, merged by the lead as any job's, its write-set these removals alone,
+/// crate::agent::steps); the records then no longer hold their files, which GC's queue frees as it
+/// does any (`by_the_queue` takes them under `sources/` too), and the orphan sweep lists their
+/// folders for those named before the queue was. A step whose code is deleted adds its outputs'
+/// prefix here; no step of the table may make a name under one. A prefix ends in `/` for a folder.
 pub const RETIRED: [&str; 3] = [
     // (The worldwide z8 terrain and its maxima, `-v<n>` and `-v<n>-max`: its code deleted by task #670.)
     "sources/terrain-z8-",
@@ -179,6 +209,25 @@ pub const RETIRED: [&str; 3] = [
 /// Whether logical name `l` is one a removed step made (`RETIRED`).
 pub fn retired(l: &str) -> bool {
     RETIRED.iter().any(|p| l.starts_with(p))
+}
+
+/// Whether a chunk takes content name `n` when GC's queue frees it: one in a folder the map
+/// indexes (outside `NEVER`), a removed step's (`RETIRED`), or a source of a pass older than the
+/// newest complete one (`passes_before`; `sources/osm/<date>/`, `sources/items/<date>/`). The rest
+/// of `sources/` is never GC's; the gate's copies (`sources/inputs/`) are `inputs_walk`'s, by the
+/// indexes that hold them, which the queue doesn't see.
+pub fn by_the_queue(n: &str, passes_before: Option<&str>) -> bool {
+    let mut parts = n.split('/');
+    let top = parts.next().unwrap_or_default();
+    if !NEVER.contains(&top) || retired(n) {
+        return true;
+    }
+    match (top, parts.next(), parts.next(), parts.next()) {
+        ("sources", Some("osm" | "items"), Some(date), Some(_)) => {
+            crate::osmpass::is_date(date) && passes_before.is_some_and(|newest| date < newest)
+        }
+        _ => false,
+    }
 }
 
 /// The depth's current targets as the agent's last plan found them (`build::depth_kept`: the z3 and
@@ -342,7 +391,7 @@ pub struct Verified {
     /// The bytes hashed (a dry run: it would hash), by the records' sizes, else the files'.
     pub bytes: u64,
     /// Why the run ended before the last batch: a call that stalled past its deadline and was
-    /// stopped (the batches before it are saved; the next daily run takes up the rest).
+    /// stopped (the batches before it are saved; the next duties' pass takes up the rest).
     pub stalled: Option<String>,
 }
 
@@ -428,12 +477,12 @@ fn nas_ssh() -> Vec<String> {
 /// What the pool's records and journal name beyond today's manifest (docs/pool.md §7.3, §7.7): the
 /// newest records' manifest and pending uploads (today's files may lag them a save), and every
 /// journal entry those records don't reflect yet, refused ones aside: a hand-off not merged yet
-/// (its member away for weeks, its entry written but untold) keeps the files it names, its changes
-/// and its uploads, so GC may run beside other jobs. Empty with the pool never on (no journal); an
-/// error when any of them can't be read now, or an entry the records don't name doesn't read whole
-/// (short, damaged, or not there as listed: a read cut short says nothing of the entry): GC fails
-/// then, removing nothing (tried again as a failed job is, sooner than its daily run), until the
-/// lead has refused the entry (one unreadable for `driver::UNREADABLE_S` awake), which the records
+/// (its member away for weeks, its entry written but untold) keeps what it names, its changes and
+/// its uploads (the gate's copies an index of it lists: `inputs_kept`). Empty with the pool never
+/// on (no journal); an error when any of them can't be read now, or an entry the records don't name
+/// doesn't read whole (short, damaged, or not there as listed: a read cut short says nothing of the
+/// entry): the inputs sweep then sweeps nothing that pass (said: `inputs_walk`), until the lead has
+/// refused the entry (one unreadable for `driver::UNREADABLE_S` awake), which the records
 /// then name. With no term led (the pool switched off, or its term not readable whole), no one
 /// refuses: an entry unreadable whose day is `PASS_OVER_S` past is passed over, said as a warning,
 /// so the hold is bounded either way.
@@ -456,8 +505,8 @@ pub struct Unmerged {
 /// is written whole in seconds (by a temporary name), and a lead refuses one its reads find not
 /// whole for `driver::UNREADABLE_S` (an hour) awake; three days is that hour with a margin for the
 /// pool switched off as a lead's Mac slept, a term handed over, or a share answering stale reads a
-/// while. Passing over isn't removing: the entry's files go only when old by GC's own keep window,
-/// as any file the map, manifest or records don't name.
+/// while. Passing over isn't removing: the entry's files go only by GC's own rules, as any file
+/// the map, manifest or records don't name.
 pub const PASS_OVER_S: u64 = 3 * 86400;
 const _: () = assert!(PASS_OVER_S >= crate::pool::driver::UNREADABLE_S + 2 * 86400);
 
@@ -665,501 +714,612 @@ fn meta(listed: u64, stats: u64, deletes: u64) {
     }
 }
 
-/// What a run is asked beside its window (the `gc` job's flags, `scenic gc`).
+/// How old an unheld content-named file must be before the orphan sweep queues it (docs/maplog.md
+/// §7.5): no job runs that long between its upload and its hand-off.
+pub const ORPHAN_AGE_S: u64 = 14 * 86400;
+/// How old a `.tmp` file must be before a walk removes it: a write that never finished (no write
+/// takes that long).
+pub const TMP_AGE_S: u64 = 2 * 86400;
+/// How long the gate's checked copies of a version replaced stay restorable (docs/inputs.md
+/// §4.9: an index made or replaced since, or a check's state of since naming it replaced, keeps
+/// its files), and the age a copy nothing keeps must have.
+pub const INPUTS_KEEP_S: u64 = 14 * 86400;
+/// How long a retired pass's other files (the planet download) stay once the newer pass is
+/// complete: a fresh pass can still be compared with the one before.
+pub const PLANET_KEEP_S: u64 = 14 * 86400;
+/// How often the duties' pass begins (`duties`): the history packs a day at a time, and the
+/// uploads' checks and the names to drop keep up with a day's jobs.
+pub const DUTIES_EVERY_S: u64 = 86400;
+
+/// The sweeps in the order a run takes them, and how long after one pass ended the next begins:
+/// the walks list folders of the whole share, which GC's queue spares it doing daily, so a pass
+/// begins once an orphan of the pass before has had its age (an orphan goes within twice
+/// `ORPHAN_AGE_S`; a replaced copy of the gate's within twice `INPUTS_KEEP_S`).
+pub const SWEEPS: [(&str, u64); 3] = [("duties", DUTIES_EVERY_S), ("inputs", INPUTS_KEEP_S), ("orphans", ORPHAN_AGE_S)];
+
+/// The file in the lead's map log folder its sweeps' passes are kept in (`Sweeps`).
+pub const SWEEPS_FILE: &str = "gc-sweeps.json";
+
+/// Each sweep's pass (`SWEEPS`): when it began, when it ended, and the folder a walk reached, so a
+/// run stopped (killed, yielding) goes on after it without listing again what it had.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Sweeps {
+    #[serde(default)]
+    pub each: BTreeMap<String, Pass>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pass {
+    pub begun: u64,
+    /// None: under way.
+    #[serde(default)]
+    pub ended: Option<u64>,
+    /// The last folder its walk finished (a path from the project folder).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reached: Option<String>,
+}
+
+impl Sweeps {
+    /// The passes kept at `p`: none there (or unreadable, said), none begun.
+    pub fn read(p: &std::path::Path) -> Sweeps {
+        match std::fs::read(p) {
+            Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
+                eprintln!("gc: {} doesn't read ({e}): every sweep's pass begins again", p.display());
+                Sweeps::default()
+            }),
+            Err(_) => Sweeps::default(),
+        }
+    }
+
+    fn write(&self, p: &std::path::Path) -> Result<()> {
+        if let Some(d) = p.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        store::whole::write(p, &serde_json::to_vec(self)?).with_context(|| format!("write {}", p.display()))
+    }
+
+    /// Whether sweep `name`'s pass is under way, or its next is due at `now`.
+    pub fn due(&self, name: &str, now: u64) -> bool {
+        let every = SWEEPS.iter().find(|(n, _)| *n == name).map_or(0, |s| s.1);
+        self.each.get(name).is_none_or(|p| p.ended.is_none_or(|e| now.saturating_sub(e) >= every))
+    }
+
+    /// Whether any is.
+    pub fn any_due(&self, now: u64) -> bool {
+        SWEEPS.iter().any(|(n, _)| self.due(n, now))
+    }
+}
+
+/// What a run is asked (the `gc` job's flags, `scenic gc`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Asked<'a> {
     /// Says what it would do, and does none of it.
     pub dry_run: bool,
     /// The depth's current targets (`DepthKeep`; None: no depth name dropped).
     pub depth: Option<&'a DepthKeep>,
-    /// GC's queue's due set (crate::agent::gcqueue::SHADOW_DUE), with the lead's map and the names
-    /// freed within the window GC's roots, checked against what this run removes and the check
-    /// written beside it (`SHADOW_CHECK`); one that can't be read fails the run, removing nothing (a
-    /// dry run says so, and goes on).
-    pub shadow: Option<&'a std::path::Path>,
+    /// Where its sweeps' passes are kept (`SWEEPS_FILE`, the agent's): each sweep runs when due and
+    /// goes on where it reached. None (a run by hand): every sweep runs whole, nothing kept.
+    pub sweeps: Option<&'a std::path::Path>,
     /// What the NAS kept of old catalogues removed (`remove_old_catalogues`): the lead asks it once
     /// every member's app checks the NAS by `map/` (crate::pool::beat::Beat::checks_map).
     pub old_catalogues: bool,
 }
 
-/// `run_once`, its NAS work counted from its start and noted as it ends (`note_cost`), in a job
-/// (`SCENIC_COSTS` set). Every content name it removes is told `tell` first (`Tell`).
-pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, asked: &Asked, tell: &dyn Tell) -> Result<Report> {
-    let Asked { dry_run, depth, shadow, old_catalogues } = *asked;
+/// What a run acts through: the lead, its safe points, a file's removal.
+pub struct Ways<'a> {
+    pub lead: &'a dyn Lead,
+    /// Whether to stop at this safe point (a job's: the agent asking it to, crate::control).
+    pub yielding: &'a dyn Fn() -> bool,
+    /// Removes a file from the NAS (one SMB call; a test's to fail or stop).
+    pub remove: &'a dyn Fn(&NasPath) -> std::io::Result<()>,
+}
+
+/// A job's safe point between two removals or two folders: whether the agent asks it to stop (the
+/// build pausing, or a job held back long for the NAS it holds: docs/pool.md §7.7). Read at most
+/// once a second.
+pub fn job_yielding() -> bool {
+    crate::control::reached();
+    crate::control::draining_lately()
+}
+
+/// A file's removal over SMB, counted as a delete (`meta`).
+pub fn unlink(p: &NasPath) -> std::io::Result<()> {
+    meta(0, 0, 1);
+    p.remove_file()
+}
+
+/// Whether a run went on to its end or stopped at a safe point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Flow {
+    Done,
+    Paused,
+}
+
+/// A run: the queue's chunks (`drain`), then each sweep whose pass is due (`SWEEPS`), its NAS
+/// work counted from its start and noted as it ends (`note_cost`) in a job (`SCENIC_COSTS` set).
+/// Stopped at a safe point, it says so (`Report::paused`), what it did kept.
+pub fn run(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Result<Report> {
     STARTED.get_or_init(std::time::Instant::now);
     if std::env::var_os("SCENIC_COSTS").is_some() {
         COUNTING.set(true);
         crate::costin::begin();
     }
-    // (The names to drop first; a failure is said and tried again next run, never fails GC. Its
-    // scratch only a folder: a removal writes nothing.)
-    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let scratch = std::env::temp_dir().join(format!("scenic-gc-{}-{n}", std::process::id()));
-    let due = shadow.map(|p| -> Result<super::gcqueue::ShadowDue> {
-        let b = std::fs::read(p).with_context(|| format!("read {}", p.display()))?;
-        serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))
-    });
-    let mut due_warning = None;
-    let due = match due {
-        Some(Ok(d)) => Some(d),
-        Some(Err(e)) if dry_run => {
-            due_warning = Some(format!("GC's queue's due set not read: {e:#}"));
-            None
-        }
-        Some(Err(e)) => return Err(e.context("nothing removed: GC's queue's due set, the lead's map in it")),
-        None => None,
-    };
-    let dropped = drop_names(root, &scratch, depth, dry_run);
-    std::fs::remove_dir_all(&scratch).ok();
-    let r = run_once(root, keep_days, dry_run, due.as_ref(), tell).map(|mut rep| {
-        rep.warnings.extend(due_warning);
-        if let (Some(c), Some(p)) = (&rep.shadow_check, shadow) {
-            let to = p.with_file_name(super::gcqueue::SHADOW_CHECK);
-            if let Err(e) = store::whole::write(&to, &serde_json::to_vec(c).unwrap_or_default()) {
-                rep.warnings.push(format!("GC's queue's check not written to {}: {e:#}", to.display()));
-            }
-            // (Only a holder the queue missed is warned of; its window's reasons are counted.)
-            if !c.holds() {
-                rep.warnings.push(c.said());
-            }
-            rep.shadow = Some(c.said());
-        }
-        match &dropped {
-            Ok(d) => (rep.retired_dropped, rep.depth_dropped, rep.pending_dropped) = (d.retired, d.depth, d.unpended),
-            Err(e) => rep.warnings.push(format!("names not dropped: {e:#}")),
-        }
-        // The history's old days, one tar a day (task #531); a failure is said, never fails GC.
-        match super::histarchive::run(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
-            Ok(h) => {
-                meta(h.listed, h.stats, h.files_removed as u64 + h.tmp_removed as u64 + h.days_archived as u64);
-                rep.history_days_archived = h.days_archived;
-                rep.warnings.extend(h.warnings);
-            }
-            Err(e) => rep.warnings.push(format!("history not archived: {e:#}")),
-        }
-        // The forecasts' archive's old days, one tar a month, kept for good (task #621).
-        match super::fcarchive::pack(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
-            Ok(h) => {
-                meta(h.listed, h.stats, h.files_removed as u64 + h.tmp_removed as u64);
-                rep.forecast_days_archived = h.days_archived;
-                rep.warnings.extend(h.warnings);
-            }
-            Err(e) => rep.warnings.push(format!("forecasts not archived: {e:#}")),
-        }
-        // The forecast inputs' archive's days before the backtest's span (task #933).
-        match super::fcinputs::prune(root, crate::agent::jobs::now_s(), dry_run) {
-            Ok(h) => {
-                meta(h.listed, h.stats, h.files_removed as u64);
-                rep.forecast_input_days_removed = h.files_removed;
-            }
-            Err(e) => rep.warnings.push(format!("forecast inputs not pruned: {e:#}")),
-        }
-        // The old catalogues' folders, once asked (docs/maplog.md §8, step 9); a failure is said,
-        // never fails GC, and the next run takes up what's left.
-        let nas_root = store::nas::on_nas(&root.unchecked_path());
-        let ssh = nas_ssh();
-        let ssh: Vec<&str> = ssh.iter().map(String::as_str).collect();
-        if old_catalogues {
-            match remove_old_catalogues(root, nas_root.as_deref().map(|n| (&ssh[..], n)), dry_run) {
-                Ok(o) => {
-                    rep.warnings.extend(o.warnings);
-                    rep.old_catalogues = o.removed;
-                }
-                Err(e) => rep.warnings.push(format!("old catalogues not removed: {e:#}")),
-            }
-        }
-        // The uploads still pending checked on the NAS itself, last (the longest, hashing on the
-        // NAS); a failure is said, never fails GC. Not a project folder on the NAS's share (a
-        // test's): none checked.
-        if let Some(nas_root) = &nas_root {
-            match verify_pending(root, &scratch, &ssh, nas_root, dry_run) {
-                Ok(v) => {
-                    (rep.pending_verified, rep.pending_verify_bytes, rep.pending_failed) = (v.ok, v.bytes, v.bad.len());
-                    if let Some(why) = &v.stalled {
-                        rep.warnings.push(format!(
-                            "uploads' verification stopped: {why} (the batches before it are saved; the next run takes up the rest)"
-                        ));
-                    }
-                    if let Some(first) = v.bad.first() {
-                        rep.warnings.push(format!(
-                            "{} uploads don't match their SHA-256 on the NAS, or aren't there (left pending; `scenic redo` their targets): {first}{}",
-                            v.bad.len(),
-                            if v.bad.len() > 1 { " …" } else { "" }
-                        ));
-                    }
-                }
-                Err(e) => rep.warnings.push(format!("uploads not verified: {e:#}")),
-            }
-            std::fs::remove_dir_all(&scratch).ok();
-        }
-        rep
-    });
+    let r = run_counted(root, asked, ways);
     note_cost();
     r
 }
 
-fn run_once(
-    root: &store::nasfs::NasRoot,
-    keep_days: u64,
-    dry_run: bool,
-    due: Option<&super::gcqueue::ShadowDue>,
-    tell: &dyn Tell,
-) -> Result<Report> {
-    use crate::timings::phase;
-    let keep = Duration::from_secs(keep_days * 86400);
-    let now = SystemTime::now();
-    let old = |t: SystemTime| now.duration_since(t).is_ok_and(|d| d > keep);
+fn run_counted(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Result<Report> {
+    let dry_run = asked.dry_run;
     let mut rep = Report { dry_run, ..Default::default() };
-    let mut due_now = Removals { tell, dry_run, due: Vec::new() };
-
-    // The maps (docs/maplog.md §8, step 6: no catalogue names a file any more): every snapshot of
-    // the map on the NAS (`map/`, the newest few: the map up to an hour behind and before), and the
-    // lead's map now with the names its queue freed within the window (`due`, the lead's agent's).
-    // (Phase names are stored in the job logs and their stats: the old spelling stays, task #547.)
-    let read = phase("reading the catalogs");
-    crate::agent::jobs::stage(0, 2, "steps (reading the maps)");
-    let map_dir = root.join(store::map::NAS_DIR);
-    let seqs = store::map::seqs_in(&map_dir).context("list the map's snapshots")?;
-    let mut referenced: BTreeSet<String> = BTreeSet::new();
-    // (What the map names now, for the shadow's check: the lead's, else the newest snapshot's.)
-    let mut newest: BTreeSet<String> = BTreeSet::new();
-    for (k, &seq) in seqs.iter().enumerate() {
-        crate::agent::jobs::within(k as f64 / seqs.len() as f64);
-        let p = map_dir.join(store::map::nas_name(seq));
-        meta(0, 1, 0);
-        // A snapshot that can't be read stops the sweep: its files might be in use.
-        let b = p.read().with_context(|| format!("read {}", p.display()))?;
-        read.count(b.len() as u64, 1);
-        let (m, _) = store::map::Snapshot::decode(&b).with_context(|| format!("read {}", p.display()))?;
-        let names: BTreeSet<String> = m.catalogue()?.files.into_values().map(|f| f.file).collect();
-        if k == 0 {
-            newest = names.clone();
-        }
-        referenced.extend(names);
-        rep.catalogues_kept += 1;
-    }
-    // (A due set naming no map, the lead's log holding none: the snapshots alone.)
-    if let Some(d) = due.filter(|d| !d.map.is_empty()) {
-        newest = d.map.iter().cloned().collect();
-        referenced.extend(d.map.iter().cloned());
-        let since = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_secs()).saturating_sub(keep.as_secs());
-        referenced.extend(d.freed.iter().filter(|(_, at)| *at >= since).map(|(n, _)| n.clone()));
-        rep.catalogues_kept += 1;
-    }
-    // Before the first map there's nothing to keep track of, so nothing is removed.
-    if rep.catalogues_kept == 0 {
+    let latest = crate::osmpass::latest_pass(root);
+    crate::agent::jobs::stage(0, 2, "steps (removing what GC's queue frees)");
+    let (flow, tops) = {
+        let _p = crate::timings::phase("removing what GC's queue frees");
+        drain(root, ways, dry_run, latest.as_deref(), &mut rep)?
+    };
+    if flow == Flow::Paused {
+        rep.paused = true;
         return Ok(rep);
     }
-    // The build's manifest: everything a build has uploaded and may publish next (work in flight,
-    // and outputs reused by name). Unreadable, nothing is removed.
-    // (Not `exists()`: it's false on an I/O error too, and then the manifest's files would go.)
-    drop(read);
-    let m: std::collections::BTreeMap<String, String> = {
-        let _p = phase("reading the build manifest");
-        crate::out::read_manifest(root).context("the build manifest")?
-    };
-    // The pool's newest records and its journal's entries not merged yet: unreadable, nothing
-    // removed, the job failed (said in the status, tried again as failures are); entries passed
-    // over, no term led, said as warnings (the job's note).
-    let um = {
-        let _p = phase("reading the journal");
-        let now_s = now.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        unmerged(root, now_s).context("nothing removed: the pool's records or journal can't be read whole")?
-    };
-    for w in &um.warnings {
-        eprintln!("gc: warning: {w}");
-    }
-    rep.warnings.extend(um.warnings.iter().cloned());
-    rep.unmerged = um.entries;
-    // (What the gate's copies are kept by, read before the manifest is given up.)
-    let inputs_keep = match inputs_kept(root, &m, &um, keep, now) {
-        Ok(k) => Some(k),
-        Err(e) => {
-            rep.inputs_skipped = Some(format!("{e:#}"));
-            None
+    crate::agent::jobs::stage(1, 2, "steps (sweeping)");
+    let now = crate::agent::jobs::now_s();
+    let mut sw = asked.sweeps.map(Sweeps::read).unwrap_or_default();
+    for (name, _) in SWEEPS {
+        if asked.sweeps.is_some() && !sw.due(name, now) {
+            continue;
         }
-    };
-    // (The shadow's due names the records, or a hand-off not merged, name: a holder it missed.)
-    let mut check = due.map(|d| {
-        let due: BTreeSet<String> = d.names.iter().cloned().collect();
-        let by_records = m.values().chain(&um.files).filter(|c| due.contains(*c)).cloned().collect();
-        let out = super::gcqueue::ShadowCheck { due: due.len(), due_at: d.at, ..Default::default() };
-        Shadow { due, by_records, out }
-    });
-    referenced.extend(m.into_values());
-    referenced.extend(um.files);
-    rep.referenced = referenced.len();
-    let tops: BTreeSet<String> = referenced
-        .iter()
-        .filter_map(|f| f.split('/').next())
-        .filter(|t| !NEVER.contains(t))
-        .map(str::to_string)
-        .collect();
-    // A retired prefix outside `NEVER` adds its own folder only, when its top folder isn't swept
-    // anyway (never the rest of that top folder; `sweep_retired_names` takes those under `NEVER`).
-    let tops: Vec<String> = RETIRED
-        .iter()
-        .filter_map(|p| p.rsplit_once('/').map(|(d, _)| d))
-        .filter(|d| d.split('/').next().is_some_and(|t| !NEVER.contains(&t) && !tops.contains(t)))
-        .map(str::to_string)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .chain(tops)
-        .collect();
-
-    crate::agent::jobs::stage(1, 2, "steps (sweeping the folders)");
-    // (Listing the folders and removing what's due, file by file: one phase, the removals counted.)
-    let sweep = phase("sweeping folders");
-    for (k, top) in tops.iter().enumerate() {
-        yield_point();
-        crate::agent::jobs::within(k as f64 / tops.len() as f64);
-        let mut stack = vec![root.join(top)];
-        while let Some(dir) = stack.pop() {
-            due_now.flush(&old, &mut rep, check.as_mut())?;
-            yield_point();
-            let Ok(rd) = dir.read_dir() else { continue };
-            for e in rd {
-                let p = e.path.clone();
-                meta(1, 1, 0);
-                let Some(md) = stat(&e) else { continue };
-                if md.is_dir() {
-                    stack.push(p);
-                    continue;
-                }
-                rep.files_seen += 1;
-                if rep.restored.contains(&p) {
-                    continue;
-                }
-                let rel = p.rel().to_string();
-                let name = e.name.clone();
-                let mtime = md.modified().unwrap_or(now);
-                if name.ends_with(TOMB) {
-                    put_back(&p, dry_run, &mut rep);
-                    continue;
-                }
-                if name.ends_with(".tmp") {
-                    // A write that never finished (two days: no write takes that long).
-                    if now.duration_since(mtime).is_ok_and(|d| d > Duration::from_secs(2 * 86400)) {
-                        remove(&p, dry_run)?;
-                        rep.tmp_removed += 1;
-                    }
-                    continue;
-                }
-                if store::naming::parse_content_name(&rel).is_none() {
-                    continue;
-                }
-                if referenced.contains(&rel) {
-                    if let Some(c) = &mut check {
-                        let why = if c.by_records.contains(&rel) {
-                            "records"
-                        } else if newest.contains(&rel) {
-                            "map"
-                        } else {
-                            "window"
-                        };
-                        c.note(&rel, Some(why));
-                    }
-                    continue;
-                }
-                if !old(mtime) {
-                    rep.young += 1;
-                    if let Some(c) = &mut check {
-                        c.note(&rel, Some("young"));
-                    }
-                    continue;
-                }
-                due_now.push(Due { path: p, rel, len: md.len(), kind: Kind::Swept }, &old, &mut rep, check.as_mut())?;
-            }
+        let pass = sw.each.entry(name.to_string()).or_default();
+        if pass.ended.is_some() || pass.begun == 0 {
+            *pass = Pass { begun: now, ..Default::default() };
         }
-    }
-    due_now.flush(&old, &mut rep, check.as_mut())?;
-    drop(sweep);
-    // (The due names the sweep didn't meet: gone already, or in no folder it sweeps.)
-    if let Some(mut c) = check {
-        let left: Vec<String> = c.due.iter().cloned().collect();
-        for n in left {
-            let why = if root.join(&n).exists() { "not swept" } else { "gone" };
-            c.note(&n, Some(why));
+        rep.swept.push(name.to_string());
+        let reached = pass.reached.clone();
+        let save = |sw: &Sweeps| asked.sweeps.filter(|_| !dry_run).map_or(Ok(()), |p| sw.write(p));
+        save(&sw)?;
+        let mut at = |rel: &str| -> Result<()> {
+            sw.each.entry(name.to_string()).or_default().reached = Some(rel.to_string());
+            save(&sw)
+        };
+        let flow = match name {
+            "duties" => duties(root, asked, &mut rep),
+            "inputs" => inputs_walk(root, ways, dry_run, reached.as_deref(), &mut at, &mut rep),
+            _ => orphan_walk(root, ways, dry_run, &tops, latest.as_deref(), reached.as_deref(), &mut at, &mut rep),
+        }?;
+        if flow == Flow::Paused {
+            rep.paused = true;
+            return Ok(rep);
         }
-        rep.shadow_check = Some(c.out);
-    }
-    // The gate's checked copies: what's kept named, the rest once old.
-    if let Some(keep) = inputs_keep {
-        let _p = phase("sweeping the inputs' copies");
-        let mut stack = vec![root.join("sources/inputs")];
-        while let Some(dir) = stack.pop() {
-            due_now.flush(&old, &mut rep, None)?;
-            yield_point();
-            let Ok(rd) = dir.read_dir() else { continue };
-            for e in rd {
-                let p = e.path.clone();
-                meta(1, 1, 0);
-                let Some(md) = stat(&e) else { continue };
-                if md.is_dir() {
-                    stack.push(p);
-                    continue;
-                }
-                rep.files_seen += 1;
-                if rep.restored.contains(&p) {
-                    continue;
-                }
-                let rel = p.rel().to_string();
-                let mtime = md.modified().unwrap_or(now);
-                if e.name.ends_with(TOMB) {
-                    put_back(&p, dry_run, &mut rep);
-                    continue;
-                }
-                if e.name.ends_with(".tmp") {
-                    if now.duration_since(mtime).is_ok_and(|d| d > Duration::from_secs(2 * 86400)) {
-                        remove(&p, dry_run)?;
-                        rep.tmp_removed += 1;
-                    }
-                    continue;
-                }
-                if store::naming::parse_content_name(&rel).is_none() || keep.contains(&rel) || referenced.contains(&rel)
-                {
-                    continue;
-                }
-                if !old(mtime) {
-                    rep.young += 1;
-                    continue;
-                }
-                due_now.push(Due { path: p, rel, len: md.len(), kind: Kind::Inputs }, &old, &mut rep, None)?;
-            }
-        }
-        due_now.flush(&old, &mut rep, None)?;
-    }
-    // Retired passes' sources: passes older than the newest complete one.
-    if let Some(latest) = crate::osmpass::latest_pass(root) {
-        let _p = phase("sweeping retired passes");
-        // When the newest pass completed (its summary's time): a retired pass's plain files (the
-        // planet download) go once that's `keep_days` ago, so a fresh pass can still be compared.
-        let done_at = root
-            .join("sources/osm")
-            .join(&latest)
-            .read_dir()
-            .ok()
-            .and_then(|rd| rd.into_iter().find(|e| e.name.starts_with("pass.") && e.name.ends_with(".json")))
-            .and_then(|e| e.metadata().ok()?.modified().ok());
-        let plain_due = done_at.is_some_and(old);
-        for kind in ["osm", "items"] {
-            let Ok(rd) = root.join("sources").join(kind).read_dir() else { continue };
-            let mut dates: Vec<String> =
-                rd.into_iter().map(|e| e.name).filter(|d| crate::osmpass::is_date(d) && *d < latest).collect();
-            dates.sort();
-            for d in dates {
-                yield_point();
-                let dir = root.join("sources").join(kind).join(&d);
-                sweep_retired(&dir, &referenced, &old, plain_due, &mut due_now, &mut rep)?;
-            }
-        }
-    }
-    {
-        let _p = phase("sweeping removed steps' files");
-        sweep_retired_names(root, &referenced, &old, &mut due_now, &mut rep)?;
+        let pass = sw.each.entry(name.to_string()).or_default();
+        (pass.ended, pass.reached) = (Some(crate::agent::jobs::now_s()), None);
+        save(&sw)?;
     }
     Ok(rep)
 }
 
-/// What a sweep found due, removed a chunk at a time (`TELL_CHUNK`): the chunk's names told
-/// (`Tell`) first, then each removed unless a job reused it meanwhile (`remove_unless_touched`),
-/// then a safe point. A dry run tells no one and removes nothing.
-struct Removals<'a> {
-    tell: &'a dyn Tell,
+/// The queue's chunks, one after another until the lead has none (a dry run: the names due now,
+/// counted), each removed as it was told (`remove_told`). The orphan sweep's top folders, as the
+/// lead's last answer named them.
+fn drain(
+    root: &store::nasfs::NasRoot,
+    ways: &Ways,
     dry_run: bool,
-    due: Vec<Due>,
-}
-
-/// A content-named file due: nothing names it and it's old.
-struct Due {
-    path: NasPath,
-    rel: String,
-    len: u64,
-    kind: Kind,
-}
-
-/// Which sweep found it: what its removal counts as in the report.
-#[derive(Clone, Copy)]
-enum Kind {
-    /// The folders the map indexes.
-    Swept,
-    /// The gate's checked copies.
-    Inputs,
-    /// Retired passes' sources and removed steps' files.
-    Retired,
-}
-
-impl Removals<'_> {
-    /// `d` due; the chunk removed once full.
-    fn push(
-        &mut self,
-        d: Due,
-        old: &dyn Fn(SystemTime) -> bool,
-        rep: &mut Report,
-        check: Option<&mut Shadow>,
-    ) -> Result<()> {
-        self.due.push(d);
-        if self.due.len() >= TELL_CHUNK {
-            self.flush(old, rep, check)?;
+    passes_before: Option<&str>,
+    rep: &mut Report,
+) -> Result<(Flow, BTreeSet<String>)> {
+    let ask = ChunkAsk { max: if dry_run { usize::MAX } else { CHUNK_NAMES }, passes_before, dry: dry_run };
+    loop {
+        let c = ways.lead.chunk(&ask).context("nothing removed: GC's queue on the lead not asked")?;
+        if dry_run {
+            rep.due = c.names.len();
+            return Ok((Flow::Done, c.tops));
         }
-        Ok(())
+        if c.names.is_empty() {
+            return Ok((Flow::Done, c.tops));
+        }
+        rep.chunks += 1;
+        let (mut removed, mut already) = (0, 0);
+        let flow = remove_told(root, &c.names, ways, &mut removed, &mut already);
+        (rep.removed, rep.gone_already) = (rep.removed + removed, rep.gone_already + already);
+        if flow? == Flow::Paused {
+            return Ok((Flow::Paused, c.tops));
+        }
     }
+}
 
-    /// The chunk so far told, then removed, each counted (and noted in the shadow's `check`).
-    fn flush(
-        &mut self,
-        old: &dyn Fn(SystemTime) -> bool,
-        rep: &mut Report,
-        mut check: Option<&mut Shadow>,
-    ) -> Result<()> {
-        if self.due.is_empty() {
-            return Ok(());
+/// Names the lead has marked deleted (a chunk, or a sweep's told), removed one by one in their
+/// order, a safe point before each; one not there is gone already. Then said gone to the lead. At
+/// a safe point asked to stop: what went said gone and the rest let go (back to the queue,
+/// unmarked). A removal that fails stops it: what went said, the rest let go but that one, whose
+/// outcome isn't known (the next chunk takes it again), and the run fails.
+fn remove_told(
+    root: &store::nasfs::NasRoot,
+    names: &[String],
+    ways: &Ways,
+    removed: &mut usize,
+    already: &mut usize,
+) -> Result<Flow> {
+    let mut gone = Vec::new();
+    for (i, n) in names.iter().enumerate() {
+        if (ways.yielding)() {
+            ways.lead.gone(&gone, &names[i..]).context("what went not said to GC's queue on the lead")?;
+            return Ok(Flow::Paused);
         }
-        let due = std::mem::take(&mut self.due);
-        let held: BTreeSet<String> = if self.dry_run {
-            BTreeSet::new()
+        match (ways.remove)(&root.join(n)) {
+            Ok(()) => *removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => *already += 1,
+            Err(e) => {
+                if let Err(g) = ways.lead.gone(&gone, &names[i + 1..]) {
+                    eprintln!(
+                        "gc: what went not said to GC's queue on the lead: {g:#} (the next chunk takes it again)"
+                    );
+                }
+                return Err(e).with_context(|| format!("remove {n}"));
+            }
+        }
+        gone.push(n.clone());
+    }
+    ways.lead
+        .gone(&gone, &[])
+        .context("what went not said to GC's queue on the lead (the next chunk takes it again)")?;
+    Ok(Flow::Done)
+}
+
+/// A folder a walk starts at: listed whole, or only its own files whose path starts with `only`
+/// (a removed step's prefix in `sources/`); `pass`: a retired pass's (its other files removed once
+/// the newer pass has settled).
+#[derive(Clone, Debug, PartialEq)]
+struct Root {
+    dir: String,
+    only: Option<&'static str>,
+    pass: bool,
+}
+
+/// Where a folder stands against the folder a walk reached (`reached`), in the walk's order (each
+/// folder before what's in it, names in order): done before it, it or one it's in (listed again
+/// for what's in it, its own files done), or not yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seen {
+    Done,
+    Above,
+    New,
+}
+
+fn seen(rel: &str, reached: Option<&str>) -> Seen {
+    let Some(r) = reached else { return Seen::New };
+    let parts = |p: &str| p.split('/').filter(|c| !c.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    let (f, r) = (parts(rel), parts(r));
+    if r.starts_with(&f) {
+        Seen::Above
+    } else if f < r {
+        Seen::Done
+    } else {
+        Seen::New
+    }
+}
+
+/// The folders under `roots` in the walk's order, after `reached`: each listed once and handed to
+/// `visit` with its entries (the folders it holds walked after it, by name; never through a link),
+/// which notes it reached and may stop the walk.
+fn walk(
+    root: &store::nasfs::NasRoot,
+    roots: &[Root],
+    reached: Option<&str>,
+    visit: &mut dyn FnMut(&Root, &NasPath, Vec<store::nasfs::NasEntry>) -> Result<Flow>,
+) -> Result<Flow> {
+    let mut roots = roots.to_vec();
+    roots.sort_by(|a, b| seen_key(&a.dir).cmp(&seen_key(&b.dir)));
+    for r in &roots {
+        let mut stack = vec![root.join(&r.dir)];
+        while let Some(dir) = stack.pop() {
+            let s = seen(dir.rel(), reached);
+            if s == Seen::Done || (s == Seen::Above && r.only.is_some()) {
+                continue;
+            }
+            let Ok(entries) = dir.read_dir() else { continue };
+            if s == Seen::Above {
+                meta(entries.len() as u64, 0, 0);
+            }
+            if r.only.is_none() {
+                let mut subs: Vec<NasPath> = entries
+                    .iter()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink()))
+                    .map(|e| e.path.clone())
+                    .collect();
+                subs.sort_by(|a, b| b.rel().cmp(a.rel()));
+                stack.extend(subs);
+            }
+            if s == Seen::New && visit(r, &dir, entries)? == Flow::Paused {
+                return Ok(Flow::Paused);
+            }
+        }
+    }
+    Ok(Flow::Done)
+}
+
+fn seen_key(p: &str) -> Vec<String> {
+    p.split('/').filter(|c| !c.is_empty()).map(str::to_string).collect()
+}
+
+/// The orphan sweep (docs/maplog.md §7.5): the folders the map and the records name (`tops`, the
+/// lead's), the removed steps' (`RETIRED`) and the retired passes' (older than `latest`), a folder
+/// at a time from the one it reached: each content-named file at least `ORPHAN_AGE_S` old sent to
+/// the lead, which queues those nothing holds (GC's queue frees them as any); each `.tmp` file
+/// `TMP_AGE_S` old removed; a retired pass's other files removed once the newer pass has been
+/// complete `PLANET_KEEP_S`, and its folders left empty. A dry run counts, sending and removing
+/// nothing.
+#[allow(clippy::too_many_arguments)]
+fn orphan_walk(
+    root: &store::nasfs::NasRoot,
+    ways: &Ways,
+    dry_run: bool,
+    tops: &BTreeSet<String>,
+    latest: Option<&str>,
+    reached: Option<&str>,
+    at: &mut dyn FnMut(&str) -> Result<()>,
+    rep: &mut Report,
+) -> Result<Flow> {
+    let _p = crate::timings::phase("sweeping for orphans");
+    let mut roots: Vec<Root> = tops
+        .iter()
+        .filter(|t| !NEVER.contains(&t.as_str()))
+        .map(|t| Root { dir: t.clone(), only: None, pass: false })
+        .collect();
+    for p in RETIRED {
+        let dir = p.rsplit_once('/').map_or("", |(d, _)| d);
+        let top = dir.split('/').next().unwrap_or_default();
+        if NEVER.contains(&top) {
+            roots.push(Root { dir: dir.into(), only: Some(p), pass: false });
+        } else if !tops.contains(top) {
+            roots.push(Root { dir: dir.into(), only: None, pass: false });
+        }
+    }
+    // (A retired pass's planet goes once the newest pass completed `PLANET_KEEP_S` ago: its
+    // summary's time.)
+    let mut planet_due = false;
+    if let Some(latest) = latest {
+        meta(1, 0, 0);
+        planet_due = root
+            .join("sources/osm")
+            .join(latest)
+            .read_dir()
+            .ok()
+            .and_then(|rd| rd.into_iter().find(|e| e.name.starts_with("pass.") && e.name.ends_with(".json")))
+            .and_then(|e| e.metadata().ok()?.modified().ok())
+            .is_some_and(|t| age_s(t) > PLANET_KEEP_S);
+        for kind in ["osm", "items"] {
+            meta(1, 0, 0);
+            let Ok(rd) = root.join("sources").join(kind).read_dir() else { continue };
+            for e in rd.into_iter().filter(|e| crate::osmpass::is_date(&e.name) && e.name.as_str() < latest) {
+                roots.push(Root { dir: format!("sources/{kind}/{}", e.name), only: None, pass: true });
+            }
+        }
+    }
+    walk(root, &roots, reached, &mut |r, dir, entries| {
+        let mut found = Vec::new();
+        let mut left = false;
+        for e in entries {
+            meta(1, 1, 0);
+            let Some(md) = stat(&e) else {
+                left = true;
+                continue;
+            };
+            if md.is_dir() {
+                left = true;
+                continue;
+            }
+            let rel = e.path.rel().to_string();
+            if r.only.is_some_and(|p| !rel.starts_with(p)) {
+                continue;
+            }
+            let age = md.modified().map_or(0, age_s);
+            if e.name.ends_with(".tmp") {
+                if age > TMP_AGE_S {
+                    remove_plain(&e.path, ways, dry_run)?;
+                    rep.tmp_removed += 1;
+                } else {
+                    left = true;
+                }
+            } else if store::naming::parse_content_name(&rel).is_some() {
+                if age >= ORPHAN_AGE_S {
+                    found.push(rel);
+                }
+                left = true;
+            } else if r.pass && planet_due {
+                remove_plain(&e.path, ways, dry_run)?;
+                rep.retired_removed += 1;
+            } else {
+                left = true;
+            }
+        }
+        rep.folders += 1;
+        rep.orphans_found += found.len();
+        if !dry_run {
+            if !found.is_empty() {
+                rep.orphans_queued += ways.lead.orphans(&found).context("the orphans found not queued on the lead")?;
+            }
+            if r.pass && !left {
+                meta(0, 0, 1);
+                dir.remove_dir().ok();
+            }
+        }
+        at(dir.rel())?;
+        Ok(if (ways.yielding)() { Flow::Paused } else { Flow::Done })
+    })
+}
+
+/// The gate's checked copies (`sources/inputs/`, docs/inputs.md §4.9), a folder at a time from the
+/// one it reached: a content-named file nothing keeps (`inputs_kept`, read as the walk starts: the
+/// lead's holders as each is told cover what was accepted since) and `INPUTS_KEEP_S` old told the
+/// lead (`Lead::removing`), `CHUNK_NAMES` at a time, those it doesn't hold removed (`remove_told`);
+/// a `.tmp` file `TMP_AGE_S` old removed. None swept while what keeps them can't be read (said).
+fn inputs_walk(
+    root: &store::nasfs::NasRoot,
+    ways: &Ways,
+    dry_run: bool,
+    reached: Option<&str>,
+    at: &mut dyn FnMut(&str) -> Result<()>,
+    rep: &mut Report,
+) -> Result<Flow> {
+    let _p = crate::timings::phase("sweeping the inputs' copies");
+    let now = SystemTime::now();
+    let keep = (|| -> Result<BTreeSet<String>> {
+        let m = crate::out::read_manifest(root).context("the build manifest")?;
+        let um = unmerged(root, crate::agent::jobs::now_s()).context("the pool's records or journal")?;
+        rep.unmerged = um.entries;
+        rep.warnings.extend(um.warnings.iter().cloned());
+        inputs_kept(root, &m, &um, Duration::from_secs(INPUTS_KEEP_S), now)
+    })();
+    let keep = match keep {
+        Ok(k) => k,
+        Err(e) => {
+            rep.inputs_skipped = Some(format!("{e:#}"));
+            return Ok(Flow::Done);
+        }
+    };
+    let roots = [Root { dir: "sources/inputs".into(), only: None, pass: false }];
+    walk(root, &roots, reached, &mut |_, dir, entries| {
+        let mut due = Vec::new();
+        for e in entries {
+            meta(1, 1, 0);
+            let Some(md) = stat(&e) else { continue };
+            if md.is_dir() {
+                continue;
+            }
+            let rel = e.path.rel().to_string();
+            let age = md.modified().map_or(0, age_s);
+            if e.name.ends_with(".tmp") {
+                if age > TMP_AGE_S {
+                    remove_plain(&e.path, ways, dry_run)?;
+                    rep.tmp_removed += 1;
+                }
+            } else if store::naming::parse_content_name(&rel).is_some() && !keep.contains(&rel) && age > INPUTS_KEEP_S {
+                due.push(rel);
+            }
+        }
+        rep.folders += 1;
+        if dry_run {
+            rep.inputs_removed += due.len();
         } else {
-            let names: Vec<String> = due.iter().map(|d| d.rel.clone()).collect();
-            let held =
-                self.tell.removing(&names).context("nothing more removed: GC's queue on the lead wasn't told")?;
-            held.into_iter().collect()
-        };
-        for d in due {
-            if held.contains(&d.rel) {
-                rep.held += 1;
-                if let Some(c) = check.as_deref_mut() {
-                    c.note(&d.rel, Some("held by the lead"));
-                }
-                continue;
-            }
-            // (Its time looked at again right before it goes: a job reusing it by name touches it,
-            // out::Out::put_file; gone only if no job did meanwhile.)
-            let gone = remove_unless_touched(&d.path, old, self.dry_run)?;
-            if let Some(c) = check.as_deref_mut() {
-                c.note(&d.rel, if gone { None } else { Some("young") });
-            }
-            if !gone {
-                rep.young += 1;
-                continue;
-            }
-            crate::timings::count(d.len, 1);
-            rep.removed += 1;
-            rep.removed_bytes += d.len;
-            match d.kind {
-                Kind::Swept if !retired(&d.rel) => {}
-                Kind::Inputs => rep.inputs_removed += 1,
-                Kind::Swept | Kind::Retired => {
-                    rep.retired_removed += 1;
-                    rep.retired_bytes += d.len;
+            for chunk in due.chunks(CHUNK_NAMES) {
+                let held: BTreeSet<String> = ways
+                    .lead
+                    .removing(chunk)
+                    .context("nothing more removed: GC's queue on the lead wasn't told")?
+                    .into_iter()
+                    .collect();
+                rep.inputs_held += held.len();
+                let told: Vec<String> = chunk.iter().filter(|n| !held.contains(*n)).cloned().collect();
+                let (mut removed, mut already) = (0, 0);
+                let flow = remove_told(root, &told, ways, &mut removed, &mut already);
+                rep.inputs_removed += removed;
+                if flow? == Flow::Paused {
+                    return Ok(Flow::Paused);
                 }
             }
         }
-        // (A safe point each chunk, not only each folder: a folder of thousands of due files takes
-        // minutes at the share's deletion rate.)
-        yield_point();
-        Ok(())
+        at(dir.rel())?;
+        Ok(if (ways.yielding)() { Flow::Paused } else { Flow::Done })
+    })
+}
+
+/// A file no content name is (a stray `.tmp`, a retired pass's planet) removed (a dry run: said);
+/// one gone already is.
+fn remove_plain(p: &NasPath, ways: &Ways, dry_run: bool) -> Result<()> {
+    if dry_run {
+        eprintln!("gc: would remove {}", p.display());
+        return Ok(());
     }
+    match (ways.remove)(p) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(|| format!("remove {}", p.display())),
+        _ => Ok(()),
+    }
+}
+
+/// Seconds since `t` (0 for a time ahead).
+fn age_s(t: SystemTime) -> u64 {
+    SystemTime::now().duration_since(t).map_or(0, |d| d.as_secs())
+}
+
+/// The duties, once a day (`DUTIES_EVERY_S`): the names to drop (removed steps', the depth's
+/// orphans, the pending uploads the build doesn't read), the history's and the forecasts' archives,
+/// the forecast inputs' old days, the old catalogues once asked, and the uploads still pending
+/// checked on the NAS, last. Each a failure said, never failing GC; each goes on where it stopped
+/// (what it did saved as it went), so a pass cut short at a safe point is taken again whole.
+fn duties(root: &store::nasfs::NasRoot, asked: &Asked, rep: &mut Report) -> Result<Flow> {
+    let dry_run = asked.dry_run;
+    // (Its scratch only a folder: a removal writes nothing.)
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch = std::env::temp_dir().join(format!("scenic-gc-{}-{n}", std::process::id()));
+    match drop_names(root, &scratch, asked.depth, dry_run) {
+        Ok(d) => (rep.retired_dropped, rep.depth_dropped, rep.pending_dropped) = (d.retired, d.depth, d.unpended),
+        Err(e) => rep.warnings.push(format!("names not dropped: {e:#}")),
+    }
+    std::fs::remove_dir_all(&scratch).ok();
+    // The history's old days, one tar a day (task #531).
+    match super::histarchive::run(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
+        Ok(h) => {
+            meta(h.listed, h.stats, h.files_removed as u64 + h.tmp_removed as u64 + h.days_archived as u64);
+            rep.history_days_archived = h.days_archived;
+            rep.warnings.extend(h.warnings);
+        }
+        Err(e) => rep.warnings.push(format!("history not archived: {e:#}")),
+    }
+    // The forecasts' archive's old days, one tar a month, kept for good (task #621).
+    match super::fcarchive::pack(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
+        Ok(h) => {
+            meta(h.listed, h.stats, h.files_removed as u64 + h.tmp_removed as u64);
+            rep.forecast_days_archived = h.days_archived;
+            rep.warnings.extend(h.warnings);
+        }
+        Err(e) => rep.warnings.push(format!("forecasts not archived: {e:#}")),
+    }
+    // The forecast inputs' archive's days before the backtest's span (task #933).
+    match super::fcinputs::prune(root, crate::agent::jobs::now_s(), dry_run) {
+        Ok(h) => {
+            meta(h.listed, h.stats, h.files_removed as u64);
+            rep.forecast_input_days_removed = h.files_removed;
+        }
+        Err(e) => rep.warnings.push(format!("forecast inputs not pruned: {e:#}")),
+    }
+    // The old catalogues' folders, once asked (docs/maplog.md §8, step 9).
+    let nas_root = store::nas::on_nas(&root.unchecked_path());
+    let ssh = nas_ssh();
+    let ssh: Vec<&str> = ssh.iter().map(String::as_str).collect();
+    if asked.old_catalogues {
+        match remove_old_catalogues(root, nas_root.as_deref().map(|n| (&ssh[..], n)), dry_run) {
+            Ok(o) => {
+                rep.warnings.extend(o.warnings);
+                rep.old_catalogues = o.removed;
+            }
+            Err(e) => rep.warnings.push(format!("old catalogues not removed: {e:#}")),
+        }
+    }
+    // The uploads still pending checked on the NAS itself, last (the longest, hashing on the NAS).
+    // Not a project folder on the NAS's share (a test's): none checked.
+    if let Some(nas_root) = &nas_root {
+        match verify_pending(root, &scratch, &ssh, nas_root, dry_run) {
+            Ok(v) => {
+                (rep.pending_verified, rep.pending_verify_bytes, rep.pending_failed) = (v.ok, v.bytes, v.bad.len());
+                if let Some(why) = &v.stalled {
+                    rep.warnings.push(format!(
+                        "uploads' verification stopped: {why} (the batches before it are saved; the next pass takes up the rest)"
+                    ));
+                }
+                if let Some(first) = v.bad.first() {
+                    rep.warnings.push(format!(
+                        "{} uploads don't match their SHA-256 on the NAS, or aren't there (left pending; `scenic redo` their targets): {first}{}",
+                        v.bad.len(),
+                        if v.bad.len() > 1 { " …" } else { "" }
+                    ));
+                }
+            }
+            Err(e) => rep.warnings.push(format!("uploads not verified: {e:#}")),
+        }
+        std::fs::remove_dir_all(&scratch).ok();
+    }
+    Ok(Flow::Done)
 }
 
 /// What the NAS kept of the catalogues before docs/maplog.md §8 step 6 (step 9): their folders and
@@ -1281,135 +1441,6 @@ pub fn remove_this_macs_catalogues(app_home: &std::path::Path, user_home: &std::
     gone
 }
 
-/// The shadow's due set as the sweep meets its names (`note`): each once.
-struct Shadow {
-    due: BTreeSet<String>,
-    by_records: BTreeSet<String>,
-    out: super::gcqueue::ShadowCheck,
-}
-
-impl Shadow {
-    /// Due name `n` met: removed (None), else kept for `why` ("gone": not on the NAS).
-    fn note(&mut self, n: &str, why: Option<&str>) {
-        if !self.due.remove(n) {
-            return;
-        }
-        match why {
-            None => self.out.removed.push(n.to_string()),
-            Some("gone") => self.out.gone.push(n.to_string()),
-            Some(w) => self.out.kept.entry(w.to_string()).or_default().push(n.to_string()),
-        }
-    }
-}
-
-/// One retired pass's folder: content-named files nothing names, once old; any other
-/// file once `plain_due`; then the folders left empty.
-fn sweep_retired(
-    dir: &NasPath,
-    referenced: &BTreeSet<String>,
-    old: &dyn Fn(SystemTime) -> bool,
-    plain_due: bool,
-    due: &mut Removals,
-    rep: &mut Report,
-) -> Result<()> {
-    let dry_run = due.dry_run;
-    let mut dirs = vec![dir.clone()];
-    let mut stack = vec![dir.clone()];
-    while let Some(d) = stack.pop() {
-        due.flush(old, rep, None)?;
-        let Ok(rd) = d.read_dir() else { continue };
-        for e in rd {
-            let p = e.path.clone();
-            meta(1, 1, 0);
-            let Some(md) = stat(&e) else { continue };
-            if md.is_dir() {
-                stack.push(p.clone());
-                dirs.push(p);
-                continue;
-            }
-            rep.files_seen += 1;
-            if e.name.ends_with(TOMB) {
-                put_back(&p, dry_run, rep);
-                continue;
-            }
-            if rep.restored.contains(&p) {
-                continue;
-            }
-            let rel = p.rel().to_string();
-            if store::naming::parse_content_name(&rel).is_some() {
-                if referenced.contains(&rel) {
-                    continue;
-                }
-                if !old(md.modified().unwrap_or(SystemTime::now())) {
-                    rep.young += 1;
-                    continue;
-                }
-                due.push(Due { path: p, rel, len: md.len(), kind: Kind::Retired }, old, rep, None)?;
-            } else if plain_due {
-                remove(&p, dry_run)?;
-                crate::timings::count(md.len(), 1);
-                rep.removed += 1;
-                rep.removed_bytes += md.len();
-                rep.retired_removed += 1;
-                rep.retired_bytes += md.len();
-            }
-        }
-    }
-    // (Its last chunk gone before its folders are looked at.)
-    due.flush(old, rep, None)?;
-    // Deepest first: a folder emptied above may let its parent go too.
-    dirs.sort_by_key(|d| std::cmp::Reverse(d.rel().split('/').count()));
-    for d in dirs {
-        meta(1, 0, 0);
-        if d.read_dir().is_ok_and(|rd| rd.is_empty()) && !dry_run {
-            meta(0, 0, 1);
-            d.remove_dir().ok();
-        }
-    }
-    Ok(())
-}
-
-/// The files of removed steps (`RETIRED`) under `sources/` (`NEVER` keeps the folder sweep out; a
-/// prefix elsewhere is the folder sweep's), in each prefix's folder (not below it): content-named
-/// ones nothing names, once old; a tombstone of one put back.
-fn sweep_retired_names(
-    root: &store::nasfs::NasRoot,
-    referenced: &BTreeSet<String>,
-    old: &dyn Fn(SystemTime) -> bool,
-    due: &mut Removals,
-    rep: &mut Report,
-) -> Result<()> {
-    let dry_run = due.dry_run;
-    for prefix in RETIRED.iter().filter(|p| p.split('/').next().is_some_and(|t| NEVER.contains(&t))) {
-        due.flush(old, rep, None)?;
-        yield_point();
-        let dir = prefix.rsplit_once('/').map_or("", |(d, _)| d);
-        let Ok(rd) = root.join(dir).read_dir() else { continue };
-        for e in rd {
-            let rel = e.path.rel().to_string();
-            meta(1, 1, 0);
-            if !rel.starts_with(prefix) || rep.restored.contains(&e.path) {
-                continue;
-            }
-            if e.name.ends_with(TOMB) {
-                put_back(&e.path, dry_run, rep);
-                continue;
-            }
-            let Some(md) = stat(&e) else { continue };
-            if md.is_dir() || store::naming::parse_content_name(&rel).is_none() || referenced.contains(&rel) {
-                continue;
-            }
-            rep.files_seen += 1;
-            if !old(md.modified().unwrap_or(SystemTime::now())) {
-                rep.young += 1;
-                continue;
-            }
-            due.push(Due { path: e.path.clone(), rel, len: md.len(), kind: Kind::Retired }, old, rep, None)?;
-        }
-    }
-    due.flush(old, rep, None)
-}
-
 /// A sweep's stat of entry `e`: None when it can't be read, or it's a link. A sweep never goes through
 /// a link: a file reached by one has a path no root names, so it would go however much its own name
 /// is kept (`sources/inputs/regions/@geometry/@geometry`, a link to its own folder, 27 Oct, took the
@@ -1421,592 +1452,486 @@ fn stat(e: &store::nasfs::NasEntry) -> Option<std::fs::Metadata> {
     e.metadata().ok()
 }
 
-/// Whether file `p` is still old by a fresh look at its time (not the listing's: a job reusing a
-/// content-named file touches it, and GC's listing may be minutes old by the time it gets there).
-fn still_old(p: &NasPath, old: &dyn Fn(SystemTime) -> bool) -> bool {
-    meta(0, 1, 0);
-    p.metadata().ok().and_then(|m| m.modified().ok()).is_some_and(old)
-}
+/// A lead with nothing queued (a run's duties alone, in tests): no chunk, nothing held.
+#[cfg(test)]
+pub struct Idle;
 
-/// What a file GC is about to remove is renamed to first (`remove_unless_touched`).
-const TOMB: &str = store::naming::TOMB;
-
-/// A tombstone a sweep finds (left by a GC stopped between its rename and its removal, a put-back
-/// that failed, or another GC's still in flight): never removed here, but put back under its name
-/// when that's free, for the usual rules to decide next run; when its name has a file again (a job
-/// uploaded the same bytes meanwhile), the tombstone's copy is the same bytes and goes. Another
-/// GC's in flight finds its tombstone gone and keeps the file (`remove_unless_touched`).
-fn put_back(tomb: &NasPath, dry_run: bool, rep: &mut Report) {
-    let Some(name) = tomb.file_name().and_then(|t| t.strip_suffix(TOMB)).map(|n| tomb.with_file_name(n)) else {
-        return;
-    };
-    if dry_run {
-        eprintln!("gc: would put {} back", name.display());
-        return;
+#[cfg(test)]
+impl Lead for Idle {
+    fn chunk(&self, _: &ChunkAsk) -> Result<Chunk> {
+        Ok(Chunk::default())
     }
-    // (`restore`: never over a file of its name a job has uploaded again.)
-    match restore(tomb, &name) {
-        Ok(()) => {
-            rep.tombs += 1;
-            rep.restored.insert(name);
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!("gc: putting {} back: {e}", name.display()),
+    fn gone(&self, _: &[String], _: &[String]) -> Result<()> {
+        Ok(())
+    }
+    fn orphans(&self, _: &[String]) -> Result<usize> {
+        Ok(0)
+    }
+    fn removing(&self, _: &[String]) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 }
 
-/// Tombstone `tomb` back under `name`, by a rename that never replaces: a file there already (a job
-/// uploaded the same bytes again meanwhile, newer than the tombstone's copy) is kept, and the
-/// tombstone goes. (A replacing rename would put the tombstone's old time over the new upload's,
-/// for the next run to remove.)
-fn restore(tomb: &NasPath, name: &NasPath) -> std::io::Result<()> {
-    meta(0, 0, 1);
-    match tomb.rename_no_replace(name) {
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => tomb.remove_file(),
-        r => r,
+/// A run's ways with `lead`, never yielding, removing over the share.
+#[cfg(test)]
+pub fn ways_for_tests(lead: &dyn Lead) -> Ways<'_> {
+    fn never() -> bool {
+        false
     }
-}
-
-/// Removes content-named file `p`, unless a job reused it by name meanwhile: renamed to a tombstone
-/// first (a job reusing it now finds no file of its name, and uploads it again: out::Out::put_file),
-/// its time then looked at again, the tombstone's: touched since GC listed it (a job had it open
-/// before the rename), put back; else removed. True when it went.
-fn remove_unless_touched(p: &NasPath, old: &dyn Fn(SystemTime) -> bool, dry_run: bool) -> Result<bool> {
-    if dry_run {
-        eprintln!("gc: would remove {}", p.display());
-        return Ok(still_old(p, old));
-    }
-    let tomb = p.with_file_name(format!("{}{TOMB}", p.file_name().unwrap_or_default()));
-    // (Not renamed aside, for whatever reason: kept this run, as a young file is.)
-    // (A rename and a removal: each a metadata write, counted as a delete.)
-    meta(0, 0, 1);
-    if let Err(e) = p.rename(&tomb) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            eprintln!("gc: {} not set aside ({e}): kept this run", p.display());
-        }
-        return Ok(false);
-    }
-    if still_old(&tomb, old) {
-        meta(0, 0, 1);
-        return match tomb.remove_file() {
-            Ok(()) => Ok(true),
-            // (Another GC put it back meanwhile: kept.)
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e).with_context(|| format!("remove {}", tomb.display())),
-        };
-    }
-    // (Touched: back under its name; one uploaded again meanwhile is the same bytes, its name its
-    // content's, and kept: `restore`. Gone already, another GC put it back: kept. Failing, the
-    // next run puts it back.)
-    if let Err(e) = restore(&tomb, p) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            eprintln!("gc: putting {} back: {e} (the next run does)", p.display());
-        }
-    }
-    Ok(false)
-}
-
-fn remove(p: &NasPath, dry_run: bool) -> Result<()> {
-    if dry_run {
-        eprintln!("gc: would remove {}", p.display());
-        return Ok(());
-    }
-    meta(0, 0, 1);
-    p.remove_file().with_context(|| format!("remove {}", p.display()))
+    Ways { lead, yielding: &never, remove: &unlink }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A `Tell` that takes every removal (the lead's queue marking them: GC's queue's own tests).
-    const TOLD: fn(&[String]) -> Result<()> = |_| Ok(());
+    use std::cell::{Cell, RefCell};
     use std::fs::{self, FileTimes};
     use std::path::{Path, PathBuf};
+    use store::map::gc::{GcQueue, Holders, Lease, GRACE_S};
+    use store::map::Map;
 
     fn age(p: &Path, days: u64) {
         let t = SystemTime::now() - Duration::from_secs(days * 86400);
         fs::File::options().write(true).open(p).unwrap().set_times(FileTimes::new().set_modified(t)).unwrap();
     }
 
-    #[test]
-    fn keeps_referenced_and_young_removes_the_rest() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let put = |rel: &str, days: u64| {
-            let p = root.join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, days);
-        };
-        let kept = "layers/roads/hi/6-1-2.0123456789abcdef.pack";
-        put(kept, 30);
-        put("layers/roads/hi/6-1-2.fedcba9876543210.pack", 30); // replaced, old: removed
-        put("layers/roads/hi/6-1-3.1111111111111111.pack", 1); // unreferenced but young: kept
-        put("layers/roads/hi/6-1-4.2222222222222222.pack.tmp", 5); // abandoned write: removed
-        put("sources/osm/x.3333333333333333.osm.pbf", 300); // never swept
-        put("layers/roads/README", 300); // not content-named: kept
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files.insert(
-            "layers/roads/hi/6-1-2".into(),
-            store::catalogue::FileRef { file: kept.into(), ..Default::default() },
-        );
-        store::testkit::map_root(root, &cat);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!((r.removed, r.tmp_removed, r.young), (1, 1, 1));
-        assert!(root.join(kept).exists());
-        assert!(!root.join("layers/roads/hi/6-1-2.fedcba9876543210.pack").exists());
-        assert!(root.join("layers/roads/hi/6-1-3.1111111111111111.pack").exists());
-        assert!(root.join("sources/osm/x.3333333333333333.osm.pbf").exists());
-        assert!(root.join("layers/roads/README").exists());
+    fn put(root: &Path, rel: &str, days: u64) {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, b"x").unwrap();
+        age(&p, days);
     }
 
-    /// Task #883 step 7: GC's queue's due set (shadow) checked against what the run removes: each
-    /// due name removed, gone already, or kept with today's reason; the check written beside it.
+    /// The newest lease the in-process lead marks with.
+    const NEWEST: Lease = Lease { term: 2, n: 9 };
+    /// A lease granted before every mark.
+    const OLDER: Lease = Lease { term: 1, n: 1 };
+
+    /// GC's queue `q` asked in process as the lead's coordinator answers it (no client, no live
+    /// lease), its clock `now` (unix s).
+    struct InProcess<'a> {
+        q: &'a GcQueue,
+        now: Cell<u64>,
+    }
+
+    impl InProcess<'_> {
+        fn holders<'c>(&self, none: &'c BTreeMap<String, store::map::Cursor>) -> Holders<'c> {
+            Holders { cursors: none, oldest_lease: None, now: self.now.get() }
+        }
+    }
+
+    impl Lead for InProcess<'_> {
+        fn chunk(&self, a: &ChunkAsk) -> Result<Chunk> {
+            let none = BTreeMap::new();
+            let take = |n: &str| by_the_queue(n, a.passes_before);
+            let names = if a.dry {
+                self.q.due_by(&self.holders(&none), &take)
+            } else {
+                self.q.chunk(&self.holders(&none), NEWEST, a.max, &take)?
+            };
+            Ok(Chunk { names, tops: self.q.tops() })
+        }
+        fn gone(&self, gone: &[String], released: &[String]) -> Result<()> {
+            self.q.gone(gone, released, self.now.get(), NEWEST)
+        }
+        fn orphans(&self, names: &[String]) -> Result<usize> {
+            self.q.orphans(names, self.now.get())
+        }
+        fn removing(&self, names: &[String]) -> Result<Vec<String>> {
+            let none = BTreeMap::new();
+            self.q.removing(names, &self.holders(&none), NEWEST)
+        }
+    }
+
+    fn now_s() -> u64 {
+        crate::agent::jobs::now_s()
+    }
+
+    /// The map naming `files` (content names) at `seq`.
+    fn map_of(seq: u64, files: &[&str]) -> Map {
+        let e = files
+            .iter()
+            .map(|c| {
+                (
+                    format!("f/{}", c.split_once('.').unwrap().0),
+                    serde_json::json!({ "file": c, "size": 1, "fmt": 1 }).into(),
+                )
+            })
+            .collect();
+        Map::new(seq, format!("t{seq}"), e)
+    }
+
+    /// GC's queue in `dir` as a lead keeps it: its map naming `kept`, the records seen (naming
+    /// nothing), and `freed` freed by a batch at `at`.
+    fn queue_of(dir: &Path, freed: &[String], kept: &[&str], at: u64) -> (GcQueue, Map) {
+        let all: Vec<&str> = freed.iter().map(String::as_str).chain(kept.iter().copied()).collect();
+        let m1 = map_of(1, &all);
+        let q = GcQueue::default();
+        q.open(dir, &m1, at).unwrap();
+        q.records((2, 1), std::iter::empty(), at);
+        let m2 = map_of(2, kept);
+        q.batch(&m1.batch_to(m2.entries(), 2, "t2", "", ""), at);
+        (q, m2)
+    }
+
+    /// A sweeps file with every pass ended `now` (a run of the queue's chunks alone), or but `due`.
+    fn sweeps_ended(dir: &Path, now: u64, due: &[&str]) -> PathBuf {
+        let p = dir.join(SWEEPS_FILE);
+        let each = SWEEPS
+            .iter()
+            .filter(|(n, _)| !due.contains(n))
+            .map(|(n, _)| (n.to_string(), Pass { begun: now, ended: Some(now), reached: None }))
+            .collect();
+        fs::write(&p, serde_json::to_vec(&Sweeps { each }).unwrap()).unwrap();
+        p
+    }
+
+    /// `n` due files, `layers/a/hi/<i % 3>/6-1-<i>.<hash>.pack`, sorted as the queue orders them.
+    fn due_files(root: &Path, n: usize) -> Vec<String> {
+        let mut v: Vec<String> =
+            (0..n).map(|i| format!("layers/a/hi/{}/6-1-{i}.{:016x}.pack", i % 3, i + 0x100)).collect();
+        for f in &v {
+            put(root, f, 60);
+        }
+        v.sort();
+        v
+    }
+
+    /// docs/maplog.md §7.3 (step 8b): GC removes by the queue, a chunk of `CHUNK_NAMES` at a time,
+    /// each name marked deleted on the lead (so the merge refuses a hand-off reusing it) before it
+    /// goes, then said gone; what the map names stays. A dry run counts what's due, marking and
+    /// removing nothing. The lead not asked: nothing removed, the run fails; what went not said
+    /// gone: the names stay told, for the next chunk.
     #[test]
-    fn the_shadow_s_due_set_is_checked_against_the_removals() {
-        use super::super::gcqueue::{ShadowCheck, ShadowDue, SHADOW_CHECK, SHADOW_DUE};
-        let d = tempfile::tempdir().unwrap();
+    fn every_removal_is_marked_deleted_before_it_goes() {
+        let (d, q_dir, home) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = d.path();
-        let put = |rel: &str, days: u64| {
-            let p = root.join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, days);
+        let kept = "layers/a/hi/6-9-9.9999999999999999.pack";
+        put(root, kept, 60);
+        let due = due_files(root, CHUNK_NAMES + 5);
+        let t0 = now_s() - GRACE_S - 10;
+        let (q, _) = queue_of(q_dir.path(), &due, &[kept], t0);
+        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let sweeps = sweeps_ended(home.path(), now_s(), &[]);
+        let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
+        let r = run(&nas, &Asked { dry_run: true, ..asked }, &ways_for_tests(&lead)).unwrap();
+        assert_eq!((r.due, r.removed), (due.len(), 0));
+        assert!(q.removing_now().is_empty() && q.deleted_under(due.iter(), OLDER).is_none(), "a dry run marks nothing");
+        let order: RefCell<Vec<String>> = Default::default();
+        let remove = |p: &NasPath| {
+            assert!(q.deleted_under([p.rel().to_string()].iter(), OLDER).is_some(), "{} removed unmarked", p.rel());
+            order.borrow_mut().push(p.rel().to_string());
+            unlink(p)
         };
-        let (cat_kept, rec_kept, young, removed, gone) = (
-            "layers/a/6-1-1.0123456789abcdef.pack",
-            "layers/a/6-1-2.1111111111111111.pack",
-            "layers/a/6-1-3.2222222222222222.pack",
-            "layers/a/6-1-4.3333333333333333.pack",
-            "layers/a/6-1-5.4444444444444444.pack",
+        let ways = Ways { remove: &remove, ..ways_for_tests(&lead) };
+        let r = run(&nas, &asked, &ways).unwrap();
+        assert_eq!((r.chunks, r.removed, r.gone_already, r.paused), (2, due.len(), 0, false), "{r:?}");
+        assert_eq!(*order.borrow(), due, "in the queue's order");
+        assert!(due.iter().all(|f| !root.join(f).exists()) && root.join(kept).exists());
+        assert!(q.is_empty() && q.removing_now().is_empty());
+        assert!(q.deleted_under(due.iter(), OLDER).is_some(), "the marks kept for the merge");
+        // The lead not asked: nothing removed, the run failed.
+        struct Away;
+        impl Lead for Away {
+            fn chunk(&self, _: &ChunkAsk) -> Result<Chunk> {
+                anyhow::bail!("the lead's coordinator doesn't answer")
+            }
+            fn gone(&self, _: &[String], _: &[String]) -> Result<()> {
+                anyhow::bail!("the lead's coordinator doesn't answer")
+            }
+            fn orphans(&self, _: &[String]) -> Result<usize> {
+                anyhow::bail!("the lead's coordinator doesn't answer")
+            }
+            fn removing(&self, _: &[String]) -> Result<Vec<String>> {
+                anyhow::bail!("the lead's coordinator doesn't answer")
+            }
+        }
+        let more = due_files(root, 3);
+        let e = format!("{:#}", run(&nas, &asked, &ways_for_tests(&Away)).unwrap_err());
+        assert!(e.contains("nothing removed") && e.contains("doesn't answer"), "{e}");
+        assert!(more.iter().all(|f| root.join(f).exists()));
+        // What went not said gone (the lead gone between): the run fails, the names still told.
+        let (q, _) = queue_of(tempfile::tempdir().unwrap().path(), &more, &[], t0);
+        struct Deaf<'a>(InProcess<'a>);
+        impl Lead for Deaf<'_> {
+            fn chunk(&self, a: &ChunkAsk) -> Result<Chunk> {
+                self.0.chunk(a)
+            }
+            fn gone(&self, _: &[String], _: &[String]) -> Result<()> {
+                anyhow::bail!("the lead's coordinator doesn't answer")
+            }
+            fn orphans(&self, n: &[String]) -> Result<usize> {
+                self.0.orphans(n)
+            }
+            fn removing(&self, n: &[String]) -> Result<Vec<String>> {
+                self.0.removing(n)
+            }
+        }
+        let deaf = Deaf(InProcess { q: &q, now: Cell::new(now_s()) });
+        assert!(run(&nas, &asked, &ways_for_tests(&deaf)).is_err());
+        assert_eq!(q.removing_now(), more, "told, for the next chunk to take again");
+    }
+
+    /// docs/maplog.md §8 step 8b: the job killed between two deletions mid-chunk: the next run's
+    /// first chunk is the one it was in, told again; the next deletion is of the first file not
+    /// gone (those gone count as gone already), nothing is deleted twice, nothing kept for ever, and
+    /// the queue, back from its file (a lead restart), ends empty.
+    #[test]
+    fn gc_resumes_mid_chunk_after_a_kill() {
+        let (d, q_dir, home) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = d.path();
+        let due = due_files(root, CHUNK_NAMES + 50);
+        let t0 = now_s() - GRACE_S - 10;
+        let (q, m2) = queue_of(q_dir.path(), &due, &[], t0);
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let sweeps = sweeps_ended(home.path(), now_s(), &[]);
+        let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
+        // (Killed after 230 deletions: 30 into the second chunk.)
+        let kill_at = CHUNK_NAMES + 30;
+        let deleted: RefCell<Vec<String>> = Default::default();
+        let killing = |p: &NasPath| {
+            if deleted.borrow().len() == kill_at {
+                panic!("killed");
+            }
+            unlink(p)?;
+            deleted.borrow_mut().push(p.rel().to_string());
+            Ok(())
+        };
+        {
+            let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+            let ways = Ways { remove: &killing, ..ways_for_tests(&lead) };
+            let killed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&nas, &asked, &ways)));
+            assert!(killed.is_err());
+        }
+        assert_eq!(*deleted.borrow(), due[..kill_at]);
+        assert!(due[kill_at..].iter().all(|f| root.join(f).exists()));
+        // The lead back from its disk: the second chunk still told, the first gone.
+        let back = GcQueue::default();
+        back.open(q_dir.path(), &m2, now_s()).unwrap();
+        back.records((2, 1), std::iter::empty(), now_s());
+        assert_eq!(back.removing_now(), due[CHUNK_NAMES..], "the chunk it was in");
+        assert_eq!(back.len(), 50);
+        let tried: RefCell<Vec<(String, bool)>> = Default::default();
+        let counting = |p: &NasPath| {
+            let r = unlink(p);
+            tried.borrow_mut().push((p.rel().to_string(), r.is_ok()));
+            r
+        };
+        let lead = InProcess { q: &back, now: Cell::new(now_s()) };
+        let r = run(&nas, &asked, &Ways { remove: &counting, ..ways_for_tests(&lead) }).unwrap();
+        assert_eq!((r.chunks, r.removed, r.gone_already), (1, 20, 30), "{r:?}");
+        let tried = tried.take();
+        let removed: Vec<&String> = tried.iter().filter(|(_, ok)| *ok).map(|(n, _)| n).collect();
+        assert_eq!(removed, due[kill_at..].iter().collect::<Vec<_>>(), "from the first not gone, in order");
+        let mut all: Vec<String> = deleted.take().into_iter().chain(removed.into_iter().cloned()).collect();
+        all.sort();
+        assert_eq!(all, due, "each deleted once");
+        assert!(due.iter().all(|f| !root.join(f).exists()));
+        assert!(back.is_empty() && back.removing_now().is_empty(), "nothing kept for ever");
+    }
+
+    /// A run yields at a safe point mid-chunk (a job held back for the NAS it holds): what went is
+    /// said gone, the rest of the chunk let go (queued, unmarked: a hand-off may bring one meanwhile);
+    /// the next run starts where it left off, at the first file not gone.
+    #[test]
+    fn gc_yields_mid_chunk_and_resumes_where_it_left_off() {
+        let (d, q_dir, home) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = d.path();
+        let due = due_files(root, 50);
+        let (q, _) = queue_of(q_dir.path(), &due, &[], now_s() - GRACE_S - 10);
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let sweeps = sweeps_ended(home.path(), now_s(), &[]);
+        let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
+        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let removed: RefCell<Vec<String>> = Default::default();
+        let remove = |p: &NasPath| {
+            removed.borrow_mut().push(p.rel().to_string());
+            unlink(p)
+        };
+        let yielding = || removed.borrow().len() >= 20;
+        let r = run(&nas, &asked, &Ways { yielding: &yielding, remove: &remove, lead: &lead }).unwrap();
+        assert!(r.paused && r.removed == 20 && r.swept.is_empty(), "{r:?}");
+        assert!(due[..20].iter().all(|f| !root.join(f).exists()) && due[20..].iter().all(|f| root.join(f).exists()));
+        assert!(q.removing_now().is_empty(), "the rest let go");
+        assert!(due[20..].iter().all(|f| q.queued(f).is_some()) && q.deleted_under(due[20..].iter(), OLDER).is_none());
+        removed.take();
+        let r = run(&nas, &asked, &Ways { remove: &remove, ..ways_for_tests(&lead) }).unwrap();
+        assert_eq!((r.removed, r.gone_already, r.paused), (30, 0, false), "{r:?}");
+        assert_eq!(*removed.borrow(), due[20..], "where it left off");
+        assert!(q.is_empty());
+    }
+
+    /// The orphan sweep (docs/maplog.md §7.5) queues a content-named file nothing holds only once
+    /// it's `ORPHAN_AGE_S` old, freed when found (so it waits its grace from then, and a lease older
+    /// than that holds it); a held one never; a removed step's files and a retired pass's too; it
+    /// removes `.tmp` files `TMP_AGE_S` old and a retired pass's planet once the newer pass has
+    /// settled; it never goes through a link, nor lists the newest pass or the rest of `sources/`.
+    #[test]
+    fn an_orphan_is_queued_only_after_its_age() {
+        use std::os::unix::fs::symlink;
+        let (d, q_dir, home) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = d.path();
+        let days = ORPHAN_AGE_S / 86400;
+        let (kept, old, young) = (
+            "layers/a/hi/6-1-1.1111111111111111.pack",
+            "layers/a/hi/6-1-2.2222222222222222.pack",
+            "layers/a/hi/6-1-3.3333333333333333.pack",
         );
-        put(cat_kept, 30);
-        put(rec_kept, 30);
-        put(young, 1);
-        put(removed, 30);
-        // (Named by an older map snapshot of the window: kept for it, expected; by the newest: the
-        // map holds it, a holder the queue missed.)
-        let held = "layers/a/6-1-6.5555555555555555.pack";
-        put(held, 30);
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files
-            .insert("layers/a/6-1-1".into(), store::catalogue::FileRef { file: cat_kept.into(), ..Default::default() });
-        store::testkit::map_root(root, &cat);
-        let mut cat = store::catalogue::Catalogue::new(2);
-        cat.files
-            .insert("layers/a/6-1-6".into(), store::catalogue::FileRef { file: held.into(), ..Default::default() });
-        store::testkit::map_root(root, &cat);
-        fs::create_dir_all(root.join("state/build")).unwrap();
-        fs::write(
-            root.join("state/build/manifest.json"),
-            serde_json::json!({ "layers/a/6-1-2": rec_kept }).to_string(),
-        )
-        .unwrap();
-        let home = tempfile::tempdir().unwrap();
-        let due_p = home.path().join(SHADOW_DUE);
-        let mut names: Vec<String> = [cat_kept, rec_kept, young, removed, gone, held].map(String::from).to_vec();
-        names.sort();
-        fs::write(&due_p, serde_json::to_vec(&ShadowDue { at: 7, queued: 9, names, ..Default::default() }).unwrap())
-            .unwrap();
-        let r = run(
-            &store::nasfs::NasRoot::local_for_test(root),
-            14,
-            &Asked { shadow: Some(&due_p), ..Default::default() },
-            &TOLD,
-        )
-        .unwrap();
-        let c: ShadowCheck = serde_json::from_slice(&fs::read(home.path().join(SHADOW_CHECK)).unwrap()).unwrap();
-        assert_eq!((c.due, c.due_at), (6, 7), "{c:?}");
-        assert_eq!(c.removed, vec![removed.to_string()]);
-        assert_eq!(c.gone, vec![gone.to_string()], "{c:?}");
-        assert_eq!(c.kept["window"], vec![cat_kept.to_string()]);
-        assert_eq!(c.kept["records"], vec![rec_kept.to_string()]);
-        assert_eq!(c.kept["young"], vec![young.to_string()]);
-        assert_eq!(c.kept["map"], vec![held.to_string()]);
-        assert!(!c.holds());
-        assert!(r.warnings.iter().any(|w| w.contains("HELD")), "{:?}", r.warnings);
+        let (tmp_old, tmp_young, plain) = ("layers/a/hi/x.pack.tmp", "layers/a/hi/y.pack.tmp", "layers/a/README");
+        let (z8, other) = ("sources/terrain-z8-v1.4444444444444444.pack", "sources/registers/r.5555555555555555.tar");
+        let (old_pass, planet, newest, newest_done) = (
+            "sources/osm/2026-03-01/pieces/6-1-1.6666666666666666.osm.pbf",
+            "sources/osm/2026-03-01/planet.osm.pbf",
+            "sources/osm/2026-09-28/pieces/6-1-1.7777777777777777.osm.pbf",
+            "sources/osm/2026-09-28/pass.8888888888888888.json",
+        );
+        let outside = "state/x.9999999999999999.json";
+        for f in [kept, old, plain, z8, other, old_pass, planet, newest, outside] {
+            put(root, f, days + 1);
+        }
+        put(root, young, days - 1);
+        put(root, tmp_old, TMP_AGE_S / 86400 + 1);
+        put(root, tmp_young, 1);
+        put(root, newest_done, PLANET_KEEP_S / 86400 + 1);
+        symlink(root.join("layers/a/hi"), root.join("layers/a/hi/loop")).unwrap();
+        symlink(root.join("state"), root.join("layers/a/state")).unwrap();
+        let (q, _) = queue_of(q_dir.path(), &[], &[kept], now_s());
+        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let sweeps = sweeps_ended(home.path(), now_s(), &["orphans"]);
+        let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
+        let r = run(&nas, &Asked { dry_run: true, ..asked }, &ways_for_tests(&lead)).unwrap();
+        assert_eq!((r.orphans_found, r.orphans_queued, r.tmp_removed), (4, 0, 1), "{r:?}");
+        assert!(q.is_empty() && root.join(tmp_old).exists() && root.join(planet).exists(), "a dry run does nothing");
+        let r = run(&nas, &asked, &ways_for_tests(&lead)).unwrap();
+        assert_eq!(r.swept, ["orphans"]);
+        assert_eq!((r.orphans_found, r.orphans_queued, r.tmp_removed, r.retired_removed), (4, 3, 1, 1), "{r:?}");
+        for f in [old, z8, old_pass] {
+            assert_eq!(q.queued(f).map(|x| x.at), Some(lead.now.get()), "{f}");
+        }
+        for f in [kept, young, other, newest, outside] {
+            assert!(q.queued(f).is_none(), "{f}");
+        }
+        assert!(!root.join(tmp_old).exists() && root.join(tmp_young).exists() && !root.join(planet).exists());
+        assert!(root.join(plain).exists() && root.join(old_pass).exists());
+        // Found now: due once its grace has passed (and the lease rule from now), not before.
+        let none = BTreeMap::new();
+        let at = |now: u64, lease: Option<u64>| q.due(&Holders { cursors: &none, oldest_lease: lease, now });
+        assert!(at(lead.now.get() + GRACE_S - 1, None).is_empty());
+        assert!(at(lead.now.get() + GRACE_S, Some(lead.now.get() - 1)).is_empty(), "a lease older than the find");
+        assert_eq!(at(lead.now.get() + GRACE_S, None).len(), 3);
+        // The pass ended: not due again until `ORPHAN_AGE_S` after.
+        let s = Sweeps::read(&sweeps);
+        assert!(!s.due("orphans", now_s()) && s.due("orphans", now_s() + ORPHAN_AGE_S));
+    }
+
+    /// docs/maplog.md §4.5, §7.5: a lead whose disk was lost starts its queue empty; the orphan
+    /// sweep finds what the lost queue held (old, named by nothing), and GC's chunks then remove it
+    /// once its grace from the find has passed; what the map names stays.
+    #[test]
+    fn the_queue_rebuilds_after_a_lead_disk_restore() {
+        let (d, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = d.path();
+        let kept = "base/6-1-1.1111111111111111.sect";
+        let lost = ["base/6-1-2.2222222222222222.sect", "layers/a/hi/6-1-2.3333333333333333.pack"];
+        for f in lost.iter().chain([&kept]) {
+            put(root, f, ORPHAN_AGE_S / 86400 + 10);
+        }
+        // (The restored lead: its map from the NAS's snapshot, a queue file of nothing.)
+        let fresh = tempfile::tempdir().unwrap();
+        let (q, _) = queue_of(fresh.path(), &[], &[kept, "layers/a/hi/6-1-1.4444444444444444.pack"], now_s());
+        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let sweeps = sweeps_ended(home.path(), now_s(), &["orphans"]);
+        let r = run(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap();
+        assert_eq!((r.orphans_queued, r.removed), (2, 0), "{r:?}");
+        lead.now.set(lead.now.get() + GRACE_S);
+        let sweeps = sweeps_ended(home.path(), now_s(), &[]);
+        let r = run(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap();
+        assert_eq!(r.removed, 2, "{r:?}");
+        assert!(lost.iter().all(|f| !root.join(f).exists()) && root.join(kept).exists());
+    }
+
+    /// The orphan sweep stopped at a safe point (between folders) goes on after the folder it
+    /// reached at its next run: each folder listed once in all, every orphan found.
+    #[test]
+    fn the_orphan_sweep_goes_on_from_the_folder_it_reached() {
+        let (d, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = d.path();
+        let orphans: Vec<String> = (0..6).map(|i| format!("layers/a/d{i}/e/6-1-{i}.{:016x}.pack", i + 0x10)).collect();
+        for f in &orphans {
+            put(root, f, ORPHAN_AGE_S / 86400 + 1);
+        }
+        let q_dir = tempfile::tempdir().unwrap();
+        let (q, _) = queue_of(q_dir.path(), &[], &["layers/a/6-9-9.9999999999999999.pack"], now_s());
+        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let sweeps = sweeps_ended(home.path(), now_s(), &["orphans"]);
+        let asked = Asked { sweeps: Some(&sweeps), ..Default::default() };
+        let listed = Cell::new(0);
+        let yielding = || {
+            listed.set(listed.get() + 1);
+            listed.get() == 5
+        };
+        let r = run(&nas, &asked, &Ways { yielding: &yielding, ..ways_for_tests(&lead) }).unwrap();
+        assert!(r.paused && r.folders == 5, "{r:?}");
+        let reached = Sweeps::read(&sweeps).each["orphans"].reached.clone();
+        // (layers, layers/a, its d0 and d0/e, d1: the fifth.)
+        assert_eq!(reached.as_deref(), Some("layers/a/d1"), "{reached:?}");
+        let r = run(&nas, &asked, &ways_for_tests(&lead)).unwrap();
+        // (layers, a, six d's and their e's: 14 in all.)
+        assert_eq!(r.folders, 14 - 5, "{r:?}");
+        assert!(orphans.iter().all(|f| q.queued(f).is_some()));
+        let s = Sweeps::read(&sweeps);
+        assert!(s.each["orphans"].ended.is_some() && s.each["orphans"].reached.is_none());
     }
 
     /// Task #451: a run in a job counts its NAS metadata work (crate::costin: `listed`, `stats`,
-    /// `deletes`), its weight beside its bytes; outside one (no `SCENIC_COSTS`) nothing.
+    /// `deletes`), its weight beside its bytes; outside one (no `SCENIC_COSTS`) nothing. A chunk
+    /// costs a delete a file and nothing else on the share.
     #[test]
     fn a_run_counts_its_listings_stats_and_deletes() {
         let _l = crate::costin::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let d = tempfile::tempdir().unwrap();
+        let (d, q_dir, home) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = d.path();
-        for (rel, days) in [("layers/a/6-1-2.0123456789abcdef.pack", 30), ("layers/a/6-1-3.fedcba9876543210.pack", 30)]
-        {
-            let p = root.join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, days);
-        }
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files.insert(
-            "layers/a/6-1-2".into(),
-            store::catalogue::FileRef { file: "layers/a/6-1-2.0123456789abcdef.pack".into(), ..Default::default() },
-        );
-        store::testkit::map_root(root, &cat);
+        let due = due_files(root, 2);
+        let (q, _) = queue_of(q_dir.path(), &due, &["layers/a/6-9-9.9999999999999999.pack"], now_s() - GRACE_S - 10);
+        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let sweeps = sweeps_ended(home.path(), now_s(), &[]);
         crate::costin::begin();
         COUNTING.set(true);
-        let r = run_once(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, &TOLD).unwrap();
+        let r =
+            run_counted(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap();
+        let m = crate::costin::take();
+        assert_eq!(r.removed, 2);
+        assert_eq!((m.get("deletes"), m.get("listed"), m.get("stats")), (Some(&2), None, None), "{m:?}");
+        // The orphan sweep lists and looks at each entry.
+        let sweeps = sweeps_ended(home.path(), now_s(), &["orphans"]);
+        crate::costin::begin();
+        run_counted(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap();
         COUNTING.set(false);
         let m = crate::costin::take();
-        assert_eq!(r.removed, 1);
-        assert!(m["listed"] >= 2 && m["stats"] >= 3, "{m:?}");
-        // (Its rename aside and its removal.)
-        assert_eq!(m["deletes"], 2, "{m:?}");
+        assert!(m["listed"] >= 1 && m["stats"] >= 1, "{m:?}");
         crate::costin::begin();
         meta(5, 5, 5);
         assert!(!crate::costin::take().contains_key("listed"), "not in a job: not counted");
     }
 
-    /// Task #451 review: the main sweep passes a safe point at every folder, not only at each
-    /// top folder, so a yield waits for one folder's work at most.
-    #[test]
-    fn the_sweep_passes_a_safe_point_each_folder() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let mut cat = store::catalogue::Catalogue::new(1);
-        for i in 0..6 {
-            let rel = format!("layers/a/d{i}/6-1-{i}.0123456789abcdef.pack");
-            fs::create_dir_all(root.join(&rel).parent().unwrap()).unwrap();
-            fs::write(root.join(&rel), b"x").unwrap();
-            cat.files.insert(
-                format!("layers/a/d{i}/6-1-{i}"),
-                store::catalogue::FileRef { file: rel, ..Default::default() },
-            );
-        }
-        store::testkit::map_root(root, &cat);
-        YIELD_CHECKS.set(0);
-        run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        // (layers, layers/a and its six folders.)
-        assert!(YIELD_CHECKS.get() >= 8, "{}", YIELD_CHECKS.get());
-    }
-
-    /// docs/maplog.md §8, step 8a: the map's roots remove what nothing names (a file only an old
-    /// catalogue named among them), once old; the shadow's check says it went.
-    #[test]
-    fn the_map_s_roots_remove_what_nothing_names() {
-        use super::super::gcqueue::{ShadowCheck, ShadowDue, SHADOW_CHECK, SHADOW_DUE};
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let (kept, unnamed) = ("layers/a/hi/6-1-1.1111111111111111.pack", "layers/a/hi/6-1-2.2222222222222222.pack");
-        for f in [kept, unnamed] {
-            let p = root.join(f);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, 60);
-        }
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files
-            .insert("layers/a/hi/6-1-1".into(), store::catalogue::FileRef { file: kept.into(), ..Default::default() });
-        store::testkit::map_root(root, &cat);
-        let home = tempfile::tempdir().unwrap();
-        let due_p = home.path().join(SHADOW_DUE);
-        let due = ShadowDue { at: 7, names: vec![unnamed.into()], ..Default::default() };
-        fs::write(&due_p, serde_json::to_vec(&due).unwrap()).unwrap();
-        let asked = Asked { shadow: Some(&due_p), ..Default::default() };
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &asked, &TOLD).unwrap();
-        assert_eq!((r.removed, r.removed_bytes), (1, 1));
-        assert!(root.join(kept).exists());
-        assert!(!root.join(unnamed).exists());
-        let c: ShadowCheck = serde_json::from_slice(&fs::read(home.path().join(SHADOW_CHECK)).unwrap()).unwrap();
-        assert_eq!(c.removed, vec![unnamed.to_string()], "{c:?}");
-        assert!(c.holds(), "{c:?}");
-    }
-
-    /// docs/maplog.md §11.4 (step 8a): every name a run removes is told the lead first (`Tell`: GC's
-    /// queue marks it deleted, so the merge refuses a hand-off reusing it), a chunk at a time before
-    /// any of the chunk goes (every sweep removes through one `Removals`: here the map's folders);
-    /// nothing kept is told; a dry run tells no one. A tell that fails removes nothing
-    /// more and fails the run.
-    #[test]
-    fn every_removal_is_marked_deleted_before_it_goes() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let put = |rel: &str, days: u64| {
-            let p = root.join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, days);
-        };
-        let kept = "layers/a/hi/6-1-1.1111111111111111.pack";
-        let young = "layers/a/hi/6-1-2.2222222222222222.pack";
-        put(kept, 60);
-        put(young, 1);
-        let mut due: Vec<String> =
-            (0..TELL_CHUNK + 5).map(|i| format!("layers/a/hi/{}/6-1-{i}.{:016x}.pack", i % 3, i + 100)).collect();
-        for f in &due {
-            put(f, 60);
-        }
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files
-            .insert("layers/a/hi/6-1-1".into(), store::catalogue::FileRef { file: kept.into(), ..Default::default() });
-        store::testkit::map_root(root, &cat);
-        let told: std::cell::RefCell<Vec<Vec<String>>> = Default::default();
-        let tell = |names: &[String]| -> Result<()> {
-            for n in names {
-                assert!(root.join(n).exists(), "{n} told after it went");
-            }
-            told.borrow_mut().push(names.to_vec());
-            Ok(())
-        };
-        let nas = store::nasfs::NasRoot::local_for_test(root);
-        let r = run(&nas, 14, &Asked { dry_run: true, ..Default::default() }, &tell).unwrap();
-        assert_eq!(r.removed, due.len());
-        assert!(told.borrow().is_empty(), "a dry run tells no one");
-        let r = run(&nas, 14, &Asked::default(), &tell).unwrap();
-        assert_eq!((r.removed, r.young), (due.len(), 1));
-        let chunks = told.take();
-        assert!(chunks.len() >= 2 && chunks.iter().all(|c| !c.is_empty() && c.len() <= TELL_CHUNK), "{chunks:?}");
-        let mut all: Vec<String> = chunks.into_iter().flatten().collect();
-        all.sort();
-        due.sort();
-        assert_eq!(all, due, "each removal told once, nothing kept told");
-        assert!(due.iter().all(|f| !root.join(f).exists()) && root.join(kept).exists() && root.join(young).exists());
-        // The lead not told: nothing removed, the run failed.
-        let more = "layers/a/hi/6-1-9.9999999999999999.pack";
-        put(more, 60);
-        let away = |_: &[String]| -> Result<()> { anyhow::bail!("the lead's coordinator doesn't answer") };
-        let e = format!("{:#}", run(&nas, 14, &Asked::default(), &away).unwrap_err());
-        assert!(e.contains("wasn't told") && e.contains("doesn't answer"), "{e}");
-        assert!(root.join(more).exists());
-    }
-
-    /// A link in a swept folder isn't gone through (`stat`), whichever sweep meets it: a file kept
-    /// under its own name stays, a due one is removed once, under its own; a link to the folder it's
-    /// in loops, one to elsewhere leaves that alone. Step 9's pass removes a link, not its target.
-    #[test]
-    fn a_sweep_never_goes_through_a_link() {
-        use std::os::unix::fs::symlink;
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let put = |rel: &str| {
-            let p = root.join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, 60);
-        };
-        let (kept, due) = ("layers/a/hi/6-1-1.1111111111111111.pack", "layers/a/hi/6-1-2.2222222222222222.pack");
-        let (input, input_due) =
-            ("sources/inputs/u/@g/x.3333333333333333.rgeo", "sources/inputs/u/@g/y.4444444444444444.rgeo");
-        let (osm, outside) = ("sources/osm/2026-01-01/a.5555555555555555.json", "state/kept.6666666666666666.json");
-        for f in [kept, due, input, input_due, osm, outside] {
-            put(f);
-        }
-        // (A pass newer than the one with the link, complete: the older is retired.)
-        put("sources/osm/2026-02-01/pass.7777777777777777.json");
-        symlink(root.join("layers/a/hi"), root.join("layers/a/hi/hi")).unwrap();
-        symlink(root.join("sources/inputs/u/@g"), root.join("sources/inputs/u/@g/@g")).unwrap();
-        symlink(root.join("sources/osm/2026-01-01"), root.join("sources/osm/2026-01-01/loop")).unwrap();
-        symlink(root.join("state"), root.join("layers/a/state")).unwrap();
-        fs::create_dir_all(root.join("state/build")).unwrap();
-        let manifest = serde_json::json!({ "sources/inputs/u/@g/x": input, "sources/osm/2026-01-01/a": osm });
-        fs::write(root.join("state/build/manifest.json"), manifest.to_string()).unwrap();
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files
-            .insert("layers/a/hi/6-1-1".into(), store::catalogue::FileRef { file: kept.into(), ..Default::default() });
-        store::testkit::map_root(root, &cat);
-        let nas = store::nasfs::NasRoot::local_for_test(root);
-        let told: std::cell::RefCell<Vec<String>> = Default::default();
-        let tell = |names: &[String]| -> Result<()> {
-            told.borrow_mut().extend_from_slice(names);
-            Ok(())
-        };
-        let r = run(&nas, 14, &Asked::default(), &tell).unwrap();
-        let mut told = told.take();
-        told.sort();
-        assert_eq!(told, [due, input_due], "each under its own name, once");
-        assert_eq!(r.removed, 2);
-        for f in [kept, input, osm, outside] {
-            assert!(root.join(f).exists(), "{f}");
-        }
-        // Step 9's pass: the link goes, what it points at stays.
-        put("catalog/1.json");
-        symlink(root.join("state"), root.join("catalog/state")).unwrap();
-        remove_old_catalogues(&nas, None, false).unwrap();
-        assert!(!root.join("catalog").exists() && root.join(outside).exists());
-    }
-
-    /// A name the lead answers as held (`Tell`: named now, or its holders not outlasted, the run's
-    /// roots being as old as the run) stays, counted; the rest of its chunk goes.
-    #[test]
-    fn a_name_the_lead_holds_stays() {
-        struct Holds(String);
-        impl Tell for Holds {
-            fn removing(&self, names: &[String]) -> Result<Vec<String>> {
-                Ok(names.iter().filter(|n| **n == self.0).cloned().collect())
-            }
-        }
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let (held, due) = ("layers/a/hi/6-1-1.1111111111111111.pack", "layers/a/hi/6-1-2.2222222222222222.pack");
-        let kept = "layers/a/hi/6-1-3.3333333333333333.pack";
-        for f in [held, due, kept] {
-            let p = root.join(f);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, 60);
-        }
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files
-            .insert("layers/a/hi/6-1-3".into(), store::catalogue::FileRef { file: kept.into(), ..Default::default() });
-        store::testkit::map_root(root, &cat);
-        let nas = store::nasfs::NasRoot::local_for_test(root);
-        let r = run(&nas, 14, &Asked::default(), &Holds(held.to_string())).unwrap();
-        assert_eq!((r.removed, r.held), (1, 1));
-        assert!(root.join(held).exists() && !root.join(due).exists());
-    }
-
-    /// The due set asked for and not read (the lead's map and its freed names in it): a real run
-    /// fails, removing nothing; a dry run says so and goes on.
-    #[test]
-    fn a_due_set_not_read_removes_nothing() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let due = "layers/a/hi/6-1-2.2222222222222222.pack";
-        let p = root.join(due);
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(&p, b"x").unwrap();
-        age(&p, 60);
-        store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
-        let nas = store::nasfs::NasRoot::local_for_test(root);
-        let gone = root.join("no-such-file");
-        let asked = Asked { shadow: Some(&gone), ..Default::default() };
-        let e = format!("{:#}", run(&nas, 14, &asked, &TOLD).unwrap_err());
-        assert!(e.contains("nothing removed"), "{e}");
-        assert!(p.exists());
-        let r = run(&nas, 14, &Asked { dry_run: true, ..asked }, &TOLD).unwrap();
-        assert!(r.warnings.iter().any(|w| w.contains("not read")), "{:?}", r.warnings);
-    }
-
-    #[test]
-    fn the_maps_keep_their_files_however_old() {
-        use super::super::gcqueue::ShadowDue;
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let file = |n: u64| format!("layers/a/hi/6-1-1.{}.pack", format!("{n}").repeat(16));
-        for n in 1..=7 {
-            let p = root.join(file(n));
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, 60);
-        }
-        for n in 1..=4 {
-            let mut cat = store::catalogue::Catalogue::new(n);
-            cat.files
-                .insert("layers/a/hi/6-1-1".into(), store::catalogue::FileRef { file: file(n), ..Default::default() });
-            store::testkit::map_root(root, &cat);
-        }
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let due = ShadowDue {
-            at: now,
-            map: vec![file(5)],
-            freed: vec![(file(6), now - 86400), (file(7), now - 30 * 86400)],
-            ..Default::default()
-        };
-        let home = tempfile::tempdir().unwrap();
-        let due_p = home.path().join(super::super::gcqueue::SHADOW_DUE);
-        fs::write(&due_p, serde_json::to_vec(&due).unwrap()).unwrap();
-        let r = run(
-            &store::nasfs::NasRoot::local_for_test(root),
-            14,
-            &Asked { shadow: Some(&due_p), ..Default::default() },
-            &TOLD,
-        )
-        .unwrap();
-        // (Snapshots 2 to 4, the newest kept there, and the lead's map.)
-        assert_eq!((r.catalogues_kept, r.removed), (4, 2));
-        for n in 1..=7 {
-            assert_eq!(root.join(file(n)).exists(), ![1, 7].contains(&n), "{n}");
-        }
-        // No map at all (neither a snapshot nor the lead's): nothing removed.
-        let e = tempfile::tempdir().unwrap();
-        let p = e.path().join(file(1));
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(&p, b"x").unwrap();
-        age(&p, 60);
-        let r = run(&store::nasfs::NasRoot::local_for_test(e.path()), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!((r.catalogues_kept, r.removed), (0, 0));
-        assert!(p.exists());
-    }
-
-    #[test]
-    fn the_build_manifest_keeps_its_files() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let f = "base/6-1-1.4444444444444444.sect";
-        fs::create_dir_all(root.join("base")).unwrap();
-        fs::write(root.join(f), b"x").unwrap();
-        age(&root.join(f), 60);
-        let cat = store::catalogue::Catalogue::new(1);
-        store::testkit::map_root(root, &cat);
-        // Not in the catalogue, old, but the build uploaded it: kept. (A catalogue file elsewhere so
-        // `base/` is swept at all.)
-        let mut cat2 = store::catalogue::Catalogue::new(2);
-        cat2.files.insert(
-            "base/6-1-2".into(),
-            store::catalogue::FileRef { file: "base/6-1-2.5555555555555555.sect".into(), ..Default::default() },
-        );
-        store::testkit::map_root(root, &cat2);
-        fs::create_dir_all(root.join("state/build")).unwrap();
-        fs::write(root.join("state/build/manifest.json"), format!("{{\"base/6-1-1\": \"{f}\"}}")).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!(r.removed, 0);
-        assert!(root.join(f).exists());
-    }
-
-    #[test]
-    fn retired_passes_go_after_the_newer_one_settles() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let put = |rel: &str, days: u64| {
-            let p = root.join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, days);
-        };
-        // The old pass (retired from the manifest), the newest (complete 20 days ago), and a planet
-        // waiting for its pass.
-        put("sources/osm/2026-03-01/planet.osm.pbf", 200);
-        put("sources/osm/2026-03-01/pieces/6-1-1.1111111111111111.osm.pbf", 200);
-        put("sources/items/2026-03-01/facts.2222222222222222.json", 200);
-        put("sources/osm/2026-09-28/planet.osm.pbf", 30);
-        put("sources/osm/2026-09-28/pass.3333333333333333.json", 20);
-        put("sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf", 25);
-        put("sources/osm/2027-03-01/planet.osm.pbf", 1);
-        put("sources/registers/legacy.5555555555555555.tar.zst", 300);
-        store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!(r.retired_removed, 3, "{r:?}");
-        assert!(
-            !root.join("sources/osm/2026-03-01").exists() && !root.join("sources/items/2026-03-01").exists(),
-            "the retired pass's folders, emptied, go too"
-        );
-        for kept in [
-            "sources/osm/2026-09-28/planet.osm.pbf",
-            "sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf",
-            "sources/osm/2027-03-01/planet.osm.pbf",
-            "sources/registers/legacy.5555555555555555.tar.zst",
-        ] {
-            assert!(root.join(kept).exists(), "{kept}");
-        }
-        // A newer pass completed only days ago: the old planet waits (its content-named files don't).
-        put("sources/osm/2026-03-01/planet.osm.pbf", 200);
-        put("sources/osm/2026-03-01/roads/6-1-1.6666666666666666.bin", 200);
-        put("sources/osm/2026-09-28/pass.3333333333333333.json", 3);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!(r.retired_removed, 1);
-        assert!(root.join("sources/osm/2026-03-01/planet.osm.pbf").exists());
-    }
-
     /// The gate's copies (docs/inputs.md §4.9): kept while the manifest's index or report names
-    /// them, or a journal entry not merged yet does; the rest of `sources/` and the inputs folders
-    /// never swept; none swept while an index can't be read.
+    /// them, or a journal entry not merged yet does, or a version replaced lately; the rest, old,
+    /// told the lead and removed, but those it holds as they're told; the inputs folders and the
+    /// rest of `sources/` never swept; none swept while an index can't be read. A link isn't gone
+    /// through.
     #[test]
     fn the_inputs_copies_go_once_nothing_names_them() {
+        use std::os::unix::fs::symlink;
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         let put = |rel: &str, body: &str, days: u64| {
@@ -2037,9 +1962,10 @@ mod tests {
         );
         put(&format!("{u}/@held.7777777777777777.json"), "{}", 60);
         put(&format!("{u}/@held.8888888888888888.json"), "{}", 60); // an old report: goes
+        put(&format!("{u}/c.9999999999999990.jsonl"), "x", 60); // old, but the lead holds it as told
         put("inputs/_gate-test/a.jsonl", "x", 300); // the inputs folder: never
         put("sources/registers/legacy.9999999999999999.tar.zst", "x", 300); // the rest of sources/: never
-        store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
+        symlink(root.join(u), root.join(format!("{u}/loop"))).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         // A nested unit (`timetables/gtfs`'s kind): its index named, its copy kept; an old copy of
         // it gone.
@@ -2063,9 +1989,23 @@ mod tests {
             },
             at: 1_791_500_000,
         };
-        crate::pool::journal::write(&store::nasfs::NasRoot::local_for_test(&root), &entry).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!(r.inputs_skipped, None);
+        crate::pool::journal::write(&store::nasfs::NasRoot::local_for_test(root), &entry).unwrap();
+        // (The lead's queue: its records hold the copy a hand-off just brought, `c`.)
+        let q_dir = tempfile::tempdir().unwrap();
+        let q = GcQueue::default();
+        q.open(q_dir.path(), &map_of(1, &[]), now_s()).unwrap();
+        let held = format!("{u}/c.9999999999999990.jsonl");
+        q.records((2, 1), [held.clone()].iter(), now_s());
+        let lead = InProcess { q: &q, now: Cell::new(now_s()) };
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let home = tempfile::tempdir().unwrap();
+        let sweeps = home.path().join(SWEEPS_FILE);
+        let pass = || {
+            sweeps_ended(home.path(), now_s(), &["inputs"]);
+            run(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap()
+        };
+        let r = pass();
+        assert_eq!((r.inputs_skipped.as_deref(), r.unmerged, r.inputs_held), (None, 1, 1), "{r:?}");
         assert_eq!(r.inputs_removed, 3, "{r:?}");
         assert!(
             !root.join(format!("{u}/a.2222222222222222.jsonl")).exists()
@@ -2074,6 +2014,7 @@ mod tests {
         );
         for k in [
             kept.clone(),
+            held.clone(),
             format!("{u}/a.3333333333333333.jsonl"),
             format!("{u}/b.4444444444444444.jsonl"),
             format!("{u}/@index.5555555555555555.json"),
@@ -2093,7 +2034,7 @@ mod tests {
             &index("_gate-test", &[&format!("{u}/a.cccccccccccccccc.jsonl")]),
             1,
         );
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
+        let r = pass();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // Its touch failed (its time 30 days old), but the check's state made yesterday names it
@@ -2107,7 +2048,7 @@ mod tests {
             40,
         );
         put(&format!("{n}/@listed.bbbbbbbbbbbbbbbb.json"), &serde_json::json!({"fmt": 1, "unit": "_gate-nest/inner", "listed": {}, "replaced": format!("{n}/@index.aaaaaaaaaaaaaaaf.json")}).to_string(), 2);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
+        let r = pass();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(
             root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists()
@@ -2115,53 +2056,31 @@ mod tests {
         );
         // 15 days after it was replaced (the state that named it that old too): gone, with its index.
         age(&root.join(format!("{u}/@listed.eeeeeeeeeeeeeeee.json")), 15);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
+        let r = pass();
         assert_eq!(r.inputs_removed, 3, "the copy, its index, the old state: {r:?}");
         assert!(!root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // An index named that can't be read: nothing there swept.
         put(&format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl"), "x", 60);
         fs::write(root.join(format!("{u}/@index.5555555555555555.json")), b"{not json").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
+        let r = pass();
         assert!(r.inputs_skipped.is_some() && r.inputs_removed == 0);
         assert!(root.join(format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl")).exists());
     }
 
-    /// A journal entry the newest records don't reflect yet keeps the files it names (its changes
-    /// and its uploads), however old; once merged (or refused) it keeps nothing of its own; an
-    /// entry not whole yet keeps GC from removing anything, until refused, or with no term led,
-    /// `PASS_OVER_S` old.
+    /// The journal's entries the newest records don't reflect yet (`unmerged`, what keeps the
+    /// gate's copies an entry's index lists): counted with their files, however old; none once
+    /// merged (or refused); one not whole yet an error (the inputs sweep sweeps nothing), until
+    /// refused, or with no term led, `PASS_OVER_S` old.
     #[test]
     fn an_unmerged_entry_keeps_its_files() {
         use crate::pool::journal::{self, Entry, LeaseId};
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
-        let put = |rel: &str, days: u64| {
-            let p = root.join(rel);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-            age(&p, days);
-        };
-        let (a, b, c) = (
-            "layers/roads/hi/6-1-2.1111111111111111.pack",
-            "layers/roads/hi/6-1-3.2222222222222222.pack",
-            "layers/roads/hi/6-1-4.3333333333333333.pack",
-        );
-        for f in [a, b, c] {
-            put(f, 60);
-        }
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files.insert(
-            "layers/roads/hi/6-9-9".into(),
-            store::catalogue::FileRef {
-                file: "layers/roads/hi/6-9-9.9999999999999999.pack".into(),
-                ..Default::default()
-            },
-        );
-        store::testkit::map_root(root, &cat);
+        let (a, b) = ("layers/roads/hi/6-1-2.1111111111111111.pack", "layers/roads/hi/6-1-3.2222222222222222.pack");
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         // An entry of a member away three weeks, written, never merged: its change and its upload.
-        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let nas = store::nasfs::NasRoot::local_for_test(root);
         let mut h = crate::handoff::Handoff::default();
         h.changes.insert("layers/roads/hi/6-1-2".into(), Some(a.into()));
         h.pending.insert(b.into(), "0".repeat(64));
@@ -2173,10 +2092,11 @@ mod tests {
             at: 1_791_500_000,
         };
         journal::write(&nas, &e).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!((r.unmerged, r.removed), (1, 1), "{r:?}");
-        assert!(root.join(a).exists() && root.join(b).exists() && !root.join(c).exists());
-        // Merged (term 1's records reflect it, naming nothing of it: replaced since): its files go.
+        let now = crate::agent::jobs::now_s();
+        let u = unmerged(&nas, now).unwrap();
+        assert_eq!(u.entries, 1);
+        assert!(u.files.contains(a) && u.files.contains(b), "{:?}", u.files);
+        // Merged (term 1's records reflect it): nothing of its own.
         let me = crate::pool::Member { id: "m-0000000000000001".into(), host: "a".into(), app: "development".into() };
         fs::write(root.join("state/build/jobs.json"), "{}").unwrap();
         fs::write(root.join("state/build/pending.json"), "{}").unwrap();
@@ -2184,13 +2104,9 @@ mod tests {
         let mut rec = crate::pool::records::Records { term: 1, ..Default::default() };
         rec.reflected.insert(e.key().unwrap());
         rec.save(&nas).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!((r.unmerged, r.removed), (0, 2), "{r:?}");
-        // A term led: an entry that doesn't read whole (short, of whatever day: a read cut short
-        // says nothing of it), or reads damaged: GC fails, nothing removed, every run, until the
-        // lead refuses it.
-        put(c, 60);
-        let now = crate::agent::jobs::now_s();
+        let u = unmerged(&nas, now).unwrap();
+        assert!(u.entries == 0 && !u.files.contains(a));
+        // A term led: an entry that doesn't read whole, or reads damaged, is an error until refused.
         let entry_at = |key: &str, bytes: &[u8]| {
             let p = root.join(journal::DIR).join(format!("{key}.json"));
             fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -2199,110 +2115,155 @@ mod tests {
         };
         let short_key = format!("{}/1-5", journal::day(now - 10 * 86400).unwrap());
         entry_at(&short_key, b"{\"member\": ");
-        for _ in 0..2 {
-            let e = format!(
-                "{:#}",
-                run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap_err()
-            );
-            assert!(e.contains("nothing removed") && e.contains("1-5"), "{e}");
-            assert!(root.join(c).exists());
-        }
+        assert!(format!("{:#}", unmerged(&nas, now).unwrap_err()).contains("1-5"));
         let damaged_key = format!("{}/1-6", journal::day(now).unwrap());
         entry_at(&damaged_key, b"{\"not\": \"an entry\"}");
         rec.rejected.insert(short_key, "never whole".into());
         rec.save(&nas).unwrap();
-        let e = format!(
-            "{:#}",
-            run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap_err()
-        );
-        assert!(e.contains("damaged") && root.join(c).exists(), "{e}");
-        // Both refused by the lead: passed over, the sweep goes on.
+        assert!(format!("{:#}", unmerged(&nas, now).unwrap_err()).contains("damaged"));
         rec.rejected.insert(damaged_key, "damaged".into());
         rec.save(&nas).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert!(r.removed == 1 && r.warnings.is_empty(), "{r:?}");
+        assert!(unmerged(&nas, now).unwrap().warnings.is_empty());
         // No term led (its term not readable whole): no one refuses. An entry unreadable from today
-        // still fails GC; one whose day is over `PASS_OVER_S` past (ten days here, the days far
-        // from the bound) is passed over, said as a warning, the sweep going on.
+        // is an error; one whose day is over `PASS_OVER_S` past is passed over, said.
         fs::write(root.join(crate::pool::term::DIR).join("1.json"), b"{\"term\": ").unwrap();
-        put(c, 60);
         let young = entry_at(&format!("{}/1-8", journal::day(now).unwrap()), b"{\"member\": ");
-        let e = format!(
-            "{:#}",
-            run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap_err()
-        );
-        assert!(e.contains("1-8") && root.join(c).exists(), "{e}");
+        assert!(format!("{:#}", unmerged(&nas, now).unwrap_err()).contains("1-8"));
         fs::remove_file(&young).unwrap();
         entry_at(&format!("{}/1-7", journal::day(now - 10 * 86400).unwrap()), b"{\"member\": ");
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert!(
-            r.removed == 1
-                && r.warnings.len() == 1
-                && r.warnings[0].contains("1-7")
-                && r.warnings[0].contains("passed over"),
-            "{r:?}"
-        );
-        assert!(!root.join(c).exists());
+        let u = unmerged(&nas, now).unwrap();
+        assert!(u.warnings.len() == 1 && u.warnings[0].contains("1-7") && u.warnings[0].contains("passed over"));
     }
 
-    /// A file reused by name as GC removes it: renamed to a tombstone first, its time looked at
-    /// again there; touched since GC listed it, put back.
+    /// Task #701: a removed step's names (`RETIRED`) leave the manifest in one save, the rest kept
+    /// (their files then go as GC's queue frees them: `by_the_queue` takes them under `sources/`);
+    /// a run after changes nothing; a dry run counts, writing nothing.
     #[test]
-    fn a_file_touched_as_gc_removes_it_is_put_back() {
+    fn removed_steps_names_leave_the_manifest_and_the_queue_takes_their_files() {
         let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("layers/roads/hi/6-1-2.0123456789abcdef.pack");
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(&p, b"x").unwrap();
-        let keep = Duration::from_secs(14 * 86400);
-        let now = SystemTime::now();
-        let old = |t: SystemTime| now.duration_since(t).is_ok_and(|d| d > keep);
-        // (Listed old; touched by a job before GC got to it.)
-        age(&p, 30);
-        fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now()).unwrap();
-        assert!(!remove_unless_touched(&store::nasfs::NasPath::local_for_test(&p), &old, false).unwrap());
-        assert!(
-            p.exists() && fs::read_dir(p.parent().unwrap()).unwrap().count() == 1,
-            "back under its name, no tombstone left"
-        );
-        // Not touched: gone, no tombstone left.
-        age(&p, 30);
-        assert!(remove_unless_touched(&store::nasfs::NasPath::local_for_test(&p), &old, false).unwrap());
-        assert!(!p.exists() && fs::read_dir(p.parent().unwrap()).unwrap().count() == 0);
-        // Gone already (another GC, or never there): nothing.
-        assert!(!remove_unless_touched(&store::nasfs::NasPath::local_for_test(&p), &old, false).unwrap());
-        // A tombstone a sweep finds (a GC stopped between, or another's in flight): never removed
-        // as a stale file, put back under its name for the usual rules; its name taken again (the
-        // same bytes uploaded meanwhile), it goes. Not a content-named file either way.
         let root = d.path();
-        let mut tomb = p.as_os_str().to_owned();
-        tomb.push(TOMB);
-        let tomb = PathBuf::from(tomb);
-        fs::write(&tomb, b"x").unwrap();
-        age(&tomb, 30);
-        assert!(store::naming::parse_content_name(&tomb.strip_prefix(root).unwrap().to_string_lossy()).is_none());
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files.insert(
-            "layers/roads/hi/6-9-9".into(),
-            store::catalogue::FileRef {
-                file: "layers/roads/hi/6-9-9.9999999999999999.pack".into(),
-                ..Default::default()
-            },
+        let (v1, v3, other) = (
+            "sources/terrain-z8-v1.1111111111111111.pack",
+            "sources/terrain-z8-v3.3333333333333333.pack",
+            "base/6-1-1.4444444444444444.sect",
         );
-        store::testkit::map_root(root, &cat);
         fs::create_dir_all(root.join("state/build")).unwrap();
-        fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert!(r.tombs == 1 && p.exists() && !tomb.exists() && r.removed == 0, "put back, decided next run: {r:?}");
-        // (Its name a young file of the same bytes, uploaded again meanwhile.)
-        fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now()).unwrap();
-        fs::write(&tomb, b"x").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert!(r.tombs == 1 && !tomb.exists() && p.exists(), "its name taken: the tombstone's copy goes: {r:?}");
-        // (The upload's time kept, not the tombstone's: never replaced by it.)
-        assert!(
-            fs::metadata(&p).unwrap().modified().unwrap().elapsed().unwrap() < Duration::from_secs(86400),
-            "the new upload kept"
+        let manifest =
+            serde_json::json!({ "sources/terrain-z8-v1": v1, "sources/terrain-z8-v3": v3, "base/6-1-1": other });
+        let mpath = root.join("state/build/manifest.json");
+        fs::write(&mpath, manifest.to_string()).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let duties = |dry_run: bool| {
+            let home = tempfile::tempdir().unwrap();
+            let sweeps = sweeps_ended(home.path(), now_s(), &["duties"]);
+            run(&nas, &Asked { dry_run, sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&Idle)).unwrap()
+        };
+        assert_eq!(duties(true).retired_dropped, 2, "a dry run counts what it would drop");
+        assert_eq!(fs::read(&mpath).unwrap(), manifest.to_string().as_bytes());
+        let r = duties(false);
+        assert_eq!(r.retired_dropped, 2, "{:?}", r.warnings);
+        let m: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
+        assert_eq!(m.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
+        let before = fs::metadata(&mpath).unwrap().modified().unwrap();
+        assert_eq!(duties(false).retired_dropped, 0);
+        assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before, "nothing written");
+        for f in
+            [v1, v3, "global/legacy/ferries.1111111111111111.json", "work/terrain-lakes/6-1-1.1111111111111111.bin"]
+        {
+            assert!(by_the_queue(f, None), "{f}");
+        }
+        for f in [
+            "sources/registers/r.1111111111111111.tar",
+            "sources/inputs/u/a.1111111111111111.jsonl",
+            "state/x.1111111111111111.json",
+        ] {
+            assert!(!by_the_queue(f, Some("2026-09-28")), "{f}");
+        }
+        assert!(by_the_queue("sources/osm/2026-03-01/pieces/6-1-1.1111111111111111.osm.pbf", Some("2026-09-28")));
+        assert!(!by_the_queue("sources/osm/2026-09-28/pieces/6-1-1.1111111111111111.osm.pbf", Some("2026-09-28")));
+        assert!(!by_the_queue("sources/osm/2026-03-01/pieces/6-1-1.1111111111111111.osm.pbf", None));
+    }
+
+    /// Task #52: the old pipeline's converted data (`global/legacy/`) is retired: its names leave
+    /// the manifest (their uploads never verified leave the pending); nothing else under `global/`
+    /// is dropped, a look-alike folder included.
+    #[test]
+    fn the_legacy_folder_is_retired_and_nothing_else_under_global() {
+        for l in ["global/legacy/ferries", "global/legacy/details-poi", "global/legacy/dem-stats"] {
+            assert!(retired(l), "{l}");
+        }
+        for l in ["global/legacy", "global/legacyx/ferries", "global/railfreq", "global/heritage/layer-summary"] {
+            assert!(!retired(l), "{l}");
+        }
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let (ferries, poi, rail, near) = (
+            "global/legacy/ferries.1111111111111111.json",
+            "global/legacy/details-poi.2222222222222222.jsonl",
+            "global/railfreq.4444444444444444.bin",
+            "global/legacyx/ferries.5555555555555555.json",
         );
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        let manifest = serde_json::json!({
+            "global/legacy/ferries": ferries,
+            "global/legacy/details-poi": poi,
+            "global/railfreq": rail,
+            "global/legacyx/ferries": near,
+        });
+        let mpath = root.join("state/build/manifest.json");
+        fs::write(&mpath, manifest.to_string()).unwrap();
+        let ppath = root.join("state/build/pending.json");
+        fs::write(&ppath, serde_json::json!({ferries: "a", poi: "b", rail: "c"}).to_string()).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let dr = drop_names(&nas, &d.path().join("s"), None, false).unwrap();
+        assert_eq!(dr.retired, 2);
+        let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
+        assert_eq!(p.keys().collect::<Vec<_>>(), [rail]);
+        let m: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
+        assert_eq!(m.keys().collect::<Vec<_>>(), ["global/legacyx/ferries", "global/railfreq"]);
+    }
+
+    /// Task #679: the depth packs no current target names leave the manifest in one save, with the
+    /// removed steps' names; every other name stays (a target's packs, other layers' of the same
+    /// tile). Without the targets, no depth name goes; a dry run counts them, writing nothing; a
+    /// run after drops nothing.
+    #[test]
+    fn depth_packs_no_target_names_leave_the_manifest() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let kept_hi = "layers/depth/hi/6-1-33.1111111111111111.pack";
+        let kept_lo = "layers/depth-shade/lo/3-0-4.2222222222222222.pack";
+        let gone_hi = "layers/depth/hi/6-2-33.3333333333333333.pack";
+        let gone_class = "layers/depth-class/hi/6-2-33.4444444444444444.pack";
+        let gone_lo = "layers/depth/lo/3-5-5.5555555555555555.pack";
+        let terrain = "layers/terrain/hi/6-2-33.6666666666666666.pack";
+        let z8 = "sources/terrain-z8-v1.7777777777777777.pack";
+        let logical = |c: &str| c.split_once('.').unwrap().0.to_string();
+        let manifest: BTreeMap<String, String> = [kept_hi, kept_lo, gone_hi, gone_class, gone_lo, terrain, z8]
+            .iter()
+            .map(|c| (logical(c), c.to_string()))
+            .collect();
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        let mpath = root.join("state/build/manifest.json");
+        let text = serde_json::to_string(&manifest).unwrap();
+        fs::write(&mpath, &text).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let k = keep();
+        let dr = drop_names(&nas, &d.path().join("s"), None, true).unwrap();
+        assert_eq!((dr.retired, dr.depth), (1, 0), "without the targets, no depth name");
+        let dr = drop_names(&nas, &d.path().join("s"), Some(&k), true).unwrap();
+        assert_eq!((dr.retired, dr.depth), (1, 3));
+        assert_eq!(fs::read_to_string(&mpath).unwrap(), text, "a dry run writes nothing");
+        let dr = drop_names(&nas, &d.path().join("s"), Some(&k), false).unwrap();
+        assert_eq!((dr.retired, dr.depth), (1, 3));
+        let m: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
+        assert_eq!(
+            m.keys().collect::<Vec<_>>(),
+            ["layers/depth-shade/lo/3-0-4", "layers/depth/hi/6-1-33", "layers/terrain/hi/6-2-33"]
+        );
+        let before = fs::metadata(&mpath).unwrap().modified().unwrap();
+        assert_eq!(drop_names(&nas, &d.path().join("s"), Some(&k), false).unwrap(), Dropped::default());
+        assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
     }
 
     /// Step 9's pass (docs/maplog.md §8): the old catalogues' folders go whole, by one call on the
@@ -2373,157 +2334,6 @@ mod tests {
                 && user.path().join("Library/Caches/scenic/map/current.json.zst").exists()
         );
         assert!(remove_this_macs_catalogues(app.path(), user.path()).is_empty());
-    }
-
-    #[test]
-    fn nothing_without_a_catalogue() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("layers/roads/hi/6-1-2.0123456789abcdef.pack");
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(&p, b"x").unwrap();
-        age(&p, 300);
-        let r = run(&store::nasfs::NasRoot::local_for_test(d.path()), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!((r.removed, r.files_seen), (0, 0));
-        assert!(p.exists());
-    }
-
-    /// Task #701: a removed step's names (`RETIRED`) leave the manifest in one save, the rest kept;
-    /// its files then go once old, but one a catalogue of the window names stays; a run after
-    /// changes nothing (no names left, the manifest not written).
-    #[test]
-    fn removed_steps_names_leave_the_manifest_and_their_files_go() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let (v1, v1max, v3, other) = (
-            "sources/terrain-z8-v1.1111111111111111.pack",
-            "sources/terrain-z8-v1-max.2222222222222222.f32",
-            "sources/terrain-z8-v3.3333333333333333.pack",
-            "base/6-1-1.4444444444444444.sect",
-        );
-        for f in [v1, v1max, v3, other, "sources/terrain-z8-README"] {
-            fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
-            fs::write(root.join(f), b"x").unwrap();
-            age(&root.join(f), 30);
-        }
-        // (A tombstone of one, a GC stopped between: put back, then judged next run.)
-        fs::write(root.join(format!("{v1max}{TOMB}")), b"x").unwrap();
-        fs::remove_file(root.join(v1max)).unwrap();
-        fs::create_dir_all(root.join("state/build")).unwrap();
-        let manifest = serde_json::json!({
-            "sources/terrain-z8-v1": v1,
-            "sources/terrain-z8-v1-max": v1max,
-            "sources/terrain-z8-v3": v3,
-            "base/6-1-1": other,
-        });
-        let mpath = root.join("state/build/manifest.json");
-        fs::write(&mpath, manifest.to_string()).unwrap();
-        // The catalogue in the window still serves v3: kept.
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files.insert(
-            "sources/terrain-z8-v3".into(),
-            store::catalogue::FileRef { file: v3.into(), ..Default::default() },
-        );
-        store::testkit::map_root(root, &cat);
-        let nas = store::nasfs::NasRoot::local_for_test(root);
-        let r = run(&nas, 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
-        let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
-        assert_eq!(m.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
-        assert_eq!((r.retired_removed, r.tombs), (1, 1));
-        assert!(!root.join(v1).exists() && root.join(v3).exists() && root.join(other).exists());
-        assert!(root.join(v1max).exists() && root.join("sources/terrain-z8-README").exists());
-        // Again: nothing to drop, the manifest left as it was; the one put back goes now.
-        let before = fs::metadata(&mpath).unwrap().modified().unwrap();
-        age(&root.join(v1max), 30);
-        let r = run(&nas, 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!((r.retired_dropped, r.retired_removed), (0, 1));
-        assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
-        assert!(!root.join(v1max).exists() && root.join(v3).exists());
-        // A dry run counts, writing nothing.
-        fs::write(&mpath, manifest.to_string()).unwrap();
-        assert_eq!(
-            run(&nas, 14, &Asked { dry_run: true, ..Default::default() }, &TOLD).unwrap().retired_dropped,
-            3,
-            "a dry run counts what it would drop"
-        );
-        assert_eq!(fs::read(&mpath).unwrap(), manifest.to_string().as_bytes());
-    }
-
-    /// Task #52: the old pipeline's converted data (`global/legacy/`) is retired: its names leave
-    /// the manifest and its files go by the folder sweep alone (once, counted as retired), its
-    /// tombstones put back; nothing else under `global/` is dropped, a look-alike folder included.
-    #[test]
-    fn the_legacy_folder_is_retired_and_nothing_else_under_global() {
-        for l in ["global/legacy/ferries", "global/legacy/details-poi", "global/legacy/dem-stats"] {
-            assert!(retired(l), "{l}");
-        }
-        for l in ["global/legacy", "global/legacyx/ferries", "global/railfreq", "global/heritage/layer-summary"] {
-            assert!(!retired(l), "{l}");
-        }
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let (ferries, poi, stats, rail, near) = (
-            "global/legacy/ferries.1111111111111111.json",
-            "global/legacy/details-poi.2222222222222222.jsonl",
-            "global/legacy/dem-stats.3333333333333333.json",
-            "global/railfreq.4444444444444444.bin",
-            "global/legacyx/ferries.5555555555555555.json",
-        );
-        for f in [ferries, poi, stats, rail, near] {
-            fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
-            fs::write(root.join(f), b"xy").unwrap();
-            age(&root.join(f), 30);
-        }
-        fs::write(root.join(format!("{stats}{TOMB}")), b"xy").unwrap();
-        fs::remove_file(root.join(stats)).unwrap();
-        fs::create_dir_all(root.join("state/build")).unwrap();
-        let manifest = serde_json::json!({
-            "global/legacy/ferries": ferries,
-            "global/legacy/details-poi": poi,
-            "global/legacy/dem-stats": stats,
-            "global/railfreq": rail,
-            "global/legacyx/ferries": near,
-        });
-        let mpath = root.join("state/build/manifest.json");
-        fs::write(&mpath, manifest.to_string()).unwrap();
-        // (Uploads never verified: the retired ones leave the pending too, the rest stay.)
-        let ppath = root.join("state/build/pending.json");
-        fs::write(&ppath, serde_json::json!({ferries: "a", poi: "b", rail: "c"}).to_string()).unwrap();
-        store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
-        let nas = store::nasfs::NasRoot::local_for_test(root);
-        let r = run(&nas, 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
-        let p: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
-        assert_eq!(p.keys().collect::<Vec<_>>(), [rail]);
-        let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
-        assert_eq!(m.keys().collect::<Vec<_>>(), ["global/legacyx/ferries", "global/railfreq"]);
-        assert_eq!((r.retired_removed, r.retired_bytes, r.removed, r.tombs), (2, 4, 2, 1));
-        assert!(!root.join(ferries).exists() && !root.join(poi).exists() && root.join(stats).exists());
-        assert!(root.join(rail).exists() && root.join(near).exists());
-        age(&root.join(stats), 30);
-        let r = run(&nas, 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!((r.retired_dropped, r.retired_removed, r.removed), (0, 1, 1));
-        assert!(!root.join(stats).exists() && root.join(rail).exists() && root.join(near).exists());
-        // With nothing else under global/ named, only the legacy folder is listed: an old,
-        // content-named file beside it no one names stays (the folder sweep never took it).
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let (ferries, other) = ("global/legacy/ferries.1111111111111111.json", "global/railfreq.4444444444444444.bin");
-        for f in [ferries, other] {
-            fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
-            fs::write(root.join(f), b"xy").unwrap();
-            age(&root.join(f), 30);
-        }
-        fs::create_dir_all(root.join("state/build")).unwrap();
-        fs::write(
-            root.join("state/build/manifest.json"),
-            serde_json::json!({"global/legacy/ferries": ferries}).to_string(),
-        )
-        .unwrap();
-        store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default(), &TOLD).unwrap();
-        assert_eq!((r.retired_dropped, r.retired_removed, r.removed), (1, 1, 1), "{:?}", r.warnings);
-        assert!(!root.join(ferries).exists() && root.join(other).exists());
     }
 
     /// Task #701: in the pool the drop is the gc job's hand-off (merged by the lead), never a
@@ -2608,84 +2418,6 @@ mod tests {
         assert!(DepthKeep::read(&p, k.at + DEPTH_KEEP_FRESH_S + 1).is_err());
         fs::write(&p, b"{\"at\": ").unwrap();
         assert!(DepthKeep::read(&p, now).is_err());
-    }
-
-    /// Task #679: the depth packs no current target names leave the manifest in one save, with the
-    /// removed steps' names; every other name stays (a target's packs, other layers' of the same
-    /// tile). Their files then go once old, but one a catalogue of the window names stays; a file a
-    /// running depth job uploaded (its entry unmerged) stays. Without the targets, no depth name
-    /// goes; a dry run counts them, writing nothing; a run after drops nothing.
-    #[test]
-    fn depth_packs_no_target_names_leave_the_manifest_and_their_files_go() {
-        use crate::pool::journal::{self, Entry, LeaseId};
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let kept_hi = "layers/depth/hi/6-1-33.1111111111111111.pack";
-        let kept_lo = "layers/depth-shade/lo/3-0-4.2222222222222222.pack";
-        let gone_hi = "layers/depth/hi/6-2-33.3333333333333333.pack";
-        let gone_class = "layers/depth-class/hi/6-2-33.4444444444444444.pack";
-        let gone_lo = "layers/depth/lo/3-5-5.5555555555555555.pack";
-        let terrain = "layers/terrain/hi/6-2-33.6666666666666666.pack";
-        let z8 = "sources/terrain-z8-v1.7777777777777777.pack";
-        // (A running depth job's upload for the orphan tile, its entry written, not merged.)
-        let running = "layers/depth-shade/hi/6-2-33.8888888888888888.pack";
-        for f in [kept_hi, kept_lo, gone_hi, gone_class, gone_lo, terrain, z8, running] {
-            fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
-            fs::write(root.join(f), b"x").unwrap();
-            age(&root.join(f), 30);
-        }
-        let logical = |c: &str| c.split_once('.').unwrap().0.to_string();
-        let manifest: std::collections::BTreeMap<String, String> =
-            [kept_hi, kept_lo, gone_hi, gone_class, gone_lo, terrain, z8]
-                .iter()
-                .map(|c| (logical(c), c.to_string()))
-                .collect();
-        fs::create_dir_all(root.join("state/build")).unwrap();
-        let mpath = root.join("state/build/manifest.json");
-        let text = serde_json::to_string(&manifest).unwrap();
-        fs::write(&mpath, &text).unwrap();
-        // A catalogue in the window still serves the orphan's classes: kept.
-        let mut cat = store::catalogue::Catalogue::new(1);
-        cat.files
-            .insert(logical(gone_class), store::catalogue::FileRef { file: gone_class.into(), ..Default::default() });
-        store::testkit::map_root(root, &cat);
-        let nas = store::nasfs::NasRoot::local_for_test(root);
-        let mut h = crate::handoff::Handoff::default();
-        h.changes.insert(logical(running), Some(running.into()));
-        let e = Entry {
-            member: "m-0000000000000002".into(),
-            lease: LeaseId { term: 1, n: 4 },
-            step: "depth".into(),
-            handoff: h,
-            at: 1_791_500_000,
-        };
-        journal::write(&nas, &e).unwrap();
-        let k = keep();
-        // Without the targets: no depth name goes (the removed step's does).
-        let dr = drop_names(&nas, &d.path().join("s"), None, true).unwrap();
-        assert_eq!((dr.retired, dr.depth), (1, 0));
-        // A dry run counts, writing nothing.
-        let r = run(&nas, 14, &Asked { dry_run: true, depth: Some(&k), ..Default::default() }, &TOLD).unwrap();
-        assert_eq!((r.retired_dropped, r.depth_dropped), (1, 3), "{:?}", r.warnings);
-        assert_eq!(fs::read_to_string(&mpath).unwrap(), text);
-        let r = run(&nas, 14, &Asked { depth: Some(&k), ..Default::default() }, &TOLD).unwrap();
-        assert_eq!((r.retired_dropped, r.depth_dropped), (1, 3), "{:?}", r.warnings);
-        let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
-        assert_eq!(
-            m.keys().collect::<Vec<_>>(),
-            ["layers/depth-shade/lo/3-0-4", "layers/depth/hi/6-1-33", "layers/terrain/hi/6-2-33"]
-        );
-        for f in [kept_hi, kept_lo, terrain, gone_class, running] {
-            assert!(root.join(f).exists(), "{f}");
-        }
-        for f in [gone_hi, gone_lo, z8] {
-            assert!(!root.join(f).exists(), "{f}");
-        }
-        // Again: nothing to drop, the manifest left as it was.
-        let before = fs::metadata(&mpath).unwrap().modified().unwrap();
-        let r = run(&nas, 14, &Asked { depth: Some(&k), ..Default::default() }, &TOLD).unwrap();
-        assert_eq!((r.retired_dropped, r.depth_dropped), (0, 0));
-        assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
     }
 
     /// Task #679: a depth job leased for a tile the coverage has left since keeps its packs; other

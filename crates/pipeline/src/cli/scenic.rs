@@ -194,22 +194,20 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
-    /// Remove replaced files from the NAS (the agent runs it daily)
+    /// Remove what nothing holds from the NAS, by GC's queue on the lead, then the sweeps due (the
+    /// lead's agent runs it whenever it has work)
     Gc {
         /// Says what it would remove
         #[arg(long)]
         dry_run: bool,
-        /// Files replaced this many days ago or more
-        #[arg(long, value_name = "N", default_value_t = 14)]
-        days: u64,
         /// The depth's current targets (the agent writes them, agent::gc::DepthKeep): its packs
         /// no target names are dropped
         #[arg(long, value_name = "FILE")]
         depth_keep: Option<PathBuf>,
-        /// GC's queue's due set (shadow; the agent writes it, agent::gcqueue::SHADOW_DUE): checked
-        /// against what this run removes, the check written beside it
+        /// Where the sweeps' passes are kept (the agent's, agent::gc::SWEEPS_FILE): each runs when
+        /// due and goes on from the folder it reached. Without it every sweep runs whole
         #[arg(long, value_name = "FILE")]
-        shadow_due: Option<PathBuf>,
+        sweeps: Option<PathBuf>,
         /// Removes what the NAS kept of old catalogues (catalog/, catalog-held/, two switches): the
         /// agent asks it once every member's app checks the NAS by map/ (an older app sees the NAS
         /// away without catalog/)

@@ -1,10 +1,11 @@
-//! GC's queue on the lead (docs/maplog.md §7.2, §7.4), the map log's own store beside it: the
+//! GC's queue on the lead (docs/maplog.md §7.2 to §7.5), the map log's own store beside it: the
 //! content names no longer held, each with the map's `seq` from which no map names it and when it
-//! was freed; the holders' index (the map's names, the records'); and the names deleted, each with
+//! was freed; the holders' index (the map's names, the records', and the names a hand-off being
+//! merged brings); the names being removed (told, not yet gone) and the names deleted, each with
 //! the newest lease granted then. Told of each batch (`batch`) by the log's writer and of each
-//! records save (`records`) by the lead's agent, which reads its due set (`due`) and the deletions
-//! a hand-off meets (`deleted_under`). Its users and the rules in full: pipeline's
-//! `agent::gcqueue`.
+//! records save (`records`) by the lead's agent; the `gc` job takes its chunks (`chunk`) and says
+//! what went (`gone`) through the lead's coordinator; the merge asks it of each hand-off
+//! (`bringing`). Its users and the rules in full: pipeline's `agent::gcqueue`.
 //!
 //! One file of JSON lines in the log's folder (`FILE`), appended and `fsync`ed once per change,
 //! rewritten whole once it has grown to four times what it holds; a last line cut short is dropped.
@@ -13,7 +14,7 @@
 use super::{Batch, Cursor, Map};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -51,9 +52,37 @@ pub struct Queued {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 enum Line {
-    Queued { q: String, seq: u64, at: u64 },
-    Taken { taken: String },
-    Deleted { deleted: Vec<String>, at: u64, lease: Lease },
+    Queued {
+        q: String,
+        seq: u64,
+        at: u64,
+    },
+    Taken {
+        taken: String,
+    },
+    /// Told and gone, by a `gc` job of before step 8b (each removed or kept as its run decided):
+    /// off the queue, marked.
+    Deleted {
+        deleted: Vec<String>,
+        at: u64,
+        lease: Lease,
+    },
+    /// Told: marked (the merge refuses them from then on), being removed; still queued until gone.
+    Removing {
+        removing: Vec<String>,
+        at: u64,
+        lease: Lease,
+    },
+    /// Removed: off the queue, the mark's lease the newest granted when the removal ended.
+    Gone {
+        gone: Vec<String>,
+        at: u64,
+        lease: Lease,
+    },
+    /// Told and not removed (the job yielded first): queued again as they were, unmarked.
+    Released {
+        released: Vec<String>,
+    },
 }
 
 /// What holds a name besides the map and the records, as `due` is asked.
@@ -66,6 +95,15 @@ pub struct Holders<'a> {
     pub now: u64,
 }
 
+/// Why the merge refuses a hand-off (`GcQueue::bringing`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The name was deleted (told) at this time after the hand-off's lease was granted.
+    Deleted(String, u64),
+    /// The name is being removed now (told, not yet gone).
+    Removing(String),
+}
+
 #[derive(Default)]
 struct Inner {
     /// The file and its lines (None: not opened).
@@ -73,19 +111,24 @@ struct Inner {
     file: Option<File>,
     lines: usize,
     queued: HashMap<String, Queued>,
-    /// Deleted names: when, and the newest lease granted then.
+    /// Told and not yet gone: the chunk in progress, in its order.
+    removing: BTreeSet<String>,
+    /// Deleted (told) names: when, and the newest lease granted then (or when gone).
     deleted: HashMap<String, (u64, Lease)>,
     /// The map's content names and its `seq`.
     map: HashSet<String>,
     map_seq: u64,
     /// The records' (term, seq) and content names, once seen.
     records: Option<((u64, u64), HashSet<String>)>,
+    /// Names a hand-off being merged brings, and when: held until the records after it are seen
+    /// (then queued again from that time unless they name them).
+    brought: HashMap<String, u64>,
     /// Lines not yet written.
     out: Vec<u8>,
 }
 
-/// The queue, shared by the map log's writer (batches) and the agent's loop (records saves, the
-/// plan's due set, the merge's refusals).
+/// The queue, shared by the map log's writer (batches), the agent's loop (records saves, the
+/// merge's refusals) and the lead's coordinator (the `gc` job's chunks).
 #[derive(Default)]
 pub struct GcQueue {
     inner: Mutex<Inner>,
@@ -109,7 +152,9 @@ impl Inner {
     }
 
     fn held(&self, n: &str) -> bool {
-        self.map.contains(n) || self.records.as_ref().is_some_and(|(_, r)| r.contains(n))
+        self.map.contains(n)
+            || self.records.as_ref().is_some_and(|(_, r)| r.contains(n))
+            || self.brought.contains_key(n)
     }
 
     fn line(&mut self, l: &Line) {
@@ -120,7 +165,7 @@ impl Inner {
     }
 
     fn queue(&mut self, n: &str, seq: u64, at: u64) {
-        if self.held(n) || self.queued.contains_key(n) {
+        if self.held(n) || self.queued.contains_key(n) || self.removing.contains(n) {
             return;
         }
         self.queued.insert(n.to_string(), Queued { seq, at });
@@ -133,6 +178,12 @@ impl Inner {
         }
     }
 
+    /// `l` written (once flushed) and applied.
+    fn put(&mut self, l: Line) {
+        self.line(&l);
+        self.apply(l);
+    }
+
     fn apply(&mut self, l: Line) {
         match l {
             Line::Queued { q, seq, at } => {
@@ -141,18 +192,32 @@ impl Inner {
             Line::Taken { taken } => {
                 self.queued.remove(&taken);
             }
-            Line::Deleted { deleted, at, lease } => {
-                for n in deleted {
+            Line::Deleted { deleted: names, at, lease } | Line::Gone { gone: names, at, lease } => {
+                for n in names {
                     self.queued.remove(&n);
+                    self.removing.remove(&n);
                     self.deleted.insert(n, (at, lease));
+                }
+            }
+            Line::Removing { removing, at, lease } => {
+                for n in removing {
+                    self.deleted.insert(n.clone(), (at, lease));
+                    self.removing.insert(n);
+                }
+            }
+            Line::Released { released } => {
+                for n in released {
+                    if self.removing.remove(&n) {
+                        self.deleted.remove(&n);
+                    }
                 }
             }
         }
     }
 
     /// The lines made written and `fsync`ed (once per change); the file rewritten whole once it
-    /// has grown to four times what it holds, deletions older than `DELETIONS_KEPT_S` let go.
-    /// Whether they're on the disk.
+    /// has grown to four times what it holds, deletions older than `DELETIONS_KEPT_S` let go (but
+    /// those being removed). Whether they're on the disk.
     fn flush(&mut self, now: u64) -> bool {
         if self.out.is_empty() {
             return true;
@@ -175,7 +240,8 @@ impl Inner {
             self.file = None;
         }
         if self.lines > 4 * (self.queued.len() + self.deleted.len()) + 10_000 {
-            self.deleted.retain(|_, (at, _)| now.saturating_sub(*at) < DELETIONS_KEPT_S);
+            let removing = &self.removing;
+            self.deleted.retain(|n, (at, _)| removing.contains(n) || now.saturating_sub(*at) < DELETIONS_KEPT_S);
             if let Err(e) = self.rewrite(&path) {
                 eprintln!("maplog: GC's queue: can't rewrite {}: {e:#}", path.display());
             }
@@ -196,6 +262,28 @@ impl Inner {
             && h.oldest_lease.is_none_or(|t| t > q.at)
     }
 
+    /// Whether `n` is held now, as a tell is answered: a holder names it, or it's queued and
+    /// hasn't outlasted its grace, a cursor or a live lease.
+    fn holds(&self, n: &str, floor: Option<u64>, h: &Holders) -> bool {
+        self.held(n) || self.queued.get(n).is_some_and(|q| !Self::outlasted(q, floor, h))
+    }
+
+    /// The names due by the queue's rules, by `take`, sorted (not those being removed).
+    fn due_by(&self, h: &Holders, take: &dyn Fn(&str) -> bool) -> Vec<String> {
+        if self.records.is_none() {
+            return Vec::new();
+        }
+        let floor = Self::floor(h);
+        let mut v: Vec<String> = self
+            .queued
+            .iter()
+            .filter(|(n, q)| !self.removing.contains(*n) && Self::outlasted(q, floor, h) && !self.held(n) && take(n))
+            .map(|(n, _)| n.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
     fn rewrite(&mut self, path: &Path) -> Result<()> {
         let mut b = Vec::new();
         let mut q: Vec<_> = self.queued.iter().collect();
@@ -204,13 +292,18 @@ impl Inner {
             serde_json::to_writer(&mut b, &Line::Queued { q: n.clone(), seq: x.seq, at: x.at })?;
             b.push(b'\n');
         }
-        let mut by: BTreeMap<(u64, Lease), Vec<String>> = BTreeMap::new();
-        for (n, k) in &self.deleted {
-            by.entry(*k).or_default().push(n.clone());
+        let mut by: BTreeMap<(bool, u64, Lease), Vec<String>> = BTreeMap::new();
+        for (n, (at, lease)) in &self.deleted {
+            by.entry((self.removing.contains(n), *at, *lease)).or_default().push(n.clone());
         }
-        for ((at, lease), mut deleted) in by {
-            deleted.sort();
-            serde_json::to_writer(&mut b, &Line::Deleted { deleted, at, lease })?;
+        for ((removing, at, lease), mut names) in by {
+            names.sort();
+            let l = if removing {
+                Line::Removing { removing: names, at, lease }
+            } else {
+                Line::Deleted { deleted: names, at, lease }
+            };
+            serde_json::to_writer(&mut b, &l)?;
             b.push(b'\n');
         }
         self.file = None;
@@ -303,8 +396,10 @@ impl GcQueue {
 
     /// The records as saved now (`id`: their term and number; `names`: the content names they
     /// hold; at `now`): the names they've dropped since the last seen are queued unless the map
-    /// names them, those they name now taken. The first seen only start the index (what was dropped
-    /// before them is the orphan sweep's, §7.5). The same `id` again changes nothing.
+    /// names them, those they name now taken; the names hand-offs brought before them (`bringing`)
+    /// that they don't name queued again from when they were brought. The first seen only start
+    /// the index (what was dropped before them is the orphan sweep's, §7.5). The same `id` again
+    /// changes nothing.
     pub fn records<'a>(&self, id: (u64, u64), names: impl Iterator<Item = &'a String>, now: u64) {
         let mut g = self.lock();
         if g.records.as_ref().is_some_and(|(k, _)| *k == id) {
@@ -329,63 +424,145 @@ impl GcQueue {
         for n in &dropped {
             g.queue(n, seq, now);
         }
+        for (n, at) in std::mem::take(&mut g.brought) {
+            g.queue(&n, seq, at);
+        }
         g.flush(now);
     }
 
-    /// The names due now (sorted): none while the records haven't been seen (a holder unknown).
+    /// The names due now (sorted): none while the records haven't been seen (a holder unknown),
+    /// nor those being removed.
     pub fn due(&self, h: &Holders) -> Vec<String> {
-        let g = self.lock();
-        if g.records.is_none() {
-            return Vec::new();
-        }
-        let floor = Inner::floor(h);
-        let mut v: Vec<String> = g
-            .queued
-            .iter()
-            .filter(|(n, q)| Inner::outlasted(q, floor, h) && !g.held(n))
-            .map(|(n, _)| n.clone())
-            .collect();
-        v.sort();
-        v
+        self.lock().due_by(h, &|_| true)
     }
 
-    /// Names `names` deleted from the NAS at `at`, `lease` the newest granted then.
-    pub fn deleted(&self, names: &[String], at: u64, lease: Lease) {
-        if names.is_empty() {
-            return;
-        }
+    /// Those due now that `take` lets a chunk take (the queue's own: crate::agent::gc::by_the_queue
+    /// in pipeline), sorted.
+    pub fn due_by(&self, h: &Holders, take: &dyn Fn(&str) -> bool) -> Vec<String> {
+        self.lock().due_by(h, take)
+    }
+
+    /// The `gc` job's next chunk, up to `max` names (§7.3): first those of a chunk told and not
+    /// gone (the job killed, or its gone not heard), told again, the rest of the chunk the names
+    /// due that `take` lets it take. Each is checked against its holders as of now (the map, the
+    /// records, a hand-off being merged, or queued and not outlasted `h`): held, a name of a chunk
+    /// before is let go (unmarked, taken); the others are marked deleted, `lease` the newest
+    /// granted now, on the disk before this answers. An error, nothing marked, while the records
+    /// haven't been seen (a holder unknown) or the marks can't be written.
+    pub fn chunk(&self, h: &Holders, lease: Lease, max: usize, take: &dyn Fn(&str) -> bool) -> Result<Vec<String>> {
         let mut g = self.lock();
-        let l = Line::Deleted { deleted: names.to_vec(), at, lease };
-        g.line(&l);
-        g.apply(l);
-        g.flush(at);
+        anyhow::ensure!(g.records.is_some(), "the lead hasn't seen the records yet");
+        let floor = Inner::floor(h);
+        let (mut out, mut freed) = (Vec::new(), Vec::new());
+        for n in g.removing.iter() {
+            if out.len() >= max {
+                break;
+            }
+            if g.holds(n, floor, h) {
+                freed.push(n.clone());
+            } else {
+                out.push(n.clone());
+            }
+        }
+        if !freed.is_empty() {
+            g.put(Line::Released { released: freed.clone() });
+            for n in &freed {
+                if g.held(n) {
+                    g.take(n);
+                }
+            }
+        }
+        let left = max.saturating_sub(out.len());
+        out.extend(g.due_by(h, take).into_iter().take(left));
+        if !out.is_empty() {
+            g.put(Line::Removing { removing: out.clone(), at: h.now, lease });
+        }
+        anyhow::ensure!(g.flush(h.now), "the marks aren't on the lead's disk");
+        Ok(out)
     }
 
-    /// The `gc` job's `names`, about to be removed: those something holds as of now answered (the
-    /// map or the records name them, or they're queued and haven't outlasted `h`: the job's roots
-    /// are as old as its run, hours on a slow share, and the holders are here), the rest marked
-    /// deleted, `lease` the newest granted now, on the disk before this answers. An error, the job
-    /// removing nothing more, while the records haven't been seen (a holder unknown) or the marks
-    /// can't be written.
+    /// A sweep's `names` about to be removed (by its own rules: the gate's copies): those
+    /// something holds as of now answered (the map, the records or a hand-off name them, or
+    /// they're queued and haven't outlasted `h`: the sweep's roots are as old as its run), the rest
+    /// marked as `chunk` marks them. Errors as `chunk`'s.
     pub fn removing(&self, names: &[String], h: &Holders, lease: Lease) -> Result<Vec<String>> {
         let mut g = self.lock();
         anyhow::ensure!(g.records.is_some(), "the lead hasn't seen the records yet");
         let floor = Inner::floor(h);
-        let (held, free): (Vec<String>, Vec<String>) = names
-            .iter()
-            .cloned()
-            .partition(|n| g.held(n) || g.queued.get(n).is_some_and(|q| !Inner::outlasted(q, floor, h)));
+        let (held, free): (Vec<String>, Vec<String>) = names.iter().cloned().partition(|n| g.holds(n, floor, h));
         if !free.is_empty() {
-            let l = Line::Deleted { deleted: free, at: h.now, lease };
-            g.line(&l);
-            g.apply(l);
-            anyhow::ensure!(g.flush(h.now), "the marks aren't on the lead's disk");
+            g.put(Line::Removing { removing: free, at: h.now, lease });
         }
+        anyhow::ensure!(g.flush(h.now), "the marks aren't on the lead's disk");
         Ok(held)
     }
 
+    /// The job's `gone`, removed (or not there), at `at`: off the queue, each mark's lease
+    /// `lease`, the newest granted now (a lease granted while it went refused too); and its
+    /// `released`, told and not removed (it yielded first): queued again, unmarked. An error when
+    /// that can't be on the disk (the names then stay being removed: the next chunk takes them
+    /// again).
+    pub fn gone(&self, gone: &[String], released: &[String], at: u64, lease: Lease) -> Result<()> {
+        let mut g = self.lock();
+        if !gone.is_empty() {
+            g.put(Line::Gone { gone: gone.to_vec(), at, lease });
+        }
+        let released: Vec<String> = released.iter().filter(|n| g.removing.contains(*n)).cloned().collect();
+        if !released.is_empty() {
+            g.put(Line::Released { released });
+        }
+        anyhow::ensure!(g.flush(at), "what went isn't on the lead's disk");
+        Ok(())
+    }
+
+    /// The orphan sweep's `names` (§7.5: content-named files on the NAS old enough that no job
+    /// still holds them by its upload): those nothing holds and not queued queued, freed `now` at
+    /// the map's `seq` (so a lease granted before they were found holds them, and every cursor
+    /// must reach the map they were found at). How many. An error while the records haven't been
+    /// seen.
+    pub fn orphans(&self, names: &[String], now: u64) -> Result<usize> {
+        let mut g = self.lock();
+        anyhow::ensure!(g.records.is_some(), "the lead hasn't seen the records yet");
+        let (seq, before) = (g.map_seq, g.queued.len());
+        for n in names {
+            g.queue(n, seq, now);
+        }
+        let added = g.queued.len() - before;
+        g.flush(now);
+        Ok(added)
+    }
+
+    /// Hand-off names `names` as the merge takes it (its lease `lease`, at `now`): why it's
+    /// refused (a name being removed, or deleted after its lease was granted: its job may have
+    /// found the file on the NAS before it went, §7.4); else they're held (off the queue) until
+    /// the records after it are seen (`records`), so no chunk takes one meanwhile.
+    pub fn bringing<'a>(
+        &self,
+        names: impl Iterator<Item = &'a String> + Clone,
+        lease: Lease,
+        now: u64,
+    ) -> Option<Refused> {
+        let mut g = self.lock();
+        for n in names.clone() {
+            if g.removing.contains(n) {
+                return Some(Refused::Removing(n.clone()));
+            }
+            if let Some((at, l)) = g.deleted.get(n) {
+                if *l >= lease {
+                    return Some(Refused::Deleted(n.clone(), *at));
+                }
+            }
+        }
+        for n in names {
+            g.brought.insert(n.clone(), now);
+            g.take(n);
+        }
+        g.flush(now);
+        None
+    }
+
     /// The first of `names` deleted after lease `lease` was granted (the deletion's newest lease is
-    /// it or after it), and when: what the merge refuses a hand-off for (§7.4).
+    /// it or after it), and when.
     pub fn deleted_under<'a>(&self, names: impl Iterator<Item = &'a String>, lease: Lease) -> Option<(String, u64)> {
         let g = self.lock();
         for n in names {
@@ -398,25 +575,28 @@ impl GcQueue {
         None
     }
 
-    /// The map's content names, as the queue holds them (sorted).
-    pub fn map_names(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.lock().map.iter().cloned().collect();
-        v.sort();
-        v
+    /// The top folders of what the map and the records name (the orphan sweep's, §7.5).
+    pub fn tops(&self) -> BTreeSet<String> {
+        let g = self.lock();
+        let records = g.records.iter().flat_map(|(_, r)| r.iter());
+        g.map.iter().chain(records).filter_map(|n| n.split_once('/').map(|(t, _)| t.to_string())).collect()
     }
 
-    /// The names queued, each with when it was freed (sorted by name).
-    pub fn freed(&self) -> Vec<(String, u64)> {
-        let mut v: Vec<(String, u64)> = self.lock().queued.iter().map(|(n, q)| (n.clone(), q.at)).collect();
-        v.sort();
-        v
-    }
-
-    /// The names queued, and the oldest one's time freed.
+    /// The names queued (those being removed among them).
     pub fn len(&self) -> usize {
         self.lock().queued.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The names told and not yet gone.
+    pub fn removing_now(&self) -> Vec<String> {
+        self.lock().removing.iter().cloned().collect()
+    }
+
+    /// When the oldest queued name was freed.
     pub fn oldest(&self) -> Option<u64> {
         self.lock().queued.values().map(|q| q.at).min()
     }

@@ -3541,8 +3541,8 @@ impl Agent {
         self.room_target.as_ref().map_or(0, |t| t.bytes)
     }
 
-    /// The target as a job of `step` keeps it: none for the daily backup and GC (they read no
-    /// cache and write little here; the NAS's backup doesn't stop for this Mac's disk).
+    /// The target as a job of `step` keeps it: none for the backup and GC (they read no cache and
+    /// write little here; the NAS's backup doesn't stop for this Mac's disk).
     fn floor_for(&self, step: &str) -> u64 {
         if matches!(step, "backup" | "gc") {
             0
@@ -6764,7 +6764,7 @@ impl Agent {
     }
 
     /// A job of `id` ran here: this Mac's caches may hold more, so a freeing toward the room target
-    /// is tried again (not after the daily ones: they read no cache).
+    /// is tried again (not after the backup and GC: they read no cache).
     fn worked(&mut self, id: &str) {
         if !matches!(step_of(id).as_deref(), Some("backup" | "gc")) {
             self.mem.worked_at = now_s();
@@ -13821,9 +13821,10 @@ mod tests {
         };
         assert!(!gc_cmd(&mut a, false).iter().any(|c| c == "--old-catalogues"), "a member's app looks at catalog/");
         assert!(gc_cmd(&mut a, true).iter().any(|c| c == "--old-catalogues"));
-        // The pass, as the job runs it: the old folders go, nothing else.
-        let told = |_: &[String]| -> anyhow::Result<()> { Ok(()) };
-        let r = gc::run(&nas, 14, &gc::Asked { old_catalogues: true, ..Default::default() }, &told).unwrap();
+        // The pass, as the job runs it (its duties): the old folders go, nothing else.
+        let r =
+            gc::run(&nas, &gc::Asked { old_catalogues: true, ..Default::default() }, &gc::ways_for_tests(&gc::Idle))
+                .unwrap();
         assert_eq!(r.old_catalogues, ["catalog", "catalog-held"], "(no old switch on this root)");
         assert!(!root.join("catalog").exists() && !root.join("catalog-held").exists());
         assert!(root.join(NAS_CHECK).is_dir() && root.join("state/build/manifest.json").exists());

@@ -89,7 +89,7 @@ mod tests {
         assert!(ok("/app/scenic-build geoid-offsets --root /r --sources s --from f --at -73.5,45"));
         assert!(ok("/app/scenic-build osm-pass --root /r --planet p --date d --clear a --clear b"));
         assert!(ok("/app/scenic-build tool scenic-metrics /u buildings /b"));
-        assert!(ok("/app/scenic gc --root /r --days 3"));
+        assert!(ok("/app/scenic gc --root /r --sweeps /h/gc-sweeps.json"));
         assert!(ok(
             "/app/scenic-build tool trees --blocks 8/1/2,8/2/2 --coverage c --chm x --leaf y --squares 1,2 --out o"
         ));

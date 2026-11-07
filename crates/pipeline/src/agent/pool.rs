@@ -1887,10 +1887,12 @@ impl Run {
         let gc = self.gc.clone();
         let checked = |e: &Entry, r: &Records| {
             by_its_lead(e, &lead_of)?;
-            if let Some(why) = gc.as_deref().and_then(|q| super::gcqueue::refusal(q, e)) {
-                return Err(why);
+            check_from(self.the_plan, e, r, &lead_app, &app_of)?;
+            // (Last: one it lets merge holds its names from GC's chunks, docs/maplog.md §7.4.)
+            match gc.as_deref().and_then(|q| super::gcqueue::refusal(q, e, crate::coord::wall_now())) {
+                Some(why) => Err(why),
+                None => Ok(()),
             }
-            check_from(self.the_plan, e, r, &lead_app, &app_of)
         };
         let out = self.side.step(give, &checked);
         // (Named and off the records now, or no longer leading: forgotten here.)

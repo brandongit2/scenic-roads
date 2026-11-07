@@ -37,7 +37,8 @@
 //!   scenic nas-target [<percent> | off] the pool's NAS load target: the busiest disk's busy share
 //!                                       the NAS budget grants up to (by default 85, 30 to 95);
 //!                                       off: the default; with none, how it stands
-//!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
+//!   scenic gc [--dry-run]               remove what nothing holds from the NAS, by GC's queue on the
+//!                                       lead, then the sweeps (the lead's agent runs it when it has work)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!   scenic inputs                       every gate unit (docs/inputs.md §4): its accepted version, its
 //!                                       state, what holds it, its acceptances (those no check raises
@@ -1595,7 +1596,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
-        Some(Cmd::Gc { dry_run, days, depth_keep, shadow_due, old_catalogues, root: r }) => {
+        Some(Cmd::Gc { dry_run, depth_keep, sweeps, old_catalogues, root: r }) => {
             // (The depth's targets not read: said, and no depth name dropped this run.)
             let keep = depth_keep.as_deref().and_then(|p| {
                 gc::DepthKeep::read(p, now_s())
@@ -1603,14 +1604,27 @@ fn main() -> Result<()> {
                     .ok()
                     .flatten()
             });
-            let r = pipeline::timings::job("gc", || {
+            pipeline::timings::job("gc", || {
                 gc::set_way(agent::theplan::the_plan().cost_version(gc::STEP));
-                let asked = gc::Asked { dry_run, depth: keep.as_ref(), shadow: shadow_due.as_deref(), old_catalogues };
-                // (Each removal told the lead's GC queue first: gc::Tell.)
+                let asked = gc::Asked { dry_run, depth: keep.as_ref(), sweeps: sweeps.as_deref(), old_catalogues };
+                // (Every removal marked deleted on the lead's GC queue first: gc::Lead.)
                 let root = root(&r.root, true)?;
-                gc::run(&root, days, &asked, &gc::TheLead::from_nas(&root))
+                let lead = gc::TheLead::from_nas(&root);
+                let r = gc::run(
+                    &root,
+                    &asked,
+                    &gc::Ways { lead: &lead, yielding: &gc::job_yielding, remove: &gc::unlink },
+                )?;
+                // (Its warnings the job's note in the status.)
+                for w in &r.warnings {
+                    eprintln!("gc: warning: {w}");
+                }
+                println!("{}", serde_json::to_string_pretty(&r)?);
+                if r.paused {
+                    pipeline::control::stop_paused(gc::STEP);
+                }
+                Ok(())
             })?;
-            println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Some(Cmd::Redo { step, targets, run, root: r }) => redo(&step, &targets, run, &r.root),
