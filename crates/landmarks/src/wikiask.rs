@@ -318,14 +318,23 @@ pub(crate) mod tests {
     /// once they run out), noting the queries (the POSTs' `query`, or the GETs' paths): its URL and
     /// what it was asked.
     pub(crate) fn replay(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<String>>>) {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
+        l.set_nonblocking(true).unwrap();
         let url = format!("http://{}/sparql", l.local_addr().unwrap());
         let asked = Arc::new(Mutex::new(vec![]));
         let seen = asked.clone();
         std::thread::spawn(move || {
             let mut k = 0;
-            for s in l.incoming() {
-                let Ok(mut s) = s else { break };
+            loop {
+                let mut s = match store::spawn::accept(&l) {
+                    Ok((s, _)) => s,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                s.set_nonblocking(false).unwrap();
                 let mut r = BufReader::new(s.try_clone().unwrap());
                 let mut line = String::new();
                 r.read_line(&mut line).unwrap();
