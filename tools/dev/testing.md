@@ -14,7 +14,9 @@ refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `
   `cargo test` commands, from the branch's diff against main (working tree included): each changed
   module (`agent/build.rs` → `-p pipeline --lib -- agent::build::`), the modules using it one level
   out, and the integration tests naming it (a crate's whole targets on one line, one cargo run
-  building them in parallel). Run those, or narrower: the same `-p` and target, each
+  building them in parallel), and a module's own tests when a file it compiles in changed
+  (`include_str!`, `include_bytes!` or `include!` outside a `#[test]` function: web/work's pages
+  in coord/mod.rs, #969). Run those, or narrower: the same `-p` and target, each
   filter starting with one it prints. No Rust change, nothing to run. `affected-tests.sh <commit>`
   or `<a>..<b>` shows the set for past work.
 - Scan tests (#662): an integration test that reads the repo's own files (write_sets,
@@ -36,7 +38,8 @@ refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `
 - `--release` only for performance work: mark the command `#perf` (it may use `--workspace`).
 - Full suites run in `tools/app/publish.sh` before a publish, the PM's; and once by the PM on main
   after a merge batch, in the background, before publishing. Publish runs (#848):
-  - `cargo nextest run --workspace`: every workspace crate's libraries, binaries and integration
+  - `cargo nextest run --workspace` (or, on a tree whose Rust build inputs are a passed publish's,
+    only the tests reading a changed file: below, after the reuse rule): every workspace crate's libraries, binaries and integration
     tests (det, roadcore, pipeline, server, store, names, pyport, codecs, jobrt, buildstore, coordwire, offload, landmarks, mapview, inputs, terrain, trees, roads, bld, webpenc), on the test Mac;
   - then `tools/app/other-tests.zsh`, on the publishing Mac, its parts at once: `node --test` of
     `web/test/*.test.{ts,mjs}` and `tools/check/*.test.mjs` (by glob), `tools/devtools/test/*.test.mjs`,
@@ -94,12 +97,16 @@ or the branch's own (edited since P: on 5 Nov, 56 of 61 passes reused nothing, e
 an agent's own edit running its whole set). Of the newest 60 passes recorded (any branch's), the
 one with the fewest own files, then the fewest in X. Neither part is reused when a file in X is:
 - of no known kind: a top-level entry outside the script's `KNOWN`;
-- for clippy, any Rust build input; for the tests, one of main's, or an own one other than a plain
-  source (a `.rs` file under `crates/<crate>/src` or `tests`, not the crate's root, whose own tests
-  no filter isolates, nor a build script or a proc macro's) or a file `include_str!`d or
-  `include_bytes!`d only inside `#[test]` functions (those tests run again: steps.rs's source
-  tests read agent/mod.rs, plan.rs and build.rs so); not one `include!`d, `#[path]`ed or named in
-  a macro. The inputs: `crates/`, Cargo.toml and Cargo.lock, rust-toolchain, mise.toml,
+- for clippy, any Rust build input; for the tests, one, main's or the branch's own (main's are
+  traced as the branch's since #969: on 6 Nov, 40 of 92 checks running their whole set did so for
+  any Rust file main changed), other than a plain source (a `.rs` file under `crates/<crate>/src`
+  or `tests`, not the crate's root, whose own tests no filter isolates, nor a build script or a
+  proc macro's), a binary's root `crates/<crate>/src/main.rs` (its crate's every target runs
+  again: no other crate links a binary), an example (no test builds or runs one; clippy checks it),
+  or a file `include_str!`d or `include_bytes!`d inside `#[test]` functions (those tests run
+  again: steps.rs's source tests read agent/mod.rs, plan.rs and build.rs so) or outside them by a
+  plain source (that module's own tests, as affected-tests.sh gives them); not one `include!`d,
+  `#[path]`ed or named in a macro, nor a library's root. The inputs: `crates/`, Cargo.toml and Cargo.lock, rust-toolchain, mise.toml,
   clippy.toml, rustfmt.toml, `.cargo/`, `.config/`; the package folders (Cargo.toml's members and
   exclude, and the paths the manifests name: path dependencies, `[patch]`); any file a crate's
   source `include_*!`s or `#[path]`s, names as a macro's or attribute's first `"../"` literal, or a
@@ -108,7 +115,7 @@ one with the fewest own files, then the fewest in X. Neither part is reused when
   wrapping them, tools/dev/devjob.zsh and devjob.py).
 For the tests part, what HEAD's commands run again: the tests P's commands didn't run (each pass
 keeps its commands in `.git/check-tests/<hash>`, 30 days), and of the rest, those X affects:
-`affected-tests.sh P..HEAD` (the own sources' modules traced as the branch's are, one level out;
+`affected-tests.sh P..HEAD` (the sources' modules, main's and own, traced as the branch's are, one level out;
 the scan tests whose `//! scans:` line covers a file in X, that line trusted for what the test
 reads), a test without one naming a `CARGO_MANIFEST_DIR` path or a `".."` path over a file in X,
 and a source's such path inside a `#[test]` function (that test). A path whose base
@@ -121,14 +128,28 @@ runs the whole part. Both parts run on a doubt: a symlink anywhere in the repo, 
 with P and why it holds (main's changed files and the own ones, which tests ran again); a part
 run says why it wasn't reused (no such pass, a lookup failing, the file that is an input). Its test,
 `tools/dev/test/check-reuse.zsh`, runs the rule on toy repos (docs only, dev tools only, a file a
-test reads, a Rust change, a Cargo.lock change, an included file, the runner changed, an unknown
+test reads, a module's change on main, a new file no module declares, the crate's root changed on
+main, a Cargo.lock change, a file the root includes, a file a module compiles in, a binary's root,
+an example, the runner changed, an unknown
 file, the branch changed after the rebase, its own edit of a module, of the crate's root, its
 manifest, an included file or an integration test, fewer or more tests than the pass ran, the pass
 with the fewest own changes, no earlier pass, an untracked file, and the reads above
 that need a further look: `join("..")`, a deeper base, a symlink, a `#[path]` outside, a macro's
 test, lib and main, a test folder, a renamed package, a `[patch]` path, a macro attribute's
 folder) and checks the lists: every top-level entry of the repo is in `KNOWN`, and the runner
-scripts' code names no repo script outside `RUNNER`. publish.sh doesn't reuse: its suite is whole.
+scripts' code names no repo script outside `RUNNER`.
+
+publish.sh reuses a suite of its own (#969), never a check.sh pass (those run only a branch's
+affected tests): after its Rust suite, other tests and clippy pass, it records the tree in
+`~/Library/Caches/scenic-publish/suite-passed` (with the hash of its suite line and of the
+workspace's targets, kept in `check-tests/` beside it, 30 days). A later publish asks
+check-reuse.py about those passes (the same suite line's) with every workspace target as its
+commands; it takes the verdict only when clippy's holds, no Rust build input differing (the test
+programs are the same): then only the tests reading a changed file as they run go again (the scan
+tests, a `#[test]` reading the repo), or none, and clippy is skipped. Any Rust change, or a
+doubt, runs the whole suite, as before. The other tests always run. On 6 Nov, 4 of 27 publishes
+had no release build to do and ran the whole suite (247-1,171 s); a docs-only change since a passed publish
+(38fb734d to 2d07b67d) runs pipeline's `cli` test and one buildstore test.
 
 Enforced twice: `tools/dev/report-guard.sh` (a SubagentStop hook) keeps a worktree agent with
 commits beyond main from finishing until its HEAD passed, and the PM runs
@@ -511,3 +532,26 @@ agent::tests among them, and the scan tests): the test Mac's CPU 3,169 → 2,283
 the same, bound by the pipeline's compile after any Rust edit (11 min) and a flaky test's 300-s
 watchdog (a_slow_plan_delays_no_grant_pause_or_heartbeat: 2 of its last 61 runs failed so; its
 cause, a hold ask taken and dropped by the taker it wasn't for, fixed since: `control::take_hold_request`).
+
+#969's third part, measured from the dev job records and `.git/check-passed` to 6 Nov 22:30 (M1's
+clock), the tests parts run on the M4 only, against the same selection of 5 Nov's:
+- **The tests part**: p50 1,187 → 576 s, p90 2,059 → 1,645 s (50 runs before the first part, 98 since the second
+  part). Compiles 49 → 58 % of it, waits for a slot or the key 17 → 18 %, the rest, the run, 33 → 24 %:
+  compiling is now what bounds it. A new key's first build (34 of the 98) takes 664 s p50, a key's
+  later ones 193 s: 60 % of all compile time.
+- **Cloning a new key's build folder from another key's** was tried and dropped: third-party crates
+  are cheap through sccache, and the tree's crates must compile again for its path. The same
+  build-only run of the usual targets: empty, 2,351 s of CPU; cloned, 2,278 s (-3 %).
+- **Reuse**: 7 of 97 passes reused tests before the second part, 59 of 119 since. Of the 92 checks since then
+  running their whole set, replayed with check-reuse.py as it stood at each commit: main's Rust
+  changes 40, a page coord/mod.rs compiles in 10, a crate's main.rs alone 4, an example alone 1, the rest
+  manifests, Cargo.lock, runner scripts, a `#[path]` module. Under today's rule 60 of the 92 run part
+  of their set and 32 all of it; those runs' test time 157,978 → 133,920 s (-15 %), as main's changes
+  mostly reach the same heavy modules. Their compiles stay.
+- **The costliest tests** by total time (154 runs): the forecast's live-scale run 12,355 s, terrain_task's
+  groups 10,627, a key names exactly its reads 10,164, polar's paused block 9,447, slope_pack's z6
+  tile 9,325, depth's fine source 9,148, terrain_task's stopped and paused tiles 8,357 and 8,110. Of
+  all test time the top 10 are 28 %, the top 40 55 %. terrain_task's paused tile (four pause points)
+  and groups test (two block sizes fewer), alone, interleaved, load ~130: wall 59-69 → 41-51 s and
+  80-96 → 69-79 s, the two's CPU 359 → 250 s.
+- **Publish** "Rust tests" p50 1,754 → 681 s, p90 ~1,270 s (27 publishes on 6 Nov).
