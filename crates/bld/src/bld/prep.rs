@@ -779,18 +779,22 @@ pub fn read(
     drop(ghsl_frames);
     let _p = phase("reading the row groups");
     // Each file's footer, once.
-    let mut opened: HashMap<usize, (store::nasfs::NasPath, parquet::arrow::arrow_reader::ArrowReaderMetadata)> =
-        HashMap::new();
+    let mut opened: HashMap<
+        usize,
+        (store::nasfs::NasPath, store::range::PlainFile, parquet::arrow::arrow_reader::ArrowReaderMetadata),
+    > = HashMap::new();
     for &(fi, ..) in &jobs {
         if let std::collections::hash_map::Entry::Vacant(e) = opened.entry(fi) {
             // (Read again while the share fails for a moment: store::retry; the file is listed.)
             let path = base.join(&src.files[fi].name);
             let what = format!("{}: its footer", path.display());
-            let meta = path.retry_any(&what, &store::retry::waits(), store::retry::transient_or_missing, || {
-                let file = path.open().with_context(|| format!("open {}", path.display()))?;
-                super::overture::open(&file).with_context(|| what.clone())
-            })?;
-            e.insert((path, meta));
+            let (file, meta) =
+                path.retry_any(&what, &store::retry::waits(), store::retry::transient_or_missing, || {
+                    let file = path.open_plain().with_context(|| format!("open {}", path.display()))?;
+                    let meta = super::overture::open(&file).with_context(|| what.clone())?;
+                    Ok((file, meta))
+                })?;
+            e.insert((path, file, meta));
         }
     }
     // (Each chunk of row groups read a piece kept, task #889: a resumed run reads only the chunks
@@ -807,9 +811,9 @@ pub fn read(
         chunks[c]
             .par_iter()
             .map(|(fi, k, part, bx, name)| {
-                let (path, meta) = &opened[fi];
+                let (path, file, meta) = &opened[fi];
                 path.retry_any(name, &store::retry::waits(), store::retry::transient_or_missing, || {
-                    super::overture::row_group(path, meta, *k, *part, *bx, name)
+                    super::overture::row_group(file, meta, *k, *part, *bx, name)
                 })
             })
             .collect()

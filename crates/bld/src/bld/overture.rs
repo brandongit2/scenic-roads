@@ -20,6 +20,7 @@ use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 use parquet::file::reader::ChunkReader;
 use parquet::file::statistics::Statistics;
 use std::collections::HashMap;
+use store::range::RangeRead;
 
 /// A building's columns read (`bldprep`).
 const B_COLS: [&str; 13] = [
@@ -369,17 +370,65 @@ impl Cols {
     }
 }
 
-/// A downloaded file's footer, read once for its row groups.
-pub fn open(file: &std::fs::File) -> Result<ArrowReaderMetadata> {
-    Ok(ArrowReaderMetadata::load(file, ArrowReaderOptions::new())?)
+/// A file as parquet reads it, through store::range's reads: on the NAS each counted, its wait
+/// measured (store::waits) and a read the share fails for a moment tried again.
+struct Ranged<'a>(&'a dyn RangeRead);
+
+/// A read error as parquet carries it (`External`: the cause kept, for retry's look at the chain).
+fn parquet_err(e: store::IoError) -> parquet::errors::ParquetError {
+    parquet::errors::ParquetError::External(Box::new(e))
 }
 
-/// Row group `rg` of the file at `path` (its footer `meta`): its rows whose box meets `b` (w, s, e,
-/// n), as a frame of buildings or (`part`) building parts; None when none does. `src` names it in
-/// errors. (The file opened for this read alone: a parquet reader seeks its handle, which clones
-/// share.)
+impl parquet::file::reader::Length for Ranged<'_> {
+    fn len(&self) -> u64 {
+        self.0.len().unwrap_or(0)
+    }
+}
+
+impl ChunkReader for Ranged<'_> {
+    type T = std::io::Cursor<bytes::Bytes>;
+
+    /// (Parquet's footer reader takes its last 8 bytes so; a row group's pages are `Spans`' to read.)
+    fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
+        let left = parquet::file::reader::Length::len(self).saturating_sub(start) as usize;
+        Ok(std::io::Cursor::new(self.get_bytes(start, left)?))
+    }
+
+    fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<bytes::Bytes> {
+        Ok(bytes::Bytes::from(self.0.read_at(start, length).map_err(parquet_err)?))
+    }
+}
+
+/// A downloaded file's footer, read once for its row groups.
+pub fn open(file: &dyn RangeRead) -> Result<ArrowReaderMetadata> {
+    Ok(ArrowReaderMetadata::load(&Ranged(file), ArrowReaderOptions::new())?)
+}
+
+/// The chunks of the columns `want` of row group `rg`, read from `file` in one read a run of them (a
+/// parquet reader of `file` itself asks for each page apart, a round trip of the share each): what
+/// `row_group_of` reads.
+fn chunks_of(file: &dyn RangeRead, meta: &ArrowReaderMetadata, rg: usize, idx: &[usize]) -> Result<Spans> {
+    let g = meta.metadata().row_group(rg);
+    let mut r: Vec<(u64, u64)> = idx.iter().map(|&i| g.column(i).byte_range()).collect();
+    r.sort_unstable();
+    let mut spans = Spans::new(file.len()?);
+    let mut k = 0;
+    while k < r.len() {
+        let (at, mut end) = (r[k].0, r[k].0 + r[k].1);
+        k += 1;
+        while k < r.len() && r[k].0 <= end {
+            end = end.max(r[k].0 + r[k].1);
+            k += 1;
+        }
+        spans.add(at, file.read_at(at, (end - at) as usize)?);
+    }
+    Ok(spans)
+}
+
+/// Row group `rg` of `file` (its footer `meta`): its rows whose box meets `b` (w, s, e, n), as a
+/// frame of buildings or (`part`) building parts; None when none does. `src` names it in errors.
 pub fn row_group(
-    path: &store::nasfs::NasPath,
+    file: &dyn RangeRead,
     meta: &ArrowReaderMetadata,
     rg: usize,
     part: bool,
@@ -391,8 +440,21 @@ pub fn row_group(
     if !missing.is_empty() {
         bail!("{src}: Overture's columns changed: no {missing:?}");
     }
-    let file = path.open().with_context(|| format!("open {}", path.display()))?.into_file();
-    let builder = ParquetRecordBatchReaderBuilder::new_with_metadata(file, meta.clone());
+    row_group_of(chunks_of(file, meta, rg, &idx)?, meta, rg, part, b, src)
+}
+
+/// `row_group`, from a reader that has the row group's chunks of its columns.
+pub fn row_group_of<R: ChunkReader + 'static>(
+    reader: R,
+    meta: &ArrowReaderMetadata,
+    rg: usize,
+    part: bool,
+    b: [f64; 4],
+    src: &str,
+) -> Result<Option<Frame>> {
+    let want: &[&str] = if part { &P_COLS } else { &B_COLS };
+    let (idx, _) = leaves(meta.metadata().file_metadata().schema_descr(), want);
+    let builder = ParquetRecordBatchReaderBuilder::new_with_metadata(reader, meta.clone());
     let mask = ProjectionMask::leaves(builder.parquet_schema(), idx);
     let rows = meta.metadata().row_group(rg).num_rows().max(1) as usize;
     let reader = builder.with_row_groups(vec![rg]).with_projection(mask).with_batch_size(rows).build()?;
@@ -572,6 +634,67 @@ pub fn boxes<R: ChunkReader + 'static>(reader: R, md: std::sync::Arc<ParquetMeta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file's reads, counted (a share's round trips).
+    struct Counted(Vec<u8>, std::sync::atomic::AtomicU64);
+
+    impl RangeRead for Counted {
+        fn len(&self) -> Result<u64, store::IoError> {
+            RangeRead::len(&self.0)
+        }
+        fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.read_at(off, len)
+        }
+    }
+
+    /// A row group's columns read through `Ranged` and `chunks_of`, a round trip a run of chunks and
+    /// none a page: the same rows as a parquet reader of the file itself gives.
+    #[test]
+    fn a_row_groups_chunks_read_in_one_read_give_the_same_rows() {
+        use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+        use parquet::arrow::ArrowWriter;
+        use parquet::file::properties::WriterProperties;
+        let a: ArrayRef = std::sync::Arc::new(Int64Array::from_iter_values(0..20_000));
+        let b: ArrayRef = std::sync::Arc::new(Int64Array::from_iter_values((0..20_000).map(|v| v * 7)));
+        let c: ArrayRef = std::sync::Arc::new(Int64Array::from_iter_values((0..20_000).map(|v| v * 13)));
+        let batch = RecordBatch::try_from_iter([("a", a), ("b", b), ("c", c)]).unwrap();
+        // (Small pages: a reader of the file itself makes a read of each.)
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(5_000))
+            .set_data_page_row_count_limit(100)
+            .build();
+        let mut file = Vec::new();
+        let mut w = ArrowWriter::try_new(&mut file, batch.schema(), Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let reads = std::sync::atomic::Ordering::Relaxed;
+        let f = Counted(file.clone(), Default::default());
+        let meta = open(&f).unwrap();
+        let (rg, idx) = (2, [0usize, 2]);
+        let before = f.1.load(reads);
+        let spans = chunks_of(&f, &meta, rg, &idx).unwrap();
+        assert_eq!(f.1.load(reads) - before, 2, "two chunks not side by side: a read each");
+        let of_spans = ParquetRecordBatchReaderBuilder::new_with_metadata(spans, meta.clone());
+        let mask = ProjectionMask::leaves(of_spans.parquet_schema(), idx);
+        let got: Vec<RecordBatch> = of_spans
+            .with_row_groups(vec![rg])
+            .with_projection(mask.clone())
+            .build()
+            .unwrap()
+            .map(|b| b.unwrap())
+            .collect();
+        let of_file = ParquetRecordBatchReaderBuilder::new_with_metadata(bytes::Bytes::from(file), meta.clone());
+        let whole: Vec<RecordBatch> =
+            of_file.with_row_groups(vec![rg]).with_projection(mask).build().unwrap().map(|b| b.unwrap()).collect();
+        assert_eq!(got, whole);
+        assert_eq!(got.iter().map(RecordBatch::num_rows).sum::<usize>(), 5_000);
+        // (Side by side, one read.)
+        let before = f.1.load(reads);
+        chunks_of(&f, &meta, rg, &[0, 1, 2]).unwrap();
+        assert_eq!(f.1.load(reads) - before, 1);
+    }
 
     #[test]
     fn a_footers_length_is_its_last_bytes() {

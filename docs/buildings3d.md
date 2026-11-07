@@ -129,7 +129,8 @@ release (§5).
   the coverage needs and lacks fails the job.
 - **`bldprep T`**, per z6 tile within 1 km of the coverage with a downloaded row group or GHSL tile
   meeting it (`pipeline::bld::prep`): the row groups meeting T are read (`bld::overture`, parts: T
-  grown by 0.02°, so an outline finds its parts) with the GHSL windows (`bld::ghsl`), as columns
+  grown by 0.02°, so an outline finds its parts; a row group's chunks of the columns read in one
+  read through store::range, its waits counted as the NAS's, task #998) with the GHSL windows (`bld::ghsl`), as columns
   (geometry as WKB); centroids (area-weighted) and areas computed in f64, rounded to E7, what's
   centred in T kept, GHSL sampled, the normalized file written. Checks the columns' names and
   types, failing on a schema change.
