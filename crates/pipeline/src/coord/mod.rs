@@ -4458,22 +4458,27 @@ fn route(
         }
         "/gc/removing" => {
             // The `gc` job's content names about to be removed (crate::agent::gc::Tell, docs/maplog.md
-            // §11.4): marked deleted in GC's queue (written and fsynced), the newest lease granted now
-            // theirs, before the job removes any: the merge refuses a hand-off of an older lease
-            // bringing one from then on.
+            // §11.4): those still held answered, to keep; the rest marked deleted in GC's queue (written
+            // and fsynced), the newest lease granted now theirs, before the job removes any: the merge
+            // refuses a hand-off of an older lease bringing one from then on.
             let b: GcRemoving = serde_json::from_slice(body)?;
-            let (q, lease) = {
+            let (q, feed, oldest_lease, lease) = {
                 let s = shared.lock().unwrap();
-                (s.gc.clone(), newest_lease(&s))
+                let oldest = s.leases.all(s.now()).iter().map(|l| l.granted_at).min();
+                (s.gc.clone(), s.maplog.clone(), oldest, newest_lease(&s))
             };
-            let Some(q) = q else {
+            let (Some(q), Some(feed)) = (q, feed) else {
                 return Ok((
                     503,
                     serde_json::json!({ "error": "no GC queue here: not the lead, or its map's log not open" }),
                 ));
             };
-            q.deleted(&b.names, unix_now(), crate::agent::gcqueue::lease(lease));
-            Ok((200, serde_json::json!({ "marked": b.names.len() })))
+            let cursors = feed.cursors();
+            let holders = store::map::gc::Holders { cursors: &cursors, oldest_lease, now: unix_now() };
+            match q.removing(&b.names, &holders, crate::agent::gcqueue::lease(lease)) {
+                Ok(held) => Ok((200, serde_json::json!({ "held": held }))),
+                Err(e) => Ok((503, serde_json::json!({ "error": format!("{e:#}") }))),
+            }
         }
         "/pool/release" => {
             // The owner's release of a member's leases (`scenic pool release <member>`).

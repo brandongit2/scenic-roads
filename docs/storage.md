@@ -119,10 +119,12 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
 - An unreferenced content-named file goes once older than 14 days; stray `.tmp` files after 2 days.
   (No catalogue is read; their old folders go by a pass of their own: docs/maplog.md §8, step 9.)
   Each such file is told to the lead first, 200 at a time (`gc::Tell`, `POST /gc/removing` to the
-  lead's coordinator, which marks them deleted in GC's queue), then removed, with a safe point after
-  each 200: the merge refuses a hand-off of an older lease bringing one (docs/maplog.md §11.4). The
-  lead not told (no coordinator, not the lead, an older app), nothing more is removed and the job
-  fails.
+  lead's coordinator, which answers those something holds now, kept this run, and marks the rest
+  deleted in GC's queue), then removed, with a safe point after each 200: the merge refuses a
+  hand-off of an older lease bringing one (docs/maplog.md §11.4). The lead not told (no coordinator,
+  not the lead, an older app, the marks not on its disk) or the queue's due set not read, nothing
+  more is removed and the job fails.
+  No sweep goes through a link (a file reached by one has a path no root names).
 - Retired passes' sources (`sources/osm/<date>/`, `sources/items/<date>/`) go by the same rule, their
   other files 14 days after the newer pass completed.
 - The input check's checked copies (`sources/inputs/`, inputs.md §4.9) are kept while the manifest,

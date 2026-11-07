@@ -152,12 +152,13 @@ impl Inner {
 
     /// The lines made written and `fsync`ed (once per change); the file rewritten whole once it
     /// has grown to four times what it holds, deletions older than `DELETIONS_KEPT_S` let go.
-    fn flush(&mut self, now: u64) {
+    /// Whether they're on the disk.
+    fn flush(&mut self, now: u64) -> bool {
         if self.out.is_empty() {
-            return;
+            return true;
         }
         let out = std::mem::take(&mut self.out);
-        let Some(path) = self.path.clone() else { return };
+        let Some(path) = self.path.clone() else { return false };
         self.lines += out.iter().filter(|&&c| c == b'\n').count();
         let r = (|| -> Result<()> {
             let f = match self.file.as_mut() {
@@ -168,6 +169,7 @@ impl Inner {
             f.sync_data()?;
             Ok(())
         })();
+        let written = r.is_ok();
         if let Err(e) = r {
             eprintln!("maplog: GC's queue: can't write {}: {e:#} (held in memory)", path.display());
             self.file = None;
@@ -178,6 +180,20 @@ impl Inner {
                 eprintln!("maplog: GC's queue: can't rewrite {}: {e:#}", path.display());
             }
         }
+        written
+    }
+
+    /// The oldest `seq` a client heard within `CURSOR_TTL_S` is at.
+    fn floor(h: &Holders) -> Option<u64> {
+        h.cursors.values().filter(|c| h.now.saturating_sub(c.heard) < CURSOR_TTL_S).map(|c| c.seq).min()
+    }
+
+    /// Whether queued `q` has outlasted its holders: `GRACE_S`, every cursor (`floor`), every live
+    /// lease.
+    fn outlasted(q: &Queued, floor: Option<u64>, h: &Holders) -> bool {
+        h.now.saturating_sub(q.at) >= GRACE_S
+            && floor.is_none_or(|s| s >= q.seq)
+            && h.oldest_lease.is_none_or(|t| t > q.at)
     }
 
     fn rewrite(&mut self, path: &Path) -> Result<()> {
@@ -322,16 +338,11 @@ impl GcQueue {
         if g.records.is_none() {
             return Vec::new();
         }
-        let floor = h.cursors.values().filter(|c| h.now.saturating_sub(c.heard) < CURSOR_TTL_S).map(|c| c.seq).min();
+        let floor = Inner::floor(h);
         let mut v: Vec<String> = g
             .queued
             .iter()
-            .filter(|(n, q)| {
-                h.now.saturating_sub(q.at) >= GRACE_S
-                    && floor.is_none_or(|s| s >= q.seq)
-                    && h.oldest_lease.is_none_or(|t| t > q.at)
-                    && !g.held(n)
-            })
+            .filter(|(n, q)| Inner::outlasted(q, floor, h) && !g.held(n))
             .map(|(n, _)| n.clone())
             .collect();
         v.sort();
@@ -348,6 +359,29 @@ impl GcQueue {
         g.line(&l);
         g.apply(l);
         g.flush(at);
+    }
+
+    /// The `gc` job's `names`, about to be removed: those something holds as of now answered (the
+    /// map or the records name them, or they're queued and haven't outlasted `h`: the job's roots
+    /// are as old as its run, hours on a slow share, and the holders are here), the rest marked
+    /// deleted, `lease` the newest granted now, on the disk before this answers. An error, the job
+    /// removing nothing more, while the records haven't been seen (a holder unknown) or the marks
+    /// can't be written.
+    pub fn removing(&self, names: &[String], h: &Holders, lease: Lease) -> Result<Vec<String>> {
+        let mut g = self.lock();
+        anyhow::ensure!(g.records.is_some(), "the lead hasn't seen the records yet");
+        let floor = Inner::floor(h);
+        let (held, free): (Vec<String>, Vec<String>) = names
+            .iter()
+            .cloned()
+            .partition(|n| g.held(n) || g.queued.get(n).is_some_and(|q| !Inner::outlasted(q, floor, h)));
+        if !free.is_empty() {
+            let l = Line::Deleted { deleted: free, at: h.now, lease };
+            g.line(&l);
+            g.apply(l);
+            anyhow::ensure!(g.flush(h.now), "the marks aren't on the lead's disk");
+        }
+        Ok(held)
     }
 
     /// The first of `names` deleted after lease `lease` was granted (the deletion's newest lease is

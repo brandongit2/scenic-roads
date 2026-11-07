@@ -414,11 +414,8 @@ files for its logical names, as today. The page's switch to a new map stays keye
   - **Away from the NAS or the lead:** with no NAS the mirror copies nothing and says nothing (it
     lets go only what no download wants); with the lead away it copies as before, its cursor said
     again next round. The map serves what's here either way.
-  - **Old servers:** a server from before 7b says no mirror cursor, and still appends its
-    `mirror-start`/`mirror-end` to `state/publish/`, which nothing reads; step 8b deletes by the
-    queue only once every Mac's server is a release past 7b. The mirror's lines from before the
-    switch stay in `state/publish/` (not read: `scenic timings publish` has no mirror times for
-    those catalogues) until it's deleted, once both Macs run 7b.
+  - **Old servers:** a server from before 7b says no mirror cursor; step 8b deletes by the queue
+    only once every Mac's server is a release past 7b.
   - The batches answered are passed over: the downloads compare their own lists (above), and the
     server's own client holds the map.
 
@@ -559,12 +556,13 @@ taken and not merged isn't indexed: a reused name is either held by a lease gran
 freed (the third rule), or refused at the merge (§7.4). The NAS snapshot is a client (`snapshot`,
 its cursor the oldest of the snapshots kept there). Deletions are kept for the merge's refusal
 `DELETIONS_KEPT_S` (`CURSOR_TTL`). In shadow nothing deletes by the queue: the `gc` job is handed
-the due set and checks it against what it removes that day (storage.md, GC); what it removed or
-found gone is then marked deleted. With today's 14-day catalogue window and `GRACE` of 2 days, the
-check is expected to report due names today's GC keeps for its window every day ("catalogue": an
-older catalogue of the window names it, "young", "not swept": a folder it doesn't sweep): those are
-counted only. A due name kept because the records, an unmerged hand-off ("records") or the newest
-catalogue ("map") name it is a holder the queue missed: only those make GC's report warn.
+the due set and checks it against what it removes that day (storage.md, GC); what it found gone is
+then marked deleted, what it removes it tells as it goes (§11.4). With the 14-day window and `GRACE`
+of 2 days, the check is expected to report due names the job keeps for its window every day
+("window": freed within it, or an older snapshot names it; "young"; "not swept": a folder it doesn't
+sweep; "held by the lead": a holder as it told it): those are counted only. A due name kept because
+the records, an unmerged hand-off ("records") or the map now ("map") name it is a holder the queue
+missed: only those make GC's report warn.
 The mirror's client (`mirror/<host>`, §5.4, §6.2, step 7b) holds the files of the oldest `seq` a
 download still copies, so step 8b's deletions by the queue keep them.
 
@@ -631,9 +629,9 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 | 6 (built) | **Catalogues stop** (after the gate: every server on the log a day): the step only posts; `catalog-held/` → `map-held/` | the catalogue writer and reader (`write`, `write_delta*`, `Delta`, `delta.rs`, `chain`, `whole_due`, `MAX_CHAIN`, `keep_read_in`/`kept_dir`, `latest*`, `read_n*`, `list`, `prune`, `next_n`), `state/pool/delta-catalog` and `Switches::delta`, the `catalog-stats:` sizes' look-ups of the last catalogue | `the_step_publishes_with_no_catalog_folder`; `a_held_batch_is_appended_whole_when_the_hold_lifts`; `a_posted_map_is_appended_once`; `the_maps_keep_their_files_however_old` (GC); test roots (`lakefill catalog-add`, `coastcheck water-packs`, the server's tests, `store::testkit::map_root`) on snapshots |
 | 7 (built: shadow) | **GC's queue, shadow:** the lead queues freed names (batches and records saves), leases and clients as holders; the merge's refusal of names deleted under a lease; a dry-run report beside today's GC, which still deletes | — | `a_name_freed_and_taken_again_leaves_the_queue`; `due_waits_for_every_cursor_the_grace_and_older_leases`; `a_reuse_of_a_deleted_name_is_refused_and_redone`; the shadow's due set ⊆ today's GC's deletions on the same day (a check job) |
 | 7b (built) | **The mirror is a client** (§6.2): the server's mirror sync asks `/map/changes` as `mirror/<host>` each round with the oldest `seq` whose files it still copies (its cursor, made from the downloads' pins and the files here), the map its round copies and the last it got through at (`&copying=`, `&synced=`); the lead keeps them on the cursor and notes them in the history (`mirror-start`, `mirror-end`) for `pubtimes`, as it does the adoptions; a reset moves the Updates of older maps on to the one served | `data::publish_event`, the mirror's `MIRROR_MARKS`, `pubtimes::SERVERS`, `SERVERS_MAX`, `append_server`, `read_servers`, `ServerEvent`, `MirrorMarks`, `state/publish/` | `a_mirror_copying_an_older_seq_holds_its_cursor` (an Update of an older map holds it while the map served moves on, through rounds cut short and a restart; caught up once its files are here); `a_cursor_older_than_the_log_resyncs_the_updates`; `a_client_is_answered_what_follows_its_seq_and_its_cursor_noted` (a mirror the lead didn't hold is reset); `mirror_times_come_from_the_history` |
-| 8a (built) | **The map's roots remove** (§11.4): every name the `gc` job removes is told the lead's coordinator first (`gc::Tell`, `POST /gc/removing`, `gc::TheLead`), 200 at a time, and marked deleted in its queue with the newest lease then, so the merge refuses a hand-off reusing any of them; `REPORT_ONLY` and its assert are gone. Today's daily `gc` job and its 14-day window stay. The date gate (15 Nov 07:12, the last catalogue plus 14 days) lifted by the owner, 7 Nov: no old browser tab or long-offline Mac holds an old catalogue | `REPORT_ONLY`, `REPORTS_ONLY`, the assert, `report_only*` in the report, the check's `report-only` reason, the job's marking of what it removed at the plan after it (`shadow_checked` marks only what it found gone) | `every_removal_is_marked_deleted_before_it_goes`; `a_hand_off_reusing_a_name_gc_removes_is_refused` (by HTTP to a lead's coordinator); `the_map_s_roots_remove_what_nothing_names` |
+| 8a (built) | **The map's roots remove** (§11.4): every name the `gc` job removes is told the lead's coordinator first (`gc::Tell`, `POST /gc/removing`, `gc::TheLead`), 200 at a time: one something holds now is answered and stays, the rest marked deleted in its queue with the newest lease then, so the merge refuses a hand-off reusing any of them; `REPORT_ONLY` and its assert are gone. Today's daily `gc` job and its 14-day window stay. The date gate (15 Nov 07:12, the last catalogue plus 14 days) lifted by the owner, 7 Nov: no old browser tab or long-offline Mac holds an old catalogue | `REPORT_ONLY`, `REPORTS_ONLY`, the assert, `report_only*` in the report, the check's `report-only` reason, the job's marking of what it removed at the plan after it (`shadow_checked` marks only what it found gone) | `every_removal_is_marked_deleted_before_it_goes`; `a_hand_off_reusing_a_name_gc_removes_is_refused` (by HTTP to a lead's coordinator); `the_lead_holds_back_what_is_held_as_gc_tells_it`; `a_name_the_lead_holds_stays`; `a_due_set_not_read_removes_nothing`; `the_map_s_roots_remove_what_nothing_names` |
 | 8b | **GC runs by the queue:** chunks of 200 whenever quiet, resumable; the orphan sweep; today's other sweeps as chunked cursors | `run_once`'s catalogue reading and folder sweep, `remove_unless_touched` and `Out::put_file`'s touch, `TOMB` and `put_back`, the 14-day catalogue window, the `gc` job's daily schedule | `gc_resumes_mid_chunk_after_a_kill` (agent killed between two deletions; next chunk starts at the first not gone, nothing deleted twice or kept forever); `gc_yields_to_the_budget`; `an_orphan_is_queued_only_after_its_age`; `the_queue_rebuilds_after_a_lead_disk_restore` |
-| 9 (built; runs once every member is on it) | **The old catalogues go:** the lead's daily `gc` job, asked `--old-catalogues` once every member's heartbeat says its app's NAS check looks at `map/` (`Beat::checks_map`, `pool::Side::all_check_map`), removes `catalog/`, `catalog-held/` and the switches `state/pool/delta-catalog` and `state/pool/map-serve` on the NAS (`gc::remove_old_catalogues`: one `rm -rf` over SSH from the lead, else over SMB file by file, a safe point between folders); each Mac's agent removes its `catalog/` (the map server's, in the app's folder) and `~/Library/Caches/scenic/catalogue/` at its start (`gc::remove_this_macs_catalogues`: every Mac runs an agent, the map server runs on the mini alone and a laptop's on demand). Nothing reads a catalogue since step 6 and GC roots on none, so a file only an old catalogue named is GC's as any file nothing names (on 7 Nov, 5,827 of catalogue 1063's 21,233 files weren't in map 1689). The gate: the agent's NAS check looked at `catalog/` until this step (`agent::answers`, now `agent::NAS_CHECK`, `map/`), and an older app sees the NAS away without it | the folders and switches | `the_old_catalogues_folders_go_whole`; `the_old_catalogues_wait_for_every_member_s_map_check`; `the_old_catalogues_go_only_once_every_app_checks_by_the_map` (on a private root, after the pass an agent checking by `catalog/` sees the NAS away, this app's sees it); `this_macs_old_catalogues_go` |
+| 9 (built; runs once every member is on it) | **The old catalogues go:** the lead's daily `gc` job, asked `--old-catalogues` once every member's heartbeat says its app's NAS check looks at `map/` (`Beat::checks_map`, `pool::Side::all_check_map`), removes `catalog/`, `catalog-held/` and the switches `state/pool/delta-catalog` and `state/pool/map-serve` on the NAS (`gc::remove_old_catalogues`: one `rm -rf` over SSH from the lead, else over SMB file by file, a safe point between folders); each Mac's agent removes its `catalog/` (the map server's, in the app's folder) and `~/Library/Caches/scenic/catalogue/` at its start (`gc::remove_this_macs_catalogues`: every Mac runs an agent, the map server runs on the mini alone and a laptop's on demand). Nothing reads a catalogue since step 6 and GC roots on none, so a file only an old catalogue named is GC's as any file nothing names (on 7 Nov, 5,827 of catalogue 1063's 21,233 files weren't in map 1689). The gate: the agent's NAS check looked at `catalog/` until this step (`agent::answers`, now `agent::NAS_CHECK`, `map/`), and an older app sees the NAS away without it. A member away on an older app holds the pass: its heartbeat on the NAS stays and says no `checks_map`; only a heartbeat file gone and unheard `FORGET_AFTER` (20 min) stops counting. A rollback past the pass: that app's agent sees the NAS away and its build stops (the map stays served); `mkdir catalog` in the project folder brings it back (it only stats the folder), and the pass doesn't run again while its heartbeat lacks `checks_map` | the folders and switches | `the_old_catalogues_folders_go_whole`; `the_old_catalogues_wait_for_every_member_s_map_check`; `the_old_catalogues_go_only_once_every_app_checks_by_the_map` (on a private root, after the pass an agent checking by `catalog/` sees the NAS away, this app's sees it); `this_macs_old_catalogues_go` |
 | 10 | docs: formats.md (Catalogue → the map and its snapshot), storage.md (GC), macs.md (the server's sync, the mirror), building.md (publishing, the switches), pool.md §7.2/§10; this doc folded in | — | — |
 
 Order: 1, 2, 3 in turn; 4 and 5 after 3, in either order; 6 after 3, 4 and 5 and the gate; 7 after
@@ -795,9 +793,22 @@ What 8a carries:
   it was to go, the run stopped) only costs a hand-off reusing it its redo; a lease granted after
   the mark finds the file there or not, as before 8a (the touch, the tombstone). The lead not told
   (no coordinator, not the lead, an older app answering 404), the job removes nothing more and
-  fails. A mark is kept `DELETIONS_KEPT_S` (7 days, `crates/store/src/map/gc.rs:33`); a hand-off
-  told later than that isn't refused, and its missing file is the pending uploads' verification's to
-  find.
+  fails, as it does with the marks not on the lead's disk. A mark is kept `DELETIONS_KEPT_S` (7 days,
+  `crates/store/src/map/gc.rs:33`); a hand-off told later than that isn't refused, and its missing
+  file is the pending uploads' verification's to find.
+- **The roots are as old as the run.** The run reads the map, the records and the due set as it
+  starts, and removes for up to hours after. So as it tells each chunk the lead answers against its
+  holders then (`GcQueue::removing`): the map or the records name it, or it's queued and hasn't
+  outlasted `GRACE_S`, a client's cursor heard within `CURSOR_TTL_S` or a live lease. Those stay
+  this run (`Report::held`), unmarked. With the records not seen yet the lead answers 503, and the
+  run stops. A due set asked for and not read fails the run before anything goes.
+- **Its pace.** The job is one sequential stream of SMB calls, no sleep between them: it can't pass
+  what one stream gets, a fraction of what the share gives four (`budget::nas::STREAMS`). The lead
+  grants it as its own job under the NAS budget, its weight by its last run's measured listing and
+  deletes (the first run with deletions weighed as a sweep, since no run before deleted); the gate
+  on the NAS's own load (`Loop`) holds new jobs while its disks are busy, and a job held back
+  `OWN_AGE` makes it yield at its next safe point (`nas_yield`), every 200 at most. Stopped there, it
+  lists afresh at its next run and goes on.
 
 ## Decisions (PM, 30 Oct night)
 

@@ -15,7 +15,10 @@
 //! refuses (`refusal`): a hand-off of a lease granted before the deletion that brings a deleted
 //! name may have found the file on the NAS and reused it; its targets are done again. The `gc` job
 //! tells the lead each name before it removes it (crate::agent::gc::Tell, `/gc/removing`: step 8a,
-//! docs/maplog.md §11.4), so the refusal covers every removal from the moment it can happen.
+//! docs/maplog.md §11.4), so the refusal covers every removal from the moment it can happen; a name
+//! something holds as it's told (GcQueue::removing: the map or the records name it, or it hasn't
+//! outlasted a cursor, a lease or its grace) is answered and stays, the job's roots being as old as
+//! its run.
 //!
 //! Shadow (step 7): nothing deletes by the queue. The `gc` job, which deletes by its own rules, is
 //! given the queue's due set (`SHADOW_DUE`, written as its job is planned) and checks it against

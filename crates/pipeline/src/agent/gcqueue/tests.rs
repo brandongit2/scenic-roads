@@ -185,7 +185,11 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     q.open(&d.path().join("maplog"), &map(1, &[]), T0).unwrap();
     c.set_term(3);
     c.set_maplog(store::map::feed::Feed::new(), q.clone());
-    lead().removing(&[name.to_string()]).unwrap();
+    // (The records not seen yet, a holder unknown: nothing marked, the job told so.)
+    assert!(lead().removing(&[name.to_string()]).is_err());
+    assert!(refusal(&q, &entry(5, name)).is_none());
+    super::records(&q, &records(1, &[]), T0);
+    assert_eq!(lead().removing(&[name.to_string()]).unwrap(), Vec::<String>::new());
     // (A lease of term 2, granted before: refused; the redo's, granted after: merged.)
     let reused = entry(5, name);
     assert!(refusal(&q, &reused).is_some_and(|why| why.contains(name)));
@@ -194,6 +198,47 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     let back = GcQueue::default();
     back.open(&d.path().join("maplog"), &map(1, &[]), T0).unwrap();
     assert!(refusal(&back, &reused).is_some(), "kept on the lead's disk");
+}
+
+/// docs/maplog.md §11.4: the lead answers the `gc` job's names against its holders as they are now,
+/// the job's roots being as old as its run: what the map or the records name, and a queued name that
+/// hasn't outlasted its grace, a client's cursor or a live lease, stay unmarked and are answered, to
+/// keep; the rest are marked. Marks that can't be on the disk (a queue with no file) are an error.
+#[test]
+fn the_lead_holds_back_what_is_held_as_gc_tells_it() {
+    let d = tempfile::tempdir().unwrap();
+    let m1 = map(1, &[("a", "a.1.pack"), ("b", "b.1.pack"), ("c", "c.1.pack")]);
+    let q = GcQueue::default();
+    q.open(d.path(), &m1, T0).unwrap();
+    super::records(&q, &records(1, &[("r", "r.1.pack")]), T0);
+    let (b2, _) = to(&m1, &[("a", "a.1.pack"), ("c", "c.1.pack"), ("n", "n.1.pack")], 2);
+    q.batch(&b2, T0);
+    assert!(q.queued("b.1.pack").is_some());
+    let names: Vec<String> = ["a.1.pack", "r.1.pack", "b.1.pack", "x.1.pack"].map(String::from).to_vec();
+    let newest = store::map::gc::Lease { term: 2, n: 9 };
+    let at = |now: u64, cursors: &BTreeMap<String, Cursor>, oldest_lease| {
+        q.removing(&names, &Holders { cursors, oldest_lease, now }, newest).unwrap()
+    };
+    let none = BTreeMap::new();
+    // Within its grace; a cursor behind it; a lease older than it. The map's and the records' always.
+    assert_eq!(at(T0 + 10, &none, None), ["a.1.pack", "r.1.pack", "b.1.pack"]);
+    let past = T0 + GRACE_S;
+    let behind: BTreeMap<String, Cursor> =
+        [("server/m1".to_string(), Cursor { seq: 1, heard: past, at: past, ..Default::default() })].into();
+    assert_eq!(at(past, &behind, None), ["a.1.pack", "r.1.pack", "b.1.pack"]);
+    assert_eq!(at(past, &none, Some(T0 - 1)), ["a.1.pack", "r.1.pack", "b.1.pack"]);
+    assert!(q.queued("b.1.pack").is_some(), "still queued, not marked");
+    // All passed: it's marked; only the map's and the records' stay.
+    assert_eq!(at(past, &none, Some(past)), ["a.1.pack", "r.1.pack"]);
+    assert!(q.queued("b.1.pack").is_none());
+    let older = store::map::gc::Lease { term: 2, n: 5 };
+    assert!(q.deleted_under([&"b.1.pack".to_string()].into_iter(), older).is_some());
+    assert!(q.deleted_under([&"x.1.pack".to_string()].into_iter(), older).is_some(), "named by nothing: marked");
+    assert!(q.deleted_under([&"a.1.pack".to_string()].into_iter(), older).is_none(), "kept: not marked");
+    let unopened = GcQueue::default();
+    super::records(&unopened, &records(1, &[]), T0);
+    let free = ["y.1.pack".to_string()];
+    assert!(unopened.removing(&free, &Holders { cursors: &none, oldest_lease: None, now: past }, newest).is_err());
 }
 
 /// A last line cut short is dropped (and cut off the file); a damaged earlier line is an error.
