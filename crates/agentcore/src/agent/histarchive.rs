@@ -88,7 +88,7 @@ pub(crate) fn files(dir: &NasPath) -> io::Result<Vec<(String, u64)>> {
     nasread::with(dir, move || {
         let mut v = Vec::new();
         for e in d.read_dir()? {
-            let md = e.metadata()?;
+            let md = e.symlink_metadata()?;
             let name = e.name;
             if !md.is_file() {
                 return Err(io::Error::other(format!("{name} is not a file")));

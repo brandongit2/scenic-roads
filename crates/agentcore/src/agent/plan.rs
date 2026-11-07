@@ -3485,9 +3485,55 @@ mod tests {
         assert_eq!(left[0], sample_name(1_700_004_000));
     }
 
+    /// The links of a frozen root (`frozen_plan_on_a_private_root`): every entry of the NAS's
+    /// project folder `nas` but `state/`, linked at `root` by its name. Made here, never by a shell
+    /// loop: `ln -s <folder> <name>` run again, or with a name already a link to a folder, makes the
+    /// link inside that folder, on the NAS (task #1004: `inputs/inputs` and 16 more, 7 Nov). A name
+    /// already at `root` must be the link to its entry; anything else is refused.
+    fn link_the_rest(root: &Path, nas: &Path) {
+        for e in std::fs::read_dir(nas).unwrap() {
+            let name = e.unwrap().file_name();
+            if name == "state" || name.to_string_lossy().starts_with(['.', '@', '#']) {
+                continue;
+            }
+            let (at, to) = (root.join(&name), nas.join(&name));
+            match std::fs::read_link(&at) {
+                Ok(l) => assert_eq!(l, to, "{} links elsewhere", at.display()),
+                // (std's symlink fails where the name is taken: it never makes a link inside.)
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::os::unix::fs::symlink(&to, &at).unwrap(),
+                Err(e) => panic!("{} is there and not a link: {e}", at.display()),
+            }
+        }
+    }
+
+    #[test]
+    fn a_frozen_roots_links_are_made_once_and_never_inside_the_nas() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, nas) = (d.path().join("root"), d.path().join("nas"));
+        for f in ["inputs/a.toml", "state/x", "map/m", "@eaDir/e"] {
+            std::fs::create_dir_all(nas.join(f).parent().unwrap()).unwrap();
+            std::fs::write(nas.join(f), b"x").unwrap();
+        }
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        link_the_rest(&root, &nas);
+        link_the_rest(&root, &nas);
+        let mut names: Vec<_> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
+        names.sort();
+        assert_eq!(names, ["inputs", "map", "state"]);
+        assert_eq!(std::fs::read_link(root.join("inputs")).unwrap(), nas.join("inputs"));
+        assert!(std::fs::symlink_metadata(nas.join("inputs/inputs")).is_err(), "no link inside the NAS's folder");
+        assert!(std::fs::symlink_metadata(nas.join("map/map")).is_err());
+        // A name taken by a folder of its own is refused, never linked into.
+        std::fs::remove_file(root.join("map")).unwrap();
+        std::fs::create_dir(root.join("map")).unwrap();
+        assert!(std::panic::catch_unwind(|| link_the_rest(&root, &nas)).is_err());
+        assert!(std::fs::symlink_metadata(root.join("map/map")).is_err());
+    }
+
     /// The frozen-plan check (docs/crates.md §6.3, 6f2): a planner's `region_jobs` and `checklist`
-    /// on a private copy of the lead's state (`SCENIC_FROZEN_ROOT`: `state/` copied, every other
-    /// entry a symlink to the NAS's project folder; never the NAS itself), its home
+    /// on a private copy of the lead's state (`SCENIC_FROZEN_ROOT`: `state/` copied there by hand,
+    /// every other entry of the NAS's project folder linked there by the check itself,
+    /// `link_the_rest`; never the NAS itself), its home
     /// `SCENIC_FROZEN_HOME` (the coverage's cache and the terrain indexes kept there between runs),
     /// with no coordinator, no gate watch and no record of past catalogues. What it planned (the
     /// jobs with their commands, targets and keys, before and after the holds; the waits; the
@@ -3520,6 +3566,8 @@ mod tests {
         let state = std::fs::symlink_metadata(real.join("state")).unwrap();
         assert!(state.is_dir(), "the root's state/ must be a copy, not a link: {}", real.display());
         if std::env::var_os("SCENIC_FROZEN_SANDBOXED").is_none() {
+            let share = store::nas::find_mount(store::nas::HOST, store::nas::SHARE).expect("the NAS's share mounted");
+            link_the_rest(&real, &share.point.join(store::nas::PROJECT));
             let app_home = std::env::var("HOME").unwrap() + "/Library/Application Support/scenic";
             let profile =
                 format!("(version 1)(allow default)(deny file-write* (subpath \"/Volumes\") (subpath \"{app_home}\"))");

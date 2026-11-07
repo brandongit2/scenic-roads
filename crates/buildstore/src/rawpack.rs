@@ -520,7 +520,9 @@ impl Packer {
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE);
         // (On the NAS: an archive's copy, `<name>.<host>.<pid>.tmp`.)
         for e in self.store.join("packs").read_dir().into_iter().flatten() {
-            if e.path.extension() == Some("tmp") && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old) {
+            if e.path.extension() == Some("tmp")
+                && e.symlink_metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old)
+            {
                 e.path.remove_file().ok();
             }
         }
@@ -748,7 +750,7 @@ impl Packer {
                 if n.ends_with(".tiles")
                     && !named.contains(&n)
                     && !gone.contains_key(&n)
-                    && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old)
+                    && e.symlink_metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old)
                 {
                     gone.insert(n, now);
                 }

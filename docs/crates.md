@@ -949,7 +949,8 @@ commit; re-exports at the old paths as before.
         build.rs's job names (`job("…`, `id: format!("…`).
       - **The frozen-plan check** (built): `plan::tests::frozen_plan_on_a_private_root`, ignored,
         runs a planner's `region_jobs` and `checklist` on a private root (`SCENIC_FROZEN_ROOT`:
-        the lead's `state/` copied, every other entry of the NAS's project folder a symlink;
+        the lead's `state/` copied there, every other entry of the NAS's project folder linked
+        there by the check itself, `link_the_rest`, never by a shell loop: #1004);
         `SCENIC_FROZEN_HOME` keeps the coverage's cache and the terrain indexes between runs;
         `SCENIC_FROZEN_APP` the lead's app), with no coordinator, gate watch or record of past
         catalogues, the forecast's thread parked, and writes the jobs (commands, targets, keys)

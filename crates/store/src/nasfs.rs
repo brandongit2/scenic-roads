@@ -218,12 +218,14 @@ impl NasEntry {
         self.file_type.is_some_and(|t| t.is_dir())
     }
 
-    /// Whether it is a file, by the listing (no stat).
+    /// Whether it is a file, by the listing (no stat). A link made from a Mac lists as a file on
+    /// the NAS's SMB share (it is stored as an XSym file); only `symlink_metadata` tells.
     pub fn is_file(&self) -> bool {
         self.file_type.is_some_and(|t| t.is_file())
     }
 
-    /// Its type by the listing (a stat when the listing didn't say).
+    /// Its type by the listing (a stat when the listing didn't say). On the SMB share a link made
+    /// from a Mac lists as a file (`is_file`).
     pub fn file_type(&self) -> io::Result<std::fs::FileType> {
         match self.file_type {
             Some(t) => Ok(t),
@@ -231,9 +233,12 @@ impl NasEntry {
         }
     }
 
-    /// A stat of it.
-    pub fn metadata(&self) -> io::Result<std::fs::Metadata> {
-        self.path.metadata()
+    /// A stat of it that doesn't follow a link: a link is a link (`is_symlink`), never the folder
+    /// or file it leads to, so a walk by it never goes through one (task #1004: a link to its own
+    /// folder, `inputs/inputs`, took the backup's walk down it until "Too many levels of symbolic
+    /// links").
+    pub fn symlink_metadata(&self) -> io::Result<std::fs::Metadata> {
+        self.path.symlink_metadata()
     }
 }
 

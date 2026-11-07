@@ -1394,7 +1394,7 @@ fn list(folder: &NasPath) -> Option<HashMap<String, u64>> {
     };
     let mut names = HashMap::new();
     for e in rd {
-        match e.metadata() {
+        match e.symlink_metadata() {
             Ok(m) if m.is_file() => {
                 names.insert(e.name, m.len());
             }

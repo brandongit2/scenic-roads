@@ -650,8 +650,11 @@ pub fn inputs_kept(
                 continue;
             };
             meta(0, 1, 0);
-            let young =
-                e.metadata()?.modified().ok().is_some_and(|t| now.duration_since(t).map_or(true, |d| d <= within));
+            let young = e
+                .symlink_metadata()?
+                .modified()
+                .ok()
+                .is_some_and(|t| now.duration_since(t).map_or(true, |d| d <= within));
             if !young {
                 continue;
             }
@@ -1121,7 +1124,7 @@ fn orphan_walk(
             .read_dir()
             .ok()
             .and_then(|rd| rd.into_iter().find(|e| e.name.starts_with("pass.") && e.name.ends_with(".json")))
-            .and_then(|e| e.metadata().ok()?.modified().ok())
+            .and_then(|e| e.symlink_metadata().ok()?.modified().ok())
             .is_some_and(|t| age_s(t) > PLANET_KEEP_S);
         for kind in ["osm", "items"] {
             meta(1, 0, 0);
@@ -1447,9 +1450,8 @@ fn remove_tree(dir: &NasPath) -> Result<()> {
         let rd = d.read_dir().with_context(|| format!("list {}", d.display()))?;
         for e in rd {
             meta(1, 1, 0);
-            // (A link goes itself, what it points at stays: `stat`.)
-            let link = e.file_type().with_context(|| format!("look at {}", e.path.display()))?.is_symlink();
-            if !link && e.metadata().with_context(|| format!("look at {}", e.path.display()))?.is_dir() {
+            // (A link goes itself, what it points at stays: its stat is its own.)
+            if e.symlink_metadata().with_context(|| format!("look at {}", e.path.display()))?.is_dir() {
                 stack.push(e.path.clone());
                 dirs.push(e.path);
             } else {
@@ -1495,10 +1497,7 @@ pub fn remove_this_macs_catalogues(app_home: &std::path::Path, user_home: &std::
 /// is kept (`sources/inputs/regions/@geometry/@geometry`, a link to its own folder, 27 Oct, took the
 /// walk 32 levels down it).
 fn stat(e: &store::nasfs::NasEntry) -> Option<std::fs::Metadata> {
-    if e.file_type().ok()?.is_symlink() {
-        return None;
-    }
-    e.metadata().ok()
+    e.symlink_metadata().ok().filter(|m| !m.file_type().is_symlink())
 }
 
 /// A lead with nothing queued (a run's duties alone, in tests): no chunk, nothing held.

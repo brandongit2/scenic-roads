@@ -626,7 +626,7 @@ pub fn ignored(name: &str) -> bool {
     name.starts_with(['.', '@', '#', '_'])
 }
 
-/// Unit `unit`'s inputs folder listed now (`todo/` and `how/` aside, and the names `ignored`): an empty
+/// Unit `unit`'s inputs folder listed now (`todo/` and `how/` aside, the names `ignored` and links): an empty
 /// listing when there's no inputs folder yet, an error when it can't be listed now.
 pub fn list(root: &store::nasfs::NasRoot, unit: &str, recursive: bool) -> Result<Listing> {
     let top = inputs_folder(root, unit);
@@ -647,7 +647,11 @@ pub fn list(root: &store::nasfs::NasRoot, unit: &str, recursive: bool) -> Result
             }
             let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
             buildstore::costin::meta(0, 1, 0);
-            let md = e.metadata().with_context(|| format!("stat {}", e.path.display()))?;
+            let md = e.symlink_metadata().with_context(|| format!("stat {}", e.path.display()))?;
+            // (A link is neither listed nor followed: task #1004.)
+            if md.file_type().is_symlink() {
+                continue;
+            }
             if !md.is_dir() && checks(unit).is_some_and(|c| !c.takes(&path)) {
                 continue;
             }

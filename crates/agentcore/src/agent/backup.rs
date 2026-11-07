@@ -5,7 +5,9 @@
 //! Content-addressed, so an unchanged file is stored once however many days keep it:
 //! `blobs/<hash16>` holds each version of a file, and `<YYYY-MM-DD>.json` lists the folder as it
 //! was that day (path, size, modification time, blob). A day is written only when something
-//! changed. Generated `todo/` folders are skipped.
+//! changed. Generated `todo/` folders are skipped, and so is every link: none is followed or
+//! copied (task #1004: a link to its own folder, `inputs/inputs`, failed the backup with "Too many
+//! levels of symbolic links").
 //!
 //! To restore a file: find it in a day's list and copy `blobs/<hash>` back to its path.
 
@@ -50,8 +52,8 @@ fn skip(name: &str) -> bool {
     name.starts_with('.') || name.starts_with('@') || name.starts_with('#') || name == "todo" || name.ends_with(".tmp")
 }
 
-/// The user's folders as they are now; files whose size and time match `prev` keep its blob
-/// without being read again.
+/// The user's folders as they are now, their links passed over; files whose size and time match
+/// `prev` keep its blob without being read again.
 fn scan(root: &store::nasfs::NasRoot, prev: &Manifest) -> Result<Vec<(String, NasPath, u64, u64, Option<String>)>> {
     let mut out = Vec::new();
     for top in FOLDERS {
@@ -63,7 +65,10 @@ fn scan(root: &store::nasfs::NasRoot, prev: &Manifest) -> Result<Vec<(String, Na
                     continue;
                 }
                 let p = e.path.clone();
-                let md = e.metadata().with_context(|| format!("stat {}", p.display()))?;
+                let md = e.symlink_metadata().with_context(|| format!("stat {}", p.display()))?;
+                if md.file_type().is_symlink() {
+                    continue;
+                }
                 if md.is_dir() {
                     stack.push(p);
                     continue;
@@ -319,5 +324,23 @@ mod tests {
         assert_eq!(fs::read_dir(local.join("blobs")).unwrap().count(), 2);
         assert!(local.join("2026-09-03.json").exists());
         assert!(!local.join("2026-09-01.json").exists());
+    }
+
+    /// Task #1004: no link is followed or backed up: a link to its own folder (`inputs/inputs`), a
+    /// link back to an ancestor, a link to a file.
+    #[test]
+    fn links_are_passed_over() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        fs::create_dir_all(root.join("inputs/regions")).unwrap();
+        fs::write(root.join("inputs/regions/x.toml"), b"id = \"x\"").unwrap();
+        std::os::unix::fs::symlink(root.join("inputs"), root.join("inputs/inputs")).unwrap();
+        std::os::unix::fs::symlink(root.join("inputs/regions"), root.join("inputs/regions/up")).unwrap();
+        std::os::unix::fs::symlink(root.join("inputs/regions/x.toml"), root.join("inputs/regions/y.toml")).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), None, "2026-09-01", 30).unwrap();
+        assert_eq!((r.files, r.new_blobs), (1, 1));
+        let day: Manifest =
+            serde_json::from_slice(&fs::read(root.join("state/backups/2026-09-01.json")).unwrap()).unwrap();
+        assert_eq!(day.keys().collect::<Vec<_>>(), ["inputs/regions/x.toml"]);
     }
 }

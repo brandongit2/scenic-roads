@@ -125,4 +125,19 @@ if (( rc == 2 )) && [[ $out == *"$no"* ]]; then print "ok: shell-guard.sh refuse
 in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":"git reset --hard"},"cwd":sys.argv[1],"agent_id":"aaa","session_id":"s1"}))' $own)
 out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
 if (( rc == 0 )) && [[ -z $out ]]; then print "ok: shell-guard.sh lets the own worktree's pass"; else print "FAIL: shell-guard.sh: $rc $out"; fail=1; fi
+# The ln rule (#1004): `ln -s` without -n/-h refused, wherever in the command; -sn, -sfn, -sfh pass.
+for want cmd in \
+  "No \`ln -s\` without" "ln -s /Volumes/x/inputs root/inputs" \
+  "No \`ln -s\` without" "for e in /Volumes/x/*; do ln -s \$e r/\${e:t}; done" \
+  "No \`ln -s\` without" "mkdir r && ln -sf a r/b" \
+  "No \`ln -s\` without" "sudo ln -s a b" \
+  ok "ln -sn a b" ok "ln -sfn a b" ok "ln -s -h a b" ok "ln -sfh v1 app/current" ok "ln a b" ok "echo ln -s a b"; do
+  in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"session_id":"s1"}))' $cmd $own)
+  out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
+  if [[ $want == ok && $rc == 0 ]] || [[ $want != ok && $rc == 2 && $out == *"$want"* ]]; then
+    print "ok ($want): $cmd"
+  else
+    print "FAIL ($want): $cmd: $rc $out"; fail=1
+  fi
+done
 exit $fail

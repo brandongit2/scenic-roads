@@ -13,6 +13,13 @@
 # warnings ("warning:" no
 # lead, the lead or a member out of touch, the lead's loop stuck) and the jobs failed since the last
 # check's stamp ("failed:"). The same flags are on the build page's alerts and the menu bar.
+#
+# Links on the NAS (#1004): none belongs in the project folder, and a walker that follows one to an
+# ancestor loops (the backup's "Too many levels of symbolic links", 7 Nov). The NAS is asked over
+# SSH, at most every 6 hours (.claude/nas-links, the last answer): links and XSym files (a link
+# made from a Mac over SMB is stored as a 1,067-byte file starting "XSym") anywhere under inputs/,
+# state/ and sources/inputs/, and a top folder's link to itself (`<name>/<name>`). A link found is
+# a "link:" line; a flag, nothing is blocked.
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
@@ -27,6 +34,27 @@ date +%s > .claude/health-stamp
 print "== health $(date '+%F %T')"
 df -h / | awk 'NR==2{print "disk: "$4" free of "$2}'
 print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/map ]] && echo mounted || echo NOT MOUNTED)"
+if [[ ! -f .claude/nas-links || -n $(find .claude/nas-links -mmin +360) ]]; then
+  # (On the NAS, POSIX sh: the candidates, then each checked; a find cut short says so.)
+  if ans=$(ssh -o BatchMode=yes -o ConnectTimeout=5 brandontsang@fishandchips.local '
+    cd /volume1/personal/projects/scenic-roads || exit 3
+    { for d in */; do d=${d%/}; echo "$d/$d"; done
+      timeout 180 find inputs state sources/inputs -mindepth 1 \( -type l -o -type f -size 1067c \) -print || echo "!find $?"
+    } | while IFS= read -r p; do
+      case $p in "!find "*) echo "$p"; continue ;; esac
+      if [ -L "$p" ] || { [ -f "$p" ] && [ "$(head -c 4 "$p" 2>/dev/null)" = XSym ]; }; then echo "link: $p"; fi
+    done' 2>/dev/null); then
+    print -r -- "checked $(date '+%F %T')${ans:+
+}$ans" > .claude/nas-links
+  else
+    print "NAS links: NOT READ (ssh to the NAS failed, exit $?): asked again at the next check"
+  fi
+fi
+if [[ -f .claude/nas-links ]]; then
+  print "NAS links in inputs/, state/, sources/inputs/ and the top folders (none belong; $(head -1 .claude/nas-links)):"
+  tail -n +2 .claude/nas-links | sed 's/^!find \(.*\)/find ended with exit \1: the list may be short/; s/^/  /'
+  [[ $(wc -l < .claude/nas-links) -gt 1 ]] || print "  none"
+fi
 from="6 h ago"; [[ -n $since ]] && from=$(date -r $since '+%F %T')
 print "the build (scenic status --flags, failures since $from):"
 if out=$(scenic status --flags ${since:+--since} ${since:+$since} 2>&1); then

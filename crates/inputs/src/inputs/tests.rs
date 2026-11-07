@@ -485,6 +485,23 @@ fn listing_passes_over_the_macs_files_drafts_and_the_apps_folders_and_names_stra
     assert!(list(&store::nasfs::NasRoot::local_for_test(d.path()), "none-yet", false).unwrap().files.is_empty());
 }
 
+/// Task #1004: a link in an inputs folder is neither listed nor followed (a link to its own folder,
+/// one back to the inputs folder, one to a file).
+#[test]
+fn listing_passes_over_links() {
+    let d = tempfile::tempdir().unwrap();
+    let b = d.path().join("inputs").join(TEST_UNIT);
+    std::fs::create_dir_all(b.join("sub")).unwrap();
+    std::fs::write(b.join("a.jsonl"), b"x").unwrap();
+    std::fs::write(b.join("sub/v.jsonl"), b"x").unwrap();
+    std::os::unix::fs::symlink(&b, b.join(TEST_UNIT)).unwrap();
+    std::os::unix::fs::symlink(&b, b.join("sub/up")).unwrap();
+    std::os::unix::fs::symlink(b.join("a.jsonl"), b.join("b.jsonl")).unwrap();
+    let r = list(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT, true).unwrap();
+    assert_eq!(r.files.keys().cloned().collect::<Vec<_>>(), ["a.jsonl", "sub/v.jsonl"]);
+    assert!(r.strays.is_empty(), "{:?}", r.strays);
+}
+
 #[test]
 fn the_key_follows_the_listing_the_acceptances_and_the_index() {
     let l = Listing { files: [("a.jsonl".to_string(), (10, 100))].into(), strays: vec![], ..Default::default() };

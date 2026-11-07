@@ -234,6 +234,27 @@ fn a_listing_leaves_temporary_files_out_and_a_missing_folder_is_empty() {
     assert!(e.iter().all(|e| e.is_file() && e.path.parent().unwrap() == r.join("m")));
 }
 
+/// Task #1004: an entry's stat is the link's own, never what it leads to (a link to its own
+/// folder, a link to a file).
+#[test]
+fn an_entrys_stat_never_follows_a_link() {
+    let (d, r) = root();
+    r.join("m").create_dir_all().unwrap();
+    r.join("m/a.json").write(b"a").unwrap();
+    std::os::unix::fs::symlink(d.path().join("m"), d.path().join("m/m")).unwrap();
+    std::os::unix::fs::symlink(d.path().join("m/a.json"), d.path().join("m/b.json")).unwrap();
+    let mut e = r.join("m").read_dir().unwrap();
+    e.sort_by(|a, b| a.name.cmp(&b.name));
+    let kinds: Vec<(&str, bool, bool)> = e
+        .iter()
+        .map(|e| {
+            let m = e.symlink_metadata().unwrap();
+            (e.name.as_str(), m.is_dir(), m.file_type().is_symlink())
+        })
+        .collect();
+    assert_eq!(kinds, [("a.json", false, false), ("b.json", false, true), ("m", false, true)]);
+}
+
 /// Task #990: an upload's bytes count as each write goes, not once it lands, so a long upload's job
 /// is seen moving by its beats; the file counts made as it lands. A file written through `NasFile`,
 /// a whole copy to the NAS (each read told), a NAS-to-NAS copy, a content-named upload.

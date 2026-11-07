@@ -6,6 +6,8 @@
 # - no waiting on `pgrep -f` in a loop (its pattern is on the waiting shell's own command line, so
 #   it matches itself and never ends): wait on the PID, `while kill -0 <pid>; do sleep 30; done`;
 # - no open-ended `until grep` wait;
+# - no `ln -s` without `-n` or `-h` (#1004): where the link's name is already a link to a folder, it
+#   makes the link inside that folder (on the NAS, `inputs/inputs` and 16 more like it, 7 Nov);
 # - no git write in a checkout that isn't the session's own (tools/dev/git-guard.py, #980).
 set -uo pipefail
 in=$(cat)
@@ -17,6 +19,11 @@ cmd = (d.get("tool_input") or {}).get("command") or ""
 for seg in re.split(r"&&|\|\||;|\||\(|\)|\$\(|`", cmd):
     if re.match(r"\s*(?:sudo\s+)?(?:find|bfs)\s+(?:-\S+\s+)*/(?:\s|$)", seg):
         print("No `find /` (the owner'"'"'s rule): search the repo, the NAS project folder or a named folder."); sys.exit()
+for seg in re.split(r"&&|\|\||;|\||\(|\)|\$\(|`|\bdo\b|\bthen\b|\belse\b", cmd):
+    m = re.match(r"\s*(?:sudo\s+|command\s+|xargs\s+(?:-\S+\s+)*)?(?:/bin/)?ln((?:\s+-[A-Za-z]+)+)", seg)
+    flags = "".join(m.group(1).split()).replace("-", "") if m else ""
+    if "s" in flags and not set(flags) & set("nh"):
+        print("No `ln -s` without `-n` (the owner'"'"'s rule, #1004): where the link'"'"'s name is already a link to a folder, `ln -s` makes the link inside that folder (on the NAS: `inputs/inputs`, a loop for every walker). Use `ln -sn` (it fails on a name taken by a link; a name that is a folder is still linked into: never name one), or make the link in code."); sys.exit()
 if re.search(r"\b(?:until|while)\b[^\n]*\bpgrep\s+(?:-\w*\s+)*-\w*f", cmd):
     print("No waiting on `pgrep -f` (it matches its own shell and never ends): wait on the PID, `while kill -0 <pid>; do sleep 30; done`."); sys.exit()
 if re.search(r"\buntil\s+!?\s*grep\b", cmd) and not re.search(r"SECONDS|seq\s|\$\(\(|-gt\s|-ge\s|timeout|kill\s+-0", cmd):

@@ -205,5 +205,14 @@ it stopped.
 
 **Backups.** Daily, the agent copies `inputs/` and the input check's acceptances
 (`state/inputs/accepted/`) into a content-addressed store under `state/backups/`, with a dated list
-on days something changed (kept 30 days), mirrored to the M4; `todo/` isn't backed up. Everything
-else can be regenerated.
+on days something changed (kept 30 days), mirrored to the M4; `todo/` isn't backed up, and no link
+is followed or backed up (#1004: a link to its own folder, `inputs/inputs`, failed the backup on
+7 Nov). Everything else can be regenerated.
+
+**Links.** None belongs in the project folder. A link made from a Mac is stored on the NAS as an
+XSym file and lists as a file over SMB; only its stat says it's a link. No walk of the NAS's folders
+goes through one: each goes down by the listing's type or by an entry's stat, which doesn't follow a
+link (`NasEntry::symlink_metadata`). A link made on the NAS itself, which the share may show as the
+folder it leads to, can't be told from a Mac: the PM's tools/dev/health.sh asks the NAS over SSH
+for any link (of either kind) under `inputs/`, `state/` and `sources/inputs/`, and a top folder's
+link to itself, at most every 6 hours, and flags each.
