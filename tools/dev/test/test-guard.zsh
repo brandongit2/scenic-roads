@@ -56,8 +56,8 @@ check "isn't a module path" "cargo test -p $crate -- '>x'"   # quoted: an argume
 check "isn't a module path" "cargo test -p $crate -- $f '2'>/p/log"   # a quoted 2 is an argument, not the fd
 check "isn't a module path" "cargo test -p $crate -- $f \\2>/p/log"
 check ok "cargo test -p $crate -- $f 2>&1--release"   # >& to the file 1--release, not fd 1 and a flag
-check ok $'cargo test -p $crate \\\n  -- '"$f > /p/log"   # a line continuation is no word
-check "--release" $'cargo test -p $crate \\\n  --release -- '$f
+check ok "cargo test -p $crate "$'\\\n  -- '"$f > /p/log"   # a line continuation is no word ($'…' expands no $crate)
+check "--release" "cargo test -p $crate "$'\\\n  --release -- '$f
 check "isn't a module path" "cargo test -p $crate -- bare"
 check "No full test suites" "cargo test -p $crate"
 check "--release" "cargo test -p $crate --release -- $f"
