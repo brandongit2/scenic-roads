@@ -28,7 +28,6 @@ import { tasks, type Task } from './tasks';
 import { idle } from './idle';
 import { mapTasks } from './maptasks';
 import { initHosts } from './hosts';
-import { ferryMetricDef } from './ferry';
 import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
 import { Depth } from './depth';
@@ -49,6 +48,8 @@ import { globeProjection } from './polarglobe';
 import { nasBack, TileRetry } from './retry';
 import { RegionLayers, regionAt } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
+import { FerryScale } from './ctl/ferries';
+import { FrameLoop } from './ctl/frame';
 import { TerrainTint } from './ctl/tint';
 import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
@@ -496,7 +497,6 @@ async function main() {
   let statsDirty = true;
   let lastStats = 0;
   let cur: [number, number] = [...s0.range] as [number, number];
-  let snap = true;
   let cdf: Uint8Array | null = null;
   let cdfKey = '';
 
@@ -516,7 +516,9 @@ async function main() {
    * centre's scale, whatever share of the view it is. `dist`: the metric over the lines in view;
    * `km`: their length. */
   const byLen = (dist: Dist, km: number, fitLen: [number, number], step: number): [number, number] =>
-    fitByWidths(dist, km, screenWidthKm(map.getCenter().lat, map.getZoom(), map.getCanvas().clientWidth), fitLen, step);
+    fitByWidths(dist, km, widthKm(), fitLen, step);
+  /** The view's width on the ground at its centre (km). */
+  const widthKm = () => screenWidthKm(map.getCenter().lat, map.getZoom(), map.getCanvas().clientWidth);
 
   /**
    * The In view statistics; `full`: everything, else (while the camera moves) only what the colour
@@ -769,47 +771,9 @@ async function main() {
   profile.colour = () => ({ palette: store.s.palette, mode: store.s.mode, range: cur, weights: store.s.weights, cdf: store.s.equalize ? cdf : null });
   const ferries = new Ferries(map);
   const stations = new Stations(map);
-  const updateFerries = () => {
-    if (!ferries.loaded || !store.s.ferry.on) {
-      layers.updateFerry(null);
-      ferryCard.update(null);
-      return;
-    }
-    const v = ferries.inView();
-    layers.updateFerry(v.km);
-    ferryCard.update(v.cov);
-    // The metric scale: distribution of the ferry lines in view and the auto-fitted range, which
-    // the frame loop eases to (ferryEase).
-    const f = store.s.ferry;
-    const d = ferryMetricDef(f.metric);
-    ferryDist = ferries.metricDist();
-    // (its weights are the lines' km in view)
-    ferryTarget = !f.auto || !ferryDist || ferryDist.total <= 0 ? f.range
-      : d.byLen && unitOf(f.fitUnits, f.metric) === 'widths' ? byLen(ferryDist, ferryDist.total, pairOf(f.fitLens, f.metric, FIT_LEN_DEFAULT), d.step)
-      : fitByPct(ferryDist, f.fit, d.step);
-    if (!ferryCur || ferryKey !== f.metric) {
-      ferryKey = f.metric;
-      ferryCur = ferryTarget;
-      ferryEase(true);
-    }
-    wake();
-  };
-  let ferryDist: Dist | null = null;
-  let ferryTarget: [number, number] | null = null;
-  let ferryCur: [number, number] | null = null;
-  let ferryKey = '';
-  let ferryPainted = 0;
-  /** The ferry scale's eased range applied: the lines' colours are a data-driven expression (each
-   * change lays the ferry source out again), so at most every 100 ms while it eases. */
-  const ferryEase = (force = false) => {
-    if (!ferryCur) return;
-    const now = performance.now();
-    if (!force && now - ferryPainted < 100) return;
-    ferryPainted = now;
-    const fcdf = store.s.ferry.equalize ? cdfOf(ferryDist, ferryCur) : null;
-    ferries.setScale(ferryCur, fcdf);
-    ferryCard.updateScale(ferryDist, ferryCur, fcdf);
-  };
+  // The ferry lines in view and their colour scale (ctl/ferries.ts).
+  const ferryScale = new FerryScale(ferries, store, layers, ferryCard, { widthKm, wake });
+  const updateFerries = () => ferryScale.update();
   ferries.onLoaded = updateFerries;
   onSettled(updateFerries);
   duringMoves(updateFerries, 300);
@@ -1195,52 +1159,45 @@ async function main() {
     statsCard.update(stats, p, roads.zt, viewExtra);
   };
 
-  // Frame loop: statistics (throttled) and eased colour range. It runs while there is something to
-  // do (stats to compute, a range still easing, panels to refresh) and sleeps otherwise.
-  let last = performance.now();
-  let lastPanel = 0;
-  let ticking = false;
-  let panelsDue = false;
-  const tick = (now: number) => {
-    const dt = now - last;
-    last = now;
-    let panels = panelsDue;
-    let easing = false;
-    // While the camera moves, the cheap statistics only, and less often; everything once settled.
-    // A pass runs STATS_MS a frame (STATS_MOVING_MS while moving) until it ends.
-    if (!statsJob && statsDirty && now - lastStats > (moving ? 400 : 150)) {
-      statsDirty = false;
-      // While moving, the cheap pass (what the colour ranges follow), and every 2.5 s a full one:
-      // the In view summary follows the view too, a little behind.
-      statsJobFull = !moving || now - lastFullStats > 2500;
-      if (statsJobFull) lastFullStats = now;
-      statsJob = computeStats(statsJobFull);
-    }
-    if (statsJob) {
-      const t0 = performance.now();
-      const budget = moving ? STATS_MOVING_MS : STATS_MS;
-      while (performance.now() - t0 < budget) {
-        if (statsJob.next().done) {
-          statsJob = null;
-          lastStats = now;
-          panels = true;
-          break;
+  // The roads' and rail's part of the frame loop: their statistics and eased colour ranges.
+  const roadsPart = {
+    get due() {
+      return statsDirty || !!statsJob;
+    },
+    tick(now: number, moving: boolean, k: number) {
+      let panels = false, easing = false;
+      // While the camera moves, the cheap statistics only, and less often; everything once settled.
+      // A pass runs STATS_MS a frame (STATS_MOVING_MS while moving) until it ends.
+      if (!statsJob && statsDirty && now - lastStats > (moving ? 400 : 150)) {
+        statsDirty = false;
+        // While moving, the cheap pass (what the colour ranges follow), and every 2.5 s a full one:
+        // the In view summary follows the view too, a little behind.
+        statsJobFull = !moving || now - lastFullStats > 2500;
+        if (statsJobFull) lastFullStats = now;
+        statsJob = computeStats(statsJobFull);
+      }
+      if (statsJob) {
+        const t0 = performance.now();
+        const budget = moving ? STATS_MOVING_MS : STATS_MS;
+        while (performance.now() - t0 < budget) {
+          if (statsJob.next().done) {
+            statsJob = null;
+            lastStats = now;
+            panels = true;
+            break;
+          }
         }
       }
-    }
-    const t = target();
-    const k = snap ? 1 : 1 - Math.exp(-dt / 140);
-    snap = false;
-    const next: [number, number] = [cur[0] + (t[0] - cur[0]) * k, cur[1] + (t[1] - cur[1]) * k];
-    const eps = modeDef(store.s.mode).step * 0.01;
-    if (Math.abs(next[0] - cur[0]) + Math.abs(next[1] - cur[1]) > eps) {
-      cur = next;
-      roads.style.range = cur;
-      map.triggerRepaint();
-      panels = true;
-      easing = true;
-    }
-    {
+      const t = target();
+      const next: [number, number] = [cur[0] + (t[0] - cur[0]) * k, cur[1] + (t[1] - cur[1]) * k];
+      const eps = modeDef(store.s.mode).step * 0.01;
+      if (Math.abs(next[0] - cur[0]) + Math.abs(next[1] - cur[1]) > eps) {
+        cur = next;
+        roads.style.range = cur;
+        map.triggerRepaint();
+        panels = true;
+        easing = true;
+      }
       const r = store.s.rail;
       const rd = railMetricDef(r.metric);
       const tt: [number, number] = !r.auto ? r.range
@@ -1255,44 +1212,22 @@ async function main() {
         panels = true;
         easing = true;
       }
-    }
-    if (ferryCur && ferryTarget && store.s.ferry.on) {
-      const ft = ferryTarget, span = Math.max(1e-9, ft[1] - ft[0]);
-      const nf: [number, number] = [ferryCur[0] + (ft[0] - ferryCur[0]) * k, ferryCur[1] + (ft[1] - ferryCur[1]) * k];
-      if (Math.abs(nf[0] - ferryCur[0]) + Math.abs(nf[1] - ferryCur[1]) > span * 0.002) {
-        ferryCur = nf;
-        ferryEase();
-        easing = true;
-      } else if (ferryCur !== ft && (Math.abs(ft[0] - ferryCur[0]) + Math.abs(ft[1] - ferryCur[1]) > 0)) {
-        ferryCur = ft;
-        ferryEase(true);
-      }
-    }
-    {
-      const tt = tint.tick(now, moving, k);
-      panels ||= tt.panels;
-      easing ||= tt.easing;
-    }
-    panelsDue = panels && now - lastPanel <= 60;
-    if (panels && !panelsDue) {
-      lastPanel = now;
-      updateCdf();
-      updateRailCdf();
-      tint.refresh();
-      // The panels' DOM in idle time (idle.ts), during gestures too (the legends follow the view).
-      idle.run('panels', () => {
-        refresh();
-        profile.redraw();
-      }, { moving: true });
-    }
-    if (statsDirty || statsJob || easing || panelsDue || tint.due) requestAnimationFrame(tick);
-    else ticking = false;
+      return { panels, easing };
+    },
   };
+  // The frame loop (ctl/frame.ts): the panels' DOM in idle time (idle.ts), during gestures too (the
+  // legends follow the view).
+  const frame = new FrameLoop([roadsPart, ferryScale, tint], () => moving, () => {
+    updateCdf();
+    updateRailCdf();
+    tint.refresh();
+    idle.run('panels', () => {
+      refresh();
+      profile.redraw();
+    }, { moving: true });
+  });
   function wake() {
-    if (ticking) return;
-    ticking = true;
-    last = performance.now();
-    requestAnimationFrame(tick);
+    frame.wake();
   }
   /** The statistics need recomputing (and the loop wakes to do it). */
   function markDirty() {
