@@ -127,8 +127,8 @@ out=$(print -r -- $in | zsh $r/tools/dev/shell-guard.sh 2>&1); rc=$?
 if (( rc == 0 )) && [[ -z $out ]]; then print "ok: shell-guard.sh lets the own worktree's pass"; else print "FAIL: shell-guard.sh: $rc $out"; fail=1; fi
 # The ln rule (#1004): `ln -s` without -n/-h refused, wherever in the command; -sn, -sfn, -sfh pass.
 for want cmd in \
-  "No \`ln -s\` without" "ln -s /Volumes/x/inputs root/inputs" \
-  "No \`ln -s\` without" "for e in /Volumes/x/*; do ln -s \$e r/\${e:t}; done" \
+  "No \`ln -s\` without" "ln -s /srv/x/inputs root/inputs" \
+  "No \`ln -s\` without" "for e in /srv/x/*; do ln -s \$e r/\${e:t}; done" \
   "No \`ln -s\` without" "mkdir r && ln -sf a r/b" \
   "No \`ln -s\` without" "sudo ln -s a b" \
   ok "ln -sn a b" ok "ln -sfn a b" ok "ln -s -h a b" ok "ln -sfh v1 app/current" ok "ln a b" ok "echo ln -s a b"; do
