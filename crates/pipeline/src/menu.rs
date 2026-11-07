@@ -75,6 +75,7 @@ mod tests {
             listed: Instant::now(),
             cap: None,
             beats,
+            home: d.join("member"),
         };
         (h, to)
     }

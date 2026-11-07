@@ -275,6 +275,8 @@ pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut
         },
     };
     drop(pooled);
+    // (Passed on to the lead: the key its answer is kept under, for `scenic pause` to wait on.)
+    let mut lead_key = None;
     let (ok, said) = match target {
         Ok(None) => {
             // (This Mac's own ask wins over any earlier setting, whatever another Mac's clock put
@@ -291,7 +293,9 @@ pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut
         // On the NAS too while the rollout gate is on: an older member reads it there.)
         Ok(Some((id, name))) if beats.as_ref().is_some_and(|b| b.lead_asks()) => {
             let b = beats.as_ref().expect("the lead serves the asks");
-            b.ask(Ask::Hold(HoldAsk { member: id.clone(), held: req.held.clone(), at: req.at }));
+            let ask = Ask::Hold(HoldAsk { member: id.clone(), held: req.held.clone(), at: req.at });
+            lead_key = Some(ask.key());
+            b.ask(ask);
             if b.asks_on_nas() {
                 if let Some(r) = m.nas.get().root.clone() {
                     let st = HoldState { held: req.held.clone(), at: req.at };
@@ -329,5 +333,5 @@ pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut
         Err(e) => (false, e),
     };
     eprintln!("agent: {said}");
-    control::answer_hold(home, &HoldAnswer { ask: req, said, ok });
+    control::answer_hold(home, &HoldAnswer { ask: req, said, ok, lead_key });
 }

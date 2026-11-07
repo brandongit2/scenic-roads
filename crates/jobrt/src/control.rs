@@ -67,10 +67,12 @@ pub struct Request {
 /// The ask's file, in the agent's folder.
 pub const REQUEST: &str = "pause-request.json";
 
-/// Asks this Mac's agent (its folder `home`) to pause the build, or let it go on.
-pub fn request(home: &Path, pause: Option<Pause>) -> anyhow::Result<()> {
+/// Asks this Mac's agent (its folder `home`) to pause the build, or let it go on: the ask.
+pub fn request(home: &Path, pause: Option<Pause>) -> anyhow::Result<Request> {
     std::fs::create_dir_all(home)?;
-    store::whole::write(&home.join(REQUEST), &serde_json::to_vec(&Request { pause, at: now() })?)
+    let r = Request { pause, at: now() };
+    store::whole::write(&home.join(REQUEST), &serde_json::to_vec(&r)?)?;
+    Ok(r)
 }
 
 /// The ask waiting in `home`, if any (one that doesn't parse: none, and it goes).
@@ -765,6 +767,10 @@ pub struct HoldAnswer {
     pub ask: HoldRequest,
     pub said: String,
     pub ok: bool,
+    /// Passed on to the lead, which answers it later (another member's hold, task #922): what the
+    /// lead's answer is kept under (pipeline's agent::answered key). None: done here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_key: Option<String>,
 }
 
 /// Asks this Mac's agent (its folder `home`) to pause a Mac alone, or let it go on.
@@ -1227,7 +1233,7 @@ mod tests {
         assert_eq!(take_hold_request(d.path(), |_| true), Some(r.clone()));
         assert!(take_hold_request(d.path(), |_| true).is_none());
         assert!(hold_answer(d.path(), &r).is_none());
-        answer_hold(d.path(), &HoldAnswer { ask: r.clone(), said: "m4 is paused".into(), ok: true });
+        answer_hold(d.path(), &HoldAnswer { ask: r.clone(), said: "m4 is paused".into(), ok: true, lead_key: None });
         assert!(hold_answer(d.path(), &r).is_some_and(|a| a.ok));
         assert_eq!(Hold::new("x").as_pause().mode, Mode::Drain);
     }

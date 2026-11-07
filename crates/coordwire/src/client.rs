@@ -347,6 +347,31 @@ impl Conn {
 
 /// What the coordinator answered: its status and its JSON (Null for none).
 pub type Reply = (u16, serde_json::Value);
+
+/// A JSON request the coordinator answered with an error (`post_json`: any 4xx or 5xx but 404, 409
+/// and 410): its status, the route, and its `error`. A 400 is the ask refused as it is (one the
+/// coordinator read and won't take: an older app's that doesn't know it, say), and asking again
+/// gets the same (`refused`); the others may pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Declined {
+    pub code: u16,
+    pub path: String,
+    pub why: String,
+}
+
+impl std::fmt::Display for Declined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the coordinator answered {} to {}: {}", self.code, self.path, self.why)
+    }
+}
+
+impl std::error::Error for Declined {}
+
+/// The coordinator's reason when `e` is its refusal of the ask as it is (a 400 to a JSON request,
+/// `Declined`); None for any other failure (not reached, another status).
+pub fn refused(e: &anyhow::Error) -> Option<&str> {
+    e.chain().filter_map(|c| c.downcast_ref::<Declined>()).find(|d| d.code == 400).map(|d| d.why.as_str())
+}
 /// A coordinator's last answer to this client: when (this Mac's clock, unix s), and the pool's term
 /// and member it said it is (None: it didn't say: not a pool's lead, or an older app).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -623,9 +648,10 @@ impl Client {
         } else {
             serde_json::from_slice(&b).with_context(|| format!("the coordinator's answer to {path}"))?
         };
-        // (404, 409 and 410 say something to the caller: no such thing; refused as it is; gone.)
+        // (404, 409 and 410 say something to the caller: no such thing; not as things stand; gone.)
         if code >= 400 && ![404, 409, 410].contains(&code) {
-            bail!("the coordinator answered {code} to {path}: {}", v["error"].as_str().unwrap_or(""));
+            let why = v["error"].as_str().unwrap_or("").to_string();
+            return Err(Declined { code, path: path.to_string(), why }.into());
         }
         Ok((code, v))
     }

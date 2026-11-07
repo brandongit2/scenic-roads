@@ -3,7 +3,7 @@
 //! calls on it are here (`LeaseCalls`: they carry the coordinator's own types), with what they
 //! answer and `probe`.
 
-pub use coordwire::client::{Answered, Client, Reply};
+pub use coordwire::client::{refused, Answered, Client, Declined, Reply};
 
 use super::{Ask, Done, Fail, Grant};
 use anyhow::{bail, Result};

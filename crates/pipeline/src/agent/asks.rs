@@ -85,7 +85,10 @@ impl Control {
             let what = if st.held.is_some() { "paused" } else { "going on" };
             self.set_hold(st);
             eprintln!("agent: this Mac is {what} (taken up at once)");
-            control::answer_hold(&self.home, &HoldAnswer { ask: req, said: format!("this Mac is {what}"), ok: true });
+            control::answer_hold(
+                &self.home,
+                &HoldAnswer { ask: req, said: format!("this Mac is {what}"), ok: true, lead_key: None },
+            );
         }
         let quit = control::peek_quit(&self.home);
         if quit != *self.quit.get() {
@@ -525,6 +528,16 @@ pub(crate) mod tests {
         };
         m.said = crate::agent::memguard::words(&m);
         st.memory = Some(m);
+        // (An ask the lead refused, not yet seen, as the menu bar prints it: task #922.)
+        st.refused = vec![crate::agent::answered::Answered {
+            key: "setting batch-minutes".into(),
+            what: "set the pool's batch-minutes to 20 (by the build page (100.64.0.6))".into(),
+            mac: "m1".into(),
+            at: 1_699_999_000,
+            answered: 1_699_999_010,
+            refused: Some("batch-minutes: not a setting the lead takes, or not of its kind (20)".into()),
+            seen: false,
+        }];
         st
     }
 

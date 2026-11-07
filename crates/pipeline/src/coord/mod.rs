@@ -2591,11 +2591,14 @@ impl Coordinator {
     }
 
     /// Takes the owner's ask `a` (its own agent's, in process: crate::coord::asks), as
-    /// `/pool/hold` and `/pool/settings` take a member's; on its disk before it returns.
+    /// `/pool/hold` and `/pool/settings` take a member's; on its disk before it returns. Refused as
+    /// it is (`asks::Refused`: asking again gets the same), or not now (no store yet, its disk
+    /// slow: any other error).
     pub fn take_ask(&self, a: &asks::Ask) -> Result<()> {
         let keep = {
             let mut s = self.shared.lock().unwrap();
-            take_ask(&mut s, a)?;
+            anyhow::ensure!(s.keep.store().is_some(), NO_STORE);
+            take_ask(&mut s, a).map_err(|e| asks::Refused(format!("{e:#}")))?;
             s.keep.clone()
         };
         anyhow::ensure!(keep.durable(keep.last()), "the lead's disk didn't take the change in time");
@@ -3880,10 +3883,14 @@ fn unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Why a coordinator without its store (a viewer, a lead whose store isn't open yet) takes no ask:
+/// nothing would keep it. Not the ask's fault: answered 503, asked again (task #922: it had been a
+/// 400, a refusal the member dropped).
+const NO_STORE: &str = "this coordinator keeps no store (not the lead's, or not open yet): ask again";
+
 /// Takes ask `a` into the lead's asks (`asks::Lead`), its document submitted to its store when it
-/// changed them (a viewer, or a coordinator without its store, refuses: nothing would keep it).
+/// changed them; an error is the ask refused as it is. (Only with a store: `NO_STORE`.)
 fn take_ask(s: &mut Shared, a: &asks::Ask) -> Result<()> {
-    anyhow::ensure!(s.keep.store().is_some(), "this coordinator keeps no store: not the lead's");
     let doc = match a {
         asks::Ask::Hold(h) => s.asks.hold(h)?.1,
         asks::Ask::Setting(t) => s.asks.set(t)?,
@@ -4292,6 +4299,24 @@ fn route(
             }
             Ok((202, serde_json::json!({ "asked": true })))
         }
+        "/work/asked" => {
+            // The owner's asks this Mac passed on that the lead refused, not yet seen
+            // (crate::agent::answered; its status carries them too): `{}` reads them,
+            // `{"seen": {"key": …, "at": …}}` marks one seen (the build page's Dismiss).
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let Some((home, _)) = shared.lock().unwrap().settings.clone() else {
+                return Ok((
+                    503,
+                    serde_json::json!({ "error": "this Mac's agent hasn't said where its folder is yet" }),
+                ));
+            };
+            if let Some(s) = b.get("seen") {
+                let key = s["key"].as_str().ok_or_else(|| anyhow::anyhow!("seen: a key"))?;
+                let at = s["at"].as_u64().ok_or_else(|| anyhow::anyhow!("seen: when it was asked (at)"))?;
+                crate::agent::answered::seen(&home, key, at);
+            }
+            Ok((200, serde_json::json!({ "refused": crate::agent::answered::unseen(&home) })))
+        }
         "/work/quit" => {
             // The app quits (crate::control::Quit): `{"mode": "now" | "finish"}`, from this Mac only.
             // Asked of its agent as the app asks (the quit ask's file), taken up at once.
@@ -4428,6 +4453,9 @@ fn route(
             // Another Mac's pause, or its own, from a member's agent (crate::coord::asks).
             let a: asks::HoldAsk = serde_json::from_slice(body)?;
             let mut s = shared.lock().unwrap();
+            if s.keep.store().is_none() {
+                return Ok((503, serde_json::json!({ "error": NO_STORE })));
+            }
             take_ask(&mut s, &asks::Ask::Hold(a.clone()))?;
             Ok((200, serde_json::json!({ "hold": s.asks.holds.get(&a.member) })))
         }
@@ -4438,6 +4466,9 @@ fn route(
             let mut s = shared.lock().unwrap();
             if v.get("name").is_some() {
                 let a: asks::SettingAsk = serde_json::from_value(v)?;
+                if s.keep.store().is_none() {
+                    return Ok((503, serde_json::json!({ "error": NO_STORE })));
+                }
                 take_ask(&mut s, &asks::Ask::Setting(a))?;
             }
             Ok((200, serde_json::to_value(&s.asks.settings)?))
@@ -5304,6 +5335,7 @@ mod http {
             .route("/work/act", any(json))
             .route("/work/settings", any(json))
             .route("/work/hold", any(json))
+            .route("/work/asked", any(json))
             .route("/work/quit", any(json))
             .route("/work/status", any(json))
             .route("/work/swarm", any(json))
@@ -5609,7 +5641,8 @@ mod http {
         let key = bearer(req.headers()).map(str::to_string);
         // (Not the lead's, a member's port: the page is the lead's, docs/roles.md §3.3. A page of
         // its own origin (or none: an address typed, the menu bar's web view) sent there; the lead's
-        // page asking this Mac's `/work/live` and `/work/settings` from its origin answered here.)
+        // page asking this Mac's `/work/live`, `/work/settings` and `/work/asked` from its origin
+        // answered here.)
         if key.is_none() && own_page {
             if let Some(r) = elsewhere(&c, &req, &path) {
                 return r;
@@ -5637,13 +5670,13 @@ mod http {
         }
         // (The owner's asks from a build page, on any device that reaches it (the owner, 21 Oct:
         // no page of this Mac's own first). Not the lead's, a member's port: this Mac's own alone
-        // (its settings, its hold, its quit); the build's (pause, inputs, cancel and retry) are the
-        // lead's page's.)
+        // (its settings, its hold, its refused asks seen, its quit); the build's (pause, inputs,
+        // cancel and retry) are the lead's page's.)
         let (viewer, member) = {
             let s = c.shared.lock().unwrap();
             (s.viewer, s.viewer || s.broker)
         };
-        let owners_asks = matches!(path.as_str(), "/work/settings" | "/work/hold" | "/work/quit")
+        let owners_asks = matches!(path.as_str(), "/work/settings" | "/work/hold" | "/work/asked" | "/work/quit")
             || (!member && matches!(path.as_str(), "/work/pause" | "/work/inputs" | "/work/act"));
         if viewer {
             return if key.is_none() && owners_asks && req.method() == Method::POST {
@@ -11968,6 +12001,29 @@ mod tests {
         c.set_settings(home.path(), None);
         assert_eq!(post(serde_json::json!({ "nas_room": "3" })).0, 400, "the NAS away");
         assert_eq!(post(serde_json::json!({ "room": "off" })).0, 200, "the NAS away: this Mac's still");
+    }
+
+    /// Task #922: `/work/asked` from any device (the lead's page asks each Mac's): this Mac's asks
+    /// the lead refused, not yet seen, and the page's Dismiss marking one seen.
+    #[test]
+    fn the_build_page_reads_a_macs_refused_asks_and_marks_one_seen() {
+        use crate::agent::answered::{self, Answered};
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let far = [("X-Forwarded-For", "100.101.1.2")];
+        let post = |b: serde_json::Value| send(&addr, "POST", "/work/asked", None, &far, &b);
+        assert_eq!(post(serde_json::json!({})).0, 503, "no folder said yet");
+        let home = tempfile::tempdir().unwrap();
+        c.set_settings(home.path(), None);
+        answered::note(
+            home.path(),
+            Answered::new("setting x", "set x", 7, Some("not a setting the lead takes".into())),
+        );
+        let (code, _, v) = post(serde_json::json!({}));
+        assert_eq!((code, v["refused"][0]["key"].as_str()), (200, Some("setting x")), "{v}");
+        assert_eq!(post(serde_json::json!({ "seen": { "key": "setting x" } })).0, 400, "which ask");
+        let (code, _, v) = post(serde_json::json!({ "seen": { "key": "setting x", "at": 7 } }));
+        assert_eq!((code, v["refused"].as_array().map(Vec::len)), (200, Some(0)), "{v}");
     }
 
     #[test]

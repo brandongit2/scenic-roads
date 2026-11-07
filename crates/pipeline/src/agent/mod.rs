@@ -26,6 +26,7 @@
 //! catalogue. A job is a child process (see `jobs`) that resumes from its own completion markers, so
 //! stopping it at any time loses at most its current stage.
 
+pub mod answered;
 pub mod asks;
 pub mod backup;
 pub mod beat;
@@ -822,6 +823,10 @@ pub struct Status {
     /// "note:"): declared elevation datasets left in their own height reference.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notices: Vec<Notice>,
+    /// The owner's asks this Mac passed on that the lead refused, not yet seen (crate::agent::answered:
+    /// the build page shows them by Mac, the menu bar this Mac's; set by the beat as it writes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<answered::Answered>,
     /// The last jobs to finish, newest first.
     pub recent: Vec<Done>,
     /// Region recipes, and the ones that don't parse.
@@ -3171,6 +3176,7 @@ impl Agent {
             listed: Instant::now(),
             cap: self.last_cond.map(|cond| self.capacity(&cond)),
             beats,
+            home: self.o.home.clone(),
         })
     }
 
@@ -4114,10 +4120,19 @@ impl Agent {
             let (home, members) = (self.o.home.clone(), self.members());
             slots::take_member_hold(&home, &members, &mut |st| self.control.set_hold(st));
         }
+        // (Each answer kept, crate::agent::answered; one refused as it is would stop every one
+        // after it, asked again each round: off the queue, its refusal kept for the owner to see.)
         if let (Some(c), Some(b)) = (&self.coord, &self.beats) {
             for a in b.asks() {
                 match c.take_ask(&a) {
-                    Ok(()) => b.asked(&a),
+                    Ok(()) => {
+                        b.asked(&a);
+                        answered::ask(&self.o.home, b, &a, None);
+                    }
+                    Err(e) if e.downcast_ref::<crate::coord::asks::Refused>().is_some() => {
+                        b.asked(&a);
+                        answered::ask(&self.o.home, b, &a, Some(format!("{e:#}")));
+                    }
                     Err(e) => {
                         eprintln!("agent: an ask of its coordinator: {e:#} (asked again)");
                         break;
@@ -7114,18 +7129,42 @@ impl Agent {
         }
         match crate::control::take_request(&self.o.home) {
             Some(req) => {
+                let answer = |refused| {
+                    let what = match &req.pause {
+                        Some(p) if p.mode == crate::control::Mode::Freeze => format!("freeze the build (by {})", p.by),
+                        Some(p) => format!("pause the build (by {})", p.by),
+                        None => "let the build go on".to_string(),
+                    };
+                    answered::Answered::new(answered::PAUSE, &what, req.at, refused)
+                };
                 if let Some(c) = &self.coord {
                     c.set_pause(req.pause.clone(), req.at);
                     crate::control::clear_request(&self.o.home, &req);
+                    answered::note(&self.o.home, answer(None));
                 } else if self.is_member() {
                     let sent = match root {
                         Some(r) => self.client(r, waiting).map(|c| c.set_pause(req.pause.as_ref(), req.at)),
                         None => self.client.as_ref().map(|c| c.set_pause(req.pause.as_ref(), req.at)),
                     };
+                    let refused = sent
+                        .as_ref()
+                        .and_then(|s| s.as_ref().err())
+                        .and_then(crate::coord::client::refused)
+                        .map(str::to_string);
                     match sent {
                         Some(Ok(())) => {
                             crate::control::clear_request(&self.o.home, &req);
                             self.pause_local = false;
+                            answered::note(&self.o.home, answer(None));
+                        }
+                        // (Refused as it is (an older lead that doesn't read this pause, say): asked
+                        // again it gets the same, so it goes, said for the owner; this Mac neither
+                        // holds for it nor takes it as the build's.)
+                        Some(Err(_)) if refused.is_some() => {
+                            crate::control::clear_request(&self.o.home, &req);
+                            self.pause_local = false;
+                            answered::note(&self.o.home, answer(refused));
+                            return;
                         }
                         Some(Err(e)) => {
                             waiting.push(Waiting {

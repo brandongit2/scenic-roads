@@ -125,6 +125,16 @@
     "out_of_touch_s": 600,
     "pid": 0,
     "recent": [],
+    "refused": [
+      {
+        "answered": 1699999010,
+        "at": 1699999000,
+        "key": "setting batch-minutes",
+        "mac": "m1",
+        "refused": "batch-minutes: not a setting the lead takes, or not of its kind (20)",
+        "what": "set the pool's batch-minutes to 20 (by the build page (100.64.0.6))"
+      }
+    ],
     "regions": [],
     "started": 0,
     "verdict": {

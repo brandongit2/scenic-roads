@@ -80,9 +80,16 @@ pub struct ToLead {
     pub cap: Option<crate::coord::Capacity>,
     /// Its pool heartbeat (`Beats::own`) and where the answer goes.
     pub beats: Arc<Beats>,
+    /// The agent's folder: where the lead's answers to its asks are kept (crate::agent::answered).
+    pub home: PathBuf,
 }
 
 impl ToLead {
+    /// The lead's answer to queued ask `a`, kept: taken, or refused (`refused`).
+    fn answered(&self, a: &crate::coord::asks::Ask, refused: Option<String>) {
+        super::answered::ask(&self.home, &self.beats, a, refused);
+    }
+
     /// The beat as it goes now, with `status` (its plan's parts left out: the lead's page reads
     /// the lead's), its heartbeat stamped now.
     fn body(&self, status: &Status) -> crate::coord::held::Beat {
@@ -143,23 +150,32 @@ impl ToLead {
     }
 
     /// Its asks queued (crate::coord::asks), sent to a lead that takes them, in order, each off the
-    /// queue once answered 200 (the first not: the rest wait for the next beat); and the settings
-    /// fetched when the lead's generation moved past those it has.
+    /// queue once answered 200 (the first not: the rest wait for the next beat), its answer kept
+    /// (crate::agent::answered). One the lead refuses as it is (400) would stop every one after it:
+    /// off the queue too, its refusal kept for the owner to see. And the settings fetched when the
+    /// lead's generation moved past those it has.
     fn send_asks(&self, c: &crate::coord::client::Client) {
         if !self.beats.lead_asks() {
             return;
         }
         for a in self.beats.asks() {
             let (path, body) = a.post();
-            match c.post_json(path, &body) {
-                Ok((200, _)) => self.beats.asked(&a),
+            let r = c.post_json(path, &body);
+            let refused = r.as_ref().err().and_then(crate::coord::client::refused).map(str::to_string);
+            match r {
+                Ok((200, _)) => {
+                    self.beats.asked(&a);
+                    self.answered(&a, None);
+                }
+                Err(_) if refused.is_some() => {
+                    self.beats.asked(&a);
+                    self.answered(&a, refused);
+                }
                 Ok((code, v)) => {
-                    eprintln!("agent: its ask of the lead ({path}): answered {code}: {}", v["error"]);
-                    // (One the lead refuses as it is (400) would stop every one after it: dropped.)
-                    if code == 400 {
-                        self.beats.asked(&a);
-                        continue;
-                    }
+                    eprintln!(
+                        "agent: its ask of the lead ({path}): answered {code}: {} (sent again with the next beat)",
+                        v["error"]
+                    );
                     return;
                 }
                 Err(e) => {
@@ -254,6 +270,7 @@ impl Beat {
         let mut status = v.status.clone();
         let asked = crate::control::peek_hold_request(&self.home);
         status.say(asked.as_ref(), &hold, hold.held.is_none() && hold.at > v.hold_at);
+        status.refused = super::answered::unseen(&self.home);
         status.beat = now_s();
         // (The lead's build in a line, from the verdict just said, its members' beats as of now.)
         if status.build.is_some() {
@@ -548,6 +565,7 @@ mod tests {
                         listed: Instant::now(),
                         cap: None,
                         beats: beats.clone(),
+                        home: d.path().join(&*id),
                     }),
                     hold_at: 0,
                     at: Instant::now(),
@@ -650,8 +668,10 @@ mod tests {
     }
 
     /// A member's beat to the lead's coordinator at `port`: its own heartbeat as member `id`, its
-    /// registry `beats`.
-    fn member(id: &str, port: u16, token: &str) -> ToLead {
+    /// registry `beats`, its agent's folder `d/<id>`.
+    fn member(d: &std::path::Path, id: &str, port: u16, token: &str) -> ToLead {
+        let home = d.join(id);
+        std::fs::create_dir_all(&home).unwrap();
         let beats = Arc::new(Beats::default());
         beats.set_own(crate::agent::pool::Heartbeat {
             pool: crate::pool::Beat { member: id.into(), host: id.into(), ..Default::default() },
@@ -666,6 +686,7 @@ mod tests {
             listed: Instant::now(),
             cap: None,
             beats,
+            home,
         }
     }
 
@@ -686,7 +707,7 @@ mod tests {
         let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
         c.set_beats(Some(Arc::new(Beats::default())));
         let token = c.contact.token.clone();
-        let (x, y) = (member(X, port, &token), member(Y, port, &token));
+        let (x, y) = (member(d.path(), X, port, &token), member(d.path(), Y, port, &token));
         assert!(!beat_once(&x) && x.beats.lead_hold().is_none() && x.beats.lead_asks());
         let held = Some(Hold { by: "scenic pause on Y".into(), at: 100 });
         y.beats.ask(Ask::Hold(HoldAsk { member: X.into(), held: held.clone(), at: 100 }));
@@ -716,7 +737,7 @@ mod tests {
         let dir = d.path().join("lead");
         let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
         c.set_beats(Some(Arc::new(Beats::default())));
-        let x = member(X, port, &c.contact.token);
+        let x = member(d.path(), X, port, &c.contact.token);
         x.beats.ask(Ask::Setting(SettingAsk { name: PLACEMENT.into(), value: true.into(), by: "t".into(), at: 5 }));
         assert!(!beat_once(&x));
         assert!(c.pool_settings().placement() && x.beats.asks().is_empty());
@@ -728,11 +749,63 @@ mod tests {
         let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
         c.set_beats(Some(Arc::new(Beats::default())));
         assert_eq!(c.pool_settings(), s, "kept across the restart");
-        let x = member(X, port, &c.contact.token);
+        let x = member(d.path(), X, port, &c.contact.token);
         beat_once(&x);
         beat_once(&x);
         assert_eq!(x.beats.settings(), Some(s));
         c.stop();
+    }
+
+    /// Task #922: an ask the lead refuses as it is (a setting it doesn't take: a newer Mac's, asking
+    /// an older lead) leaves the queue, the asks after it going on; its refusal is kept, what, from
+    /// which Mac, why and when, in the member's status until it's seen, and a later ask about the
+    /// same thing taken clears it. Refused at once, its pause neither: the lead's 400 to a pause it
+    /// can't read is said as a refusal, not a lead out of reach.
+    #[test]
+    fn an_ask_the_lead_refuses_is_said_and_stops_none_after_it() {
+        use crate::coord::asks::{Ask, SettingAsk, NAS_TARGET, PLACEMENT};
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
+        c.set_beats(Some(Arc::new(Beats::default())));
+        let y = member(d.path(), Y, port, &c.contact.token);
+        beat_once(&y);
+        let ask = |name: &str, value: serde_json::Value, at| {
+            Ask::Setting(SettingAsk { name: name.into(), value, by: "the build page".into(), at })
+        };
+        // (A NAS target of 100 %: one a newer app might take, this lead doesn't.)
+        y.beats.ask(ask(NAS_TARGET, 100.into(), 7));
+        y.beats.ask(ask(PLACEMENT, true.into(), 8));
+        assert!(!beat_once(&y));
+        assert!(y.beats.asks().is_empty(), "neither left queued");
+        assert!(c.pool_settings().placement(), "the one after it taken");
+        let r = super::super::answered::unseen(&y.home);
+        assert_eq!(r.len(), 1, "{r:?}");
+        let key = format!("setting {NAS_TARGET}");
+        assert_eq!((&r[0].key, r[0].at, r[0].mac.as_str()), (&key, 7, store::sys::host()));
+        assert!(r[0].what.contains("to 100"), "{r:?}");
+        assert!(r[0].refused.as_ref().is_some_and(|w| w.contains("not a setting the lead takes")), "{r:?}");
+        // (In the status as the beat writes it.)
+        let local = y.home.join("helper.json");
+        let mut h = Handle::new(y.home.clone(), Snap::new(HoldState::default()));
+        h.publish(view(local.clone(), None));
+        assert_eq!(said(&local).refused, r);
+        // (A later ask about it taken: the refusal goes.)
+        y.beats.ask(ask(NAS_TARGET, 70.into(), 9));
+        beat_once(&y);
+        assert!(super::super::answered::unseen(&y.home).is_empty());
+        assert_eq!(c.pool_settings().nas_target().map(|t| t.pct), Some(70));
+        // (The lead's own agent's, in process: refused the same, said as a refusal.)
+        let e = c.take_ask(&ask(NAS_TARGET, 100.into(), 10)).unwrap_err();
+        assert!(e.downcast_ref::<crate::coord::asks::Refused>().is_some(), "{e:#}");
+        // The build's pause, in a mode the lead doesn't know.
+        let w = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), Y);
+        let e = w
+            .post_json("/work/pause", &serde_json::json!({ "pause": { "mode": "sideways", "by": "t", "at": 1 } }))
+            .unwrap_err();
+        assert!(crate::coord::client::refused(&e).is_some_and(|w| w.contains("sideways")), "{e:#}");
+        c.stop();
+        let e = w.post_json("/work/pause", &serde_json::json!({ "pause": null })).unwrap_err();
+        assert!(crate::coord::client::refused(&e).is_none(), "not reached: no refusal");
     }
 
     /// docs/coordination.md step 5: the owner's asks while the lead is down stay queued on the member
@@ -745,7 +818,7 @@ mod tests {
         let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
         c.set_beats(Some(Arc::new(Beats::default())));
         let token = c.contact.token.clone();
-        let y = member(Y, port, &token);
+        let y = member(d.path(), Y, port, &token);
         beat_once(&y);
         c.stop();
         let queue = d.path().join("y-asks.json");
@@ -759,7 +832,7 @@ mod tests {
         // (Its agent restarted meanwhile: the queue read back.)
         let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
         c.set_beats(Some(Arc::new(Beats::default())));
-        let y = member(Y, port, &token);
+        let y = member(d.path(), Y, port, &token);
         y.beats.keep_asks(&queue);
         assert_eq!(y.beats.asks().len(), 2);
         let y = ToLead { token: c.contact.token.clone(), ..y };

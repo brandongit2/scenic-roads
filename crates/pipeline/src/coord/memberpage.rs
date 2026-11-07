@@ -6,7 +6,7 @@
 //! such a lead (none known, not answering, or an older app's) it answers `/work/` with a small page
 //! of its own: this Mac's status, from its `helper.json`, and since when the lead isn't reached.
 //!
-//! Not redirected: `/work/live` and `/work/settings` asked by the lead's page from any origin it is served at
+//! Not redirected: `/work/live`, `/work/settings` and `/work/asked` asked by the lead's page from any origin it is served at
 //! (CORS, `Coordinator::set_brokers`), the jobs' calls (a key), and `sw.js` (an installed page's
 //! worker updates from its own origin, then follows the redirects: web/work/sw.js).
 
@@ -55,7 +55,7 @@ pub fn answer(path: &str, get: bool, page_file: impl Fn(&str) -> bool) -> Answer
         "/work/live" => Answer::Here,
         "/work/swarm" | "/work/history" | "/work/steps" | "/work/regions" | "/work/catalogs" | "/work/tocome"
         | "/work/built" | "/work/pause" | "/work/inputs" | "/work/act" | "/work/settings" | "/work/hold"
-        | "/work/timings" | "/work/floors" | "/work/redo" => Answer::Lead,
+        | "/work/asked" | "/work/timings" | "/work/floors" | "/work/redo" => Answer::Lead,
         _ => Answer::Here,
     }
 }

@@ -2706,7 +2706,8 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
 - **Pausing one Mac** (`crate::control::Hold`, task #224): `scenic pause --here` / `scenic resume
   --here`, `scenic pause <member>` / `scenic resume <member>` (host name or member id) from another
   Mac, or the menu bar's "Pause This Mac" / "Resume This Mac". The ask goes to this Mac's agent (a
-  file in its folder, `hold-request.json`; `scenic pause` prints the agent's answer). A Mac's hold
+  file in its folder, `hold-request.json`; `scenic pause` prints the agent's answer, and for another
+  member's waits up to 20 s for the lead's: refused, it exits 1 with the lead's reason, docs/coordination.md step 5). A Mac's hold
   is kept in its agent's folder (`hold.json`, so a restart keeps it) and by the lead
   (`/pool/hold`, crate::coord::asks, docs/coordination.md step 5): another Mac's ask goes to the
   lead with that Mac's next beat (queued on its disk until the lead takes it), a Mac's own is told

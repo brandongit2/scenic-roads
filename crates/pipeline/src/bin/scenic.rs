@@ -1614,8 +1614,34 @@ fn main() -> Result<()> {
     }
 }
 
+/// How long `scenic pause` and `resume` wait for the lead's answer to an ask passed on to it.
+const LEAD_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The lead's answer about `key` to the ask at `at` (pipeline::agent::answered), waited for up to
+/// `LEAD_WAIT`: an error with the lead's reason when it refused it; whether it answered (a later
+/// ask's answer counts: it overtook this one).
+fn lead_answer(home: &std::path::Path, key: &str, at: u64) -> Result<bool> {
+    let waited = std::time::Instant::now();
+    loop {
+        if let Some(a) = agent::answered::of(home, key, at) {
+            if let Some(why) = a.refused.filter(|_| a.at == at) {
+                bail!("the lead refused this Mac's ask to {}: {why}", a.what);
+            }
+            return Ok(true);
+        }
+        if waited.elapsed() >= LEAD_WAIT {
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+/// What `scenic pause` and `resume` say of an ask the lead hasn't answered in `LEAD_WAIT`.
+const NOT_ANSWERED: &str = "the lead hasn't answered yet: this Mac's agent asks it until it does, and a refusal shows in the menu bar and on the build page";
+
 /// `scenic pause` (`pause`) or `scenic resume`: an ask to this Mac's agent, which passes it on to
-/// the lead's (crate::control); `--here` or a member: that Mac alone (task #224).
+/// the lead's (crate::control); `--here` or a member: that Mac alone (task #224). An ask the lead
+/// refuses (pipeline::agent::answered) exits 1 with its reason.
 fn pause_resume(pause: bool, now: bool, here: bool, member: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     use pipeline::control::{Mode, Pause};
     let home = home_or_default(home);
@@ -1627,8 +1653,13 @@ fn pause_resume(pause: bool, now: bool, here: bool, member: Option<&str>, home: 
         while waited.elapsed() < std::time::Duration::from_secs(60) {
             if let Some(a) = pipeline::control::hold_answer(&home, &r) {
                 anyhow::ensure!(a.ok, "{}", a.said);
+                // (Another member's, passed on to the lead: its answer waited for.)
+                let pending = match &a.lead_key {
+                    Some(key) if !lead_answer(&home, key, r.at)? => format!(" ({NOT_ANSWERED})"),
+                    _ => String::new(),
+                };
                 println!(
-                    "{}{}",
+                    "{}{pending}{}",
                     a.said,
                     if pause {
                         ": its running jobs stop at their next safe point and are given back, it takes no new work (leading, it keeps the lead and grants the others' work), until `scenic resume`; the rest of the pool goes on"
@@ -1643,9 +1674,11 @@ fn pause_resume(pause: bool, now: bool, here: bool, member: Option<&str>, home: 
         bail!("this Mac's agent hasn't taken the ask up in a minute (is it running?); it stays asked");
     }
     let p = pause.then(|| Pause::new(if now { Mode::Freeze } else { Mode::Drain }, &format!("scenic pause on {host}")));
-    pipeline::control::request(&home, p)?;
+    let r = pipeline::control::request(&home, p)?;
+    let pending =
+        if lead_answer(&home, agent::answered::PAUSE, r.at)? { String::new() } else { format!(" ({NOT_ANSWERED})") };
     println!(
-        "{}",
+        "{}{pending}",
         match (pause, now) {
             (true, false) => "pausing: each Mac's running job stops at its next safe point (within minutes), and nothing new starts until `scenic resume`",
             (true, true) => "pausing now: each Mac's running job is frozen where it is, until `scenic resume`",

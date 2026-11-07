@@ -7,8 +7,9 @@
 //!   member hears it within one beat, and a member fetches the settings when their generation moves.
 //! - **A member's agent** queues its asks (`Ask`, crate::coord::beats::Beats::ask: kept on its disk,
 //!   `QUEUE`) and its beat's poster sends them, in order, once the lead answers saying it takes them
-//!   (`beats::ASKS`); an ask the lead hasn't answered 200 stays queued, sent when it returns. The
-//!   lead's own agent hands its queue to its coordinator in process.
+//!   (`beats::ASKS`); an ask the lead hasn't answered stays queued, sent when it returns, and one it
+//!   refuses as it is (400; in process, `Refused`) leaves the queue, said for the owner
+//!   (crate::agent::answered). The lead's own agent hands its queue to its coordinator in process.
 //! - **Mixed versions** (the rollout gate, planned for deletion one release after every member
 //!   says `beats::ASKS` for a day): while the lead doesn't say it, or says a member heard doesn't
 //!   (`Answer::asks_on_nas`), the NAS's files go on beside (a hold's `state/pool/holds/<member>.json`,
@@ -49,6 +50,20 @@ pub struct HoldAsk {
     pub at: u64,
 }
 
+/// An ask the lead refuses as it is (a hold for no member id, a setting it doesn't take or not of
+/// its kind: an older lead's word on a newer Mac's ask, say): why. Asked again, it gets the same, so
+/// it leaves the queue, said where the owner sees it (crate::agent::answered).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
 /// An ask queued on a member until the lead answers it 200.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -63,6 +78,33 @@ impl Ask {
         match self {
             Ask::Hold(h) => ("/pool/hold", serde_json::to_value(h).unwrap_or_default()),
             Ask::Setting(s) => ("/pool/settings", serde_json::to_value(s).unwrap_or_default()),
+        }
+    }
+
+    /// What it's about, the same for every ask of it (crate::agent::answered's key): a member's
+    /// hold (`hold <member>`), a setting (`setting <name>`).
+    pub fn key(&self) -> String {
+        match self {
+            Ask::Hold(h) => format!("hold {}", h.member),
+            Ask::Setting(s) => format!("setting {}", s.name),
+        }
+    }
+
+    /// When it was asked.
+    pub fn at(&self) -> u64 {
+        match self {
+            Ask::Hold(h) => h.at,
+            Ask::Setting(s) => s.at,
+        }
+    }
+
+    /// What it asks, in words: the member held named `name` (its host, when known).
+    pub fn what(&self, name: &str) -> String {
+        match self {
+            Ask::Hold(HoldAsk { held: Some(h), .. }) => format!("pause {name} alone (by {})", h.by),
+            Ask::Hold(HoldAsk { held: None, .. }) => format!("let {name} go on"),
+            Ask::Setting(s) if s.value.is_null() => format!("clear the pool's {} (by {})", s.name, s.by),
+            Ask::Setting(s) => format!("set the pool's {} to {} (by {})", s.name, s.value, s.by),
         }
     }
 }

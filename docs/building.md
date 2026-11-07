@@ -99,7 +99,8 @@ from the first (`edit_held`).
   - **Asked for** from the menu bar (Pause Building; Option: Pause Building Now), the map's build
     panel or `scenic pause [--now]`, lifted by Resume or `scenic resume`: an ask in the agent's folder
     (`pause-request.json`) passed to the lead's coordinator; an ask older than the build's last
-    change is passed over.
+    change is passed over. One the lead refuses (task #922) is said in the menu bar and on the build
+    page until seen, and `scenic pause`/`resume` exit 1 with the lead's reason.
   - **Held** by the lead's coordinator (in its store, `coord/store/`, mirrored to `state/build/pause.json`) and
     told to every worker; each agent keeps what it last heard.
   - **At a safe point** (the default): each job finishes its target, notes it done (`SCENIC_DONE`)
