@@ -111,8 +111,9 @@ NAS's own planet fetch.
 
 **GC** (`agent::gc`, docs/maplog.md §7) is the lead's `gc` job, planned whenever GC's queue has a
 chunk for it or one of its sweeps is due, and run when the NAS is quiet: only beside leased jobs
-that leave its measured weight room (pool.md §7.2, `Limits::fits_quiet`), or, held back 24 hours,
-as an aged job of the lead's own (`QUIET_AGE`); running, it yields at its next safe point (between
+that leave its measured weight room (pool.md §7.2, `Limits::fits_quiet`; unmeasured the way it runs
+now, its first run beside any), or, held back 24 hours, as an aged job of the lead's own
+(`QUIET_AGE`); running, it yields at its next safe point (between
 two removals, or two folders) to a target held back for the budget, and the next run goes on where
 it stopped.
 - **What holds a file:** the map at any `seq` a client still holds, the records (the manifest and

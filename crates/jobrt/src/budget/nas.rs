@@ -272,21 +272,26 @@ impl Limits {
 }
 
 /// The steps that wait for a quiet NAS (task #451): never urgent, they start only beside nothing
-/// that weighs anything, or within the whole by their own measured weight, never by an aged wait
-/// (`fits_quiet`), never hold room for themselves, and yield at a safe point to a job held back
-/// for the budget `OWN_AGE` that their going would let start (crate::coord's `nas_yield`).
+/// that weighs anything, or within the whole by their own measured weight (unmeasured, as any job
+/// weighing nothing: their first run measures them), never by an aged wait (`fits_quiet`), never
+/// hold room for themselves, and yield at a safe point to a job held back for the budget
+/// `OWN_AGE` that their going would let start (crate::coord's `nas_yield`).
 pub const QUIET_STEPS: [&str; 1] = ["gc"];
 
 /// How long a quiet step's job is held back for a quiet NAS before it goes as an aged job of the
-/// lead's own (`fits_own_job`, its room held): a pool that stays busy never starves it for good.
+/// lead's own (`fits_own_job`, its room held): a pool that stays busy never starves it for good
+/// while its lead runs that long (the wait is kept in its coordinator's memory).
 pub const QUIET_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 impl Limits {
     /// Whether a job of a quiet step (`QUIET_STEPS`) of weight `w` may start beside leased jobs
-    /// weighing `running` together: beside nothing that weighs anything, or, its weight measured
-    /// (`w` > 0), within the whole with them. Unmeasured, it goes only alone.
+    /// weighing `running` together: beside nothing that weighs anything, or within the whole with
+    /// them. Unmeasured (`w` 0), it goes as any job weighing nothing, so its first run measures it:
+    /// held for a quiet NAS instead, it waited for one a busy pool never has, and its wait ages only
+    /// in a coordinator's memory, which each lead's restart starts afresh (task #1000: from 8b's
+    /// publish on, GC's new way never ran).
     pub fn fits_quiet(running: u32, w: u32) -> bool {
-        running == 0 || (w > 0 && running.saturating_add(w) <= WHOLE)
+        w == 0 || running == 0 || running.saturating_add(w) <= WHOLE
     }
 }
 
@@ -541,7 +546,7 @@ mod tests {
         assert!(Limits::fits(999, 999, 0));
         // A quiet step (the clean-up): alone, or measured and within the whole; never aged past it.
         assert!(Limits::fits_quiet(0, 0) && Limits::fits_quiet(0, 1000));
-        assert!(!Limits::fits_quiet(1, 0), "unmeasured: alone only");
+        assert!(Limits::fits_quiet(1100, 0), "unmeasured: weighs nothing until its first run");
         assert!(Limits::fits_quiet(700, 300) && !Limits::fits_quiet(701, 300));
         assert!(Limits::fits_own(600, 400) && !Limits::fits_own(601, 400));
         assert!(Limits::fits_own(0, 1000) && !Limits::fits_own(1, 1000), "the lead's own: within the whole, or alone");

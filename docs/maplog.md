@@ -573,7 +573,9 @@ Built (step 8b, `agent::gc`, the queue's side `store::map::gc`). Where it depart
 - **A job, not the agent itself:** the `gc` job (the lead's own, `LEAD_ONLY`) is planned whenever
   the queue has a chunk for it or a sweep's pass is due (`Planner::gc_work`), no longer daily, and
   granted by the NAS budget as a quiet step as before; so its NAS work is measured and weighed as
-  any job's, and it yields to a job held back for it (`nas_yield`) at its next safe point, before
+  any job's (its own way's alone: `gc`'s `cost_v` 1 puts away the daily job's runs, which weighed
+  the whole NAS and held it for a quiet NAS the busy pool never had, task #1000; unmeasured, its
+  first run goes beside any), and it yields to a job held back for it (`nas_yield`) at its next safe point, before
   each removal. It asks the lead's coordinator: `POST /gc/chunk` (up to `gc::CHUNK_NAMES`, 200),
   `/gc/gone`, `/gc/orphans`, `/gc/removing` (a sweep's names), each answered from the queue in
   memory and its file on the lead's disk.

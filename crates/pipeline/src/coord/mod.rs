@@ -9728,9 +9728,9 @@ mod tests {
 
     /// Task #451 (20 Oct: GC beside two depth-lo jobs, the NAS at 34 % IO wait, all three stalled):
     /// the clean-up weighs its metadata work (folder entries listed, files statted and deleted over
-    /// the NAS's probed rates for them), starts only on a quiet NAS (unmeasured, alone; measured,
-    /// within the whole, never aged past it, its wait never noted), and yields to a job held back
-    /// `OWN_AGE` that it alone keeps out.
+    /// the NAS's probed rates for them), starts only on a quiet NAS (measured, within the whole,
+    /// never aged past it, its wait never noted; unmeasured, weighing nothing until its first run
+    /// measures it, task #1000), and yields to a job held back `OWN_AGE` that it alone keeps out.
     #[test]
     fn the_clean_up_waits_for_a_quiet_nas_and_yields_to_a_held_job() {
         let (_d, c, w, clock) = every((0, 0));
@@ -9789,11 +9789,16 @@ mod tests {
             let g = s.nas_waits.lock().unwrap();
             g.keys().map(|k| k.0.clone()).collect()
         };
-        // Unmeasured: alone only, its wait not noted, whatever the time.
-        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "cold: beside the member's job, held");
-        age(crate::budget::nas::OWN_AGE);
-        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "never aged past it");
+        // Unmeasured (its way new, task #1000): it goes beside the member's job, weighing nothing,
+        // so its first run measures it; its wait never noted. The daily job's run before (its way
+        // before step 8b: the whole share read and listed, past the whole NAS) weighs nothing now.
+        let daily = [("threads", 1), ("bytes", 119_607_616_284), ("listed", 295_768), ("stats", 288_071)];
+        c.add_costs_by(&[(cost_key("gc", "gc"), Cost { v: 0, ..cost("gc", &daily) })], "m4");
+        assert!(cost_version("gc") > 0, "the queue's way is its own");
+        let g0 = c.ask_own(&a, &BTreeSet::new(), 0).expect("unmeasured: goes beside the member's job");
+        assert_eq!(c.nas_shares().get("m4"), Some(&0), "weighs nothing until measured");
         assert!(waits(&c).is_empty(), "its wait never noted: it holds no room");
+        c.finish(g0.lease, &[]);
         // Measured: 200 entries listed and 8 files deleted a second (200 + 200 of the NAS), its
         // bytes next to nothing: 400 beside the member's 300.
         let gc = cost("gc", &[("threads", 1), ("bytes", 0), ("listed", 120_000), ("deletes", 4_800)]);
@@ -9823,10 +9828,11 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "never urgent");
     }
 
-    /// Task #451 review: an unmeasured clean-up doesn't start beside a cold job (weight 0, its NAS
-    /// load unknown), and one held back `QUIET_AGE` by a pool that stays busy goes as an aged job.
+    /// Task #451 review: one held back `QUIET_AGE` by a pool that stays busy goes as an aged job.
+    /// Task #1000: an unmeasured one goes beside a cold job (weight 0, its NAS load unknown): its
+    /// first run is what measures it, and held for a NAS a busy pool never has quiet, it never ran.
     #[test]
-    fn the_clean_up_waits_for_no_cold_job_and_ages_in_after_a_day() {
+    fn an_unmeasured_clean_up_goes_and_a_held_one_ages_in_after_a_day() {
         let (_d, c, w, clock) = every((0, 0));
         let limits = crate::budget::nas::Limits {
             bytes_s: 100e6,
@@ -9853,9 +9859,9 @@ mod tests {
         let g1 = w.ask(&Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) }).unwrap().expect("slope-hi");
         assert_eq!(c.nas_shares().get("m1"), Some(&0));
         let a = Ask { want: 1, can: vec!["gc".into()], ..every_ask("m4", "gc", 64_000, 100_000) };
-        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "unmeasured beside a cold job: held");
+        let g0 = c.ask_own(&a, &BTreeSet::new(), 0).expect("unmeasured beside a cold job: goes");
+        c.finish(g0.lease, &[]);
         w.give_back(g1.lease, "test").unwrap();
-        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some(), "alone: goes");
 
         // Measured at 400, beside a member's 700 that never ends: held, until a day has passed.
         let (_d, c, w, clock2) = every((0, 0));
@@ -9875,10 +9881,11 @@ mod tests {
         };
         let slope = Cost { v: cost_version("slope-hi"), ..cost(&[("threads", 1), ("bytes", 42_000_000_000)]) };
         c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), slope)], "m1");
-        c.add_costs_by(
-            &[(cost_key("gc", "gc"), cost(&[("threads", 1), ("bytes", 0), ("listed", 120_000), ("deletes", 4_800)]))],
-            "m4",
-        );
+        let gc = Cost {
+            v: cost_version("gc"),
+            ..cost(&[("threads", 1), ("bytes", 0), ("listed", 120_000), ("deletes", 4_800)])
+        };
+        c.add_costs_by(&[(cost_key("gc", "gc"), gc)], "m4");
         c.add_disks(&[(cost_key("gc", "gc"), 0)]);
         let mut offers = c.shared.lock().unwrap().offers.clone();
         offers.push(Offer {

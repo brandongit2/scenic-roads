@@ -1521,8 +1521,12 @@ pub const TABLE: [Step; 60] = [
             w_timetables_todo,
         )
     },
+    // (Way 1: GC by its queue, docs/maplog.md §7.3, step 8b: chunks of 200 deletions and the sweeps'
+    // passes. The daily job's runs before it read and listed the whole share, 100 MB/s: weighed
+    // the whole NAS, they held the clean-up for a quiet NAS that never came, task #1000.)
     Step {
         alone: true,
+        cost_v: 1,
         ..step("upkeep", Keep, World, "gc", "Removes replaced files from the NAS.", w_gc)
     },
     Step {

@@ -478,7 +478,7 @@ fn tenths(t: u32) -> String {
 pub const SETTLE: Duration = Duration::from_secs(60);
 
 /// The steps that read the NAS as they go: one none of whose runs measured its rate weighs the NAS
-/// budget's whole (`NasWeigher`), and one running may load it unseen (`nas_unknown_running`).
+/// budget's whole (`NasWeigher`).
 pub(super) const NAS_STEPS: &[&str] = &["unit", "pack", "lo"];
 
 /// The batch length while the pool's setting `batch-minutes` isn't set (s; docs/pool.md §7.7, Batch
@@ -1007,22 +1007,6 @@ impl Sched {
                 (st == step && targets.contains(t))
                     || running.saturating_add(w).saturating_add(*rw) <= crate::budget::nas::WHOLE
             })
-    }
-
-    /// Whether a leased job may load the NAS unseen by its weight: one of a step known to read it
-    /// (`NAS_STEPS`), or one none of whose step's runs measured its NAS rate (a cold one).
-    pub(super) fn nas_unknown_running(&self, nw: &NasWeigher, now: Instant) -> bool {
-        self.leases.live(now).any(|l| match &l.work {
-            Work::Job { step, targets } => {
-                NAS_STEPS.contains(&step.as_str())
-                    || if targets.is_empty() {
-                        nw.book.nas(step, "").is_none()
-                    } else {
-                        targets.iter().any(|t| nw.book.nas(step, &t.0).is_none())
-                    }
-            }
-            _ => false,
-        })
     }
 
     /// How many targets were passed over for the NAS budget alone at `now` (`nas_wait`).
@@ -1991,10 +1975,11 @@ impl Sched {
                 return false;
             }
             let own = running.saturating_sub(members);
-            // (A quiet step, the clean-up: alone or within the whole by its measured weight, never
-            // aged past it, its wait not noted: it never holds room, crate::budget::nas::QUIET_STEPS.)
-            // Held back `QUIET_AGE` (a pool that stays busy), it goes as an aged job of the lead's
-            // own, its wait noted so its room is held: never starved for good.
+            // (A quiet step, the clean-up: alone or within the whole by its measured weight
+            // (unmeasured, weighing nothing until its first run), never aged past it, its wait not
+            // noted: it never holds room, crate::budget::nas::QUIET_STEPS.) Held back `QUIET_AGE`
+            // (a pool that stays busy), it goes as an aged job of the lead's own, its wait noted so
+            // its room is held.
             let quiet = crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str()) && {
                 let mut g = self.quiet_since.lock().unwrap_or_else(|e| e.into_inner());
                 let since = if alone {
@@ -2006,9 +1991,7 @@ impl Sched {
             };
             let waited = waited || (crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str()) && !quiet);
             let fits = if quiet {
-                // (Unmeasured, it goes only beside no NAS-heavy job: none of a step known to read
-                // the NAS, none whose weight isn't measured yet.)
-                crate::budget::nas::Limits::fits_quiet(running, w) && (w > 0 || !self.nas_unknown_running(&nw, now))
+                crate::budget::nas::Limits::fits_quiet(running, w)
             } else {
                 crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited)
             } && nw.limits.open(running, w)
