@@ -1,7 +1,12 @@
 #!/bin/zsh
-# tools/dev/test-guard.py's worktree lookup: a filter for a module in <mod>/mod.rs passes when the
-# command goes into the worktree by ~/…, $HOME/… or its full path, from the main checkout (task
-# #458 review: `cd ~/…` was cut at its first `/` and every module refused). Run by check.sh.
+# tools/dev/test-guard.py's verdicts on a subagent's commands in this worktree: each case below is a
+# command and what the guard must say ("ok": nothing, or only that it is outside the affected set;
+# else a text its refusal holds). Run by check.sh when the guard or shellwords.py changed.
+# The cases run in one python process (#1003), each through the guard's whole code as the hook runs
+# it (its stdin, its exit); the processes it starts (affected-tests.sh, git) run once for all cases,
+# their answers kept, as the tree doesn't change meanwhile. (A process per case ran affected-tests.sh
+# for each of the ~80 cases it reached: on the M4, with 6f4's 130 Rust files changed, 893 s, 2,060 s
+# in 7 Nov's checks; now 11 s, 10 s of it the one run.) "ok" also fails on a crash, which passed.
 set -u
 here=${0:A:h}; wt=$(git -C $here rev-parse --show-toplevel)
 [[ $wt == */.claude/worktrees/* ]] || { print "skip: not in a worktree"; exit 0 }
@@ -10,24 +15,19 @@ main=${wt%%/.claude/worktrees/*}; rel=${wt#$HOME/}
 crate=agentcore
 mod=$(cd $wt/crates/$crate/src && for d in */; do [[ -f $d/mod.rs ]] && { print ${d%/}; break }; done)
 [[ -n $mod ]] || { print "no <mod>/mod.rs in $crate"; exit 1 }
-fail=0
-for dir in "~/$rel" "\$HOME/$rel" "$wt"; do
-  cmd="cd $dir && cargo test -p $crate --lib -- $mod::"
-  # Only the module check matters here: the affected-set check may refuse it, but not as "isn't a module".
-  out=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"agent_id":"t"}))' $cmd $main | python3 $here/../test-guard.py 2>&1)
-  if [[ $out == *"isn't a module path"* ]]; then print "FAIL: $cmd\n  $out"; fail=1; else print "ok: $cmd"; fi
-done
+typeset -a cases   # expectation, cwd, command; a case after another
+check() {  # [-C <cwd>] expectation (ok | a text the refusal has), command; cwd: the worktree
+  local cwd=$wt; [[ $1 == -C ]] && { cwd=$2; shift 2 }
+  cases+=( "$1" "$cwd" "$2" )
+}
+
+# The worktree a command goes into, from the main checkout: by ~/…, $HOME/… or its full path, a filter
+# for a module in <mod>/mod.rs is a module path (task #458 review: `cd ~/…` was cut at its first `/`
+# and every module refused).
+for dir in "~/$rel" "\$HOME/$rel" "$wt"; do check -C $main ok "cd $dir && cargo test -p $crate --lib -- $mod::"; done
 
 # Redirects and what they name are not cargo's arguments (task #938: `cargo test -p det > log 2>&1`
-# refused the log's path as a filter), nor is what a pipe feeds. "ok" = none of the guard's argument
-# refusals (module path, full suite, --release); the affected-set check may still say what it likes.
-run() { python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"agent_id":"t"}))' "$1" $wt | python3 $here/../test-guard.py 2>&1 }
-check() {  # expectation (ok | a text the refusal has), command
-  local out=$(run "$2") bad=0
-  if [[ $1 == ok ]]; then [[ $out == *"isn't a module path"* || $out == *"No full test suites"* || $out == *"--release"* || $out == *"can't be checked"* ]] && bad=1
-  else [[ $out == *"$1"* ]] || bad=1; fi
-  if (( bad )); then print "FAIL ($1): $2\n  $out"; fail=1; else print "ok ($1): $2"; fi
-}
+# refused the log's path as a filter), nor is what a pipe feeds.
 f="$mod::x"
 for r in '> /p/log' '>/p/log' '>> /p/log' '>>/p/log' '2> /p/log' '2>/p/log' '2>>/p/log' '&> /p/log' '&>/p/log' '&>> /p/log' '>& /p/log' '>&/p/log' '< /p/in' '</p/in' '> "/p/my log"' "> '/p/my log'" '>"/p/my log"' '2>&1' '> /p/log 2>&1' '1>&2 >/p/log' '>| /p/log' '<<< x' '>! /p/log' '>>|/p/log' '&>>! /p/log' '<> /p/f' '2>&-' '>&2x'; do
   check ok "cargo test -p $crate $r -- $f"
@@ -96,4 +96,48 @@ check "--release" "echo \"\$(cargo test -p $crate --release -- $f)\""
 check ok "cargo test -p $crate -- $f --skip '\$(:)'"   # single-quoted: text, not a substitution
 check ok "cargo test -p $crate -- $f > /p/log && echo \$(date)"
 check ok "echo \$(date) | cargo test -p $crate -- $f"
+
+python3 - $here/../test-guard.py "${cases[@]}" <<'PY'
+import io, json, os, subprocess, sys, traceback
+from contextlib import redirect_stderr, redirect_stdout
+guard, args = sys.argv[1], sys.argv[2:]
+sys.path.insert(0, os.path.dirname(os.path.abspath(guard)))   # (its shellwords, as when run as a script)
+code = compile(open(guard, encoding="utf-8").read(), guard, "exec")
+def once(f):   # a process's answer (or its error), kept for the same call
+    kept = {}
+    def call(*a, **kw):
+        k = repr((a, sorted(kw.items())))
+        if k not in kept:
+            try: kept[k] = (f(*a, **kw), None)
+            except Exception as e: kept[k] = (None, e)
+        r, e = kept[k]
+        if e: raise e
+        return r
+    return call
+subprocess.run, subprocess.check_output = once(subprocess.run), once(subprocess.check_output)
+def verdict(cwd, cmd):   # what the hook would show: the guard's output, or its traceback
+    sys.stdin, out = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd, "agent_id": "t"})), io.StringIO()
+    try:
+        with redirect_stdout(out), redirect_stderr(out): exec(code, {"__name__": "__main__", "__file__": guard})
+    except SystemExit: pass
+    except Exception: out.write(traceback.format_exc())
+    return out.getvalue().strip()
+fail = 0
+for i in range(0, len(args), 3):
+    want, cwd, cmd = args[i:i + 3]
+    out = verdict(cwd, cmd)
+    good = (not out or out.startswith("This cargo test is outside the affected set")) if want == "ok" else want in out
+    print("ok (%s): %s" % (want, cmd) if good else "FAIL (%s): %s\n  %s" % (want, cmd, out.replace("\n", "\n  ")))
+    fail |= not good
+sys.exit(fail)
+PY
+fail=$?
+
+# The hook itself (test-guard.sh, as Claude Code runs it): exit 2 with the reason, or 0 and nothing.
+hook() { python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"agent_id":"t"}))' "$1" $wt | zsh $here/../test-guard.sh 2>&1 }
+out=$(hook "cargo test -p $crate -- bare"); rc=$?
+if (( rc == 2 )) && [[ $out == *"isn't a module path"* ]]; then print "ok (hook refuses): cargo test -p $crate -- bare"
+else print "FAIL (hook refuses, exit $rc): cargo test -p $crate -- bare\n  $out"; fail=1; fi
+out=$(hook "ls"); rc=$?
+if (( rc == 0 )) && [[ -z $out ]]; then print "ok (hook passes): ls"; else print "FAIL (hook passes, exit $rc): ls\n  $out"; fail=1; fi
 exit $fail
