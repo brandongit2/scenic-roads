@@ -22,7 +22,7 @@
 # eval too; what a script run by the command does is not seen, nor a `cd` in a subshell, `( … )`,
 # which the line's later commands are taken to be in too.
 import hashlib, json, os, re, subprocess, sys
-from shellwords import strip_heredocs, segments, tokens, command
+from shellwords import strip_heredocs, segments, substitutions, tokens, command
 
 WRITES = {"reset", "checkout", "switch", "restore", "commit", "rebase", "merge", "cherry-pick", "revert",
           "am", "pull", "clean", "add", "rm", "mv", "apply", "read-tree", "update-index", "checkout-index"}
@@ -175,33 +175,6 @@ def git(args, base, env):
     block("`%s` would write to %s, which isn't this session's: %s. A session writes with git only in its own checkouts: a subagent's worktree, a finished agent's that no running subagent works in, and the worktrees it made; the main session in the rest. To look at or test another commit, make a worktree of your own (`git worktree add <scratch folder> <commit>`) and work there." % (what, top, why))
 
 
-def substitutions(t):
-    """t with each $( … ) and ` … ` outside single quotes made one word, $(pwd) as $PWD and any other as
-    ${SUBSTITUTION} (a path that can't be told), and the scripts inside them: segments() would cut
-    `git -C $(…)/x reset` at the parentheses, the git command's words in two."""
-    out, inner, q, i = [], [], None, 0
-    while i < len(t):
-        ch = t[i]
-        if q == "'":
-            q = None if ch == "'" else q
-        elif ch == "\\" and i + 1 < len(t): out.append(t[i:i + 2]); i += 2; continue
-        elif ch == "'" and not q: q = "'"
-        elif ch == '"': q = None if q == '"' else '"'
-        elif t.startswith("$(", i) or ch == "`":
-            j, depth = i + (2 if ch == "$" else 1), 1
-            while j < len(t) and depth:
-                if ch == "`": depth -= t[j] == "`"
-                elif t[j] == "(": depth += 1
-                elif t[j] == ")": depth -= 1
-                j += 1
-            body = t[i + (2 if ch == "$" else 1):j - 1]
-            inner.append(body)
-            out.append("$PWD" if body.strip() == "pwd" else "${SUBSTITUTION}")
-            i = j; continue
-        out.append(ch); i += 1
-    return "".join(out), inner
-
-
 def chdir(toks):
     """Where an `env -C <dir>`/`--chdir` prefix of the words runs the command (None: no such prefix),
     and the words with `--chdir <dir>` as one (command() takes only -C's value)."""
@@ -224,7 +197,7 @@ def chdir(toks):
 
 def scan(text, base, env, depth=0):
     if depth > 4: block("Commands nested this deep can't be checked: write the git command out plainly.")
-    text, inner = substitutions(strip_heredocs(text))
+    text, inner = substitutions(strip_heredocs(text), True)
     for t in inner: scan(t, base, env, depth + 1)
     stack = []
     for seg in segments(text):

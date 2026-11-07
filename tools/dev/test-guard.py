@@ -1,6 +1,6 @@
 # tools/dev/test-guard.sh's checks (see there). Prints the reason to block, or nothing.
 import json, sys, os, re, shlex, subprocess
-from shellwords import strip_heredocs, segments, tokens, command   # (tools/dev/shellwords.py)
+from shellwords import strip_heredocs, segments, substitutions, tokens, command   # (tools/dev/shellwords.py)
 d = json.load(sys.stdin)
 tool, ti, cwd, agent = d.get("tool_name"), d.get("tool_input") or {}, d.get("cwd") or "", d.get("agent_id")
 repo = os.path.dirname(subprocess.check_output(["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True).strip())   # the main checkout
@@ -19,10 +19,13 @@ repro, perf = "#repro" in cmd, "#perf" in cmd
 
 # --- Finding the test runs (shellwords.py: commands, not text).
 CARGO_TAKES = {"-C", "--config", "-Z", "--color", "--manifest-path", "--target-dir", "--explain"}
+SUBST = "A test run whose arguments hold $( … ), <( … ), >( … ) or backticks can't be checked (the guard can't see what they expand to): write the arguments out plainly."
 found = []   # argument lists of cargo test / nextest runs
 def scan(text, depth=0):
     if depth > 4: block("Commands nested this deep can't be checked: write the cargo test command out plainly.")
-    for seg in segments(strip_heredocs(text)):
+    text, inner = substitutions(strip_heredocs(text))   # a $( … ), <( … ), >( … ) or backtick stays one word; its script is scanned on its own
+    for t in inner: scan(t, depth + 1)
+    for seg in segments(text):
         _, toks = command(tokens(seg))
         if not toks: continue
         c0, rest = os.path.basename(toks[0]), toks[1:]
@@ -58,10 +61,13 @@ def scan(text, depth=0):
             elif len(sub) > 1 and sub[0] == "nextest" and sub[1] in ("r", "run"): args = sub[2:]
             else: continue
             if "-C" in conf: block("cargo -C <dir> test: run it from the checkout's root, naming the crate with -p.")
+            if "${SUBSTITUTION}" in seg: block(SUBST)
             found.append(args)
         elif c0 == "cargo-nextest":
             sub = rest[1:] if rest[:1] == ["nextest"] else rest
-            if sub and sub[0] in ("r", "run"): found.append(sub[1:])
+            if sub and sub[0] in ("r", "run"):
+                if "${SUBSTITUTION}" in seg: block(SUBST)
+                found.append(sub[1:])
 scan(cmd)
 
 TAKES = {"-p","--package","--test","--bin","--features","-F","-j","--jobs","--target-dir","--manifest-path","--profile",

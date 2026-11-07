@@ -7,6 +7,36 @@ import os, re
 
 def strip_heredocs(t):
     return re.sub(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2[ \t]*(?=\n|$)", "<<HEREDOC", t, flags=re.S)
+def sub_end(t, i):
+    """Where the substitution starting at t[i] ($( … ), <( … ), >( … ) or ` … `) ends, and its body's start."""
+    b = i + (2 if t[i] in "$<>" else 1)
+    j, depth = b, 1
+    while j < len(t) and depth:
+        if t[i] == "`": depth -= t[j] == "`"
+        elif t[j] == "(": depth += 1
+        elif t[j] == ")": depth -= 1
+        j += 1
+    return j, b
+def substitutions(t, pwd=False):
+    """(t with each $( … ), <( … ), >( … ) and ` … ` outside single quotes made one word, ${SUBSTITUTION}
+    (with pwd, $(pwd) as $PWD), and the scripts inside them): a command's words stay together
+    for the checks, and the scripts are checked on their own. <( and >( count outside quotes only."""
+    out, inner, q, i = [], [], None, 0
+    while i < len(t):
+        ch = t[i]
+        if q == "'":
+            q = None if ch == "'" else q
+        elif ch == "\\" and i + 1 < len(t): out.append(t[i:i + 2]); i += 2; continue
+        elif ch == "'" and not q: q = "'"
+        elif ch == '"': q = None if q == '"' else '"'
+        elif t.startswith("$(", i) or ch == "`" or (not q and ch in "<>" and t.startswith("(", i + 1)):
+            j, b = sub_end(t, i)
+            body = t[b:j - 1]
+            inner.append(body)
+            out.append("$PWD" if pwd and body.strip() == "pwd" else "${SUBSTITUTION}")
+            i = j; continue
+        out.append(ch); i += 1
+    return "".join(out), inner
 def segments(t):
     out, cur, q, i = [], [], None, 0
     while i < len(t):
@@ -17,6 +47,8 @@ def segments(t):
             elif ch == q: q = None
         elif ch == "\\" and i + 1 < len(t): cur.append(ch); cur.append(t[i + 1]); i += 1
         elif ch in "'\"": q = ch; cur.append(ch)
+        elif t.startswith("$(", i) or ch == "`" or (ch in "<>" and t.startswith("(", i + 1)):   # a substitution stays in its command
+            j, _ = sub_end(t, i); cur.append(t[i:j]); i = j; continue
         elif ch == "&" and ((cur and cur[-1] in "<>") or t[i + 1:i + 2] == ">"): cur.append(ch)   # 2>&1, &>
         elif ch == "|" and cur and cur[-1] == ">": cur.append(ch)   # >|
         elif ch in ";&|()\n": out.append("".join(cur)); cur = []

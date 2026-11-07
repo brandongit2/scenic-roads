@@ -4,7 +4,8 @@ Enforced by tools/dev/test-guard.sh (a PreToolUse hook in .claude/settings.local
 a command that breaks these and says why. It finds a test run where a command starts (also after
 `env`/`time`/`nice`/`command`/`xargs`, by a path to cargo, with cargo flags before `test`, as `cargo t`,
 `cargo nextest r` or `cargo-nextest`) and inside the script of `sh -c`, `eval` and `python -c`; it
-refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `make`/`just test`).
+refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `make`/`just test`, a run whose
+arguments hold `$( … )`, `<( … )`, `>( … )` or backticks outside single quotes); a run inside such a substitution is found.
 
 - Tests build optimised (`[profile.test]` in Cargo.toml, #505: opt-level 1 for the workspace, 3 for
   dependencies; debug assertions and overflow checks stay on), so the first `cargo test` in a fresh
@@ -190,7 +191,7 @@ the command or `export`ed earlier on the line), else where an earlier `cd`, `pus
 To look at or test a running agent's commit, make a worktree of your own (`git worktree add <scratch
 folder> <commit>`). A write whose folder the guard can't tell (a variable not set on the line, a
 substitution other than `$(pwd)`, `cd -`, a `popd` past the line's `pushd`s) is refused: write the
-path out. Git commands inside `$( … )` and backticks, `sh -c`/`bash -c`/`zsh -c` and `eval` are
+path out. Git commands inside `$( … )`, `<( … )`, `>( … )` and backticks, `sh -c`/`bash -c`/`zsh -c` and `eval` are
 checked; reads (log, diff, status, show, rev-parse, merge-base, branch, worktree list), other repos
 and quoted or heredoc text pass. Not seen: what a script the command runs does with git
 (publish.sh's snapshot worktree is its own), git in `python -c`, and a `cd` inside a

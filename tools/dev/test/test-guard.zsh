@@ -60,4 +60,23 @@ check "isn't a module path" "cargo test -p pipeline -- bare"
 check "No full test suites" "cargo test -p pipeline"
 check "--release" "cargo test -p pipeline --release -- $f"
 check "--workspace" "cargo test --workspace 2>&1 | tee /p/log"
+# A substitution stays with its command (it was cut at the "(" and the rest left the cargo command), and a
+# test run whose arguments hold one is refused: the guard can't see what it expands to.
+S="can't be checked (the guard can't see"
+check "$S" "cargo test -p pipeline -- ${f}\$(:) --release"
+check "$S" "cargo test -p pipeline \$(echo --release) -- $f"
+check "$S" "cargo test -p pipeline -- $f \`echo --release\`"
+check "$S" "cargo test -p pipeline -- $f <(:)"
+check "$S" "cargo test -p pipeline -- $f >(:)"
+check "$S" "cargo test -p pipeline -- $f \"\$(:)\""
+check "$S" "cargo nextest run -p pipeline $f\$(:)"
+check "$S" "X=\$(echo a b) cargo test -p pipeline -- $f"
+check "built from variables or substitutions" "sh -c 'cargo test -p pipeline -- $f\$(:)'"
+check "--release" "echo \$(:) && cargo test -p pipeline --release -- $f"
+check "--release" "echo \$(echo a; echo b) && cargo test -p pipeline --release -- $f"
+check "No full test suites" "x=\$(cargo test -p pipeline)"   # a run inside a substitution is found
+check "--release" "echo \"\$(cargo test -p pipeline --release -- $f)\""
+check ok "cargo test -p pipeline -- $f --skip '\$(:)'"   # single-quoted: text, not a substitution
+check ok "cargo test -p pipeline -- $f > /p/log && echo \$(date)"
+check ok "echo \$(date) | cargo test -p pipeline -- $f"
 exit $fail
