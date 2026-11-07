@@ -70,8 +70,8 @@ export type LandmarkResponse =
   | {
       type: 'result';
       id: number;
-      /** The server couldn't answer (the panel keeps the last answer; asked again soon). */
-      failed?: boolean;
+      /** The server couldn't answer, why (the panel keeps the last answer; asked again soon). */
+      error?: string;
       /** The scores in view as a histogram (HIST_BINS over 0–1), how many, and the scores at the
        * query's ranks (fewer in view: the least prominent's). */
       hist: Float64Array;
@@ -86,8 +86,8 @@ export type LandmarkResponse =
     }
   | { type: 'count'; id: number; n: number; of: number }
   | { type: 'tile'; id: number; data: ArrayBuffer; names: TileNames }
-  /** By view: a tile whose points couldn't be had (the map asks again). */
-  | { type: 'tileFailed'; id: number };
+  /** By view: a tile whose points couldn't be had, why (the map asks again). */
+  | { type: 'tileFailed'; id: number; error: string };
 
 /** A point tile's named points (namefade.ts): feature id, fame, isolation, and the zoom where the
  * name's isolation spans a pixel (mz; -99 without); `scaled`: the names' opacity is in the tile
@@ -169,10 +169,10 @@ async function byView(v: MarksView, m: LandmarkRequest) {
       if (r.status === 409) post({ type: 'stale' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       j = await r.json();
-    } catch {
+    } catch (e) {
       // Unanswered (the server busy, the NAS away, newer points): the panel keeps what it shows.
       const none = new Float64Array(HIST_BINS);
-      return post({ type: 'result', id: m.id, failed: true, hist: none, n: 0, atRanks: null, byKind: [], top: [], topByKind: {}, fhist: {}, summit: null }, [none.buffer]);
+      return post({ type: 'result', id: m.id, error: String((e as Error)?.message ?? e), hist: none, n: 0, atRanks: null, byKind: [], top: [], topByKind: {}, fhist: {}, summit: null }, [none.buffer]);
     }
     // (An answer overtaken by a newer query: its extras may leave out ones that query has.)
     if (j.extra && m.id === lastViewQuery) v.setExtras(j.extra);
@@ -210,9 +210,13 @@ async function byView(v: MarksView, m: LandmarkRequest) {
  * tile covering it, the most prominent TILE_MAX of them below TILE_CAP_Z. */
 async function viewTile(v: MarksView, m: Extract<LandmarkRequest, { type: 'tile' }>) {
   // (the stops & sights' tile: each kind's points, capped as a kind's own tile was)
-  const each = await Promise.all((m.kinds ?? [kindOf(m.src)]).map((k) => v.pointsIn(k, m.z, m.x, m.y)));
-  if (each.some((p) => !p)) return post({ type: 'tileFailed', id: m.id });
-  const pts = each.flatMap((p) => capped(p!, m.z));
+  let each: { t: MarkTile; i: number }[][];
+  try {
+    each = await Promise.all((m.kinds ?? [kindOf(m.src)]).map((k) => v.pointsIn(k, m.z, m.x, m.y)));
+  } catch (e) {
+    return post({ type: 'tileFailed', id: m.id, error: String((e as Error)?.message ?? e) });
+  }
+  const pts = each.flatMap((p) => capped(p, m.z));
   const n = 2 ** m.z;
   const ids: number[] = [], fas: number[] = [], ias: number[] = [], mzs: number[] = [];
   const tps: TilePoint[] = pts.map(({ t, i }) => {

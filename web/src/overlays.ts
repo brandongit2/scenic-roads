@@ -147,7 +147,7 @@ maplibregl.addProtocol(POINT_TILES, (params) => new Promise((resolve, reject) =>
   const id = ++tileSeq;
   tileReplies.set(id, (m) => {
     // (By view, a tile whose points couldn't be had fails: TileRetry asks again.)
-    if (m.type === 'tileFailed') return reject(new Error('landmark tile unavailable'));
+    if (m.type === 'tileFailed') return reject(new Error(`landmark tile ${src}/${z}/${x}/${y}: ${m.error}`));
     tileNames(src, z, x, y, m.names);
     resolve({ data: m.data });
   });
@@ -316,7 +316,7 @@ export class Overlays {
     } else if (m.type === 'mask') {
       if (this.maskIds.get(m.src) === m.id) this.dots.setMask(m.src, m.vis);
     } else if (m.type === 'result') {
-      if (m.id === this.lastQuery && m.failed) {
+      if (m.id === this.lastQuery && m.error !== undefined) {
         // Unanswered: what the panel shows stays; asked again in a moment.
         this.answered = m.id;
         setTimeout(() => this.state && this.prominenceSoon(this.state), 2000);

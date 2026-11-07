@@ -46,6 +46,8 @@ export const FIELDS: Record<string, string[]> = {
 interface Entry {
   t: MarkTile | null;
   state: 'loading' | 'ok' | 'none' | 'error';
+  /** Why it failed (state 'error'). */
+  error?: string;
   used: number;
 }
 
@@ -226,12 +228,13 @@ export class MarksView {
     return e;
   }
 
-  /** A tile once it has loaded (null: there's none); undefined: it couldn't be had (asked again
-   * the next time). */
-  async tileOf(kind: string, z: number, x: number, y: number): Promise<MarkTile | null | undefined> {
+  /** A tile once it has loaded (null: there's none); it throws when it couldn't be had (asked
+   * again the next time), saying why. */
+  async tileOf(kind: string, z: number, x: number, y: number): Promise<MarkTile | null> {
     const e = this.ensure(kind, z, x, y);
     while (e.state === 'loading' && !this.disposed) await new Promise<void>((r) => this.waiters.push(r));
-    return e.state === 'ok' || e.state === 'none' ? e.t : undefined;
+    if (e.state === 'ok' || e.state === 'none') return e.t;
+    throw new Error(e.state === 'error' ? e.error ?? 'failed' : 'the points by view were replaced (a new catalogue)');
   }
 
   private pump() {
@@ -254,8 +257,9 @@ export class MarksView {
             this.fails = 0;
             if (this.entries.get(k) === e) this.bytes += t?.bytes ?? 0;
           },
-          () => {
+          (err) => {
             e.state = 'error';
+            e.error = String((err as Error)?.message ?? err);
             this.retrySoon();
           },
         )
@@ -544,17 +548,15 @@ export class MarksView {
 
   /** The points of a kind in map tile z/x/y for its names and hit-testing: once the tile's data is
    * in. */
-  async pointsIn(kind: string, z: number, x: number, y: number): Promise<{ t: MarkTile; i: number }[] | null> {
+  async pointsIn(kind: string, z: number, x: number, y: number): Promise<{ t: MarkTile; i: number }[]> {
     // The data covering the tile: its z6 block, or the thinned tile of its zoom (with the extras);
-    // null when it couldn't be had (the map asks again: TileRetry).
+    // throwing when it couldn't be had (the map asks again: TileRetry).
     if (z >= BLOCK_Z) {
       const d = z - BLOCK_Z;
       const t = this.z6.has(`6/${x >> d}/${y >> d}`) ? await this.tileOf(kind, BLOCK_Z, x >> d, y >> d) : null;
-      if (t === undefined) return null;
       return t ? within(t, z, x, y) : [];
     }
     const t = await this.tileOf(kind, z, x, y);
-    if (t === undefined) return null;
     const out = t ? within(t, z, x, y) : [];
     const have = new Set(out.map((p) => p.t.ids[p.i]));
     for (const [id, [et, i]] of this.extras.get(kind) ?? []) {
