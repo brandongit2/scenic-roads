@@ -1166,7 +1166,12 @@ commit; re-exports at the old paths as before.
         So the split's gain is where §6.4 put it: the workspace's dev build ~26 % shorter on the same
         CPU (agentcore compiles beside the families, the plan's pipeline after both), and an edit in
         a family 4.0 → 2.3 s, as it no longer recompiles the runtime; an edit in the runtime costs
-        what it did (agentcore, then pipeline and server). The runtime's tests build as they did
+        what it did (agentcore, then pipeline and server). The edited crate halved (~61k lines
+        against pipeline's ~120k), but cargo rebuilds every crate above a rebuilt one (no early cut-off
+        when its interface is unchanged), and they rebuild in series: pipeline (the plan and the
+        binaries, ~22k), new on this chain, takes about what the halving saved (the family edit's
+        2.3 s is bld, pipeline and server; the runtime's 3.5 s, agentcore, pipeline and server). Only a smaller crate under the edit, with less above it,
+        would shorten it (splitting agentcore along coord, pool and the forecast), not planned. The runtime's tests build as they did
         (the plan compiled into them). tools/dev/check.sh's tests part on this branch (10:26, the
         M4 at load 50-90 with the checks above): 514 s for 1,213 tests (its affected set, most of
         the suite: the branch moves ~90 files), nextest's run 124 s, the rest building; no before
