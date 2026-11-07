@@ -602,7 +602,8 @@ pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String
 
 /// The build's history: the NAS's (`state/coord/history/<day>/*.jsonl`, or the day's tar in
 /// `history-archive/` once GC packed it, the last `days` days',
-/// every writer's), else the lead's own (`local`, its coordinator's file); duplicates once.
+/// every writer's), else the lead's own (`local`, its coordinator's file); duplicates once; the
+/// runs of jobs across a lead's restart mended (crate::coord::history::mend_runs).
 pub fn load_history(root: Option<&store::nasfs::NasRoot>, local: Option<&Path>, days: u64) -> Vec<Event> {
     let mut out: Vec<Event> = Vec::new();
     let since = now_s().saturating_sub(days * 86400);
@@ -640,6 +641,7 @@ pub fn load_history(root: Option<&store::nasfs::NasRoot>, local: Option<&Path>, 
     let mut seen = BTreeSet::new();
     out.retain(|e| seen.insert(serde_json::to_string(&Event { seq: 0, ..e.clone() }).unwrap_or_default()));
     out.sort_by_key(|e| (e.t, e.seq));
+    crate::coord::history::mend_runs(&mut out);
     out
 }
 

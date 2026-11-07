@@ -49,7 +49,8 @@ pub struct Event {
     pub step: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<String>,
-    /// How long it took (an end, a done, a task).
+    /// How long it took (an end, a done or fail: its job's run from its start, its lease's
+    /// crate::coord::lease::Lease::ran, whatever restart or take-over came between; a task).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,12 +80,13 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v: Option<u32>,
     /// The longest its job went with nothing of its work moving, as the lead heard its beats (s:
-    /// crate::coord::lease::Lease::still_most), on an "end" or "done" of a leased job: its step's
-    /// usual stillness (`History::still_p90s`). Events before task #986 have none.
+    /// crate::coord::lease::Lease::still_most), on an "end" or "done" of a leased job the lead heard
+    /// from its start (none of a lease `taken_up`, task #992): its step's usual stillness
+    /// (`History::still_p90s`). Events before task #986 have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub still_s: Option<u64>,
     /// Its job's rate in each unit its progress line said (units a second over the time its parts
-    /// in that unit took: crate::coord::lease::Pace::rates), on an "end" or "done" of a leased job:
+    /// in that unit took: crate::coord::lease::Pace::rates), on the same events as `still_s`:
     /// its step's usual rates (`History::paces`). Events before task #990 have none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub rates: BTreeMap<String, f64>,
@@ -476,6 +478,7 @@ impl History {
         while events.len() > KEEP_MAX {
             events.pop_front();
         }
+        mend_runs(events.make_contiguous());
         let ends: Vec<Event> = h.events.iter().filter(|e| finished(e)).cloned().collect();
         for e in &ends {
             h.note_built(e);
@@ -730,6 +733,31 @@ impl History {
     }
 }
 
+/// A worker's job's end ("done", "fail") whose lease began before a coordinator's start ("agent")
+/// in `events`: its time (`secs`) the time since its "lease" event, when that's longer. Before
+/// task #992 such an end put the time since its lease was read back at the restart, not its
+/// job's run (`Lease::ran`): 326 of the lead's 5,830 "done" events to 6 Nov, a median quarter of
+/// their runs, 107 of 150 hours. One written since is its job's run, begun just after its grant:
+/// it reads its lease's time, a few seconds more at most.
+pub fn mend_runs(events: &mut [Event]) {
+    let mut starts: Vec<u64> = events.iter().filter(|e| e.kind == "agent").map(|e| e.t).collect();
+    starts.sort_unstable();
+    let mut leased: HashMap<u64, u64> = HashMap::new();
+    for e in events.iter().filter(|e| e.kind == "lease") {
+        if let Some(l) = e.lease {
+            leased.entry(l).and_modify(|t| *t = (*t).min(e.t)).or_insert(e.t);
+        }
+    }
+    for e in events.iter_mut().filter(|e| matches!(e.kind.as_str(), "done" | "fail")) {
+        let Some(&from) = e.lease.and_then(|l| leased.get(&l)) else { continue };
+        let restarted = starts.get(starts.partition_point(|&t| t <= from)).is_some_and(|&t| t < e.t);
+        let whole = e.t.saturating_sub(from) as f64;
+        if restarted && e.secs.is_some_and(|s| s < whole) {
+            e.secs = Some(whole);
+        }
+    }
+}
+
 /// Whether `e` is a job's end with targets it finished (a lead's "end", a worker's "done"; one
 /// that failed names those it finished first).
 pub(crate) fn finished(e: &Event) -> bool {
@@ -739,6 +767,28 @@ pub(crate) fn finished(e: &Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task #992: an end written before it, of a lease that began before the lead's restart, put
+    /// the time since the restart: read back, its time since its lease. One with no restart
+    /// between, or no lease event kept, is as written.
+    #[test]
+    fn a_run_across_a_restart_is_mended() {
+        let at =
+            |kind: &str, t: u64, lease: Option<u64>, secs: Option<f64>| Event { t, lease, secs, ..Event::new(kind) };
+        let mut es = vec![
+            at("lease", 100, Some(1), None),
+            at("lease", 100, Some(2), None),
+            at("lease", 1500, Some(3), None),
+            at("agent", 1000, None, None),
+            at("done", 1200, Some(1), Some(200.0)),
+            at("fail", 1300, Some(2), Some(300.0)),
+            at("done", 1600, Some(3), Some(100.0)),
+            at("done", 1700, Some(4), Some(50.0)),
+        ];
+        mend_runs(&mut es);
+        let secs: Vec<_> = es[4..].iter().map(|e| e.secs.unwrap()).collect();
+        assert_eq!(secs, [1100.0, 1200.0, 100.0, 50.0]);
+    }
 
     fn ev(kind: &str, t: u64, worker: &str) -> Event {
         Event { kind: kind.into(), t, worker: Some(worker.into()), ..Default::default() }

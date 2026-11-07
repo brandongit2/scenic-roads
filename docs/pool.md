@@ -2578,7 +2578,8 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   `Lease::began`, and keeps it off the view it shows, task #992). A job's run (the time on its
   "done" or "fail" event, the forecast's and the page's time run, the NAS budget's time past its
   prediction) is from that start, not its lease's grant: a lease read back at a lead's restart is
-  younger than its job. The phase is the top-level phase its
+  younger than its job. Read back, an end whose lease began before a lead's restart reads at
+  least its time since its "lease" event (`history::mend_runs`). The phase is the top-level phase its
   main thread has open (pipeline::timings: its name and class, since when, unix s), said in the
   job's counts file after its counts (`store::nasio::set_phase`: a sequence number, odd while it's
   written, its time and 48 bytes of text, a few stores in the mapped page, ~40 ns a call measured; never
