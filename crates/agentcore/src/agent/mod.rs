@@ -29,19 +29,19 @@
 // The plan's modules (pipeline's), compiled in for the runtime's unit tests alone, which run on the
 // real plan (`seam::for_tests`): in a build, the plan is pipeline's and is asked through `seam::Plan`.
 #[cfg(test)]
-#[path = "../../../pipeline/src/agent/build.rs"]
+#[path = "./../../../pipeline/src/agent/build.rs"]
 pub mod build;
 #[cfg(test)]
-#[path = "../../../pipeline/src/agent/idents.rs"]
+#[path = "./../../../pipeline/src/agent/idents.rs"]
 pub mod idents;
 #[cfg(test)]
-#[path = "../../../pipeline/src/agent/steps.rs"]
+#[path = "./../../../pipeline/src/agent/steps.rs"]
 pub mod steps;
 #[cfg(test)]
-#[path = "../../../pipeline/src/agent/theplan.rs"]
+#[path = "./../../../pipeline/src/agent/theplan.rs"]
 pub mod theplan;
 #[cfg(test)]
-#[path = "../../../pipeline/src/agent/tiles.rs"]
+#[path = "./../../../pipeline/src/agent/tiles.rs"]
 pub mod tiles;
 
 pub mod answered;
