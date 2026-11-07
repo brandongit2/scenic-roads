@@ -7,6 +7,7 @@
 #   it matches itself and never ends): wait on the PID, `while kill -0 <pid>; do sleep 30; done`;
 # - no open-ended `until grep` wait;
 # - no git write in a checkout that isn't the session's own (tools/dev/git-guard.py, #980).
+set -uo pipefail
 in=$(cat)
 out=$(print -r -- $in | python3 -c '
 import json, re, sys

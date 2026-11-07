@@ -15,7 +15,7 @@
 # "log quiet over N min" (N per run, default 30), "restarting repeatedly" (3+ starts in 30 min).
 # After 6 starts in 30 min a run gives up: `longrun: failed: restarting repeatedly, gave up`.
 # State: ~/Library/Logs/scenic/longrun/<name>/; jobs: ~/Library/LaunchAgents/local.scenic.run.<name>.plist.
-setopt no_unset pipe_fail
+set -uo pipefail
 me=${0:A}
 state_root=$HOME/Library/Logs/scenic/longrun
 agents=$HOME/Library/LaunchAgents

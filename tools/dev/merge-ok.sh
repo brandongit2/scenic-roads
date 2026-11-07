@@ -6,6 +6,7 @@
 # reused from is recorded and holds in turn. A pass holds only when it names the commit's tree
 # (`tree <hash>`, #980): check.sh records nothing for a checkout that changed during its run.
 #   tools/dev/merge-ok.sh <commit>...
+set -uo pipefail
 case ${1:-} in
   -h|--help) print "usage: tools/dev/merge-ok.sh <commit>..."; exit 0 ;;
   ""|-*) print -u2 "merge-ok.sh: which commits? (merge-ok.sh <commit>...)"; exit 2 ;;

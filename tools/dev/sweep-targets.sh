@@ -142,8 +142,9 @@ make_room() {
   rm -rf $cache/*(DN)
   say "emptied the compile cache ($s): below the $room; now $(gb $(free_kb $shared:h)) free"
 }
-# (Sourced by its test, tools/dev/test/sweep-targets.zsh: the definitions alone.)
+# (Sourced by its test, tools/dev/test/sweep-targets.zsh: the definitions alone, its options left as they are.)
 [[ $ZSH_EVAL_CONTEXT == *:file ]] && return 0
+set -uo pipefail
 
 cd $repo || exit 1
 busy=$(for p in $(pgrep -x cargo; pgrep -x rustc); do lsof -a -d cwd -p $p -Fn 2>/dev/null | sed -n 's/^n//p'; done | sort -u)

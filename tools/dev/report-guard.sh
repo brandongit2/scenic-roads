@@ -3,6 +3,7 @@
 # worktree (.claude/worktrees/agent-<agent_id>) that has commits beyond main can't finish (report)
 # until tools/dev/check.sh passed on its current HEAD with a clean tree. Exit 2 shows the reason to
 # the subagent, which keeps going. Agents without a worktree, or with nothing committed, pass.
+set -uo pipefail
 in=$(cat)
 repo=${$(git -C ${0:A:h} rev-parse --path-format=absolute --git-common-dir):h}   # the main checkout, found from this script (also from a worktree copy)
 id=$(print -r -- $in | python3 -c 'import json,sys; print(json.load(sys.stdin).get("agent_id") or "")' 2>/dev/null)

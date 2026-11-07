@@ -13,6 +13,7 @@
 # warnings ("warning:" no
 # lead, the lead or a member out of touch, the lead's loop stuck) and the jobs failed since the last
 # check's stamp ("failed:"). The same flags are on the build page's alerts and the menu bar.
+set -uo pipefail
 case $#:${1:-} in
   0:) ;;
   1:-h|1:--help) print "usage: tools/dev/health.sh   (no arguments)"; exit 0 ;;

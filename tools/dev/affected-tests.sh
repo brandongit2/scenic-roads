@@ -17,6 +17,7 @@
 # tools/dev/test-guard.sh holds agents' cargo test to this set.
 #   tools/dev/affected-tests.sh --nextest <file>  reads such `cargo test` lines from the file and
 #                                          prints the `cargo nextest run` lines running the same tests (#969, below)
+set -uo pipefail
 usage="usage: tools/dev/affected-tests.sh [<commit> | <a>..<b> | --nextest <file>]"
 case $#:${1:-} in
   1:-h|1:--help) print -r -- $usage; exit 0 ;;

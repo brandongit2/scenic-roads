@@ -5,7 +5,7 @@
 # SCENIC_SIM_HOLD=<seconds> waits that long before shutting down; SCENIC_SIM_PORT=<n> serves on another
 # port than 8097 (another agent's run holding it).
 #   tools/dev/safari-sim.sh [out-dir] [device name]     (default: iPhone 18 Pro)
-set -u
+set -uo pipefail
 case ${1:-} in
   -h|--help) print "usage: tools/dev/safari-sim.sh [out-dir] [device name]"; exit 0 ;;
   -*) print -u2 "safari-sim.sh takes no options: $1 (--help)"; exit 2 ;;
@@ -31,7 +31,7 @@ node "$here/touch-test.mjs" --serve --port $port >"$out/server.log" 2>&1 &
 srv=$!
 # (A port already held, someone else's server: their page would be the one shown.)
 sleep 1; kill -0 $srv 2>/dev/null || { srv=; echo "FAIL the server didn't start on $port ($out/server.log); SCENIC_SIM_PORT=<n> for another"; exit 1; }
-xcrun simctl list devices | grep -q "$udid) (Booted)" || { booted=1; xcrun simctl boot "$udid" || exit 1; }
+[[ $(xcrun simctl list devices) == *"$udid) (Booted)"* ]] || { booted=1; xcrun simctl boot "$udid" || exit 1; }
 xcrun simctl bootstatus "$udid" -b >/dev/null
 for tab in overview jobs machines regions nas inputs activity details; do
   xcrun simctl openurl "$udid" "http://localhost:$port/work/?view#$tab"
