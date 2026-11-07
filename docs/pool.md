@@ -439,15 +439,19 @@ delete those no job holds), and its agent reserves it while it holds the lease: 
 the job starts, then that less what the job has written so far (the disk guard's count). The
 lead's own running jobs reserve what their measures say they have still to take (`disk_left`).
 A reservation ends with its lease, at hand-off or give-back. The free disk an ask and its
-capacity say (`disk_mb`; the lead's own asks' likewise) is the free space, on a member with what
-its caches can free (`agent`'s `freeable`: `room::helper_cheap_bytes`, the canopy squares, the
-copies of the records' files and the raw terrain's archives, less the whole copies above; counted
-at most every ten minutes, and again after a job or a freeing), less the owner's room target and
+capacity say (`disk_mb`; the lead's own asks' likewise) is the free space, on a member with a room
+target with what its caches can free (`agent`'s `freeable`: `room::helper_cheap_bytes`, the canopy
+squares, the copies of the records' files and the raw terrain's archives, but the whole copies above
+and the files a job holds now, which room-making leaves; counted at most every ten minutes, and
+again after a job or a freeing), less the owner's room target and
 every live reservation (`reserved_mb`), so a job not yet written isn't counted free twice. A
 member's job granted for what its caches hold starts with the room past the target and the other
 jobs' reservations (a shared step's), and its caches are freed toward its reservation while it
-runs (the freeing toward the target and the reservations, `goal`, the target 0 or not), the disk
-guard behind it (task #1000: counted without its caches, the M4, 37 GB free against its 30 GB
+runs (the freeing toward the target and the reservations, `goal`), the disk guard behind it: freed
+short of what was counted, its growth stops at the target (the guard freezes it there, makes what
+room it can, and gives it back, failed, kept from that Mac an hour). With no target the guard holds
+only a full disk while the freeing runs beside the job's writes, so a member's caches are counted
+only with one (task #1000: counted without its caches, the M4, 37 GB free against its 30 GB
 target and 77 GB of caches, was offered 7 GB for jobs and ran one, 11 of its 14 cores idle). The lead's caches aren't counted: it asks alone with its
 disk unbounded, and beside its jobs a job of its own needs its measured room free as it starts or
 is given back, so one granted for its caches would be granted and given back each loop. There is no

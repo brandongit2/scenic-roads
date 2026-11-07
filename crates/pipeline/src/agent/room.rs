@@ -182,13 +182,13 @@ fn months_bytes(cache: &Path, sources: &NasPath) -> u64 {
 /// crate::agent's `freeable`): the cheap caches but the loose raw tiles (`aws-terrarium/<z>/…`),
 /// which a helper keeps until a job of its own packs them onto the NAS (it can't: only a job
 /// handing off packs; the NAS lacks them), and the pageview months (the NAS is asked which it has).
-/// The copies of the NAS's archives (`aws-terrarium/packs/`) count.
-pub fn helper_cheap_bytes(cache: &Path) -> u64 {
+/// The copies of the NAS's archives (`aws-terrarium/packs/`) count. Not the files `keep` names.
+pub fn helper_cheap_bytes(cache: &Path, keep: &dyn Fn(&Path) -> bool) -> u64 {
     let mut files = Vec::new();
     for d in ["chm10", "blobs", "aws-terrarium/packs"] {
         walk_cheap(cache, d, None, &mut files);
     }
-    files.iter().map(|f| f.1).sum()
+    files.iter().filter(|f| !keep(&f.2)).map(|f| f.1).sum()
 }
 
 /// Whether `p`, in the agent's cache, is this Mac's own to count and delete from: not a link (a

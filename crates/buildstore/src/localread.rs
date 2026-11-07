@@ -196,6 +196,23 @@ pub fn held(cache: &Path) -> u64 {
         + packs
 }
 
+/// Whether `p`, a file under this Mac's cache folder `cache`, is one of the copies `held` counts:
+/// under `blobs/layers/basemap*` or `blobs/work/lakefill*`, or a `blobs/sources/fetched/<id>/*.tar`
+/// (a temporary file, `.tmp`, not).
+pub fn is_shared(cache: &Path, p: &Path) -> bool {
+    let Ok(rel) = p.strip_prefix(cache.join("blobs")) else { return false };
+    let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    if parts.last().is_none_or(|n| n.ends_with(".tmp")) {
+        return false;
+    }
+    match parts.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["layers", top, ..] => top.starts_with("basemap"),
+        ["work", top, ..] => top.starts_with("lakefill"),
+        ["sources", "fetched", _, f] => f.ends_with(".tar"),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

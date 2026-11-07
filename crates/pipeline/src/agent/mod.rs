@@ -2413,8 +2413,8 @@ impl Agent {
             cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
             app: Some(self.app.clone()),
             limit_mb: Some(self.jobs_ceiling()).filter(|&l| l > 0 && !all_new),
-            // (Its free space now and what its caches can free, less the owner's target and its
-            // jobs' reservations: `disk_room`.)
+            // (Its free space now and, with a target, what its caches can free, less the owner's
+            // target and its jobs' reservations: `disk_room`.)
             disk_mb: Some(self.disk_room() >> 20),
             cap: Some(self.capacity(c)),
             want: want(self.job_slots(), self.running_jobs()),
@@ -3551,15 +3551,16 @@ impl Agent {
     }
 
     /// What the caches are freed toward (0: nothing): the target and the jobs' reservations past
-    /// it (`reserved`; with no target, the reservations alone), or, while a job waits for it
-    /// (`floor_short`), the room it needs past it, when more.
+    /// it (`reserved`), or, while a job waits for it (`floor_short`), the room it needs past it,
+    /// when more.
     fn goal(&self) -> u64 {
         let target = self.floor();
         match self.floor_short {
             Some((t, n, _)) if target > 0 && t == target => target.max(n),
-            // (The jobs' reservations past the target: room made for each, `reserved`, a job granted
-            // for what the caches can free among them, `disk_room`.)
-            _ => target.saturating_add(self.reserved(None)),
+            // (With a target, the jobs' reservations past it: room made for each, `reserved`, a job
+            // granted for what the caches can free among them, `disk_room`.)
+            _ if target > 0 => target.saturating_add(self.reserved(None)),
+            _ => target,
         }
     }
 
@@ -6183,33 +6184,39 @@ impl Agent {
         (0..self.slots.len()).filter(|&k| Some(k) != except).map(|k| self.reservation(k)).sum()
     }
 
-    /// The disk a job could have (bytes): the free space, on a member with what its caches can free
-    /// (as last counted, `freeable`), less the owner's room target and the jobs' reservations
-    /// (`reserved`): what an ask says (`disk_mb`). A member's job starts with the room past the
-    /// target and the other jobs' reservations (a shared step's, `need_of`), and its caches are
-    /// freed toward its reservation while it runs (`goal`, `tend_caches`), the disk guard behind
+    /// The disk a job could have (bytes): the free space, on a member with a room target with what
+    /// its caches can free (as last counted, `freeable`), less the owner's room target and the jobs'
+    /// reservations (`reserved`): what an ask says (`disk_mb`). A member's job starts with the room
+    /// past the target and the other jobs' reservations (a shared step's, `need_of`), and its caches
+    /// are freed toward its reservation while it runs (`goal`, `tend_caches`), the disk guard behind
     /// it: so a member whose caches hold the room isn't refused the jobs it could run once they're
     /// freed (task #1000: the M4 ran one job, 11 of its 14 cores idle, 7 GB of its 37 GB free past
-    /// its 30 GB target, its caches holding 77 GB). The lead asks alone with its disk unbounded
-    /// (room made as its job starts); beside its jobs, a job of its own needs its measured room
-    /// free as it starts or is given back, so its caches aren't counted there: granted for them,
-    /// it would be given back each loop.
+    /// its 30 GB target, its caches holding 77 GB). Freed short of the promise, the job's growth
+    /// stops at the target (the disk guard freezes it there, makes what room it can and gives it
+    /// back). With no target the guard holds only a full disk, while the freeing runs beside the
+    /// job's writes: its caches aren't counted. The lead asks alone with its disk unbounded (room
+    /// made as its job starts); beside its jobs, a job of its own needs its measured room free as
+    /// it starts or is given back, so its caches aren't counted there: granted for them, it would
+    /// be given back each loop.
     fn disk_room(&self) -> u64 {
-        let cheap = if self.is_member() { self.cheap.map_or(0, |c| c.1) } else { 0 };
+        let cheap = if self.is_member() && self.floor() > 0 { self.cheap.map_or(0, |c| c.1) } else { 0 };
         self.disk_free().saturating_add(cheap).saturating_sub(self.floor() + self.reserved(None))
     }
 
     /// What room-making can free on a member's disk for a job (bytes): its cheap caches
-    /// (room::helper_cheap_bytes) less the whole copies its jobs read (crate::localread::held:
-    /// counted held by their own rule, a Mac holding one granted no fill for it, so not free twice).
-    /// Counted at most every ten minutes (a walk of thousands of files), and again after a job,
-    /// room-making or a freeing.
+    /// (room::helper_cheap_bytes) but the whole copies its jobs read (crate::localread::is_shared:
+    /// counted held by their own rule, a Mac holding one granted no fill for it, so not free twice)
+    /// and the files a job holds now (store::cachefile::in_use: room-making leaves them). Counted at
+    /// most every ten minutes (a walk of thousands of files), and again after a job, room-making or
+    /// a freeing.
     fn freeable(&mut self) -> u64 {
         match self.cheap {
             Some((at, n)) if at.elapsed() < Duration::from_secs(600) => n,
             _ => {
                 let cache = self.o.home.join("cache");
-                let n = room::helper_cheap_bytes(&cache).saturating_sub(crate::localread::held(&cache));
+                let n = room::helper_cheap_bytes(&cache, &|p| {
+                    crate::localread::is_shared(&cache, p) || store::cachefile::in_use(p)
+                });
                 self.cheap = Some((Instant::now(), n));
                 n
             }
@@ -11487,8 +11494,10 @@ mod tests {
 
     /// Task #1000: the disk a member's ask says counts what its caches can free (the M4: 37 GB
     /// free, a 30 GB target, its caches 77 GB, was granted only jobs of 7 GB, one at a time), but
-    /// the whole copies its jobs read (held by their own rule); a job granted for it is room made
-    /// for, beside other jobs too, toward its reservation (`goal`), a target set or not.
+    /// the whole copies its jobs read (held by their own rule) and the files a job holds now
+    /// (room-making leaves them); a job granted for it is room made for, beside other jobs too,
+    /// toward its reservation (`goal`). With no target (the disk guard holds only a full disk),
+    /// the caches aren't counted.
     #[test]
     fn the_disk_for_jobs_counts_what_the_caches_can_free() {
         let d = tempfile::tempdir().unwrap();
@@ -11514,9 +11523,19 @@ mod tests {
         file("chm10/N40W080.tif", 27 * g);
         file("blobs/ab/abcdef", 41 * g);
         file("blobs/layers/basemap-2026-10-01.pmtiles", 2 * g);
+        file("blobs/sources/fetched/s1/6-1-2.0123456789abcdef.tar", g);
+        file("chm10/N41W080.tif", 5 * g);
+        // (A job reading a square: held, so room-making leaves it.)
+        let reading = std::fs::File::open(cache.join("chm10/N41W080.tif")).unwrap();
+        store::cachefile::lock_shared(&reading).unwrap();
         a.free_set = Some(37 * g);
         a.room_target = Some(room::Target { bytes: 30 * g, by: String::new(), at: 0 });
-        assert_eq!(a.freeable(), 68 * g, "the canopy and the records' copies; the basemap's copy held");
+        assert_eq!(
+            a.freeable(),
+            68 * g,
+            "the canopy and the records' copies; the basemap's and the depth pack's copies, and the square a job reads, held"
+        );
+        drop(reading);
         assert_eq!(a.disk_room(), 75 * g);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert_eq!(a.capacity(&cond).disk_mb, 75 << 10);
@@ -11525,7 +11544,7 @@ mod tests {
         a.slots[1].reserve_mb = Some(20 << 10);
         assert_eq!((a.disk_room(), a.goal()), (55 * g, 50 * g));
         a.room_target = None;
-        assert_eq!(a.goal(), 20 * g, "no target: the reservations alone");
+        assert_eq!(a.disk_room(), 17 * g, "no target: the free space alone, less the reservations");
     }
 
     /// Task #970: a member's running job counts at the peak its grant was packed at (`Slot::peak_mb`,

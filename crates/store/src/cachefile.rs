@@ -563,6 +563,25 @@ pub fn try_remove(path: &Path) -> Removed {
     }
 }
 
+/// Whether a job holds the cache file at `path` now, so `try_remove` would leave it: its exclusive
+/// lock not to be had without waiting (taken and let go at once; a link, or a file not to be opened,
+/// counts as held, as `try_remove` leaves it). Not there: not held.
+pub fn in_use(path: &Path) -> bool {
+    #[cfg(unix)]
+    return crate::spawn::no_child_starting(|| {
+        use std::os::unix::fs::OpenOptionsExt;
+        match File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) {
+            Ok(f) => lock(&f, libc::LOCK_EX | libc::LOCK_NB).is_err(),
+            Err(e) => e.kind() != io::ErrorKind::NotFound,
+        }
+    });
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// Deletes the cache files at `paths` together, or none: each locked exclusively first (not
 /// waited for), all unlinked only when every one could be (a set whose files mean something only
 /// together: the DEM seed). Their bytes when deleted; None when one is in use.
