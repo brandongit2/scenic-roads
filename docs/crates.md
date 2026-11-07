@@ -1111,8 +1111,9 @@ commit; re-exports at the old paths as before.
       - **The runtime's tests run on the real plan:** ~430 of them reach it by `seam::for_tests()`
         (a planner, a coordinator, the forecast), so they couldn't move to pipeline without making
         most of the runtime's insides public, nor run on a stand-in table. agentcore's unit tests
-        compile the plan's modules in (`#[cfg(test)] #[path = "../../../pipeline/src/agent/…"]` in
-        agent/mod.rs, the families as dev-dependencies and re-exported under `cfg(test)` at
+        compile the plan's modules in (`#[cfg(test)] #[path = "./../../../pipeline/src/agent/…"]` in
+        agent/mod.rs, "./" so that check-reuse.py reads them as `#[path]`s and not as a macro's
+        crate-relative "../" literal leaving the repo, the families as dev-dependencies and re-exported under `cfg(test)` at
         pipeline's paths, as is an `out` without `open`), so every runtime test is where it was,
         unchanged. The plan's own tests stay pipeline's: agentcore's build script sets
         `in_agentcore`, and their modules are `#[cfg(all(test, not(in_agentcore)))]`. The cost: a
