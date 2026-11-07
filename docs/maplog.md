@@ -1,6 +1,6 @@
 # The map and its log
 
-**Task #883: steps 1 to 6 and 7b of §8 built, step 7 in shadow; 8a, 8b, 9 and 10 planned (status and
+**Task #883: steps 1 to 6, 7b and 9 of §8 built, step 7 in shadow; 8a, 8b and 10 planned (status and
 what's left: §11).** This doc says how catalogues and GC give way to one current map of the served
 files plus an append-only log of its changes, which clients follow by cursor, and a GC that runs all
 the time in small steps it can resume. No catalogue is written or read since step 6. Until steps 8a
@@ -634,7 +634,7 @@ server has spoken the log for a day (the #642 gate, as coordination.md §8).
 | 7b (built) | **The mirror is a client** (§6.2): the server's mirror sync asks `/map/changes` as `mirror/<host>` each round with the oldest `seq` whose files it still copies (its cursor, made from the downloads' pins and the files here), the map its round copies and the last it got through at (`&copying=`, `&synced=`); the lead keeps them on the cursor and notes them in the history (`mirror-start`, `mirror-end`) for `pubtimes`, as it does the adoptions; a reset moves the Updates of older maps on to the one served | `data::publish_event`, the mirror's `MIRROR_MARKS`, `pubtimes::SERVERS`, `SERVERS_MAX`, `append_server`, `read_servers`, `ServerEvent`, `MirrorMarks`, `state/publish/` | `a_mirror_copying_an_older_seq_holds_its_cursor` (an Update of an older map holds it while the map served moves on, through rounds cut short and a restart; caught up once its files are here); `a_cursor_older_than_the_log_resyncs_the_updates`; `a_client_is_answered_what_follows_its_seq_and_its_cursor_noted` (a mirror the lead didn't hold is reset); `mirror_times_come_from_the_history` |
 | 8a | **The map's roots remove** (§11.4): every name the `gc` job removes is marked deleted in the queue before it's removed, not only its due set's and not after the job, so the merge refuses a hand-off reusing any of them; then `REPORT_ONLY` and its assert go. Today's daily `gc` job and its 14-day window stay. Not before 15 Nov 2026 07:12 (the last catalogue, 1066, written 1 Nov 07:11:48, plus 14 days) | `REPORT_ONLY`, `REPORTS_ONLY`, the assert, `report_only*` in the report, the check's `report-only` reason | `every_removal_is_marked_deleted_before_it_goes`; `a_hand_off_by_http_reusing_a_removed_name_is_redone`; `the_map_s_roots_remove_what_nothing_names` |
 | 8b | **GC runs by the queue:** chunks of 200 whenever quiet, resumable; the orphan sweep; today's other sweeps as chunked cursors | `run_once`'s catalogue reading and folder sweep, `remove_unless_touched` and `Out::put_file`'s touch, `TOMB` and `put_back`, the 14-day catalogue window, the `gc` job's daily schedule | `gc_resumes_mid_chunk_after_a_kill` (agent killed between two deletions; next chunk starts at the first not gone, nothing deleted twice or kept forever); `gc_yields_to_the_budget`; `an_orphan_is_queued_only_after_its_age`; `the_queue_rebuilds_after_a_lead_disk_restore` |
-| 9 | **The old catalogues go:** one GC pass removes `catalog/` and `catalog-held/` on the NAS, and each Mac its `catalog/` and `~/Library/Caches/scenic/catalogue/`. Nothing reads a catalogue since step 6 and GC roots on none, so a file only an old catalogue named is GC's as any file nothing names (on 7 Nov, 5,827 of catalogue 1063's 21,233 files weren't in map 1689: until 8a only `REPORT_ONLY` kept them). But the agent's NAS check looked at `catalog/` until this step (`agent::answers`, now `map/`): an older app sees the NAS away without the folder | the folders | — |
+| 9 (built; runs once every member is on it) | **The old catalogues go:** the lead's daily `gc` job, asked `--old-catalogues` once every member's heartbeat says its app's NAS check looks at `map/` (`Beat::checks_map`, `pool::Side::all_check_map`), removes `catalog/`, `catalog-held/` and the switches `state/pool/delta-catalog` and `state/pool/map-serve` on the NAS (`gc::remove_old_catalogues`: one `rm -rf` over SSH from the lead, else over SMB file by file, a safe point between folders); each Mac's agent removes its `catalog/` (the map server's, in the app's folder) and `~/Library/Caches/scenic/catalogue/` at its start (`gc::remove_this_macs_catalogues`: every Mac runs an agent, the map server runs on the mini alone and a laptop's on demand). Nothing reads a catalogue since step 6 and GC roots on none, so a file only an old catalogue named is GC's as any file nothing names (on 7 Nov, 5,827 of catalogue 1063's 21,233 files weren't in map 1689). The gate: the agent's NAS check looked at `catalog/` until this step (`agent::answers`, now `agent::NAS_CHECK`, `map/`), and an older app sees the NAS away without it | the folders and switches | `the_old_catalogues_folders_go_whole`; `the_old_catalogues_wait_for_every_member_s_map_check`; `the_old_catalogues_go_only_once_every_app_checks_by_the_map` (on a private root, after the pass an agent checking by `catalog/` sees the NAS away, this app's sees it); `this_macs_old_catalogues_go` |
 | 10 | docs: formats.md (Catalogue → the map and its snapshot), storage.md (GC), macs.md (the server's sync, the mirror), building.md (publishing, the switches), pool.md §7.2/§10; this doc folded in | — | — |
 
 Order: 1, 2, 3 in turn; 4 and 5 after 3, in either order; 6 after 3, 4 and 5 and the gate; 7 after
@@ -689,7 +689,7 @@ and the Macs go with step 9, GC's with steps 8a and 8b.
 
 ## 11. Where it stands (6 Nov 2026), and what's left
 
-**Status: step 7b built (6 Nov); 8a, 8b, 9 and 10 planned.** The rest of this doc is the design; this section is
+**Status: steps 7b (6 Nov) and 9 (7 Nov) built; 8a, 8b and 10 planned.** The rest of this doc is the design; this section is
 the walk of every reader and writer as the code is today (references at commit 36bb70a2), and the
 steps left.
 
@@ -709,7 +709,7 @@ steps left.
 | The plan, names-todo, regions | `crates/pipeline/src/agent/plan.rs:2214` (`map_now`), `crates/landmarks/src/namestodo.rs:405` (`inputs_key`, keyed by the log's marks), `regionsview`, `builtview` | the head's catalogue (`Here`) | nothing |
 | The menu app | `tools/status/main.swift:445`-`467` | the status's regions' `map_at` alone | nothing: it never read catalogues |
 | Test roots | `lakefill catalog-add` (`crates/pipeline/src/cli/progs.rs:354`), `coastcheck`, `store::testkit::map_root` | they write a snapshot | nothing |
-| The NAS's old folders | `catalog/` (1,041 files, 479 MB, the newest `1066.delta.json.zst` of 1 Nov 07:11), `catalog-held/` (176 kB) | no catalogue read; `catalog/` looked at by an older app's NAS check (this one's: `map/`) | 9 |
+| The NAS's old folders | `catalog/` (1,041 files, 479 MB, the newest `1066.delta.json.zst` of 1 Nov 07:11), `catalog-held/` (176 kB) | no catalogue read; `catalog/` looked at by an older app's NAS check (this one's: `map/`) | 9 (built): removed by the `gc` job once every member's app checks by `map/` |
 
 Cut with the next step that touches it: `cataloguesview::Source` (`:288`) has one implementation,
 the feed (`:295`; the tests' is the feed too): the trait can go.
@@ -742,8 +742,9 @@ clients keep their map, and one with none reads the NAS's snapshot (§5.2).
 2. **8b, GC by the queue**: chunks, the orphan sweep, the other sweeps as cursors; the daily job,
    the folder sweep, the 14-day window and the touch go. After 8a (7b, the mirror's cursor that
    makes it safe for offline downloads, is built).
-3. **9, the old catalogues go**: `catalog/` and `catalog-held/` on the NAS (479 MB), and any Mac's
-   server's `catalog/`. Once every member's app checks the NAS by `map/`, not `catalog/`.
+3. **9, the old catalogues go** (built): `catalog/` and `catalog-held/` on the NAS (479 MB) by the
+   `gc` job once every member's app checks the NAS by `map/`, not `catalog/`; each Mac's copies at
+   its agent's start.
 4. **10, docs**: formats.md, storage.md, macs.md, building.md, pool.md, and this doc folded in.
 
 **With #916 step 6d** (docs/crates.md §6.3). #883's steps left touch one place in cli: `scenic

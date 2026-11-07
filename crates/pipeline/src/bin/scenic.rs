@@ -1385,8 +1385,13 @@ fn main() -> Result<()> {
             }
             pipeline::sys::raise_open_files();
             // (Every Mac's app kept current from here, the map server's Mac too: pipeline::appupdate.)
+            // (And its copies of old catalogues gone, docs/maplog.md §8 step 9.)
             if places.home.is_none() {
                 pipeline::appupdate::spawn(app_home(), o.root.clone());
+                let user = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+                for d in gc::remove_this_macs_catalogues(&app_home(), &user) {
+                    eprintln!("agent: removed {} (an old catalogue's copy)", d.display());
+                }
             }
             let mut a = agent::Agent::new(o)?;
             a.run()?;
@@ -1577,7 +1582,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
-        Some(Cmd::Gc { dry_run, days, depth_keep, shadow_due, root: r }) => {
+        Some(Cmd::Gc { dry_run, days, depth_keep, shadow_due, old_catalogues, root: r }) => {
             // (The depth's targets not read: said, and no depth name dropped this run.)
             let keep = depth_keep.as_deref().and_then(|p| {
                 gc::DepthKeep::read(p, now_s())
@@ -1586,7 +1591,8 @@ fn main() -> Result<()> {
                     .flatten()
             });
             let r = pipeline::timings::job("gc", || {
-                gc::run(&root(&r.root, true)?, days, dry_run, keep.as_ref(), shadow_due.as_deref())
+                let asked = gc::Asked { dry_run, depth: keep.as_ref(), shadow: shadow_due.as_deref(), old_catalogues };
+                gc::run(&root(&r.root, true)?, days, &asked)
             })?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())

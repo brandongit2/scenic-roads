@@ -1280,6 +1280,10 @@ impl Planner {
             if let Some(due) = self.shadow_gc() {
                 cmd.extend(["--shadow-due".into(), s(&due)]);
             }
+            // (docs/maplog.md §8 step 9: once every member's app checks the NAS by map/.)
+            if self.inp.pool_seen.as_ref().is_some_and(|p| p.all_check_map) {
+                cmd.push("--old-catalogues".into());
+            }
             out.push(JobSpec {
                 id: "gc".into(),
                 what: "gc".into(),

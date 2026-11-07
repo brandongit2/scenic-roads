@@ -973,6 +973,10 @@ pub struct PoolView {
     /// The pool as the controls show it (crate::agent::lead: docs/pool.md §10, §11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead: Option<lead::View>,
+    /// Every member's heartbeat says its app's NAS check looks at `map/` (pool::Side::all_check_map):
+    /// the lead's `gc` job removes the NAS's old catalogues (gc::OLD_CATALOGUES).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_check_map: bool,
 }
 
 impl PoolView {
@@ -9703,6 +9707,14 @@ fn first_secs(step: &str) -> f64 {
 /// An agent for a test: it reads the test's fixed Mac (cond::Mac::TEST), not the one running it.
 #[cfg(test)]
 fn test_agent(o: Options) -> Result<Agent> {
+    // (The NAS's answer as the real probe decides it, by its folder, but at once: a loaded Mac's
+    // threads can't make a test's NAS look away.)
+    test_agent_with(o, |r| r.join(NAS_CHECK).is_dir())
+}
+
+/// `test_agent`, the NAS's answer by `probe`.
+#[cfg(test)]
+fn test_agent_with(o: Options, probe: fn(&NasRoot) -> bool) -> Result<Agent> {
     // (Never the real NAS or the app's home: a test with no root would find the mounted NAS.)
     let root = o.root.as_ref().expect("a test agent needs a root of its own (a temp folder)");
     assert!(
@@ -9711,11 +9723,9 @@ fn test_agent(o: Options) -> Result<Agent> {
         root.display()
     );
     assert!(!store::nasfs::is_live_path(&o.home), "a test agent's home is the app's real one: {}", o.home.display());
-    // (The NAS's answer as the real probe decides it, by its folder, but at once: a loaded Mac's
-    // threads can't make a test's NAS look away.)
     // (Its jobs go out through the budgets' proxy, as every agent's: started as its first loop
     // would.)
-    Agent::new_with(o, |r| r.join(NAS_CHECK).is_dir()).map(|mut a| {
+    Agent::new_with(o, probe).map(|mut a| {
         a.mac = cond::Mac::TEST;
         if let (Some(r), true, false) = (a.o.root.clone(), a._lock.is_some(), a.o.dry_run) {
             a.tend_proxy(&r);
@@ -13753,6 +13763,69 @@ mod tests {
             .any(|j| j.id == "backup"));
     }
 
+    /// #883 step 9 (docs/maplog.md §8): the lead's `gc` job removes the NAS's old catalogues only
+    /// while every member's heartbeat says its app checks the NAS by `map/` (the pool's view; the
+    /// gate itself: lead's the_old_catalogues_wait_for_every_member_s_map_check). The gate is
+    /// needed: on a private root, once the pass has run, an agent whose check looks at `catalog/`
+    /// (an older app's) sees the NAS away, while this app's sees it.
+    #[test]
+    fn the_old_catalogues_go_only_once_every_app_checks_by_the_map() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
+        let mut m = BTreeMap::new();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        crate::inputs::regions::accept_fixture(
+            &nas,
+            (&root).into(),
+            &[recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }],
+            &mut m,
+        );
+        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
+        put(&root.join("catalog/1066.delta.json.zst"), b"old");
+        put(&root.join("catalog/1065.json.zst"), b"old");
+        put(&root.join("catalog-held/1060.json.zst"), b"old");
+        let old_check: fn(&NasRoot) -> bool = |r| r.join("catalog").is_dir();
+        let opts = |home: &str| Options {
+            root: Some(nas.clone()),
+            home: d.path().join(home),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: true,
+            once: true,
+            member: false,
+        };
+        let mut a = test_agent(opts("home")).unwrap();
+        let gc_cmd = |a: &mut Agent, every: bool| -> Vec<String> {
+            a.pool_seen = Some(PoolView {
+                member: "m-a".into(),
+                role: pool::Role::Lead,
+                gates: Default::default(),
+                members: vec!["m-a".into(), "m-b".into()],
+                heard: 2,
+                unacked: 0,
+                restart: None,
+                lead: None,
+                all_check_map: every,
+            });
+            let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+            let plan = a.planner().plan(&nas, &c, &mut Vec::new());
+            plan.into_iter().find(|j| j.id == "gc").expect("gc due").cmd
+        };
+        assert!(!gc_cmd(&mut a, false).iter().any(|c| c == "--old-catalogues"), "a member's app looks at catalog/");
+        assert!(gc_cmd(&mut a, true).iter().any(|c| c == "--old-catalogues"));
+        // The pass, as the job runs it: the old folders go, nothing else.
+        let r = gc::run(&nas, 14, &gc::Asked { old_catalogues: true, ..Default::default() }).unwrap();
+        assert_eq!(r.old_catalogues, ["catalog", "catalog-held"], "(no old switch on this root)");
+        assert!(!root.join("catalog").exists() && !root.join("catalog-held").exists());
+        assert!(root.join(NAS_CHECK).is_dir() && root.join("state/build/manifest.json").exists());
+        // This app's check sees the NAS; an older app's, by catalog/, sees it away.
+        a.round().unwrap();
+        assert!(read_status(Some(&nas), &d.path().join("home")).unwrap().conditions.nas);
+        let mut old = test_agent_with(opts("old"), old_check).unwrap();
+        old.round().unwrap();
+        assert!(!read_status(Some(&nas), &d.path().join("old")).unwrap().conditions.nas, "an older app's check");
+    }
+
     /// The gate in the agent (docs/inputs.md §4.2, §4.3, §4.7): the inputs folders listed off the loop,
     /// a unit's check planned before every other job while its key isn't the one recorded (a full
     /// one daily), the status's entry; an acceptance asked of the agent written by it.
@@ -17672,6 +17745,7 @@ mod pool_tests {
                 lead: Some(lead::LeadOf { term: 539, member: "m-m1".into(), host: "m1".into(), ..Default::default() }),
                 ..Default::default()
             }),
+            all_check_map: false,
         });
         // Resumed: the old lead's broker answers with nothing (what the M4 saw for hours).
         let mut w = Vec::new();

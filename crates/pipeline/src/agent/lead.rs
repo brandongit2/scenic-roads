@@ -912,6 +912,37 @@ mod tests {
             assert!(!mf.exists() && a.run.today.is_none());
         }
 
+        /// #883 step 9's gate (docs/maplog.md §8): the NAS's old catalogues go only while every
+        /// member's heartbeat says its app's NAS check looks at `map/`. A member on an older app (its
+        /// heartbeat without `checks_map`), or one whose heartbeat isn't there, holds them: its check
+        /// looks at `catalog/` and would see the NAS away (gc's test of the pass shows it).
+        #[test]
+        fn the_old_catalogues_wait_for_every_member_s_map_check() {
+            use crate::pool::reachable::PROBE_S;
+            let d = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = pool(d.path());
+            pass_all(&mut [&mut b, &mut a], PROBE_S);
+            a.go();
+            assert!(a.run.side.all_check_map && a.run.pool_view().all_check_map, "{:?}", a.run.side.beats);
+            let hb = a.root.join(crate::pool::beat::path(&b.id())).unchecked_path();
+            let kept = std::fs::read(&hb).unwrap();
+            let mut v: serde_json::Value = serde_json::from_slice(&kept).unwrap();
+            assert_eq!(v.as_object_mut().unwrap().remove("checks_map"), Some(serde_json::Value::Bool(true)));
+            std::fs::write(&hb, serde_json::to_vec(&v).unwrap()).unwrap();
+            a.pass(PROBE_S);
+            a.go();
+            assert!(!a.run.side.all_check_map && !a.run.pool_view().all_check_map, "B's app looks at catalog/");
+            std::fs::remove_file(&hb).unwrap();
+            a.pass(PROBE_S);
+            a.go();
+            assert!(!a.run.side.all_check_map, "a member without a heartbeat");
+            // B back on this app: they may go.
+            std::fs::write(&hb, &kept).unwrap();
+            pass_all(&mut [&mut b, &mut a], crate::pool::beat::BEAT_EVERY_S + PROBE_S);
+            a.go();
+            assert!(a.run.side.all_check_map);
+        }
+
         /// Task #881: the mini is the fixed lead. A term naming a member (an elected lead's, from
         /// before) isn't led by it: the declared lead makes the next. With the lead gone, the member
         /// makes no term and leads nothing, however long; every view says so.

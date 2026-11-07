@@ -352,6 +352,10 @@ pub struct Side {
     /// older app on that Mac), says its app reads the term's snapshot (`Beat::reads_records`); a
     /// member with none read counts as one that doesn't. False until read.
     pub readers_ready: bool,
+    /// Whether every member's heartbeat, read as `readers_ready`'s, says its app's NAS check looks
+    /// at `map/` (`Beat::checks_map`): the NAS's old catalogues may go (crate::agent::gc). False
+    /// until read.
+    pub all_check_map: bool,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
     /// Its clocks (a test's virtual one: `set_clock`).
@@ -457,6 +461,7 @@ impl Side {
             beats: Vec::new(),
             beats_at: None,
             readers_ready: false,
+            all_check_map: false,
             ahead: 0,
             clock: store::clock::real(),
         }))
@@ -1745,6 +1750,7 @@ impl Run {
                     self.side.http.set_nas_too(crate::coord::beats::old_in_touch(read.iter().flatten(), &me, now));
                 }
                 self.side.readers_ready = read.iter().all(|h| h.as_ref().is_some_and(|h| h.pool.reads_records));
+                self.side.all_check_map = read.iter().all(|h| h.as_ref().is_some_and(|h| h.pool.checks_map));
                 self.side.beats = read.into_iter().flatten().filter(|h| !h.shadow).map(|h| h.pool).collect();
                 self.side.beats_at = Some(now);
             }
@@ -1812,6 +1818,7 @@ impl Run {
             unacked: self.side.driver().mine().unacked(),
             restart: self.restart.clone(),
             lead: self.controls.view.clone(),
+            all_check_map: self.side.all_check_map,
         }
     }
 
@@ -2576,6 +2583,7 @@ mod tests {
             unacked: 0,
             restart: None,
             lead: None,
+            all_check_map: false,
         };
         assert_eq!(super::super::PoolView::heard_of(Some(&v)), 2);
         assert_eq!(super::super::PoolView::heard_of(None), 1);

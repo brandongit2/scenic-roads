@@ -1355,6 +1355,7 @@ impl Driver {
             addresses: Vec::new(),
             reach: Vec::new(),
             reads_records: true,
+            checks_map: true,
         }
     }
 }

@@ -43,6 +43,12 @@ pub struct Beat {
     /// before it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub reads_records: bool,
+    /// Its app's NAS check looks at the map's snapshots (`map/`, crate::agent::NAS_CHECK), not the
+    /// old `catalog/`: the lead's GC removes the old catalogues' folders once every member's
+    /// heartbeat says so (crate::agent::gc::OLD_CATALOGUES, docs/maplog.md §8 step 9). Left out by
+    /// apps before it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub checks_map: bool,
 }
 
 /// The path of member `member`'s heartbeat.

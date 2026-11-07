@@ -276,7 +276,7 @@ Each step ships alone and keeps the build running; each ends with its tests.
    owner may overrule for 7b: the files deleted). Tests: the server's
    `a_server_on_demand_keeps_the_map_as_it_moves` and its command line's (`--on-demand` takes no
    `--listen`; `a_server_on_demand_ends_at_once_when_its_port_is_held`); by hand on the M1, 6 Nov (below). Either way `catalog/` and
-   `~/Library/Caches/scenic/catalogue` go with #883 step 9, not here.
+   `~/Library/Caches/scenic/catalogue` go with #883 step 9 (each Mac's agent removes them at its start), not here.
 8. **The member's NAS fallbacks**, with #878's gates (§8.4): nothing to build in #882; each gate's
    deletion takes a member's share of it (the `nas-switch` pool, `beat-nas`'s status copy, the pool
    thread's mail and journal), and `pool::term::role` moves out of `pool::term` before #878 step 8
@@ -412,7 +412,7 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   - what the server keeps for offline use: `accepted/` (0.9 GB, the translations' and descriptions'
     accepted versions), `names/` (3 MB), `profiles.json`, `region-areas.json`, `map-page`.
   Not needed by anything: `catalog/`, `~/Library/Caches/scenic/catalogue` (no catalogue read since
-  #883 step 6; #883 step 9 deletes them) and the home's `regions.json` (no code reads it; written
+  #883 step 6; #883 step 9's agent removes them at its start) and the home's `regions.json` (no code reads it; written
   22 Oct). **7a (the PM's decision; built):** the menu bar's Open the Map on This Mac (every Mac,
   tools/status `startMapHere`) opens http://localhost:7311; where nothing answers there and no
   server is installed (`~/Library/LaunchAgents/local.scenic.server.plist`: the map's Mac's), it
@@ -504,7 +504,7 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   none. 7b (built) gave the mirror its cursor; on 6 Nov only the mini runs a mirror, so no
   laptop's cursor holds GC. 8a (not before 15 Nov) and 8b are the lead's. With 7a, a laptop's two
   cursors exist only while its map runs and `CURSOR_TTL_S` drops them, so it never holds GC more
-  than 7 days. Step 9 owns `catalog/` on every Mac.
+  than 7 days. Step 9 (built) removes `catalog/` on every Mac, at its agent's start.
 
 ### 8.5 What the steps left save
 

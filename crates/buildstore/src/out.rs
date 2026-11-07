@@ -937,6 +937,26 @@ pub fn verify(
     Ok((ok.into_iter().map(|(n, _)| n.clone()).collect(), bad.into_iter().map(|(n, _)| n.clone()).collect()))
 }
 
+/// Removes folders `dirs` (relative to the project folder) on the NAS itself, whole, by one `rm -rf`
+/// over SSH (`ssh`, `nas_root` as for `verify`): a folder of many small files goes in one call, not
+/// one SMB deletion a file (the share takes some tens a second). Bounded as `verify`'s call is (its
+/// deadline that of a call hashing nothing).
+pub fn remove_on_nas(ssh: &[&str], nas_root: &str, dirs: &[&str]) -> Result<()> {
+    if dirs.is_empty() {
+        return Ok(());
+    }
+    crate::nasssh::ssh_opened(ssh)?;
+    let mut cmd = store::spawn::command(ssh[0]);
+    cmd.args(&ssh[1..]);
+    let quoted: Vec<String> = dirs.iter().map(|d| format!("'{}'", d.replace('\'', "'\\''"))).collect();
+    cmd.arg(format!("cd '{nas_root}' && rm -rf -- {}", quoted.join(" ")));
+    let deadline = verify_deadline(0, testing());
+    let out = output_within(&mut cmd, deadline, verify_grace(testing()))
+        .map_err(|e| anyhow::Error::new(e).context(format!("ssh to the NAS removing {}", dirs.join(", "))))?;
+    anyhow::ensure!(out.status.success(), "ssh to the NAS: {}", String::from_utf8_lossy(&out.stderr).trim());
+    Ok(())
+}
+
 /// Uploads local file `local` under `logical` to `root` (`Out::put_file`), the local file removed
 /// after: its content name, and its SHA-256 when it was copied. An identical file already on the
 /// NAS is reused (and touched), not copied again; one of the same name with another size is an

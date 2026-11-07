@@ -26,8 +26,8 @@ map/           <seq>.json.zst: the map whole (every file it reads, by content na
                hourly snapshot of its log, the newest three (docs/maplog.md §4.4)
 map-held/      <seq>.json.zst: the map the catalog step would publish, kept back for review (while
                inputs/hold-catalog exists), the newest three
-catalog/, catalog-held/  the catalogues of before docs/maplog.md §8, step 6: read by nothing, left
-               for step 9 to remove
+catalog/, catalog-held/  the catalogues of before docs/maplog.md §8, step 6: read by nothing; the
+               gc job removes them once every member's app checks the NAS by map/ (step 9)
 app/           published app versions; current.json, previous.json
 settings/      profiles.json: the map's settings profiles, shared by every user (crates/server/src/profiles.rs;
                the one file the map's server writes on the NAS)

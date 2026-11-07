@@ -509,7 +509,8 @@ read as a catalogue: `store::map::Map::catalogue` makes this value of it (`n` it
 its batch's time). The `catalog` step posts the map it builds in this form, zstd with its content
 checksum, to the lead's agent (`maplog/posted.json.zst`, docs/maplog.md §6.7). No catalogue file is
 written or read on the NAS since docs/maplog.md §8, step 6: the old `catalog/` and `catalog-held/`
-folders there are left for step 9 to remove, and nothing reads them.
+folders there, read by nothing, go by the `gc` job once every member's app checks the NAS by `map/`
+(step 9).
 
 Spelling: the code and docs say catalogue, but every stored or wire name keeps the old spelling, because the
 NAS holds years of data and the pool runs mixed app versions: the file `inputs/hold-catalog`, the steps

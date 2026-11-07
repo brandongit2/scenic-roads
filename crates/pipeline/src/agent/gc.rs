@@ -2,8 +2,9 @@
 //! neither the map (the lead's now, and its snapshots on the NAS), nor a name the lead's GC queue
 //! freed within the last `keep_days`, nor the build's manifest nor (with the pool) its newest
 //! records or a journal entry they don't reflect yet (`unmerged`) references, and that is itself
-//! older than `keep_days`; abandoned `.tmp` files. (Old catalogues aren't read or removed: none is
-//! written since docs/maplog.md §8, step 6; step 9 removes the folder.)
+//! older than `keep_days`; abandoned `.tmp` files. (No catalogue is read: none is written since
+//! docs/maplog.md §8, step 6. Their old folders, `OLD_CATALOGUES`, go by a pass of their own once
+//! every member's app checks the NAS by `map/`: `remove_old_catalogues`, step 9.)
 //! So it runs beside other jobs: a job's files are young, or named by its entry once it's written.
 //!
 //! Deletions go through SMB: on this share they're permanent (no Recycle Bin entry; tested
@@ -99,6 +100,10 @@ pub struct Report {
     pub forecast_days_archived: usize,
     /// Days of the forecast inputs' archive removed (crate::agent::fcinputs::KEEP_S), or counted.
     pub forecast_input_days_removed: usize,
+    /// What the NAS kept of old catalogues removed this run (`OLD_CATALOGUES`; a dry run: there to
+    /// remove), asked (`Asked::old_catalogues`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub old_catalogues: Vec<String>,
     /// GC's queue's due set (shadow, crate::agent::gcqueue) checked against this run's removals, in
     /// words; the check itself, written beside the due set for the lead's agent.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -611,18 +616,26 @@ fn meta(listed: u64, stats: u64, deletes: u64) {
     }
 }
 
+/// What a run is asked beside its window (the `gc` job's flags, `scenic gc`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Asked<'a> {
+    /// Says what it would do, and does none of it.
+    pub dry_run: bool,
+    /// The depth's current targets (`DepthKeep`; None: no depth name dropped).
+    pub depth: Option<&'a DepthKeep>,
+    /// GC's queue's due set (crate::agent::gcqueue::SHADOW_DUE), checked against what this run
+    /// removes and the check written beside it (`SHADOW_CHECK`); one that can't be read is said, and
+    /// not checked.
+    pub shadow: Option<&'a std::path::Path>,
+    /// What the NAS kept of old catalogues removed (`remove_old_catalogues`): the lead asks it once
+    /// every member's app checks the NAS by `map/` (crate::pool::beat::Beat::checks_map).
+    pub old_catalogues: bool,
+}
+
 /// `run_once`, its NAS work counted from its start and noted as it ends (`note_cost`), in a job
 /// (`SCENIC_COSTS` set).
-/// `depth`: the depth's current targets (`DepthKeep`; None: no depth name dropped). `shadow`: GC's
-/// queue's due set (crate::agent::gcqueue::SHADOW_DUE), checked against what this run removes and
-/// the check written beside it (`SHADOW_CHECK`); one that can't be read is said, and not checked.
-pub fn run(
-    root: &store::nasfs::NasRoot,
-    keep_days: u64,
-    dry_run: bool,
-    depth: Option<&DepthKeep>,
-    shadow: Option<&std::path::Path>,
-) -> Result<Report> {
+pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, asked: &Asked) -> Result<Report> {
+    let Asked { dry_run, depth, shadow, old_catalogues } = *asked;
     STARTED.get_or_init(std::time::Instant::now);
     if std::env::var_os("SCENIC_COSTS").is_some() {
         COUNTING.set(true);
@@ -690,6 +703,20 @@ pub fn run(
                 rep.forecast_input_days_removed = h.files_removed;
             }
             Err(e) => rep.warnings.push(format!("forecast inputs not pruned: {e:#}")),
+        }
+        // The old catalogues' folders, once asked (docs/maplog.md §8, step 9); a failure is said,
+        // never fails GC, and the next run takes up what's left.
+        if old_catalogues {
+            let nas_root = store::nas::on_nas(&root.unchecked_path());
+            let ssh = nas_ssh();
+            let ssh: Vec<&str> = ssh.iter().map(String::as_str).collect();
+            match remove_old_catalogues(root, nas_root.as_deref().map(|n| (&ssh[..], n)), dry_run) {
+                Ok(o) => {
+                    rep.warnings.extend(o.warnings);
+                    rep.old_catalogues = o.removed;
+                }
+                Err(e) => rep.warnings.push(format!("old catalogues not removed: {e:#}")),
+            }
         }
         // The uploads still pending checked on the NAS itself, last (the longest, hashing on the
         // NAS); a failure is said, never fails GC. Not a project folder on the NAS's share (a
@@ -1005,6 +1032,124 @@ fn run_once(
     Ok(rep)
 }
 
+/// What the NAS kept of the catalogues before docs/maplog.md §8 step 6 (step 9): their folders and
+/// the switches of steps 3 and 6 (`delta-catalog`, `map-serve`), read by nothing since, and removed
+/// once every member's app checks the NAS by `map/` (crate::agent::NAS_CHECK): an older app's check
+/// looks at `catalog/`, and sees the NAS away without it (every Mac's build would stop).
+pub const OLD_CATALOGUES: [&str; 4] = ["catalog", "catalog-held", "state/pool/delta-catalog", "state/pool/map-serve"];
+
+/// What `remove_old_catalogues` did.
+#[derive(Debug, Default)]
+pub struct OldCatalogues {
+    /// Those of `OLD_CATALOGUES` removed (a dry run: there to remove).
+    pub removed: Vec<String>,
+    /// Why it went file by file (its call on the NAS failing), said.
+    pub warnings: Vec<String>,
+}
+
+/// Step 9's pass: `OLD_CATALOGUES` removed from the NAS. By one call on the NAS itself when it can
+/// (`ssh`: the command and the project folder as the NAS sees it; crate::out::remove_on_nas), since
+/// the share takes some tens of SMB deletions a second (catalog/ held 1,041 files on 7 Nov); else,
+/// or that failing, file by file over SMB, a safe point between folders (a run paused there goes on
+/// at the next). Nothing else is touched.
+pub fn remove_old_catalogues(
+    root: &store::nasfs::NasRoot,
+    ssh: Option<(&[&str], &str)>,
+    dry_run: bool,
+) -> Result<OldCatalogues> {
+    let mut o = OldCatalogues::default();
+    // (Whether it's there, and a folder.)
+    let there = |name: &str| -> Result<Option<bool>> {
+        meta(0, 1, 0);
+        match root.join(name).metadata() {
+            Ok(m) => Ok(Some(m.is_dir())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("look at {name}")),
+        }
+    };
+    let mut left = Vec::new();
+    for name in OLD_CATALOGUES {
+        if there(name)?.is_some() {
+            left.push(name);
+        }
+    }
+    if dry_run || left.is_empty() {
+        o.removed = left.iter().map(|n| n.to_string()).collect();
+        return Ok(o);
+    }
+    if let Some((ssh, nas_root)) = ssh {
+        meta(0, 0, 1);
+        if let Err(e) = crate::out::remove_on_nas(ssh, nas_root, &left) {
+            o.warnings.push(format!("old catalogues removed over SMB, file by file: {e:#}"));
+        }
+    }
+    for name in left {
+        match there(name)? {
+            Some(true) => remove_tree(&root.join(name))?,
+            Some(false) => {
+                meta(0, 0, 1);
+                unless_gone(root.join(name).remove_file()).with_context(|| format!("remove {name}"))?;
+            }
+            None => {}
+        }
+        o.removed.push(name.to_string());
+    }
+    Ok(o)
+}
+
+/// Folder `dir` and all it holds removed over SMB: its files one by one, a safe point between
+/// folders, then the folders deepest first.
+fn remove_tree(dir: &NasPath) -> Result<()> {
+    let mut dirs = vec![dir.clone()];
+    let mut stack = vec![dir.clone()];
+    while let Some(d) = stack.pop() {
+        yield_point();
+        meta(1, 0, 0);
+        let rd = d.read_dir().with_context(|| format!("list {}", d.display()))?;
+        for e in rd {
+            meta(1, 1, 0);
+            let md = e.metadata().with_context(|| format!("look at {}", e.path.display()))?;
+            if md.is_dir() {
+                stack.push(e.path.clone());
+                dirs.push(e.path);
+            } else {
+                meta(0, 0, 1);
+                unless_gone(e.path.remove_file()).with_context(|| format!("remove {}", e.path.display()))?;
+            }
+        }
+    }
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.rel().split('/').count()));
+    for d in dirs {
+        meta(0, 0, 1);
+        unless_gone(d.remove_dir()).with_context(|| format!("remove {}", d.display()))?;
+    }
+    Ok(())
+}
+
+/// A removal's outcome, its file or folder gone already counted as done.
+fn unless_gone(r: std::io::Result<()>) -> std::io::Result<()> {
+    match r {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
+}
+
+/// This Mac's copies of old catalogues (docs/maplog.md §8, step 9), read by nothing since step 6:
+/// the map server's `catalog/` in the app's folder (`app_home`) and `Library/Caches/scenic/catalogue/`
+/// in the user's (`user_home`). Removed at the agent's start (every Mac runs one; the map server
+/// only on the Mac mini, a laptop's on demand). What was removed.
+pub fn remove_this_macs_catalogues(app_home: &std::path::Path, user_home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut gone = Vec::new();
+    for d in [app_home.join("catalog"), user_home.join("Library/Caches/scenic/catalogue")] {
+        match std::fs::remove_dir_all(&d) {
+            Ok(()) => gone.push(d),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!("agent: {} not removed: {e}", d.display()),
+        }
+    }
+    gone
+}
+
 /// The shadow's due set as the sweep meets its names (`note`): each once.
 struct Shadow {
     due: BTreeSet<String>,
@@ -1263,7 +1408,7 @@ mod tests {
             store::catalogue::FileRef { file: kept.into(), ..Default::default() },
         );
         store::testkit::map_root(root, &cat);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!((r.removed, r.tmp_removed, r.young), (1, 1, 1));
         assert!(root.join(kept).exists());
         assert!(!root.join("layers/roads/hi/6-1-2.fedcba9876543210.pack").exists());
@@ -1320,7 +1465,12 @@ mod tests {
         names.sort();
         fs::write(&due_p, serde_json::to_vec(&ShadowDue { at: 7, queued: 9, names, ..Default::default() }).unwrap())
             .unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, Some(&due_p)).unwrap();
+        let r = run(
+            &store::nasfs::NasRoot::local_for_test(root),
+            14,
+            &Asked { shadow: Some(&due_p), ..Default::default() },
+        )
+        .unwrap();
         let c: ShadowCheck = serde_json::from_slice(&fs::read(home.path().join(SHADOW_CHECK)).unwrap()).unwrap();
         assert_eq!((c.due, c.due_at), (6, 7), "{c:?}");
         assert_eq!(c.removed, vec![removed.to_string()]);
@@ -1385,7 +1535,7 @@ mod tests {
         }
         store::testkit::map_root(root, &cat);
         YIELD_CHECKS.set(0);
-        run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         // (layers, layers/a and its six folders.)
         assert!(YIELD_CHECKS.get() >= 8, "{}", YIELD_CHECKS.get());
     }
@@ -1417,7 +1567,11 @@ mod tests {
         let due = ShadowDue { at: 7, names: vec![unnamed.into()], ..Default::default() };
         fs::write(&due_p, serde_json::to_vec(&due).unwrap()).unwrap();
         REPORTS_ONLY.set(true);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, Some(&due_p));
+        let r = run(
+            &store::nasfs::NasRoot::local_for_test(root),
+            14,
+            &Asked { shadow: Some(&due_p), ..Default::default() },
+        );
         REPORTS_ONLY.set(false);
         let r = r.unwrap();
         assert_eq!((r.removed, r.report_only, r.report_only_bytes), (0, 1, 1));
@@ -1457,7 +1611,12 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let due_p = home.path().join(super::super::gcqueue::SHADOW_DUE);
         fs::write(&due_p, serde_json::to_vec(&due).unwrap()).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, Some(&due_p)).unwrap();
+        let r = run(
+            &store::nasfs::NasRoot::local_for_test(root),
+            14,
+            &Asked { shadow: Some(&due_p), ..Default::default() },
+        )
+        .unwrap();
         // (Snapshots 2 to 4, the newest kept there, and the lead's map.)
         assert_eq!((r.catalogues_kept, r.removed), (4, 2));
         for n in 1..=7 {
@@ -1469,7 +1628,7 @@ mod tests {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, b"x").unwrap();
         age(&p, 60);
-        let r = run(&store::nasfs::NasRoot::local_for_test(e.path()), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(e.path()), 14, &Asked::default()).unwrap();
         assert_eq!((r.catalogues_kept, r.removed), (0, 0));
         assert!(p.exists());
     }
@@ -1494,7 +1653,7 @@ mod tests {
         store::testkit::map_root(root, &cat2);
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), format!("{{\"base/6-1-1\": \"{f}\"}}")).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!(r.removed, 0);
         assert!(root.join(f).exists());
     }
@@ -1520,7 +1679,7 @@ mod tests {
         put("sources/osm/2027-03-01/planet.osm.pbf", 1);
         put("sources/registers/legacy.5555555555555555.tar.zst", 300);
         store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!(r.retired_removed, 3, "{r:?}");
         assert!(
             !root.join("sources/osm/2026-03-01").exists() && !root.join("sources/items/2026-03-01").exists(),
@@ -1538,7 +1697,7 @@ mod tests {
         put("sources/osm/2026-03-01/planet.osm.pbf", 200);
         put("sources/osm/2026-03-01/roads/6-1-1.6666666666666666.bin", 200);
         put("sources/osm/2026-09-28/pass.3333333333333333.json", 3);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!(r.retired_removed, 1);
         assert!(root.join("sources/osm/2026-03-01/planet.osm.pbf").exists());
     }
@@ -1605,7 +1764,7 @@ mod tests {
             at: 1_791_500_000,
         };
         crate::pool::journal::write(&store::nasfs::NasRoot::local_for_test(&root), &entry).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!(r.inputs_skipped, None);
         assert_eq!(r.inputs_removed, 3, "{r:?}");
         assert!(
@@ -1634,7 +1793,7 @@ mod tests {
             &index("_gate-test", &[&format!("{u}/a.cccccccccccccccc.jsonl")]),
             1,
         );
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // Its touch failed (its time 30 days old), but the check's state made yesterday names it
@@ -1648,7 +1807,7 @@ mod tests {
             40,
         );
         put(&format!("{n}/@listed.bbbbbbbbbbbbbbbb.json"), &serde_json::json!({"fmt": 1, "unit": "_gate-nest/inner", "listed": {}, "replaced": format!("{n}/@index.aaaaaaaaaaaaaaaf.json")}).to_string(), 2);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(
             root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists()
@@ -1656,13 +1815,13 @@ mod tests {
         );
         // 15 days after it was replaced (the state that named it that old too): gone, with its index.
         age(&root.join(format!("{u}/@listed.eeeeeeeeeeeeeeee.json")), 15);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!(r.inputs_removed, 3, "the copy, its index, the old state: {r:?}");
         assert!(!root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // An index named that can't be read: nothing there swept.
         put(&format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl"), "x", 60);
         fs::write(root.join(format!("{u}/@index.5555555555555555.json")), b"{not json").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert!(r.inputs_skipped.is_some() && r.inputs_removed == 0);
         assert!(root.join(format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl")).exists());
     }
@@ -1714,7 +1873,7 @@ mod tests {
             at: 1_791_500_000,
         };
         journal::write(&nas, &e).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!((r.unmerged, r.removed), (1, 1), "{r:?}");
         assert!(root.join(a).exists() && root.join(b).exists() && !root.join(c).exists());
         // Merged (term 1's records reflect it, naming nothing of it: replaced since): its files go.
@@ -1725,7 +1884,7 @@ mod tests {
         let mut rec = crate::pool::records::Records { term: 1, ..Default::default() };
         rec.reflected.insert(e.key().unwrap());
         rec.save(&nas).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!((r.unmerged, r.removed), (0, 2), "{r:?}");
         // A term led: an entry that doesn't read whole (short, of whatever day: a read cut short
         // says nothing of it), or reads damaged: GC fails, nothing removed, every run, until the
@@ -1742,7 +1901,7 @@ mod tests {
         entry_at(&short_key, b"{\"member\": ");
         for _ in 0..2 {
             let e =
-                format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap_err());
+                format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap_err());
             assert!(e.contains("nothing removed") && e.contains("1-5"), "{e}");
             assert!(root.join(c).exists());
         }
@@ -1750,12 +1909,12 @@ mod tests {
         entry_at(&damaged_key, b"{\"not\": \"an entry\"}");
         rec.rejected.insert(short_key, "never whole".into());
         rec.save(&nas).unwrap();
-        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap_err());
+        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap_err());
         assert!(e.contains("damaged") && root.join(c).exists(), "{e}");
         // Both refused by the lead: passed over, the sweep goes on.
         rec.rejected.insert(damaged_key, "damaged".into());
         rec.save(&nas).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert!(r.removed == 1 && r.warnings.is_empty(), "{r:?}");
         // No term led (its term not readable whole): no one refuses. An entry unreadable from today
         // still fails GC; one whose day is over `PASS_OVER_S` past (ten days here, the days far
@@ -1763,11 +1922,11 @@ mod tests {
         fs::write(root.join(crate::pool::term::DIR).join("1.json"), b"{\"term\": ").unwrap();
         put(c, 60);
         let young = entry_at(&format!("{}/1-8", journal::day(now).unwrap()), b"{\"member\": ");
-        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap_err());
+        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap_err());
         assert!(e.contains("1-8") && root.join(c).exists(), "{e}");
         fs::remove_file(&young).unwrap();
         entry_at(&format!("{}/1-7", journal::day(now - 10 * 86400).unwrap()), b"{\"member\": ");
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert!(
             r.removed == 1
                 && r.warnings.len() == 1
@@ -1824,18 +1983,88 @@ mod tests {
         store::testkit::map_root(root, &cat);
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert!(r.tombs == 1 && p.exists() && !tomb.exists() && r.removed == 0, "put back, decided next run: {r:?}");
         // (Its name a young file of the same bytes, uploaded again meanwhile.)
         fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now()).unwrap();
         fs::write(&tomb, b"x").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert!(r.tombs == 1 && !tomb.exists() && p.exists(), "its name taken: the tombstone's copy goes: {r:?}");
         // (The upload's time kept, not the tombstone's: never replaced by it.)
         assert!(
             fs::metadata(&p).unwrap().modified().unwrap().elapsed().unwrap() < Duration::from_secs(86400),
             "the new upload kept"
         );
+    }
+
+    /// Step 9's pass (docs/maplog.md §8): the old catalogues' folders go whole, by one call on the
+    /// NAS (here a shell on this Mac in its place), else, or that failing, over SMB file by file;
+    /// nothing else goes, and a dry run removes nothing. (Its gate: agent's
+    /// the_old_catalogues_go_only_once_every_app_checks_by_the_map.)
+    #[test]
+    fn the_old_catalogues_folders_go_whole() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        let files = [
+            "catalog/1066.delta.json.zst",
+            "catalog/a/1.json.zst",
+            "catalog-held/1060.json.zst",
+            "state/pool/delta-catalog",
+            "state/pool/map-serve",
+        ];
+        let fill = || {
+            for f in files.iter().chain(&["map/1689.json.zst", "state/pool/nas-budget"]) {
+                fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+                fs::write(root.join(f), b"x").unwrap();
+            }
+        };
+        let gone = || {
+            OLD_CATALOGUES.iter().all(|n| !root.join(n).exists())
+                && root.join("map/1689.json.zst").exists()
+                && root.join("state/pool/nas-budget").exists()
+        };
+        fill();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let o = remove_old_catalogues(&nas, None, true).unwrap();
+        assert_eq!(o.removed, OLD_CATALOGUES);
+        assert!(files.iter().all(|f| root.join(f).exists()), "a dry run removes nothing");
+        let o = remove_old_catalogues(&nas, None, false).unwrap();
+        assert_eq!((o.removed, o.warnings.len()), (OLD_CATALOGUES.map(String::from).to_vec(), 0));
+        assert!(gone());
+        assert!(remove_old_catalogues(&nas, None, false).unwrap().removed.is_empty(), "none left");
+        let at = root.to_str().unwrap();
+        fill();
+        let o = remove_old_catalogues(&nas, Some((&["sh", "-c"], at)), false).unwrap();
+        assert_eq!((o.removed.len(), o.warnings), (4, Vec::<String>::new()));
+        assert!(gone());
+        fill();
+        let o = remove_old_catalogues(&nas, Some((&["false"], at)), false).unwrap();
+        assert_eq!(o.removed.len(), 4);
+        assert!(o.warnings[0].contains("file by file"), "{:?}", o.warnings);
+        assert!(gone());
+    }
+
+    /// This Mac's copies of old catalogues (the map server's `catalog/`, the cache's `catalogue/`)
+    /// go at the agent's start; the rest of the app's folder and the cache stay.
+    #[test]
+    fn this_macs_old_catalogues_go() {
+        let (app, user) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        for p in [
+            app.path().join("catalog/1066.json.zst"),
+            app.path().join("mirror/x"),
+            user.path().join("Library/Caches/scenic/catalogue/1.json.zst"),
+            user.path().join("Library/Caches/scenic/map/current.json.zst"),
+        ] {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"x").unwrap();
+        }
+        assert_eq!(remove_this_macs_catalogues(app.path(), user.path()).len(), 2);
+        assert!(!app.path().join("catalog").exists() && !user.path().join("Library/Caches/scenic/catalogue").exists());
+        assert!(
+            app.path().join("mirror/x").exists()
+                && user.path().join("Library/Caches/scenic/map/current.json.zst").exists()
+        );
+        assert!(remove_this_macs_catalogues(app.path(), user.path()).is_empty());
     }
 
     #[test]
@@ -1845,7 +2074,7 @@ mod tests {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, b"x").unwrap();
         age(&p, 300);
-        let r = run(&store::nasfs::NasRoot::local_for_test(d.path()), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(d.path()), 14, &Asked::default()).unwrap();
         assert_eq!((r.removed, r.files_seen), (0, 0));
         assert!(p.exists());
     }
@@ -1888,7 +2117,7 @@ mod tests {
         );
         store::testkit::map_root(root, &cat);
         let nas = store::nasfs::NasRoot::local_for_test(root);
-        let r = run(&nas, 14, false, None, None).unwrap();
+        let r = run(&nas, 14, &Asked::default()).unwrap();
         assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
         let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
         assert_eq!(m.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
@@ -1898,13 +2127,17 @@ mod tests {
         // Again: nothing to drop, the manifest left as it was; the one put back goes now.
         let before = fs::metadata(&mpath).unwrap().modified().unwrap();
         age(&root.join(v1max), 30);
-        let r = run(&nas, 14, false, None, None).unwrap();
+        let r = run(&nas, 14, &Asked::default()).unwrap();
         assert_eq!((r.retired_dropped, r.retired_removed), (0, 1));
         assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
         assert!(!root.join(v1max).exists() && root.join(v3).exists());
         // A dry run counts, writing nothing.
         fs::write(&mpath, manifest.to_string()).unwrap();
-        assert_eq!(run(&nas, 14, true, None, None).unwrap().retired_dropped, 3, "a dry run counts what it would drop");
+        assert_eq!(
+            run(&nas, 14, &Asked { dry_run: true, ..Default::default() }).unwrap().retired_dropped,
+            3,
+            "a dry run counts what it would drop"
+        );
         assert_eq!(fs::read(&mpath).unwrap(), manifest.to_string().as_bytes());
     }
 
@@ -1950,7 +2183,7 @@ mod tests {
         fs::write(&ppath, serde_json::json!({ferries: "a", poi: "b", rail: "c"}).to_string()).unwrap();
         store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
         let nas = store::nasfs::NasRoot::local_for_test(root);
-        let r = run(&nas, 14, false, None, None).unwrap();
+        let r = run(&nas, 14, &Asked::default()).unwrap();
         assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
         let p: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
         assert_eq!(p.keys().collect::<Vec<_>>(), [rail]);
@@ -1960,7 +2193,7 @@ mod tests {
         assert!(!root.join(ferries).exists() && !root.join(poi).exists() && root.join(stats).exists());
         assert!(root.join(rail).exists() && root.join(near).exists());
         age(&root.join(stats), 30);
-        let r = run(&nas, 14, false, None, None).unwrap();
+        let r = run(&nas, 14, &Asked::default()).unwrap();
         assert_eq!((r.retired_dropped, r.retired_removed, r.removed), (0, 1, 1));
         assert!(!root.join(stats).exists() && root.join(rail).exists() && root.join(near).exists());
         // With nothing else under global/ named, only the legacy folder is listed: an old,
@@ -1980,7 +2213,7 @@ mod tests {
         )
         .unwrap();
         store::testkit::map_root(root, &store::catalogue::Catalogue::new(1));
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None, None).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, &Asked::default()).unwrap();
         assert_eq!((r.retired_dropped, r.retired_removed, r.removed), (1, 1, 1), "{:?}", r.warnings);
         assert!(!root.join(ferries).exists() && root.join(other).exists());
     }
@@ -2124,10 +2357,10 @@ mod tests {
         let dr = drop_names(&nas, &d.path().join("s"), None, true).unwrap();
         assert_eq!((dr.retired, dr.depth), (1, 0));
         // A dry run counts, writing nothing.
-        let r = run(&nas, 14, true, Some(&k), None).unwrap();
+        let r = run(&nas, 14, &Asked { dry_run: true, depth: Some(&k), ..Default::default() }).unwrap();
         assert_eq!((r.retired_dropped, r.depth_dropped), (1, 3), "{:?}", r.warnings);
         assert_eq!(fs::read_to_string(&mpath).unwrap(), text);
-        let r = run(&nas, 14, false, Some(&k), None).unwrap();
+        let r = run(&nas, 14, &Asked { depth: Some(&k), ..Default::default() }).unwrap();
         assert_eq!((r.retired_dropped, r.depth_dropped), (1, 3), "{:?}", r.warnings);
         let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
         assert_eq!(
@@ -2142,7 +2375,7 @@ mod tests {
         }
         // Again: nothing to drop, the manifest left as it was.
         let before = fs::metadata(&mpath).unwrap().modified().unwrap();
-        let r = run(&nas, 14, false, Some(&k), None).unwrap();
+        let r = run(&nas, 14, &Asked { depth: Some(&k), ..Default::default() }).unwrap();
         assert_eq!((r.retired_dropped, r.depth_dropped), (0, 0));
         assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
     }
