@@ -1132,11 +1132,12 @@ pub struct Grant {
 /// had counted none of them until their terrain was built (32 z6 tiles at 17:00, 149 by 19:00).
 pub const EXPECTED_STALE: f64 = 0.6;
 
-/// The items listed so far (`items`): by step, then target (looked up without making a key: the
-/// listing looks up each of the millions of reads its targets declare), and how many.
+/// The items listed so far (`items`): by step, then target (looked up without making a key, by a
+/// quick hash, roadcore::fx: the listing looks up each of the millions of reads its targets
+/// declare), and how many.
 #[derive(Default)]
 struct Index {
-    of: std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
+    of: roadcore::fx::FxMap<String, roadcore::fx::FxMap<String, usize>>,
     len: usize,
 }
 
@@ -4368,7 +4369,7 @@ mod tests {
 
     /// Every archived forecast input under a project folder (SCENIC_FORECAST_INPUTS: its
     /// `state/coord/forecast-inputs`, read only; SCENIC_FORECAST_FROM and SCENIC_FORECAST_TO, unix s,
-    /// the span kept)
+    /// the span, by default the archive's days kept to now)
     /// timed as the lead runs it, a line each: its listing's CPU time and each of its three runs'
     /// (each on a thread of its own, as `forecast_by` runs them), cut or not at `BUDGET`
     /// (SCENIC_FORECAST_LIMIT_S another), the items placed of all. With SCENIC_FORECAST_HASH, its
@@ -4377,7 +4378,6 @@ mod tests {
     #[test]
     fn archived_timing() {
         let Ok(root) = std::env::var("SCENIC_FORECAST_INPUTS") else { return };
-        let from: u64 = std::env::var("SCENIC_FORECAST_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
         let budget = std::env::var("SCENIC_FORECAST_LIMIT_S")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -4392,6 +4392,11 @@ mod tests {
         let (mut most, mut cuts, mut n) = (Duration::ZERO, 0, 0);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let to: u64 = std::env::var("SCENIC_FORECAST_TO").ok().and_then(|s| s.parse().ok()).unwrap_or(now);
+        // (Not said: the archive's days kept. Its reader opens each day's file of the span.)
+        let from: u64 = std::env::var("SCENIC_FORECAST_FROM")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(to.saturating_sub(crate::agent::fcinputs::KEEP_S));
         for i in crate::agent::fcinputs::read(&store::nasfs::NasRoot::from_arg(&root), from, to) {
             let r = i.record().unwrap();
             let inp = &r.input;
