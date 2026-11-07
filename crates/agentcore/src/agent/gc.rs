@@ -369,7 +369,7 @@ pub fn drop_names(
     if dry_run || (names.is_empty() && unpend.is_empty()) {
         return Ok(r);
     }
-    let mut out = crate::out::Out::open(root, scratch, STEP, the_plan.writes())?;
+    let mut out = buildstore::out::Out::open(root, scratch, STEP, the_plan.writes())?;
     for l in names {
         out.remove(l);
     }
@@ -393,20 +393,20 @@ pub struct Verified {
     pub stalled: Option<String>,
 }
 
-/// How many uploads one call on the NAS checks at most (crate::out::verify; a safe point between
+/// How many uploads one call on the NAS checks at most (buildstore::out::verify; a safe point between
 /// calls): each a stat and a block read there, so a call takes seconds. Its command line names
 /// each, so a batch also ends before its quoted names pass `out::NAS_NAMES_MAX` (`verify_batches`).
 const VERIFY_CHUNK: usize = 500;
 
-/// `todo` in batches of at most `VERIFY_CHUNK` names, each within `crate::out::NAS_NAMES_MAX`
+/// `todo` in batches of at most `VERIFY_CHUNK` names, each within `buildstore::out::NAS_NAMES_MAX`
 /// bytes quoted and joined (one name longer than that alone in its batch, which `verify` refuses).
 fn verify_batches(todo: &[(String, Option<u64>)]) -> Vec<&[(String, Option<u64>)]> {
     let mut batches = Vec::new();
     let (mut start, mut len) = (0, 0);
     for (i, (c, _)) in todo.iter().enumerate() {
         // (Its quoted name and the space before the next.)
-        let n = crate::out::sh_quoted(c).len() + 1;
-        if i > start && (i - start == VERIFY_CHUNK || len + n > crate::out::NAS_NAMES_MAX + 1) {
+        let n = buildstore::out::sh_quoted(c).len() + 1;
+        if i > start && (i - start == VERIFY_CHUNK || len + n > buildstore::out::NAS_NAMES_MAX + 1) {
             batches.push(&todo[start..i]);
             (start, len) = (i, 0);
         }
@@ -419,7 +419,7 @@ fn verify_batches(todo: &[(String, Option<u64>)]) -> Vec<&[(String, Option<u64>)
 }
 
 /// Checks the records' unverified uploads the build reads (`read_by`) on the NAS itself, there at
-/// the records' size (crate::out::verify: `ssh`, `nas_root` the project folder as the NAS sees it),
+/// the records' size (buildstore::out::verify: `ssh`, `nas_root` the project folder as the NAS sees it),
 /// as the `gc` step's job (`scratch` its `Out`'s): those that are leave the pending (in the pool
 /// through its hand-off's `checked`); those that aren't stay, said. Each batch (`VERIFY_CHUNK`) saved
 /// as it ends, then a safe point (`yield_point`). A dry run counts them, checking nothing.
@@ -445,10 +445,10 @@ pub fn verify_pending(
     if todo.is_empty() {
         return Ok(v);
     }
-    let mut out = crate::out::Out::open(root, scratch, STEP, the_plan.writes())?;
+    let mut out = buildstore::out::Out::open(root, scratch, STEP, the_plan.writes())?;
     for chunk in verify_batches(&todo) {
         let batch: BTreeMap<String, Option<u64>> = chunk.iter().cloned().collect();
-        let (ok, bad) = match crate::out::verify(ssh, nas_root, &batch) {
+        let (ok, bad) = match buildstore::out::verify(ssh, nas_root, &batch) {
             Ok(r) => r,
             // (Stopped past its deadline: what the batches before it checked is saved already; the
             // rest stays pending for the next run.)
@@ -1200,7 +1200,7 @@ fn inputs_walk(
 ) -> Result<Flow> {
     let _p = crate::timings::phase("sweeping the inputs' copies");
     let read_keep = |rep: &mut Report| -> Result<BTreeSet<String>> {
-        let m = crate::out::read_manifest(root).context("the build manifest")?;
+        let m = buildstore::records::read_manifest(root).context("the build manifest")?;
         let um = unmerged(root, crate::agent::jobs::now_s()).context("the pool's records or journal")?;
         rep.unmerged = um.entries;
         rep.warnings.extend(um.warnings.iter().cloned());
@@ -1387,7 +1387,7 @@ pub struct OldCatalogues {
 }
 
 /// Step 9's pass: `OLD_CATALOGUES` removed from the NAS. By one call on the NAS itself when it can
-/// (`ssh`: the command and the project folder as the NAS sees it; crate::out::remove_on_nas), since
+/// (`ssh`: the command and the project folder as the NAS sees it; buildstore::out::remove_on_nas), since
 /// the share takes some tens of SMB deletions a second (catalog/ held 1,041 files on 7 Nov); else,
 /// or that failing, file by file over SMB, a safe point between folders (a run paused there goes on
 /// at the next). Nothing else is touched.
@@ -1418,7 +1418,7 @@ pub fn remove_old_catalogues(
     }
     if let Some((ssh, nas_root)) = ssh {
         meta(0, 0, 1);
-        if let Err(e) = crate::out::remove_on_nas(ssh, nas_root, &left) {
+        if let Err(e) = buildstore::out::remove_on_nas(ssh, nas_root, &left) {
             o.warnings.push(format!("old catalogues removed over SMB, file by file: {e:#}"));
         }
     }
@@ -2430,7 +2430,7 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         let hand = d.path().join("handoff");
         let writes = super::super::seam::for_tests().writes();
-        let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP, writes).unwrap().handing_off(&hand);
+        let mut out = buildstore::out::Out::open(&nas, &d.path().join("s"), STEP, writes).unwrap().handing_off(&hand);
         out.remove("sources/terrain-z8-v3");
         out.unpend("sources/terrain-z8-v3.3333333333333333.pack");
         out.save().unwrap();
@@ -2443,7 +2443,7 @@ mod tests {
             [("sources/terrain-z8-v3".to_string(), None)].into_iter().collect::<std::collections::BTreeMap<_, _>>()
         );
         assert_eq!(fs::read_to_string(root.join("state/build/manifest.json")).unwrap(), manifest);
-        let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP, writes).unwrap().handing_off(&hand);
+        let mut out = buildstore::out::Out::open(&nas, &d.path().join("s"), STEP, writes).unwrap().handing_off(&hand);
         out.remove("base/6-1-1");
         assert!(out.save().is_err());
     }
@@ -2593,7 +2593,8 @@ mod tests {
         let ppath = root.join("state/build/pending.json");
         let pending = serde_json::json!({good: "a", no_size: "b", short: "c", gone: "d"});
         fs::write(&ppath, pending.to_string()).unwrap();
-        fs::write(root.join(crate::out::SIZES), serde_json::json!({good: 4, short: 11, gone: 1}).to_string()).unwrap();
+        fs::write(root.join(buildstore::out::SIZES), serde_json::json!({good: 4, short: 11, gone: 1}).to_string())
+            .unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         let at = root.to_str().unwrap();
         let s = d.path().join("s");
@@ -2661,8 +2662,8 @@ mod tests {
         assert!(b.len() > 1 && b.iter().all(|b| !b.is_empty()));
         assert_eq!(b.iter().map(|b| b.len()).sum::<usize>(), long.len());
         for b in &b {
-            let joined = b.iter().map(|(c, _)| crate::out::sh_quoted(c)).collect::<Vec<_>>().join(" ");
-            assert!(joined.len() <= crate::out::NAS_NAMES_MAX, "{}", joined.len());
+            let joined = b.iter().map(|(c, _)| buildstore::out::sh_quoted(c)).collect::<Vec<_>>().join(" ");
+            assert!(joined.len() <= buildstore::out::NAS_NAMES_MAX, "{}", joined.len());
         }
         assert!(verify_batches(&[]).is_empty());
     }

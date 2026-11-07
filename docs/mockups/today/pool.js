@@ -1,7 +1,7 @@
 // The pool on the build page (docs/pool.md §10, §11): who leads and since when (the Mac mini, the
 // fixed lead: nothing on the page moves it), each member with its state, and "no lead" when the lead
 // is out of touch. From the agent's status the coordinator serves (`/work/swarm`'s agent: its
-// `pool.lead`, crates/pipeline/src/agent/lead.rs View).
+// `pool.lead`, crates/agentcore/src/agent/lead.rs View).
 
 function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);

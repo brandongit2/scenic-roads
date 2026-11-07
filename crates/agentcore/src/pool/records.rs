@@ -332,7 +332,7 @@ pub struct Records {
     /// Uploads not yet verified on the NAS: content name → SHA-256.
     pub pending: BTreeMap<String, String>,
     /// The sizes of the files the manifest names, as their jobs wrote them (content name → bytes;
-    /// crate::out::SIZES): a catalogue's, without a look at the NAS. Records from before them have
+    /// buildstore::out::SIZES): a catalogue's, without a look at the NAS. Records from before them have
     /// none, nor files written before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sizes: BTreeMap<String, u64>,
@@ -453,7 +453,7 @@ impl Records {
             manifest: read_or_default(nas, TODAY[0])?,
             keys: read_or_default(nas, TODAY[1])?,
             pending,
-            sizes: read_or_default(nas, crate::out::SIZES)?,
+            sizes: read_or_default(nas, buildstore::out::SIZES)?,
             ..Default::default()
         })
     }
@@ -489,7 +489,7 @@ impl Records {
         if self.term == 1 {
             nas.write_whole(TODAY[0], &serde_json::to_vec_pretty(&self.manifest)?)?;
             nas.write_whole(TODAY[2], &serde_json::to_vec_pretty(&self.pending)?)?;
-            nas.write_whole(crate::out::SIZES, &serde_json::to_vec(&self.sizes)?)?;
+            nas.write_whole(buildstore::out::SIZES, &serde_json::to_vec(&self.sizes)?)?;
             nas.write_whole(TODAY[1], &serde_json::to_vec_pretty(&self.keys)?)?;
         }
         Ok(())
@@ -826,7 +826,7 @@ mod tests {
         r.save(&nas).unwrap();
         assert_eq!(r.sizes, [("base/6-1-1.k3.base".to_string(), 14)].into());
         let today: BTreeMap<String, u64> =
-            serde_json::from_slice(&nas.read(crate::out::SIZES).unwrap().unwrap()).unwrap();
+            serde_json::from_slice(&nas.read(buildstore::out::SIZES).unwrap().unwrap()).unwrap();
         assert_eq!(today, r.sizes);
         assert_eq!(Records::today(&nas).unwrap().sizes, r.sizes);
     }

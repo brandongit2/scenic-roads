@@ -2257,7 +2257,7 @@ pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
 pub fn write_today(nas: &dyn Nas, r: &Records) -> Result<()> {
     nas.write_whole("state/build/manifest.json", &serde_json::to_vec_pretty(&r.manifest)?)?;
     nas.write_whole("state/build/pending.json", &serde_json::to_vec_pretty(&r.pending)?)?;
-    nas.write_whole(crate::out::SIZES, &serde_json::to_vec(&r.sizes)?)?;
+    nas.write_whole(buildstore::out::SIZES, &serde_json::to_vec(&r.sizes)?)?;
     nas.write_whole("state/build/jobs.json", &serde_json::to_vec_pretty(&r.keys)?)
 }
 
@@ -3448,7 +3448,7 @@ mod tests {
         let outside = pack(2, "6/1/3", &["hidata", "layers/terrain/hi"]);
         let key = outside.key().unwrap();
         // (The same names a pack job's `Out` takes and refuses.)
-        let mut o = crate::out::Out::open(
+        let mut o = buildstore::out::Out::open(
             &store::nasfs::NasRoot::local_for_test(&d.path().join("o")),
             &d.path().join("o-scratch"),
             "pack",
@@ -3766,7 +3766,7 @@ mod tests {
             Some("k1")
         );
         let m: BTreeMap<String, String> =
-            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&r.join("state/build/manifest.json")))
+            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&r.join("state/build/manifest.json")))
                 .unwrap();
         assert_eq!(m, rec.manifest);
         let ev =

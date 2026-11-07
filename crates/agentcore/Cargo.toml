@@ -1,0 +1,64 @@
+[package]
+name = "agentcore"
+version = "0.1.0"
+edition = "2021"
+
+# The agent's runtime (docs/crates.md §6.3, 6f4): the agent, the coordinator, the pool, the
+# forecast and the command lines, below the plan (pipeline), which it asks through
+# agent::seam::Plan; beside the step families.
+[dependencies]
+det = { path = "../det" }
+roadcore = { path = "../roadcore" }
+store = { path = "../store" }
+codecs = { path = "../codecs" }
+jobrt = { path = "../jobrt" }
+buildstore = { path = "../buildstore" }
+coordwire = { path = "../coordwire" }
+offload = { path = "../offload" }
+inputs = { path = "../inputs" }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+zstd = "0.13"
+anyhow.workspace = true
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+libc = "0.2"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+clap = { workspace = true, features = ["help", "usage", "error-context", "suggestions"] }
+# Pinned as coordwire pins it (coordwire::client's idle transport uses ureq's unversioned::transport API).
+ureq = "=3.4.2"
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+# (fs, set-header and cors are server's, named here too: resolver 2 unifies features over a run's
+# packages, so a test run without server built tower-http and all of the runtime a second time,
+# 58 of the last 170 check.sh runs, #969.)
+tower-http = { version = "0.6", features = ["catch-panic", "compression-gzip", "fs", "set-header", "cors"] }
+tower = { version = "0.5", features = ["util"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+socket2 = { version = "0.6", features = ["all"] }
+futures-util = { version = "0.3", default-features = false }
+
+[features]
+# Test helpers for pipeline's tests (coord::start_on_test_port). Helpers only, never behaviour.
+testkit = []
+
+# The runtime's unit tests run on the real plan: its modules are compiled in (agent/mod.rs), with
+# the families they read.
+[dev-dependencies]
+bld = { path = "../bld", features = ["testkit"] }
+trees = { path = "../trees", features = ["testkit"] }
+landmarks = { path = "../landmarks", features = ["testkit"] }
+terrain = { path = "../terrain", features = ["testkit"] }
+roads = { path = "../roads" }
+names = { path = "../names" }
+offload = { path = "../offload", features = ["testkit"] }
+inputs = { path = "../inputs", features = ["testkit"] }
+buildstore = { path = "../buildstore", features = ["testkit"] }
+coordwire = { path = "../coordwire", features = ["testkit"] }
+codecs = { path = "../codecs", features = ["testkit"] }
+jobrt = { path = "../jobrt", features = ["testkit"] }
+store = { path = "../store", features = ["testkit"] }
+rayon.workspace = true
+tempfile = "3"

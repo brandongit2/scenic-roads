@@ -820,7 +820,8 @@ impl<'a> Reader<'a> {
     }
 }
 
-#[cfg(test)]
+// (The plan's own tests: pipeline's alone, not where agentcore compiles the plan in, agentcore/build.rs.)
+#[cfg(all(test, not(in_agentcore)))]
 mod tests {
     use super::*;
     use serde_json::json;

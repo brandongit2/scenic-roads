@@ -139,7 +139,8 @@ mod tests {
     fn a_native_worker_runs_a_task_and_the_job_takes_it() {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
-        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let (c, port) =
+            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         // The z6 tile's folder, and a stand-in step: it writes one file, removes another, and writes
         // a third again as it was.
         let dir = d.path().join("unit");
@@ -227,7 +228,8 @@ mod tests {
         let child = store::spawn::output(store::spawn::command("/bin/sh").args(["-c", "ps -o pgid= -p $$"])).unwrap();
         assert_eq!(String::from_utf8_lossy(&child.stdout).trim().parse::<u32>().unwrap(), owner());
         let d = tempfile::tempdir().unwrap();
-        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let (c, port) =
+            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let job = Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job"));
         let prog = Offload::at(url, c.job_token.clone(), &d.path().join("prog"));
@@ -251,7 +253,8 @@ mod tests {
         // The lead's coordinator stopped (its Mac no longer leads), or one that took the lead back
         // with a new key for its jobs: each task out is settled by running it here, the job going on.
         let d = tempfile::tempdir().unwrap();
-        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let (c, port) =
+            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let offer = |o: &Offload, name: &str| {
             let root = o.task_root(name);
@@ -295,7 +298,7 @@ mod tests {
         d: &Path,
     ) -> (Arc<store::clock::Virtual>, crate::coord::Coordinator, String, Offload, PathBuf, PathBuf, Vec<Run>) {
         use std::os::unix::fs::PermissionsExt;
-        let (c, port) = crate::coord::start_for_test(&d.join("coord"), "m4", "");
+        let (c, port) = crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.join("coord"), "m4", "");
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
         let dir = d.join("unit");
@@ -554,7 +557,8 @@ echo \"$2 $(($(wc -l < \"$1/out.txt\")))\" >> \"$1/out.txt\"\n",
         let (here, anywhere) = split_kept(&runs, &p);
         assert_eq!((here.len(), anywhere.len()), (1, 2), "the step run before its pause stays here, as kept");
         run_tail_kept(here, 0, &dir, &[&dir], &tools, &mut p).unwrap();
-        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let (c, port) =
+            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let o = Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job"));
         let t = o.offer(TileId::parse("6/1/2").unwrap(), &dir, None, anywhere).unwrap();
@@ -594,7 +598,8 @@ echo \"$2 $(($(wc -l < \"$1/out.txt\")))\" >> \"$1/out.txt\"\n",
     #[test]
     fn a_task_is_offered_only_with_inputs_it_can_serve() {
         let d = tempfile::tempdir().unwrap();
-        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let (c, port) =
+            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         let o = Offload::at(format!("http://127.0.0.1:{port}"), c.job_token.clone(), &d.path().join("job"));
         let root = o.task_root("a");
         std::fs::create_dir_all(root.join("u")).unwrap();

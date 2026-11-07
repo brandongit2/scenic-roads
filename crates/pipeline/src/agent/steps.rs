@@ -2327,7 +2327,8 @@ fn w_prune(l: &str, removal: bool) -> bool {
             || w_bldfield_lo(l, false))
 }
 
-#[cfg(test)]
+// (The plan's own tests: pipeline's alone, not where agentcore compiles the plan in, agentcore/build.rs.)
+#[cfg(all(test, not(in_agentcore)))]
 mod tests {
     /// A z6 tile waits for the terrain packs along its own long ways, which it stages (task #853,
     /// crate::stage::Area), not only for its box's: they're its `Read::Along`s, worked out from its
@@ -2698,7 +2699,8 @@ mod tests {
         // (Each source with its trimmed lines joined, as rustfmt breaks a call across lines.)
         let flat = |s: &str| s.lines().map(str::trim).collect::<String>();
         // (The agent's: its round's and its plan's, agent::plan.)
-        let agent = flat(include_str!("mod.rs")) + &flat(include_str!("plan.rs"));
+        let agent = flat(include_str!("../../../agentcore/src/agent/mod.rs"))
+            + &flat(include_str!("../../../agentcore/src/agent/plan.rs"));
         let build = flat(include_str!("build.rs"));
         let (agent, build) = (agent.as_str(), build.as_str());
         let mut named = std::collections::BTreeSet::<String>::new();

@@ -293,7 +293,7 @@ pub fn retire(cache: &Path, root: Option<&store::nasfs::NasRoot>) -> BTreeMap<St
     let mut freed: BTreeMap<String, u64> = BTreeMap::new();
     // (Read as Out reads it, the records now; an empty one is taken as unreadable.)
     let named: Option<HashSet<String>> = root.and_then(|r| {
-        let m = crate::out::read_manifest(r).ok()?;
+        let m = buildstore::records::read_manifest(r).ok()?;
         (!m.is_empty()).then(|| m.keys().map(|l| l.replace('/', "-")).collect())
     });
     let unread = |n: &str| named.as_ref().is_some_and(|named| !named.contains(n));
@@ -896,7 +896,7 @@ fn heritage_remade(root: Option<&store::nasfs::NasRoot>, p: &Path) -> bool {
     }
     let Some(date) = name.strip_prefix("heritage-merged-").and_then(|r| r.get(..10)) else { return false };
     let Some(root) = root else { return false };
-    let m = crate::out::read_manifest(root).unwrap_or_default();
+    let m = buildstore::records::read_manifest(root).unwrap_or_default();
     m.get(&format!("sources/osm/{date}/filtered")).is_some_and(|c| root.join(c).is_file())
 }
 

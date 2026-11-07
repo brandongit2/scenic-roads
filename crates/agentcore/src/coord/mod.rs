@@ -1073,7 +1073,7 @@ pub struct Capacity {
     pub home: bool,
     /// The leases of its running jobs.
     pub leases: Vec<u64>,
-    /// Those of its running jobs that only wait on a worker (crate::offload's WAITING_ENV), each
+    /// Those of its running jobs that only wait on a worker (::offload's WAITING_ENV), each
     /// with the memory it holds now: packed at that and none of their cores (task #462).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<WaitingJob>,
@@ -2631,7 +2631,7 @@ impl Coordinator {
 
     /// Whether a worker around (not found wrong) takes tails, spares what one takes typically (any,
     /// before one was offered) and is measured faster than this Mac at them (task::beats): this
-    /// Mac's `unit` jobs then give it a moment to take theirs (crate::offload::LEASE_WAIT), the
+    /// Mac's `unit` jobs then give it a moment to take theirs (::offload::LEASE_WAIT), the
     /// forecast's z6 tiles that much longer.
     pub fn tail_takers(&self) -> bool {
         let s = self.shared.lock().unwrap();
@@ -5305,7 +5305,7 @@ fn route(
                     };
                     let v = match &t.state {
                         // (With how many workers asking lately could take it now: a job about
-                        // to take it back gives them a moment, crate::offload.)
+                        // to take it back gives them a moment, ::offload.)
                         task::State::Offered => serde_json::json!({ "state": "offered", "takers": s.takers(t, now) }),
                         // (With how long it's been held and how far it is, as its worker says: a
                         // job waits for it only while it'll be back sooner than its own run.)
@@ -6253,12 +6253,24 @@ fn test_listener() -> (std::net::TcpListener, u16) {
     panic!("no port left that wasn't given before")
 }
 
-/// A test's coordinator (its state in `dir`), on a port the test held from the start (`test_port`'s
-/// listener, handed over: no other process can take it between); and the port.
+/// A test's coordinator on `the_plan` (its state in `dir`), on a port the test held from the start
+/// (`test_port`'s listener, handed over: no other process can take it between); and the port. For
+/// pipeline's tests too (`testkit`), which hand in the plan.
+#[cfg(any(test, feature = "testkit"))]
+pub fn start_on_test_port(
+    the_plan: &'static dyn crate::agent::seam::Plan,
+    dir: &Path,
+    me: &str,
+    app: &str,
+) -> (Coordinator, u16) {
+    let (listener, port) = test_listener();
+    (Coordinator::start_on(the_plan, dir, listener, me, app).unwrap(), port)
+}
+
+/// `start_on_test_port` on the plan (`seam::for_tests`).
 #[cfg(test)]
 pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u16) {
-    let (listener, port) = test_listener();
-    (Coordinator::start_on(crate::agent::seam::for_tests(), dir, listener, me, app).unwrap(), port)
+    start_on_test_port(crate::agent::seam::for_tests(), dir, me, app)
 }
 
 #[cfg(test)]

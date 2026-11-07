@@ -103,7 +103,7 @@ fn a_pieces_subtrees_go_to_workers_and_come_back_the_same() {
     let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
     let alone = piece(p, "alone", t, &cov, &raw, &src, None);
     assert!(alone.0.is_some() && alone.1.is_some());
-    let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
+    let (c, port) = crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &p.join("coord"), "m4", "");
     let url = format!("http://127.0.0.1:{port}");
     let tok = c.contact.token.clone();
     let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
@@ -159,7 +159,8 @@ fn live_pieces_with_a_worker() {
         &crate::terrain_base::terrarium_template(&store::nasfs::NasRoot::local_for_test(&root), &out.manifest).unwrap(),
     );
     let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
-    let (c, port) = crate::coord::start_for_test(&scratch.join("coord"), "m4", "");
+    let (c, port) =
+        crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &scratch.join("coord"), "m4", "");
     let url = format!("http://127.0.0.1:{port}");
     let off = Offload::at(url.clone(), c.job_token.clone(), &scratch.join("offload"))
         .waiting(crate::offload::Waiting::UntilDone);

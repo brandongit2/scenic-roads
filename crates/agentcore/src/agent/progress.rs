@@ -66,11 +66,11 @@ fn of_total(done: usize, total: usize, empty: usize, nouns: &str) -> String {
 }
 
 impl Item {
-    pub(super) fn sized(step: &str, done: usize, total: Option<usize>) -> Item {
+    pub fn sized(step: &str, done: usize, total: Option<usize>) -> Item {
         Item { step: step.into(), done, total, left: total.map(|t| t.saturating_sub(done)), ..Default::default() }
     }
 
-    pub(super) fn left(step: &str, left: Option<usize>) -> Item {
+    pub fn left(step: &str, left: Option<usize>) -> Item {
         Item { step: step.into(), left, ..Default::default() }
     }
 

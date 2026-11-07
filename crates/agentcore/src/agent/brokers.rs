@@ -4,7 +4,7 @@
 //!
 //! - **Each member brokers its own jobs' tasks**: a member's agent runs a coordinator of its own
 //!   (its broker, on the pool's port, crate::coord::PORT) and gives its jobs its address, so their
-//!   tasks are offered there (crate::offload: `SCENIC_COORD`), served from its disk and handed back
+//!   tasks are offered there (::offload: `SCENIC_COORD`), served from its disk and handed back
 //!   to it. The lead's coordinator brokers the lead's, as before.
 //! - **A change of lead** (the owner's move of the declaration) restarts both Macs' agents into
 //!   their new roles (docs/roles.md §1), their jobs handed over to the next process; a job taken

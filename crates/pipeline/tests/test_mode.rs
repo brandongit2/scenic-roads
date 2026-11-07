@@ -1,6 +1,6 @@
-//! Pipeline's library as its binaries, examples and integration tests link it: built with its
-//! dev-dependencies' features (buildstore's `testkit`) but without `cfg(test)`, so with none of the
-//! unit tests' behaviour: `Out`'s retries and the NAS calls' deadline are the real ones, and fetch reaches
+//! Pipeline's library (and the runtime's, agentcore's, under it) as its binaries, examples and
+//! integration tests link it: built with its dev-dependencies' features (buildstore's and
+//! agentcore's `testkit`) but without `cfg(test)`, so with none of the unit tests' behaviour: `Out`'s retries and the NAS calls' deadline are the real ones, and fetch reaches
 //! the network (task #916 step 4 review: `testkit` had made an example offline). And only
 //! dev-dependencies turn a `testkit` on, so no release build has one (task #916 step 6d review).
 //!
@@ -15,17 +15,19 @@ fn a_build_with_the_dev_dependencies_has_no_test_time_behaviour() {
     assert!(pipeline::fetch::online("https://example.org/x").is_ok());
 }
 
-/// `buildstore::out::testing` is true exactly where pipeline's `cfg(test)` applied: its unit tests.
-/// The agent's runtime reads it for its test-time behaviours (the NAS and port guards, its short
-/// waits, the panics a test wants; task #916 step 6f3), so a process seeing it true uses a test's
-/// stand-ins. Its flag is written only by `go_testing` (no environment variable, file or argument
-/// reads it), which is named only in a crate's `#[cfg(test)]` start-up constructor (`TEST_START`):
-/// in any file of a crate (its library, binaries, tests, examples, build script); else it is true
-/// only in buildstore's own unit tests, its initial value. So it is true only in some crate's unit
-/// tests; and no crate with a `TEST_START` links pipeline but pipeline itself (server's unit tests,
-/// which do link it, have none). Binaries and integration tests: the test above.
+/// `buildstore::out::testing` is true exactly where the runtime's `cfg(test)` applied when it was
+/// pipeline's: the unit tests of agentcore (the runtime, task #916 step 6f4) and of pipeline (the
+/// plan and the families' tests, which run the runtime). The runtime reads it for its test-time
+/// behaviours (the NAS and port guards, its short waits, the panics a test wants; step 6f3), so a
+/// process seeing it true uses a test's stand-ins. Its flag is written only by `go_testing` (no
+/// environment variable, file or argument reads it), which is named only in a crate's `#[cfg(test)]`
+/// start-up constructor (`TEST_START`): in any file of a crate (its library, binaries, tests,
+/// examples, build script); else it is true only in buildstore's own unit tests, its initial value.
+/// So it is true only in some crate's unit tests; and no crate with a `TEST_START` links agentcore
+/// but agentcore and pipeline (server's unit tests, which do link both, have none). Binaries and
+/// integration tests: the test above.
 #[test]
-fn only_pipeline_s_unit_tests_run_its_code_testing() {
+fn only_the_runtime_s_and_pipeline_s_unit_tests_run_testing() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let crates = root.join("crates");
     let mut starts = Vec::new();
@@ -93,8 +95,8 @@ fn only_pipeline_s_unit_tests_run_its_code_testing() {
             }
         }
     }
-    // The crates linking pipeline: it, and those depending on them.
-    let mut linking = vec!["pipeline".to_string()];
+    // The crates linking the runtime: agentcore, and those depending on them.
+    let mut linking = vec!["agentcore".to_string()];
     loop {
         let more: Vec<String> = deps
             .iter()
@@ -106,12 +108,14 @@ fn only_pipeline_s_unit_tests_run_its_code_testing() {
         }
         linking.extend(more);
     }
-    assert!(linking.contains(&"server".to_string()), "server links pipeline: {linking:?}");
-    assert!(starts.contains(&"pipeline".to_string()), "pipeline's TEST_START: {starts:?}");
+    assert!(linking.contains(&"server".to_string()), "server links agentcore: {linking:?}");
+    for c in ["agentcore", "pipeline"] {
+        assert!(starts.iter().any(|s| s == c), "{c}'s TEST_START: {starts:?}");
+    }
     for s in &starts {
-        if s != "pipeline" && linking.contains(s) {
+        if !["agentcore", "pipeline"].contains(&s.as_str()) && linking.contains(s) {
             bad.push(format!(
-                "{s} has a TEST_START and links pipeline: its unit tests would run pipeline's code testing"
+                "{s} has a TEST_START and links agentcore: its unit tests would run the runtime's code testing"
             ));
         }
     }

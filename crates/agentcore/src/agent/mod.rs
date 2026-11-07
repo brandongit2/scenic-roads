@@ -26,12 +26,29 @@
 //! catalogue. A job is a child process (see `jobs`) that resumes from its own completion markers, so
 //! stopping it at any time loses at most its current stage.
 
+// The plan's modules (pipeline's), compiled in for the runtime's unit tests alone, which run on the
+// real plan (`seam::for_tests`): in a build, the plan is pipeline's and is asked through `seam::Plan`.
+#[cfg(test)]
+#[path = "../../../pipeline/src/agent/build.rs"]
+pub mod build;
+#[cfg(test)]
+#[path = "../../../pipeline/src/agent/idents.rs"]
+pub mod idents;
+#[cfg(test)]
+#[path = "../../../pipeline/src/agent/steps.rs"]
+pub mod steps;
+#[cfg(test)]
+#[path = "../../../pipeline/src/agent/theplan.rs"]
+pub mod theplan;
+#[cfg(test)]
+#[path = "../../../pipeline/src/agent/tiles.rs"]
+pub mod tiles;
+
 pub mod answered;
 pub mod asks;
 pub mod backup;
 pub mod beat;
 pub mod brokers;
-pub mod build;
 pub mod builtview;
 pub mod bus;
 pub mod cataloguesview;
@@ -46,7 +63,6 @@ pub mod gc;
 pub mod gcqueue;
 pub mod heal;
 pub mod histarchive;
-pub mod idents;
 pub mod jobs;
 pub mod lead;
 pub mod live;
@@ -70,10 +86,7 @@ pub use buildstore::recipes;
 pub mod settings;
 pub mod share;
 pub mod slots;
-pub mod steps;
 pub mod takeover;
-pub mod theplan;
-pub mod tiles;
 
 use crate::coord::client::LeaseCalls;
 use crate::pool::term::Role;
@@ -2159,7 +2172,7 @@ impl Agent {
     }
 
     /// Hands this member's finished tasks back (a task leased from the lead's coordinator, run in
-    /// its outbox folder: crate::offload): its outputs and what it took, or its failure. A folder
+    /// its outbox folder: ::offload): its outputs and what it took, or its failure. A folder
     /// stays until the coordinator has it (or says its lease is gone: then its work was offered
     /// again, and it's dropped), across restarts; one left by a task that died with an earlier agent
     /// is given back. (A job's work goes through the journal: crate::agent::pool.)
@@ -2614,7 +2627,7 @@ impl Agent {
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[k].lease = Some(Held::Leased { lease, dir });
                 // (Its kind as the coordinator sent it; an older lead's grant names none: its
-                // spec's, crate::offload::task_kind, until every lead sends it.)
+                // spec's, ::offload::task_kind, until every lead sends it.)
                 let kind = if task_kind.is_empty() { self.o.the_plan.task_kind(&task) } else { task_kind };
                 let what = self.o.the_plan.task_what(&kind, &task, &unit);
                 Some((
@@ -3354,7 +3367,7 @@ impl Agent {
         self.o.home.join(format!("nascounts{}", slot_suffix(k)))
     }
 
-    /// Where slot `k`'s job keeps the file that says it waits on a worker (crate::offload's
+    /// Where slot `k`'s job keeps the file that says it waits on a worker (::offload's
     /// WAITING_ENV), while it does.
     fn waiting_path(&self, k: usize) -> PathBuf {
         self.o.home.join(format!("waiting{}", slot_suffix(k)))
@@ -3363,9 +3376,9 @@ impl Agent {
     /// What slot `k`'s job waits on, when it waits on a worker holding its z6 tile's tail and nothing
     /// else (its file, `waiting_path`): None with no job, no file, or a stale one (its process gone,
     /// or not of this job's group).
-    fn waiting_on(&self, k: usize) -> Option<crate::offload::WaitNote> {
+    fn waiting_on(&self, k: usize) -> Option<::offload::WaitNote> {
         let r = self.slots[k].running.as_ref()?;
-        let n = crate::offload::WaitNote::read(&self.waiting_path(k))?;
+        let n = ::offload::WaitNote::read(&self.waiting_path(k))?;
         let pid = i32::try_from(n.pid).ok()?;
         (pid == r.pgid || crate::sys::group_members(r.pgid).contains(&pid)).then_some(n)
     }
@@ -6915,7 +6928,7 @@ impl Agent {
         env.push((crate::coverage::CACHE_ENV.into(), self.o.home.join("cache").to_string_lossy().into_owned()));
         // Resuming on (crate::agent::resume): a pass complete by the records; a resumable job given
         // this member's hand-offs of its step its lead hasn't merged (laid over the snapshot as it
-        // opens: crate::out::Out), and its progress noted as this Mac's.
+        // opens: buildstore::out::Out), and its progress noted as this Mac's.
         if self.resume_on() {
             env.push((resume::RESUME_ENV.into(), "1".into()));
             if resume::resumable(&spec.id) {
@@ -6964,7 +6977,7 @@ impl Agent {
         // afresh.
         let waiting = self.waiting_path(k);
         std::fs::remove_file(&waiting).ok();
-        env.push((crate::offload::WAITING_ENV.into(), waiting.to_string_lossy().into_owned()));
+        env.push((::offload::WAITING_ENV.into(), waiting.to_string_lossy().into_owned()));
         // Where it reports NAS calls stuck busy (crate::agent::heal).
         env.push((store::whole::STUCK_ENV.into(), self.stuck_log().to_string_lossy().into_owned()));
         // Its connections out through the proxy (Wikimedia's metered by the pool's budget), this
@@ -8702,7 +8715,7 @@ impl Agent {
             let new: Vec<(String, crate::rawpack::Pack)> =
                 rec.raw.iter().filter(|(_, p)| !run.named_raw.contains(&p.name)).cloned().collect();
             if !new.is_empty() {
-                if let Ok(Some(lock)) = crate::out::BuildLock::try_take(root) {
+                if let Ok(Some(lock)) = buildstore::out::BuildLock::try_take(root) {
                     let (settled, n) = crate::rawpack::name_handed_places(root, &new, &lock);
                     run.named_raw.extend(settled);
                     if n > 0 {
@@ -9043,7 +9056,7 @@ fn planning_keys(root: &NasRoot, bases: Vec<PathBuf>) -> Result<crate::pool::rec
 /// `shown` as the last plan read it, else as the records name it now; what it did logged.
 fn apply_gate_ask(root: &NasRoot, a: &crate::inputs::Ask, shown: Option<crate::inputs::Report>, member: &str) {
     let held = shown.or_else(|| {
-        let m = crate::out::read_manifest(root).ok()?;
+        let m = buildstore::records::read_manifest(root).ok()?;
         crate::inputs::read_report(root, m.get(&crate::inputs::held_logical(&a.unit))?).ok()
     });
     match crate::inputs::apply_ask(root, a, held.as_ref(), member) {
@@ -9734,8 +9747,11 @@ mod tests {
     /// makes them in turn), so once however many z6 tiles it runs.
     #[test]
     fn terrain_peak_counts_the_uploads_beside() {
-        let (levels, mids, upload) =
-            (crate::terrain_pack::piece_peak_mb(), crate::terrain_pack::DEEP_MIDS_MB, crate::out::UPLOAD_HELD >> 20);
+        let (levels, mids, upload) = (
+            crate::terrain_pack::piece_peak_mb(),
+            crate::terrain_pack::DEEP_MIDS_MB,
+            buildstore::out::UPLOAD_HELD >> 20,
+        );
         assert_eq!(upload, 8, "an upload's 8 MB hash read");
         assert_eq!(crate::agent::seam::for_tests().terrain_peak(1), levels + mids + upload);
         assert_eq!(crate::agent::seam::for_tests().terrain_peak(3), levels + 2 * 20 + 3 * mids + upload);
@@ -12194,7 +12210,7 @@ mod tests {
         assert!(lead_start(&mut a, &labels, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty());
         assert!(a.slots[1].running.is_none());
         // A stale file (a process not of the job's): the same.
-        let note = |pid: u32| crate::offload::WaitNote { pid, worker: "ipad".into(), task: 7, since: now_s() };
+        let note = |pid: u32| ::offload::WaitNote { pid, worker: "ipad".into(), task: 7, since: now_s() };
         assert!(note(1).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
         assert!(a.waiting_on(0).is_none());
         assert!(lead_start(&mut a, &labels, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty());
@@ -13977,7 +13993,7 @@ mod tests {
         assert_eq!(kept(), BTreeSet::from([first.clone(), second.clone()]));
         // Its check runs: exactly the listing it was keyed by, one file of the two there now.
         let given: crate::inputs::Planned = serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
-        let mut out = crate::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
+        let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
         let said = crate::inputs::gate::run(&mut out, unit, true, Some(given)).unwrap();
         assert!(said.starts_with(&format!("{unit}: 1 file read of 1")), "{said}");
         let listing = crate::inputs::read_listed(&nas, &out.manifest, unit).unwrap();
@@ -14057,7 +14073,7 @@ mod tests {
         // Run (as its job would) and recorded: a normal check planned next (its key without the full
         // one's), then nothing while nothing changes.
         let mut out =
-            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
+            buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         crate::inputs::gate::run(&mut out, unit, true, None).unwrap();
         let mut keys = crate::pool::records::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         keys.record("inputs", &work.targets);
@@ -14137,11 +14153,12 @@ mod tests {
         let f = plan.iter().find(|j| j.id == format!("inputs {unit} forget")).expect("a job forgetting its records");
         assert!(f.cmd.ends_with(&["--forget".to_string()]));
         let mut out =
-            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
+            buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         crate::inputs::gate::forget(&mut out, unit).unwrap();
-        let m: BTreeMap<String, String> =
-            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
-                .unwrap();
+        let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &root.join("state/build/manifest.json"),
+        ))
+        .unwrap();
         assert!(!m.keys().any(|l| crate::inputs::unit_of(l) == Some(unit)));
         assert!(
             !b.planner()

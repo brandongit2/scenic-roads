@@ -2271,9 +2271,9 @@ impl Planner {
         let busy =
             |k: usize, speed: f64| self.slot_job(k).map_or(0.0, |j| j.busy_s(&|step, t| cost(step, t).secs, speed));
         // (A worker that takes tails around: each of this Mac's z6 tiles the moment its job gives it to
-        // take its tail, crate::offload.)
+        // take its tail, ::offload.)
         let unit_extra_s = if self.coord.as_ref().is_some_and(|c| c.tail_takers()) {
-            crate::offload::LEASE_WAIT.as_secs_f64()
+            ::offload::LEASE_WAIT.as_secs_f64()
         } else {
             0.0
         };

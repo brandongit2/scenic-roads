@@ -293,7 +293,7 @@ pub trait Plan: Send + Sync {
     /// Whether `l` is a file a job of `step` saves for `target`.
     fn saves(&self, step: &str, target: &str, l: &str) -> bool;
     /// The table's write sets, as a step's `Out` checks what it writes against them.
-    fn writes(&self) -> crate::out::Writes;
+    fn writes(&self) -> buildstore::out::Writes;
     /// Why entry `e` has a change outside its step's outputs; None: it hasn't.
     fn outside(&self, e: &crate::pool::journal::Entry) -> Option<String>;
     /// `outside` by `writes` in place of the table's write sets.
@@ -431,9 +431,11 @@ pub trait PlanHeld: Send {
         covs: std::sync::Arc<super::Coverages>,
         keys: Keys,
     ) -> Box<dyn FnOnce() -> RegionCounts + Send>;
-    /// A plan kept, for a test of what follows.
-    #[cfg(test)]
-    fn keep_for_test(&self, p: Planned);
+    /// A plan kept, for a test of what follows. (In the unit tests, which run on the plan's own; the
+    /// default, keeping nothing, is only where a crate's tests turn `testkit` on beside a build of
+    /// the plan without them.)
+    #[cfg(any(test, feature = "testkit"))]
+    fn keep_for_test(&self, _p: Planned) {}
 }
 
 impl std::fmt::Debug for dyn Plan {

@@ -900,7 +900,7 @@ mod tests {
             assert!(!a.run.side.readers_ready, "B's app reads today's files");
             a.run.keep_today(true);
             let m: BTreeMap<String, String> =
-                crate::out::read_record(&store::nasfs::NasPath::local_for_test(&mf)).unwrap();
+                buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&mf)).unwrap();
             assert_eq!(m, a.run.side.driver().records().unwrap().manifest, "written for B's readers");
             assert_eq!(a.run.today.map(|t| t.0), Some(2));
             // B back on this app: written no more.

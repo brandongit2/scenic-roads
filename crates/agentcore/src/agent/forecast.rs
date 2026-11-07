@@ -48,7 +48,7 @@ pub struct Machine {
     /// Seconds from now until it's free (its job under way's time left).
     pub busy_s: f64,
     /// What each z6 tile takes it more (seconds): the lead's, while a worker that takes tails is
-    /// around, the moment its job gives one to take its tail (crate::offload::LEASE_WAIT). (A
+    /// around, the moment its job gives one to take its tail (::offload::LEASE_WAIT). (A
     /// terrain z6 tile's subtrees out with workers, crate::terrain_task, take none: they're offered as
     /// the z6 tile begins and waited for only after its own run, by then taken or not, and its
     /// measured time, the job's, has those waits in it.)

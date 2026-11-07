@@ -27,7 +27,7 @@ const ASKS: &[(&str, &str)] = &[
     ("crates/jobrt/src/budget/proxy.rs", "the proxy's tests, a metered host answered here"),
     ("crates/jobrt/src/budget/tests.rs", "the budget's tests"),
     ("crates/jobrt/src/budget/net.rs", "the page's limit words (limit_of), asking no one"),
-    ("crates/pipeline/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
+    ("crates/agentcore/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
     ("crates/inputs/src/inputs/sources.rs", "its tests: the staged declarations' URLs, compared, asked of no one"),
     ("crates/landmarks/src/wikiask.rs", "ureq (honours HTTPS_PROXY: Proxy::try_from_env); a 429 told (budget::seen)"),
     (
@@ -55,7 +55,7 @@ const BYPASS: &[(&str, &str, &str)] = &[
         "the hold and the retries told to the proxy itself, on this Mac (budget::seen, budget::retried)",
     ),
     (
-        "crates/pipeline/src/answers.rs",
+        "crates/agentcore/src/answers.rs",
         ".proxy(None)",
         "the answers' lease asked of the proxy itself, on this Mac (/lease/answers)",
     ),
@@ -65,7 +65,7 @@ const BYPASS: &[(&str, &str, &str)] = &[
         "the job's own Mac (its coordinator on 127.0.0.1) direct: the sandbox allows it",
     ),
     (
-        "crates/pipeline/src/agent/mod.rs",
+        "crates/agentcore/src/agent/mod.rs",
         "NO_PROXY=localhost,127.0.0.1,::1",
         "a test: the job's environment as the proxy gives it",
     ),

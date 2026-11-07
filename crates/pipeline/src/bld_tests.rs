@@ -45,7 +45,8 @@ fn z8_tiles_go_to_workers_and_come_back_the_same() {
     let files = files(d.path());
     let cov = coverage();
     let z8s = job::z8_tiles_of(&files);
-    let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+    let (c, port) =
+        crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
     // (The coordinator and the job on a virtual clock: the job's waits are counted in it.)
     let clock = store::clock::Virtual::new();
     c.shared.lock().unwrap().clock = clock.clone();

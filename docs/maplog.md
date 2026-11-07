@@ -773,15 +773,15 @@ steps left.
 | The map server's sync | `crates/server/src/maplog.rs:73` (`spawn`), `:323` (the long poll), `:232` (`Map::catalogue` each batch); its start `crates/server/src/data.rs:128` (`store::map::newest_nas`) | the lead's `/map/changes`, its saved map, the NAS's snapshot | nothing |
 | The mirror and offline downloads | `crates/store/src/mirror.rs:643` (`Mirror::sync`, given the catalogue made of the map), `crates/server/src/downloads.rs` (`keep_lists`; `once`, its cursor told each round: `Plan::copies_from`, `Downloads::resync`), `crates/server/src/maplog.rs` (`MirrorLink`) | each download's own list against the map served; its cursor `mirror/<host>` | nothing (7b built) |
 | The map app | `web/src/catalogue.ts:107` (`/api/catalog` each minute, its own Mac's server) | the server's map as a catalogue status | nothing |
-| Consistency of tile sets | the gate picks a batch's contents; `crates/pipeline/src/bin/scenic-build.rs:500` (the `catalog` step posts its map); `crates/pipeline/src/agent/publish.rs:67` (`MapLog`, one batch appended whole); clients swap a batch in whole | the batch | nothing |
-| Publish history and ages | `crates/pipeline/src/agent/cataloguesview.rs:322` (`CataloguesView`), built only on the lead (`crates/pipeline/src/agent/mod.rs:7728`, `tend_pageview`); adoptions and the mirrors' rounds noted there (`publish_marks`); `crates/pipeline/src/pubtimes.rs:414` (the history's `catalog` events), the mirrors' `mirror-start`/`mirror-end` events | the lead's feed in process | nothing |
-| `/work/catalogs` | `crates/pipeline/src/coord/mod.rs:4900`; a member's port sends it to the lead (`crates/pipeline/src/coord/memberpage.rs:56`) | the view above | nothing |
-| `scenic catalogs` | `crates/pipeline/src/cli/scenic.rs:274` | the view this Mac's agent kept (`cataloguesview::KEPT`) | nothing |
+| Consistency of tile sets | the gate picks a batch's contents; `crates/pipeline/src/bin/scenic-build.rs:500` (the `catalog` step posts its map); `crates/agentcore/src/agent/publish.rs:67` (`MapLog`, one batch appended whole); clients swap a batch in whole | the batch | nothing |
+| Publish history and ages | `crates/agentcore/src/agent/cataloguesview.rs:322` (`CataloguesView`), built only on the lead (`crates/agentcore/src/agent/mod.rs:7728`, `tend_pageview`); adoptions and the mirrors' rounds noted there (`publish_marks`); `crates/agentcore/src/pubtimes.rs:414` (the history's `catalog` events), the mirrors' `mirror-start`/`mirror-end` events | the lead's feed in process | nothing |
+| `/work/catalogs` | `crates/agentcore/src/coord/mod.rs:4900`; a member's port sends it to the lead (`crates/agentcore/src/coord/memberpage.rs:56`) | the view above | nothing |
+| `scenic catalogs` | `crates/agentcore/src/cli/scenic.rs:274` | the view this Mac's agent kept (`cataloguesview::KEPT`) | nothing |
 | publish.rs and coordwire | `crates/coordwire/src/lib.rs:39` (`map_now`: `/map/snapshot`, else the NAS's newest), `publish.rs:67` (`MapLog`), `:95` (`Here`: the head's catalogue, made of the map while read) | the lead's log | nothing |
-| gc.rs and the queue | `crates/pipeline/src/agent/gc.rs:841` (`run`), `:903` (`drain`: the queue's chunks), `:935` (`remove_told`), `:1052` (`orphan_walk`), `:1156` (`inputs_walk`), `:50` (`Lead`), `:219` (`by_the_queue`); `crates/pipeline/src/coord/mod.rs:4527` (`/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing`); `crates/pipeline/src/agent/gcqueue.rs:42` (`refusal`); `crates/pipeline/src/agent/plan.rs:1132` (`gc_work`); `crates/store/src/map/gc.rs:452` (`GcQueue::chunk`), `:539` (`bringing`), `:27` (`GRACE_S`) | GC's queue on the lead (the map's names, the records', what a hand-off brings) | nothing |
-| The plan, names-todo, regions | `crates/pipeline/src/agent/plan.rs:2214` (`map_now`), `crates/landmarks/src/namestodo.rs:405` (`inputs_key`, keyed by the log's marks), `regionsview`, `builtview` | the head's catalogue (`Here`) | nothing |
+| gc.rs and the queue | `crates/agentcore/src/agent/gc.rs:841` (`run`), `:903` (`drain`: the queue's chunks), `:935` (`remove_told`), `:1052` (`orphan_walk`), `:1156` (`inputs_walk`), `:50` (`Lead`), `:219` (`by_the_queue`); `crates/agentcore/src/coord/mod.rs:4527` (`/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing`); `crates/agentcore/src/agent/gcqueue.rs:42` (`refusal`); `crates/agentcore/src/agent/plan.rs:1132` (`gc_work`); `crates/store/src/map/gc.rs:452` (`GcQueue::chunk`), `:539` (`bringing`), `:27` (`GRACE_S`) | GC's queue on the lead (the map's names, the records', what a hand-off brings) | nothing |
+| The plan, names-todo, regions | `crates/agentcore/src/agent/plan.rs:2214` (`map_now`), `crates/landmarks/src/namestodo.rs:405` (`inputs_key`, keyed by the log's marks), `regionsview`, `builtview` | the head's catalogue (`Here`) | nothing |
 | The menu app | `tools/status/main.swift:445`-`467` | the status's regions' `map_at` alone | nothing: it never read catalogues |
-| Test roots | `lakefill catalog-add` (`crates/pipeline/src/cli/progs.rs:354`), `coastcheck`, `store::testkit::map_root` | they write a snapshot | nothing |
+| Test roots | `lakefill catalog-add` (`crates/agentcore/src/cli/progs.rs:354`), `coastcheck`, `store::testkit::map_root` | they write a snapshot | nothing |
 | The NAS's old folders | `catalog/` (1,041 files, 479 MB, the newest `1066.delta.json.zst` of 1 Nov 07:11), `catalog-held/` (176 kB) | no catalogue read; `catalog/` looked at by an older app's NAS check (this one's: `map/`) | 9 (built): removed by the `gc` job once every member's app checks by `map/` |
 
 Cut with the next step that touches it: `cataloguesview::Source` (`:288`) has one implementation,
@@ -804,7 +804,7 @@ the newest three kept: three deletions an hour) and no listing by any reader. GC
 share can't batch; 8b drops the folder sweep (listing and stat of every file each day) and the touch
 in the upload path (`crates/buildstore/src/out.rs:412`), the one per-file write left there for GC.
 
-**How the lead serves it.** The lead's coordinator (port 8090, `crates/pipeline/src/coord/maproutes.rs:40`)
+**How the lead serves it.** The lead's coordinator (port 8090, `crates/agentcore/src/coord/maproutes.rs:40`)
 answers `/map/changes` and `/map/snapshot` from the feed in memory (§3, coordination.md §2 rule 3:
 never the NAS), with the build's key; a long poll looks each 50 ms for a batch. With the lead away,
 clients keep their map, and one with none reads the NAS's snapshot (§5.2).
@@ -821,7 +821,7 @@ clients keep their map, and one with none reads the NAS's snapshot (§5.2).
 4. **10, docs**: formats.md, storage.md, macs.md, building.md, pool.md, and this doc folded in.
 
 **With #916 step 6d** (docs/crates.md §6.3). #883's steps left touch one place in cli: `scenic
-gc`'s flags (`crates/pipeline/src/cli/scenic.rs:198`; 8b, built: `--shadow-due` and `--days` gone,
+gc`'s flags (`crates/agentcore/src/cli/scenic.rs:198`; 8b, built: `--shadow-due` and `--days` gone,
 `--sweeps` the passes' file). Nothing left edits `cli/mod.rs`, `cli/build.rs`,
 `cli/progs.rs` or `net.rs` (`net.rs` has no catalogue code since step 6). So 6d moved
 `cli::program` (with `TOOLS`) to jobrt::sys without waiting for #883.

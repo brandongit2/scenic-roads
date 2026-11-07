@@ -25,7 +25,7 @@
 //! - **The job sees its earlier attempts:** its agent lays this member's hand-offs for the job's
 //!   step that its lead hasn't acknowledged (unwritten, or written and not yet in the current term's
 //!   records) into a file of the job's folder (`unmerged`), named to the job by `UNMERGED_ENV`, which
-//!   crate::out::Out lays over the snapshot as it opens: a pass restarted after sleep finds its
+//!   buildstore::out::Out lays over the snapshot as it opens: a pass restarted after sleep finds its
 //!   earlier stages' outputs before the lead has merged them.
 //! - **A pass complete by its records:** `sources/osm/<date>/pass` in the merged records (today's
 //!   manifest, which the lead writes from them), not a `pass.*.json` file on the NAS
@@ -60,7 +60,7 @@ pub const REFRESH_S: u64 = crate::coord::TTL.as_secs() / 2;
 /// start their targets afresh.)
 pub const RESUMABLE: [&str; 1] = ["osm-pass"];
 // A job's environment: the file of its member's unacknowledged hand-offs for its step (`unmerged`),
-// which crate::out::Out lays over the snapshot: the build's files' crate's (task #916 step 4).
+// which buildstore::out::Out lays over the snapshot: the build's files' crate's (task #916 step 4).
 pub use buildstore::out::UNMERGED_ENV;
 
 /// Whether `job` (an agent's job id, `<step> <target>`) is of a resumable step.

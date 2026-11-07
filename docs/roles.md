@@ -188,7 +188,7 @@ Kept: `coord/` itself, the member's broker's folder (§3.2), with `jobs-token`, 
 `history.jsonl` (written on the M1 on 6 Nov), `workers-token` (the pool's, copied in by
 `pool::seed` at each broker's start: agent/mod.rs `make_broker`) and `journal/` (made by every
 broker's start, `Coordinator::start_with`); and the agent's own `timings.jsonl`: every Mac appends
-its own jobs' timings there (`take_timings`, crates/pipeline/src/agent/mod.rs), which `scenic`
+its own jobs' timings there (`take_timings`, crates/agentcore/src/agent/mod.rs), which `scenic`
 reads as "this Mac's jobs"; its memory, `state.json`; and the lead's answers to its owner's asks,
 `asks-answered.json` with its lock `asks-answered.lock` (every Mac's: agent/answered.rs). The test
 `member_leftovers_names_every_lead_file` runs a lead and a member (the two-agents harness) and

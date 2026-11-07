@@ -1,11 +1,11 @@
 //! The agent's parts share nothing mutable but through `crate::agent::bus` (docs/agent-parts.md §3,
-//! task #871): no `Mutex<` in crates/pipeline/src/agent/ outside bus.rs and nasread.rs (its own
-//! call pools). The files not yet split into parts keep the count they have, listed in `LEFT`, until
+//! task #871): no `Mutex<` in the agent's modules (crates/agentcore/src/agent/, the runtime's, and
+//! crates/pipeline/src/agent/, the plan's) outside bus.rs and nasread.rs (its own call pools). The files not yet split into parts keep the count they have, listed in `LEFT`, until
 //! their migration step lands (§7): a file with more fails here, and so does one with fewer, so the
 //! list only shrinks and never goes stale. (A scan of the source's text, its comments and strings
 //! blanked.)
 //!
-//! scans: crates/pipeline/src/agent
+//! scans: crates/agentcore/src/agent crates/pipeline/src/agent
 
 mod common;
 
@@ -31,19 +31,20 @@ const LEFT: &[(&str, usize)] = &[
 
 #[test]
 fn no_shared_mutex() {
-    let dir = root().join("crates/pipeline/src/agent");
-    let mut fs = Vec::new();
-    files(&dir, "rs", &mut fs);
     let mut found: BTreeMap<String, usize> = BTreeMap::new();
-    for p in fs {
-        let rel = p.strip_prefix(&dir).unwrap().to_string_lossy().to_string();
-        if OWN.contains(&rel.as_str()) {
-            continue;
-        }
-        let text = std::fs::read_to_string(&p).unwrap();
-        let n: usize = text.lines().map(|l| code_of(l).matches("Mutex<").count()).sum();
-        if n > 0 {
-            found.insert(rel, n);
+    for dir in ["crates/agentcore/src/agent", "crates/pipeline/src/agent"].map(|d| root().join(d)) {
+        let mut fs = Vec::new();
+        files(&dir, "rs", &mut fs);
+        for p in fs {
+            let rel = p.strip_prefix(&dir).unwrap().to_string_lossy().to_string();
+            if OWN.contains(&rel.as_str()) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).unwrap();
+            let n: usize = text.lines().map(|l| code_of(l).matches("Mutex<").count()).sum();
+            if n > 0 {
+                found.insert(rel, n);
+            }
         }
     }
     let left: BTreeMap<String, usize> = LEFT.iter().map(|(f, n)| (f.to_string(), *n)).collect();

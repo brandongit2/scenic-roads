@@ -20,7 +20,7 @@ terrain = { path = "../terrain" }
 trees = { path = "../trees" }
 roads = { path = "../roads" }
 bld = { path = "../bld" }
-sha2 = "0.10"
+agentcore = { path = "../agentcore" }
 serde = { version = "1", features = ["derive"] }
 zstd = "0.13"
 anyhow.workspace = true
@@ -32,24 +32,17 @@ serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
 png = "0.18"
 weezl = "0.2"
 libc = "0.2"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
 clap = { workspace = true, features = ["help", "usage", "error-context", "suggestions"] }
-# Pinned as coordwire pins it (coordwire::client's idle transport uses ureq's unversioned::transport API).
-ureq = "=3.4.2"
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", "sync", "time"] }
-tokio-util = { version = "0.7", features = ["io"] }
-# (fs, set-header and cors are server's, named here too: resolver 2 unifies features over a run's
-# packages, so a test run without server built tower-http and all of pipeline a second time,
-# 58 of the last 170 check.sh runs, #969.)
-tower-http = { version = "0.6", features = ["catch-panic", "compression-gzip", "fs", "set-header", "cors"] }
-tower = { version = "0.5", features = ["util"] }
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-socket2 = { version = "0.6", features = ["all"] }
-futures-util = { version = "0.3", default-features = false }
+
+# (agentcore compiles the plan's modules into its unit tests, and sets `in_agentcore` there:
+# agentcore/build.rs.)
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(in_agentcore)"] }
 
 [dev-dependencies]
+agentcore = { path = "../agentcore", features = ["testkit"] }
 bld = { path = "../bld", features = ["testkit"] }
 trees = { path = "../trees", features = ["testkit"] }
 landmarks = { path = "../landmarks", features = ["testkit"] }

@@ -45,7 +45,7 @@ fn same_piece(a: &Path, b: &Path) -> bool {
 /// A coordinator on a virtual clock, and the clock: the job's waits are counted in it, and a
 /// worker acts at its moments (`worker`).
 fn coordinator(p: &Path) -> (crate::coord::Coordinator, String, Arc<store::clock::Virtual>) {
-    let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
+    let (c, port) = crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &p.join("coord"), "m4", "");
     let clock = store::clock::Virtual::new();
     c.shared.lock().unwrap().clock = clock.clone();
     (c, format!("http://127.0.0.1:{port}"), clock)

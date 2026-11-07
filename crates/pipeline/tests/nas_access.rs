@@ -37,9 +37,9 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/store/src/naming.rs", "write_atomic_as", 1, "a content-named upload: its own temporary name, an exclusive rename, a read-back past the cache; its bytes counted as it writes them, the file by its caller as it lands"),
     ("crates/store/src/blobs.rs", "get", 1, "a whole local copy by crate::sys::copy_data_held, its bytes counted as they're read (crate::nasfs's copy_counter), the file opened by its caller (pipeline::localread)"),
     // A child process's or a program's argument.
-    ("crates/pipeline/src/agent/gc.rs", "duties", 1, "the project folder as the NAS sees it, for the uploads' check over SSH (store::nas::on_nas)"),
-    ("crates/pipeline/src/agent/jobs.rs", "root_arg", 1, "a child process's --root, its spec's: the spawners' one way out"),
-    ("crates/pipeline/src/agent/mod.rs", "osm_pass_cmd", 2, "the OSM pass's --planet and --planetiler arguments"),
+    ("crates/agentcore/src/agent/gc.rs", "duties", 1, "the project folder as the NAS sees it, for the uploads' check over SSH (store::nas::on_nas)"),
+    ("crates/agentcore/src/agent/jobs.rs", "root_arg", 1, "a child process's --root, its spec's: the spawners' one way out"),
+    ("crates/agentcore/src/agent/mod.rs", "osm_pass_cmd", 2, "the OSM pass's --planet and --planetiler arguments"),
     ("crates/inputs/src/osmpass.rs", "filtered_nas", 1, "osmium's input, streamed over SSH from its path on the NAS"),
     ("crates/inputs/src/osmpass.rs", "run_pass", 1, "the extract program's input, read where it lies"),
     ("crates/inputs/src/osmpass.rs", "patch_ferries", 1, "osmium's input, read where it lies"),
@@ -70,12 +70,12 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/landmarks/src/namestodo.rs", "translation_files", 1, "the names crate's tables read their files by path"),
     // A raw path for what isn't a file's read or write.
     ("crates/buildstore/src/out.rs", "file", 1, "a local lock file named after the root's real path"),
-    ("crates/pipeline/src/agent/room.rs", "ours", 1, "a local cache file's real path against the root's"),
+    ("crates/agentcore/src/agent/room.rs", "ours", 1, "a local cache file's real path against the root's"),
     ("crates/buildstore/src/room.rs", "nas_free", 1, "the share's free space: its mount's statfs"),
-    ("crates/pipeline/src/agent/cond.rs", "resources", 1, "the share's free space: its mount's statfs"),
-    ("crates/pipeline/src/coord/mod.rs", "nas_prober", 1, "the share's mount: its statfs"),
+    ("crates/agentcore/src/agent/cond.rs", "resources", 1, "the share's free space: its mount's statfs"),
+    ("crates/agentcore/src/coord/mod.rs", "nas_prober", 1, "the share's mount: its statfs"),
     ("crates/jobrt/src/budget/nas.rs", "probe_dir", 1, "the NAS's speed probe measures raw calls, never counted as the build's NAS work"),
-    ("crates/pipeline/src/agent/live.rs", "add_files", 1, "a note's full path (store::nasio's ring) shown under the root"),
+    ("crates/agentcore/src/agent/live.rs", "add_files", 1, "a note's full path (store::nasio's ring) shown under the root"),
     ("crates/store/src/iopool.rs", "for_root", 1, "the I/O pool's probe: a stat of the root itself, on its own thread"),
 ];
 
@@ -93,7 +93,7 @@ const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/src/bin/tools/coastcheck.rs", "main"),
     ("crates/pipeline/src/bin/tools/lakefill.rs", "catalogue_add"),
     // (A unit test's root, `TEST_ROOT`, only while `buildstore::out::testing`: refused when live.)
-    ("crates/pipeline/src/agent/mod.rs", "find_root"),
+    ("crates/agentcore/src/agent/mod.rs", "find_root"),
     ("crates/server/src/main.rs", "main"),
     ("crates/server/src/data.rs", "find_nas"),
     ("crates/pipeline/examples/checklist.rs", "main"),

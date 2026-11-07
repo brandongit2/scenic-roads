@@ -2,7 +2,7 @@
 
 **Built (task #871, steps 0–7 of §7), but the pool part (§4.6), which waits for #878.** This doc
 says how the build agent's single serial loop (`crate::agent::Agent::run` and `step`,
-crates/pipeline/src/agent/mod.rs, as it was) became independent parts, each split by what it waits
+crates/agentcore/src/agent/mod.rs, as it was) became independent parts, each split by what it waits
 on; docs/pool.md §7.8 and §11 and docs/building.md §2 say the same as built. §1 and the parts
 marked *today* describe main at e3fa1d53, before the split; §4's *Built* notes say what is.
 

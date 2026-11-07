@@ -9,6 +9,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agentcore"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bld",
+ "buildstore",
+ "clap",
+ "codecs",
+ "coordwire",
+ "det",
+ "flate2",
+ "futures-util",
+ "hyper",
+ "hyper-util",
+ "inputs",
+ "jobrt",
+ "landmarks",
+ "libc",
+ "names",
+ "offload",
+ "rayon",
+ "roadcore",
+ "roads",
+ "serde",
+ "serde_json",
+ "sha2",
+ "socket2",
+ "store",
+ "tempfile",
+ "terrain",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "trees",
+ "ureq",
+ "xxhash-rust",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1444,6 +1486,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 name = "pipeline"
 version = "0.1.0"
 dependencies = [
+ "agentcore",
  "anyhow",
  "axum",
  "bld",
@@ -1454,9 +1497,6 @@ dependencies = [
  "coordwire",
  "det",
  "flate2",
- "futures-util",
- "hyper",
- "hyper-util",
  "inputs",
  "jobrt",
  "landmarks",
@@ -1471,20 +1511,13 @@ dependencies = [
  "roads",
  "serde",
  "serde_json",
- "sha2",
- "socket2",
  "store",
  "tempfile",
  "terrain",
  "tokio",
- "tokio-util",
  "toml",
- "tower",
- "tower-http",
  "trees",
- "ureq",
  "weezl",
- "xxhash-rust",
  "zstd 0.13.3",
 ]
 
