@@ -255,9 +255,10 @@ pub fn run(
     }
 
     let p = phase("writing the outputs");
+    // (An item left out, too costly a query alone, has no facts this run.)
     let known: Vec<(String, Py)> = facts_q
         .iter()
-        .map(|q| (q.clone(), facts[q].clone()))
+        .filter_map(|q| Some((q.clone(), facts.get(q)?.clone())))
         .filter(|(_, r)| !r.get("missing").is_some_and(Py::truthy))
         .collect();
     let file = out.join("facts.json");

@@ -15,6 +15,7 @@
 //! Wikidata (crate::wikiask) and added to it after each batch. The files' bytes are as Python's
 //! `json` writes them (pyport::pyjson), every float operation in the order the Python's was.
 
+use crate::heritagewd::write_atomic;
 use crate::interest::py_round;
 use crate::wikiask::{number, val, Asker};
 use anyhow::{bail, Context, Result};
@@ -329,13 +330,13 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
         // Saved after every batch, so a rerun picks up where a failed one stopped.
         let p = phase("fetching park facts from Wikidata");
         let ask = Asker::new();
-        let got =
-            wd_parks(&ask, wikidata, &todo, |part| Ok(std::fs::write(&cache, dumps_spaced(&merged(&have, part)))?))?;
+        // (Written whole by a rename: a run killed as it writes keeps the last batch's.)
+        let got = wd_parks(&ask, wikidata, &todo, |part| write_atomic(&cache, &dumps_spaced(&merged(&have, part))))?;
         drop(p);
         let _p = phase("writing the Wikidata cache");
         let Py::Dict(d) = merged(&have, &got) else { unreachable!() };
         have = d;
-        std::fs::write(&cache, dumps_spaced(&Py::Dict(have.clone())))?;
+        write_atomic(&cache, &dumps_spaced(&Py::Dict(have.clone())))?;
     }
     let p = phase("writing the park details");
     let facts: HashMap<&str, &Py> = have.iter().map(|(k, v)| (k.as_str(), v)).collect();

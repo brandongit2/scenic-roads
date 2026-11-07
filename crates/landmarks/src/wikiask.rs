@@ -10,14 +10,19 @@
 //!
 //! - **A wait**: a 429 or a `Retry-After`, the service asking for time. Told to the job's proxy
 //!   (jobrt::budget::seen: every process and Mac held that long), waited out here as long
-//!   (jobrt::budget::hold_s), and asked again, however often it says so: a wait is no failure.
+//!   (jobrt::budget::hold_s), and asked again: a wait is no failure. A service still refusing once
+//!   the waits for one request add up past the longest hold the pool honours
+//!   (jobrt::budget::HOLD_MAX_S) fails the run, what it saved kept.
 //! - **Too costly**: the query ran past the service's time limit. QLever says so with a 429 and its
-//!   error object (`exception`: its server answers every cancelled query 429, with no
-//!   `Retry-After`); the Wikidata Query Service with a 500 naming its `TimeoutException`. The same
-//!   query would only run out again: it isn't asked again, nor told as a hold (no one asked too
-//!   often, and the proxy has charged its time to the budget). A batch is asked again in halves
+//!   error object, whose `exception` says it timed out (its server answers every cancelled query
+//!   429, with no `Retry-After`); the Wikidata Query Service with a 500 naming its
+//!   `TimeoutException`. Anything else is a wait, so a rate limit is never asked in halves. The
+//!   same query would only run out again: it isn't asked again, nor told as a hold (no one asked
+//!   too often, and the proxy has charged its time to the budget). A batch is asked again in halves
 //!   (`Asker::sparql_batches`) down to one item; an item too costly alone is left out with a log
-//!   line, asked again by the next run. A query that is no batch fails (`TooCostly`).
+//!   line, asked again by the next run. More queries too costly in a row than one item, or two
+//!   side by side, would give (the batch's halvings and two) is a service answering nothing, which
+//!   fails the run rather than asking every half. A query that is no batch fails (`TooCostly`).
 //! - **A failure**: no answer, or another error: asked again after a hold's default wait
 //!   (jobrt::budget::HOLD_DEFAULT_S) times the failures so far, `FAILURES` in a row failing the run.
 //!
@@ -96,7 +101,13 @@ fn sort(status: u16, body: String, retry: Option<&str>) -> Said {
         return Said::Answer(body);
     }
     let said = format!("HTTP {status}: {}", body.chars().take(300).collect::<String>());
-    let cancelled = status == 429 && retry.is_none() && loads(&body).is_ok_and(|v| v.get("exception").is_some());
+    let timed_out = |e: &str| {
+        let e = e.to_ascii_lowercase();
+        ["timed out", "timeout", "time limit"].iter().any(|w| e.contains(w))
+    };
+    let cancelled = status == 429
+        && retry.is_none()
+        && loads(&body).is_ok_and(|v| v.get("exception").and_then(Py::as_str).is_some_and(timed_out));
     if cancelled || (status == 500 && body.contains("TimeoutException")) {
         return Said::TooCostly(said);
     }
@@ -104,6 +115,13 @@ fn sort(status: u16, body: String, retry: Option<&str>) -> Said {
         return Said::Wait(jobrt::budget::hold_s(retry), said);
     }
     Said::Failed(said)
+}
+
+/// Queries too costly in a row (`Asker::sparql_batches`): how many, and the most a batch's costly
+/// keys give.
+struct Costly {
+    in_a_row: usize,
+    most: usize,
 }
 
 /// A query that ran past the query service's time limit: what it said.
@@ -169,7 +187,7 @@ impl Asker {
         request: impl Fn() -> Result<(u16, String, Option<String>)>,
         read: impl Fn(&str) -> Option<T>,
     ) -> Result<T> {
-        let mut failures = 0;
+        let (mut failures, mut waited) = (0, 0);
         loop {
             let (status, body, retry) = {
                 let _w = store::waits::net();
@@ -182,6 +200,13 @@ impl Asker {
                 },
                 Said::Wait(s, said) => {
                     jobrt::budget::seen(url, status, retry.as_deref());
+                    waited += s;
+                    if waited > jobrt::budget::HOLD_MAX_S {
+                        bail!(
+                            "{url}: still asking to wait after {} s of waits, past the longest hold the pool honours ({said})",
+                            waited - s
+                        );
+                    }
                     eprintln!("  asked to wait {s} s ({})", said.chars().take(120).collect::<String>());
                     failures = 0;
                     (self.wait)(Duration::from_secs(s));
@@ -227,7 +252,8 @@ impl Asker {
     /// `keys` asked of `endpoint` `batch` at a time (`query` making a batch's query), each batch's
     /// keys and bindings given to `answered` as it comes. A batch too costly for the service is
     /// asked again in halves, down to one key; a key too costly alone is left out (not given to
-    /// `answered`) with a log line.
+    /// `answered`) with a log line. Too costly in a row past what one costly key, or two side by
+    /// side, would give: the service answering nothing, an error (`TooCostly`).
     pub fn sparql_batches(
         &self,
         endpoint: &str,
@@ -236,8 +262,12 @@ impl Asker {
         query: &dyn Fn(&[String]) -> String,
         answered: &mut dyn FnMut(&[String], Vec<Py>) -> Result<()>,
     ) -> Result<()> {
+        let mut costly = Costly { in_a_row: 0, most: 0 };
         for chunk in keys.chunks(batch.max(1)) {
-            self.halves(endpoint, chunk, query, answered)?;
+            // (One costly key: the whole and each half holding it down to the key alone, its
+            // halvings and one; a costly key beside it, one more.)
+            costly.most = (usize::BITS - (chunk.len() - 1).leading_zeros()) as usize + 2;
+            self.halves(endpoint, chunk, query, answered, &mut costly)?;
         }
         Ok(())
     }
@@ -248,17 +278,29 @@ impl Asker {
         keys: &[String],
         query: &dyn Fn(&[String]) -> String,
         answered: &mut dyn FnMut(&[String], Vec<Py>) -> Result<()>,
+        costly: &mut Costly,
     ) -> Result<()> {
         match self.sparql(endpoint, &query(keys)) {
-            Ok(rows) => answered(keys, rows),
+            Ok(rows) => {
+                costly.in_a_row = 0;
+                answered(keys, rows)
+            }
             Err(e) => match e.downcast::<TooCostly>() {
+                Ok(t) if costly.in_a_row >= costly.most => Err(TooCostly(format!(
+                    "{} queries in a row, more than costly items give: the service answers nothing; the last {}",
+                    costly.most + 1,
+                    t.0
+                ))
+                .into()),
                 Ok(_) if keys.len() > 1 => {
+                    costly.in_a_row += 1;
                     eprintln!("  a query of {} items ran past the service's time limit: asked in halves", keys.len());
                     let (a, b) = keys.split_at(keys.len() / 2);
-                    self.halves(endpoint, a, query, answered)?;
-                    self.halves(endpoint, b, query, answered)
+                    self.halves(endpoint, a, query, answered, costly)?;
+                    self.halves(endpoint, b, query, answered, costly)
                 }
                 Ok(t) => {
+                    costly.in_a_row += 1;
                     eprintln!("  {}: left out, {t}", keys[0]);
                     Ok(())
                 }
@@ -396,6 +438,9 @@ pub(crate) mod tests {
         // (A 429 asking for time: its Retry-After, else the hold's default; a date is no seconds.)
         assert!(matches!(sort(429, "Too many requests".into(), Some("7")), Said::Wait(7, _)));
         assert!(matches!(sort(429, QLEVER_TIMED_OUT.into(), Some("7")), Said::Wait(7, _)));
+        // (A 429 whose error isn't a time-out is a wait, never halved.)
+        let limited = r#"{"exception": "Too many requests from this address", "status": "ERROR"}"#;
+        assert!(matches!(sort(429, limited.into(), None), Said::Wait(60, _)));
         let d = jobrt::budget::HOLD_DEFAULT_S;
         assert!(matches!(sort(429, "".into(), None), Said::Wait(s, _) if s == d));
         assert!(matches!(sort(429, "".into(), Some("Wed, 21 Oct 2026 07:28:00 GMT")), Said::Wait(s, _) if s == d));
@@ -436,6 +481,17 @@ pub(crate) mod tests {
         assert_eq!(*waits.lock().unwrap(), vec![3; 12]);
     }
 
+    /// A service still refusing past the longest hold the pool honours fails the run.
+    #[test]
+    fn endless_waits_end() {
+        let (url, asked) = replay(vec![(429, Some("300"), "slow down".into())]);
+        let (a, waits) = noting();
+        let e = a.sparql(&url, "SELECT ?item WHERE { }").unwrap_err();
+        assert!(format!("{e:#}").contains("still asking to wait after 900 s"), "{e:#}");
+        assert_eq!(asked.lock().unwrap().len(), 4);
+        assert_eq!(*waits.lock().unwrap(), vec![300; 3]);
+    }
+
     /// Failures are asked again a few times, waiting longer each, then fail the run.
     #[test]
     fn failures_fail_in_the_end() {
@@ -473,5 +529,12 @@ pub(crate) mod tests {
             asked.lock().unwrap().iter().map(|q| q.rsplit('+').next().unwrap().to_string()).collect();
         assert_eq!(asked, ["Q1%2CQ2%2CQ3%2CQ4", "Q1%2CQ2", "Q1", "Q2", "Q3%2CQ4"]);
         assert!(waits.lock().unwrap().is_empty(), "nothing waited: too costly isn't a wait");
+        // A service answering nothing: eight keys, the whole and three halvings to a key, a key
+        // beside it, then the run fails rather than asking all fifteen queries.
+        let (url, asked) = replay(vec![t()]);
+        let keys: Vec<String> = (1..=8).map(|i| format!("Q{i}")).collect();
+        let e = a.sparql_batches(&url, &keys, 8, &|ks| ks.join(","), &mut |_, _| panic!("no answer")).unwrap_err();
+        assert!(format!("{e:#}").contains("6 queries in a row"), "{e:#}");
+        assert_eq!(asked.lock().unwrap().len(), 6);
     }
 }
