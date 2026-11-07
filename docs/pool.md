@@ -147,7 +147,7 @@ Checked by the simulator (§13):
 - **Read every step** by the lead (`term::declared`; a read that fails keeps the last), and by a
   member only while no answer of its lead's within `PAGE_AWAY_S` (35 s) said the term it leads
   (docs/coordination.md step 8a): with one, the member takes that term's lead for the declared one
-  (a lead steps down at its next step once it isn't, and its answers then say no term). A member it
+  (a lead steps down at its next step once it isn't, and its answers then say no term; nor do they while its step couldn't read the declaration or the next term: `Out::vouched`). A member it
   doesn't name never makes a term and never leads one (`Driver::step`'s `declare`).
 - **Made once** with create-new: in a new pool, by the first Mac to make term 1, which declares
   itself (`term::declare`); in a pool past term 1, by the owner, by hand. No Mac declares itself

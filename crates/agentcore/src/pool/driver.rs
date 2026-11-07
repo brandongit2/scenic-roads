@@ -296,6 +296,12 @@ pub struct Out {
     pub term: u64,
     /// The term it leads.
     pub leads: Option<u64>,
+    /// Leading, this step's own reads found it so: the declaration read naming it, and no later
+    /// term (`learn` answered). Only then do its coordinator's beat answers say the term it leads
+    /// (crate::agent::lead::after, `held::Answer::term`), which its members take in place of the
+    /// NAS (docs/coordination.md step 8a): a lead whose share fails those reads, keeping its last
+    /// view, says none, so its members read the declaration and find the owner's move.
+    pub vouched: bool,
     /// Leading, whether it may grant jobs and plan now: not while its view may be old (a
     /// re-assertion due).
     pub duties: bool,
@@ -671,11 +677,11 @@ impl Driver {
         }
         // The declared lead (a member never leads); none declared yet, the current term's lead
         // declares itself.
-        let mine = if by_lead {
+        let (mine, read) = if by_lead {
             // (The lead leads only while declared: it steps down at its next step otherwise, and
             // its answers say no term.)
             self.declared = self.cur.lead.as_ref().map(|t| t.member.clone());
-            false
+            (false, false)
         } else {
             self.declare(io, &mut out)
         };
@@ -752,6 +758,7 @@ impl Driver {
         out.term = self.saved.term;
         if let Some(l) = &self.lead {
             out.leads = Some(l.term.term);
+            out.vouched = read && learnt.is_ok();
             out.duties = self.must.is_none();
             out.fresh &= self.must.is_none();
             out.caught_up = (!self.journal || l.listed_at.is_some_and(|at| end.0.saturating_sub(at) < RELIST_S))
@@ -767,7 +774,7 @@ impl Driver {
         // again.)
         if let Some(why) = unsure {
             out.events.push(Event::Failed { what: "check the member's lock", why });
-            (out.duties, out.caught_up, out.fresh) = (false, false, false);
+            (out.duties, out.caught_up, out.fresh, out.vouched) = (false, false, false, false);
         }
         out
     }
@@ -986,24 +993,39 @@ impl Driver {
     /// once, and counts as declared while its declaration's create fails (tried again next step);
     /// the term unreadable meanwhile, the last read is kept. Past term 1 no Mac declares itself
     /// (a pool that led before #881: an elected lead, maybe not the mini, would make itself the
-    /// fixed one): the owner writes the declaration, and until then no one leads.
-    fn declare(&mut self, io: &dyn Io, out: &mut Out) -> bool {
-        match term::declared(io) {
-            Ok(Some(d)) => self.declared = Some(d.member),
+    /// fixed one): the owner writes the declaration, and until then no one leads. With whether the
+    /// declaration was read (`Out::vouched`).
+    fn declare(&mut self, io: &dyn Io, out: &mut Out) -> (bool, bool) {
+        // (Read: the NAS's declaration says it, as written or as this step wrote it.)
+        let read = match term::declared(io) {
+            Ok(Some(d)) => {
+                self.declared = Some(d.member);
+                true
+            }
             Ok(None) => match &self.cur.lead {
                 Some(t) if t.term == 1 && t.member == self.me.id => match term::declare(io, &self.me, io.now()) {
-                    Ok(d) => self.declared = d.map(|d| d.member).or(Some(self.me.id.clone())),
+                    Ok(d) => {
+                        self.declared = d.map(|d| d.member).or(Some(self.me.id.clone()));
+                        true
+                    }
                     Err(e) => {
                         self.declared = Some(self.me.id.clone());
                         out.events.push(Event::Failed { what: "declare the lead", why: format!("{e:#}") });
+                        false
                     }
                 },
-                Some(_) => self.declared = None,
-                None => {}
+                Some(_) => {
+                    self.declared = None;
+                    true
+                }
+                None => true,
             },
-            Err(e) => out.events.push(Event::Waits { what: "read the lead's declaration", why: format!("{e:#}") }),
-        }
-        self.declared.as_deref() == Some(self.me.id.as_str())
+            Err(e) => {
+                out.events.push(Event::Waits { what: "read the lead's declaration", why: format!("{e:#}") });
+                false
+            }
+        };
+        (self.declared.as_deref() == Some(self.me.id.as_str()), read)
     }
 
     /// Takes up term `t`, which names this Mac (§6.2): from the newest records a read finds (its

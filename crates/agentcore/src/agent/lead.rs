@@ -195,9 +195,17 @@ pub fn after(
     let now = run.side.now();
     let dir = home.join("pool");
     let me = run.side.member().id.clone();
-    // The term it leads, for its members' beats' answers (docs/coordination.md step 8a).
+    // The term it leads, for its members' beats' answers (docs/coordination.md step 8a): only as
+    // this step's own reads found it (`Out::vouched`).
     if let Some(c) = coord {
-        c.set_led(run.side.driver().current().lead.clone().filter(|t| t.member == me && out.leads == Some(t.term)));
+        c.set_led(
+            run.side
+                .driver()
+                .current()
+                .lead
+                .clone()
+                .filter(|t| t.member == me && out.leads == Some(t.term) && out.vouched),
+        );
     }
     // The history.
     let notes = notes(&out.events, &run.side.member().host, now);
@@ -859,6 +867,54 @@ mod tests {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(30));
             }
+        }
+
+        /// docs/coordination.md step 8a: the lead's agent tells its coordinator the term it leads
+        /// after each step (`after`), and its beats' answers say it, only while that step's own
+        /// reads found it leading (`Out::vouched`). Its declaration unreadable, it keeps its view
+        /// and leads on, but its answers say no term, so its members read the declaration
+        /// themselves and find an owner's move; moved, it steps down and says none.
+        #[test]
+        fn the_lead_s_answers_say_its_term_only_as_its_own_step_read_it() {
+            let d = tempfile::tempdir().unwrap();
+            let (mut a, b) = pool(d.path());
+            let (c, _port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "");
+            let go = |a: &mut Mac| {
+                a.run.conds = Some(a.conds);
+                a.run.tend_reach();
+                let out = a.run.step();
+                after(&mut a.run, &out, &a.root, &a.home, Some(&c));
+                out
+            };
+            let said = || {
+                let w = crate::coord::held::Beat {
+                    member: "b".into(),
+                    speaks: vec![crate::coord::held::SPEAKS.into()],
+                    ..Default::default()
+                };
+                c.member_beat(&w).term.map(|t| (t.term, t.member))
+            };
+            (c.set_term(1), c.set_member(Some(&a.id())));
+            let o = go(&mut a);
+            assert_eq!((o.leads, o.vouched), (Some(1), true), "{:?}", o.events);
+            assert_eq!(said(), Some((1, a.id())));
+            // Its declaration not readable (a share failing it): it leads on, its answers say none.
+            let decl = d.path().join("nas").join(term::LEAD);
+            let kept = std::fs::read(&decl).unwrap();
+            std::fs::remove_file(&decl).unwrap();
+            std::fs::create_dir(&decl).unwrap();
+            let o = go(&mut a);
+            assert_eq!((o.leads, o.vouched), (Some(1), false), "{:?}", o.events);
+            assert_eq!(said(), None);
+            std::fs::remove_dir(&decl).unwrap();
+            std::fs::write(&decl, &kept).unwrap();
+            assert!(go(&mut a).vouched);
+            assert_eq!(said(), Some((1, a.id())));
+            // The owner moves the lead to B: A steps down, and says none.
+            let to_b = term::Declared { member: b.id(), host: "b".into(), since: 1 };
+            std::fs::write(&decl, serde_json::to_vec(&to_b).unwrap()).unwrap();
+            assert_eq!(go(&mut a).leads, None);
+            assert_eq!(said(), None);
         }
 
         /// #883 step 9's gate (docs/maplog.md §8): the NAS's old catalogues go only while every

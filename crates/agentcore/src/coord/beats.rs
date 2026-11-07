@@ -460,9 +460,11 @@ impl Beats {
     /// of `now` (docs/coordination.md step 8a): its driver learns its lead and term from it, and
     /// reads the NAS's declaration and terms only while there's none (an older lead's answers, a
     /// lead not leading or its step hung, or none answering lately: the owner may have moved it).
+    /// An answer timed after `now` (this Mac's clock set back since) counts as none: else it would
+    /// stay fresh for as long as the clock was set back, the lead gone meanwhile.
     pub fn lead_says(&self, now: u64) -> Option<crate::pool::term::Term> {
         let g = self.inner.lock().unwrap();
-        g.lead_term.as_ref().filter(|(_, at)| now.saturating_sub(*at) < PAGE_AWAY_S).map(|(t, _)| t.clone())
+        g.lead_term.as_ref().filter(|(_, at)| *at <= now && now - at < PAGE_AWAY_S).map(|(t, _)| t.clone())
     }
 
     /// The lead's messages to this member as its last answer carried them, after those taken.
@@ -701,7 +703,8 @@ mod tests {
 
     /// docs/coordination.md step 8a: a member takes its lead's term from the lead's answer while
     /// that answer is fresh (`PAGE_AWAY_S`); an answer without one (an older lead, or one not
-    /// leading), none lately, or an older lead's 404, and its driver reads the NAS.
+    /// leading), none lately (or timed after its clock, set back), or an older lead's 404, and its
+    /// driver reads the NAS.
     #[test]
     fn a_member_takes_its_lead_s_term_from_a_fresh_answer_alone() {
         let b = Beats::default();
@@ -718,6 +721,7 @@ mod tests {
         b.answered(&Answer { speaks: vec![SPEAKS.into()], term: Some(t.clone()), ..Default::default() }, 10);
         assert_eq!(b.lead_says(10 + PAGE_AWAY_S - 1), Some(t.clone()));
         assert_eq!(b.lead_says(10 + PAGE_AWAY_S), None, "the lead not answering lately");
+        assert_eq!(b.lead_says(9), None, "this Mac's clock set back past the answer");
         b.answered(&Answer { speaks: vec![SPEAKS.into()], ..Default::default() }, 20);
         assert_eq!(b.lead_says(20), None, "an answer saying no term");
         b.answered(&Answer { speaks: vec![SPEAKS.into()], term: Some(t), ..Default::default() }, 30);
