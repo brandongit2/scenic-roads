@@ -64,9 +64,9 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   keys alone in `brief.json` beside it, for the readers needing no more). Before the pool they were `state/build/manifest.json`, `jobs.json`, `pending.json` and
   `sizes.json`, which the lead still writes while a member's older app reads them (docs/pool.md
   §6.2).
-- **Unverified uploads** (content name → SHA-256): a file a job copied to the NAS
-  (one reused isn't) is read back past the client's cache as it lands, and stays pending until
-  checked on the NAS itself. The records hold pending files as they hold the manifest's. GC's
+- **Unverified uploads** (content name → SHA-256): a file a job copied to the NAS is read back
+  past the client's cache as it lands, and stays pending until checked on the NAS itself; one a job
+  found there and reused is pending too (nothing touches it, so its check is what finds it gone). The records hold pending files as they hold the manifest's. GC's
   daily duties drain them (`agent::gc`): first every pending upload the build doesn't read (neither a manifest name nor a
   file an accepted inputs' index it names lists: replaced or dropped since) leaves the pending
   unchecked, its file then GC's queue's as any the records stop naming; then every one it reads is hashed on the NAS over
@@ -128,7 +128,9 @@ it stopped.
   answers, its `map/` folder there; a lost mount fails the run), then says
   them gone (`POST /gc/gone`, the marks' lease renewed to the newest then). The merge refuses a
   hand-off bringing a name being removed, or one removed after its lease was granted: its targets
-  are done again (docs/maplog.md §7.4). Killed mid-chunk, the next run's first chunk is the same,
+  are done again (docs/maplog.md §7.4). A removal's mark is kept while any lease as old may still
+  be handed off (owed by its member until a beat of its lists it neither held nor handed off),
+  however long a member is away. Killed mid-chunk, the next run's first chunk is the same,
   told again (one held by then kept out of it, still marked); yielding mid-chunk, the job says what
   went and lets the rest go back to the queue, unmarked (but a name told more than once, which the
   killed job may have removed, stays marked). Nothing is listed for it. A chunk takes a name in a folder the map indexes, a removed
