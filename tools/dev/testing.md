@@ -38,8 +38,7 @@ refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `
 - `--release` only for performance work: mark the command `#perf` (it may use `--workspace`).
 - Full suites run in `tools/app/publish.sh` before a publish, the PM's; and once by the PM on main
   after a merge batch, in the background, before publishing. Publish runs (#848):
-  - `cargo nextest run --workspace` (or, on a tree whose Rust build inputs are a passed publish's,
-    only the tests reading a changed file: below, after the reuse rule): every workspace crate's libraries, binaries and integration
+  - `cargo nextest run --workspace`: every workspace crate's libraries, binaries and integration
     tests (det, roadcore, pipeline, server, store, names, pyport, codecs, jobrt, buildstore, coordwire, offload, landmarks, mapview, inputs, terrain, trees, roads, bld, webpenc), on the test Mac;
   - then `tools/app/other-tests.zsh`, on the publishing Mac, its parts at once: `node --test` of
     `web/test/*.test.{ts,mjs}` and `tools/check/*.test.mjs` (by glob), `tools/devtools/test/*.test.mjs`,
@@ -139,17 +138,10 @@ test, lib and main, a test folder, a renamed package, a `[patch]` path, a macro 
 folder) and checks the lists: every top-level entry of the repo is in `KNOWN`, and the runner
 scripts' code names no repo script outside `RUNNER`.
 
-publish.sh reuses a suite of its own (#969), never a check.sh pass (those run only a branch's
-affected tests): after its Rust suite, other tests and clippy pass, it records the tree in
-`~/Library/Caches/scenic-publish/suite-passed` (with the hash of its suite line and of the
-workspace's targets, kept in `check-tests/` beside it, 30 days). A later publish asks
-check-reuse.py about those passes (the same suite line's) with every workspace target as its
-commands; it takes the verdict only when clippy's holds, no Rust build input differing (the test
-programs are the same): then only the tests reading a changed file as they run go again (the scan
-tests, a `#[test]` reading the repo), or none, and clippy is skipped. Any Rust change, or a
-doubt, runs the whole suite, as before. The other tests always run. On 6 Nov, 4 of 27 publishes
-had no release build to do and ran the whole suite (247-1,171 s); a docs-only change since a passed publish
-(38fb734d to 2d07b67d) runs pipeline's `cli` test and one buildstore test.
+publish.sh doesn't reuse: its suite is whole, the one run with nothing traced, which every lighter
+rule above leans on. (#969 tried taking a passed publish's suite when no Rust build input differed;
+4 of 27 publishes qualified on 6 Nov, and it would have trusted the `//! scans:` lines at the
+one gate that doesn't: `cli`'s left out README.md, which it reads.)
 
 Enforced twice: `tools/dev/report-guard.sh` (a SubagentStop hook) keeps a worktree agent with
 commits beyond main from finishing until its HEAD passed, and the PM runs
