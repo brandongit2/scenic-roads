@@ -541,7 +541,7 @@ cause, a hold ask taken and dropped by the taker it wasn't for, fixed since: `co
 #969's third part, measured from the dev job records and `.git/check-passed` to 6 Nov 22:30 (M1's
 clock), the tests parts run on the M4 only, against the same selection of 5 Nov's:
 - **The tests part**: p50 1,187 → 576 s, p90 2,059 → 1,645 s (50 runs before the first part, 98 since the second
-  part). Compiles 49 → 58 % of it, waits for a slot or the key 17 → 18 %, the rest, the run, 33 → 24 %:
+  part; every Mac's parts by the dev job records' `stats`, 4 Nov to 5 Nov 21:36 against 6 Nov 01:40 to 22:30: p50 920 → 469 s, p90 2,048 → 1,574 s). Compiles 49 → 58 % of it, waits for a slot or the key 17 → 18 %, the rest, the run, 33 → 24 %:
   compiling is now what bounds it. A new key's first build (34 of the 98) takes 664 s p50, a key's
   later ones 193 s: 60 % of all compile time.
 - **Cloning a new key's build folder from another key's** was tried and dropped: third-party crates
@@ -550,13 +550,20 @@ clock), the tests parts run on the M4 only, against the same selection of 5 Nov'
 - **Reuse**: 7 of 97 passes reused tests before the second part, 59 of 119 since. Of the 92 checks since then
   running their whole set, replayed with check-reuse.py as it stood at each commit: main's Rust
   changes 40, a page coord/mod.rs compiles in 10, a crate's main.rs alone 4, an example alone 1, the rest
-  manifests, Cargo.lock, runner scripts, a `#[path]` module. Under today's rule 60 of the 92 run part
-  of their set and 32 all of it; those runs' test time 157,978 → 133,920 s (-15 %), as main's changes
-  mostly reach the same heavy modules. Their compiles stay.
+  manifests, Cargo.lock, runner scripts, a `#[path]` module. Under #969's first tracing of main's changes
+  (one level of naming, since replaced: it could skip a test whose result changed) 60 of the 92 ran part of
+  their set, their test time 157,978 → 133,920 s (-15 %). Under today's rule, each test in a program linking
+  a change, 51 checks of 5 to 7 Nov sampled and replayed at their commits: 32 run part of their set and 19 all
+  of it (29 and 22 under the first tracing, as today's takes a crate's root as any source), and of the 29 running part under
+  both, 27 % more filters. The 7 of 97 and 59 of 119 above are under the first tracing's rule or before. Their compiles stay.
 - **The costliest tests** by total time (154 runs): the forecast's live-scale run 12,355 s, terrain_task's
   groups 10,627, a key names exactly its reads 10,164, polar's paused block 9,447, slope_pack's z6
   tile 9,325, depth's fine source 9,148, terrain_task's stopped and paused tiles 8,357 and 8,110. Of
   all test time the top 10 are 28 %, the top 40 55 %. terrain_task's paused tile (four pause points)
   and groups test (two block sizes fewer), alone, interleaved, load ~130: wall 59-69 → 41-51 s and
-  80-96 → 69-79 s, the two's CPU 359 → 250 s.
-- **Publish** "Rust tests" p50 1,754 → 681 s, p90 ~1,270 s (27 publishes on 6 Nov).
+  80-96 → 69-79 s, the two's CPU 359 → 250 s. What they give up: the tile has 18 samplings and its
+  log holds a block only from the 13th, so of the seven pauses before (after 0, 1, 2, 3, 5, 8, 13)
+  the cut 2, 3, 5 and 8 were each the state 0, 1 and 9 still are, nothing kept, and 13 stays the one
+  with a block kept (asserted); neither list pauses with two kept (17). Blocks 1 and 3 levels up
+  differ from 0 and 2 only in `blocks`' shift.
+- **Publish** "Rust tests", the dev job records' passed runs: p50 1,184 s, p90 2,122 s (6, 4 and 5 Nov) → p50 802 s, p90 1,478 s (28, 6 Nov).
