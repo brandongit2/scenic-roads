@@ -96,7 +96,7 @@ make_room
 # No margin set: settings.rs's default (GB), read from its line.
 fresh; target 1000
 wanted
-d=$(sed -n 's/^pub const SWEEP_MARGIN_DEFAULT_GB: u64 = \([0-9]*\);.*/\1/p' $repo/crates/pipeline/src/agent/settings.rs)
+d=$(sed -n 's/^pub const SWEEP_MARGIN_DEFAULT_GB: u64 = \([0-9]*\);.*/\1/p' $repo/crates/agentcore/src/agent/settings.rs)
 [[ -n $d ]] && (( want == 1000 + (d << 20) )) && [[ $room == *"(default)"* ]] \
   && ok "no margin: the default" || no "no margin: the default" "want $want KB, default $d; $room"
 

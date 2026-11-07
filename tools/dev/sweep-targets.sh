@@ -18,7 +18,7 @@
 # - Room (#954, make_room): while this Mac's free disk is below its room target (the agent's
 #   room-target.json, set on the build page or by `scenic room`) plus the sweep's margin
 #   (sweep-margin.json beside it, the build page's "Dev sweep margin"; none set:
-#   SWEEP_MARGIN_DEFAULT_GB in crates/pipeline/src/agent/settings.rs), the shared build folder's
+#   SWEEP_MARGIN_DEFAULT_GB in crates/agentcore/src/agent/settings.rs), the shared build folder's
 #   entries go, the least recently used (read or written) first, until it is back above both; then, still below,
 #   the compile cache. No room target: the margin alone is kept free.
 # - The main checkout's target/debug: entries untouched for 2 days go.
@@ -51,9 +51,9 @@ wanted() {
   m=$(json_bytes $agent_home/sweep-margin.json)
   if [[ -z $m ]]; then
     from=default
-    m=$(sed -n 's/^pub const SWEEP_MARGIN_DEFAULT_GB: u64 = \([0-9][0-9]*\);.*/\1/p' $repo/crates/pipeline/src/agent/settings.rs 2>/dev/null)
+    m=$(sed -n 's/^pub const SWEEP_MARGIN_DEFAULT_GB: u64 = \([0-9][0-9]*\);.*/\1/p' $repo/crates/agentcore/src/agent/settings.rs 2>/dev/null)
     if [[ -n $m ]]; then m=$(( m << 30 ))
-    else m=0 from="its default unreadable: 0"; say "the sweep's default margin can't be read from crates/pipeline/src/agent/settings.rs (SWEEP_MARGIN_DEFAULT_GB): 0 used"; fi
+    else m=0 from="its default unreadable: 0"; say "the sweep's default margin can't be read from crates/agentcore/src/agent/settings.rs (SWEEP_MARGIN_DEFAULT_GB): 0 used"; fi
   fi
   if [[ -n $t ]]; then room="room target $(gb $(( t >> 10 ))) + margin $(gb $(( m >> 10 ))) ($from)"
   else room="margin $(gb $(( m >> 10 ))) ($from; no room target: no room-target.json in the agent's folder)" t=0; fi

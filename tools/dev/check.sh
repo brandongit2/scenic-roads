@@ -80,7 +80,9 @@ export SCENIC_DEVJOB_PARENT=$djrun
 # (zsh runs no EXIT trap on a signal: a TERM or INT ends it by exit, so the run is ended "stopped".)
 trap 'dj_end $djrun $djstatus ${djwhy:+why} ${djwhy:+$djwhy}' EXIT
 trap 'exit 143' TERM; trap 'exit 130' INT
-changed=( ${(f)"$(git diff --name-only $base; git ls-files --others --exclude-standard)"} )
+# (`--no-renames`: a moved file is its old path and its new one, as check-reuse.py reads X; with
+# renames, 6f4's move of agent/settings.rs hid the old path the sweep's test is run by.)
+changed=( ${(f)"$(git diff --no-renames --name-only $base; git ls-files --others --exclude-standard)"} )
 # A tree already checked is not checked again (#887): a clean checkout (no untracked files either)
 # whose tree and merge-base's tree a pass recorded passes at once, recording HEAD with that pass's
 # fields and `reused all=<its commit>`. (Every part reads only the tree and its diff against that base.)
@@ -159,7 +161,7 @@ if has 'tools/dev/check*' || has 'tools/dev/affected-tests.sh' || has 'tools/dev
 else skip reuse "the reuse rule unchanged"; fi
 if has 'tools/dev/bin/*' || has 'tools/dev/test/shared-target.zsh'; then part sharedtarget zsh tools/dev/test/shared-target.zsh
 else skip sharedtarget "tools/dev/bin unchanged"; fi
-if has 'tools/dev/sweep-targets.sh' || has 'tools/dev/test/sweep-targets.zsh' || has 'crates/pipeline/src/agent/settings.rs'; then
+if has 'tools/dev/sweep-targets.sh' || has 'tools/dev/test/sweep-targets.zsh' || has 'crates/agentcore/src/agent/settings.rs'; then
   part sweep zsh tools/dev/test/sweep-targets.zsh
 else skip sweep "the sweep unchanged"; fi
 if has 'tools/status/*'; then
