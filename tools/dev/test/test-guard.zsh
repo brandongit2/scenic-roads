@@ -141,4 +141,8 @@ if (( rc == 2 )) && [[ $out == *"isn't a module path"* ]]; then print "ok (hook 
 else print "FAIL (hook refuses, exit $rc): cargo test -p $crate -- bare\n  $out"; fail=1; fi
 out=$(hook "ls"); rc=$?
 if (( rc == 0 )) && [[ -z $out ]]; then print "ok (hook passes): ls"; else print "FAIL (hook passes, exit $rc): ls\n  $out"; fail=1; fi
+# affected-tests.sh failing (here rg off the PATH, as in a plain ssh shell) refuses as that, not as "nothing affected".
+out=$(PATH=${(j.:.)${path:#${commands[rg]:h}}} hook "cargo test -p $crate -- $f"); rc=$?
+if (( rc == 2 )) && [[ $out == *"affected-tests.sh failed"*"'rg'"* ]]; then print "ok (hook, no rg): cargo test -p $crate -- $f"
+else print "FAIL (hook, no rg, exit $rc): cargo test -p $crate -- $f\n  $out"; fail=1; fi
 exit $fail

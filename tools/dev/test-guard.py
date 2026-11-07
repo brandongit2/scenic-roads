@@ -130,7 +130,13 @@ for args in found:
     if full:
         block("No full test suites from agents or reviewers: run the tests tools/dev/affected-tests.sh prints for your worktree (a reviewer: only the tests the commit adds or changes, filtered). A full suite only for a failure the PM names: mark it #repro. publish.sh runs everything.")
     if not wt: continue   # a reviewer in the main checkout: filtered runs are theirs to pick
-    r = subprocess.run([repo + "/tools/dev/affected-tests.sh"], cwd=root, capture_output=True, text=True, timeout=30)
+    # (120 s: the M1 took 25 s on 6f4's 130 Rust files; past it the guard blocks, which a hang inside
+    # the hook's own timeout would not. A failure isn't an empty set: rg off the PATH read as "nothing
+    # affected".)
+    try: r = subprocess.run([repo + "/tools/dev/affected-tests.sh"], cwd=root, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired: block("tools/dev/affected-tests.sh took over 120 s in %s, so this cargo test can't be checked against it." % root)
+    if r.returncode:
+        block("tools/dev/affected-tests.sh failed in %s (exit %d), so this cargo test can't be checked against it: %s" % (root, r.returncode, (r.stderr.strip().splitlines() or ["no output"])[-1]))
     allowed = {}   # (crate, target) -> None (whole) | set of filter prefixes
     for line in r.stdout.splitlines():
         if not line.startswith("cargo test "): continue
