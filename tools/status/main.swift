@@ -161,6 +161,9 @@ struct Status: Decodable {
     let forecast: Forecast?
     /// What needs a look (the lead's: crates/pipeline/src/agent/flags.rs).
     let flags: [Flag]?
+    /// The owner's asks this Mac passed on that the lead refused, not yet seen on the build page
+    /// (crates/pipeline/src/agent/answered.rs; agents from task #922 on).
+    let refused: [RefusedAsk]?
 
     /// Its running jobs, every slot's in order (`jobs`, else the old fields).
     var allJobs: [Job] { jobs ?? ([job, beside].compactMap { $0 } + (more ?? [])) }
@@ -199,6 +202,14 @@ struct Status: Decodable {
         if let w = waiting.first { return Verdict(state: "waiting", said: "Waiting: \(w.what)") }
         return Verdict(state: "idle", said: "Nothing to build")
     }
+}
+
+/// An ask the lead refused (crates/pipeline/src/agent/answered.rs Answered): what was asked, when,
+/// and the lead's reason.
+struct RefusedAsk: Decodable {
+    let what: String
+    let at: Int
+    let refused: String?
 }
 
 /// A Mac's own pause's stage (crates/jobrt/src/control.rs HoldView): "asked", "pausing" (its
@@ -840,6 +851,10 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     // What needs a look, as the lead flags it (the same lines as `scenic status` and the build page).
     for f in buildFlags(r) {
         out.append(Line(text: "\(f.kind.capitalized): \(f.said)", style: .small))
+    }
+    // This Mac's asks the lead refused (task #922), until they're seen on the build page.
+    for a in s.refused ?? [] {
+        out.append(Line(text: "The lead refused this Mac's ask to \(a.what) (\(clock(a.at))): \(a.refused ?? "no reason given") · Dismiss it on the build page", style: .plain))
     }
     // Every running job, slot by slot (task #846: a Mac runs up to six).
     let jobs = s.allJobs

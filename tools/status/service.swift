@@ -778,6 +778,7 @@ func selfTest(_ dir: String) -> Never {
     check("its hold items: the stage, each job finishing, Resume", items.first?.title.hasPrefix("Pausing:") == true && items.filter { $0.title.contains("finishing unit") }.count == 2 && items.last?.held == false)
     let printed = lines(said, line, own: ownSaid).map(\.text)
     check("every job shown, slot by slot", (1...3).allSatisfy { k in printed.contains { $0.hasPrefix("Slot \(k): ") } })
+    check("an ask the lead refused, said until it's seen (task #922)", printed.contains { $0.hasPrefix("The lead refused this Mac's ask to set the pool's batch-minutes to 20") && $0.contains("not a setting the lead takes") })
     check("a stuck loop said, by its agent's threshold, its age counted on from its beat (400 s said, 30 s ago)", printed.contains("m1: loop stuck 7\u{00A0}min, in the pool's round"))
     // Each helper's too (task #899): one stuck, one under the threshold, one out of touch (said
     // elsewhere): the fixture's status with those helpers in it.
