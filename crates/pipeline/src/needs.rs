@@ -492,7 +492,7 @@ impl Curve {
 /// (`Book::nas_prior`) alike.
 #[derive(Debug, Default)]
 pub struct Cache(
-    Mutex<(u64, BTreeMap<(String, Measure), Model>)>,
+    Mutex<(u64, std::collections::HashMap<String, Vec<(Measure, std::sync::Arc<Model>)>>)>,
     Mutex<(u64, BTreeMap<String, Option<(Cores, bool)>>)>,
     Mutex<(u64, BTreeMap<String, Option<crate::budget::nas::Rate>>)>,
     /// Each target's `Book::nas` (step → target → it): the NAS budget weighs each target offered
@@ -500,7 +500,25 @@ pub struct Cache(
     Mutex<(u64, Rates)>,
     /// Each step's wall time by threads (`Book::curve`).
     Mutex<(u64, BTreeMap<String, Curve>)>,
+    /// Each step's runs' 90th percentile time at the lead's pace (`Book::secs_p90`: the placement
+    /// asks it for every target it weighs that isn't measured).
+    Mutex<(u64, BTreeMap<String, Option<u64>>)>,
+    /// Each target's source's time (`Book::source_secs`, step → target): every target a placement
+    /// weighs, and every job leased at each ask (its NAS load's time), asks it.
+    Mutex<(u64, ByTarget<Option<f64>>)>,
+    /// Each `Book::secs_on` asked (step → target → threads and worker): a placement sizes every
+    /// target it weighs by it, and weighs every job leased at each ask by its targets' times.
+    Mutex<(u64, ByTarget<Vec<SecsAsked>>)>,
+    /// Each target's own run's NAS rate and time (`Book::own_rate`, step → target): the NAS budget
+    /// weighs every target offered and leased by it for each offer an ask weighs.
+    Mutex<(u64, ByTarget<Option<(crate::budget::nas::Rate, f64)>>)>,
 );
+
+/// What `Cache` keeps of each target: step → target → it (looked up without making a key).
+type ByTarget<T> = std::collections::HashMap<String, std::collections::HashMap<String, T>>;
+
+/// A `Book::secs_on` kept (`Cache`): its threads and worker, and its answer.
+type SecsAsked = ((u32, Option<String>), Option<(u64, bool)>);
 
 /// `Cache`'s targets' NAS rates: step → target → `Book::nas`.
 type Rates = std::collections::HashMap<String, std::collections::HashMap<String, Option<crate::budget::nas::Rate>>>;
@@ -809,19 +827,18 @@ impl<'a> Book<'a> {
     }
 
     /// The step's model of `m`: made, or as kept since the measures last changed.
-    fn model(&self, step: &str, m: Measure) -> Model {
+    fn model(&self, step: &str, m: Measure) -> std::sync::Arc<Model> {
         let cache = match &self.cache {
             CacheRef::Own(c) => c,
             CacheRef::Kept(c) => *c,
         };
-        let key = (step.to_string(), m);
         {
             let mut g = cache.0.lock().unwrap_or_else(|e| e.into_inner());
             if g.0 != self.rev {
-                *g = (self.rev, BTreeMap::new());
+                *g = (self.rev, Default::default());
             }
-            if let Some(md) = g.1.get(&key) {
-                return md.clone();
+            if let Some(md) = g.1.get(step).and_then(|v| v.iter().find(|k| k.0 == m)) {
+                return md.1.clone();
             }
         }
         let runs = self.runs(step, m);
@@ -836,8 +853,8 @@ impl<'a> Book<'a> {
             .then(|| std::sync::Arc::new(Near::of_measures(self.places(step))));
         let (by_source, macs) = if m == Measure::Secs { self.by_source(step) } else { Default::default() };
         let older = if m == Measure::Mem { self.older_of(step) } else { None };
-        let md = Model { fits, prior: self.prior_of(step, m), older, near, by_source, macs };
-        cache.0.lock().unwrap_or_else(|e| e.into_inner()).1.insert(key, md.clone());
+        let md = std::sync::Arc::new(Model { fits, prior: self.prior_of(step, m), older, near, by_source, macs });
+        cache.0.lock().unwrap_or_else(|e| e.into_inner()).1.entry(step.to_string()).or_default().push((m, md.clone()));
         md
     }
 
@@ -891,19 +908,37 @@ impl<'a> Book<'a> {
 
     /// The time target `target`'s source took (`BySource`), at the lead's pace (s): the same target's
     /// run, the way its step runs now, of the first step `step` reads that names it.
+    /// Kept with the models while the measures stand (its sources' names are worked out from the
+    /// steps table's reads, a slope-hi's 256 deep packs among them).
     fn source_secs(&self, step: &str, target: &str) -> Option<f64> {
-        self.the_plan.sources_naming(step, target).into_iter().find_map(|src| {
+        let cache = match &self.cache {
+            CacheRef::Own(c) => c,
+            CacheRef::Kept(c) => *c,
+        };
+        {
+            let mut g = cache.6.lock().unwrap_or_else(|e| e.into_inner());
+            if g.0 != self.rev {
+                *g = (self.rev, Default::default());
+            }
+            if let Some(&s) = g.1.get(step).and_then(|t| t.get(target)) {
+                return s;
+            }
+        }
+        let s = self.the_plan.sources_naming(step, target).into_iter().find_map(|src| {
             let c = self
                 .costs
                 .get(&cost_key(src, target))
                 .filter(|c| c.v >= self.the_plan.cost_version(src) && !is_drop(c))?;
             Some(self.lead_secs(src, c) as f64)
-        })
+        });
+        let mut g = cache.6.lock().unwrap_or_else(|e| e.into_inner());
+        g.1.entry(step.to_string()).or_default().insert(target.to_string(), s);
+        s
     }
 
     /// The step's fits of `m`, best first (the good ones, then the poor), one per size its runs have.
     pub fn fits(&self, step: &str, m: Measure) -> Vec<Fit> {
-        self.model(step, m).fits
+        self.model(step, m).fits.clone()
     }
 
     /// The step's prior of `m`: memory and disk, `p90` of its targets' measures the way it runs now
@@ -1097,17 +1132,47 @@ impl<'a> Book<'a> {
     ///   else its bin's runs on every Mac at this one's pace; else its step's prior at it.
     /// - **None** (or no worker): as before task #927, said by the second value: its own run as it
     ///   ran, twice that from another worker (no worker: as it ran); else the model at its pace.
+    /// Kept with the models while the measures stand.
     pub fn secs_on(&self, step: &str, target: &str, threads: u32, worker: Option<&str>) -> Option<(u64, bool)> {
-        let key = cost_key(step, target);
+        let cache = match &self.cache {
+            CacheRef::Own(c) => c,
+            CacheRef::Kept(c) => *c,
+        };
+        let asked = |a: &SecsAsked| a.0 .0 == threads && a.0 .1.as_deref() == worker;
+        {
+            let mut g = cache.7.lock().unwrap_or_else(|e| e.into_inner());
+            if g.0 != self.rev {
+                *g = (self.rev, Default::default());
+            }
+            if let Some(a) = g.1.get(step).and_then(|t| t.get(target)).and_then(|v| v.iter().find(|a| asked(a))) {
+                return a.1;
+            }
+        }
+        let s = self.secs_on_made(step, target, &cost_key(step, target), threads, worker);
+        let mut g = cache.7.lock().unwrap_or_else(|e| e.into_inner());
+        let kept = g.1.entry(step.to_string()).or_default().entry(target.to_string()).or_default();
+        kept.push(((threads, worker.map(str::to_string)), s));
+        s
+    }
+
+    /// `secs_on` worked out.
+    fn secs_on_made(
+        &self,
+        step: &str,
+        target: &str,
+        key: &str,
+        threads: u32,
+        worker: Option<&str>,
+    ) -> Option<(u64, bool)> {
         let md = self.model(step, Measure::Secs);
         let mac = worker.map(crate::paces::mac_of).filter(|m| md.macs.contains(*m));
-        let own = self.costs.get(&key).filter(|c| c.v >= self.the_plan.cost_version(step));
+        let own = self.costs.get(key).filter(|c| c.v >= self.the_plan.cost_version(step));
         let Some(mac) = mac else {
             if let Some(c) = own {
                 let other = worker.is_some_and(|w| c.worker.as_deref() != Some(w));
                 return Some((if other { c.secs * 2 } else { c.secs }, false));
             }
-            let s = self.fitted(&md, &key, threads).or(md.prior)?;
+            let s = self.fitted(&md, key, threads).or(md.prior)?;
             return Some(((s as f64 * self.pace(worker, step)).round() as u64, false));
         };
         let pace = self.pace(worker, step);
@@ -1124,7 +1189,7 @@ impl<'a> Book<'a> {
             .and_then(|(by, b)| bin_mean(by.own.get(&(mac.to_string(), b))))
             // (Its fit as `secs` reads it, of no thread count: a fit's thread term is of runs
             // whose threads followed the load they ran in, not what more threads would do.)
-            .or_else(|| self.fitted(&md, &key, 0).map(|s| s as f64 * pace))
+            .or_else(|| self.fitted(&md, key, 0).map(|s| s as f64 * pace))
             .or_else(|| bin_of.and_then(|(by, b)| bin_mean(by.all.get(&b))).map(|s| s * pace))
             .or_else(|| md.prior.map(|s| s as f64 * pace))?;
         Some((s.round() as u64, true))
@@ -1165,15 +1230,33 @@ impl<'a> Book<'a> {
             return Some(c.secs);
         }
         let md = self.model(step, Measure::Secs);
-        let s = self.fitted(&md, &key, threads).or_else(|| {
-            p90(self
-                .costs
-                .iter()
-                .filter(|(k, c)| step_of_key(k) == step && c.v >= v && time_weight(step, c).is_some())
-                .map(|(_, c)| self.lead_secs(step, c))
-                .collect())
-        })?;
+        let s = self.fitted(&md, &key, threads).or_else(|| self.step_p90(step))?;
         Some((s as f64 * self.pace(worker, step)).round() as u64)
+    }
+
+    /// `secs_p90`'s prior: the 90th percentile of its step's runs the way it runs now, at the lead's
+    /// pace (s); kept with the models while the measures stand.
+    fn step_p90(&self, step: &str) -> Option<u64> {
+        let cache = match &self.cache {
+            CacheRef::Own(c) => c,
+            CacheRef::Kept(c) => *c,
+        };
+        let mut g = cache.5.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 != self.rev {
+            *g = (self.rev, BTreeMap::new());
+        }
+        if let Some(&s) = g.1.get(step) {
+            return s;
+        }
+        let v = self.the_plan.cost_version(step);
+        let s = p90(self
+            .costs
+            .iter()
+            .filter(|(k, c)| step_of_key(k) == step && c.v >= v && time_weight(step, c).is_some())
+            .map(|(_, c)| self.lead_secs(step, c))
+            .collect());
+        g.1.insert(step.to_string(), s);
+        s
     }
 
     /// The cores a job of `step` for `target` takes, as measured (crate::costin's `sizes`): its own
@@ -1251,7 +1334,12 @@ impl<'a> Book<'a> {
         if g.0 != self.rev {
             *g = (self.rev, BTreeMap::new());
         }
-        *g.1.entry(step.to_string()).or_insert_with(most)
+        if let Some(&c) = g.1.get(step) {
+            return c;
+        }
+        let c = most();
+        g.1.insert(step.to_string(), c);
+        c
     }
 
     /// The step's wall time by threads (`Curve`), kept with the models while the measures stand.
@@ -1367,7 +1455,26 @@ impl<'a> Book<'a> {
 
     /// `nas`'s own run's rate alone.
     pub fn nas_own(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
-        self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(self.the_plan, step, c)).map(|r| r.0)
+        self.own_rate(step, target).map(|r| r.0)
+    }
+
+    /// Target `target`'s own run's NAS rate and time (`nas_rate`), kept with the models while the
+    /// measures stand.
+    fn own_rate(&self, step: &str, target: &str) -> Option<(crate::budget::nas::Rate, f64)> {
+        let cache = match &self.cache {
+            CacheRef::Own(c) => c,
+            CacheRef::Kept(c) => *c,
+        };
+        let mut g = cache.8.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 != self.rev {
+            *g = (self.rev, Default::default());
+        }
+        if let Some(&r) = g.1.get(step).and_then(|t| t.get(target)) {
+            return r;
+        }
+        let r = self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(self.the_plan, step, c));
+        g.1.entry(step.to_string()).or_default().insert(target.to_string(), r);
+        r
     }
 
     /// `nas_for` on `worker` (None: `nas`, at the lead's pace), with the time it lasts (s): its own
@@ -1380,8 +1487,7 @@ impl<'a> Book<'a> {
         target: &str,
         worker: Option<&str>,
     ) -> Option<(crate::budget::nas::Rate, Option<f64>)> {
-        if let Some((r, secs)) = self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(self.the_plan, step, c))
-        {
+        if let Some((r, secs)) = self.own_rate(step, target) {
             return Some((r, Some(secs)));
         }
         let r = match worker {
@@ -1509,7 +1615,7 @@ pub fn fit_table(book: &Book) -> String {
                 }
             }
             // (Memory by place, `Near`: each measure predicted from its nearest others.)
-            if let Some(nr) = book.model(s, m).near.filter(|nr| nr.runs > 0) {
+            if let Some(nr) = book.model(s, m).near.clone().filter(|nr| nr.runs > 0) {
                 out += &format!(
                     "{:<14} {:<7} {:>5}  {:<10} {:>6.1}% {:>6.1}% {:>8}  {}its {NEAR_RUNS} nearest within {NEAR_RINGS} rings × {MARGIN}\n",
                     s,
@@ -2277,7 +2383,7 @@ mod tests {
             costs.remove(&format!("terrain-deep {t}"));
         }
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
-        let nr = b.model("terrain-deep", Measure::Mem).near.unwrap();
+        let nr = b.model("terrain-deep", Measure::Mem).near.clone().unwrap();
         assert!(nr.good() && nr.runs > 300, "{nr:?}");
         let prior = b.prior("terrain-deep", Measure::Mem).unwrap();
         let (sparse, from) = b.mem("terrain-deep", "10/303/360", 2, 0);
@@ -2314,7 +2420,7 @@ mod tests {
         }
         costs.remove("terrain-deep 10/305/360");
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
-        let nr = b.model("terrain-deep", Measure::Mem).near.unwrap();
+        let nr = b.model("terrain-deep", Measure::Mem).near.clone().unwrap();
         assert!(!nr.good(), "{nr:?}");
         assert_eq!(b.mem("terrain-deep", "10/305/360", 2, 0).1, From::Prior);
     }
