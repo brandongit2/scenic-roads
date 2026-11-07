@@ -3101,25 +3101,17 @@ impl Planner {
                 }
                 checking.insert(unit.to_string());
                 // (The listing and acceptances the key is made from, for the job to check exactly
-                // them: inputs::Planned.)
+                // them: inputs::Planned. The file stays while the job it names may start: a folder
+                // that changes before then is planned again under another key, and this job, which
+                // checks what it was keyed, is replaced by that one.)
                 // (Named by the z6 tile flat, `timetables+gtfs`: a nested z6 tile's name is one file's.)
                 let flat = crate::inputs::flat(unit);
                 let planned = self.o.home.join("inputs-listing").join(format!("{flat}.{key}.json"));
-                let wrote =
-                    std::fs::create_dir_all(planned.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| {
-                        for e in std::fs::read_dir(planned.parent().unwrap())?.flatten() {
-                            if e.file_name().to_string_lossy().starts_with(&format!("{flat}.")) && e.path() != planned {
-                                std::fs::remove_file(e.path()).ok();
-                            }
-                        }
-                        store::whole::write(
-                            &planned,
-                            &serde_json::to_vec(&crate::inputs::Planned {
-                                listing: l.listing.clone(),
-                                accepted: l.accepted.clone(),
-                            })?,
-                        )
-                    });
+                let wrote = keep_listing(
+                    &planned,
+                    &flat,
+                    &crate::inputs::Planned { listing: l.listing.clone(), accepted: l.accepted.clone() },
+                );
                 if let Err(e) = wrote {
                     waiting.push(Waiting {
                         step: Some("inputs".into()),
@@ -3281,6 +3273,26 @@ fn sample_name(now: u64) -> String {
     format!("{STALL_SAMPLE}-{year:04}{month:02}{day:02}-{:02}{:02}{:02}Z.txt", d / 3600, d / 60 % 60, d % 60)
 }
 
+/// How long a unit's earlier listing files stay (`keep_listing`): a day, as room's leftovers.
+const LISTING_KEPT: Duration = Duration::from_secs(86400);
+
+/// The listing a check is keyed by, `listing`, written (whole) to `planned` for its job to read, in
+/// the folder of the unit's earlier ones (`flat.<key>.json`). Those stay a day: a job planned under
+/// an earlier key may start after the folder changed (task #971: the NAS's regions being edited,
+/// its listing file gone, the job failed at once), and checks exactly what it was keyed.
+fn keep_listing(planned: &Path, flat: &str, listing: &crate::inputs::Planned) -> Result<()> {
+    let dir = planned.parent().context("the listing's folder")?;
+    std::fs::create_dir_all(dir)?;
+    store::whole::write(planned, &serde_json::to_vec(listing)?)?;
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+        if e.file_name().to_string_lossy().starts_with(&format!("{flat}.")) && old.is_some_and(|a| a >= LISTING_KEPT) {
+            std::fs::remove_file(e.path()).ok();
+        }
+    }
+    Ok(())
+}
+
 /// The oldest samples in `home` removed past the newest `keep`, and the single file the sampler
 /// wrote before samples were timestamped.
 fn prune_samples(home: &Path, keep: usize) {
@@ -3365,6 +3377,37 @@ const SAMPLE_LIMIT: Duration = Duration::from_secs(300);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder that changes between the plan and the job's start: the listing the job was handed
+    /// is still there, for the key it was given; the unit's listings a day old are swept (task #971).
+    #[test]
+    fn a_listing_handed_to_a_job_stays_when_the_folder_changes() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("inputs-listing");
+        let at = |key: &str| dir.join(format!("regions.{key}.json"));
+        let with = |n: usize| crate::inputs::Planned {
+            listing: crate::inputs::Listing {
+                files: (0..n).map(|i| (format!("{i}.json"), (1, 1))).collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        keep_listing(&at("a"), "regions", &with(1)).unwrap();
+        // (The folder changed: the plan keyed it again, before the first job started.)
+        keep_listing(&at("b"), "regions", &with(2)).unwrap();
+        let handed: crate::inputs::Planned = serde_json::from_slice(&std::fs::read(at("a")).unwrap()).unwrap();
+        assert_eq!(handed, with(1));
+        // (Another unit's stays; one of the unit's a day old goes.)
+        keep_listing(&dir.join("roads.c.json"), "roads", &with(1)).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(at("a"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - LISTING_KEPT)
+            .unwrap();
+        keep_listing(&at("c"), "regions", &with(3)).unwrap();
+        assert!(!at("a").exists() && at("b").exists() && at("c").exists() && dir.join("roads.c.json").exists());
+    }
 
     /// The plan is made again when something it depends on changed, it was kicked (a job's end, a
     /// gate ask), a timed wait ended, or its fallback is due; none made yet, at once. (Times passed

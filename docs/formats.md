@@ -1146,6 +1146,6 @@ class, id) within a tile. The client sends the id with the clicked point.
   check's listing `@listed` (`{fmt: 1, unit, listed: {<path>: [size, mtime]}, replaced, full_at}`);
   while a change is held, `@held` (`{fmt: 1, unit, checks, held, findings: [{id, level, files,
   message, at, lines}], together, raised}`); the agent's listing for a check
-  (`agent/inputs-listing/<unit with / as +>.<key>.json`, `inputs::Planned`); the owner's acceptances
+  (`agent/inputs-listing/<unit with / as +>.<key>.json`, `inputs::Planned`; the unit's earlier ones stay a day, for a job planned before its folder changed); the owner's acceptances
   `state/inputs/accepted/<unit>/<finding id>.json` (create-new, `{id, member, host, at, by,
   message}`).
