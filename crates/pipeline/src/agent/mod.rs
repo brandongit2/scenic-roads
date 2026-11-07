@@ -16486,10 +16486,14 @@ mod pool_tests {
             out
         };
         // §3.5's kept: the agent's own timings (every Mac's jobs') and memory (`state.json`, written
-        // when it changes: a member's within these rounds may not), the broker's folder and files.
+        // when it changes: a member's within these rounds may not), the lead's answers to its asks
+        // (every Mac's, answered::FILE: a member's within these rounds asks nothing), the broker's
+        // folder and files.
         let kept_list = [
             "timings.jsonl",
             "state.json",
+            answered::FILE,
+            answered::LOCK_FILE,
             "coord",
             "coord/jobs-token",
             "coord/page",

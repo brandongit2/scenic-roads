@@ -189,7 +189,8 @@ Kept: `coord/` itself, the member's broker's folder (§3.2), with `jobs-token`, 
 `pool::seed` at each broker's start: agent/mod.rs `make_broker`) and `journal/` (made by every
 broker's start, `Coordinator::start_with`); and the agent's own `timings.jsonl`: every Mac appends
 its own jobs' timings there (`take_timings`, crates/pipeline/src/agent/mod.rs), which `scenic`
-reads as "this Mac's jobs"; and its memory, `state.json`. The test
+reads as "this Mac's jobs"; its memory, `state.json`; and the lead's answers to its owner's asks,
+`asks-answered.json` with its lock `asks-answered.lock` (every Mac's: agent/answered.rs). The test
 `member_leftovers_names_every_lead_file` runs a lead and a member (the two-agents harness) and
 requires each entry the lead writes in its folder and `coord/` to be a leftover, written by the
 member too, or in the kept list, and nothing the member writes to be a leftover. The map server's

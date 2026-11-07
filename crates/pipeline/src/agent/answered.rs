@@ -12,12 +12,12 @@
 //! their own ask here (`of`).
 //!
 //! Only this Mac's agent process writes the file (its loop, its beat's poster, its coordinator's
-//! `/work/asked`), one at a time (`LOCK`), each a whole document.
+//! `/work/asked`), one at a time (`locked`: a lock on `LOCK_FILE`, which any process honours), each
+//! a whole document.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Mutex;
 
 /// The answers, in the agent's folder.
 pub const FILE: &str = "asks-answered.json";
@@ -77,7 +77,16 @@ pub fn ask(home: &Path, beats: &crate::coord::beats::Beats, a: &crate::coord::as
     note(home, Answered::new(&a.key(), &a.what(&name), a.at(), refused));
 }
 
-static LOCK: Mutex<()> = Mutex::new(());
+/// The file the writers lock (`locked`), beside `FILE`: the answers themselves are replaced whole,
+/// a new file each time, so a lock on them would hold nothing.
+pub const LOCK_FILE: &str = "asks-answered.lock";
+
+/// The answers' lock in `home`, held while it lives (none when it can't be had: written unlocked).
+fn locked(home: &Path) -> Option<std::fs::File> {
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(home.join(LOCK_FILE)).ok()?;
+    f.lock().ok()?;
+    Some(f)
+}
 
 fn read(home: &Path) -> BTreeMap<String, Answered> {
     std::fs::read(home.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
@@ -98,7 +107,7 @@ pub fn note(home: &Path, a: Answered) {
     if let Some(why) = &a.refused {
         eprintln!("agent: the lead refused this Mac's ask to {}: {why}", a.what);
     }
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = locked(home);
     let mut all = read(home);
     if all.get(&a.key).is_some_and(|was| was.at > a.at) {
         return;
@@ -119,7 +128,7 @@ pub fn unseen(home: &Path) -> Vec<Answered> {
 
 /// The refusal about `key` of the ask at `at` marked seen; whether there was one.
 pub fn seen(home: &Path, key: &str, at: u64) -> bool {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = locked(home);
     let mut all = read(home);
     let Some(a) = all.get_mut(key).filter(|a| a.at == at && a.refused.is_some() && !a.seen) else {
         return false;
