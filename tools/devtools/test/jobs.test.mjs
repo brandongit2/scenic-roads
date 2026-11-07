@@ -127,6 +127,10 @@ test("a test run is on the Mac it ran on: the tests job while its run is remote,
     { op: "start", id: "c-1-tests", parent: "c-1", kind: "tests", name: "tests k", mac: "m1", t: U + 1, attrs: { ran_on: "m4" } },
     { op: "span", id: "c-1-run", parent: "c-1-tests", kind: "run", name: "run on the test Mac", mac: "m4", t0: U + 2, t1: U + 8, status: "ok", attrs: { ran_on: "m4" } },
     { op: "span", id: "c-1-suite", parent: "c-1-run", kind: "suite", name: "store", mac: "m4", t0: U + 3, t1: U + 7, status: "ok" },
+    { op: "start", id: "c-2", kind: "check", name: "check l", mac: "m1", t: U, attrs: { checkout: "l" } },
+    { op: "start", id: "c-2-tests", parent: "c-2", kind: "tests", name: "tests l", mac: "m1", t: U + 1, attrs: { ran_on: "m4" } },
+    { op: "start", id: "c-3", kind: "check", name: "check m", mac: "m1", t: U, attrs: { checkout: "m" } },
+    { op: "start", id: "c-3-tests", parent: "c-3", kind: "tests", name: "tests m", mac: "m1", t: U + 1, attrs: { ran_on: "m4", rerun_here: "the test Mac's run ended without a result" } },
     { op: "start", id: "h-1", kind: "tests", name: "tests h", mac: "m1", t: U, attrs: { ran_here: "SCENIC_CHECK_LOCAL set" } },
     { op: "start", id: "b-1", kind: "tests", name: "tests b", mac: "m1", t: U, attrs: { ran_on: "m4", rerun_here: "the test Mac's run ended without a result" } },
   ]);
@@ -135,7 +139,8 @@ test("a test run is on the Mac it ran on: the tests job while its run is remote,
   assert.deepEqual([by["r-1"].mac, by["r-1"].on], ["m1", "m4"], "started on m1, shown on m4 while its run is there");
   assert.deepEqual([by["h-1"].on, by["b-1"].on], ["m1", "m1"], "a run here, and one rerun here, stay on their Mac");
   assert.deepEqual([by["c-1"].on, by["c-1"].macs], ["m1", ["m1", "m4"]], "check.sh on its Mac, naming the Macs its parts ran on");
-  assert.deepEqual(d.away.map((x) => [x.id, x.root, x.on]), [["c-1-tests", "c-1", "m4"]], "check's tests job on the test Mac, with its run");
+  assert.deepEqual([by["c-2"].macs, by["c-3"].macs], [["m1", "m4"], ["m1"]], "a tests job running on the test Mac, before its run's spans come; one rerun here");
+  assert.deepEqual(d.away.map((x) => [x.id, x.root, x.on]), [["c-1-tests", "c-1", "m4"], ["c-2-tests", "c-2", "m4"]], "check's tests job on the test Mac, with its run");
   assert.deepEqual((await get(`/api/jobs/runs?from=${U - 60}&to=${U + 60}&kind=check`)).body.away, []);
   const r = (await get("/api/jobs/runs/r-1")).body;
   assert.deepEqual(Object.keys(r.samples).sort(), ["m1", "m4"], "the test Mac's load beside its own, before the run's spans come");

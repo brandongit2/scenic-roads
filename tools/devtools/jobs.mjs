@@ -210,13 +210,14 @@ export function makeJobs(jobs, changed) {
     const kind = url.searchParams.get("kind");
     const rs = stmt(`SELECT * FROM spans WHERE root = id AND t0 <= ? AND (t1 IS NULL OR t1 >= ?) ${kind ? "AND kind = ?" : ""} ORDER BY t0`)
       .all(...[to, from, ...(kind ? [kind] : [])]);
-    const counts = new Map(stmt(`SELECT root, COUNT(*) AS n, SUM(status IN ('fail', 'gone')) AS bad, json_group_array(DISTINCT mac) AS ms FROM spans WHERE root IN (SELECT value FROM json_each(?)) GROUP BY root`)
+    const counts = new Map(stmt(`SELECT root, COUNT(*) AS n, SUM(status IN ('fail', 'gone')) AS bad, json_group_array(DISTINCT mac) AS ms,
+      json_group_array(DISTINCT CASE WHEN json_extract(attrs, '$.rerun_here') IS NULL THEN json_extract(attrs, '$.ran_on') END) AS ons FROM spans WHERE root IN (SELECT value FROM json_each(?)) GROUP BY root`)
       .all(JSON.stringify(rs.map((r) => r.root))).map((c) => [c.root, c]));
     const away = !kind || kind === "tests" ? stmt(`SELECT * FROM spans WHERE kind = 'tests' AND root <> id AND t0 <= ? AND (t1 IS NULL OR t1 >= ?)
       AND json_extract(attrs, '$.ran_on') <> mac AND json_extract(attrs, '$.rerun_here') IS NULL ORDER BY t0`).all(to, from) : [];
     return {
       now: now(), from, to,
-      runs: rs.map((r) => { const c = counts.get(r.root); return { ...row(r), spans: (c?.n || 1) - 1, failed: c?.bad || 0, macs: c ? JSON.parse(c.ms).filter(Boolean).sort() : [r.mac] }; }),
+      runs: rs.map((r) => { const c = counts.get(r.root); return { ...row(r), spans: (c?.n || 1) - 1, failed: c?.bad || 0, macs: c ? [...new Set([...JSON.parse(c.ms), ...JSON.parse(c.ons)])].filter(Boolean).sort() : [r.mac] }; }),
       away: away.map((r) => ({ ...row(r), root: r.root })),
       macs: macs(),
     };

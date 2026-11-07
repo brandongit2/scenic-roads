@@ -183,7 +183,7 @@ function mainRelations(key) {
   if (!ck) return null;
   return { on: [...segs.values()].filter((s) => s.run && checkoutOf(s.run) === ck), arrows: [] };
 }
-// (A tests job inside another run: its run's.)
+// (A tests job inside another run, `away`, counted in its run: its run's checkout.)
 const checkoutOf = (r) => r?.attrs?.checkout ?? r?.of?.attrs?.checkout;
 const segs = new Map(), segRuns = new Map();
 function renderMain() {
@@ -204,7 +204,7 @@ function renderMain() {
   const shown = main.runs.filter((r) => !st.hide.has(classOf(r)));
   // (Each on the Mac it ran on; a tests job inside another run beside them, with its run.)
   const runById = new Map(main.runs.map((r) => [r.id, r]));
-  const away = (main.away || []).filter((r) => !st.hide.has(classOf(r))).map((r) => ({ ...r, of: runById.get(r.root) }));
+  const away = (main.away || []).filter((r) => !st.hide.has(classOf(r))).map((r) => ({ ...r, away: true, of: runById.get(r.root) }));
   const byMac = new Map();
   for (const r of [...shown, ...away]) (byMac.get(r.on) || byMac.set(r.on, []).get(r.on)).push(r);
   for (const m of Object.keys(main.samples)) if (!byMac.has(m)) byMac.set(m, []);
@@ -225,12 +225,12 @@ function renderMain() {
         const t = track();
         for (const r of row) {
           const key = `r ${r.id}`;
-          if (!r.of && r.status === "running" && r.lost == null) running++;
-          if (!r.of && bad(r)) failed++;
+          if (!r.away && r.status === "running" && r.lost == null) running++;
+          if (!r.away && bad(r)) failed++;
           const s = t.add({ key, from: r.t0, until: r.t1 ?? now, colour: colourOf(cls), kind: r.status === "running" && r.lost == null ? "running" : "past", failed: bad(r), cls, run: r });
           segs.set(key, s); segRuns.set(key, r);
           cards.set(key, () => [h("b", null, r.name), facts([...runFacts(r, now, macs, r.macs), r.of ? ["part of", `${r.of.name} (${CLASS_LABEL[classOf(r.of)] || r.of.kind})`] : null,
-            r.spans ? ["spans", `${r.spans}${r.failed ? `, ${r.failed} failed` : ""}`] : null, ["Mac's load then", sampleAt(mac, r.t0)]]), h("div", "go", r.of ? "click to open its run" : "click to open it")]);
+            r.spans ? ["spans", `${r.spans}${r.failed ? `, ${r.failed} failed` : ""}`] : null, ["Mac's load then", sampleAt(mac, r.t0)]]), h("div", "go", r.away ? "click to open its run" : "click to open it")]);
         }
         lanes.append(h("div", { class: "ln", title: CLASS_LABEL[cls] || cls }, i ? "" : `${CLASS_LABEL[cls] || cls} (${mine.length})`), t.el);
       });
@@ -347,7 +347,7 @@ function renderRun() {
   // The run itself, then a lane a kind at each depth.
   const top = track();
   top.add({ key: `s ${run.id}`, from: t0, until: t1, colour: colourOf(classOf(run)), kind: run.status === "running" && run.lost == null ? "running" : "past", failed: bad(run) });
-  const ranOn = [...new Set([run.mac, ...spans.map((s) => s.mac)])].filter(Boolean);
+  const ranOn = [...new Set([run, ...spans].flatMap((s) => [s.mac, s.on]))].filter(Boolean);
   cards.set(`s ${run.id}`, () => [h("b", null, run.name), facts(runFacts(run, now, macs, ranOn))]);
   lanes.append(h("div", "ln", "the run"), top.el);
   const maxDepth = Math.max(0, ...depth.values());
