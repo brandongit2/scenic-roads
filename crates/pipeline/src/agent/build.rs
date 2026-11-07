@@ -15,7 +15,8 @@ use super::publish::{
     PublishLine, PublishRegion, Publishing, CATALOGUE_CAP_S, CATALOGUE_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S,
     NAMES_TODO_EVERY_S, OVERLAYS_EVERY_S,
 };
-use super::steps::{readiness, ready, Left, Ready, View};
+use super::seam::{Left, NamesTodo, PassJob, PassWork, Planned, Publish, RegionLeft};
+use super::steps::{along_add, along_add_built, readiness, ready, Ready, View};
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
 use crate::coverage::Coverage;
 use crate::dem::spacing::Fine;
@@ -272,45 +273,6 @@ pub struct PassReads<'a> {
     pub lakefill: std::result::Result<Option<String>, String>,
     pub reach: &'a dyn Fn() -> Option<crate::reach::LoadError>,
     pub failures: &'a dyn Fn(&str) -> u32,
-}
-
-/// What names-to-do is gated by (`names_todo_work`): its inputs' key, the seconds since it last
-/// ran, and whether the build is idle.
-pub struct NamesTodo {
-    pub key: Option<String>,
-    pub since: Option<u64>,
-    pub idle: bool,
-}
-
-/// A job of the pass's worldwide steps (`PassWork::jobs`): its id, its step's command, the
-/// arguments after `--root` and `--scratch`, and the work it records.
-#[derive(Debug)]
-pub struct PassJob {
-    pub id: String,
-    pub step: &'static str,
-    pub args: Vec<String>,
-    pub work: Option<Work>,
-}
-
-/// The pass's worldwide steps' work (`pass_work`).
-#[derive(Debug, Default)]
-pub struct PassWork {
-    /// Their jobs, in the plan's order.
-    pub jobs: Vec<PassJob>,
-    /// Why some wait, said.
-    pub waits: Vec<super::Waiting>,
-    /// The pass's lake fill holds the jobs that read it (the agent's `hold_for_lakefill`).
-    pub lakefill_held: bool,
-    /// Everything else waits for the pass's outlines: nothing more planned.
-    pub outlines_hold: bool,
-    /// The 3D buildings' release is made (or none is declared): its scan's parts may go.
-    pub buildings_made: bool,
-    /// The summits' work (placed after the regions' plan, which says whether the terrain they read
-    /// is built).
-    pub summits: Option<Work>,
-    /// Each of `WORLDWIDE_STEPS` left (a run, or its output missing from the manifest), for the
-    /// checklist, held or not.
-    pub left: [bool; 9],
 }
 
 /// The pass's worldwide steps (pass `date`, none before the first), and names-to-do after each
@@ -845,7 +807,7 @@ fn summits_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 pub const PEAKS_V: u32 = 4;
 
 /// What a step's targets held in `view` wait for (crate::agent::steps::readiness), each a held
-/// target's: the step's waiting note (`Plan::held`), None when none of them waits.
+/// target's: the step's waiting note (`Planned::held`), None when none of them waits.
 fn held_note<'a>(step: &str, targets: impl IntoIterator<Item = &'a str>, view: &dyn View) -> Option<String> {
     let mut waits = Vec::new();
     for t in targets {
@@ -967,7 +929,7 @@ pub fn trees_targets(x: &KeyCtx) -> crate::treepacks::Targets {
 
 /// Each region's `RegionState` worked out alone, for the plan's return before its regions (the
 /// pass's heritage sites, reaches or roadside buildings awaited: without reaches, every region at 0
-/// of 0). Past it, `Plan::built` counts its `Region`s' z6 tiles and those stale: the same counts.
+/// of 0). Past it, `Planned::built` counts its `Region`s' z6 tiles and those stale: the same counts.
 fn region_states_alone(x: &KeyCtx, regions: &[(String, Coverage)], done: &Keys) -> BTreeMap<String, RegionState> {
     let (m, reach, tiles) = (x.m, x.reach, x.tiles);
     let keys = unit_keys(x);
@@ -1683,7 +1645,7 @@ pub struct TerrainWork {
     pub slope_lo_left: BTreeSet<String>,
     pub slope_left: BTreeSet<String>,
     /// The steps with stale targets held for other steps' targets, each with what it waits for
-    /// (`Plan::held`, from their readiness).
+    /// (`Planned::held`, from their readiness).
     pub held: Vec<(&'static str, String)>,
     /// Those `_left` sets by step: what a target reading them waits for (crate::agent::steps::View).
     pub left: Left,
@@ -1858,7 +1820,7 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
         // until it's made.)
         w.left.unknown_for.insert(
             "root-tiles",
-            super::steps::UnknownFor { targets: tt.reads_root.clone(), until: ("terrain-root", "terrain-root".into()) },
+            super::seam::UnknownFor { targets: tt.reads_root.clone(), until: ("terrain-root", "terrain-root".into()) },
         );
         match readiness("terrain-root", "terrain-root", &w.left) {
             Ready::Waits(n) => w.held.push(("terrain-root", super::steps::wait_note(&n))),
@@ -2012,132 +1974,6 @@ pub fn low_gate(last: bool, queue_empty: bool, half_stale: bool, since: Option<u
 /// last run isn't known, or it was `every` seconds or more ago.
 pub fn gate_open(idle: bool, since: Option<u64>, every: u64) -> bool {
     idle || since.is_none_or(|s| s >= every)
-}
-
-/// What the plan builds the regions by, one at a time, and publishes them by, as they're done:
-/// each region's own coverage, as the recipes list them (crate::coverage::Coverage::by_region); the
-/// regions the map's catalogue has, and its z6 tiles; when the last catalogue went out.
-#[derive(Clone, Copy)]
-pub struct Publish<'a> {
-    pub each: &'a [(String, Coverage)],
-    /// The last catalogue's regions by id: whether it has the region as its recipe is now (false: an
-    /// older outline, the region on the map as it was).
-    pub on_map: &'a BTreeMap<String, bool>,
-    /// The served catalogue's z6 tiles' base packs and road values, by logical name
-    /// (crate::pubtimes::served_units): the map tiles to draw are grouped by the z6 tile whose change
-    /// made them stale (`by_unit`).
-    pub served: &'a BTreeMap<String, String>,
-    /// Seconds since the last catalogue went out (or one last started); None when none has.
-    pub since_catalogue: Option<u64>,
-    /// Seconds since a catalogue was first held back by the map tiles or the road index to draw
-    /// (`Plan::catalogue_held`), or by their hand-offs waiting to be merged (the agent's), since the
-    /// last catalogue; None while none is. Past `CATALOGUE_CAP_S`, one goes out with what's drawn.
-    pub held_for: Option<u64>,
-    /// Catalogues are held for review (`inputs/hold-catalog`): what's new is weighed against the last
-    /// held one's.
-    pub held: bool,
-    /// How publishing goes (the switches).
-    pub way: Publishing,
-}
-
-/// The work there is, in order, and the regions a catalogue made now records as built (`ready`: every
-/// z6 tile of theirs built as the coverage wants it, and their z3 tiles' slope and tree cover; the
-/// catalogue keeps the others as the last one had them).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Plan {
-    pub work: Vec<Work>,
-    pub ready: Vec<String>,
-    /// The regions not `ready`, each with its z6 tiles built of those it builds (by the records: a
-    /// z6 tile current under its key), in the regions' order: what a catalogue records of a region still
-    /// building (its `--building`; docs/formats.md, Catalogue `coverage`).
-    pub building: Vec<(String, usize, usize)>,
-    /// Every region's work left, in the order they're built (those with none last), whether or not
-    /// it can start now: what the forecast schedules (crate::agent::forecast).
-    pub regions: Vec<RegionLeft>,
-    /// The drops left, (step, target), of every step with "none" targets (`is_none_key`: terrain-hi,
-    /// slope-hi, terrain-lo, slope-lo, terrain-deep, slope-deep, trees, trees-lo), runnable now,
-    /// first of the terrain, slope and tree cover work: the forecast's first items, shown as drops.
-    pub drops: Vec<(String, String)>,
-    /// The catalogue planned goes out with the low zooms made (`low_gate`: they were due, and
-    /// nothing's left of the publishing chain, or no lo pack is stale), its batch saying so once
-    /// made (crate::agent::publish::LOW). Without a catalogue planned: the low zooms are made now.
-    pub low: bool,
-    /// A catalogue is due but held back by the map tiles or the road index to draw (`CATALOGUE_GATE`),
-    /// short of `CATALOGUE_CAP_S`: the agent counts how long (`Publish::held_for`).
-    pub catalogue_held: bool,
-    /// A catalogue is due, not held back, but waits out its minute (`CATALOGUE_EVERY_S`): the hold's
-    /// count (`LastCatalogue::held_at`) is kept till it goes.
-    pub catalogue_due: bool,
-    /// The z6 tiles whose key can't be worked out now (a terrain pack's index unread: `unit_keys`):
-    /// neither built nor counted as built until it can.
-    pub unknown: Vec<String>,
-    /// The z6 tiles whose mids are made in idle time (`TreeWork::backfill`, `TerrainWork::backfill`:
-    /// the work's last): for the forecast.
-    pub backfill: Vec<Work>,
-    /// Publishing as planned now, for the log and the status.
-    pub publishing: PublishLine,
-    /// No z6 tile or terrain left to build: the steps gated by time (`GATED`) run at once.
-    pub idle: bool,
-    /// What's left of each step the plan's targets read, runnable or not (crate::agent::steps::View):
-    /// every target held is held through its readiness in it (the summits' too, by the agent).
-    pub left: Left,
-    /// The steps with work left that is held for other steps' targets, each with what it waits for
-    /// (a note in the summits' form): terrain, slope and tree cover's, and the landmarks'.
-    pub held: Vec<(String, String)>,
-    /// The regions' steps' checklist as this plan finds them (`checklist`, with the plan's keys).
-    pub checklist: Checklist,
-    /// How far each region is built, by id: the build page's and `scenic status`'s counts.
-    pub built: BTreeMap<String, RegionState>,
-}
-
-/// A region's work left (`Plan::regions`), as targets.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RegionLeft {
-    pub id: String,
-    /// Whether the map's catalogue has it: as its recipe is now (true), as it was (false), or not at
-    /// all (None).
-    pub on_map: Option<bool>,
-    /// Its z6 tiles not built as the coverage wants them, all of them (a region is done when they
-    /// are), and those it builds itself (the rest come with a region before it), in the order
-    /// they're built.
-    pub units: Vec<String>,
-    pub own_units: Vec<String>,
-    /// The terrain z6 tiles of the z3 tiles it reads to make (stale, or their mids for an assembly),
-    /// and those it makes itself (the rest come with a region before it); those z3 tiles' stale
-    /// assemblies, and those it makes itself.
-    pub terrain: Vec<String>,
-    pub own_terrain: Vec<String>,
-    #[serde(default)]
-    pub terrain_lo: Vec<String>,
-    #[serde(default)]
-    pub own_terrain_lo: Vec<String>,
-    /// The terrain-deep z10 tiles of the z3 tiles it reads left to make, and those it makes itself.
-    #[serde(default)]
-    pub terrain_deep: Vec<String>,
-    #[serde(default)]
-    pub own_terrain_deep: Vec<String>,
-    /// Its z3 tiles' stale slope-deep z10 tiles.
-    #[serde(default)]
-    pub slope_deep: Vec<String>,
-    /// Its z3 tiles' stale slope z6 tiles and assemblies; the tree cover z6 tiles of its z3 tiles to make
-    /// (stale, or their mids for an assembly), and its z3 tiles whose tree cover assembly is stale.
-    pub slope: Vec<String>,
-    #[serde(default)]
-    pub slope_lo: Vec<String>,
-    pub trees: Vec<String>,
-    #[serde(default)]
-    pub trees_lo: Vec<String>,
-    /// Its z6 tiles built as the coverage wants them now but reading terrain that's stale: whether
-    /// each goes stale too is known only once that terrain is built (its key names the tiles'
-    /// contents). For the forecast, which takes a share of them as work to come
-    /// (`forecast::EXPECTED_STALE`).
-    #[serde(default)]
-    pub expected: Vec<String>,
-    /// The map tiles (pack(T)'s targets, "6/x/y") its z6 tiles draw that are stale now or will be once
-    /// its z6 tiles left are built, each with its z6 tiles that draw it (a tile waits for those alone):
-    /// what's drawn before it's on the map as it's built now.
-    #[serde(default)]
-    pub packs: Vec<(String, Vec<String>)>,
 }
 
 /// What a key is worked out from (crate::agent::steps::key): the planner's arguments.
@@ -2296,7 +2132,7 @@ fn world_key(step: &str, x: &KeyCtx) -> Option<String> {
 ///   other chains, its tiles in the regions' order; it holds no region;
 /// - last, in idle time, the mids of current tree cover z6 tiles without one (`TreeWork::backfill`).
 ///
-/// With it, the regions' steps' checklist (`Plan::checklist`), from the same keys.
+/// With it, the regions' steps' checklist (`Planned::checklist`), from the same keys.
 #[allow(clippy::too_many_arguments)]
 pub fn plan(
     cov: &Coverage,
@@ -2307,7 +2143,7 @@ pub fn plan(
     reach: Option<&Reaches>,
     tiles: &TerrainTiles,
     updates: Publish,
-) -> Plan {
+) -> Planned {
     plan_with(&KeyMemo::default(), cov, date, m, done, inputs, reach, tiles, updates)
 }
 
@@ -2325,7 +2161,7 @@ pub fn plan_with(
     reach: Option<&Reaches>,
     tiles: &TerrainTiles,
     updates: Publish,
-) -> Plan {
+) -> Planned {
     let x = &KeyCtx::new(cov, date, m, inputs, reach, tiles).memo(memo);
     let held = updates.held;
     // (Its sections timed as the plan's phases, `nasread::PLAN`: docs/incremental-planning.md §1.)
@@ -2336,7 +2172,7 @@ pub fn plan_with(
 }
 
 /// `plan`'s work, worked out with `x`.
-fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
+fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     let (cov, date, m, inputs, reach, tiles) = (x.cov, x.date, x.m, x.inputs, x.reach, x.tiles);
     nasread::PLAN.enter("build::plan: the sites, water and pyramids");
     let mut work = Vec::new();
@@ -2473,7 +2309,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
         };
         let publishing = PublishLine { why, ..Default::default() };
         let built = region_states_alone(x, updates.each, done);
-        return Plan { work, backfill, publishing, left, held: held_steps, drops, built, ..Default::default() };
+        return Planned { work, backfill, publishing, left, held: held_steps, drops, built, ..Default::default() };
     };
 
     // base(U): the z6 tiles the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -2489,7 +2325,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     // box's), from its reach: waited for as its other reads (steps::Read::Along).
     for (u, _) in &units {
         if let Some(r) = reach.get(*u) {
-            left.along.add("unit", &u.slash(), r);
+            along_add(&mut left.along, "unit", &u.slash(), r);
         }
     }
     // A z6 tile's terrain z3 tiles: those of the z6 tiles near it and along its long ways, whose packs
@@ -2734,7 +2570,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     // first region in this order that builds it) and terrain likewise, its slope and tree cover.
     let mut claimed = vec![false; units.len()];
     let mut claimed_terrain: BTreeSet<String> = BTreeSet::new();
-    // (The drops are no region's own: the forecast's first, `Plan::drops`.)
+    // (The drops are no region's own: the forecast's first, `Planned::drops`.)
     for (step, t) in &drops {
         claimed_terrain.insert(match step.as_str() {
             "terrain-lo" => format!("lo {t}"),
@@ -3037,7 +2873,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Plan {
     work.extend(polar);
     // Last of all, in idle time: the mids of current z6 tiles that have none (expected the same).
     work.extend(backfill.iter().cloned());
-    Plan {
+    Planned {
         work,
         ready,
         building,
@@ -3534,7 +3370,7 @@ fn landmarks_chain(x: &KeyCtx, done: &Keys) -> Option<Work> {
 /// network) runs beside the candidates. The landmark points and the overlays are gated by time
 /// (`gate_open`, `way`'s gaps): the points at most hourly while z6 tiles build (`MARKS_EVERY_S`),
 /// the overlays every `OVERLAYS_EVERY_S`; both at once after the last z6 tile. With it, the steps
-/// with targets held, each with what they wait for (`Plan::held`); the time gates aren't a wait.
+/// with targets held, each with what they wait for (`Planned::held`); the time gates aren't a wait.
 /// What it finds left of its steps goes into `left`.
 #[allow(clippy::too_many_arguments)]
 fn landmarks_work(
@@ -4125,7 +3961,7 @@ fn depth_work_in(x: &KeyCtx, done: &Keys, left: &mut Left) -> Vec<Work> {
     // sea, for those meeting one.)
     for (step, list) in [("depth", &dt.hi), ("depth-lo", &dt.lo)] {
         for (t, _) in list {
-            left.along.add_built(step, t, x);
+            along_add_built(&mut left.along, step, t, x);
         }
     }
     for (step, t) in &dt.unknown {
@@ -4461,7 +4297,7 @@ fn chain_items(works: &[Work], steps: &[&str], known: bool) -> Vec<Item> {
 /// cover, the roads, the map tiles, the map's finishing, trains a day, the landmarks, the 3D
 /// buildings, publishing.
 /// `held`: the catalogue is held for review (inputs/hold-catalog): publishing is its held copy.
-/// `ready`: the regions a catalogue would record as built now (`Plan::ready`). Made with each plan,
+/// `ready`: the regions a catalogue would record as built now (`Planned::ready`). Made with each plan,
 /// with its keys (`plan`: `x`'s memo).
 pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Checklist {
     let (date, m, inputs, reach, tiles) = (x.date, x.m, x.inputs, x.reach, x.tiles);
@@ -4631,7 +4467,7 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
 
 /// A catalogue when what it would list or record has changed since the last one (not while the
 /// regions can't be read: `inputs` "regions" "?"). `ready`: the regions it records as built
-/// (`Plan::ready`).
+/// (`Planned::ready`).
 /// The catalogue, when the last (`held`: the last held one) has other files or regions than one made
 /// now would; none while the regions can't be read.
 fn catalogue_work(
@@ -4750,7 +4586,7 @@ pub(crate) mod tests {
         inputs: &BTreeMap<String, String>,
         on_map: &BTreeMap<String, bool>,
         since_publish: Option<u64>,
-    ) -> Plan {
+    ) -> Planned {
         let each = c.by_region();
         super::plan(
             c,
@@ -5466,7 +5302,7 @@ pub(crate) mod tests {
 
     /// A step whose stale targets wait for another step's (slope for the terrain of its z3 tile and its
     /// neighbours', the terrain assemblies for their z6 tiles) reports a waiting note saying so
-    /// (`TerrainWork::held`, `Plan::held`); once the terrain is built the slope's note is gone. A z6
+    /// (`TerrainWork::held`, `Planned::held`); once the terrain is built the slope's note is gone. A z6
     /// tile made again for its mid alone holds its assembly, not its slope.
     #[test]
     fn steps_held_for_other_steps_targets_report_a_note() {
@@ -5721,9 +5557,9 @@ pub(crate) mod tests {
     /// Every step of the plan done as its job does it (`did`, `terrain_did`), a z6 tile's candidates in
     /// the manifest once they're made; the steps run, in order, until nothing's left.
     /// Docs/readiness.md §7: the plan holds nothing undeclared. Each target left of a step that
-    /// declares its reads (`Plan::left`) is offered just when its readiness there is `Yes`, but for
+    /// declares its reads (`Planned::left`) is offered just when its readiness there is `Yes`, but for
     /// what's held by no read: a time gate (`GATED`), a key not known yet.
-    fn waits_are_reads(p: &Plan) {
+    fn waits_are_reads(p: &Planned) {
         use crate::agent::steps::{readiness, row};
         let offered: BTreeSet<(&str, &str)> =
             p.work.iter().flat_map(|w| w.targets.iter().map(move |t| (w.step.as_str(), t.0.as_str()))).collect();
@@ -5777,7 +5613,7 @@ pub(crate) mod tests {
     /// Docs/readiness.md §7: every key the plan offers a target under is crate::agent::steps::key's
     /// with the full context (a "none" target's, `steps::none_key`), byte for byte, for every step
     /// whose keys are derived (`steps::derived`). The steps whose keys it checked.
-    fn keys_are_derived(p: &Plan, x: &KeyCtx) -> BTreeSet<String> {
+    fn keys_are_derived(p: &Planned, x: &KeyCtx) -> BTreeSet<String> {
         let mut seen = BTreeSet::new();
         for w in p.work.iter().filter(|w| crate::agent::steps::derived(&w.step)) {
             for (t, k) in &w.targets {
@@ -5988,7 +5824,7 @@ pub(crate) mod tests {
             &Keys::default(),
             &|_| (0, (0, 0, 0, 0)),
         );
-        let p = Plan { work: w, ..Default::default() };
+        let p = Planned { work: w, ..Default::default() };
         assert!(keys_are_derived(&p, &x).contains("bldprep"));
     }
 
@@ -6445,7 +6281,7 @@ pub(crate) mod tests {
         w: &[Work],
     ) {
         let x = KeyCtx { cov: c, date: "d", m, inputs, reach: None, tiles, memo: None };
-        let seen = keys_are_derived(&Plan { work: w.to_vec(), ..Default::default() }, &x);
+        let seen = keys_are_derived(&Planned { work: w.to_vec(), ..Default::default() }, &x);
         assert_eq!(seen.len(), w.iter().map(|w| &w.step).collect::<BTreeSet<_>>().len(), "{seen:?}");
     }
 
@@ -6869,7 +6705,7 @@ pub(crate) mod tests {
                 },
             )
         };
-        let of = |p: &Plan, step: &str| -> Vec<(String, String)> {
+        let of = |p: &Planned, step: &str| -> Vec<(String, String)> {
             p.work.iter().filter(|w| w.step == step).flat_map(|w| w.targets.clone()).collect()
         };
         let sets = vec![lidar];
@@ -6926,7 +6762,7 @@ pub(crate) mod tests {
         assert!(of(&p, "slope-deep").is_empty());
         assert!(of(&p, "slope-hi").iter().any(|(t, _)| sdeep.iter().any(|(d, _)| under(t, d))));
         // The dataset cut to one z10 tile's cell: the deep targets elsewhere are drops, first of the
-        // step's work, the forecast's own (`Plan::drops`), no region's.
+        // step's work, the forecast's own (`Planned::drops`), no region's.
         let u = TileId::parse(&deep[0].0).unwrap();
         let b = roadcore::geo::tile_box(u.z, u.x, u.y);
         let cell = [b[0].floor(), b[1].floor(), b[0].floor() + 1.0, b[1].floor() + 1.0];
@@ -7235,7 +7071,7 @@ pub(crate) mod tests {
         done: &Keys,
         since: Option<u64>,
         held_for: Option<u64>,
-    ) -> Plan {
+    ) -> Planned {
         let each = c.by_region();
         super::plan(
             c,
@@ -7268,7 +7104,7 @@ pub(crate) mod tests {
         since: Option<u64>,
         way: Publishing,
         held: bool,
-    ) -> Plan {
+    ) -> Planned {
         let each = c.by_region();
         super::plan(
             c,
@@ -7305,7 +7141,7 @@ pub(crate) mod tests {
         m.insert(format!("global/roads/{d}"), format!("global/roads/{d}.{content}.roads"));
     }
     /// A plan's steps, a step's works one after another as one (the plan lists a step's by region).
-    fn steps(p: &Plan) -> Vec<String> {
+    fn steps(p: &Planned) -> Vec<String> {
         let mut v: Vec<String> = p.work.iter().map(|w| w.step.clone()).collect();
         v.dedup();
         v
@@ -7322,7 +7158,7 @@ pub(crate) mod tests {
         done: &mut Keys,
         way: Publishing,
         held: bool,
-    ) -> (Vec<String>, Plan) {
+    ) -> (Vec<String>, Planned) {
         let mut ran = Vec::new();
         for _ in 0..30 {
             let p = pplan(c, reach, m, done, &BTreeMap::new(), Some(120), way, held);
@@ -7477,7 +7313,7 @@ pub(crate) mod tests {
         let (c, reach, m, done) = three();
         let plan =
             |on_map: &BTreeMap<String, bool>| pplan(&c, &reach, &m, &done, on_map, None, Default::default(), false);
-        let units = |p: &Plan| {
+        let units = |p: &Planned| {
             p.work
                 .iter()
                 .filter(|w| w.step == "unit")
@@ -7714,7 +7550,7 @@ pub(crate) mod tests {
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let near = Publishing { near: true, ..Default::default() };
         // (The slope listed before the regions' z6 tiles: the done regions'.)
-        let prep = |p: &Plan, step: &str| {
+        let prep = |p: &Planned, step: &str| {
             p.work
                 .iter()
                 .take_while(|w| w.step != "unit")
@@ -8423,7 +8259,7 @@ pub(crate) mod tests {
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let s = steps(&m, &done);
         assert_eq!(s["a"]["unit"][0], 1, "{s:?}");
-        // The plan's counts (`Plan::built`) say the same of its z6 tiles, as worked out alone.
+        // The plan's counts (`Planned::built`) say the same of its z6 tiles, as worked out alone.
         let p = hplan(&c, &reach, &m, &done, None, None);
         assert_eq!(p.built["a"], RegionState { built: 1, total: s["a"]["unit"][1] });
         let (inputs, t) = (BTreeMap::new(), tiles_for(&m));
@@ -10879,7 +10715,7 @@ pub(crate) mod tests {
             _ => Vec::new(),
         };
         for (step, t) in ts {
-            left.along.add_built(step, t, &x);
+            super::super::steps::along_add_built(&mut left.along, step, t, &x);
         }
         assert_eq!(waits(&left, "depth", "6/40/23"), wanted);
         assert_eq!(readiness("depth", "6/30/23", &left), Ready::Yes);

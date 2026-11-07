@@ -64,6 +64,7 @@ pub mod redo;
 pub mod regionsview;
 pub mod resume;
 pub mod room;
+pub mod seam;
 // A region as the build reads it: the build's files' crate's (task #916 step 4), kept at this path.
 pub use buildstore::recipes;
 pub mod settings;
@@ -10050,7 +10051,7 @@ mod tests {
         });
         // (A plan made: its result kept, its digest and the leases as it read them.)
         p.n = 5;
-        *p.kept.borrow_mut() = Some((build::Plan::default(), build::KeyMemo::default()));
+        *p.kept.borrow_mut() = Some((seam::Planned::default(), build::KeyMemo::default()));
         p.leases = Some(co.lease_gen());
         let seen = p.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         let ago = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
@@ -13567,7 +13568,7 @@ mod tests {
             &input_digests(root),
             Some(&reaches),
             &tiles,
-            build::Publish {
+            seam::Publish {
                 each: &cov.by_region(),
                 on_map: &BTreeMap::new(),
                 served: &BTreeMap::new(),
@@ -13621,7 +13622,7 @@ mod tests {
             &input_digests(&store::nasfs::NasRoot::local_for_test(&root)),
             Some(&reaches),
             &tiles,
-            build::Publish {
+            seam::Publish {
                 each: &cov.by_region(),
                 on_map: &BTreeMap::new(),
                 served: &BTreeMap::new(),

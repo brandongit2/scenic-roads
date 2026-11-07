@@ -43,7 +43,7 @@ pub fn unmerged_holds(unmerged: bool, held_for: Option<u64>) -> bool {
 
 /// When a catalogue due was first held back (LastCatalogue::held_at), now `now`, it last `was`:
 /// held back now (`held`), kept (or now if none); else kept while a catalogue is planned or due and
-/// waiting out its minute (`due`: build::Plan::catalogue_due), so the cap reached isn't lost; else
+/// waiting out its minute (`due`: seam::Planned::catalogue_due), so the cap reached isn't lost; else
 /// none, the count starting again.
 pub fn held_at(was: Option<u64>, held: bool, due: bool, now: u64) -> Option<u64> {
     if held {
@@ -61,7 +61,7 @@ pub const CATALOGUE_EVERY_S: u64 = 60;
 
 /// How long (seconds) a catalogue may be held back by the map tiles or the road index still to draw,
 /// or their hand-offs waiting to be merged (z6 tiles landing one after another), counted from when it
-/// was first held (`build::Publish::held_for`): past it, one goes out with what's drawn and merged.
+/// was first held (`seam::Publish::held_for`): past it, one goes out with what's drawn and merged.
 pub const CATALOGUE_CAP_S: u64 = 600;
 
 /// The low zooms' cadence (`build::low_gate`): how long after they were last made they're made again
@@ -93,8 +93,8 @@ pub struct Publishing {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LastCatalogue {
     /// When a catalogue due was first held back since the last (by the map tiles or the road index
-    /// to draw, `build::Plan::catalogue_held`, or their hand-offs waiting to be merged), kept across a
-    /// restart or a change of lead: `build::Publish::held_for` counts from it, toward `CATALOGUE_CAP_S`.
+    /// to draw, `seam::Planned::catalogue_held`, or their hand-offs waiting to be merged), kept across a
+    /// restart or a change of lead: `seam::Publish::held_for` counts from it, toward `CATALOGUE_CAP_S`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_at: Option<u64>,
     /// The cadence-gated steps' (`GATED`) last runs as the lead saw them: the key recorded, and
@@ -102,7 +102,7 @@ pub struct LastCatalogue {
     /// never in a key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ran: BTreeMap<String, Ran>,
-    /// The last plan had no z6 tile or terrain left to build (`build::Plan::idle`; not kept).
+    /// The last plan had no z6 tile or terrain left to build (`seam::Planned::idle`; not kept).
     #[serde(skip)]
     pub idle: bool,
 }

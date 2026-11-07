@@ -21,8 +21,8 @@
 //! at its speed. It's run three times: as
 //! estimated, and for a range, the times measured a little off and those guessed much more.
 
-use super::build::RegionLeft;
 use super::publish::{CATALOGUE_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S, OVERLAYS_EVERY_S};
+use super::seam::RegionLeft;
 use crate::coord::sched::{Clock, Sched, State};
 use crate::coord::{cost_key, Ask, Capacity, Offer};
 use serde::{Deserialize, Serialize};
@@ -131,7 +131,7 @@ pub struct Cost {
 /// A job of the lead's alone, or one of the chains': (step, target, cost).
 pub type Job = (String, String, Cost);
 
-/// The work left, as the plan sees it (build::Plan), and what each target takes: all of it data,
+/// The work left, as the plan sees it (seam::Planned), and what each target takes: all of it data,
 /// so the lead's, written to the NAS each time it's made (`Record`), gives another Mac the same
 /// forecast.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -139,9 +139,9 @@ pub struct Input<'a> {
     pub now: u64,
     /// The lead's jobs before the regions' (the pass's worldwide jobs, the heritage sites).
     pub before: Vec<Job>,
-    /// The regions' work left, in the order they're built (build::Plan::regions).
+    /// The regions' work left, in the order they're built (seam::Planned::regions).
     pub regions: Cow<'a, [RegionLeft]>,
-    /// The drops (build::Plan::drops: targets of the "none" keys, their packs dropped),
+    /// The drops (seam::Planned::drops: targets of the "none" keys, their packs dropped),
     /// each at its drop's cost: first of the regions' work, waiting on nothing, shown as drops
     /// (`Lane::drop`). A region whose terrain they're in waits on them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -195,8 +195,8 @@ pub struct Input<'a> {
     pub paused: bool,
     /// What the regions' targets read along their long ways (crate::agent::steps::Read::Along), the
     /// plan's (`Left::along`): waited for as their other reads (`Waits::of`).
-    #[serde(default, skip_serializing_if = "crate::agent::steps::Along::is_empty")]
-    pub along: crate::agent::steps::Along,
+    #[serde(default, skip_serializing_if = "crate::agent::seam::Along::is_empty")]
+    pub along: crate::agent::seam::Along,
     /// The forecast code it's run as (`VERSION`; not recorded): the backtest's replay sets the
     /// code before (crate::agent::fccheck::replay) to rerun a record as that code made it.
     #[serde(skip, default = "version")]
@@ -930,7 +930,7 @@ enum Phase {
 /// nothing in `free`: 6 Nov's record had some 1 M slope-deep parts the slope-hi tiles read, 2,300
 /// reads waiting in all; and each step's `may_wait`, with the items listed when it was worked out).
 struct Waits<'a> {
-    along: &'a crate::agent::steps::Along,
+    along: &'a crate::agent::seam::Along,
     whole: BTreeMap<&'static str, (usize, usize)>,
     held: std::collections::HashMap<u64, Deps>,
     free: std::collections::HashSet<u64>,
@@ -2106,7 +2106,7 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
         });
     }
     // The cadenced publishes: each once its cadence has passed since it last went, or once no z6 tile
-    // or terrain is left (build::Plan::idle), whichever comes first.
+    // or terrain is left (seam::Planned::idle), whichever comes first.
     let idle_s = expected.items.iter().filter(|i| i.phase == Phase::Region).map(|i| i.end).fold(0.0, f64::max);
     let c = &inp.cadence;
     f.publishes = [
@@ -2569,7 +2569,7 @@ mod tests {
         }
     }
 
-    /// The drops (`Input::drops`, build::Plan::drops) go first at their own cost, a run of their
+    /// The drops (`Input::drops`, seam::Planned::drops) go first at their own cost, a run of their
     /// own shown as drops (`Lane::drop`), never merged with the step's builds: 29 Oct's 4,275 Alaska
     /// drops were the yukon's, last, at a build's 76 s each.
     #[test]
@@ -4075,9 +4075,9 @@ mod tests {
     /// read listed, every item of a step read whole; through a read not listed that waits itself
     /// (`held`), what it waits on, and through a step read whole none of whose targets is listed,
     /// the items of the steps it reads on (`whole_left`).
-    fn declared_waits(its: &Items, along: &crate::agent::steps::Along, i: usize) -> BTreeSet<(String, String)> {
+    fn declared_waits(its: &Items, along: &crate::agent::seam::Along, i: usize) -> BTreeSet<(String, String)> {
         use crate::agent::steps::{read_steps, readiness, Ready, View};
-        struct Listed<'a>(&'a [Item], &'a crate::agent::steps::Along);
+        struct Listed<'a>(&'a [Item], &'a crate::agent::seam::Along);
         impl View for Listed<'_> {
             fn left(&self, step: &str, t: &str) -> bool {
                 self.0.iter().any(|d| d.step == step && d.target == t)
@@ -4085,7 +4085,7 @@ mod tests {
             fn any_left(&self, step: &str) -> bool {
                 self.0.iter().any(|d| d.step == step)
             }
-            fn along(&self) -> Option<&crate::agent::steps::Along> {
+            fn along(&self) -> Option<&crate::agent::seam::Along> {
                 Some(self.1)
             }
         }

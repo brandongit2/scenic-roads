@@ -111,7 +111,7 @@ pub(super) struct PlanView {
     pub regions_view: Option<(RegionsKey, std::sync::Arc<serde_json::Value>)>,
     /// Whether the forecast's thread runs (a NAS user: the self-heal waits for it).
     pub forecasting: bool,
-    /// Whether the catalogue last planned has the low zooms made (build::Plan::low): its batch says
+    /// Whether the catalogue last planned has the low zooms made (seam::Planned::low): its batch says
     /// so (crate::agent::publish::LOW) once it's published.
     pub catalogue_low: bool,
 }
@@ -381,14 +381,14 @@ pub(super) struct Planner {
     /// The last `build::plan` result as it came, with its keys: what "its jobs" filters again on a
     /// lease change (`refilter`, set meanwhile), instead of planning (docs/incremental-planning.md
     /// step 2). Dropped as a plan starts.
-    pub(super) kept: std::cell::RefCell<Option<(build::Plan, build::KeyMemo)>>,
+    pub(super) kept: std::cell::RefCell<Option<(seam::Planned, build::KeyMemo)>>,
     pub(super) refilter: std::cell::Cell<bool>,
     pub(super) jobs: Vec<JobSpec>,
     pub(super) waiting: Vec<Waiting>,
     pub(super) regions: (Vec<recipes::Recipe>, Vec<(String, String)>),
     /// The checklist, made with each plan (`checklist`); the regions' steps' part of it as the plan
-    /// found them (build::Plan::checklist: None while no plan got that far); how far each region
-    /// is built, as the last plan that got that far counted (build::Plan::built); the regions'
+    /// found them (seam::Planned::checklist: None while no plan got that far); how far each region
+    /// is built, as the last plan that got that far counted (seam::Planned::built); the regions'
     /// steps for the page, when that count was last started and the count under way.
     pub(super) progress: Vec<progress::Line>,
     pub(super) regions_checklist: std::cell::RefCell<Option<progress::Checklist>>,
@@ -433,7 +433,7 @@ pub(super) struct Planner {
     /// The newest NAS snapshot of the map read (`map_now`, without the lead's log): its `seq`, and its
     /// catalogue (None: it didn't read).
     pub(super) nas_map: std::cell::RefCell<Option<(u64, Option<std::sync::Arc<store::catalogue::Catalogue>>)>>,
-    /// The regions the last plan would publish as built (build::Plan::ready), for the checklist.
+    /// The regions the last plan would publish as built (seam::Planned::ready), for the checklist.
     pub(super) ready: std::cell::RefCell<Vec<String>>,
     /// The last plan's forecast (crate::agent::forecast), for the status.
     pub(super) forecast: std::cell::RefCell<Option<forecast::Forecast>>,
@@ -470,7 +470,7 @@ pub(super) struct Planner {
     /// The lead's record of its catalogues (publish::LastCatalogue, its folder's `publishing.json`):
     /// when one was first held back, and the gated steps' runs.
     pub(super) catalogues: std::cell::RefCell<publish::LastCatalogue>,
-    /// Whether the catalogue last planned had the low zooms made (build::Plan::low, nothing left of
+    /// Whether the catalogue last planned had the low zooms made (seam::Planned::low, nothing left of
     /// the publishing chain): its batch, once made, says so (`PlanView::catalogue_low`).
     pub(super) catalogue_low: std::cell::Cell<bool>,
     /// Since when a catalogue has been due (publish::PublishLine::due_since).
@@ -713,7 +713,7 @@ impl Planner {
     }
 
     /// Each region's steps for the build page (while a page asks, every `STEPS_EVERY`, on a thread of
-    /// its own). (How far each region is built is the plan's: build::Plan::built.)
+    /// its own). (How far each region is built is the plan's: seam::Planned::built.)
     pub(super) fn count_steps(&mut self, root: &NasRoot) {
         let Some(c) = self.coord.clone() else { return };
         if self.steps_making.as_ref().is_some_and(|h| h.is_finished()) {
@@ -1483,7 +1483,7 @@ impl Planner {
             );
             self.note_ran(&keys);
             let r = self.catalogues.borrow();
-            build::NamesTodo { key, since: r.since("names-todo", now_s()), idle: r.idle }
+            seam::NamesTodo { key, since: r.since("names-todo", now_s()), idle: r.idle }
         };
         let mut pw = build::pass_work(pass, &manifest, &keys, reads, Some(&names));
         held.lakefill = pw.lakefill_held;
@@ -1664,7 +1664,7 @@ impl Planner {
                     &inputs,
                     reach.as_deref(),
                     &tiles,
-                    build::Publish {
+                    seam::Publish {
                         each: &covs.each,
                         on_map: &on_map,
                         served: &served,
@@ -2193,7 +2193,7 @@ impl Planner {
 
     /// The forecast (crate::agent::forecast) of the work left: `before`, the lead's jobs before
     /// the regions'; `regions`, the plan's; `backfill`, the z6 tiles whose mids it makes in
-    /// idle time (build::Plan::backfill); `chains`, the trains', landmarks', 3D buildings' and depths' work to come
+    /// idle time (seam::Planned::backfill); `chains`, the trains', landmarks', 3D buildings' and depths' work to come
     /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
     /// the lead's pace: a time measured on a member over its speed) and memory as last measured,
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
@@ -2204,12 +2204,12 @@ impl Planner {
         &self,
         root: &store::nasfs::NasRoot,
         before: &[JobSpec],
-        regions: &[build::RegionLeft],
+        regions: &[seam::RegionLeft],
         drops: &[(String, String)],
         backfill: &[jobs::Work],
         chains: [Vec<jobs::Work>; 5],
         blind: Option<String>,
-        left: &steps::Left,
+        left: &seam::Left,
         peak: &dyn Fn(&str, &str) -> u64,
     ) -> forecast::Record<'static> {
         use forecast::{Cost, Machine};

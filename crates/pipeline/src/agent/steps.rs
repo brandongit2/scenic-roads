@@ -44,6 +44,7 @@
 
 use super::every::{place, Place};
 use super::forecast::ReadTarget;
+use super::seam::{Along, Left};
 use crate::legacy::TileId;
 pub use crate::pool::records::current;
 use serde::{Deserialize, Serialize};
@@ -201,53 +202,6 @@ pub enum Read {
     Built { step: &'static str, of: fn(&str, &super::build::KeyCtx) -> Vec<String>, grain: Grain },
 }
 
-/// What targets read along their long ways (`Read::Along`), as a caller with the pass's reaches
-/// works them out (`Along::add`), and where what's built says (`Read::Built`, `Along::add_built`):
-/// by step, target and step read, the targets read.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Along(
-    std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
-    >,
-);
-
-impl Along {
-    /// Target `t` of `step`'s `Read::Along`s, with its reach `r`.
-    pub fn add(&mut self, step: &str, t: &str, r: &crate::reach::Reach) {
-        for x in row(step).map_or(&[][..], |r| r.reads) {
-            if let Read::Along { step: s, of } = *x {
-                self.put(step, t, s, of(t, r));
-            }
-        }
-    }
-
-    /// Target `t` of `step`'s `Read::Built`s, by what `x` holds.
-    pub fn add_built(&mut self, step: &str, t: &str, x: &super::build::KeyCtx) {
-        for r in row(step).map_or(&[][..], |r| r.reads) {
-            if let Read::Built { step: s, of, .. } = *r {
-                self.put(step, t, s, of(t, x));
-            }
-        }
-    }
-
-    fn put(&mut self, step: &str, t: &str, read: &str, v: Vec<String>) {
-        if !v.is_empty() {
-            let at = self.0.entry(step.to_string()).or_default().entry(t.to_string()).or_default();
-            at.entry(read.to_string()).or_default().extend(v);
-        }
-    }
-
-    /// The targets of `read` that target `t` of `step` reads along its long ways.
-    pub fn get(&self, step: &str, t: &str, read: &str) -> &[String] {
-        self.0.get(step).and_then(|m| m.get(t)).and_then(|m| m.get(read)).map_or(&[], Vec::as_slice)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
 /// An input's identity for a target (`Read::Input`), or what a target reads of another step's
 /// outputs (`Grain::Read`): lines, each naming one thing read by content. None while it can't be
 /// worked out now (the key is unknown then: the target waits).
@@ -272,6 +226,24 @@ impl Grain {
     /// names their outputs, which change when those are made again; not `Tiles`, which may not.
     const fn passes_on(self) -> bool {
         !matches!(self, Grain::Tiles(_))
+    }
+}
+
+/// Target `t` of `step`'s `Read::Along`s, with its reach `r`, into `along`.
+pub fn along_add(along: &mut Along, step: &str, t: &str, r: &crate::reach::Reach) {
+    for x in row(step).map_or(&[][..], |r| r.reads) {
+        if let Read::Along { step: s, of } = *x {
+            along.put(step, t, s, of(t, r));
+        }
+    }
+}
+
+/// Target `t` of `step`'s `Read::Built`s, by what `x` holds, into `along`.
+pub fn along_add_built(along: &mut Along, step: &str, t: &str, x: &super::build::KeyCtx) {
+    for r in row(step).map_or(&[][..], |r| r.reads) {
+        if let Read::Built { step: s, of, .. } = *r {
+            along.put(step, t, s, of(t, x));
+        }
     }
 }
 
@@ -635,50 +607,12 @@ pub fn wait_note<'a>(waits: impl IntoIterator<Item = &'a (&'static str, String)>
     format!("wait for {}", parts.join(", "))
 }
 
-/// Left targets by step, as the planner gathers them (its `View`): a step in `whole` has every
-/// target left (a world step's own), an input in `unknown` can't be worked out; `mids`, by step,
-/// the targets whose mid isn't current (stale, or current without it: a `Read::Mids`'s).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Left {
-    pub targets: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
-    pub mids: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,
-    pub whole: std::collections::BTreeSet<&'static str>,
-    pub unknown: std::collections::BTreeSet<&'static str>,
-    /// By input, the targets it can't be worked out for now (an input some targets read only), and
-    /// the target whose making works it out.
-    pub unknown_for: std::collections::BTreeMap<&'static str, UnknownFor>,
-    /// What targets read along their long ways (`Read::Along`), from the pass's reaches.
-    pub along: Along,
-}
-
-/// An input's targets that can't be worked out now (`Left::unknown_for`), and the target (step,
-/// target) whose making works it out: what they wait for, to the planner and the forecast alike.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct UnknownFor {
-    pub targets: std::collections::BTreeSet<String>,
-    pub until: (&'static str, String),
-}
-
 /// The steps that read input `name` (`Read::Input`).
 pub fn input_readers(name: &str) -> impl Iterator<Item = &'static str> + '_ {
     TABLE
         .iter()
         .filter(move |r| r.reads.iter().any(|x| matches!(x, Read::Input { name: n, .. } if *n == name)))
         .map(|r| r.name)
-}
-
-impl Left {
-    /// `step`'s targets `ts` left (with those it has).
-    pub fn set(&mut self, step: &'static str, ts: impl IntoIterator<Item = String>) {
-        self.targets.entry(step).or_default().extend(ts);
-    }
-
-    /// World step `step` left, when `left`.
-    pub fn world(&mut self, step: &'static str, left: bool) {
-        if left {
-            self.whole.insert(step);
-        }
-    }
 }
 
 impl View for Left {
@@ -2396,7 +2330,7 @@ mod tests {
     /// would build, then build again once they're made.
     #[test]
     fn a_unit_waits_for_the_terrain_along_its_long_ways() {
-        use super::{read_targets, readiness, Along, Left, ReadTarget, Ready};
+        use super::{along_add, read_targets, readiness, Along, Left, ReadTarget, Ready};
         use crate::reach::{LongWay, Reach};
         // 6/31/19 (its tile reaches 55.8° N; its box, 35 km further) owns a way running 300 km
         // south from 55° N, a node every 2 km.
@@ -2405,7 +2339,7 @@ mod tests {
         let verts: Vec<[i32; 2]> = (0..150).map(|k| e7(-1.6 + 0.004 * k as f64, 55.0 - 0.018 * k as f64)).collect();
         let reach = Reach { long: vec![LongWay { owned: true, ferry: false, verts }], ..Default::default() };
         let mut left = Left::default();
-        left.along.add("unit", t, &reach);
+        along_add(&mut left.along, "unit", t, &reach);
         // Along it, past its box: the hi pack of 6/31/21 (52.5° N on) and the deep packs at its far end.
         let (hi, deep) = (left.along.get("unit", t, "terrain-hi"), left.along.get("unit", t, "terrain-deep"));
         let far = crate::legacy::TileId::of_point(crate::terrain_deep::PACK_Z, e7(-1.0, 52.4)).slash();
@@ -2434,7 +2368,7 @@ mod tests {
         };
         for r in [theirs, ferry] {
             let mut l = Left { along: Along::default(), ..left.clone() };
-            l.along.add("unit", t, &r);
+            along_add(&mut l.along, "unit", t, &r);
             assert!(l.along.is_empty());
             assert_eq!(readiness("unit", t, &l), Ready::Yes);
         }
