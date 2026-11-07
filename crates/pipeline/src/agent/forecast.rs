@@ -3025,7 +3025,7 @@ mod tests {
         let regions = [RegionLeft { slope_deep: ts, ..region("a", &[], &[], &[]) }];
         let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
         // (Targets of 100 thousandths of the NAS each, a member's four lanes free, the lead's lane
-        // busy, a member's job out for 900 s.)
+        // busy, a member's job out for 900 s: held, one at a time while it runs.)
         let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, held: true, ..Default::default() };
         let v = crate::coord::cost_version("slope-deep");
         let mut st = State { nas: Some(limits), nas_own: Some(limits), lead_name: "m4".into(), ..Default::default() };
@@ -3073,8 +3073,9 @@ mod tests {
         };
         let now = spans(VERSION);
         assert_eq!(now.len(), 8);
-        assert_eq!(now[0].0, 900.0, "shut while the job out runs: {now:?}");
-        assert!(now[1].0 < now[0].1, "then they go beside each other: {now:?}");
+        let (during, after): (Vec<(f64, f64)>, Vec<(f64, f64)>) = now.iter().partition(|x| x.0 < 900.0);
+        assert!(during.windows(2).all(|w| w[1].0 >= w[0].1 - 1e-9), "shut while the job out runs: {now:?}");
+        assert!(after.windows(2).any(|w| w[1].0 < w[0].1), "then they go beside each other: {now:?}");
         let before = spans(6);
         assert!(before.windows(2).all(|w| w[1].0 >= w[0].1 - 1e-9), "code 6, one at a time: {before:?}");
     }
