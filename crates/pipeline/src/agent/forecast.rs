@@ -974,8 +974,8 @@ impl<'a> Waits<'a> {
         let (mut deps, mut gs) = (Vec::new(), Vec::new());
         for (r, passes) in self.the_plan.read_targets_passing(step, t, Some(self.along)) {
             match r {
-                ReadTarget::One(s, u) => match by.of.get(&(s.to_string(), u.clone())) {
-                    Some(&i) => deps.push(i),
+                ReadTarget::One(s, u) => match by.get(s, &u) {
+                    Some(i) => deps.push(i),
                     None if passes => {
                         let (d, g) = self.held(by, groups, s, u);
                         deps.extend(d);
@@ -1022,7 +1022,7 @@ impl<'a> Waits<'a> {
     /// one it reads through passes waits on and may wait itself (crate::agent::steps::read_steps);
     /// worked out again once more items are listed.
     fn may_wait(&mut self, by: &Index, step: &'static str) -> bool {
-        let n = by.of.len();
+        let n = by.len;
         if let Some(&(at, m)) = self.may.get(step) {
             if at == n {
                 return m;
@@ -1030,7 +1030,7 @@ impl<'a> Waits<'a> {
         }
         // (No cycle in the declared reads; marked first all the same.)
         self.may.insert(step, (n, false));
-        let listed = |s: &str| by.of.range((s.to_string(), String::new())..).next().is_some_and(|((st, _), _)| st == s);
+        let listed = |s: &str| by.of_step(s).next().is_some();
         let m =
             self.the_plan.read_steps(step).into_iter().any(|(s, passes)| listed(s) || (passes && self.may_wait(by, s)));
         self.may.insert(step, (n, m));
@@ -1055,20 +1055,15 @@ impl<'a> Waits<'a> {
     /// The set of `step`'s items listed by now, made once for each length it has (items are only
     /// added: a set as long is the same); None while none is listed.
     fn group(&mut self, by: &Index, groups: &mut Vec<Vec<usize>>, step: &'static str) -> Option<usize> {
-        let mut all: Vec<usize> = by
-            .of
-            .range((step.to_string(), String::new())..)
-            .take_while(|((st, _), _)| st == step)
-            .map(|(_, &i)| i)
-            .collect();
-        if all.is_empty() {
+        let n = by.of.get(step).map_or(0, |m| m.len());
+        if n == 0 {
             return None;
         }
         Some(match self.whole.get(step) {
-            Some(&(n, g)) if n == all.len() => g,
+            Some(&(at, g)) if at == n => g,
             _ => {
+                let mut all: Vec<usize> = by.of_step(step).collect();
                 all.sort_unstable();
-                let n = all.len();
                 groups.push(all);
                 self.whole.insert(step, (n, groups.len() - 1));
                 groups.len() - 1
@@ -1137,10 +1132,29 @@ pub struct Grant {
 /// had counted none of them until their terrain was built (32 z6 tiles at 17:00, 149 by 19:00).
 pub const EXPECTED_STALE: f64 = 0.6;
 
-/// The items listed so far (`items`): by step and target.
+/// The items listed so far (`items`): by step, then target (looked up without making a key: the
+/// listing looks up each of the millions of reads its targets declare), and how many.
 #[derive(Default)]
 struct Index {
-    of: BTreeMap<(String, String), usize>,
+    of: std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
+    len: usize,
+}
+
+impl Index {
+    fn get(&self, step: &str, t: &str) -> Option<usize> {
+        self.of.get(step).and_then(|m| m.get(t)).copied()
+    }
+
+    fn insert(&mut self, step: &str, t: &str, i: usize) {
+        if self.of.entry(step.to_string()).or_default().insert(t.to_string(), i).is_none() {
+            self.len += 1;
+        }
+    }
+
+    /// `step`'s items listed.
+    fn of_step(&self, step: &str) -> impl Iterator<Item = usize> + '_ {
+        self.of.get(step).into_iter().flat_map(|m| m.values().copied())
+    }
 }
 
 /// The work as items (`items`): each region's, and the sets of items many wait for, each listed
@@ -1169,7 +1183,7 @@ fn items(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input) -> Items 
                phase: Phase,
                (mut deps, gs): (Vec<usize>, Vec<usize>)|
      -> usize {
-        if let Some(&i) = by.of.get(&(step.to_string(), target.to_string())) {
+        if let Some(i) = by.get(step, target) {
             return i;
         }
         let shared = the_plan.shared().contains(&step) && phase != Phase::Before;
@@ -1190,7 +1204,7 @@ fn items(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input) -> Items 
             drop: false,
         });
         let i = out.len() - 1;
-        by.of.insert((step.to_string(), target.to_string()), i);
+        by.insert(step, target, i);
         i
     };
     for (step, target, cost) in &inp.before {
@@ -1201,7 +1215,7 @@ fn items(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input) -> Items 
     // reads); then every region's slope and tree cover, each target once the targets it reads are
     // (its row's declaration, as the planner's waits: `Waits::of`).
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
-    let item_of = |by: &Index, step: &str, t: &str| by.of.get(&(step.to_string(), t.to_string())).copied();
+    let item_of = |by: &Index, step: &str, t: &str| by.get(step, t);
     let mut waits = Waits::new(the_plan, inp);
     let mut reads = |by: &Index, groups: &mut Vec<Vec<usize>>, step: &str, t: &str| waits.of(by, groups, step, t);
     // (A set many wait for, listed once: its index in `groups`.)
@@ -1349,17 +1363,21 @@ fn items(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input) -> Items 
 
 /// The items ready to take (their deps done, not yet taken), each phase's by step in order (an
 /// ask's offers: `offers`).
+/// `rev` counts its changes: the offers made of it kept while it stands (`run_on`).
 #[derive(Default)]
 struct Ready {
     phase: [BTreeMap<String, BTreeSet<usize>>; 6],
+    rev: u64,
 }
 
 impl Ready {
     fn insert(&mut self, i: usize, it: &Item, p: usize) {
+        self.rev += 1;
         self.phase[p].entry(it.step.clone()).or_default().insert(i);
     }
 
     fn remove(&mut self, i: usize, it: &Item, p: usize) {
+        self.rev += 1;
         let drop = |m: &mut BTreeMap<String, BTreeSet<usize>>| {
             if let Some(s) = m.get_mut(&it.step) {
                 s.remove(&i);
@@ -1662,6 +1680,9 @@ fn run_on(
     let mut changes = 0u64;
     let mut pruned_at = f64::NEG_INFINITY;
     let mut refused: BTreeMap<(String, bool), (u64, f64)> = BTreeMap::new();
+    // (Each Mac's offers as last made, of the work ready at which change and the regions' slope
+    // and tree cover offered ahead.)
+    let mut offered: BTreeMap<String, (u64, Vec<usize>, Vec<Offer>)> = BTreeMap::new();
     let mut guard = 0usize;
     let mut cut = false;
     loop {
@@ -1769,14 +1790,20 @@ fn run_on(
             } else {
                 Vec::new()
             };
-            let mut order = ready.steps(pi(Phase::Before));
-            order.extend(ready.steps(pi(Phase::Publish)));
-            order.extend(prep.into_iter().map(|i| vec![i]));
-            for p in [Phase::Region, Phase::Late, Phase::Chain, Phase::After] {
-                order.extend(ready.steps(pi(p)));
-            }
             let ask = Ask { want: lanes.len(), ..pool.asks[&g].clone() };
-            let offers = offers(the_plan, &items, &order, &ask);
+            // (Its Mac's offers made again only once the work ready has changed: most asks are
+            // refused, and come again at each item's end.)
+            let kept = offered.get(&g).is_some_and(|(rev, p, _)| *rev == ready.rev && *p == prep);
+            if !kept {
+                let mut order = ready.steps(pi(Phase::Before));
+                order.extend(ready.steps(pi(Phase::Publish)));
+                order.extend(prep.iter().map(|&i| vec![i]));
+                for p in [Phase::Region, Phase::Late, Phase::Chain, Phase::After] {
+                    order.extend(ready.steps(pi(p)));
+                }
+                offered.insert(g.clone(), (ready.rev, prep, offers(the_plan, &items, &order, &ask)));
+            }
+            let offers = &offered[&g].2;
             // (Every Mac with a lane free asking, as the live ones do each loop: placement draws
             // among those asking lately, which aged out as the run's seconds passed.)
             let idle = |g: &str| {
@@ -1786,7 +1813,7 @@ fn run_on(
             let room = |g: &str| pool.asks[g].cap.as_ref().map_or(0, |c| c.mem_mb);
             let who: Vec<(&str, usize, u64)> = pool.asks.keys().map(|g| (g.as_str(), idle(g), room(g))).collect();
             pool.sched.asking(who, pool.clock(t).now);
-            pool.sched.pack(&ask, &offers, lead, pool.clock(t)).0
+            pool.sched.pack(&ask, offers, lead, pool.clock(t)).0
         };
         if picks.is_empty() {
             refused.insert(key, (changes, t));
@@ -1875,10 +1902,10 @@ fn offers(the_plan: &dyn crate::agent::seam::Plan, items: &[Item], order: &[Vec<
     let mut last: Option<(&str, bool)> = None;
     // (An item in `order` twice, a region's slope ahead of the regions' work and again with the
     // rest of its step, offered once.)
-    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut seen = vec![false; items.len()];
     for group in order {
         for &i in group {
-            if !seen.insert(i) {
+            if std::mem::replace(&mut seen[i], true) {
                 continue;
             }
             let it = &items[i];
