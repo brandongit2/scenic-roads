@@ -5,7 +5,9 @@ a command that breaks these and says why. It finds a test run where a command st
 `env`/`time`/`nice`/`command`/`xargs`, by a path to cargo, with cargo flags before `test`, as `cargo t`,
 `cargo nextest r` or `cargo-nextest`) and inside the script of `sh -c`, `eval` and `python -c`; it
 refuses runs it can't read (`$c test`, `cargo --config alias.…`, `cargo -C`, `make`/`just test`, a run whose
-arguments hold `$( … )`, `<( … )`, `>( … )` or backticks outside single quotes); a run inside such a substitution is found.
+words hold `$( … )`, `<( … )`, `>( … )` or backticks outside single quotes (an assignment before it, a redirect's target
+and a comment aren't its words), and `sh -c`, `eval` or a command word built from a substitution whose script mentions cargo test); a run inside such a substitution is found.
+Not seen: a run through a shell function or alias, a script file, or a substitution's output that names cargo without the script saying it (`$(cat cmd.txt)`).
 
 - Tests build optimised (`[profile.test]` in Cargo.toml, #505: opt-level 1 for the workspace, 3 for
   dependencies; debug assertions and overflow checks stay on), so the first `cargo test` in a fresh

@@ -12,7 +12,8 @@
 # cargo, cargo flags before the subcommand, cargo t, nextest r, cargo-nextest) and inside the script
 # of sh/bash/zsh -c, eval and python -c; other quoted text and heredocs are left alone. Refused:
 # a run through a variable ($c test), cargo --config alias.…, cargo -C, make/just test, a run whose
-# arguments hold $( … ), <( … ), >( … ) or backticks outside single quotes (a run inside one is found).
+# words hold $( … ), <( … ), >( … ) or backticks outside single quotes (a run inside one is found), and
+# sh -c, eval or a command word built from a substitution whose script mentions cargo test.
 # A crash of the checks blocks too, showing its traceback.
 out=$(python3 ${0:A:h}/test-guard.py 2>&1)
 [[ -z $out ]] && exit 0

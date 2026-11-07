@@ -20,22 +20,28 @@ repro, perf = "#repro" in cmd, "#perf" in cmd
 # --- Finding the test runs (shellwords.py: commands, not text).
 CARGO_TAKES = {"-C", "--config", "-Z", "--color", "--manifest-path", "--target-dir", "--explain"}
 SUBST = "A test run whose arguments hold $( … ), <( … ), >( … ) or backticks can't be checked (the guard can't see what they expand to): write the arguments out plainly."
+TEST = re.compile(r"\b(t|test|nextest)\b")
 found = []   # argument lists of cargo test / nextest runs
 def scan(text, depth=0):
     if depth > 4: block("Commands nested this deep can't be checked: write the cargo test command out plainly.")
-    text, inner = substitutions(strip_heredocs(text))   # a $( … ), <( … ), >( … ) or backtick stays one word; its script is scanned on its own
-    for t in inner: scan(t, depth + 1)
+    text, bodies = substitutions(strip_heredocs(text))   # a $( … ), <( … ), >( … ) or backtick stays one word; its script is scanned on its own
+    for t in bodies: scan(t, depth + 1)
+    n = 0   # (the substitutions before seg: they stand in text in bodies' order)
     for seg in segments(text):
+        a, n = n, n + seg.count("${SUBSTITUTION}")
         _, toks = command(tokens(seg))
         if not toks: continue
         c0, rest = os.path.basename(toks[0]), toks[1:]
+        # (sh -c "$(…)", eval "$(…)" and $(…) -p … run what the substitution writes: a cargo test there can't be read)
+        if any(TEST.search(b) and "cargo" in b for b in bodies[a:n]) and "${SUBSTITUTION}" in " ".join(toks[:1] + (rest if c0 in ("sh", "bash", "zsh", "dash", "eval") else [])):
+            block("A command built from a substitution that writes out a cargo test can't be checked: write the cargo test out plainly.")
         if c0 in ("sh", "bash", "zsh", "dash"):
             for k, t in enumerate(rest):
                 if re.match(r"^-\w*c\w*$", t) and k + 1 < len(rest):
-                    inner = rest[k + 1]
-                    if re.search(r"\$|`", inner) and re.search(r"\b(t|test|nextest)\b", inner) and "cargo" in inner:
+                    script = rest[k + 1]
+                    if re.search(r"\$|`", script) and TEST.search(script) and "cargo" in script:
                         block("A cargo test inside %s -c built from variables or substitutions can't be checked: write it out plainly." % c0)
-                    scan(inner, depth + 1); break
+                    scan(script, depth + 1); break
         elif c0 == "eval": scan(" ".join(rest), depth + 1)
         elif c0.startswith("python") and "-c" in rest:
             k = rest.index("-c")
@@ -56,17 +62,18 @@ def scan(text, depth=0):
                     if rest[i].startswith("--config="): conf.append(rest[i])
                     i += 1
             sub = rest[i:]
+            if any("${SUBSTITUTION}" in t for t in rest[:i + 1]): block(SUBST)   # (cargo $(…) -p …: the subcommand can't be told)
             if any("alias" in c for c in conf): block("cargo --config alias.… can't be checked: run cargo test itself.")
             if sub and sub[0] in ("t", "test"): args = sub[1:]
             elif len(sub) > 1 and sub[0] == "nextest" and sub[1] in ("r", "run"): args = sub[2:]
             else: continue
             if "-C" in conf: block("cargo -C <dir> test: run it from the checkout's root, naming the crate with -p.")
-            if "${SUBSTITUTION}" in seg: block(SUBST)
+            if any("${SUBSTITUTION}" in t for t in rest): block(SUBST)
             found.append(args)
         elif c0 == "cargo-nextest":
             sub = rest[1:] if rest[:1] == ["nextest"] else rest
             if sub and sub[0] in ("r", "run"):
-                if "${SUBSTITUTION}" in seg: block(SUBST)
+                if any("${SUBSTITUTION}" in t for t in rest): block(SUBST)
                 found.append(sub[1:])
 scan(cmd)
 

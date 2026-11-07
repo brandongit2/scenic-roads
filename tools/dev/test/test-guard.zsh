@@ -22,7 +22,7 @@ done
 run() { python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2],"agent_id":"t"}))' "$1" $wt | python3 $here/../test-guard.py 2>&1 }
 check() {  # expectation (ok | a text the refusal has), command
   local out=$(run "$2") bad=0
-  if [[ $1 == ok ]]; then [[ $out == *"isn't a module path"* || $out == *"No full test suites"* || $out == *"--release"* ]] && bad=1
+  if [[ $1 == ok ]]; then [[ $out == *"isn't a module path"* || $out == *"No full test suites"* || $out == *"--release"* || $out == *"can't be checked"* ]] && bad=1
   else [[ $out == *"$1"* ]] || bad=1; fi
   if (( bad )); then print "FAIL ($1): $2\n  $out"; fail=1; else print "ok ($1): $2"; fi
 }
@@ -70,7 +70,22 @@ check "$S" "cargo test -p pipeline -- $f <(:)"
 check "$S" "cargo test -p pipeline -- $f >(:)"
 check "$S" "cargo test -p pipeline -- $f \"\$(:)\""
 check "$S" "cargo nextest run -p pipeline $f\$(:)"
-check "$S" "X=\$(echo a b) cargo test -p pipeline -- $f"
+check "$S" "cargo \$(echo --config x) test -p pipeline -- $f"
+check "$S" "cargo \$(echo test) -p pipeline --release -- $f"
+check ok "cargo build -p pipeline 2>&1 | tail -\$(echo 3)"
+check ok "X=\$(echo a b) cargo test -p pipeline -- $f"   # an assignment isn't split into cargo's words
+check ok "cargo test -p pipeline -- $f > /p/log-\$(date +%s)"   # a redirect's target isn't an argument
+check ok "cargo test -p pipeline -- $f   # checks \`Room::passes_over\`"   # nor a comment
+check "--release" "x=\$(echo \")\"; cargo test -p pipeline --release -- $f)"   # a quoted ) doesn't end it
+check "--release" "x=\$(echo ')'; cargo test -p pipeline --release -- $f)"
+check "--release" "echo \`cargo test -p pipeline --release -- $f\`"
+# A command that runs what a substitution writes: a cargo test written there can't be read.
+B="writes out a cargo test"
+check "$B" "sh -c \"\$(echo cargo test -p pipeline --release -- $f)\""
+check "$B" "eval \"\$(echo cargo test -p pipeline --release -- $f)\""
+check "$B" "\$(echo cargo test) -p pipeline --release -- $f"
+check ok "\$(git rev-parse --show-toplevel)/tools/dev/affected-tests.sh; x=\$(cargo test -p pipeline -- $f 2>&1)"
+check ok "eval \"\$(git rev-parse --show-toplevel)\" && cargo test -p pipeline -- $f"
 check "built from variables or substitutions" "sh -c 'cargo test -p pipeline -- $f\$(:)'"
 check "--release" "echo \$(:) && cargo test -p pipeline --release -- $f"
 check "--release" "echo \$(echo a; echo b) && cargo test -p pipeline --release -- $f"

@@ -8,15 +8,27 @@ import os, re
 def strip_heredocs(t):
     return re.sub(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2[ \t]*(?=\n|$)", "<<HEREDOC", t, flags=re.S)
 def sub_end(t, i):
-    """Where the substitution starting at t[i] ($( … ), <( … ), >( … ) or ` … `) ends, and its body's start."""
-    b = i + (2 if t[i] in "$<>" else 1)
-    j, depth = b, 1
-    while j < len(t) and depth:
-        if t[i] == "`": depth -= t[j] == "`"
-        elif t[j] == "(": depth += 1
-        elif t[j] == ")": depth -= 1
+    """Where the substitution starting at t[i] ($( … ), <( … ), >( … ) or ` … `) ends, and its body's start.
+    Quotes and substitutions inside it are read as the shell reads them: $(echo ")"; …) ends at the last )."""
+    bt = t[i] == "`"
+    b = i + (1 if bt else 2)
+    j, depth, q = b, 1, None
+    while j < len(t):
+        ch = t[j]
+        if q == "'":
+            q = None if ch == "'" else q
+        elif ch == "\\": j += 2; continue
+        elif bt:
+            if ch == "`": return j + 1, b
+        elif t.startswith("$(", j) or ch == "`": j, _ = sub_end(t, j); continue
+        elif q: q = None if ch == '"' else q
+        elif ch in "'\"": q = ch
+        elif ch == "(": depth += 1
+        elif ch == ")":
+            depth -= 1
+            if not depth: return j + 1, b
         j += 1
-    return j, b
+    return len(t), b
 def substitutions(t, pwd=False):
     """(t with each $( … ), <( … ), >( … ) and ` … ` outside single quotes made one word, ${SUBSTITUTION}
     (with pwd, $(pwd) as $PWD), and the scripts inside them): a command's words stay together
