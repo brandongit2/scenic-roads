@@ -5,38 +5,34 @@ import 'maplibre-gl/built/maplibre-gl.css';
 // source: our own MapLibre, web/maplibre/, vite.config.ts).
 import mlWorkerUrl from 'maplibre-gl/src/source/worker.ts?worker&url';
 import './style.css';
-import { FIT_LEN_DEFAULT, fitByPct, fitByWidths, pairOf, screenWidthKm, spread, unitOf } from './autofit';
-import { getProfile, getRoadWays, getWay, keepable, onVersions, packChanged, packUrl, packVersion, peekWay, roadWays, setPacks, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
+import { screenWidthKm } from './autofit';
+import { getProfile, getRoadWays, getWay, onVersions, packChanged, packUrl, packVersion, peekWay, roadWays, setPacks, setVersions, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
 import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setLandColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, setRegisterCredits, summariseFeature, withDetails } from './overlays';
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
-import { hexRgb, paletteRgb } from './palettes';
-import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from './roads/layer';
-import { CASING_CLASSES_MASK, DIM_GREY, FADES, FADE_Z, RAIL0, RAIL_GROUPS, interp, setWidths } from './config';
-import { MAP_SCHEMES, lookUniforms, presetLook, type RoadMapLook } from './mapschemes';
-import { RAIL_GROUP_COLOURS, railMetricDef, railMetricOf } from './rail';
+import { hexRgb } from './palettes';
+import { RoadLayer, type HoverInfo } from './roads/layer';
+import { FADE_Z, RAIL0 } from './config';
 import type { FeatureSummary } from './overlays';
 import { RailCard } from './ui/rail';
 import { FerryCard } from './ui/ferry';
 import { StopsCard } from './ui/stops';
 import { Ferries } from './ferries';
 import { Stations } from './stations';
-import { tasks, type Task } from './tasks';
+import { tasks } from './tasks';
 import { idle } from './idle';
 import { mapTasks } from './maptasks';
 import { initHosts } from './hosts';
-import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
 import { Depth } from './depth';
 import { waterNameAt } from './watername';
 import { buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type Ray } from './buildings';
-import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
-import { metricOf, modeDef } from './scenic';
+import type { Extreme } from './roads/stats';
 import * as prefs from './prefs';
-import { ROAD_WEIGHT, Store, cleanRoadLook, classMask, defaults, labelShown, modeGroup, fromHash, fromProfile, fromSaved, profileIdOf, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
+import { Store, cleanRoadLook, classMask, defaults, labelShown, fromHash, fromProfile, fromSaved, profileIdOf, railMask, roadLenKm, surfaceMask, toHash, tollMask, unnamedHideClasses, type AppState, type Selection, type Stretch } from './state';
 import { applyLabelLooks, defaultLooks, labelLayerShown, labelSizeOf } from './labellook';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, cacheTerrainRays, setTerrainAreas, switchContours } from './terrain';
@@ -51,6 +47,7 @@ import { ContourLayer, type ContourDraw } from './contours';
 import { FerryScale } from './ctl/ferries';
 import { FrameLoop } from './ctl/frame';
 import { Buildings } from './ctl/buildings';
+import { RoadsRail } from './ctl/roads';
 import { TerrainTint } from './ctl/tint';
 import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
@@ -69,7 +66,7 @@ import { PlaceSearch } from './ui/search';
 import { installListsResize, installPanelResize } from './ui/resize';
 import { ProfilePanel } from './ui/profile';
 import { RegionsPanel } from './ui/regions';
-import { StatsCard, type InViewExtra, type ViewPlace } from './ui/stats';
+import { StatsCard, type ViewPlace } from './ui/stats';
 import { SightsPane, type Sight } from './ui/sights';
 import { LinesPane, RidesPane } from './ui/rides';
 import { Strip } from './ui/strip';
@@ -321,309 +318,25 @@ async function main() {
   });
   map.on('terrain', () => cam3d.tuneDepth(map));
 
-  // ---- road layer & range animation ----------------------------------------------
-  const s0 = store.s;
-  setWidths(s0.roadLook.widths);
-  const roads = new RoadLayer({
-    freqFilter: { on: false, min: 0, max: 0, unknown: true },
-    mode: s0.mode,
-    palette: s0.palette,
-    range: [...s0.range] as [number, number],
-    classMask: classMask(s0),
-    surfaceMask: surfaceMask(s0),
-    tollMask: tollMask(s0),
-    unnamedHide: unnamedHideClasses(s0),
-    weight: ROAD_WEIGHT * lineWeight(s0, 'roads'),
-    ties: 0,
-    threshold: { ...s0.threshold },
-    visible: s0.layers.roads,
-    weights: [...s0.weights],
-    equalize: s0.equalize,
-    routeGlow: s0.routeGlow,
-    terrain3d: s0.terrain.on,
-    exaggeration: s0.terrain.exaggeration,
-    lowFade: s0.lowFade,
-    lowSpan: s0.lowSpan,
-    occlude: s0.occlude,
-    opacity: s0.roadOpacity,
-    lenMin: roadLenM(s0)[0],
-    lenMax: roadLenM(s0)[1],
-    direct: 0,
-    scheme: null,
-    single: [1, 1, 1],
-    modeId: null,
-    railMask: 0,
-    railWeights: [],
-    casingMask: CASING_CLASSES_MASK,
-    land: hexRgb(s0.land),
-    ...roadLookStyle(s0),
-    persp: { ...s0.roadPersp },
-  });
-  // The tiles' version in their URLs (cached for good): the catalogue's for the layer, else none. (Not
-  // the build time in meta: it stayed when the tiles' way column changed from indices to OSM ids,
-  // and a browser holding the older tiles under the same URLs would have kept them.)
-  roads.setSource(version('roads.tiles'), meta.bounds);
-  // Street-map colours (Map display type): the Map look's, rebuilt when it changes; its classes
-  // cased (the other display types: tertiary and up).
-  let lookOf: RoadMapLook | null = null;
-  let lookU: ReturnType<typeof lookUniforms> | null = null;
-  const applyMapMode = (s: AppState) => {
-    const st = roads.style;
-    const on = s.mode === 'map';
-    if (on && lookOf !== s.roadMap) {
-      lookOf = s.roadMap;
-      lookU = lookUniforms(s.roadMap);
-    }
-    st.direct = on ? 1 : 0;
-    st.scheme = on ? lookU : null;
-    st.casingMask = on && lookU ? lookU.casedMask : CASING_CLASSES_MASK;
-  };
-  applyMapMode(s0);
-
-  // ---- passenger rail -------------------------------------------------------------
-  const railScheme: SchemeUniforms = (() => {
-    const u = lookUniforms(presetLook(MAP_SCHEMES.find((m) => m.key === 'mono')!));
-    RAIL_GROUP_COLOURS.forEach((c, k) => {
-      u.classCol.set([...hexRgb(c), 1], (RAIL0 + k) * 4);
-      u.classCas.set(hexRgb('#07090c'), (RAIL0 + k) * 3);
-    });
-    return u;
-  })();
-  const rails = new RoadLayer(
-    // Drawn as railways (a thin line with cross-ties: the layer's rail pattern), cased when zoomed in.
-    { ...roads.style, ...roadLookStyle(defaults), minZoom: [], classMask: 0x7c00, casingMask: 0x7c00, surfaceMask: 3, tollMask: 3, unnamedHide: 0, threshold: { on: false, dir: 'above', value: 0 }, routeGlow: false, lenMin: 0, lenMax: Infinity, equalize: false, opacity: 1 },
-    {
-      id: 'rails',
-      rail: true,
-      metric: (_st, e, g, ch, ground, style, fq) =>
-        railMetricOf(store.s.rail.metric, { elev: e, grade: g, ground, bridge: (style & 96) === 32, tunnel: (style & 64) !== 0, ch, freq: fq }, store.s.rail.weights),
-    },
-  );
-  rails.setSource(version('rails.tiles'), meta.bounds);
-  // The tilted tile cover unprojects onto the terrain (not the camera pivot's level).
-  roads.groundSamples = rails.groundSamples = (pts) => cam3d.coverSamples(map, pts);
-  let railCur: [number, number] = [...s0.rail.range] as [number, number];
-  // Rail equalisation lookup (from the rail distribution in view), when on.
-  let railCdf: Uint8Array | null = null;
-  let railCdfKey = '';
-  const applyRailStyle = (s: AppState) => {
-    const r = s.rail, st: RoadStyle = rails.style;
-    st.visible = r.on;
-    st.railMask = railMask(s);
-    st.direct = r.colour === 'line' ? 2 : r.colour === 'group' ? 3 : r.colour === 'single' ? 4 : 0;
-    st.scheme = railScheme;
-    st.single = hexRgb(r.single);
-    st.modeId = railMetricDef(r.metric).id;
-    st.palette = r.palette;
-    st.railWeights = [...r.weights];
-    st.freqFilter = { on: r.freqOn, min: r.freqMin, max: r.freqMax, unknown: r.freqUnknown };
-    st.weight = lineWeight(s, 'rail');
-    st.ties = r.ties;
-    st.opacity = r.opacity;
-    const metric = r.colour === 'metric';
-    st.lowFade = metric ? r.lowFade : 0;
-    st.lowSpan = r.lowSpan;
-    st.equalize = metric && r.equalize;
-    st.threshold = metric ? { ...r.threshold } : { on: false, dir: 'above', value: 0 };
-    st.terrain3d = s.terrain.on;
-    st.exaggeration = s.terrain.exaggeration;
-    st.occlude = s.occlude;
-    st.range = railCur;
-  };
-  applyRailStyle(s0);
-  // Rail service frequency per way (railfreq): sorted OSM way ids (as the rail tiles' way column)
-  // and trains a day each way. Loaded for a version of the file (again for a new catalogue's); a
-  // failed request isn't kept (asked again the next time rail changes).
-  let railFreqFor: string | null = null;
-  const loadRailFreq = () => {
-    const v = version('rail-freq.bin');
-    if (railFreqFor === v) return;
-    railFreqFor = v;
-    const req = fetch(`/api/railfreq${ver('rail-freq.bin')}`).then(keepable).then((r) => (r.ok ? r.arrayBuffer() : null));
-    tasks.track('railfreq', 'Rail frequencies', req, 'trains a day per line')
-      .then((b) => {
-        if (railFreqFor !== v || !b || b.byteLength < 8) return;
-        const n = b.byteLength / 8;
-        const dv = new DataView(b);
-        // Negative: a lower bound (MTR lines with only published headways).
-        const ways = new Uint32Array(n), vals = new Float32Array(n);
-        for (let i = 0; i < n; i++) {
-          ways[i] = dv.getUint32(i * 8, true);
-          vals[i] = dv.getFloat32(i * 8 + 4, true);
-        }
-        const find = (w: number) => {
-          let lo = 0, hi = n - 1;
-          while (lo <= hi) {
-            const m = (lo + hi) >> 1;
-            if (ways[m] < w) lo = m + 1;
-            else if (ways[m] > w) hi = m - 1;
-            else return m;
-          }
-          return -1;
-        };
-        rails.setLineValues((w) => {
-          const i = find(w);
-          return i < 0 ? -1 : Math.abs(vals[i]);
-        }, (w) => {
-          const i = find(w);
-          return i >= 0 && vals[i] < 0;
-        });
-      })
-      .catch(() => {
-        if (railFreqFor === v) railFreqFor = null;
-      });
-  };
-  if (s0.rail.on) loadRailFreq();
-
-  let stats: ViewStats | null = null;
-  let railStats: ViewStats | null = null;
-  /** Distribution of the rail colour metric over rail in view. */
-  let railDist: Dist | null = null;
-  /** Rail in view by trains a day (log10), for the frequency filter's histogram. */
-  let railFreqDist: Dist | null = null;
-  /** Distribution of the current colour metric over roads in view. */
-  let mdist: Dist | null = null;
-  let viewExtra: InViewExtra = {};
-  let statsDirty = true;
-  let lastStats = 0;
-  let cur: [number, number] = [...s0.range] as [number, number];
-  let cdf: Uint8Array | null = null;
-  let cdfKey = '';
-
-  const target = (): [number, number] => {
-    const s = store.s;
-    const d = modeDef(s.mode);
-    if (s.mode === 'relief') {
-      const e = stats?.elev;
-      return e ? spread(e.quantile(0), e.quantile(1), 10) : cur;
-    }
-    if (!s.auto) return s.range;
-    if (modeGroup(s.mode) === 'scenic' && unitOf(s.fitUnits, s.mode) === 'widths') return mdist && mdist.total > 0 && stats && stats.totalKm > 0 ? byLen(mdist, stats.totalKm, pairOf(s.fitLens, s.mode, FIT_LEN_DEFAULT), d.step) : cur;
-    return mdist && mdist.total > 0 ? fitByPct(mdist, s.fit, d.step) : cur;
-  };
-  /** The best fitLen[0] screen widths of line in view to the best fitLen[1] (the roads' scenic
-   * metrics, rail's and ferries' ranked ones, in screen widths): a fixed amount of line at the view
-   * centre's scale, whatever share of the view it is. `dist`: the metric over the lines in view;
-   * `km`: their length. */
-  const byLen = (dist: Dist, km: number, fitLen: [number, number], step: number): [number, number] =>
-    fitByWidths(dist, km, widthKm(), fitLen, step);
+  // ---- roads and rail -------------------------------------------------------------
+  // Their layers, styles, In view statistics and colour ranges (ctl/roads.ts).
   /** The view's width on the ground at its centre (km). */
   const widthKm = () => screenWidthKm(map.getCenter().lat, map.getZoom(), map.getCanvas().clientWidth);
-
-  /**
-   * The In view statistics; `full`: everything, else (while the camera moves) only what the colour
-   * ranges follow: the current metric's distribution, from fewer samples. The rest (km, the other
-   * metrics, landmarks, summit, ferries, busiest line) stays from the last settled view. A tile at a
-   * time (a generator): the frame loop runs it a few milliseconds a frame (at 120 Hz a frame has
-   * 8 ms, and a full pass over a dense view took 40 ms), and the results take effect once it ends.
-   */
-  function* computeStats(full = true): Generator<void, void> {
-    const s = store.s;
-    const nSamples = full ? 90_000 : 15_000;
-    const d = modeDef(s.mode);
-    const fromSketches = s.mode === 'elev' || s.mode === 'relief' || s.mode === 'grade';
-    let st = stats, md = mdist, extra = viewExtra, rst = railStats, rdist = railDist, rfd = railFreqDist;
-    if (full || fromSketches || !st) {
-      const lr = roadLenM(s);
-      st = yield* viewStatsGen(roads, groupMask(s), classMask(s), surfaceMask(s), unnamedHideGroups(s), lr[0] > 0 || lr[1] < Infinity ? lr : null, tollMask(s));
-    }
-    if (fromSketches) {
-      md = s.mode === 'grade' ? st!.grade : st!.elev;
-    } else if (!full) {
-      const smp = yield* roads.metricSamplesGen([s.mode], s.weights, nSamples);
-      md = distFromSamples(smp.v[0], smp.w, ...d.domain);
-    }
-    if (full) {
-      // Scenic summary for the stats card + the current metric's distribution, in one pass.
-      const modes = ['score', 'openness', 'trees', 'vista', 'bldg'] as const;
-      const scenicMode = d.id >= 3 && !(modes as readonly string[]).includes(s.mode) ? [s.mode] : [];
-      const smp = yield* roads.metricSamplesGen([...modes, ...scenicMode], s.weights, nSamples);
-      const dists = modes.map((m, i) => distFromSamples(smp.v[i], smp.w, ...modeDef(m).domain));
-      if (!fromSketches) {
-        const i = (modes as readonly string[]).indexOf(s.mode);
-        md = i >= 0 ? dists[i] : distFromSamples(smp.v[modes.length], smp.w, ...d.domain);
-      }
-      const [sc, , , vi] = dists;
-      extra = inViewExtra(sc, vi);
-    }
-    // Rail: km per service group, and the colour metric's distribution.
-    const r = s.rail;
-    if (full || !rst) rst = r.on ? yield* viewStatsGen(rails, 31, 0x7c00, 3, 0, null) : null;
-    if (r.on && r.colour === 'metric') {
-      const rd = railMetricDef(r.metric);
-      const smpR = yield* rails.sampleWithGen([(e, g, ch, ground, style, fq) =>
-        railMetricOf(r.metric, { elev: e, grade: g, ground, bridge: (style & 96) === 32, tunnel: (style & 64) !== 0, ch, freq: fq }, r.weights)], nSamples);
-      // Lines without a timetable have no frequency (NaN): left out of the distribution.
-      const keep = smpR.v[0].map((v) => (Number.isNaN(v) ? 0 : 1));
-      const vv = smpR.v[0].filter((_, i) => keep[i]), ww = smpR.w.filter((_, i) => keep[i]);
-      rdist = distFromSamples(vv, ww, ...rd.domain);
-    } else rdist = null;
-    if (r.on && (full || !rfd)) {
-      // Lines without a timetable (NaN or none) are left out.
-      const smpF = yield* rails.sampleWithGen([(_e, _g, _ch, _ground, _style, fq) => (fq > 0 ? Math.log10(fq) : NaN)], nSamples);
-      const keep = smpF.v[0].map((v) => (Number.isNaN(v) ? 0 : 1));
-      rfd = distFromSamples(smpF.v[0].filter((_, i) => keep[i]), smpF.w.filter((_, i) => keep[i]), Math.log10(0.5), Math.log10(3000), 256);
-    } else if (!r.on) rfd = null;
-    stats = st;
-    mdist = md;
-    viewExtra = extra;
-    railStats = rst;
-    railDist = rdist;
-    railFreqDist = rfd;
-  }
-  /** The statistics pass under way (computeStats), run a few ms a frame by the frame loop, and
-   * whether it is a full one (dropped when the camera moves: the view it was for is gone). */
-  let statsJob: Generator<void, void> | null = null;
-  let statsJobFull = false;
-  let lastFullStats = 0;
-  /** Time a pass may take a frame (ms): at rest, and while the camera moves (the frame's own work
-   * then fills most of its 8 ms). */
-  const STATS_MS = 3;
-  const STATS_MOVING_MS = 1;
-
-  const updateRailCdf = () => {
-    const r = store.s.rail;
-    if (!r.equalize || r.colour !== 'metric' || !railDist || railDist.total <= 0) {
-      if (railCdf) {
-        railCdf = null;
-        railCdfKey = '';
-        rails.setCdf(null);
-      }
-      return;
-    }
-    const key = `${r.metric}|${railCur[0].toFixed(3)}|${railCur[1].toFixed(3)}|${railDist.total.toFixed(0)}`;
-    if (key === railCdfKey) return;
-    railCdfKey = key;
-    railCdf = cdfOf(railDist, railCur);
-    rails.setCdf(railCdf);
-  };
-
-  const updateCdf = () => {
-    const s = store.s;
-    if (!s.equalize || !mdist || mdist.total <= 0) {
-      if (cdf) {
-        cdf = null;
-        roads.setCdf(null);
-      }
-      return;
-    }
-    const key = `${s.mode}|${cur[0].toFixed(3)}|${cur[1].toFixed(3)}|${mdist.total.toFixed(0)}`;
-    if (key === cdfKey) return;
-    cdfKey = key;
-    const out = new Uint8Array(256);
-    const a = 1 - mdist.above(cur[0]), b = 1 - mdist.above(cur[1]);
-    const span = Math.max(1e-9, b - a);
-    for (let i = 0; i < 256; i++) {
-      const v = cur[0] + (i / 255) * (cur[1] - cur[0]);
-      out[i] = Math.round(Math.max(0, Math.min(1, (1 - mdist.above(v) - a) / span)) * 255);
-    }
-    cdf = out;
-    roads.setCdf(out);
-  };
+  const rd = new RoadsRail(map, store, meta, {
+    wake,
+    widthKm,
+    others: () => {
+      const s = store.s;
+      const lms = overlays.viewLandmarks.filter((l) => s.overlays[l.key]);
+      return { ferry: s.ferry.on ? ferries.viewSummary() : undefined, landmarks: lms.length ? lms : undefined, summit: overlays.summitInView() };
+    },
+  });
+  const { roads, rails } = rd;
+  const markDirty = () => rd.markDirty();
 
   // The terrain tint (ctl/tint.ts): its scale over the terrain in view, easing as the roads' does.
   const tint = new TerrainTint(map, store, {
-    roadRange: () => cur,
+    roadRange: () => rd.cur,
     outline: () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]),
     styleReady: () => styleReady,
   });
@@ -712,40 +425,6 @@ async function main() {
     if (x) sightOsm(x); // ready for O
     listHover(x ? { feature: { layer: x.layer, props: x.props, lngLat: x.lngLat } } : null);
   };
-  /** The In view summary beyond roads: rail and ferries, landmarks and terrain (each while shown). */
-  const scenicExtra = (sc: Dist | null | undefined, vi: Dist | null | undefined): InViewExtra => ({
-    scenic: sc && sc.total > 0 ? [sc.quantile(0.5), sc.quantile(0.9)] : null,
-    vista: vi && vi.total > 0 ? [vi.quantile(0.5), vi.quantile(0.9)] : null,
-  });
-  const inViewExtra = (sc: Dist | null | undefined, vi: Dist | null | undefined): InViewExtra => {
-    const s = store.s;
-    const x: InViewExtra = scenicExtra(sc, vi);
-    if (s.rail.on && railStats) {
-      const groups = RAIL_GROUPS.map((g, k) => ({ label: g.label, colour: RAIL_GROUP_COLOURS[k], km: railStats!.classKm[RAIL0 + k] }));
-      const total = groups.reduce((a, g) => a + g.km, 0);
-      const b = rails.busiestInView();
-      x.rail = { total, groups, busiest: b ? { name: railName.get(b.way) ?? 'Rail line', perDay: b.perDay, lngLat: b.lngLat } : null, highest: railStats.highest };
-      if (b && !railName.has(b.way)) getWay(b.way, b.lngLat).then((info) => {
-        // The line's name without a route's direction or service codes ("Highland Sleeper").
-        railName.set(b.way, (info && lineName(info)) || 'Rail line');
-        markDirty();
-      });
-    }
-    if (s.ferry.on) x.ferry = ferries.viewSummary();
-    const lms = overlays.viewLandmarks.filter((l) => s.overlays[l.key]);
-    if (lms.length) x.landmarks = lms;
-    const summit = overlays.summitInView();
-    const hi = Math.max(summit?.ele ?? -Infinity, stats?.highest?.elev ?? -Infinity);
-    const lo = stats?.lowest?.elev;
-    x.terrain = {
-      summit,
-      relief: Number.isFinite(hi) && lo !== undefined ? hi - lo : null,
-      above1000: stats?.elev ? stats.elev.above(1000) : null,
-    };
-    return x;
-  };
-  /** The busiest lines' names as shown (by way). */
-  const railName = new Map<number, string>();
   statsCard.onPlace = (pl: ViewPlace) => {
     if (pl.layer) overlays.select({ lngLat: pl.lngLat, layer: pl.layer, props: pl.props });
     else map.flyTo({ center: pl.lngLat, zoom: Math.max(map.getZoom(), 11), duration: 900 });
@@ -755,11 +434,11 @@ async function main() {
     setMarks();
     if (!pl) return listHover(null);
     if (pl.layer) return listHover({ feature: { layer: pl.layer, props: pl.props ?? {}, lngLat: pl.lngLat } });
-    if (pl === viewExtra.rail?.busiest) return listHover({ layer: rails, at: pl.lngLat });
-    if (pl === viewExtra.ferry?.busiest) return listHover({ ferryAt: pl.lngLat });
+    if (pl === rd.viewExtra.rail?.busiest) return listHover({ layer: rails, at: pl.lngLat });
+    if (pl === rd.viewExtra.ferry?.busiest) return listHover({ ferryAt: pl.lngLat });
     listHover(null);
   };
-  profile.colour = () => ({ palette: store.s.palette, mode: store.s.mode, range: cur, weights: store.s.weights, cdf: store.s.equalize ? cdf : null });
+  profile.colour = () => ({ palette: store.s.palette, mode: store.s.mode, range: rd.cur, weights: store.s.weights, cdf: store.s.equalize ? rd.cdf : null });
   const ferries = new Ferries(map);
   const stations = new Stations(map);
   // The ferry lines in view and their colour scale (ctl/ferries.ts).
@@ -810,7 +489,7 @@ async function main() {
   statsCard.onFly = (x: Extreme) => {
     const ll = maplibregl.LngLat.convert(x.lngLat);
     map.flyTo({ ...cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, Math.max(map.getZoom(), 14)), duration: 1200 });
-    const kind = x === stats?.highest ? 'high' : 'low';
+    const kind = x === rd.stats?.highest ? 'high' : 'low';
     marks[kind] = point(x.lngLat, kind, fmt.m(x.elev));
     setMarks();
     setTimeout(() => {
@@ -1120,15 +799,7 @@ async function main() {
   // tiles, and the app's own downloads and searches. Map events start its polling; it stops by
   // itself once nothing is busy.
   tasks.mount(strip.status);
-  tasks.poll(() => {
-    const out: Task[] = [];
-    for (const [layer, label] of [[roads, 'Roads'], [rails, 'Rail']] as const) {
-      if (layer === rails && !store.s.rail.on) continue;
-      const p = layer.progress();
-      if (p.loaded < p.wanted) out.push({ label, done: p.loaded, total: p.wanted, detail: 'tiles (downloaded, decoded and uploaded)' });
-    }
-    return out;
-  });
+  tasks.poll(() => rd.loading());
   tasks.poll(() => mapTasks(map));
   // The far buildings' field (its tiles, roof ground, elevations, shader) and the 3D contours'
   // lines being made in their worker.
@@ -1141,76 +812,19 @@ async function main() {
 
   const refresh = () => {
     const p = roads.progress();
-    colour.update(mdist, cur, cdf);
-    railCard.update(railDist, railCur, railCdf);
+    colour.update(rd.mdist, rd.cur, rd.cdf);
+    railCard.update(rd.railDist, rd.railCur, rd.railCdf);
     layers.updateTint(tint.dist, tint.cur, tint.cdf);
-    layers.updateFilters({ roadLen: stats?.roadLen ?? null, railFreq: railFreqDist, ferryFreq: store.s.ferry.on ? ferries.freqDist() : null });
-    layers.update(stats);
-    layers.updateRail(railStats);
-    statsCard.update(stats, p, roads.zt, viewExtra);
+    layers.updateFilters({ roadLen: rd.stats?.roadLen ?? null, railFreq: rd.railFreqDist, ferryFreq: store.s.ferry.on ? ferries.freqDist() : null });
+    layers.update(rd.stats);
+    layers.updateRail(rd.railStats);
+    statsCard.update(rd.stats, p, roads.zt, rd.viewExtra);
   };
 
-  // The roads' and rail's part of the frame loop: their statistics and eased colour ranges.
-  const roadsPart = {
-    get due() {
-      return statsDirty || !!statsJob;
-    },
-    tick(now: number, moving: boolean, k: number) {
-      let panels = false, easing = false;
-      // While the camera moves, the cheap statistics only, and less often; everything once settled.
-      // A pass runs STATS_MS a frame (STATS_MOVING_MS while moving) until it ends.
-      if (!statsJob && statsDirty && now - lastStats > (moving ? 400 : 150)) {
-        statsDirty = false;
-        // While moving, the cheap pass (what the colour ranges follow), and every 2.5 s a full one:
-        // the In view summary follows the view too, a little behind.
-        statsJobFull = !moving || now - lastFullStats > 2500;
-        if (statsJobFull) lastFullStats = now;
-        statsJob = computeStats(statsJobFull);
-      }
-      if (statsJob) {
-        const t0 = performance.now();
-        const budget = moving ? STATS_MOVING_MS : STATS_MS;
-        while (performance.now() - t0 < budget) {
-          if (statsJob.next().done) {
-            statsJob = null;
-            lastStats = now;
-            panels = true;
-            break;
-          }
-        }
-      }
-      const t = target();
-      const next: [number, number] = [cur[0] + (t[0] - cur[0]) * k, cur[1] + (t[1] - cur[1]) * k];
-      const eps = modeDef(store.s.mode).step * 0.01;
-      if (Math.abs(next[0] - cur[0]) + Math.abs(next[1] - cur[1]) > eps) {
-        cur = next;
-        roads.style.range = cur;
-        map.triggerRepaint();
-        panels = true;
-        easing = true;
-      }
-      const r = store.s.rail;
-      const rd = railMetricDef(r.metric);
-      const tt: [number, number] = !r.auto ? r.range
-        : !railDist || railDist.total <= 0 ? railCur
-        : rd.byLen && unitOf(r.fitUnits, r.metric) === 'widths' ? (railStats && railStats.totalKm > 0 ? byLen(railDist, railStats.totalKm, pairOf(r.fitLens, r.metric, FIT_LEN_DEFAULT), rd.step) : railCur)
-        : fitByPct(railDist, r.fit, rd.step);
-      const nr: [number, number] = [railCur[0] + (tt[0] - railCur[0]) * k, railCur[1] + (tt[1] - railCur[1]) * k];
-      if (Math.abs(nr[0] - railCur[0]) + Math.abs(nr[1] - railCur[1]) > rd.step * 0.01) {
-        railCur = nr;
-        rails.style.range = railCur;
-        map.triggerRepaint();
-        panels = true;
-        easing = true;
-      }
-      return { panels, easing };
-    },
-  };
   // The frame loop (ctl/frame.ts): the panels' DOM in idle time (idle.ts), during gestures too (the
   // legends follow the view).
-  const frame = new FrameLoop([roadsPart, ferryScale, tint], () => moving, () => {
-    updateCdf();
-    updateRailCdf();
+  const loop = new FrameLoop([rd, ferryScale, tint], () => moving, () => {
+    rd.updateCdfs();
     tint.refresh();
     idle.run('panels', () => {
       refresh();
@@ -1218,16 +832,10 @@ async function main() {
     }, { moving: true });
   });
   function wake() {
-    frame.wake();
-  }
-  /** The statistics need recomputing (and the loop wakes to do it). */
-  function markDirty() {
-    statsDirty = true;
-    wake();
+    loop.wake();
   }
   wake();
 
-  rails.onChange = () => markDirty();
   roads.onChange = () => {
     markDirty();
     const p = roads.progress();
@@ -1269,45 +877,6 @@ async function main() {
   // With the HUD off (I) the map is only for looking: nothing is hovered or selected.
   const hudOff = () => document.body.classList.contains('hud-off');
   let pickAt: { x: number; y: number } | null = null;
-  const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
-  const cssOfRgb = (c: number[]) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
-  /** A CSS colour ('#rrggbb' or 'rgb(r,g,b)') mixed toward the land colour, `k` of it kept (as the
-   * rail layer's u_bg). */
-  const mixBg = (css: string, k: number) => {
-    const c = /^#[0-9a-f]{6}$/i.test(css) ? hexRgb(css) : (css.match(/[\d.]+/g) ?? ['0', '0', '0']).slice(0, 3).map((v) => Number(v) / 255);
-    const bg = hexRgb(store.s.land);
-    return cssOfRgb(c.map((v, i) => bg[i] + (v - bg[i]) * k));
-  };
-  /** A rail line's colour and opacity at a point as the rail layer draws it (roads/layer.ts
-   * endColour), for the stop dot there: its colour (by line, service, single or the metric's
-   * palette, a highlight's misses grey) mixed toward the background by the class's colour strength
-   * at this zoom (tunnels at 45 %, misses at most 85 %), and with a metric the scale's low-end fade
-   * as its opacity. The dots took the bare colour, so on a tunnel or at the low end of the scale a
-   * stop shone brighter than its line. */
-  const railLookOf = (hv: HoverInfo): { c: string; a: number } => {
-    const r = store.s.rail;
-    const cls = hv.style & 15;
-    let col: string, a = 1;
-    let fade = interp(FADE_Z, FADES[cls], map.getZoom()) * ((hv.style & 64) !== 0 ? 0.45 : 1);
-    const lc = hv.tile.data!.lineColour[hv.hit.line];
-    if (r.colour === 'line') col = lc ? hex(lc - 1) : RAIL_GROUP_COLOURS[cls - RAIL0];
-    else if (r.colour === 'group') col = RAIL_GROUP_COLOURS[cls - RAIL0];
-    else if (r.colour === 'single') col = r.single;
-    else {
-      const v = railMetricOf(r.metric, { elev: hv.elev, grade: hv.grade, ground: hv.ground, bridge: (hv.style & 96) === 32, tunnel: (hv.style & 64) !== 0, ch: hv.ch, freq: hv.fq }, r.weights);
-      if (Number.isNaN(v)) col = '#5c6673';
-      else {
-        const u = scaleU(v, railCur, r.equalize ? railCdf : null);
-        a = fadeAlpha(u, r.lowFade, r.lowSpan);
-        if (passes(v, r.threshold, railCur)) col = paletteRgb(r.palette, u);
-        else {
-          col = cssOfRgb(DIM_GREY);
-          fade = Math.min(fade, 0.85);
-        }
-      }
-    }
-    return { c: mixBg(col, fade), a };
-  };
   // Rail stop and ferry terminal dots in the colour of their line at that point; each shows only
   // once coloured (stations.ts, ferries.ts). In idle time (idle.ts), after a render, at most every
   // 100 ms (300 ms while the camera moves): the dots shown and not yet coloured, and all of them
@@ -1318,13 +887,13 @@ async function main() {
     dotsAt = performance.now();
     // (The zoom while the lines' colour strength follows it: railLookOf.)
     const fz = Math.min(FADE_Z[FADE_Z.length - 1], Math.round(map.getZoom() * 4) / 4);
-    const key = [rails.drawnCount, JSON.stringify({ ...store.s.rail, opacity: 1 }), railCur.join(), JSON.stringify(store.s.ferry), JSON.stringify(store.s.lineWeights), fz].join('|');
+    const key = [rails.drawnCount, JSON.stringify({ ...store.s.rail, opacity: 1 }), rd.railCur.join(), JSON.stringify(store.s.ferry), JSON.stringify(store.s.lineWeights), fz].join('|');
     const all = key !== dotsKey;
     dotsKey = key;
     const p = rails.progress();
     const colourAt = (lng: number, lat: number) => {
       const hv = rails.pickNear(lng, lat, 4);
-      return hv === undefined ? undefined : hv ? railLookOf(hv) : null;
+      return hv === undefined ? undefined : hv ? rd.railLook(hv) : null;
     };
     yield* stations.recolour(colourAt, all, p.loaded >= p.wanted);
     yield* ferries.recolourTerminals(all);
@@ -1344,7 +913,7 @@ async function main() {
     if ((e.sourceId === 'stations' || e.sourceId === 'ferries') && (e as { tile?: unknown }).tile) stopTiles++;
   });
   map.on('render', () => {
-    const sig = [rails.drawnCount, stopTiles, JSON.stringify({ ...store.s.rail, opacity: 1 }), railCur.join(), JSON.stringify(store.s.ferry), JSON.stringify(store.s.lineWeights)].join('|');
+    const sig = [rails.drawnCount, stopTiles, JSON.stringify({ ...store.s.rail, opacity: 1 }), rd.railCur.join(), JSON.stringify(store.s.ferry), JSON.stringify(store.s.lineWeights)].join('|');
     if (sig === dotsSig) return;
     dotsSig = sig;
     colourDotsSoon();
@@ -1914,39 +1483,10 @@ async function main() {
     if (map.getLayer('bg')) map.setPaintProperty('bg', 'background-color', c);
   };
   store.on((s, ch) => {
-    const st = roads.style;
-    st.mode = s.mode;
-    st.palette = s.palette;
-    st.classMask = classMask(s);
-    st.surfaceMask = surfaceMask(s);
-    st.tollMask = tollMask(s);
-    st.unnamedHide = unnamedHideClasses(s);
-    st.weight = ROAD_WEIGHT * lineWeight(s, 'roads');
-    st.persp = rails.style.persp = { ...s.roadPersp };
-    st.threshold = { ...s.threshold };
-    st.visible = s.layers.roads;
-    st.weights = [...s.weights];
-    st.equalize = s.equalize;
-    st.routeGlow = s.routeGlow;
-    st.terrain3d = s.terrain.on;
-    st.exaggeration = s.terrain.exaggeration;
-    st.lowFade = s.lowFade;
-    st.lowSpan = s.lowSpan;
-    st.occlude = s.occlude;
-    st.opacity = s.roadOpacity;
-    Object.assign(st, roadLookStyle(s));
-    setWidths(s.roadLook.widths);
-    [st.lenMin, st.lenMax] = roadLenM(s);
+    rd.apply(s, ch);
     dots.setTerrain({ on: s.terrain.on, exaggeration: s.terrain.exaggeration, occlude: s.occlude });
     contours.set(contourStyle(s));
-    applyMapMode(s);
-    applyRailStyle(s);
-    if (ch.has('rail')) {
-      markDirty();
-      railCard.sync();
-      if (s.rail.on) loadRailFreq();
-      map.triggerRepaint();
-    }
+    if (ch.has('rail')) railCard.sync();
     const outline = ch.has('pointOutline') || ch.has('pointOutlineOpacity');
     // A label type shown or hidden (Labels → Style): the layers' visibility again.
     const shownKey = ch.has('labelLooks') ? JSON.stringify(Object.entries(s.labelLooks).filter(([, o]) => o.shown === false).map(([k]) => k)) : labelShownKey;
@@ -1972,8 +1512,6 @@ async function main() {
       bld.apply(s);
       if (!s.buildings.on) hoverBuilding(null);
     }
-    if (ch.has('groups') || ch.has('unnamed') || ch.has('roadLen') || ch.has('roadLenOn') || ch.has('surface') || ch.has('toll') || ch.has('layers') || ch.has('mode') || ch.has('weights')) markDirty();
-    if (ch.has('equalize') || ch.has('mode')) cdfKey = '';
     if (styleReady) {
       if (ch.has('layers') || ch.has('water') || ch.has('boundaryLevels') || kinds) applyLayers();
       if (ch.has('terrain')) {
@@ -2092,9 +1630,7 @@ async function main() {
   onVersions(['roads.tiles'], () => roads.setSource(version('roads.tiles'), roads.bounds));
   onVersions(['rails.tiles'], () => rails.setSource(version('rails.tiles'), rails.bounds));
   onVersions(['buildings.tiles'], () => switchBuildings(map));
-  onVersions(['rail-freq.bin'], () => {
-    if (railFreqFor !== null && store.s.rail.on) loadRailFreq();
-  });
+  onVersions(['rail-freq.bin'], () => rd.railFreqChanged());
   onVersions(versionedTiles().map((t) => t.file), (files) => {
     for (const t of versionedTiles()) {
       if (!files.includes(t.file)) continue;
@@ -2110,8 +1646,7 @@ async function main() {
   const newCatalogue = (m: Meta) => {
     // What the versions don't say: the data's bounds (where tiles are asked for), and whether the
     // labels come from our tiles (the style is made for one or the other).
-    roads.setSource(version('roads.tiles'), m.bounds);
-    rails.setSource(version('rails.tiles'), m.bounds);
+    rd.setBounds(m.bounds);
     // The buildings, once a catalogue has them: the layers, their settings, the B key and `bd=`.
     if (m.layers?.buildings && !hasBuildings) {
       hasBuildings = true;
@@ -2268,13 +1803,6 @@ async function main() {
  * (easeTo, flyTo, fitBounds) even with centerClampedToGround off. The camera never follows the
  * terrain here: keep only the bookkeeping part (minimum elevation for clipping).
  */
-/** The road layer's share of the settings' road look (AppState.roadLook; the width table aside:
- * config.ts setWidths). Rail keeps the defaults'. */
-function roadLookStyle(s: AppState): Pick<RoadStyle, 'minZoom' | 'casingFrom' | 'casingWidth' | 'tunnelFade' | 'bridgeCasing' | 'dashUnpaved'> {
-  const l = s.roadLook;
-  return { minZoom: [...l.minZoom], casingFrom: l.casingFrom, casingWidth: l.casingWidth, tunnelFade: l.tunnel, bridgeCasing: l.bridgeCasing, dashUnpaved: l.dashUnpaved };
-}
-
 function unlinkCameraFromTerrain(map: maplibregl.Map) {
   type Cam = { terrain?: { getMinTileElevationForLngLatZoom: (c: unknown, z: number) => number }; _updateElevation?: (k: number, tr: any) => void };
   const cam = (map as unknown as { _camera?: Cam })._camera;
