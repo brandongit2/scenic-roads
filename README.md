@@ -168,7 +168,7 @@ come from GTFS, hand-checked timetables, or OSM `interval` + `opening_hours`; ne
 
 ## Building and running
 
-The pool's lead, the Mac mini (`scenic agent`, `crates/pipeline/src/agent`), builds the map into the
+The pool's lead, the Mac mini (`scenic agent`, `crates/agentcore/src/agent`), builds the map into the
 NAS from a worldwide OpenStreetMap download, a z6 tile at a time, and publishes a catalogue that the
 map server switches to in place. The other Macs and any browser on the LAN help through its
 coordinator (`docs/workers.md`, `docs/pool.md`). The build runs on a Mac while Scenic
