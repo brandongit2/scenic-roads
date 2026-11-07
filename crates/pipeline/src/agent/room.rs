@@ -178,10 +178,11 @@ fn months_bytes(cache: &Path, sources: &NasPath) -> u64 {
     files.iter().filter(|f| !index(&f.2) || there(&f.2, f.1)).map(|f| f.1).sum()
 }
 
-/// What `make_room` can free on a helper: the cheap caches but the loose raw tiles (`aws-terrarium/
-/// <z>/…`), which it keeps until a job of its own packs them onto the NAS (it can't: only a job
-/// handing off packs; the NAS lacks them). The copies of the NAS's archives (`aws-terrarium/packs/`)
-/// count.
+/// What `make_room` can free on a helper, and on any Mac without asking the NAS (what an ask counts,
+/// crate::agent's `freeable`): the cheap caches but the loose raw tiles (`aws-terrarium/<z>/…`),
+/// which a helper keeps until a job of its own packs them onto the NAS (it can't: only a job
+/// handing off packs; the NAS lacks them), and the pageview months (the NAS is asked which it has).
+/// The copies of the NAS's archives (`aws-terrarium/packs/`) count.
 pub fn helper_cheap_bytes(cache: &Path) -> u64 {
     let mut files = Vec::new();
     for d in ["chm10", "blobs", "aws-terrarium/packs"] {

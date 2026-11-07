@@ -433,17 +433,26 @@ and when:
   beside it on that Mac carry their output alone. Files of an earlier pass count as held until
   the next job reading them prunes them. Its agent counts the grant in
   `reserved_mb` (as `disk_words` and the build page's disk bar show it).
-The cache files a Mac has are on its disk, outside the free space an ask says; the
-room-target freeing and the disk guard (`room::toward`) can delete those no job holds, but
-nothing counts them free before (room-making as a job starts frees the cheap caches alone)),
-and its agent reserves it while it holds the lease: the whole of it until
+The whole copies a Mac has are on its disk, outside the free space an ask says (held by this
+rule, not counted free twice); the room-target freeing and the disk guard (`room::toward`) can
+delete those no job holds), and its agent reserves it while it holds the lease: the whole of it until
 the job starts, then that less what the job has written so far (the disk guard's count). The
 lead's own running jobs reserve what their measures say they have still to take (`disk_left`).
 A reservation ends with its lease, at hand-off or give-back. The free disk an ask and its
-capacity say (`disk_mb`; the lead's own asks' likewise) is the free space less the
-owner's room target and every live reservation (`reserved_mb`), so a job not yet written isn't
-counted free twice. There is no fixed reserve: the room target is the only floor (a Mac with
-49 GB free and a 20 GB target offers 29 GB, less its reservations). An older agent's `reserve_mb`
+capacity say (`disk_mb`; the lead's own asks' likewise) is the free space, on a member with what
+its caches can free (`agent`'s `freeable`: `room::helper_cheap_bytes`, the canopy squares, the
+copies of the records' files and the raw terrain's archives, less the whole copies above; counted
+at most every ten minutes, and again after a job or a freeing), less the owner's room target and
+every live reservation (`reserved_mb`), so a job not yet written isn't counted free twice. A
+member's job granted for what its caches hold starts with the room past the target and the other
+jobs' reservations (a shared step's), and its caches are freed toward its reservation while it
+runs (the freeing toward the target and the reservations, `goal`, the target 0 or not), the disk
+guard behind it (task #1000: counted without its caches, the M4, 37 GB free against its 30 GB
+target and 77 GB of caches, was offered 7 GB for jobs and ran one, 11 of its 14 cores idle). The lead's caches aren't counted: it asks alone with its
+disk unbounded, and beside its jobs a job of its own needs its measured room free as it starts or
+is given back, so one granted for its caches would be granted and given back each loop. There is no
+fixed reserve: the room target is the only floor (a Mac with 49 GB free, a 20 GB target and no
+caches offers 29 GB, less its reservations). An older agent's `reserve_mb`
 (a fixed 30 GB it took off too) parses and is passed over: its `disk_mb` has it taken off already,
 so it only offers less; the coordinator takes off only the jobs a member holds that
 its capacity doesn't name yet (granted since it asked, or an older agent's ask, all of them). The
