@@ -8743,7 +8743,16 @@ impl Agent {
         }
         let events = co.history_since(run.history_seq);
         if run.history_seq == 0 {
-            // (From this process's start: what came before is in the coordinator's own history.)
+            // (From this process's start: what came before is in the coordinator's own history. But
+            // its coordinator's start ("agent", again on a term taken up by the same coordinator:
+            // read once), which crate::coord::history::mend_runs knows a lead's restart by: the
+            // NAS's history had none, so its readers (forecast-check, the backtest's inputs) took
+            // the runs across a restart as written, task #988.)
+            let start: Vec<crate::coord::history::Event> =
+                events.iter().rev().find(|e| e.kind == "agent").cloned().into_iter().collect();
+            if let Err(e) = pool::append_history(root, &run.side.member().id, &start) {
+                eprintln!("agent: the history on the NAS: {e:#}");
+            }
             run.history_seq = events.last().map_or(0, |e| e.seq).max(1);
         } else if !events.is_empty() {
             // (The terms' events are on the NAS already: crate::agent::lead appends them as they come.)
@@ -15526,6 +15535,11 @@ mod pool_tests {
             .unwrap()
             .flatten()
             .any(|day| day.path().join(format!("{me}.jsonl")).exists()));
+        // (With its coordinator's start, which mends the runs across a restart as read: task #988.)
+        assert!(std::fs::read_dir(r.join("state/coord/history")).unwrap().flatten().any(|day| {
+            std::fs::read_to_string(day.path().join(format!("{me}.jsonl")))
+                .is_ok_and(|s| s.lines().any(|l| l.contains(r#""kind":"agent""#)))
+        }));
         assert!(r.join(crate::pool::beat::path(&me)).exists());
         let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &home).unwrap();
         let pv = st.pool.expect("the pool in its status");

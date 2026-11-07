@@ -1257,6 +1257,9 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   and readers take none as nothing known. The build page's schedule draws its arrows from it.
 - **The history** is one file per writer, `state/coord/history/<day>/<member>.jsonl`, for the last
   `history::DAYS` (7) days, the days the page view reads (`pageview` takes the same constant). A
+  lead's agent appends its coordinator's events from its first pass on, and with its first its
+  coordinator's start (its "agent" event: how `history::mend_runs` knows a restart; until task #988
+  the NAS's files had none, so their readers took the runs across a restart as written). A
   day before them is packed as one tar, `state/coord/history-archive/<day>.tar` (members
   `<day>/<member>.jsonl`), by the daily `gc` job, so the lead alone, outside its loop and the
   pool's lock (`agent::histarchive`, task #531). Per day: its files read whole and merged into
