@@ -4,8 +4,8 @@
 (`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a to 6d (§6, 6c
 `crates/coordwire`, 6d `crates/inputs`) and 6e (`crates/offload`, `crates/terrain`, `crates/trees`,
 `crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1 to
-6f3 (§6.3: `build::pass_work`, the frozen-plan check, the `Plan` trait, test time); every later step
-below is planned (6f4: §6).
+6f4 (§6.3: `build::pass_work`, the frozen-plan check, the `Plan` trait, test time, and the runtime
+in `crates/agentcore`); every later step below is planned.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -263,7 +263,8 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
    (built) has the step modules name the lower crates directly, 6c (built) moved the coordinator's
    client side down (coordwire), 6d (built) the inputs family (`crates/inputs`), 6e (built:
    `crates/offload`, `crates/terrain`, `crates/trees`, `crates/roads`, landmarks' names family,
-   `crates/bld`) the step families; then (planned) the agent's plan split from its runtime.
+   `crates/bld`) the step families; then 6f (built) the agent's plan split from its runtime
+   (`crates/agentcore`).
 6. **coordination**, after #882 lands.
 7. Path rewrites: the step modules' were step 6b's; the rest (the agent's, coord's, the
    binaries') per crate as it moves, `crate::x` → `<crate>::x`, and the re-exports dropped.
@@ -508,9 +509,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1 to 6f3 built, 6f4 planned)
+## 6. Breaking the big cycle (6a-6e and 6f1 to 6f4 built)
 
-**Status: 6a-6e and 6f1 to 6f3 built; 6f4 planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6e and 6f1 to 6f4 built** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -1011,8 +1012,8 @@ commit; re-exports at the old paths as before.
           `step_sums`), fccheck's `replay` and `backtest`, `flags::of`, progress's sayings,
           `room::Hints`, `redo::said`, `every`'s functions, `uses::Run`, `Paces::with_starts`,
           `memguard::Watch::floors`. `jobs::note_cost` takes the step's way as a number (`gc::set_way`).
-          For the runtime's tests until 6f4, `seam::for_tests()` and coord's `cfg(test)`
-          `cost_version` and `saves`.
+          For the runtime's tests, `seam::for_tests()` (since 6f4 on the plan compiled into
+          agentcore's tests) and coord's `cfg(test)` `cost_version` and `saves`.
         - **Cut:** the planner's `tiles`, `reach`, `kept`, `terrain_tiles`, `current_reach`,
           `as_built_parts`; `agent::terrain_peak`, `task_what`, `key_inputs`, `input_digests` and
           `key_names` (moved to `agent/theplan.rs`); `pubtimes::restaled_by` (to build.rs); the
@@ -1074,15 +1075,15 @@ commit; re-exports at the old paths as before.
       - **Safety:** `testing()` is true exactly where pipeline's `cfg(test)` applied. It turns true
         only by `go_testing`, called only from a lib.rs's `#[cfg(test)]` `TEST_START` (or in
         buildstore's own unit tests, its initial value), so only in some crate's unit tests; of the
-        crates linking pipeline (it and server), only pipeline has a `TEST_START`. So in every
+        crates linking the runtime, only pipeline has a `TEST_START` (and agentcore, since 6f4). So in every
         binary, example and integration test, and in server's tests, each switched site takes its
         production branch, as it did built without `cfg(test)`. tests/test_mode.rs checks both
         halves: `a_build_with_the_dev_dependencies_has_no_test_time_behaviour` (false in an
-        integration test) and `only_pipeline_s_unit_tests_run_its_code_testing` (in every file of
+        integration test) and `only_the_runtime_s_and_pipeline_s_unit_tests_run_testing` (as 6f4 named it; in every file of
         every crate, `go_testing` named only in a lib.rs's `#[cfg(test)]` `TEST_START`; the flag
         private to buildstore's out.rs, starting as `cfg!(test)`, read by `testing` and written by
         `go_testing` alone, so no environment variable, file or argument sets it; and no crate with
-        a `TEST_START` linking pipeline but pipeline). No production value changed: each function's other branch is the old
+        a `TEST_START` linking the runtime but pipeline, and agentcore since 6f4). No production value changed: each function's other branch is the old
         `not(test)` constant.
       - **Cut:** the consts' `cfg` pairs; nasread's `SWITCH_READERS`, `READERS`, `WRITERS` and the
         big reads' deadline no longer public (the status sums them through `threads_in_all`).
@@ -1091,34 +1092,94 @@ commit; re-exports at the old paths as before.
         the planner's `slow_plan`, gc's `YIELD_CHECKS` count, and the `/work/test-block` route
         (a test route never ships behind the flag). forecast.rs, coord/sched.rs and fccheck.rs hold
         no behaviour site (forecast's `run` is a test helper); they were left alone for #995.
-   4. **6f4, the move** (planned): the runtime (agent but build, steps, idents and tiles; coord, pool,
-      needs, paces, uses, pubtimes, answers, menu, appupdate, cli, net) into `crates/agentcore`,
-      on inputs and the crates below it, beside the families; pipeline keeps the plan, offload's
-      `run_task` and `task_kind` (through `Plan`), `out::open`, the binaries and the re-exports.
-      agentcore gets its own `TEST_START` for its own unit tests, and test_mode.rs's check then
-      allows it beside pipeline. Measured as §5 does. What stands in its way (counted 7 Nov after
-      6f3, main at 19b13986):
-      - **The plan's names in the runtime:** 25 lines naming the plan's `build::`, `steps::`,
-        `idents::` or `tiles::` (comments and strings aside, plan.rs included; cli's own `build`
-        module isn't the plan's): 23 in tests (agent/mod.rs 17, coord/mod.rs 3, builtview 2,
-        forecast 1), going to a pipeline test module as the families' tests went, and 2 in
-        non-test code, new since 6f2:
-        cataloguesview's `step_times` calls `steps::output_names` (#994), a question for
-        `Plan::output_names`. Besides, gc's depth layers and `out::open` (6f2).
-      - **Test-only items pipeline's tests would need** once the runtime is agentcore's: the five
-        hooks above, and the items its tests use (`Options::member`, `test_agent`,
-        `test_agent_with`, `planner`, `seam::for_tests`, coord's `start_for_test`, `cost_version`,
-        `saves`, `pool_state`, `port_kept`, `port_free`, nasread's `fake`, asks' `never_sweep`,
-        beat's `never_tick`, gc's `Idle`, `ways_for_tests`, `sweeps_done_for_tests`): those of
-        tests that stay in agentcore stay `cfg(test)`; those of tests moving to pipeline become
-        accessors on agentcore's test side (as 6e's `task::testkit`, a `testkit` feature).
-   Before it, pipeline holds ~120k lines (the cycle's 108.0k, the binaries' 14.2k).
+   4. **6f4, the move** (built, 7 Nov 2026): the runtime (agent but build, steps, idents, tiles and
+      theplan; coord, pool, needs, paces, uses, pubtimes, answers, menu, appupdate, cli, net) is
+      `crates/agentcore` (~61k lines without tests), on inputs and the crates below it (det,
+      roadcore, store, codecs, jobrt, buildstore, coordwire, offload), beside the families.
+      pipeline keeps the plan (~9k lines without tests), offload's `run_task`, `out::open`, the
+      family tests, the binaries (~13k) and the re-exports: its `agent` is `pub use
+      agentcore::agent::*` beside the plan's modules, its root re-exports the rest at their old
+      paths, and the plan names the runtime's items by them as before. The runtime names
+      `buildstore::out` and the offload crate directly (it held no `out` or `offload` of its own
+      but pipeline's re-exports).
+      - **Untangled first**, a commit each, behaviour unchanged: the Catalogues map's step times
+        ask `Plan::output_names` (the view holds the agent's plan); gc's drop and verify open their
+        `Out` by `Plan::writes` (the table's write sets, `steps::writes`) and a depth pack's layers
+        are `Plan::depth_layers` (terrain's), the plan coming in by `gc::Ways`; a task's kind by
+        its first step is `Plan::task_kind`'s own (offload.rs had it; scenic's task run asks the
+        plan).
+      - **The runtime's tests run on the real plan:** ~430 of them reach it by `seam::for_tests()`
+        (a planner, a coordinator, the forecast), so they couldn't move to pipeline without making
+        most of the runtime's insides public, nor run on a stand-in table. agentcore's unit tests
+        compile the plan's modules in (`#[cfg(test)] #[path = "../../../pipeline/src/agent/…"]` in
+        agent/mod.rs, the families as dev-dependencies and re-exported under `cfg(test)` at
+        pipeline's paths, as is an `out` without `open`), so every runtime test is where it was,
+        unchanged. The plan's own tests stay pipeline's: agentcore's build script sets
+        `in_agentcore`, and their modules are `#[cfg(all(test, not(in_agentcore)))]`. The cost: a
+        test build compiles the plan twice (pipeline's and agentcore's tests), as a dev build
+        doesn't. Not traced by `affected-tests.sh`: agentcore's tests after a plan file's edit
+        (it maps the file to pipeline's module); check-reuse.py follows the `#[path]`s.
+      - **Test time:** agentcore's own `TEST_START` and `test_start` probe (pipeline's stays, for the
+        plan's and the families' tests); tests/test_mode.rs's
+        `only_the_runtime_s_and_pipeline_s_unit_tests_run_testing` allows a `TEST_START` in
+        agentcore beside pipeline, and none in another crate linking agentcore. For pipeline's
+        tests, agentcore's `testkit` (a dev-dependency's): `coord::start_on_test_port` (the plan
+        handed in; `start_for_test` calls it with `seam::for_tests`) and `PlanHeld::keep_for_test`'s
+        default (no-op, where pipeline's build of the plan has no tests beside a `testkit`).
+      - **Cut:** pipeline's re-exports of paces, uses and phase_names (nothing names them there),
+        its dependencies only the runtime used (sha2, xxhash-rust, ureq, tokio-util, tower-http,
+        tower, hyper, hyper-util, socket2, futures-util), offload.rs's `task_kind`. progress's
+        `Item::sized` and `left` are `pub` (the plan calls them across the crates).
+      - **Pure moves:** each moved or edited file's tokens against the untangled tree's (the
+        commits above), comments dropped and every path reduced to its last name: 77 of the 91
+        files the same; the rest differ only by the plan's module lines, `pub(super)` → `pub`, the
+        testkit items, the plan's tests' gate and their `seam::for_tests` → `theplan::the_plan`,
+        steps' test reading agentcore's files, the root's module lines, and a trailing comma
+        rustfmt added. So nothing on disk or on the wire changed.
+      - **Checks** (7 Nov, on the M4, test profile; main at 5f73e8e8 against this branch, each its
+        own tree, target and home, side by side, the homes named alike before comparing): the
+        frozen-plan check (main's `pipeline --lib`, agentcore's `--lib` here) on a fresh copy of the
+        lead's state (term 784, 57 MB, removed after), nine states, each the same bytes: as it
+        stands (933 KB: 73 jobs, 10 waits, 10 offers); the outlines unmade, held; the same with 5
+        failures; every worldwide step's output gone (the outlines, the pass, the regions' land, the
+        reaches, the buildings' index, the heritage input, the spoken and water layers), the
+        outlines failed 3 times, names-to-do due; the lake fill failed 3 times, the languages and
+        translations gone, the reaches damaged (884 KB); the sources gone, the reaches damaged,
+        names-to-do's gate shut (797 KB); no pass, names-to-do due; the same, shut; a pass with no
+        outputs yet (882 KB). A run's most was 4.5 GB. #995's `coord::tests::archived_grants`
+        over the archive's days kept: the same 2,419 lines (2,233 asks), 6.2 GB.
+      - **Measured** (7 Nov 10:55-11:05, on the M4 at load 17-52, rustc 1.98.1, sccache; main at
+        5f73e8e8 against this branch, each tree its own target folder, interleaved as §5's: main,
+        6f4; 6f4, main; main, 6f4; `time -l`'s peak is the largest process). The edits: one comment
+        line appended to agent/flags.rs (the runtime) and to bld's bld/work.rs (a family), each built
+        at once:
+
+        | run | main | 6f4 |
+        |---|---|---|
+        | dev (`build --workspace --bins`), the workspace's crates whole | 52.3 s (CPU 296 s), 2.15 GB | 38.5 s (CPU 296 s), 1.98 GB |
+        | dev, flags edit | 5.1, 3.7, 3.7 s (CPU 11.2 s), 1.25 GB: pipeline, server | 5.0, 3.5, 3.6 s (CPU 11.9-12.2 s), 1.25 GB: agentcore, pipeline, server |
+        | dev, work edit | 4.1, 4.0, 4.0 s (CPU 12.0-12.4 s), 1.24-1.25 GB: bld, pipeline, server | 2.4, 2.3, 2.3 s (CPU 10.0-10.6 s), 1.25 GB: bld, pipeline, server |
+        | unit-test build after the flags edit (and the work edit's bld) | pipeline --lib: 4.0, 4.0, 4.0 s (CPU 5.9-6.0 s), 1.79-1.81 GB | agentcore --lib: 3.8, 3.7, 3.8 s (CPU 5.6-5.8 s), 1.70-1.75 GB |
+        | the runtime's unit tests, built whole | pipeline --lib: 78.2 s (CPU 646 s), 3.82 GB | agentcore --lib: 74.5 s (CPU 631 s), 3.65 GB |
+
+        So the split's gain is where §6.4 put it: the workspace's dev build ~26 % shorter on the same
+        CPU (agentcore compiles beside the families, the plan's pipeline after both), and an edit in
+        a family 4.0 → 2.3 s, as it no longer recompiles the runtime; an edit in the runtime costs
+        what it did (agentcore, then pipeline and server). The runtime's tests build as they did
+        (the plan compiled into them). tools/dev/check.sh's tests part on this branch (10:26, the
+        M4 at load 50-90 with the checks above): 514 s for 1,213 tests (its affected set, most of
+        the suite: the branch moves ~90 files), nextest's run 124 s, the rest building; no before
+        figure, as a check's time follows its branch's affected set.
+   Before 6f4, pipeline held ~120k lines (the cycle's 108.0k, the binaries' 14.2k).
 
 ### 6.4 Expected gain
 
 Estimated from the 5 Nov `--timings` (pipeline's lib: 36-40 s for ~142k non-test lines, ~0.27 s
 per thousand; edits measured in §5) and the line counts above; to be checked against each step's
 measurements.
+After 6f4 (its measurement, §6.3): the clean dev build 52 → 38 s, as estimated; a family's edit
+4.0 → 2.3 s; the runtime's edit as before; the largest rustc in a clean dev build 2.15 → 1.98 GB,
+not the half estimated (pipeline's lib was 1.3 GB before 6f4, the steps having left it at 6e).
 
 - **Clean dev build** (the workspace's crates; M4): today one serial chain, ~5 s of crates below, pipeline's
   lib 36-40 s, then the binaries and server ~7 s (~50 s in all). After 6a-6e: inputs ~7 s, terrain ~4 s, the families ~2-4 s,
