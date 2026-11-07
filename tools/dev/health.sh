@@ -35,8 +35,9 @@ print "== health $(date '+%F %T')"
 df -h / | awk 'NR==2{print "disk: "$4" free of "$2}'
 print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/map ]] && echo mounted || echo NOT MOUNTED)"
 if [[ ! -f .claude/nas-links || -n $(find .claude/nas-links -mmin +360) ]]; then
-  # (On the NAS, POSIX sh: the candidates, then each checked; a find cut short says so.)
-  if ans=$(ssh -o BatchMode=yes -o ConnectTimeout=5 brandontsang@fishandchips.local '
+  # (On the NAS, POSIX sh: the candidates, then each checked; a find cut short says so. ~70 s on
+  # 7 Nov; bounded: 5 s to connect, find's 180 s, a silent link dropped after 45 s.)
+  if ans=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 brandontsang@fishandchips.local '
     cd /volume1/personal/projects/scenic-roads || exit 3
     { for d in */; do d=${d%/}; echo "$d/$d"; done
       timeout 180 find inputs state sources/inputs -mindepth 1 \( -type l -o -type f -size 1067c \) -print || echo "!find $?"
