@@ -37,7 +37,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/store/src/naming.rs", "write_atomic_as", 1, "a content-named upload: its own temporary name, an exclusive rename, a read-back past the cache; its bytes counted as it writes them, the file by its caller as it lands"),
     ("crates/store/src/blobs.rs", "get", 1, "a whole local copy by crate::sys::copy_data_held, its bytes counted as they're read (crate::nasfs's copy_counter), the file opened by its caller (pipeline::localread)"),
     // A child process's or a program's argument.
-    ("crates/pipeline/src/agent/gc.rs", "run", 1, "the project folder as the NAS sees it, for the uploads' check over SSH (store::nas::on_nas)"),
+    ("crates/pipeline/src/agent/gc.rs", "duties", 1, "the project folder as the NAS sees it, for the uploads' check over SSH (store::nas::on_nas)"),
     ("crates/pipeline/src/agent/jobs.rs", "root_arg", 1, "a child process's --root, its spec's: the spawners' one way out"),
     ("crates/pipeline/src/agent/mod.rs", "osm_pass_cmd", 2, "the OSM pass's --planet and --planetiler arguments"),
     ("crates/inputs/src/osmpass.rs", "filtered_nas", 1, "osmium's input, streamed over SSH from its path on the NAS"),

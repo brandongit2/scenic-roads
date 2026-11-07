@@ -15506,7 +15506,7 @@ mod pool_tests {
         })
         .unwrap();
         a.mem.last_ok.insert("backup".into(), now_s());
-        a.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&a.o.home);
         a.round().unwrap();
         assert!(a.published.is_some() && a.pool_hung.is_none(), "it leads, its contact on the NAS");
         let moving = |a: &Agent| a.coord.as_ref().unwrap().shared.lock().unwrap().moving.clone();
@@ -15688,7 +15688,7 @@ mod pool_tests {
         })
         .unwrap();
         a.mem.last_ok.insert("backup".into(), now_s());
-        a.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&a.o.home);
         let raw = serde_json::to_string(&vec![("6-1-1", &named), ("6-1-1", &absent)]).unwrap();
         let job = JobSpec {
             id: "backup".into(),
@@ -15757,7 +15757,7 @@ mod pool_tests {
         })
         .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let mut m = test_agent(Options {
             the_plan: crate::agent::seam::for_tests(),
@@ -15841,7 +15841,7 @@ mod pool_tests {
         })
         .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let mut m = test_agent(Options {
             the_plan: crate::agent::seam::for_tests(),
@@ -15954,7 +15954,7 @@ mod pool_tests {
         })
         .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let mut m = test_agent(Options {
             the_plan: crate::agent::seam::for_tests(),
@@ -16052,7 +16052,7 @@ mod pool_tests {
         .unwrap();
         lead.free_set = Some(400 << 30);
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         // (The planet after the lead's first step: only the test's plans below see it.)
         std::fs::create_dir_all(r.join(format!("sources/osm/{date}"))).unwrap();
@@ -16204,7 +16204,7 @@ mod pool_tests {
         })
         .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let mut m = test_agent(Options {
             the_plan: crate::agent::seam::for_tests(),
@@ -16266,7 +16266,7 @@ mod pool_tests {
         })
         .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let lport = lead.coord.as_ref().unwrap().port();
         let mut m = test_agent(Options {
@@ -16495,7 +16495,7 @@ mod pool_tests {
         };
         let mut lead = test_agent(o("l")).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let mut m = test_agent(o("m")).unwrap();
         m.round().unwrap();
@@ -16574,7 +16574,7 @@ mod pool_tests {
         };
         let mut lead = test_agent(o("l")).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         // (Left by a process of this Mac's that led.)
         let idx = d.path().join("m/agent/pack-idx");
@@ -16647,7 +16647,7 @@ mod pool_tests {
         }
         let mut lead = test_agent(o("l")).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         let mut m = test_agent(o("m")).unwrap();
         for _ in 0..3 {
             lead.round().unwrap();
@@ -16720,7 +16720,7 @@ mod pool_tests {
         };
         let mut lead = test_agent(o("l")).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let mut m = test_agent(o("m")).unwrap();
         m.round().unwrap();
@@ -16829,7 +16829,7 @@ mod pool_tests {
         })
         .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let catalogue = JobSpec {
             id: "catalog catalog".into(),
@@ -16866,7 +16866,7 @@ mod pool_tests {
         })
         .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         // (What the job posts, written here: the step's own work isn't the test's.)
         let mut c =
@@ -16979,7 +16979,7 @@ mod pool_tests {
         })
         .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         // (A job of its own, holding its update.)
         let job = JobSpec {
             id: "pack 6/1/1".into(),
@@ -17042,7 +17042,7 @@ mod pool_tests {
         };
         let mut lead = test_agent(opts("l/agent")).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let mut m = test_agent(opts("m/agent")).unwrap();
         let im = m.pooled().unwrap().side.member().id.clone();
@@ -17089,7 +17089,7 @@ mod pool_tests {
         };
         let mut lead = test_agent(opts("l/agent")).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
-        lead.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
         lead.round().unwrap();
         let il = lead.pooled().unwrap().side.member().id.clone();
         let mut m = test_agent(opts("m/agent")).unwrap();
@@ -17279,7 +17279,7 @@ mod pool_tests {
         })
         .unwrap();
         a.mem.last_ok.insert("backup".into(), now_s());
-        a.mem.last_ok.insert("gc".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&a.o.home);
         a.round().unwrap();
         let home = a.o.home.clone();
         // Paused from a Mac whose clock runs an hour ahead; resumed here: this Mac's ask wins.

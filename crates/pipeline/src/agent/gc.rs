@@ -735,7 +735,7 @@ pub const DUTIES_EVERY_S: u64 = 86400;
 /// the walks list folders of the whole share, which GC's queue spares it doing daily, so a pass
 /// begins once an orphan of the pass before has had its age (an orphan goes within twice
 /// `ORPHAN_AGE_S`; a replaced copy of the gate's within twice `INPUTS_KEEP_S`).
-pub const SWEEPS: [(&str, u64); 3] = [("duties", DUTIES_EVERY_S), ("inputs", INPUTS_KEEP_S), ("orphans", ORPHAN_AGE_S)];
+pub const SWEEPS: [(&str, u64); 3] = [("duties", DUTIES_EVERY_S), ("copies", INPUTS_KEEP_S), ("orphans", ORPHAN_AGE_S)];
 
 /// The file in the lead's map log folder its sweeps' passes are kept in (`Sweeps`).
 pub const SWEEPS_FILE: &str = "gc-sweeps.json";
@@ -883,7 +883,7 @@ fn run_counted(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Resu
         };
         let flow = match name {
             "duties" => duties(root, asked, &mut rep),
-            "inputs" => inputs_walk(root, ways, dry_run, reached.as_deref(), &mut at, &mut rep),
+            "copies" => inputs_walk(root, ways, dry_run, reached.as_deref(), &mut at, &mut rep),
             _ => orphan_walk(root, ways, dry_run, &tops, latest.as_deref(), reached.as_deref(), &mut at, &mut rep),
         }?;
         if flow == Flow::Paused {
@@ -1481,6 +1481,16 @@ pub fn ways_for_tests(lead: &dyn Lead) -> Ways<'_> {
     Ways { lead, yielding: &never, remove: &unlink }
 }
 
+/// Every sweep's pass ended now in the agent's home `home` (its map log folder's `SWEEPS_FILE`):
+/// an agent's test whose plan has no GC to do (its queue empty).
+#[cfg(test)]
+pub fn sweeps_done_for_tests(home: &std::path::Path) {
+    let now = crate::agent::jobs::now_s();
+    let each =
+        SWEEPS.iter().map(|(n, _)| (n.to_string(), Pass { begun: now, ended: Some(now), reached: None })).collect();
+    Sweeps { each }.write(&home.join(super::publish::MAPLOG).join(SWEEPS_FILE)).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2001,7 +2011,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let sweeps = home.path().join(SWEEPS_FILE);
         let pass = || {
-            sweeps_ended(home.path(), now_s(), &["inputs"]);
+            sweeps_ended(home.path(), now_s(), &["copies"]);
             run(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap()
         };
         let r = pass();
