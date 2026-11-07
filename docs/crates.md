@@ -1,11 +1,13 @@
 # The pipeline's crates (task #916)
 
-**Status: Planned.** Steps 1 (`crates/pyport`), 2 (`crates/codecs`), 3 (`crates/jobrt`), 4
-(`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a to 6d (§6, 6c
-`crates/coordwire`, 6d `crates/inputs`) and 6e (`crates/offload`, `crates/terrain`, `crates/trees`,
-`crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1 to
-6f4 (§6.3: `build::pass_work`, the frozen-plan check, the `Plan` trait, test time, and the runtime
-in `crates/agentcore`); every later step below is planned.
+**Status: Built through step 7a; later steps planned.** Built: steps 1 (`crates/pyport`), 2
+(`crates/codecs`), 3 (`crates/jobrt`), 4 (`crates/buildstore`), 5a (`crates/landmarks`), 5b
+(`crates/mapview`), 6a to 6d (§6, 6c `crates/coordwire`, 6d `crates/inputs`), 6e (`crates/offload`,
+`crates/terrain`, `crates/trees`, `crates/roads`, the names family into `crates/landmarks`,
+`crates/bld`), 6f1 to 6f4 (§6.3: `build::pass_work`, the frozen-plan check, the `Plan` trait, test
+time, and the runtime in `crates/agentcore`), and 7a (§7: the map server on neither pipeline nor
+agentcore). The big cycle is gone: what §2 planned as "coordination" is agentcore (6f4), and
+pipeline holds the plan and the binaries. Planned: §7.3's next steps.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -116,10 +118,10 @@ names, webpenc as now).
    resume_log, `jobs` (the job side of agent::jobs: its progress lines and its log read back),
    `room` (the room target a job is told and the free space past it, from agent::room and
    agent::cond), `settings` (the pool's settings and the ask to set one, from coord::asks), the
-   resume constants, `DRAIN_GRACE`; cli's `program` and `TOOLS` (step 6d). ~9.6k lines (1 Nov
-   2026), no pipeline dependency. Planned: the rest of cli, and net (#883's steps left edit only
-   `scenic gc`'s flags, cli/scenic.rs), and nasread's NAS reading (after #923, which edits
-   agent/nasread.rs). Offloading a step's parts is no trait here but the **offload** crate (step
+   resume constants, `DRAIN_GRACE`; cli's `program` and `TOOLS` (step 6d); appupdate (step 7a).
+   ~9.6k lines (1 Nov 2026), no pipeline dependency. net went to coordwire instead (step 7a: it
+   reads buildstore's test flag and needs axum). Not planned now: the rest of cli and nasread's NAS
+   reading (§7.3 says why). Offloading a step's parts is no trait here but the **offload** crate (step
    6e: `Offload` on coordwire's client, its waits, unit's `Run`), below the families that offer
    tasks.
 4. **buildstore** (the build's files: the NAS/store layer above `store`; built, step 4): out,
@@ -167,14 +169,16 @@ names, webpenc as now).
      jobrt, buildstore, offload, landmarks, inputs, terrain and roads. The free space its steps
      check before writing (`disk_free`, the NAS reserve's `nas_room`) went first, from agent::room
      to buildstore::room (§6.3).
-7. **coordination**: coord, pool, needs, pubtimes, answers, offload, menu, appupdate (coord ↔ pool
-   ↔ agent are one cycle today; they split after the steps are out). ~33k lines.
-8. **pipeline** (the agent, kept under this name so `cargo run -p pipeline --bin …` and the
-   server's dependency stay): agent (66k lines; later split by its own seams, docs/agent-parts.md)
-   and the binaries. The scenic metrics' map-side parts (scache, view, terr, buildings: the
-   scenic-metrics tool's, and unit's scache) are built as **mapview** (step 5b, ~1.3k lines, on
-   codecs, det, roadcore, store). crates/server names none of them; it uses pipeline's inputs,
-   depth, water, coord and others, so it keeps its pipeline dependency.
+7. **agentcore** (planned as "coordination"; built, step 6f4): the runtime: the agent but its plan,
+   coord, pool, needs, paces, uses, pubtimes, answers, menu, cli. ~60k lines without tests, beside
+   the families (on inputs and below). agent ↔ coord ↔ pool are still one cycle inside it (§7.3).
+   The app's updater went to jobrt and net to coordwire (step 7a), for the map server.
+8. **pipeline** (kept under this name so `cargo run -p pipeline --bin …` stays): the plan (agent's
+   build, steps, idents, tiles, theplan; ~18k lines with tests), offload's `run_task`, `out::open`,
+   the family tests and the binaries (~13k). The scenic metrics' map-side parts (scache, view, terr,
+   buildings) are **mapview** (step 5b, ~1.3k lines, on codecs, det, roadcore, store).
+   crates/server depends on neither pipeline nor agentcore since step 7a: buildstore, codecs,
+   coordwire, inputs, jobrt and terrain (agentcore in two tests only, §7).
 
 Each moved module stays reachable at its old path by a `pub use` in `pipeline`'s lib.rs while
 pipeline's modules above the steps or its binaries name it there. The step modules name the lower
@@ -265,8 +269,9 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
    `crates/offload`, `crates/terrain`, `crates/trees`, `crates/roads`, landmarks' names family,
    `crates/bld`) the step families; then 6f (built) the agent's plan split from its runtime
    (`crates/agentcore`).
-6. **coordination**, after #882 lands.
-7. Path rewrites: the step modules' were step 6b's; the rest (the agent's, coord's, the
+6. **coordination**: built as agentcore (6f4).
+7. **After the split** (§7): 7a (built) the map server off pipeline and agentcore; then §7.3.
+8. Path rewrites: the step modules' were step 6b's, the server's 7a's; the rest (the plan's, the
    binaries') per crate as it moves, `crate::x` → `<crate>::x`, and the re-exports dropped.
 
 ## 5. Measurements
@@ -501,6 +506,8 @@ server recompile either way; an edit in the family adds bld's own ~1-2 s of CPU)
 rustc 1.36 → 1.31 GB; the family's unit tests build 4-7 times faster on ~a fifth of the CPU, their
 rustc a sixth of pipeline's. The first builds' walls are third-party crates from sccache under the
 load, not 6e.
+
+After 6f4, and step 7a's before and after: 7 Nov 2026, §7.1 and §7.2.
 
 The machine's load (other agents' builds, 30-125) swamps any difference step 1 could make; these
 are a baseline of the method, not evidence either way. What follows from the structure, not the
@@ -1186,6 +1193,8 @@ measurements.
 After 6f4 (its measurement, §6.3): the clean dev build 52 → 38 s, as estimated; a family's edit
 4.0 → 2.3 s; the runtime's edit as before; the largest rustc in a clean dev build 2.15 → 1.98 GB,
 not the half estimated (pipeline's lib was 1.3 GB before 6f4, the steps having left it at 6e).
+After 7a (§7.2): the server off the end of the build; a clean build ~10 % shorter, an edit in the
+runtime or the plan 0.3-0.5 s and a quarter to a third of its CPU.
 
 - **Clean dev build** (the workspace's crates; M4): today one serial chain, ~5 s of crates below, pipeline's
   lib 36-40 s, then the binaries and server ~7 s (~50 s in all). After 6a-6e: inputs ~7 s, terrain ~4 s, the families ~2-4 s,
@@ -1207,3 +1216,104 @@ not the half estimated (pipeline's lib was 1.3 GB before 6f4, the steps having l
   not pipeline's whole library at the test profile: after a wikiask edit, landmarks' unit tests
   build in 0.6-0.9 s, pipeline's lib tests in 7-9.5 s (§5). A family's crate brings that to its
   steps' tests (terrain's, inputs' …), which today each rebuild pipeline's whole test library.
+
+## 7. After the split (7a built)
+
+### 7.1 What a build waits on (7 Nov 2026, main at 6f90a4df)
+
+Measured on the M4 (load 23-90: the pool's jobs and other agents' builds), rustc 1.98.1, sccache,
+`cargo build --workspace --bins --timings` (dev) in a tree and target folder of its own, one comment
+line appended to a file and built at once (each run from a built tree), `time -l`'s peak (the
+largest process). "Clean": the workspace's crates cleaned (`cargo clean -p` each), third-party
+crates kept built. Each crate's start and length are cargo's `--timings`:
+
+| run | wall (s) | CPU user (s) | peak | what ran, from the build's start |
+|---|---|---|---|---|
+| clean | 41.2, 35.6, 38.3, 34.6 | 101-117 | 2.05-2.15 GB | inputs 5-6 +9-11, then agentcore 10.7-12.4 +17-20 beside the families (terrain … bld, done at 20-23.5), pipeline's lib +2.5-3.1 from agentcore's metadata, then the programs once agentcore is whole: scenic-build +4.0-5.2, server +7.2-9.3 |
+| agentcore's agent/flags.rs | 3.8-6.6 | 8.2-8.6 | 1.34 GB | agentcore +2.1-4.0, pipeline's lib +0.5-1.0 inside it, then server +1.5-2.2, scenic-build +1.2-1.9, scenic +0.7-1.6 at once |
+| agentcore's coord/budgets.rs | 3.8-5.7 | 8.1-9.5 | 1.34 GB | the same, agentcore +2.1-2.9 |
+| terrain's road_terrain.rs | 3.7-5.5 | 7.7-9.0 | 1.34 GB | terrain, trees, roads, landmarks, bld one after another (1.9-3.3 s), pipeline's lib +0.5-0.7, then the programs (server +1.4-2.3) |
+| pipeline's agent/tiles.rs (the plan) | 2.0-3.0 | 6.4-7.3 | 1.34 GB | pipeline's lib +0.5-0.6, then the programs (server +1.4-2.1) |
+
+Against §6.3's 6f4 figures (10:55, load 17-52: clean 38.5 s, the flags edit 3.5-3.6 s): the same
+within the load. What the timings show:
+
+- **pipeline after agentcore costs no wall time.** pipeline's lib starts on agentcore's metadata
+  and is done before agentcore's code is; the programs wait for agentcore whole either way (a
+  program links every crate below it). Not rebuilding pipeline after an agentcore edit would save
+  its 0.5 s of CPU and nothing of the wall, so it isn't a step.
+- **The map server was the build's last part, every time.** It depended on pipeline, so it started
+  only once agentcore was whole, and it is the longest program: in a clean build the last 3-4 s
+  were the server alone (it ran 7.2-9.3 s against scenic-build's 4.0-5.2); after an edit in
+  agentcore or the plan it was the longest of the three programs. It names nothing of the plan,
+  and of the runtime a handful of items (7a).
+- **An edit's floor** is its crate, the crates above it one after another, then the slowest
+  program: ~2.0 s for a plan edit, ~3.7 s for a runtime one (agentcore's own 2.1-4.0 s), ~3.7 s for
+  a terrain one (the families' chain, 1.9-3.3 s). Peak memory after an edit is one rustc of 1.34
+  GB (agentcore's or pipeline's); clean, agentcore's, 2.05-2.15 GB.
+
+### 7.2 7a, the map server off pipeline and agentcore (built, 7 Nov 2026)
+
+crates/server named pipeline's paths for crates below it (codecs, buildstore, inputs, terrain:
+~200 mentions, comments included) and agentcore's for six things; those moved below the runtime, each re-exported at
+its old path, and the server names their crates:
+
+- appupdate: agentcore → jobrt (it prunes jobrt's pyenvs);
+- net: agentcore → coordwire (with axum and tokio), coordwire gaining a `TEST_START` and
+  `test_start` probe as the families have, so net's test-time branches (`names`, `urls`,
+  `lan_urls`: none, loopback, none) are a test's in its own tests as in agentcore's;
+- the declared lead and this Mac's role (`LEAD`, `Declared`, `declared`, `Role`, `role`, `role_of`,
+  `declare`): agentcore::pool::term → buildstore::records::term (the role moving out of pool::term
+  ahead of #878 step 8, docs/roles.md);
+- this Mac's member id and its lock (`member_id`, `read_member_id`, `MemberLock`): agentcore::pool
+  → buildstore::records::member;
+- this Mac's room target read (`TARGET`, `target`, `RoomTarget`): agentcore's agent::room and
+  agent::settings → buildstore::room;
+- `LEAD_STATUS` → coordwire; the map server's cursor prefix → `store::map::feed::SERVER`, beside
+  `MIRROR`.
+
+The server depends on buildstore, codecs, coordwire, inputs, jobrt and terrain; agentcore only as a
+dev-dependency (maplog's tests serve the lead's map routes, a download test sets the room).
+agentcore's build script says `rerun-if-changed=build.rs`, so it no longer runs again before each
+edit's compile. Cut: sha2 from server and agentcore (no user in either); agentcore's re-exports of
+appupdate, `read_member_id` and `settings::RoomTarget` (only the server named them there).
+
+Measured as §7.1, main at 6f90a4df against this step, interleaved (this step, main; three times
+each), then the clean builds (main, 7a, 7a, main):
+
+| run | main | 7a |
+|---|---|---|
+| clean | 38.3, 34.6 s (CPU 107-108 s), 2.11-2.15 GB: server last, +7.2-9.3 s after agentcore | 45.1, 30.6 s (CPU 106-112 s), 2.04-2.13 GB: scenic-build last, +3.8-6.3 s after agentcore; server done 9-13 s before the end |
+| agentcore's flags.rs | 6.6, 5.8, 6.1 s (CPU 8.3-8.5 s) | 6.0, 5.6 s (CPU 6.2-6.4 s) |
+| agentcore's coord/budgets.rs | 4.9, 4.1, 4.1 s (CPU 8.3-8.7 s) | 3.7, 3.9, 3.7 s (CPU 6.0-6.2 s) |
+| terrain's road_terrain.rs | 5.4, 4.9, 4.8 s (CPU 7.8-8.3 s) | 4.3, 5.3, 4.7 s (CPU 7.2-7.6 s): server beside the families |
+| pipeline's agent/tiles.rs | 2.5, 2.4, 2.4 s (CPU 6.4-6.8 s) | 1.8, 2.0, 2.0 s (CPU 4.1-4.2 s): no server |
+
+(7a's first clean ran at the load's peak: every crate in it 30-50 % slower, inputs 13.4 s against
+9.0.) So an edit in the runtime or the plan no longer rebuilds the server: ~0.3-0.5 s off the wall
+(7-18 %) and 2.1-2.6 s of CPU (25-38 %); a terrain edit's server compiles beside the families (CPU
+−0.6 s; the wall within the load's noise, the chain to scenic-build unchanged); a clean build's
+tail is scenic-build's, ~3-4 s shorter (~10 %). Peak memory unchanged: one rustc of 1.34 GB after
+an edit, agentcore's 2.0-2.15 GB clean (the server's rustc now runs beside agentcore's, not after
+it). A server test build no longer compiles pipeline's lib.
+
+### 7.3 Next
+
+What's left, by gain for its cost (rerun §7.1's measure before each):
+
+1. **landmarks beside trees and roads** (an edit in terrain or trees: ~0.6-1.0 s off a ~4-5 s chain;
+   landmarks' and bld's own edits: unchanged). landmarks names roads for three items only: stage's
+   `tiles_in` (heritage, four calls; a tile range, terrain-level), timetables' `FERRY_LINES` (a path)
+   and candidates' `Cand` (marksjob's `from_unit`). Moved below (`tiles_in`, `FERRY_LINES` to
+   terrain or codecs; `from_unit` up to bld or pipeline, or `Cand` down), landmarks depends on terrain
+   alone. bld still needs roads (reach's `Reach`, `LongWay`, `near_box`) and landmarks (heritage's
+   logical names, `slice_parts`, `latest_date`), so it stays last of the families. After #842, which
+   edits terrain_deep and the plan.
+2. **Splitting agentcore** is the only lever for a runtime edit's own 2.1-4.0 s; the programs'
+   1.2-1.9 s follow any edit. A crate split off below agentcore makes its own edits slower (it,
+   then agentcore, then the programs), so only a part with nothing of the runtime above it helps:
+   agent ↔ coord name each other 418 and 255 times (tools/dev/modgraph.py agentcore, 7 Nov), pool
+   and the forecast are inside the same cycle. Not a move with re-exports: a design of its own,
+   after #878 (coordination off the NAS) reshapes coord and pool.
+3. **The rest of cli and nasread's NAS reading** into jobrt (planned in §2 before 6f4): nothing
+   in the build waits on them now; they'd move only if a crate below agentcore needs them.
