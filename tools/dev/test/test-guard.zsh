@@ -119,7 +119,8 @@ def verdict(cwd, cmd):   # what the hook would show: the guard's output, or its 
     sys.stdin, out = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd, "agent_id": "t"})), io.StringIO()
     try:
         with redirect_stdout(out), redirect_stderr(out): exec(code, {"__name__": "__main__", "__file__": guard})
-    except SystemExit: pass
+    except SystemExit as e:   # (sys.exit("text") prints the text, as a process would to its stderr)
+        if e.code is not None and not isinstance(e.code, int): out.write(str(e.code))
     except Exception: out.write(traceback.format_exc())
     return out.getvalue().strip()
 fail = 0
