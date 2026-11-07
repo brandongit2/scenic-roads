@@ -1966,8 +1966,9 @@ pub const EVERY: Duration = Duration::from_secs(60);
 /// by side, a forecast takes a quarter of the cadence's CPU at most on each of three cores, on every
 /// Mac (the pages' views run it too). CPU time, task #584: at the utility QoS a loaded Mac starves
 /// the runs (the mini at load 34: 4 s of CPU took 15 s of wall), and a wall-time cut then hid the
-/// finish of an input no bigger than usual. A run at live scale (the worldwide rebuild's ~30,000
-/// items, 25 Oct) computes 4-7 s on the M4.
+/// finish of an input no bigger than usual. A run at live scale (7 Nov's queue with every region on,
+/// 19,000-20,300 items on 30 lanes) computes 5-12 s on the M4 under load (task #995; docs/pool.md
+/// §7.9, Where the forecast's time goes).
 pub const BUDGET: Duration = Duration::from_secs(EVERY.as_secs() / 4);
 
 /// A run is cut too after this many times its budget on the wall clock (120 s for `BUDGET`), so a

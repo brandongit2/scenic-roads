@@ -13231,6 +13231,85 @@ mod tests {
         }
     }
 
+    /// The lead's scheduler of each archived forecast input (SCENIC_GRANTS_INPUTS: a project folder,
+    /// its `state/coord/forecast-inputs` read only; SCENIC_FORECAST_FROM and SCENIC_FORECAST_TO, unix
+    /// s, the span, by default the archive's days kept to now) asked as the live lead is asked: each
+    /// Mac's recorded ask packed in turn against the recorded offers, on one scheduler throughout so
+    /// what it keeps between asks is used, again after each change it must see: a granted job ended
+    /// with its measure taken, a recorded lease ended (a beat leaving it out), a minute on, the batch
+    /// length and the NAS budget's limits set, the steps' uses cleared, the offers changed. Every grant
+    /// and refusal printed, a line each (unset: nothing): two builds' lines compared say whether a
+    /// change to the scheduler moved a live grant (task #995's caches).
+    #[test]
+    fn archived_grants() {
+        let Ok(root) = std::env::var("SCENIC_GRANTS_INPUTS") else { return };
+        let the_plan = crate::agent::seam::for_tests();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let to: u64 = std::env::var("SCENIC_FORECAST_TO").ok().and_then(|s| s.parse().ok()).unwrap_or(now);
+        let from: u64 = std::env::var("SCENIC_FORECAST_FROM")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(to.saturating_sub(crate::agent::fcinputs::KEEP_S));
+        let (mut n, mut grants) = (0, 0);
+        for i in crate::agent::fcinputs::read(&store::nasfs::NasRoot::from_arg(&root), from, to) {
+            let Ok(r) = i.record() else { continue };
+            let Some(st) = r.input.sched.clone() else { continue };
+            n += 1;
+            let t0 = Instant::now();
+            let clock = |k: u64| sched::Clock { now: t0 + Duration::from_secs(60 * k), unix: r.input.now + 60 * k };
+            let mut s = sched::Sched::from_state(the_plan, &st, clock(0), Duration::from_secs(400 * 86_400));
+            s.set_offers(st.offers.clone());
+            let mut lines: Vec<String> = Vec::new();
+            let mut ask_all = |s: &mut sched::Sched, k: u64, round: &str, offers: &[Offer]| {
+                let mut first = None;
+                for w in &st.workers {
+                    let (picks, why) = s.pack(&w.ask, offers, w.ask.worker == st.lead_name, clock(k));
+                    for p in &picks {
+                        first.get_or_insert((p.lease, p.step.clone(), p.targets[0].0.clone(), w.ask.worker.clone()));
+                        lines.push(format!("{round} {}: {p:?}", w.ask.worker));
+                    }
+                    grants += picks.len();
+                    lines.push(format!("{round} {}: {} granted, why {why:?}", w.ask.worker, picks.len()));
+                }
+                first
+            };
+            let first = ask_all(&mut s, 0, "asked", &st.offers);
+            // (A job granted ends, its measure taken, as a hand-off's is (`add_costs`).)
+            if let Some((lease, step, t, worker)) = first {
+                s.end(lease);
+                let v = the_plan.cost_version(&step);
+                let c = Cost { secs: 600, peak_mb: 3000, worker: Some(worker), v, ..Default::default() };
+                s.costs.insert(cost_key(&step, &t), c);
+                s.needs_rev += 1;
+            }
+            ask_all(&mut s, 1, "ended", &st.offers);
+            // (A recorded lease a beat leaves out: ended.)
+            let gone = s.leases.live(clock(2).now).find(|l| matches!(l.work, Work::Job { .. })).map(|l| l.id);
+            if let Some(id) = gone {
+                s.end(id);
+            }
+            ask_all(&mut s, 2, "beat", &st.offers);
+            ask_all(&mut s, 3, "later", &st.offers);
+            // (The settings: the batch length, the NAS budget's limits.)
+            s.batch_s = if s.batch_s == 0 { 1800 } else { 0 };
+            for l in [&mut s.nas, &mut s.nas_own].into_iter().flatten() {
+                l.bytes_s /= 2.0;
+                l.creates_s /= 2.0;
+            }
+            ask_all(&mut s, 4, "settings", &st.offers);
+            s.set_use_runs(Vec::new());
+            ask_all(&mut s, 5, "uses", &st.offers);
+            // (The plan's offers again, its first step's left out and the rest reversed.)
+            let offers: Vec<Offer> = st.offers.iter().skip(1).rev().cloned().collect();
+            s.set_offers(offers.clone());
+            ask_all(&mut s, 6, "offers", &offers);
+            for l in &lines {
+                eprintln!("{} {}: {l}", i.at, i.term);
+            }
+        }
+        eprintln!("{n} inputs, {grants} grants");
+    }
+
     /// A recorded forecast's pool (SCENIC_PACK_RECORD: a forecast-input.json): each step's cold
     /// start as the lead would size it (`Sched::provisional` over its first offered target, else a
     /// target of none), whether it is one there now (its first offered target unmeasured), and each
