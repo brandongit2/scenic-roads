@@ -44,12 +44,16 @@
 //!   and the lakes' fill's copies, for a job reading the shared cache) goes last, and so, before them,
 //!   does what the jobs the lead's forecast places on this Mac read, the furthest ahead first (task
 //!   #843).
-//! - A file too large for the shortage (`Room::passes_over`: past what's left to free, a quarter or
-//!   more of the bytes the cheap caches hold and used within `LARGE_IDLE`: the basemap's copy, 27 GB
-//!   on a laptop's tens) waits while the others can free what's short, then goes before what a job is
-//!   known to read, the smallest such first (task #998: least recently used alone, the M4 lost it
-//!   for shortages of a GB or two and copied it back 10 times in 16 days, 240 GB, while the bytes it
-//!   freed stayed unused). Past `LARGE_IDLE` it's a file like any other.
+//! - A file larger than what's left to free (`Room::passes_over`: the basemap's copy, 27 GB on a
+//!   laptop's tens) waits while the others read at the same time as it (none known, or the same
+//!   hint) can free what's short, then those waiting go, the smallest first, before anything read
+//!   sooner (task #998: least recently used alone, the M4 lost it to shortages of a GB or two and
+//!   copied it back 10 times in 16 days, 240 GB, while the bytes it freed stayed unused). It waits
+//!   only until what the others have freed in its place since its last use (`PAID`) reaches its
+//!   own bytes, the cost of copying it back: past that, keeping it has cost more than losing it
+//!   would have, and it goes as any other file. (Keep while the rent paid is under the price, then
+//!   buy: never more than twice the bytes the better of the two choices, known in hindsight, copies
+//!   back. A file no job reads again, an older pass's basemap, goes after its own bytes of others.)
 //!
 //! Otherwise nothing is emptied: a Mac keeps its caches while it has room (the mini's ~100 GB). They
 //! go only when the disk is short of what a job needs, or of the owner's room target (`toward`),
@@ -125,11 +129,10 @@ const LIST_AHEAD: usize = 16;
 /// with the raw tiles, in least recently used order; the others go before any tile.
 const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// How long since its last use a file too large for the shortage is passed over (`Room::passes_over`):
-/// a day, about the longest a step's work on a Mac left it idle between its jobs while the step had
-/// work (the basemap's copies on the M4, 22 Oct to 7 Nov: 1 to 14 h apart within a run of depth jobs,
-/// 3 to 6 days between runs of them).
-const LARGE_IDLE: std::time::Duration = std::time::Duration::from_secs(86400);
+/// What room-making has freed in place of each file it passed over as too large for the shortage
+/// (`Room::passes_over`) since that file's last use: its path, that use, the bytes. This agent's
+/// alone (a restart starts each at none: a file passed over then waits at most its own bytes again).
+static PAID: std::sync::Mutex<BTreeMap<PathBuf, (SystemTime, u64)>> = std::sync::Mutex::new(BTreeMap::new());
 
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`; and `blobs/`, this Mac's copies of files the records name
@@ -1544,15 +1547,23 @@ fn free_cheap(
             && newest.is_some_and(|t| t < lately);
         (g.iter().map(|f| order(hint(&f.2))).max().unwrap_or(0), !idle_square, newest)
     });
-    let held: u64 = groups.iter().flatten().map(|f| f.1).sum();
+    // (What was paid for a file gone, or used since, is forgotten.)
+    if let Ok(mut paid) = PAID.lock() {
+        let here: HashMap<&Path, SystemTime> = groups.iter().flatten().map(|f| (f.2.as_path(), f.0)).collect();
+        paid.retain(|p, (used, _)| !p.starts_with(cache) || here.get(p.as_path()) == Some(used));
+    }
     let by = if packed > 0 { BTreeMap::from([("terrain".to_string(), packed)]) } else { BTreeMap::new() };
     let mut room = Room { cache, free_space, target, goal, short: target.saturating_sub(free), since: packed, by };
     let (mut listed, mut made) = (Listed::new(), HashSet::new());
-    let now = SystemTime::now();
-    // (What no job is known to read, then what one is: each with what it passed over, as too large
-    // for the shortage, at its end.)
-    let known = groups.partition_point(|g| g.iter().map(|f| order(hint(&f.2))).max().unwrap_or(0) == 0);
-    for tier in [&groups[..known], &groups[known..]] {
+    // (Each run of files read at the same time, none known first: with what it passed over, as too
+    // large for the shortage, at its end. The hints' order stands: what's read sooner goes later.)
+    let when = |g: &Vec<(SystemTime, u64, PathBuf)>| g.iter().map(|f| order(hint(&f.2))).max().unwrap_or(0);
+    let levels: Vec<u64> = groups.iter().map(when).collect();
+    let mut at = 0;
+    while at < groups.len() {
+        let end = at + levels[at..].iter().take_while(|&&l| l == levels[at]).count();
+        let tier = &groups[at..end];
+        at = end;
         let mut large: Vec<&(SystemTime, u64, PathBuf)> = Vec::new();
         for ahead in tier.chunks(LIST_AHEAD) {
             // (Asked to stop: the room made so far does.)
@@ -1577,7 +1588,7 @@ fn free_cheap(
                 if room.enough()? || super::stopping() {
                     return Ok(room.by);
                 }
-                if room.passes_over(f.1, held, now.duration_since(f.0).unwrap_or_default()) {
+                if room.passes_over(&f.2, f.1, f.0) {
                     large.push(f);
                     continue;
                 }
@@ -1634,12 +1645,23 @@ impl Room<'_> {
         Ok(false)
     }
 
-    /// Whether a file of `len` bytes idle for `idle` waits while others free what's short: it would
-    /// free more than is left to free, it's a quarter or more of the `held` bytes the cheap caches
-    /// hold, and it was used within `LARGE_IDLE` (the module's doc). (A clear's and an emptying's
-    /// need is past any file.)
-    fn passes_over(&self, len: u64, held: u64, idle: std::time::Duration) -> bool {
-        len > self.short.saturating_sub(self.since) && len.saturating_mul(4) >= held && idle < LARGE_IDLE
+    /// Whether file `p` of `len` bytes, last used at `used`, waits while others free what's short:
+    /// it would free more than is left to free, and what the others have freed in its place since
+    /// that use (`PAID`), this shortage's left included, is still less than its own bytes, what
+    /// copying it back costs (the module's doc). Passed over, it's charged what's left. (A clear's
+    /// and an emptying's need is past any file.)
+    fn passes_over(&self, p: &Path, len: u64, used: SystemTime) -> bool {
+        let left = self.short.saturating_sub(self.since);
+        if len <= left {
+            return false;
+        }
+        let Ok(mut paid) = PAID.lock() else { return false };
+        let before = paid.get(p).filter(|r| r.0 == used).map_or(0, |r| r.1);
+        if before.saturating_add(left) >= len {
+            return false;
+        }
+        paid.insert(p.to_path_buf(), (used, before + left));
+        true
     }
 
     /// Frees cache file `p`, as its `fate` says.
@@ -2350,10 +2372,11 @@ mod tests {
         assert_eq!(trim_with(c, nas, 0, &disk).unwrap().bytes(), 0);
     }
 
-    /// Task #998: a file too large for the shortage (the basemap's copy on a laptop) waits while the
-    /// others can free what's short, whatever their use; short of more than it, or with nothing else
-    /// to free, or idle a day, it goes; and a job reading the shared cache keeps it past what none
-    /// is known to read.
+    /// Task #998: a file larger than the shortage (the basemap's copy on a laptop) waits while the
+    /// others read at the same time can free what's short, whatever their use; short of more than
+    /// it, with nothing else to free, or once the others have freed its own bytes in its place since
+    /// its last use, it goes; what's read sooner still goes later; and a job reading the shared
+    /// cache keeps it past what none is known to read.
     #[test]
     fn a_large_file_outlives_a_small_shortage() {
         const MB: u64 = 1 << 20;
@@ -2400,9 +2423,32 @@ mod tests {
         lay(ago(7200));
         run(1000 * MB, 1800 * MB, &|_| None);
         assert!(!basemap.exists() && tars.iter().all(|t| t.exists()));
-        // Idle a day: a file like any other.
-        lay(ago(LARGE_IDLE.as_secs() + 60));
-        run(1000 * MB, 1060 * MB, &|_| None);
+        // Short 150 MB a time, its last use the same: kept while what went in its place is under
+        // its 800 MB (150, 300 … 750), then it goes. A use in between starts that again.
+        let tars_back = || {
+            for (k, t) in tars.iter().enumerate() {
+                put(t, 50 * MB, ago(100 - k as u64));
+            }
+        };
+        lay(ago(7200));
+        for round in 1..=6 {
+            tars_back();
+            run(1000 * MB, 1150 * MB, &|_| None);
+            assert_eq!(basemap.exists(), round < 6, "round {round}");
+        }
+        assert!(tars.iter().all(|t| t.exists()));
+        lay(ago(7200));
+        for round in 1..=6 {
+            if round == 6 {
+                std::fs::File::options().append(true).open(&basemap).unwrap().set_modified(ago(3600)).unwrap();
+            }
+            tars_back();
+            run(1000 * MB, 1150 * MB, &|_| None);
+            assert!(basemap.exists(), "used again before round {round}");
+        }
+        // Read later than the others (a forecast's, they a queued job's): it goes before them.
+        lay(ago(7200));
+        run(1000 * MB, 1060 * MB, &|p| Some(if p.to_string_lossy().ends_with(".tar") { 0 } else { 500 }));
         assert!(!basemap.exists() && tars.iter().all(|t| t.exists()));
         // Passed over before what a job is known to read goes.
         lay(ago(7200));

@@ -144,10 +144,10 @@ from the first (`edit_held`).
     cache's steps); within each, canopy squares and copies idle an hour, least recently used first;
     then raw tiles a folder at a time and the squares read since. A file goes once the NAS has it at the
     same size; what the NAS lacks is put there first (raw tiles packed as an archive), or kept.
-    Within each too, a file too large for the shortage (past what's left to free, a quarter or more
-    of the cheap caches' bytes, used within a day: `Room::passes_over`, the basemap's copy on a
-    laptop) waits until the others have gone (task #998: the M4 lost it to shortages of 0.3 to 19 GB
-    and copied its 27 GB back 10 times in 16 days).
+    Within each too, a file larger than what's left to free (`Room::passes_over`, the basemap's copy
+    on a laptop) waits until the others read at the same time have gone, but only until what they
+    freed in its place since its last use reaches its own bytes, the cost of copying it back (task
+    #998: the M4 lost it to shortages of 0.3 to 19 GB and copied its 27 GB back 10 times in 16 days).
   - **Otherwise** nothing is emptied: a Mac keeps its caches while it has room, and frees them
     only when the disk is short of a job's room or of the owner's room target (`room::toward`), as
     far as that needs, in that order. A file no upcoming job reads isn't deleted while there's

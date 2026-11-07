@@ -23,7 +23,8 @@
 //!
 //! (A copy room-making frees between jobs is copied again by the next job that reads it, its reads
 //! the NAS's then, as before, plus the copy's. The basemap's, 27 GB, waits while smaller files can
-//! free a shortage smaller than it, and last while a job here reads it: pipeline::agent::room.)
+//! free a shortage smaller than it, until they've freed its own bytes in its place, and goes last
+//! while a job here reads it: pipeline::agent::room.)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
