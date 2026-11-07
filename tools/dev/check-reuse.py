@@ -26,7 +26,8 @@ in X) is weighed. It holds for a part here only when
   - tests: each one that is such an input, main's or the branch's own, is a source of a crate (a
     .rs file under crates/<crate>/src, not a build script or proc macro's), an integration test's
     (under crates/<crate>/tests), an example or a file include_str!d or include_bytes!d, nothing
-    include!ing it, naming it by #[path] or in a macro. Then run again:
+    include!ing it or naming it in a macro (one a crate's source names by #[path] is that crate's
+    source too). Then run again:
       - the tests HEAD's commands run that P's didn't;
       - every test of HEAD's commands in a program linking the changed source's crate (#969): the
         crate's own targets, and those of the crates reaching it through their dependencies (a
@@ -159,7 +160,8 @@ PATHATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 # The environment read as a source compiles: nothing in a tree says what it held. (cargo's own CARGO_*
 # follow from the tree.)
 ENVMACRO = re.compile(r'\b(?:option_)?env!\s*\(\s*("[^"\\]*")?')
-MACROLIT = re.compile(r'#!?\[\s*\w+(?:::\w+)*\s*(?:=|\()\s*"(\.\./[^"\\]*)"|\b(?!include(?:_str|_bytes)?!)\w+!\s*[(\[{]\s*"(\.\./[^"\\]*)"')
+# (#[path] is PATHATTR's: relative to its source's folder, a Rust source whose modules are followed.)
+MACROLIT = re.compile(r'#!?\[\s*(?!path\s*=)\w+(?:::\w+)*\s*(?:=|\()\s*"(\.\./[^"\\]*)"|\b(?!include(?:_str|_bytes)?!)\w+!\s*[(\[{]\s*"(\.\./[^"\\]*)"')
 
 
 def build_inputs(files, pkgs):
@@ -201,7 +203,7 @@ def build_inputs(files, pkgs):
             p = norm(d, rel)
             if p is None or not any(under(p, k) for k in pkgs):
                 raise Doubt("%s has a #[path] outside the package folders: %s" % (f, rel))
-            ins.append((p, "%s's #[path]" % f))
+            ins.append((p, f + PATHED))
         for m in MACROLIT.finditer(src):
             rel = m.group(1) or m.group(2)
             for p in (norm(d, rel), norm("/".join(f.split("/")[:2]), rel)):
@@ -216,6 +218,7 @@ def build_inputs(files, pkgs):
 
 PLAIN = "the Rust build"   # (the reason a file inside a package folder, and nothing more, gives)
 DATA = " reads it as it compiles"
+PATHED = "'s #[path]"   # (after the declaring source: "<f>'s #[path]")
 
 
 def source(f, kind, scripts, macros):
@@ -282,8 +285,10 @@ def traced(f, whys, scripts, macros, data, files, links):
     integration test's: itself, by affected-tests.sh. An example: none (no test builds or runs one;
     clippy checks it). A file include_str!d or include_bytes!d inside #[test] functions: those
     tests (a source test reading agent/build.rs); outside them, in a crate's source or an
-    integration test: as that source (web/work's pages in coord/mod.rs). Not: one include!d, named
-    by #[path] or in a macro, or read by a build script."""
+    integration test: as that source (web/work's pages in coord/mod.rs). A file a crate's source
+    declares a module by #[path]: a source of that crate too (agentcore's unit tests compile the
+    plan, pipeline's agent/build.rs …, in). Not: one include!d or named in a macro, or read by a
+    build script."""
     units, linked = [], set()
 
     def link(g):
@@ -299,6 +304,10 @@ def traced(f, whys, scripts, macros, data, files, links):
                 if not link(f):
                     return None
             elif not (source(f, "tests", scripts, macros) or source(f, "examples", scripts, macros)):
+                return None
+        elif w.endswith(PATHED):
+            g = w[:-len(PATHED)]
+            if not source(g, "src", scripts, macros) or not link(g):
                 return None
         elif not w.endswith(DATA):
             return None

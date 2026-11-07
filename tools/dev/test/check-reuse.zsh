@@ -281,6 +281,12 @@ fresh "a crate depending on it through others" many m 'cargo test -p c --lib' ru
 fresh "a crate's dev-dependency: its tests link it" many m 'cargo test -p d --lib' run partial 'cargo test -p d --lib'
 fresh "a dev-dependency of a dependency: not linked" many m 'cargo test -p e --lib' run reuse
 fresh "a crate linking nothing changed" many m 'cargo test -p u --lib' run reuse
+# (6f4: agentcore's unit tests compile the plan's modules in by #[path]: a source of both crates. Its
+# "../" is from the source's folder, not a macro's literal from the crate's, which leaves the repo.)
+pathed() { many; w crates/u/src/lib.rs 'mod q;'; w crates/u/src/q/mod.rs '#[cfg(test)]
+#[path = "../../../a/src/x.rs"]
+mod x;' }
+fresh "a file another crate's source names by #[path]: that crate's tests too" pathed m 'cargo test -p u --lib|cargo test -p e --lib' run partial 'cargo test -p u --lib'
 s() { w crates/a/src/bin/x.rs 'fn main() {}'; w crates/a/tests/i.rs '#[test]
 fn i() { let _ = env!("CARGO_BIN_EXE_x"); }' }
 m() { print '// 2' >> crates/a/src/bin/x.rs }
