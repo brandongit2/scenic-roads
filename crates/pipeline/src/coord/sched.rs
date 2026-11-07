@@ -140,8 +140,17 @@ pub struct Sched {
     /// Each target's `measured` (step → target → it), as the measures stood (`rev`) and as offered
     /// (`set_offers` clears it): a placement weighs each target it may grant for every ask.
     pub measured_of: Mutex<(u64, Measures)>,
+    /// Each target's look for `provisional` (`provisional_of`: step → target → its memory and
+    /// disk), as the measures stood (`rev`) and as offered (`set_offers` clears it).
+    pub provisional_at:
+        Mutex<(u64, std::collections::HashMap<String, std::collections::HashMap<String, (u64, Option<u64>)>>)>,
     /// Each step's drops' need (crate::needs::Book::drop_need) as the measures stood (`rev`).
     pub drop_needs: Mutex<(u64, BTreeMap<String, Option<(u64, u64)>>)>,
+    /// While `pack` packs, what it looks up of the leases (`Packing`); None otherwise.
+    pub packing: Mutex<Option<Packing>>,
+    /// What's worked out of each leased job (`LeaseKept`), by lease, as the measures stood (`rev`),
+    /// as offered and as the steps' uses stood (`set_offers`, `set_use_runs` and `add_use` clear it).
+    pub kept_leases: Mutex<(u64, std::collections::HashMap<u64, Vec<LeaseKept>>)>,
     /// Each Mac's pace at each step against the lead's (crate::paces, task #926; set through
     /// `set_paces`, which moves `needs_rev`): the measures' times and NAS rates are read at the
     /// lead's pace by it, and a worker's at its own. Empty: as measured.
@@ -153,6 +162,25 @@ pub struct Sched {
     /// The batch length the pool's setting says (s; `batch-minutes`, crate::coord::asks; 0: not set,
     /// `JOB_S`): `batch_len`.
     pub batch_s: u64,
+}
+
+/// What one `Sched::pack` keeps of the leases while it packs, made again at each grant: the NAS
+/// budget's sums at (now, lead) (`nas_room_heaviest`) and each step's targets held (`held_of`).
+#[derive(Debug, Default)]
+pub struct Packing {
+    nas: Vec<((Instant, bool), (u32, u32, usize, [u32; 2]))>,
+    held: BTreeMap<(String, Instant), std::sync::Arc<BTreeSet<String>>>,
+}
+
+/// What's kept of a leased job (`Sched::kept_leases`), of its worker and work: its NAS weight by
+/// the limits it was weighed by (`Sched::lease_nas`), and its packing need and time
+/// (`Sched::lease_need`).
+#[derive(Debug)]
+pub struct LeaseKept {
+    worker: String,
+    work: Work,
+    nas: Vec<(crate::budget::nas::Limits, (u32, bool))>,
+    need: Option<(Need, Option<u64>)>,
 }
 
 /// `Sched::measured_of`'s targets' measures: step → target → `Sched::measures`.
@@ -269,6 +297,13 @@ struct Run {
     disk_mb: u64,
     cores: u32,
     ends: Option<u64>,
+}
+
+impl Run {
+    /// A job measured `m`, counting for `cores` (tenths), of measured time `secs`, run `ran` s.
+    fn of(m: Measured, cores: u32, secs: Option<u64>, ran: u64) -> Run {
+        Run { mem_mb: m.mem_mb, disk_mb: m.disk_mb, cores, ends: secs.map(|s| s.saturating_sub(ran)) }
+    }
 }
 
 /// The room held for a waiting job (`RoomWait`) and what may still go while it waits (`Sched::pack`,
@@ -546,6 +581,16 @@ impl Sched {
         self.offered.get(step)?.get(target).copied()
     }
 
+    /// `step`'s work done under a key the plan hasn't shown yet (`done`): target → key.
+    fn done_of(&self, step: &str) -> std::collections::HashMap<&str, &str> {
+        let from = (step.to_string(), String::new());
+        self.done
+            .range(from..)
+            .take_while(|((st, _), _)| st == step)
+            .map(|((_, t), k)| (t.as_str(), k.as_str()))
+            .collect()
+    }
+
     /// Whether `worker` failed any target (`failed`): its first in the map's order, by worker.
     pub(super) fn failed_any(&self, worker: &str) -> bool {
         self.failed.range((worker.to_string(), String::new())..).next().is_some_and(|((w, _), _)| w == worker)
@@ -562,6 +607,8 @@ impl Sched {
         self.offered.clear();
         self.drops.clear();
         self.measured_of.lock().unwrap_or_else(|e| e.into_inner()).1.clear();
+        self.provisional_at.lock().unwrap_or_else(|e| e.into_inner()).1.clear();
+        self.kept_leases.lock().unwrap_or_else(|e| e.into_inner()).1.clear();
         for o in &self.offers {
             let of = self.offered.entry(o.step.clone()).or_default();
             for t in &o.targets {
@@ -727,7 +774,16 @@ impl Sched {
 
     /// `worker`'s live jobs' leases.
     pub(super) fn job_leases(&self, worker: &str, now: Instant) -> Vec<Lease> {
-        self.leases.live(now).filter(|l| l.worker == worker && matches!(l.work, Work::Job { .. })).cloned().collect()
+        self.worker_jobs(worker, now).cloned().collect()
+    }
+
+    fn worker_jobs<'s>(&'s self, worker: &'s str, now: Instant) -> impl Iterator<Item = &'s Lease> + 's {
+        self.leases.live(now).filter(move |l| l.worker == worker && matches!(l.work, Work::Job { .. }))
+    }
+
+    /// Whether `worker` holds a live job's lease.
+    fn holds_job(&self, worker: &str, now: Instant) -> bool {
+        self.worker_jobs(worker, now).next().is_some()
     }
 
     /// A job of `step` over `targets` on `worker` (None: at the lead's pace): its NAS weight under `l` (its targets' moves
@@ -752,6 +808,53 @@ impl Sched {
         (w, nw.book.the_plan.fetches(step))
     }
 
+    /// Leased job `l`'s entry in `kept_leases` (made empty where none is of its worker and work, or
+    /// the measures moved), handed to `f`.
+    fn kept_lease<T>(&self, l: &Lease, f: impl FnOnce(&mut LeaseKept) -> T) -> T {
+        let rev = self.rev();
+        let mut g = self.kept_leases.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 != rev {
+            *g = (rev, Default::default());
+        }
+        let v = g.1.entry(l.id).or_default();
+        let k = match v.iter().position(|k| k.worker == l.worker && k.work == l.work) {
+            Some(k) => k,
+            None => {
+                v.push(LeaseKept { worker: l.worker.clone(), work: l.work.clone(), nas: Vec::new(), need: None });
+                v.len() - 1
+            }
+        };
+        f(&mut v[k])
+    }
+
+    /// `job_nas` of leased job `l` (of `step` over `targets`) on its worker, kept (`kept_leases`):
+    /// the NAS budget weighs every job leased for each offer an ask weighs, a job of 30 targets each
+    /// time.
+    fn lease_nas(&self, nw: &NasWeigher, l: &Lease, step: &str, targets: &[(String, String)]) -> (u32, bool) {
+        if let Some(w) = self.kept_lease(l, |k| k.nas.iter().find(|n| n.0 == nw.limits).map(|n| n.1)) {
+            return w;
+        }
+        let got = Self::job_nas(nw, step, Some(&l.worker), targets.iter().map(|t| t.0.as_str()));
+        self.kept_lease(l, |k| k.nas.push((nw.limits, got)));
+        got
+    }
+
+    /// Leased job `l`'s (of `step` over `targets`) packing need on its worker (`pack_need`) and its
+    /// measured time there as it ran its threads (`batch_secs`), kept (`kept_leases`): each ask
+    /// packs beside every job its Mac holds.
+    fn lease_need(&self, l: &Lease, step: &str, targets: &[(String, String)]) -> (Need, Option<u64>) {
+        if let Some(n) = self.kept_lease(l, |k| k.need) {
+            return n;
+        }
+        let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
+        let got = (
+            self.pack_need(step, &ts, &l.worker),
+            self.batch_secs(step, ts.iter().map(String::as_str), &l.worker, 0).map(|s| s.0),
+        );
+        self.kept_lease(l, |k| k.need = Some(got));
+        got
+    }
+
     /// What leased job `l` weighs of the NAS budget now, and whether it downloads (`job_nas`): its
     /// targets' measured rates, as predicted, until it has run past the time they predict it takes
     /// its worker (`secs_of`, summed; a target of no known time, `OWN_AGE`); then the greater of its
@@ -768,7 +871,7 @@ impl Sched {
     /// ran for most of an hour on a Mac moving a fraction of that (task #925).
     pub(super) fn job_weight(&self, nw: &NasWeigher, l: &Lease, now: Instant) -> (u32, bool) {
         let Work::Job { step, targets } = &l.work else { return (0, false) };
-        let (w, dl) = Self::job_nas(nw, step, Some(&l.worker), targets.iter().map(|t| t.0.as_str()));
+        let (w, dl) = self.lease_nas(nw, l, step, targets);
         if l.live.is_none() {
             return (w, dl);
         }
@@ -804,6 +907,16 @@ impl Sched {
     ) -> Option<(NasWeigher<'_>, u32, u32, usize, [u32; 2])> {
         let limits = if lead { self.nas_own.or(self.nas)? } else { self.nas? };
         let nw = NasWeigher { limits, book: self.book() };
+        // (Within one `pack`, the leases change only as it grants: each offer it weighs asks this.)
+        let kept = self
+            .packing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|p| p.nas.iter().find(|k| k.0 == (now, lead)).map(|k| k.1));
+        if let Some((w, members, dl, most)) = kept {
+            return Some((nw, w, members, dl, most));
+        }
         // (The switch `off`: the members' jobs aren't held, so the lead's own aren't held back by
         // them either, only by its own (task #440: else a member's unheld jobs keep the lead idle).)
         let members_held = self.nas.is_some();
@@ -823,7 +936,23 @@ impl Sched {
                 dl += usize::from(d);
             }
         }
+        if let Some(p) = self.packing.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            p.nas.push(((now, lead), (w, members, dl, most)));
+        }
         Some((nw, w, members, dl, most))
+    }
+
+    /// `Leases::held` of `step`, kept within one `pack` (`packing`) as nas_room_heaviest is.
+    fn held_of(&self, step: &str, now: Instant) -> std::sync::Arc<BTreeSet<String>> {
+        let mut g = self.packing.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(h) = g.as_ref().and_then(|p| p.held.get(&(step.to_string(), now))) {
+            return h.clone();
+        }
+        let h = std::sync::Arc::new(self.leases.held(step, now));
+        if let Some(p) = g.as_mut() {
+            p.held.insert((step.to_string(), now), h.clone());
+        }
+        h
     }
 
     /// The room the NAS budget holds for a target aged in it (task #444): of the targets held back
@@ -882,7 +1011,7 @@ impl Sched {
     /// Whether a leased job may load the NAS unseen by its weight: one of a step known to read it
     /// (`NAS_STEPS`), or one none of whose step's runs measured its NAS rate (a cold one).
     pub(super) fn nas_unknown_running(&self, nw: &NasWeigher, now: Instant) -> bool {
-        self.leases.all(now).into_iter().any(|l| match &l.work {
+        self.leases.live(now).any(|l| match &l.work {
             Work::Job { step, targets } => {
                 NAS_STEPS.contains(&step.as_str())
                     || if targets.is_empty() {
@@ -986,6 +1115,7 @@ impl Sched {
     pub fn set_use_runs(&mut self, runs: Vec<crate::uses::Run>) {
         self.use_runs = runs;
         self.uses = crate::uses::Uses::of(&self.use_runs);
+        self.kept_leases.lock().unwrap_or_else(|e| e.into_inner()).1.clear();
     }
 
     /// A job's timings `rec` come in at `now` (unix s): its runs among the uses' (crate::uses: one
@@ -998,6 +1128,7 @@ impl Sched {
         self.use_runs.retain(|r| crate::uses::in_window(r, now));
         self.use_runs.extend(runs);
         self.uses = crate::uses::Uses::of(&self.use_runs);
+        self.kept_leases.lock().unwrap_or_else(|e| e.into_inner()).1.clear();
     }
 
     /// The threads a job packed as `n` is granted on a Mac of `total` cores, and the cores it counts
@@ -1066,17 +1197,35 @@ impl Sched {
     /// (`no_figure`). It goes beside other jobs when that fits; the memory guard
     /// (crate::agent::memguard) stops one that overruns, and its floor is learned.
     pub(super) fn provisional(&self, step: &str, targets: &[String]) -> Option<Measured> {
-        let b = self.book();
-        let each = targets
-            .iter()
-            .map(|t| b.older_mem(step, t).unwrap_or(0).max(self.offered_mb(step, t)))
-            .max()
-            .filter(|&mb| mb > 0)?;
+        let each: Vec<(u64, Option<u64>)> = targets.iter().map(|t| self.provisional_of(step, t)).collect();
+        let mem = each.iter().map(|e| e.0).max().filter(|&mb| mb > 0)?;
         Some(Measured {
-            mem_mb: provisional_mb(each),
-            disk_mb: targets.iter().filter_map(|t| b.disk(step, t, 0)).max().unwrap_or(0),
+            mem_mb: provisional_mb(mem),
+            disk_mb: each.iter().filter_map(|e| e.1).max().unwrap_or(0),
             own: false,
         })
+    }
+
+    /// `provisional`'s look at `target` of `step`: its runs' memory of their latest earlier way
+    /// or the memory it was offered with, the larger, and its disk by the measures; kept while
+    /// the measures stand and as offered (`provisional_of`: an ask weighs each cold target it may
+    /// grant).
+    fn provisional_of(&self, step: &str, target: &str) -> (u64, Option<u64>) {
+        let rev = self.rev();
+        {
+            let mut g = self.provisional_at.lock().unwrap_or_else(|e| e.into_inner());
+            if g.0 != rev {
+                *g = (rev, Default::default());
+            }
+            if let Some(&p) = g.1.get(step).and_then(|t| t.get(target)) {
+                return p;
+            }
+        }
+        let b = self.book();
+        let p = (b.older_mem(step, target).unwrap_or(0).max(self.offered_mb(step, target)), b.disk(step, target, 0));
+        let mut g = self.provisional_at.lock().unwrap_or_else(|e| e.into_inner());
+        g.1.entry(step.to_string()).or_default().insert(target.to_string(), p);
+        p
     }
 
     /// Whether a cold start of `step` over `targets` has no figure to go beside other jobs by: its
@@ -1092,7 +1241,7 @@ impl Sched {
     /// its floor).
     pub(super) fn cold_fits(&self, step: &str, targets: &[String], a: &Ask, now: Instant) -> bool {
         let fits = |m: Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d);
-        self.provisional(step, targets).is_some_and(fits) || self.job_leases(&a.worker, now).is_empty()
+        self.provisional(step, targets).is_some_and(fits) || !self.holds_job(&a.worker, now)
     }
 
     /// The disk a job of `step` reserves for its shared cache (crate::needs::CACHES) on the Mac
@@ -1119,13 +1268,21 @@ impl Sched {
     /// of the lead's own: `own_cold_waits`). And why it granted fewer jobs than the ask wanted
     /// (None: as many as it wanted).
     pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<String>) {
+        *self.packing.lock().unwrap_or_else(|e| e.into_inner()) = Some(Packing::default());
+        let got = self.pack_kept(a, offers, lead, clock);
+        *self.packing.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        got
+    }
+
+    /// `pack`, its look-ups of the leases kept while it packs (`packing`).
+    fn pack_kept(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<String>) {
         let now = clock.now;
         // (Its Mac below its memory floor, the brake on or a give-back cooling it down (docs/pool.md
         // §7.1): nothing, a cold start to a Mac running nothing among it.)
         if let Some(why) = a.cap.as_ref().and_then(|c| c.mem_held_back.as_ref()) {
             return (Vec::new(), Some(format!("memory: {why}")));
         }
-        let mine = self.job_leases(&a.worker, now);
+        let mine: Vec<&Lease> = self.worker_jobs(&a.worker, now).collect();
         // (A job held: its measure, else its provisional need, `pack_need`; one its Mac says only
         // waits on a worker (`Capacity::waiting`), at what it holds now within that, none of its
         // cores: the room past it free for a job beside it, which yields to it when it goes on
@@ -1135,19 +1292,20 @@ impl Sched {
             |l: &Lease| a.cap.as_ref().and_then(|c| c.waiting.iter().find(|w| w.lease == l.id)).map(|w| w.held_mb);
         let holds =
             |l: &Lease| a.cap.as_ref().and_then(|c| c.held_each.iter().find(|w| w.lease == l.id)).map(|w| w.held_mb);
-        let jobs: Vec<(&Lease, String, Vec<String>)> = mine
+        let jobs: Vec<(&Lease, &str, &[(String, String)])> = mine
             .iter()
-            .filter_map(|l| match &l.work {
-                Work::Job { step, targets } => Some((l, step.clone(), targets.iter().map(|t| t.0.clone()).collect())),
+            .filter_map(|&l| match &l.work {
+                Work::Job { step, targets } => Some((l, step.as_str(), &targets[..])),
                 Work::Task { .. } => None,
             })
             .collect();
+        let names = |ts: &[(String, String)]| -> Vec<String> { ts.iter().map(|t| t.0.clone()).collect() };
         let needs: Vec<Need> = jobs
             .iter()
-            .map(|(l, step, targets)| {
-                let mut n = Need { held: l.threads, ..self.pack_need(step, targets, &a.worker) };
+            .map(|&(l, step, targets)| {
+                let mut n = Need { held: l.threads, ..self.lease_need(l, step, targets).0 };
                 // (Its re-grants' growth past its measure: `grown_mb`.)
-                n.m.mem_mb += self.grown_mb(l, step, targets, n.m.mem_mb);
+                n.m.mem_mb += self.grown_mb(l, step, targets.iter().map(|t| t.0.as_str()), n.m.mem_mb);
                 if let Some(held) = waits(l) {
                     n.m.mem_mb = n.m.mem_mb.min(held);
                     n.waits = true;
@@ -1159,11 +1317,10 @@ impl Sched {
                 n
             })
             .collect();
-        let held_steps: Vec<(String, Vec<String>)> = jobs.iter().map(|(_, st, ts)| (st.clone(), ts.clone())).collect();
         // (A cold start with no figure, its step never measured in any way or nothing to size it
         // by (`no_figure`): nothing beside it, as before task #499.)
-        if let Some((st, _)) =
-            needs.iter().zip(&held_steps).find(|(n, (st, ts))| n.cold && self.no_figure(st, ts)).map(|(_, s)| s.clone())
+        if let Some(st) =
+            needs.iter().zip(&jobs).find(|(n, (_, st, ts))| n.cold && self.no_figure(st, &names(ts))).map(|(_, j)| j.1)
         {
             return (Vec::new(), Some(format!("{st} has no measure to size it by: nothing goes beside its first job")));
         }
@@ -1173,8 +1330,8 @@ impl Sched {
         // (Cores left, in tenths of a core: each job's, the cores it counts for (`need_cores`).)
         let mut cores = needs
             .iter()
-            .zip(&held_steps)
-            .fold(total * 10, |left, (n, (st, _))| left.saturating_sub(self.need_cores(st, n, total).1));
+            .zip(&jobs)
+            .fold(total * 10, |left, (n, (_, st, _))| left.saturating_sub(self.need_cores(st, n, total).1));
         // (Its Mac's load from outside the pool (other processes: builds, tests): the cores its
         // last minute's load average keeps busy (`Capacity::cores_free`) past those the jobs it
         // holds count for, less those the in-use share keeps already, come off the cores left
@@ -1188,8 +1345,9 @@ impl Sched {
         let mut runs: Vec<Run> = jobs
             .iter()
             .zip(&needs)
-            .map(|((l, st, ts), n)| {
-                self.run_of(st, ts, &a.worker, n.m, self.need_cores(st, n, total).1, l.ran(now).as_secs())
+            .map(|(&(l, st, ts), n)| {
+                let secs = self.lease_need(l, st, ts).1;
+                Run::of(n.m, self.need_cores(st, n, total).1, secs, l.ran(now).as_secs())
             })
             .collect();
         // (The cores left were its jobs counted at their threads, as before task #688: a grant
@@ -1200,8 +1358,8 @@ impl Sched {
         // the climb within a minute instead of a whole ask's worth landing at once.)
         let mut by_threads = needs
             .iter()
-            .zip(&held_steps)
-            .fold(total, |left, (n, (st, _))| {
+            .zip(&jobs)
+            .fold(total, |left, (n, (_, st, _))| {
                 left.saturating_sub(if n.waits || n.idle { 0 } else { self.need_cores(st, n, total).0 })
             })
             .saturating_sub(outside);
@@ -1234,7 +1392,7 @@ impl Sched {
         // the first job granted reading it, in its grant's disk. One no job its agent reserves for
         // holds is taken off here.)
         let mut caches: BTreeSet<&'static str> = BTreeSet::new();
-        for (st, _) in &held_steps {
+        for (_, st, _) in &jobs {
             if let Some(c) = crate::needs::cache_of(st) {
                 if caches.insert(c)
                     && !mine.iter().any(|l| {
@@ -1463,10 +1621,10 @@ impl Sched {
     /// regions check once needed about a region's worth, docs/inputs.md §4.3). Never the peak over
     /// the threads a job runs on now: past those it was measured at, that spreads the peak thinner
     /// than any thread of it is.
-    fn per_thread_mb(&self, step: &str, targets: &[String], peak_mb: u64) -> (u64, u32) {
+    fn per_thread_mb<'t>(&self, step: &str, targets: impl IntoIterator<Item = &'t str>, peak_mb: u64) -> (u64, u32) {
         let v = self.the_plan.cost_version(step);
         let measured = targets
-            .iter()
+            .into_iter()
             .map(|t| {
                 let c = self.costs.get(&cost_key(step, t)).filter(|c| c.v >= v)?;
                 c.sizes.get("threads").map(|&n| n as u32).filter(|&n| n > 0)
@@ -1484,9 +1642,19 @@ impl Sched {
     /// threads it started on, `Lease::start_threads`, and those its measure was taken at), each
     /// `per_thread_mb`. Its Mac's agent counts it at its measure alone (crate::agent's `capacity`),
     /// so the lead adds this (`pack`, `regrant`).
-    pub(super) fn grown_mb(&self, l: &Lease, step: &str, targets: &[String], peak_mb: u64) -> u64 {
-        let (per, covered) = self.per_thread_mb(step, targets, peak_mb);
+    pub(super) fn grown_mb<'t>(
+        &self,
+        l: &Lease,
+        step: &str,
+        targets: impl IntoIterator<Item = &'t str>,
+        peak_mb: u64,
+    ) -> u64 {
         let start = if l.start_threads > 0 { l.start_threads } else { l.threads };
+        // (Not re-granted past its start: nothing, whatever its measure covers.)
+        if l.threads <= start {
+            return 0;
+        }
+        let (per, covered) = self.per_thread_mb(step, targets, peak_mb);
         per * u64::from(l.threads.saturating_sub(start.max(covered)))
     }
 
@@ -1529,7 +1697,7 @@ impl Sched {
             .iter()
             .filter_map(|l| {
                 let (st, ts, n) = need_of(l)?;
-                grown += self.grown_mb(l, &st, &ts, n.m.mem_mb);
+                grown += self.grown_mb(l, &st, ts.iter().map(String::as_str), n.m.mem_mb);
                 let (t, b) = self.need_cores(&st, &n, total);
                 Some((
                     l.id,
@@ -1591,7 +1759,7 @@ impl Sched {
                         None => {
                             // (Each thread past those whose memory is counted already: its lease's,
                             // and those its grant was admitted with.)
-                            let (per, covered) = self.per_thread_mb(&step, &ts, n.m.mem_mb);
+                            let (per, covered) = self.per_thread_mb(&step, ts.iter().map(String::as_str), n.m.mem_mb);
                             let start = if l.start_threads > 0 { l.start_threads } else { l.threads };
                             let paid = l.threads.max(start).max(covered);
                             fit.min(paid.saturating_add(u32::try_from(room_mb / per).unwrap_or(u32::MAX))).max(next)
@@ -1645,6 +1813,10 @@ impl Sched {
             clock.now,
             clock.unix,
         );
+        // (The leases changed: what `pack` kept of them made again.)
+        if let Some(p) = self.packing.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            *p = Packing::default();
+        }
         self.leases.set_threads(lease, threads);
         {
             // (Its step's other waits weighing no more than this job restart now: the step isn't
@@ -1718,7 +1890,7 @@ impl Sched {
     /// runs anywhere (one job of a step kept to the lead at a time).
     pub(super) fn own_open(&self, o: &Offer, a: &Ask, now: Instant) -> bool {
         if o.targets.is_empty()
-            || self.leases.all(now).iter().any(|l| matches!(&l.work, Work::Job { step, .. } if *step == o.step))
+            || self.leases.live(now).any(|l| matches!(&l.work, Work::Job { step, .. } if *step == o.step))
         {
             return false;
         }
@@ -1766,12 +1938,7 @@ impl Sched {
     /// A job of `step` over `targets` on `worker`'s Mac, measured `m` and counting for `cores`
     /// (tenths), that has run `ran` s, as room held for a waiting job weighs it (`Run`).
     fn run_of(&self, step: &str, targets: &[String], worker: &str, m: Measured, cores: u32, ran: u64) -> Run {
-        Run {
-            mem_mb: m.mem_mb,
-            disk_mb: m.disk_mb,
-            cores,
-            ends: self.batch_secs(step, targets.iter().map(String::as_str), worker, 0).map(|s| s.0.saturating_sub(ran)),
-        }
+        Run::of(m, cores, self.batch_secs(step, targets.iter().map(String::as_str), worker, 0).map(|s| s.0), ran)
     }
 
     /// Whether the lead's own planned job of offer `o` waits for room: open (`own_open`), a cold
@@ -1876,18 +2043,17 @@ impl Sched {
     /// its room. A cold start (`measured` None) by its provisional need, one job of its step in the
     /// pool at a time.
     pub(super) fn pick_every(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
-        let held = self.leases.held(&o.step, now);
-        // (Each target's look-ups only where the worker failed any or the step has any done.)
-        let (any_failed, any_done) = (self.failed_any(&a.worker), self.done_any(&o.step));
+        let held = self.held_of(&o.step, now);
+        // (Each target's failures looked up only where the worker failed any; the step's work done
+        // taken out once, each target looked up in it: an ask weighs every target of every offer.)
+        let (any_failed, done) = (self.failed_any(&a.worker), self.done_of(&o.step));
         let open = |t: &str, k: &str| {
             let backoff = any_failed
                 && self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
                     now.duration_since(*at)
                         < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
                 });
-            !held.contains(t)
-                && !(any_done && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) == Some(k))
-                && !backoff
+            !held.contains(t) && done.get(t) != Some(&k) && !backoff
         };
         let job_disk = self.job_floor(&o.step);
         let fits = |m: &Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d);
@@ -2139,7 +2305,7 @@ impl Sched {
     /// none) and the memory its Mac had free then (`Capacity::mem_mb`, when its capacity is said),
     /// less that of the jobs granted it since (`lease_mem`), fits it.
     pub(super) fn would_take_now(&self, n: &str, asked: Instant, x: &Ask, m: &Measured, now: Instant) -> bool {
-        let since: Vec<Lease> = self.job_leases(n, now).into_iter().filter(|l| l.granted >= asked).collect();
+        let since: Vec<&Lease> = self.worker_jobs(n, now).filter(|l| l.granted >= asked).collect();
         let taken: u64 = since.iter().map(|l| self.lease_mem(l)).sum();
         since.len() < x.want.max(1)
             && x.cap.as_ref().filter(|c| c.limit_mb > 0).is_none_or(|c| m.mem_mb.saturating_add(taken) <= c.mem_mb)
@@ -2405,6 +2571,9 @@ impl Sched {
             measured_steps: Default::default(),
             measured_of: Default::default(),
             drop_needs: Default::default(),
+            kept_leases: Default::default(),
+            packing: Default::default(),
+            provisional_at: Default::default(),
             paces: s.paces.clone(),
             use_runs: Vec::new(),
             uses: s.uses.clone(),
@@ -2426,9 +2595,8 @@ impl Sched {
             if free == 0 {
                 continue;
             }
-            let mine = self.job_leases(n, now);
-            let granted = mine.iter().filter(|l| l.granted >= now).count();
-            let running: u64 = mine.iter().filter(|l| l.granted < now).map(|l| self.lease_mem(l)).sum();
+            let granted = self.worker_jobs(n, now).filter(|l| l.granted >= now).count();
+            let running: u64 = self.worker_jobs(n, now).filter(|l| l.granted < now).map(|l| self.lease_mem(l)).sum();
             if let Some(w) = self.workers.get_mut(n) {
                 (w.seen, w.asked) = (now, Some(now));
                 if let Some(x) = w.ask.as_mut() {

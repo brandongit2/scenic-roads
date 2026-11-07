@@ -1571,6 +1571,9 @@ impl Coordinator {
                 measured_steps: Default::default(),
                 measured_of: Default::default(),
                 drop_needs: Default::default(),
+                kept_leases: Default::default(),
+                packing: Default::default(),
+                provisional_at: Default::default(),
                 paces: Default::default(),
                 use_runs: Vec::new(),
                 uses: Default::default(),
@@ -10314,7 +10317,7 @@ mod tests {
         assert_eq!(m1_beat(&c, Some(one)), [(l, 4)], "room for one");
         let s = c.shared.lock().unwrap();
         let lease = s.leases.of(l).unwrap().clone();
-        assert_eq!(s.sched.grown_mb(&lease, "slope-hi", &ts, peak), peak);
+        assert_eq!(s.sched.grown_mb(&lease, "slope-hi", ts.iter().map(String::as_str), peak), peak);
     }
 
     /// Task #948: a job using 1 of its 8 threads keeps them while nothing else wants its Mac's
