@@ -491,9 +491,10 @@ fn nas_ssh() -> Vec<String> {
 }
 
 /// What the pool's records and journal name beyond today's manifest (docs/pool.md §7.3, §7.7): the
-/// newest records' manifest and pending uploads (today's files may lag them a save), and every
-/// journal entry those records don't reflect yet, refused ones aside: a hand-off not merged yet
-/// (its member away for weeks, its entry written but untold) keeps what it names, its changes and
+/// newest records' manifest and pending uploads (today's files are term 1's: a later term's lead
+/// doesn't write them), and every journal entry those records don't reflect yet, refused ones
+/// aside: a hand-off not merged yet (its member away for weeks, its entry written but untold) keeps
+/// what it names, its changes and
 /// its uploads (the gate's copies an index of it lists: `inputs_kept`). Empty with the pool never
 /// on (no journal); an error when any of them can't be read now, or an entry the records don't name
 /// doesn't read whole (short, damaged, or not there as listed: a read cut short says nothing of the
@@ -509,7 +510,7 @@ pub struct Unmerged {
     /// The (logical, content) names of those entries' changes, for the sweeps that read what a
     /// file names (the gate's indexes).
     pub changes: Vec<(String, String)>,
-    /// The newest records' manifest (logical, content), which today's file may lag a save.
+    /// The newest records' manifest (logical, content): today's file is term 1's.
     pub records: Vec<(String, String)>,
     /// How many entries weren't merged.
     pub entries: usize,
@@ -584,7 +585,7 @@ pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
 }
 
 /// What GC keeps of `sources/inputs/` (docs/inputs.md §4.9): what the records name (`manifest`,
-/// today's file, and with the pool on the newest records' own manifest, which today's may lag:
+/// today's file, and with the pool on the newest records' own manifest (today's is term 1's):
 /// the units' accepted indexes, listings and held reports), the files each such index lists, the
 /// same of every journal entry the newest records don't reflect yet (pool.md §7.3: an entry not
 /// merged may name a version the records will), the files listed by every index whose time is

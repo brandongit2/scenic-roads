@@ -15827,7 +15827,7 @@ mod pool_tests {
         let pv = st.pool.expect("the pool in its status");
         assert_eq!((pv.role, pv.member.as_str()), (pool::Role::Lead, me.as_str()));
         // The daily sweep waits for a re-assertion, then runs on the step that made it, caught up:
-        // term 2, whose records its readers read (today's files no more: its one member reads these).
+        // term 2, whose records its readers read (today's files no more: they're term 1's).
         until(&mut a, |a| a.mem.last_ok.contains_key("gc"));
         assert!(a.pooled().unwrap().gates.term >= 2);
         assert!(r.join("state/build/terms/2.json").exists());
