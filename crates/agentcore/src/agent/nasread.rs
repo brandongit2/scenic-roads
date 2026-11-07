@@ -801,35 +801,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn opening_a_member_lists_the_terms_patiently_and_never_hangs() {
-        let d = tempfile::tempdir().unwrap();
-        let (hold, gate) = mpsc::channel::<()>();
-        let stuck = Stuck {
-            inner: store::nasfs::NasRoot::local_for_test(d.path()),
-            stuck: crate::pool::term::DIR.into(),
-            gate: Arc::new(Mutex::new(gate)),
-        };
-        let (reads, writes) = (leak(Calls::new("or", 4)), leak(Calls::new("ow", 1)));
-        let n = Deadlined::with(Arc::new(stuck), reads, writes, Duration::from_millis(100), Duration::from_millis(100));
-        let t = Instant::now();
-        let e = crate::agent::pool::list_patiently(
-            &n,
-            crate::pool::term::DIR,
-            &[Duration::from_millis(10), Duration::from_millis(20)],
-        )
-        .unwrap_err();
-        assert!(buildstore::records::nas::timed_out(&e), "{e:#}");
-        store::testkit::ended_before(t, Duration::from_secs(60), "tried three times, never hung");
-        assert_eq!(reads.busy(), 3, "one stuck reader a try");
-        drop(hold);
-        // A listing that answers on a later try.
-        let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(d.path().join(crate::pool::term::DIR)).unwrap();
-        let n = store::nasfs::NasRoot::local_for_test(d.path());
-        assert_eq!(crate::agent::pool::list_patiently(&n, crate::pool::term::DIR, &[]).unwrap(), Vec::<String>::new());
-    }
-
-    #[test]
     fn an_unreadable_extract_plans_no_job() {
         use crate::agent::present_or_missing;
         assert_eq!(present_or_missing(Ok(b"x".to_vec())), Some(Some(b"x".to_vec())));

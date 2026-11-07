@@ -132,6 +132,12 @@ pub struct Answer {
     /// began: crate::coord::budgets).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub progress_released: Vec<(String, u64)>,
+    /// The term the lead leads, while it leads it and its pool's step isn't taken as hung (the
+    /// term its answers' `x-pool-term` says): a member learns its lead and term from it, reading the
+    /// NAS's declaration and terms only while no answer within `beats::PAGE_AWAY_S` carried one
+    /// (docs/coordination.md step 8a). Left out by a lead before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term: Option<crate::pool::term::Term>,
 }
 
 /// The build in a line, from the lead (`Answer::lead`): its Mac, its app, the build's state as its
@@ -204,6 +210,11 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         beats.set_asks_on_nas(a.asks_on_nas);
         a.budgets_on_nas = on_nas(s, &beats, unix, super::beats::BUDGETS);
     }
+    // (As its answers' headers say it: its leases' term, its member said; a member's broker none.)
+    a.term = s
+        .led
+        .clone()
+        .filter(|t| !s.broker && t.term == s.leases.term && s.pool_member.as_deref() == Some(t.member.as_str()));
     if b.speaks.iter().any(|w| w == SPEAKS) {
         // (As of when its list was made: a lease granted since isn't in it.)
         let now = s.now();

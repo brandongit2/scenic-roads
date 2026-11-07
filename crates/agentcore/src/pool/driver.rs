@@ -79,6 +79,11 @@
 //! a fixed lead), no one leads until the owner writes it; in a new pool, term 1's lead declares
 //! itself, once, with create-new.
 //!
+//! A member learns its lead and the current term from its lead's beat answer while one came lately
+//! (`Heard::lead_says`, docs/coordination.md step 8a), with no NAS call; without one (an older
+//! lead, a lead not leading or hung, none answering: the owner may have moved the lead) it reads
+//! the declaration and stats the next term, as the lead does every step.
+//!
 //! The lead's view can be old without its knowing (§6.6). It re-asserts (makes the next term naming
 //! itself and takes it up from its own records, its coordinator loading the term before's state
 //! with its leases) before acting again when, since its last step or within its last one, its wall
@@ -241,6 +246,12 @@ pub struct Heard {
     /// docs/coordination.md step 6): it lists the journal no more, and is caught up without a
     /// listing. (The rollout gate, deleted with it.)
     pub http_only: bool,
+    /// A member: the term its lead's beat answered it leads, that answer fresh (within
+    /// crate::coord::beats::PAGE_AWAY_S: crate::coord::beats::Beats::lead_says). Its lead and term
+    /// are learnt from it, and the NAS's declaration and terms aren't read; None (an older lead, a
+    /// lead not leading, none answering lately: the owner may have moved the lead) reads them
+    /// (docs/coordination.md step 8a).
+    pub lead_says: Option<Term>,
 }
 
 /// How a member's hand-offs go to its lead.
@@ -641,7 +652,17 @@ impl Driver {
                 Ask::Act(a) => acts.push(a),
             }
         }
-        let learnt = self.learn(io);
+        // (A term its lead says, of another member, no older than its own view: taken in place of
+        // the NAS's.)
+        let said = heard.lead_says.filter(|t| t.member != self.me.id && t.term >= self.cur.term.max(self.saved.term));
+        let by_lead = said.is_some();
+        let learnt = match said {
+            Some(t) => {
+                self.heard_of(t);
+                Ok(())
+            }
+            None => self.learn(io),
+        };
         if let Err(e) = &learnt {
             out.events.push(Event::Failed { what: "learn the current term", why: format!("{e:#}") });
         }
@@ -650,7 +671,14 @@ impl Driver {
         }
         // The declared lead (a member never leads); none declared yet, the current term's lead
         // declares itself.
-        let mine = self.declare(io, &mut out);
+        let mine = if by_lead {
+            // (The lead leads only while declared: it steps down at its next step otherwise, and
+            // its answers say no term.)
+            self.declared = self.cur.lead.as_ref().map(|t| t.member.clone());
+            false
+        } else {
+            self.declare(io, &mut out)
+        };
         // A member's entries to the journal, for a lead that doesn't take them by HTTP (the gate);
         // the declared lead merges its own from memory.
         if !mine && heard.route == Route::Journal {
@@ -785,6 +813,20 @@ impl Driver {
         }
         self.saved.term = self.saved.term.max(self.cur.term);
         Ok(())
+    }
+
+    /// Learns the current term from its lead's word (`Heard::lead_says`: a term of another member,
+    /// no older than its view), with no NAS call. At its first step it counts as the term learnt
+    /// then, as `learn`'s from the NAS does.
+    fn heard_of(&mut self, t: Term) {
+        if self.first.is_none() {
+            self.first = Some(t.term);
+            if !self.known {
+                self.saved.led = self.saved.led.max(t.term);
+            }
+        }
+        self.cur = Current { term: t.term, lead: Some(t) };
+        self.saved.term = self.saved.term.max(self.cur.term);
     }
 
     /// Finishes the term its create made and couldn't fill.
@@ -1354,7 +1396,6 @@ impl Driver {
             leads,
             addresses: Vec::new(),
             reach: Vec::new(),
-            reads_records: true,
             checks_map: true,
         }
     }
@@ -1492,6 +1533,55 @@ mod tests {
     }
 
     impl Io for Slow<'_> {
+        fn now(&self) -> u64 {
+            self.0.now()
+        }
+        fn awake(&self) -> u64 {
+            self.0.awake()
+        }
+    }
+
+    /// A Mac's NAS calls counted (creates, whole writes, reads, stats, listings, removes).
+    struct Counted<'a>(&'a Mac<'a>, Cell<u64>);
+
+    impl Counted<'_> {
+        /// The calls since the last ask.
+        fn take(&self) -> u64 {
+            self.1.replace(0)
+        }
+        fn one(&self) {
+            self.1.set(self.1.get() + 1);
+        }
+    }
+
+    impl Nas for Counted<'_> {
+        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
+            self.one();
+            self.0.create_new(path, bytes)
+        }
+        fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            self.one();
+            self.0.write_whole(path, bytes)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            self.one();
+            self.0.read(path)
+        }
+        fn exists(&self, path: &str) -> Result<bool> {
+            self.one();
+            self.0.exists(path)
+        }
+        fn list(&self, dir: &str) -> Result<Vec<String>> {
+            self.one();
+            self.0.list(dir)
+        }
+        fn remove(&self, path: &str) -> Result<()> {
+            self.one();
+            self.0.remove(path)
+        }
+    }
+
+    impl Io for Counted<'_> {
         fn now(&self) -> u64 {
             self.0.now()
         }
@@ -1695,6 +1785,68 @@ mod tests {
         let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert_eq!(b.records().unwrap().keys.recorded("unit", "6-1-1"), Some("k1"), "from A's records");
+    }
+
+    /// docs/coordination.md step 8a, measured: a member's step learns its lead and term from its
+    /// lead's beat answer (`Heard::lead_says`) with no NAS call, where it read the declaration and
+    /// stat'd the next term each step (and at its first, the lead's hint, the term's file, and
+    /// more); its lead's re-assertion learnt the same way. With no word from its lead (lately, or
+    /// ever: an older lead), it reads the NAS, so it learns of the owner's move of the lead to it.
+    #[test]
+    fn a_member_learns_its_lead_s_term_from_its_answer_with_no_nas_call() {
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        let says = |a: &Driver| Heard { lead_says: a.current().lead.clone(), ..able() };
+        // Before: from the NAS.
+        let nb = Counted(&ib, Cell::new(0));
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+        assert_eq!((b.step(&nb, able(), &any).term, b.declared()), (1, Some(A)));
+        let first = nb.take();
+        ib.pass(20);
+        b.step(&nb, able(), &any);
+        let each = nb.take();
+        // (Its first: the declaration, the hint, the hinted term stat'd, the next, the term read, the
+        // next again, the declaration; then each step the next stat'd and the declaration.)
+        assert_eq!((first, each), (7, 2));
+        // After: from its lead's word.
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+        for _ in 0..30 {
+            ib.pass(20);
+            let o = b.step(&nb, says(&a), &any);
+            assert_eq!((o.term, o.leads, b.declared()), (1, None, Some(A)), "{:?}", o.events);
+        }
+        assert_eq!(nb.take(), 0, "no NAS call in 30 steps");
+        // A re-asserts (term 2): B learns it from A's word.
+        ia.pass(STALL_S + 1);
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(2));
+        ib.pass(20);
+        let o = b.step(&nb, says(&a), &any);
+        assert_eq!((o.term, b.current().lead.as_ref().map(|t| t.member.as_str())), (2, Some(A)));
+        assert_eq!(nb.take(), 0);
+        // A word older than its view (a stale answer) is passed over for the NAS.
+        let old = Term { term: 1, ..a.current().lead.clone().unwrap() };
+        ib.pass(20);
+        assert_eq!(b.step(&nb, Heard { lead_says: Some(old), ..able() }, &any).term, 2);
+        assert!(nb.take() > 0);
+        // The owner moves the lead to B. While A's answers say it leads, B leads nothing; once B
+        // hears no word (A stepped down, or away), it reads the declaration, and takes the lead.
+        declare(&mem, B);
+        ib.pass(20);
+        assert_eq!(b.step(&nb, says(&a), &any).leads, None);
+        assert_eq!(b.declared(), Some(A));
+        ib.pass(20);
+        let o = b.step(&nb, able(), &any);
+        assert_eq!(b.declared(), Some(B));
+        assert!(
+            o.events
+                .iter()
+                .any(|e| matches!(e, Event::Made { term: 3, how } if how == "the declared lead, after Mac-mini")),
+            "{:?}",
+            o.events
+        );
     }
 
     #[test]

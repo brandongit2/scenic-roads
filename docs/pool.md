@@ -144,8 +144,11 @@ Checked by the simulator (§13):
 { "member": "m-3f9c…", "host": "Mac-mini-de-Brandon", "since": 1791300000 }
 ```
 
-- **Read every step** by every member (`term::declared`; a read that fails keeps the last). A
-  member it doesn't name never makes a term and never leads one (`Driver::step`'s `declare`).
+- **Read every step** by the lead (`term::declared`; a read that fails keeps the last), and by a
+  member only while no answer of its lead's within `PAGE_AWAY_S` (35 s) said the term it leads
+  (docs/coordination.md step 8a): with one, the member takes that term's lead for the declared one
+  (a lead steps down at its next step once it isn't, and its answers then say no term). A member it
+  doesn't name never makes a term and never leads one (`Driver::step`'s `declare`).
 - **Made once** with create-new: in a new pool, by the first Mac to make term 1, which declares
   itself (`term::declare`); in a pool past term 1, by the owner, by hand. No Mac declares itself
   past term 1: a lead elected before #881 (any Mac, a takeover during the rollout) would make
@@ -171,9 +174,14 @@ of the lead's, between restarts and sleeps.
   "since": 1791300000, "how": "restarted: re-asserted", "from": 11 }
 ```
 
-- **The current term is the highest that exists.** A Mac learns it at start (`term::current`, from
-  the hint `state/build/lead.json` or one listing), then only stats `<E+1>.json` (`term::next`). It
-  never goes back (`driver::Saved` keeps the highest seen).
+- **The current term is the highest that exists.** The lead learns it at start (`term::current`,
+  from the hint `state/build/lead.json` or one listing), then only stats `<E+1>.json`
+  (`term::next`). A member learns it from its lead's beat answers (`Answer::term`, the term the
+  lead leads as its answers' `x-pool-term` says it: `Heard::lead_says`), with no NAS call, and as
+  the lead does while none came within `PAGE_AWAY_S` (an older lead, a lead not leading or its step
+  hung, none answering). It never goes back (`driver::Saved` keeps the highest seen; a lead's word
+  of an older term is passed over for the NAS). A member opening with a saved state stats that
+  state's term (gone: the terms were moved aside, the state set aside), never lists the terms.
 - **Only the declared lead makes a term:** term 1, its re-assertions (§6.6), and the term after one
   that names another member (an elected lead's, from before #881, or after the owner's move).
 - **A term not readable whole** (its bytes not landed) has no known lead. Its maker finishes it
@@ -223,14 +231,10 @@ of the lead's, between restarts and sleeps.
   two writes) is read from its snapshot (`Brief::now`). An idle agent's
   plan digest stats the current term's snapshot. The map server reads it through its own pool
   (`pool::nas::ReadOnly`).
-- **Today's files, for older apps** (the rollout): apps before this one read today's files. A
-  heartbeat says its app reads the snapshot (`Beat::reads_records`); a term after the first's lead
-  writes today's files after its saves (`agent::pool::write_today`) only while some member's
-  heartbeat, as last read whole, doesn't say so (`Side::readers_ready`, read every `PROBE_S`; a
-  member with no heartbeat, or a shadow run's, counts as not saying so), and then at its next step
-  that didn't fail a save (`Run::keep_today`): a Mac back on an older app reads them up to
-  `PROBE_S` and a step stale. Once every member's says so the files are left as they were, stale, read by
-  no app that heartbeats. Term 1's own saves still write them (`Records::save`).
+- **Today's files** are the records before the pool: term 1's first snapshot is made from them and
+  its saves write them. A later term's lead writes them no more (the rollout's copy for apps that
+  read them, last written on the live share 31 Oct, was deleted with #878 step 8a); this app reads
+  the term's snapshot.
 - **The coordinator's state** is in its store on its own disk (docs/coordination.md §4, task #878:
   `agent/coord/store/`), not per term: a restart opens it, so it keeps its leases. Its backup on the
   NAS (`state/lead/store.json`, §7.5) is what a take-up in a new process loads when another Mac led

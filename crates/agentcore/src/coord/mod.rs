@@ -416,6 +416,11 @@ pub struct Shared {
     /// with its term (`POOL_MEMBER`, `POOL_TERM`), so a member tells its lead's coordinator from
     /// another's (its reach, crate::pool::reachable). None while its Mac has lost the NAS.
     pub pool_member: Option<String>,
+    /// The term its agent's driver leads, as its last step said (`Coordinator::set_led`): every beat's
+    /// answer carries it while it's the term the leases are granted in and `pool_member` is said
+    /// (`held::Answer::term`), so a member learns its lead and term without the NAS
+    /// (docs/coordination.md step 8a).
+    pub led: Option<crate::pool::term::Term>,
     /// Where the members' messages to this Mac's member go (`/pool/mail`, `inbox`): its agent's
     /// (`Coordinator::set_inbox`); None, refused (the member keeps them queued).
     pub inbox: Option<std::sync::Arc<inbox::Inbox>>,
@@ -1591,6 +1596,7 @@ impl Coordinator {
             told: None,
             min_app: None,
             pool_member: None,
+            led: None,
             inbox: None,
             handoffs: None,
             asks: asks::Lead::default(),
@@ -2763,6 +2769,12 @@ impl Coordinator {
     /// The pool's term the leases it grants now are in (docs/pool.md §7.5; 0: the pool off).
     pub fn set_term(&self, term: u64) {
         self.shared.lock().unwrap().leases.term = term;
+    }
+
+    /// The term its agent's driver leads now (None: it leads none), for the beats' answers
+    /// (`Shared::led`).
+    pub fn set_led(&self, led: Option<crate::pool::term::Term>) {
+        self.shared.lock().unwrap().led = led;
     }
 
     /// The pool's term lease `id` was granted in (0: none, or the pool off).
@@ -6435,6 +6447,36 @@ mod tests {
         assert_eq!(c.expire().iter().map(|l| l.id).collect::<Vec<_>>(), [g.lease]);
         // Back after it: the lease is said ended; its jobs stop.
         assert_eq!(c.member_beat(&word("m1", &[g.lease])).released, [g.lease]);
+    }
+
+    /// docs/coordination.md step 8a: a beat's answer says the term the lead leads, as its answers'
+    /// headers say it (its leases' term, its member said); none while it leads none, while its
+    /// step is taken as hung (no member said), or while its take-up of a term isn't told yet.
+    #[test]
+    fn a_beat_s_answer_says_the_lead_s_term_while_it_leads_it() {
+        let (_d, c, _w) = start();
+        let t = |n: u64| crate::pool::term::Term {
+            term: n,
+            member: "m-lead".into(),
+            host: "mini".into(),
+            app: "x".into(),
+            since: 1,
+            how: "re-asserted".into(),
+            from: n - 1,
+        };
+        let said = || c.member_beat(&word("m1", &[])).term;
+        assert_eq!(said(), None, "leading none");
+        (c.set_term(4), c.set_member(Some("m-lead")), c.set_led(Some(t(4))));
+        assert_eq!(said(), Some(t(4)));
+        c.set_member(None);
+        assert_eq!(said(), None, "its pool's step taken as hung");
+        c.set_member(Some("m-lead"));
+        c.set_led(Some(t(5)));
+        assert_eq!(said(), None, "term 5 taken up, its leases' term not told yet");
+        c.set_term(5);
+        assert_eq!(said(), Some(t(5)));
+        c.set_led(None);
+        assert_eq!(said(), None, "stepped down");
     }
 
     /// The grant on disk, its answer lost to a lead crash: the restarted lead has it, unconfirmed,

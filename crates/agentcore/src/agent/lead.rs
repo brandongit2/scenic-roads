@@ -195,6 +195,10 @@ pub fn after(
     let now = run.side.now();
     let dir = home.join("pool");
     let me = run.side.member().id.clone();
+    // The term it leads, for its members' beats' answers (docs/coordination.md step 8a).
+    if let Some(c) = coord {
+        c.set_led(run.side.driver().current().lead.clone().filter(|t| t.member == me && out.leads == Some(t.term)));
+    }
     // The history.
     let notes = notes(&out.events, &run.side.member().host, now);
     if !notes.is_empty() {
@@ -855,61 +859,6 @@ mod tests {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(30));
             }
-        }
-
-        /// The rollout of the records' readers (docs/pool.md §6.2): the lead of a later term writes
-        /// today's files while any member's heartbeat says its app reads them (an older app's,
-        /// without `reads_records`), and no more once every member's reads the term's snapshot;
-        /// this app's readers read the snapshot either way.
-        #[test]
-        fn todays_files_kept_while_a_members_app_reads_them() {
-            use crate::pool::reachable::PROBE_S;
-            let d = tempfile::tempdir().unwrap();
-            let (mut a, mut b) = pool(d.path());
-            // A restarts: it re-asserts, term 2 (a later term's lead writes today's files).
-            a.run.side.restart().unwrap();
-            until(&mut [&mut a, &mut b], |m| {
-                m[0].run.side.driver().records().is_some_and(|r| r.term == 2 && r.seq > 0)
-            });
-            let root = a.root.clone();
-            let mf = root.join("state/build/manifest.json").unchecked_path();
-            let read = |a: &Mac| crate::pool::records::Records::now(&a.root).unwrap();
-            let rec = a.run.side.driver().records().unwrap().clone();
-            assert_eq!((read(&a).term, read(&a).seq), (rec.term, rec.seq), "this app's readers: the term's snapshot");
-            // Both Macs on this app: today's files written no more.
-            pass_all(&mut [&mut b, &mut a], PROBE_S);
-            a.go();
-            assert!(a.run.side.readers_ready, "both heartbeats say so: {:?}", a.run.side.beats);
-            std::fs::remove_file(&mf).unwrap();
-            a.run.keep_today(true);
-            assert!(!mf.exists(), "every member reads the snapshot: not written");
-            // B's heartbeat not there (lost, or B never beat): counted as an older app's.
-            let hb = root.join(crate::pool::beat::path(&b.id())).unchecked_path();
-            let kept = std::fs::read(&hb).unwrap();
-            std::fs::remove_file(&hb).unwrap();
-            a.pass(PROBE_S);
-            a.go();
-            assert!(!a.run.side.readers_ready, "a member without a heartbeat");
-            std::fs::write(&hb, &kept).unwrap();
-            // B on an older app: its heartbeat without the field (B not stepped, so it stays so).
-            let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&hb).unwrap()).unwrap();
-            assert_eq!(v.as_object_mut().unwrap().remove("reads_records"), Some(serde_json::Value::Bool(true)));
-            std::fs::write(&hb, serde_json::to_vec(&v).unwrap()).unwrap();
-            a.pass(PROBE_S);
-            a.go();
-            assert!(!a.run.side.readers_ready, "B's app reads today's files");
-            a.run.keep_today(true);
-            let m: BTreeMap<String, String> =
-                buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&mf)).unwrap();
-            assert_eq!(m, a.run.side.driver().records().unwrap().manifest, "written for B's readers");
-            assert_eq!(a.run.today.map(|t| t.0), Some(2));
-            // B back on this app: written no more.
-            pass_all(&mut [&mut b, &mut a], crate::pool::beat::BEAT_EVERY_S + PROBE_S);
-            a.go();
-            assert!(a.run.side.readers_ready);
-            std::fs::remove_file(&mf).unwrap();
-            a.run.keep_today(true);
-            assert!(!mf.exists() && a.run.today.is_none());
         }
 
         /// #883 step 9's gate (docs/maplog.md §8): the NAS's old catalogues go only while every

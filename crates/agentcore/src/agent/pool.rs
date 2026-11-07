@@ -349,49 +349,14 @@ pub struct Side {
     /// When (unix s) `beats` were last read whole: a round with a read failing keeps the last.
     pub beats_at: Option<u64>,
     /// Whether every member's heartbeat, as `beats` were last read whole (shadow runs' too: an
-    /// older app on that Mac), says its app reads the term's snapshot (`Beat::reads_records`); a
-    /// member with none read counts as one that doesn't. False until read.
-    pub readers_ready: bool,
-    /// Whether every member's heartbeat, read as `readers_ready`'s, says its app's NAS check looks
-    /// at `map/` (`Beat::checks_map`): the NAS's old catalogues may go (crate::agent::gc). False
-    /// until read.
+    /// older app on that Mac), says its app's NAS check looks at `map/` (`Beat::checks_map`): the
+    /// NAS's old catalogues may go (crate::agent::gc); a member with none read counts as one that
+    /// doesn't. False until read.
     pub all_check_map: bool,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
     /// Its clocks (a test's virtual one: `set_clock`).
     clock: Arc<dyn store::clock::Clock>,
-}
-
-/// The waits between tries of a listing as a member opens (`list_patiently`): 10 and 30 s, ms in a
-/// unit test (`buildstore::out::testing`).
-fn open_backoff() -> [Duration; 2] {
-    if buildstore::out::testing() {
-        [Duration::from_millis(10), Duration::from_millis(30)]
-    } else {
-        [Duration::from_secs(10), Duration::from_secs(30)]
-    }
-}
-
-/// Folder `dir`'s names, the listing tried again after each wait of `backoff` while it fails (on a
-/// NAS under a deadline, crate::agent::nasread::Deadlined, one that hangs fails rather than
-/// waits), each failure logged; the last failure when none answers.
-pub fn list_patiently(nas: &(dyn Nas + Send + Sync), dir: &str, backoff: &[Duration]) -> Result<Vec<String>> {
-    let mut waits = backoff.iter();
-    loop {
-        match nas.list(dir) {
-            Ok(l) => return Ok(l),
-            Err(e) => match waits.next() {
-                Some(w) => {
-                    eprintln!("pool: listing {dir}: {e:#}; trying again in {} ms", w.as_millis());
-                    std::thread::sleep(*w);
-                }
-                None => {
-                    eprintln!("pool: listing {dir}: {e:#}; going on without it");
-                    return Err(e);
-                }
-            },
-        }
-    }
 }
 
 impl Side {
@@ -404,12 +369,13 @@ impl Side {
         std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
         let me = Member { id: id.clone(), host: store::sys::host_name(), app: app.to_string() };
         let (mut saved, written) = load_saved(&dir.join("saved.json"));
-        // (A state from an earlier time the pool was on, its terms since moved aside: it names terms
-        // no longer there, and would hold this member's view above them. Counted as lost: its jobs'
-        // hand-offs not written yet alone kept, as the driver keeps another member's.)
-        if saved.term > 0 && list_patiently(&*nas, crate::pool::term::DIR, &open_backoff()).is_ok_and(|t| t.is_empty())
-        {
-            eprintln!("pool: the NAS has no terms: this member's saved state, of term {}, is from an earlier time the pool was on; set aside", saved.term);
+        // (A state from an earlier time the pool was on, its terms since moved aside: it names a term
+        // no longer there, and would hold this member's view above the terms. Counted as lost: its
+        // jobs' hand-offs not written yet alone kept, as the driver keeps another member's. A stat
+        // of that term's file, never a listing of the terms: no term file is ever removed, and the
+        // folder holds one a re-assertion, 794 on 7 Nov, a listing of 3 to 33 s under load.)
+        if saved.term > 0 && nas.exists(&crate::pool::term::path(saved.term)).is_ok_and(|there| !there) {
+            eprintln!("pool: the NAS has no term {}: this member's saved state is from an earlier time the pool was on; set aside", saved.term);
             std::fs::rename(dir.join("saved.json"), dir.join("saved.earlier.json")).ok();
             saved = Saved { mine: saved.mine.unwritten_only(), ..Default::default() };
         }
@@ -465,7 +431,6 @@ impl Side {
             reach: Vec::new(),
             beats: Vec::new(),
             beats_at: None,
-            readers_ready: false,
             all_check_map: false,
             ahead: 0,
             clock: store::clock::real(),
@@ -679,6 +644,7 @@ impl Side {
             merged: self.http.take_merged(),
             route: self.http.handoff_route(),
             http_only: !self.http.journal_on(now),
+            lead_says: self.http.lead_says(now),
         };
         self.conds = give.conds;
         let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead };
@@ -1284,9 +1250,8 @@ pub struct Run {
     drain_n: u64,
     /// Whether the jobs an earlier process left were taken (`take_left`: once a process).
     left_taken: bool,
-    /// The records (term, seq) last written to today's files; the raw tiles' archives named in the
-    /// stores' indexes and not yet off the records (`Give::named_raw`).
-    pub today: Option<(u64, u64)>,
+    /// The raw tiles' archives named in the stores' indexes and not yet off the records
+    /// (`Give::named_raw`).
     pub named_raw: BTreeSet<String>,
     /// The outbox's jobs drained (once a process: `Run::drain_outbox`), and the hand-off folders'
     /// last files drained, to mark merged (handoff.rs's `<folder>.merged`)
@@ -1564,7 +1529,6 @@ impl Run {
             drained: BTreeSet::new(),
             drain_n: 0,
             left_taken: false,
-            today: None,
             named_raw: BTreeSet::new(),
             outbox_drained: false,
             marks: Vec::new(),
@@ -1690,25 +1654,6 @@ impl Run {
         }
     }
 
-    /// Today's files written from the lead's records after a save (`saved`: this step's are on the
-    /// NAS), while any member's app still reads them (`Side::readers_ready`, §6.2's rollout): once
-    /// every member's reads the term's snapshot they're written no more, and left as they were
-    /// (stale: read by no app that heartbeats), written again at the next save should an older app
-    /// beat again. Term 1's own saves write them (crate::pool::records::Records::save).
-    pub fn keep_today(&mut self, saved: bool) {
-        let Some(rec) = self.side.driver().records() else { return };
-        if self.side.readers_ready {
-            self.today = None;
-            return;
-        }
-        if saved && rec.term >= 2 && rec.seq > 0 && self.today != Some((rec.term, rec.seq)) {
-            match write_today(self.side.nas(), rec) {
-                Ok(()) => self.today = Some((rec.term, rec.seq)),
-                Err(e) => eprintln!("agent: today's records from term {}'s: {e:#}", rec.term),
-            }
-        }
-    }
-
     /// Whom this Mac reaches (docs/pool.md §6.8, crate::pool::reachable), in each of its steps,
     /// before its heartbeat is written: the outcome of its client's requests to the lead's
     /// coordinator counted (an answer from it, as the current term's: `Cx::lead_answered`; a
@@ -1757,7 +1702,6 @@ impl Run {
                 if self.cx.coord.is_some() {
                     self.side.http.set_nas_too(crate::coord::beats::old_in_touch(read.iter().flatten(), &me, now));
                 }
-                self.side.readers_ready = read.iter().all(|h| h.as_ref().is_some_and(|h| h.pool.reads_records));
                 self.side.all_check_map = read.iter().all(|h| h.as_ref().is_some_and(|h| h.pool.checks_map));
                 self.side.beats = read.into_iter().flatten().filter(|h| !h.shadow).map(|h| h.pool).collect();
                 self.side.beats_at = Some(now);
@@ -2249,16 +2193,6 @@ pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Today's files (the manifest, the unverified uploads, the sizes, the job keys) written from `r`
-/// (the records of a term after the first: term 1's own saves write them), for older apps' readers:
-/// this app's read the term's snapshot (§6.2, crate::pool::records::Records::now).
-pub fn write_today(nas: &dyn Nas, r: &Records) -> Result<()> {
-    nas.write_whole("state/build/manifest.json", &serde_json::to_vec_pretty(&r.manifest)?)?;
-    nas.write_whole("state/build/pending.json", &serde_json::to_vec_pretty(&r.pending)?)?;
-    nas.write_whole(buildstore::out::SIZES, &serde_json::to_vec(&r.sizes)?)?;
-    nas.write_whole("state/build/jobs.json", &serde_json::to_vec_pretty(&r.keys)?)
 }
 
 /// The history's events appended to this member's file of their day,
@@ -2993,6 +2927,103 @@ mod tests {
     /// (no mailbox written), taken from its store once, and acknowledged; the lead's Ack comes back
     /// in the answer to the member's next beat (no mailbox either), dropped by the lead once the
     /// member's beat says it took it.
+    /// A NAS whose terms' files and the lead's declaration don't answer while `hung` (a share
+    /// stuck on them); every other call the share's.
+    struct TermsHung(SharedNas, Arc<std::sync::atomic::AtomicBool>);
+
+    impl TermsHung {
+        fn check(&self, path: &str) -> Result<()> {
+            let terms = path.starts_with(crate::pool::term::DIR)
+                || path == crate::pool::term::LEAD
+                || path == crate::pool::term::HINT;
+            anyhow::ensure!(
+                !(terms && self.1.load(std::sync::atomic::Ordering::SeqCst)),
+                "{path}: the share doesn't answer"
+            );
+            Ok(())
+        }
+    }
+
+    impl Nas for TermsHung {
+        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<crate::pool::nas::Created> {
+            self.check(path)?;
+            self.0.create_new(path, bytes)
+        }
+        fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            self.0.write_whole(path, bytes)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            self.check(path)?;
+            self.0.read(path)
+        }
+        fn exists(&self, path: &str) -> Result<bool> {
+            self.check(path)?;
+            self.0.exists(path)
+        }
+        fn list(&self, dir: &str) -> Result<Vec<String>> {
+            self.check(dir)?;
+            self.0.list(dir)
+        }
+        fn remove(&self, path: &str) -> Result<()> {
+            self.0.remove(path)
+        }
+    }
+
+    /// docs/coordination.md step 8a: a member's pool side takes its lead's term from the lead's
+    /// beat answer (as the lead's agent tells its coordinator the term it leads, lead::after), so
+    /// its steps learn the lead and its re-assertions with the terms' files and the declaration
+    /// not answering; its lead's word stale (no answer within `PAGE_AWAY_S`), it reads them again.
+    #[test]
+    fn a_member_learns_its_lead_s_term_by_the_beat_with_the_terms_hung() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let hung = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("a/agent"));
+        assert_eq!(until(&mut a, || Give::default(), |o| o.caught_up).leads, Some(1));
+        let nas: SharedNas = Arc::new(TermsHung(Arc::new(store::nasfs::NasRoot::local_for_test(&r)), hung.clone()));
+        let mut b = side_over(nas, &d.path().join("b/agent"));
+        let (c, _port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "");
+        c.set_member(Some(&a.member().id));
+        c.set_beats(Some(a.http_beats()));
+        let tell = |a: &Side| {
+            let t = a.driver().current().lead.clone().unwrap();
+            c.set_term(t.term);
+            c.set_led(Some(t));
+        };
+        let beat = |b: &Side| {
+            let w = crate::coord::held::Beat {
+                member: "b-host".into(),
+                speaks: vec![crate::coord::held::SPEAKS.into(), crate::coord::beats::SPEAKS.into()],
+                heartbeat: b.http_beats().own(),
+                ..Default::default()
+            };
+            b.http_beats().answered(&c.member_beat(&w), b.now());
+        };
+        let unlearnt = |o: &Out| {
+            o.events.iter().any(|e| matches!(e, Event::Failed { what, .. } | Event::Waits { what, .. } if what.contains("term") || what.contains("declaration")))
+        };
+        tell(&a);
+        beat(&b);
+        hung.store(true, std::sync::atomic::Ordering::SeqCst);
+        let o = b.step(Give::default(), &any);
+        assert_eq!((o.term, o.leads), (1, None), "{:?}", o.events);
+        assert!(!unlearnt(&o), "{:?}", o.events);
+        assert_eq!(b.driver().declared(), Some(a.member().id.as_str()));
+        // A re-asserts (a restart): B learns term 2 from its next answer.
+        a.restart().unwrap();
+        until(&mut a, || Give::default(), |o| o.leads == Some(2));
+        tell(&a);
+        beat(&b);
+        let o = b.step(Give::default(), &any);
+        assert_eq!(o.term, 2, "{:?}", o.events);
+        assert!(!unlearnt(&o), "{:?}", o.events);
+        // No answer lately: the NAS read, which doesn't answer: said.
+        b.ahead += crate::coord::beats::PAGE_AWAY_S;
+        let o = b.step(Give::default(), &any);
+        assert!(unlearnt(&o), "{:?}", o.events);
+        assert_eq!(o.term, 2, "its view kept");
+    }
+
     #[test]
     fn a_members_mail_goes_by_http_alone_to_a_lead_that_serves_it() {
         let mut m = mail_pool();
@@ -3754,21 +3785,9 @@ mod tests {
     }
 
     #[test]
-    fn todays_files_and_the_history_per_writer() {
+    fn the_history_per_writer() {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();
-        let mut rec = Records { term: 2, seq: 4, ..Default::default() };
-        rec.manifest.insert("base/6-1-1".into(), "base/6-1-1.1111111111111111.base".into());
-        rec.keys.record("unit", &[("6/1/1".into(), "k1".into())]);
-        write_today(&store::nasfs::NasRoot::local_for_test(&r), &rec).unwrap();
-        assert_eq!(
-            crate::pool::records::Keys::load(&store::nasfs::NasRoot::local_for_test(r)).recorded("unit", "6/1/1"),
-            Some("k1")
-        );
-        let m: BTreeMap<String, String> =
-            buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&r.join("state/build/manifest.json")))
-                .unwrap();
-        assert_eq!(m, rec.manifest);
         let ev =
             |seq: u64, t: u64| crate::coord::history::Event { seq, t, ..crate::coord::history::Event::new("start") };
         append_history(

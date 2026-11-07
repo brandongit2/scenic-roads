@@ -1266,7 +1266,7 @@ its old path, and the server names their crates:
   `lan_urls`: none, loopback, none) are a test's in its own tests as in agentcore's;
 - the declared lead and this Mac's role (`LEAD`, `Declared`, `declared`, `Role`, `role`, `role_of`,
   `declare`): agentcore::pool::term → buildstore::records::term (the role moving out of pool::term
-  ahead of #878 step 8, docs/roles.md);
+  ahead of #878 step 8c, docs/roles.md);
 - this Mac's member id and its lock (`member_id`, `read_member_id`, `MemberLock`): agentcore::pool
   → buildstore::records::member;
 - this Mac's room target read (`TARGET`, `target`, `RoomTarget`): agentcore's agent::room and

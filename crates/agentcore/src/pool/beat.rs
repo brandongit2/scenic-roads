@@ -37,12 +37,6 @@ pub struct Beat {
     /// the lead's coordinator and the other members' brokers. Written by the agent, not the driver.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reach: Vec<super::reachable::Reach>,
-    /// Its app's readers read the build's records from the term's snapshot (§6.2:
-    /// crate::pool::records::Records::now), not today's files: the lead stops writing those once
-    /// every member's heartbeat says so (crate::agent::pool::Run::keep_today). Left out by apps
-    /// before it.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub reads_records: bool,
     /// Its app's NAS check looks at the map's snapshots (`map/`, crate::agent::NAS_CHECK), not the
     /// old `catalog/`: the lead's GC removes the old catalogues' folders once every member's
     /// heartbeat says so (crate::agent::gc::OLD_CATALOGUES, docs/maplog.md §8 step 9). Left out by

@@ -8693,18 +8693,16 @@ impl Agent {
         }
     }
 
-    /// What the lead keeps written besides its records (docs/pool.md §12): today's files while a
-    /// member's app still reads them (`pool::Run::keep_today`; `saved`: this step's records are on
-    /// the NAS), the raw tiles' and pyramids' archives its records hold named in their stores'
-    /// indexes, its coordinator's store's backup started (crate::pool::store::back_up), its history's
-    /// new events.
+    /// What the lead keeps written besides its records (docs/pool.md §12): GC's queue told of the
+    /// records saved (`saved`: this step's are on the NAS), the raw tiles' and pyramids' archives its
+    /// records hold named in their stores' indexes, its coordinator's store's backup started
+    /// (crate::pool::store::back_up), its history's new events.
     fn pool_lead_files(&mut self, root: &store::nasfs::NasRoot, saved: bool) {
         // (The forecast's files the plan handed over, written below.)
         let (fc_bytes, fc_entry) = std::mem::take(&mut self.fc_pending);
         let here = self.maplog.started();
         let Some(mut guard) = self.pooled() else { return };
         let run = &mut *guard;
-        run.keep_today(saved);
         if let Some(rec) = run.side.driver().records() {
             // (GC's queue told of the records as saved: what they dropped queued, docs/maplog.md §7.2.)
             if let Some(h) = here.as_ref().filter(|_| saved) {

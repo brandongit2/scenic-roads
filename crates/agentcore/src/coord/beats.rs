@@ -154,6 +154,9 @@ struct Inner {
     /// (`keep_lead_view`: `LEAD_VIEW` in the agent's folder).
     lead_view: LeadView,
     lead_view_at: Option<std::path::PathBuf>,
+    /// On a member: the term its lead's last answer said it leads (`Answer::term`), and when that
+    /// answer came (unix s): its driver's step takes it while fresh (`lead_says`).
+    lead_term: Option<(crate::pool::term::Term, u64)>,
 }
 
 /// The registry, shared by a member's pool side, its agent's beat and (on the lead) its coordinator.
@@ -182,6 +185,7 @@ impl Default for Beats {
                 released: Vec::new(),
                 threads: Vec::new(),
                 lead_answered: None,
+                lead_term: None,
                 lead_asks: false,
                 asks_on_nas: true,
                 from_lead: Vec::new(),
@@ -280,6 +284,7 @@ impl Beats {
         let mut g = self.inner.lock().unwrap();
         g.lead_takes = takes;
         g.lead_answered = Some((now, a.speaks.iter().any(|w| w == PAGE)));
+        g.lead_term = a.term.clone().map(|t| (t, now));
         if takes {
             let before = std::mem::take(&mut g.heard);
             for h in &a.members {
@@ -451,6 +456,15 @@ impl Beats {
         self.inner.lock().unwrap().lead_answered.is_some_and(|(at, _)| now.saturating_sub(at) < PAGE_AWAY_S)
     }
 
+    /// On a member: the term its lead's last answer said it leads, that answer within `PAGE_AWAY_S`
+    /// of `now` (docs/coordination.md step 8a): its driver learns its lead and term from it, and
+    /// reads the NAS's declaration and terms only while there's none (an older lead's answers, a
+    /// lead not leading or its step hung, or none answering lately: the owner may have moved it).
+    pub fn lead_says(&self, now: u64) -> Option<crate::pool::term::Term> {
+        let g = self.inner.lock().unwrap();
+        g.lead_term.as_ref().filter(|(_, at)| now.saturating_sub(*at) < PAGE_AWAY_S).map(|(t, _)| t.clone())
+    }
+
     /// The lead's messages to this member as its last answer carried them, after those taken.
     pub fn from_lead(&self) -> Vec<(u64, serde_json::Value)> {
         let g = self.inner.lock().unwrap();
@@ -570,6 +584,7 @@ impl Beats {
         let mut g = self.inner.lock().unwrap();
         g.lead_takes = false;
         g.lead_answered = None;
+        g.lead_term = None;
         (g.lead_asks, g.asks_on_nas) = (false, true);
         g.lead_handoffs = Some(false);
         (g.lead_budgets, g.budgets_on_nas) = (Some(false), true);
@@ -682,6 +697,32 @@ mod tests {
         assert!(old_in_touch([&old, &new], "m-me", 1100));
         assert!(!old_in_touch([&new], "m-me", 1100));
         assert!(!old_in_touch([&old], "m-me", 1000 + crate::pool::beat::OUT_OF_TOUCH_S + 1), "out of touch");
+    }
+
+    /// docs/coordination.md step 8a: a member takes its lead's term from the lead's answer while
+    /// that answer is fresh (`PAGE_AWAY_S`); an answer without one (an older lead, or one not
+    /// leading), none lately, or an older lead's 404, and its driver reads the NAS.
+    #[test]
+    fn a_member_takes_its_lead_s_term_from_a_fresh_answer_alone() {
+        let b = Beats::default();
+        let t = crate::pool::term::Term {
+            term: 7,
+            member: "m-lead".into(),
+            host: "mini".into(),
+            app: "x".into(),
+            since: 1,
+            how: "re-asserted".into(),
+            from: 6,
+        };
+        assert_eq!(b.lead_says(10), None, "no answer yet");
+        b.answered(&Answer { speaks: vec![SPEAKS.into()], term: Some(t.clone()), ..Default::default() }, 10);
+        assert_eq!(b.lead_says(10 + PAGE_AWAY_S - 1), Some(t.clone()));
+        assert_eq!(b.lead_says(10 + PAGE_AWAY_S), None, "the lead not answering lately");
+        b.answered(&Answer { speaks: vec![SPEAKS.into()], ..Default::default() }, 20);
+        assert_eq!(b.lead_says(20), None, "an answer saying no term");
+        b.answered(&Answer { speaks: vec![SPEAKS.into()], term: Some(t), ..Default::default() }, 30);
+        b.lead_older(31);
+        assert_eq!(b.lead_says(31), None, "an older lead's 404");
     }
 
     /// A member's page goes to a lead that says it serves it, while it answers; an older lead's
