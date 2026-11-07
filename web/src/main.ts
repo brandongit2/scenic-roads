@@ -8,7 +8,7 @@ import './style.css';
 import { FIT_LEN_DEFAULT, fitByPct, fitByWidths, pairOf, screenWidthKm, spread, unitOf } from './autofit';
 import { getProfile, getRoadWays, getWay, keepable, onVersions, packChanged, packUrl, packVersion, peekWay, roadWays, setPacks, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setLandColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setLandColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, setRegisterCredits, summariseFeature, withDetails } from './overlays';
@@ -40,16 +40,16 @@ import * as prefs from './prefs';
 import { ROAD_WEIGHT, Store, cleanRoadLook, classMask, defaults, labelShown, modeGroup, fromHash, fromProfile, fromSaved, profileIdOf, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
 import { applyLabelLooks, defaultLooks, labelLayerShown, labelSizeOf } from './labellook';
 import * as cam3d from './camera3d';
-import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, setTerrainAreas, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
+import { applyLabelOpacity, applyLabelSize, applyTerrain, cacheTerrainRays, setTerrainAreas, switchContours } from './terrain';
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
 import { CatalogueWatch } from './catalogue';
 import { PolarCaps } from './polarcaps';
 import { boxKm, viewArea } from './inview';
-import { capGround, globeProjection } from './polarglobe';
+import { globeProjection } from './polarglobe';
 import { nasBack, TileRetry } from './retry';
 import { RegionLayers, regionAt } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
-import { terrainDist } from './terrainstats';
+import { TerrainTint } from './ctl/tint';
 import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
 import { slicedGlyphs } from './glyphs';
@@ -629,79 +629,12 @@ async function main() {
     roads.setCdf(out);
   };
 
-  // Terrain tint: a colour scale like the roads' (ui/scale.ts), over the terrain in view (its
-  // histogram from the DEM tiles drawn, terrainstats.ts). Its range eases to the target as the
-  // road colours' does (frame loop), and the terrain is measured again every few hundred
-  // milliseconds while the view changes, mid-gesture too.
-  let terrainD: Dist | null = null;
-  let terrainDirty = true;
-  let lastTerrain = 0;
-  let tintCur: [number, number] = [...s0.terrain.tintScales[s0.terrain.tintVar].range] as [number, number];
-  let tintSnap = true;
-  let tintCdf: Uint8Array | null = null;
-  let tintCdfKey = '';
-  let tintPreview: string | null = null;
-  let tintKey = `${s0.terrain.tint}|${s0.terrain.tintVar}`;
-  /** Roads coloured so that the tint can follow their range: by elevation (or grade, for slope). */
-  const tintMatchable = () => (store.s.terrain.tintVar === 'slope' ? store.s.mode === 'grade' : store.s.mode === 'elev' || store.s.mode === 'relief');
-  const tintScale = () => {
-    const t = store.s.terrain;
-    const sc = t.tintScales[t.tintVar];
-    return tintPreview ? { ...sc, palette: tintPreview } : sc;
-  };
-  const tintTarget = (): [number, number] => {
-    const t = store.s.terrain;
-    const sc = t.tintScales[t.tintVar];
-    if (t.tintMatch && tintMatchable()) return cur;
-    if (!sc.auto) return sc.range;
-    if (!terrainD || terrainD.total <= 0) return tintCur;
-    return spread(terrainD.quantile(sc.fit[0] / 100), terrainD.quantile(sc.fit[1] / 100), TINT_VARS[t.tintVar].step * 4);
-  };
-  const measureTerrain = () => {
-    const t = store.s.terrain;
-    lastTerrain = performance.now();
-    terrainDirty = false;
-    if (!t.tint || !styleReady) return;
-    const slope = t.tintVar === 'slope';
-    const d = terrainDist(map, slope ? 'slope' : 'dem-tint', TINT_VARS[t.tintVar].domain, groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]), slope ? { max: SLOPE_MAX } : null, capGround(map));
-    if (d) terrainD = d;
-  };
-  const updateTintCdf = () => {
-    const sc = store.s.terrain.tintScales[store.s.terrain.tintVar];
-    if (!sc.equalize || !terrainD || terrainD.total <= 0) {
-      tintCdf = null;
-      tintCdfKey = '';
-      return;
-    }
-    const key = `${tintCur[0].toPrecision(4)}|${tintCur[1].toPrecision(4)}|${terrainD.total.toPrecision(6)}`;
-    if (key === tintCdfKey) return;
-    tintCdfKey = key;
-    tintCdf = cdfOf(terrainD, tintCur);
-  };
-  let tintAt: ((v: number) => [[number, number, number], number]) | null = null;
-  const refreshTint = () => {
-    if (!styleReady) return;
-    updateTintCdf();
-    const t = store.s.terrain;
-    applyTint(map, t, tintScale(), tintCur, tintCdf, store.s.palette, tintCdfKey);
-    tintAt = null;
-  };
-
-  const wireTintPreview = () => {
-    layers.tintCssFor = (key) => tintCss(store.s.terrain, { ...tintScale(), palette: key }, tintCur, store.s.palette);
-    layers.tintColourAt = (v) => {
-      tintAt ??= tintColourAt(store.s.terrain, tintScale(), tintCur, tintCdf, store.s.palette);
-      const [c, a] = tintAt(v);
-      return [`rgb(${c.map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255)).join(',')})`, a];
-    };
-    layers.tintMatchAvailable = tintMatchable;
-    layers.onTintPreview = (key) => {
-      tintPreview = key;
-      refreshTint();
-      layers.updateTint(terrainD, tintCur, tintCdf);
-    };
-    layers.sync(store.s);
-  };
+  // The terrain tint (ctl/tint.ts): its scale over the terrain in view, easing as the roads' does.
+  const tint = new TerrainTint(map, store, {
+    roadRange: () => cur,
+    outline: () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]),
+    styleReady: () => styleReady,
+  });
 
   // ---- UI ------------------------------------------------------------------------
   const km = Math.round(meta.elev_hist_10m_km.reduce((a, b) => a + b, 0));
@@ -729,7 +662,8 @@ async function main() {
   profiles.onChange = () => writeHash();
   const layers = new LayersCard(layersRoot, store, { roads: colour.el, rail: railCard.el, ferry: ferryCard.el, stops: stopsCard.el });
   layers.showBuildings(hasBuildings);
-  wireTintPreview();
+  tint.wire(layers);
+  layers.sync(store.s);
   const statsEl = document.getElementById('stats')!;
   const statsCard = new StatsCard(statsEl);
   installListsResize(statsEl);
@@ -1254,7 +1188,7 @@ async function main() {
     const p = roads.progress();
     colour.update(mdist, cur, cdf);
     railCard.update(railDist, railCur, railCdf);
-    layers.updateTint(terrainD, tintCur, tintCdf);
+    layers.updateTint(tint.dist, tint.cur, tint.cdf);
     layers.updateFilters({ roadLen: stats?.roadLen ?? null, railFreq: railFreqDist, ferryFreq: store.s.ferry.on ? ferries.freqDist() : null });
     layers.update(stats);
     layers.updateRail(railStats);
@@ -1335,39 +1269,23 @@ async function main() {
       }
     }
     {
-      // Terrain tint: measured again every 300 ms while the view changes (150 ms at rest), the
-      // range easing to its target as the roads' does.
-      const t = store.s.terrain;
-      if (t.tint && terrainDirty && now - lastTerrain > (moving ? 300 : 150)) {
-        measureTerrain();
-        panels = true;
-      }
-      if (t.tint) {
-        const tt = tintTarget();
-        const kt = tintSnap ? 1 : k;
-        tintSnap = false;
-        const nt: [number, number] = [tintCur[0] + (tt[0] - tintCur[0]) * kt, tintCur[1] + (tt[1] - tintCur[1]) * kt];
-        if (Math.abs(nt[0] - tintCur[0]) + Math.abs(nt[1] - tintCur[1]) > TINT_VARS[t.tintVar].step * 0.01) {
-          tintCur = nt;
-          refreshTint();
-          panels = true;
-          easing = true;
-        }
-      }
+      const tt = tint.tick(now, moving, k);
+      panels ||= tt.panels;
+      easing ||= tt.easing;
     }
     panelsDue = panels && now - lastPanel <= 60;
     if (panels && !panelsDue) {
       lastPanel = now;
       updateCdf();
       updateRailCdf();
-      refreshTint();
+      tint.refresh();
       // The panels' DOM in idle time (idle.ts), during gestures too (the legends follow the view).
       idle.run('panels', () => {
         refresh();
         profile.redraw();
       }, { moving: true });
     }
-    if (statsDirty || statsJob || easing || panelsDue || (store.s.terrain.tint && terrainDirty)) requestAnimationFrame(tick);
+    if (statsDirty || statsJob || easing || panelsDue || tint.due) requestAnimationFrame(tick);
     else ticking = false;
   };
   function wake() {
@@ -1395,7 +1313,7 @@ async function main() {
     }
   };
   map.on('move', () => {
-    terrainDirty = true;
+    tint.invalidate();
     markDirty();
     if (styleReady) updateCoastRamp(map, store.s.water);
   });
@@ -1414,7 +1332,7 @@ async function main() {
   // New elevation or slope tiles: the terrain in view again.
   map.on('sourcedata', (e) => {
     if ((e.sourceId === 'dem-tint' || e.sourceId === 'slope') && (e as { tile?: unknown }).tile && store.s.terrain.tint) {
-      terrainDirty = true;
+      tint.invalidate();
       wake();
     }
   });
@@ -2201,15 +2119,7 @@ async function main() {
       // (after the terrain: contour lines are added when first shown)
       if (ch.has('lineWeights') || ch.has('terrain')) applyLineWidths(map, s.lineWeights);
       if (ch.has('terrain') || ch.has('palette') || ch.has('mode')) {
-        // Another variable (metres ↔ percent) or the tint just shown: measure and snap to it.
-        const tk = `${s.terrain.tint}|${s.terrain.tintVar}`;
-        if (tk !== tintKey) {
-          tintKey = tk;
-          tintSnap = true;
-          terrainD = null;
-          terrainDirty = true;
-        }
-        refreshTint();
+        tint.apply(s);
         wake();
       }
       if (ch.has('labelOpacity') || ch.has('poiOpacity')) applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
@@ -2422,7 +2332,7 @@ async function main() {
       applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize, (id) => labelSizeOf(store.s.labelLooks, id));
     };
     setHorizonThinning(map, store.s.labelDensity.horizon);
-    refreshTint();
+    tint.refresh();
     overlays.apply(store.s);
     ferries.apply(store.s);
     stations.apply(store.s);
