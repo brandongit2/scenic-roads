@@ -2753,7 +2753,8 @@ mod tests {
     #[test]
     fn every_step_the_agent_runs_has_a_row() {
         // The steps the agent makes jobs of, as its source names them: the planner's work
-        // (`Work { step: "…"`), the jobs it titles (`job(format!("…`, `id: "…"`), the steps the
+        // (`Work { step: "…"`), the jobs it titles (`job(format!("…`, `id: "…"`; the pass's
+        // worldwide jobs, build::pass_work's: `job("…`, `id: format!("…`), the steps the
         // checklist counts (build::COUNTED), and those whose names it puts together.
         // (Each source with its trimmed lines joined, as rustfmt breaks a call across lines.)
         let flat = |s: &str| s.lines().map(str::trim).collect::<String>();
@@ -2774,6 +2775,8 @@ mod tests {
             }
         };
         take(build, "Work { step: \"");
+        take(build, "job(\"");
+        take(build, "id: format!(\"");
         take(agent, "Work { step: \"");
         take(agent, "job(format!(\"");
         take(agent, "id: \"");

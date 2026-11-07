@@ -95,17 +95,17 @@ pub fn outlines_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 
 /// Failures in a row of the outlines job after which the rest of the build no longer waits for it
 /// (`outlines_hold`), while the pass has outlines to go on with.
-pub const OUTLINES_HOLDS: u32 = 3;
+const OUTLINES_HOLDS: u32 = 3;
 
 /// Whether the rest of the build waits for the outlines job (which has work): while the pass has
 /// no outlines (`made`), or until the job has failed `OUTLINES_HOLDS` times in a row.
-pub fn outlines_hold(made: bool, failures: u32) -> bool {
+fn outlines_hold(made: bool, failures: u32) -> bool {
     !made || failures < OUTLINES_HOLDS
 }
 
 /// The coastline's land, once per pass (crate::inputs::regions::land): from the pass's
 /// `coastline` set, made again when the set or `land::LAND_V` changes or it's missing.
-pub fn regions_land_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
+fn regions_land_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (date, m) = (x.date, x.m);
     use crate::inputs::regions::land;
     m.get(&crate::osmpass::set_name(date, "coastline"))?;
@@ -118,7 +118,7 @@ pub fn regions_land_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 /// reads.
 pub const TRAILENDS_V: u32 = 1;
 
-pub fn trailends_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
+fn trailends_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     x.m.get(&crate::osmpass::set_name(x.date, "hikes"))?;
     let k = world_key("trailends", x)?;
     (done.lo.get("trailends").map(String::as_str) != Some(k.as_str()))
@@ -147,7 +147,7 @@ pub fn reach_key(x: &KeyCtx) -> Option<String> {
 /// kana reading: docs/names.md. 3, task #862: roadcore::geo's Mercator and Earth.)
 pub const LABELS_V: u32 = 3;
 
-pub fn labels_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
+fn labels_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     x.m.get(&crate::osmpass::set_name(x.date, "labels"))?;
     let k = world_key("labels", x)?;
     (done.lo.get("labels").map(String::as_str) != Some(k.as_str()))
@@ -158,7 +158,7 @@ pub fn labels_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 /// version of the languages input (docs/inputs.md §6.2: its index's content name, which the job is
 /// given) or rules version: `global/spoken`, which the servers read. None while the input has no
 /// accepted version.
-pub fn spoken_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
+fn spoken_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (date, m) = (x.date, x.m);
     m.get(&format!("sources/osm/{date}/outlines"))?;
     m.get(&crate::inputs::logical(crate::inputs::languages::UNIT))?;
@@ -176,7 +176,7 @@ pub fn spoken_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 ///
 /// Gated by time (`gate_open`): at most every `NAMES_TODO_EVERY_S` (`since`: seconds since it last
 /// ran) while z6 tiles build; after any catalogue once none's left (`idle`).
-pub fn names_todo_work(
+fn names_todo_work(
     served: Option<&str>,
     m: &BTreeMap<String, String>,
     done: &Keys,
@@ -256,6 +256,253 @@ pub fn water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let k = world_key("water", x)?;
     (done.lo.get("water").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "water".into(), targets: vec![("water".into(), k)] })
+}
+
+/// The pass's worldwide steps the checklist counts, after the planet's own (`PassWork::left`).
+pub const WORLDWIDE_STEPS: [&str; 9] =
+    ["pass-sets", "outlines", "trailends", "reach", "buildings", "summits", "labels", "lakefill", "water"];
+
+/// What the planner read for the pass's worldwide steps (`pass_work`) besides the manifest and the
+/// keys: the 3D buildings' declared release (crate::buildtiles::release_of; None while it can't be
+/// read), the lake fill's planned source (crate::lakefill::run::planned_source), why the pass's
+/// reaches, made, don't load now (asked only when the reach job has no work; None: they load, or
+/// aren't made), and each job's failures in a row by its id (counted on this Mac).
+pub struct PassReads<'a> {
+    pub release: Option<String>,
+    pub lakefill: std::result::Result<Option<String>, String>,
+    pub reach: &'a dyn Fn() -> Option<crate::reach::LoadError>,
+    pub failures: &'a dyn Fn(&str) -> u32,
+}
+
+/// What names-to-do is gated by (`names_todo_work`): its inputs' key, the seconds since it last
+/// ran, and whether the build is idle.
+pub struct NamesTodo {
+    pub key: Option<String>,
+    pub since: Option<u64>,
+    pub idle: bool,
+}
+
+/// A job of the pass's worldwide steps (`PassWork::jobs`): its id, its step's command, the
+/// arguments after `--root` and `--scratch`, and the work it records.
+#[derive(Debug)]
+pub struct PassJob {
+    pub id: String,
+    pub step: &'static str,
+    pub args: Vec<String>,
+    pub work: Option<Work>,
+}
+
+/// The pass's worldwide steps' work (`pass_work`).
+#[derive(Debug, Default)]
+pub struct PassWork {
+    /// Their jobs, in the plan's order.
+    pub jobs: Vec<PassJob>,
+    /// Why some wait, said.
+    pub waits: Vec<super::Waiting>,
+    /// The pass's lake fill holds the jobs that read it (the agent's `hold_for_lakefill`).
+    pub lakefill_held: bool,
+    /// Everything else waits for the pass's outlines: nothing more planned.
+    pub outlines_hold: bool,
+    /// The 3D buildings' release is made (or none is declared): its scan's parts may go.
+    pub buildings_made: bool,
+    /// The summits' work (placed after the regions' plan, which says whether the terrain they read
+    /// is built).
+    pub summits: Option<Work>,
+    /// Each of `WORLDWIDE_STEPS` left (a run, or its output missing from the manifest), for the
+    /// checklist, held or not.
+    pub left: [bool; 9],
+}
+
+/// The pass's worldwide steps (pass `date`, none before the first), and names-to-do after each
+/// catalogue: each step's work, its job's arguments, and apart its hold or wait, from one place for
+/// the plan's jobs and the checklist's lines. A held step's work is left out of the jobs; the
+/// checklist still counts it left (`PassWork::left`, with its own checks of an output missing from
+/// the manifest). `names`: what names-to-do is gated by, asked only once the outlines hold nothing
+/// (None: not planned, the checklist's).
+pub fn pass_work(
+    date: Option<&str>,
+    m: &BTreeMap<String, String>,
+    keys: &Keys,
+    reads: PassReads,
+    names: Option<&dyn Fn() -> NamesTodo>,
+) -> PassWork {
+    let mut w = PassWork::default();
+    let wait = |step: Option<&str>, what: &str, why: String| super::Waiting {
+        step: step.map(str::to_string),
+        what: what.into(),
+        why,
+    };
+    if let Some(date) = date {
+        let cx = PassCtx::default();
+        let px = cx.ctx(date, m);
+        let p = vec!["--pass".to_string(), date.to_string()];
+        let sets = !crate::osmpass::SETS.iter().all(|st| m.contains_key(&crate::osmpass::set_name(date, st.0)));
+        let outlines = outlines_work(&px, keys);
+        let outlines_made = m.contains_key(&format!("sources/osm/{date}/outlines"));
+        let trailends = trailends_work(&px, keys);
+        let reach = reach_work(&px, keys);
+        let buildings = reads.release.as_deref().filter(|r| !m.contains_key(&crate::buildtiles::index_logical(r)));
+        w.summits = summits_work(&px, keys);
+        let labels = labels_work(&px, keys);
+        let lakefill = reads.lakefill.as_ref().map(|s| lakefill_work(date, m, keys, s.as_deref()));
+        let water = water_work(&px, keys);
+        w.left = [
+            sets,
+            outlines.is_some() || !outlines_made,
+            trailends.is_some() || !m.contains_key(&crate::osmpass::set_name(date, "hikes")),
+            reach.is_some(),
+            reads.release.as_ref().is_none_or(|r| !m.contains_key(&crate::buildtiles::index_logical(r))),
+            w.summits.is_some() || !m.contains_key(&format!("work/summits/{date}")),
+            labels.is_some(),
+            // (A source folder that can't be read: held, left, as the jobs see it.)
+            lakefill.as_ref().map_or(true, |l| l.is_some()),
+            water.is_some(),
+        ];
+        // (A job of the pass is named by its step and the pass.)
+        let job = |step: &'static str, args: Vec<String>, work: Option<Work>| PassJob {
+            id: format!("{step} {date}"),
+            step,
+            args,
+            work,
+        };
+        if sets {
+            w.jobs.push(job("pass-sets", p.clone(), None));
+        }
+        // The pass's outlines (their own step: made again when their assembly changes, not at the
+        // next pass). While they have work, nothing else is planned (the regions' coverage, the
+        // languages spoken, the lake fill, the rail feeds and the catalogue read them), so nothing
+        // is made from the outlines they replace; unless the job has failed `OUTLINES_HOLDS` times
+        // in a row and the pass has outlines: the rest then goes on with those.
+        if let Some(o) = outlines {
+            let failures = (reads.failures)(&format!("outlines {date}"));
+            w.jobs.push(job("outlines", p.clone(), Some(o)));
+            if outlines_hold(outlines_made, failures) {
+                w.waits.push(wait(
+                    None,
+                    "Building",
+                    "waits for the pass's outlines to be assembled (the outlines job)".into(),
+                ));
+                w.outlines_hold = true;
+                return w;
+            }
+            w.waits.push(wait(
+                Some("outlines"),
+                "outlines",
+                format!("failed {failures} times in a row: the rest goes on with the outlines the pass has meanwhile"),
+            ));
+        }
+        if let Some(t) = trailends {
+            w.jobs.push(job("trailends", p.clone(), Some(t)));
+        }
+        // The coastline's land, which the regions' check cuts a region with water back to.
+        if let Some(l) = regions_land_work(&px, keys) {
+            w.jobs.push(job("regions-land", p.clone(), Some(l)));
+        }
+        if let Some(r) = reach {
+            w.jobs.push(job("reach", p.clone(), Some(r)));
+        } else {
+            match (reads.reach)() {
+                // Made, but it doesn't decode: made again.
+                Some(crate::reach::LoadError::Bad(e)) => {
+                    w.waits.push(wait(
+                        None,
+                        "roads",
+                        format!("the pass's reaches don't read ({e}); making them again"),
+                    ));
+                    if let Some(k) = reach_key(&px) {
+                        let r = Work { step: "reach".into(), targets: vec![("reach".into(), k)] };
+                        w.jobs.push(job("reach", p.clone(), Some(r)));
+                    }
+                }
+                Some(crate::reach::LoadError::Io(e)) => {
+                    w.waits.push(wait(None, "roads", format!("the pass's reaches can't be read now: {e}")))
+                }
+                None => {}
+            }
+        }
+        // (Of the declared release: none before the source declarations are accepted.)
+        match buildings {
+            Some(release) => w.jobs.push(PassJob {
+                id: format!("buildings {release}"),
+                step: "buildings",
+                args: Vec::new(),
+                work: None,
+            }),
+            None => w.buildings_made = true,
+        }
+        if let Some(l) = labels {
+            w.jobs.push(job("labels", p.clone(), Some(l)));
+        }
+        let table = m.get(&crate::inputs::logical(crate::inputs::languages::UNIT));
+        if let (Some(s), Some(table)) = (spoken_work(&px, keys), table) {
+            // (The languages' accepted version the key names.)
+            let args = [p.clone(), vec!["--languages-index".to_string(), table.clone()]].concat();
+            w.jobs.push(job("spoken", args, Some(s)));
+        } else if table.is_none() && outlines_made {
+            w.waits.push(wait(
+                Some("spoken"),
+                "spoken",
+                "the languages' first accepted version (the input check takes inputs/languages/ in)".into(),
+            ));
+        }
+        if !m.contains_key(&crate::inputs::logical(crate::inputs::heritage::UNIT)) {
+            w.waits.push(wait(
+                Some("heritage-sites"),
+                "heritage-sites",
+                "the heritage registers' first accepted version (the input check takes inputs/heritage/ in)".into(),
+            ));
+        }
+        // (The lakes filled from Canada's own data first: while the lakefill job has work, unless it
+        // has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with a new
+        // app), the jobs that read the fill wait (the water, the depth's water digests, the
+        // catalogue), so the pass's water, depth and map all have the new fill, or after that many
+        // failures all go without it. While the source's folder can't be read, or while its source
+        // isn't declared, they wait too.)
+        match lakefill {
+            Err(e) => {
+                w.lakefill_held = true;
+                w.waits.push(wait(Some("lakefill"), "lakefill", e.clone()));
+            }
+            Ok(lakefill) => {
+                let failures = (reads.failures)(&format!("lakefill {date}"));
+                w.lakefill_held = water_waits_for_lakefill(lakefill.is_some(), failures);
+                if let Some(l) = lakefill {
+                    if failures >= LAKEFILL_HOLDS {
+                        w.waits.push(wait(Some("lakefill"), "lakefill", format!("failed {failures} times in a row: the water, terrain and map go without this pass's fill meanwhile")));
+                    }
+                    w.jobs.push(job("lakefill", p.clone(), Some(l)));
+                }
+            }
+        }
+        if let Some(wa) = water {
+            w.jobs.push(job("water", p.clone(), Some(wa)));
+        }
+    }
+    // After each catalogue the map serves: the names to translate and descriptions to write. (From
+    // the translations' and descriptions' accepted versions, which the agent names: the job reads
+    // them through the accessor, never the inputs folders.)
+    let Some(names) = names else { return w };
+    let n = names();
+    let units = [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT];
+    if let Some(todo) = names_todo_work(n.key.as_deref(), m, keys, n.since, n.idle) {
+        let mut args = Vec::new();
+        for unit in units {
+            args.extend([format!("--{unit}-index"), m.get(&crate::inputs::logical(unit)).cloned().unwrap_or_default()]);
+        }
+        w.jobs.push(PassJob {
+            id: format!("names-todo {}", todo.targets[0].1),
+            step: "names-todo",
+            args,
+            work: Some(todo),
+        });
+    } else if n.key.is_some() && units.iter().any(|u| !m.contains_key(&crate::inputs::logical(u))) {
+        w.waits.push(wait(
+            Some("names-todo"),
+            "names-todo",
+            "the translations' or the descriptions' first accepted version (the input check takes them in)".into(),
+        ));
+    }
+    w
 }
 
 /// Whether z6 tile `u` is built for the coverage: some road it owns may touch it (`Reach::builds`, at
@@ -585,7 +832,7 @@ pub const SUMMITS_V: u32 = 1;
 /// Its key: the pass's summits set and the terrain packs' z8 it reads (crate::peaks::z8::digest).
 /// The agent runs it only once no terrain-hi or terrain-lo work is left (its readiness: crate::agent::steps), so
 /// a lo pack still to be made doesn't make it twice.
-pub fn summits_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
+fn summits_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     x.m.get(&crate::osmpass::set_name(x.date, "summits"))?;
     let k = world_key("summits", x)?;
     (done.lo.get("summits").map(String::as_str) != Some(k.as_str()))

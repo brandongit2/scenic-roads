@@ -1461,176 +1461,41 @@ impl Planner {
             JobSpec { id, what, cmd, needs: Needs { nas: true }, restart_after_sleep: true, record }
         };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
-        // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
-        // release), the summits, the labels, the water.
-        // (The pass's steps keyed as the pass has them, before the coverage: build::PASS_STEPS.)
-        let pass_cx = build::PassCtx::default();
-        if let Some(date) = pass {
-            let px = pass_cx.ctx(date, &manifest);
-            let p = vec!["--pass".to_string(), date.to_string()];
-            if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
-                jobs.push(job(format!("pass-sets {date}"), "pass-sets", p.clone(), None));
-            }
-            // The pass's outlines (their own step: made again when their assembly changes, not at
-            // the next pass). While they have work, nothing else is planned (the regions' coverage,
-            // the languages spoken, the lake fill, the rail feeds and the catalogue read them), so
-            // nothing is made from the outlines they replace; unless the job has failed
-            // `build::OUTLINES_HOLDS` times in a row (counted on this Mac) and the pass has
-            // outlines: the rest then goes on with those.
-            if let Some(w) = build::outlines_work(&px, &keys) {
-                let failures = self.inp.mem.retry.get(&format!("outlines {date}")).map_or(0, |r| r.0);
-                let made = manifest.contains_key(&format!("sources/osm/{date}/outlines"));
-                jobs.push(job(format!("outlines {date}"), "outlines", p.clone(), Some(w)));
-                if build::outlines_hold(made, failures) {
-                    waiting.push(Waiting {
-                        step: None,
-                        what: "Building".into(),
-                        why: "waits for the pass's outlines to be assembled (the outlines job)".into(),
-                    });
-                    return jobs;
-                }
-                waiting.push(Waiting {
-                    step: Some("outlines".into()),
-                    what: "outlines".into(),
-                    why: format!(
-                        "failed {failures} times in a row: the rest goes on with the outlines the pass has meanwhile"
-                    ),
-                });
-            }
-            if let Some(w) = build::trailends_work(&px, &keys) {
-                jobs.push(job(format!("trailends {date}"), "trailends", p.clone(), Some(w)));
-            }
-            // The coastline's land, which the regions' check cuts a region with water back to.
-            if let Some(w) = build::regions_land_work(&px, &keys) {
-                jobs.push(job(format!("regions-land {date}"), "regions-land", p.clone(), Some(w)));
-            }
-            let reach_job = |w: jobs::Work| job(format!("reach {date}"), "reach", p.clone(), Some(w));
-            if let Some(w) = build::reach_work(&px, &keys) {
-                jobs.push(reach_job(w));
-            } else if let Err(why) = self.current_reach(root, &manifest, &keys, date) {
-                match why {
-                    // Made, but it doesn't decode: made again.
-                    crate::reach::LoadError::Bad(e) => {
-                        waiting.push(Waiting {
-                            step: None,
-                            what: "roads".into(),
-                            why: format!("the pass's reaches don't read ({e}); making them again"),
-                        });
-                        if let Some(k) = build::reach_key(&px) {
-                            jobs.push(reach_job(jobs::Work {
-                                step: "reach".into(),
-                                targets: vec![("reach".into(), k)],
-                            }));
-                        }
-                    }
-                    crate::reach::LoadError::Io(e) => waiting.push(Waiting {
-                        step: None,
-                        what: "roads".into(),
-                        why: format!("the pass's reaches can't be read now: {e}"),
-                    }),
-                }
-            }
-            // (Of the declared release: none before the source declarations are accepted.)
-            let release = crate::buildtiles::release_of(root, &manifest).ok();
-            if let Some(release) =
-                release.as_deref().filter(|r| !manifest.contains_key(&crate::buildtiles::index_logical(r)))
-            {
-                jobs.push(job(format!("buildings {release}"), "buildings", Vec::new(), None));
-            } else if let Ok(rd) = std::fs::read_dir(self.o.home.join("scratch/buildings")) {
+        // since it ran), the outlines, the hiking routes' ends, the coastline's land, the reaches,
+        // Overture's buildings (once per release), the labels, the languages spoken, the lake fill,
+        // the water; then the names to translate and descriptions to write (build::pass_work). The
+        // summits come after the regions' plan, below.
+        let reads = build::PassReads {
+            release: pass.and_then(|_| crate::buildtiles::release_of(root, &manifest).ok()),
+            lakefill: pass.map_or(Ok(None), |_| crate::lakefill::run::planned_source(root, &manifest)),
+            reach: &|| pass.and_then(|date| self.current_reach(root, &manifest, &keys, date).err()),
+            failures: &|id| self.inp.mem.retry.get(id).map_or(0, |r| r.0),
+        };
+        // (Names-to-do's inputs' key: the last batch of the map's log touching what they read. The
+        // steps gated by time: when each last ran, as its recorded key changed.)
+        let names = || {
+            let key = crate::namestodo::inputs_seq(
+                &self.map_marks(),
+                self.inp.map.as_ref().and_then(|h| h.feed.map()).as_deref(),
+            );
+            self.note_ran(&keys);
+            let r = self.catalogues.borrow();
+            build::NamesTodo { key, since: r.since("names-todo", now_s()), idle: r.idle }
+        };
+        let mut pw = build::pass_work(pass, &manifest, &keys, reads, Some(&names));
+        held.lakefill = pw.lakefill_held;
+        waiting.append(&mut pw.waits);
+        jobs.extend(std::mem::take(&mut pw.jobs).into_iter().map(|j| job(j.id, j.step, j.args, j.work)));
+        if pw.outlines_hold {
+            return jobs;
+        }
+        if pw.buildings_made {
+            if let Ok(rd) = std::fs::read_dir(self.o.home.join("scratch/buildings")) {
                 // Made: the scan's parts (~40 GB) go, even from a run stopped before it removed them.
                 for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("parts-")) {
                     std::fs::remove_dir_all(e.path()).ok();
                 }
             }
-            if let Some(w) = build::labels_work(&px, &keys) {
-                jobs.push(job(format!("labels {date}"), "labels", p.clone(), Some(w)));
-            }
-            let table = manifest.get(&crate::inputs::logical(crate::inputs::languages::UNIT));
-            if let (Some(w), Some(table)) = (build::spoken_work(&px, &keys), table) {
-                // (The languages' accepted version the key names.)
-                jobs.push(job(
-                    format!("spoken {date}"),
-                    "spoken",
-                    [p.clone(), vec!["--languages-index".to_string(), table.clone()]].concat(),
-                    Some(w),
-                ));
-            } else if table.is_none() && manifest.contains_key(&format!("sources/osm/{date}/outlines")) {
-                waiting.push(Waiting {
-                    step: Some("spoken".into()),
-                    what: "spoken".into(),
-                    why: "the languages' first accepted version (the input check takes inputs/languages/ in)".into(),
-                });
-            }
-            if !manifest.contains_key(&crate::inputs::logical(crate::inputs::heritage::UNIT)) {
-                waiting.push(Waiting {
-                    step: Some("heritage-sites".into()),
-                    what: "heritage-sites".into(),
-                    why: "the heritage registers' first accepted version (the input check takes inputs/heritage/ in)"
-                        .into(),
-                });
-            }
-            // (The lakes filled from Canada's own data first: while the lakefill job has work, unless
-            // it has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with
-            // a new app), the jobs that read the fill wait (`hold_for_lakefill`: the water, the
-            // depth's water digests, the catalogue), so the pass's water, depth and map all have
-            // the new fill, or after that many failures all go without it. While the source's folder
-            // can't be read, or while its source isn't declared, they wait too.)
-            match crate::lakefill::run::planned_source(root, &manifest) {
-                Err(e) => {
-                    held.lakefill = true;
-                    waiting.push(Waiting { step: Some("lakefill".into()), what: "lakefill".into(), why: e });
-                }
-                Ok(source) => {
-                    let lakefill = build::lakefill_work(date, &manifest, &keys, source.as_deref());
-                    let failures = self.inp.mem.retry.get(&format!("lakefill {date}")).map_or(0, |r| r.0);
-                    held.lakefill = build::water_waits_for_lakefill(lakefill.is_some(), failures);
-                    if let Some(w) = lakefill {
-                        if failures >= build::LAKEFILL_HOLDS {
-                            waiting.push(Waiting { step: Some("lakefill".into()), what: "lakefill".into(), why: format!("failed {failures} times in a row: the water, terrain and map go without this pass's fill meanwhile") });
-                        }
-                        jobs.push(job(format!("lakefill {date}"), "lakefill", p.clone(), Some(w)));
-                    }
-                }
-            }
-            if let Some(w) = build::water_work(&px, &keys) {
-                jobs.push(job(format!("water {date}"), "water", p.clone(), Some(w)));
-            }
-        }
-        // After each catalogue the map serves: the names to translate and descriptions to write.
-        // (From the translations' and descriptions' accepted versions, which the agent names: the
-        // job reads them through the accessor, never the inputs folders.)
-        // (Their inputs' key: the last batch of the map's log touching what they read.)
-        let names_key = crate::namestodo::inputs_seq(
-            &self.map_marks(),
-            self.inp.map.as_ref().and_then(|h| h.feed.map()).as_deref(),
-        );
-        // (The steps gated by time: when each last ran, as its recorded key changed.)
-        self.note_ran(&keys);
-        let (since, idle) = {
-            let r = self.catalogues.borrow();
-            (r.since("names-todo", now_s()), r.idle)
-        };
-        if let Some(w) = build::names_todo_work(names_key.as_deref(), &manifest, &keys, since, idle) {
-            let n = w.targets[0].1.clone();
-            let mut args = Vec::new();
-            for unit in [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT] {
-                args.extend([
-                    format!("--{unit}-index"),
-                    manifest.get(&crate::inputs::logical(unit)).cloned().unwrap_or_default(),
-                ]);
-            }
-            jobs.push(job(format!("names-todo {n}"), "names-todo", args, Some(w)));
-        } else if names_key.is_some()
-            && [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT]
-                .iter()
-                .any(|u| !manifest.contains_key(&crate::inputs::logical(u)))
-        {
-            waiting.push(Waiting {
-                step: Some("names-todo".into()),
-                what: "names-todo".into(),
-                why: "the translations' or the descriptions' first accepted version (the input check takes them in)"
-                    .into(),
-            });
         }
         if recipes.is_empty() {
             return jobs;
@@ -1847,7 +1712,7 @@ impl Planner {
                 Some(w),
             ));
         }
-        let summits = build::summits_work(&pass_cx.ctx(date, &manifest), &done);
+        let summits = pw.summits.take();
         // (Held, they're the landmarks chain's first step in the forecast, after the terrain.)
         let mut summits_held = None;
         let summits_waits = match steps::readiness("summits", "summits", &planned.left) {
@@ -2821,13 +2686,13 @@ impl Planner {
         });
         let Some(date) = have else {
             // Nothing to size the rest by until a pass is complete: its steps, to come.
-            items.extend(WORLDWIDE_STEPS.iter().map(|s| progress::Item { step: s.to_string(), ..Default::default() }));
+            items.extend(
+                build::WORLDWIDE_STEPS.iter().map(|s| progress::Item { step: s.to_string(), ..Default::default() }),
+            );
             items.extend(build::checklist_to_come());
             return build::fold(&items, &next, &notes);
         };
         let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
-        let pass_cx = build::PassCtx::default();
-        let px = pass_cx.ctx(&date, &manifest);
         // Countries the pass couldn't assemble, kept as the previous pass's outlines: said on the
         // pass's line until a pass has them whole (crate::outlines::assemble).
         if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
@@ -2847,29 +2712,23 @@ impl Planner {
                 }
             }
         }
-        // The pass's worldwide steps, each one run left or none.
-        let left = [
-            !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),
-            build::outlines_work(&px, &keys).is_some()
-                || !manifest.contains_key(&format!("sources/osm/{date}/outlines")),
-            build::trailends_work(&px, &keys).is_some()
-                || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
-            build::reach_work(&px, &keys).is_some(),
-            crate::buildtiles::release_of(root, &manifest)
-                .map_or(true, |r| !manifest.contains_key(&crate::buildtiles::index_logical(&r))),
-            build::summits_work(&px, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
-            build::labels_work(&px, &keys).is_some(),
-            // (A source folder that can't be read: held, left, as the jobs see it.)
-            crate::lakefill::run::planned_source(root, &manifest)
-                .map_or(true, |s| build::lakefill_work(&date, &manifest, &keys, s.as_deref()).is_some()),
-            build::water_work(&px, &keys).is_some(),
-        ];
-        items.extend(WORLDWIDE_STEPS.iter().zip(left).map(|(s, l)| progress::Item {
+        // The pass's worldwide steps, each one run left or none (held or not: build::pass_work's).
+        let reads = build::PassReads {
+            release: crate::buildtiles::release_of(root, &manifest).ok(),
+            lakefill: crate::lakefill::run::planned_source(root, &manifest),
+            reach: &|| None,
+            failures: &|_| 0,
+        };
+        let left = build::pass_work(Some(&date), &manifest, &keys, reads, None).left;
+        items.extend(build::WORLDWIDE_STEPS.iter().zip(left).map(|(s, l)| progress::Item {
             step: s.to_string(),
             left: Some(l as usize),
             ..Default::default()
         }));
-        next.insert("pass", WORLDWIDE_STEPS.iter().zip(left).filter(|(_, l)| *l).map(|(s, _)| s.to_string()).collect());
+        next.insert(
+            "pass",
+            build::WORLDWIDE_STEPS.iter().zip(left).filter(|(_, l)| *l).map(|(s, _)| s.to_string()).collect(),
+        );
         // The regions' steps as the plan found them, with its keys (none while no plan got that far:
         // the coverage unread, say).
         if let Some((more, more_next)) = self.regions_checklist.borrow().clone().filter(|_| !regions.is_empty()) {

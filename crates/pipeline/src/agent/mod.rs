@@ -318,10 +318,6 @@ fn write_published(home: &Path, r: &publish::LastCatalogue) -> Result<()> {
     store::whole::write(&home.join(PUBLISHED_FILE), &serde_json::to_vec(r)?)
 }
 
-/// The pass's worldwide steps the checklist counts, after the planet's own.
-const WORLDWIDE_STEPS: [&str; 9] =
-    ["pass-sets", "outlines", "trailends", "reach", "buildings", "summits", "labels", "lakefill", "water"];
-
 /// The loop's pool steps passed over in a row, a tick holding the run, before the status says the
 /// pool's step hangs (about a minute of the loop's steps; or at once past `STALL_S`).
 const HUNG_SKIPS: u32 = 3;
