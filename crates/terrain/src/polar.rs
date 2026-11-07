@@ -635,12 +635,6 @@ pub fn root(
 
 // ---- The steps (pipeline::agent::build's polar chain) ----------------------------------------------
 
-/// The pool over latitudes `b` (crate::terrain_base::Pool), its levels' plans read to `max_z`.
-fn pool_plans(out: &buildstore::out::Out, b: [f64; 4], max_z: u8) -> Result<(Vec<Plan>, store::nasfs::NasPath)> {
-    let pool = crate::terrain_base::Pool::read(out.root(), &out.manifest, b)?;
-    Ok((plans(&pool.plan, max_z), pool.store.clone()))
-}
-
 /// The cap's finest zoom (`finest`) of the declared datasets the build's records name.
 pub fn finest_now(out: &buildstore::out::Out, pole: Pole) -> Result<u8> {
     let sets = crate::terrain_zoom::Declared::read(out.root(), &out.manifest)?.map(|d| d.sets).unwrap_or_default();
@@ -703,8 +697,16 @@ pub fn terrain_step(out: &mut buildstore::out::Out, targets: &[(Pole, (u32, u32)
         jobrt::control::safe_point("polar-terrain");
         jobrt::jobs::report(k as u64, targets.len() as u64, "polar blocks");
         let max_z = finest_now(out, pole)?;
-        let (plans, store) = pool_plans(out, polar::lat_box(pole, BLOCK_Z, b.0, b.1), max_z)?;
-        let o = inputs::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
+        // (The pool over the block's latitudes; the stored files the block reads much of read from
+        // this Mac's whole copies, as the terrain's are, buildstore::localread: the same bytes.)
+        let area = polar::lat_box(pole, BLOCK_Z, b.0, b.1);
+        let pool = crate::terrain_base::Pool::read(out.root(), &out.manifest, area)?;
+        let plans = plans(&pool.plan, max_z);
+        let o = inputs::dem::generic::Opts {
+            fetch: &net,
+            store: Some(pool.store.clone()),
+            local: pool.local.as_ref().map(|local| inputs::dem::generic::Copies { local, area }),
+        };
         let ss = samplers(&plans, &o)?;
         let voids = Voids::default();
         let mut pieces = jobrt::resume_log::Pieces::open(
