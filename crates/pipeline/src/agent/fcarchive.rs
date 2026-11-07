@@ -750,6 +750,7 @@ mod tests {
             unknown: Vec::new(),
             paused: false,
             along: Default::default(),
+            code: crate::agent::forecast::VERSION,
         };
         let rec = Record { input: inp, each_s: [("unit".to_string(), 191.23)].into(), waiting: Default::default() };
         let f = Forecast {

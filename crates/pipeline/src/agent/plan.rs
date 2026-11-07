@@ -2691,6 +2691,7 @@ impl Planner {
             step_pace: BTreeMap::new(),
             paused: self.inp.pause.is_some(),
             along: left.along.clone(),
+            code: forecast::VERSION,
             // (The targets an input of which can't be worked out yet wait for what works it out,
             // as the plan holds them: the slope tiles reading the terrain's root while it's stale.)
             unknown: left

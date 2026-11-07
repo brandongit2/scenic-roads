@@ -88,11 +88,13 @@ Callers, each supplying only its `View`:
 | Caller | Its `View::left` | Replaces |
 |---|---|---|
 | the planner (`build::plan`, every `*_work`) | the target's recorded key isn't its key now (`Keys`, `TerrainWork::is_left` generalised to every step) | `build::waits`, the chain functions' hand orderings, `HERITAGE_WAIT` and the other wait strings (the note is `Read`-derived: "wait for {step} {targets}") |
-| the forecast (`forecast::items`) | not given its own `View`: it calls `read_targets` (with its input's `along`, the plan's) and maps each to an item index (a `Whole` read to one shared group per step, as #867's `shared_waits`) | `chain_deps`, `UNITS_NEED`, `reads_terrain`, the held-chain guard |
+| the forecast (`forecast::items`) | not given its own `View`: it calls `read_targets_passing` (with its input's `along`, the plan's) and maps each to an item index (a `Whole` read to one shared group per step, as #867's `shared_waits`); a read not in the plan that passes waits on, to what it waits on in turn (`forecast::Waits`, the planner's `held` and `whole_left`) | `chain_deps`, `UNITS_NEED`, `reads_terrain`, the held-chain guard |
 | the page and `scenic status` | the planner's | `wait_note`'s fallbacks |
 
-The planner and the forecast agree by construction: both enumerate `read_targets`; the forecast's
-deps are exactly those reads still in the plan. The #867 guard existed because the planner held
+The planner and the forecast agree by construction: both enumerate the same declared reads; the
+forecast's deps are the reads still in the plan, and through a read not in it that passes waits on
+(3b below), what that read waits on (task #988: until then the forecast stopped at such a read, and
+ran at once the depth tiles the plan held for the terrain under their lakes' estimates). The #867 guard existed because the planner held
 chain jobs for reasons it never declared. Under this design the planner may hold a target only
 through `readiness`, and a test enforces that (§7). The guard and its "offers lack it" inference go.
 
@@ -202,7 +204,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      lists what a target waits for; `steps::wait_note` words the holds ("wait for terrain-hi (12)").
      The planner holds every target through it (terrain, slope, trees, the z6 tiles' wait for
      heritage-sites, reach and buildings, the landmarks, the 3D buildings, depth, polar, the
-     summits' hold in the agent); the forecast's items wait on `read_targets` (`waits_of`, a
+     summits' hold in the agent); the forecast's items wait on the same reads (`forecast::Waits`, a
      `Whole` read one shared set); the page and `scenic status` show the planner's notes.
      `/work/tocome` gives job-to-job dependencies (`jobs`, `deps`, `after` per job) and the build
      page draws single-job arrows.
@@ -438,9 +440,10 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
   out of its offers for readiness has `readiness != Yes`, and every target with `Yes` and a stale key
   is offered (the planner holds nothing undeclared). Replaces #867's held-chain guard.
 - `forecast::tests::the_forecast_waits_for_what_the_planner_does` (built): for each fixture and on a
-  `SCENIC_FORECAST_RECORD` record, each item's deps (expanded through its groups) equal
-  `read_targets` filtered to items in the plan, and the forecast places none before what it waits
-  on ends. Planned: replaying the forecast's first grants through the planner, each offered at
+  `SCENIC_FORECAST_RECORD` record, each item's deps (expanded through its groups) equal what the
+  planner's `readiness` holds it for over a view of the items listed before it (a read not listed
+  that waits, expanded to what it waits on), and the forecast places none before what it waits on
+  ends; `forecast::tests::a_target_waits_through_a_read_built_as_it_stands` (built, task #988). Planned: replaying the forecast's first grants through the planner, each offered at
   the time the forecast places it. Supersedes
   `a_replay_never_places_a_target_the_live_plan_holds_back`.
 - `steps::tests::a_key_names_exactly_its_reads`: for each step, changing each declared input (one at

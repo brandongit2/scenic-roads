@@ -310,19 +310,51 @@ pub trait View {
 /// long ways from `along`: the one list the planner and the forecast both wait on. Sorted, no
 /// repeats; inputs aren't targets.
 pub fn read_targets(step: &str, t: &str, along: Option<&Along>) -> Vec<ReadTarget> {
-    let mut v: Vec<ReadTarget> = Vec::new();
+    let mut v: Vec<ReadTarget> = read_targets_passing(step, t, along).into_iter().map(|r| r.0).collect();
+    v.dedup();
+    v
+}
+
+/// `read_targets`, each with whether a wait passes on through it (`readiness`): a target read
+/// that isn't left still holds its reader while it waits itself (`held`: a `Read::Targets` of a
+/// grain that `passes_on`, a `Read::Mids`), and so does a step read whole none of whose targets is
+/// left while anything it reads is (`whole_left`: a `Read::Whole` of a grain that passes on); an
+/// `Along` or `Built` read holds it only while left. Sorted, no repeats.
+pub fn read_targets_passing(step: &str, t: &str, along: Option<&Along>) -> Vec<(ReadTarget, bool)> {
+    let mut v: Vec<(ReadTarget, bool)> = Vec::new();
     for r in row(step).map_or(&[][..], |r| r.reads) {
         match *r {
-            Read::Targets { step, of, .. } | Read::Mids { step, of, .. } => {
-                v.extend(of(t).into_iter().map(|u| ReadTarget::One(step, u)))
+            Read::Targets { step, of, grain } => {
+                v.extend(of(t).into_iter().map(|u| (ReadTarget::One(step, u), grain.passes_on())))
             }
-            Read::Along { step: s, .. } | Read::Built { step: s, .. } => {
-                v.extend(along.map_or(&[][..], |a| a.get(step, t, s)).iter().map(|u| ReadTarget::One(s, u.clone())))
-            }
-            Read::Whole { step, .. } => v.push(ReadTarget::Whole(step)),
+            Read::Mids { step, of, .. } => v.extend(of(t).into_iter().map(|u| (ReadTarget::One(step, u), true))),
+            Read::Along { step: s, .. } | Read::Built { step: s, .. } => v.extend(
+                along.map_or(&[][..], |a| a.get(step, t, s)).iter().map(|u| (ReadTarget::One(s, u.clone()), false)),
+            ),
+            Read::Whole { step, grain } => v.push((ReadTarget::Whole(step), grain.passes_on())),
             Read::Input { .. } => {}
         }
     }
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// The steps `step`'s row reads targets of, each with whether a wait passes on through it (as
+/// `read_targets_passing` says of its targets). Those that pass on are what `whole_left` reads on
+/// from `step` read whole: any of their targets left holds what reads `step` whole while none of
+/// `step`'s own is. Sorted, no repeats.
+pub fn read_steps(step: &str) -> Vec<(&'static str, bool)> {
+    let mut v: Vec<(&'static str, bool)> = row(step)
+        .map_or(&[][..], |r| r.reads)
+        .iter()
+        .filter_map(|r| match *r {
+            Read::Targets { step: s, grain, .. } | Read::Whole { step: s, grain } => Some((s, grain.passes_on())),
+            Read::Mids { step: s, .. } => Some((s, true)),
+            Read::Along { step: s, .. } | Read::Built { step: s, .. } => Some((s, false)),
+            Read::Input { .. } => None,
+        })
+        .collect();
     v.sort_unstable();
     v.dedup();
     v
@@ -403,14 +435,7 @@ fn held(step: &str, u: &str, view: &dyn View) -> bool {
 /// Whether `step`, read whole, is left: a target of it is, or something any of its targets read
 /// (any target of each step it reads, whole).
 fn whole_left(step: &str, view: &dyn View) -> bool {
-    view.any_left(step)
-        || row(step).map_or(&[][..], |r| r.reads).iter().any(|r| match *r {
-            Read::Targets { step: s, grain, .. } | Read::Whole { step: s, grain } => {
-                grain.passes_on() && whole_left(s, view)
-            }
-            Read::Mids { step: s, .. } => whole_left(s, view),
-            Read::Input { .. } | Read::Along { .. } | Read::Built { .. } => false,
-        })
+    view.any_left(step) || read_steps(step).into_iter().any(|(s, passes)| passes && whole_left(s, view))
 }
 
 /// Target `t`'s key of `step` (docs/readiness.md §4): its `derived_key` (a "none" target's is

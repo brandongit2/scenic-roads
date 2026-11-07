@@ -330,6 +330,7 @@ mod tests {
                 unknown: Vec::new(),
                 paused: false,
                 along: Default::default(),
+                code: crate::agent::forecast::VERSION,
             },
             each_s: [("unit".to_string(), now as f64)].into(),
             waiting: BTreeMap::new(),

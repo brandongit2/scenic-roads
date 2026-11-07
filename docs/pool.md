@@ -2003,6 +2003,66 @@ where the skips held it to none for the day.
 code before (M4, test build, under load); the replay's debug build cut 11 of its 39 code 5 runs at
 the 15 s budget, its release build none.
 
+**What held the near term back (task #988).** `forecast-check` over code 5's archived forecasts
+(5 Nov 23:34 to 7 Nov 00:40 UTC), its samples under 15 min: the end's p90 247 min, the start's 260
+(by its own horizon) and the run's 11: the start delay, not the run. Each forecast held to the input
+archived just before it (the plan's offers and the scheduler's NAS waits then), of the targets it
+placed to start within 15 min: depth 394 not offered by the plan (44 offered), peaks 192 not
+offered, pack 52, bldprep 29; bldtiles 55 passed over for the NAS budget (137 offered and free),
+slope-hi 33, bldprep 28. The plan held the depth because a target waits while a target it reads
+waits (docs/readiness.md 3b, `held`): a depth tile reads the lake-depth packs of the tiles its
+sources meet, built as they stand, and those read the terrain left under them. The forecast stopped
+at such a read: it listed only the work left, so a read built as it stands waited for nothing, and
+it ran the depth at once (22:51 on 6 Nov: 39 depth tiles placed in the first 15 min, the plan
+offering none; 40 depth tiles and 48 lake-depth tiles ready that the plan held). The NAS budget's
+holds the forecast's scheduler reproduces: the lead's record of 22:51 asked as the mini asked
+grants two bldprep jobs and holds the rest for the NAS's room, as the live lead did.
+
+**What changed (code 6).** A target waits through a read that isn't listed but passes waits on
+(`forecast::Waits`, `steps::read_targets_passing`): for what that read waits on, as the planner's
+`readiness` holds it (`held`, and a step read whole none of whose targets is listed, `whole_left`:
+`steps::read_steps`). The 22:51 record's chains then wait as the plan offers them (no depth ready
+against none offered, lake-depth 433 ready against 433 offered). The read itself, made again once
+what it reads is built, isn't placed (its job's time goes uncounted). Its cost: a read is worked out
+once a forecast, those that wait on nothing kept as their hash (6 Nov: some 1 M slope-deep parts the
+slope-hi tiles read, 2,300 waiting), a step none of whose reads may wait not looked into; the
+forecast lists the work once for its three runs (`forecast_by`, each a copy), where each run
+listed it again (11 s a listing in the test build on 6 Nov's record, 16 s with the waits). The
+backtest runs its two codes one after the other (side by side its replay of 60 inputs on the M1
+peaked at a 4.7 GB footprint).
+
+**The runs across a restart.** The NAS's history held no coordinator start ("agent" events: the
+lead's agent appended its coordinator's events only from its first pass on), so
+`history::mend_runs` mended nothing there: forecast-check and the backtest's inputs (each step's
+pace, the longest jobs, each Mac's pace) took 378 runs over 5 to 7 Nov as written, 123 hours short.
+The lead's agent now appends its coordinator's start with its first pass (§7.5). The backtest
+below ran on a copy of the archive with the lead's own starts added.
+
+**The backtest, code 5 against 6** (`forecast-check --replay --from 2026-11-05T12:00 --to
+2026-11-07T00:40 --split 2026-11-06T06:00`, release build on the M1, 49 min, a 4.0 GB peak
+footprint; 40 train inputs, 20 test: the archive lost the inputs of 6 Nov 09:30-19:18). Minutes;
+median / p90 of the absolute error:
+
+| | test, code 5 | test, code 6 | train, code 5 | train, code 6 |
+|---|---|---|---|---|
+| end, all | 185 / 458 | 191 / 430 | 206 / 6,517 | 193 / 7,010 |
+| end < 15 min | 72 / 296 | 51 / 280 | 98 / 548 | 105 / 582 |
+| end 15 min-1 h | 114 / 269 | 111 / 242 | 94 / 620 | 90 / 592 |
+| start < 15 min | 82 / 288 | 72 / 276 | 114 / 561 | 133 / 581 |
+| start 15 min-1 h | 128 / 283 | 131 / 267 | 100 / 620 | 95 / 581 |
+| run < 15 min | 1 / 9 | 1 / 9 | 0 / 5 | 0 / 5 |
+| end, depth | 112 / 463 | 68 / 152 | 332 / 1,254 | 325 / 1,225 |
+| end, bldtiles | 265 / 618 | 241 / 547 | 121 / 1,148 | 130 / 1,122 |
+| in order within 4 h | 67 % | 71 % | 64 % | 64 % |
+
+On the test set the near term is better (under 15 min the end's median 72 to 51, p90 296 to 280;
+15 min to 1 h p90 269 to 242), the depth most (p90 463 to 152), and the whole end's p90 (458 to
+430). On train the hour ahead is mixed: under 15 min worse (end p90 548 to 582, start 561 to 581),
+15 min to 1 h better (620 to 592), the whole end's p90 worse (6,517 to 7,010) where its median is
+better (206 to 193). What's left near: the run's error stays under 10 min at p90; the start's is
+the order and room of the work (the replay's near-term p90 is above the live forecasts' 247 on
+the same days).
+
 ## 8. Tasks
 
 A job is a step's run over targets on a Mac with the NAS. A **task** is a pure piece a running job

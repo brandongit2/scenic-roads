@@ -155,7 +155,7 @@ pub struct Input<'a> {
     /// heritage sites, reaches or buildings; a new pass under way): no finish is forecast.
     pub blind: Option<String>,
     /// The trains' and the landmarks' chains (but the overlays): from the start, each step once what
-    /// it reads is built (`waits_of`).
+    /// it reads is built (`Waits::of`).
     pub chains: Vec<Job>,
     /// After everything else: the overlays (they read the built z6 tiles) and a catalogue with what the
     /// chains made since.
@@ -194,9 +194,18 @@ pub struct Input<'a> {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paused: bool,
     /// What the regions' targets read along their long ways (crate::agent::steps::Read::Along), the
-    /// plan's (`Left::along`): waited for as their other reads (`waits_of`).
+    /// plan's (`Left::along`): waited for as their other reads (`Waits::of`).
     #[serde(default, skip_serializing_if = "crate::agent::steps::Along::is_empty")]
     pub along: crate::agent::steps::Along,
+    /// The forecast code it's run as (`VERSION`; not recorded): the backtest's replay sets the
+    /// code before (crate::agent::fccheck::replay) to rerun a record as that code made it.
+    #[serde(skip, default = "version")]
+    pub code: u32,
+}
+
+/// `VERSION`, as an `Input::code` read back.
+fn version() -> u32 {
+    VERSION
 }
 
 /// Targets of `step` the plan holds until `until` is made (crate::agent::steps::UnknownFor: an
@@ -828,7 +837,7 @@ impl ToCome {
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
 /// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// A run of a machine's work of one step: from and until when (unix seconds), and how many
 /// targets. A run is one or more jobs as the scheduler grants them in the forecast's run, one after
@@ -913,51 +922,161 @@ enum Phase {
     After,
 }
 
-/// The items a target of `step` waits on, of those listed by now (`by`): what it reads
-/// (crate::agent::steps::read_targets, the planner's waits), a target's own item, a step it reads
-/// whole as one set in `groups`, shared by every item reading it (`whole`: by step, the set's length
-/// when made and its index; task #867: 1,328 peaks each listing the 568 candidates were 0.75M of
-/// the kept waits' 1.07M deps).
-fn waits_of(
-    along: &crate::agent::steps::Along,
-    by: &Index,
-    groups: &mut Vec<Vec<usize>>,
-    whole: &mut BTreeMap<&'static str, (usize, usize)>,
-    step: &str,
-    t: &str,
-) -> (Vec<usize>, Vec<usize>) {
-    let (mut deps, mut gs) = (Vec::new(), Vec::new());
-    for r in crate::agent::steps::read_targets(step, t, Some(along)) {
-        match r {
-            ReadTarget::One(s, u) => deps.extend(by.of.get(&(s.to_string(), u)).copied()),
-            ReadTarget::Whole(s) => {
-                let mut all: Vec<usize> = by
-                    .of
-                    .range((s.to_string(), String::new())..)
-                    .take_while(|((st, _), _)| st == s)
-                    .map(|(_, &i)| i)
-                    .collect();
-                if all.is_empty() {
-                    continue;
-                }
-                // (Items are only added: a set as long is the same.)
-                let g = match whole.get(s) {
-                    Some(&(n, g)) if n == all.len() => g,
-                    _ => {
-                        all.sort_unstable();
-                        let n = all.len();
-                        groups.push(all);
-                        whole.insert(s, (n, groups.len() - 1));
-                        groups.len() - 1
+/// What the items wait on (`Waits::of`): the input's reads along long ways (the plan's), each step
+/// read whole as one set in `groups`, shared by every item reading it (`whole`: by step, the set's
+/// length when made and its index; task #867: 1,328 peaks each listing the 568 candidates were
+/// 0.75M of the kept waits' 1.07M deps), and what a target read that isn't listed waits on
+/// (code 6 on, `passes`: `held`, by its step and target's hash, `held_key`; those that wait on
+/// nothing in `free`: 6 Nov's record had some 1 M slope-deep parts the slope-hi tiles read, 2,300
+/// reads waiting in all; and each step's `may_wait`, with the items listed when it was worked out).
+struct Waits<'a> {
+    along: &'a crate::agent::steps::Along,
+    passes: bool,
+    whole: BTreeMap<&'static str, (usize, usize)>,
+    held: std::collections::HashMap<u64, Deps>,
+    free: std::collections::HashSet<u64>,
+    may: BTreeMap<&'static str, (usize, bool)>,
+}
+
+/// A read target's key in `Waits::held` and `Waits::free`: its step's and target's XXH3.
+fn held_key(step: &str, t: &str) -> u64 {
+    let mut h = xxhash_rust::xxh3::Xxh3::new();
+    h.update(step.as_bytes());
+    h.update(&[0]);
+    h.update(t.as_bytes());
+    h.digest()
+}
+
+/// The items and sets an item waits on (`Waits::of`): its own deps, and its sets in `Items::groups`.
+type Deps = (Vec<usize>, Vec<usize>);
+
+impl<'a> Waits<'a> {
+    fn new(inp: &'a Input) -> Self {
+        Waits {
+            along: &inp.along,
+            passes: inp.code >= 6,
+            whole: BTreeMap::new(),
+            held: Default::default(),
+            free: Default::default(),
+            may: BTreeMap::new(),
+        }
+    }
+
+    /// The items a target of `step` waits on, of those listed by now (`by`), as the planner's
+    /// readiness holds it (crate::agent::steps::readiness): what it reads
+    /// (crate::agent::steps::read_targets), a target's own item, a step it reads whole its set in
+    /// `groups`; and through a read that isn't listed (built as it stands) but passes waits on
+    /// (`read_targets_passing`), what that read waits on, the planner's `held`: its own record is
+    /// current, but what it reads is left, so it is made again once that is and its readers wait
+    /// (task #988: a depth tile reading the lake-depth packs of a tile whose terrain is left; the
+    /// forecast ran it at once, the plan held it). Likewise a step read whole none of whose targets
+    /// is listed waits on the steps it reads on (`read_steps`, the planner's `whole_left`).
+    fn of(&mut self, by: &Index, groups: &mut Vec<Vec<usize>>, step: &str, t: &str) -> Deps {
+        let (mut deps, mut gs) = (Vec::new(), Vec::new());
+        for (r, passes) in crate::agent::steps::read_targets_passing(step, t, Some(self.along)) {
+            match r {
+                ReadTarget::One(s, u) => match by.of.get(&(s.to_string(), u.clone())) {
+                    Some(&i) => deps.push(i),
+                    None if passes && self.passes => {
+                        let (d, g) = self.held(by, groups, s, u);
+                        deps.extend(d);
+                        gs.extend(g);
                     }
-                };
-                gs.push(g);
+                    None => {}
+                },
+                ReadTarget::Whole(s) if passes && self.passes => self.whole_left(by, groups, s, &mut gs),
+                ReadTarget::Whole(s) => gs.extend(self.group(by, groups, s)),
+            }
+        }
+        deps.sort_unstable();
+        deps.dedup();
+        gs.sort_unstable();
+        gs.dedup();
+        (deps, gs)
+    }
+
+    /// What target `u` of `step`, not listed, waits on (`of`), worked out the first time it's asked
+    /// (what it reads is listed ahead of what reads it: a region's terrain before its slope, the
+    /// regions' before the chains; some 65,000 slope tiles read z10 tiles' parts, each read by
+    /// many); nothing, without a look, for a step none of whose reads may wait (`may_wait`).
+    fn held(&mut self, by: &Index, groups: &mut Vec<Vec<usize>>, step: &'static str, u: String) -> Deps {
+        if !self.may_wait(by, step) {
+            return Deps::default();
+        }
+        let key = held_key(step, &u);
+        if self.free.contains(&key) {
+            return Deps::default();
+        }
+        if let Some(d) = self.held.get(&key) {
+            return d.clone();
+        }
+        let got = self.of(by, groups, step, &u);
+        if got.0.is_empty() && got.1.is_empty() {
+            self.free.insert(key);
+        } else {
+            self.held.insert(key, got.clone());
+        }
+        got
+    }
+
+    /// Whether a target of `step` not listed may wait on an item: a step it reads has one listed, or
+    /// one it reads through passes waits on and may wait itself (crate::agent::steps::read_steps);
+    /// worked out again once more items are listed.
+    fn may_wait(&mut self, by: &Index, step: &'static str) -> bool {
+        let n = by.of.len();
+        if let Some(&(at, m)) = self.may.get(step) {
+            if at == n {
+                return m;
+            }
+        }
+        // (No cycle in the declared reads; marked first all the same.)
+        self.may.insert(step, (n, false));
+        let listed = |s: &str| by.of.range((s.to_string(), String::new())..).next().is_some_and(|((st, _), _)| st == s);
+        let m = crate::agent::steps::read_steps(step)
+            .into_iter()
+            .any(|(s, passes)| listed(s) || (passes && self.may_wait(by, s)));
+        self.may.insert(step, (n, m));
+        m
+    }
+
+    /// The sets of a step read whole: its own items', else those of the steps it reads on
+    /// (`read_steps`, those passing waits on), as far as some are listed.
+    fn whole_left(&mut self, by: &Index, groups: &mut Vec<Vec<usize>>, step: &'static str, gs: &mut Vec<usize>) {
+        match self.group(by, groups, step) {
+            Some(g) => gs.push(g),
+            None => {
+                for (s, passes) in crate::agent::steps::read_steps(step) {
+                    if passes {
+                        self.whole_left(by, groups, s, gs);
+                    }
+                }
             }
         }
     }
-    deps.sort_unstable();
-    deps.dedup();
-    (deps, gs)
+
+    /// The set of `step`'s items listed by now, made once for each length it has (items are only
+    /// added: a set as long is the same); None while none is listed.
+    fn group(&mut self, by: &Index, groups: &mut Vec<Vec<usize>>, step: &'static str) -> Option<usize> {
+        let mut all: Vec<usize> = by
+            .of
+            .range((step.to_string(), String::new())..)
+            .take_while(|((st, _), _)| st == step)
+            .map(|(_, &i)| i)
+            .collect();
+        if all.is_empty() {
+            return None;
+        }
+        Some(match self.whole.get(step) {
+            Some(&(n, g)) if n == all.len() => g,
+            _ => {
+                all.sort_unstable();
+                let n = all.len();
+                groups.push(all);
+                self.whole.insert(step, (n, groups.len() - 1));
+                groups.len() - 1
+            }
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1031,6 +1150,8 @@ struct Index {
 /// before the steps after. (Lead memory, 25 Oct: each slope target had its own copy of its z3
 /// tiles' terrain, about 6,750 items, 8.7 GB of the agents' 17 GB. Since #864 a slope target's own
 /// list is only what it reads: a slope-deep's 5 at most, a slope-hi's 10 and its 256 z10 tiles'.)
+/// Made once a forecast, each of its three runs taking a copy (`forecast_by`).
+#[derive(Clone)]
 struct Items {
     items: Vec<Item>,
     region_items: Vec<Vec<usize>>,
@@ -1080,13 +1201,11 @@ fn items(inp: &Input) -> Items {
     // A region at a time: its own terrain (the z6 tiles, then each z3 tile's assembly once its z6 tiles
     // are made), then its own z6 tiles (each once its region's terrain is built: the terrain it
     // reads); then every region's slope and tree cover, each target once the targets it reads are
-    // (its row's declaration, as the planner's waits: `waits_of`).
+    // (its row's declaration, as the planner's waits: `Waits::of`).
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
     let item_of = |by: &Index, step: &str, t: &str| by.of.get(&(step.to_string(), t.to_string())).copied();
-    let mut whole: BTreeMap<&'static str, (usize, usize)> = BTreeMap::new();
-    let mut reads = |by: &Index, groups: &mut Vec<Vec<usize>>, step: &str, t: &str| {
-        waits_of(&inp.along, by, groups, &mut whole, step, t)
-    };
+    let mut waits = Waits::new(inp);
+    let mut reads = |by: &Index, groups: &mut Vec<Vec<usize>>, step: &str, t: &str| waits.of(by, groups, step, t);
     // (A set many wait for, listed once: its index in `groups`.)
     let group = |groups: &mut Vec<Vec<usize>>, mut v: Vec<usize>| -> usize {
         v.sort_unstable();
@@ -1403,7 +1522,13 @@ fn mac_of(m: &Machine) -> String {
     m.mac.clone().unwrap_or_else(|| m.name.clone())
 }
 
-/// One run through the work, each item's time `scale`d. As a lane frees, its Mac asks the
+/// `run_on` on `inp`'s items (the tests': a forecast lists them once for its three runs).
+#[cfg(test)]
+fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
+    run_on(inp, items(inp), scale, budget)
+}
+
+/// One run through the work (`its`, `items`), each item's time `scale`d. As a lane frees, its Mac asks the
 /// coordinator's scheduler (crate::coord::sched::Sched::pack, the live coordinator's own decision)
 /// for a job each of its lanes free then, the work ready offered in the plan's order: pulled, as a
 /// live agent asks when a slot frees, never pushed to every Mac at once. Each job granted runs its
@@ -1411,11 +1536,6 @@ fn mac_of(m: &Machine) -> String {
 /// A lane given none asks again once a job ends (or `ASK_AGAIN_S`).
 /// Cut once its thread has computed `budget`, or after `BACKSTOP` times it on the wall clock
 /// (`Sim::cut`, `thread_cpu`).
-fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
-    run_on(inp, items(inp), scale, budget)
-}
-
-/// `run` on the items given.
 fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
     let (cpu0, wall0) = (thread_cpu(), Instant::now());
     let Items { mut items, region_items, groups } = its;
@@ -1858,17 +1978,19 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
         };
     }
     let now = inp.now as f64;
-    // (The three runs side by side, each on a thread of its own.)
+    // (The three runs side by side, each on a thread of its own, on one listing of the work: its
+    // waits are the most of its making, task #988.)
+    let its = items(inp);
     let (expected, soon, late) = std::thread::scope(|s| {
         let soon = s.spawn(|| {
             low_priority();
-            run(inp, &scaled(SCALINGS[1]), budget)
+            run_on(inp, its.clone(), &scaled(SCALINGS[1]), budget)
         });
         let late = s.spawn(|| {
             low_priority();
-            run(inp, &scaled(SCALINGS[2]), budget)
+            run_on(inp, its.clone(), &scaled(SCALINGS[2]), budget)
         });
-        let expected = run(inp, &scaled(SCALINGS[0]), budget);
+        let expected = run_on(inp, its.clone(), &scaled(SCALINGS[0]), budget);
         let join =
             |h: std::thread::ScopedJoinHandle<'_, Sim>| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
         (expected, join(soon), join(late))
@@ -2513,6 +2635,7 @@ mod tests {
             unknown: Vec::new(),
             paused: false,
             along: Default::default(),
+            code: crate::agent::forecast::VERSION,
         }
     }
 
@@ -3761,6 +3884,7 @@ mod tests {
             unknown: Vec::new(),
             paused: false,
             along: Default::default(),
+            code: crate::agent::forecast::VERSION,
         }
     }
 
@@ -3870,28 +3994,99 @@ mod tests {
             .collect()
     }
 
-    /// What an item of `inp`'s regions and chains waits on by its declared reads
-    /// (crate::agent::steps::read_targets), of the items listed before it: a target read, every
-    /// item of a step read whole.
+    /// What an item of `inp`'s regions and chains waits on as the planner holds it
+    /// (crate::agent::steps::readiness), of the items listed before it (its view's left): a target
+    /// read listed, every item of a step read whole; through a read not listed that waits itself
+    /// (`held`), what it waits on, and through a step read whole none of whose targets is listed,
+    /// the items of the steps it reads on (`whole_left`).
     fn declared_waits(its: &Items, along: &crate::agent::steps::Along, i: usize) -> BTreeSet<(String, String)> {
+        use crate::agent::steps::{read_steps, readiness, Ready, View};
+        struct Listed<'a>(&'a [Item], &'a crate::agent::steps::Along);
+        impl View for Listed<'_> {
+            fn left(&self, step: &str, t: &str) -> bool {
+                self.0.iter().any(|d| d.step == step && d.target == t)
+            }
+            fn any_left(&self, step: &str) -> bool {
+                self.0.iter().any(|d| d.step == step)
+            }
+            fn along(&self) -> Option<&crate::agent::steps::Along> {
+                Some(self.1)
+            }
+        }
+        fn whole(v: &Listed, step: &str, out: &mut BTreeSet<(String, String)>) {
+            if v.any_left(step) {
+                out.extend(v.0.iter().filter(|d| d.step == step).map(|d| (d.step.clone(), d.target.clone())));
+            } else {
+                for (s, passes) in read_steps(step) {
+                    if passes {
+                        whole(v, s, out);
+                    }
+                }
+            }
+        }
+        fn expand(v: &Listed, step: &str, t: &str, out: &mut BTreeSet<(String, String)>) {
+            let Ready::Waits(w) = readiness(step, t, v) else { return };
+            for (s, u) in w {
+                if v.left(s, &u) {
+                    out.insert((s.to_string(), u));
+                } else if u == s {
+                    whole(v, s, out);
+                } else {
+                    expand(v, s, &u, out);
+                }
+            }
+        }
         let it = &its.items[i];
-        let reads = crate::agent::steps::read_targets(&it.step, &it.target, Some(along));
-        its.items[..i]
-            .iter()
-            .filter(|d| {
-                reads.iter().any(|r| match r {
-                    ReadTarget::One(s, u) => d.step == *s && d.target == *u,
-                    ReadTarget::Whole(s) => d.step == *s,
-                })
-            })
-            .map(|d| (d.step.clone(), d.target.clone()))
-            .collect()
+        let mut out = BTreeSet::new();
+        expand(&Listed(&its.items[..i], along), &it.step, &it.target, &mut out);
+        out
+    }
+
+    /// Task #988 (code 6): a target waits through a read built as it stands for what that read
+    /// waits on, as the plan holds it (crate::agent::steps::readiness: `held`, `whole_left`). The
+    /// 3D buildings' z3 field reads the mids of its z6 tiles' 3D tiles, none left, one of which reads
+    /// normalized files left; the depth's root reads every z3 assembly, none left, which read a z6
+    /// tile's depth left. Each waits for those, and is placed after them; code 5 ran them at once.
+    #[test]
+    fn a_target_waits_through_a_read_built_as_it_stands() {
+        let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000 };
+        let regions: [RegionLeft; 0] = [];
+        let unit = |_: &str, _: &str| c(1.0);
+        let base = input(&regions, vec![mac("m4", 1.0)], &unit);
+        let job = |s: &str, t: &str, secs: f64| (s.to_string(), t.to_string(), c(secs));
+        let chains = vec![
+            job("bldprep", "6/2/2", 600.0),
+            job("bldfield-lo", "3/0/0", 60.0),
+            job("depth", "6/1/1", 300.0),
+            job("depth-root", "depth-root", 50.0),
+        ];
+        let inp = Input { chains, ..base };
+        let pair = |s: &str, t: &str| (s.to_string(), t.to_string());
+        let waits = |inp: &Input, s: &str, t: &str| {
+            let its = items(inp);
+            let w = waits_listed(&its);
+            w[its.items.iter().position(|i| i.step == s && i.target == t).unwrap()].clone()
+        };
+        assert_eq!(waits(&inp, "bldfield-lo", "3/0/0"), BTreeSet::from([pair("bldprep", "6/2/2")]));
+        assert_eq!(waits(&inp, "depth-root", "depth-root"), BTreeSet::from([pair("depth", "6/1/1")]));
+        let its = items(&inp);
+        for (i, it) in its.items.iter().enumerate().filter(|(_, it)| it.phase == Phase::Chain) {
+            assert_eq!(waits_listed(&its)[i], declared_waits(&its, &inp.along, i), "{}", it.target);
+        }
+        let f = forecast(&inp);
+        let at = |s: &str, t: &str| f.placed.iter().find(|p| p.step == s && p.target == t).map(|p| (p.from, p.until));
+        let ((fl, _), (_, prep)) = (at("bldfield-lo", "3/0/0").unwrap(), at("bldprep", "6/2/2").unwrap());
+        let ((root, _), (_, depth)) = (at("depth-root", "depth-root").unwrap(), at("depth", "6/1/1").unwrap());
+        assert!(fl >= prep && root >= depth, "{fl} {prep} {root} {depth}");
+        // Code 5: for the reads listed alone.
+        let old = Input { code: 5, ..inp.clone() };
+        assert!(waits(&old, "bldfield-lo", "3/0/0").is_empty() && waits(&old, "depth-root", "depth-root").is_empty());
     }
 
     /// Docs/readiness.md §7 (supersedes task #867's held-chain guard): the forecast waits for what
     /// the planner does, both from the steps' declared reads: each item of the regions' slope and
-    /// tree cover, the z6 tiles and the chains waits on exactly the items its reads name
-    /// (`read_targets`), and a replay places none before what it waits on is done. With
+    /// tree cover, the z6 tiles and the chains waits on exactly the items the planner's readiness
+    /// holds it for (`declared_waits`), and a replay places none before what it waits on is done. With
     /// SCENIC_FORECAST_RECORD, that record's input too.
     #[test]
     fn the_forecast_waits_for_what_the_planner_does() {

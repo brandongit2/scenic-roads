@@ -373,7 +373,9 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 /// `repace`); before it, none. Code 5 also each Mac's room at its sustained best (`Rooms`, from the
 /// asks the inputs before it recorded) and each Mac's slots its lanes (`unhold`: no hold of the day
 /// before); before it, each Mac's room as its last ask said and the record's lanes (a record before
-/// code 3, its lanes slowed by its Mac's hold of the day before as it was made).
+/// code 3, its lanes slowed by its Mac's hold of the day before as it was made). Code 6 also has a
+/// target wait through a read built as it stands for what that read waits on, as the plan holds it
+/// (`Input::code`: crate::agent::forecast's `Waits`); before it, for the reads listed alone.
 pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut rooms = Rooms::default();
@@ -387,6 +389,7 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
             }
         };
         let inp = &mut r.input;
+        inp.code = code;
         inp.step_pace.clear();
         noted.note(inp);
         rooms.note(inp);
@@ -638,12 +641,9 @@ pub fn batches(inputs: &[Input], events: &[Event], from: u64, to: u64) -> Vec<Ba
 
 /// The backtest of `inputs` (`replay`, old and new) against `events`, over `from`..`to`.
 pub fn backtest(inputs: &[Input], events: &[Event], from: u64, to: u64, split: u64) -> Backtest {
-    let run = |code: u32| replay(inputs, events, code);
-    let (old, new) = std::thread::scope(|s| {
-        let o = s.spawn(|| run(forecast::VERSION - 1));
-        let n = run(forecast::VERSION);
-        (o.join().unwrap_or_else(|e| std::panic::resume_unwind(e)), n)
-    });
+    // (One code after the other: side by side, the M1's replay of 60 inputs peaked at a 4.7 GB
+    // footprint, task #988; each forecast's three runs go side by side already.)
+    let (old, new) = (replay(inputs, events, forecast::VERSION - 1), replay(inputs, events, forecast::VERSION));
     let part =
         |es: &[Entry], test: bool| -> Vec<Entry> { es.iter().filter(|e| (e.at >= split) == test).cloned().collect() };
     let rep = |es: &[Entry], test: bool| check(&part(es, test), events, if test { split } else { from }, to);
@@ -1047,6 +1047,7 @@ mod tests {
                     unknown: Vec::new(),
                     paused: false,
                     along: Default::default(),
+                    code: crate::agent::forecast::VERSION,
                 },
                 each_s: BTreeMap::new(),
                 waiting: BTreeMap::new(),
@@ -1125,6 +1126,7 @@ mod tests {
             unknown: Vec::new(),
             paused: false,
             along: Default::default(),
+            code: crate::agent::forecast::VERSION,
         };
         let mut inp = input(vec![lane("lead", "lead", 300.0), lane("m1", "m1", 0.0)], 3);
         unhold(&mut inp);

@@ -888,6 +888,7 @@ pub(crate) mod tests {
                 unknown: Vec::new(),
                 paused: false,
                 along: Default::default(),
+                code: crate::agent::forecast::VERSION,
             },
             each_s: BTreeMap::new(),
             waiting: BTreeMap::new(),
