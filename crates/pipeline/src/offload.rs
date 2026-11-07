@@ -1,6 +1,6 @@
 //! A `unit` job's tasks run on a worker (docs/workers.md §3): `run_task`, a task's steps over the
-//! files fetched from the lead's coordinator (crate::coord), and `task_kind`, a task's kind by its
-//! first step. What the steps offering tasks name (`Offload`, its waits, a task's places) is the
+//! files fetched from the lead's coordinator (crate::coord); a task's kind by its first step is the
+//! plan's (`Plan::task_kind`). What the steps offering tasks name (`Offload`, its waits, a task's places) is the
 //! offload crate's (docs/crates.md, task #916 step 6e), re-exported here at its old paths.
 
 pub use ::offload::{places, Offered, Offload, Patience, Settled, WaitNote, Waiting, LEASE_WAIT, WAITING_ENV};
@@ -9,22 +9,6 @@ use crate::unit::Run;
 use anyhow::{Context, Result};
 use coordwire::client::Client;
 use std::path::{Path, PathBuf};
-
-/// A task's kind, by its first step: "tail" (a z6 tile's last steps), or the 3D buildings', tree
-/// cover's or terrain's (crate::bld::task::KIND, crate::trees::task::KIND,
-/// crate::terrain_task::KIND).
-pub fn task_kind(spec: &serde_json::Value) -> String {
-    let first = &spec["runs"][0];
-    if first["prog"] == crate::bld::task::KIND {
-        crate::bld::task::KIND.to_string()
-    } else if first["what"] == crate::trees::task::KIND {
-        crate::trees::task::KIND.to_string()
-    } else if first["what"] == crate::terrain_task::KIND {
-        crate::terrain_task::KIND.to_string()
-    } else {
-        "tail".to_string()
-    }
-}
 
 /// Runs task `lease` here, natively (a worker's agent): its files fetched from the
 /// coordinator into `dir`, its steps run over them with the programs in `bin`, and the files they

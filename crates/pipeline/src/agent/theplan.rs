@@ -155,8 +155,19 @@ impl Plan for ThePlan {
     fn tree_task_kind(&self) -> &'static str {
         crate::trees::task::KIND
     }
+    /// By its first step: "tail" (a z6 tile's last steps), or the 3D buildings', tree cover's or
+    /// terrain's (crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND).
     fn task_kind(&self, spec: &serde_json::Value) -> String {
-        crate::offload::task_kind(spec)
+        let first = &spec["runs"][0];
+        if first["prog"] == crate::bld::task::KIND {
+            crate::bld::task::KIND.to_string()
+        } else if first["what"] == crate::trees::task::KIND {
+            crate::trees::task::KIND.to_string()
+        } else if first["what"] == crate::terrain_task::KIND {
+            crate::terrain_task::KIND.to_string()
+        } else {
+            "tail".to_string()
+        }
     }
     fn names_todo_inputs(&self) -> &'static [&'static str] {
         &crate::namestodo::INPUTS

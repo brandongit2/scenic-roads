@@ -1559,7 +1559,7 @@ fn main() -> Result<()> {
             );
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             // (Timed as a task of its kind: a tail's, a 3D buildings' z3 tile's, tree cover's blocks'.)
-            let kind = format!("task {}", pipeline::offload::task_kind(&spec));
+            let kind = format!("task {}", pipeline::agent::theplan::the_plan().task_kind(&spec));
             let r = pipeline::timings::job(&kind, || {
                 pipeline::offload::run_task(
                     &client,
