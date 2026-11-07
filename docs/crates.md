@@ -1046,7 +1046,8 @@ commit; re-exports at the old paths as before.
           and the trait. `forecast-check --replay` on one input, twice by each: the same bytes. On
           four inputs it differs from run to run on either side, as a run past `BUDGET` is cut by its
           CPU time; with `BUDGET` raised in both copies (900 s), each
-          input's replay by codes 5 and 6 the same bytes by main and the trait.
+          input's replay by codes 5 and 6 the same bytes by main and the trait. Again after #993 (main at
+          594ac65a, codes 6 and 7): the 113 inputs' bytes, and the one input's replay, twice each, the same.
         Moving the planner up with the plan instead was
       weighed and is the larger cut: its pass names ~150 of the runtime's items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
       API. `timetables::View` went
