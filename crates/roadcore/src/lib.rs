@@ -14,6 +14,7 @@
 use det::Det;
 pub mod archive;
 pub mod elev;
+pub mod fx;
 pub mod geo;
 pub mod grid;
 pub mod lsum;

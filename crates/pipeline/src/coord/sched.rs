@@ -19,6 +19,7 @@ use super::lease::{Lease, Leases, Work};
 use super::{cost_key, disk_words, first_guess, mem_words, Ask, Cost, Measured, Offer, Worker};
 use super::{AROUND, ASKING};
 use crate::agent::memguard::Floor;
+use roadcore::fx::FxMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -64,7 +65,7 @@ pub struct Sched {
     pub offers: Vec<Offer>,
     /// Each step's offered targets, the size each was first offered with (`offers` indexed: the
     /// placement looks up every target it weighs, and a worldwide pass offers tens of thousands).
-    pub offered: std::collections::HashMap<String, std::collections::HashMap<String, u64>>,
+    pub offered: FxMap<String, FxMap<String, u64>>,
     /// The offered targets that are drops (offered under their step's "none" key,
     /// crate::agent::build::is_none_key): sized by their step's drops (crate::needs::Book::drop_need)
     /// until their own run says, never by its builds.
@@ -142,15 +143,14 @@ pub struct Sched {
     pub measured_of: Mutex<(u64, Measures)>,
     /// Each target's look for `provisional` (`provisional_of`: step → target → its memory and
     /// disk), as the measures stood (`rev`) and as offered (`set_offers` clears it).
-    pub provisional_at:
-        Mutex<(u64, std::collections::HashMap<String, std::collections::HashMap<String, (u64, Option<u64>)>>)>,
+    pub provisional_at: Mutex<(u64, FxMap<String, FxMap<String, (u64, Option<u64>)>>)>,
     /// Each step's drops' need (crate::needs::Book::drop_need) as the measures stood (`rev`).
     pub drop_needs: Mutex<(u64, BTreeMap<String, Option<(u64, u64)>>)>,
     /// While `pack` packs, what it looks up of the leases (`Packing`); None otherwise.
     pub packing: Mutex<Option<Packing>>,
     /// What's worked out of each leased job (`LeaseKept`), by lease, as the measures stood (`rev`),
     /// as offered and as the steps' uses stood (`set_offers`, `set_use_runs` and `add_use` clear it).
-    pub kept_leases: Mutex<(u64, std::collections::HashMap<u64, Vec<LeaseKept>>)>,
+    pub kept_leases: Mutex<(u64, FxMap<u64, Vec<LeaseKept>>)>,
     /// Each Mac's pace at each step against the lead's (crate::paces, task #926; set through
     /// `set_paces`, which moves `needs_rev`): the measures' times and NAS rates are read at the
     /// lead's pace by it, and a worker's at its own. Empty: as measured.
@@ -184,7 +184,8 @@ pub struct LeaseKept {
 }
 
 /// `Sched::measured_of`'s targets' measures: step → target → `Sched::measures`.
-pub type Measures = std::collections::HashMap<String, std::collections::HashMap<String, (u64, Option<Measured>)>>;
+/// (Looked in for every target an ask weighs, never walked: roadcore::fx.)
+pub type Measures = FxMap<String, FxMap<String, (u64, Option<Measured>)>>;
 
 /// The NAS budget's weights for one placement (`Shared::nas_room`): the limits and one Book (its
 /// steps' 90th percentiles kept with its models: crate::needs::Book::nas_prior).
@@ -634,7 +635,7 @@ impl Sched {
         let rev = self.rev();
         let mut g = self.measured_of.lock().unwrap_or_else(|e| e.into_inner());
         if g.0 != rev {
-            *g = (rev, Measures::new());
+            *g = (rev, Measures::default());
         }
         if let Some(&m) = g.1.get(step).and_then(|t| t.get(target)) {
             return m;
@@ -1461,15 +1462,23 @@ impl Sched {
                 }
                 // (A job reading a shared cache none here reads yet: its room less the cache's.)
                 let fill = self.cache_fill(&o.step, &caches, a);
+                // (Copied only when its cache's fill changes it: an ask weighs every offer.)
                 let room_o = match room.disk_mb {
-                    Some(d) if fill > 0 => Ask { disk_mb: Some(d.saturating_sub(fill)), ..room.clone() },
-                    _ => room.clone(),
+                    Some(d) if fill > 0 => {
+                        std::borrow::Cow::Owned(Ask { disk_mb: Some(d.saturating_sub(fill)), ..room.clone() })
+                    }
+                    _ => std::borrow::Cow::Borrowed(&room),
                 };
                 let pick =
                     if o.job.is_some() { self.pick_own(o, &room_o, now) } else { self.pick_every(o, &room_o, now) };
                 if pick.is_empty() {
                     if waiting.is_none() {
-                        let whole = Ask { disk_mb: a.disk_mb.map(|d| d.saturating_sub(fill)), ..a.clone() };
+                        let whole = match a.disk_mb {
+                            Some(d) if fill > 0 => {
+                                std::borrow::Cow::Owned(Ask { disk_mb: Some(d.saturating_sub(fill)), ..a.clone() })
+                            }
+                            _ => std::borrow::Cow::Borrowed(a),
+                        };
                         waiting = self.room_wait(o, &whole, &room_o, now).map(|(m, ts)| {
                             let n = self.pack_need(&o.step, &ts, &a.worker);
                             let w = RoomWait {

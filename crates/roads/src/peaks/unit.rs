@@ -23,41 +23,12 @@ use rayon::prelude::*;
 use roadcore::geo::{merc, EARTH_R};
 use roadcore::grid::decode_terrain;
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeSet, BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// A quick hasher for the searches' pixel sets and the overlays' lookups (FxHash's multiply and
-/// rotate): they're only looked in, never walked in their order, so it changes nothing but the
-/// time, where SipHash was a third of the coarse floods'.
-#[derive(Clone, Copy, Default)]
-pub struct Fx(u64);
-
-impl std::hash::Hasher for Fx {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for c in bytes.chunks(8) {
-            let mut b = [0u8; 8];
-            b[..c.len()].copy_from_slice(c);
-            self.write_u64(u64::from_le_bytes(b));
-        }
-    }
-    fn write_u64(&mut self, v: u64) {
-        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
-    }
-    fn write_i64(&mut self, v: i64) {
-        self.write_u64(v as u64);
-    }
-    fn write_u32(&mut self, v: u32) {
-        self.write_u64(v as u64);
-    }
-}
-
-type FxBuild = std::hash::BuildHasherDefault<Fx>;
-type FxSet<K> = HashSet<K, FxBuild>;
-type FxMap<K, V> = HashMap<K, V, FxBuild>;
+// (The searches' pixel sets and the overlays' look-ups: roadcore::fx.)
+use roadcore::fx::{FxMap, FxSet};
 
 const Z12: u8 = 12;
 const Z8_: u8 = 8;

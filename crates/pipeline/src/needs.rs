@@ -492,7 +492,7 @@ impl Curve {
 /// (`Book::nas_prior`) alike.
 #[derive(Debug, Default)]
 pub struct Cache(
-    Mutex<(u64, std::collections::HashMap<String, Vec<(Measure, std::sync::Arc<Model>)>>)>,
+    Mutex<(u64, roadcore::fx::FxMap<String, Vec<(Measure, std::sync::Arc<Model>)>>)>,
     Mutex<(u64, BTreeMap<String, Option<(Cores, bool)>>)>,
     Mutex<(u64, BTreeMap<String, Option<crate::budget::nas::Rate>>)>,
     /// Each target's `Book::nas` (step → target → it): the NAS budget weighs each target offered
@@ -515,13 +515,13 @@ pub struct Cache(
 );
 
 /// What `Cache` keeps of each target: step → target → it (looked up without making a key).
-type ByTarget<T> = std::collections::HashMap<String, std::collections::HashMap<String, T>>;
+type ByTarget<T> = roadcore::fx::FxMap<String, roadcore::fx::FxMap<String, T>>;
 
 /// A `Book::secs_on` kept (`Cache`): its threads and worker, and its answer.
 type SecsAsked = ((u32, Option<String>), Option<(u64, bool)>);
 
 /// `Cache`'s targets' NAS rates: step → target → `Book::nas`.
-type Rates = std::collections::HashMap<String, std::collections::HashMap<String, Option<crate::budget::nas::Rate>>>;
+type Rates = ByTarget<Option<crate::budget::nas::Rate>>;
 
 /// The measures needs are read from: what each target cost (crate::coord::Cost), and, where kept,
 /// the floors (crate::agent::memguard) and disk floors (MB, by cost key); the models made from them
@@ -1425,7 +1425,7 @@ impl<'a> Book<'a> {
         {
             let mut g = cache.3.lock().unwrap_or_else(|e| e.into_inner());
             if g.0 != self.rev {
-                *g = (self.rev, Rates::new());
+                *g = (self.rev, Rates::default());
             }
             if let Some(&r) = g.1.get(step).and_then(|t| t.get(target)) {
                 return r;
