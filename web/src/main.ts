@@ -1,22 +1,19 @@
 import * as maplibregl from 'maplibre-gl';
-import type { GeoJSONSource } from 'maplibre-gl';
 import 'maplibre-gl/built/maplibre-gl.css';
 // MapLibre resolves its worker at runtime, which bundlers can't see; bundle it explicitly (its
 // source: our own MapLibre, web/maplibre/, vite.config.ts).
 import mlWorkerUrl from 'maplibre-gl/src/source/worker.ts?worker&url';
 import './style.css';
 import { screenWidthKm } from './autofit';
-import { getProfile, getRoadWays, getWay, onVersions, packChanged, packUrl, packVersion, peekWay, roadWays, setPacks, setVersions, version, type Drive, type Meta, type Profile, type Ride } from './api';
-import { displayName, displayOf, lineName } from './names';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setLandColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
+import { onVersions, packChanged, packUrl, packVersion, setPacks, setVersions, version, type Meta, type Profile } from './api';
+import { displayName, displayOf } from './names';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setLandColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
-import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, setRegisterCredits, summariseFeature, withDetails } from './overlays';
-import { loadDetail, osmPath, peekDetail, refKey } from './details';
+import { landmarkRef, Overlays, setRegisterCredits } from './overlays';
+import { loadDetail, osmPath, peekDetail } from './details';
 import { hexRgb } from './palettes';
-import { RoadLayer, type HoverInfo } from './roads/layer';
-import { FADE_Z, RAIL0 } from './config';
-import type { FeatureSummary } from './overlays';
+import { FADE_Z } from './config';
 import { RailCard } from './ui/rail';
 import { FerryCard } from './ui/ferry';
 import { StopsCard } from './ui/stops';
@@ -28,26 +25,26 @@ import { mapTasks } from './maptasks';
 import { initHosts } from './hosts';
 import { applyTrees } from './trees';
 import { Depth } from './depth';
-import { waterNameAt } from './watername';
-import { buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type Ray } from './buildings';
-import type { Extreme } from './roads/stats';
+import { heritageChanged, heritagePoints, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, switchBuildings } from './buildings';
 import * as prefs from './prefs';
-import { Store, cleanRoadLook, classMask, defaults, labelShown, fromHash, fromProfile, fromSaved, profileIdOf, railMask, roadLenKm, surfaceMask, toHash, tollMask, unnamedHideClasses, type AppState, type Selection, type Stretch } from './state';
+import { Store, cleanRoadLook, defaults, labelShown, fromHash, fromProfile, fromSaved, profileIdOf, toHash, type AppState } from './state';
 import { applyLabelLooks, defaultLooks, labelLayerShown, labelSizeOf } from './labellook';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, cacheTerrainRays, setTerrainAreas, switchContours } from './terrain';
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
 import { CatalogueWatch } from './catalogue';
 import { PolarCaps } from './polarcaps';
-import { boxKm, viewArea } from './inview';
 import { globeProjection } from './polarglobe';
 import { nasBack, TileRetry } from './retry';
-import { RegionLayers, regionAt } from './regions';
+import { RegionLayers } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
 import { FerryScale } from './ctl/ferries';
 import { FrameLoop } from './ctl/frame';
 import { Buildings } from './ctl/buildings';
 import { RoadsRail } from './ctl/roads';
+import { Hover } from './ctl/hover';
+import { Lists } from './ctl/lists';
+import { Marks, point } from './ctl/marks';
 import { TerrainTint } from './ctl/tint';
 import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
@@ -56,7 +53,7 @@ import { installTrackpad } from './trackpad';
 import { MapStatus } from './ui/mapstatus';
 import { ColourCard } from './ui/colour';
 import { Profiles, fetchProfiles } from './ui/settingprofiles';
-import { cap, h, toast } from './ui/dom';
+import { cap, toast } from './ui/dom';
 import { fmt } from './fmt';
 import { loadBar } from './ui/loadbar';
 import { DrivesPane } from './ui/drives';
@@ -66,7 +63,7 @@ import { PlaceSearch } from './ui/search';
 import { installListsResize, installPanelResize } from './ui/resize';
 import { ProfilePanel } from './ui/profile';
 import { RegionsPanel } from './ui/regions';
-import { StatsCard, type ViewPlace } from './ui/stats';
+import { StatsCard } from './ui/stats';
 import { SightsPane, type Sight } from './ui/sights';
 import { LinesPane, RidesPane } from './ui/rides';
 import { Strip } from './ui/strip';
@@ -416,28 +413,6 @@ async function main() {
     markDirty();
     sights.refresh();
   };
-  sights.kinds = () => overlays.viewLandmarks.filter((l) => store.s.overlays[l.key]);
-  sights.query = (k) => overlays.topInView(k);
-  sights.onSelect = (x) => overlays.select(x);
-  sights.onHover = (x) => {
-    marks.high = x ? point(x.lngLat, 'high') : null;
-    setMarks();
-    if (x) sightOsm(x); // ready for O
-    listHover(x ? { feature: { layer: x.layer, props: x.props, lngLat: x.lngLat } } : null);
-  };
-  statsCard.onPlace = (pl: ViewPlace) => {
-    if (pl.layer) overlays.select({ lngLat: pl.lngLat, layer: pl.layer, props: pl.props });
-    else map.flyTo({ center: pl.lngLat, zoom: Math.max(map.getZoom(), 11), duration: 900 });
-  };
-  statsCard.onPlaceHover = (pl: ViewPlace | null) => {
-    marks.high = pl ? point(pl.lngLat, 'high') : null;
-    setMarks();
-    if (!pl) return listHover(null);
-    if (pl.layer) return listHover({ feature: { layer: pl.layer, props: pl.props ?? {}, lngLat: pl.lngLat } });
-    if (pl === rd.viewExtra.rail?.busiest) return listHover({ layer: rails, at: pl.lngLat });
-    if (pl === rd.viewExtra.ferry?.busiest) return listHover({ ferryAt: pl.lngLat });
-    listHover(null);
-  };
   profile.colour = () => ({ palette: store.s.palette, mode: store.s.mode, range: rd.cur, weights: store.s.weights, cdf: store.s.equalize ? rd.cdf : null });
   const ferries = new Ferries(map);
   const stations = new Stations(map);
@@ -452,51 +427,18 @@ async function main() {
   onSettled(() => overlays.prominence(store.s));
   duringMoves(() => overlays.prominenceSoon(store.s), 300);
 
-  // Markers: profile cursor, highest / lowest road in view, viewshed eye, a place searched for.
-  const marks: Record<string, GeoJSON.Feature | null> = { cursor: null, high: null, low: null, viewshed: null, ring: null, place: null };
-  const setMarks = () => {
-    const src = map.getSource<GeoJSONSource>('marks');
-    src?.setData({ type: 'FeatureCollection', features: Object.values(marks).filter(Boolean) as GeoJSON.Feature[] });
-  };
-  const point = (ll: [number, number], kind: string, label?: string): GeoJSON.Feature => ({
-    type: 'Feature',
-    properties: label ? { kind, label } : { kind },
-    geometry: { type: 'Point', coordinates: ll },
-  });
-  const line = (coords: [number, number][] | null): GeoJSON.GeoJSON =>
-    coords ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } } : { type: 'FeatureCollection', features: [] };
-  profile.onHover = (ll, label) => {
-    marks.cursor = ll ? point(ll, 'cursor', label) : null;
-    setMarks();
-  };
+  // Markers: profile cursor, highest / lowest road in view, viewshed eye, a place searched for
+  // (ctl/marks.ts).
+  const marks = new Marks(map);
+  profile.onHover = (ll, label) => marks.set('cursor', ll ? point(ll, 'cursor', label) : null);
   // A place found: the map goes there, at the zoom that shows it, and marks it (named by the line
   // under its label when it has one, its English mostly), until the search's words go.
   search.onGo = (p) => {
     const ll = new maplibregl.LngLat(p.lon, p.lat);
-    marks.place = point([p.lon, p.lat], 'place', p.sub || p.main);
-    setMarks();
+    marks.set('place', point([p.lon, p.lat], 'place', p.sub || p.main));
     map.flyTo({ ...cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, p.zoom), duration: 1500 });
   };
-  search.onClear = () => {
-    marks.place = null;
-    setMarks();
-  };
-  statsCard.onMark = (x, kind) => {
-    marks[kind] = x ? point(x.lngLat, kind, fmt.m(x.elev)) : null;
-    setMarks();
-    listHover(x ? { layer: ((x.tile.data?.lineStyle[x.line] ?? 0) & 15) >= RAIL0 ? rails : roads, at: x.lngLat, way: x.tile.data?.lineWay[x.line] } : null);
-  };
-  statsCard.onFly = (x: Extreme) => {
-    const ll = maplibregl.LngLat.convert(x.lngLat);
-    map.flyTo({ ...cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, Math.max(map.getZoom(), 14)), duration: 1200 });
-    const kind = x === rd.stats?.highest ? 'high' : 'low';
-    marks[kind] = point(x.lngLat, kind, fmt.m(x.elev));
-    setMarks();
-    setTimeout(() => {
-      marks[kind] = null;
-      setMarks();
-    }, 6000);
-  };
+  search.onClear = () => marks.set('place', null);
   // The profile panel covers the map's bottom.
   const fitPad = { top: 60, bottom: 270, left: 60, right: 60 };
   /** fitBounds, but framed from the ground at the centre rather than from sea level (cam3d.frame). */
@@ -507,10 +449,6 @@ async function main() {
     if (!cam?.center || cam.zoom === undefined) return;
     const ll = maplibregl.LngLat.convert(cam.center);
     map.flyTo({ ...cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, cam.zoom), duration: 900 });
-  };
-  const bboxQuery = () => {
-    const b = map.getBounds();
-    return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((x) => x.toFixed(5)).join(',');
   };
   /** Outline of the ground in view, for the lists "in view" (scenic drives, rides): the screen
    * unprojected, up to where the ground gets too foreshortened to see (a pixel covering more than
@@ -562,19 +500,6 @@ async function main() {
     outline = pts.map(([x, y]) => ground(x, y)).filter((ll): ll is maplibregl.LngLat => !!ll);
     return outline;
   };
-  const polyQuery = () => groundOutline().map((ll) => `${ll.lng.toFixed(4)},${ll.lat.toFixed(4)}`).join(',');
-  // Zoomed-out lists (docs/phase5.md "Zoomed-out queries"): from the server's summaries when the
-  // outline's box is wider than 1,200 km, exact again below 900 km (between, as it was: panning or a
-  // resize doesn't flip it), one mode for drives, rides and rail lines.
-  let approxLists: boolean | null = null;
-  const approxQuery = (): boolean => {
-    const o = groundOutline();
-    if (o.length < 3) return approxLists ?? false;
-    // (Its box across the antimeridian or round a pole: inview.ts.)
-    const km = boxKm(viewArea(o.map((ll) => [ll.lng, ll.lat]), [-180, -90, 180, 90]).box);
-    approxLists = approxLists === null ? km > 1050 : approxLists ? km > 900 : km > 1200;
-    return approxLists;
-  };
   // Landmarks, ferries and the roads' and rail's statistics "in view" use the same outline (the
   // bounding box of a globe or tilted view takes in far more: Toronto from northern British
   // Columbia).
@@ -582,218 +507,21 @@ async function main() {
   ferries.viewOutline = overlays.viewOutline;
   roads.viewOutline = rails.viewOutline = overlays.viewOutline;
 
-  // A scenic drive or ride picked from a list is a stretch of the selected road (store.s.stretch,
-  // so links carry it). Its line on the map: the list's geometry, or, when it came from a link,
-  // the stretch cut out of the road's profile once loaded.
-  let pinned: [number, number][] | null = null;
-  let profileCoords: [number, number][] | null = null;
-  const cut = (coords: [number, number][], a: [number, number], b: [number, number]) => {
-    const near = (q: [number, number]) => {
-      const k = Math.cos((q[1] * Math.PI) / 180);
-      let best = 0, bd = Infinity;
-      coords.forEach((c, i) => {
-        const d = ((c[0] - q[0]) * k) ** 2 + (c[1] - q[1]) ** 2;
-        if (d < bd) [bd, best] = [d, i];
-      });
-      return best;
-    };
-    const [i, j] = [near(a), near(b)].sort((x, y) => x - y);
-    return coords.slice(i, j + 1);
-  };
-  const setDriveHl = (g: [number, number][] | null) => map.getSource<GeoJSONSource>('drive-hl')?.setData(line(g));
-  const drawStretch = () => {
-    const st = store.s.selected !== null ? store.s.stretch : null;
-    if (st && !pinned && profileCoords) pinned = cut(profileCoords, st.a, st.b);
-    setDriveHl(st ? pinned : null);
-  };
-  const applyStretch = () => {
-    const st = store.s.selected !== null ? store.s.stretch : null;
-    if (!st) pinned = null;
-    profile.highlight(st ? { start: st.a, end: st.b, label: st.label } : null);
-    drawStretch();
-  };
-  const driveStretch = (d: Drive): Stretch => ({
-    a: d.geom[0], b: d.geom[d.geom.length - 1], label: `Scenic ${d.score.toFixed(0)} · ${fmt.dist(d.length_m)}`,
+  // Hover and clicks on the map, and list items hovered (ctl/hover.ts).
+  const hover = new Hover(map, store, {
+    strip, overlays, ferries, rd, viewshed, regionLayers, regions, marks,
+    depth: () => depth,
+    driving: () => !!driving,
+    moving: () => moving,
   });
-  const boundsOf = (g: [number, number][]) => {
-    const b = new maplibregl.LngLatBounds();
-    for (const q of g) b.extend(q);
-    return b;
-  };
-  /** A drive or ride picked from a list: its road or line selected (by its first way and the point
-   * the list gives on it) and the stretch marked, the map staying where it is. A zoomed-out list's
-   * geometry (its summaries' samples, 500 m apart) isn't kept: the stretch is cut from the road's
-   * profile once loaded, as a link's is. */
-  const pickStretch = (sel: Selection, st: Stretch, geom: [number, number][] | null) => {
-    store.set({ selected: sel, stretch: st });
-    pinned = geom;
-    drawStretch();
-  };
-
-  // Scenic drives.
-  drives.query = () => ({ bbox: bboxQuery(), poly: polyQuery(), classes: classMask(store.s), surface: surfaceMask(store.s), toll: tollMask(store.s), unnamed: unnamedHideClasses(store.s), len: roadLenKm(store.s), weights: store.s.weights, approx: approxQuery() });
-  drives.onResults = (ds) =>
-    map.getSource<GeoJSONSource>('drives')?.setData({
-      type: 'FeatureCollection',
-      features: ds.map((d) => ({ type: 'Feature', properties: { score: d.score }, geometry: { type: 'LineString', coordinates: d.geom } })),
-    });
-  drives.onHover = (d) => {
-    listHover(d ? { layer: roads, at: midpoint(d.geom), way: d.way, geom: [d.geom] } : null);
-    return d ? setDriveHl(d.geom) : drawStretch();
-  };
-  drives.onSelect = (d) => pickStretch({ way: d.way, at: d.at }, driveStretch(d), d.approx ? null : d.geom);
-
-  // Scenic rides and rail lines: the rail weights and service groups shown.
-  const railQuery = () => ({ bbox: bboxQuery(), poly: polyQuery(), weights: store.s.rail.weights, groups: railMask(store.s), approx: approxQuery() });
-  rides.query = railQuery;
-  lines.query = railQuery;
-  const rideStretch = (r: Ride): Stretch => ({
-    a: r.geom[0], b: r.geom[r.geom.length - 1], label: `Scenic ride ${r.score.toFixed(0)} · ${fmt.dist(r.length_m)}`,
+  // The lists in view and the road selected (ctl/lists.ts).
+  const lists = new Lists(map, store, statsCard, profile, { drives, rides, lines, sights }, overlays, rd, marks, {
+    outline: groundOutline,
+    hover: (x) => hover.list(x),
+    sightHovered: (x) => void sightOsm(x), // ready for O
+    onSettled,
+    duringMoves,
   });
-  rides.onResults = (rs) => drives.onResults(rs.map((r) => ({ score: r.score, geom: r.geom }) as unknown as Drive));
-  rides.onHover = (r) => {
-    listHover(r ? { layer: rails, at: midpoint(r.geom), geom: [r.geom] } : null);
-    return r ? setDriveHl(r.geom) : drawStretch();
-  };
-  rides.onSelect = (r) => pickStretch({ way: r.way, at: r.at }, rideStretch(r), r.approx ? null : r.geom);
-  lines.onHover = (l) => {
-    listHover(l ? { layer: rails, at: midpoint(l.geom.reduce((a, b) => (lineLen(b) > lineLen(a) ? b : a))), geom: l.geom } : null);
-    map.getSource<GeoJSONSource>('drive-hl')?.setData(l ? { type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: l.geom } } : line(null));
-    if (!l) drawStretch();
-  };
-  // A line picked from the list: selected, as a click on it on the map does.
-  lines.onSelect = (l) => store.set({ selected: { way: l.way, at: l.at }, stretch: null });
-
-  // A list item hovered (Drives, Rides, Rail lines, Sights, In view): the bottom bar shows it as a
-  // hover on the map would, and a road or line too small on screen to see at a glance gets a ring.
-  /** Length of a line (degrees, scaled by latitude: only for comparing lines). */
-  const lineLen = (g: [number, number][]) => {
-    let l = 0;
-    for (let i = 1; i < g.length; i++) l += Math.hypot((g[i][0] - g[i - 1][0]) * Math.cos((g[i][1] * Math.PI) / 180), g[i][1] - g[i - 1][1]);
-    return l;
-  };
-  /** The point halfway along a line. */
-  const midpoint = (g: [number, number][]): [number, number] => {
-    const half = lineLen(g) / 2;
-    let l = 0;
-    for (let i = 1; i < g.length; i++) {
-      const d = Math.hypot((g[i][0] - g[i - 1][0]) * Math.cos((g[i][1] * Math.PI) / 180), g[i][1] - g[i - 1][1]);
-      if (l + d >= half && d > 0) {
-        const t = (half - l) / d;
-        return [g[i - 1][0] + (g[i][0] - g[i - 1][0]) * t, g[i - 1][1] + (g[i][1] - g[i - 1][1]) * t];
-      }
-      l += d;
-    }
-    return g[0];
-  };
-  /** The ring around lines (lng, lat) too small on screen to see at a glance: whose smallest
-   * enclosing circle (with the line's width) is under two of the largest landmark dots across. The
-   * ring clears them by a comfortable margin. */
-  const ringAround = (parts: [number, number][][] | null) => {
-    marks.ring = null;
-    const all = parts?.flat() ?? [];
-    if (all.length) {
-      const step = Math.max(1, Math.floor(all.length / 400));
-      const pts = all.filter((_, i) => i % step === 0 || i === all.length - 1).map((q) => map.project(q));
-      // Ritter's bounding circle: from the point farthest from the first to the one farthest from
-      // that, grown to take in any point outside.
-      const far = (a: { x: number; y: number }) => pts.reduce((b, q) => (Math.hypot(q.x - a.x, q.y - a.y) > Math.hypot(b.x - a.x, b.y - a.y) ? q : b), a);
-      const p1 = far(pts[0]), p2 = far(p1);
-      let cx = (p1.x + p2.x) / 2, cy = (p1.y + p2.y) / 2, r = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2;
-      for (const q of pts) {
-        const d = Math.hypot(q.x - cx, q.y - cy);
-        if (d > r) {
-          const nr = (r + d) / 2, k = (nr - r) / d;
-          cx += (q.x - cx) * k;
-          cy += (q.y - cy) * k;
-          r = nr;
-        }
-      }
-      const z = map.getZoom();
-      // The largest landmark dot: a World Heritage site at the top of the scale (dots.ts).
-      const stops = HER_R[0], i = stops.findIndex(([sz]) => sz >= z);
-      const base = i < 0 ? stops[stops.length - 1][1] : i === 0 ? stops[0][1] : stops[i - 1][1] + ((stops[i][1] - stops[i - 1][1]) * (z - stops[i - 1][0])) / (stops[i][0] - stops[i - 1][0]);
-      const maxDot = 2 * base * 1.25;
-      const lineW = 3;
-      if (2 * (r + lineW / 2) < 2 * maxDot) {
-        const c = map.unproject([cx, cy]);
-        marks.ring = { type: 'Feature', properties: { kind: 'ring', r: Math.max(10, r + lineW / 2 + Math.max(6, r * 0.6)) }, geometry: { type: 'Point', coordinates: [c.lng, c.lat] } };
-      }
-    }
-    setMarks();
-  };
-  type ListItem =
-    | { layer: RoadLayer; at: [number, number]; way?: number; geom?: [number, number][][] }
-    | { feature: { layer: string; props: Record<string, any>; lngLat: [number, number] } }
-    | { ferryAt: [number, number] };
-  let listTok = 0;
-  const listHover = (x: ListItem | null) => {
-    const tok = ++listTok;
-    if (!x) {
-      ringAround(null);
-      strip.show(null, null);
-      return;
-    }
-    if ('feature' in x) {
-      ringAround(null);
-      const f = summariseFeature(x.feature.layer, x.feature.props, x.feature.lngLat);
-      if (f) showFeat(f, []);
-      return;
-    }
-    if ('ferryAt' in x) {
-      ringAround(null);
-      const p = map.project(x.ferryAt);
-      const f = ferries.hoverAt({ x: p.x, y: p.y });
-      return f ? strip.showFeature(f, []) : strip.show(null, null);
-    }
-    ringAround(x.geom ?? null);
-    // The road's ways where known (a drive spans several), so a road crossing there isn't taken.
-    const set = x.way !== undefined ? roadWays(x.way) : undefined;
-    const ok = set ? (w: number) => set.has(w) : x.way !== undefined ? (w: number) => w === x.way : undefined;
-    const hv = x.layer.pickNear(x.at[0], x.at[1], 4, ok) ?? x.layer.pickNear(x.at[0], x.at[1], 4);
-    if (!hv) return strip.show(null, null);
-    const known = peekWay(hv.way);
-    strip.show(hv, known === undefined ? 'loading' : known, []);
-    if (known === undefined) {
-      getWay(hv.way, hv.lngLat).then((info) => {
-        if (listTok === tok) strip.show(hv, info, []);
-      });
-    }
-  };
-
-  statsCard.onTab = (k) => {
-    if (k === 'drives') drives.refresh(true);
-    else if (k === 'rides') rides.refresh(true);
-    else drives.onResults([]);
-    if (k === 'lines') lines.refresh(true);
-    if (k === 'sights') sights.refresh();
-    drawStretch(); // drop hover highlights of the list left behind
-  };
-  onSettled(() => {
-    drives.refresh();
-    rides.refresh();
-    lines.refresh();
-  });
-  // The lists follow the view while it moves too, every 1.5 s (a request at a time: a newer one
-  // replaces the one under way).
-  duringMoves(() => {
-    drives.refresh();
-    rides.refresh();
-    lines.refresh();
-  }, 1500);
-  const applyDrivesShown = () => map.getLayer('drives-line') && map.setLayoutProperty('drives-line', 'visibility', drives.showOnMap ? 'visible' : 'none');
-  drives.onShowChange = applyDrivesShown;
-
-  statsCard.show(statsCard.tab); // restored tab: run its loaders now that callbacks exist
-
-  statsCard.wayName = async (x) => {
-    const info = await getWay(x.tile.data!.lineWay[x.line], x.lngLat);
-    // Rail: the line's name without a route's direction or service codes.
-    if (info && ['tram', 'metro', 'commuter', 'intercity', 'heritage'].includes(info.class)) return lineName(info);
-    return info ? [info.ref, displayName(info.main, info.name, info.sub)].filter(Boolean).join(' ') : '';
-  };
-
-  // Hover readouts for the scenic channels.
 
   // The status line: every task under way (tasks.ts), from the map's tiles, the road and rail
   // tiles, and the app's own downloads and searches. Map events start its polling; it stops by
@@ -872,11 +600,6 @@ async function main() {
   });
   onSettled(() => markDirty());
 
-  // ---- hover & selection -----------------------------------------------------------
-  let hovered: HoverInfo | null = null;
-  // With the HUD off (I) the map is only for looking: nothing is hovered or selected.
-  const hudOff = () => document.body.classList.contains('hud-off');
-  let pickAt: { x: number; y: number } | null = null;
   // Rail stop and ferry terminal dots in the colour of their line at that point; each shows only
   // once coloured (stations.ts, ferries.ts). In idle time (idle.ts), after a render, at most every
   // 100 ms (300 ms while the camera moves): the dots shown and not yet coloured, and all of them
@@ -885,7 +608,7 @@ async function main() {
   let dotsAt = 0;
   function* colourDots(): Generator<void, void> {
     dotsAt = performance.now();
-    // (The zoom while the lines' colour strength follows it: railLookOf.)
+    // (The zoom while the lines' colour strength follows it: RoadsRail.railLook.)
     const fz = Math.min(FADE_Z[FADE_Z.length - 1], Math.round(map.getZoom() * 4) / 4);
     const key = [rails.drawnCount, JSON.stringify({ ...store.s.rail, opacity: 1 }), rd.railCur.join(), JSON.stringify(store.s.ferry), JSON.stringify(store.s.lineWeights), fz].join('|');
     const all = key !== dotsKey;
@@ -939,138 +662,6 @@ async function main() {
       }
     }
   });
-  const interactive = () => [...POINT_LAYERS].filter((id) => map.getLayer(id) && map.getLayoutProperty(id, 'visibility') !== 'none');
-  // A hovered stop, site or area: shown at once, then again with its details when they arrive.
-  let featKey = '';
-  const showFeat = (f: FeatureSummary, areas: FeatureSummary[]) => {
-    const key = f.ref ? refKey(f.ref) : '';
-    featKey = key;
-    const d = f.ref ? peekDetail(f.ref) : undefined;
-    strip.showFeature(d !== undefined ? withDetails(f, d) : f, areas);
-    if (f.ref && d === undefined) {
-      loadDetail(f.ref).then((dd) => {
-        if (featKey === key) strip.showFeature(withDetails(f, dd), areas);
-      });
-    }
-  };
-  const doPick = () => {
-    const pt = pickAt;
-    pickAt = null;
-    // Not while the camera moves: the map's queries project through the 3D terrain, and a
-    // hover readout mid-gesture is of no use.
-    if (!pt || driving || moving || hudOff()) return;
-    featKey = '';
-    waterTok++; // (a water answer still to come is for an older pick)
-    // Markers first (small targets), then the nearest road or rail line, then the highlighted
-    // areas under the cursor.
-    const feats = overlays.hoverAt(pt);
-    // Ferries next (car ferries are in the road layer too; their ferry details say more).
-    const ferry = feats.point ? null : ferries.hoverAt(pt);
-    if (ferry) {
-      hoverBuilding(null);
-      hovered = null;
-      roads.setHover(null);
-      rails.setHover(null);
-      map.getCanvas().style.cursor = viewshed.active ? 'crosshair' : 'pointer';
-      hoverAreas = feats.areas;
-      return strip.showFeature(ferry, feats.areas);
-    }
-    const hr = feats.point ? null : roads.pick(pt.x, pt.y);
-    const hl = feats.point || !store.s.rail.on ? null : rails.pick(pt.x, pt.y);
-    hovered = hr && hl ? (hl.px <= hr.px ? hl : hr) : hr ?? hl;
-    // A road or rail line behind a building gives way to it (the lines are picked within a few
-    // pixels of the cursor, hidden or not).
-    const exag = store.s.terrain.on ? store.s.terrain.exaggeration : 0;
-    const ray: Ray = { at: (x, y, e) => cam3d.rayAt(map, x, y, e), camera: cam3d.cameraAltitude(map) };
-    if (hovered && store.s.buildings.on && hiddenByBuilding(map, hovered.lngLat, store.s.buildings, exag, ray)) hovered = null;
-    const layer = hovered && hovered === hl ? rails : roads;
-    (layer === rails ? roads : rails).setHover(null);
-    // Highlight the whole road (or line), not just the way under the cursor (fetched once per road).
-    const road = hovered ? roadWays(hovered.way) : undefined;
-    layer.setHover(hovered, road ?? null);
-    if (hovered && !road) {
-      getRoadWays(hovered.way, hovered.lngLat).then((set) => {
-        if (set && hovered && set.has(hovered.way)) layer.setHover(hovered, set);
-      });
-    }
-    map.getCanvas().style.cursor = viewshed.active ? 'crosshair' : hovered || feats.point ? 'pointer' : '';
-    hoverAreas = feats.areas;
-    if (!hovered) {
-      // A building, when no marker, road or rail line answers: the areas it's in as chips (a whole
-      // old town is a heritage area, which would otherwise hide every building in it).
-      const bf = feats.point ? null : buildingAt(map, pt, store.s.buildings, exag, ray)?.f ?? null;
-      hoverBuilding(bf);
-      if (bf) {
-        roads.setHover(null);
-        rails.setHover(null);
-        return strip.showFeature(buildingSummary(bf), feats.areas);
-      }
-      // A region (Show regions on map), before the areas inside it.
-      const ll = cursorLL ?? map.unproject([pt.x, pt.y]);
-      const rg = feats.point ? null : regionAt(regionLayers.shown, [ll.lng, ll.lat]);
-      if (rg) {
-        roads.setHover(null);
-        rails.setHover(null);
-        return strip.showRegion(regions.regionInfo(rg.properties.region, rg.properties.name));
-      }
-      const f = feats.point ?? feats.areas[0];
-      if (f) return showFeat(f, feats.areas);
-      // Nothing else here: water, if the depth has it (else the strip goes idle).
-      waterAt = { tok: waterTok, pt, ll: cursorLL ?? map.unproject([pt.x, pt.y]) };
-      if (!waterBusy) void askWater();
-      return;
-    }
-    hoverBuilding(null);
-    const hv = hovered;
-    const known = peekWay(hv.way);
-    strip.show(hv, known === undefined ? 'loading' : known, hoverAreas);
-    if (known === undefined) {
-      getWay(hv.way, hv.lngLat).then((info) => {
-        if (hovered?.way === hv.way) strip.show(hovered, info, hoverAreas);
-      });
-    }
-  };
-  let hoverAreas: FeatureSummary[] = [];
-  /** The pick a water answer (depth.water) is for: one newer, or the cursor gone, drops it. */
-  let waterTok = 0;
-  /** The newest water pick still to ask about, and whether a probe is out: one at a time, the
-   * newest pick next, so fast moves don't queue probes in the depth workers. */
-  let waterAt: { tok: number; pt: { x: number; y: number }; ll: maplibregl.LngLat } | null = null;
-  let waterBusy = false;
-  const askWater = async () => {
-    waterBusy = true;
-    try {
-      while (waterAt) {
-        const q = waterAt;
-        waterAt = null;
-        const w = await depth.water(q.ll);
-        if (q.tok !== waterTok) continue;
-        if (!w) strip.show(null, null);
-        else {
-          const n = waterNameAt(map, q.pt, w.water);
-          strip.showWater(w, n.name, n.kind);
-        }
-      }
-    } finally {
-      waterBusy = false;
-    }
-  };
-  /** The hovered building highlighted (null: none), when it changed. */
-  let hoveredBuilding: unknown = null;
-  const hoverBuilding = (f: maplibregl.MapGeoJSONFeature | null) => {
-    const key = f ? JSON.stringify(f.geometry) : null;
-    if (key === hoveredBuilding) return;
-    hoveredBuilding = key;
-    setBuildingHover(map, f);
-  };
-  // Last cursor position on the map (terrain-aware), for the Street View shortcut.
-  let cursorLL: maplibregl.LngLat | null = null;
-  map.on('mousemove', (e) => {
-    if (!pickAt) requestAnimationFrame(doPick);
-    pickAt = { x: e.point.x, y: e.point.y };
-    cursorLL = e.lngLat;
-  });
-  map.getCanvas().addEventListener('mouseleave', () => (cursorLL = null));
   // Back on the map, a slider, dropdown or button used earlier lets go of the keyboard, so keys
   // (G, Esc, arrows) reach the map; a text field keeps it (you may still be typing).
   map.getCanvas().addEventListener('mouseenter', () => {
@@ -1079,48 +670,15 @@ async function main() {
     const num = a instanceof HTMLInputElement && a.type === 'number';
     if (a instanceof HTMLElement && a !== document.body && (num || !isTyping(a)) && !a.closest('.maplibregl-canvas-container')) a.blur();
   });
-  /** No hover: the cursor left the map, or the HUD went off. */
-  const unhover = () => {
-    pickAt = null;
-    waterTok++;
-    hovered = null;
-    roads.setHover(null);
-    rails.setHover(null);
-    hoverBuilding(null);
-    strip.show(null, null);
-  };
-  map.getCanvas().addEventListener('mouseleave', unhover);
+  map.getCanvas().addEventListener('mouseleave', () => hover.unhover());
 
-  let profileAbort: AbortController | null = null;
-  const select = async (sel: Selection | null) => {
-    profileAbort?.abort();
-    profileCoords = null;
-    if (sel === null) {
-      profile.hide();
-      map.getSource<GeoJSONSource>('selection')?.setData(line(null));
-      pinned = null;
-      drawStretch();
-      return;
-    }
-    profileAbort = new AbortController();
-    const info = peekWay(sel.way) ?? (await getWay(sel.way, sel.at));
-    profile.loading((info && (info.ref || displayName(info.main, info.name, info.sub))) || 'this road');
-    try {
-      const p = await getProfile(sel.way, sel.at, profileAbort.signal);
-      profile.show(p);
-      map.getSource<GeoJSONSource>('selection')?.setData(line(p.coords));
-      profileCoords = p.coords;
-      drawStretch();
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') profile.error((e as Error).message);
-    }
-  };
   profile.onClose = () => store.set({ selected: null, stretch: null });
-  profile.onZoom = (p) => {
+  const boundsOf = (g: [number, number][]) => {
     const b = new maplibregl.LngLatBounds();
-    for (const c of p.coords) b.extend(c);
-    fitGround(b, fitPad);
+    for (const q of g) b.extend(q);
+    return b;
   };
+  profile.onZoom = (p) => fitGround(boundsOf(p.coords), fitPad);
 
   // ---- fly-along "Drive" ------------------------------------------------------------
   let driving: { raf: number; stop: () => void } | null = null;
@@ -1168,8 +726,7 @@ async function main() {
       const ground = map.queryTerrainElevation(pos) ?? 0;
       elev = elev === null ? ground : elev + (ground - elev) * Math.min(1, dt * 2);
       map.jumpTo(cam3d.frame(map, new maplibregl.LngLat(pos[0], pos[1]), elev, 14.6, 70, bearing));
-      marks.cursor = point(pos, 'cursor');
-      setMarks();
+      marks.set('cursor', point(pos, 'cursor'));
       if (d >= L) return driving?.stop();
       if (driving) driving.raf = requestAnimationFrame(frame);
     };
@@ -1178,8 +735,7 @@ async function main() {
       cancelAnimationFrame(driving.raf);
       driving = null;
       map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
-      marks.cursor = null;
-      setMarks();
+      marks.set('cursor', null);
       canvas.removeEventListener('mousedown', stop);
       canvas.removeEventListener('wheel', stop);
     };
@@ -1192,32 +748,7 @@ async function main() {
 
   // ---- clicks ----------------------------------------------------------------------
   // (A finger's tap once it's not the first of a double tap: trackpad.ts, single.)
-  map.on('click', (e) => cameraControls.single(() => click(e)));
-  const click = (e: maplibregl.MapMouseEvent) => {
-    if (hudOff()) return;
-    if (viewshed.active) {
-      viewshed.run([e.lngLat.lng, e.lngLat.lat]);
-      return;
-    }
-    if (overlays.click(e.point, POINT_LAYERS)) return;
-    if (ferries.click(e.point, e.lngLat)) {
-      overlays.closePopup();
-      return;
-    }
-    ferries.closePopup();
-    const hr = roads.pick(e.point.x, e.point.y);
-    const hl = store.s.rail.on ? rails.pick(e.point.x, e.point.y) : null;
-    const hv = hr && hl ? (hl.px <= hr.px ? hl : hr) : hr ?? hl;
-    // A World Heritage line (a canal, a wall) against the roads and rail: the nearer wins.
-    const wl = overlays.whsLineAt(e.point);
-    if (wl && (!hv || wl.px <= hv.px) && overlays.click(e.point, ['whs-line'])) return;
-    if (hv) {
-      overlays.closePopup();
-      store.set({ selected: { way: hv.way, at: hv.lngLat }, stretch: null });
-      return;
-    }
-    overlays.click(e.point, AREA_LAYERS);
-  };
+  map.on('click', (e) => cameraControls.single(() => hover.click(e)));
   layers.onViewshed = () => (viewshed.active ? viewshed.cancel() : viewshed.start());
   layers.trees.onPreview = (palette) => applyTrees(map, palette ? { ...store.s.trees, palette } : store.s.trees);
   // Depth under the water (depth.ts): its layers once the catalogue has them.
@@ -1226,10 +757,7 @@ async function main() {
   layers.depth.onPreview = (palette) => depth.preview(palette);
   depth.onFit = () => layers.depth.update(depth.dist, depth.domain(), depth.cdf());
   viewshed.onActive = (on) => layers.setViewshedActive(on);
-  viewshed.onMark = (ll) => {
-    marks.viewshed = ll ? point(ll, 'viewshed') : null;
-    setMarks();
-  };
+  viewshed.onMark = (ll) => marks.set('viewshed', ll ? point(ll, 'viewshed') : null);
   // ---- G / M / O: Street View, Google Maps, OpenStreetMap --------------------------------------
   // For what is under the pointer: a list entry (drives, rides, rail lines, sights), a point on
   // the profile, else the map at the cursor (snapped to the hovered road). Google Maps shows a
@@ -1293,7 +821,8 @@ async function main() {
     }
     const hp = profile.hoverPoint();
     if (hp) return { lngLat: hp.lngLat, heading: hp.heading, streetView: !hp.rail, what: 'at this point' };
-    if (cursorLL) return { lngLat: hovered ? hovered.lngLat : [cursorLL.lng, cursorLL.lat], streetView: true, what: 'at the cursor' };
+    const cur = hover.cursorLL;
+    if (cur) return { lngLat: hover.hovered ? hover.hovered.lngLat : [cur.lng, cur.lat], streetView: true, what: 'at the cursor' };
     return null;
   };
   const openLink = (k: string, t: LinkTarget) => {
@@ -1393,7 +922,7 @@ async function main() {
       map.resize();
       if (off) {
         // Nothing stays hovered or selected (no popup either) while it's off.
-        unhover();
+        hover.unhover();
         map.getCanvas().style.cursor = '';
         overlays.closePopup();
         ferries.closePopup();
@@ -1510,7 +1039,7 @@ async function main() {
     }
     if ((ch.has('buildings') || ch.has('terrain')) && styleReady) {
       bld.apply(s);
-      if (!s.buildings.on) hoverBuilding(null);
+      if (!s.buildings.on) hover.hoverBuilding(null);
     }
     if (styleReady) {
       if (ch.has('layers') || ch.has('water') || ch.has('boundaryLevels') || kinds) applyLayers();
@@ -1558,8 +1087,8 @@ async function main() {
       rides.refresh();
       lines.refresh();
     }
-    if (ch.has('selected')) select(s.selected);
-    if (ch.has('selected') || ch.has('stretch')) applyStretch();
+    if (ch.has('selected')) void lists.select(s.selected);
+    if (ch.has('selected') || ch.has('stretch')) lists.applyStretch();
     if (!ch.has('view')) {
       colour.sync();
       stopsCard.sync();
@@ -1728,7 +1257,7 @@ async function main() {
     overlays.apply(store.s);
     ferries.apply(store.s);
     stations.apply(store.s);
-    applyDrivesShown();
+    lists.applyDrivesShown();
     regions.start();
     // The catalogue from now on (a new catalogue finds the style's sources there).
     watch = new CatalogueWatch(meta.catalog);
@@ -1771,8 +1300,8 @@ async function main() {
       reachable = now;
     });
     if (store.s.selected !== null) {
-      select(store.s.selected);
-      applyStretch();
+      void lists.select(store.s.selected);
+      lists.applyStretch();
     }
     // The bar gives up on a slow first view; overlays start within 2 s either way.
     setTimeout(finishFirstView, FIRST_VIEW_MS);
