@@ -3248,7 +3248,8 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let merged = whs_over_cover(out, &date, &poly, &cache, scratch)?;
     drop(p);
     // (Safe points, task #890: here, the clip held in the cache by its set and cover, which a resumed
-    // run takes up, and after each script of the chain, what it fetched kept in the pass's answers
+    // run takes up, and after each script of the chain (and each Wikidata batch heritagewd and
+    // areadetails keep, task #999), what it fetched kept in the pass's answers
     // (sent to the NAS as the step ends, paused too). A resumed run starts the step over, nothing
     // partial taken up but the cached clip: it redoes the clips before it (minutes) and runs every
     // script again, those done finding what they fetched in the answers (kept for the pass, never

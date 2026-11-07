@@ -16,7 +16,7 @@
 //! `json` writes them (pyport::pyjson), every float operation in the order the Python's was.
 
 use crate::interest::py_round;
-use crate::wikiask::{val, Asker};
+use crate::wikiask::{number, val, Asker};
 use anyhow::{bail, Context, Result};
 use det::Det;
 use jobrt::timings::phase;
@@ -140,8 +140,54 @@ fn is_qid(s: &str) -> bool {
     s.strip_prefix('Q').is_some_and(|d| !d.is_empty() && d.chars().all(|c| pyport::pytext::decimal(c).is_some()))
 }
 
-/// Facts of these items (several hundred at a time), by item; `save` given what's in so far
-/// before each batch after the first.
+/// The park query of `chunk`'s items. (An unknown value, a blank node, is no inception or
+/// visitors: `isLiteral`, so neither SAMPLE nor MAX takes one over a known value.)
+fn parks_query(chunk: &[String]) -> String {
+    let values = chunk.iter().map(|q| format!("wd:{q}")).collect::<Vec<_>>().join(" ");
+    format!(
+        r#"PREFIX psn: <http://www.wikidata.org/prop/statement/value-normalized/> PREFIX p: <http://www.wikidata.org/prop/>
+        SELECT ?item (SAMPLE(?den) AS ?d_en) (SAMPLE(?dloc) AS ?d_loc) (SAMPLE(?wen) AS ?w_en) (SAMPLE(?inc0) AS ?inc)
+          (MAX(?a0) AS ?area) (MAX(?v0) AS ?visitors) (GROUP_CONCAT(DISTINCT ?opL; SEPARATOR="|") AS ?op)
+          (GROUP_CONCAT(DISTINCT ?instL; SEPARATOR="|") AS ?inst) WHERE {{
+          VALUES ?item {{ {values} }}
+          OPTIONAL {{ ?item schema:description ?den FILTER(LANG(?den) = "en") }}
+          OPTIONAL {{ ?item schema:description ?dloc FILTER(LANG(?dloc) IN ("fr", "es", "pt", "ca")) }}
+          OPTIONAL {{ ?a schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?wen }}
+          OPTIONAL {{ ?item wdt:P571 ?inc0 FILTER(isLiteral(?inc0)) }}
+          OPTIONAL {{ ?item p:P2046 ?st . ?st psn:P2046 ?nv . ?nv wikibase:quantityAmount ?a0 }}
+          OPTIONAL {{ ?item wdt:P1174 ?v0 FILTER(isLiteral(?v0)) }}
+          OPTIONAL {{ ?item wdt:P137 ?o . ?o rdfs:label ?opL FILTER(LANG(?opL) = "en") }}
+          OPTIONAL {{ ?item wdt:P31 ?i . ?i rdfs:label ?instL FILTER(LANG(?instL) = "en") }}
+        }} GROUP BY ?item"#
+    )
+}
+
+/// A park's facts from its binding (`qid`'s): a value that isn't one left out, logged
+/// (crate::wikiask::number).
+fn park_record(b: &Py, qid: &str) -> Py {
+    let mut rec: Vec<(String, Py)> = vec![];
+    for key in ["d_en", "d_loc", "w_en", "op", "inst"] {
+        if let Some(v) = val(b, key) {
+            rec.push((key.into(), Py::Str(v.into())));
+        }
+    }
+    if let Some(v) = val(b, "inc") {
+        rec.push(("inception".into(), Py::Str(v.chars().take(10).collect())));
+    }
+    if let Some(a) = number(b, "area", qid) {
+        // (Normalised to m².)
+        rec.push(("area_km2".into(), Py::Float(py_round(a / 1e6, 2))));
+    }
+    if let Some(f) = number(b, "visitors", qid).map(f64::trunc) {
+        rec.push(("visitors".into(), Py::Int(if f == 0.0 { "0".into() } else { format!("{f:.0}") })));
+    }
+    Py::Dict(rec)
+}
+
+/// Facts of these items, `BATCH` a query (crate::wikiask::Asker::sparql_batches: a batch too
+/// costly for the service asked in halves, an item too costly alone left out), by item; `save`
+/// given what's in so far after each batch, a safe point after it (what came is in the pass's
+/// answers, which a resumed run doesn't ask again).
 fn wd_parks(
     ask: &Asker,
     endpoint: &str,
@@ -150,59 +196,25 @@ fn wd_parks(
 ) -> Result<Vec<(String, Py)>> {
     let mut out: Vec<(String, Py)> = vec![];
     let mut at: HashMap<String, usize> = HashMap::new();
-    for (n, chunk) in qids.chunks(BATCH).enumerate() {
-        if n > 0 {
-            save(&out)?;
-        }
-        let values = chunk.iter().map(|q| format!("wd:{q}")).collect::<Vec<_>>().join(" ");
-        let q = format!(
-            r#"PREFIX psn: <http://www.wikidata.org/prop/statement/value-normalized/> PREFIX p: <http://www.wikidata.org/prop/>
-        SELECT ?item (SAMPLE(?den) AS ?d_en) (SAMPLE(?dloc) AS ?d_loc) (SAMPLE(?wen) AS ?w_en) (SAMPLE(?inc0) AS ?inc)
-          (MAX(?a0) AS ?area) (MAX(?v0) AS ?visitors) (GROUP_CONCAT(DISTINCT ?opL; SEPARATOR="|") AS ?op)
-          (GROUP_CONCAT(DISTINCT ?instL; SEPARATOR="|") AS ?inst) WHERE {{
-          VALUES ?item {{ {values} }}
-          OPTIONAL {{ ?item schema:description ?den FILTER(LANG(?den) = "en") }}
-          OPTIONAL {{ ?item schema:description ?dloc FILTER(LANG(?dloc) IN ("fr", "es", "pt", "ca")) }}
-          OPTIONAL {{ ?a schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?wen }}
-          OPTIONAL {{ ?item wdt:P571 ?inc0 }}
-          OPTIONAL {{ ?item p:P2046 ?st . ?st psn:P2046 ?nv . ?nv wikibase:quantityAmount ?a0 }}
-          OPTIONAL {{ ?item wdt:P1174 ?v0 }}
-          OPTIONAL {{ ?item wdt:P137 ?o . ?o rdfs:label ?opL FILTER(LANG(?opL) = "en") }}
-          OPTIONAL {{ ?item wdt:P31 ?i . ?i rdfs:label ?instL FILTER(LANG(?instL) = "en") }}
-        }} GROUP BY ?item"#
-        );
-        for b in ask.sparql(endpoint, &q)? {
-            let mut rec: Vec<(String, Py)> = vec![];
-            for key in ["d_en", "d_loc", "w_en", "op", "inst"] {
-                if let Some(v) = val(&b, key) {
-                    rec.push((key.into(), Py::Str(v.into())));
-                }
-            }
-            if let Some(v) = val(&b, "inc") {
-                rec.push(("inception".into(), Py::Str(v.chars().take(10).collect())));
-            }
-            let float = |k: &str, v: &str| pyport::pytext::float(v).with_context(|| format!("{k} {v:?} not a number"));
-            if let Some(v) = val(&b, "area") {
-                // (Normalised to m².)
-                rec.push(("area_km2".into(), Py::Float(py_round(float("area", v)? / 1e6, 2))));
-            }
-            if let Some(v) = val(&b, "visitors") {
-                let f = float("visitors", v)?.trunc();
-                anyhow::ensure!(f.is_finite(), "visitors {v:?} not finite");
-                rec.push(("visitors".into(), Py::Int(if f == 0.0 { "0".into() } else { format!("{f:.0}") })));
-            }
+    let mut done = 0;
+    ask.sparql_batches(endpoint, qids, BATCH, &parks_query, &mut |chunk, rows| {
+        for b in rows {
             let item = val(&b, "item").context("a binding without its item")?;
             let qid = item.rsplit('/').next().unwrap_or(item).to_string();
+            let rec = park_record(&b, &qid);
             match at.get(&qid) {
-                Some(&k) => out[k].1 = Py::Dict(rec),
+                Some(&k) => out[k].1 = rec,
                 None => {
                     at.insert(qid.clone(), out.len());
-                    out.push((qid, Py::Dict(rec)));
+                    out.push((qid, rec));
                 }
             }
         }
-        eprintln!("  wikidata {}/{}", (n * BATCH + chunk.len()), qids.len());
-    }
+        done += chunk.len();
+        eprintln!("  wikidata {done}/{}", qids.len());
+        save(&out)?;
+        jobrt::control::piece_saved()
+    })?;
     Ok(out)
 }
 
@@ -382,5 +394,39 @@ mod tests {
     fn names_and_items_as_python() {
         assert_eq!(norm("Kahnawà:ke 14"), "kahnawke14");
         assert!(is_qid("Q42") && is_qid("Q١٢") && !is_qid("Q") && !is_qid("q42") && !is_qid("Q4 "));
+    }
+
+    /// 7 Nov's two failures, from recorded answers: a park whose visitors are an unknown value
+    /// (QLever's genid IRI) has none, and a batch past QLever's time limit is asked in halves, each
+    /// batch saved as it comes.
+    #[test]
+    fn unknown_values_and_costly_batches() {
+        use crate::wikiask::tests::{bindings, noting, replay, QLEVER_TIMED_OUT};
+        let park = |q: &str, visitors: &str| {
+            format!(
+                r#"{{"item": {{"type": "uri", "value": "http://www.wikidata.org/entity/{q}"}},
+                "visitors": {visitors}, "area": {{"type": "literal", "value": "2500000"}}}}"#
+            )
+        };
+        let genid =
+            r#"{"type": "uri", "value": "http://www.wikidata.org/.well-known/genid/9e0e785fb54b8e85182f3338680c3feb"}"#;
+        let (url, asked) = replay(vec![
+            (429, None, QLEVER_TIMED_OUT.into()),
+            (200, None, bindings(&park("Q1", genid))),
+            (200, None, bindings(&park("Q2", r#"{"type": "literal", "value": "1234.7"}"#))),
+        ]);
+        let (ask, waits) = noting();
+        let mut saves = vec![];
+        let qids = vec!["Q1".to_string(), "Q2".to_string()];
+        let got = wd_parks(&ask, &url, &qids, |s| {
+            saves.push(s.len());
+            Ok(())
+        })
+        .unwrap();
+        let got: Vec<String> = got.iter().map(|(q, r)| format!("{q} {}", dumps_spaced(r))).collect();
+        assert_eq!(got, [r#"Q1 {"area_km2": 2.5}"#, r#"Q2 {"area_km2": 2.5, "visitors": 1234}"#]);
+        assert_eq!(saves, [1, 2]);
+        assert_eq!(asked.lock().unwrap().len(), 3);
+        assert!(waits.lock().unwrap().is_empty());
     }
 }

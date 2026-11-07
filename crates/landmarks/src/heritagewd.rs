@@ -27,7 +27,7 @@
 //! so a rerun only asks what is new. The files' bytes are as dem/heritagewd.py wrote them
 //! (pyport::pyjson's `dumps_spaced`).
 
-use crate::wikiask::{urlencode, val, Asker};
+use crate::wikiask::{int, urlencode, val, Asker};
 use anyhow::{bail, Context, Result};
 use det::Det;
 use jobrt::timings::phase;
@@ -354,7 +354,7 @@ fn query(prop: &str, ids: &[String]) -> String {
       (GROUP_CONCAT(DISTINCT ?archL; SEPARATOR=\"|\") AS ?arch) WHERE {{
       {bind}
       OPTIONAL {{ ?item wikibase:sitelinks ?sl0 }}
-      OPTIONAL {{ ?item wdt:P571 ?inc0 }}
+      OPTIONAL {{ ?item wdt:P571 ?inc0 FILTER(isLiteral(?inc0)) }}
       {opt}
       OPTIONAL {{ ?item wdt:P31 ?i . ?i rdfs:label ?instL FILTER(LANG(?instL) = \"en\") }}
       OPTIONAL {{ ?item wdt:P149 ?s . ?s rdfs:label ?styleL FILTER(LANG(?styleL) = \"en\") }}
@@ -363,47 +363,74 @@ fn query(prop: &str, ids: &[String]) -> String {
     )
 }
 
-/// Looks the batches up, two at a time: each batch's rows by its IDs ([] for none), in `jobs`' order.
-fn look_up(ask: &Asker, endpoint: &str, jobs: &[(String, Vec<String>)]) -> Result<Vec<Vec<(String, Py)>>> {
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let out: std::sync::Mutex<Vec<Option<Result<Vec<(String, Py)>>>>> =
-        std::sync::Mutex::new((0..jobs.len()).map(|_| None).collect());
-    std::thread::scope(|s| {
-        for _ in 0..2 {
-            s.spawn(|| loop {
-                let n = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some((prop, keys)) = jobs.get(n) else { break };
-                let r = ask.sparql(endpoint, &query(prop, keys)).map(|rows| {
-                    let mut got: HashMap<&str, Vec<Py>> = HashMap::new();
-                    for b in &rows {
-                        if let Some(id) = val(b, "id") {
-                            got.entry(id).or_default().push(b.clone());
-                        }
-                    }
-                    keys.iter().map(|k| (k.clone(), Py::List(got.remove(k.as_str()).unwrap_or_default()))).collect()
-                });
-                if n % 25 == 0 {
-                    eprintln!("  batches {}/{}", n + 1, jobs.len());
+/// Looks up `todo`'s IDs, each property's (or "QID"'s) `BATCH` a query
+/// (crate::wikiask::Asker::sparql_batches: a batch too costly for the service asked in halves, an
+/// ID too costly alone left out, asked again by the next run): each batch's rows by its IDs ([]
+/// for none) set in `seen` and appended to its cache `path` as they come, a safe point after each
+/// (what came is in the pass's answers, which a resumed run doesn't ask again).
+fn look_up(
+    ask: &Asker,
+    endpoint: &str,
+    todo: &[(String, Vec<String>)],
+    seen: &mut Ordered<Py>,
+    path: &Path,
+) -> Result<()> {
+    let n: usize = todo.iter().map(|(_, k)| k.len()).sum();
+    let (mut done, mut batches) = (0, 0);
+    for (prop, keys) in todo {
+        ask.sparql_batches(endpoint, keys, BATCH, &|ks| query(prop, ks), &mut |ks, rows| {
+            let mut got: HashMap<&str, Vec<Py>> = HashMap::new();
+            for b in &rows {
+                if let Some(id) = val(b, "id") {
+                    got.entry(id).or_default().push(b.clone());
                 }
-                let failed = r.is_err();
-                out.lock().unwrap()[n] = Some(r);
-                if failed {
-                    next.store(usize::MAX / 2, std::sync::atomic::Ordering::Relaxed);
-                }
-            });
-        }
-    });
-    out.into_inner().unwrap().into_iter().map(|r| r.unwrap_or_else(|| bail!("a batch not looked up"))).collect()
+            }
+            let mut lines = String::new();
+            for k in ks {
+                let r = dict(vec![
+                    ("prop", Py::Str(prop.clone())),
+                    ("id", Py::Str(k.clone())),
+                    ("rows", Py::List(got.remove(k.as_str()).unwrap_or_default())),
+                ]);
+                lines.push_str(&dumps_spaced(&r));
+                lines.push('\n');
+                seen.set(&sk(prop, k), r);
+            }
+            append(path, &lines)?;
+            done += ks.len();
+            if batches % 25 == 0 {
+                eprintln!("  looked up {done}/{n}");
+            }
+            batches += 1;
+            jobrt::control::piece_saved()
+        })?;
+    }
+    Ok(())
 }
 
-/// A site's facts from one of its result rows.
+/// `text` appended to `p`, after its last whole line (a line an append cut short dropped first, as
+/// `read_lines` drops it).
+fn append(p: &Path, text: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::FileExt;
+    let mut f = std::fs::OpenOptions::new().read(true).append(true).create(true).open(p)?;
+    let len = f.metadata()?.len();
+    let mut last = [b'\n'];
+    if len > 0 {
+        f.read_exact_at(&mut last, len - 1)?;
+    }
+    if last[0] != b'\n' {
+        let old = std::fs::read(p)?;
+        f.set_len(old.iter().rposition(|&c| c == b'\n').map_or(0, |i| i + 1) as u64)?;
+    }
+    f.write_all(text.as_bytes()).with_context(|| format!("append to {}", p.display()))
+}
+
+/// A site's facts from one of its result rows (a value that isn't one left out, logged).
 fn record(b: &Py) -> Result<Vec<(String, Py)>> {
     let item = val(b, "item").context("a row without its item")?;
     let qid = item.rsplit('/').next().unwrap_or(item);
-    let sl = match val(b, "sl") {
-        Some(s) => Py::Int(s.trim().parse::<i128>().with_context(|| format!("sitelinks {s:?}"))?.to_string()),
-        None => Py::Int("0".into()),
-    };
+    let sl = Py::Int(int(b, "sl", qid).unwrap_or(0).to_string());
     let langs = |pre: &str| {
         Py::Dict(
             LANGS
@@ -439,7 +466,11 @@ fn item(i: usize, prop: &str, id: &str, rec: &[(String, Py)]) -> Py {
     Py::Dict(d)
 }
 
-/// Per item: the number of Wikipedia articles (any language) and their `lang|title` list.
+/// Items a query of Wikipedia articles asks.
+const WP_BATCH: usize = 1000;
+
+/// Per item: the number of Wikipedia articles (any language) and their `lang|title` list (an item
+/// too costly a query alone left out: crate::wikiask::Asker::sparql_batches).
 pub(crate) fn wikipedias(ask: &Asker, endpoint: &str, qids: &[String]) -> Result<Vec<(String, Py)>> {
     wikipedias_told(ask, endpoint, qids, &mut |_| {})
 }
@@ -452,9 +483,8 @@ pub(crate) fn wikipedias_told(
     progress: &mut dyn FnMut(usize),
 ) -> Result<Vec<(String, Py)>> {
     let _p = phase("looking up Wikipedia articles");
-    let mut out = Vec::new();
-    for (k, chunk) in qids.chunks(1000).enumerate() {
-        let q = format!(
+    let query = |chunk: &[String]| {
+        format!(
             "SELECT ?item (COUNT(DISTINCT ?art) AS ?n) (GROUP_CONCAT(?lt; SEPARATOR=\"\\t\") AS ?arts) WHERE {{
           VALUES ?item {{ {} }}
           ?art schema:about ?item ; schema:isPartOf ?site ; schema:inLanguage ?lang ; schema:name ?nm .
@@ -462,9 +492,12 @@ pub(crate) fn wikipedias_told(
           BIND(CONCAT(?lang, \"|\", ?nm) AS ?lt)
         }} GROUP BY ?item",
             chunk.iter().map(|x| format!("wd:{x}")).collect::<Vec<_>>().join(" ")
-        );
+        )
+    };
+    let (mut out, mut batches) = (Vec::new(), 0);
+    ask.sparql_batches(endpoint, qids, WP_BATCH, &query, &mut |chunk, rows| {
         let mut got: HashMap<String, Py> = HashMap::new();
-        for b in ask.sparql(endpoint, &q)? {
+        for b in rows {
             if let Some(it) = val(&b, "item") {
                 got.insert(it.rsplit('/').next().unwrap_or(it).to_string(), b);
             }
@@ -472,18 +505,20 @@ pub(crate) fn wikipedias_told(
         for x in chunk {
             let r = match got.get(x) {
                 Some(b) => dict(vec![
-                    ("n", Py::Int(val(b, "n").map_or(Ok(0), |s| s.trim().parse::<i128>())?.to_string())),
+                    ("n", Py::Int(int(b, "n", x).unwrap_or(0).to_string())),
                     ("arts", Py::List(val(b, "arts").unwrap_or("").split('\t').map(|s| Py::Str(s.into())).collect())),
                 ]),
                 None => dict(vec![("n", Py::Int("0".into())), ("arts", Py::List(vec![]))]),
             };
             out.push((x.clone(), r));
         }
-        if k % 20 == 0 {
-            eprintln!("  Wikipedia articles: {}/{}", k * 1000 + chunk.len(), qids.len());
+        if batches % 20 == 0 {
+            eprintln!("  Wikipedia articles: {}/{}", out.len(), qids.len());
         }
-        progress(k * 1000 + chunk.len());
-    }
+        batches += 1;
+        progress(out.len());
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -558,12 +593,16 @@ fn shortdescs(ask: &Asker, api: &str, titles: &[String]) -> Result<Ordered<Strin
     Ok(out)
 }
 
-/// A JSON-lines cache: each line by its key (`key` of the line), first places kept, last values.
+/// A JSON-lines cache: each line by its key (`key` of the line), first places kept, last values;
+/// a last line without its newline (an append cut short: `look_up`'s) dropped.
 pub(crate) fn read_lines(p: &Path, key: impl Fn(&Py) -> Result<String>) -> Result<Ordered<Py>> {
     let mut out = Ordered::new();
     if p.exists() {
         let text = std::fs::read_to_string(p).with_context(|| format!("read {}", p.display()))?;
-        for line in text.lines() {
+        for line in text.split_inclusive('\n').filter(|l| l.ends_with('\n')).map(str::trim_end) {
+            if line.is_empty() {
+                continue;
+            }
             let r = loads(line).with_context(|| format!("a line of {}", p.display()))?;
             out.set(&key(&r)?, r);
         }
@@ -627,29 +666,18 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
     let id_cache = w.join("ids.jsonl");
     let mut seen = read_lines(&id_cache, |r| Ok(sk(str_at(r, "prop")?, str_at(r, "id")?)))?;
     drop(p);
-    let mut jobs = Vec::new();
-    for (prop, ids) in by_prop.iter() {
-        let mut keys: Vec<String> = ids.keys.iter().filter(|k| !seen.has(&sk(prop, k))).cloned().collect();
-        keys.sort();
-        for c in keys.chunks(BATCH) {
-            jobs.push((prop.clone(), c.to_vec()));
-        }
-    }
+    let todo: Vec<(String, Vec<String>)> = by_prop
+        .iter()
+        .map(|(prop, ids)| {
+            let mut keys: Vec<String> = ids.keys.iter().filter(|k| !seen.has(&sk(prop, k))).cloned().collect();
+            keys.sort();
+            (prop.clone(), keys)
+        })
+        .collect();
     let n_ids: usize = by_prop.vals.iter().map(|v| v.keys.len()).sum();
-    eprintln!("{n_ids} register IDs, {} to look up", jobs.iter().map(|j| j.1.len()).sum::<usize>());
+    eprintln!("{n_ids} register IDs, {} to look up", todo.iter().map(|j| j.1.len()).sum::<usize>());
     let p = phase("looking up register IDs on Wikidata");
-    let save = |seen: &mut Ordered<Py>, jobs: &[(String, Vec<String>)], res: Vec<Vec<(String, Py)>>| {
-        for ((prop, _), rows) in jobs.iter().zip(res) {
-            for (k, rows) in rows {
-                seen.set(
-                    &sk(prop, &k),
-                    dict(vec![("prop", Py::Str(prop.clone())), ("id", Py::Str(k)), ("rows", rows)]),
-                );
-            }
-        }
-    };
-    let res = look_up(&ask, &ends.wikidata, &jobs)?;
-    save(&mut seen, &jobs, res);
+    look_up(&ask, &ends.wikidata, &todo, &mut seen, &id_cache)?;
     drop(p);
     let write_ids = |seen: &Ordered<Py>| -> Result<()> {
         let _p = phase("writing the register ID cache");
@@ -711,9 +739,7 @@ pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
         new_q.len()
     );
     let p = phase("looking up OSM-linked items on Wikidata");
-    let jobs: Vec<(String, Vec<String>)> = new_q.chunks(BATCH).map(|c| ("QID".to_string(), c.to_vec())).collect();
-    let res = look_up(&ask, &ends.wikidata, &jobs)?;
-    save(&mut seen, &jobs, res);
+    look_up(&ask, &ends.wikidata, &[("QID".to_string(), new_q)], &mut seen, &id_cache)?;
     drop(p);
     write_ids(&seen)?;
     let p = phase("making the records");
@@ -854,6 +880,23 @@ mod tests {
         assert_eq!(other_article(&arts), Some(("ga".into(), "G".into())));
         let arts = loads(r#"["zz|Z", "xa|X"]"#).unwrap();
         assert_eq!(other_article(&arts), Some(("xa".into(), "X".into())));
+    }
+
+    #[test]
+    fn a_cut_short_append_dropped() {
+        let p = std::env::temp_dir().join(format!("heritagewd-lines-{}.jsonl", std::process::id()));
+        std::fs::write(&p, "{\"qid\": \"Q1\", \"n\": 1}\n").unwrap();
+        append(&p, "{\"qid\": \"Q2\", \"n\": 2}\n{\"qid\": \"Q1\", \"n\": 3}\n{\"qid\": \"Q").unwrap();
+        let lines = |p: &Path| {
+            let r = read_lines(p, |r| Ok(r.at("qid").py_str())).unwrap();
+            r.iter().map(|(k, v)| format!("{k} {}", dumps_spaced(v))).collect::<Vec<String>>()
+        };
+        assert_eq!(lines(&p), [r#"Q1 {"qid": "Q1", "n": 3}"#, r#"Q2 {"qid": "Q2", "n": 2}"#]);
+        // (The next append goes after the last whole line.)
+        append(&p, "{\"qid\": \"Q3\", \"n\": 0}\n").unwrap();
+        assert_eq!(lines(&p)[2], r#"Q3 {"qid": "Q3", "n": 0}"#);
+        assert!(std::fs::read_to_string(&p).unwrap().ends_with("3}\n{\"qid\": \"Q3\", \"n\": 0}\n"));
+        std::fs::remove_file(&p).ok();
     }
 
     /// A run on caches holding every answer asks nothing (the unit tests' process is offline) and

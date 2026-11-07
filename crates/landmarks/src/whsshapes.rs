@@ -251,13 +251,23 @@ fn wd_sparql(ask: &Asker, wikidata: &str, query: &str, cache: &Path) -> Result<V
     }
     let d = loads(&std::fs::read_to_string(cache)?).with_context(|| format!("parse {}", cache.display()))?;
     let mut out = vec![];
+    let mut unknown = 0;
     for b in d.at("results").at("bindings").list().context("no bindings")? {
         let Py::Dict(kv) = b else { bail!("a binding not an object") };
+        // (A row holding an unknown value, a statement's `somevalue`, says nothing: every
+        // column of these queries is needed.)
+        if kv.iter().any(|(_, v)| crate::wikiask::unknown(v)) {
+            unknown += 1;
+            continue;
+        }
         let mut m = HashMap::new();
         for (k, v) in kv {
             m.insert(k.clone(), v.at("value").as_str().context("a value not a string")?.to_string());
         }
         out.push(m);
+    }
+    if unknown > 0 {
+        eprintln!("{}: {unknown} rows with an unknown value, left out", cache.display());
     }
     Ok(out)
 }

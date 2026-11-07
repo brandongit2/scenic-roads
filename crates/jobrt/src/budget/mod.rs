@@ -148,9 +148,15 @@ pub fn seen(url: &str, status: u16, retry_after: Option<&str>) -> bool {
     if class_of(host).is_none() || (status != 429 && retry_after.is_none_or(|r| r.trim().is_empty())) {
         return false;
     }
-    let s = retry_after.and_then(|r| r.trim().parse::<f64>().ok()).unwrap_or(HOLD_DEFAULT_S as f64);
-    let secs = (s.max(1.0).ceil() as u64).max(1);
-    tell(&format!("/hold?s={secs}&host={host}"))
+    tell(&format!("/hold?s={}&host={host}", hold_s(retry_after)))
+}
+
+/// How long a refusal saying `retry_after` holds the pool (s): its seconds (at least one, at most
+/// `HOLD_MAX_S`), `HOLD_DEFAULT_S` when it says none (or a date). A step waiting out a 429 waits
+/// this long, the hold `seen` told the same.
+pub fn hold_s(retry_after: Option<&str>) -> u64 {
+    let s = retry_after.and_then(|r| r.trim().parse::<f64>().ok()).filter(|s| s.is_finite());
+    s.map_or(HOLD_DEFAULT_S, |s| s.max(1.0).ceil() as u64).clamp(1, HOLD_MAX_S)
 }
 
 /// A process's request to `url` is asked again (crate::fetch's retries): told to its proxy, which

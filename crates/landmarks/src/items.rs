@@ -16,13 +16,15 @@
 //! delete facts-<epoch>.jsonl (or wp-) here: the deletion goes to the NAS with the next run, which
 //! asks about every item again. Older epochs' files go at the end of a run.
 //!
-//! Output: `<out>/facts.json` (QID → record, the items Wikidata knows). Every failed query fails
-//! the run (no silently skipped batch). The files' bytes are as Python's `json` writes them
-//! (pyport::pyjson).
+//! Output: `<out>/facts.json` (QID → record, the items Wikidata knows). A failed query fails the
+//! run; one too costly for the service is asked in halves, and an item too costly alone is left
+//! out with a log line (not cached, so asked again by the next run: crate::wikiask). An unknown
+//! value, or one that isn't a number, is no value. The files' bytes are as Python's `json` writes
+//! them (pyport::pyjson).
 
 use crate::heritagewd::{wikipedias_told, write_atomic};
 use crate::interest::py_round;
-use crate::wikiask::{val, Asker};
+use crate::wikiask::{int, number, val, Asker};
 use anyhow::{Context, Result};
 use jobrt::jobs::report;
 use jobrt::timings::phase;
@@ -67,7 +69,7 @@ fn facts_query(chunk: &[String]) -> String {
           OPTIONAL {{ ?item schema:description ?den FILTER(LANG(?den) = "en") }}
           OPTIONAL {{ ?item schema:description ?dloc FILTER(LANG(?dloc) IN ("fr", "es", "pt", "ca")) }}
           OPTIONAL {{ ?a schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?wen }}
-          OPTIONAL {{ ?item wdt:P571 ?inc0 }}
+          OPTIONAL {{ ?item wdt:P571 ?inc0 FILTER(isLiteral(?inc0)) }}
           {num}
           OPTIONAL {{ ?item wdt:P206 ?w . ?w rdfs:label ?waterL FILTER(LANG(?waterL) = "en") }}
           OPTIONAL {{ ?item wdt:P4552 ?r . ?r rdfs:label ?rangeL FILTER(LANG(?rangeL) = "en") }}
@@ -78,11 +80,8 @@ fn facts_query(chunk: &[String]) -> String {
 /// One binding's record: sitelinks, short descriptions (English, else French, Spanish, Portuguese
 /// or Catalan), English article, water body (P206), mountain range (P4552), inception, and the
 /// numeric facts to 2 decimals.
-fn record(b: &Py) -> Result<Py> {
-    let sl = match val(b, "sl") {
-        Some(s) => pyport::pytext::strip(s).parse::<i128>().with_context(|| format!("sitelinks {s:?}"))?,
-        None => 0,
-    };
+fn record(b: &Py, qid: &str) -> Py {
+    let sl = int(b, "sl", qid).unwrap_or(0);
     let mut rec = vec![("sl".to_string(), Py::Int(sl.to_string()))];
     for k in ["d_en", "d_loc", "w_en", "water", "range"] {
         if let Some(v) = val(b, k) {
@@ -93,34 +92,35 @@ fn record(b: &Py) -> Result<Py> {
         rec.push(("inception".into(), Py::Str(v.chars().take(10).collect())));
     }
     for (n, _) in Q_PROPS {
-        if let Some(v) = val(b, &format!("v_{n}")) {
-            let x = pyport::pytext::float(v).with_context(|| format!("{n} {v:?} not a number"))?;
+        if let Some(x) = number(b, &format!("v_{n}"), qid) {
             rec.push((n.into(), Py::Float(py_round(x, 2))));
         }
     }
-    Ok(Py::Dict(rec))
+    Py::Dict(rec)
 }
 
-/// Facts of these items from the Wikidata endpoint, WD_BATCH at a time (`progress` told how many
-/// are done after each batch).
+/// Facts of these items from the Wikidata endpoint, WD_BATCH a query (`progress` told how many
+/// are done after each batch): the items asked (an item too costly a query alone is left out:
+/// crate::wikiask::Asker::sparql_batches), and the facts of those Wikidata knows.
 fn facts_of(
     ask: &Asker,
     endpoint: &str,
     qids: &[String],
     progress: &mut dyn FnMut(usize),
-) -> Result<HashMap<String, Py>> {
-    let mut out = HashMap::new();
-    for (k, chunk) in qids.chunks(WD_BATCH).enumerate() {
-        for b in ask.sparql(endpoint, &facts_query(chunk))? {
+) -> Result<(Vec<String>, HashMap<String, Py>)> {
+    let (mut asked, mut out) = (vec![], HashMap::new());
+    ask.sparql_batches(endpoint, qids, WD_BATCH, &facts_query, &mut |chunk, rows| {
+        for b in rows {
             let item = val(&b, "item").context("a binding without its item")?;
             let qid = item.rsplit_once('/').context("an item not a URL")?.1;
-            out.insert(qid.to_string(), record(&b)?);
+            out.insert(qid.to_string(), record(&b, qid));
         }
-        let done = (k * WD_BATCH + chunk.len()).min(qids.len());
-        eprintln!("  wikidata {done}/{}", qids.len());
-        progress(done);
-    }
-    Ok(out)
+        asked.extend_from_slice(chunk);
+        eprintln!("  wikidata {}/{}", asked.len(), qids.len());
+        progress(asked.len());
+        Ok(())
+    })?;
+    Ok((asked, out))
 }
 
 /// A JSON-lines cache's records by "qid", in the file's order (a repeated QID keeps its first
@@ -223,14 +223,14 @@ pub fn run(
         // (The job's progress; within a chunk, said again after each of its batches.)
         report(k as u64, todo.len() as u64, what);
         let p = phase("fetching facts from Wikidata");
-        let got = facts_of(&ask, wikidata, chunk, &mut |n| report((k + n) as u64, todo.len() as u64, what))?;
+        let (asked, got) = facts_of(&ask, wikidata, chunk, &mut |n| report((k + n) as u64, todo.len() as u64, what))?;
         drop(p);
         // Items Wikidata doesn't know (merged, deleted) are remembered as such, not asked again.
         let _p = phase("appending to the caches");
         let missing = Py::Dict(vec![("sl".into(), Py::Int("0".into())), ("missing".into(), Py::Bool(true))]);
-        let rows: Vec<Py> = chunk.iter().map(|q| with_qid(q, got.get(q).unwrap_or(&missing))).collect();
+        let rows: Vec<Py> = asked.iter().map(|q| with_qid(q, got.get(q).unwrap_or(&missing))).collect();
         append_jsonl(&fpath, &rows)?;
-        for (q, r) in chunk.iter().zip(&rows) {
+        for (q, r) in asked.iter().zip(&rows) {
             facts.insert(q.clone(), without_qid(r));
         }
         note_fetch()?;
@@ -303,12 +303,14 @@ mod tests {
             ("v_prominence", "1e3"),
         ]);
         assert_eq!(
-            dumps_spaced(&record(&b).unwrap()),
+            dumps_spaced(&record(&b, "Q1")),
             r#"{"sl": 12, "d_en": "mountain", "range": "Alps", "inception": "1850-01-01", "height": 8848.86, "prominence": 1000.0, "focal": 12.35}"#
         );
-        // (No sitelinks: 0.)
-        assert_eq!(dumps_spaced(&record(&binding(&[])).unwrap()), r#"{"sl": 0}"#);
-        assert!(record(&binding(&[("v_height", "tall")])).is_err());
+        // (No sitelinks: 0. A value that isn't a number, or is unknown, is none.)
+        assert_eq!(dumps_spaced(&record(&binding(&[]), "Q2")), r#"{"sl": 0}"#);
+        let genid = "http://www.wikidata.org/.well-known/genid/9e0e785fb54b8e85182f3338680c3feb";
+        let odd = binding(&[("v_height", "tall"), ("v_focal", "2"), ("inc", genid), ("v_discharge", genid)]);
+        assert_eq!(dumps_spaced(&record(&odd, "Q3")), r#"{"sl": 0, "focal": 2.0}"#);
     }
 
     #[test]
