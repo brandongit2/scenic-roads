@@ -32,7 +32,7 @@ import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
 import { Depth } from './depth';
 import { waterNameAt } from './watername';
-import { addBuildings, applyBuildings, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
+import { buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -50,6 +50,7 @@ import { RegionLayers, regionAt } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
 import { FerryScale } from './ctl/ferries';
 import { FrameLoop } from './ctl/frame';
+import { Buildings } from './ctl/buildings';
 import { TerrainTint } from './ctl/tint';
 import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
@@ -75,9 +76,8 @@ import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
 import { EVAL, evalState, installEval } from './evalmode';
-import { CMP, cmpState, installCmp } from './bldcmp';
+import { CMP, cmpState } from './bldcmp';
 import { BENCH, benchHash, runBench } from './selfbench';
-import type { FieldLayer } from './bldfield';
 
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
 // for automated checks. No effect otherwise.
@@ -209,21 +209,11 @@ async function main() {
   map.setStyle(baseStyle(store.s.water, !!meta.labelTiles, store.s.labelDensity, !!meta.water, meta.terrainAreas), { diff: false });
   setTerrainAreas(map, meta.terrainAreas);
   if (EVAL) installEval(map);
-  // The far buildings' field (bldfield.ts, task #102), on by default where the catalogue has its
-  // layer (`buildings-field`); `?bldfield=off` leaves it out, `?bldfield=<url>` takes its tiles from
-  // <url>, a bare `?bldfield` the server's (either whatever the catalogue says). Without it the meshes alone (z14), as before the field.
-  // Its comparison mode: bldcmp.ts.
-  const fieldParam = new URLSearchParams(location.search).get('bldfield');
-  let field: FieldLayer | null = null;
-  let fieldReady: Promise<FieldLayer> | null = null;
-  const wantField = (m: Meta) => fieldParam !== 'off' && (fieldParam !== null || !!m.layers?.['buildings-field']);
-  const loadField = () =>
-    (fieldReady ??= import('./bldfield').then((m) => (field = new m.FieldLayer(fieldParam || null))));
-  const fieldAtStart = wantField(meta) ? loadField() : null;
-  if (CMP) {
-    if (fieldAtStart) void fieldAtStart.then((f) => installCmp(map, f));
-    else installCmp(map, null);
-  }
+  // The 3D buildings and the far buildings' field (ctl/buildings.ts).
+  const bld = new Buildings(map, store, meta, {
+    styleReady: () => styleReady,
+    bridges: () => [[roads, 'roads-bridges'], [rails, 'rails-bridges']],
+  });
   // Debug: ?checks hands the map to automated checks (window.__map: its camera, after gestures).
   if (new URLSearchParams(location.search).has('checks')) (window as unknown as { __map: maplibregl.Map }).__map = map;
   // Tiles the NAS couldn't answer are asked for again (retry.ts).
@@ -320,7 +310,7 @@ async function main() {
   cam3d.setRoofs((ll) => roofAt(map, ll));
   // (and the near plane clear of the tallest of them, read again once the map settles: tuneDepth)
   cam3d.setTalls(() => {
-    const m = drawnTalls(map);
+    const m = drawnTalls(map), field = bld.field;
     return field?.on ? { allowM: m.allowM, boxes: [...m.boxes, ...field.drawnTalls().boxes] } : m;
   });
   map.on('idle', () => cam3d.tuneDepth(map));
@@ -665,6 +655,7 @@ async function main() {
   const layers = new LayersCard(layersRoot, store, { roads: colour.el, rail: railCard.el, ferry: ferryCard.el, stops: stopsCard.el });
   layers.showBuildings(hasBuildings);
   tint.wire(layers);
+  bld.wire(layers);
   layers.sync(store.s);
   const statsEl = document.getElementById('stats')!;
   const statsCard = new StatsCard(statsEl);
@@ -1141,7 +1132,7 @@ async function main() {
   tasks.poll(() => mapTasks(map));
   // The far buildings' field (its tiles, roof ground, elevations, shader) and the 3D contours'
   // lines being made in their worker.
-  tasks.poll(() => field?.loadTasks() ?? []);
+  tasks.poll(() => bld.field?.loadTasks() ?? []);
   tasks.poll(() => {
     const n = contours.decoding();
     return n ? [{ label: 'Contours 3D', detail: `${n} tiles in its worker` }] : [];
@@ -1915,59 +1906,12 @@ async function main() {
     depth.setFloor(floorShown);
   };
   let lastExaggeration = store.s.terrain.on ? store.s.terrain.exaggeration : 0;
-  // Colour by height: the shared colour scale over the buildings in view (their tiles' heights,
-  // read when the map is idle: buildings.onHeights), auto-fit to its percentiles as the roads'.
-  let bldDist: Dist | null = null;
-  let bldLook: HeightLook = { range: [...store.s.buildings.height.range], cdf: null };
-  let bldPreview: string | null = null;
-  const bldLookNow = (): HeightLook => {
-    const sc = store.s.buildings.height;
-    const range: [number, number] = !sc.auto ? [...sc.range] : bldDist && bldDist.total > 0 ? spread(bldDist.quantile(sc.fit[0] / 100), bldDist.quantile(sc.fit[1] / 100), 4) : bldLook.range;
-    return { range, cdf: sc.equalize ? cdfOf(bldDist, range) : null };
-  };
   /** The land's colour: the background (the far buildings' field mixes over it too); the water's
    * tiles, mixed over the land, follow in applyWater. */
   const applyLand = (c: string) => {
     setLandColour(c);
     roads.style.land = rails.style.land = hexRgb(c);
     if (map.getLayer('bg')) map.setPaintProperty('bg', 'background-color', c);
-  };
-  /** The buildings' settings applied (the terrain's exaggeration and light are theirs too). */
-  const applyBuildingsNow = (s: AppState) => {
-    // Bridges and elevated rail drawn after the buildings while they stand in 3D (roads/layer.ts
-    // bridgeLayer): placed after them, before the first symbol layer.
-    const apart = !!map.getLayer('buildings') && s.buildings.on && !s.buildings.flat && s.terrain.on;
-    for (const [l, id] of [[roads, 'roads-bridges'], [rails, 'rails-bridges']] as const) {
-      if (!map.getLayer(id) && map.getLayer('buildings')) map.addLayer(l.bridgeLayer(id), 'water-name-line');
-      if (l.bridgesApart !== apart) {
-        l.bridgesApart = apart;
-        map.triggerRepaint();
-      }
-    }
-    bldLook = bldLookNow();
-    const b = bldPreview ? { ...s.buildings, height: { ...s.buildings.height, palette: bldPreview } } : s.buildings;
-    applyBuildings(map, b, s.terrain.on ? s.terrain.exaggeration : 0, s.terrain.light, bldLook);
-    if (field) {
-      field.opacity = b.opacity;
-      field.hk = b.scale > 0 ? b.scale : Math.max(1, s.terrain.on ? s.terrain.exaggeration : 0);
-      field.on = b.on && !b.flat && s.terrain.on;
-      // The plain colour (the comparison's own); by height, the meshes' colours (the field plain when
-      // coloured by source: the owner's call).
-      field.colour = hexRgb(CMP ? CMP.colour : b.plain);
-      if (!CMP) {
-        const hc = heightColourFn(b, bldLook);
-        field.setHeightColour(hc?.key ?? '', hc?.colour ?? null);
-      }
-    }
-    layers.buildings.updateHeights(bldDist, bldLook);
-  };
-  onHeights(map, (d) => {
-    bldDist = d;
-    if (styleReady && store.s.buildings.colour === 'height') applyBuildingsNow(store.s);
-  });
-  layers.buildings.onPalettePreview = (k) => {
-    bldPreview = k;
-    if (styleReady) applyBuildingsNow(store.s);
   };
   store.on((s, ch) => {
     const st = roads.style;
@@ -2025,7 +1969,7 @@ async function main() {
       }
     }
     if ((ch.has('buildings') || ch.has('terrain')) && styleReady) {
-      applyBuildingsNow(s);
+      bld.apply(s);
       if (!s.buildings.on) hoverBuilding(null);
     }
     if (ch.has('groups') || ch.has('unnamed') || ch.has('roadLen') || ch.has('roadLenOn') || ch.has('surface') || ch.has('toll') || ch.has('layers') || ch.has('mode') || ch.has('weights')) markDirty();
@@ -2174,17 +2118,7 @@ async function main() {
       layers.showBuildings(true);
       writeHash();
     }
-    if (m.layers?.buildings && styleReady && !map.getSource('bld')) {
-      addBuildings(map, 'water-name-line', 'boundary-county');
-      applyBuildingsNow(store.s);
-      heritageChanged(map, store.s.overlays.heritage);
-      addField();
-    }
-    // The field, once a catalogue has its layer (not in the comparison mode: set up at start).
-    if (!fieldReady && !CMP && wantField(m) && styleReady && map.getLayer('buildings')) {
-      loadField();
-      addField();
-    }
+    bld.catalogue(m);
     if (!!m.labelTiles !== labelTilesOn() || !!m.water !== waterTilesOn()) watch?.wantReload('New map data');
     // The areas of terrain finer than its base, as they grow: the terrain sources' covers and the
     // contours follow in place.
@@ -2211,14 +2145,6 @@ async function main() {
     stations.release();
     ferries.release();
   };
-  // The field's layer, once loaded, right after the extruded buildings (when they're there).
-  const addField = () =>
-    void fieldReady?.then((f) => {
-      const ids = map.getStyle().layers.map((l) => l.id);
-      const next = ids[ids.indexOf('buildings') + 1];
-      if (!map.getLayer(f.id) && ids.includes('buildings')) map.addLayer(f, next);
-      applyBuildingsNow(store.s);
-    });
   // Attach as soon as the style is parsed; basemap tiles keep streaming in behind.
   // (An inline style can finish parsing before listeners are registered.)
   const attach = () => {
@@ -2230,11 +2156,7 @@ async function main() {
     // The 3D buildings after the road and rail layers (a road in front stays in front: it lies on
     // the terrain, whose depth they're tested against), their footprints among the draped layers
     // before the boundaries (docs/buildings3d.md §4.2).
-    if (meta.layers?.buildings) {
-      addBuildings(map, 'water-name-line', 'boundary-county');
-      heritageChanged(map, store.s.overlays.heritage);
-      addField();
-    }
+    if (meta.layers?.buildings) bld.add();
     // Under the roads, above every layer draped on the terrain (one between them would split the
     // draping in two: the terrain drawn twice).
     map.addLayer(contours, 'roads');
@@ -2253,7 +2175,7 @@ async function main() {
     applyLineWidths(map, store.s.lineWeights);
     applyTrees(map, store.s.trees);
     depth.apply(store.s.depth);
-    applyBuildingsNow(store.s);
+    bld.apply(store.s);
     applyLabelOpacity(map, store.s.labelOpacity, overlayLabelScale(store.s.poiOpacity));
     applyOverlayOpacity(map, store.s.poiOpacity);
     applyBoundaryOpacity(map, store.s.boundaryOpacity);

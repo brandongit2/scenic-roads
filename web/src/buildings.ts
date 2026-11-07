@@ -299,7 +299,7 @@ export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: numbe
   map.setLight({ anchor: 'map', position: [1.5, ((light % 360) + 360) % 360, 40], intensity: 0.35, color: '#ffffff' });
 }
 
-/** The buildings' heights in view changed (colour by height: main.ts fits the scale to them). */
+/** The buildings' heights in view changed (colour by height: ctl/buildings.ts fits the scale to them). */
 export function onHeights(map: MLMap, f: (d: Dist | null) => void) {
   tallOf(map).onDist = f;
 }
