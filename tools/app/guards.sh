@@ -35,6 +35,14 @@ bad = [t for t in sorted(glob.glob("crates/*/tests/*.rs"))
        if re.search(r'\b(?:root|repo)\(\)|CARGO_MANIFEST_DIR"\)\)\.(?:join|parent)\("\.\./|\.parent\(\)', s := open(t).read())
        and not re.search(r"^//! scans: \S", s, re.M)]
 for t in bad: print(t + ": reads the repo's files without a `//! scans: <path prefix> …` line (tools/dev/testing.md)")
+# (And the line covers what it names: `repo().join("README.md")` under no prefix of cli.rs's, #969.)
+for t in sorted(glob.glob("crates/*/tests/*.rs")):
+    s = open(t).read()
+    m = re.search(r"^//! scans: (.+)$", s, re.M)
+    pre = m.group(1).split() if m else []
+    for p in re.findall(r'\b(?:root|repo)(?:\(\))?\.join\("([^"]+)"\)', s):
+        if m and not any(p == q or p.startswith(q.rstrip("/") + "/") for q in pre):
+            print(t + ": reads " + p + ", under no prefix of its `//! scans:` line (tools/dev/testing.md)"); bad.append(t)
 sys.exit(1 if bad else 0)
 PY
 # No test reaches a live program's port on this Mac (#906: a unit test's coordinator on 127.0.0.1:8090,
