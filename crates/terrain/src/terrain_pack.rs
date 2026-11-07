@@ -2182,6 +2182,11 @@ pub(crate) mod tests {
             PauseAfter { inner, left: left.into(), held: Default::default() }
         }
 
+        /// The samplings it has left.
+        pub(crate) fn left(&self) -> usize {
+            self.left.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
         /// One sampling, or the build pausing.
         fn sampling(&self) -> anyhow::Result<()> {
             let ord = std::sync::atomic::Ordering::Relaxed;

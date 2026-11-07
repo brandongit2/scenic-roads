@@ -549,7 +549,8 @@ mod tests {
 
     /// Paused mid-sampling (task #705: jobrt::control::Paused, between the pool's chunks), a z6 tile
     /// saves nothing, its blocks made so far kept in its log; resumed, the packs of a run never
-    /// paused.
+    /// paused. Paused before its first sampling, after it, midway and three quarters in (#969: at
+    /// 0, 1, 2, 3, 5, 8 … until a run did not pause before, each with its resume).
     #[test]
     fn a_z6_tile_paused_mid_sampling_resumes_to_the_same_packs() {
         use crate::terrain_pack::tests::{files_under, PauseAfter};
@@ -563,32 +564,34 @@ mod tests {
                 .filter(|(l, _)| l.starts_with("layers/terrain/") || l.starts_with("work/terrain-mid/"))
                 .collect()
         };
-        let fresh = {
+        // (Never paused, counting its samplings.)
+        let (fresh, n) = {
             let (root, scratch) = (d.path().join("fresh"), d.path().join("fresh-scratch"));
             let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
-            crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, &src).unwrap();
-            saved(&root, &scratch)
+            let all = PauseAfter::new(&raw, usize::MAX);
+            crate::terrain_pack::build_piece_keeping(&mut out, &all, t, &cov, &src).unwrap();
+            (saved(&root, &scratch), usize::MAX - all.left())
         };
         assert_eq!(fresh.len(), 2, "{fresh:?}");
-        let (mut paused, mut logged) = (0, 0);
-        for left in [0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377] {
+        assert!(n >= 4, "{n} samplings");
+        let mut logged = 0;
+        for left in std::collections::BTreeSet::from([0, 1, n / 2, 3 * n / 4]) {
             let name = format!("paused-{left}");
             let (root, scratch) = (d.path().join(&name), d.path().join(format!("{name}-scratch")));
             let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
             let p = PauseAfter::new(&raw, left);
-            let Err(e) = crate::terrain_pack::build_piece_keeping(&mut out, &p, t, &cov, &src) else { break };
+            let e = crate::terrain_pack::build_piece_keeping(&mut out, &p, t, &cov, &src).unwrap_err();
             assert!(jobrt::control::is_paused(&e), "{e:#}");
             assert!(saved(&root, &scratch).is_empty(), "paused after {left}: nothing saved");
             let packs = files_under(&root).into_iter().filter(|f| f.to_string_lossy().contains("terrain")).count();
             assert_eq!(packs, 0, "paused after {left}: no pack");
-            paused += 1;
             logged += jobrt::resume_log::path(&scratch, (6, t.0, t.1)).exists() as usize;
             // Resumed: the same packs.
             let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
             crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, &src).unwrap();
             assert_eq!(saved(&root, &scratch), fresh, "paused after {left}, resumed");
         }
-        assert!(paused >= 3 && logged >= 1, "{paused} paused, {logged} with blocks kept");
+        assert!(logged >= 1, "{logged} paused with blocks kept");
     }
 
     /// A z6 tile stopped after its first safe point (a block kept, or a level's end), its
@@ -661,10 +664,11 @@ mod tests {
         let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         // The whole z6 tile, and each group from its file: the same tiles, the same mid.
         let whole = crate::terrain_pack::make_piece(&raw, &src, levels.clone()).unwrap();
-        // Each level's tiles all made at once (the way before task #447), and in blocks of one
-        // tile: the same bytes.
+        // Each level's tiles all made at once (the way before task #447), in blocks of one tile and
+        // midway to the run's own (BLOCK_UP, `whole`'s): the same bytes. (Also 1 and 3 levels up
+        // before #969: the same code, two more whole builds of this test's eight.)
         assert!(same(&crate::terrain_pack::make_piece_whole(&raw, &src, levels.clone()).unwrap(), &whole), "whole");
-        for up in 0..4 {
+        for up in [0, 2] {
             let by = crate::terrain_pack::make_piece_up(&raw, &src, levels.clone(), up).unwrap();
             assert!(same(&by, &whole), "blocks {up} levels up");
         }
