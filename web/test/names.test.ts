@@ -133,6 +133,20 @@ const at = '#map=9.00/46.00000/-71.00000';
   presets.restoreBuiltins();
   assert.equal(mem.get('scenic-roads:weightPresets'), undefined);
   assert.equal(mem.get('scenic-roads:presets.roads'), 'null');
+  // An older app's tab still open writes the older key after this one moved the list: its write is
+  // the latest, so the next load reads it (a list, or its "Built-ins"), and the next edit moves it.
+  const { PresetList } = await import('../src/presets.ts');
+  const rails = await import('../src/data/rail-presets.json', { with: { type: 'json' } });
+  mem.set('scenic-roads:railWeightPresets', JSON.stringify([{ id: 'other-tab', name: 'Other tab', weights: { views: 2 } }]));
+  const later = new PresetList('presets.rail', RAIL_COMPONENTS, rails.default.presets, { key: 'railWeightPresets', noDef: ['freq'] });
+  assert.deepEqual(later.list.map((p) => [p.id, p.w[0], p.w[10]]), [['other-tab', 2, 0]]);
+  later.rename('other-tab', 'Moved');
+  assert.equal(mem.get('scenic-roads:railWeightPresets'), undefined);
+  assert.equal(new PresetList('presets.rail', RAIL_COMPONENTS, rails.default.presets, { key: 'railWeightPresets' }).list[0].name, 'Moved');
+  mem.set('scenic-roads:railWeightPresets', 'null');
+  const reset = new PresetList('presets.rail', RAIL_COMPONENTS, rails.default.presets, { key: 'railWeightPresets' });
+  assert.equal(reset.custom, false);
+  assert.deepEqual(reset.list, reset.builtin);
 }
 
 // The built-in presets name every factor by a key the components have.

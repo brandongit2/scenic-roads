@@ -29,10 +29,13 @@ export class PresetList {
   private ls = new Set<() => void>();
 
   /** `old`: the localStorage key an older app kept the edited list under, and the factors whose
-   * def it didn't have (it left them out at 0, as any factor without one). */
+   * def it didn't have (it left them out at 0, as any factor without one). Every write here removes
+   * that key, so when it is there it is the latest write (an older app's tab, still open, edited or
+   * went back to the built-ins since) and is read over this key's. */
   constructor(private key: string, private comps: Comp[], data: unknown, private old: { key: string; noDef?: string[] }) {
     this.builtin = this.parse(data)!;
-    const saved = this.parse(prefs.load<unknown>(key, null)) ?? this.parse(prefs.load<unknown>(old.key, null), old.noDef);
+    const was = prefs.load<unknown>(old.key, undefined);
+    const saved = was !== undefined ? this.parse(was, old.noDef) : this.parse(prefs.load<unknown>(key, null));
     this.custom = !!saved;
     this.list = saved ?? this.builtin.map((p) => ({ ...p, w: [...p.w] }));
   }
