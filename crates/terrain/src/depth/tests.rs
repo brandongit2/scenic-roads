@@ -1241,9 +1241,10 @@ fn a_fine_source_in_the_open_sea_is_built_to_its_zoom_and_averaged_down() {
     for zoom in [12u8, 14] {
         let d = tempfile::tempdir().unwrap();
         let mut srcs = sources(d.path());
-        // (A survey in the open sea, away from the shore and the patch: a slope eastward.)
-        let (c0, r0) = at(zoom, 0.3, 0.6);
-        let (c1, r1) = at(zoom, 0.36, 0.66);
+        // (A survey in the open sea, away from the shore and the patch: a slope eastward. #969: 5 z14
+        // tiles across, each its tiles' block to compose, not 15.)
+        let (c0, r0) = at(zoom, 0.32, 0.62);
+        let (c1, r1) = at(zoom, 0.34, 0.64);
         let p = d.path().join("9.tif");
         grid_file(&p, zoom, c0, r0, (c1 - c0) as u32, (r1 - r0) as u32, &|c, _| -30.0 - (c % 64) as f32 * 0.1);
         let mut s = srcs[1].clone();

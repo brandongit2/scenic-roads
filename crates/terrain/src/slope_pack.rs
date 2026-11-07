@@ -1438,16 +1438,17 @@ mod tests {
         );
     }
 
-    /// Terrain packs for z6 tile 6/28/16: its z9 tile 9/224/128's z12 tiles (16 by 16 of them, a hi
-    /// pack), and where `deep` the four z13 tiles under 12/1792/1024 and two z14 under one of them (a
-    /// deep pack of z10 tile 10/448/256), each its own hill.
+    /// Terrain packs for z6 tile 6/28/16: z10 tile 10/448/256's z12 tiles (4 by 4 of them, a hi pack:
+    /// its z11 and z10 parents have all their children, its z9 parent one of four), and where `deep`
+    /// the four z13 tiles under 12/1792/1024 and two z14 under one of them (a deep pack of the same
+    /// z10 tile), each its own hill.
     fn terrain(out: &mut Out, deep: bool) {
         let tile = |z: u8, x: u32, y: u32| {
             let b = hill(z, x, y);
             let n = b.len() as u32;
             (z, x, y, b, n)
         };
-        let hi: Vec<_> = (1792..1800).flat_map(|x| (1024..1032).map(move |y| tile(12, x, y))).collect();
+        let hi: Vec<_> = (1792..1796).flat_map(|x| (1024..1028).map(move |y| tile(12, x, y))).collect();
         crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, 28, 16), &mut hi.into_iter())
             .unwrap();
         if deep {
@@ -1509,7 +1510,7 @@ mod tests {
         assert!(bytes(&made(two.path(), 2).0) == bytes(&out), "the same bytes on 2 threads as on 8");
         let s = ManifestTiles::new(&out, "slope");
         let at = |z: u8, x: u32, y: u32| s.get(z, x, y).unwrap().map(|b| roadcore::shade::decode(&b).unwrap());
-        for (z, x, y) in [(14, 7168, 4096), (13, 3585, 2049), (12, 1792, 1024), (12, 1799, 1031), (9, 224, 128)] {
+        for (z, x, y) in [(14, 7168, 4096), (13, 3585, 2049), (12, 1792, 1024), (12, 1795, 1027), (9, 224, 128)] {
             assert!(at(z, x, y).is_some(), "{z}/{x}/{y} stored");
         }
         assert!(at(14, 7170, 4096).is_none() && at(13, 3586, 2048).is_none(), "none past the terrain's");
@@ -1525,7 +1526,7 @@ mod tests {
             let mine = Mutex::new(Vec::new());
             Pyramid { own: &own, tiles: &tiles, out: &mine, tick: &|| {}, done: &none_done }.tile(6, 28, 16);
             let whole = mine.into_inner().unwrap();
-            assert!(whole.len() > 70);
+            assert!(whole.len() > 25);
             for (z, x, y, b) in whole.iter().filter(|m| m.0 >= 9) {
                 assert_eq!(s.get(*z, *x, *y).unwrap().as_ref(), Some(b), "{z}/{x}/{y} as one run makes it");
             }
@@ -1545,7 +1546,7 @@ mod tests {
                 (14, 7168, 4096),
                 (14, 7169, 4096),
             ];
-            ((z == 12 && (1792..1800).contains(&x) && (1024..1032).contains(&y)) || deep.contains(&(z, x, y)))
+            ((z == 12 && (1792..1796).contains(&x) && (1024..1028).contains(&y)) || deep.contains(&(z, x, y)))
                 .then(|| hill(z, x, y))
         };
         // (A deep tile's border from the deep tiles alone: `fallback_floor`.)
@@ -1762,7 +1763,7 @@ mod tests {
     #[test]
     fn a_pyramid_is_the_same_whatever_its_threads_do() {
         let own = |z: u8, x: u32, y: u32| -> Option<Vec<Px>> {
-            (z >= 4 || (x + y) % 3 != 0).then(|| {
+            (z >= 3 || (x + y) % 3 != 0).then(|| {
                 (0..TS * TS)
                     .map(|i| {
                         let t = (i as f32 * 0.37 + x as f32 * 1.3 + y as f32 * 0.7 + z as f32).dsin();
@@ -1772,10 +1773,10 @@ mod tests {
             })
         };
         let mut tiles = HashSet::new();
-        for z in 0..=5u8 {
+        for z in 0..=4u8 {
             for x in 0..1u32 << z {
                 for y in 0..1u32 << z {
-                    if z < 4 || (x + 2 * y) % 5 != 0 {
+                    if z < 3 || (x + 2 * y) % 5 != 0 {
                         tiles.insert((z, x, y));
                     }
                 }
@@ -1789,7 +1790,7 @@ mod tests {
             v
         };
         let first = run();
-        assert!(first.len() > 500);
+        assert!(first.len() > 150);
         for _ in 0..2 {
             assert!(run() == first);
         }

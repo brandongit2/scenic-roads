@@ -1016,11 +1016,20 @@ mod tests {
     }
 
     /// Task #889: a block's shading paused at every one of its safe points (each chunk kept as a
-    /// piece), resumed each time, puts the same tiles as one never paused.
+    /// piece), resumed each time, puts the same tiles as one never paused. (#969: on the block with
+    /// the fewest z8 tiles of those with two chunks or more, not a whole block's 256 in four: a stop
+    /// with some kept, one with all kept and the run after them are the same states.)
     #[test]
     fn a_block_paused_at_every_safe_point_resumes_to_the_same_tiles() {
         use jobrt::resume_log::{Pieces, STOP_AFTER};
-        let (pole, b, max_z) = (Pole::South, (7, 7), 8u8);
+        let (pole, max_z) = (Pole::South, 8u8);
+        let tiles_of = |b: (u32, u32)| {
+            polar::cap_tiles(pole, max_z)
+                .into_iter()
+                .filter(|&(x, y)| (x >> (max_z - BLOCK_Z), y >> (max_z - BLOCK_Z)) == b)
+                .count()
+        };
+        let b = blocks(pole).into_iter().filter(|&b| tiles_of(b) > 64).min_by_key(|&b| tiles_of(b)).unwrap();
         let hilly = |_: u8, x: u32, y: u32| -> Result<Option<Arc<Vec<f32>>>> {
             Ok((x % 5 != 0)
                 .then(|| Arc::new((0..TS * TS).map(|i| ((i * 7 + x as usize * 3 + y as usize) % 97) as f32).collect())))
@@ -1057,7 +1066,8 @@ mod tests {
                 Ok(t) => break t,
             }
         };
-        assert!(stops > 2, "several safe points: {stops}");
+        assert_eq!(stops, tiles_of(b).div_ceil(64), "a stop after each chunk kept");
+        assert!(stops > 1, "several safe points: {stops}");
         assert!(resumed == fresh, "paused at each of its {stops} safe points");
     }
 
@@ -1065,7 +1075,7 @@ mod tests {
     /// whole, and come many times (not once, at the end).
     #[test]
     fn a_block_in_progress_reports_progress() {
-        let (pole, b, max_z) = (Pole::South, (7, 7), 7u8);
+        let (pole, b, max_z) = (Pole::South, (7, 7), 6u8);
         let flat =
             |_: u8, _: u32, _: u32| -> Result<Option<Arc<Vec<f32>>>> { Ok(Some(Arc::new(vec![100.0; TS * TS]))) };
         let (mut said, mut puts) = (Vec::new(), 0u64);
