@@ -1,6 +1,7 @@
 //! Whole local copies of the NAS's content-named files a job reads by many small ranges (task #551):
 //! the basemap (`layers/basemap/world-<date>.<hash>.pmtiles`, the depth's, the terrain's, the lakes'
-//! and the water's water), the depth sources' packs (`sources/fetched/<id>/<z6 tile>.<hash>.tar`),
+//! and the water's water), the lakes' fill the water's readers open whole (`work/lakefill/<date>.…`),
+//! the depth sources' packs (`sources/fetched/<id>/<z6 tile>.<hash>.tar`),
 //! and the stored elevation datasets' GeoTIFFs (`sources/fetched/<id>/<name>.tif`, task #689:
 //! pipeline::dem::generic::stored) a terrain job reads half or more of (pipeline::dem::generic::COPY_SHARE).
 //! A random 64 KB read of the NAS waits ~40 ms on its disks' seeks, the Mac's own SSD's 0.2 ms: a
@@ -20,9 +21,9 @@
 //! (pipeline::coord's `missing`). One process copies a file at a time (`making`, and across processes a
 //! lock file in the cache's `copying/`): another wanting it waits, then reads that copy.
 //!
-//! (A copy room-making frees between jobs is copied again by the next job that reads it: with the
-//! disk near its target, the basemap's 28.6 GB may go and come back job after job. Its reads are
-//! the NAS's then, as before, plus the copy's.)
+//! (A copy room-making frees between jobs is copied again by the next job that reads it, its reads
+//! the NAS's then, as before, plus the copy's. The basemap's, 27 GB, waits while smaller files can
+//! free a shortage smaller than it, and last while a job here reads it: pipeline::agent::room.)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -174,8 +175,8 @@ pub fn path(local: Option<&Local>, p: &NasPath) -> Place {
 }
 
 /// The bytes this Mac's cache folder `cache` holds of the shared cache (what a Mac holds of it:
-/// pipeline::agent's `caches_here`): the basemaps' copies (`blobs/layers/basemap*`) and the depth
-/// sources' packs' (`blobs/sources/fetched/<id>/*.tar`). The stored GeoTIFFs' copies (`.tif`, the
+/// pipeline::agent's `caches_here`): the basemaps' copies (`blobs/layers/basemap*`), the lakes' fills'
+/// (`blobs/work/lakefill*`) and the depth sources' packs' (`blobs/sources/fetched/<id>/*.tar`). The stored GeoTIFFs' copies (`.tif`, the
 /// terrain's) are not the shared cache's: each terrain job's disk counts those it makes.
 pub fn held(cache: &Path) -> u64 {
     let blobs = cache.join("blobs");
@@ -189,7 +190,9 @@ pub fn held(cache: &Path) -> u64 {
         .filter(|m| m.is_file())
         .map(|m| m.len())
         .sum();
-    store::cachefile::bytes_of(&blobs.join("layers"), "basemap") + packs
+    store::cachefile::bytes_of(&blobs.join("layers"), "basemap")
+        + store::cachefile::bytes_of(&blobs.join("work"), "lakefill")
+        + packs
 }
 
 #[cfg(test)]

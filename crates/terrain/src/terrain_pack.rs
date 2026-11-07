@@ -241,8 +241,9 @@ pub fn open_water(out: &Out) -> anyhow::Result<inputs::lakefill::FilledWater<cod
     open_water_with(out, None)
 }
 
-/// `open_water`, the basemap read from `local`'s whole copy where it gives one (buildstore::localread:
-/// the steps reading it in thousands of ranges, its shared cache's, pipeline::needs::CACHES).
+/// `open_water`, the basemap and the lakes' fill read from `local`'s whole copies where it gives them
+/// (buildstore::localread: the steps reading the basemap in thousands of ranges and every job's fill,
+/// its shared cache's, pipeline::needs::CACHES; without a copy the fill is read whole from the NAS).
 pub fn open_water_with(
     out: &Out,
     local: Option<&buildstore::localread::Local>,
@@ -252,7 +253,7 @@ pub fn open_water_with(
         .context("no basemap (layers/basemap/world-<date>): the depth's water is the latest pass's basemap's")?;
     let base = codecs::terrain_water::BasemapWater::open(&buildstore::localread::path(local, &out.path(c)), c)?;
     let fill = match inputs::lakefill::current(&out.manifest) {
-        Some((_, f)) => Some(inputs::lakefill::Fill::open(&out.path(f), f)?),
+        Some((_, f)) => Some(inputs::lakefill::Fill::open(&buildstore::localread::path(local, &out.path(f)), f)?),
         None => None,
     };
     Ok(inputs::lakefill::FilledWater { base, fill })

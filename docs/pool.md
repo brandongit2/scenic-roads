@@ -405,7 +405,7 @@ docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
 peaks and targets' measures past three times its targets' median and a GB (a 35 GB peak against
 65 MB targets, which kept it on the lead's Mac) are dropped each time the coordinator loads them,
 so it runs on any Mac by its measured use. **Shared caches** (task #392, `needs::CACHES`): `depth`, `depth-lo`, `terrain-water`, `lakefill` and `water` read the whole copies (task
-#551, `localread`: whole local copies of the basemap and the depth sources' packs in the cache's
+#551, `localread`: whole local copies of the basemap, the lakes' fill and the depth sources' packs in the cache's
 `blobs/`, made where the disk has room for one past the room target, else the NAS read in place; one
 process copies a file at a time, the others waiting for its copy (a lock file in the cache's
 `copying/`); their reads are the local disk's, `costin`'s `local`, not in a run's NAS weight; a
@@ -422,7 +422,7 @@ and when:
   the fill. Warm runs, and a part copied
   (a part refilled after an eviction), leave it.
 - *What a Mac holds* (`Capacity::caches`, `have_mb`): read off its disk as its agent asks
-  (`caches_here`: the bytes of its cache folder's `blobs/layers/basemap*` and
+  (`caches_here`: the bytes of its cache folder's `blobs/layers/basemap*`, `blobs/work/lakefill*` and
   `blobs/sources/fetched/<id>/*.tar`, the whole copies; the terrain's copies of the stored GeoTIFFs,
   `*.tif` beside them (task #689), are its jobs' own disk, not this cache), so
   whatever emptied them (room-making, the OSM pass's clear, a hand) counts.

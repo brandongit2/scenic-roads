@@ -6264,11 +6264,13 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         Some(d) => d,
         None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass")?,
     };
+    // (The basemap and the lakes' fill read from this Mac's whole copies when it has room for them:
+    // pipeline::localread.)
+    let local = pipeline::localread::Local::from_env(out.root());
     let basemap = match opt(args, "--basemap") {
         Some(f) => store::nasfs::Place::Local(PathBuf::from(f)),
-        // (Read from this Mac's whole copy when it has room for one: pipeline::localread.)
         None => pipeline::localread::path(
-            pipeline::localread::Local::from_env(out.root()).as_ref(),
+            local.as_ref(),
             &out.path(out.get(&format!("layers/basemap/world-{date}")).context("the pass has no basemap")?),
         ),
     };
@@ -6301,7 +6303,9 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let fill = match opt(args, "--lakefill") {
         Some(f) => Some(pipeline::lakefill::Fill::open(Path::new(&f), &f)?),
         None => match out.get(&pipeline::lakefill::logical(&date)) {
-            Some(c) => Some(pipeline::lakefill::Fill::open(&out.path(c), c)?),
+            Some(c) => {
+                Some(pipeline::lakefill::Fill::open(&pipeline::localread::path(local.as_ref(), &out.path(c)), c)?)
+            }
             None => None,
         },
     };
