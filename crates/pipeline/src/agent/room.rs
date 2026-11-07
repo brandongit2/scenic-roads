@@ -130,9 +130,18 @@ const LIST_AHEAD: usize = 16;
 const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// What room-making has freed in place of each file it passed over as too large for the shortage
-/// (`Room::passes_over`) since that file's last use: its path, that use, the bytes. This agent's
-/// alone (a restart starts each at none: a file passed over then waits at most its own bytes again).
-static PAID: std::sync::Mutex<BTreeMap<PathBuf, (SystemTime, u64)>> = std::sync::Mutex::new(BTreeMap::new());
+/// (`Room::passes_over`) since that file's last use, in the cache's folder (beside the caches it
+/// frees, none of them): each file by its path in the cache, that use (unix ns) and the bytes. Read
+/// at a freeing's start, written at its end when it changed (a temporary file renamed over it). Two
+/// freeings at once (one toward the target, one for a job) may each write theirs: what the other
+/// paid is lost, so a file waits a little longer, never less than the rule says it may.
+const PAID: &str = "room-paid.json";
+
+type Paid = BTreeMap<String, (u128, u64)>;
+
+fn ns(t: SystemTime) -> u128 {
+    t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
+}
 
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`; and `blobs/`, this Mac's copies of files the records name
@@ -1548,12 +1557,25 @@ fn free_cheap(
         (g.iter().map(|f| order(hint(&f.2))).max().unwrap_or(0), !idle_square, newest)
     });
     // (What was paid for a file gone, or used since, is forgotten.)
-    if let Ok(mut paid) = PAID.lock() {
-        let here: HashMap<&Path, SystemTime> = groups.iter().flatten().map(|f| (f.2.as_path(), f.0)).collect();
-        paid.retain(|p, (used, _)| !p.starts_with(cache) || here.get(p.as_path()) == Some(used));
-    }
+    let mut paid: Paid =
+        std::fs::read(cache.join(PAID)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let before = paid.len();
+    let here: HashMap<String, u128> =
+        groups.iter().flatten().filter_map(|f| Some((rel(cache, &f.2)?, ns(f.0)))).collect();
+    paid.retain(|p, (used, _)| here.get(p) == Some(used));
+    let paid_changed = paid.len() != before;
     let by = if packed > 0 { BTreeMap::from([("terrain".to_string(), packed)]) } else { BTreeMap::new() };
-    let mut room = Room { cache, free_space, target, goal, short: target.saturating_sub(free), since: packed, by };
+    let mut room = Room {
+        cache,
+        free_space,
+        target,
+        goal,
+        short: target.saturating_sub(free),
+        since: packed,
+        by,
+        paid,
+        paid_changed,
+    };
     let (mut listed, mut made) = (Listed::new(), HashSet::new());
     // (Each run of files read at the same time, none known first: with what it passed over, as too
     // large for the shortage, at its end. The hints' order stands: what's read sooner goes later.)
@@ -1568,7 +1590,7 @@ fn free_cheap(
         for ahead in tier.chunks(LIST_AHEAD) {
             // (Asked to stop: the room made so far does.)
             if room.enough()? || super::stopping() {
-                return Ok(room.by);
+                return Ok(std::mem::take(&mut room.by));
             }
             // Their NAS folders listed at once.
             let folders: BTreeSet<NasPath> = ahead
@@ -1586,7 +1608,7 @@ fn free_cheap(
             });
             for f in ahead.iter().flatten() {
                 if room.enough()? || super::stopping() {
-                    return Ok(room.by);
+                    return Ok(std::mem::take(&mut room.by));
                 }
                 if room.passes_over(&f.2, f.1, f.0) {
                     large.push(f);
@@ -1599,12 +1621,12 @@ fn free_cheap(
         large.sort_by_key(|f| f.1);
         for f in large {
             if room.enough()? || super::stopping() {
-                return Ok(room.by);
+                return Ok(std::mem::take(&mut room.by));
             }
             room.free(sources, &f.2, f.1, &mut listed, &mut made);
         }
     }
-    Ok(room.by)
+    Ok(std::mem::take(&mut room.by))
 }
 
 /// make_room_with's count of what it has deleted, against the free space it's after.
@@ -1621,6 +1643,29 @@ struct Room<'a> {
     since: u64,
     /// The bytes deleted, by cache (`kind`).
     by: BTreeMap<String, u64>,
+    /// `PAID`'s, and whether it changed.
+    paid: Paid,
+    paid_changed: bool,
+}
+
+/// `p`'s path in the cache `cache`, as `PAID` keeps it.
+fn rel(cache: &Path, p: &Path) -> Option<String> {
+    p.strip_prefix(cache).ok()?.to_str().map(str::to_string)
+}
+
+impl Drop for Room<'_> {
+    /// `PAID` written when it changed (a failure costs only a file passed over again).
+    fn drop(&mut self) {
+        if !self.paid_changed {
+            return;
+        }
+        let (to, tmp) = (self.cache.join(PAID), self.cache.join(format!("{PAID}.tmp")));
+        if let Ok(b) = serde_json::to_vec(&self.paid) {
+            if std::fs::write(&tmp, b).and_then(|()| std::fs::rename(&tmp, &to)).is_err() {
+                std::fs::remove_file(&tmp).ok();
+            }
+        }
+    }
 }
 
 impl Room<'_> {
@@ -1650,17 +1695,16 @@ impl Room<'_> {
     /// that use (`PAID`), this shortage's left included, is still less than its own bytes, what
     /// copying it back costs (the module's doc). Passed over, it's charged what's left. (A clear's
     /// and an emptying's need is past any file.)
-    fn passes_over(&self, p: &Path, len: u64, used: SystemTime) -> bool {
+    fn passes_over(&mut self, p: &Path, len: u64, used: SystemTime) -> bool {
         let left = self.short.saturating_sub(self.since);
-        if len <= left {
-            return false;
-        }
-        let Ok(mut paid) = PAID.lock() else { return false };
-        let before = paid.get(p).filter(|r| r.0 == used).map_or(0, |r| r.1);
+        let Some(key) = rel(self.cache, p).filter(|_| len > left) else { return false };
+        let used = ns(used);
+        let before = self.paid.get(&key).filter(|r| r.0 == used).map_or(0, |r| r.1);
         if before.saturating_add(left) >= len {
             return false;
         }
-        paid.insert(p.to_path_buf(), (used, before + left));
+        self.paid.insert(key, (used, before + left));
+        self.paid_changed = true;
         true
     }
 
@@ -2474,10 +2518,10 @@ mod tests {
         assert_eq!(t.when(&cache, &rows), Some(0));
     }
 
-    /// The bytes of the files under `d`.
+    /// The bytes of the files under `d`'s `blobs/` (not room-making's own `PAID`).
     fn walk_len(d: &Path) -> u64 {
         let mut out = Vec::new();
-        walk(d, &mut out);
+        walk(&d.join("blobs"), &mut out);
         out.iter().map(|f| f.1).sum()
     }
 
