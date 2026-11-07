@@ -248,7 +248,7 @@ sm slow $p1 1 && no "smoke still starting" "passed" || {
   [[ $(<$tmp/smoke-slow) == *"didn't answer"*'still reading the map'*'printed nothing'* && $(<$tmp/smoke-slow) != *000* ]] && ok "smoke: a server still starting past the wait said so" || no "smoke still starting" "$(<$tmp/smoke-slow)"; }
 # One that said it has read the map ("map <seq> · NAS …", the server's line) and isn't listening yet:
 # said so.
-python3 -I $fake $p1 $tmp/go-read 'map 1689 · NAS /Volumes/personal/projects/scenic-roads' > $tmp/log-read 2>&1 & fp=$!
+python3 -I $fake $p1 $tmp/go-read 'map 1689 · NAS /some/share' > $tmp/log-read 2>&1 & fp=$!
 out=$(zsh -c "source ${(q)lib}; smoke $p1 $fp $tmp/log-read 3 /api/ping")
 kill $fp 2>/dev/null; wait $fp 2>/dev/null
 [[ $out == *"didn't answer"*'its map read, not yet listening'* ]] && ok "smoke: a server that read the map but isn't listening said so" || no "smoke map read" "$out"

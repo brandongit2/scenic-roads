@@ -736,10 +736,10 @@ pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, asked: &Asked, tell: &d
         }
         // The old catalogues' folders, once asked (docs/maplog.md §8, step 9); a failure is said,
         // never fails GC, and the next run takes up what's left.
+        let nas_root = store::nas::on_nas(&root.unchecked_path());
+        let ssh = nas_ssh();
+        let ssh: Vec<&str> = ssh.iter().map(String::as_str).collect();
         if old_catalogues {
-            let nas_root = store::nas::on_nas(&root.unchecked_path());
-            let ssh = nas_ssh();
-            let ssh: Vec<&str> = ssh.iter().map(String::as_str).collect();
             match remove_old_catalogues(root, nas_root.as_deref().map(|n| (&ssh[..], n)), dry_run) {
                 Ok(o) => {
                     rep.warnings.extend(o.warnings);
@@ -751,10 +751,8 @@ pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, asked: &Asked, tell: &d
         // The uploads still pending checked on the NAS itself, last (the longest, hashing on the
         // NAS); a failure is said, never fails GC. Not a project folder on the NAS's share (a
         // test's): none checked.
-        if let Some(nas_root) = store::nas::on_nas(&root.unchecked_path()) {
-            let ssh = nas_ssh();
-            let ssh: Vec<&str> = ssh.iter().map(String::as_str).collect();
-            match verify_pending(root, &scratch, &ssh, &nas_root, dry_run) {
+        if let Some(nas_root) = &nas_root {
+            match verify_pending(root, &scratch, &ssh, nas_root, dry_run) {
                 Ok(v) => {
                     (rep.pending_verified, rep.pending_verify_bytes, rep.pending_failed) = (v.ok, v.bytes, v.bad.len());
                     if let Some(why) = &v.stalled {
