@@ -39,9 +39,17 @@
 //!   (an older format's counts, a dead stream's temporary file) goes as any unheld cache file.
 //!
 //! - A file the jobs queued and running read (`Hints`: a terrain run's own shard's archive copies;
-//!   the pageview months, for an items or heritage job; a z6 tile's canopy squares and packs; the
-//!   base packs copied here for the map tiles) goes last, and so, before them, does what the jobs
-//!   the lead's forecast places on this Mac read, the furthest ahead first (task #843).
+//!   the pageview months, for an items or heritage job; a z6 tile's canopy squares and packs; a tree
+//!   cover tile's squares' rows kept here; the base packs copied here for the map tiles; the basemap's
+//!   and the lakes' fill's copies, for a job reading the shared cache) goes last, and so, before them,
+//!   does what the jobs the lead's forecast places on this Mac read, the furthest ahead first (task
+//!   #843).
+//! - A file too large for the shortage (`Room::passes_over`: past what's left to free, a quarter or
+//!   more of the bytes the cheap caches hold and used within `LARGE_IDLE`: the basemap's copy, 27 GB
+//!   on a laptop's tens) waits while the others can free what's short, then goes before what a job is
+//!   known to read, the smallest such first (task #998: least recently used alone, the M4 lost it
+//!   for shortages of a GB or two and copied it back 10 times in 16 days, 240 GB, while the bytes it
+//!   freed stayed unused). Past `LARGE_IDLE` it's a file like any other.
 //!
 //! Otherwise nothing is emptied: a Mac keeps its caches while it has room (the mini's ~100 GB). They
 //! go only when the disk is short of what a job needs, or of the owner's room target (`toward`),
@@ -116,6 +124,12 @@ const LIST_AHEAD: usize = 16;
 /// Canopy squares read this lately (the z3 tile being built's, which the next jobs read again) wait
 /// with the raw tiles, in least recently used order; the others go before any tile.
 const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// How long since its last use a file too large for the shortage is passed over (`Room::passes_over`):
+/// a day, about the longest a step's work on a Mac left it idle between its jobs while the step had
+/// work (the basemap's copies on the M4, 22 Oct to 7 Nov: 1 to 14 h apart within a run of depth jobs,
+/// 3 to 6 days between runs of them).
+const LARGE_IDLE: std::time::Duration = std::time::Duration::from_secs(86400);
 
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`; and `blobs/`, this Mac's copies of files the records name
@@ -1009,6 +1023,10 @@ pub struct Hints {
     /// The map tiles (`pack`, `lo`): the base packs and road values copied here for them
     /// (`base/`), which the next such job copies again when they're gone.
     pub packs: Option<u64>,
+    /// A job of a step reading the shared cache (crate::needs::CACHES): its files every such job
+    /// opens, the basemap's and the lakes' fill's copies (`blobs/layers/basemap*`,
+    /// `blobs/work/lakefill*`). (The sources' packs each job finds as it reads: by use alone.)
+    pub shared: Option<u64>,
 }
 
 /// `at` into `slot`, the earlier kept.
@@ -1069,6 +1087,7 @@ impl Hints {
             }
             "items" | "heritage" => sooner(&mut self.months, at),
             "pack" | "lo" => sooner(&mut self.packs, at),
+            s if crate::needs::cache_of(s).is_some() => sooner(&mut self.shared, at),
             _ => {}
         }
     }
@@ -1106,6 +1125,9 @@ impl Hints {
         if let Some(t) = other.packs {
             sooner(&mut self.packs, t);
         }
+        if let Some(t) = other.shared {
+            sooner(&mut self.shared, t);
+        }
     }
 
     /// When (unix s; 0, now) a job here is known to read file `p` of the caches at `cache`; None
@@ -1132,6 +1154,13 @@ impl Hints {
         }
         if p.starts_with(cache.join("blobs")) {
             take(name.split('.').next().and_then(|u| self.units.get(u).copied()));
+            // (Rows of a canopy square kept for the trees: trees::squares::RowsCache.)
+            if p.starts_with(cache.join("blobs/sources/canopy")) {
+                take(name.split_once(".tif.").and_then(|(n, _)| self.squares.get(&format!("{n}.tif")).copied()));
+            }
+            if p.starts_with(cache.join("blobs/layers/basemap")) || p.starts_with(cache.join("blobs/work/lakefill")) {
+                take(self.shared);
+            }
         }
         w
     }
@@ -1515,37 +1544,53 @@ fn free_cheap(
             && newest.is_some_and(|t| t < lately);
         (g.iter().map(|f| order(hint(&f.2))).max().unwrap_or(0), !idle_square, newest)
     });
+    let held: u64 = groups.iter().flatten().map(|f| f.1).sum();
     let by = if packed > 0 { BTreeMap::from([("terrain".to_string(), packed)]) } else { BTreeMap::new() };
     let mut room = Room { cache, free_space, target, goal, short: target.saturating_sub(free), since: packed, by };
     let (mut listed, mut made) = (Listed::new(), HashSet::new());
-    for ahead in groups.chunks(LIST_AHEAD) {
-        // (Asked to stop: the room made so far does.)
-        if room.enough()? || super::stopping() {
-            break;
-        }
-        // Their NAS folders listed at once.
-        let folders: BTreeSet<NasPath> = ahead
-            .iter()
-            .filter_map(|g| nas_path(cache, sources, &g.first()?.2)?.parent())
-            .filter(|f| !listed.contains_key(f))
-            .collect();
-        // (A thread that can't start, or fails, leaves its folder to be listed when it's reached.)
-        std::thread::scope(|s| {
-            let lists: Vec<_> = folders
-                .iter()
-                .filter_map(|f| std::thread::Builder::new().spawn_scoped(s, move || (f.clone(), list(f))).ok())
-                .collect();
-            listed.extend(lists.into_iter().filter_map(|h| h.join().ok()));
-        });
-        for (_, len, p) in ahead.iter().flatten() {
+    let now = SystemTime::now();
+    // (What no job is known to read, then what one is: each with what it passed over, as too large
+    // for the shortage, at its end.)
+    let known = groups.partition_point(|g| g.iter().map(|f| order(hint(&f.2))).max().unwrap_or(0) == 0);
+    for tier in [&groups[..known], &groups[known..]] {
+        let mut large: Vec<&(SystemTime, u64, PathBuf)> = Vec::new();
+        for ahead in tier.chunks(LIST_AHEAD) {
+            // (Asked to stop: the room made so far does.)
             if room.enough()? || super::stopping() {
                 return Ok(room.by);
             }
-            match fate(cache, sources, p, &mut listed) {
-                Fate::Go => room.delete(p, *len),
-                Fate::Copy(dest) if copy_there(p, &dest, &mut made) => room.delete(p, *len),
-                Fate::Copy(_) | Fate::Stay => {}
+            // Their NAS folders listed at once.
+            let folders: BTreeSet<NasPath> = ahead
+                .iter()
+                .filter_map(|g| nas_path(cache, sources, &g.first()?.2)?.parent())
+                .filter(|f| !listed.contains_key(f))
+                .collect();
+            // (A thread that can't start, or fails, leaves its folder to be listed when it's reached.)
+            std::thread::scope(|s| {
+                let lists: Vec<_> = folders
+                    .iter()
+                    .filter_map(|f| std::thread::Builder::new().spawn_scoped(s, move || (f.clone(), list(f))).ok())
+                    .collect();
+                listed.extend(lists.into_iter().filter_map(|h| h.join().ok()));
+            });
+            for f in ahead.iter().flatten() {
+                if room.enough()? || super::stopping() {
+                    return Ok(room.by);
+                }
+                if room.passes_over(f.1, held, now.duration_since(f.0).unwrap_or_default()) {
+                    large.push(f);
+                    continue;
+                }
+                room.free(sources, &f.2, f.1, &mut listed, &mut made);
             }
+        }
+        // (The smallest first: what's still short may take no more.)
+        large.sort_by_key(|f| f.1);
+        for f in large {
+            if room.enough()? || super::stopping() {
+                return Ok(room.by);
+            }
+            room.free(sources, &f.2, f.1, &mut listed, &mut made);
         }
     }
     Ok(room.by)
@@ -1587,6 +1632,23 @@ impl Room<'_> {
         }
         (self.short, self.since) = (self.target - free, 0);
         Ok(false)
+    }
+
+    /// Whether a file of `len` bytes idle for `idle` waits while others free what's short: it would
+    /// free more than is left to free, it's a quarter or more of the `held` bytes the cheap caches
+    /// hold, and it was used within `LARGE_IDLE` (the module's doc). (A clear's and an emptying's
+    /// need is past any file.)
+    fn passes_over(&self, len: u64, held: u64, idle: std::time::Duration) -> bool {
+        len > self.short.saturating_sub(self.since) && len.saturating_mul(4) >= held && idle < LARGE_IDLE
+    }
+
+    /// Frees cache file `p`, as its `fate` says.
+    fn free(&mut self, sources: &NasPath, p: &Path, len: u64, listed: &mut Listed, made: &mut HashSet<NasPath>) {
+        match fate(self.cache, sources, p, listed) {
+            Fate::Go => self.delete(p, len),
+            Fate::Copy(dest) if copy_there(p, &dest, made) => self.delete(p, len),
+            Fate::Copy(_) | Fate::Stay => {}
+        }
     }
 
     /// Deletes `p` unless a job holds it (store::cachefile).
@@ -2286,6 +2348,91 @@ mod tests {
         assert!(!c.join("chm10/3.tif").exists());
         // No goal (no room target): nothing goes.
         assert_eq!(trim_with(c, nas, 0, &disk).unwrap().bytes(), 0);
+    }
+
+    /// Task #998: a file too large for the shortage (the basemap's copy on a laptop) waits while the
+    /// others can free what's short, whatever their use; short of more than it, or with nothing else
+    /// to free, or idle a day, it goes; and a job reading the shared cache keeps it past what none
+    /// is known to read.
+    #[test]
+    fn a_large_file_outlives_a_small_shortage() {
+        const MB: u64 = 1 << 20;
+        let (d, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let cache = d.path().join("cache");
+        let root = store::nasfs::NasPath::local_for_test(nas.path().join("sources"));
+        let basemap = cache.join("blobs/layers/basemap/world-1.0123456789abcdef.pmtiles");
+        let tars: Vec<PathBuf> =
+            (0..4).map(|k| cache.join(format!("blobs/sources/fetched/g/6-{k}-1.0123456789abcdef.tar"))).collect();
+        let ago = |s: u64| SystemTime::now() - std::time::Duration::from_secs(s);
+        let put = |p: &Path, len: u64, used: SystemTime| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            let f = std::fs::File::create(p).unwrap();
+            f.set_len(len).unwrap();
+            f.set_modified(used).unwrap();
+        };
+        // (A stated disk: free as room is made.)
+        let run = |free: u64, want: u64, hint: &dyn Fn(&Path) -> Option<u64>| {
+            let start: u64 =
+                [&basemap].into_iter().chain(&tars).filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+            let cache2 = cache.clone();
+            let room = move |_: &Path| -> std::io::Result<u64> {
+                let now: u64 = walk_len(&cache2);
+                Ok(free + start - now)
+            };
+            free_cheap(&cache, &root, want, want, &room, hint, None).unwrap()
+        };
+        let lay = |base_used: SystemTime| {
+            put(&basemap, 800 * MB, base_used);
+            for (k, t) in tars.iter().enumerate() {
+                put(t, 50 * MB, ago(100 - k as u64));
+            }
+        };
+        // The oldest, and past what's short: the small ones go, the oldest first, it stays.
+        lay(ago(7200));
+        run(1000 * MB, 1060 * MB, &|_| None);
+        assert!(basemap.exists(), "not for 60 MB");
+        assert_eq!(tars.iter().map(|t| t.exists()).collect::<Vec<_>>(), [false, false, true, true]);
+        // Short of more than the others hold: them first, then it.
+        lay(ago(7200));
+        run(1000 * MB, 1300 * MB, &|_| None);
+        assert!(!basemap.exists() && tars.iter().all(|t| !t.exists()));
+        // Short of more than it: by use, the oldest first.
+        lay(ago(7200));
+        run(1000 * MB, 1800 * MB, &|_| None);
+        assert!(!basemap.exists() && tars.iter().all(|t| t.exists()));
+        // Idle a day: a file like any other.
+        lay(ago(LARGE_IDLE.as_secs() + 60));
+        run(1000 * MB, 1060 * MB, &|_| None);
+        assert!(!basemap.exists() && tars.iter().all(|t| t.exists()));
+        // Passed over before what a job is known to read goes.
+        lay(ago(7200));
+        run(1000 * MB, 1300 * MB, &|p| p.to_string_lossy().ends_with(".tar").then_some(0));
+        assert!(!basemap.exists() && tars.iter().all(|t| t.exists()));
+        // A job reading the shared cache: its basemap's and fill's copies are read now, and go last.
+        let mut h = Hints::default();
+        h.add("terrain-hi", &[]);
+        assert_eq!(h.when(&cache, &basemap), None);
+        h.add("depth", &["6/1/1".to_string()]);
+        assert_eq!(h.when(&cache, &basemap), Some(0));
+        assert_eq!(h.when(&cache, &cache.join("blobs/work/lakefill/1.0123456789abcdef.sect")), Some(0));
+        assert_eq!(h.when(&cache, &tars[0]), None);
+        let mut f = Hints::default();
+        f.add_at("depth-lo", &[], 500);
+        f.merge(&h);
+        assert_eq!(f.shared, Some(0));
+        // A square's rows kept for the trees: by its square.
+        let mut t = Hints::default();
+        t.add("trees", &["6/32/21".to_string()]);
+        let (name, _) = t.squares.first_key_value().unwrap();
+        let rows = cache.join(format!("blobs/sources/canopy/{name}.2048.16-1024.rows"));
+        assert_eq!(t.when(&cache, &rows), Some(0));
+    }
+
+    /// The bytes of the files under `d`.
+    fn walk_len(d: &Path) -> u64 {
+        let mut out = Vec::new();
+        walk(d, &mut out);
+        out.iter().map(|f| f.1).sum()
     }
 
     #[test]
