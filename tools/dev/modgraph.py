@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Task #916: the pipeline crate's module graph, from its sources (docs/crates.md).
+"""Task #916: a crate's module graph, from its sources (docs/crates.md).
 
-For each top-level module of crates/pipeline/src (a file `x.rs` and/or folder `x/`), the other
+  tools/dev/modgraph.py [<crate>] [--dot]     <crate>: a folder of crates/ (pipeline, agentcore …;
+                                              pipeline when none is given)
+
+For each top-level module of crates/<crate>/src (a file `x.rs` and/or folder `x/`), the other
 top-level modules its code names by `crate::<m>` (also inside `use crate::{a, b::c}` groups), or by
-`pipeline::<m>` in the binaries. Prints each module's lines and edges (with counts of mentions),
+`<crate>::<m>` in the binaries. Only the crate's own files: agentcore's unit tests compile the plan's
+modules in by #[path] (pipeline's agent/build.rs …), which count as pipeline's. Prints each module's lines and edges (with counts of mentions),
 then the strongly connected components (cycles). `--dot` prints Graphviz instead.
 Comment lines (starting with //) are skipped, so doc links don't count.
 """
@@ -12,8 +16,11 @@ import re
 import sys
 from collections import defaultdict
 
+crate = next((a for a in sys.argv[1:] if not a.startswith('-')), 'pipeline')
 root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     '..', '..', 'crates', 'pipeline', 'src'))
+                                     '..', '..', 'crates', crate, 'src'))
+if not os.path.isdir(root):
+    sys.exit('modgraph.py: no crate folder %s' % root)
 
 
 def mod_of(path):
@@ -57,7 +64,7 @@ for d, _, fs in os.walk(root):
 
 for p, (m, src) in texts.items():
     code = '\n'.join(l for l in src.split('\n') if not l.lstrip().startswith('//'))
-    pfx = r'\bpipeline' if m.startswith('bin:') else r'\bcrate'
+    pfx = r'\b' + re.escape(crate) if m.startswith('bin:') else r'\bcrate'
     targets = [x.group(1) for x in re.finditer(pfx + r'::(\w+)', code)]
     for x in re.finditer(pfx + r'::\{', code):
         i = j = x.end()
@@ -103,7 +110,7 @@ for v in sorted(mods):
         strong(v)
 
 if '--dot' in sys.argv:
-    print('digraph pipeline {')
+    print('digraph %s {' % crate)
     for a in sorted(edges):
         for b in sorted(edges[a]):
             print(f'  "{a}" -> "{b}";')
