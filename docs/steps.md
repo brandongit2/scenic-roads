@@ -217,7 +217,7 @@ makes the same bytes on every Mac.
   the grid, "s/4/x/y", where the coverage meets its latitudes: `polar::built`): its cap tiles at the finest
   zoom sampled, each coarser level its children's means (a quarter with none, past the cap, sea
   level: no dataset is published at every zoom on this grid, so there is no relief to read), coded
-  as the Mercator terrain is: its pack `layers/polar-terrain-<pole>/polar/4-x-y`. **polar-slope**, a
+  as the Mercator terrain is: its pack `layers/polar-terrain-<pole>/polar/4-x-y`, the stored files it reads half of or more copied to the Mac's SSD as the terrain's are (pipeline::localread, the area the block's latitudes). **polar-slope**, a
   run per block once its and its neighbours' terrain is built: Horn's method at the finest zoom on the stored
   terrain (its neighbours' edge tiles for the border), each coarser level its children's means at
   full precision (a quarter with none flat), as `shade-webp`: its pack
@@ -241,7 +241,10 @@ makes the same bytes on every Mac.
     NALCMS resampled as GDAL's warper did).
   - Reading (task #606): a run reads this Mac's whole copies of the canopy squares (`chm10/`, the
     z6 tiles' canopy step's) where it has them, held for the job; else only the rows its blocks need
-    of the NAS's, read first in 8 MB reads, four at once, into its scratch (`trees::squares::rows_here`).
+    of the NAS's, read first in 8 MB reads, four at once, into this Mac's cache for the runs after
+    (`trees::squares::RowsCache`, `blobs/sources/canopy/<file>.<length>.<first>-<end>.rows`, a span of
+    the file by bytes: the tiles of a row read the same strips; task #998) where the disk has room past
+    the owner's target, else into its scratch (`trees::squares::rows_here`).
     A z6 tile makes its blocks a row at a time (each strip decoded once for the row), each block's
     band under a permit: a trees job is paced like an input check (docs/inputs.md §4.3, Threads),
     its threads as its lead re-grants them (docs/pool.md §7.1, Threads re-granted). The trees program's NAS reads count in the

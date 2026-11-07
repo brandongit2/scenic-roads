@@ -711,12 +711,12 @@ fn canopy_rows_read_first_are_the_files_bytes() {
     let p = d.path().join(chm_name(50, 0, "cover5m"));
     let whole = std::fs::read(&p).unwrap();
     let n = std::sync::atomic::AtomicU64::new(0);
-    let f = squares::rows_here(&p, (4100, 4500), &o.path().join("rows"), &|done, _| {
+    let (f, read) = squares::rows_here(&p, (4100, 4500), &o.path().join("rows"), None, &|done, _| {
         n.store(done, std::sync::atomic::Ordering::Relaxed)
     })
     .unwrap();
     let kept = std::fs::metadata(o.path().join("rows")).unwrap().len();
-    assert!(kept > 0 && kept < whole.len() as u64 && n.into_inner() == kept);
+    assert!(kept > 0 && kept < whole.len() as u64 && n.into_inner() == kept && read == kept);
     assert_eq!(f.len().unwrap(), whole.len() as u64);
     for (off, len) in [(0, 16), (1000, 4096), (whole.len() as u64 / 2, 9000), (whole.len() as u64 - 100, 100)] {
         assert_eq!(f.read_at(off, len).unwrap(), whole[off as usize..off as usize + len]);
@@ -729,7 +729,7 @@ fn canopy_rows_read_first_are_the_files_bytes() {
         .unwrap()
         .height;
     for (k, rows) in [(0, 0), (img - 1, img - 1), (img - 3, img + 500), (img + 10, img + 20)].into_iter().enumerate() {
-        let f = squares::rows_here(&p, rows, &o.path().join(format!("edge{k}")), &|_, _| {}).unwrap();
+        let (f, _) = squares::rows_here(&p, rows, &o.path().join(format!("edge{k}")), None, &|_, _| {}).unwrap();
         // Every strip's bytes, read through it, the file's.
         for off in (0..whole.len() as u64).step_by(4093) {
             let len = 4093.min(whole.len() - off as usize);
@@ -737,6 +737,78 @@ fn canopy_rows_read_first_are_the_files_bytes() {
         }
     }
 }
+
+/// Task #998: the rows a run read are kept in the cache for the runs after: the same rows read again
+/// read nothing of the NAS, rows meeting them only what they lack, and every read gives the file's
+/// bytes; with no room past the room target they go to the scratch alone; room-making's freeing of
+/// a span (one not held) has it read again.
+#[test]
+fn canopy_rows_kept_in_the_cache_are_read_there() {
+    let o = tempfile::tempdir().unwrap();
+    let p = o.path().join(chm_name(50, 0, "cover5m"));
+    // (Six strips of 2500 rows stored, each a span of its own.)
+    let whole =
+        tiff(40000, 16, &|tx, ty| (tx == 43 && ty < 6).then(|| testkit::samples(tx, ty, 16, &testkit::cover_at)), &[]);
+    std::fs::write(&p, &whole).unwrap();
+    let cache = o.path().join("cache");
+    let kept = squares::RowsCache::new(&cache, 0);
+    let rows = o.path().join("rows");
+    let same = |f: &std::sync::Arc<dyn store::range::RangeRead>| {
+        for off in (0..whole.len() as u64).step_by(4093) {
+            let len = 40_000.min(whole.len() - off as usize);
+            assert_eq!(f.read_at(off, len).unwrap(), whole[off as usize..off as usize + len], "at {off}");
+        }
+    };
+    let in_cache = || -> Vec<std::path::PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(cache.join("blobs/sources/canopy"))
+            .map(|r| r.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    };
+    // (No room past the target: the scratch's alone, as with no cache.)
+    let full = squares::RowsCache::new(&cache, jobrt::room::MAX_TARGET);
+    let (f, first) = squares::rows_here(&p, (2600, 2700), &rows, Some(&full), &|_, _| {}).unwrap();
+    assert!(first > 0 && in_cache().is_empty());
+    assert_eq!(std::fs::metadata(&rows).unwrap().len(), first);
+    same(&f);
+    std::fs::remove_file(&rows).unwrap();
+
+    // Kept: read once.
+    let (f, read) = squares::rows_here(&p, (2600, 2700), &rows, Some(&kept), &|_, _| {}).unwrap();
+    assert_eq!(read, first);
+    assert!(!rows.exists(), "kept in the cache, none in the scratch");
+    assert_eq!(in_cache().len(), 1);
+    same(&f);
+    // The same rows again: nothing of the NAS.
+    let (f, read) = squares::rows_here(&p, (2600, 2700), &rows, Some(&kept), &|_, _| {}).unwrap();
+    assert_eq!(read, 0);
+    same(&f);
+    // Rows they're inside of: only what they lack; every read across the pieces.
+    let (f, read) = squares::rows_here(&p, (100, 7400), &rows, Some(&kept), &|_, _| {}).unwrap();
+    assert!(read > 0 && in_cache().len() >= 2, "{read} {:?}", in_cache());
+    same(&f);
+    drop(f);
+    // Rows inside what's kept: nothing of the NAS.
+    let (f, read) = squares::rows_here(&p, (2600, 2650), &rows, Some(&kept), &|_, _| {}).unwrap();
+    assert_eq!(read, 0);
+    same(&f);
+    drop(f);
+    // Freed by room-making, held no more: read again.
+    for s in in_cache() {
+        store::cachefile::release(&s);
+        store::testkit::wait_for("a span freed", || {
+            matches!(store::cachefile::try_remove(&s), store::cachefile::Removed::Freed(_)).then_some(())
+        });
+    }
+    let (f, read) = squares::rows_here(&p, (2600, 2700), &rows, Some(&kept), &|_, _| {}).unwrap();
+    assert_eq!(read, first);
+    same(&f);
+    for s in in_cache() {
+        store::cachefile::release(&s);
+    }
+}
+
 #[test]
 fn a_runs_work_stays_within_the_threads_it_was_given() {
     // (The trees program's `--workers n`: its pool of n, in which `in_order` runs the blocks; their

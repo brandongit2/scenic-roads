@@ -71,8 +71,9 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   - **The cheap ones** (emptied for room, cleared; kept after a build while the disk has room): canopy squares
     (`chm10/`), raw terrain tiles and archive copies (`aws-terrarium/`),
     copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles; with the
-    basemap and the depth sources' packs the depth's and water's steps read, and the stored GLO-30 tiles
-    and fill masks a terrain job reads half or more of, task #689: pipeline::localread), pageview month indexes (`items/months/`).
+    basemap, the lakes' fill and the depth sources' packs the depth's and water's steps read, the stored GLO-30 tiles
+    and fill masks a terrain or polar terrain job reads half or more of, task #689: pipeline::localread; and the
+    canopy rows the trees read of the NAS's squares, `trees::squares::RowsCache`), pageview month indexes (`items/months/`).
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
     pack(T) and lo), the
     retired caches, local copies the summits and peaks jobs

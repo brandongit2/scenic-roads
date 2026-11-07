@@ -936,7 +936,7 @@ pub struct Run {
     /// This Mac's canopy squares' cache (the units' copies): a whole square there is read there.
     pub chm: PathBuf,
     /// The NAS's canopy squares (`sources/canopy/`): the rest read there, only the rows the run
-    /// needs (squares::rows_here).
+    /// needs, kept for the runs after where this Mac has room (squares::rows_here).
     pub chm_store: PathBuf,
     /// The declared sources as the run reads them (`RunSources`, a JSON file: crate::treepacks writes
     /// it beside the coverage).
@@ -953,8 +953,8 @@ pub struct Run {
 /// their files opened (`Source::Given`).
 type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>, Source);
 
-/// Where a run keeps the canopy rows it read from the NAS (squares::rows_here), in its `out`;
-/// removed as the blocks are made.
+/// Where a run keeps the canopy rows it read from the NAS that this Mac's cache has no room for
+/// (squares::rows_here), in its `out`; removed as the blocks are made.
 const ROWS_DIR: &str = "canopy-rows";
 
 /// The canopy rows (first, last) of square (`top`, `left`) that `blocks` read; None when none.
@@ -1011,6 +1011,8 @@ fn begin(a: &Run) -> Result<Begun> {
     let p = phase("reading canopy rows from the NAS");
     let rows_dir = a.out.join(ROWS_DIR);
     std::fs::create_dir_all(&rows_dir).with_context(|| rows_dir.display().to_string())?;
+    let rows_cache = squares::RowsCache::from_env();
+    let mut read = 0;
     let mut given: BTreeMap<String, Arc<dyn RangeRead>> = BTreeMap::new();
     for (k, (name, here, (top, left))) in files.iter().enumerate() {
         let f: Arc<dyn RangeRead> = match (here, chm_rows(&blocks, *top, *left)) {
@@ -1018,14 +1020,14 @@ fn begin(a: &Run) -> Result<Begun> {
                 let said = |done: u64, of: u64| {
                     jobrt::jobs::report_f(k as f64 + done as f64 / of.max(1) as f64, files.len() as u64, "canopy rows")
                 };
-                squares::rows_here(p, rows, &rows_dir.join(name), &said)?
+                let (f, n) = squares::rows_here(p, rows, &rows_dir.join(name), rows_cache.as_ref(), &said)?;
+                read += n;
+                f
             }
             (h, _) => Arc::new(PlainFile::open(h.path()).with_context(|| h.path().display().to_string())?),
         };
         given.insert(name.clone(), f);
     }
-    let read: u64 =
-        files.iter().filter_map(|(n, _, _)| std::fs::metadata(rows_dir.join(n)).ok()).map(|m| m.len()).sum();
     let whole: u64 = files
         .iter()
         .filter(|(_, h, _)| matches!(h, squares::Here::Nas(_)))

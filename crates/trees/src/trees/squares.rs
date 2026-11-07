@@ -1,8 +1,9 @@
 //! The squares a z3 tile's blocks read, made ready first (the hub's work):
 //! - **Canopy squares** read from this Mac's whole copies in the cache (`--chm`, the units'
 //!   copies) where it has them, else from the NAS's store (`--chm-store`): only the rows the run
-//!   needs, read first in big reads (`rows_here`; whole squares were copied before task #606, ~2 GB a
-//!   pair in Siberia, at 3–10 MB/s while the NAS was busy). A square not in the store is downloaded
+//!   needs, read first in big reads and kept in the cache for the runs after (`rows_here`,
+//!   `RowsCache`; whole squares were copied before task #606, ~2 GB a pair in Siberia, at 3–10 MB/s
+//!   while the NAS was busy). A square not in the store is downloaded
 //!   from Meta into it first, once: under a `<file>.lock` there, made exclusively, a job on the other
 //!   Mac waiting for it (a lock not touched for 30 minutes is a holder that died). An empty file is
 //!   Meta's "none there".
@@ -91,20 +92,127 @@ impl Here {
 const ROWS_READ: u64 = 8 << 20;
 const ROWS_READERS: usize = 4;
 
+/// Where the canopy rows a run reads from the NAS are kept past it: this Mac's cache's `blobs/`, the
+/// file's name, its length and the span it holds in the name
+/// (`sources/canopy/<file>.<length>.<first>-<end>.rows`), so the next z6 tile's run reading the same
+/// strips (a strip is a row of the square's whole width: the tiles of a row read the same ones)
+/// reads them here. As the other copies there: made and held through store::cachefile, the least
+/// recently used freed by room-making (pipeline::agent::room, without asking the NAS: a square's
+/// file is written once), and made only with room for them past the owner's room target
+/// (jobrt::room), else read into the run's scratch and gone with it.
+#[derive(Clone, Debug)]
+pub struct RowsCache {
+    dir: PathBuf,
+    target: u64,
+}
+
+impl RowsCache {
+    /// The agent's cache (`SCENIC_CACHE`) and room target; None without a cache (a run by hand, a
+    /// test): every row read into the run's scratch.
+    pub fn from_env() -> Option<RowsCache> {
+        let cache = std::env::var_os(buildstore::coverage::CACHE_ENV)?;
+        Some(RowsCache::new(Path::new(&cache), jobrt::room::job_target()))
+    }
+
+    pub fn new(cache: &Path, target: u64) -> RowsCache {
+        RowsCache { dir: cache.join("blobs/sources/canopy"), target }
+    }
+
+    fn prefix(name: &str, file_len: u64) -> String {
+        format!("{name}.{file_len}.")
+    }
+
+    /// The spans of a file kept here that meet `lo..hi`, each (first, end, its path), by first byte.
+    fn spans(&self, name: &str, file_len: u64, lo: u64, hi: u64) -> Vec<(u64, u64, PathBuf)> {
+        let pre = Self::prefix(name, file_len);
+        let mut v: Vec<(u64, u64, PathBuf)> = std::fs::read_dir(&self.dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name();
+                let (a, b) = n.to_str()?.strip_prefix(&pre)?.strip_suffix(".rows")?.split_once('-')?;
+                let (a, b) = (a.parse().ok()?, b.parse().ok()?);
+                (a < hi && lo < b).then(|| (a, b, e.path()))
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn path_of(&self, name: &str, file_len: u64, lo: u64, hi: u64) -> PathBuf {
+        self.dir.join(format!("{}{lo}-{hi}.rows", Self::prefix(name, file_len)))
+    }
+}
+
+/// `lo..hi` less the spans `have` (sorted by first byte), in order.
+fn gaps(lo: u64, hi: u64, have: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let (mut at, mut out) = (lo, Vec::new());
+    for &(a, b) in have {
+        if a > at {
+            out.push((at, a.min(hi)));
+        }
+        at = at.max(b);
+        if at >= hi {
+            return out;
+        }
+    }
+    if at < hi {
+        out.push((at, hi));
+    }
+    out
+}
+
+/// The bytes `lo..hi` of `src` read into a new file `f`, in big reads, `ROWS_READERS` at once; `done`
+/// told each read's bytes.
+fn read_span(
+    src: &dyn RangeRead,
+    lo: u64,
+    hi: u64,
+    f: &std::fs::File,
+    done: &(dyn Fn(u64) + Sync),
+) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use store::sys::PosIo;
+    let len = hi - lo;
+    let next = AtomicU64::new(0);
+    std::thread::scope(|s| {
+        let hs: Vec<_> = (0..ROWS_READERS)
+            .map(|_| {
+                s.spawn(|| -> std::io::Result<()> {
+                    loop {
+                        let at = next.fetch_add(ROWS_READ, Relaxed);
+                        if at >= len {
+                            return Ok(());
+                        }
+                        let n = ROWS_READ.min(len - at);
+                        let b = src.read_at(lo + at, n as usize).map_err(std::io::Error::other)?;
+                        f.write_all_at(&b, at)?;
+                        done(n);
+                    }
+                })
+            })
+            .collect();
+        hs.into_iter().try_for_each(|h| h.join().map_err(|_| std::io::Error::other("a canopy rows reader panicked"))?)
+    })
+}
+
 /// A canopy file at `path` (on the NAS) for a run whose blocks read its rows `rows` (first and
 /// last, of its full-resolution image): the bytes of the strips holding them (a canopy square's
-/// strips are rows of its whole width) read first in big reads, `ROWS_READERS` at once, into
-/// `local` (the run's scratch), and read from there; anything else (its header and strip arrays)
-/// where it lies. The same bytes as the file's, so the same tiles. `done` is told the bytes read so
-/// far, of how many.
+/// strips are rows of its whole width) read here first: those `cache` has kept already where they
+/// are, the others in big reads, `ROWS_READERS` at once, into `cache` where it has room for them,
+/// else into `local` (the run's scratch; `.<n>` after it for each piece); anything else (its header
+/// and strip arrays) where it lies. The same bytes as the file's, so the same tiles. `done` is told
+/// the bytes read from the NAS so far, of how many. The file as the run reads it, and the bytes read
+/// from the NAS.
 pub fn rows_here(
     path: &Path,
     rows: (u32, u32),
     local: &Path,
+    cache: Option<&RowsCache>,
     done: &(dyn Fn(u64, u64) + Sync),
-) -> Result<Arc<dyn RangeRead>> {
+) -> Result<(Arc<dyn RangeRead>, u64)> {
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-    use store::sys::PosIo;
     let what = || path.display().to_string();
     let src: Arc<dyn RangeRead> = Arc::new(PlainFile::open(path).with_context(what)?);
     let (lo, hi) = {
@@ -123,44 +231,49 @@ pub fn rows_here(
         (lo, hi)
     };
     if lo >= hi {
-        return Ok(src);
+        return Ok((src, 0));
     }
-    let f = std::fs::File::create(local).with_context(|| local.display().to_string())?;
-    let len = hi - lo;
-    let (next, got) = (AtomicU64::new(0), AtomicU64::new(0));
-    std::thread::scope(|s| -> Result<()> {
-        let hs: Vec<_> = (0..ROWS_READERS)
-            .map(|_| {
-                s.spawn(|| -> Result<()> {
-                    loop {
-                        let at = next.fetch_add(ROWS_READ, Relaxed);
-                        if at >= len {
-                            return Ok(());
-                        }
-                        let n = ROWS_READ.min(len - at);
-                        let b = src.read_at(lo + at, n as usize).with_context(what)?;
-                        f.write_all_at(&b, at).with_context(|| local.display().to_string())?;
-                        done(got.fetch_add(n, Relaxed) + n, len);
-                    }
-                })
-            })
-            .collect();
-        for h in hs {
-            h.join().map_err(|_| anyhow::anyhow!("a reader of {} panicked", what()))??;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let file_len = src.len().with_context(what)?;
+    // (Those kept here, held; one room-making took meanwhile is read again.)
+    let mut pieces: Vec<(u64, u64, PlainFile)> = Vec::new();
+    if let Some(c) = cache {
+        for (a, b, p) in c.spans(&name, file_len, lo, hi) {
+            if let Some(p) = store::cachefile::hold_existing(&p).ok().flatten() {
+                pieces.push((a, b, PlainFile::open(&p).with_context(|| p.display().to_string())?));
+            }
         }
-        Ok(())
-    })?;
-    drop(f);
-    let local = PlainFile::open(local).with_context(|| local.display().to_string())?;
-    Ok(Arc::new(Rows { src, local, at: lo, len }))
+    }
+    let have: Vec<(u64, u64)> = pieces.iter().map(|p| (p.0, p.1)).collect();
+    let todo = gaps(lo, hi, &have);
+    let len: u64 = todo.iter().map(|g| g.1 - g.0).sum();
+    let got = AtomicU64::new(0);
+    let count = |n: u64| done(got.fetch_add(n, Relaxed) + n, len);
+    for (k, &(a, b)) in todo.iter().enumerate() {
+        let kept = cache
+            .filter(|c| std::fs::create_dir_all(&c.dir).is_ok() && jobrt::room::free_past(&c.dir, c.target) >= b - a);
+        let at = match kept {
+            Some(c) => store::cachefile::hold(&c.path_of(&name, file_len, a, b), &mut |tmp| {
+                read_span(&*src, a, b, &std::fs::File::create(tmp)?, &count)
+            })
+            .with_context(what)?,
+            None => {
+                let p = if k == 0 { local.to_path_buf() } else { PathBuf::from(format!("{}.{k}", local.display())) };
+                let f = std::fs::File::create(&p).with_context(|| p.display().to_string())?;
+                read_span(&*src, a, b, &f, &count).with_context(what)?;
+                p
+            }
+        };
+        pieces.push((a, b, PlainFile::open(&at).with_context(|| at.display().to_string())?));
+    }
+    Ok((Arc::new(Rows { src, pieces }), len))
 }
 
-/// A file read where it lies but for a span of it read before into a local file (`rows_here`).
+/// A file read where it lies but for spans of it read before into local files (`rows_here`; they
+/// may overlap: spans kept by runs that wanted other rows).
 struct Rows {
     src: Arc<dyn RangeRead>,
-    local: PlainFile,
-    at: u64,
-    len: u64,
+    pieces: Vec<(u64, u64, PlainFile)>,
 }
 
 impl RangeRead for Rows {
@@ -169,11 +282,22 @@ impl RangeRead for Rows {
     }
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
-        if off >= self.at && off.saturating_add(len as u64) <= self.at + self.len {
-            self.local.read_at(off - self.at, len)
-        } else {
-            self.src.read_at(off, len)
+        let end = off.saturating_add(len as u64);
+        // (The piece holding `at` furthest on, then the next from where it ends.)
+        let (mut at, mut out) = (off, Vec::new());
+        while at < end {
+            let Some(p) = self.pieces.iter().filter(|p| p.0 <= at && at < p.1).max_by_key(|p| p.1) else {
+                // (What no piece holds, where it lies: the file's header and strip arrays.)
+                return self.src.read_at(off, len);
+            };
+            let n = (p.1.min(end) - at) as usize;
+            if n == len {
+                return p.2.read_at(at - p.0, n);
+            }
+            out.extend(p.2.read_at(at - p.0, n)?);
+            at += n as u64;
         }
+        Ok(out)
     }
 }
 
