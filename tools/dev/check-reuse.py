@@ -23,20 +23,26 @@ in X) is weighed. It holds for a part here only when
     members, excludes and the paths its manifests name; the files their sources include_*!,
     #[path] or name as a macro's first "../" literal; what build scripts and proc macros read; the
     scripts that run the part, RUNNER);
-  - tests: each one that is such an input, main's or the branch's own (#969), is a module's source
-    (a .rs file under crates/<crate>/src or tests, not a crate's root, build script or proc
-    macro), a binary's root (its crate's every target), an example (none) or a file
-    include_str!d or include_bytes!d inside #[test] functions (those tests) or outside them by a
-    module's source (that module's own tests), nothing include!ing it, naming it by #[path] or in a
-    macro; then run again: the tests HEAD's commands run that P's didn't, and of those
-    both run, the tests affected-tests.sh gives for P..HEAD (the plain sources' modules traced
-    as for the branch, the scan tests whose `//! scans:` line covers a file in X) and the tests
-    reading a file in X at run time (a source's CARGO_MANIFEST_DIR or ".." path inside a #[test]
-    function). A reading this can't place (outside a #[test] function, in a macro, a crate whose
-    targets aren't cargo's defaults) runs the whole part; a path whose base can't be told is the
-    whole repo.
+  - tests: each one that is such an input, main's or the branch's own, is a source of a crate (a
+    .rs file under crates/<crate>/src, not a build script or proc macro's), an integration test's
+    (under crates/<crate>/tests), an example or a file include_str!d or include_bytes!d, nothing
+    include!ing it, naming it by #[path] or in a macro. Then run again:
+      - the tests HEAD's commands run that P's didn't;
+      - every test of HEAD's commands in a program linking the changed source's crate (#969): the
+        crate's own targets, and those of the crates reaching it through their dependencies (a
+        program's dev-dependencies count, a dependency's don't). Naming can't place one nearer: a
+        user's user, a trait's impl, a macro or a re-export names nothing. So too for a file
+        compiled in outside a #[test] function;
+      - of the rest, what can change without a program changing: the tests affected-tests.sh gives
+        for P..HEAD (an integration test changed, the scan tests whose `//! scans:` line covers a
+        file in X), a #[test] function's own include_str! of a changed file, and the tests reading
+        a file in X at run time (a source's CARGO_MANIFEST_DIR or ".." path inside a #[test]
+        function). A reading this can't place (outside a #[test] function, in a macro, a crate
+        whose targets aren't cargo's defaults) runs the whole part; a path whose base can't be told
+        is the whole repo.
 Doubt runs both parts: a symlink in the repo, an include! or #[path] outside the package folders
-(whose own modules aren't followed), a path a manifest or .cargo names outside them.
+(whose own modules aren't followed), a path a manifest or .cargo names outside them, a source
+reading the environment as it compiles (env!, option_env! other than cargo's own CARGO_*).
 Anything not shown safe (no such pass, a git lookup failing) runs the part.
 """
 import hashlib, os, posixpath, re, subprocess, sys
@@ -150,6 +156,9 @@ INCLUDE = re.compile(r'\binclude(_str|_bytes)?!\s*\(\s*("([^"\\]*)")?')
 PATHATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 # A "../" literal an attribute or a macro takes first (#[folder = "../../web"], include_dir!(…)):
 # a file read as it compiles, by a third-party macro, relative to the source's folder or the crate's.
+# The environment read as a source compiles: nothing in a tree says what it held. (cargo's own CARGO_*
+# follow from the tree.)
+ENVMACRO = re.compile(r'\b(?:option_)?env!\s*\(\s*("[^"\\]*")?')
 MACROLIT = re.compile(r'#!?\[\s*\w+(?:::\w+)*\s*(?:=|\()\s*"(\.\./[^"\\]*)"|\b(?!include(?:_str|_bytes)?!)\w+!\s*[(\[{]\s*"(\.\./[^"\\]*)"')
 
 
@@ -170,6 +179,9 @@ def build_inputs(files, pkgs):
         if not f.endswith(".rs") or not any(under(f, p) for p in pkgs):
             continue
         src, d = read(f), posixpath.dirname(f)
+        for m in ENVMACRO.finditer(src):
+            if not (m.group(1) or "").startswith('"CARGO_') and blank(src)[m.start()] != " ":
+                raise Doubt("%s reads the environment as it compiles: %s" % (f, m.group(0)))
         # (include! and #[path] name Rust sources, whose own modules and includes are followed only
         # inside the package folders.)
         for m in INCLUDE.finditer(src):
@@ -206,63 +218,101 @@ PLAIN = "the Rust build"   # (the reason a file inside a package folder, and not
 DATA = " reads it as it compiles"
 
 
-def plain(f, scripts, macros):
-    """A module's source: a .rs file under crates/<crate>/src or tests, not the crate's root (whose
-    own tests no filter isolates, nor its users are traced), a build script or a proc macro's."""
+def source(f, kind, scripts, macros):
+    """A .rs file under crates/<crate>/<kind>, not a build script's or a proc macro's."""
     p = f.split("/")
-    return (len(p) >= 4 and p[0] == "crates" and p[2] in ("src", "tests") and f.endswith(".rs")
-            and f not in scripts and not any(under(f, k) for k in macros)
-            and "/".join(p[2:]) not in ("src/lib.rs", "src/main.rs"))
+    return (len(p) >= 4 and p[0] == "crates" and p[2] == kind and f.endswith(".rs")
+            and f not in scripts and not any(under(f, k) for k in macros))
 
 
-def crate_targets(c, files):
-    """The test units of crate c's every target, as cargo's defaults lay them out."""
-    d = "crates/%s/" % c
-    out = [(c, "--lib", None)] if d + "src/lib.rs" in files else []
-    for f in files:
-        r = f[len(d):] if f.startswith(d) else ""
-        if r == "src/main.rs": out.append((c, "--bin " + c, None))
-        elif re.fullmatch(r"src/bin/[^/]+\.rs", r): out.append((c, "--bin " + r[8:-3], None))
-        elif re.fullmatch(r"src/bin/[^/]+/main\.rs", r): out.append((c, "--bin " + r.split("/")[2], None))
-        elif re.fullmatch(r"tests/[^/]+\.rs", r): out.append((c, "--test " + r[6:-3], None))
-        elif re.fullmatch(r"tests/[^/]+/main\.rs", r): out.append((c, "--test " + r.split("/")[1], None))
+def linking(pkgs):
+    """{a package folder: the package names of every folder whose test programs link it}: a program
+    holds its crate, its dependencies of any kind and theirs but for their dev-dependencies. Without
+    a folder [patch] names: its users' manifests name a version, not its path."""
+    try:
+        import tomllib   # (Python 3.11's: affected-tests.sh imports this file, on any python3.)
+    except ImportError:
+        raise Doubt("this python3 has no tomllib to read the manifests")
+
+    def toml(p):
+        try:
+            return tomllib.loads(read(p))
+        except tomllib.TOMLDecodeError as e:
+            raise Doubt("%s can't be read: %s" % (p, e))
+
+    root = toml("Cargo.toml")
+    table = root.get("workspace", {}).get("dependencies", {})
+    patched = {norm("", v["path"]) for t in root.get("patch", {}).values() for v in t.values() if "path" in v}
+
+    def deps(d, m, kinds):
+        out = set()
+        for t in [m] + list(m.get("target", {}).values()):
+            for sec, v in ((k, v) for k in t if k.replace("_", "-") in kinds for v in t[k].items()):
+                name, v = v
+                if isinstance(v, dict) and v.get("workspace") and isinstance(table.get(name), dict):
+                    if "path" in table[name]: out.add(norm("", table[name]["path"]))
+                elif isinstance(v, dict) and "path" in v:
+                    out.add(norm(d, v["path"]))
+        return out
+
+    names, runs, every = {}, {}, {}
+    for d in pkgs:
+        m = toml(d + "/Cargo.toml")
+        if "name" in m.get("package", {}):
+            names[d] = m["package"]["name"]
+            runs[d] = deps(d, m, ("dependencies", "build-dependencies"))
+            every[d] = runs[d] | deps(d, m, ("dev-dependencies",))
+    out = {d: set() for d in names if d not in patched}
+    for t in names:
+        seen, todo = {t}, list(every[t])
+        while todo:
+            d = todo.pop()
+            if d not in seen:
+                seen.add(d)
+                todo += runs.get(d, ())
+        for d in seen & set(out):
+            out[d].add(names[t])
     return out
 
 
-def traced(f, whys, scripts, macros, data, files):
-    """The test units a change of f since the pass (main's or the branch's own), a Rust build
-    input, affects beyond what affected-tests.sh traces for it ([] none more); None when they can't
-    be told. Traced: a module's source (plain); a binary's root, crates/<c>/src/main.rs (no other
-    crate links a binary: its crate's every target, #969); an example (no test builds or runs one;
-    clippy checks it); a file include_str!d or include_bytes!d inside #[test] functions (those
-    tests: a source test reading agent/build.rs), or outside them by a module's source (that
-    module's own tests, which affected-tests.sh gives: web/work's pages in coord/mod.rs, #969). Not:
-    one include!d, named by #[path] or in a macro, or read by a build script, nor a library's root."""
-    p, units = f.split("/"), []
+def traced(f, whys, scripts, macros, data, files, links):
+    """What a change of f since the pass (main's or the branch's own), a Rust build input, affects
+    beyond what affected-tests.sh gives for it: (test units, packages all of whose test programs
+    link it); None when they can't be told. A crate's source: the packages linking its crate. An
+    integration test's: itself, by affected-tests.sh. An example: none (no test builds or runs one;
+    clippy checks it). A file include_str!d or include_bytes!d inside #[test] functions: those
+    tests (a source test reading agent/build.rs); outside them, in a crate's source or an
+    integration test: as that source (web/work's pages in coord/mod.rs). Not: one include!d, named
+    by #[path] or in a macro, or read by a build script."""
+    units, linked = [], set()
+
+    def link(g):
+        d = "/".join(g.split("/")[:2])
+        if d not in links:
+            return False
+        linked.update(links[d])
+        return True
+
     for w in set(whys):
         if w == PLAIN:
-            if plain(f, scripts, macros):
-                continue
-            if len(p) == 4 and p[0] == "crates" and p[2:] == ["src", "main.rs"] and f not in scripts:
-                units += crate_targets(p[1], files)
-            elif len(p) >= 4 and p[0] == "crates" and p[2] == "examples" and f.endswith(".rs") \
-                    and not any(under(f, k) for k in macros):
-                continue
-            else:
+            if source(f, "src", scripts, macros):
+                if not link(f):
+                    return None
+            elif not (source(f, "tests", scripts, macros) or source(f, "examples", scripts, macros)):
                 return None
         elif not w.endswith(DATA):
             return None
     for g, at in data.get(f, []):
         src = read(g)
-        if enclosing(src, at) is None:   # (compiled into g's code: g's own tests, by affected-tests.sh)
-            if not plain(g, scripts, macros):
+        if enclosing(src, at) is None:
+            if not (source(g, "src", scripts, macros) or source(g, "tests", scripts, macros)) or not link(g):
                 return None
             continue
         try:
             units += units_of(g, at, src, files)
         except Doubt:
             return None
-    return units
+    return units, linked
 
 
 # ---- the tests' reads at run time ----
@@ -518,7 +568,8 @@ def decide(passed, tests_file):
         if mode == "120000": links.append(f)
     if links:   # (a read through one names the link, not the file changed)
         raise Doubt("the repo holds symlinks, which a read can go through: " + short(links))
-    ins, scripts, macros, data = build_inputs(files, packages(files))
+    pkgs = packages(files)
+    ins, scripts, macros, data = build_inputs(files, pkgs)
     hit = {}
     for f in x:
         for pre, why in ins:
@@ -532,13 +583,15 @@ def decide(passed, tests_file):
         out.append(("clippy", "reuse", p, how + "; none is a Rust build input"))
     if not tests:
         return out
-    # (Main's changes since P are traced as the branch's own are, #969: on 6 Nov, 40 of 92 checks
-    # running every test did so for any Rust file main changed.)
-    extra, odd = [], []
+    links = linking(pkgs)
+    extra, linked, odd = [], {}, []
     for f in hit:
-        u = traced(f, hit[f], scripts, macros, data, files)
-        if u is None: odd.append(f)
-        else: extra += [(c, g, flt, f) for c, g, flt in u]
+        u = traced(f, hit[f], scripts, macros, data, files, links)
+        if u is None:
+            odd.append(f)
+        else:
+            extra += [(c, g, flt, f) for c, g, flt in u[0]]
+            for c in u[1]: linked.setdefault(c, f)
     if odd:
         whose = " and ".join(w for w, fs in (("main", [f for f in odd if f in mains]),
                                              ("the branch", [f for f in odd if f not in mains])) if fs)
@@ -564,13 +617,13 @@ def decide(passed, tests_file):
         theirs = [l for l in b.decode("utf-8", "replace").splitlines() if l.strip()]
     how += "; none is a Rust build input" if not hit else "; the Rust ones traced"
     try:
-        out += tests_part(tests, theirs, x, files, p, how, extra)
+        out += tests_part(tests, theirs, x, files, p, how, extra, linked)
     except Doubt as e:
         out.append(("tests", "run", "-", str(e)))
     return out
 
 
-def tests_part(tests, theirs, x, files, p, how, extra):
+def tests_part(tests, theirs, x, files, p, how, extra, linked):
     ours = parse_cmds(tests)
     # HEAD's tests that P's commands didn't run (cargo's filters match by substring: a filter of
     # P's inside one of HEAD's ran its tests).
@@ -585,8 +638,9 @@ def tests_part(tests, theirs, x, files, p, how, extra):
         else:
             left = [f for f in fs if not any(o in f for o in old[k])]
             if left: new[k] = left
-    # The tests X affects: affected-tests.sh over P..HEAD (the own sources' modules traced as for
-    # the branch, the scan tests' lines), then the sources' reads at run time.
+    # The tests X affects: affected-tests.sh over P..HEAD (the integration tests changed, the scan
+    # tests' lines), every test in a program linking a changed crate, then the sources' reads at
+    # run time.
     r = subprocess.run([HERE + "/affected-tests.sh", "%s..HEAD" % p], capture_output=True, text=True)
     if r.returncode:
         raise Doubt("affected-tests.sh over the changes since %s failed: %s" % (p[:7], r.stderr.strip()[:200]))
@@ -596,6 +650,10 @@ def tests_part(tests, theirs, x, files, p, how, extra):
         if (c, g) in hits and hits[(c, g)] is None: continue
         hits[(c, g)] = None if flt is None else hits.get((c, g), []) + [flt]
         why.append("%s (%s changed)" % (flt or g, f))
+    for k in ours:
+        if k[0] in linked:
+            hits[k] = None
+            why.append("%s %s (links %s)" % (k[0], k[1], linked[k[0]]))
     for f in files:
         if not (f.startswith("crates/") and f.endswith(".rs")):
             continue

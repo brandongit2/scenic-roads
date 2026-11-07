@@ -70,6 +70,10 @@ base=$(git merge-base main $head0)
 treekey="tree $(git rev-parse "$head0^{tree}") base $(git rev-parse "$base^{tree}")"
 clean0=$(git status --porcelain)
 [[ -z $clean0 ]] || treekey=
+# (How the tests build, from the environment, #969: no tree says what it held, so a pass neither
+# stands for such a run nor is taken from one.)
+buildenv=( ${(M)${(f)"$(env)"}:#(CARGO_PROFILE_|RUSTFLAGS=|CARGO_BUILD_RUSTFLAGS=|CARGO_ENCODED_RUSTFLAGS=)*} )
+(( ! ${#buildenv} )) || treekey=
 source ${0:A:h}/devjob.zsh
 dj_start check "check ${root:t}" log $logs base ${base:0:7}; djrun=$REPLY djstatus=stopped djwhy=
 export SCENIC_DEVJOB_PARENT=$djrun
@@ -115,7 +119,9 @@ reuse() {  # reuse <name> <commit> <why>: the part's pass at <commit> holds here
   dj_span part $1 $EPOCHREALTIME $EPOCHREALTIME reuse why "passed at ${2:0:7}: $3"
   print -r -- "$1 ... REUSE  (passed at ${2:0:7}: $3)"
 }
-tests=( ${(f)"$(${0:A:h}/affected-tests.sh | grep -v '^#')"} )
+# (Its failure is check.sh's: an empty list would pass as "no affected Rust tests".)
+affected=$(${0:A:h}/affected-tests.sh) || { print "FAIL: tools/dev/affected-tests.sh failed: no test list"; djstatus=fail; exit 1 }
+tests=( ${(f)"$(print -r -- $affected | grep -v '^#')"} )
 # Reuse (#950), on a clean checkout only: tools/dev/check-reuse.py's verdict for clippy and tests.
 typeset -A verdict from why; typeset -a again
 if [[ -n $treekey ]]; then
@@ -219,6 +225,8 @@ if (( failed )); then print "FAIL: fix the parts above before reporting"; exit 1
 # (Not recorded: a pass names the tree it checked, which must be HEAD's, the same at both ends.)
 notrec() { print -r -- "PASS, but NOT recorded: $1"; djwhy=$2; exit 1 }
 head1=$(git rev-parse HEAD)
+(( ! ${#buildenv} )) ||
+  notrec "the environment sets how the tests build (${buildenv[1]%%=*} …): a pass is recorded for a tree alone" "build settings in the environment"
 [[ $head1 == $head0 ]] ||
   notrec "HEAD moved during the run, from ${head0:0:7} to ${head1:0:7} (a commit, reset or checkout here): what was checked isn't HEAD. Run check.sh again, changing nothing in this checkout while it runs." "HEAD moved"
 [[ -z $(git status --porcelain --untracked-files=no) ]] ||

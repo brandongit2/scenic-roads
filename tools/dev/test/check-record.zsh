@@ -58,6 +58,16 @@ run() {
 }
 
 run "a clean run" recorded
+w tools/dev/affected-tests.sh '#!/bin/zsh
+exit 3'
+g add -A; g commit -m broken
+run "affected-tests.sh failing" "affected-tests.sh failed"
+w tools/dev/affected-tests.sh '#!/bin/zsh'
+g add -A; g commit -m mended
+export CARGO_PROFILE_TEST_OPT_LEVEL=0
+g commit --allow-empty -m env
+run "the environment setting how tests build" "NOT recorded: the environment sets how the tests build"
+unset CARGO_PROFILE_TEST_OPT_LEVEL
 run "the same tree again" "recorded:this tree was already checked"
 # (A record naming a tree its commit doesn't have vouches for nothing: the run goes on.)
 print -r -- "$(git rev-parse main) t tree $(git rev-parse 'HEAD^{tree}') base $(git rev-parse 'main^{tree}') at $(git rev-parse main)" > $passed

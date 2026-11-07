@@ -105,19 +105,19 @@ edit() { print 2 >> tools/data/y }
 case_ "a file a #[test] function reads" reuse partial 'cargo test -p a --lib -- tests::reads_data'
 edit() { print 2 >> tools/helper/z }
 case_ "a file read outside a #[test] function" reuse run
-# (#969: main's Rust changes since the pass traced as the branch's own are.)
+# (#969: main's Rust changes since the pass weighed as the branch's own are: each test in a program linking them.)
 edit() { print '// 2' >> crates/a/src/m.rs }
-case_ "a module's change on main" run partial 'cargo test -p a --lib -- m::'
+case_ "a module's change on main" run partial $'cargo test -p a --test scan\ncargo test -p a --lib -- m:: tests::'
 edit() { w crates/a/src/b.rs 'pub fn b() {}' }
-case_ "a new file on main no module declares" run reuse
+case_ "a new file on main no module declares" run partial $'cargo test -p a --test scan\ncargo test -p a --lib -- m:: tests::'
 edit() { { print '// 2'; cat crates/a/src/lib.rs } > $tmp/lib.rs && mv $tmp/lib.rs crates/a/src/lib.rs }   # (at its top: the branch's edit is at its end)
-case_ "the crate's root changed on main" run run
+case_ "the crate's root changed on main" run partial $'cargo test -p a --test scan\ncargo test -p a --lib -- m:: tests::'
 edit() { print v2 > Cargo.lock }
 case_ "a Cargo.lock change on main" run run
 edit() { print 2 >> web/x.txt }
-case_ "a file the crate's root includes" run run
+case_ "a file the crate's root includes" run partial $'cargo test -p a --test scan\ncargo test -p a --lib -- m:: tests::'
 edit() { print 2 >> web/y.txt }
-case_ "a file a module compiles in" run partial 'cargo test -p a --lib -- m::'
+case_ "a file a module compiles in" run partial $'cargo test -p a --test scan\ncargo test -p a --lib -- m:: tests::'
 edit() { print 2 >> tools/dev/check.sh }
 case_ "the script running the parts" run run
 edit() { w newthing/z 1 }
@@ -126,13 +126,13 @@ edit() { print 2 >> docs/b.md }; after='print 3 >> docs/a.md'
 case_ "the branch changed after the rebase: a file a scan test reads" reuse partial 'cargo test -p a --test scan'
 # (#969: the branch's own edits since the pass; the tests they affect run again.)
 edit() { print 2 >> docs/b.md }; after='print "// 2" >> crates/a/src/m.rs'
-case_ "the branch's own edit of a module since the pass" run partial 'cargo test -p a --lib -- m::'
+case_ "the branch's own edit of a module since the pass" run partial $'cargo test -p a --test scan\ncargo test -p a --lib -- m:: tests::'
 edit() { print 2 >> docs/b.md }; after='print "// 2" >> crates/a/src/lib.rs'
-case_ "the branch's own edit of the crate's root" run run
+case_ "the branch's own edit of the crate's root" run partial $'cargo test -p a --test scan\ncargo test -p a --lib -- m:: tests::'
 edit() { print 2 >> docs/b.md }; after='print "# 2" >> crates/a/Cargo.toml'
 case_ "the branch's own manifest edit" run run
 edit() { print 2 >> docs/b.md }; after='print 2 >> web/x.txt'
-case_ "the branch's own edit of a file the build includes" run run
+case_ "the branch's own edit of a file the build includes" run partial $'cargo test -p a --test scan\ncargo test -p a --lib -- m:: tests::'
 edit() { print 2 >> docs/b.md }; after='print 2 >> docs/c.md'
 case_ "the branch's own edit of a file a #[test] function includes" run partial 'cargo test -p a --lib -- m::tests::reads_c'
 edit() { print 2 >> docs/b.md }; after='print 2 >> crates/a/tests/scan.rs'
@@ -232,10 +232,78 @@ fn t() {}
 fn main() {}'; w crates/a/tests/i.rs '#[test]
 fn i() {}' }
 m() { print '// 2' >> crates/a/src/main.rs }
-fresh "a binary's root changed on main: its crate's every target" s m 'cargo test -p a --bin a --test i' run partial 'cargo test -p a --bin a --test i'
+fresh "a binary's root changed on main: its crate's targets" s m 'cargo test -p a --bin a --test i' run partial 'cargo test -p a --bin a --test i'
 s() { w crates/a/examples/e.rs 'fn main() {}' }
 m() { print '// 2' >> crates/a/examples/e.rs }
 fresh "an example changed on main: no test builds it" s m 'cargo test -p a --lib -- t' run reuse
+
+# -- what a test program links (#969's review): a source's change runs every test of HEAD's commands
+# in a program linking its crate, however far the test's module is from it. One level of naming, the
+# bound on what a branch's first check runs, can't say a test's result stands: users of users, a
+# trait's impl, a macro, a re-export name nothing.
+s() { w crates/a/src/lib.rs 'mod x; mod y; mod z;'; w crates/a/src/x.rs 'pub fn v() -> u8 { 1 }'
+  w crates/a/src/y.rs 'pub fn v() -> u8 { crate::x::v() }'
+  w crates/a/src/z.rs '#[test]
+fn t() { assert_eq!(crate::y::v(), 1); }' }
+m() { w crates/a/src/x.rs 'pub fn v() -> u8 { 2 }' }
+fresh "a module two levels from the test" s m 'cargo test -p a --lib -- z::' run partial 'cargo test -p a --lib -- z::'
+s() { w crates/a/src/lib.rs 'mod x;'; w crates/a/src/x.rs 'pub fn v() {}' }
+m() { w crates/a/src/lib.rs 'mod x; pub mod w;'; w crates/a/src/w.rs '' }
+fresh "the crate's root" s m 'cargo test -p a --lib -- x::' run partial 'cargo test -p a --lib -- x::'
+many() {  # the packages b (on a), c (on b, through the workspace's table), d (dev only on c), e (on d), u (on none)
+  w Cargo.toml '[workspace]
+members = ["crates/a", "crates/b", "crates/c", "crates/d", "crates/e", "crates/u"]
+[workspace.dependencies]
+b = { path = "crates/b" }'
+  w crates/a/src/x.rs ''
+  for p in b c d e u; do w crates/$p/src/lib.rs ''; done
+  w crates/b/Cargo.toml '[package]
+name = "b"
+[dependencies]
+a = { path = "../a" }'
+  w crates/c/Cargo.toml '[package]
+name = "c"
+[target."cfg(unix)".dependencies]
+b = { workspace = true }'
+  w crates/d/Cargo.toml '[package]
+name = "d"
+[dev-dependencies]
+c = { path = "../c" }'
+  w crates/e/Cargo.toml '[package]
+name = "e"
+[dependencies]
+d = { path = "../d" }'
+  w crates/u/Cargo.toml '[package]
+name = "u"' }
+m() { print '// 2' >> crates/a/src/x.rs }
+fresh "a crate depending on the changed one" many m 'cargo test -p b --lib -- q::|cargo test -p u --lib -- q::' run partial 'cargo test -p b --lib -- q::'
+fresh "a crate depending on it through others" many m 'cargo test -p c --lib' run partial 'cargo test -p c --lib'
+fresh "a crate's dev-dependency: its tests link it" many m 'cargo test -p d --lib' run partial 'cargo test -p d --lib'
+fresh "a dev-dependency of a dependency: not linked" many m 'cargo test -p e --lib' run reuse
+fresh "a crate linking nothing changed" many m 'cargo test -p u --lib' run reuse
+s() { w crates/a/src/bin/x.rs 'fn main() {}'; w crates/a/tests/i.rs '#[test]
+fn i() { let _ = env!("CARGO_BIN_EXE_x"); }' }
+m() { print '// 2' >> crates/a/src/bin/x.rs }
+fresh "a binary's source: the integration test running it" s m 'cargo test -p a --test i' run partial 'cargo test -p a --test i'
+s() { w crates/a/tests/i.rs 'const X: &str = include_str!("../../../docs/a.md");
+#[test]
+fn i() { assert!(!X.is_empty()); }' }
+fresh "a file an integration test compiles in" s docs 'cargo test -p a --test i' run partial 'cargo test -p a --test i'
+s() { w Cargo.toml '[workspace]
+members = ["crates/a"]
+exclude = ["crates/x"]
+[patch.crates-io]
+x = { path = "crates/x" }'; w crates/x/Cargo.toml '[package]
+name = "x"'; w crates/x/src/lib.rs ''; w crates/a/Cargo.toml '[package]
+name = "a"
+[dependencies]
+x = "1"' }
+m() { print '// 2' >> crates/x/src/lib.rs }
+fresh "a patched crate: its users don't name its path" s m 'cargo test -p a --lib' run run
+s() { w crates/a/src/lib.rs 'pub const V: Option<&str> = option_env!("SOME_FLAG");' }
+fresh "a source reading the environment as it compiles" s docs 'cargo test -p a --lib' run run
+s() { w crates/a/src/lib.rs 'pub const V: &str = env!("CARGO_PKG_NAME");' }
+fresh "cargo's own variables" s docs 'cargo test -p a --lib' reuse reuse
 
 # -- affected-tests.sh --nextest: check.sh's tests lines as one nextest run (#969), a lib's unit
 # tests built only for the packages asking for them
