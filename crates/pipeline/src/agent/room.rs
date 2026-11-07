@@ -2456,19 +2456,19 @@ mod tests {
         assert!(!basemap.exists() && tars.iter().all(|t| t.exists()));
         // A job reading the shared cache: its basemap's and fill's copies are read now, and go last.
         let mut h = Hints::default();
-        h.add("terrain-hi", &[]);
+        h.add(crate::agent::seam::for_tests(), "terrain-hi", &[]);
         assert_eq!(h.when(&cache, &basemap), None);
-        h.add("depth", &["6/1/1".to_string()]);
+        h.add(crate::agent::seam::for_tests(), "depth", &["6/1/1".to_string()]);
         assert_eq!(h.when(&cache, &basemap), Some(0));
         assert_eq!(h.when(&cache, &cache.join("blobs/work/lakefill/1.0123456789abcdef.sect")), Some(0));
         assert_eq!(h.when(&cache, &tars[0]), None);
         let mut f = Hints::default();
-        f.add_at("depth-lo", &[], 500);
+        f.add_at(crate::agent::seam::for_tests(), "depth-lo", &[], 500);
         f.merge(&h);
         assert_eq!(f.shared, Some(0));
         // A square's rows kept for the trees: by its square.
         let mut t = Hints::default();
-        t.add("trees", &["6/32/21".to_string()]);
+        t.add(crate::agent::seam::for_tests(), "trees", &["6/32/21".to_string()]);
         let (name, _) = t.squares.first_key_value().unwrap();
         let rows = cache.join(format!("blobs/sources/canopy/{name}.2048.16-1024.rows"));
         assert_eq!(t.when(&cache, &rows), Some(0));
