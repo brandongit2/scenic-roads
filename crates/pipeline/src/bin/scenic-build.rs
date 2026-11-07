@@ -6939,10 +6939,10 @@ mod tests {
             super::catalogue(&mut out, false, None, &Default::default(), Some(&post), NOW).unwrap()
         };
         let mut log = pipeline::agent::publish::MapLog::default();
-        let here = log.here(&home, &nas);
+        let here = log.here(pipeline::agent::theplan::the_plan(), &home, &nas);
         let first = run();
         assert!(post.exists(), "posted");
-        log.published(&home, &nas, false);
+        log.published(pipeline::agent::theplan::the_plan(), &home, &nas, false);
         store::testkit::eventually("the map's log takes the post", || here.feed.head() == Some(first.n));
         let c = here.catalogue().unwrap();
         assert_eq!((c.n, c.files["layers/roads/hi/6-1-2"].size), (1, 3));
@@ -6954,7 +6954,7 @@ mod tests {
         // (The lead's map read without a coordinator: its NAS snapshot, at 1.)
         let second = run();
         assert_eq!((second.n, second.files, second.stated), (2, 2, 0));
-        log.published(&home, &nas, true);
+        log.published(pipeline::agent::theplan::the_plan(), &home, &nas, true);
         store::testkit::eventually("the next batch", || here.feed.head() == Some(2));
         assert!(here.catalogue().unwrap().files.contains_key("layers/roads/hi/6-1-3"));
         assert!(!post.exists(), "taken");

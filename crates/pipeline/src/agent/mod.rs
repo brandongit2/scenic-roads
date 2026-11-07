@@ -564,16 +564,6 @@ fn room_beside(the_plan: &dyn seam::Plan, can: Vec<String>, free: u64, held: u64
     can.into_iter().filter(|s| free >= held.saturating_add(helper_need(the_plan, s))).collect()
 }
 
-/// What a granted task of `kind` does, for the status ("bldtile: z8 tile 8/4/5", "tail 6/1/1").
-fn task_what(kind: &str, task: &serde_json::Value, unit: &str) -> String {
-    match kind {
-        crate::bld::task::KIND => format!("{kind}: z8 tile {unit}"),
-        crate::trees::task::KIND => format!("{kind}: blocks {}", task["blocks"].as_str().unwrap_or(unit)),
-        crate::terrain_task::KIND => format!("{kind}: subtrees {}", task["subtrees"].as_str().unwrap_or(unit)),
-        _ => format!("tail {unit}"),
-    }
-}
-
 /// A leased task's kind: its job id's step (`JobId`, "<kind> <unit>"); "tail", the most room, for
 /// an id naming no kind (a job adopted from an agent before task #849, "task <lease>").
 fn task_kind<'a>(the_plan: &dyn seam::Plan, spec: &'a JobSpec) -> &'a str {
@@ -620,13 +610,18 @@ const UPCOMING_STALE_S: u64 = 3600;
 /// This Mac's (`host`) tiles to come in a `/work/tocome` answer (`forecast::ToCome::answer`), as
 /// cache hints at the forecast's time, with that time (none placed on it: no hints); None when the
 /// answer isn't a forecast's (a lead before its first answers 200 with `making`).
-fn upcoming_of(code: u16, v: &serde_json::Value, host: &str) -> Option<(u64, room::Hints)> {
+fn upcoming_of(
+    the_plan: &dyn crate::agent::seam::Plan,
+    code: u16,
+    v: &serde_json::Value,
+    host: &str,
+) -> Option<(u64, room::Hints)> {
     let at = v["at"].as_u64().filter(|_| code == 200 && v["macs"].is_object())?;
     let mine: BTreeMap<String, Vec<(String, u32)>> = match v["macs"].get(host) {
         Some(m) => serde_json::from_value(m.clone()).ok()?,
         None => BTreeMap::new(),
     };
-    Some((at, room::Hints::of_tocome(&mine, at)))
+    Some((at, room::Hints::of_tocome(the_plan, &mine, at)))
 }
 
 #[cfg(test)]
@@ -663,17 +658,6 @@ pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
         ("terrain-lo", 3) => BTreeSet::from([(3, x, y)]),
         _ => BTreeSet::new(),
     }
-}
-
-/// The memory a terrain-hi run of `z6` tiles is expected to take (MB), before one has said: a z6
-/// tile's levels at a time (crate::terrain_pack::piece_peak_mb), and each z6 tile's quarters (~20 MB)
-/// and its z10 tiles' deep mids taken in (`DEEP_MIDS_MB`); beside them, the z6 tile before's uploads
-/// in flight (crate::out::UPLOAD_HELD: they land beside the next one's work, scenic-build's Landing).
-fn terrain_peak(z6: usize) -> u64 {
-    crate::terrain_pack::piece_peak_mb()
-        + (z6 as u64).saturating_sub(1) * 20
-        + z6 as u64 * crate::terrain_pack::DEEP_MIDS_MB
-        + crate::out::UPLOAD_HELD.div_ceil(1 << 20)
 }
 
 /// Whether `spec`'s job is paced (crate::inputs::pace: its grant read every second, `Agent::tend_grant`): an input check (the
@@ -1438,9 +1422,9 @@ impl AgentLock {
 }
 
 /// The coverage of the regions, and each region's own.
-struct Coverages {
-    all: crate::coverage::Coverage,
-    each: Vec<(String, crate::coverage::Coverage)>,
+pub struct Coverages {
+    pub all: crate::coverage::Coverage,
+    pub each: Vec<(String, crate::coverage::Coverage)>,
 }
 
 /// How long the regions' work waits after the owner changes a recipe or an outline file, for more
@@ -2285,12 +2269,12 @@ impl Agent {
             return;
         }
         let Some(c) = self.client(root, &mut Vec::new()) else { return };
-        let (urls, token, host) = (c.urls(), c.token(), self.host.clone());
+        let (urls, token, host, the_plan) = (c.urls(), c.token(), self.host.clone(), self.o.the_plan);
         self.upcoming_ask.1 = Some(Instant::now());
         let ask = move || -> Option<(u64, room::Hints)> {
             let c = crate::coord::client::Client::at(urls, token, &host);
             let (code, v) = c.post_json("/work/tocome", &serde_json::json!({ "raw": true })).ok()?;
-            upcoming_of(code, &v, &host)
+            upcoming_of(the_plan, code, &v, &host)
         };
         match std::thread::Builder::new().name("upcoming".into()).spawn(ask) {
             Ok(h) => self.upcoming_ask.0 = Some(h),
@@ -2405,7 +2389,7 @@ impl Agent {
             }
         }
         if can.is_empty() {
-            let need = helper_need(self.o.the_plan, crate::trees::task::KIND);
+            let need = helper_need(self.o.the_plan, self.o.the_plan.tree_task_kind());
             let floor = self.floor();
             let past =
                 if floor > 0 { format!(", past the disk room target's {}", room::size(floor)) } else { String::new() };
@@ -2632,8 +2616,8 @@ impl Agent {
                 self.slots[k].lease = Some(Held::Leased { lease, dir });
                 // (Its kind as the coordinator sent it; an older lead's grant names none: its
                 // spec's, crate::offload::task_kind, until every lead sends it.)
-                let kind = if task_kind.is_empty() { crate::offload::task_kind(&task) } else { task_kind };
-                let what = task_what(&kind, &task, &unit);
+                let kind = if task_kind.is_empty() { self.o.the_plan.task_kind(&task) } else { task_kind };
+                let what = self.o.the_plan.task_what(&kind, &task, &unit);
                 Some((
                     k,
                     JobSpec {
@@ -3620,15 +3604,15 @@ impl Agent {
         let running = self.slots.iter().filter_map(|s| s.running.as_ref()).filter_map(|r| r.spec.record.clone());
         let view = self.plan.view.get();
         for w in view.queued.iter().cloned().chain(running) {
-            h.add(&w.step, &w.targets.into_iter().map(|t| t.0).collect::<Vec<_>>());
+            h.add(self.o.the_plan, &w.step, &w.targets.into_iter().map(|t| t.0).collect::<Vec<_>>());
         }
         for r in self.slots.iter().filter_map(|s| s.running.as_ref()) {
             let j = JobId::parse(&r.spec.id);
             if let Some(t) = j.rest.filter(|_| crate::pool::records::current(j.step).starts_with("terrain-")) {
-                h.add(j.step, &[t.to_string()]);
+                h.add(self.o.the_plan, j.step, &[t.to_string()]);
             }
             if let Some(st) = step_of(&r.spec.id) {
-                h.add(&st, &[]);
+                h.add(self.o.the_plan, &st, &[]);
             }
         }
         // (And what the forecast has this Mac read next, at its time: task #843.)
@@ -5034,7 +5018,7 @@ impl Agent {
                 // batch says whether it went out with the low zooms made. A held one posts none.)
                 if let Some(root) = root.filter(|_| self.keeps_publishing()) {
                     let low = self.plan.view.get().catalogue_low;
-                    self.maplog.published(&self.o.home, root, low);
+                    self.maplog.published(self.o.the_plan, &self.o.home, root, low);
                 }
                 self.note(crate::coord::history::Event {
                     worker: Some(self.host.clone()),
@@ -5424,6 +5408,7 @@ impl Agent {
             // archive copies, the pageview months for an items or heritage job, …)
             let mut hints = self.hints();
             hints.add(
+                self.o.the_plan,
                 &step,
                 &spec
                     .record
@@ -5433,7 +5418,7 @@ impl Agent {
             );
             let j = JobId::parse(&id);
             if let Some(t) = j.rest.filter(|_| crate::pool::records::current(j.step).starts_with("terrain-")) {
-                hints.add(j.step, &[t.to_string()]);
+                hints.add(self.o.the_plan, j.step, &[t.to_string()]);
             }
             // (Its own scratch, kept from a give-back, its own again before room is made: never
             // room-making's, the OSM pass's above all.)
@@ -7833,7 +7818,7 @@ impl Agent {
         let Some(coord) = self.coord.clone().filter(|_| self.keeps_publishing()) else { return };
         // (The Catalogues map: the map's log followed, the lead's in process; asked each loop, so it
         // misses no batch.)
-        let here = self.maplog.here(&self.o.home, root);
+        let here = self.maplog.here(self.o.the_plan, &self.o.home, root);
         let keep = self.o.home.join(cataloguesview::KEPT);
         let cv = self
             .catalogues_view
@@ -9070,66 +9055,6 @@ fn clear_target_scratch(dir: &Path, target: &str) -> Vec<PathBuf> {
     gone
 }
 
-/// The planner's inputs the steps' keys read (build::KeyCtx's `inputs`): `input_digests`, the
-/// timetable feeds' declarations as rail-feeds' key names them ("feed-keys": the key names they
-/// fetch with; "feeds": the digest of what of them it reads; "?" while their index can't be read,
-/// and rail-feeds waits) and the declared elevation datasets' spacing, which the rail and
-/// candidates keys name ("?" while it can't be read, and they wait: crate::dem::spacing). Every
-/// reader keying targets reads these (the plan, the checklist, the regions' counts).
-pub fn key_inputs(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    let mut inputs = input_digests(root);
-    if let Some(ix) = manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
-        let d = crate::inputs::feeds::declared(root, ix);
-        inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
-        inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
-    }
-    inputs.insert(
-        crate::dem::spacing::INPUT.into(),
-        crate::dem::spacing::digest_read(root, manifest).unwrap_or_else(|_| "?".into()),
-    );
-    inputs
-}
-
-/// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds
-/// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bld-key", "bldprep 6/x/y",
-/// "bldprep-rows 6/x/y": crate::bld::sources::digests).
-pub fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
-    let mut inputs: BTreeMap<String, String> = BTreeMap::new();
-    // The heritage registers as the heritage sites' key names them (crate::heritage::registers_line);
-    // "?" when they can't be read now (the heritage sites then wait), none without an accepted version.
-    match crate::heritage::registers_now(root) {
-        Ok(Some(line)) => {
-            inputs.insert("heritage".into(), line);
-        }
-        Ok(None) => {}
-        Err(_) => {
-            inputs.insert("heritage".into(), "?".into());
-        }
-    }
-    // The regions as a catalogue records them; "?" when they can't be read now (build::catalogue_work
-    // then waits).
-    inputs.insert(
-        "regions".into(),
-        crate::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()),
-    );
-    inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
-    // The 3D buildings' sources, of the declared releases (crate::inputs::sources): what each z6
-    // tile's bldprep reads, and its rows, and what the keys name of the declarations ("bld-key");
-    // none before they're accepted (no 3D buildings' work), "?" while they can't be read now.
-    match crate::inputs::sources::open_now(root).and_then(|s| s.map(|s| crate::bld::sources::declared(&s)).transpose())
-    {
-        Ok(Some((release, ghsl, key))) => {
-            inputs.extend(crate::bld::sources::digests(root, &release, &ghsl));
-            inputs.insert("bld-key".into(), key);
-        }
-        Ok(None) => {}
-        Err(_) => {
-            inputs.insert("bld-release".into(), "?".into());
-        }
-    }
-    inputs
-}
-
 /// The waiting line for the keys the timetable feeds' declarations fetch with that inputs/keys.env
 /// doesn't hold (`inputs` "feed-keys" less "keys"): those feeds are left out until it does (not a
 /// finding: keys.env isn't an input, and the declaration is right).
@@ -9144,25 +9069,6 @@ fn missing_feed_keys(inputs: &BTreeMap<String, String>) -> Option<String> {
             if missing.len() == 1 { "it" } else { "them" }
         )
     })
-}
-
-/// The names of the keys a `KEY=value` file holds a value for, sorted and comma-separated ("" when
-/// there's no file; None when it can't be read). Never their values: the names go in job keys.
-fn key_names(path: &NasPath) -> Option<String> {
-    let text = match path.read_to_string() {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(String::new()),
-        Err(_) => return None,
-    };
-    let mut names: Vec<&str> = text
-        .lines()
-        .filter_map(|l| l.split_once('='))
-        .filter(|(k, v)| !k.trim().starts_with('#') && !v.trim().is_empty())
-        .map(|(k, _)| k.trim())
-        .collect();
-    names.sort_unstable();
-    names.dedup();
-    Some(names.join(","))
 }
 
 /// How often an idle agent plans again while the budgets' proxy won't start.
@@ -9813,8 +9719,8 @@ mod tests {
         let (levels, mids, upload) =
             (crate::terrain_pack::piece_peak_mb(), crate::terrain_pack::DEEP_MIDS_MB, crate::out::UPLOAD_HELD >> 20);
         assert_eq!(upload, 8, "an upload's 8 MB hash read");
-        assert_eq!(terrain_peak(1), levels + mids + upload);
-        assert_eq!(terrain_peak(3), levels + 2 * 20 + 3 * mids + upload);
+        assert_eq!(crate::agent::seam::for_tests().terrain_peak(1), levels + mids + upload);
+        assert_eq!(crate::agent::seam::for_tests().terrain_peak(3), levels + 2 * 20 + 3 * mids + upload);
     }
 
     /// Task #444: a NAS wait said again between plans (the plan's lines kept) is listed once, with
@@ -10088,7 +9994,7 @@ mod tests {
         });
         // (A plan made: its result kept, its digest and the leases as it read them.)
         p.n = 5;
-        *p.kept.borrow_mut() = Some((seam::Planned::default(), build::KeyMemo::default()));
+        p.held_plan.keep_for_test(seam::Planned::default());
         p.leases = Some(co.lease_gen());
         let seen = p.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         let ago = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
@@ -10108,7 +10014,7 @@ mod tests {
         assert!(p.n > 5, "a number of its own");
         assert_eq!(co.shared.lock().unwrap().plan, p.n, "told to the coordinator");
         assert_eq!(p.last.map(|l| l.2), Some(seen), "no plan made");
-        assert!(p.refiltered.is_some() && p.kept.borrow().is_some());
+        assert!(p.refiltered.is_some() && p.held_plan.has_kept());
     }
 
     /// Every scenic-build command line the agent makes, by its own code (step_args, the targets as
@@ -10208,13 +10114,22 @@ mod tests {
             forecast::Placed { lane: 1, step: "unit".into(), target: "6/33/23".into(), from: 1_000_000, until: 0 },
         ];
         let tc = forecast::ToCome::of(&placed, &["m4".to_string(), "mini".to_string()], 1_000_000);
-        let (at, h) = upcoming_of(200, &tc.answer(), "m4").unwrap();
+        let (at, h) = upcoming_of(crate::agent::seam::for_tests(), 200, &tc.answer(), "m4").unwrap();
         let c = Path::new("/c");
         assert_eq!(at, 1_000_000);
         assert_eq!(h.when(c, &c.join("blobs/base/6-33-22.0123456789abcdef.base")), Some(1_000_060));
         assert_eq!(h.when(c, &c.join("blobs/base/6-33-23.0123456789abcdef.base")), None);
-        assert_eq!(upcoming_of(200, &tc.answer(), "m1"), Some((1_000_000, room::Hints::default())));
-        assert!(upcoming_of(200, &serde_json::json!({ "making": "no forecast yet" }), "m4").is_none());
+        assert_eq!(
+            upcoming_of(crate::agent::seam::for_tests(), 200, &tc.answer(), "m1"),
+            Some((1_000_000, room::Hints::default()))
+        );
+        assert!(upcoming_of(
+            crate::agent::seam::for_tests(),
+            200,
+            &serde_json::json!({ "making": "no forecast yet" }),
+            "m4"
+        )
+        .is_none());
     }
 
     #[test]
@@ -13626,7 +13541,7 @@ mod tests {
                     &cov,
                     date,
                     &m,
-                    &input_digests(root),
+                    &theplan::input_digests(root),
                     None,
                     &crate::agent::tiles::TerrainTiles::default(),
                 ),
@@ -13656,7 +13571,7 @@ mod tests {
             date,
             &m,
             &keys,
-            &input_digests(root),
+            &theplan::input_digests(root),
             Some(&reaches),
             &tiles,
             seam::Publish {
@@ -13710,7 +13625,7 @@ mod tests {
             date,
             &m,
             &keys,
-            &input_digests(&store::nasfs::NasRoot::local_for_test(&root)),
+            &theplan::input_digests(&store::nasfs::NasRoot::local_for_test(&root)),
             Some(&reaches),
             &tiles,
             seam::Publish {
@@ -15183,10 +15098,14 @@ mod tests {
     fn key_names_only() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("keys.env");
-        assert_eq!(key_names(&store::nasfs::NasPath::local_for_test(&p)).as_deref(), Some(""), "no file: no keys");
+        assert_eq!(
+            theplan::key_names(&store::nasfs::NasPath::local_for_test(&p)).as_deref(),
+            Some(""),
+            "no file: no keys"
+        );
         std::fs::write(&p, "LTA_ACCOUNT_KEY=s3cr3t\nODPT_KEY=\n# OLD_KEY=x\n TDX_CLIENT_ID = abc \nnot a line\n")
             .unwrap();
-        let names = key_names(&store::nasfs::NasPath::local_for_test(&p)).unwrap();
+        let names = theplan::key_names(&store::nasfs::NasPath::local_for_test(&p)).unwrap();
         assert_eq!(names, "LTA_ACCOUNT_KEY,TDX_CLIENT_ID", "the keys with values, by name");
         assert!(!names.contains("s3cr3t") && !names.contains("abc"));
     }
@@ -16974,7 +16893,7 @@ mod pool_tests {
         // (Step 3: the lead's coordinator answers the servers from the log's feed.)
         lead.round().unwrap();
         assert!(lead.coord.as_ref().is_some_and(|c| c.has_maplog()), "the map's routes answer");
-        assert_eq!(lead.maplog.here(&lead.o.home, &root).feed.head(), Some(c.n));
+        assert_eq!(lead.maplog.here(crate::agent::seam::for_tests(), &lead.o.home, &root).feed.head(), Some(c.n));
         // (Step 4: and the plan reads the map from it, the catalogue checked equal to it.)
         assert_eq!(*lead.planner().map_now(&root).unwrap(), c);
     }

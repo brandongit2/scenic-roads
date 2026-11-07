@@ -378,10 +378,9 @@ pub(super) struct Planner {
     /// it; when its jobs were last filtered again and how long that took (`refilter_due`).
     pub(super) leases: Option<u64>,
     pub(super) refiltered: Option<(Instant, Duration)>,
-    /// The last `build::plan` result as it came, with its keys: what "its jobs" filters again on a
-    /// lease change (`refilter`, set meanwhile), instead of planning (docs/incremental-planning.md
-    /// step 2). Dropped as a plan starts.
-    pub(super) kept: std::cell::RefCell<Option<(seam::Planned, build::KeyMemo)>>,
+    /// What the planner carries for the plan (seam::PlanHeld): the terrain packs' indexes, the
+    /// pass's reaches, the last plan with its keys.
+    pub(super) held_plan: Box<dyn seam::PlanHeld>,
     pub(super) refilter: std::cell::Cell<bool>,
     pub(super) jobs: Vec<JobSpec>,
     pub(super) waiting: Vec<Waiting>,
@@ -403,11 +402,6 @@ pub(super) struct Planner {
     /// The offered steps' work as the regions' planning last offered it (`region_jobs`), and its
     /// pass: offered with the plan, in its order (`offer_plan`).
     pub(super) offered: std::cell::RefCell<(String, Vec<crate::coord::Offer>)>,
-    /// The pass's reaches as last read, by content name (large: read again only when they change).
-    pub(super) reach: std::cell::RefCell<Option<(String, std::sync::Arc<crate::reach::Reaches>)>>,
-    /// The terrain packs' indexes, which the z6 tiles' keys read (`tiles`, kept in `pack-idx/`): those
-    /// the manifest names, each read once.
-    pub(super) tiles: std::cell::RefCell<tiles::TerrainTiles>,
     /// The depth's targets as the last plan found them, for GC (`build::depth_kept`; None: not
     /// found then, and no depth pack is dropped).
     pub(super) depth_keep: std::cell::RefCell<Option<gc::DepthKeep>>,
@@ -498,7 +492,7 @@ impl Planner {
         catalogues: publish::LastCatalogue,
     ) -> Planner {
         let (out, out_rx) = mpsc::channel();
-        let tiles = tiles::TerrainTiles::new(Some(o.home.join("pack-idx")));
+        let held_plan = o.the_plan.held(o.home.join("pack-idx"));
         Planner {
             o,
             host,
@@ -524,15 +518,13 @@ impl Planner {
             built: Default::default(),
             leases: None,
             refiltered: None,
-            kept: Default::default(),
+            held_plan,
             refilter: Default::default(),
             steps_counted: None,
             steps_making: None,
             #[cfg(test)]
             slow_plan: None,
             offered: Default::default(),
-            reach: Default::default(),
-            tiles: std::cell::RefCell::new(tiles),
             depth_keep: Default::default(),
             coverage: Default::default(),
             coverage_making: Default::default(),
@@ -677,7 +669,7 @@ impl Planner {
             self.phase("the checklist");
             let regions = self.regions.0.clone();
             self.progress = self.checklist(&root, &regions);
-        } else if refilter_due(leases != self.leases, self.kept.borrow().is_some(), last, refiltered) {
+        } else if refilter_due(leases != self.leases, self.held_plan.has_kept(), last, refiltered) {
             // (The leases changed alone: the last plan's work filtered again and offered, its digest
             // kept. Numbered as a plan is: its jobs are new specs, and a grant of one by its id must
             // find the spec of the offer it was granted from, never the last plan's of the same id
@@ -1392,7 +1384,7 @@ impl Planner {
         // (A plan's `build::plan` result made again: the last one let go before, not held beside it.
         // Filtered again, taken below.)
         if !self.refilter.get() {
-            self.kept.borrow_mut().take();
+            self.held_plan.let_go();
         }
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, keys): (BTreeMap<String, String>, crate::pool::records::Keys) = match self.planning_records(root)
@@ -1469,24 +1461,22 @@ impl Planner {
         // Overture's buildings (once per release), the labels, the languages spoken, the lake fill,
         // the water; then the names to translate and descriptions to write (build::pass_work). The
         // summits come after the regions' plan, below.
-        let reads = build::PassReads {
-            release: pass.and_then(|_| crate::buildtiles::release_of(root, &manifest).ok()),
+        let ask = seam::PassAsk {
             lakefill: pass.map_or(Ok(None), |_| crate::lakefill::run::planned_source(root, &manifest)),
-            reach: &|| pass.and_then(|date| self.current_reach(root, &manifest, &keys, date).err()),
             failures: &|id| self.inp.mem.retry.get(id).map_or(0, |r| r.0),
         };
         // (Names-to-do's inputs' key: the last batch of the map's log touching what they read. The
         // steps gated by time: when each last ran, as its recorded key changed.)
         let names = || {
-            let key = crate::namestodo::inputs_seq(
-                &self.map_marks(),
-                self.inp.map.as_ref().and_then(|h| h.feed.map()).as_deref(),
-            );
+            let key = self
+                .o
+                .the_plan
+                .names_todo_key(&self.map_marks(), self.inp.map.as_ref().and_then(|h| h.feed.map()).as_deref());
             self.note_ran(&keys);
             let r = self.catalogues.borrow();
             seam::NamesTodo { key, since: r.since("names-todo", now_s()), idle: r.idle }
         };
-        let mut pw = build::pass_work(pass, &manifest, &keys, reads, Some(&names));
+        let mut pw = self.held_plan.pass_work(root, pass, &manifest, &keys, ask, Some(&names));
         held.lakefill = pw.lakefill_held;
         waiting.append(&mut pw.waits);
         jobs.extend(std::mem::take(&mut pw.jobs).into_iter().map(|j| job(j.id, j.step, j.args, j.work)));
@@ -1524,7 +1514,7 @@ impl Planner {
         let cov = &covs.all;
         self.note_timetables(root, &manifest);
         let done = keys;
-        let mut inputs = key_inputs(root, &manifest);
+        let mut inputs = self.o.the_plan.key_inputs(root, &manifest);
         // (The inputs' descriptions' credits, for the catalogue's key: crate::inputs::credits. None
         // yet, no line, so the catalogue's key is as it was. Unreadable now: the last digest read
         // stands, or, with none read yet, the catalogue waits; never a key that flips on a failed
@@ -1564,7 +1554,7 @@ impl Planner {
                 Err(e) => eprintln!("extents: not kept now: {e:#}"),
             }
         }
-        let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
+        self.held_plan.begin_round(root, &manifest, &done, date);
         if !manifest.contains_key(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
             waiting.push(Waiting { step: None, what: "trains".into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
@@ -1633,53 +1623,20 @@ impl Planner {
         // z6 tile that changed.)
         let served = self.planned_tiles.borrow_mut().served(map.as_deref());
         drop(map);
-        // (The plan's keys, handed on to what derives keys of the same context below, and kept for a
-        // lease change's filtering again: the last result and its keys, `build::plan` not made. Each
-        // reader takes them only while its context reads the same, `KeyMemo::serves`: a pass newly on
-        // the NAS, or an index read that couldn't be before, and `build::plan` is made again.)
-        let reused = if self.refilter.get() { self.kept.borrow_mut().take() } else { None };
-        let reused = reused.filter(|(_, memo)| {
-            memo.serves(&build::KeyCtx::new(
-                cov,
-                date,
-                &manifest,
-                &inputs,
-                reach.as_deref(),
-                &self.terrain_tiles(root, &manifest),
-            ))
-        });
-        *self.depth_keep.borrow_mut() =
-            build::depth_kept(cov, &manifest, &self.terrain_tiles(root, &manifest), &done, now_s());
-        let (mut planned, memo) = match reused {
-            Some(k) => k,
-            None => {
-                let memo = build::KeyMemo::default();
-                let tiles = self.terrain_tiles(root, &manifest);
-                nasread::PLAN.enter("build::plan");
-                let p = build::plan_with(
-                    &memo,
-                    &cov,
-                    date,
-                    &manifest,
-                    &done,
-                    &inputs,
-                    reach.as_deref(),
-                    &tiles,
-                    seam::Publish {
-                        each: &covs.each,
-                        on_map: &on_map,
-                        served: &served,
-                        since_catalogue: since_publish,
-                        held_for: self.catalogues.borrow().held_at.map(|t| now_s().saturating_sub(t)),
-                        held,
-                        way,
-                    },
-                );
-                drop(tiles);
-                (p, memo)
-            }
+        // (The plan, or on a lease change's filtering again the last result and its keys, `build::plan`
+        // not made; its keys handed on to what derives keys of the same context below.)
+        let round = seam::Round { root, cov, date, manifest: &manifest, inputs: &inputs, done: &done };
+        let publish = seam::Publish {
+            each: &covs.each,
+            on_map: &on_map,
+            served: &served,
+            since_catalogue: since_publish,
+            held_for: self.catalogues.borrow().held_at.map(|t| now_s().saturating_sub(t)),
+            held,
+            way,
         };
-        let kept = planned.clone();
+        let (mut planned, depth_keep) = self.held_plan.plan(&round, publish, self.refilter.get());
+        *self.depth_keep.borrow_mut() = depth_keep;
         nasread::PLAN.enter("its jobs");
         *self.regions_checklist.borrow_mut() = Some(std::mem::take(&mut planned.checklist));
         *self.built.borrow_mut() = std::mem::take(&mut planned.built);
@@ -1690,10 +1647,7 @@ impl Planner {
             waiting.push(Waiting { what: step.clone(), why, step: Some(step) });
         }
         // The z6 tiles held until the heritage registers are first accepted: said, not a silent stall.
-        if let Some(why) = build::heritage_awaits_acceptance(
-            &build::KeyCtx::new(cov, date, &manifest, &inputs, reach.as_deref(), &self.terrain_tiles(root, &manifest))
-                .memo(&memo),
-        ) {
+        if let Some(why) = self.held_plan.heritage_waits(&round) {
             waiting.push(Waiting {
                 step: Some("heritage-sites".into()),
                 what: "sites".into(),
@@ -1704,11 +1658,7 @@ impl Planner {
         // peaks after them): held, said.
         // The timetables' to-do list and report, after each rail and ferries run (lead-only: it
         // writes into the static timetables' inputs folder's todo/, never read as an input).
-        if let Some(w) = build::timetables_todo_work(
-            &build::KeyCtx::new(cov, date, &manifest, &inputs, reach.as_deref(), &self.terrain_tiles(root, &manifest))
-                .memo(&memo),
-            &done,
-        ) {
+        if let Some(w) = self.held_plan.timetables_todo(&round) {
             jobs.push(job(
                 "timetables-todo".into(),
                 "timetables-todo",
@@ -1739,14 +1689,7 @@ impl Planner {
         // Or the declared elevation datasets: before their switch (docs/inputs.md §6.8), or while
         // their accepted version can't be read.
         if !planned.unknown.is_empty() {
-            let why = match self.tiles.borrow().elevation(&manifest) {
-                Ok(None) => "the records don't say the build reads the declared elevation datasets yet (their switch, docs/inputs.md §6.8)".to_string(),
-                Err(e) => e.0,
-                Ok(Some(_)) => {
-                    let why = self.tiles.borrow().unread().next().map(|(c, e)| format!(": {c}, {e}")).unwrap_or_default();
-                    format!("the terrain's indexes can't be read now for {} of them{why}", planned.unknown.len())
-                }
-            };
+            let why = self.held_plan.unknown_why(&manifest, planned.unknown.len());
             waiting.push(Waiting { step: Some("unit".into()), what: "roads".into(), why });
         }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
@@ -1795,7 +1738,7 @@ impl Planner {
             let new = notes.new_tiles(&tiles);
             if !new.is_empty() {
                 let names: Vec<String> = new.iter().map(|t| t.0.clone()).collect();
-                let by_unit = crate::pubtimes::restaled_by(&manifest, reach.as_deref(), &served, &names);
+                let by_unit = self.held_plan.restaled_by(&manifest, &served, &names);
                 notes.note(&new);
                 self.note(crate::pubtimes::planned_event(&new, by_unit));
             }
@@ -1931,7 +1874,8 @@ impl Planner {
             let guess = |t: &str| match w.step.as_str() {
                 "unit" | "pois" => size(t),
                 "terrain-hi" => {
-                    terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }) + cov_read
+                    self.o.the_plan.terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) })
+                        + cov_read
                 }
                 "bldprep" | "bldtiles" => bld_rows(t).unwrap_or(0),
                 _ => 0,
@@ -1992,7 +1936,8 @@ impl Planner {
                     crate::coord::unit_peak(self.o.the_plan.cost_version("unit"), &BTreeMap::new(), t, size(t))
                 }
                 "terrain-hi" => {
-                    terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }) + cov_read
+                    self.o.the_plan.terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) })
+                        + cov_read
                 }
                 "bldprep" | "bldtiles" => bld_rows(t).unwrap_or(0),
                 _ => 0,
@@ -2004,18 +1949,7 @@ impl Planner {
                     .filter(|w| matches!(w.step.as_str(), "heritage-sites" | "pyramids-fill"))
                     .map(|w| job(format!("{} {date}", w.step), &w.step, Vec::new(), Some(w.clone()))),
             );
-            let mut chains = build::chains_left(
-                &build::KeyCtx::new(
-                    cov,
-                    date,
-                    &manifest,
-                    &inputs,
-                    reach.as_deref(),
-                    &self.terrain_tiles(root, &manifest),
-                )
-                .memo(&memo),
-                &done,
-            );
+            let mut chains = self.held_plan.chains_left(&round);
 
             chains[1].splice(0..0, summits_held);
             let record = self.forecast_record(
@@ -2127,7 +2061,6 @@ impl Planner {
             j.what = what;
             jobs.push(j);
         }
-        *self.kept.borrow_mut() = Some((kept, memo));
         jobs
     }
 
@@ -2621,7 +2554,7 @@ impl Planner {
                 tocome.runs.after = w.by_job(&item_job, jobs);
             }
             // (This Mac's own, as cache hints: `upcoming`.)
-            let upcoming = tocome.macs.get(&host).map(|m| (tocome.at, room::Hints::of_tocome(m, tocome.at)));
+            let upcoming = tocome.macs.get(&host).map(|m| (tocome.at, room::Hints::of_tocome(the_plan, m, tocome.at)));
             Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, upcoming, waits, took: took.elapsed() }
         });
         match run {
@@ -2721,13 +2654,8 @@ impl Planner {
             }
         }
         // The pass's worldwide steps, each one run left or none (held or not: build::pass_work's).
-        let reads = build::PassReads {
-            release: crate::buildtiles::release_of(root, &manifest).ok(),
-            lakefill: crate::lakefill::run::planned_source(root, &manifest),
-            reach: &|| None,
-            failures: &|_| 0,
-        };
-        let left = build::pass_work(Some(&date), &manifest, &keys, reads, None).left;
+        let ask = seam::PassAsk { lakefill: crate::lakefill::run::planned_source(root, &manifest), failures: &|_| 0 };
+        let left = self.held_plan.pass_work(root, Some(&date), &manifest, &keys, ask, None).left;
         items.extend(self.o.the_plan.worldwide_steps().iter().zip(left).map(|(s, l)| progress::Item {
             step: s.to_string(),
             left: Some(l as usize),
@@ -2763,88 +2691,19 @@ impl Planner {
         &self,
         root: &store::nasfs::NasRoot,
     ) -> Option<std::thread::JoinHandle<(BTreeMap<String, BTreeMap<&'static str, [usize; 2]>>, Duration)>> {
-        let (date, manifest, covs, keys, reach) = self.as_built_parts(root)?;
-        let tiles = self.terrain_tiles(root, &manifest).clone();
-        let root = root.clone();
+        let date = self.latest_pass(root)?;
+        let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
+        let covs = self.coverage(root, &manifest, false).ok()?;
+        let count = self.held_plan.region_counts(root, date, manifest, covs, keys);
         let run = move || {
             let t = Instant::now();
-            let inputs = key_inputs(&root, &manifest);
-            let x = build::KeyCtx::new(&covs.all, &date, &manifest, &inputs, reach.as_deref(), &tiles);
-            (build::region_steps(&x, &covs.each, &keys), t.elapsed())
+            (count(), t.elapsed())
         };
         std::thread::Builder::new()
             .name("region-steps".into())
             .spawn(run)
             .inspect_err(|e| eprintln!("agent: the region-steps thread: {e}"))
             .ok()
-    }
-
-    /// What `start_region_steps` reads: the pass, the manifest, the coverages, the records as written and the
-    /// reaches (the last two held: read again only when they change).
-    #[allow(clippy::type_complexity)]
-    pub(super) fn as_built_parts(
-        &self,
-        root: &store::nasfs::NasRoot,
-    ) -> Option<(
-        String,
-        BTreeMap<String, String>,
-        std::sync::Arc<Coverages>,
-        crate::pool::records::Keys,
-        Option<std::sync::Arc<crate::reach::Reaches>>,
-    )> {
-        let date = self.latest_pass(root)?;
-        let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
-        let covs = self.coverage(root, &manifest, false).ok()?;
-        let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
-        Some((date, manifest, covs, keys, reach))
-    }
-
-    /// The terrain packs' indexes `manifest` names, those not yet held read (from `pack-idx/`, else
-    /// the NAS: half a minute for the whole build's, once).
-    pub(super) fn terrain_tiles(
-        &self,
-        root: &store::nasfs::NasRoot,
-        manifest: &BTreeMap<String, String>,
-    ) -> std::cell::Ref<'_, tiles::TerrainTiles> {
-        let t = std::time::Instant::now();
-        let n = self.tiles.borrow_mut().load(root, manifest);
-        if n > 0 {
-            eprintln!(
-                "agent: read the indexes of {n} terrain pack{} in {:.1} s",
-                if n == 1 { "" } else { "s" },
-                t.elapsed().as_secs_f64()
-            );
-        }
-        self.tiles.borrow()
-    }
-
-    /// The pass's reaches (crate::reach), once they're made for the current version (Ok(None)
-    /// until then: no z6 tile is planned, and the reach job comes first among the pass's worldwide
-    /// jobs), or why they can't be read.
-    pub(super) fn current_reach(
-        &self,
-        root: &store::nasfs::NasRoot,
-        manifest: &BTreeMap<String, String>,
-        keys: &crate::pool::records::Keys,
-        date: &str,
-    ) -> Result<Option<std::sync::Arc<crate::reach::Reaches>>, crate::reach::LoadError> {
-        let cx = build::PassCtx::default();
-        if build::reach_work(&cx.ctx(date, manifest), keys).is_some() {
-            return Ok(None);
-        }
-        let Some(c) = manifest.get(&crate::reach::logical(date)) else { return Ok(None) };
-        // (Read again when the base packs' extents kept with them change too: crate::extents.)
-        let c = &format!("{c} {}", crate::extents::stamp(root));
-        let mut cached = self.reach.borrow_mut();
-        if let Some((have, r)) = cached.as_ref() {
-            if have == c {
-                return Ok(Some(r.clone()));
-            }
-        }
-        let Some(r) = crate::reach::Reaches::load(root, manifest, date)? else { return Ok(None) };
-        let r = std::sync::Arc::new(r);
-        *cached = Some((c.clone(), r.clone()));
-        Ok(Some(r))
     }
 
     /// The coverage of the regions' accepted version, and each region's, as last made: made again

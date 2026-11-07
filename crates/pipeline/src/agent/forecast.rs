@@ -2566,7 +2566,6 @@ mod tests {
     const CPU_BOUND_MS: u128 = 8000;
 
     use super::*;
-    use crate::agent::steps::SHARED;
     use std::collections::BTreeSet;
 
     fn region(id: &str, terrain: &[&str], units: &[&str], slope: &[&str]) -> RegionLeft {

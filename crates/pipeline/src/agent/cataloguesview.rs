@@ -529,7 +529,11 @@ mod tests {
         fn new() -> Log {
             let d = tempfile::tempdir().unwrap();
             let here = Arc::new(super::super::publish::Here::default());
-            let w = super::super::publish::Writer::new(d.path().join("maplog"), here.clone());
+            let w = super::super::publish::Writer::new(
+                crate::agent::seam::for_tests(),
+                d.path().join("maplog"),
+                here.clone(),
+            );
             Log { d, w, here }
         }
         fn publish(&mut self, c: &store::catalogue::Catalogue) {

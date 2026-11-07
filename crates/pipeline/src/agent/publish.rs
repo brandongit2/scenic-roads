@@ -263,8 +263,8 @@ pub const LOW_WATCH: &str = "why:the low zooms";
 
 /// What the log watches (store::map::log::Log::open_watching): the low zooms' batches, and the
 /// names' to-do lists' inputs (crate::namestodo::INPUTS).
-fn watches() -> Vec<&'static str> {
-    std::iter::once(LOW_WATCH).chain(crate::namestodo::INPUTS).collect()
+fn watches(the_plan: &dyn crate::agent::seam::Plan) -> Vec<&'static str> {
+    std::iter::once(LOW_WATCH).chain(the_plan.names_todo_inputs().iter().copied()).collect()
 }
 
 /// The lead's map as its agent reads it (docs/maplog.md §6.5): the log's feed (the map, its batches
@@ -322,8 +322,13 @@ impl MapLog {
     /// The map as the agent and the coordinator's `/map/` routes read it: the thread started (its log
     /// in `home`'s `maplog/`, opened at once, so a lead started again answers before its next
     /// publish; its snapshots written to `root`).
-    pub fn here(&mut self, home: &std::path::Path, root: &store::nasfs::NasRoot) -> std::sync::Arc<Here> {
-        self.start(home, root);
+    pub fn here(
+        &mut self,
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        home: &std::path::Path,
+        root: &store::nasfs::NasRoot,
+    ) -> std::sync::Arc<Here> {
+        self.start(the_plan, home, root);
         self.here.clone().expect("started")
     }
 
@@ -332,13 +337,18 @@ impl MapLog {
         self.tx.as_ref().and(self.here.clone())
     }
 
-    fn start(&mut self, home: &std::path::Path, root: &store::nasfs::NasRoot) -> &std::sync::mpsc::SyncSender<bool> {
+    fn start(
+        &mut self,
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        home: &std::path::Path,
+        root: &store::nasfs::NasRoot,
+    ) -> &std::sync::mpsc::SyncSender<bool> {
         let here = self.here.get_or_insert_with(Default::default).clone();
         self.tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(1);
             let (dir, root) = (home.join(MAPLOG), root.clone());
             let started = std::thread::Builder::new().name("maplog".into()).spawn(move || {
-                let mut w = Writer::new(dir, here);
+                let mut w = Writer::new(the_plan, dir, here);
                 w.open_guarded();
                 // (A post taken and not appended, or posted and not told of: the agent stopped.)
                 w.take_posted(&root, false);
@@ -355,8 +365,14 @@ impl MapLog {
 
     /// The `catalog` step's job ended, its map posted (made with the low zooms: `low`): its batch, on
     /// the log's thread (started the first time, its log in `home`'s `maplog/`).
-    pub fn published(&mut self, home: &std::path::Path, root: &store::nasfs::NasRoot, low: bool) {
-        match self.start(home, root).try_send(low) {
+    pub fn published(
+        &mut self,
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        home: &std::path::Path,
+        root: &store::nasfs::NasRoot,
+        low: bool,
+    ) {
+        match self.start(the_plan, home, root).try_send(low) {
             Ok(()) => {}
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
                 eprintln!("maplog: a post waits already: the next batch takes the newest")
@@ -393,14 +409,19 @@ pub(crate) enum Wrote {
 /// The log's writer: the log, opened when its thread starts (or at its first publish), and what
 /// the agent and the coordinator read (`Here`), told of each batch.
 pub(crate) struct Writer {
+    the_plan: &'static dyn crate::agent::seam::Plan,
     dir: std::path::PathBuf,
     log: Option<store::map::log::Log>,
     here: std::sync::Arc<Here>,
 }
 
 impl Writer {
-    pub(crate) fn new(dir: std::path::PathBuf, here: std::sync::Arc<Here>) -> Writer {
-        Writer { dir, log: None, here }
+    pub(crate) fn new(
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        dir: std::path::PathBuf,
+        here: std::sync::Arc<Here>,
+    ) -> Writer {
+        Writer { the_plan, dir, log: None, here }
     }
 
     /// The log opened now, its map, the batches it replayed and its marks handed to the feed (a
@@ -408,7 +429,7 @@ impl Writer {
     fn open(&mut self) -> anyhow::Result<&mut store::map::log::Log> {
         use anyhow::Context;
         if self.log.is_none() {
-            let mut log = store::map::log::Log::open_watching(&self.dir, &watches())
+            let mut log = store::map::log::Log::open_watching(&self.dir, &watches(self.the_plan))
                 .with_context(|| format!("open the log in {}", self.dir.display()))?;
             self.here.gc.open(&self.dir, &log.map(), unix(now())).context("open GC's queue")?;
             if !log.map().is_empty() {
@@ -622,7 +643,7 @@ mod tests {
         let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let chain = recorded();
         let here = std::sync::Arc::new(Here::default());
-        let mut w = Writer::new(d.path().join(MAPLOG), here.clone());
+        let mut w = Writer::new(crate::agent::seam::for_tests(), d.path().join(MAPLOG), here.clone());
         let t0 = std::time::SystemTime::now();
         for (i, c) in chain.iter().enumerate() {
             w.publish(Some(&root), c.clone(), false, t0);
@@ -643,7 +664,7 @@ mod tests {
         assert!(d.path().join(format!("nas/map/{}.json.zst", last.n)).exists());
         // Reopened (an agent restarted), the log goes on from where it was.
         let here = std::sync::Arc::new(Here::default());
-        let mut again = Writer::new(d.path().join(MAPLOG), here.clone());
+        let mut again = Writer::new(crate::agent::seam::for_tests(), d.path().join(MAPLOG), here.clone());
         let mut next = last.clone();
         next.n += 1;
         next.units.push("6/0/0".into());
@@ -676,7 +697,7 @@ mod tests {
         let post =
             |c: &store::catalogue::Catalogue, name: &str| std::fs::write(dir.join(name), c.encode().unwrap()).unwrap();
         let here = std::sync::Arc::new(Here::default());
-        let mut w = Writer::new(dir.clone(), here.clone());
+        let mut w = Writer::new(crate::agent::seam::for_tests(), dir.clone(), here.clone());
         post(&chain[0], POSTED);
         w.take_posted(&root, false);
         assert_eq!(here.feed.head(), Some(chain[0].n));
@@ -688,7 +709,7 @@ mod tests {
         post(&chain[1], TAKEN);
         post(&chain[2], POSTED);
         let here = std::sync::Arc::new(Here::default());
-        let mut w = Writer::new(dir.clone(), here.clone());
+        let mut w = Writer::new(crate::agent::seam::for_tests(), dir.clone(), here.clone());
         w.open_guarded();
         w.take_posted(&root, true);
         assert_eq!(*here.catalogue().unwrap(), chain[2]);

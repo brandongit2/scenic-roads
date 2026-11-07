@@ -3033,6 +3033,40 @@ pub fn unit_reach(reach: Option<&Reaches>, m: &BTreeMap<String, String>, u: Tile
     }
 }
 
+/// The z6 tiles whose change made each of `tiles` (z6, "6/x/y") stale: of its owners (their ways meet
+/// it: `unit_reach`, `owns`, as its key reads them), those whose base pack or
+/// road values in the manifest `m` aren't what `served` (the served catalogue's, by logical name)
+/// has: by z6 tile ("6/x/y"), its tiles. A z6 tile rebuilt the same (the same content names) made none
+/// stale.
+pub fn restaled_by(
+    m: &BTreeMap<String, String>,
+    reach: Option<&Reaches>,
+    served: &BTreeMap<String, String>,
+    tiles: &[String],
+) -> BTreeMap<String, Vec<String>> {
+    use crate::legacy::TileId;
+    let changed: Vec<(TileId, [i32; 4])> = m
+        .keys()
+        .filter_map(|l| l.strip_prefix("base/").and_then(TileId::parse))
+        .filter(|u| {
+            [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())]
+                .iter()
+                .any(|l| m.get(l) != served.get(l))
+        })
+        .map(|u| (u, unit_reach(reach, m, u)))
+        .collect();
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for t in tiles {
+        let p: Vec<u32> = t.split('/').filter_map(|s| s.parse().ok()).collect();
+        let [z, x, y] = p[..] else { continue };
+        let b = crate::hipack::tile_bounds(z as u8, x, y);
+        for (u, _) in changed.iter().filter(|(_, e)| owns(*e, b)) {
+            out.entry(u.slash()).or_default().push(t.clone());
+        }
+    }
+    out
+}
+
 /// Of the z6 tiles of manifest `m`, those owning any of `tiles` ((z, x, y)): whose ways
 /// (`unit_reach`) meet its box (`owns`), the z6 tiles a tile's key in `pack_lo_targets` reads. What a
 /// pack or lo job opens.
@@ -4522,6 +4556,39 @@ pub(crate) mod tests {
     use crate::agent::recipes::Recipe;
     use crate::depth::build::depth_hi_box_read;
     use crate::reach::{LongWay, Reach};
+
+    /// The z6 tiles whose change made a tile stale: its owners whose base pack or road values aren't
+    /// the served catalogue's; one rebuilt the same made none.
+    #[test]
+    fn a_tile_is_restaled_by_its_owners_that_changed() {
+        let m: BTreeMap<String, String> = [
+            ("base/6-28-16", "b1"),
+            ("global/roads/6-28-16", "r1"),
+            ("base/6-40-20", "b2"),
+            ("global/roads/6-40-20", "r2"),
+            ("base/6-28-17", "b3"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        // (6-40-20 as served; 6-28-16's roads new; 6-28-17 not served yet.)
+        let served: BTreeMap<String, String> = [
+            ("base/6-28-16", "b1"),
+            ("global/roads/6-28-16", "r0"),
+            ("base/6-40-20", "b2"),
+            ("global/roads/6-40-20", "r2"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        let r = restaled_by(&m, None, &served, &["6/28/16".into(), "6/40/20".into(), "6/28/17".into(), "6/0/0".into()]);
+        assert_eq!(r.get("6/28/16").unwrap(), &["6/28/16", "6/28/17"]);
+        assert_eq!(r.get("6/28/17").unwrap(), &["6/28/16", "6/28/17"]);
+        assert!(!r.contains_key("6/40/20"));
+        // The same as served: none.
+        let same: BTreeMap<String, String> = m.clone();
+        assert!(restaled_by(&m, None, &same, &["6/28/16".into()]).is_empty());
+    }
 
     /// The targets a target of `step` reads of other steps' (crate::agent::steps::read_targets),
     /// its whole reads aside.
@@ -11706,7 +11773,7 @@ pub(crate) mod tests {
             crate::reach::Reaches::load(&store::nasfs::NasRoot::local_for_test(&root), &m, &date).ok().flatten();
         let mut tiles = TerrainTiles::new(std::env::var("SCENIC_BENCH_IDX").ok().map(std::path::PathBuf::from));
         tiles.load(&store::nasfs::NasRoot::local_for_test(&root), &m);
-        let inputs = crate::agent::key_inputs(&store::nasfs::NasRoot::local_for_test(&root), &m);
+        let inputs = crate::agent::theplan::key_inputs(&store::nasfs::NasRoot::local_for_test(&root), &m);
         lap("reading reaches, terrain indexes and input digests", &mut t);
         for round in 1..=2 {
             let k = keys.clone();

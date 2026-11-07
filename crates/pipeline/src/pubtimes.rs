@@ -4,7 +4,7 @@
 //! - **In the build's history** (crate::coord::history, the lead's): a z6 tile's job ended ("end",
 //!   "done"); its hand-off merged ("merged": `merged_event`, each entry's key, member, step and
 //!   targets); the map tiles (pack) planned ("planned": `planned_event`, the z6 tiles the lead
-//!   first plans at their keys, and the z6 tiles whose change made each stale, `restaled_by`), leased
+//!   first plans at their keys, and the z6 tiles whose change made each stale, `PlanHeld::restaled_by`), leased
 //!   ("lease", "start") and done ("end", "done"); and catalogue n written ("catalog": its `n`, its
 //!   job's time, and `CatalogueStats`: the files it stat'ed, its phases).
 //!   And each Mac's map server's adoption of the map at `seq` n ("adopt": `ADOPT`, its `worker` the
@@ -80,43 +80,8 @@ impl CatalogueStats {
     }
 }
 
-/// The z6 tiles whose change made each of `tiles` (z6, "6/x/y") stale: of its owners (their ways meet
-/// it: crate::agent::build::{unit_reach, owns}, as its key reads them), those whose base pack or
-/// road values in the manifest `m` aren't what `served` (the served catalogue's, by logical name)
-/// has: by z6 tile ("6/x/y"), its tiles. A z6 tile rebuilt the same (the same content names) made none
-/// stale.
-pub fn restaled_by(
-    m: &BTreeMap<String, String>,
-    reach: Option<&crate::reach::Reaches>,
-    served: &BTreeMap<String, String>,
-    tiles: &[String],
-) -> BTreeMap<String, Vec<String>> {
-    use crate::agent::build::{owns, unit_reach};
-    use crate::legacy::TileId;
-    let changed: Vec<(TileId, [i32; 4])> = m
-        .keys()
-        .filter_map(|l| l.strip_prefix("base/").and_then(TileId::parse))
-        .filter(|u| {
-            [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())]
-                .iter()
-                .any(|l| m.get(l) != served.get(l))
-        })
-        .map(|u| (u, unit_reach(reach, m, u)))
-        .collect();
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for t in tiles {
-        let p: Vec<u32> = t.split('/').filter_map(|s| s.parse().ok()).collect();
-        let [z, x, y] = p[..] else { continue };
-        let b = crate::hipack::tile_bounds(z as u8, x, y);
-        for (u, _) in changed.iter().filter(|(_, e)| owns(*e, b)) {
-            out.entry(u.slash()).or_default().push(t.clone());
-        }
-    }
-    out
-}
-
 /// The served catalogue's base packs' and road values' content names, by logical name (what
-/// `restaled_by` compares with).
+/// `PlanHeld::restaled_by` compares with).
 pub fn served_units(c: &store::catalogue::Catalogue) -> BTreeMap<String, String> {
     c.files
         .iter()
@@ -133,7 +98,7 @@ fn cut(k: &str) -> String {
 }
 
 /// A "planned" event: map tiles first planned at their keys (`tiles`: (tile, key)), and the z6 tiles
-/// whose change made them stale (`restaled_by`). Small: the keys cut short, each z6 tile its own tiles.
+/// whose change made them stale (`PlanHeld::restaled_by`). Small: the keys cut short, each z6 tile its own tiles.
 pub fn planned_event(tiles: &[(String, String)], by_unit: BTreeMap<String, Vec<String>>) -> Event {
     let keys: Vec<String> = tiles.iter().map(|(_, k)| cut(k)).collect();
     Event {
@@ -282,7 +247,7 @@ pub struct UnitChain {
     /// Each Mac's server adopting it (that catalogue or a later one), and its mirror through it.
     pub adopted: BTreeMap<String, u64>,
     pub mirrored: BTreeMap<String, u64>,
-    /// The map tiles its change made stale (`restaled_by`), as planned after its hand-off.
+    /// The map tiles its change made stale (`PlanHeld::restaled_by`), as planned after its hand-off.
     pub restaled: usize,
 }
 
@@ -845,39 +810,6 @@ mod tests {
             m,
             [("6/1/1".to_string(), 100, Some(110)), ("6/2/2".into(), 200, Some(230)), ("6/1/1".into(), 300, Some(340))]
         );
-    }
-
-    /// The z6 tiles whose change made a tile stale: its owners whose base pack or road values aren't
-    /// the served catalogue's; one rebuilt the same made none.
-    #[test]
-    fn a_tile_is_restaled_by_its_owners_that_changed() {
-        let m: BTreeMap<String, String> = [
-            ("base/6-28-16", "b1"),
-            ("global/roads/6-28-16", "r1"),
-            ("base/6-40-20", "b2"),
-            ("global/roads/6-40-20", "r2"),
-            ("base/6-28-17", "b3"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.to_string(), b.to_string()))
-        .collect();
-        // (6-40-20 as served; 6-28-16's roads new; 6-28-17 not served yet.)
-        let served: BTreeMap<String, String> = [
-            ("base/6-28-16", "b1"),
-            ("global/roads/6-28-16", "r0"),
-            ("base/6-40-20", "b2"),
-            ("global/roads/6-40-20", "r2"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.to_string(), b.to_string()))
-        .collect();
-        let r = restaled_by(&m, None, &served, &["6/28/16".into(), "6/40/20".into(), "6/28/17".into(), "6/0/0".into()]);
-        assert_eq!(r.get("6/28/16").unwrap(), &["6/28/16", "6/28/17"]);
-        assert_eq!(r.get("6/28/17").unwrap(), &["6/28/16", "6/28/17"]);
-        assert!(!r.contains_key("6/40/20"));
-        // The same as served: none.
-        let same: BTreeMap<String, String> = m.clone();
-        assert!(restaled_by(&m, None, &same, &["6/28/16".into()]).is_empty());
     }
 
     /// The tiles noted planned are known again from the history (a lead restarted or new), by tile

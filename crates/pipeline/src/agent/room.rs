@@ -1029,31 +1029,29 @@ pub fn order(when: Option<u64>) -> u64 {
 
 impl Hints {
     /// The hints of the work of `step` on `targets` ("z/x/y") queued or running here: read now.
-    pub fn add(&mut self, step: &str, targets: &[String]) {
-        self.add_at(step, targets, 0)
+    pub fn add(&mut self, the_plan: &dyn crate::agent::seam::Plan, step: &str, targets: &[String]) {
+        self.add_at(the_plan, step, targets, 0)
     }
 
     /// The hints of the work of `step` on `targets` ("z/x/y") from `at` (unix s; 0, now): a z6
     /// tile's canopy squares (its box with staging's margin) and packs; a tree cover tile's
     /// squares; a terrain run's archives; an items or heritage job's pageview months; the map
     /// tiles' base packs.
-    pub fn add_at(&mut self, step: &str, targets: &[String], at: u64) {
+    pub fn add_at(&mut self, the_plan: &dyn crate::agent::seam::Plan, step: &str, targets: &[String], at: u64) {
         let step = crate::pool::records::current(step);
         let tile = |t: &str| -> Option<(u8, u32, u32)> {
             let mut v = t.split(['/', '-']).map(|s| s.parse::<u32>().ok());
             Some((u8::try_from(v.next()??).ok()?, v.next()??, v.next()??))
         };
         let mut squares = |b: [f64; 4]| {
-            for (top, left) in crate::trees::squares_of(b) {
-                for kind in ["median", "p95", "cover5m"] {
-                    sooner_in(&mut self.squares, crate::trees::chm_name(top, left, kind), at);
-                }
+            for f in the_plan.canopy_files(b) {
+                sooner_in(&mut self.squares, f, at);
             }
         };
         match step {
             "unit" => {
                 for (z, x, y) in targets.iter().filter_map(|t| tile(t)) {
-                    squares(roadcore::geo::tile_box_grown(z, x, y, crate::stage::MARGIN_KM));
+                    squares(roadcore::geo::tile_box_grown(z, x, y, the_plan.unit_margin_km()));
                     sooner_in(&mut self.units, format!("{z}-{x}-{y}"), at);
                 }
             }
@@ -1077,11 +1075,15 @@ impl Hints {
 
     /// The hints of this Mac's tiles to come in a forecast made at `at` (`forecast::ToCome::macs`'
     /// entry for this Mac: by step, [tile, s from `at`]).
-    pub fn of_tocome(steps: &BTreeMap<String, Vec<(String, u32)>>, at: u64) -> Hints {
+    pub fn of_tocome(
+        the_plan: &dyn crate::agent::seam::Plan,
+        steps: &BTreeMap<String, Vec<(String, u32)>>,
+        at: u64,
+    ) -> Hints {
         let mut h = Hints::default();
         for (step, tiles) in steps {
             for (t, s) in tiles {
-                h.add_at(step, std::slice::from_ref(t), at + u64::from(*s));
+                h.add_at(the_plan, step, std::slice::from_ref(t), at + u64::from(*s));
             }
         }
         h
@@ -1871,14 +1873,14 @@ mod tests {
         );
         // As the agent hints a terrain run's own shard's archives (`terrain_reads`).
         let mut h = Hints::default();
-        h.add("terrain", &["6/1/1".to_string()]);
+        h.add(crate::agent::seam::for_tests(), "terrain", &["6/1/1".to_string()]);
         assert!(
             h.has(c, &c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles"))
                 && !h.has(c, &c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles"))
         );
         // A z6 tile's canopy squares and the copies of its packs; an items job's pageview months.
-        h.add("unit", &["6/33/22".to_string()]);
-        h.add("items", &[]);
+        h.add(crate::agent::seam::for_tests(), "unit", &["6/33/22".to_string()]);
+        h.add(crate::agent::seam::for_tests(), "items", &[]);
         assert!(
             h.has(c, &c.join("blobs/base/6-33-22.0123456789abcdef.base"))
                 && !h.has(c, &c.join("blobs/base/6-33-23.0123456789abcdef.base"))
@@ -1887,7 +1889,7 @@ mod tests {
         assert!(h.has(c, &c.join(MONTHS).join("2026-08.tsv.zst")));
         // The map tiles: the base packs copied here for them.
         assert!(!h.has(c, &c.join("base/base/6-1-1.0000000000000001.base")));
-        h.add("pack", &["6/1/1".to_string()]);
+        h.add(crate::agent::seam::for_tests(), "pack", &["6/1/1".to_string()]);
         assert!(
             h.has(c, &c.join("base/base/6-1-1.0000000000000001.base"))
                 && h.has(c, &c.join("base/global/roads/6-2-2.0000000000000002.roads"))
@@ -1909,7 +1911,7 @@ mod tests {
         let (n_soon, n_later, n_none) = (whole(&soon, 9000), whole(&later, 7200), whole(&none, 60));
         let tocome =
             BTreeMap::from([("terrain-hi".to_string(), vec![("6/1/1".to_string(), 100), ("6/2/2".to_string(), 5000)])]);
-        let h = Hints::of_tocome(&tocome, 1_000_000);
+        let h = Hints::of_tocome(crate::agent::seam::for_tests(), &tocome, 1_000_000);
         assert_eq!((h.when(c, &soon), h.when(c, &later), h.when(c, &none)), (Some(1_000_100), Some(1_005_000), None));
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
@@ -1925,7 +1927,7 @@ mod tests {
         assert!(soon.exists() && !later.exists());
         // A queued job's (now) outranks a forecast's.
         let mut q = Hints::default();
-        q.add("terrain-hi", &["6/2/2".to_string()]);
+        q.add(crate::agent::seam::for_tests(), "terrain-hi", &["6/2/2".to_string()]);
         let mut m = h.clone();
         m.merge(&q);
         assert_eq!((m.when(c, &later), order(m.when(c, &later)) > order(m.when(c, &soon))), (Some(0), true));
@@ -1988,7 +1990,7 @@ mod tests {
         let own = c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles");
         let n = whole(&own, 60);
         let mut h = Hints::default();
-        h.add("terrain", &["6/1/1".to_string()]);
+        h.add(crate::agent::seam::for_tests(), "terrain", &["6/1/1".to_string()]);
         assert!(h.has(c, &own));
         let f = clear(c, &store::nasfs::NasPath::local_for_test(nas), Level::Caches, false).unwrap();
         assert_eq!((f.freed.get("terrain"), own.exists()), (Some(&n), false));

@@ -346,7 +346,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let here = Arc::new(super::super::publish::Here::default());
-        let mut w = super::super::publish::Writer::new(d.path().join("maplog"), here.clone());
+        let mut w =
+            super::super::publish::Writer::new(crate::agent::seam::for_tests(), d.path().join("maplog"), here.clone());
         w.publish(Some(&root), c1, false, std::time::SystemTime::now());
         let cv = CataloguesView::new(here.feed.clone(), None);
         assert!(cv.names().is_none(), "nothing read yet");

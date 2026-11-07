@@ -10,8 +10,10 @@ use super::jobs::Work;
 use super::progress::{Checklist, Item, Line, RegionState};
 use super::publish::{PublishLine, Publishing};
 use crate::coverage::Coverage;
+use crate::pool::records::Keys;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use store::nasfs::NasRoot;
 
 /// What names-to-do is gated by (`names_todo_work`): its inputs' key, the seconds since it last
 /// ran, and whether the build is idle.
@@ -320,6 +322,112 @@ pub trait Plan: Send + Sync {
     fn fold(&self, items: &[Item], next: &BTreeMap<&str, Vec<String>>, notes: &BTreeMap<&str, String>) -> Vec<Line>;
     /// The regions' steps' items before anything sizes them.
     fn checklist_to_come(&self) -> Vec<Item>;
+
+    // The families' items the runtime asks of.
+    /// The memory a terrain-hi run of `z6` tiles is expected to take (MB), before one has said: a z6
+    /// tile's levels at a time, each z6 tile's quarters and its z10 tiles' deep mids taken in; beside
+    /// them, the z6 tile before's uploads in flight.
+    fn terrain_peak(&self, z6: usize) -> u64;
+    /// What a granted task of `kind` does, for the status ("bldtile: z8 tile 8/4/5", "tail 6/1/1").
+    fn task_what(&self, kind: &str, task: &serde_json::Value, unit: &str) -> String;
+    /// The kind of task that asks the least room (tree cover's).
+    fn tree_task_kind(&self) -> &'static str;
+    /// A task's kind, by its spec.
+    fn task_kind(&self, spec: &serde_json::Value) -> String;
+    /// The map log's watches names-to-do's inputs are told by.
+    fn names_todo_inputs(&self) -> &'static [&'static str];
+    /// Names-to-do's inputs' key: the last batch of the map's log touching what they read.
+    fn names_todo_key(
+        &self,
+        marks: &BTreeMap<String, store::map::Mark>,
+        map: Option<&store::map::Map>,
+    ) -> Option<String>;
+    /// The canopy files a box [w, s, e, n] reads.
+    fn canopy_files(&self, b: [f64; 4]) -> Vec<String>;
+    /// The margin a z6 tile's staging reads past its box (km).
+    fn unit_margin_km(&self) -> f64;
+
+    // The planner's.
+    /// What the planner carries for the plan, its caches in `index_dir` where they're kept.
+    fn held(&self, index_dir: std::path::PathBuf) -> Box<dyn PlanHeld>;
+    /// The inputs the steps' keys read (`Round::inputs`).
+    fn key_inputs(&self, root: &NasRoot, manifest: &BTreeMap<String, String>) -> BTreeMap<String, String>;
+}
+
+/// What a plan's round is asked by: the coverage, the pass, the records and the keys' inputs.
+#[derive(Clone, Copy)]
+pub struct Round<'a> {
+    pub root: &'a NasRoot,
+    pub cov: &'a Coverage,
+    pub date: &'a str,
+    pub manifest: &'a BTreeMap<String, String>,
+    pub inputs: &'a BTreeMap<String, String>,
+    pub done: &'a Keys,
+}
+
+/// What the planner reads for the pass's worldwide steps (`PlanHeld::pass_work`): the lake fill's
+/// planned source (crate::lakefill::run::planned_source), and each job's failures in a row by its
+/// id (counted on this Mac).
+pub struct PassAsk<'a> {
+    pub lakefill: std::result::Result<Option<String>, String>,
+    pub failures: &'a dyn Fn(&str) -> u32,
+}
+
+/// Each region's steps, by region and step: its targets done of all (`PlanHeld::region_counts`).
+pub type RegionCounts = BTreeMap<String, BTreeMap<&'static str, [usize; 2]>>;
+
+/// What the planner carries for the plan, opaque to it (docs/crates.md §6.3, 6f2), for its life:
+/// the terrain packs' indexes, the pass's reaches, the last plan with its keys. A plan is answered
+/// here, and so is what shares its keys, so the runtime holds no key's context.
+pub trait PlanHeld: Send {
+    /// A plan starts anew: the last one let go first, not held beside the next.
+    fn let_go(&self);
+    /// Whether a plan is kept for filtering again (`plan`'s `refilter`).
+    fn has_kept(&self) -> bool;
+    /// The pass's worldwide steps' work. `names`: what names-to-do is gated by, asked only once the
+    /// outlines hold nothing (None: the checklist's, not planned, which asks nothing of the reaches).
+    fn pass_work(
+        &self,
+        root: &NasRoot,
+        date: Option<&str>,
+        manifest: &BTreeMap<String, String>,
+        keys: &Keys,
+        ask: PassAsk,
+        names: Option<&dyn Fn() -> NamesTodo>,
+    ) -> PassWork;
+    /// The reaches of this round read (or held): what the questions below read until the next.
+    fn begin_round(&self, root: &NasRoot, manifest: &BTreeMap<String, String>, done: &Keys, date: &str);
+    /// The plan of this round, with the depth's targets for GC. `refilter`: the kept plan again,
+    /// while its keys' context reads the same, instead of planning.
+    fn plan(&self, r: &Round, publish: Publish, refilter: bool) -> (Planned, Option<super::gc::DepthKeep>);
+    /// Why the regions' z6 tiles wait for the heritage registers.
+    fn heritage_waits(&self, r: &Round) -> Option<String>;
+    /// The timetables' to-do list's work.
+    fn timetables_todo(&self, r: &Round) -> Option<Work>;
+    /// The trains', landmarks', 3D buildings' and depths' work to come, for the forecast.
+    fn chains_left(&self, r: &Round) -> [Vec<Work>; 5];
+    /// Why `n` z6 tiles' keys can't be worked out now.
+    fn unknown_why(&self, manifest: &BTreeMap<String, String>, n: usize) -> String;
+    /// The map tiles among `tiles` made stale by each z6 tile whose base pack or road values in
+    /// `manifest` aren't what `served` has: by z6 tile ("6/x/y"), its tiles.
+    fn restaled_by(
+        &self,
+        manifest: &BTreeMap<String, String>,
+        served: &BTreeMap<String, String>,
+        tiles: &[String],
+    ) -> BTreeMap<String, Vec<String>>;
+    /// What counts each region's steps, off the planner's thread: it holds a copy of what it reads.
+    fn region_counts(
+        &self,
+        root: &NasRoot,
+        date: String,
+        manifest: BTreeMap<String, String>,
+        covs: std::sync::Arc<super::Coverages>,
+        keys: Keys,
+    ) -> Box<dyn FnOnce() -> RegionCounts + Send>;
+    /// A plan kept, for a test of what follows.
+    #[cfg(test)]
+    fn keep_for_test(&self, p: Planned);
 }
 
 impl std::fmt::Debug for dyn Plan {
