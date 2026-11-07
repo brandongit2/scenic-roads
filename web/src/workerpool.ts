@@ -1,7 +1,7 @@
 // Workers answering requests by id: each request goes to a worker of the caller's choice (by
 // default the next in turn), its answer is the reply with its id ({ id, error } failing it), and an
 // abort sends the worker { type: 'cancel', id } and rejects with an AbortError. The coastal shading
-// (coast.ts) and the depth (depth.ts) each keep one.
+// (coast.ts), the depth (depth.ts) and the roads' and rail's tiles (roads/layer.ts) each keep one.
 
 export class WorkerPool<Req extends { id: number }, Res extends { id: number; error?: string }> {
   readonly workers: Worker[] = [];

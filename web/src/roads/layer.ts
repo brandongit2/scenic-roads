@@ -40,6 +40,7 @@ import { lodCells, lodSig, pieceLists, type LodFilter } from './lod';
 import { ATTR, DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
 import { viewArea, type ViewArea } from '../inview';
 import { backoffMs, onNasBack } from '../retry';
+import { WorkerPool } from '../workerpool';
 
 // The projection of a piece (vertex i to i + 1): both ends on screen, their depths, its
 // perspective scale, whether it is drawn at all and where it stands against the terrain. Shared
@@ -1096,8 +1097,9 @@ export class RoadLayer implements CustomLayerInterface {
   private lut!: WebGLTexture;
   private cdfTex!: WebGLTexture;
   private tiles = new Map<string, RoadTile>();
-  private workers: Worker[] = [];
-  private reqs = new Map<number, RoadTile>();
+  private pool!: WorkerPool<WorkerRequest, WorkerResponse>;
+  /** Tiles asked of the workers, by their reqId, and how to cancel each. */
+  private reqs = new Map<number, { t: RoadTile; ctrl: AbortController }>();
   private nextReq = 1;
   private readonly maxInflight = 12;
   private gpuBytes = 0;
@@ -1137,11 +1139,7 @@ export class RoadLayer implements CustomLayerInterface {
     this.tf = gl.createTransformFeedback()!;
     this.maxPt = Math.min(511, (gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE) as Float32Array)[1] || 64);
     const n = Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 2));
-    for (let i = 0; i < n; i++) {
-      const w = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
-      w.onmessage = (ev: MessageEvent<WorkerResponse>) => this.onWorker(ev.data);
-      this.workers.push(w);
-    }
+    this.pool = new WorkerPool(() => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }), n);
   }
 
   /** The programs for MapLibre's projection (mercator, globe); false while one is still linking
@@ -1193,7 +1191,7 @@ export class RoadLayer implements CustomLayerInterface {
   }
 
   onRemove() {
-    this.workers.forEach((w) => w.terminate());
+    this.pool.workers.forEach((w) => w.terminate());
     for (const t of this.tiles.values()) this.freeGpu(t);
   }
 
@@ -1246,9 +1244,9 @@ export class RoadLayer implements CustomLayerInterface {
     this.zt = out.reduce((m, t) => Math.max(m, t.z), TILE_MINZOOM);
     this.wanted = out;
     const keep = new Set(out.map((t) => t.key));
-    for (const [id, t] of this.reqs) {
+    for (const [id, { t, ctrl }] of this.reqs) {
       if (!keep.has(t.key)) {
-        this.workers[id % this.workers.length].postMessage({ type: 'abort', id } satisfies WorkerRequest);
+        ctrl.abort();
         this.reqs.delete(id);
         // (A tile drawn from older data stays, asked for again when wanted again.)
         if (t.state === 'loading') this.tiles.delete(t.key);
@@ -1451,9 +1449,13 @@ export class RoadLayer implements CustomLayerInterface {
     t.reqId = id;
     const v = this.tileVersion(t);
     t.want = v;
-    this.reqs.set(id, t);
+    const ctrl = new AbortController();
+    this.reqs.set(id, { t, ctrl });
     const url = `${hostFor(this.rail ? 'rails' : 'roads')}/tiles/${this.id}/${t.z}/${t.x}/${t.y}${v ? `?v=${v}` : ''}`;
-    this.workers[id % this.workers.length].postMessage({ type: 'load', id, url, z: t.z, x: t.x, y: t.y, lod: this.workerLodFilter() } satisfies WorkerRequest);
+    this.pool.ask({ type: 'load', id: 0, url, z: t.z, x: t.x, y: t.y, lod: this.workerLodFilter() }, ctrl.signal).then(
+      (m) => this.onWorker(id, m),
+      (e: Error) => e.name !== 'AbortError' && this.onWorker(id, { id, error: e.message }),
+    );
   }
 
   /** The server is reachable again: failed tiles are asked for at once. */
@@ -1473,20 +1475,20 @@ export class RoadLayer implements CustomLayerInterface {
     return t.state === 'loading' ? t.reqId === 0 : t.want !== this.tileVersion(t);
   }
 
-  private onWorker(m: WorkerResponse) {
-    const t = this.reqs.get(m.id);
+  private onWorker(id: number, m: WorkerResponse) {
+    const t = this.reqs.get(id)?.t;
     if (!t) return;
-    this.reqs.delete(m.id);
+    this.reqs.delete(id);
     if (t.state !== 'loading') return this.refreshed(t, m);
     t.ver = t.want;
-    if (m.type === 'error') {
+    if (m.error !== undefined) {
       t.state = 'error';
       // Asked again after a pause that grows with its failures, or when the NAS is back.
       t.fails = (t.fails ?? 0) + 1;
       const wait = backoffMs(t.fails);
       t.retryAt = performance.now() + wait;
       setTimeout(() => this.map.triggerRepaint(), wait + 50);
-      console.warn('tile', t.key, m.message);
+      console.warn('tile', t.key, m.error);
     } else if (!m.tile) {
       t.fails = 0;
       t.state = 'empty';
@@ -1505,14 +1507,14 @@ export class RoadLayer implements CustomLayerInterface {
   /** A tile drawn from older data, fetched again (a new version): the new data is uploaded beside
    * it and takes its place once up (swap); a failure keeps the old data. */
   private refreshed(t: RoadTile, m: WorkerResponse) {
-    if (m.type === 'tile' && m.tile) {
+    if (m.error === undefined && m.tile) {
       this.uploads.push({ key: t.key, z: t.z, x: t.x, y: t.y, state: 'loading', reqId: t.reqId, ver: t.want, lastUsed: t.lastUsed, scale: t.scale, data: m.tile, swapFor: t });
       this.map.triggerRepaint();
       return;
     }
     // (A failure keeps the old data, counted as loaded: not asked for again before the next version.)
     t.ver = t.want;
-    if (m.type === 'error') console.warn('tile', t.key, m.message);
+    if (m.error !== undefined) console.warn('tile', t.key, m.error);
     else {
       // Nothing there any more.
       this.freeGpu(t);

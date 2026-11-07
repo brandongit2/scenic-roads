@@ -25,9 +25,9 @@ import { EARTH_R, mercPhi } from '../merc';
 
 const inflight = new Map<number, AbortController>();
 
-self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
+self.onmessage = async (ev: MessageEvent<WorkerRequest | { type: 'cancel'; id: number }>) => {
   const msg = ev.data;
-  if (msg.type === 'abort') {
+  if (msg.type === 'cancel') {
     inflight.get(msg.id)?.abort();
     inflight.delete(msg.id);
     return;
@@ -36,20 +36,20 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   inflight.set(msg.id, ctrl);
   try {
     const res = await fetch(msg.url, { signal: ctrl.signal });
-    if (res.status === 204) return post({ type: 'tile', id: msg.id, tile: null });
+    if (res.status === 204) return post({ id: msg.id, tile: null });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const buf = new Uint8Array(await res.arrayBuffer());
     const t0 = performance.now();
     const tile = decode(buf, msg.z, msg.y, msg.lod);
     tile.decodeMs = performance.now() - t0;
     tile.bytes = buf.byteLength;
-    post({ type: 'tile', id: msg.id, tile }, [
+    post({ id: msg.id, tile }, [
       tile.verts, tile.lineStart.buffer, tile.lineWay.buffer, tile.wayOrder.buffer, tile.lineStyle.buffer, tile.lineFlags.buffer, tile.lineRoadLen.buffer, tile.lineAttr.buffer, tile.lineColour.buffer,
       tile.rlStart.buffer, tile.rlRoad.buffer, tile.rlCum.buffer, tile.pieces.buffer, tile.eq.buffer, tile.gq.buffer, tile.glen.buffer, tile.clen.buffer, tile.ext.buffer,
       ...tile.levels.flatMap((l) => (l.mult ? [l.mult.buffer] : [])),
     ]);
   } catch (e) {
-    if ((e as Error).name !== 'AbortError') post({ type: 'error', id: msg.id, message: String(e) });
+    if ((e as Error).name !== 'AbortError') post({ id: msg.id, error: String(e) });
   } finally {
     inflight.delete(msg.id);
   }

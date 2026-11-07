@@ -1257,7 +1257,16 @@ export class FieldLayer implements CustomLayerInterface {
       return;
     }
     if (m.type === 'dg') {
-      this.roofGround(m);
+      if ('error' in m) {
+        // (the texels kept: asked again when the elevations next change; meanwhile the roofs over
+        // the ground under each texel)
+        const t = this.tiles.get(m.key);
+        if (t && t.state === 'ready') {
+          t.texels = m.texels;
+          t.dgAsked = '';
+        }
+        console.warn(`bldfield: ${m.key}: roof ground: ${m.error}`);
+      } else this.roofGround(m);
       return;
     }
     if (m.type === 'herTex') {
@@ -1268,28 +1277,15 @@ export class FieldLayer implements CustomLayerInterface {
       }
       return;
     }
-    if (m.type === 'dgfailed') {
-      // (the texels kept: asked again when the elevations next change; meanwhile the roofs over the
-      // ground under each texel)
-      const t = this.tiles.get(m.key);
-      if (t && t.state === 'ready') {
-        t.texels = m.texels;
-        t.dgAsked = '';
-      }
-      console.warn(`bldfield: ${m.key}: roof ground: ${m.error}`);
-      return;
-    }
     this.flying.delete(m.key);
     const t = this.tiles.get(m.key);
     if (t) {
-      if (m.type === 'failed') {
-        if (m.error === 'cancelled') this.tiles.delete(m.key);
-        else {
-          t.fails++;
-          t.state = 'failed';
-          t.retryAt = performance.now() + backoffMs(t.fails);
-          console.warn(`bldfield: ${m.key}: ${m.error}`);
-        }
+      if ('cancelled' in m) this.tiles.delete(m.key);
+      else if ('error' in m) {
+        t.fails++;
+        t.state = 'failed';
+        t.retryAt = performance.now() + backoffMs(t.fails);
+        console.warn(`bldfield: ${m.key}: ${m.error}`);
       } else if (m.empty) t.state = 'empty';
       else {
         if (t.z === 8) {
@@ -1306,7 +1302,7 @@ export class FieldLayer implements CustomLayerInterface {
   /** The worker's roof ground for a tile's elevations: uploaded (R16F, filtered and mipmapped as the
    * class textures are), its cells' largest kept for the march's start; stale ones (the elevations
    * changed since) dropped. */
-  private roofGround(m: Extract<FieldOut, { type: 'dg' }>) {
+  private roofGround(m: Extract<FieldOut, { type: 'dg'; dg: Uint16Array }>) {
     const t = this.tiles.get(m.key);
     if (!t || t.state !== 'ready') return;
     t.texels = m.texels;

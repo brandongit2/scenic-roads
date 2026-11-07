@@ -28,12 +28,14 @@ export type FieldOut =
   /** The heritage tint's pixels (RGBA, premultiplied: the mipmaps mix the tint by the share each texel has). */
   | { type: 'herTex'; key: string; ver: string; px: Uint8Array }
   | { type: 'done'; key: string; empty: true }
-  | { type: 'failed'; key: string; error: string }
+  /** The tile not loaded: why (an `error`, as every worker's failed reply), or cancelled. */
+  | { type: 'done'; key: string; error: string }
+  | { type: 'done'; key: string; cancelled: true }
   /** Share × each texel's roof ground (R16F's half floats, a layer a class held), each cell's
    * largest (32 × 32); the texels handed back. */
   | { type: 'dg'; key: string; ver: string; dg: Uint16Array; dgc: Float32Array; texels: Uint8Array }
-  /** The roof ground not made: the texels handed back all the same. */
-  | { type: 'dgfailed'; key: string; ver: string; texels: Uint8Array; error: string }
+  /** The roof ground not made (`error`): the texels handed back all the same. */
+  | { type: 'dg'; key: string; ver: string; texels: Uint8Array; error: string }
   | {
       type: 'done';
       key: string;
@@ -72,7 +74,7 @@ function split(b: Uint8Array): { mask: number; webp: Uint8Array; tail: Uint8Arra
   return { mask: b[0], webp: b.subarray(1, end), tail: b.subarray(end) };
 }
 
-async function load(key: string, url: string): Promise<FieldOut> {
+async function load(key: string, url: string): Promise<Extract<FieldOut, { empty: boolean }>> {
   const ac = new AbortController();
   inflight.set(key, ac);
   try {
@@ -232,18 +234,18 @@ self.onmessage = (e: MessageEvent<FieldIn>) => {
       const dg = packHalf(d32);
       (self as unknown as Worker).postMessage({ type: 'dg', key: msg.key, ver: msg.ver, dg, dgc, texels: msg.texels } satisfies FieldOut, [dg.buffer, dgc.buffer, msg.texels.buffer]);
     } catch (err) {
-      (self as unknown as Worker).postMessage({ type: 'dgfailed', key: msg.key, ver: msg.ver, texels: msg.texels, error: String(err) } satisfies FieldOut, [msg.texels.buffer]);
+      (self as unknown as Worker).postMessage({ type: 'dg', key: msg.key, ver: msg.ver, texels: msg.texels, error: String(err) } satisfies FieldOut, [msg.texels.buffer]);
     }
     return;
   }
   load(msg.key, msg.url).then(
     (out) => {
-      if (out.type === 'done' && !out.empty) {
+      if (!out.empty) {
         const tr: Transferable[] = [out.top32.buffer, out.cmask.buffer, out.texels.buffer];
         for (const c of out.classes) if (c) tr.push(c.buffer);
         (self as unknown as Worker).postMessage(out, tr);
       } else (self as unknown as Worker).postMessage(out);
     },
-    (err: unknown) => (self as unknown as Worker).postMessage({ type: 'failed', key: msg.key, error: err instanceof Error && err.name === 'AbortError' ? 'cancelled' : String(err) } satisfies FieldOut),
+    (err: unknown) => (self as unknown as Worker).postMessage((err instanceof Error && err.name === 'AbortError' ? { type: 'done', key: msg.key, cancelled: true } : { type: 'done', key: msg.key, error: String(err) }) satisfies FieldOut),
   );
 };

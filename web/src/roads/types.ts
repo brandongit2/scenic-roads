@@ -82,10 +82,8 @@ export interface PieceLevel {
   mult?: Uint8Array;
 }
 
-export type WorkerRequest =
-  | { type: 'load'; id: number; url: string; z: number; x: number; y: number; lod: LodFilter | null }
-  | { type: 'abort'; id: number };
+/** A tile to fetch and decode (its tile workers are a WorkerPool: cancelled by { type: 'cancel', id }). */
+export type WorkerRequest = { type: 'load'; id: number; url: string; z: number; x: number; y: number; lod: LodFilter | null };
 
-export type WorkerResponse =
-  | { type: 'tile'; id: number; tile: DecodedTile | null }
-  | { type: 'error'; id: number; message: string };
+/** The decoded tile (null: none there), or why not. */
+export type WorkerResponse = { id: number; tile: DecodedTile | null; error?: undefined } | { id: number; error: string };
