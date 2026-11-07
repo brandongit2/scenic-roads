@@ -573,8 +573,9 @@ Built (step 8b, `agent::gc`, the queue's side `store::map::gc`). Where it depart
 - **A job, not the agent itself:** the `gc` job (the lead's own, `LEAD_ONLY`) is planned whenever
   the queue has a chunk for it or a sweep's pass is due (`Planner::gc_work`), no longer daily, and
   granted by the NAS budget as a quiet step as before; so its NAS work is measured and weighed as
-  any job's (its own way's alone: `gc`'s `cost_v` 1 puts away the daily job's runs, which weighed
-  the whole NAS and held it for a quiet NAS the busy pool never had, task #1000; unmeasured, it
+  any job's (its own way's alone: `gc`'s `cost_v` 2 puts away the runs that hashed the pending
+  uploads, 813 GB in 4,844 s, and so weighed the whole NAS and held it for a quiet NAS the busy
+  pool never had, task #1001, now checked by their sizes; unmeasured, it
   weighs the whole as any unmeasured NAS step and goes beside no job weighing the whole, its first
   run measuring it), and it yields to a job held back for it (`nas_yield`) at its next safe point, before
   each removal. It asks the lead's coordinator: `POST /gc/chunk` (up to `gc::CHUNK_NAMES`, 200),

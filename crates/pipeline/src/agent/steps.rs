@@ -1521,12 +1521,12 @@ pub const TABLE: [Step; 60] = [
             w_timetables_todo,
         )
     },
-    // (Way 1: GC by its queue, docs/maplog.md §7.3, step 8b: chunks of 200 deletions and the sweeps'
-    // passes. The daily job's runs before it read and listed the whole share, 100 MB/s: weighed
-    // the whole NAS, they held the clean-up for a quiet NAS that never came, task #1000.)
+    // (Way 2: the pending uploads checked by their sizes, `wc -c` on the NAS, task #1001. Way 1's
+    // runs hashed them, 813 GB in 4,844 s: weighed the whole NAS by them, the clean-up waited for a
+    // quiet NAS that never came. Way 1 had put away the daily job's runs the same way, task #1000.)
     Step {
         alone: true,
-        cost_v: 1,
+        cost_v: 2,
         ..step("upkeep", Keep, World, "gc", "Removes replaced files from the NAS.", w_gc)
     },
     Step {
