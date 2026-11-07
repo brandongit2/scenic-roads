@@ -2027,7 +2027,12 @@ what it reads is built, isn't placed (its job's time goes uncounted). Its cost: 
 once a forecast, those that wait on nothing kept as their hash (6 Nov: some 1 M slope-deep parts the
 slope-hi tiles read, 2,300 waiting), a step none of whose reads may wait not looked into; the
 forecast lists the work once for its three runs (`forecast_by`, each a copy), where each run
-listed it again (11 s a listing in the test build on 6 Nov's record, 16 s with the waits). The
+listed it again (11 s a listing in the test build on 6 Nov's record, 16 s with the waits; in the
+release build on the M1, 7 Nov 02:34 UTC's record of 20,613 items 9.6 s to 12.5 s, and four train
+records of 5 to 6 Nov 12 s to 17-18 s). The listing is outside the runs' `BUDGET`, which bounds each
+run's CPU alone: the forecast takes about 3-6 s more on the wall, its three runs as cut as before
+(that record's under either code at 15 s, partial; 17 of the 40 train inputs' replays under
+either). The
 backtest runs its two codes one after the other (side by side its replay of 60 inputs on the M1
 peaked at a 4.7 GB footprint).
 
@@ -2059,9 +2064,17 @@ On the test set the near term is better (under 15 min the end's median 72 to 51,
 15 min to 1 h p90 269 to 242), the depth most (p90 463 to 152), and the whole end's p90 (458 to
 430). On train the hour ahead is mixed: under 15 min worse (end p90 548 to 582, start 561 to 581),
 15 min to 1 h better (620 to 592), the whole end's p90 worse (6,517 to 7,010) where its median is
-better (206 to 193). What's left near: the run's error stays under 10 min at p90; the start's is
-the order and room of the work (the replay's near-term p90 is above the live forecasts' 247 on
-the same days).
+better (206 to 193). The train set's near term is worse without any target waiting more than the
+plan holds it (task #988's review): over five of its inputs, code 6 gives no target the plan
+offered a wait code 5 didn't, and of the targets placed to start within 15 min that the plan didn't
+offer, the peaks go from 3,862 to none and the depth from 65 to 26. The lanes those held targets
+took go in code 6's run to work the plan offered but the live scheduler started later, for what the
+forecast doesn't model (the NAS budget's holds above): bldtiles placed within 15 min of the plan's
+offers 503 to 651, bldprep 763 to 1,018, depth 237 to 319, each started early already (bldtiles'
+start under 15 min: bias -312 to -332 min, p90 656 to 687; n 469 to 564), while the pois' start
+p90 within 15 min to 1 h goes from 918 to 217. What's left near: the run's error stays under 10
+min at p90; the start's is the order and room of the work (the replay's near-term p90 is above the
+live forecasts' 247 on the same days).
 
 ## 8. Tasks
 
