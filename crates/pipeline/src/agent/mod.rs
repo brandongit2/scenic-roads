@@ -3229,14 +3229,16 @@ impl Agent {
             // leads, the lead's by HTTP while it's a member, whoever granted it: docs/pool.md §7.6.)
             Some(Held::Own(id) | Held::Pooled { id, .. }) if self.coord.is_some() => {
                 let Some(c) = &self.coord else { return true };
-                if c.renew_live(id, progress, live) {
+                if c.renew_live(id, progress.clone(), live.clone()) {
                     return true;
                 }
                 let work = self.slots[k].running.as_ref().map(|r| held_work(&r.spec));
                 match work.and_then(|w| c.hold(&w.step, &w.targets)) {
                     Some(id) => {
-                        // (Held again under a new id; its hand-off keeps the lease it began under,
-                        // its files where it writes them.)
+                        // (Held again under a new id, beaten at once: its job's start said, the
+                        // lease younger than it, crate::coord::lease::Lease::taken_up. Its hand-off
+                        // keeps the lease it began under, its files where it writes them.)
+                        c.renew_live(id, progress, live);
                         self.slots[k].lease = Some(match self.slots[k].lease.take() {
                             Some(Held::Pooled { term, dir, own, .. }) => Held::Pooled { id, term, dir, own },
                             _ => Held::Own(id),
@@ -3932,6 +3934,13 @@ impl Agent {
             s.lease = lease;
             (s.peak_mb, s.reserve_mb) = (hand.peak_mb, hand.reserve_mb);
             s.running = Some(r);
+            // (Its own lease beaten at once: its job's start said, so one held again is known
+            // younger than its job, crate::coord::lease::Lease::taken_up.)
+            if let (Some(Held::Own(n) | Held::Pooled { id: n, own: true, .. }), Some(c)) =
+                (&self.slots[k].lease, &self.coord)
+            {
+                c.renew_live(*n, None, self.job_live(k));
+            }
             // (One already ended, `pgid` 0, isn't watched: its end is seen at the next look.)
             if pgid > 0 {
                 self.watch_job(k, pgid);
@@ -6325,7 +6334,8 @@ impl Agent {
         let r = self.slots[k].running.as_ref()?;
         let targets = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
         let net = self.proxy.as_ref().and_then(|p| p.net()).and_then(|n| n.job(&Self::net_tag(k)));
-        Some(jobs::Live::read(&self.nas_counts_path(k), &self.slot_costs(k), targets, net))
+        let ran_s = Some(r.elapsed().as_secs());
+        Some(jobs::Live { ran_s, ..jobs::Live::read(&self.nas_counts_path(k), &self.slot_costs(k), targets, net) })
     }
 
     /// This Mac's resources for the status (cond::Resources); its caches counted again on a thread

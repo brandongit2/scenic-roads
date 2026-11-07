@@ -768,7 +768,7 @@ impl Sched {
         let predicted: u64 = self
             .batch_secs(step, names.iter().copied(), &l.worker, l.threads)
             .map_or(crate::budget::nas::OWN_AGE.as_secs(), |s| s.0);
-        if now.saturating_duration_since(l.granted).as_secs() <= predicted {
+        if l.ran(now).as_secs() <= predicted {
             return (w, dl);
         }
         match (l.mean(), l.lately()) {
@@ -1173,15 +1173,12 @@ impl Sched {
         let outside = outside_cores(a, ours);
         cores = cores.saturating_sub(outside * 10);
         // (The jobs it holds as room held for a waiting job weighs them (`Backfill`): how long each
-        // has run, the longer of its grant's wall clock (kept across leads and in a record,
-        // `Leased::granted_at`) and this coordinator's clock.)
+        // has run, `Lease::ran`.)
         let mut runs: Vec<Run> = jobs
             .iter()
             .zip(&needs)
             .map(|((l, st, ts), n)| {
-                let by_wall = if l.granted_at > 0 { clock.unix.saturating_sub(l.granted_at) } else { 0 };
-                let ran = by_wall.max(now.saturating_duration_since(l.granted).as_secs());
-                self.run_of(st, ts, &a.worker, n.m, self.need_cores(st, n, total).1, ran)
+                self.run_of(st, ts, &a.worker, n.m, self.need_cores(st, n, total).1, l.ran(now).as_secs())
             })
             .collect();
         // (The cores left were its jobs counted at their threads, as before task #688: a grant
@@ -2324,6 +2321,7 @@ impl Sched {
             let at = if l.granted_at > 0 { l.granted_at.min(clock.unix) } else { clock.unix };
             let id =
                 leases.grant_at(&l.worker, Work::Job { step: l.step.clone(), targets: l.targets.clone() }, now, at);
+            leases.began_at(id, at, clock.unix, now);
             leases.set_threads(id, l.threads);
         }
         let workers = s

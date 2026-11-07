@@ -105,10 +105,16 @@ pub struct Needs {
 /// its NAS bytes read and written, files made and metadata work (its processes' counts,
 /// store::nasio: the lead weighs a job past its predicted time by them, crate::coord::sched's
 /// `job_weight`) and its internet bytes in
-/// and out (the proxy's count of its tag, crate::budget::net), since it began. Each None: not said
-/// (a step that times no phases or notes no costs, a job its agent gave no folder or tag).
+/// and out (the proxy's count of its tag, crate::budget::net), since it began; and how long it has
+/// run. Each None: not said (a step that times no phases or notes no costs, a job its agent gave no
+/// folder or tag).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Live {
+    /// How long it has run (whole seconds): from its process's start, carried through a take-over
+    /// (`Running::elapsed`; set by its agent, not by `read`). The lead takes its lease's job start
+    /// from it (crate::coord::lease::Lease::began; task #992) and keeps it off the lease's view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ran_s: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
     /// Unix s.
@@ -169,6 +175,7 @@ impl Live {
             nas_deletes: at(store::nasio::Count::Deletes),
             net_in: net.map(|n| n.0),
             net_out: net.map(|n| n.1),
+            ran_s: None,
         }
     }
 
@@ -1014,6 +1021,7 @@ mod tests {
                 nas_deletes: Some(0),
                 net_in: Some(10),
                 net_out: Some(2),
+                ran_s: None,
             }
         );
     }

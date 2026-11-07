@@ -39,6 +39,12 @@ pub struct Lease {
     /// (Restarted from the load when read back from disk.)
     #[serde(skip, default = "Instant::now")]
     pub granted: Instant,
+    /// When its job began, when that's before its grant or said (`began`; in memory alone): as its
+    /// worker's last beat said it (crate::agent::jobs::Live::ran_s, its process's start carried
+    /// through a take-over), else, for a lease taken up (read back at a lead's restart, a term's
+    /// state, a record), its grant by the wall clock (`granted_at`). None: its grant.
+    #[serde(skip)]
+    began: Option<Instant>,
     #[serde(skip, default = "Instant::now")]
     deadline: Instant,
     /// What the worker last said it was doing (its job's progress line), when it says.
@@ -103,6 +109,25 @@ fn is_zero_u32(n: &u32) -> bool {
 }
 
 impl Lease {
+    /// When its job began (`began`): its grant, unless its job is older or its worker said.
+    pub fn began(&self) -> Instant {
+        self.began.unwrap_or(self.granted)
+    }
+
+    /// How long its job has run to `now` (from `began`): its run, which its lease may be younger
+    /// than (task #992: a job's "done" event put the time since its lease was read back at a
+    /// lead's restart, 326 of the lead's 5,830 to 6 Nov, a median quarter of their runs).
+    pub fn ran(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.began())
+    }
+
+    /// Its job began before its lease (taken up at a lead's restart or from a term's state, or held
+    /// again for a job running at its agent's take-over): what its beats measure is of part of
+    /// its run, the lead not having heard the rest.
+    pub fn taken_up(&self) -> bool {
+        self.began.is_some_and(|b| b < self.granted)
+    }
+
     /// Its job's NAS rate over its last `WINDOW` or so of beats: None until a view said `WINDOW`
     /// before the newest, or when one doesn't say all it moved (crate::agent::jobs::Live::nas_rate).
     pub fn lately(&self) -> Option<crate::budget::nas::Rate> {
@@ -142,8 +167,12 @@ impl Lease {
     /// `e` (its job's "done" or "end" event) with what its run measured to `end`: its longest still
     /// stretch (`still_most`), its rate in each unit its progress said, its longest wait for its
     /// progress to go on and the most threads it had meanwhile (`Pace`): what its step's runs are
-    /// held to (crate::coord::history::History).
+    /// held to (crate::coord::history::History). None of them for a lease `taken_up`: they'd be of
+    /// the part of its run since, its longest stretches cut short.
     pub fn noted(&self, e: crate::coord::history::Event, end: Instant) -> crate::coord::history::Event {
+        if self.taken_up() {
+            return e;
+        }
         crate::coord::history::Event {
             still_s: Some(self.still_most(end)),
             gap_s: self.pace.gap_most(end),
@@ -184,6 +213,16 @@ impl Lease {
 
 fn is_zero(n: &u64) -> bool {
     *n == 0
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// When a job began at unix second `at` (0: not said) began on this process's clock, `unix` being
+/// `now`: None when not said or not before now (its grant then).
+fn began_by_wall(at: u64, unix: u64, now: Instant) -> Option<Instant> {
+    (at > 0 && at < unix).then(|| now.checked_sub(Duration::from_secs(unix - at))).flatten()
 }
 
 /// A target held out of every offer and start until the lead runs a newer app than the one it was
@@ -302,8 +341,10 @@ impl Leases {
         if let Some(s) = saved.and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) {
             l.next = l.next.max(s.next);
             (l.holds, l.cancelled) = (s.holds, s.cancelled);
+            let unix = unix_now();
             for mut x in s.leases {
                 (x.granted, x.deadline, x.unconfirmed) = (now, now + ttl, true);
+                x.began = began_by_wall(x.granted_at, unix, now);
                 l.by_id.insert(x.id, x);
             }
         }
@@ -345,8 +386,10 @@ impl Leases {
         self.next = self.next.max(s.next);
         (self.holds, self.cancelled) = (s.holds, s.cancelled);
         let n = s.leases.len();
+        let unix = unix_now();
         for mut x in s.leases {
             (x.granted, x.deadline, x.unconfirmed) = (now, now + self.ttl, true);
+            x.began = began_by_wall(x.granted_at, unix, now);
             self.next = self.next.max(x.id + 1);
             self.by_id.insert(x.id, x);
         }
@@ -505,8 +548,15 @@ impl Leases {
     }
 
     pub fn grant(&mut self, worker: &str, work: Work, now: Instant) -> u64 {
-        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        self.grant_at(worker, work, now, unix)
+        self.grant_at(worker, work, now, unix_now())
+    }
+
+    /// Lease `id`, granted at `now` for a job that began at `at` by the wall clock (unix s, `unix`
+    /// now): one a record says was out (crate::coord::sched's `from_state`), its job running since.
+    pub fn began_at(&mut self, id: u64, at: u64, unix: u64, now: Instant) {
+        if let Some(l) = self.by_id.get_mut(&id) {
+            l.began = began_by_wall(at, unix, now);
+        }
     }
 
     /// `grant`, its `granted_at` the unix second given (the scheduler's clock, crate::coord::sched).
@@ -522,6 +572,7 @@ impl Leases {
                 worker: worker.to_string(),
                 work,
                 granted: now,
+                began: None,
                 deadline: now + self.ttl,
                 progress: None,
                 live: None,
@@ -596,9 +647,16 @@ impl Leases {
         now: Instant,
     ) -> bool {
         let lasts = self.by_id.get(&id).is_some_and(|l| self.lasts(l, now));
+        let mut live = live;
+        // (How long its job has run: its start, kept off its view, which moves whenever its job's
+        // work does.)
+        let ran = live.as_mut().and_then(|v| v.ran_s.take());
         match self.by_id.get_mut(&id) {
             Some(l) if l.worker == worker && lasts => {
                 l.deadline = now + self.ttl;
+                if let Some(r) = ran {
+                    l.began = now.checked_sub(Duration::from_secs(r)).or(l.began);
+                }
                 // (Its work moved: its progress line, or anything its job's view says, changed.)
                 let moved = (progress.is_some() && progress != l.progress)
                     || live.as_ref().is_some_and(|v| l.live.as_ref() != Some(v));
@@ -608,7 +666,10 @@ impl Leases {
                 }
                 if let Some(line) = &progress {
                     let target = live.as_ref().or(l.live.as_ref()).and_then(|v| v.target.as_deref());
-                    l.pace.beat(line, target, l.threads, l.heard.unwrap_or(l.granted), now, l.granted);
+                    // (A lease taken up: its part under way began before it, by how much unheard,
+                    // so it's counted from this beat on.)
+                    let prev = l.heard.unwrap_or(if l.taken_up() { now } else { l.granted });
+                    l.pace.beat(line, target, l.threads, prev, now, l.granted);
                 }
                 l.heard = Some(now);
                 if progress.is_some() {
@@ -930,6 +991,45 @@ mod tests {
         assert!(back.finish(a, "m4", t3).is_none());
         assert_eq!(back.drop_where(|x| x.worker == "m1").len(), 2);
         assert!(back.all(t3).is_empty());
+    }
+
+    /// Task #992: a lease's job began when its beats say (`Live::ran_s`, kept off its view: two
+    /// beats saying the same of its work but its run don't move it); one read back at a lead's
+    /// restart began at its grant by the wall clock until its worker says. A lease younger than
+    /// its job (`taken_up`) notes none of what its beats measured on its end (the lead heard part
+    /// of its run), and its part under way counts from its first beat, not the lead's restart.
+    #[test]
+    fn a_lease_taken_up_is_timed_from_its_job_s_start() {
+        let t0 = Instant::now();
+        let s = |n: u64| Duration::from_secs(n);
+        let mut l = Leases::new(s(600));
+        let a = l.grant("m1", job(&[("6/1/1", "k")]), t0);
+        let live = |ran: u64| crate::agent::jobs::Live { ran_s: Some(ran), targets: 1, ..Default::default() };
+        // (Its job began 5 s after its grant, as its beat says.)
+        assert!(l.renew_live(a, "m1", None, Some(live(5)), t0 + s(10)));
+        assert!(l.renew_live(a, "m1", None, Some(live(45)), t0 + s(50)));
+        let x = l.of(a).unwrap();
+        assert!(!x.taken_up() && x.live.as_ref().unwrap().ran_s.is_none());
+        assert_eq!((x.ran(t0 + s(65)), x.still()), (s(60), Some(s(40))), "not moved by its run alone");
+        assert!(x.noted(crate::coord::history::Event::new("done"), t0 + s(65)).still_s.is_some());
+        // Read back at a restart 100 s on, its grant 600 s before by the wall clock.
+        let (mut kept, each) = l.kept();
+        kept["leases"] = each.into_iter().map(|x| x.1).collect();
+        kept["leases"][0]["granted_at"] = (x.granted_at - 600).into();
+        let t1 = t0 + s(100);
+        let mut back = Leases::new(s(600));
+        back.restore(&kept, t1).unwrap();
+        let y = back.of(a).unwrap();
+        assert!(y.taken_up() && (s(600)..s(602)).contains(&y.ran(t1)), "{:?}", y.ran(t1));
+        // Its beats then: its run as its job says, its part under way from its first beat.
+        assert!(back.renew_live(a, "m1", Some("50/100 tiles".into()), Some(live(700)), t1 + s(20)));
+        assert!(back.renew_live(a, "m1", Some("55/100 tiles".into()), Some(live(730)), t1 + s(50)));
+        let y = back.of(a).unwrap();
+        assert_eq!(y.ran(t1 + s(50)), s(730));
+        assert_eq!(y.pace.lately(s(40)), None, "its part heard 30 s: not judged over 40");
+        assert_eq!(y.pace.lately(s(30)), Some(("tiles", 5.0 / 30.0)));
+        let e = y.noted(crate::coord::history::Event::new("done"), t1 + s(60));
+        assert!(e.still_s.is_none() && e.gap_s.is_none() && e.rates.is_empty() && e.threads.is_none());
     }
 
     /// docs/coordination.md §6.1: a member speaking for its leases keeps them beat or not; its beat

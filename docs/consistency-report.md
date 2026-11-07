@@ -378,7 +378,7 @@ Ranked by impact: bugs and real drift risk first (High), then likely future drif
 - **F59:**
   - `RegionLeft` has hand-written per-step fields while `RegionFc` keys by step id.
   - `/work/regions?steps` is the only view not taken from the pageview.
-- **F60:** two JSON shapes for one lease (`"paused"`/`for_s` against `"pause"`/`granted`). Debug
+- **F60:** two JSON shapes for one lease (`"paused"`/`for_s` against `"pause"`/`began`). Debug
   output (`{:?}`) sent as wire data changes with any enum rename.
 - **F61:** pausing one Mac and clearing caches can't be done from the page; "Try again" exists only there.
 - **F62:** `LENGTHS` is defined twice. "Scenic analysis not available — run the scenic pipeline

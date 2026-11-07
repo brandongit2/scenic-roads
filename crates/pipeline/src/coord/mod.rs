@@ -2376,8 +2376,8 @@ impl Coordinator {
     {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
-        // (Each with how long ago it was granted; its worker the slot running it when said
-        // (`Lease::slot`, crate::agent::slot_worker; then true), else its Mac.)
+        // (Each with how long its job has run (`Lease::ran`); its worker the slot running it when
+        // said (`Lease::slot`, crate::agent::slot_worker; then true), else its Mac.)
         let leased = s
             .leases
             .all(now)
@@ -2387,7 +2387,7 @@ impl Coordinator {
                     l.slot.map_or_else(|| l.worker.clone(), |k| crate::agent::slot_worker(&l.worker, k as usize)),
                     step.clone(),
                     targets.iter().map(|t| t.0.clone()).collect(),
-                    now.duration_since(l.granted).as_secs(),
+                    l.ran(now).as_secs(),
                     l.slot.is_some(),
                 )),
                 Work::Task { .. } => None,
@@ -3907,8 +3907,9 @@ fn load_beats(s: &Shared) {
     }
 }
 
-/// What the page takes from a coordinator's memory (`Coordinator::view`): the pause, each lease and
-/// worker, the tasks by state and `task_mb`, its times as unix seconds (`unix_of`).
+/// What the page takes from a coordinator's memory (`Coordinator::view`): the pause, each lease (when
+/// its job began: `Lease::began`) and worker, the tasks by state and `task_mb`, its times as unix
+/// seconds (`unix_of`).
 fn view_of(s: &Shared) -> serde_json::Value {
     let now = s.now();
     let leases: Vec<serde_json::Value> = s
@@ -3921,7 +3922,7 @@ fn view_of(s: &Shared) -> serde_json::Value {
                 Work::Task { id } => (s.tasks.kind_of(*id), 1),
             };
             let lapses = unix_of(l.deadline());
-            serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "granted": unix_of(l.granted), "progress": l.progress, "live": l.live, "beat": lapses.saturating_sub(TTL.as_secs()), "lapses": lapses })
+            serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "began": unix_of(l.began()), "progress": l.progress, "live": l.live, "beat": lapses.saturating_sub(TTL.as_secs()), "lapses": lapses })
         })
         .collect();
     let workers: Vec<serde_json::Value> = s
@@ -3959,8 +3960,8 @@ pub fn ages(view: &serde_json::Value, unix: u64) -> (serde_json::Value, serde_js
         .flatten()
         .map(|l| {
             let mut o = l.as_object().cloned().unwrap_or_default();
-            let (granted, beat, lapses) = (take(&mut o, "granted"), take(&mut o, "beat"), take(&mut o, "lapses"));
-            o.insert("for_s".into(), unix.saturating_sub(granted.unwrap_or(unix)).into());
+            let (began, beat, lapses) = (take(&mut o, "began"), take(&mut o, "beat"), take(&mut o, "lapses"));
+            o.insert("for_s".into(), unix.saturating_sub(began.unwrap_or(unix)).into());
             o.insert("beat_s".into(), unix.saturating_sub(beat.unwrap_or(unix)).into());
             o.insert("lapses_in_s".into(), lapses.unwrap_or(unix).saturating_sub(unix).into());
             serde_json::Value::Object(o)
@@ -4654,7 +4655,8 @@ fn route(
                     }
                     s.save_leases();
                     s.save_costs();
-                    let secs = now.duration_since(l.granted).as_secs_f64();
+                    // (Its job's run, from its start: its lease may be younger, `Lease::ran`.)
+                    let secs = l.ran(now).as_secs_f64();
                     let e = history::Event {
                         worker: Some(d.worker.clone()),
                         lease: Some(d.lease),
@@ -4792,7 +4794,7 @@ fn route(
             s.history.add(history::Event {
                 worker: Some(f.worker.clone()),
                 lease: Some(f.lease),
-                secs: Some(now.duration_since(l.granted).as_secs_f64().round()),
+                secs: Some(l.ran(now).as_secs_f64().round()),
                 ok: (!back).then_some(false),
                 note: if back { why.clone() } else { note },
                 ..e
@@ -4813,7 +4815,7 @@ fn route(
                         Work::Job { step, .. } => step.clone(),
                         Work::Task { id } => s.tasks.kind_of(*id),
                     };
-                    serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress })
+                    serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "for_s": l.ran(now).as_secs(), "progress": l.progress })
                 })
                 .collect();
             let workers: BTreeMap<&String, serde_json::Value> = s
@@ -6364,6 +6366,29 @@ mod tests {
         std::fs::write(&p, b"{\"host\":").unwrap();
         let c = status_beside(&dir, b.at);
         assert!(c.at.is_none() && c.v == Some(serde_json::Value::Null));
+    }
+
+    /// Task #992: a job's run is from its start as its beats say it (its process's, carried through
+    /// a take-over), not its lease's grant: a lease read back at a lead's restart is younger than
+    /// its job. Its end's time, the forecast's and the status's time run say its run; the view its
+    /// lease shows leaves its run out (its work moved or not by what it does).
+    #[test]
+    fn a_job_s_run_is_from_its_start_not_its_lease() {
+        let (_d, c, w) = start();
+        measure_units(&c, 1);
+        unit_offer(&c, "6/1/1");
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        let live = |ran: u64| crate::agent::jobs::Live { ran_s: Some(ran), targets: 1, ..Default::default() };
+        assert!(w.beat_told(g.lease, None, Some(live(600)), None).unwrap().0);
+        let (_, leased, _, _) = c.for_forecast();
+        assert!((600..700).contains(&leased[0].3), "{leased:?}");
+        let s = c.shared.lock().unwrap();
+        let l = s.leases.of(g.lease).unwrap();
+        assert!(l.taken_up() && l.live.as_ref().unwrap().ran_s.is_none());
+        drop(s);
+        w.fail(g.lease, "exit status: 1", None).unwrap();
+        let fail = c.history_since(0).into_iter().find(|e| e.kind == "fail").unwrap();
+        assert!(fail.secs.is_some_and(|x| (600.0..700.0).contains(&x)), "{fail:?}");
     }
 
     /// `scenic pool release <member>`: the owner releases an away member's leases.

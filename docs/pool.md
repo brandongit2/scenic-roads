@@ -2131,7 +2131,10 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
     flagged stuck (it may be slow, below); one that stopped is (5 Nov: terrain-hi jobs at 0 tiles and no CPU, replayed from the
     records: found 16 min after their last move, terrain-hi's usual stillness 5 min). Beats not
     heard say nothing (a member out of touch is a warning of its own); a lead restarted counts
-    each job's stillness from its first beat after.
+    each job's stillness from its first beat after. A job whose lease is younger than it (taken up
+    at a lead's restart, or held again at its agent's take-over: `Lease::taken_up`, by its job's
+    start, `Lease::began`) notes none of `still_s`, `rates`, `gap_s` and `threads` on its event: the
+    lead heard only part of its run, its longest stretches cut short (task #992).
   - *slow*: a leased job whose progress went on, over its window, at less than its step's usual
     rate divided by the overdue factor (task #990, `flags::slow`). Its progress is its progress
     line's numbers alone, by its worker's beats (`coord::lease::Pace`): within its part under way
@@ -2570,7 +2573,12 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   live** (task #518): the status's `jobs[].live` and its lease's beat to the lead (`/work/beat`'s
   `live`, kept on the lease in memory and shown in the coordinator's leases), read as the status
   is: `{phase, class, phase_since, target, target_since, targets_done, targets, nas_read,
-  nas_wrote, net_in, net_out}` (bytes since the job began). The phase is the top-level phase its
+  nas_wrote, net_in, net_out, ran_s}` (bytes since the job began; `ran_s` how long it has run, from
+  its process's start, carried through a take-over: the lead takes its lease's job start from it,
+  `Lease::began`, and keeps it off the view it shows, task #992). A job's run (the time on its
+  "done" or "fail" event, the forecast's and the page's time run, the NAS budget's time past its
+  prediction) is from that start, not its lease's grant: a lease read back at a lead's restart is
+  younger than its job. The phase is the top-level phase its
   main thread has open (pipeline::timings: its name and class, since when, unix s), said in the
   job's counts file after its counts (`store::nasio::set_phase`: a sequence number, odd while it's
   written, its time and 48 bytes of text, a few stores in the mapped page, ~40 ns a call measured; never
