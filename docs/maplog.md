@@ -735,7 +735,7 @@ clients keep their map, and one with none reads the NAS's snapshot (§5.2).
 
 ### 11.3 What's left, each step alone
 
-1. **8a, the map's roots remove** (§11.4; built): its first real run frees the ~623 GB nothing
+1. **8a, the map's roots remove** (§11.4; built): its first real run frees the ~890 GB nothing
    names.
 2. **8b, GC by the queue**: chunks, the orphan sweep, the other sweeps as cursors; the daily job,
    the folder sweep, the 14-day window and the touch go. After 8a (7b, the mirror's cursor that
@@ -761,18 +761,18 @@ started by its menu bar, and its cursors exist only while it runs (docs/roles.md
 to another Mac starts its log from the NAS's snapshot and loses its queue (§4.5; the orphan sweep,
 8b, finds what it held); #882's fixed lead makes that rare, which is what 8b relies on.
 
-### 11.4 What frees the 623 GB
+### 11.4 What frees the 890 GB
 
-About 623 GB of the NAS is content-named files nothing names, old enough to go: the last full `gc`
-run before 8a (5 Nov, 29 min) counted 12,299 files, 623,038,314,801 bytes, and kept them (they were
-counted only, until 8a). **Step 8a frees them** (built 7 Nov): the first `gc` run after it removes
-them in its folder sweep (7 min 16 s on 5 Nov without the deletions), 200 at a time, each chunk told
-the lead first, with a safe point after each; a run paused there keeps what it removed and the next
-goes on. Each file costs a rename, a stat and a removal over SMB (`remove_unless_touched`): at the
-NAS's measured rates (`state/pool/nas-probes.json`, 68 probes over 5 and 6 Nov under the build's
-load: deletes 7.5 a second at the median, 1.9 at the tenth percentile, 388 at the ninetieth; stats
-67, 3.0 and 7,850) about an hour at the median, from a minute to some 4.7 hours at the ends. Not
-measured again since 5 Nov: a dry run on the live share is the owner's. 8b isn't needed for it.
+About 890 GB of the NAS is content-named files nothing names, old enough to go: a dry run of this
+code on the live share (7 Nov, the lead's due set of that hour, 14 min on the M1) counted 24,999 files,
+889,986,014,777 bytes, 1,077 of them the gate's copies, none named by the map, its log, GC's queue,
+the records, the lead's store or any index of the window. **Step 8a frees them** (built 7 Nov): the
+first `gc` run after it removes them in its sweeps, 200 at a time, each chunk told the lead first,
+with a safe point after each; a run paused there keeps what it removed and the next goes on. Each
+file costs a rename, a stat and a removal over SMB (`remove_unless_touched`): at the NAS's measured
+rates (`state/pool/nas-probes.json`, 66 probes, 6 and 7 Nov under the build's load: deletes 8.4 a
+second at the median, 1.9 at the tenth percentile, 388 at the ninetieth) about 1.7 hours at the
+median, from a few minutes to some 7 hours at the ends. 8b isn't needed for it.
 
 What 8a carries:
 
