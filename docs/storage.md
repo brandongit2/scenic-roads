@@ -124,12 +124,14 @@ it stopped.
 - **By the queue:** each run first takes the due names from the lead's coordinator 200 at a time
   (`POST /gc/chunk`; `gc::CHUNK_NAMES`): the lead checks each against its holders as of then and
   marks the rest deleted in its queue, the newest lease granted then theirs, on its disk before it
-  answers; the job removes them one by one over SMB (a file not there counts as gone), then says
+  answers; the job removes them one by one over SMB (a file not there counts as gone while the share
+  answers, its `map/` folder there; a lost mount fails the run), then says
   them gone (`POST /gc/gone`, the marks' lease renewed to the newest then). The merge refuses a
   hand-off bringing a name being removed, or one removed after its lease was granted: its targets
   are done again (docs/maplog.md §7.4). Killed mid-chunk, the next run's first chunk is the same,
-  told again; yielding mid-chunk, the job says what went and lets the rest go back to the queue,
-  unmarked. Nothing is listed for it. A chunk takes a name in a folder the map indexes, a removed
+  told again (one held by then kept out of it, still marked); yielding mid-chunk, the job says what
+  went and lets the rest go back to the queue, unmarked (but a name told more than once, which the
+  killed job may have removed, stays marked). Nothing is listed for it. A chunk takes a name in a folder the map indexes, a removed
   step's, or a source of a pass older than the newest complete one (`gc::by_the_queue`); the
   gate's copies are the inputs sweep's below, and the rest of `sources/` is never GC's. The lead
   not reached, or not able to put its marks on its disk, nothing is removed and the job fails.
@@ -155,7 +157,9 @@ it stopped.
     `.rgeo`, and the regions' `.rgeo` an elevation dataset's `measured.outline` was cut by, which
     its plans read while that index is accepted). The rest, 14 days old, is told the lead 200 at a
     time (`POST /gc/removing`), which answers those something holds now (kept) and marks the rest,
-    removed then as a chunk is. None is swept while what keeps them can't be read (said).
+    removed then as a chunk is. What keeps them is read as the pass starts and again once a day
+    old (`gc::KEEP_FRESH_S`, half the grace for which the lead holds a copy a merge took). None is
+    swept while what keeps them can't be read (said).
   No sweep goes through a link (a file reached by one has a path no holder names).
 - **Removed steps' data** (`agent::gc::RETIRED`, logical-name prefixes; today `sources/terrain-z8-`,
   the worldwide z8 terrain removed by task #670, `global/legacy/`, the old pipeline's converted
