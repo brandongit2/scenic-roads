@@ -89,14 +89,15 @@ if args[:1] == ["--nextest"]:
         print("cargo nextest run --no-fail-fast --hide-progress-bar --no-tests=warn %s %s -E '%s'" % (
             " ".join("-p " + c for c in group), " ".join(tg), expr))
     sys.exit()
+# (`--no-renames` throughout: a moved file's old path too, which a scan test's prefix may cover.)
 if not args:
     base = git("merge-base", "main", "HEAD").strip()
-    changed = git("diff", "--name-only", base).split() + git("ls-files", "--others", "--exclude-standard").split()
+    changed = git("diff", "--no-renames", "--name-only", base).split() + git("ls-files", "--others", "--exclude-standard").split()
     what = "this branch against main (merge-base %s), working tree included" % base[:7]
 elif ".." in args[0]:
-    changed = git("diff", "--name-only", args[0]).split(); what = args[0]
+    changed = git("diff", "--no-renames", "--name-only", args[0]).split(); what = args[0]
 else:
-    changed = git("diff", "--name-only", args[0] + "^", args[0]).split(); what = "commit " + args[0][:9]
+    changed = git("diff", "--no-renames", "--name-only", args[0] + "^", args[0]).split(); what = "commit " + args[0][:9]
 # Scan tests (#662): an integration test that reads the repo's files (write_sets, inputs_accessor,
 # cli …) says which with a `//! scans: <path prefix> …` line; any change under one (any kind of
 # file, deleted ones too) runs it whole. tools/app/guards.sh refuses a test file reading the repo
@@ -211,6 +212,91 @@ def rg(pattern, paths, multiline=False):
 def test_files_declaring(c, helper):
     return [t for t in rg(r"^\s*mod\s+%s\s*;" % re.escape(helper), ["crates/%s/tests" % c]) if t.count("/") == 3]
 
+def aliases(c, path):
+    """Where else crate c's module `path` is named, as (crate, module path) (#916: modules moved to
+    their own crates keep their old paths): a crate's root re-exporting its top module
+    (`pub use c::{…top…}`), and a module of a crate re-exporting a module of c by glob
+    (`pub use c::<m>::*;` in pipeline's agent.rs: its `agent::jobs` is agentcore's), and so on
+    through those crates' own re-exports."""
+    out, todo = [], [(c, path)]
+    while todo:
+        c0, p0 = todo.pop(0)
+        top, found = p0.split("::")[0], []
+        for oc in sorted(os.listdir("crates")):
+            if oc == c0 or not os.path.isdir("crates/%s/src" % oc): continue
+            if re.search(r"pub use (?:::)?%s::(?:\{[^}]*\b%s\b|%s\b)" % (c0, re.escape(top), re.escape(top)), read(root_file(oc))):
+                found.append((oc, p0))
+        for oc, om, rc, rm in globs():
+            if rc != c0 or oc == c0: continue
+            if p0 == rm: found.append((oc, om))
+            elif p0.startswith(rm + "::"): found.append((oc, om + p0[len(rm):]))
+        for a in found:
+            if a != (c, path) and a not in out: out.append(a); todo.append(a)
+    return out
+_globs = []
+def globs():
+    """(crate, module, the crate it re-exports from, that crate's module) for each top-level
+    `pub use <crate>::<module>::*;` of a module's file."""
+    if not _globs:
+        crates = set(os.listdir("crates"))
+        for g in rg(r"^pub use (?:::)?\w+(?:::\w+)+::\*;", ["crates"]):
+            t = target_of(g) if "/src/" in g else None
+            if not t or not t[2]: continue
+            for m in re.finditer(r"^pub use (?:::)?(\w+)((?:::\w+)+)::\*;", read(g), re.M):
+                if m.group(1) in crates: _globs.append((t[0], t[2], m.group(1), m.group(2)[2:]))
+        _globs.append(None)
+    return [x for x in _globs if x]
+# `#[path = "<file>"] mod <name>;`, the file in another crate (agentcore's unit tests compile the
+# plan's modules in, pipeline's agent/{build,steps,…}.rs; docs/crates.md §6.3, 6f4).
+PATHMOD = re.compile(r'#\[path\s*=\s*"([^"]+)"\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*;')
+_pathed = {}
+def compiled_into():
+    """{file: [the files of other crates declaring it a module by #[path]]}."""
+    if not _pathed:
+        for g in rg(r"#\[path\s*=", ["crates"]):
+            if "/src/" not in g: continue
+            for m in PATHMOD.finditer(read(g)):
+                t = os.path.normpath(os.path.join(os.path.dirname(g), m.group(1)))
+                if crate_of(t) != crate_of(g): _pathed.setdefault(t, []).append(g)
+        _pathed[None] = []
+    return _pathed
+
+def trace(c, path, kids, reason):
+    """Add the tests of the files naming crate c's module `path` (kids: its submodules, whose
+    users aren't its): its crate's `crate::<path>` (or `use crate::<parent>::{…<leaf>…}`), its
+    binaries' `<c>::<path>`, the parent naming `<leaf>::`, a child using `super::`; every other
+    crate's `<c>::<path>` in its sources, and in its integration tests (each run whole)."""
+    src = "crates/%s/src" % c
+    segs = path.split("::"); parent, leaf = "::".join(segs[:-1]), segs[-1]
+    pp = re.escape(parent + "::") if parent else ""
+    d = "crates/%s/src/%s" % (c, path.replace("::", "/"))
+    kids = sorted(set(kids) | ({k.removesuffix(".rs") for k in os.listdir(d) if k != "mod.rs"} if os.path.isdir(d) else set()))
+    notkid = r"(?!::(?:%s)\b)" % "|".join(map(re.escape, kids)) if kids else ""
+    users = set(rg(r"crate::%s\b%s" % (re.escape(path), notkid), [src])) | set(rg(r"crate::%s\{[^}]*\b%s\b" % (pp, re.escape(leaf)), [src], True))
+    pf = mod_file(c, parent)
+    if pf and re.search(r"(?<![\w:])(?:self::)?%s::" % re.escape(leaf), read(pf)): users.add(pf)
+    if os.path.isdir(d):
+        for ch in sorted(os.listdir(d)):
+            p = d + "/" + ch
+            if os.path.isdir(p): p += "/mod.rs"
+            elif not ch.endswith(".rs") or ch == "mod.rs": continue
+            if "super::" in read(p): users.add(p)
+    named = {}
+    for oc in sorted(os.listdir("crates")):
+        osrc, tdir = "crates/%s/src" % oc, "crates/%s/tests" % oc
+        if oc != c or has_lib(c):
+            users |= set(rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), [osrc + "/bin" if oc == c else osrc]))
+        for t in set(rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), [tdir])) | set(rg(r"\b%s::%s\{[^}]*\b%s\b" % (c, pp, re.escape(leaf)), [tdir], True)):
+            named[t] = oc
+    for u in sorted(users - {mod_file(c, path)}): add_file(u, "uses %s's %s%s" % (c, path, reason))
+    for t, oc in sorted(named.items()):
+        tdir = "crates/%s/tests" % oc
+        rel = t[len(tdir) + 1:]
+        if "/" in rel:
+            for tt in test_files_declaring(oc, rel.split("/")[0]):
+                add(oc, "--test " + os.path.basename(tt).removesuffix(".rs"), None, "names %s::%s%s (via %s)" % (c, path, reason, t))
+        else: add(oc, "--test " + rel.removesuffix(".rs"), None, "names %s::%s%s" % (c, path, reason))
+
 for f in changed:
     c = crate_of(f)
     if f.startswith("crates/%s/tests/" % c):
@@ -220,6 +306,12 @@ for f in changed:
             for t in test_files_declaring(c, rel.split("/")[0]):
                 add(c, "--test " + os.path.basename(t).removesuffix(".rs"), None, "uses changed " + f)
         continue
+    # A file another crate compiles in as a module (#[path]): that crate's unit tests, whole. Its code
+    # reaches them through what the crate makes of it, not by name: the plan, in agentcore's tests
+    # through seam::for_tests (~430 of them), as check-reuse.py counts it that crate's source.
+    for g in compiled_into().get(f, []):
+        oc = crate_of(g)
+        add(oc, "--lib" if has_lib(oc) else "--bin " + oc, None, "%s compiles in %s by #[path]" % (g, f))
     t = target_of(f)
     if not t: continue
     _, tgt, path = t
@@ -227,43 +319,11 @@ for f in changed:
     if not path:
         if path == "": why.append("#   %s is the crate root: its own items' users aren't traced (a new `mod` line's file is in the diff)" % f)
         continue
-    src = "crates/%s/src" % c
-    segs = path.split("::"); parent, leaf = "::".join(segs[:-1]), segs[-1]
-    pp = re.escape(parent + "::") if parent else ""
-    # A submodule's users aren't this module's: `crate::agent::steps::…` doesn't use agent/mod.rs.
     d = "crates/%s/src/%s" % (c, path.replace("::", "/"))
     kids = sorted({k.removesuffix(".rs") for k in os.listdir(d) if k != "mod.rs"}) if os.path.isdir(d) else []
-    notkid = r"(?!::(?:%s)\b)" % "|".join(map(re.escape, kids)) if kids else ""
-    users = set(rg(r"crate::%s\b%s" % (re.escape(path), notkid), [src])) | set(rg(r"crate::%s\{[^}]*\b%s\b" % (pp, re.escape(leaf)), [src], True))
-    if has_lib(c):
-        users |= set(rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), [src + "/bin"]))
-    pf = mod_file(c, parent)
-    if pf and re.search(r"(?<![\w:])(?:self::)?%s::" % re.escape(leaf), read(pf)): users.add(pf)
-    if os.path.isdir(d):
-        for ch in sorted(os.listdir(d)):
-            p = d + "/" + ch
-            if os.path.isdir(p): p += "/mod.rs"
-            elif not ch.endswith(".rs") or ch == "mod.rs": continue
-            if "super::" in read(p): users.add(p)
-    # Other crates' users (#916: modules moved to their own crates): `<c>::<path>` anywhere in
-    # them, and `crate::<path>` in a crate whose root re-exports the module (`pub use c::{…}`).
-    top = segs[0]
-    for oc in sorted(os.listdir("crates")):
-        osrc = "crates/%s/src" % oc
-        if oc == c or not os.path.isdir(osrc): continue
-        users |= set(rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), [osrc]))
-        if re.search(r"pub use %s::(?:\{[^}]*\b%s\b|%s\b)" % (c, re.escape(top), re.escape(top)), read(root_file(oc))):
-            users |= set(rg(r"crate::%s\b%s" % (re.escape(path), notkid), [osrc]))
-            if has_lib(oc): users |= set(rg(r"\b%s::%s\b%s" % (oc, re.escape(path), notkid), [osrc + "/bin"]))
-    for u in sorted(users - {f}): add_file(u, "uses " + path)
-    tdir = "crates/%s/tests" % c
-    named = set(rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), [tdir])) | set(rg(r"\b%s::%s\{[^}]*\b%s\b" % (c, pp, re.escape(leaf)), [tdir], True))
-    for t in sorted(named):
-        rel = t[len(tdir) + 1:]
-        if "/" in rel:
-            for tt in test_files_declaring(c, rel.split("/")[0]):
-                add(c, "--test " + os.path.basename(tt).removesuffix(".rs"), None, "names %s (via %s)" % (path, t))
-        else: add(c, "--test " + rel.removesuffix(".rs"), None, "names " + path)
+    trace(c, path, kids, "")
+    for ac, ap in aliases(c, path):
+        trace(ac, ap, kids, " (%s's %s re-exported)" % (c, path))
 
 for c, tgt, reason in scan_hits: add(c, tgt, None, reason)
 for f, p in included: add_file(f, "compiles in " + p)
