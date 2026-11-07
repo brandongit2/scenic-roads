@@ -281,13 +281,14 @@ def trace(c, path, kids, reason):
             if os.path.isdir(p): p += "/mod.rs"
             elif not ch.endswith(".rs") or ch == "mod.rs": continue
             if "super::" in read(p): users.add(p)
+    # (One rg over every crate, its hits sorted by where they are.)
     named = {}
-    for oc in sorted(os.listdir("crates")):
-        osrc, tdir = "crates/%s/src" % oc, "crates/%s/tests" % oc
-        if oc != c or has_lib(c):
-            users |= set(rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), [osrc + "/bin" if oc == c else osrc]))
-        for t in set(rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), [tdir])) | set(rg(r"\b%s::%s\{[^}]*\b%s\b" % (c, pp, re.escape(leaf)), [tdir], True)):
-            named[t] = oc
+    tdirs = sorted(glob.glob("crates/*/tests"))
+    for h in rg(r"\b%s::%s\b%s" % (c, re.escape(path), notkid), ["crates"]):
+        oc = crate_of(h)
+        if h.startswith("crates/%s/tests/" % oc): named[h] = oc
+        elif h.startswith("crates/%s/src/" % oc) and (oc != c or (has_lib(c) and h.startswith(src + "/bin/"))): users.add(h)
+    for h in rg(r"\b%s::%s\{[^}]*\b%s\b" % (c, pp, re.escape(leaf)), tdirs, True): named[h] = crate_of(h)
     for u in sorted(users - {mod_file(c, path)}): add_file(u, "uses %s's %s%s" % (c, path, reason))
     for t, oc in sorted(named.items()):
         tdir = "crates/%s/tests" % oc
