@@ -26,7 +26,7 @@ import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
 import { SPAN0, createTimeline } from "./timeline.js";
 import { HIGHLIGHT, createAges, paint as agePaint, whenText } from "./catalogs.js"; // the route keeps its old spelling (task #547); the file is catalogues.js
-import { loadSettings, settingsSection } from "./settings.js";
+import { ask as askMac, loadSettings, settingsSection } from "./settings.js";
 import { nasSection } from "./nas.js";
 import { startActivity, transfersPart } from "./activity.js";
 
@@ -222,10 +222,47 @@ function loopStuck(st, now) {
   return `loop stuck ${dur(age)}${st.loop_phase ? `, in ${st.loop_phase}` : ""}`;
 }
 
-function alerts(m) {
+// The owner's asks refused (task #922: the page shows what became of the owner's actions): each
+// Mac's that the lead refused, as its status says them until they're seen (crate::agent::answered,
+// `refused`: what, from which Mac, when, the lead's reason), and this page's own asks that failed
+// (`onError`). Each with its Dismiss: a Mac's marked seen on that Mac (`/work/asked`), this page's
+// gone. `hidden` the ones dismissed meanwhile, by `refusedId`.
+export const refusedId = (host, r) => `${host}\n${r.key}\n${r.at}`;
+export function refusedItems(macs, now, page, hidden) {
   const out = [];
+  for (const x of macs) {
+    for (const r of x.status.refused || []) {
+      if (hidden.has(refusedId(x.name, r))) continue;
+      out.push({ cls: "bad", text: `${x.name}: the lead refused its ask to ${r.what} (asked ${ago(now, r.at)}, at ${clock(r.at)}): ${r.refused || "no reason given"}`, to: "machines", dismiss: { host: x.name, lead: x.role === "lead", key: r.key, at: r.at } });
+    }
+  }
+  page.forEach((p, i) => out.push({ cls: "bad", text: `This page ${p.text} (${clock(p.at)})`, to: "machines", dismiss: { page: i } }));
+  return out;
+}
+// This page's own failed asks, and the refusals dismissed here (hidden until the Mac's status
+// drops them).
+const pageRefused = [];
+const dismissed = new Set();
+async function dismiss(d) {
+  if (d.page != null) { pageRefused.splice(d.page, 1); return render(); }
+  const id = refusedId(d.host, d);
+  dismissed.add(id);
+  render();
+  try {
+    // (The lead's through this page's own calls; a member's at its addresses, as its settings.)
+    const m = d.lead ? null : (last?.macs || []).find((x) => x.host === d.host);
+    if (!d.lead && !m) throw new Error("its addresses aren't known here");
+    await askMac(ctx.call, m, {}, { seen: { key: d.key, at: d.at } }, "/work/asked");
+  } catch (e) {
+    dismissed.delete(id);
+    ctx.onError?.(`couldn't dismiss ${d.host}'s refused ask: ${e.message}`);
+  }
+}
+
+function alerts(m) {
+  const out = refusedItems(m.macs, m.now, pageRefused, dismissed);
   const { a, now } = m;
-  if (!a.host) return [{ cls: "bad", text: "No word from the lead yet", to: "machines" }];
+  if (!a.host) return [{ cls: "bad", text: "No word from the lead yet", to: "machines" }, ...out];
   if (!m.fresh(a.beat)) out.push({ cls: "bad", text: `Lead out of touch for ${dur(now - a.beat)}`, to: "machines" });
   if (a.pool?.lead?.alert) out.push({ cls: "bad", text: a.pool.lead.alert, to: "machines" });
   for (const w of m.gone) if (w.seen_s < 86400) out.push({ cls: "warn", text: w.seen_s < m.touch ? `${w.name}'s status is old (can it reach the NAS?)` : `${w.name} out of touch for ${dur(w.seen_s)}`, to: "machines" });
@@ -2054,9 +2091,9 @@ function head(m) {
 
 // The alerts, full width above the Overview's map (the owner, 21 Oct 04:00), not in the sticky
 // header: each says what and links to the tab that says more.
-function alertList(m) {
-  const xs = alerts(m);
-  return xs.length ? h("div", "alerts", xs.map((x) => h("a", { class: `alert ${x.cls}`, href: `#${x.to}` }, h("i", null, x.cls === "info" ? "i" : "!"), h("span", null, x.text), h("span", "go", `Open ${x.to}`)))) : null;
+function alertList(m, xs = alerts(m)) {
+  const off = (x) => x.dismiss && h("button", { class: "go", title: "Seen: it goes from here (and from that Mac's menu bar)", onclick: (e) => { e.preventDefault(); e.stopPropagation(); dismiss(x.dismiss); } }, "Dismiss");
+  return xs.length ? h("div", "alerts", xs.map((x) => h("a", { class: `alert ${x.cls}`, href: `#${x.to}` }, h("i", null, x.cls === "info" ? "i" : "!"), h("span", null, x.text), off(x) || h("span", "go", `Open ${x.to}`)))) : null;
 }
 
 // One section, built alone: a failure (an answer missing a field, say) shows in that section, and
@@ -2084,6 +2121,8 @@ function tabs(m, md) {
       part("d-stages", () => section("d-stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", h("div", "box", stagesList(m)))),
     ],
     machines: () => [
+      // (The owner's asks refused, here too: the settings and holds are asked from this tab.)
+      part("d-refused", () => alertList(m, refusedItems(m.macs, m.now, pageRefused, dismissed))),
       part("d-machines", () => section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs`,
         h("div", "machines", hereFirst(m.macs, ctx.here).map((x) => machineCard(m, x)), m.gone.map(goneCard)))),
       part("d-pool", () => poolSection(last.agent, m.now, new Map(m.macs.filter((x) => x.status?.pool?.member).map((x) => [x.status.pool.member, x])), holdAsks(m), askHold) || section("d-pool")),
@@ -2245,7 +2284,8 @@ async function pollOnce() {
  * `onAnswer()` on each answer of the build's (the footer's Live dot); `call(path, body)` asks the coordinator ([status, json]); `ask(kind)`
  * pauses the build ("drain", "freeze") or lets it go on ("resume"); `store` keeps this browser's own (what it last showed). */
 export function dashboard(opts) {
-  ctx = opts;
+  // (This page's own asks that fail: said on the page until dismissed, not only to `onError`.)
+  ctx = { ...opts, onError: (text) => { opts.onError?.(text); pageRefused.push({ text, at: Math.round(Date.now() / 1000) }); render(); } };
   wireCards();
   new ResizeObserver(() => rowHeight(ctx.tabsEl.clientWidth)).observe(ctx.tabsEl);
   let watching = false;

@@ -29,11 +29,12 @@ const EVERY_MS = 30_000;
 // The last section's or load's `call`, `macs`, `done` and `onError`, for putSetting.
 let ctx = null;
 
-// Asks a Mac's `/work/settings`: this page's own through `call`, another at its addresses (as
-// live.js's /work/live: HTTPS over an HTTPS page; its broker answers a member's page, CORS).
-async function ask(call, m, st, body) {
+// Asks a Mac's `/work/settings` (or `path`, another of its own asks: `/work/asked`): this page's
+// own through `call`, another at its addresses (as live.js's /work/live: HTTPS over an HTTPS page;
+// its broker answers a member's page, CORS); `st.url` the address that answered last, tried first.
+export async function ask(call, m, st, body, path = "/work/settings") {
   if (!m) {
-    const [code, v] = await call("/work/settings", body);
+    const [code, v] = await call(path, body);
     if (code !== 200) throw new Error(v?.error || `answered ${code}`);
     return v;
   }
@@ -45,11 +46,11 @@ async function ask(call, m, st, body) {
   for (const u of urls) {
     let r;
     try {
-      r = await fetch(`${u.replace(/\/$/, "")}/work/settings`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
+      r = await fetch(`${u.replace(/\/$/, "")}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
     } catch (e) { last = e; continue; }
     st.url = u;
     const v = await r.json().catch(() => null);
-    if (!r.ok) throw new Error(r.status === 404 ? "its app is older (no settings here)" : v?.error || `answered ${r.status}`);
+    if (!r.ok) throw new Error(r.status === 404 ? `its app is older (no ${path} here)` : v?.error || `answered ${r.status}`);
     return v;
   }
   throw last.name === "TimeoutError" ? new Error("no answer in 5 s") : last.message === "Failed to fetch" || last.message === "Load failed" ? new Error("doesn't answer") : last;

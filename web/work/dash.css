@@ -30,6 +30,7 @@
 .alert > i { flex: none; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font: 600 var(--fs-s)/1 -apple-system, system-ui, sans-serif; font-style: normal; color: var(--bg); background: var(--dim); }
 .alert > span:nth-child(2) { flex: 1; min-width: 0; }
 .alert .go { flex: none; font-size: var(--fs-s); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 1px 8px; background: var(--bg); }
+.alert button.go { font-family: inherit; cursor: pointer; }
 .alert.warn { border-color: var(--warn-line); background: color-mix(in srgb, var(--warn) 8%, var(--panel)); } .alert.warn > i { background: var(--warn); } .alert.warn > span:nth-child(2) { color: var(--warn); }
 .alert.bad { border-color: var(--bad-line); background: color-mix(in srgb, var(--bad) 8%, var(--panel)); } .alert.bad > i { background: var(--bad); } .alert.bad > span:nth-child(2) { color: var(--bad); }
 .alert.info { border-color: var(--info-line); } .alert.info > i { background: var(--accent); }
