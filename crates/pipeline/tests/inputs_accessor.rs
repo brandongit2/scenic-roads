@@ -84,7 +84,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/plan.rs", "gate_work", ".join(\"scratch\").join(\"inputs\")", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
     ("crates/pipeline/src/agent/plan.rs", "gate_work", "\"inputs {unit} forget\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
     ("crates/pipeline/src/agent/plan.rs", "gate_work", "\"inputs-listing\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
-    ("crates/pipeline/src/agent/mod.rs", "input_digests", "\"inputs/keys.env\"", "inputs/keys.env's key names (not an input, §2)"),
+    ("crates/pipeline/src/agent/theplan.rs", "input_digests", "\"inputs/keys.env\"", "inputs/keys.env's key names (not an input, §2)"),
     ("crates/buildstore/src/inputs_folder.rs", "DROP_ROOTS", "\"inputs\"", "the inputs folders themselves, which Out::path refuses (moved from inputs, task #916 step 4)"),
     ("crates/jobrt/src/budget/snmp.rs", "KEYS", "\"inputs/keys.env\"", "inputs/keys.env's SNMP keys for the lead's NAS load reads (not an input, §2)"),
     ("crates/offload/src/lib.rs", "offer", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not an inputs folder"),

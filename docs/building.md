@@ -358,7 +358,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   measure (its neighbours', its step's fit or runs: `needs::Book`; the 3D buildings fitted by the
   rows they read). Nothing is a hand-kept figure: before its step has run the way it runs now, a
   target is a cold start (docs/pool.md §7.7), sized by its step's runs of an earlier way, terrain-hi's
-  by its code's bound (`agent::terrain_peak`, with what its process holds of the coverage it reads,
+  by its code's bound (`seam::Plan::terrain_peak`, with what its process holds of the coverage it reads,
   `coverage::Coverage::read_peak_mb`: its rings, grids, edge trees, kept bytes and the memos' cap),
   else run alone. Measures
   of older `coord::cost_version`s count for nothing. A member asks only for steps its disk has room

@@ -41,7 +41,7 @@ pub enum Read {
     Along { step: &'static str, of: fn(&str, &Reach) -> Vec<String> },
     /// Some targets of another step read where what's built says, not by the target's name (a
     /// depth target's terrain lo packs, where it meets an enclosed sea the water step found: task
-    /// #982), which the caller works into its view from what it holds (`Along::add_built`, beside
+    /// #982), which the caller works into its view from what it holds (`steps::along_add_built`, beside
     /// the `Along`s in `Left::along`). Waited for as an `Along`; keyed by `grain`.
     Built { step: &'static str, of: fn(&str, &KeyCtx) -> Vec<String>, grain: Grain },
 }
@@ -199,7 +199,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      and trees-lo read of their z6 tiles: the mids, left while a z6 tile is stale or isn't current
      with its mid (made again for it alone, its packs unchanged); what reads the packs (slope, the
      z6 tiles, the summits and peaks) waits only for those stale. `View` is `left`, `mid_left`
-     (a `Mids` read), `any_left` (a `Whole` read) and `known` (an `Input`); `steps::Left` is the
+     (a `Mids` read), `any_left` (a `Whole` read) and `known` (an `Input`); `seam::Left` is the
      planner's view (`Plan::left`).
    - `steps::readiness` gives `Yes`, `Waits` (with targets) or `Unknown`; `steps::read_targets`
      lists what a target waits for; `steps::wait_note` words the holds ("wait for terrain-hi (12)").
@@ -337,7 +337,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      and `rekey::scheme1::is_none_key`. `build::is_none_key` knows either scheme's.
      - Every reader of the records re-keys them with the same context (`rekey::as_read`, a
        `KeyCtx`: the plan, the checklist, the regions' counts, `--expect-same` (its step's alone,
-       `as_read_of`), `rekey-check`); `agent::key_inputs` is the planner's inputs they
+       `as_read_of`), `rekey-check`); `agent::theplan::key_inputs` is the planner's inputs they
        all read (the checklist and the regions' counts now read the feeds and spacing too). The
        pass's worldwide steps (`build::PASS_STEPS`: outlines, regions-land, trailends, reach,
        labels, spoken, water, summits) are planned before there's a coverage, so they're keyed in

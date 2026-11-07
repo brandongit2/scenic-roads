@@ -4,8 +4,8 @@
 (`crates/buildstore`), 5a (`crates/landmarks`), 5b (`crates/mapview`), 6a to 6d (§6, 6c
 `crates/coordwire`, 6d `crates/inputs`) and 6e (`crates/offload`, `crates/terrain`, `crates/trees`,
 `crates/roads`, the names family into `crates/landmarks`, `crates/bld`) are built, and 6f1 and
-6f2's first two parts, `build::pass_work` and the frozen-plan check (§6.3); every later step
-below is planned (the rest of 6f: §6).
+6f2 (§6.3: `build::pass_work`, the frozen-plan check and the `Plan` trait); every later step
+below is planned (6f3 and 6f4: §6).
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -508,9 +508,9 @@ down (step 1's pyjson, step 2's hipack) does not spare the pipeline's recompile 
 when the modules edited most (the steps, the agent) sit in crates that few or no others depend on,
 and the big middle (inputs, terrain) compiles beside the other families: steps 3-6.
 
-## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1 and part of 6f2 built)
+## 6. Breaking the big cycle (6a-6e built; 6f in parts: 6f1 and 6f2 built, 6f3 and 6f4 planned)
 
-**Status: 6a-6e, 6f1 and 6f2's merge and frozen-plan check built; the rest of 6f planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
+**Status: 6a-6e, 6f1 and 6f2 built; 6f3 and 6f4 planned** (design of 5 Nov 2026, after steps 5a-5b). Figures are from main at 3763caa5;
 rerun `tools/dev/modgraph.py` before each step.
 
 ### 6.1 What holds the cycle
@@ -904,16 +904,16 @@ commit; re-exports at the old paths as before.
       records.rs; so jobs.json, the records, the keys, a job's record, publishing.json and the
       status are as before. Not measured: nothing left pipeline, so no crate's compile changed
       (§5's figures come with 6f4). Not moved, as they are the plan's: `Step` and `Read` (a row's
-      reads and idents are functions over the plan's `KeyCtx`), `Along` (its data is the
-      forecast's input; its filling, `add` and `add_built`, reads the table and `KeyCtx`), `Kind`
+      reads and idents are functions over the plan's `KeyCtx`), `Along` (its data, the forecast's
+      input, went to the seam with 6f2; its filling reads the table and `KeyCtx`), `Kind`
       and `Scope`. The second review made progress's `grouped` private: nothing else calls it.
       What the runtime asks of them (a step's kind a fetch: needs' `Io`, sched's
       downloads; the first read naming a target: needs' `source_secs`; a row's `cost_v`; a
       target's reads along its ways) are `Plan`'s questions (6f2).
-   2. **6f2, `Plan`** (in parts: the merge and the frozen-plan check built, 6 Nov 2026; the trait
-      planned): the trait, in the runtime, implemented by the plan; `&'static dyn
-      Plan` held by the agent, the planner, the forecast, the simulator and coord's scheduler,
-      passed by their entry points. Cut at the planner's questions, not at the plan's items: of
+   2. **6f2, `Plan`** (built, 6-7 Nov 2026, in parts: the merge, the frozen-plan check, the trait):
+      the trait, in the runtime, implemented by the plan; `&'static dyn
+      Plan` held by the agent, the planner and coord's scheduler, passed to the forecast and by
+      their entry points. Cut at the planner's questions, not at the plan's items: of
       plan.rs's ~60, many were `Planner::region_jobs` (~900 lines) and `checklist` composing the
       worldwide steps one by one (`outlines_work` … `names_todo_work`, their holds and waits), and
       `checklist` asked the same `*_work` calls again for its lines. That composition is the
@@ -968,29 +968,63 @@ commit; re-exports at the old paths as before.
         source are read before the outlines' hold, where the planner read neither under it (the
         checklist needs them either way): a file and a folder's listing more per plan, while
         the outlines have work. A full plan's run took 4.5 to 22 min.
-      - **The trait** (planned, its shape decided 6 Nov 2026): what is left of 6f2. What the
-        planner carries for the plan stays opaque; what it reads, or hands in, is the runtime's data.
-        `KeyCtx` can't be the runtime's: it borrows `TerrainTiles` (which names `terrain_water` and
-        `depth::grids` types) and `Reaches` (crates/roads), both above agentcore, and `KeyMemo` holds
-        `TerrainTargets` built from them; a `&'static dyn Plan` carries no associated types either.
-        - **Opaque, one object:** `Plan::held(home) -> Box<dyn PlanHeld>` (`Send`), which the planner
-          keeps for its life in place of its `tiles`, `reach` and `kept` fields. It owns those caches,
-          the memo and `KeyCtx`. `PlanHeld::plan(args, refilter)` answers a plan, reusing the kept one
-          under `refilter` while `KeyMemo::serves` holds; the questions that share its keys go to the
-          same object (`timetables_todo_work`, `heritage_awaits_acceptance`, `chains_left`,
-          `depth_kept`, `restaled_by`'s owners, why the elevation keys are unknown), so `region_jobs`
-          makes no `KeyCtx`. The off-loop counts (`start_region_steps`) ask it for a `Send` closure.
-        - **Data, moved down with agentcore:** `build::Plan` (`Work`, strings, `RegionLeft`,
-          `PublishLine`, `RegionState`, `Checklist`, `Left`: no family type among them), so the planner
-          goes on reading and editing its fields, and `Publish` as the arguments (`Coverage`, maps, the
-          runtime's `Publishing`).
-        - **`pass_work`:** `PassReads` loses `reach` (its `LoadError` is roads') and `release` (bld's):
-          the plan reads both itself; the planner still gives the failure counts and `NamesTodo`.
+      - **The trait** (built, 7 Nov 2026): `agent/seam.rs` is the runtime's side (it goes down with
+        agentcore), `agent/theplan.rs` the plan's: its one implementation, `the_plan()`, which the
+        binaries hand in as `Options::the_plan`. `KeyCtx` can't be the runtime's: it borrows
+        `TerrainTiles` (which names `terrain_water` and `depth::grids` types) and `Reaches`
+        (crates/roads), both above agentcore, and `KeyMemo` holds `TerrainTargets` built from them; a
+        `&'static dyn Plan` carries no associated types either. So what the planner carries for the
+        plan is opaque, and what it reads, or hands in, is the runtime's data.
+        - **`seam::Plan`, the questions:** of the steps table (`step_names`, `is_step`, `shared`,
+          `answered`, `alone`, `records_only`, `fetches`, `cost_version`, `sources_naming` (needs'
+          `source_secs`), `noun`, `said`, `task_kinds`, `task_disk`, `is_none_key`, `output_named`,
+          `output_names`, `saves`, `outside`, `outside_by`, `read_steps`, `read_targets_passing`,
+          `input_readers`, `summits_waits`, `table_json`); of build.rs (`reads_sources`,
+          `reads_lakefill`, `catalogue_waits_for`, `job_of`, `worldwide_steps`, `fold`,
+          `checklist_to_come`); of the families (`terrain_peak`, `task_what`, `tree_task_kind`,
+          `task_kind`, `names_todo_inputs`, `names_todo_key`, `canopy_files`, `unit_margin_km`,
+          `key_inputs`); and `held`. `Step`, `Read`, `Kind` and `Scope` stay the plan's.
+        - **`seam::PlanHeld`, one opaque object:** `Plan::held(index_dir) -> Box<dyn PlanHeld>`
+          (`Send`), which the planner keeps for its life in place of its `tiles`, `reach` and
+          `kept` fields. It owns those caches and the memo. `PlanHeld::plan(round, publish,
+          refilter)` answers a plan, reusing the kept one under `refilter` while `KeyMemo::serves`
+          holds; the questions that share its keys go to the same object (`heritage_waits`,
+          `timetables_todo`, `chains_left`, `unknown_why`, `restaled_by`, `pass_work`), each by a
+          `seam::Round` of plain data, so `region_jobs` makes no `KeyCtx`. `begin_round` reads the
+          reaches once a round. The off-loop counts ask `region_counts` for a `Send` closure.
+        - **Data (`agent/seam.rs`):** `Planned` (`build::Plan` as it was: `Work`, strings,
+          `RegionLeft`, `PublishLine`, `RegionState`, `Checklist`, `Left`: no family type among them;
+          renamed, the trait having the name), so the planner goes on reading and editing its
+          fields, and `Publish` as the arguments (`Coverage`, maps, the runtime's `Publishing`);
+          `PassWork`, `PassJob`, `NamesTodo`. `Along`'s data is here too, not with the plan as 6f1
+          left it: `Left` and the forecast's `Input`, whose bytes on disk are as they were, hold it.
+          Its filling reads the table and `KeyCtx`, so it stays the plan's (`steps::along_add`,
+          `along_add_built`).
+        - **`pass_work`:** the plan reads the release (bld's) and the reaches (`LoadError` is roads')
+          itself, `build::PassReads` staying its own; the planner gives `seam::PassAsk` (the lake
+          fill's source, the failure counts) and `NamesTodo`. The checklist, asking no gate, asks
+          nothing of the reaches, as before.
+        - **Held and passed:** `Options::the_plan` (the agent, the planner), `Sched::the_plan`
+          (`Coordinator::start`, `start_on`, `viewer`, `Broker::start`), `needs::Book`,
+          `history::History`, `pool::Run`, `BuiltView`, `PageView` and the map log's `Writer`; passed to
+          the forecast (`forecast`, `forecast_by`, `Record::forecast`, `Noted::note`, `speeds`,
+          `step_sums`), fccheck's `replay` and `backtest`, `flags::of`, progress's sayings,
+          `room::Hints`, `redo::said`, `every`'s functions, `uses::Run`, `Paces::with_starts`,
+          `memguard::Watch::floors`. `jobs::note_cost` takes the step's way as a number (`gc::set_way`).
+          For the runtime's tests until 6f3, `seam::for_tests()` and coord's `cfg(test)`
+          `cost_version` and `saves`.
+        - **Cut:** the planner's `tiles`, `reach`, `kept`, `terrain_tiles`, `current_reach`,
+          `as_built_parts`; `agent::terrain_peak`, `task_what`, `key_inputs`, `input_digests` and
+          `key_names` (moved to `agent/theplan.rs`); `pubtimes::restaled_by` (to build.rs); the
+          `Default` of `Sched` and `PageView`, no plan being a default.
+        - **What's left of the runtime's names:** the runtime's lines naming the plan's modules
+          (`build::`, `steps::`, `idents::`, `tiles::`; comments aside, tests and plan.rs included)
+          RUNTIME_COUNT. A family's name in non-test runtime code: gc's depth layers
+          (`DepthKeep::orphan`), left for 6f4, as #883 was changing gc.rs.
+        - **Check of the trait** (FROZEN_RESULT).
         Moving the planner up with the plan instead was
       weighed and is the larger cut: its pass names ~150 of the runtime's items (forecast, coord, pool, agent/mod.rs), all of which would become agentcore's public
-      API. The family items above go through `Plan` too: `input_digests` and `key_inputs` (they
-      name heritage and bld) and `terrain_peak` move to the plan, called through it, as are the
-      kinds, room's hints of a step's targets and publish's watches. `timetables::View` went
+      API. `timetables::View` went
       below both (6f1). `Keys` (6f1) names every per-target step, as the records' format
       `jobs.json` does; `per_target` and `recorded` are that format's table, so they stay with it.
    3. **6f3, test time** (planned): the runtime's `cfg(test)` behaviours (the waits `JOIN_WAIT`

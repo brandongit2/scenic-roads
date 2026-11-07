@@ -167,7 +167,7 @@ Planned: the view on the page's machine card and the menu's NAS line (`up`, `slo
 
 **Owns** the plan (`planned`), offers to the coordinator (`offer_plan`), the grants
 (`lead_grants`), the gate (`tend_gate`), redos, the checklist with each plan (`checklist`: its regions' steps the plan's,
-`build::Plan::checklist`) and the regions' counts with each plan (`build::Plan::built`), and its workers (forecast, phase sums, region sync, hints).
+`seam::Planned::checklist`) and the regions' counts with each plan (`seam::Planned::built`), and its workers (forecast, phase sums, region sync, hints).
 
 **Triggered by changes, not passes.** It runs when one of these arrives and coalesces bursts
 (at most one plan running, one queued):

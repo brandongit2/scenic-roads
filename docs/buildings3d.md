@@ -151,7 +151,7 @@ No `unit` (roads) key reads any of them.
 - **`bldprep T`:** `BLDPREP_V`, the release, and each downloaded file with a row group meeting T
   (name, ETag, row group indexes), and the GHSL tiles meeting T by name and size
   (`pipeline::bld::sources`, from `buildings.json`, `footers.json.gz` and `index.json`).
-  `agent::input_digests` puts each as "bldprep 6/x/y" in the plan's inputs, recomputed only when an
+  `agent::theplan::input_digests` puts each as "bldprep 6/x/y" in the plan's inputs, recomputed only when an
   index changes; "bld-release" is the release, "" before any download, "?" when unreadable (the
   chain then waits).
 - **`bldtiles T`:** `BUILDINGS_V`, the content names of `work/bld/` for T and its 8 neighbours ("-"

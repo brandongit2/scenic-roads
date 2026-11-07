@@ -1454,7 +1454,7 @@ squares from them: `leaftype`). The jobs that read them (the z6 tiles, tree cove
 heritage chain) wait until a version is accepted (the agent's `hold_for_sources`); the lake fill,
 and the water, terrain and catalogue that read it, wait too (`lakefill::run::planned_source`); so do
 the roadside buildings' job and the z6 tiles' keys (the release, `buildtiles::release_of`, held by
-`agent::tiles` for the keys) and the 3D buildings' chain (no "bld-key" in `agent::input_digests`).
+`agent::tiles` for the keys) and the 3D buildings' chain (no "bld-key" in `agent::theplan::input_digests`).
 
 **Keys.** A key names a declared source only where it named the source in code before: the lake
 fill's key names its zips' pin, and the declaration only once it names other than the code had

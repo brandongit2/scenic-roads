@@ -1,9 +1,10 @@
-//! The seam between the runtime and the plan (docs/crates.md §6.3, 6f2): what the runtime holds of
-//! the plan as data.
+//! The seam between the runtime and the plan (docs/crates.md §6.3, 6f2): the runtime's side, which
+//! the plan's (agent::theplan) implements.
 //!
-//! `Planned` is a plan's answer; `Publish`, what it publishes by; `RegionLeft`, `Left` and `Along`,
-//! what its answer says is left; `PassWork`, the pass's worldwide steps' work. None names a family's
-//! type, and none reads the steps table.
+//! The questions: `Plan`, passed in by the runtime's entry points, and `PlanHeld`, what the planner
+//! carries for the plan, opaque to it. The data: `Planned` is a plan's answer; `Publish`, what it
+//! publishes by; `RegionLeft`, `Left` and `Along`, what its answer says is left; `PassWork`, the
+//! pass's worldwide steps' work. None names a family's type, and none reads the steps table.
 
 use super::forecast::ReadTarget;
 use super::jobs::Work;

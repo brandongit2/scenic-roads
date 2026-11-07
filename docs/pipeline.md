@@ -154,7 +154,7 @@ runs left": `Line::counts`, said the same by the page and the menu bar); then it
 order (`next`), why it waits or which Mac is on it (`note`), and which of its steps any member may
 take (`shared`). `agent::build::fold` makes the lines from the items; the planet's and its
 worldwide steps' items are the agent's own (`Planner::checklist`), the regions' `build::checklist`'s, made
-with each plan from the keys it worked out (`build::Plan::checklist`, one `build::KeyMemo`): so it is as fresh as the plan (a job's end
+with each plan from the keys it worked out (`seam::Planned::checklist`, one `build::KeyMemo`): so it is as fresh as the plan (a job's end
 kicks one), and while no plan gets as far as the regions' work (records or coverage unreadable, the
 pass's outlines being assembled) the checklist has the pass's lines alone.
 A step with a job running, on any Mac, is never done (`Line::under_way`).

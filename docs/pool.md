@@ -830,7 +830,7 @@ free then (`Ask::want`), offered the work ready in the plan's order; jobs end at
 times and give their leases back, and a job of a step never measured leaves its measures as its
 hand-off would. What a target waits for is the plan's: its declared reads (`steps::read_targets`)
 and, where an input of it can't be worked out yet, the target that works it out
-(`steps::Left::unknown_for`, `forecast::Input::unknown`: a slope tile reading the terrain's root
+(`seam::Left::unknown_for`, `forecast::Input::unknown`: a slope tile reading the terrain's root
 waits for the root while it's stale, the root a job of the lead's in the run). So the schedule
 packs as the coordinator packs: by memory, disk, cores, the NAS budget, cold starts, the lead-only
 steps and the mixed-version hold. Guards: `tests/grant_rules.rs` fails on a grant rule named
