@@ -202,9 +202,10 @@ impl NasWeigher<'_> {
             Some(w) => self.book.nas_for(step, target, w),
             None => self.book.nas(step, target),
         };
-        // (A step known to read the NAS (`NAS_STEPS`) none of whose runs noted its rate, in any
-        // way it ran: the whole budget, so its first job never overloads the NAS unseen, task #499
-        // review; its step's runs of earlier ways count by `nas_prior`.)
+        // (A step known to load the NAS (`NAS_STEPS`) none of whose runs the way it runs now
+        // (`cost_v`) noted its rate: the whole budget, so its first job never overloads the NAS
+        // unseen, task #499 review; runs of an earlier way count for nothing, crate::needs's
+        // `nas_rate`.)
         r.map_or(if NAS_STEPS.contains(&step) { crate::budget::nas::WHOLE } else { 0 }, |r| self.limits.weight(r))
     }
 
@@ -477,9 +478,9 @@ fn tenths(t: u32) -> String {
 /// its jobs' threads leave (`Sched::pack`, task #688 review): the minute its load average spans.
 pub const SETTLE: Duration = Duration::from_secs(60);
 
-/// The steps that read the NAS as they go: one none of whose runs measured its rate weighs the NAS
-/// budget's whole (`NasWeigher`).
-pub(super) const NAS_STEPS: &[&str] = &["unit", "pack", "lo"];
+/// The steps that load the NAS as they go (reads; the clean-up's deletes, task #1000): one none of
+/// whose runs the way it runs now measured its rate weighs the NAS budget's whole (`NasWeigher`).
+pub(super) const NAS_STEPS: &[&str] = &["unit", "pack", "lo", "gc"];
 
 /// The batch length while the pool's setting `batch-minutes` isn't set (s; docs/pool.md §7.7, Batch
 /// length): a quarter of an hour, the owner's choice (`Sched::batch_len`).
@@ -1975,12 +1976,21 @@ impl Sched {
                 return false;
             }
             let own = running.saturating_sub(members);
-            // (A quiet step, the clean-up: alone or within the whole by its measured weight
-            // (unmeasured, weighing nothing until its first run), never aged past it, its wait not
-            // noted: it never holds room, crate::budget::nas::QUIET_STEPS.) Held back `QUIET_AGE`
-            // (a pool that stays busy), it goes as an aged job of the lead's own, its wait noted so
-            // its room is held.
-            let quiet = crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str()) && {
+            // (A quiet step, the clean-up, measured the way it runs now: alone or within the whole
+            // by its measured weight, never aged past it, its wait not noted: it never holds room,
+            // crate::budget::nas::QUIET_STEPS.) Held back `QUIET_AGE` (a pool that stays busy), it
+            // goes as an aged job of the lead's own, its wait noted so its room is held. Unmeasured,
+            // it weighs the whole (`NAS_STEPS`) and goes as the lead's own unmeasured NAS steps do,
+            // beside no job weighing the whole (`fits_own_job`), so its first run measures it and no
+            // burst of grants lands beside it meanwhile (task #1000: held for a quiet NAS instead,
+            // a busy pool never had one, and step 8b's gc never ran).
+            let quiet_step = crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str());
+            let measured = if ts.is_empty() {
+                nw.book.nas(&o.step, "").is_some()
+            } else {
+                ts.iter().all(|t| nw.book.nas(&o.step, t).is_some())
+            };
+            let quiet = quiet_step && measured && {
                 let mut g = self.quiet_since.lock().unwrap_or_else(|e| e.into_inner());
                 let since = if alone {
                     g.get(&o.step).copied().unwrap_or(now)
@@ -1989,7 +1999,7 @@ impl Sched {
                 };
                 now.saturating_duration_since(since) < crate::budget::nas::QUIET_AGE
             };
-            let waited = waited || (crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str()) && !quiet);
+            let waited = waited || (quiet_step && measured && !quiet);
             let fits = if quiet {
                 crate::budget::nas::Limits::fits_quiet(running, w)
             } else {

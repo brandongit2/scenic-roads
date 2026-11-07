@@ -560,7 +560,7 @@ download still copies, so the queue's deletions keep them.
 ### 7.3 Running
 
 The `gc` job stops being daily. The lead's agent takes a **chunk** whenever the NAS budget leaves
-GC's weight room (`Limits::fits_quiet`, as now) : up to 200 due names, deleted one by one over SMB
+GC's weight room (`Limits::fits_quiet`, as now): up to 200 due names, deleted one by one over SMB
 (the share deletes no faster; there's no per-file write besides the deletion itself), then one line
 appended to the queue's log saying they're gone (`{deleted: [...], at}`, local `fsync`). A chunk
 stopped part way (the agent quits, the share stalls) is taken up from its first name not yet marked
@@ -574,8 +574,9 @@ Built (step 8b, `agent::gc`, the queue's side `store::map::gc`). Where it depart
   the queue has a chunk for it or a sweep's pass is due (`Planner::gc_work`), no longer daily, and
   granted by the NAS budget as a quiet step as before; so its NAS work is measured and weighed as
   any job's (its own way's alone: `gc`'s `cost_v` 1 puts away the daily job's runs, which weighed
-  the whole NAS and held it for a quiet NAS the busy pool never had, task #1000; unmeasured, its
-  first run goes beside any), and it yields to a job held back for it (`nas_yield`) at its next safe point, before
+  the whole NAS and held it for a quiet NAS the busy pool never had, task #1000; unmeasured, it
+  weighs the whole as any unmeasured NAS step and goes beside no job weighing the whole, its first
+  run measuring it), and it yields to a job held back for it (`nas_yield`) at its next safe point, before
   each removal. It asks the lead's coordinator: `POST /gc/chunk` (up to `gc::CHUNK_NAMES`, 200),
   `/gc/gone`, `/gc/orphans`, `/gc/removing` (a sweep's names), each answered from the queue in
   memory and its file on the lead's disk.

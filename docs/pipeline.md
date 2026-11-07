@@ -27,7 +27,7 @@ tasks for any worker, `docs/workers.md`.
 
 Every row has the same fields. Still kept outside the table (docs/consistency-report.md F15,
 open): the lead's steps (`every::LEAD_ONLY`), the worldwide targets (`every::names_target`), the
-NAS-reading, quiet and halo steps (`coord::sched::NAS_STEPS`, `budget::nas::QUIET_STEPS`,
+NAS-loading, quiet and halo steps (`coord::sched::NAS_STEPS`, `budget::nas::QUIET_STEPS`,
 `needs::HALO_STEPS`) and the resumable ones (`resume::RESUMABLE`).
 
 | Field | Meaning | Values |

@@ -9729,8 +9729,9 @@ mod tests {
     /// Task #451 (20 Oct: GC beside two depth-lo jobs, the NAS at 34 % IO wait, all three stalled):
     /// the clean-up weighs its metadata work (folder entries listed, files statted and deleted over
     /// the NAS's probed rates for them), starts only on a quiet NAS (measured, within the whole,
-    /// never aged past it, its wait never noted; unmeasured, weighing nothing until its first run
-    /// measures it, task #1000), and yields to a job held back `OWN_AGE` that it alone keeps out.
+    /// never aged past it, its wait never noted; unmeasured, weighing the whole as the lead's own
+    /// unmeasured NAS steps do until its first run measures it, task #1000), and yields to a job
+    /// held back `OWN_AGE` that it alone keeps out.
     #[test]
     fn the_clean_up_waits_for_a_quiet_nas_and_yields_to_a_held_job() {
         let (_d, c, w, clock) = every((0, 0));
@@ -9784,20 +9785,22 @@ mod tests {
             }
         };
         let a = Ask { want: 1, can: vec!["gc".into()], ..every_ask("m4", "gc", 64_000, 100_000) };
-        let waits = |c: &Coordinator| -> Vec<String> {
-            let s = c.shared.lock().unwrap();
-            let g = s.nas_waits.lock().unwrap();
-            g.keys().map(|k| k.0.clone()).collect()
-        };
-        // Unmeasured (its way new, task #1000): it goes beside the member's job, weighing nothing,
-        // so its first run measures it; its wait never noted. The daily job's run before (its way
-        // before step 8b: the whole share read and listed, past the whole NAS) weighs nothing now.
+        // Unmeasured the way it runs now (task #1000: the daily job's run, the way before step 8b,
+        // the whole share read and listed, counts for nothing): it weighs the whole, as the lead's
+        // own unmeasured NAS steps do, and goes beside the member's job, none weighing the whole,
+        // so its first run measures it, nothing else weighing anything granted beside it meanwhile;
+        // never past the gate on the NAS's own load.
         let daily = [("threads", 1), ("bytes", 119_607_616_284), ("listed", 295_768), ("stats", 288_071)];
         c.add_costs_by(&[(cost_key("gc", "gc"), Cost { v: 0, ..cost("gc", &daily) })], "m4");
         assert!(cost_version("gc") > 0, "the queue's way is its own");
+        let held = crate::budget::nas::Limits { held: true, ..limits };
+        c.shared.lock().unwrap().nas_own = Some(held);
+        assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "the NAS's own load over its target: held");
+        c.shared.lock().unwrap().nas_own = Some(limits);
         let g0 = c.ask_own(&a, &BTreeSet::new(), 0).expect("unmeasured: goes beside the member's job");
-        assert_eq!(c.nas_shares().get("m4"), Some(&0), "weighs nothing until measured");
-        assert!(waits(&c).is_empty(), "its wait never noted: it holds no room");
+        assert_eq!(c.nas_shares().get("m4"), Some(&1000), "weighs the whole until measured");
+        let m3 = Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
+        assert!(all_granted(&w, &m3).is_empty(), "nothing else weighing anything beside it");
         c.finish(g0.lease, &[]);
         // Measured: 200 entries listed and 8 files deleted a second (200 + 200 of the NAS), its
         // bytes next to nothing: 400 beside the member's 300.
@@ -9829,8 +9832,9 @@ mod tests {
     }
 
     /// Task #451 review: one held back `QUIET_AGE` by a pool that stays busy goes as an aged job.
-    /// Task #1000: an unmeasured one goes beside a cold job (weight 0, its NAS load unknown): its
-    /// first run is what measures it, and held for a NAS a busy pool never has quiet, it never ran.
+    /// Task #1000: an unmeasured one goes beside a cold job (weight 0, its NAS load unknown),
+    /// weighing the whole: its first run is what measures it, and held for a NAS a busy pool never
+    /// has quiet, it never ran.
     #[test]
     fn an_unmeasured_clean_up_goes_and_a_held_one_ages_in_after_a_day() {
         let (_d, c, w, clock) = every((0, 0));
@@ -9860,6 +9864,7 @@ mod tests {
         assert_eq!(c.nas_shares().get("m1"), Some(&0));
         let a = Ask { want: 1, can: vec!["gc".into()], ..every_ask("m4", "gc", 64_000, 100_000) };
         let g0 = c.ask_own(&a, &BTreeSet::new(), 0).expect("unmeasured beside a cold job: goes");
+        assert_eq!(c.nas_shares().get("m4"), Some(&1000), "weighing the whole");
         c.finish(g0.lease, &[]);
         w.give_back(g1.lease, "test").unwrap();
 
