@@ -5,7 +5,7 @@
 use crate::cache::Lru;
 use crate::views::{Blob, Sect, SectView};
 use anyhow::{ensure, Context, Result};
-use pipeline::marks::{self, MarkPt, SummitRec, KINDS};
+use codecs::marks::{self, MarkPt, SummitRec, KINDS};
 use std::ops::Range;
 use std::sync::{Arc, LazyLock, Mutex};
 

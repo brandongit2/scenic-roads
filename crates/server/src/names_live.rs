@@ -80,11 +80,11 @@ impl NamesState {
             names: RwLock::new(None),
             current: RwLock::new(None),
             spoken: RwLock::new(None),
-            accepted: crate::accepted::local_dir(home, pipeline::inputs::translations::UNIT),
+            accepted: crate::accepted::local_dir(home, inputs::inputs::translations::UNIT),
             // (An earlier app's copy of the old folder: removed by a sync, crate::accepted::sync.)
-            old: home.join(pipeline::inputs::translations::UNIT),
+            old: home.join(inputs::inputs::translations::UNIT),
             spoken_dir: home.join("names"),
-            languages: crate::accepted::local_dir(home, pipeline::inputs::languages::UNIT),
+            languages: crate::accepted::local_dir(home, inputs::inputs::languages::UNIT),
             last_use: AtomicU64::new(now()),
         })
     }
@@ -361,18 +361,18 @@ impl NamesState {
     /// hash): the languages' accepted version, kept here (brought up to date first while the NAS is
     /// there); None before there's one.
     fn table(&self, data: &Data) -> Option<(names::Table, String)> {
-        let unit = pipeline::inputs::languages::UNIT;
+        let unit = inputs::inputs::languages::UNIT;
         if let Err(e) = crate::accepted::synced(data, unit, &self.languages) {
             eprintln!("names: {unit}: {e:#}");
         }
         let kept =
-            crate::accepted::files(&self.languages).and_then(|f| f.get(pipeline::inputs::languages::TABLE).cloned());
+            crate::accepted::files(&self.languages).and_then(|f| f.get(inputs::inputs::languages::TABLE).cloned());
         if let Some((local, content)) = kept {
             match std::fs::read_to_string(&local) {
                 Ok(text) => {
                     return Some((
                         names::Table::parse(&text),
-                        pipeline::inputs::hash_of(&content).unwrap_or("accepted").to_string(),
+                        inputs::inputs::hash_of(&content).unwrap_or("accepted").to_string(),
                     ))
                 }
                 Err(e) => eprintln!("names: {}: {e}", local.display()),
@@ -383,7 +383,7 @@ impl NamesState {
 
     /// Brings the local copy of the accepted version up to date: whether it changed.
     pub(crate) fn sync(&self, data: &Data) -> bool {
-        match crate::accepted::sync(data, pipeline::inputs::translations::UNIT, &self.accepted, &self.old) {
+        match crate::accepted::sync(data, inputs::inputs::translations::UNIT, &self.accepted, &self.old) {
             Ok(changed) => changed,
             Err(e) => {
                 eprintln!("translations: {e:#}");
@@ -460,7 +460,7 @@ mod tests {
             "translations",
             &[("answers/fr-001.jsonl", &line("Blue Lake"))],
         );
-        let index: pipeline::inputs::Index =
+        let index: inputs::inputs::Index =
             serde_json::from_slice(&std::fs::read(nas.path().join(&v)).unwrap()).unwrap();
         let copy = nas.path().join(&index.files["answers/fr-001.jsonl"].file);
         let good = std::fs::read(&copy).unwrap();

@@ -4,7 +4,7 @@
 //! the addresses others reach it by, whether `tailscale serve` proxies a port over HTTPS, the
 //! tokens a service keeps (made once, readable by its owner alone), and the public names a proxy
 //! on this Mac serves it under (`names`, tools/caddy). The lead's coordinator
-//! (crate::coord) and the map's server (crates/server, docs/macs.md) use them.
+//! (agentcore::coord) and the map's server (crates/server, docs/macs.md) use them.
 
 use anyhow::{Context, Result};
 use axum::http::{header, HeaderMap};
@@ -120,7 +120,7 @@ pub const NAMES: &str = ".config/scenic/names";
 
 /// The public names a proxy on this Mac serves it under (tools/caddy: map.brandontsang.net on the
 /// M6), from `~/<NAMES>`: names the owner gave it, so `ours` takes them and the members' pages
-/// there may call the others (crate::coord::brokers::Broker's `pages`). Read again every minute;
+/// there may call the others (agentcore::coord::brokers::Broker's `pages`). Read again every minute;
 /// none in a unit test (`buildstore::out::testing`).
 pub fn names() -> Vec<String> {
     use std::sync::Mutex;
@@ -224,7 +224,7 @@ pub fn same(a: &str, b: &str) -> bool {
 pub const DEFAULT_PORT: u16 = 7311;
 
 /// This Mac's addresses for others: its Tailscale address (100.64.0.0/10), then its LAN name. In a
-/// unit test, loopback alone (crate::coord::listen_ip): never the Mac's network names, Tailscale or
+/// unit test, loopback alone (agentcore::coord::listen_ip): never the Mac's network names, Tailscale or
 /// firewall.
 pub fn urls(port: u16) -> Vec<String> {
     if buildstore::out::testing() {
@@ -242,7 +242,7 @@ pub fn urls(port: u16) -> Vec<String> {
 }
 
 /// This Mac's LAN addresses (private IPv4, not the tailnet's) at `port`: where a device on the LAN
-/// may have opened its page by address. Origins alone (crate::coord::brokers::origins_of): a LAN
+/// may have opened its page by address. Origins alone (agentcore::coord::brokers::origins_of): a LAN
 /// address is any device's on the network to claim, so never one to send to. None in a unit test.
 pub fn lan_urls(port: u16) -> Vec<String> {
     if buildstore::out::testing() {

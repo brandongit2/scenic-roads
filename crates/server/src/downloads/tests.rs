@@ -1,6 +1,6 @@
 use super::*;
 use crate::maplog::MirrorLink;
-use pipeline::areafiles::{clip, lat_y, lon_x, ring_area};
+use inputs::areafiles::{clip, lat_y, lon_x, ring_area};
 use store::catalogue::{FileRef, Layer};
 use store::naming::{write_atomic, Source};
 use store::pmtiles::Compression;
@@ -52,7 +52,7 @@ fn gz(b: &[u8]) -> Vec<u8> {
 
 /// A terrain tile as stored (lossless WebP), `h` m throughout.
 fn terrain_tile(h: f32) -> Vec<u8> {
-    pipeline::terrain_codec::encode(&mut vec![h; 65536], pipeline::terrain_codec::COARSER_M).unwrap()
+    codecs::terrain_codec::encode(&mut vec![h; 65536], codecs::terrain_codec::COARSER_M).unwrap()
 }
 
 /// The terrain's root (`root`) or lo pack's tiles (zooms 0–2 and 2/3/1 far east; the z3 tile 3/2's
@@ -427,7 +427,7 @@ async fn the_agents_room_target_above_the_reserve_is_the_mirrors_reserve() {
     catalogue(&store::nasfs::NasRoot::local_for_test(nas.path()));
     // This Mac's agent keeps 40 GiB free (`scenic room 40`), above the 30 GB reserve.
     std::fs::create_dir_all(home.path().join("agent")).unwrap();
-    pipeline::agent::settings::set_room(&home.path().join("agent"), "40", "t").unwrap();
+    agentcore::agent::settings::set_room(&home.path().join("agent"), "40", "t").unwrap();
     let data = Data::open(crate::data::Options {
         home: home.path().to_owned(),
         nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
@@ -875,13 +875,13 @@ async fn a_download_partly_here_moves_on_and_mixes_nothing() {
     assert_eq!(s.data.older_token(), "");
 }
 
-/// A deep terrain pack (pipeline::terrain_deep) of one z13 tile `h` metres high, under z10 tile
+/// A deep terrain pack (terrain::terrain_deep) of one z13 tile `h` metres high, under z10 tile
 /// (x, y), put on the "NAS" and named in `cat`'s terrain.
 fn put_deep(root: &store::nasfs::NasRoot, cat: &mut Catalogue, x: u32, y: u32, h: f32) {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("p.pack");
     let mut w = store::pack::PackWriter::create(&path, json!({"layer": "terrain"}), false).unwrap();
-    let b = pipeline::terrain_codec::encode(&mut vec![h; 65536], pipeline::terrain_codec::NATIVE_M).unwrap();
+    let b = codecs::terrain_codec::encode(&mut vec![h; 65536], codecs::terrain_codec::NATIVE_M).unwrap();
     w.add(13, x * 8, y * 8, &b, b.len() as u32).unwrap();
     w.finish().unwrap();
     let logical = format!("layers/terrain/deep/10-{x}-{y}");

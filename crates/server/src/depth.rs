@@ -1,7 +1,7 @@
 //! The depth layers' tiles (docs/steps.md §3; docs/formats.md, Depth): `depth` (Terrarium RGB,
 //! metres below the water's surface) and `depth-class` (a byte a pixel: class, dries, source), as
 //! stored, or, where the layer stores none (depth stops at each source's own zoom), made from the
-//! nearest stored ancestor as the build scales a level up (pipeline::depth::fall), encoded as the
+//! nearest stored ancestor as the build scales a level up (terrain::depth::fall), encoded as the
 //! stored ones are (lossless WebP). Outside the layer's zooms: 404; where it has nothing (no
 //! stored ancestor): 204, as every layer's missing tile (crate::cache).
 //!
@@ -10,21 +10,21 @@
 //! where the map draws the water over that floor, and the contours' ground. The surface is sea
 //! level on the world ocean (a pixel half sea or more in the water tiles, crate::water::sea_shares:
 //! the depth's own rule for water, and not on a sea closed off from the ocean,
-//! pipeline::water::Enclosed), elsewhere the terrain's heights (a lake's, a river's or an enclosed
+//! inputs::water::Enclosed), elsewhere the terrain's heights (a lake's, a river's or an enclosed
 //! sea's its source's: the Caspian's −28 m in GLO-30): the terrain keeps the source's heights at
 //! sea, its bathymetry and artefacts included, so it is no surface there. The floor is that surface
-//! less the depth, which is below it (an enclosed sea's below its own: pipeline::depth::surface),
+//! less the depth, which is below it (an enclosed sea's below its own: terrain::depth::surface),
 //! so never above it. No second terrain is stored.
 
 use crate::cache::Lru;
 use crate::terrain::{made, respond, Got};
 use crate::S;
+use ::terrain::depth::fall::{self, Grid, Kind, Stored};
 use axum::{
     extract::{Path, RawQuery, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use pipeline::depth::fall::{self, Grid, Kind, Stored};
 
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -99,7 +99,7 @@ pub async fn depth_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    tile(s, pipeline::depth::LAYER, z, x, y, q, headers).await
+    tile(s, ::terrain::depth::LAYER, z, x, y, q, headers).await
 }
 
 pub async fn class_tile(
@@ -108,7 +108,7 @@ pub async fn class_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    tile(s, pipeline::depth::CLASS_LAYER, z, x, y, q, headers).await
+    tile(s, ::terrain::depth::CLASS_LAYER, z, x, y, q, headers).await
 }
 
 /// The water's surface over terrain heights `e` (a tile's): sea level where `sea` (each pixel's
@@ -130,7 +130,7 @@ fn on_ocean(s: f32, enclosed: &[bool], i: usize) -> bool {
 }
 
 /// Whether a pixel with share `s` of sea is the sea's (half or more: as the depth's water,
-/// pipeline::depth).
+/// terrain::depth).
 fn at_sea(s: f32) -> bool {
     s >= 0.5
 }
@@ -139,11 +139,11 @@ fn at_sea(s: f32) -> bool {
 /// water's surface its depth is below (`surface`): sea level on the world ocean (`sea`, each
 /// pixel's share and whether it's an enclosed sea's), else terrain heights `e` (a lake's, a
 /// river's or an enclosed sea's surface: the depth measures the Caspian's below its −28 m,
-/// pipeline::depth::surface; None: the terrain's heights throughout), so never above it; the land
+/// terrain::depth::surface; None: the terrain's heights throughout), so never above it; the land
 /// as it is.
 pub fn floor(e: &mut [f32], sea: Option<&crate::water::Sea>, depth: &[f32], class: &[u8]) {
     for i in 0..e.len().min(depth.len()).min(class.len()) {
-        if class[i] & 7 != pipeline::depth::C_NONE && depth[i] < pipeline::depth::NODATA_MIN {
+        if class[i] & 7 != ::terrain::depth::C_NONE && depth[i] < ::terrain::depth::NODATA_MIN {
             let (share, enclosed) = sea.map_or((0.0, &[][..]), |s| (s.share[i], &s.enclosed[..]));
             let top = if on_ocean(share, enclosed, i) { 0.0 } else { e[i] };
             e[i] = top + depth[i].min(0.0);
@@ -158,7 +158,7 @@ pub fn terrain_floor(s: &crate::S, z: u8, x: u32, y: u32) -> anyhow::Result<Opti
     let Some(mut e) = crate::terrain::terrain_f32(s, z, x, y)? else { return Ok(None) };
     let mut exact = true;
     if let (Some(Grid::F(d)), Some(Grid::C(c))) =
-        (served(s, pipeline::depth::LAYER, z, x, y)?, served(s, pipeline::depth::CLASS_LAYER, z, x, y)?)
+        (served(s, ::terrain::depth::LAYER, z, x, y)?, served(s, ::terrain::depth::CLASS_LAYER, z, x, y)?)
     {
         let sea = crate::water::sea_shares(s, z, x, y)?;
         exact = sea.as_ref().is_none_or(|s| s.exact);
@@ -227,12 +227,12 @@ mod tests {
         // A lake at 120 m, 8 m deep; the land beside it (class none) keeps its height even where
         // the depth's band reaches it.
         let mut e = vec![120.0, 120.0, 135.0, 140.0];
-        let d = vec![-8.0, pipeline::depth::NODATA, 0.5, -3.0];
+        let d = vec![-8.0, ::terrain::depth::NODATA, 0.5, -3.0];
         let c = vec![
-            pipeline::depth::C_NATIVE | (9 << 4),
-            pipeline::depth::C_NATIVE,
-            pipeline::depth::C_NONE,
-            pipeline::depth::C_NONE,
+            ::terrain::depth::C_NATIVE | (9 << 4),
+            ::terrain::depth::C_NATIVE,
+            ::terrain::depth::C_NONE,
+            ::terrain::depth::C_NONE,
         ];
         floor(&mut e, Some(&sea_of(vec![0.0; 4], Vec::new())), &d, &c);
         assert_eq!(e, vec![112.0, 120.0, 135.0, 140.0]);
@@ -244,9 +244,9 @@ mod tests {
     /// (half a pixel or more), the land's own height ashore, a polder's −6 m too.
     #[test]
     fn the_seas_floor_and_surface_stand_on_sea_level() {
-        let c = pipeline::depth::C_NATIVE | (3 << 4);
-        let n = pipeline::depth::C_NONE;
-        let nd = pipeline::depth::NODATA;
+        let c = ::terrain::depth::C_NATIVE | (3 << 4);
+        let n = ::terrain::depth::C_NONE;
+        let nd = ::terrain::depth::NODATA;
         let (d, cl) = (vec![-40.0, -12.0, -1.0, nd, nd], vec![c, c, c, n, n]);
         let sea = [1.0, 1.0, 0.5, 0.25, 0.0];
         let mut e = vec![-35.0, -2.0, 10.0, -20.0, -6.0];
@@ -267,9 +267,9 @@ mod tests {
         let (sea, enclosed) = ([1.0, 1.0, 1.0, 1.0, 0.0], [true, true, true, false, false]);
         surface(&mut e, &sea, &enclosed);
         assert_eq!(e, vec![-28.0, -28.0, -28.0, 0.0, 12.0]);
-        let c = pipeline::depth::C_NATIVE | (3 << 4);
+        let c = ::terrain::depth::C_NATIVE | (3 << 4);
         let mut e = vec![-28.0, -28.0, -28.0, -1.5, 12.0];
-        let (d, cl) = ([-3.0, -872.0, 0.0, -6.0, pipeline::depth::NODATA], [c, c, c, c, pipeline::depth::C_NONE]);
+        let (d, cl) = ([-3.0, -872.0, 0.0, -6.0, ::terrain::depth::NODATA], [c, c, c, c, ::terrain::depth::C_NONE]);
         floor(&mut e, Some(&sea_of(sea.to_vec(), enclosed.to_vec())), &d, &cl);
         assert_eq!(e, vec![-31.0, -900.0, -28.0, -6.0, 12.0]);
     }

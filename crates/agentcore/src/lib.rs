@@ -5,12 +5,10 @@
 
 pub mod agent;
 pub mod answers;
-pub mod appupdate;
 pub mod cli;
 pub mod coord;
 pub mod menu;
 pub mod needs;
-pub mod net;
 pub mod paces;
 pub mod pool;
 pub mod pubtimes;
@@ -19,6 +17,7 @@ pub mod uses;
 // The crates below, at the paths the runtime names them by (as pipeline's root did).
 pub use buildstore::{costin, coverage, fetch, handoff, localread, outlines, rawpack};
 pub use codecs::{extents, legacy, whole};
+pub use coordwire::net;
 pub use jobrt::{budget, control, phase_names, pyenv, resume_log, sys, timings};
 
 // (`::inputs`: the crate, not its module of the same name.)

@@ -5,7 +5,7 @@ use store::catalogue::Catalogue;
 use store::map::feed::Feed;
 use store::map::log::Log;
 
-/// The lead's routes (pipeline::coord::maproutes) over `feed`, on a runtime of their own, on
+/// The lead's routes (agentcore::coord::maproutes) over `feed`, on a runtime of their own, on
 /// `port` (0: any); stopped when dropped, its connections cut.
 pub(crate) struct FakeLead {
     rt: Option<tokio::runtime::Runtime>,
@@ -20,7 +20,7 @@ impl FakeLead {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         rt.spawn(async move {
             let l = tokio::net::TcpListener::from_std(l).unwrap();
-            let app = pipeline::coord::maproutes::router::<()>(Arc::new(move || Some(feed.clone())));
+            let app = agentcore::coord::maproutes::router::<()>(Arc::new(move || Some(feed.clone())));
             axum::serve(l, app).await.ok();
         });
         FakeLead { rt: Some(rt), port }
@@ -93,7 +93,7 @@ fn publish(nas: &[&Path], k: u64) -> Catalogue {
 }
 
 /// The lead's log: `cat` appended (the first seeds it), the feed told, as the lead's writer does
-/// (pipeline::agent::publish::Writer).
+/// (agentcore::agent::publish::Writer).
 fn append(log: &mut Log, feed: &Feed, cat: &Catalogue) {
     if log.map().is_empty() {
         log.seed(Map::of(cat).unwrap()).unwrap();

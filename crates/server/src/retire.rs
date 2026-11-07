@@ -8,10 +8,10 @@
 //! The live map must never go down for a file gone missing, so a server retires only when it's
 //! sure it isn't the map's Mac (`retires`): no name in `~/.config/scenic/names` (the file there
 //! and without one, or not there; one that can't be read is no answer), and this Mac's role
-//! (`pipeline::pool::term::role`, the agent's own: the declared lead, `state/build/lead-member.json`,
+//! (`buildstore::records::term::role`, the agent's own: the declared lead, `state/build/lead-member.json`,
 //! against this Mac's member file) a member's. An unknown role keeps it serving.
 
-use pipeline::pool::term::Role;
+use buildstore::records::term::Role;
 use std::path::{Path, PathBuf};
 
 pub const LABEL: &str = "local.scenic.server";
@@ -20,7 +20,7 @@ pub const LABEL: &str = "local.scenic.server";
 /// and without one, or not there. One that can't be read says nothing.
 fn names_none(names: &std::io::Result<String>) -> bool {
     match names {
-        Ok(t) => pipeline::net::names_in(t).is_empty(),
+        Ok(t) => coordwire::net::names_in(t).is_empty(),
         Err(e) => e.kind() == std::io::ErrorKind::NotFound,
     }
 }
@@ -33,13 +33,13 @@ pub fn retires(names: &std::io::Result<String>, role: Role) -> bool {
 /// `retires` for this Mac: its names file in `user_home`, its role by its member id in
 /// `home/agent` and the lead declared on the NAS (no NAS: unknown, it stays).
 pub fn this_mac_retires(home: &Path, user_home: &Path) -> bool {
-    let names = std::fs::read_to_string(user_home.join(pipeline::net::NAMES));
+    let names = std::fs::read_to_string(user_home.join(coordwire::net::NAMES));
     if !names_none(&names) {
         return false;
     }
-    let me = pipeline::pool::read_member_id(&home.join("agent"));
-    let role =
-        store::nasfs::NasRoot::find(false).map_or(Role::Unknown, |r| pipeline::pool::term::role(&r, me.as_deref()));
+    let me = buildstore::records::member::read_member_id(&home.join("agent"));
+    let role = store::nasfs::NasRoot::find(false)
+        .map_or(Role::Unknown, |r| buildstore::records::term::role(&r, me.as_deref()));
     retires(&names, role)
 }
 
@@ -98,10 +98,11 @@ mod tests {
         // The role as the agent reads it (the shared function): a declaration on a NAS, two Macs.
         let d = tempfile::tempdir().unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(d.path());
-        let lead = pipeline::pool::Member { id: "m-000000000000000a".into(), host: "mini".into(), app: "x".into() };
-        let role = |me: Option<&str>| pipeline::pool::term::role(&nas, me);
+        let lead =
+            buildstore::records::Member { id: "m-000000000000000a".into(), host: "mini".into(), app: "x".into() };
+        let role = |me: Option<&str>| buildstore::records::term::role(&nas, me);
         assert_eq!(role(Some(&lead.id)), Role::Unknown, "none declared yet");
-        pipeline::pool::term::declare(&nas, &lead, 1).unwrap();
+        buildstore::records::term::declare(&nas, &lead, 1).unwrap();
         let (other, mine) = (role(Some("m-000000000000000b")), role(Some(&lead.id)));
         assert_eq!((other, mine), (Role::Member, Role::Lead));
         // A member that isn't the declared lead, without a name: it retires.

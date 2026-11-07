@@ -1,4 +1,4 @@
-//! The water's tiles (pipeline::water; docs/formats.md "Water"): each pixel's share of sea and of
+//! The water's tiles (inputs::water; docs/formats.md "Water"): each pixel's share of sea and of
 //! inland water, `/tiles/water/{z}/{x}/{y}`, 512 px.
 //!
 //! - z0–9 are the water layer's packs (a tile not stored is one value throughout: its stored
@@ -22,7 +22,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use det::Det;
-use pipeline::water::{self as wt, Cov};
+use inputs::water::{self as wt, Cov};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 /// Tiles drawn at once (more wait), and the threads they're drawn on.
@@ -93,7 +93,7 @@ pub fn version(s: &crate::AppState) -> String {
     format!("{:012x}", made_from(s, &s.data.basemap_names()) >> 16)
 }
 
-/// The catalogue's lakes filled from Canada's own data (pipeline::lakefill): its logical and content
+/// The catalogue's lakes filled from Canada's own data (inputs::lakefill): its logical and content
 /// names.
 fn fill_names(s: &crate::AppState) -> Option<(String, String)> {
     let l = s.data.catalogue().global.get("lakefill")?.clone();
@@ -110,8 +110,8 @@ fn fill_content(s: &crate::AppState) -> Option<String> {
 /// mirror lacks it. One request opens it while the others wait for it (the lock is held across
 /// the opening). One that can't be read fails the tile's request, which is tried again on the
 /// next: a tile is never drawn without the fill under a version that names it.
-fn fill(s: &crate::AppState) -> Result<Option<Arc<pipeline::lakefill::Fill>>> {
-    static KEPT: OnceLock<Mutex<Option<(String, Arc<pipeline::lakefill::Fill>)>>> = OnceLock::new();
+fn fill(s: &crate::AppState) -> Result<Option<Arc<inputs::lakefill::Fill>>> {
+    static KEPT: OnceLock<Mutex<Option<(String, Arc<inputs::lakefill::Fill>)>>> = OnceLock::new();
     let Some((logical, content)) = fill_names(s) else { return Ok(None) };
     let mut kept = KEPT.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
     if let Some((c, f)) = kept.as_ref() {
@@ -120,7 +120,7 @@ fn fill(s: &crate::AppState) -> Result<Option<Arc<pipeline::lakefill::Fill>>> {
         }
     }
     let Some((c, whole)) = s.data.whole(&logical)? else { return Ok(None) };
-    let f = Arc::new(pipeline::lakefill::Fill::from_source(Box::new(whole), &c)?);
+    let f = Arc::new(inputs::lakefill::Fill::from_source(Box::new(whole), &c)?);
     *kept = Some((c, f.clone()));
     Ok(Some(f))
 }
@@ -144,11 +144,11 @@ fn z14(s: &S, archives: &[String], x: u32, y: u32) -> Result<Vec<wt::Stored>> {
     }
     // The fill's lakes there, as a tile of their own beside the basemap's (only in its reach:
     // elsewhere it has none, and away from the NAS a region there hasn't downloaded it).
-    if !pipeline::lakefill::reaches(wt::BASE_Z, x, y) {
+    if !inputs::lakefill::reaches(wt::BASE_Z, x, y) {
         return Ok(out);
     }
     if let Some(f) = fill(s)? {
-        out.extend(<pipeline::lakefill::Fill as wt::Extra>::z14(&f, x, y));
+        out.extend(<inputs::lakefill::Fill as wt::Extra>::z14(&f, x, y));
     }
     Ok(out)
 }
@@ -231,7 +231,7 @@ fn draw(s: &S, archives: &[String], z: u8, x: u32, y: u32) -> Result<Vec<u8>> {
     Ok(pool().install(|| wt::cover(z, x, y, &get, blocks()))?.to_bytes())
 }
 
-/// The seas closed off from the world ocean (pipeline::water::Enclosed), as the catalogue has them,
+/// The seas closed off from the world ocean (inputs::water::Enclosed), as the catalogue has them,
 /// read once a content; None without them (a water layer made before them: all its sea the
 /// ocean's).
 fn enclosed(s: &crate::AppState) -> Result<Option<Arc<wt::Enclosed>>> {

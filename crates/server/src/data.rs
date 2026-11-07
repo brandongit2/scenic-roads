@@ -92,7 +92,7 @@ impl Data {
         let mirror = if o.mirror {
             let m = store::mirror::Mirror::open(o.home.clone(), o.reserve)?;
             // This Mac's build agent's room target, when above the reserve (docs/macs.md, Mirror).
-            let target = pipeline::agent::settings::RoomTarget::new(&o.home.join("agent"));
+            let target = buildstore::room::RoomTarget::new(&o.home.join("agent"));
             m.set_floor(move || target.bytes());
             Some(Arc::new(m))
         } else {
@@ -564,13 +564,13 @@ impl Data {
     pub(crate) fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         let cat = self.catalogue();
         let l = cat.layers.get(layer)?;
-        let f = pipeline::terrain_deep::PACK_Z;
-        // (A polar layer's: z0–3 in its root, z4–9 in its blocks, pipeline::polar.)
+        let f = ::terrain::terrain_deep::PACK_Z;
+        // (A polar layer's: z0–3 in its root, z4–9 in its blocks, terrain::polar.)
         if !l.polar.is_empty() {
             if self.reach().is_some_and(|r| r.grid(Self::pole(&cat, layer)).cover(z, x, y) == Cover::None) {
                 return None;
             }
-            let b = pipeline::polar::BLOCK_Z;
+            let b = ::terrain::polar::BLOCK_Z;
             return match z {
                 _ if z < b => l.root.clone(),
                 _ => l.polar.get(&format!("{b}/{}/{}", x >> (z - b), y >> (z - b))).cloned(),
@@ -580,8 +580,8 @@ impl Data {
             _ if !self.reaches(z, x, y) => None,
             0..=2 => l.root.clone(),
             3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
-            // (The terrain's deep levels: its deep packs by z10 tile, pipeline::terrain_deep.)
-            _ if z >= pipeline::terrain_deep::FIRST_Z && !l.deep.is_empty() => {
+            // (The terrain's deep levels: its deep packs by z10 tile, terrain::terrain_deep.)
+            _ if z >= ::terrain::terrain_deep::FIRST_Z && !l.deep.is_empty() => {
                 l.deep.get(&format!("{f}/{}/{}", x >> (z - f), y >> (z - f))).cloned()
             }
             _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),
@@ -822,7 +822,7 @@ impl Data {
         }
     }
 
-    /// The lead's heartbeat (pipeline::agent::LEAD_STATUS on the NAS), as it wrote it: Null when
+    /// The lead's heartbeat (coordwire::LEAD_STATUS on the NAS), as it wrote it: Null when
     /// there's none or the NAS is away. Read at most every 30 s.
     pub fn lead_status(&self) -> serde_json::Value {
         let mut g = self.lead.lock().unwrap();
@@ -833,7 +833,7 @@ impl Data {
         }
         let v = match (self.nas_root(), self.pool()) {
             (Some(root), Some(pool)) if pool.is_online() => pool
-                .read_all(&root.join(pipeline::agent::LEAD_STATUS))
+                .read_all(&root.join(coordwire::LEAD_STATUS))
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .unwrap_or(serde_json::Value::Null),
@@ -1039,7 +1039,7 @@ mod tests {
     /// each tile its own cache and ETag name.
     #[test]
     fn markdata_from_a_bundle_is_the_tiles_own_file() {
-        use pipeline::marks::{self, MarkPt, Row, SummitRec, KINDS};
+        use codecs::marks::{self, MarkPt, Row, SummitRec, KINDS};
         let (nas, homes) = (tempfile::tempdir().unwrap(), [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()]);
         let made = nas.path().join("made");
         std::fs::create_dir_all(&made).unwrap();

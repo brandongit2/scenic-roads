@@ -5,6 +5,7 @@
 //! (pipeline::pool::records::Records, with the agent's keys) or what an `Out` reads (`Recorded`).
 //! Writing them (saving, merging, taking a term up) is the pool's.
 
+pub mod member;
 pub mod nas;
 pub mod term;
 
@@ -17,7 +18,7 @@ use std::collections::BTreeMap;
 /// A member as the pool names it (§5).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
-    /// Its id, made once (pipeline::pool::member_id), named in everything it writes.
+    /// Its id, made once (member::member_id), named in everything it writes.
     pub id: String,
     /// Its host name: only a label (renaming a Mac, or macOS adding "-2" after a clash, changes
     /// nothing).

@@ -1,10 +1,10 @@
 //! The translations' and the descriptions' accepted versions, kept on this Mac (docs/inputs.md
 //! §4.6, §6.3, §6.4): the files the lead's records name for the unit, copied from the NAS through
-//! the pool (pipeline::inputs::served), so they work offline and load fast. The server never reads
+//! the pool (inputs::inputs::served), so they work offline and load fast. The server never reads
 //! an inputs folder.
 
 use crate::data::Data;
-use pipeline::inputs::served::{self, Synced};
+use inputs::inputs::served::{self, Synced};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -54,22 +54,22 @@ pub fn put(nas: &store::nasfs::NasRoot, unit: &str, files: &[(&str, &str)]) -> S
         nas.join(name).write(bytes).unwrap();
     };
     let mut index =
-        pipeline::inputs::Index { fmt: 1, unit: unit.into(), checks: format!("{unit} 1"), ..Default::default() };
+        inputs::inputs::Index { fmt: 1, unit: unit.into(), checks: format!("{unit} 1"), ..Default::default() };
     for (p, b) in files {
-        let file = pipeline::inputs::copy_name(unit, p, &store::naming::hash16(b.as_bytes())).unwrap();
+        let file = inputs::inputs::copy_name(unit, p, &store::naming::hash16(b.as_bytes())).unwrap();
         put(&file, b.as_bytes());
         index.files.insert(
             p.to_string(),
-            pipeline::inputs::FileEntry { file, size: b.len() as u64, keyed: "-".into(), facts: Default::default() },
+            inputs::inputs::FileEntry { file, size: b.len() as u64, keyed: "-".into(), facts: Default::default() },
         );
     }
     let ib = serde_json::to_vec(&index).unwrap();
-    let name = format!("{}/@index.{}.json", pipeline::inputs::store_dir(unit), store::naming::hash16(&ib));
+    let name = format!("{}/@index.{}.json", inputs::inputs::store_dir(unit), store::naming::hash16(&ib));
     put(&name, &ib);
     let records = nas.join(served::RECORDS);
     let mut m: BTreeMap<String, String> =
         records.read().ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    m.insert(pipeline::inputs::logical(unit), name.clone());
+    m.insert(inputs::inputs::logical(unit), name.clone());
     put(served::RECORDS, &serde_json::to_vec(&m).unwrap());
     name
 }

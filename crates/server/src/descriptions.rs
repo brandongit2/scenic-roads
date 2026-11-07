@@ -25,7 +25,7 @@ pub struct Descriptions {
 
 impl Descriptions {
     pub fn new(home: &Path) -> Arc<Descriptions> {
-        let unit = pipeline::inputs::descriptions::UNIT;
+        let unit = inputs::inputs::descriptions::UNIT;
         Arc::new(Descriptions {
             accepted: crate::accepted::local_dir(home, unit),
             old: home.join(unit),
@@ -91,7 +91,7 @@ impl Descriptions {
 
     /// Brings the local copy up to date: whether it changed.
     fn sync(&self, data: &Data) -> bool {
-        match crate::accepted::sync(data, pipeline::inputs::descriptions::UNIT, &self.accepted, &self.old) {
+        match crate::accepted::sync(data, inputs::inputs::descriptions::UNIT, &self.accepted, &self.old) {
             Ok(changed) => changed,
             Err(e) => {
                 eprintln!("descriptions: {e:#}");
@@ -138,7 +138,7 @@ impl Descriptions {
 
 /// The popup's credit line for a description: `{"refs": sources}` for a researched one, else the
 /// Wikipedia article it summarises, `{"lang", "title"}`: the record's own (built with the same
-/// article, pipeline::heritagedetails), else the article the record links (`wiki` for heritage sites, `wikipedia` = "lang:Title" for sights).
+/// article, landmarks::heritagedetails), else the article the record links (`wiki` for heritage sites, `wikipedia` = "lang:Title" for sights).
 fn credit(record: &serde_json::Map<String, Value>, d: &Value) -> Option<Value> {
     if let Some(src) = d.get("src").filter(|s| s.as_array().is_some_and(|a| !a.is_empty())) {
         return Some(serde_json::json!({ "refs": src }));

@@ -2,7 +2,7 @@
 name = "jobrt"
 version = "0.1.0"
 edition = "2021"
-description = "A job's runtime: control (pause, stop, done), timings, sys, the budgets and their proxy, the resume log, a job's progress lines and room target, the pool's settings (docs/crates.md, step 3)"
+description = "A job's runtime: control (pause, stop, done), timings, sys, the budgets and their proxy, the resume log, a job's progress lines and room target, the pool's settings, the app's updater (docs/crates.md, steps 3 and 7a)"
 
 [dependencies]
 store = { path = "../store" }
@@ -11,6 +11,7 @@ serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
 anyhow.workspace = true
 rayon.workspace = true
 blake3 = "1"
+sha2 = "0.10"
 libc = "0.2"
 # Pinned as coordwire pins it (coordwire::client's idle transport uses ureq's unversioned::transport API).
 ureq = "=3.4.2"

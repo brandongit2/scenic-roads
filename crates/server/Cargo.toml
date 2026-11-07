@@ -5,9 +5,16 @@ edition = "2021"
 
 [dependencies]
 libc = "0.2"
-sha2 = "0.10"
 clap = { workspace = true, features = ["help", "usage", "error-context", "suggestions"] }
-pipeline = { path = "../pipeline" }
+# The crates its code names, neither pipeline (the plan, the binaries) nor agentcore (the runtime):
+# an edit there, or in a family it doesn't read, rebuilds no server, and a build doesn't wait on
+# them to compile it (docs/crates.md, step 7a).
+buildstore = { path = "../buildstore" }
+codecs = { path = "../codecs" }
+coordwire = { path = "../coordwire" }
+inputs = { path = "../inputs" }
+jobrt = { path = "../jobrt" }
+terrain = { path = "../terrain" }
 det = { path = "../det" }
 # A folder's outline, its regions' union (regions.rs union_of): the static GEOS, its version
 # (crates/bld/Cargo.toml says why).
@@ -40,5 +47,7 @@ ureq = "=3.4.2"
 bytemuck = { workspace = true }
 
 [dev-dependencies]
+# The lead's map routes (maplog's tests serve them) and the room setting a test sets: the runtime's.
+agentcore = { path = "../agentcore" }
 store = { path = "../store", features = ["testkit"] }
 tempfile = "3"

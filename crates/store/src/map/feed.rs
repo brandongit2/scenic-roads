@@ -25,6 +25,8 @@ pub const WAIT_S: u64 = 30;
 /// gone) or held at one `seq` that long (an Update that never gets through holds GC no longer) is
 /// answered a reset, on which it moves its Updates on to the map served.
 pub const MIRROR: &str = "mirror/";
+/// A map server's cursor's name, before its host (crates/server's maplog; docs/maplog.md §6.1).
+pub const SERVER: &str = "server/";
 
 #[derive(Default)]
 struct Inner {

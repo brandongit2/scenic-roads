@@ -284,7 +284,7 @@ fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
 #[command(name = "server")]
 struct Cli {
     /// The port
-    #[arg(long, default_value_t = pipeline::net::DEFAULT_PORT)]
+    #[arg(long, default_value_t = coordwire::net::DEFAULT_PORT)]
     port: u16,
     /// The web app's built files
     #[arg(long, value_name = "DIR", default_value = "web/dist")]
@@ -357,7 +357,7 @@ async fn main() -> Result<()> {
     let user_home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     if !on_demand
         && home_arg.is_none()
-        && pipeline::appupdate::running_version(&home).is_some()
+        && jobrt::appupdate::running_version(&home).is_some()
         && retire::this_mac_retires(&home, &user_home)
     {
         retire::retire(&home, &user_home);
@@ -561,11 +561,11 @@ async fn main() -> Result<()> {
             store::spawn::listen(addr)?
         }
     };
-    let listener = pipeline::net::Listener::new(v4)?.tap_io(|_| ());
+    let listener = coordwire::net::Listener::new(v4)?.tap_io(|_| ());
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     if listen.is_none() {
         if let Ok(l6) = store::spawn::listen(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)))
-            .and_then(pipeline::net::Listener::new)
+            .and_then(coordwire::net::Listener::new)
         {
             let svc6 = svc.clone();
             tokio::spawn(async move { axum::serve(l6.tap_io(|_| ()), svc6).await });
@@ -578,7 +578,7 @@ async fn main() -> Result<()> {
         // still letting go): said once, tried again every 2 s, nothing served till it's free.
         let mut said = false;
         let l4 = loop {
-            match store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, port)).and_then(pipeline::net::Listener::new) {
+            match store::spawn::listen((std::net::Ipv4Addr::LOCALHOST, port)).and_then(coordwire::net::Listener::new) {
                 Ok(l) => break l,
                 Err(e) if !said => {
                     eprintln!("127.0.0.1:{port} is another process's ({e}): waiting for it to be free");
@@ -779,7 +779,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
             // (The shading layers' in the encoding served too: a browser's copy from a pack before it,
             // cached for good under the same pack's version, is never reused, terrain::shade_tile.)
             if layer == "slope" || layer == "depth-shade" {
-                v = format!("{v}-{}", pipeline::shade_codec::ENCODING);
+                v = format!("{v}-{}", codecs::shade_codec::ENCODING);
             }
             versions.insert(old.into(), if tiles::has_names(layer) { named(v) } else { serde_json::Value::from(v) });
         }
@@ -842,7 +842,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         if !l.deep.is_empty() {
             o.insert("deep".into(), serde_json::Value::Object(by(&l.deep)));
         }
-        // (A polar layer's blocks, z4–9 by z4 tile of its pole's grid; its root z0–3: pipeline::polar.)
+        // (A polar layer's blocks, z4–9 by z4 tile of its pole's grid; its root z0–3: terrain::polar.)
         if !l.polar.is_empty() {
             o.insert("polar".into(), serde_json::Value::Object(by(&l.polar)));
         }
@@ -860,7 +860,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         m.insert("versions".into(), versions);
         m.insert("packs".into(), packs);
         m.insert("layers".into(), serde_json::Value::Object(zooms));
-        // Where the terrain goes past the base's finest zoom (pipeline::terrain_deep): its z10
+        // Where the terrain goes past the base's finest zoom (terrain::terrain_deep): its z10
         // tiles with deep packs and their native zoom, "x/y" (the map's zoom by area:
         // web/src/basemap.ts); elsewhere the base's.
         if let Some(l) = cat.layers.get("terrain").filter(|l| !l.native_zoom.is_empty()) {
@@ -871,13 +871,13 @@ fn meta_json(s: &AppState) -> serde_json::Value {
                 .collect();
             m.insert(
                 "terrainAreas".into(),
-                serde_json::json!({"zoom": pipeline::terrain_deep::PACK_Z, "tiles": tiles}),
+                serde_json::json!({"zoom": ::terrain::terrain_deep::PACK_Z, "tiles": tiles}),
             );
         }
         m.insert("catalog".into(), serde_json::json!(cat.n));
         m.insert("online".into(), serde_json::json!(s.data.online()));
         m.insert("labelTiles".into(), serde_json::json!(cat.layers.contains_key("labels")));
-        // The water as exact coverage (pipeline::water; water.rs), where the catalogue has it.
+        // The water as exact coverage (inputs::water; water.rs), where the catalogue has it.
         m.insert("water".into(), serde_json::json!(cat.layers.contains_key("water")));
     }
     meta
@@ -930,7 +930,7 @@ fn versions_fingerprint(s: &AppState) -> String {
 fn credits_of(cat: &store::catalogue::Catalogue) -> serde_json::Value {
     match cat.credits.as_array() {
         Some(c) if !c.is_empty() => cat.credits.clone(),
-        _ => serde_json::to_value(pipeline::rules::CREDITS).unwrap_or_default(),
+        _ => serde_json::to_value(inputs::rules::CREDITS).unwrap_or_default(),
     }
 }
 
@@ -1031,7 +1031,7 @@ async fn catalogue_h(State(s): State<S>) -> Response {
         "names": s.names.versions(),
         "v": fingerprint,
         "marks": marks,
-        // The depth's sources, by the code its class tiles carry (pipeline::depth): their labels,
+        // The depth's sources, by the code its class tiles carry (terrain::depth): their labels,
         // datums and the notices their licences ask the map to show.
         "depth": cat.meta.get("depth"),
     });
@@ -1123,7 +1123,7 @@ mod tests {
     #[test]
     fn the_default_port_is_not_8080() {
         // Other tools default to 8080; the docs, the status app, the bench and the dev proxy repeat this number.
-        assert_eq!(pipeline::net::DEFAULT_PORT, 7311); // (pool port: not bound)
+        assert_eq!(coordwire::net::DEFAULT_PORT, 7311); // (pool port: not bound)
     }
 
     #[test]
@@ -1172,7 +1172,7 @@ mod tests {
         for none in [serde_json::json!([]), serde_json::Value::Null] {
             c.credits = none;
             let all = credits_of(&c);
-            assert_eq!(all.as_array().map(Vec::len), Some(pipeline::rules::CREDITS.len()));
+            assert_eq!(all.as_array().map(Vec::len), Some(inputs::rules::CREDITS.len()));
             assert_eq!(all[0]["terms"], "© OpenStreetMap contributors, ODbL");
         }
         // Else its own.

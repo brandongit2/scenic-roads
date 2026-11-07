@@ -3,11 +3,11 @@
 //! server can answer them over its per-area columns. Each function is a port of the app's, value
 //! for value (web/src/basemap.ts landmarkScoreOf, heritageTierOf; web/src/stopfilters.ts).
 
-use pipeline::marks::{axis_pos, Axis, FilterDef, FilterKind as Kind, FILTERS};
+use codecs::marks::{axis_pos, Axis, FilterDef, FilterKind as Kind, FILTERS};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-pub use pipeline::marks::score;
+pub use codecs::marks::score;
 
 /// One filter's setting (min / max: 0 = no limit on that side).
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
@@ -121,8 +121,8 @@ impl FilterHists {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codecs::marks::heritage_tier;
     use det::Det;
-    use pipeline::marks::heritage_tier;
     use serde_json::json;
 
     fn props(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -207,7 +207,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use pipeline::marks::{self as pm, flag, Cell, MarkPt, MarkTile, KINDS};
+use codecs::marks::{self as pm, flag, Cell, MarkPt, MarkTile, KINDS};
 use rayon::prelude::*;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;

@@ -28,9 +28,9 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use buildstore::coverage::DrawnRegion;
+use buildstore::outlines::{flag, OutlineRec, Ring};
 use det::Det;
-use pipeline::coverage::DrawnRegion;
-use pipeline::outlines::{flag, OutlineRec, Ring};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -125,11 +125,11 @@ impl OutlineIndex {
 }
 
 /// The country or territory `o` lies in: its ISO 3166-1 code and its English (else own) name,
-/// the name that of the outline whose own code it is (`pipeline::outlines::own_code_of`: GP's
+/// the name that of the outline whose own code it is (`buildstore::outlines::own_code_of`: GP's
 /// outline is coded FR-971 but is Guadeloupe's), the lowest level first. Both "" for a country or
 /// territory itself, and for an outline in none.
 fn lies_in<'a>(recs: &[OutlineRec], string: impl Fn(u32) -> &'a str, o: &OutlineRec) -> (String, String) {
-    use pipeline::outlines::{country_of_string, own_code_of};
+    use buildstore::outlines::{country_of_string, own_code_of};
     if o.flags & flag::ISO1 != 0 {
         return (String::new(), String::new());
     }
@@ -157,7 +157,7 @@ pub fn spoken_from_outlines(data: &crate::data::Data, table: &names::Table) -> R
         }
         Ok(out)
     };
-    let areas = pipeline::outlines::spoken_areas(table, &ix.recs, |i| ix.string(i).to_owned(), polygons)?;
+    let areas = buildstore::outlines::spoken_areas(table, &ix.recs, |i| ix.string(i).to_owned(), polygons)?;
     Ok(Some(names::Spoken::build(table, areas)))
 }
 
@@ -233,7 +233,7 @@ pub struct Listed {
 }
 
 impl Listed {
-    fn of(r: &pipeline::inputs::regions::file::Region, path: String) -> Listed {
+    fn of(r: &inputs::inputs::regions::file::Region, path: String) -> Listed {
         Listed {
             id: r.id.clone(),
             name: r.name.clone(),
@@ -327,7 +327,7 @@ fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath, prev: &Listing) -> Resul
             Err(e) => return Err(e).with_context(|| format!("list {}", d.display())),
         };
         for it in items {
-            if pipeline::inputs::ignored(&it.name) || (rel.is_empty() && (it.name == "how" || it.name == "todo")) {
+            if inputs::inputs::ignored(&it.name) || (rel.is_empty() && (it.name == "how" || it.name == "todo")) {
                 continue;
             }
             let path = if rel.is_empty() { it.name.clone() } else { format!("{rel}/{}", it.name) };
@@ -335,7 +335,7 @@ fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath, prev: &Listing) -> Resul
                 stack.push((d.join(&it.name), path));
                 continue;
             }
-            if !it.name.ends_with(".toml") || pipeline::inputs::regions::resolve::special(&path).is_some() {
+            if !it.name.ends_with(".toml") || inputs::inputs::regions::resolve::special(&path).is_some() {
                 continue;
             }
             let modified =
@@ -354,7 +354,7 @@ fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath, prev: &Listing) -> Resul
                 Err(e) => return Err(e).with_context(|| format!("read {}", p.display())),
             };
             let read = match text.and_then(|t| {
-                pipeline::inputs::regions::file::parse(&it.name, &t)
+                inputs::inputs::regions::file::parse(&it.name, &t)
                     .map_err(|fs| anyhow::anyhow!(fs.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; ")))
             }) {
                 Ok(r) => Ok(Listed::of(&r, path.clone())),
@@ -428,7 +428,7 @@ pub async fn list(State(s): State<S>) -> Response {
 
 /// A region's land and water (km², on the authalic sphere: `geom::area_km2`) and its country (its
 /// first land shape's ISO 3166-1 code, else its first shape's; "" when none is known), from its
-/// stored geometry (pipeline::inputs::regions::stored: water shapes are those marked `water`, the
+/// stored geometry (inputs::inputs::regions::stored: water shapes are those marked `water`, the
 /// rest land).
 #[derive(serde::Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Sized {
@@ -438,8 +438,8 @@ pub struct Sized {
     pub country: String,
 }
 
-pub fn sized(g: &pipeline::inputs::regions::stored::Geometry) -> Sized {
-    use pipeline::inputs::regions::geom::{area_km2, Area};
+pub fn sized(g: &inputs::inputs::regions::stored::Geometry) -> Sized {
+    use inputs::inputs::regions::geom::{area_km2, Area};
     let (mut land, mut water) = (0.0, 0.0);
     for sh in &g.shapes {
         let rings: Vec<Vec<[i64; 2]>> =
@@ -474,7 +474,7 @@ fn read_sizes(s: &crate::AppState) -> std::collections::BTreeMap<String, Sized> 
 
 /// The accepted version kept on this Mac: each region file's path and its geometry's content name.
 fn geometry_names(s: &crate::AppState) -> std::collections::BTreeMap<String, String> {
-    let kept = pipeline::inputs::served::kept(&accepted_dir(s));
+    let kept = inputs::inputs::served::kept(&accepted_dir(s));
     kept.map(|k| k.index.files)
         .unwrap_or_default()
         .into_iter()
@@ -517,7 +517,7 @@ fn size_regions(s: &crate::AppState) {
             continue;
         }
         let read = store::PooledFile::new(root.join(g), pool.clone()).read_all();
-        match read.map_err(anyhow::Error::from).and_then(|b| pipeline::inputs::regions::stored::Geometry::decode(&b)) {
+        match read.map_err(anyhow::Error::from).and_then(|b| inputs::inputs::regions::stored::Geometry::decode(&b)) {
             Ok(geo) => {
                 sizes.insert(g.clone(), sized(&geo));
                 dirty = true;
@@ -541,17 +541,15 @@ fn size_regions(s: &crate::AppState) {
 fn records(
     s: &crate::AppState,
     pool: &IoPool,
-) -> Option<(Option<pipeline::inputs::Index>, Option<pipeline::inputs::Report>)> {
+) -> Option<(Option<inputs::inputs::Index>, Option<inputs::inputs::Report>)> {
     let root = s.data.nas_root()?;
-    let m = pipeline::inputs::served::manifest(&|p: &str| Ok(pool.read_all(&root.join(p))?)).ok()?;
+    let m = inputs::inputs::served::manifest(&|p: &str| Ok(pool.read_all(&root.join(p))?)).ok()?;
     let read = |p: &str| pool.read_all(&root.join(p)).ok();
-    let unit = pipeline::inputs::regions::UNIT;
+    let unit = inputs::inputs::regions::UNIT;
     let index =
-        m.get(&pipeline::inputs::logical(unit)).and_then(|n| read(n)).and_then(|b| serde_json::from_slice(&b).ok());
-    let held = m
-        .get(&pipeline::inputs::held_logical(unit))
-        .and_then(|n| read(n))
-        .and_then(|b| serde_json::from_slice(&b).ok());
+        m.get(&inputs::inputs::logical(unit)).and_then(|n| read(n)).and_then(|b| serde_json::from_slice(&b).ok());
+    let held =
+        m.get(&inputs::inputs::held_logical(unit)).and_then(|n| read(n)).and_then(|b| serde_json::from_slice(&b).ok());
     Some((index, held))
 }
 
@@ -582,28 +580,28 @@ fn states(s: &crate::AppState, pool: &IoPool, list: &mut Listing) {
 }
 
 /// The Regions list's tree (docs/inputs.md §6.1.2): the accepted version's folders, their names
-/// from their `_group.toml`, and their regions (pipeline::inputs::regions::read::tree), from the
+/// from their `_group.toml`, and their regions (inputs::inputs::regions::read::tree), from the
 /// copy kept on this Mac; with none yet, the folders of the files listed, by their own names.
-fn tree(s: &crate::AppState, listed: &[Listed]) -> pipeline::inputs::regions::read::Folder {
-    let kept = pipeline::inputs::served::kept(&accepted_dir(s));
+fn tree(s: &crate::AppState, listed: &[Listed]) -> inputs::inputs::regions::read::Folder {
+    let kept = inputs::inputs::served::kept(&accepted_dir(s));
     let index = kept.map(|k| k.index).unwrap_or_else(|| {
-        let mut i = pipeline::inputs::Index::default();
+        let mut i = inputs::inputs::Index::default();
         for l in listed {
             let mut facts = serde_json::Map::new();
             facts.insert("id".into(), l.id.clone().into());
             i.files.insert(
                 l.path.clone(),
-                pipeline::inputs::FileEntry { file: String::new(), size: 0, keyed: String::new(), facts },
+                inputs::inputs::FileEntry { file: String::new(), size: 0, keyed: String::new(), facts },
             );
         }
         i
     });
-    pipeline::inputs::regions::read::tree(&index)
+    inputs::inputs::regions::read::tree(&index)
 }
 
 /// Where this Mac keeps the regions' accepted version (its drawn files with it).
 fn accepted_dir(s: &crate::AppState) -> std::path::PathBuf {
-    crate::accepted::local_dir(&s.data.home, pipeline::inputs::regions::UNIT)
+    crate::accepted::local_dir(&s.data.home, inputs::inputs::regions::UNIT)
 }
 
 /// The regions' accepted version kept on this Mac in step with the records, with each region's
@@ -616,7 +614,7 @@ pub fn sync_accepted(s: &crate::AppState) {
     let read =
         |p: &str| -> anyhow::Result<Vec<u8>> { Ok(store::PooledFile::new(root.join(p), pool.clone()).read_all()?) };
     if let Err(e) =
-        pipeline::inputs::served::sync_with(&read, pipeline::inputs::regions::UNIT, &accepted_dir(s), &["drawn"])
+        inputs::inputs::served::sync_with(&read, inputs::inputs::regions::UNIT, &accepted_dir(s), &["drawn"])
     {
         eprintln!("regions: the accepted copy wasn't brought up to date: {e:#}");
     }
@@ -626,7 +624,7 @@ pub fn sync_accepted(s: &crate::AppState) {
 /// the listing of the inputs folder.
 pub fn is_disabled(s: &crate::AppState, id: &str) -> bool {
     let dir = accepted_dir(s);
-    let kept = pipeline::inputs::served::kept(&dir);
+    let kept = inputs::inputs::served::kept(&dir);
     if let Some(k) = kept {
         return k.index.files.values().any(|e| {
             e.facts.get("id").and_then(Value::as_str) == Some(id)
@@ -704,7 +702,7 @@ type MakeSources<'a> = Box<dyn FnOnce() -> (Vec<Source>, bool) + 'a>;
 /// another's key.
 fn sources(s: &crate::AppState) -> (String, MakeSources<'_>) {
     let dir = accepted_dir(s);
-    let kept = pipeline::inputs::served::kept(&dir);
+    let kept = inputs::inputs::served::kept(&dir);
     if let Some(kept) = kept {
         let key = format!("accepted {}", kept.version);
         let make = move || {
@@ -715,7 +713,7 @@ fn sources(s: &crate::AppState) -> (String, MakeSources<'_>) {
                 let disabled = e.facts.get("disabled").and_then(Value::as_bool).unwrap_or(false);
                 let Some(d) = std::fs::read(dir.join(drawn))
                     .ok()
-                    .and_then(|b| serde_json::from_slice::<pipeline::inputs::regions::stored::Drawn>(&b).ok())
+                    .and_then(|b| serde_json::from_slice::<inputs::inputs::regions::stored::Drawn>(&b).ok())
                 else {
                     whole = false;
                     continue;
@@ -803,13 +801,13 @@ fn rounding(tol_m: f64) -> f64 {
     10f64.powi(((roadcore::geo::M_PER_DEG / tol_m).dlog10() + 1.0).ceil().clamp(1.0, 7.0) as i32)
 }
 
-/// A ring simplified to `tol_m` metres (pipeline::outlines::simplify, on its 1e-7° grid), its
+/// A ring simplified to `tol_m` metres (buildstore::outlines::simplify, on its 1e-7° grid), its
 /// degrees rounded to a tenth of that (fewer digits to send).
 fn simplify_ring(r: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
     let grid: Vec<[i32; 2]> = r.iter().map(|p| [(p[0] * 1e7).round() as i32, (p[1] * 1e7).round() as i32]).collect();
     let k = rounding(tol_m);
     let round = |v: i32| (f64::from(v) * 1e-7 * k).round() / k;
-    pipeline::outlines::simplify(&grid, tol_m).into_iter().map(|p| [round(p[0]), round(p[1])]).collect()
+    buildstore::outlines::simplify(&grid, tol_m).into_iter().map(|p| [round(p[0]), round(p[1])]).collect()
 }
 
 /// A ring clipped to a box (Sutherland–Hodgman): what of it lies inside, closed, its cuts along the
@@ -1548,7 +1546,7 @@ mod tests {
 
     #[test]
     fn a_regions_land_and_water() {
-        use pipeline::inputs::regions::stored::{Geometry, Shape};
+        use inputs::inputs::regions::stored::{Geometry, Shape};
         // A 1° square at the equator (~12,364 km²) with a 0.5° hole, as land; a 1° square as water.
         let sq = |x: i32, y: i32, d: i32| vec![[x, y], [x + d, y], [x + d, y + d], [x, y + d]];
         let e = 10_000_000;
@@ -1593,8 +1591,8 @@ mod tests {
         ];
         std::fs::write(&geo, lines.iter().map(|l| format!("\u{1e}{l}\n")).collect::<String>()).unwrap();
         let out = d.path().join("o.sect");
-        pipeline::outlines::assemble_geojsonseq(&geo, &out).unwrap();
-        let o = pipeline::outlines::Outlines::open(&out).unwrap();
+        buildstore::outlines::assemble_geojsonseq(&geo, &out).unwrap();
+        let o = buildstore::outlines::Outlines::open(&out).unwrap();
         let at = |id| lies_in(&o.recs, |i| o.string(i), o.by_id(id).unwrap());
         let s = |a: &str, b: &str| (a.to_string(), b.to_string());
         assert_eq!(at(1), s("", ""), "a country lies in none");

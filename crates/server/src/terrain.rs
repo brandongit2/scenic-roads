@@ -1,13 +1,13 @@
 //! Terrarium DEM tiles for MapLibre's raster-dem sources (3D terrain, hillshade, tint), from the
-//! terrain layer's packs: lossless WebP as stored (pipeline::terrain_codec), down to each place's
-//! native zoom (its deep packs past z12: pipeline::terrain_deep). Tiles absent from the layer are
+//! terrain layer's packs: lossless WebP as stored (codecs::terrain_codec), down to each place's
+//! native zoom (its deep packs past z12: terrain::terrain_deep). Tiles absent from the layer are
 //! made from their nearest ancestor, encoded the same way, so the terrain surface never has holes;
 //! outside the data, a flat sea-level tile is returned. `?floor=1` and `?surface=1`: the depth's
 //! floor under the water and the water's surface over it (crate::depth).
 //!
 //!
 //! Shading tiles (the slope layer's, the terrain's shading, and `depth-shade`, the depth's:
-//! pipeline::shade_codec; each pixel's steepness and mean direction, which the map's slope tint and
+//! codecs::shade_codec; each pixel's steepness and mean direction, which the map's slope tint and
 //! hill-shading read) are served as stored, every level down to each place's finest; a tile the
 //! layer lacks (past its finest there, or a deep tile that can't be read now) is made from its
 //! nearest stored ancestor, scaled up, as the terrain's are; outside the layer, a flat one.
@@ -39,8 +39,8 @@ pub(crate) const SURFACE_UP: &str = "terrain-surface-up";
 type Made = Lru<(&'static str, u8, u32, u32, u64), bytes::Bytes>;
 pub(crate) static MADE: LazyLock<Mutex<Made>> = LazyLock::new(|| Mutex::new(Lru::new(256 << 20)));
 
-/// A tile's response: a terrain, shading or depth tile's WebP (pipeline::terrain_codec,
-/// pipeline::shade_codec, pipeline::depth::fall), else a PNG (a depth pack from before task #671).
+/// A tile's response: a terrain, shading or depth tile's WebP (codecs::terrain_codec,
+/// codecs::shade_codec, terrain::depth::fall), else a PNG (a depth pack from before task #671).
 fn image(b: impl Into<bytes::Bytes>, versioned: bool, etag: Option<&str>) -> Response {
     let b = b.into();
     let kind = if b.starts_with(b"RIFF") { "image/webp" } else { "image/png" };
@@ -48,9 +48,9 @@ fn image(b: impl Into<bytes::Bytes>, versioned: bool, etag: Option<&str>) -> Res
 }
 
 /// A terrain tile made here (from an ancestor, with the floor under the water, flat) as the stored
-/// ones are: lossless WebP, to the centimetre (pipeline::terrain_codec).
+/// ones are: lossless WebP, to the centimetre (codecs::terrain_codec).
 pub fn encode(mut e: Vec<f32>) -> anyhow::Result<Vec<u8>> {
-    pipeline::terrain_codec::encode(&mut e, pipeline::terrain_codec::NATIVE_M)
+    codecs::terrain_codec::encode(&mut e, codecs::terrain_codec::NATIVE_M)
 }
 
 fn flat() -> Vec<u8> {
@@ -67,12 +67,12 @@ pub fn terrain_stored(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Res
     Ok(s.data.tile("terrain", z, x, y)?.map(|(b, _)| b.bytes().to_vec()))
 }
 
-/// The terrain's deep zooms (pipeline::terrain_deep's deep packs, z13 on; a deep z12, north of 67°,
+/// The terrain's deep zooms (terrain::terrain_deep's deep packs, z13 on; a deep z12, north of 67°,
 /// is in the hi packs): read from this Mac where a region's terrain detail is downloaded
 /// (crate::downloads), else from the NAS; away from it, or where a read fails, a tile there is made
 /// from its ancestor in the hi packs.
 fn deep_zoom(z: u8) -> bool {
-    z >= pipeline::terrain_deep::FIRST_Z
+    z >= ::terrain::terrain_deep::FIRST_Z
 }
 
 /// Terrain heights (m) of a tile, from its nearest stored ancestor when it isn't stored, or is a
@@ -267,7 +267,7 @@ pub async fn terrain_tile(
     let (floor, surface) = (has("floor=1"), has("surface=1"));
     let s2 = s.clone();
     let got = tokio::task::spawn_blocking(move || {
-        if floor && s.data.catalogue().layers.contains_key(pipeline::depth::LAYER) {
+        if floor && s.data.catalogue().layers.contains_key(::terrain::depth::LAYER) {
             return made_keep(FLOOR, gen(&s), z, x, y, || {
                 Ok(Some(crate::depth::terrain_floor(&s, z, x, y)?.unwrap_or_else(|| (flat(), true))))
             });
@@ -304,7 +304,7 @@ pub async fn terrain_tile(
     respond(got, v)
 }
 
-/// Whether a stored shading tile is in the shading's encoding (pipeline::shade_codec: WebP). A tile
+/// Whether a stored shading tile is in the shading's encoding (codecs::shade_codec: WebP). A tile
 /// of a pack from before it (`slope4-png`, until its step is rebuilt) is read as none, as a parent
 /// and as itself: its PNG isn't decodable as shading.
 fn is_shade(b: &[u8]) -> bool {
@@ -327,7 +327,7 @@ fn none_once(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32, why: &dyn 
 /// Why a stored shading tile isn't shading: its first bytes.
 fn not_shade(b: &[u8]) -> String {
     let kind = if b.starts_with(b"\x89PNG") { "a PNG" } else { "not WebP" };
-    format!("{kind}, not {}: a pack from before it, until its step is rebuilt", pipeline::shade_codec::ENCODING)
+    format!("{kind}, not {}: a pack from before it, until its step is rebuilt", codecs::shade_codec::ENCODING)
 }
 
 /// A shading tile's pixels made from its nearest stored ancestor in `layer` (up to eight levels
@@ -360,7 +360,7 @@ pub fn shade_from_ancestor(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u
                 continue;
             }
         };
-        return Ok(Some(pipeline::shade_codec::encode(&roadcore::shade::upsampled(&p, dz, x, y))?));
+        return Ok(Some(codecs::shade_codec::encode(&roadcore::shade::upsampled(&p, dz, x, y))?));
     }
     Ok(None)
 }
@@ -379,9 +379,9 @@ pub async fn shade_tile(
 ) -> Response {
     let v = cache::versioned(q.as_deref());
     let flat =
-        || FLAT_SHADE.get_or_init(|| pipeline::shade_codec::encode(&vec![Default::default(); 65536]).unwrap()).clone();
+        || FLAT_SHADE.get_or_init(|| codecs::shade_codec::encode(&vec![Default::default(); 65536]).unwrap()).clone();
     let got = tokio::task::spawn_blocking(move || {
-        match stored(&s, layer, z, x, y, &headers, &format!("-{}", pipeline::shade_codec::ENCODING)) {
+        match stored(&s, layer, z, x, y, &headers, &format!("-{}", codecs::shade_codec::ENCODING)) {
             Some(Got::Stored(b, _)) if !is_shade(&b) => none_once(&s, layer, z, x, y, &not_shade(&b)),
             Some(Got::Failed) if deep_zoom(z) => {}
             Some(g) => return Some(g),
@@ -409,11 +409,11 @@ pub async fn depth_shade_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    shade_tile(s, pipeline::depth::SHADE_LAYER, z, x, y, q, headers).await
+    shade_tile(s, ::terrain::depth::SHADE_LAYER, z, x, y, q, headers).await
 }
 
 /// A polar cap's tile (`/tiles/polar-terrain/{pole}/{z}/{x}/{y}`, `/tiles/polar-slope/…`: the
-/// catalogue's `polar-<kind>-<pole>`, pipeline::polar): as stored, else none (204: past the cap, or not
+/// catalogue's `polar-<kind>-<pole>`, terrain::polar): as stored, else none (204: past the cap, or not
 /// built; the map draws the tile's loaded ancestor). Nothing is made here: a renderer of any
 /// projection reads the grid's tiles as they are.
 #[allow(clippy::too_many_arguments)]
@@ -429,7 +429,7 @@ async fn polar_tile(
 ) -> Response {
     let Some(pole) = roadcore::polar::Pole::of_letter(pole) else { return StatusCode::NOT_FOUND.into_response() };
     let v = cache::versioned(q.as_deref());
-    let layer = pipeline::polar::layer(kind, pole);
+    let layer = ::terrain::polar::layer(kind, pole);
     let got = tokio::task::spawn_blocking(move || stored(&s, &layer, z, x, y, &headers, ""))
         .await
         .unwrap_or(Some(Got::Failed));
@@ -480,7 +480,7 @@ mod tests {
         let fs = pack(&root.unchecked_path().join(&fc), &[(13, 296 * 8, 360 * 8, 100.0)]);
         let mut cat = store::catalogue::Catalogue::new(1);
         let mut l = store::catalogue::Layer {
-            encoding: pipeline::terrain_codec::ENCODING.into(),
+            encoding: codecs::terrain_codec::ENCODING.into(),
             maxzoom: 16,
             ..Default::default()
         };
@@ -524,7 +524,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut w = store::pack::PackWriter::create(path, serde_json::json!({"layer": layer}), false).unwrap();
         for &(z, x, y, sl) in tiles {
-            let b = pipeline::shade_codec::encode(&vec![roadcore::shade::Px { s: sl, u: [1.0, 0.0] }; 65536]).unwrap();
+            let b = codecs::shade_codec::encode(&vec![roadcore::shade::Px { s: sl, u: [1.0, 0.0] }; 65536]).unwrap();
             w.add(z, x, y, &b, b.len() as u32).unwrap();
         }
         w.finish().unwrap();
@@ -542,7 +542,7 @@ mod tests {
         let ds = shade_pack(&root.path().join(&dc), "slope", &[(13, 296 * 8, 360 * 8, 80.0)]);
         let mut cat = store::catalogue::Catalogue::new(1);
         let mut l = store::catalogue::Layer {
-            encoding: pipeline::shade_codec::ENCODING.into(),
+            encoding: codecs::shade_codec::ENCODING.into(),
             maxzoom: 16,
             ..Default::default()
         };
@@ -588,12 +588,12 @@ mod tests {
         let (root, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let mut cat = store::catalogue::Catalogue::new(1);
         let mut l = store::catalogue::Layer {
-            encoding: pipeline::shade_codec::ENCODING.into(),
+            encoding: codecs::shade_codec::ENCODING.into(),
             maxzoom: 16,
             ..Default::default()
         };
         let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\x01\0\0\0\x01\0\x08\x06\0\0\0".to_vec();
-        let webp = pipeline::shade_codec::encode(&vec![roadcore::shade::Px { s: 30.0, u: [1.0, 0.0] }; 65536]).unwrap();
+        let webp = codecs::shade_codec::encode(&vec![roadcore::shade::Px { s: 30.0, u: [1.0, 0.0] }; 65536]).unwrap();
         let bad = b"RIFF\x10\0\0\0WEBPVP8L\x04\0\0\0junk".to_vec();
         for (i, (y6, b)) in [(22u32, &webp), (23, &png), (24, &bad)].into_iter().enumerate() {
             let key = format!("6/18/{y6}");

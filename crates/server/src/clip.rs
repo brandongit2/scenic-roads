@@ -122,7 +122,7 @@ pub fn tile(
     let raw = names::mvt::gunzip_if_gzip(blob)?;
     let out = match encoding {
         "terrarium-webp" => {
-            let nothing = if layer == pipeline::depth::LAYER { pipeline::depth::NODATA } else { 0.0 };
+            let nothing = if layer == ::terrain::depth::LAYER { ::terrain::depth::NODATA } else { 0.0 };
             raster(&raw, z, x, y, cells, &roadcore::grid::terrarium_rgb(&[nothing]))?
         }
         "shade-webp" => raster(&raw, z, x, y, cells, &roadcore::shade::rgb(&[roadcore::shade::Px::default()]))?,
@@ -187,9 +187,9 @@ fn webp_rgb(b: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
     Ok((rgb, w, h))
 }
 
-/// The tiles' lossless preset (pipeline::terrain_codec::LEVEL, the shading's alike).
+/// The tiles' lossless preset (codecs::terrain_codec::LEVEL, the shading's alike).
 fn webp(rgb: &[u8], w: u32, h: u32) -> Result<Vec<u8>> {
-    webpenc::lossless_rgb8(rgb, w, h, pipeline::terrain_codec::LEVEL).map_err(|m| anyhow::anyhow!(m))
+    webpenc::lossless_rgb8(rgb, w, h, codecs::terrain_codec::LEVEL).map_err(|m| anyhow::anyhow!(m))
 }
 
 /// A raster tile of one plane (terrain, depth, shading, classes, tree cover, water), its pixels
@@ -586,7 +586,7 @@ fn in_tile(z: u8, x: u32, y: u32, lon: f64, lat: f64) -> [f64; 2] {
 /// A landmarks tile (`rdmt`, codecs::marks) clipped to the cells: its points and speck cells
 /// outside go.
 fn marks(raw: &[u8], z: u8, x: u32, y: u32, cells: &Cells) -> Result<Vec<u8>> {
-    use pipeline::marks::{deg, MarkTile, CELL_DZ};
+    use codecs::marks::{deg, MarkTile, CELL_DZ};
     let t = MarkTile::decode(raw)?;
     let rects = cells.rects(z, x, y, Some(MARGIN));
     let held = |p: [f64; 2]| rects.iter().any(|r| inside(r, p));
@@ -636,7 +636,7 @@ fn joined(mut pieces: Vec<Vec<([f64; 2], usize, f64)>>) -> Vec<Vec<[f64; 2]>> {
     out
 }
 
-/// A block of ferries (`geojson-gz`, pipeline::ovconv: lines and terminals, and their lines'
+/// A block of ferries (`geojson-gz`, landmarks::ovconv: lines and terminals, and their lines'
 /// records) clipped to the cells (all of them: a block reaches 30 km past its tile, and a way is
 /// the same in every block). A way cut in pieces keeps its longest stretch inside them (the map
 /// draws a way as one line; one crossing between two of their rectangles is one stretch); a terminal outside goes, and the records of no way kept.
@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn a_raster_keeps_its_pixels_inside() {
         let mut e = vec![123.0f32; 65536];
-        let b = pipeline::terrain_codec::encode(&mut e, 0.1).unwrap();
+        let b = codecs::terrain_codec::encode(&mut e, 0.1).unwrap();
         let out = tile("terrarium-webp", "terrain", 5, 0, 0, &b, false, &cells(6, &[(1, 1)])).unwrap();
         let back = roadcore::grid::decode_terrain(&out).unwrap();
         assert_eq!(back[0], 0.0);
@@ -799,7 +799,7 @@ mod tests {
         assert_eq!((back[200 * 256 + 20], back[20 * 256 + 20], back[200 * 256 + 200]), (50.0, 0.0, 0.0));
         let water = png(&[200, 30].repeat(512 * 512), png::ColorType::GrayscaleAlpha, 512);
         let out = tile("water-png", "water", 5, 0, 0, &water, false, &cells(6, &[(1, 0)])).unwrap();
-        let c = pipeline::water::Cov::from_png(&out).unwrap();
+        let c = inputs::water::Cov::from_png(&out).unwrap();
         assert_eq!((c.value_at(400, 10), c.value_at(10, 10), c.value_at(400, 400)), ((200, 30), (0, 0), (0, 0)));
     }
 

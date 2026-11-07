@@ -1,5 +1,5 @@
 //! The server follows the map's log (docs/maplog.md §5, §6.1): a thread long-polls the lead's
-//! coordinator (`GET /map/changes`, pipeline::coord::maproutes), applies each answer's batches whole
+//! coordinator (`GET /map/changes`, agentcore::coord::maproutes), applies each answer's batches whole
 //! to its own map (each checked by its digest; one that doesn't apply fetches the snapshot), and
 //! hands the result on as one catalogue, swapped whole (`Data::set_map`): a request never reads a
 //! torn set. Its requests say its cursor (`client=server/<host>`). It runs wherever the server runs:
@@ -306,7 +306,7 @@ struct Link {
     lead: Lead,
     /// Where the lead's contact is kept for a start away from the NAS.
     cache: Option<PathBuf>,
-    contact: Option<pipeline::coord::Contact>,
+    contact: Option<coordwire::Contact>,
 }
 
 impl Link {
@@ -316,18 +316,15 @@ impl Link {
 
     /// The lead's addresses and key: fixed, or as the NAS says (kept on this Mac), read again
     /// after the lead didn't answer.
-    fn contact(&mut self) -> Option<pipeline::coord::Contact> {
+    fn contact(&mut self) -> Option<coordwire::Contact> {
         if let Lead::At { urls, token } = &self.lead {
-            return Some(pipeline::coord::Contact { urls: urls.clone(), token: token.clone(), page: None });
+            return Some(coordwire::Contact { urls: urls.clone(), token: token.clone(), page: None });
         }
         if self.contact.is_none() {
             let kept = self.cache.as_ref().map(|d| d.join(LEAD_KEPT));
-            let from_nas = self
-                .d
-                .nas_root()
-                .filter(|_| self.d.online())
-                .and_then(|r| pipeline::coord::contact_path(&r).read().ok());
-            let read = from_nas.as_deref().and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(b).ok());
+            let from_nas =
+                self.d.nas_root().filter(|_| self.d.online()).and_then(|r| coordwire::contact_path(&r).read().ok());
+            let read = from_nas.as_deref().and_then(|b| serde_json::from_slice::<coordwire::Contact>(b).ok());
             if let (Some(c), Some(k)) = (&read, &kept) {
                 // (Written only when it changed: this is read again each `retry` while the lead's away.)
                 if let (Some(dir), Ok(b)) = (k.parent(), serde_json::to_vec(c)) {
@@ -396,12 +393,8 @@ pub struct MirrorLink {
 impl MirrorLink {
     /// The mirror's link, for the server following the lead of `cfg` (its cursor `mirror/<host>`).
     pub fn new(d: Arc<Data>, cfg: &Config) -> MirrorLink {
-        let host = cfg.client.strip_prefix(pipeline::agent::SERVER_CURSOR).unwrap_or(&cfg.client);
-        MirrorLink {
-            link: Link::new(d, cfg),
-            client: format!("{}{host}", pipeline::agent::MIRROR_CURSOR),
-            synced: None,
-        }
+        let host = cfg.client.strip_prefix(store::map::feed::SERVER).unwrap_or(&cfg.client);
+        MirrorLink { link: Link::new(d, cfg), client: format!("{}{host}", store::map::feed::MIRROR), synced: None }
     }
 
     /// Says the cursor (`since`) and the map the round copies: the lead's head when it answers a

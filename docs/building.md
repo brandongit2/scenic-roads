@@ -185,7 +185,7 @@ from the first (`edit_held`).
     writing to the NAS check no space before writing (depth, terrain and its deep packs, the OSM pass's
     upload, `fabdem-fetch`), so it doesn't bind them yet.
   - **With the mirror's reserve** (docs/macs.md, Mirror): the map server's mirror keeps the larger
-    of its reserve and this target free (`settings::RoomTarget`, read again at most every 5 s), so a
+    of its reserve and this target free (`buildstore::room::RoomTarget`, read again at most every 5 s), so a
     download never fills room the agent freed. The mirror deletes nothing for the target, and the
     agent never touches the mirror.
   - A clear or freeing runs on its own thread; jobs run meanwhile. Nothing goes through a link.

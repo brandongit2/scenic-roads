@@ -323,7 +323,7 @@ pub(crate) fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
             changed |= put_names(s, props, key, own.as_deref(), at, "");
             changed |= put_names(s, props, "cn", None, at, "c");
         }
-        // A ferry block's lines (pipeline::ovconv) too.
+        // A ferry block's lines (landmarks::ovconv) too.
         if let Some(lines) = v.get_mut("lines").and_then(|l| l.as_object_mut()) {
             for l in lines.values_mut() {
                 let Some(o) = l.as_object_mut() else { continue };

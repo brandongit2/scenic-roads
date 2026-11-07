@@ -68,13 +68,13 @@
 //!   the basemap's zooms 11–14 over those tiles; zoomed out, its pieces over those tiles of every
 //!   layer's root and lo packs (what a terrain or shading tile without its own is made from, and
 //!   the labels the place search reads there) and of the basemap's zooms 0–10 (store::pieces;
-//!   pipeline::areafiles::pieces_of); and what the map reads of the World's files
-//!   (pipeline::areafiles::files_of). A tile of zooms 0–5 reaches past its z6 tiles: away from
+//!   inputs::areafiles::pieces_of); and what the map reads of the World's files
+//!   (inputs::areafiles::files_of). A tile of zooms 0–5 reaches past its z6 tiles: away from
 //!   the NAS one is cut to them as it's served (Data::reaches and Data::cut, set each round:
 //!   `reach`).
 //! - **A region's terrain detail** (`detail_of`), an add-on to its download: the terrain's deep
-//!   packs (pipeline::terrain_deep, z13 and finer, by z10 tile) within 2 km of it, and their
-//!   shading's (the slope layer's deep packs: pipeline::slope_pack). They cover only parts of a
+//!   packs (terrain::terrain_deep, z13 and finer, by z10 tile) within 2 km of it, and their
+//!   shading's (the slope layer's deep packs: terrain::slope_pack). They cover only parts of a
 //!   region; its terrain to z12 (the hi packs) is the rest and every zoom to z12, so it needs the
 //!   region: downloaded only while the region is. Copied after every other download.
 
@@ -87,7 +87,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use pipeline::areafiles::{box_meets, detail_of, files_of, outer_rings, pieces_of, tiles_meeting, Files, NEAR_KM};
+use inputs::areafiles::{box_meets, detail_of, files_of, outer_rings, pieces_of, tiles_meeting, Files, NEAR_KM};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -848,7 +848,7 @@ impl Downloads {
 
 /// Where the downloads of `asked` reach (Data::reach): everywhere with the World, else the z6 tiles
 /// of the regions downloaded as `cat` records them (their pieces', `area_part`), and the polar
-/// caps' blocks they meet (their polar blocks', pipeline::areafiles). Only those regions' outlines
+/// caps' blocks they meet (their polar blocks', inputs::areafiles). Only those regions' outlines
 /// are read: known at once, not after a plan of every region.
 fn reach(asked: &Asked, cat: &Catalogue) -> Reach {
     if asked.world.is_some() {
@@ -859,13 +859,13 @@ fn reach(asked: &Asked, cat: &Catalogue) -> Reach {
     let rings: Vec<Vec<Vec<[f64; 2]>>> = recorded
         .iter()
         .filter(|r| r["id"].as_str().is_some_and(|id| ids.contains(id)))
-        .filter_map(|r| serde_json::from_value::<pipeline::coverage::DrawnRegion>(r.clone()).ok())
+        .filter_map(|r| serde_json::from_value::<buildstore::coverage::DrawnRegion>(r.clone()).ok())
         .map(|r| outer_rings(&r))
         .collect();
     let tiles = rings.iter().flat_map(|r| tiles_meeting(r, NEAR_KM));
     let blocks = rings.iter().flat_map(|r| {
         [roadcore::polar::Pole::North, roadcore::polar::Pole::South].into_iter().flat_map(move |p| {
-            pipeline::areafiles::polar_blocks_meeting(r, p, NEAR_KM).into_iter().map(move |(x, y)| (p.letter(), x, y))
+            inputs::areafiles::polar_blocks_meeting(r, p, NEAR_KM).into_iter().map(move |(x, y)| (p.letter(), x, y))
         })
     });
     Reach::Tiles(Arc::new(crate::data::Footprint::of(tiles, blocks)))
@@ -1157,7 +1157,7 @@ fn world_part(cat: &Catalogue) -> Part {
 /// A region's download (`rings`, each read as a filled area): its files, with the base packs and
 /// road values of `units` (the owners of its ways, `Downloads::learn_owners`), then its pieces of
 /// worldwide files, those over its z6 tiles alone (store::pieces): of the layers' roots and lo packs
-/// (pipeline::areafiles::pieces_of), and of the basemap at every zoom.
+/// (inputs::areafiles::pieces_of), and of the basemap at every zoom.
 fn area_part(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> Part {
     let tiles = tiles_meeting(rings, NEAR_KM);
     let mut files: BTreeMap<String, u64> = files_of(cat, rings).names.into_iter().collect();
@@ -1655,7 +1655,7 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
 /// catalogue served; an Update brings those of the tiles built since.
 pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
     blocking(s, move |s| {
-        ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
+        ensure!(buildstore::recipes::valid_id(&id), "{id:?} isn't a region id");
         ensure!(s.data.mirror.is_some(), "this server keeps no copy of the map (--no-mirror)");
         ensure!(
             !(q.on && crate::regions::is_disabled(s, &id)),
@@ -1696,7 +1696,7 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
 /// removes it (the region stays).
 pub async fn put_region_detail(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
     blocking(s, move |s| {
-        ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
+        ensure!(buildstore::recipes::valid_id(&id), "{id:?} isn't a region id");
         ensure!(s.data.mirror.is_some(), "this server keeps no copy of the map (--no-mirror)");
         let mut next = s.downloads.asked();
         let at = next.regions.iter().position(|r| r.id == id);
@@ -1756,7 +1756,7 @@ pub async fn post_world_update(State(s): State<S>) -> Response {
 
 pub async fn post_region_update(State(s): State<S>, Path(id): Path<String>) -> Response {
     blocking(s, move |s| {
-        ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
+        ensure!(buildstore::recipes::valid_id(&id), "{id:?} isn't a region id");
         let what = region_name(s, &id);
         update(s, Which::Region(id), &what)
     })
@@ -1765,7 +1765,7 @@ pub async fn post_region_update(State(s): State<S>, Path(id): Path<String>) -> R
 
 pub async fn post_detail_update(State(s): State<S>, Path(id): Path<String>) -> Response {
     blocking(s, move |s| {
-        ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
+        ensure!(buildstore::recipes::valid_id(&id), "{id:?} isn't a region id");
         let what = format!("the terrain detail of {}", region_name(s, &id));
         update(s, Which::Detail(id), &what)
     })

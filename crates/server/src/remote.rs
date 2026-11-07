@@ -1,6 +1,6 @@
 //! The map on other devices: an iPhone, an iPad (docs/macs.md, Devices). The server listens
 //! beyond this Mac and answers this Mac, its LAN and the tailnet alone, also through a proxy on
-//! this Mac (`tailscale serve`), from those alone (pipeline::net::reached).
+//! this Mac (`tailscale serve`), from those alone (coordwire::net::reached).
 //!
 //! The address to open on a device (`<home>/map-page`, the status menu's Copy the Map's Address,
 //! `scenic status`): over HTTPS where `tailscale serve` proxies the server, else its tailnet address.
@@ -29,14 +29,14 @@ impl Remote {
     }
 
     /// The address to open on a device, written to `<home>/map-page` (0600) when it changes: the
-    /// public name a proxy on this Mac serves it under (pipeline::net::names, tools/caddy), else the
+    /// public name a proxy on this Mac serves it under (coordwire::net::names, tools/caddy), else the
     /// HTTPS one where `tailscale serve` proxies `port`, else the tailnet's (or the LAN name's).
     pub fn write_page(&self, port: u16) {
-        let base = pipeline::net::names()
+        let base = coordwire::net::names()
             .first()
             .map(|n| format!("https://{n}/"))
-            .or_else(|| pipeline::net::served_https(port))
-            .or_else(|| pipeline::net::urls(port).first().map(|u| format!("{u}/")));
+            .or_else(|| coordwire::net::served_https(port))
+            .or_else(|| coordwire::net::urls(port).first().map(|u| format!("{u}/")));
         let Some(base) = base else { return };
         let text = format!("{base}\n");
         if std::fs::read_to_string(&self.page).ok().as_deref() != Some(text.as_str())
@@ -49,10 +49,10 @@ impl Remote {
     }
 }
 
-// (Who may be answered and what a request must name: pipeline::net, the lead's coordinator's
+// (Who may be answered and what a request must name: coordwire::net, the lead's coordinator's
 // too.)
-pub use pipeline::net::local_origin;
-use pipeline::net::{from_the_page, ours, reached};
+pub use coordwire::net::local_origin;
+use coordwire::net::{from_the_page, ours, reached};
 
 /// Every request, first: refused from anywhere but this Mac, its LAN and the tailnet, naming
 /// another address, or from a page elsewhere.
@@ -148,7 +148,7 @@ mod tests {
         Remote::new(d.path()).write_page(8080);
         let page = std::fs::read_to_string(d.path().join("map-page")).unwrap();
         // (No address at all on a Mac without a network: the old one stays, and isn't this test's.)
-        if pipeline::net::urls(8080).first().is_some() || pipeline::net::served_https(8080).is_some() {
+        if coordwire::net::urls(8080).first().is_some() || coordwire::net::served_https(8080).is_some() {
             assert!(!page.contains("#k="), "{page}");
         }
     }

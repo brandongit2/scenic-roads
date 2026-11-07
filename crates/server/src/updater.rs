@@ -1,11 +1,11 @@
 //! The map server's app (docs/macs.md, The updater): it runs from a local copy of the published
 //! app (`<home>/app/<version>/`, through `<home>/app/current`, which the launcher runs). Every five
-//! minutes it checks for a newer one (pipeline::appupdate, which the agent runs too, one check at a
+//! minutes it checks for a newer one (jobrt::appupdate, which the agent runs too, one check at a
 //! time); once `current` names another version than its own, it exits when the map has been idle
 //! a minute, and the launcher starts the new one. A server on demand runs none of this (no launcher
 //! would start it again): it quits once unused (`quit_when_unused`), and its next start runs the
 //! newest app. Pruning keeps its version meanwhile (it runs
-//! from it: pipeline::appupdate::running_versions).
+//! from it: jobrt::appupdate::running_versions).
 
 use crate::data::Data;
 use std::path::{Path, PathBuf};
@@ -72,7 +72,7 @@ impl Updater {
     pub fn new(home: &Path) -> Arc<Updater> {
         // (Starting isn't a use: until a request comes, the server warms nothing and polls the
         // NAS at the idle rate.)
-        Arc::new(Updater { home: home.to_path_buf(), running: pipeline::appupdate::running_version(home) })
+        Arc::new(Updater { home: home.to_path_buf(), running: jobrt::appupdate::running_version(home) })
     }
 
     pub fn running(&self) -> Option<&str> {
@@ -101,7 +101,7 @@ impl Updater {
                     if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
                         last = Some(std::time::Instant::now());
                         if let Some(root) = data.nas_root() {
-                            if let Err(e) = pipeline::appupdate::check(&me.home, &root, &running) {
+                            if let Err(e) = jobrt::appupdate::check(&me.home, &root, &running) {
                                 eprintln!("app update: {e:#}");
                             }
                         }

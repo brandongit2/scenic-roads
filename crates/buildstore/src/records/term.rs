@@ -1,18 +1,82 @@
 //! Terms as a reader of the records finds them (docs/pool.md §6.1): a term is a file made once with
 //! create-new and never changed, `state/build/terms/<E>.json`; the current term is the highest that
 //! exists. A Mac learns it once (`current`), then checks only the next (`next`, a stat): nobody
-//! writes a lower term, and no Mac's view goes back. Making terms and the declared lead are the
-//! pool's (pipeline::pool::term, which re-exports these; task #916 step 6a, docs/crates.md §6).
+//! writes a lower term, and no Mac's view goes back. The lead is declared once (`declared`), and a
+//! Mac's role is by that declaration (`role`; step 7a: the map server's retire check reads it too).
+//! Making terms is the pool's (agentcore::pool::term, which re-exports these; task #916 step 6a,
+//! docs/crates.md §6).
 
-use super::nas::Nas;
+use super::nas::{Created, Nas};
 use super::Member;
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// The folder of the terms (once it's there, no step saves the records, crate::out::check_writer).
 pub const DIR: &str = crate::out::TERMS;
 /// The lead's hint: the term it made or took up, for old apps and to save a listing.
 pub const HINT: &str = "state/build/lead.json";
+
+/// The declaration of the lead (`Declared`): which member leads, for good.
+pub const LEAD: &str = "state/build/lead-member.json";
+
+/// The declared lead: the one member that makes terms and leads them. Written once with create-new
+/// (`declare`) by term 1's maker in a new pool; in a pool past term 1 with none (the move to a
+/// fixed lead), by the owner, by hand, as is moving the lead to another Mac.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Declared {
+    /// Its member id.
+    pub member: String,
+    /// Its host name: a label.
+    #[serde(default)]
+    pub host: String,
+    /// When it was declared (unix seconds, by the declaring Mac's clock).
+    #[serde(default)]
+    pub since: u64,
+}
+
+/// The declared lead; None when there's no declaration yet (or it can't be read whole: being made).
+pub fn declared(nas: &dyn Nas) -> Result<Option<Declared>> {
+    Ok(nas.read(LEAD)?.and_then(|b| serde_json::from_slice::<Declared>(&b).ok()).filter(|d| !d.member.is_empty()))
+}
+
+/// This Mac's role (docs/roles.md §1), decided once as its agent starts and by the server's retire
+/// check: the declared lead's member (`declared`) against this Mac's own (`me`, its member file).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// The declared lead: it plans, coordinates and serves.
+    Lead,
+    /// Another member is declared: this Mac works only.
+    Member,
+    /// Not known: the declaration or this Mac's member id unread (no NAS, no member file yet, no
+    /// declaration). It runs a member's parts (a subset of the lead's) until it is known.
+    Unknown,
+}
+
+/// This Mac's role: `me` its member id (None: no member file yet).
+pub fn role(nas: &dyn Nas, me: Option<&str>) -> Role {
+    role_of(declared(nas).ok().flatten().map(|d| d.member).as_deref(), me)
+}
+
+/// The role by the declared lead's member id (None: unread or none declared) and this Mac's.
+pub fn role_of(lead: Option<&str>, me: Option<&str>) -> Role {
+    match (lead, me) {
+        (Some(l), Some(m)) if l == m => Role::Lead,
+        (Some(_), Some(_)) => Role::Member,
+        _ => Role::Unknown,
+    }
+}
+
+/// Declares `me` the lead when no lead is declared yet (create-new: one declaration, but for the
+/// owner's hand): the declaration there now, this one or an earlier.
+pub fn declare(nas: &dyn Nas, me: &Member, now: u64) -> Result<Option<Declared>> {
+    let d = serde_json::to_vec_pretty(&Declared { member: me.id.clone(), host: me.host.clone(), since: now })?;
+    if let Created::Unwritten(e) = nas.create_new(LEAD, &d)? {
+        // (Its create made the file and its bytes didn't land: no other create can win it.)
+        nas.write_whole(LEAD, &d).with_context(|| format!("{e:#}"))?;
+    }
+    declared(nas)
+}
 
 /// A term's file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

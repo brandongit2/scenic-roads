@@ -24,7 +24,7 @@ fn a_build_with_the_dev_dependencies_has_no_test_time_behaviour() {
 /// start-up constructor (`TEST_START`): in any file of a crate (its library, binaries, tests,
 /// examples, build script); else it is true only in buildstore's own unit tests, its initial value.
 /// So it is true only in some crate's unit tests; and no crate with a `TEST_START` links agentcore
-/// but agentcore and pipeline (server's unit tests, which do link both, have none). Binaries and
+/// but agentcore and pipeline (server's unit tests, which link agentcore, have none). Binaries and
 /// integration tests: the test above.
 #[test]
 fn only_the_runtime_s_and_pipeline_s_unit_tests_run_testing() {

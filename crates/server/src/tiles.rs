@@ -75,7 +75,7 @@ pub async fn rail_tile(
     plain(s, "rails".into(), z, x, y, q, headers, "application/octet-stream").await
 }
 
-/// The 3D buildings' field (pipeline::bld::field): `field5-webp` tiles, levels 4–14, as stored.
+/// The 3D buildings' field (bld::bld::field): `field5-webp` tiles, levels 4–14, as stored.
 pub async fn building_field_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
@@ -85,7 +85,7 @@ pub async fn building_field_tile(
     plain(s, "buildings-field".into(), z, x, y, q, headers, "application/octet-stream").await
 }
 
-/// The 3D buildings (pipeline::bld): gzip'd MVT, layer `b`, served as stored (no names).
+/// The 3D buildings (bld::bld): gzip'd MVT, layer `b`, served as stored (no names).
 pub async fn building_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
@@ -114,7 +114,7 @@ pub async fn tree_tile(
 type Key = (u8, u8, u32, u32, u64, u64);
 static MADE: LazyLock<Mutex<Lru<Key, bytes::Bytes>>> = LazyLock::new(|| Mutex::new(Lru::new(192 << 20)));
 
-/// Labels by importance (pipeline::labels): gzip'd MVT, one layer "l", name n, OSM's English en.
+/// Labels by importance (landmarks::labels): gzip'd MVT, one layer "l", name n, OSM's English en.
 pub async fn label_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
@@ -124,7 +124,7 @@ pub async fn label_tile(
     named_mvt_tile(s, "labels".into(), crate::names_live::Rules::Labels, z, x, y, q, headers).await
 }
 
-/// Ferries by view (pipeline::ovconv): a block of gzip'd GeoJSON (the ways touching the tile, the
+/// Ferries by view (landmarks::ovconv): a block of gzip'd GeoJSON (the ways touching the tile, the
 /// terminals near it, its lines' records), names attached.
 pub async fn ferry_block(
     State(s): State<S>,
@@ -149,7 +149,7 @@ pub async fn ferry_block(
     .await
 }
 
-/// Rail stops by view (pipeline::ovconv): gzip'd MVT, layer "s", name n.
+/// Rail stops by view (landmarks::ovconv): gzip'd MVT, layer "s", name n.
 pub async fn station_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,

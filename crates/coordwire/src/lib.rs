@@ -1,10 +1,13 @@
 //! The coordinator's client side (docs/crates.md, task #916 step 6c): how a worker reaches the
 //! lead's coordinator (`Contact` on the NAS, the headers its answers carry), its client's transport
 //! (client), a task's side shared by its job and its worker (task), and the map now as a job or a
-//! command reads it from the lead (`map_now`). The coordinator itself and the lease calls (they
-//! carry its own types) are pipeline's coord, which re-exports these at their old paths.
+//! command reads it from the lead (`map_now`); and what a Mac's services share about the network
+//! (net: who may connect, the addresses, the listener; step 7a, for the map server). The coordinator
+//! itself and the lease calls (they carry its own types) are agentcore's coord, which re-exports
+//! these at their old paths.
 
 pub mod client;
+pub mod net;
 pub mod task;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
@@ -27,6 +30,9 @@ pub fn contact_path(root: &store::nasfs::NasRoot) -> store::nasfs::NasPath {
     root.join("state/coordinator.json")
 }
 
+/// The lead's heartbeat on the NAS (agentcore::agent's `Status`), relative to the project folder.
+pub const LEAD_STATUS: &str = "state/status.json";
+
 /// The headers every answer of a pool's lead's coordinator carries: its term and its member.
 pub const POOL_TERM: &str = "x-pool-term";
 pub const POOL_MEMBER: &str = "x-pool-member";
@@ -45,3 +51,22 @@ pub fn map_now(root: &store::nasfs::NasRoot) -> anyhow::Result<Option<store::map
     }
     store::map::newest_nas(root)
 }
+
+/// Its unit tests' process is offline from its start (buildstore::fetch::go_offline), and the
+/// process's test flag set (buildstore::out::go_testing: net's names, URLs and LAN addresses a
+/// test's), before any test runs, as agentcore's are, where net was (task #916 step 7a): run by the
+/// loader as the test binary starts. Only in `cfg(test)`, this crate's own unit tests.
+#[cfg(test)]
+#[used]
+#[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
+#[cfg_attr(not(target_os = "macos"), link_section = ".init_array")]
+static TEST_START: extern "C" fn() = {
+    extern "C" fn start() {
+        buildstore::fetch::go_offline();
+        buildstore::out::go_testing();
+    }
+    start
+};
+
+#[cfg(test)]
+mod test_start;

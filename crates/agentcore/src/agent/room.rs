@@ -809,9 +809,6 @@ fn clear_answers(cache: &Path, root: &store::nasfs::NasRoot, answering: bool) ->
     Ok((freed, vec![stay(lacking, "the NAS hasn't all of them yet (the step's next run sends them)")]))
 }
 
-/// The target's file, in the agent's folder.
-pub const TARGET: &str = "room-target.json";
-
 /// Sets this Mac's disk room target (its agent's folder `home`) to `bytes`, or clears it (None).
 pub fn set_target(home: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>> {
     write_target(&home.join(TARGET), bytes, by)
@@ -835,24 +832,12 @@ fn write_target(p: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>
     Ok(Some(t))
 }
 
-/// This Mac's disk room target, when one is set (one that doesn't parse, or of 0 bytes, is none;
-/// one past `MAX_TARGET` is that).
-pub fn target(home: &Path) -> Option<Target> {
-    read_target(&home.join(TARGET))
-}
-
-/// A target's file at `p` (none: missing, unreadable, or 0 bytes; at most `MAX_TARGET`).
-fn read_target(p: &Path) -> Option<Target> {
-    parse_target(&std::fs::read(p).ok()?)
-}
-
 // The free space the steps check before they write (a disk's, the NAS's past the owner's
-// reserve) and the file a target is kept in: buildstore's (task #916 step 6e, docs/crates.md), kept
-// at these paths.
-use buildstore::room::parse_target;
+// reserve) and the file a target is kept in: buildstore's (task #916 step 6e, docs/crates.md), as
+// is reading this Mac's target (step 7a: the map server reads it), kept at these paths.
 #[cfg(test)]
 pub use buildstore::room::testkit::TEST_FREE;
-pub use buildstore::room::{disk_free, nas_free, nas_reserve, nas_room, set_nas_reserve, Target};
+pub use buildstore::room::{disk_free, nas_free, nas_reserve, nas_room, set_nas_reserve, target, Target, TARGET};
 
 // A job's room target and the free space past it: the runtime crate's (task #916 step 3,
 // docs/crates.md), kept at these paths.

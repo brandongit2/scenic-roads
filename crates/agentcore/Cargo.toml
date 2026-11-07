@@ -16,7 +16,6 @@ buildstore = { path = "../buildstore" }
 coordwire = { path = "../coordwire" }
 offload = { path = "../offload" }
 inputs = { path = "../inputs" }
-sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 zstd = "0.13"
 anyhow.workspace = true

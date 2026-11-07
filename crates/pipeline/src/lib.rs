@@ -3,7 +3,7 @@ pub mod offload;
 pub mod out;
 
 // The runtime (step 6f4's: crates/agentcore), at its old paths; the plan's modules in `agent`.
-pub use agentcore::{answers, appupdate, cli, coord, menu, needs, net, pool, pubtimes};
+pub use agentcore::{answers, cli, coord, menu, needs, pool, pubtimes};
 
 // Moved to their own crates (task #916, docs/crates.md), kept at their old paths for the modules above
 // the steps and the binaries (the step modules name their crates: step 6b). Step 2's:
@@ -14,6 +14,9 @@ pub use codecs::{
 
 // Step 3's:
 pub use jobrt::{budget, control, pyenv, resume_log, sys, timings};
+// Step 7a's (what the map server names, moved below the runtime):
+pub use coordwire::net;
+pub use jobrt::appupdate;
 
 // Step 4's (out is pipeline's own: its `open` gives buildstore's `Out` the steps' write sets):
 pub use buildstore::{costin, coverage, fetch, geotiff, handoff, localread, outlines, rawpack};

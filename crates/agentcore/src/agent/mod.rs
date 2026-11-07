@@ -773,8 +773,9 @@ fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
         .collect()
 }
 
-/// The lead's heartbeat on the NAS (`Status`), relative to the project folder.
-pub const LEAD_STATUS: &str = "state/status.json";
+/// The lead's heartbeat on the NAS (`Status`), relative to the project folder: coordwire's (task
+/// #916 step 7a: the map server reads it), kept at this path.
+pub use coordwire::LEAD_STATUS;
 
 /// The heartbeat (`state/status.json`), what the app's status bar and `scenic status` show.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1039,7 +1040,7 @@ fn adopted(cursors: &BTreeMap<String, store::map::Cursor>) -> BTreeMap<String, C
 }
 
 /// A map server's cursor's name in the map's log, before its host (crates/server's maplog).
-pub const SERVER_CURSOR: &str = "server/";
+pub const SERVER_CURSOR: &str = store::map::feed::SERVER;
 /// A map server's mirror's, before its host (crates/server's maplog::MirrorLink).
 pub const MIRROR_CURSOR: &str = store::map::feed::MIRROR;
 

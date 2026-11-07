@@ -1,5 +1,5 @@
 //! Area overlays by view (docs/phase5.md "Areas"): their vector tiles (`layers/ov-*`, names
-//! attached), their details by id and the parks' records (`ovdata/3-x-y`, pipeline::ovconv).
+//! attached), their details by id and the parks' records (`ovdata/3-x-y`, landmarks::ovconv).
 
 use crate::tiles::named_mvt_tile;
 use crate::views::SectView;

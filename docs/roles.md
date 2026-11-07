@@ -279,8 +279,9 @@ Each step ships alone and keeps the build running; each ends with its tests.
    `~/Library/Caches/scenic/catalogue` go with #883 step 9 (each Mac's agent removes them at its start), not here.
 8. **The member's NAS fallbacks**, with #878's gates (§8.4): nothing to build in #882; each gate's
    deletion takes a member's share of it (the `nas-switch` pool, `beat-nas`'s status copy, the pool
-   thread's mail and journal), and `pool::term::role` moves out of `pool::term` before #878 step 8
-   deletes that module.
+   thread's mail and journal). `pool::term::role` is buildstore::records::term's since #916 step 7a
+   (the map server reads it without the runtime; `pool::term` re-exports it), so #878 step 8's
+   deletion of that module leaves it where it is.
 9. **Docs**: macs.md (Devices: roles; the App Macs' offline map as 7a builds it), agent-parts.md
    (the member's parts), pool.md §5 (a member no longer "passes its build page's asks to the lead": its
    port redirects), pool.md §10 (the page is the lead's), this doc folded in.

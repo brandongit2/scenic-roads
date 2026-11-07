@@ -1,8 +1,9 @@
 //! The free space the steps check before they write (task #916 step 6e, docs/crates.md): a local
 //! disk's (`disk_free`; a test's own disk in a crate's unit tests, `out::testing`) and the NAS's
 //! past the owner's reserve (`nas_room`, `NAS_RESERVE`), with the file a reserve or a Mac's disk
-//! room target is kept in (`Target`). The agent's room policy (its caches freed toward the target)
-//! is pipeline's agent::room, which re-exports these.
+//! room target is kept in (`Target`), and this Mac's target read (`target`, `RoomTarget`: the map
+//! server's mirror reads it, step 7a). The agent's room policy (its caches freed toward the target)
+//! is agentcore's agent::room, which re-exports these.
 
 use anyhow::Result;
 use jobrt::room::{free_past_of, MAX_TARGET};
@@ -11,7 +12,7 @@ use std::path::Path;
 
 /// The owner's disk room target on this Mac (`scenic room <GB>`, the build page's chart): the
 /// free space its agent keeps (pipeline's agent::room, The room target). In the agent's folder
-/// (agent::room::TARGET): each Mac's disk is its own. The NAS reserve is kept in the same form.
+/// (`TARGET`): each Mac's disk is its own. The NAS reserve is kept in the same form.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     /// The free space to keep (bytes).
@@ -27,6 +28,50 @@ pub fn parse_target(b: &[u8]) -> Option<Target> {
         .ok()
         .filter(|t| t.bytes > 0)
         .map(|t| Target { bytes: t.bytes.min(MAX_TARGET), ..t })
+}
+
+/// The target's file, in the agent's folder.
+pub const TARGET: &str = "room-target.json";
+
+/// This Mac's disk room target, when one is set (one that doesn't parse, or of 0 bytes, is none;
+/// one past `MAX_TARGET` is that).
+pub fn target(home: &Path) -> Option<Target> {
+    read_target(&home.join(TARGET))
+}
+
+/// A target's file at `p` (none: missing, unreadable, or 0 bytes; at most `MAX_TARGET`).
+fn read_target(p: &Path) -> Option<Target> {
+    parse_target(&std::fs::read(p).ok()?)
+}
+
+/// This Mac's disk room target as another process reads it (bytes, 0 when none): the target's file
+/// in the agent's folder, read again at most every `RoomTarget::EVERY`, so asking is cheap. The map
+/// server's mirror keeps at least this free (docs/macs.md, Mirror).
+pub struct RoomTarget {
+    home: std::path::PathBuf,
+    last: std::sync::Mutex<Option<(std::time::Instant, u64)>>,
+}
+
+impl RoomTarget {
+    /// How long a read holds: a target set with `scenic room` counts within this.
+    pub const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// The target of the agent whose folder is `home`.
+    pub fn new(home: &Path) -> RoomTarget {
+        RoomTarget { home: home.to_owned(), last: std::sync::Mutex::new(None) }
+    }
+
+    pub fn bytes(&self) -> u64 {
+        let mut g = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        match *g {
+            Some((at, b)) if at.elapsed() < Self::EVERY => b,
+            _ => {
+                let b = target(&self.home).map_or(0, |t| t.bytes);
+                *g = Some((std::time::Instant::now(), b));
+                b
+            }
+        }
+    }
 }
 
 /// The owner's NAS reserve, pool-wide (`scenic nas-room`): the free space the NAS keeps past what the
@@ -100,6 +145,18 @@ mod tests {
     use super::*;
 
     /// The NAS reserve: kept on the NAS, read back, its room the free space past it; off, none.
+    #[test]
+    fn the_room_target_is_read_once_then_held() {
+        let home = tempfile::tempdir().unwrap();
+        let t = RoomTarget::new(home.path());
+        assert_eq!(t.bytes(), 0, "none set");
+        std::fs::write(home.path().join(TARGET), br#"{"bytes":1073741824,"by":"t","at":1}"#).unwrap();
+        assert_eq!(t.bytes(), 0, "held");
+        assert_eq!(RoomTarget::new(home.path()).bytes(), 1 << 30);
+        *t.last.lock().unwrap() = None;
+        assert_eq!(t.bytes(), 1 << 30, "read again");
+    }
+
     #[test]
     fn the_nas_reserve_is_kept_on_the_nas() {
         let d = tempfile::tempdir().unwrap();
