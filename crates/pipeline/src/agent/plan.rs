@@ -3728,4 +3728,77 @@ mod tests {
         assert_eq!(left[2], sample_name(1_700_006_000));
         assert_eq!(left[0], sample_name(1_700_004_000));
     }
+
+    /// The frozen-plan check (docs/crates.md §6.3, 6f2): a planner's `region_jobs` and `checklist`
+    /// on a private copy of the lead's state (`SCENIC_FROZEN_ROOT`: `state/` copied, every other
+    /// entry a symlink to the NAS's project folder, read only; never the NAS itself), its home
+    /// `SCENIC_FROZEN_HOME` (the coverage's cache and the terrain indexes kept there between runs),
+    /// with no coordinator, no gate watch, no failure counts and no record of past catalogues. What
+    /// it planned (the jobs with their commands, targets and keys, before and after the holds; the
+    /// waits; the holds; the offers; the checklist's lines), a line each, to `SCENIC_FROZEN_OUT`:
+    /// two builds' plans of one state diffed. The forecast is left out (its thread parked, never
+    /// run).
+    #[test]
+    #[ignore]
+    fn frozen_plan_on_a_private_root() {
+        let (Ok(root), Ok(home), Ok(out)) = (
+            std::env::var("SCENIC_FROZEN_ROOT"),
+            std::env::var("SCENIC_FROZEN_HOME"),
+            std::env::var("SCENIC_FROZEN_OUT"),
+        ) else {
+            return;
+        };
+        let root = store::nasfs::NasRoot::local_for_test(PathBuf::from(root));
+        let o = Options {
+            root: Some(root.clone()),
+            home: PathBuf::from(home),
+            bin: PathBuf::from("/app"),
+            dry_run: true,
+            once: true,
+            member: false,
+        };
+        let app = std::env::var("SCENIC_FROZEN_APP").unwrap_or_else(|_| "development".into());
+        let hold = bus::Snap::new(crate::control::HoldState::default());
+        let p = Planner::new(o, "frozen".into(), app, 0, None, false, hold, publish::LastCatalogue::default());
+        // (No forecast: a thread that never ends holds its place.)
+        *p.forecasting.borrow_mut() = Some(std::thread::spawn(|| -> Forecasted {
+            loop {
+                std::thread::park()
+            }
+        }));
+        let pass = p.latest_pass(&root);
+        let (manifest, _) = p.planning_records(&root).unwrap();
+        // (The coverage read first, on its own thread: the plan's regions wait for it.)
+        let t = Instant::now();
+        while let Err(why) = p.coverage(&root, &manifest, false) {
+            assert!(t.elapsed() < Duration::from_secs(1800), "{why}");
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        eprintln!("frozen: the coverage in {:.1} s", t.elapsed().as_secs_f64());
+        let t = Instant::now();
+        let mut waiting = Vec::new();
+        let mut held = Holds::default();
+        let jobs = p.region_jobs(&root, pass.as_deref(), None, &mut waiting, &mut held);
+        let mut lines = vec![format!("pass {pass:?}"), format!("held {held:?}")];
+        lines.extend(jobs.iter().map(|j| format!("job {j:?}")));
+        let jobs = hold_for_lakefill(hold_for_sources(jobs, held.sources, &mut waiting), held.lakefill, &mut waiting);
+        lines.extend(jobs.iter().map(|j| format!("held job {j:?}")));
+        lines.extend(waiting.iter().map(|w| format!("waiting {w:?}")));
+        let (date, offered) = p.offered.borrow().clone();
+        lines.push(format!("offered {date}"));
+        lines.extend(offered.iter().map(|o| format!("offer {o:?}")));
+        eprintln!("frozen: the plan in {:.1} s", t.elapsed().as_secs_f64());
+        let recipes = crate::inputs::regions::read::source(&root, &manifest)
+            .and_then(|a| crate::inputs::regions::read::recipes(&a))
+            .unwrap_or_default();
+        lines.extend(p.checklist(&root, &recipes).iter().map(|l| format!("line {l:?}")));
+        std::fs::write(&out, lines.join("\n") + "\n").unwrap();
+        eprintln!(
+            "frozen: {} jobs, {} waits, {} offers, {} lines to {out}",
+            jobs.len(),
+            waiting.len(),
+            offered.len(),
+            lines.len()
+        );
+    }
 }
