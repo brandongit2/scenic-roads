@@ -375,7 +375,10 @@ pub fn inputs(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Input> {
 /// before); before it, each Mac's room as its last ask said and the record's lanes (a record before
 /// code 3, its lanes slowed by its Mac's hold of the day before as it was made). Code 6 also has a
 /// target wait through a read built as it stands for what that read waits on, as the plan holds it
-/// (`Input::code`: crate::agent::forecast's `Waits`); before it, for the reads listed alone.
+/// (`Input::code`: crate::agent::forecast's `Waits`); before it, for the reads listed alone. Code 7
+/// also has each job under way weigh what its beats said it moved (a record of task #993 on:
+/// `Leased::nas_rate`) and the NAS's own gate open once the jobs out then end; before it, its targets'
+/// predicted rates (`nas_rate` cleared) and the gate as recorded for the whole run.
 pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
     let mut noted = forecast::Noted::default();
     let mut rooms = Rooms::default();
@@ -398,6 +401,11 @@ pub fn replay(inputs: &[Input], events: &[Event], code: u32) -> Vec<Entry> {
             unhold(inp);
         }
         inp.paused = forecast::paused(events, inp.now);
+        if code < 7 {
+            for l in inp.sched.iter_mut().flat_map(|s| &mut s.leases) {
+                l.nas_rate = None;
+            }
+        }
         if code >= 4 {
             repace(inp, events);
         } else if let Some(st) = inp.sched.as_mut() {
@@ -481,8 +489,8 @@ impl Rooms {
     }
 
     /// Each of `inp`'s asks' room at its sustained best (`Capacity::best`), when `best` and none was
-    /// said: over the inputs noted to it (`forecast::sustained`), each standing until the next. An
-    /// input is archived every `fcinputs::EVERY_S` at most (the first forecast after), so two more
+    /// said: over the inputs noted to it (`forecast::sustained`), each standing until the next. An input is
+    /// archived every `fcinputs::EVERY_S` at most (the first forecast after), so two more
     /// than twice that apart had one lost between them, and the run breaks there (the live one reads
     /// its Mac's minute samples). Not `best`: none, its room as it asked.
     fn set(&self, inp: &mut forecast::Input, best: bool) {

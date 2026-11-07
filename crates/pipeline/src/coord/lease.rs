@@ -65,6 +65,11 @@ pub struct Lease {
     /// is replaced by the next, so a mean is had whenever a recent rate is (`Lease::lately`).
     #[serde(skip)]
     pub first: Option<(Instant, crate::agent::jobs::Live)>,
+    /// What its job moved on the NAS a second as a recorded state says (`Leased::nas_rate`,
+    /// crate::coord::sched::Sched::from_state): a scheduler made from one hears no beats, so it
+    /// weighs the job by this where the live one weighs it by `mean` and `lately`.
+    #[serde(skip)]
+    pub recorded_rate: Option<crate::budget::nas::Rate>,
     /// Its job's stillness as its worker's beats show it (docs/pool.md §10, Flags; in memory
     /// alone, a lead restarted counts from its load): the last beat heard, the last at which its
     /// work moved (None: none yet, counted from its grant: `Lease::still`), and the longest stretch
@@ -586,6 +591,7 @@ impl Leases {
                 slot: None,
                 threads: 0,
                 start_threads: 0,
+                recorded_rate: None,
                 told: None,
                 unconfirmed: false,
             },
@@ -597,6 +603,13 @@ impl Leases {
     pub fn set_threads(&mut self, id: u64, threads: u32) {
         if let Some(l) = self.by_id.get_mut(&id) {
             (l.threads, l.start_threads) = (threads, threads);
+        }
+    }
+
+    /// Lease `id`'s job as moving `rate` on the NAS, as a recorded state says (`Lease::recorded_rate`).
+    pub fn set_recorded_rate(&mut self, id: u64, rate: Option<crate::budget::nas::Rate>) {
+        if let Some(l) = self.by_id.get_mut(&id) {
+            l.recorded_rate = rate;
         }
     }
 

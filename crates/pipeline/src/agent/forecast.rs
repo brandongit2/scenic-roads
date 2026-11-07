@@ -837,7 +837,7 @@ impl ToCome {
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
 /// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 /// A run of a machine's work of one step: from and until when (unix seconds), and how many
 /// targets. A run is one or more jobs as the scheduler grants them in the forecast's run, one after
@@ -1576,6 +1576,10 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             _ => None,
         })
         .collect();
+    // (The NAS's own load over the owner's target as recorded (`Limits::held`) is a reading of now:
+    // held while the jobs out now run, nothing foreseen after them, as no passing load is. Code 7:
+    // before it, shut for the whole run.)
+    let mut gate_on: Vec<u64> = if inp.code >= 7 { out.iter().map(|o| o.1).collect() } else { Vec::new() };
     let mut inflight: Vec<usize> = running.iter().map(|r| r.0).collect();
     let mut unassigned = items.iter().filter(|i| i.by.is_none()).count();
     // Each phase's items in order, and the first not yet taken.
@@ -1723,6 +1727,14 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
             }
             on
         });
+        if inp.code >= 7 {
+            gate_on.retain(|id| out.iter().any(|o| o.1 == *id));
+            if gate_on.is_empty() {
+                for l in [&mut pool.sched.nas, &mut pool.sched.nas_own].into_iter().flatten() {
+                    l.held = false;
+                }
+            }
+        }
         // Its Mac asks once, for a job each of its lanes free now, as a live agent asks for its free
         // slots when one frees (crate::agent's asks: `Ask::want`); granted fewer, the rest wait for
         // the next change.
@@ -3004,6 +3016,103 @@ mod tests {
         assert!(sim.items.iter().all(|i| i.by.is_some()));
     }
 
+    /// Slope-deep targets of 100 thousandths of the NAS each, a member's four lanes free, the lead's
+    /// lane busy, and a member's job out for 900 s past its predicted time: the input of task #993's
+    /// tests, with the NAS's limits and that job's rate as its beats said.
+    fn nas_held_input<'a>(
+        regions: &'a [RegionLeft],
+        c: &'a dyn Fn(&str, &str) -> Cost,
+        held: bool,
+        rate: Option<f64>,
+    ) -> Input<'a> {
+        use crate::coord::sched::{Asked, Leased, State};
+        use crate::coord::{Ask, Capacity};
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, held, ..Default::default() };
+        let v = crate::coord::cost_version("slope-deep");
+        let mut st = State { nas: Some(limits), nas_own: Some(limits), lead_name: "m4".into(), ..Default::default() };
+        for t in &regions[0].slope_deep {
+            let sizes = [("threads".to_string(), 1), ("bytes".to_string(), 6_000_000_000)].into();
+            st.costs.insert(
+                cost_key("slope-deep", t),
+                crate::coord::Cost { peak_mb: 1000, secs: 600, v, sizes, ..Default::default() },
+            );
+        }
+        st.leases = vec![Leased {
+            worker: "m2".into(),
+            step: "terrain-hi".into(),
+            targets: vec![("6/9/9".into(), "k".into())],
+            threads: 1,
+            granted_at: 1_000_000 - 7200,
+            nas_rate: rate.map(|bytes_s| crate::budget::nas::Rate { bytes_s, ..Default::default() }),
+        }];
+        let cap = Capacity { mem_mb: 16_000, build_mb: 16_000, cores: 8, cores_free: 8, ..Default::default() };
+        st.workers = vec![Asked {
+            ask: Ask {
+                worker: "m1".into(),
+                kind: "native".into(),
+                mem_mb: 16_000,
+                cores: 8,
+                want: 4,
+                cap: Some(cap),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let lane = |k: usize| Machine { mac: Some("m1".into()), ..member(&super::super::slot_worker("m1", k)) };
+        let out =
+            Machine { busy_s: 900.0, running: Some(("terrain-hi".into(), 1)), mac: Some("m2".into()), ..member("m2") };
+        let lead = Machine { busy_s: 1e6, ..mac("m4", 1.0) };
+        let mut inp = input(regions, vec![lead, out, lane(0), lane(1), lane(2), lane(3)], c);
+        inp.after.clear();
+        inp.sched = Some(st);
+        inp
+    }
+
+    fn slope_deep_targets() -> [RegionLeft; 1] {
+        let ts: Vec<String> = (0..8).map(|i| format!("10/{i}/0")).collect();
+        [RegionLeft { slope_deep: ts, ..region("a", &[], &[], &[]) }]
+    }
+
+    /// Task #993: a job under way past its predicted time weighs what its beats said it moved, in
+    /// the run as in the live scheduler (`Leased::nas_rate`, `Sched::job_weight`). The lead's record
+    /// of 6 Nov 23:27 UTC: a bld-fetch no target's rate weighs, 472 bldtiles aged behind it live, the
+    /// run giving them their lanes at once.
+    #[test]
+    fn a_job_under_way_holds_the_nas_by_what_it_moved() {
+        let regions = slope_deep_targets();
+        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
+        let first = |rate: Option<f64>| {
+            let sim = run(&nas_held_input(&regions, &c, false, rate), &|c| c.secs, far());
+            sim.items.iter().filter(|i| i.step == "slope-deep").map(|i| i.from).fold(f64::INFINITY, f64::min)
+        };
+        assert_eq!(first(None), 0.0, "weighed by its targets, it weighs nothing: they go at once");
+        assert_eq!(first(Some(100e6)), 900.0, "moving the whole NAS, they wait for it to end");
+        assert_eq!(first(Some(1e6)), 0.0, "moving a hundredth of it, they go beside it");
+    }
+
+    /// Task #993: the NAS's own load over its target (`Limits::held`) is a reading of now: the run
+    /// holds it while the jobs out now run, not for its whole length (code 6 did: two records of
+    /// 5 Nov so shut ran every job that weighs anything one at a time).
+    #[test]
+    fn the_nas_gate_opens_once_the_jobs_out_end() {
+        let regions = slope_deep_targets();
+        let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
+        let spans = |code: u32| {
+            let inp = Input { code, ..nas_held_input(&regions, &c, true, Some(1e6)) };
+            let sim = run(&inp, &|c| c.secs, far());
+            let mut v: Vec<(f64, f64)> =
+                sim.items.iter().filter(|i| i.step == "slope-deep").map(|i| (i.from, i.end)).collect();
+            v.sort_by(|a, b| a.0.total_cmp(&b.0));
+            v
+        };
+        let now = spans(VERSION);
+        assert_eq!(now.len(), 8);
+        assert_eq!(now[0].0, 900.0, "shut while the job out runs: {now:?}");
+        assert!(now[1].0 < now[0].1, "then they go beside each other: {now:?}");
+        let before = spans(6);
+        assert!(before.windows(2).all(|w| w[1].0 >= w[0].1 - 1e-9), "code 6, one at a time: {before:?}");
+    }
+
     /// Task #951: each Mac's room is its sustained best from now on (`Capacity::best`): a member
     /// whose last ask had the brake on takes work at its best, one whose best can't hold a target
     /// none of it. The 4 Nov case: the mini's memory fixed mid-day (#931/#935: its floor), its
@@ -3835,6 +3944,7 @@ mod tests {
             targets: ts.iter().map(|t| (t.clone(), "k".to_string())).collect(),
             threads: 2,
             granted_at: 0,
+            nas_rate: None,
         };
         let packs: Vec<String> = regions[0].packs.iter().map(|p| p.0.clone()).take(5).collect();
         let st = State {

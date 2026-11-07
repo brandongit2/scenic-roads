@@ -201,7 +201,8 @@ pub struct Limits {
 
 /// A target's or job's measured NAS rate (crate::needs::Book::nas): bytes and files made, and its
 /// metadata work, a second.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Rate {
     pub bytes_s: f64,
     pub creates_s: f64,
