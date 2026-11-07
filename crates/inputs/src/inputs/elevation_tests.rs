@@ -886,3 +886,34 @@ fn a_presence_tile_with_no_valid_pixel_is_hollow() {
     assert_eq!(hollow_of(4326, &small, &[t], &open_none).unwrap(), vec![t]);
     assert!(west(&t) && hollow_of(4326, &small, &[t], &open).unwrap().is_empty(), "its data read, not its footprint");
 }
+
+/// Task #842 review: a tile whose only data is a sliver of a pixel across its edge, narrower than
+/// the points half a pixel apart a hollow test reads inside it, isn't hollow: its edges are read
+/// too, as a run's finer pixels there are.
+#[test]
+fn a_tile_with_data_only_across_its_edge_isnt_hollow() {
+    use crate::dem::zoom::PACK_Z;
+    // (The 1° file at 2°E 48°N, 100″ pixels, data in its fourth column alone: 2.0833°E to 2.1111°E,
+    // which z10 tiles' column 518 (from 2.109375°E) meets by its westmost 0.0017°.)
+    let mut data = vec![-9999.0f32; 36 * 36];
+    for r in 0..36 {
+        data[r * 36 + 3] = 40.0;
+    }
+    let gt = [2.0, 100.0 * PX, 0.0, 49.0, 0.0, -100.0 * PX];
+    let bytes = buildstore::geotiff::write_f32(36, 36, &data, 16, gt, 4326, Some(-9999.0)).unwrap();
+    let open = |_: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
+        buildstore::geotiff::Tiff::open(Arc::new(bytes.clone())).map_err(|e| format!("{e:#}"))
+    };
+    let files = vec![("f.tif".to_string(), Some([2.0, 48.0, 3.0, 49.0]))];
+    let presence: Vec<[u32; 2]> = (0u32..1 << PACK_Z)
+        .flat_map(|y| [[518, y], [519, y]])
+        .filter(|t| {
+            let b = roadcore::geo::tile_box(PACK_Z, t[0], t[1]);
+            b[1] >= 48.0 && b[3] <= 49.0
+        })
+        .collect();
+    let b = roadcore::geo::tile_box(PACK_Z, 518, presence[0][1]);
+    assert!(b[0] > 2.0 + 3.0 * 100.0 * PX && b[0] < 2.0 + 4.0 * 100.0 * PX, "{b:?}");
+    let hollow = hollow_of(4326, &files, &presence, &open).unwrap();
+    assert!(!hollow.is_empty() && hollow.iter().all(|t| t[0] == 519), "{hollow:?}");
+}

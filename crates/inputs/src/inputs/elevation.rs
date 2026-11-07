@@ -270,18 +270,21 @@ fn native_box(native: &dyn Fn(f64, f64) -> (f64, f64), b: [f64; 4]) -> [f64; 4] 
 }
 
 /// How many of its pixels a deep packs' tile spans at least (at the equator, its widest) in the
-/// level a hollow test reads (`hollow_of`): ~300 m pixels at z10.
-const HOLLOW_PX: f64 = 128.0;
+/// levels a hollow test reads (`hollow_of`): ~300 m pixels at z10, then, for the tiles found
+/// hollow there, ~40 m (an island of data a coarse overview's pixels miss, read again finer).
+const HOLLOW_PX: [f64; 2] = [128.0, 1024.0];
 
 /// Of a dataset's presence (`presence`: `presence_of`'s tiles, `[x, y]` at the deep packs' zoom),
 /// the tiles where a finer read finds no valid pixel (`Measured::hollow`), sorted as given: each
-/// file meeting one read at the coarsest of its levels whose pixels are no wider than `HOLLOW_PX`
-/// of a tile's side (its full resolution where none is), over the tile's box in the files' units
-/// alone, a sparse block read as no data without a read, and data there only at a point of the
-/// tile itself (points no further apart than half a pixel). A tile some file holds data in isn't
-/// read further. A footprint narrower than a tile (which presence takes as data whole) is read so
-/// too. An overview's pixel holds data where any under it does (an average's; a nearest-neighbour
-/// overview could miss a sliver).
+/// file meeting one read at the coarsest of its levels whose pixels are no wider than `HOLLOW_PX`'s
+/// first share of a tile's side (its full resolution where none is), and each tile no file had data
+/// in there read so again at its second, over the tile's box in the files' units
+/// alone, a sparse block read as the sampler reads it (its nodata, else 0) without a read, and
+/// data there only at a point of the tile itself, its edges included (points no further apart than
+/// half a pixel). A tile some file holds data in isn't read further. A footprint narrower than a
+/// tile (which presence takes as data whole) is read so too. An overview's pixel holds data where
+/// any under it does (an average's; a nearest-neighbour overview could miss an island narrower
+/// than its second level's pixels, ~40 m).
 pub fn hollow_of(
     crs: u16,
     files: &[(String, Option<[f64; 4]>)],
@@ -302,17 +305,20 @@ pub fn hollow_of(
     let meets = |a: &[f64; 4], b: &[f64; 4]| a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     let data: Vec<AtomicBool> = presence.iter().map(|_| AtomicBool::new(false)).collect();
-    let file = |(w, fp): &(String, Option<[f64; 4]>)| -> std::result::Result<(), String> {
+    // (A file without a footprint: its bounds, once opened.)
+    let known: Vec<std::sync::OnceLock<[f64; 4]>> = files.iter().map(|_| Default::default()).collect();
+    let file = |f: usize, share: f64| -> std::result::Result<(), String> {
+        let (w, fp) = &files[f];
         // (A file without a footprint is opened for its bounds; one with, only when it meets a tile
         // not yet known to have data.)
         let mut opened = None;
-        let bounds = match fp {
-            Some(b) => *b,
+        let bounds = match fp.or_else(|| known[f].get().copied()) {
+            Some(b) => b,
             None => {
                 let t = open(w)?;
                 let b = file_bounds(&t).map_err(|e| format!("{w}: {e:#}"))?;
                 opened = Some(t);
-                b
+                *known[f].get_or_init(|| b)
             }
         };
         let todo: Vec<usize> =
@@ -324,7 +330,7 @@ pub fn hollow_of(
             Some(t) => t,
             None => open(w)?,
         };
-        let level = hollow_level(&t, side / HOLLOW_PX).map_err(|e| format!("{w}: {e:#}"))?;
+        let level = hollow_level(&t, side / share).map_err(|e| format!("{w}: {e:#}"))?;
         let gt = t.transform(level).map_err(|e| format!("{w}: {e:#}"))?;
         let img = t.level(level).map_err(|e| format!("{w}: {e:#}"))?.clone();
         // (Neighbouring tiles share blocks.)
@@ -349,15 +355,17 @@ pub fn hollow_of(
             if !px.iter().any(|&v| crate::dem::generic::valid(v, nodata)) {
                 continue;
             }
-            // (Some pixel of the box holds data: one inside the tile itself? Its points no further
-            // apart than half a pixel, each in the files' units.)
+            // (Some pixel of the box holds data: one meeting the tile itself? Its points no further
+            // apart than half a pixel, each in the files' units, the tile's edges among them: a
+            // pixel across an edge may hold data inside the tile in a sliver narrower than that,
+            // which a run's finer pixels sample.)
             let b = roadcore::geo::tile_box(PACK_Z, presence[i][0], presence[i][1]);
             let k = ((2.0 * (nb[2] - nb[0]).max(nb[3] - nb[1]) / gt[1].abs()).ceil() as usize).max(2);
             let (ww, wh) = ((c1 - c0) as i64, (r1 - r0) as i64);
-            let hit = (0..k).any(|j| {
-                (0..k).any(|q| {
-                    let lon = b[0] + (q as f64 + 0.5) / k as f64 * (b[2] - b[0]);
-                    let lat = b[1] + (j as f64 + 0.5) / k as f64 * (b[3] - b[1]);
+            let hit = (0..=k).any(|j| {
+                (0..=k).any(|q| {
+                    let lon = b[0] + q as f64 / k as f64 * (b[2] - b[0]);
+                    let lat = b[1] + j as f64 / k as f64 * (b[3] - b[1]);
                     let (x, y) = native(lon, lat);
                     let (c, r) = (
                         ((x - gt[0]) / gt[1]).floor() as i64 - c0 as i64,
@@ -377,7 +385,9 @@ pub fn hollow_of(
     // (The files' reads are network round trips: `HOLLOW_READERS` at once.)
     use rayon::prelude::*;
     let pool = rayon::ThreadPoolBuilder::new().num_threads(HOLLOW_READERS).build().map_err(|e| e.to_string())?;
-    pool.install(|| files.par_iter().with_max_len(1).try_for_each(file))?;
+    for share in HOLLOW_PX {
+        pool.install(|| (0..files.len()).into_par_iter().with_max_len(1).try_for_each(|f| file(f, share)))?;
+    }
     Ok(presence.iter().zip(&data).filter(|(_, d)| !d.load(Relaxed)).map(|(t, _)| *t).collect())
 }
 

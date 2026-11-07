@@ -1138,8 +1138,9 @@ pub struct TerrainTargets {
     #[serde(default)]
     pub terrain_deep: Vec<(String, String)>,
     /// Of them, those with no data past z12 (crate::terrain_zoom::hollow: its sources' presence
-    /// read finer by the input check, `Measured::hollow`) and neither a deep pack nor a slope deep
-    /// pack named: no data, never run, and their slope-deep targets with them (task #842). Kept as
+    /// read finer by the input check, `Measured::hollow`, or cut away by its regions' outlines) and
+    /// no output of theirs named (`deep_outputs_named`): no data, never run, and their slope-deep
+    /// targets with them (task #842). Kept as
     /// targets keyed as before, so no other key moves: a z6 tile over one reads no deep mid there,
     /// as over a run of it that made none.
     #[serde(default)]
@@ -1272,10 +1273,7 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
             for &t in d.targets_in(p).iter() {
                 deep.insert(t);
                 let ts = format!("{}/{}/{}", crate::terrain_deep::PACK_Z, t.0, t.1);
-                if crate::terrain_zoom::hollow(&d.sets, t.0, t.1)
-                    && crate::terrain_deep::named_under(m, crate::terrain_deep::PACK_Z, t.0, t.1).is_empty()
-                    && !m.contains_key(&crate::slope_pack::deep_logical(t.0, t.1))
-                {
+                if crate::terrain_zoom::hollow(&d.sets, t.0, t.1) && !deep_outputs_named(m, t) {
                     out.deep_hollow.insert(ts.clone());
                 }
                 out.terrain_deep.push((ts.clone(), key("terrain-deep", &ts)));
@@ -1316,6 +1314,19 @@ pub fn terrain_slope_targets_made(x: &KeyCtx) -> TerrainTargets {
     out.terrain_lo_none = lo_left("terrain");
     out.slope_lo_none = lo_left("slope");
     out
+}
+
+/// Whether the manifest `m` names any output of z10 tile `t`'s deep targets: its terrain deep pack
+/// (a retired one too), its deep mid, its slope deep pack or slope deep mid. A target with no data
+/// past z12 is settled unrun only without them (`TerrainTargets::deep_hollow`): its z6 tile's runs
+/// read every mid named (crate::terrain_deep::read_mids, crate::slope_pack::read_deep_mid), each checked
+/// to be of the terrain's and the slope's version now, so one an earlier run left, never written
+/// again, would fail them once a version moves; with one the target runs, as before, and rewrites it.
+pub fn deep_outputs_named(m: &BTreeMap<String, String>, t: (u32, u32)) -> bool {
+    !crate::terrain_deep::named_under(m, crate::terrain_deep::PACK_Z, t.0, t.1).is_empty()
+        || m.contains_key(&crate::terrain_deep::mid_logical(t.0, t.1))
+        || m.contains_key(&crate::slope_pack::deep_logical(t.0, t.1))
+        || m.contains_key(&crate::slope_pack::deep_mid_logical(t.0, t.1))
 }
 
 /// Whether `key` is target `t` of `step`'s "none" key (`steps::none_key`): a drop, its run dropping
@@ -5281,6 +5292,25 @@ mod tests {
         let w = terrain_work(&tt, &x, &done);
         assert!(w.terrain_deep.is_empty() && w.terrain_deep_left.is_empty(), "{w:?}");
         assert_eq!(w.slope_deep, vec![(b.to_string(), "s".to_string())]);
+    }
+
+    /// Task #842 review: a deep target is settled unrun only with none of its outputs named: an
+    /// earlier run's deep or slope deep pack, or its mid alone (an empty run's), each of which its
+    /// z6 tile's runs read and check by version.
+    #[test]
+    fn a_deep_target_with_an_output_named_isnt_settled_unrun() {
+        let t = (300, 400);
+        assert!(!deep_outputs_named(&BTreeMap::new(), t));
+        for l in [
+            crate::terrain_deep::mid_logical(t.0, t.1),
+            crate::slope_pack::deep_logical(t.0, t.1),
+            crate::slope_pack::deep_mid_logical(t.0, t.1),
+            format!("{}10-{}-{}", crate::terrain_deep::PREFIX, t.0, t.1),
+        ] {
+            let m: BTreeMap<String, String> = [(l.clone(), "c".to_string())].into();
+            assert!(deep_outputs_named(&m, t), "{l}");
+            assert!(!deep_outputs_named(&m, (t.0 + 1, t.1)), "{l}: its neighbour's none");
+        }
     }
 
     /// Task #864: slope-hi's and slope-deep's declared reads (crate::agent::steps::read_targets) are

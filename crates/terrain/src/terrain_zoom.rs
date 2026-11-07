@@ -178,18 +178,25 @@ pub fn finest(sets: &[Set], z: u8, x: u32, y: u32) -> u8 {
 }
 
 /// Whether the deep packs' tile `x`, `y` (crate::terrain_deep::PACK_Z) has no data past z12: each
-/// of its sources reaching z13 or finer there (at its poleward edge) has none in it, a finer read
-/// of its files having found nothing there (`Presence::hollow`) or its regions' outlines cutting it
-/// away there (`Cover::holds_none`: a source by its cells, read only inside them). A run of it
-/// would make no tile of the band (crate::terrain_pack::Fills::keep keeps only a source reaching a
-/// tile's zoom), so the plan runs none there (task #842); not one with no such source at all,
-/// which is no target. A place's sources stay as they are: no key moves by it.
+/// of its sources reaching z13 or finer anywhere in it has none in it, a finer read of its files
+/// having found nothing there (`Presence::hollow`) or its regions' outlines cutting it away there
+/// (`Cover::holds_none`: a source by its cells, read only inside them). A run of it would make no
+/// tile of the band (crate::terrain_pack::Fills::keep keeps only a source reaching a tile's zoom,
+/// at that tile's poleward edge), so the plan runs none there (task #842); not one with no such
+/// source at all, which is no target. A source reaches the band in it where its zoom at some band
+/// tile's poleward edge is z13 or finer: every such edge is one of its deepest rows' (`MAX_Z`), so
+/// each row's is asked, a zoom finer equatorward (and a band's cell its own) than at the tile's
+/// poleward edge. A place's sources stay as they are: no key moves by it.
 pub fn hollow(sets: &[Set], x: u32, y: u32) -> bool {
-    let z = crate::terrain_deep::PACK_Z;
-    let b = roadcore::geo::tile_box(z, x, y);
-    let lat = poleward(b);
-    let mut fine =
-        sources(sets, z, x, y).into_iter().filter(|s| s.detail.zoom_at(lat) >= crate::terrain_deep::FIRST_Z).peekable();
+    use crate::terrain_deep::{FIRST_Z, MAX_Z, PACK_Z};
+    let b = roadcore::geo::tile_box(PACK_Z, x, y);
+    let k = MAX_Z - PACK_Z;
+    let rows: Vec<f64> =
+        (0..1u32 << k).map(|r| poleward(roadcore::geo::tile_box(MAX_Z, x << k, (y << k) + r))).collect();
+    let mut fine = sources(sets, PACK_Z, x, y)
+        .into_iter()
+        .filter(|s| rows.iter().any(|&lat| s.detail.zoom_at(lat) >= FIRST_Z))
+        .peekable();
     fine.peek().is_some() && fine.all(|s| s.presence.as_ref().is_some_and(|p| p.hollow(x, y)) || s.cover.holds_none(b))
 }
 
@@ -348,7 +355,19 @@ mod tests {
         let unmeasured = set("c", Some(vec![[-75.0, 45.0, -74.0, 46.0]]), raster(1.0));
         assert!(!hollow(&[measured(&[[x, y]]), unmeasured, world.clone()], x, y));
         // (No source past z12 at all: no target, not hollow.)
-        assert!(!hollow(&[world], x, y));
+        assert!(!hollow(&[world.clone()], x, y));
+        // (A source reaching z12 at the tile's poleward edge and z13 further south, with data
+        // there: its southern tiles of the band are kept, so the tile isn't hollow.)
+        let b = roadcore::geo::tile_box(pz, x, y);
+        let res = |lat: f64| inputs::dem::generic::tile_resolution(crate::terrain_deep::FIRST_Z as u32, lat);
+        let cell = (res(b[3]) + res(b[1])) / 2.0;
+        let edge = set("e", Some(vec![[-75.0, 45.0, -74.0, 46.0]]), raster(cell));
+        assert!(edge.detail.zoom_at(poleward(b)) < crate::terrain_deep::FIRST_Z);
+        assert!(edge.detail.zoom_at(b[1]) >= crate::terrain_deep::FIRST_Z);
+        assert!(!hollow(&[measured(&[[x, y]]), edge.clone(), world.clone()], x, y), "z13 past its poleward edge");
+        let mut found_none = edge;
+        found_none.presence = Some(std::sync::Arc::new(Presence::of(&[[x, y]]).with_hollow(&[[x, y]])));
+        assert!(hollow(&[measured(&[[x, y]]), found_none, world], x, y), "it too found nothing there");
     }
 
     #[test]

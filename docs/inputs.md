@@ -1224,12 +1224,14 @@ isn't one of its places); measured once a version, a version measured before it 
 Of those, where a finer read finds no valid pixel (`hollow`, crate::inputs::elevation::hollow_of,
 task #842): each file meeting a presence tile (a narrow one's footprint opened too) read over the
 tile's box at the coarsest of its levels whose pixels are no wider than 1/128 of a z10 tile at the
-equator (~300 m; its full resolution where none is), its sparse blocks read as no data, eight
-files at once. Only the
-plan reads it: a terrain-deep target whose every source reaching past z12 is hollow there is never
-run (docs/steps.md §2, Terrain); a place's sources and every key stay `presence`'s, so a dataset
-measured again moves no key by it. Measured once a version with the presence; one accepted before
-it (checks version 5) is measured again. A tile pyramid's resolution comes from its zoom at its coverage's
+equator (~300 m; its full resolution where none is), and the tiles no file had data in there read
+again so at 1/1024 (~40 m), its sparse blocks read as the sampler reads them (nodata, else 0), a
+pixel counted where it meets the tile (its edges included), eight files at once. Only the plan
+reads it: a terrain-deep target whose every source reaching past z12 is hollow there is never run
+(docs/steps.md §2, Terrain); a place's sources and every key stay `presence`'s, so the hollow
+tiles alone move no key. Measured once a version with the presence; one accepted before it
+(checks version 5) is measured again whole (its coverage, bands and presence with it, so a file
+changed since moves its keys as any measurement would). A tile pyramid's resolution comes from its zoom at its coverage's
 mid-latitude, and a tile is read to check it's 256 px (`generic::TILE_PX`). The coverage is also the
 credits' extent (§4.8).
 
