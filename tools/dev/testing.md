@@ -339,7 +339,9 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   during a run arrive at the next dated before that run's build: cargo took it for built and the
   next run tested the old binary.) Costs ~0.1-0.5 s a run over `-a` (the 46 MB tree, M1
   to M4), ~0.3-0.8 s on a cold copy (~4 s with `-a`). Tested by
-  `tools/app/test/remote-tests.zsh` (a toy crate, an edit dated back, keys taking turns in one folder).
+  `tools/app/test/remote-tests.zsh`: a toy crate, an edit dated back, and a real `cargo test` of a crate over a dependency, whose test
+  passes only on its own tree's value, in one folder: two trees taking turns, a dependency edited keeping its size, then its date too,
+  a file back to an earlier version with an older date, a module moved, a source a test overwrote. The same turns with times kept fail it (#983's bug).
 - The build folders are the slots', not the keys' (#969): `~/scenic-check/.build/<slot>/{src,target}`,
   one per test slot, the same paths whichever tree comes, kept between runs. A key takes the slot it
   last used if it is free, else the least recently used. rustc's incremental state holds only for
@@ -347,9 +349,15 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   here a run compiles what differs from the slot's last tree, publish's too. The target is set by
   `~/scenic-check/.build/<slot>/.cargo/config.toml`, not CARGO_TARGET_DIR (sccache hashes every CARGO_*
   variable, so a value per folder missed the cache: 0 % Rust hits on the mini, #887); rustc
-  through the test Mac's sccache, third-party crates for an emptied folder. A folder holds one build's
-  worth (7.1 GB through the runs measured below), with a variant of the crates a package set
-  without pipeline changes the features of.
+  through the test Mac's sccache, third-party crates for an emptied folder. A folder held 7.1-7.9 GB
+  through the runs measured below, with a variant of the crates a package set without pipeline changes the
+  features of. Cargo never deletes what it built, so it can grow as dependencies change (a key's folder kept for
+  publishes reached 14 GB); only the room rule below removes one, and never the one a run is building in.
+- A slot is its build folder's lock: mkdir takes it, and it's freed only once nothing the run started is
+  left. As a run ends or is stopped, its process group goes first (TERM, 5 s, then KILL); a run killed outright has
+  its watcher do that, and the next run takes the slot only when the group is gone. A run whose slot isn't its own at the end gives no result.
+  Tests: `remote-tests.zsh`, `remote_main` itself in a fake home (each of these, five runs at once on three slots). The dev job sampler
+  leaves the group as it starts (it's the Mac's, not the run's).
 - The run: nice 20 at utility priority (`taskpolicy -c utility`, as the pool's jobs, whose nice 0
   wins the CPU, #887; and so the lead's
   agent loop isn't starved: #700), 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
@@ -575,7 +583,7 @@ clock), the tests parts run on the M4 only, against the same selection of 5 Nov'
 - **Publish** "Rust tests", the dev job records' passed runs: p50 1,184 s, p90 2,122 s (6, 4 and 5 Nov) → p50 802 s, p90 1,478 s (28, 6 Nov).
 
 #969's fourth part, measured 7 Nov on the M4:
-- **The tests part before it**, the dev job records of 6 Nov 01:30 to 7 Nov 01:00: p50 429 s, p90 1,340 s (123 runs),
+- **The tests part before it**, the dev job records of 6 Nov 01:30 to 7 Nov 01:00: the 123 passed, p50 429 s, p90 1,340 s (all 146: p50 457 s, p90 1,432 s),
   the M4 less loaded than the third part's; the 4 since each test in a program linking a change runs again: p50 327 s.
 - **Why a new key rebuilt**: of a new key's 2,647 s of compiles, 2,042 s (77 %) were workspace crates (47 units; 296 third-party
   units 606 s, 155 of it GEOS's build script), every one anew as rustc's incremental state

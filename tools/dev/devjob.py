@@ -524,6 +524,12 @@ def send(f, log, url):
 
 def sampler():
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    # (This Mac's, not the run's that started it: out of that run's process group, which
+    # remote-tests.sh stops whole as the run ends. devjob.zsh's dj_sampler starts it in the group.)
+    try:
+        os.setsid()
+    except OSError:
+        pass
     os.makedirs(LIVE, exist_ok=True)
     lock = open(os.path.join(DIR, "sampler.lock"), "a")
     try:

@@ -180,8 +180,8 @@ export SCENIC_PUBLISH=1
 # whole_kill as they were added): every cache read
 # through the accessor, the records written only through Out (docs/pool.md §7.3), every Wikimedia
 # request through the budgets' proxy (§7.7), the Python steps' timer, no Instant dated back...)
-# Both run on the test Mac, the M4 by default (tools/app/remote-tests.sh, #442: an exact copy of this snapshot, its build
-# folder kept there between publishes, at nice 20; here when this is the test Mac, when it can't be reached,
+# Both run on the test Mac, the M4 by default (tools/app/remote-tests.sh, #442: an exact copy of this snapshot, in a test
+# slot's build folder kept there, at nice 20; here when this is the test Mac, when it can't be reached,
 # or with SCENIC_TESTS_LOCAL=1): the suite took 13-30 min on the M1 beside its builds, and a
 # timing test failed under that load. Its exit status is the suite's.
 suite='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || { mise install -q; eval "$(mise env -s zsh)"; }; rc=0

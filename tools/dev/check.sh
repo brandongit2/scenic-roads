@@ -165,8 +165,8 @@ else skip sweep "the sweep unchanged"; fi
 if has 'tools/status/*'; then
   part swift zsh -c "swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)logs}/scenic-status tools/status/*.swift && ${(q)logs}/scenic-status --test tools/status/test"
 else skip swift "tools/status unchanged"; fi
-# The tests run on the test Mac (tools/app/remote-tests.sh, #442: an exact copy of this tree, its own
-# build folder per worktree, three runs at a time there, the rest queued); here on the test Mac itself
+# The tests run on the test Mac (tools/app/remote-tests.sh, #442: an exact copy of this tree, a build
+# folder per test slot, three runs at a time there, the rest queued); here on the test Mac itself
 # (the publishing Mac), when it is down, or with SCENIC_CHECK_LOCAL=1.
 rt=$root/tools/app/remote-tests.sh
 # (Test builds without debug info: Cargo.toml's [profile.test], #918, the same as an agent's own runs.)

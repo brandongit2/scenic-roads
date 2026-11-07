@@ -40,7 +40,8 @@
 # and SCENIC_* (exported ones). Both sides print their rustc, cargo and nextest versions.
 # At most three runs on the test Mac at once (slots in ~/scenic-check/.slots, each naming its process and
 # its start time; a gone process's slot is freed); the rest wait for one, up to 30 min, then run
-# here. A run whose connection drops is stopped on the test Mac (a watcher sees its sshd gone).
+# here. A run whose connection drops is stopped on the test Mac (a watcher sees its sshd gone). A slot
+# is its build folder's lock: freed only once nothing the run started is left, a run killed outright too.
 # The result: the test Mac's side ends with a line "@@remote-tests-status <exit>" (or "none <why>"), read
 # here and not shown. Without one (the connection failed, no tree, no slot), it prints
 # "--- remote result discarded, local rerun ---" and runs the command here: what follows the last
@@ -209,15 +210,21 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   while true; do
     for s in $(slot_order $base $slots $dir); do
       if mkdir $base/.slots/$s 2>/dev/null; then
-        print -r -- "$mine" > $base/.slots/$s/owner; slot=$s; break 2
+        print -r -- "$mine" > $base/.slots/$s/owner
+        # (Stalled past the 10 s below and freed under it: not this run's.)
+        [[ $(cat $base/.slots/$s/owner 2>/dev/null) == "$mine" ]] || continue
+        slot=$s; break 2
       fi
       # A slot whose process is gone, or is another process under the same PID (its start time
       # differs), or never wrote its owner (10 s on), is freed: moved aside, then removed only if
       # it still names what was read (another waiter may have freed and retaken it meanwhile).
+      # Not while a process of that run's group is left (it was killed outright, no trap ran; its
+      # watcher stops them): a build folder is one run's at a time.
       held=$(cat $base/.slots/$s/owner 2>/dev/null); pid=${held%% *}
       if [[ -n $held ]]; then
         start=${${held#* }% *}
         kill -0 $pid 2>/dev/null && [[ "$(ps -o lstart= -p $pid)" == "$start" ]] && continue
+        [[ -n $(pgrep -g $pid 2>/dev/null) ]] && continue
       elif [[ -z $(find $base/.slots/$s -maxdepth 0 ! -newermt '10 seconds ago' 2>/dev/null) ]]; then continue
       fi
       # (Slots set aside so, another's, go after 10 min: their runs count no longer.)
@@ -234,20 +241,30 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
     (( waited >= 1800 )) && none "no test-Mac slot within 30 min"
     sleep 5; (( waited += 5 ))
   done
-  # On any exit: the watcher stopped (by its PID), the slot freed while still this run's.
+  # On any exit, by a signal too (a TERM stops the whole run, cargo's rustc and test binaries, a
+  # test's server): the watcher stopped (by its PID), then all else in this connection's process
+  # group (only this run is in it, its leader this process), and only then the slot freed, while
+  # still this run's: the slot is the build folder's lock. TERM, 5 s, then KILL, this process too:
+  # the next run frees the slot, no process of this one left.
   typeset -g g_wd= g_cpid= g_slotdir=$base/.slots/$slot g_mine=$mine
-  trap '[[ -n $g_wd ]] && kill $g_wd 2>/dev/null; [[ $(cat $g_slotdir/owner 2>/dev/null) == "$g_mine" ]] && rm -rf $g_slotdir' EXIT
-  # A signal stops the whole run, grandchildren too (cargo's rustc and test binaries): the watcher
-  # stopped and the slot freed first, then this connection's process group (only this run is in
-  # it), as the watcher does.
   typeset -g g_pgid=$(ps -o pgid= -p $$ | tr -d ' ')
-  on_signal() {
+  end_run() {
     trap '' TERM HUP INT
     [[ -n $g_wd ]] && kill $g_wd 2>/dev/null
+    local i; local -a left
+    if [[ $g_pgid == $$ ]]; then
+      for i in {1..100}; do
+        left=(${(f)"$(pgrep -g $g_pgid 2>/dev/null)"}); left=(${left:#$$})
+        (( ${#left} )) || break
+        (( i == 1 )) && kill -TERM -- -$g_pgid 2>/dev/null
+        (( i == 50 )) && kill -KILL -- -$g_pgid 2>/dev/null
+        sleep 0.1
+      done
+    fi
     [[ $(cat $g_slotdir/owner 2>/dev/null) == "$g_mine" ]] && rm -rf $g_slotdir
-    kill -TERM -- -$g_pgid 2>/dev/null
-    exit 143
   }
+  trap end_run EXIT
+  on_signal() { end_run; exit 143 }
   trap on_signal TERM HUP INT
   (( waited )) && print "remote-tests: got a test-Mac slot after ${waited} s"
   touch $dir $dir/stamp
@@ -283,8 +300,11 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   local pgid=$(ps -o pgid= -p $$ | tr -d ' ') wd=
   # (And it keeps the key's lock and stamp fresh, so a run past 6 h isn't taken for stale or
   # evicted.)
+  # (This process killed outright, no trap run: what it started goes too, TERM, 5 s, then KILL.)
+  local main=$$
   ( while sleep 3; do
       [[ -z $sshd ]] || kill -0 $sshd 2>/dev/null || { kill -TERM -- -$pgid; exit; }
+      kill -0 $main 2>/dev/null || { trap '' TERM; kill -TERM -- -$pgid; sleep 5; kill -KILL -- -$pgid; exit; }
       [[ -d $dir/.busy ]] && touch -c $dir/.busy $dir/stamp 2>/dev/null
     done ) </dev/null >/dev/null 2>&1 &
   wd=$!; g_wd=$wd
@@ -302,6 +322,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command> <origin> <live keys>
   print "remote-tests: exit $rc on the test Mac (load $(loadavg))"
   # (A run whose lock was taken over meanwhile, its tree perhaps copied over: no result.)
   [[ $(cat $dir/.busy/owner 2>/dev/null) == "$owner" ]] || none "the key's lock was taken over during the run"
+  [[ $(cat $g_slotdir/owner 2>/dev/null) == "$g_mine" ]] || none "the slot was taken during the run"
   print "@@remote-tests-status $rc"
   exit 0
 }
