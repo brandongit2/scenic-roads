@@ -7,7 +7,8 @@
 // Opened, it has the server make its index (the first time after the map's labels or translations
 // change), so it's ready by the time the words are typed; until it is, the box asks again, less
 // and less often, while it's open.
-import { fmt, h } from './dom';
+import { h } from './dom';
+import { fmt } from '../fmt';
 import { sameName } from '../names';
 import { EARTH_R } from '../merc';
 

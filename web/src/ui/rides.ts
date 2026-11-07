@@ -5,7 +5,8 @@ import { legibleRgb } from '../linecolour';
 import { displayName } from '../names';
 import { RAIL_COMPONENTS } from '../rail';
 import * as prefs from '../prefs';
-import { cap, fmt, h } from './dom';
+import { cap, h } from './dom';
+import { fmt } from '../fmt';
 import { APPROX_TIP } from './drives';
 import { LENGTHS, ListPane } from './listpane';
 
@@ -16,7 +17,6 @@ const swatch = (colour: number) => {
   i.style.background = colour ? `#${legibleRgb(colour & 0xffffff).toString(16).padStart(6, '0')}` : 'var(--line-strong)';
   return i;
 };
-const trains = (t: number) => (t >= 10 ? fmt.n(Math.round(t)) : t > 0 ? t.toFixed(1) : '');
 
 const noQuery = (): Query => ({ bbox: '', poly: '', weights: [], groups: 31, approx: false });
 
@@ -59,7 +59,7 @@ export class RidesPane extends ListPane<Ride, Query> {
         .slice(0, 3)
         .map(([v, k]) => `${RAIL_COMPONENTS[k].short} ${Math.round(v * 100)}`);
       const title = h('span', { class: 'ct' }, swatch(r.colour), cap(displayName(r.main, r.name, r.sub)) || 'Rail line');
-      return this.row(i, title, r.score, [fmt.dist(r.length_m), r.trains ? `${trains(r.trains)} trains a day` : '', ...top].filter(Boolean).join(' · '), r);
+      return this.row(i, title, r.score, [fmt.dist(r.length_m), r.trains ? fmt.perDay(r.trains, 'trains') : '', ...top].filter(Boolean).join(' · '), r);
     }));
     this.onResults(d.rides);
   }
@@ -105,7 +105,7 @@ export class LinesPane extends ListPane<RailLine, Query> {
     this.list.replaceChildren(...d.lines.map((l, i) => {
       const title = h('span', { class: 'ct' }, swatch(l.colour), cap(displayName(l.main, l.name, l.sub)));
       const svc = l.services.split(' · ').map((x) => x.split(':')[0].trim()).filter((x, k, a) => x && x !== l.name && a.indexOf(x) === k).slice(0, 3).join(', ');
-      return this.row(i, title, l.score, [`${fmt.dist(l.length_m)} in view`, l.trains ? `${trains(l.trains)} trains a day` : '', svc].filter(Boolean).join(' · '), l);
+      return this.row(i, title, l.score, [`${fmt.dist(l.length_m)} in view`, l.trains ? fmt.perDay(l.trains, 'trains') : '', svc].filter(Boolean).join(' · '), l);
     }));
   }
 }

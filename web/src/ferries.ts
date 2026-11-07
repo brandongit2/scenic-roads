@@ -10,7 +10,7 @@ import { fitPopup } from './popupfit';
 import { legibleCss } from './linecolour';
 import { displayName } from './names';
 import {
-  FERRY_GROUP_COLOURS, FERRY_GROUPS, NFERRY, ferryColourExpr, ferryColourOf, ferryMetricDef, ferryOpacityExpr, fmtDuration, fmtPerDay, freqText,
+  FERRY_GROUP_COLOURS, FERRY_GROUPS, NFERRY, ferryColourExpr, ferryColourOf, ferryMetricDef, ferryOpacityExpr, fmtDuration, freqText,
   lineTitle, operatorColour, type FerryLine,
 } from './ferry';
 import type { FeatureSummary } from './overlays';
@@ -18,7 +18,8 @@ import { distFromSamples, type Dist } from './roads/stats';
 import { passes } from './ui/scale';
 import { labelShown, lineWeight, type AppState, type FerryState } from './state';
 import { labelLayerShown } from './labellook';
-import { cap, fmt, h } from './ui/dom';
+import { cap, h } from './ui/dom';
+import { fmt } from './fmt';
 import { MERC_CIRC, tileX, tileY } from './merc';
 
 const LINE = 'ferry-line';
@@ -512,7 +513,7 @@ export class Ferries {
     if (l.duration) facts.push(fmtDuration(l.duration));
     if (ls.length > 1) {
       facts.push(`${ls.length} lines`);
-      if (Number(p.f) >= 0) facts.push(`${fmtPerDay(Number(p.f))} each way${Number(p.fp) ? '+' : ''}`);
+      if (Number(p.f) >= 0) facts.push(`${fmt.perDay(Number(p.f))} each way${Number(p.fp) ? '+' : ''}`);
     } else {
       const ft = freqText(l);
       facts.push(ft ?? 'frequency unknown');

@@ -3,7 +3,7 @@
 // crates/server/src/downloads.rs). Nothing else is copied to this Mac, and nothing downloaded goes
 // until it's removed. The Regions panel (ui/regions.ts) shows them.
 import { call } from './regions';
-import { fmt } from './ui/dom';
+import { fmt } from './fmt';
 
 /** A download's size as far as it's known, how much of it is here, and how many of its basemap
  * pieces aren't sized yet. */

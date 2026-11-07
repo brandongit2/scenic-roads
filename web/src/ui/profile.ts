@@ -6,7 +6,8 @@ import { paletteRgb } from '../palettes';
 import { metricOf, modeDef, type Mode } from '../scenic';
 import * as prefs from '../prefs';
 import { niceStep } from '../scaleaxis';
-import { cap, fmt, h, setupCanvas } from './dom';
+import { cap, h, setupCanvas } from './dom';
+import { fmt } from '../fmt';
 
 export interface ProfileColour {
   palette: string;
@@ -251,7 +252,7 @@ export class ProfilePanel {
       ctx.moveTo(L.l, y);
       ctx.lineTo(W - L.r, y);
       ctx.stroke();
-      ctx.fillText(`${Math.round(v).toLocaleString('en-CA')} m`, L.l - 6, y);
+      ctx.fillText(fmt.m(v), L.l - 6, y);
     }
     const xs = niceStep(total / 1000, 8) * 1000;
     ctx.textAlign = 'center';

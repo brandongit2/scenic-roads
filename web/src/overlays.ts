@@ -17,7 +17,8 @@ import type { KindQuery, LandmarkItem, LandmarkRequest, LandmarkResponse, TileNa
 import { NameFader } from './namefade';
 import type { LandmarkDots } from './dots';
 import { fitPopup } from './popupfit';
-import { cap, fmt, h } from './ui/dom';
+import { cap, h } from './ui/dom';
+import { fmt } from './fmt';
 import type { LayersCard } from './ui/layers';
 import type { Credit } from './catalogue';
 import { viewArea, type Box, type ViewArea } from './inview';

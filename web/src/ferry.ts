@@ -6,6 +6,7 @@
 // line ids (ferry-lines.json).
 
 import type { ExpressionSpecification } from 'maplibre-gl';
+import { fmt } from './fmt';
 import { paletteRgb } from './palettes';
 import type { ThresholdDir } from './state';
 import { fadeAlpha, passes, scaleU } from './ui/scale';
@@ -39,7 +40,7 @@ export const FERRY_METRICS: FerryMetricDef[] = [
   {
     key: 'freq', label: 'Sailings a day', help: 'Sailings a day each way, every line on the stretch added up (log scale). Grey: no timetable found; light grey: a headway is published but not the hours.',
     range: [Math.log10(1 / 7), 2], domain: [Math.log10(1 / 30), Math.log10(300)], step: 0.02, byLen: true,
-    fmt: (v) => fmtPerDay(10 ** v).replace(' a day', '/day').replace(' a week', '/wk'),
+    fmt: (v) => fmt.perDayShort(10 ** v),
     value: (p) => (Number(p.f) > 0 ? Math.log10(Number(p.f)) : NaN),
     expr: ['log10', ['max', ['get', 'f'], 0.001]],
     known: ['>', ['get', 'f'], 0],
@@ -212,20 +213,14 @@ export interface FerryLine {
 
 export const fmtDuration = (min: number) => (min < 60 ? `${Math.round(min)} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${String(Math.round(min % 60)).padStart(2, '0')}` : ''}`);
 
-export function fmtPerDay(v: number): string {
-  if (v >= 1) return `${v >= 10 ? Math.round(v) : +v.toFixed(1)} a day`;
-  const wk = v * 7;
-  return `${wk >= 1.5 ? Math.round(wk) : +wk.toFixed(1)} a week`;
-}
-
 /** "24 sailings a day each way · every 20 min" etc. */
 export function freqText(l: FerryLine): string | null {
   const f = l.freq;
   if (!f) return null;
   const parts: string[] = [];
   if (f.per_day != null) {
-    let s = `${fmtPerDay(f.per_day)} each way`;
-    if (f.per_day_low != null && f.per_day_low !== f.per_day) s += ` (${fmtPerDay(f.per_day_low)} off-season)`;
+    let s = `${fmt.perDay(f.per_day)} each way`;
+    if (f.per_day_low != null && f.per_day_low !== f.per_day) s += ` (${fmt.perDay(f.per_day_low)} off-season)`;
     parts.push(s);
   }
   if (f.headway) parts.push(`every ${fmtDuration(f.headway)}`);

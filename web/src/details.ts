@@ -2,7 +2,7 @@
 // fetched on first hover, cached, and turned into bottom-bar facts, a description line and the
 // full list for click popups.
 import { keepable, onVersions, version } from './api';
-import { fmt } from './ui/dom';
+import { fmt } from './fmt';
 
 export type DetailRef =
   | { park: { name: string; lon: number; lat: number } }

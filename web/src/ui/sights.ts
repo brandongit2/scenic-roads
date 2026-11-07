@@ -2,7 +2,8 @@
 // Wikipedia pageviews and rarity nearby), narrowed to a kind with chips.
 import type { OverlayKey } from '../state';
 import * as prefs from '../prefs';
-import { cap, fmt, h } from './dom';
+import { cap, h } from './dom';
+import { fmt } from '../fmt';
 import { displayOf } from '../names';
 
 export interface Sight {

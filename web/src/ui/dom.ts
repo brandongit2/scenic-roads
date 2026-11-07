@@ -14,23 +14,8 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Attrs = 
   return el;
 }
 
-const nf0 = new Intl.NumberFormat('en-CA', { maximumFractionDigits: 0 });
-const nf1 = new Intl.NumberFormat('en-CA', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-
 /** First letter upper-case, the rest as is ("canal de Coteau-du-Lac" → "Canal de Coteau-du-Lac"). */
 export const cap = (s: string | null | undefined): string => (s ? s.charAt(0).toLocaleUpperCase() + s.slice(1) : s ?? '');
-
-export const fmt = {
-  m: (v: number) => `${nf0.format(v)} m`,
-  m1: (v: number) => `${nf1.format(v)} m`,
-  km: (v: number) => (v < 10 ? `${nf1.format(v)} km` : `${nf0.format(v)} km`),
-  dist: (m: number) => (m < 1000 ? `${nf0.format(m)} m` : m < 10000 ? `${nf1.format(m / 1000)} km` : `${nf0.format(m / 1000)} km`),
-  pct: (v: number, d = 1) => `${v.toFixed(d)} %`,
-  n: (v: number) => nf0.format(v),
-  big: (v: number) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)} M` : v >= 1e3 ? `${(v / 1e3).toFixed(0)} k` : `${v}`),
-  mb: (b: number) => `${(b / 1e6).toFixed(0)} MB`,
-  coord: (lat: number, lng: number) => `${Math.abs(lat).toFixed(5)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lng).toFixed(5)}° ${lng >= 0 ? 'E' : 'W'}`,
-};
 
 export function toast(msg: string) {
   const t = document.getElementById('toast')!;

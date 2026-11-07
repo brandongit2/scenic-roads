@@ -8,7 +8,8 @@ import { DEFAULT_DENSITY, DENSITY_KINDS, FOAM_RANGE, FOG_RANGE, LABEL_KINDS, LIN
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import type { LabelLook } from '../labellook';
-import { fmt, h } from './dom';
+import { h } from './dom';
+import { fmt } from '../fmt';
 import { WidthGrid } from './widthgrid';
 import { ScaleControls } from './scale';
 import { ColourPick, RangeFilter, Slider, pct, type SliderOpts } from './controls';

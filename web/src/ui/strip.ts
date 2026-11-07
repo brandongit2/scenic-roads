@@ -15,14 +15,15 @@ import { CLASS_LABELS, RAIL0, RAIL_GROUPS, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNP
 import type { FeatureSummary } from '../overlays';
 import { legibleCss } from '../linecolour';
 import { displayName } from '../names';
-import { RAIL_COMPONENTS, fmtTrains, railComponents, railScore, type RailSample } from '../rail';
+import { RAIL_COMPONENTS, railComponents, railScore, type RailSample } from '../rail';
 import type { HoverInfo } from '../roads/layer';
 import type { WaterDepth } from '../depth';
 import type { WayInfo } from '../api';
 import { flagCredits, flagLicences, type Flag } from '../flags';
 import type { RegionInfo } from './regions';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
-import { cap, fmt, h } from './dom';
+import { cap, h } from './dom';
+import { fmt } from '../fmt';
 import { coarse } from './touch';
 import { MERC_CIRC } from '../merc';
 
@@ -371,7 +372,7 @@ export class Strip {
     const tags = [CLASS_LABELS[st & 15]];
     if (st & ST_BRIDGE) tags.push('bridge');
     if (st & ST_TUNNEL) tags.push('tunnel');
-    tags.push(smp.freq > 0 ? `${hov.fqMin ? 'at least ' : ''}${fmtTrains(smp.freq)} trains a day each way` : 'no timetable');
+    tags.push(smp.freq > 0 ? `${hov.fqMin ? 'at least ' : ''}${fmt.perDay(smp.freq, 'trains')} each way` : 'no timetable');
     const chips: HTMLElement[] = [];
     if (info && info !== 'loading') {
       for (const g of info.rail ?? []) {

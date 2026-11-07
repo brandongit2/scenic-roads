@@ -3,6 +3,7 @@
 // (2.8 m); engineering factors come from the track itself (elevation, grade, bridges, tunnels).
 // Component normalisation must match the rail branch of metric() in roads/layer.ts.
 
+import { fmt } from './fmt';
 import { u8Area } from './scenic';
 
 export type RailColour = 'line' | 'group' | 'metric' | 'single';
@@ -11,7 +12,6 @@ export type RailMetric = 'rscore' | 'freq' | 'elev' | 'grade' | 'viaduct' | 'vie
 /** Trains a day each way, as a byte per line (log scale, 0.1 to 1000 a day; 0 = unknown). */
 export const freqCode = (perDay: number) => (perDay > 0 ? 1 + Math.round(Math.max(0, Math.min(1, (Math.log10(perDay) + 1) / 4)) * 254) : 0);
 export const freqOfCode = (c: number) => (c > 0 ? 10 ** (((c - 1) / 254) * 4 - 1) : -1);
-export const fmtTrains = (v: number) => (v >= 10 ? `${Math.round(v)}` : v >= 1 ? `${+v.toFixed(1)}` : `${+(v * 7).toFixed(1)}/wk`);
 
 export interface RailMetricDef {
   key: RailMetric;
@@ -31,21 +31,19 @@ export interface RailMetricDef {
   fmt: (v: number) => string;
 }
 
-const n0 = (v: number) => Math.round(v).toLocaleString('en-CA');
-const km2 = (v: number) => (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : n0(v)) + ' km²';
 
 export const RAIL_METRICS: RailMetricDef[] = [
   { key: 'rscore', label: 'Scenic score', id: 30, unit: '', range: [0, 100], domain: [0, 100], step: 1, byLen: true, help: 'Weighted blend of the ride factors below.', fmt: (v) => v.toFixed(0) },
-  { key: 'freq', label: 'Service frequency', id: 32, unit: '/day', range: [0, 2.5], domain: [-1, 3], step: 0.05, byLen: true, help: 'Trains a day each way on a typical weekday (log scale), all services on the track added up, from operators\u2019 published timetables. Grey: no timetable found.', fmt: (v) => `${fmtTrains(10 ** v)} a day` },
-  { key: 'elev', label: 'Track elevation', id: 0, unit: 'm', range: [0, 1500], domain: [-50, 3500], step: 10, help: 'Metres above sea level.', fmt: (v) => `${n0(v)} m` },
+  { key: 'freq', label: 'Service frequency', id: 32, unit: '/day', range: [0, 2.5], domain: [-1, 3], step: 0.05, byLen: true, help: 'Trains a day each way on a typical weekday (log scale), all services on the track added up, from operators\u2019 published timetables. Grey: no timetable found.', fmt: (v) => fmt.perDay(10 ** v) },
+  { key: 'elev', label: 'Track elevation', id: 0, unit: 'm', range: [0, 1500], domain: [-50, 3500], step: 10, help: 'Metres above sea level.', fmt: (v) => `${fmt.n(v)} m` },
   { key: 'grade', label: 'Gradient', id: 1, unit: '%', range: [0, 6], domain: [0, 30], step: 0.5, help: 'Track gradient over ~50 m (adhesion railways stay under ~4 %; rack railways go far steeper).', fmt: (v) => `${v.toFixed(1)} %` },
-  { key: 'viaduct', label: 'Viaduct height', id: 31, unit: 'm', range: [0, 60], domain: [0, 150], step: 1, byLen: true, help: 'Height of bridges and viaducts above the ground beneath.', fmt: (v) => `${n0(v)} m` },
-  { key: 'view', label: 'Views', id: 4, unit: 'km²', range: [0, 1], domain: [0, 1], step: 0.01, byLen: true, help: 'Area visible within 15 km from a carriage window.', fmt: (v) => km2(u8Area(v * 255)) },
-  { key: 'water', label: 'Water views', id: 5, unit: 'km²', range: [0, 1], domain: [0, 1], step: 0.01, byLen: true, help: 'Lake, river and sea area visible within 15 km.', fmt: (v) => km2(u8Area(v * 255)) },
+  { key: 'viaduct', label: 'Viaduct height', id: 31, unit: 'm', range: [0, 60], domain: [0, 150], step: 1, byLen: true, help: 'Height of bridges and viaducts above the ground beneath.', fmt: (v) => `${fmt.n(v)} m` },
+  { key: 'view', label: 'Views', id: 4, unit: 'km²', range: [0, 1], domain: [0, 1], step: 0.01, byLen: true, help: 'Area visible within 15 km from a carriage window.', fmt: (v) => `${fmt.area(u8Area(v * 255))} km²` },
+  { key: 'water', label: 'Water views', id: 5, unit: 'km²', range: [0, 1], domain: [0, 1], step: 0.01, byLen: true, help: 'Lake, river and sea area visible within 15 km.', fmt: (v) => `${fmt.area(u8Area(v * 255))} km²` },
   { key: 'vista', label: 'Vista distance', id: 6, unit: 'km', range: [0, 12], domain: [0, 15], step: 0.1, byLen: true, help: 'Average farthest visible distance over all directions.', fmt: (v) => `${v.toFixed(1)} km` },
-  { key: 'drama', label: 'Mountains', id: 7, unit: 'm', range: [0, 500], domain: [0, 765], step: 5, byLen: true, help: 'Relief of the terrain within 3 km.', fmt: (v) => `${n0(v)} m` },
-  { key: 'ridge', label: 'Ledge ↔ gorge', id: 8, unit: 'm', range: [-60, 60], domain: [-256, 254], step: 2, diverging: true, help: 'Track above (+) or below (−) the surrounding terrain within 1.5 km.', fmt: (v) => `${v > 0 ? '+' : ''}${n0(v)} m` },
-  { key: 'curvy', label: 'Curvature', id: 9, unit: '°/km', range: [0, 300], domain: [0, 1020], step: 5, byLen: true, help: 'Turning per kilometre over ±250 m.', fmt: (v) => `${n0(v)} °/km` },
+  { key: 'drama', label: 'Mountains', id: 7, unit: 'm', range: [0, 500], domain: [0, 765], step: 5, byLen: true, help: 'Relief of the terrain within 3 km.', fmt: (v) => `${fmt.n(v)} m` },
+  { key: 'ridge', label: 'Ledge ↔ gorge', id: 8, unit: 'm', range: [-60, 60], domain: [-256, 254], step: 2, diverging: true, help: 'Track above (+) or below (−) the surrounding terrain within 1.5 km.', fmt: (v) => `${fmt.signed(v)} m` },
+  { key: 'curvy', label: 'Curvature', id: 9, unit: '°/km', range: [0, 300], domain: [0, 1020], step: 5, byLen: true, help: 'Turning per kilometre over ±250 m.', fmt: (v) => `${fmt.n(v)} °/km` },
 ];
 export const railMetricDef = (k: RailMetric) => RAIL_METRICS.find((m) => m.key === k) ?? RAIL_METRICS[0];
 
@@ -71,22 +69,20 @@ export interface RailSample {
   freq: number;
 }
 
-const signed = (v: number) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${n0(Math.abs(v))}`;
-const area = (v: number) => (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : n0(v));
 const viaduct = (s: RailSample) => (s.bridge && !s.tunnel ? Math.max(0, s.elev - s.ground) : 0);
 
 export const RAIL_COMPONENTS: RailComponent[] = [
-  { key: 'views', label: 'Views', short: 'Views', unit: 'km²', help: 'Visible area from the window (trees & terrain block the view)', text: (s) => area(u8Area(s.ch[0])) },
-  { key: 'water', label: 'Water in view', short: 'Water', unit: 'km²', help: 'Visible lake / river / sea area', text: (s) => area(u8Area(s.ch[1])) },
+  { key: 'views', label: 'Views', short: 'Views', unit: 'km²', help: 'Visible area from the window (trees & terrain block the view)', text: (s) => fmt.area(u8Area(s.ch[0])) },
+  { key: 'water', label: 'Water in view', short: 'Water', unit: 'km²', help: 'Visible lake / river / sea area', text: (s) => fmt.area(u8Area(s.ch[1])) },
   { key: 'vista', label: 'Long vistas', short: 'Vista', unit: 'km', help: 'Farthest visible distance (full at 15 km)', text: (s) => (s.ch[8] / 17).toFixed(1) },
-  { key: 'relief', label: 'Mountains', short: 'Mountains', unit: 'm', help: 'Terrain relief within 3 km (full at 600 m)', text: (s) => n0(s.ch[2] * 3) },
-  { key: 'ledge', label: 'Ledges & gorges', short: 'Ledge', unit: 'm', help: 'Running high on a slope or deep in a gorge (full at ±60 m from the surroundings)', text: (s) => signed((s.ch[3] - 128) * 2) },
-  { key: 'altitude', label: 'Altitude', short: 'Altitude', unit: 'm', help: 'Track elevation (full at 1,500 m)', text: (s) => n0(s.elev) },
-  { key: 'viaduct', label: 'Viaducts', short: 'Viaduct', unit: 'm', help: 'Height above the ground on bridges and viaducts (full at 40 m)', text: (s) => n0(viaduct(s)) },
+  { key: 'relief', label: 'Mountains', short: 'Mountains', unit: 'm', help: 'Terrain relief within 3 km (full at 600 m)', text: (s) => fmt.n(s.ch[2] * 3) },
+  { key: 'ledge', label: 'Ledges & gorges', short: 'Ledge', unit: 'm', help: 'Running high on a slope or deep in a gorge (full at ±60 m from the surroundings)', text: (s) => fmt.signed((s.ch[3] - 128) * 2) },
+  { key: 'altitude', label: 'Altitude', short: 'Altitude', unit: 'm', help: 'Track elevation (full at 1,500 m)', text: (s) => fmt.n(s.elev) },
+  { key: 'viaduct', label: 'Viaducts', short: 'Viaduct', unit: 'm', help: 'Height above the ground on bridges and viaducts (full at 40 m)', text: (s) => fmt.n(viaduct(s)) },
   { key: 'tunnel', label: 'Tunnels', short: 'Tunnel', unit: '', help: 'Underground running (negative: you see nothing)', text: (s) => (s.tunnel ? 'yes' : 'no') },
   { key: 'gradient', label: 'Gradient', short: 'Gradient', unit: '%', help: 'Climbing and descending (full at 4 %; rack railways max out)', text: (s) => s.grade.toFixed(1) },
-  { key: 'curvy', label: 'Curves', short: 'Curves', unit: '°/km', help: 'Curvature (full at 400 °/km)', text: (s) => n0(s.ch[4] * 4) },
-  { key: 'freq', label: 'Service frequency', short: 'Trains', unit: '/day', help: 'Trains a day each way (full at 100 a day, log scale); tracks without a timetable leave it out of the score', text: (s) => (s.freq >= 0 ? fmtTrains(s.freq) : '–') },
+  { key: 'curvy', label: 'Curves', short: 'Curves', unit: '°/km', help: 'Curvature (full at 400 °/km)', text: (s) => fmt.n(s.ch[4] * 4) },
+  { key: 'freq', label: 'Service frequency', short: 'Trains', unit: '/day', help: 'Trains a day each way (full at 100 a day, log scale); tracks without a timetable leave it out of the score', text: (s) => (s.freq >= 0 ? fmt.perDayNum(s.freq) : '–') },
 ];
 export const RNCOMP = RAIL_COMPONENTS.length;
 /** Index of the service-frequency factor (left out of the score where unknown). */

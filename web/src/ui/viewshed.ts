@@ -3,7 +3,8 @@
 import type { ImageSource, Map as MLMap } from 'maplibre-gl';
 import { getViewshed, type Viewshed } from '../api';
 import * as prefs from '../prefs';
-import { fmt, h } from './dom';
+import { h } from './dom';
+import { fmt } from '../fmt';
 
 export class ViewshedTool {
   active = false;

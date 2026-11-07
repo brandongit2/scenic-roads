@@ -3,7 +3,8 @@
 import { getDrives, type Drive } from '../api';
 import { COMPONENTS } from '../scenic';
 import * as prefs from '../prefs';
-import { cap, fmt, h } from './dom';
+import { cap, h } from './dom';
+import { fmt } from '../fmt';
 import { LENGTHS, ListPane } from './listpane';
 import { displayName } from '../names';
 

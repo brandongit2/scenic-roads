@@ -14,7 +14,8 @@ import { countryFlag, regionFlag, type Flag } from '../flags';
 import * as prefs from '../prefs';
 import { allIds, areaText, countryCode, entries, filter, folderCountry, type Shown } from '../regionlist';
 import { RegionLayers, RegionsError, getOutlines, listRegions, type Folder, type Region, type RegionOutline } from '../regions';
-import { fmt, h } from './dom';
+import { h } from './dom';
+import { fmt } from '../fmt';
 
 /** Opened again within this long of the last load: the list as it was. */
 const FRESH_MS = 10_000;

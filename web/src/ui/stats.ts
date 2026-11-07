@@ -2,7 +2,8 @@ import { CLASS_LABELS, NROAD } from '../config';
 import type { LoadProgress } from '../roads/layer';
 import type { Extreme, ViewStats } from '../roads/stats';
 import * as prefs from '../prefs';
-import { fmt, h } from './dom';
+import { h } from './dom';
+import { fmt } from '../fmt';
 
 // Neutral class colours (elevation owns the hue elsewhere).
 const CLASS_COLORS = ['#3a4250', '#4b5566', '#5a6577', '#6c778a', '#8791a3', '#a3adbd', '#c2cad6', '#dde3ea', '#ffffff', '#4f6f8f'];
@@ -181,7 +182,7 @@ export class StatsCard {
           ...bar(x.rail.groups, x.rail.total),
           h('dl', {},
             h('dt', { title: 'Trains a day each way, all services on the track (published timetables)' }, 'Busiest line'),
-            place(x.rail.busiest, x.rail.busiest ? `${fmt.n(x.rail.busiest.perDay)} a day` : ''),
+            place(x.rail.busiest, x.rail.busiest ? fmt.perDay(x.rail.busiest.perDay) : ''),
             h('dt', {}, 'Highest on rail'), ext(x.rail.highest, 'high'),
           ),
         );
@@ -190,7 +191,7 @@ export class StatsCard {
         parts.push(h('dl', {},
           h('dt', {}, 'Ferry routes'), h('dd', {}, `${x.ferry.routes}${x.ferry.seasonal ? ` · ${x.ferry.seasonal} seasonal` : ''}`),
           h('dt', { title: 'Sailings a day each way' }, 'Busiest crossing'),
-          place(x.ferry.busiest, x.ferry.busiest ? `${x.ferry.busiest.perDay >= 10 ? fmt.n(x.ferry.busiest.perDay) : x.ferry.busiest.perDay.toFixed(1)} a day` : ''),
+          place(x.ferry.busiest, x.ferry.busiest ? fmt.perDay(x.ferry.busiest.perDay) : ''),
         ));
       }
     }
