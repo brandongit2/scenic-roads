@@ -712,6 +712,22 @@ mod tests {
         }
     }
 
+    /// Task #922: only a 400 is the ask refused as it is (dropped from a member's queue, said to
+    /// the owner); a 5xx (a lead restarting, its store not open, its disk slow), another 4xx, or no
+    /// answer at all is not, and the ask is sent again.
+    #[test]
+    fn only_a_400_is_a_refusal() {
+        for (status, refusal) in [(400, true), (503, false), (500, false), (401, false), (403, false)] {
+            let (url, _) = answering(status);
+            let e =
+                Client::at(vec![url], "t".into(), "m").post_json("/pool/settings", &serde_json::json!({})).unwrap_err();
+            assert_eq!(refused(&e).is_some(), refusal, "{status}: {e:#}");
+        }
+        let e =
+            Client::at(vec![dead()], "t".into(), "m").post_json("/pool/settings", &serde_json::json!({})).unwrap_err();
+        assert!(refused(&e).is_none(), "not reached: {e:#}");
+    }
+
     #[test]
     fn one_address_answering_leaves_the_round_open() {
         let (url, tried) = answering(200);
