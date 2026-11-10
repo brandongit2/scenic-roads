@@ -217,6 +217,26 @@ UTC; the M4's terrain-deep runs, at 4–5 threads, were Japan's (GSI's live laye
 1,524 s a run, half of the sampling's wall waiting on the network. So the climb's threads idle
 there; the hours before it (3 threads, mostly HRDEM) ran at CPU/wall 1.80.
 
+## 4d. What task #1095 did (10 Nov): the blends' distances
+
+The lead's timings put `blending the edges` at a median 75 % of terrain-deep's CPU. That share
+isn't the blend's own: a phase's CPU is the whole process's while it is open (jobrt::timings), and
+terrain-deep samples 4 chunks at once, so each chunk's blend phase also counts the other chunks'
+sampling (the sampler's phases' CPUs sum to about twice the run's). Profiled with `sample`
+(`terrain-same 10/321/338`, HRDEM 1 m and 2 m, GLO-30, Terrarium; 4 threads; 120 s of the
+sampling), the sampler's own CPU was the points' projection to EPSG:3979 (24 %), the GeoTIFF
+sampling (20 %), the reading order's sort (17 %), the blends' distances (15 %, before the run
+grouping below) and the read-ahead (5 %).
+
+| change | measured |
+|---|---|
+| **The distances by group in parallel** (`GeoSet::distance`, `distance_group`, `Invalid`, `Past`): no serial pass over the points (it tested each point's window for clean blocks, reading missing blocks one at a time); a group whose windows lie in clean blocks at the radius; else a summed-area count of the invalid pixels (a point whose band holds none at the radius at once) and the rows looked at outward only while nearer than the best found; the pixels past a file's edge read once a group from the files holding them, not a lookup a pixel (`value_at`); the groups found as runs of neighbours, not by sorting every point. | 10/321/338: 727, 792, 807 CPU-s before (three runs), 733 after the first part (before the run grouping); the same deep and mid content names as the manifest's (02e54b896b199b6f, e2a73323ce2adb71), before and after |
+| **A GeoTIFF dataset's reading order by file and block row** (`Reader::in_reading_order`): was each point's own y, so in a projected CRS every point was its own run and millions were sorted, for each dataset's sampling and the blends' second heights. | not yet timed: the run was held up by the NAS (the owner's work on it); the heights don't depend on the order |
+| **A file opened once whatever the threads** (`GeoSet::open`: a cell a file): two threads opening one file at once each read its blocks into the cache. | — |
+
+The heights are the scan's to the bit: unit tests compare every point with a scan of its whole
+band, one file and two files of different pixel sizes with fill-mask voids past the edge.
+
 ## 5. Not done, with what the data says (the ranking of what's left)
 
 1. **GSI's tiles fetched live, every run (41 % of terrain-hi: 58.6 h in 16 Japan runs; the
