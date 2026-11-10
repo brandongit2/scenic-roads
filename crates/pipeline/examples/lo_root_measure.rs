@@ -4,7 +4,7 @@
 //! z6 tile's mid (its quarters outside every region the relief's, an assembly's most reading), under
 //! a footprint guard. Its count of the assembly's tiles is not an assembly's: a quarter inside a
 //! region is its children's and, with no mid given, void (a tile of only those is none), and the
-//! relief has no tile over the deep sea (heights under crate::dem::sample::NODATA_BELOW are none,
+//! relief has no tile over the deep sea (heights under inputs::dem::sample::NODATA_BELOW are none,
 //! as the lo packs before it had none there). 3/2/2, 4 Nov: 511 of 1,365, against 1,204 in its lo
 //! pack (749 of its tiles wholly in regions; 161 of those wholly outside them absent there too).
 //!

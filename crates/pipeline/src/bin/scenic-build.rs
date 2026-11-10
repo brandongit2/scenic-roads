@@ -1231,7 +1231,7 @@ fn sect_local(out: &Out, logical: &str, meta: serde_json::Value, sections: &[(&s
 /// holds at most one copy of what the mirror lacks.
 /// The z6 tiles of the manifest owning tiles `only` (z`z`: `build::owners_of`, the owners their keys
 /// read), by the reaches of pass `pass` (else the latest) and every base pack's extent
-/// (crate::extents: the lead's, those it lacks read from their headers): None (every z6 tile)
+/// (codecs::extents: the lead's, those it lacks read from their headers): None (every z6 tile)
 /// when no tiles are named, the reaches or extents can't be read, or a z6 tile isn't in the reaches
 /// (said).
 fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[TileId]) -> Option<BTreeSet<TileId>> {
@@ -1327,7 +1327,7 @@ struct Reads {
 }
 
 impl Reads {
-    /// Notes the job's NAS reads on the target being measured (crate::costin: `nas_read` and
+    /// Notes the job's NAS reads on the target being measured (buildstore::costin: `nas_read` and
     /// `nas_secs`, the same on each of its targets, so each says the job's own rate as it read:
     /// agentcore::needs::nas_rate).
     fn note(&self) {
@@ -1346,7 +1346,7 @@ impl Drop for Reads {
 
 /// The base packs (with their road values) of the manifest's z6 tiles, of only those in `owning`
 /// when given, each only where its ways reach `boxes` (all of it: None): from this Mac's mirror
-/// when it has them (whole, mapped), else read in part from the NAS (crate::basepart: the byte
+/// when it has them (whole, mapped), else read in part from the NAS (codecs::basepart: the byte
 /// ranges of the chunks of ways meeting the z6 tiles, copied into sparse files at the top of the
 /// job's scratch, where the agent counts the disk it takes, and mapped; deleted as the `Reads`
 /// returned is dropped). Their way indexes are kept in `cache` by content name
@@ -4843,7 +4843,7 @@ fn z6_tiles(args: &[String], step: &str) -> Result<Vec<TileId>> {
 /// coverage (its outlines), each fetched once, checked and put in place whole; what's there
 /// already skipped. Not through the manifest: the sources are read where they are
 /// (`sources/overture/<release>/`, `sources/ghsl/R2023A/`), and their indexes key bldprep
-/// (crate::bld::sources).
+/// (bld::bld::sources).
 fn bld_fetch_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let sources = ::inputs::inputs::sources::read(out.root(), &out.manifest)?;
@@ -6741,7 +6741,7 @@ mod tests {
         // The mirror's files it opened are held: the mirror's delete leaves them.
         let held = mirror.join(&m["base/6-32-21"]);
         assert_eq!(store::cachefile::try_remove(&held), store::cachefile::Removed::InUse);
-        // The packs' extents (crate::extents), read by a job from their headers when the lead
+        // The packs' extents (codecs::extents), read by a job from their headers when the lead
         // hasn't kept them, in memory only; once the lead has, read from its file: the far z6 tile
         // whose pack spills into the tile is caught, and is an owner.
         let (e, read) =

@@ -1,4 +1,4 @@
-//! What the plan's hollow deep tiles (task #842: `Measured::hollow`, crate::terrain_zoom::hollow)
+//! What the plan's hollow deep tiles (task #842: `Measured::hollow`, terrain::terrain_zoom::hollow)
 //! skip, on the build's real records (read only): each GeoTIFF dataset's hollow tiles worked out
 //! as the input check does (inputs::inputs::elevation::hollow_of, over its accepted presence, its
 //! files from its index in the accepted version), then the terrain-deep targets now: those
