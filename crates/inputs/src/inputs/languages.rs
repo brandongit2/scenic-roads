@@ -2,7 +2,7 @@
 //! touched. Its inputs folder, `inputs/languages/`, holds `territories.tsv`, one territory a line,
 //! `<code>\t<language>,<language>…`, most spoken first (`names::Table`'s reading; `#` lines are
 //! comments), and `about.toml` (§5.1: CLDR's version, the Unicode licence, its credit). The
-//! `spoken` job builds `global/spoken` from the accepted table (crate::agent::build::spoken_work).
+//! `spoken` job builds `global/spoken` from the accepted table (pipeline::agent::build::spoken_work).
 //!
 //! The checks:
 //! - **Errors:** a file that isn't one of those two, or isn't UTF-8; lines of `territories.tsv`

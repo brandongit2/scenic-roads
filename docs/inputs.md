@@ -1008,14 +1008,14 @@ counter, whichever unit its timetables come from.
   day). A feed's typical day is its median-busy Tuesday–Thursday from 30 days before its zip's fetch
   day to 90 after; a train in two feeds counts once (keyed by first and last stops and times, the
   operator's feed first).
-- **Ferries** (`landmarks::gtfs::ferrycount`, run by the `ferries` job's `pipeline::ferries`): per OSM ferry line,
+- **Ferries** (`landmarks::gtfs::ferrycount`, run by the `ferries` job's `landmarks::ferries`): per OSM ferry line,
   the record the map shows (`info["freq"]`): `per_day` (each way, on days it runs; under four days
   a week, weekly ÷ 7), `per_day_low` (the quietest month's), `headway` (median gap 07:00–19:00),
   `days`, `months`, `season` (`year`, `some-days`, `seasonal`), `overnight`, `source`, `url`,
   `checked`. A GTFS route matches a line when its trips call within 400 m (at most 30 % of the
   line's length) of both its ends. Feeds count from their fetch day, in id order, the first feed's
   count winning.
-- **Precedence** for a ferry line (`pipeline::ferries`' `rank`): a feed's count, then a static file's (in
+- **Precedence** for a ferry line (`landmarks::ferries`' `rank`): a feed's count, then a static file's (in
   the zips' order), then OSM's `interval` tag.
 
 #### 6.7.1 Feeds
@@ -1493,7 +1493,7 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 | Planetiler and its data | kept in code: `water::PLANETILER_VERSION` is a code contract (the water layer's simplification was checked against that version's z14 water, `osmpass::check_planetiler`), and Natural Earth, the water polygons and lake centrelines are the jar's own downloads (`--download`), named by it, not by the app | — |
 | ESA WorldCover | built: `esa-worldcover.toml`, the `land-cover` role | `geotiff`, URL template (`{tile}`), version; its class table is its legend (`params.legend`) |
 | Meta & WRI canopy height | built: `meta-canopy.toml`, the `canopy` role, its index `canopy-squares.geojson` (`producers/sources/canopy.py`, from the bucket's listing: the equator row's `lat=-0.0` read there); a file the index doesn't list is none there | `geotiff` with an index: a file's `url`, `kind` and 10° square |
-| Leaf type (EEA HRL, NALCMS) | built: `eea-leaf-type.toml`, `nalcms.toml`, the `leaf-type-europe` and `leaf-type-north-america` roles; the build still makes the squares where a run needs them (`pipeline::leaftype`, given the sources), since the coverage decides which | `image-service` and `zip-geotiff`: URL, the box each covers, NALCMS's zip member |
+| Leaf type (EEA HRL, NALCMS) | built: `eea-leaf-type.toml`, `nalcms.toml`, the `leaf-type-europe` and `leaf-type-north-america` roles; the build still makes the squares where a run needs them (`trees::leaftype`, given the sources), since the coverage decides which | `image-service` and `zip-geotiff`: URL, the box each covers, NALCMS's zip member |
 | Overture buildings | built: `overture-buildings.toml`, the `buildings` role (the release its `version`; `buildtiles` and `bld::fetch` read the bucket by role); `bld/fill.rs`'s `ESTIMATES` stays in code, the fill's rule 2 (its tables were fitted with it) | `geoparquet`: the bucket, release, its `s3://` name (the roadside scan's parts list names files by it) and region, the types read |
 | GHSL building heights | built: `ghsl-built-h.toml`, the `building-heights` role, its index `ghsl-tiles.geojson` (`producers/sources/ghsl.py`, from the tiles folder's listing: the tiles' grid read there) | `zip-geotiff` by an index of its tiles, its version naming its folder |
 | Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikipedia-api.toml`, the `wikidata` and `wikipedia` roles | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |

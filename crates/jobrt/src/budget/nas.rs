@@ -2,11 +2,11 @@
 //! `state/pool/nas-budget` (`SWITCH`) says `off` (on while missing). Packing lets more jobs run
 //! at once, and the share takes 20 to 55 small-file creates a second: the lead's coordinator keeps
 //! the pool's running jobs' NAS weights together within what the NAS was measured to give
-//! (crate::coord's `pack`, `pick_every` and `pick_own`: the lead's own jobs too), as the Wikimedia
+//! (agentcore::coord's `pack`, `pick_every` and `pick_own`: the lead's own jobs too), as the Wikimedia
 //! budget keeps the pool's requests.
 //!
 //! - **A job's NAS weight** is the share of the NAS it takes, in thousandths: its targets' measured
-//!   rate (crate::needs::Book::nas: bytes read and written a second, files made a second, from
+//!   rate (agentcore::needs::Book::nas: bytes read and written a second, files made a second, from
 //!   crate::costin's `bytes`, `wrote` and `creates` over its time), each over the NAS's (`Limits`),
 //!   added (one combined weight; reads and writes split only if measures show they limit apart),
 //!   with its metadata work beside them (task #451): the folder entries it listed, the files it
@@ -29,14 +29,14 @@
 //!   owner's target (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`), whatever
 //!   loads the NAS, the build or not, no new job that weighs anything goes but beside nothing that
 //!   weighs anything (`Limits::open`).
-//! - **Downloads**: a job of a fetching step (crate::agent::steps::Kind::Fetch) counts one; the
+//! - **Downloads**: a job of a fetching step (pipeline::agent::steps::Kind::Fetch) counts one; the
 //!   switch's `downloads <n>` caps them pool-wide (no cap without it).
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// The switch's file: the pool's setting `nas-budget` (crate::coord::asks) as an older app reads
+/// The switch's file: the pool's setting `nas-budget` (agentcore::coord::asks) as an older app reads
 /// it (the rollout gate's).
 pub const SWITCH: &str = "state/pool/nas-budget";
 /// Where the coordinator's probes are made, under the project folder (a folder per process).
@@ -199,7 +199,7 @@ pub struct Limits {
     pub held: bool,
 }
 
-/// A target's or job's measured NAS rate (crate::needs::Book::nas): bytes and files made, and its
+/// A target's or job's measured NAS rate (agentcore::needs::Book::nas): bytes and files made, and its
 /// metadata work, a second.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rate {
@@ -253,7 +253,7 @@ impl Limits {
         w == 0 || running == 0 || running.saturating_add(w) <= WHOLE
     }
 
-    /// `fits_own` for a target of the lead's own every-step asks (crate::coord's `pick_every`),
+    /// `fits_own` for a target of the lead's own every-step asks (agentcore::coord's `pick_every`),
     /// which members' small jobs would otherwise hold back for good (each lease's weight keeps
     /// `running` above zero): it goes too once it has waited `OWN_AGE` for the budget alone
     /// (`waited`), no leased job weighs the whole (`heaviest`, the most one weighs) and the lead's
@@ -263,7 +263,7 @@ impl Limits {
         Self::fits_own(running, w) || (waited && heaviest < WHOLE && own.saturating_add(w) <= WHOLE)
     }
 
-    /// `fits_own_target` for the lead's own planned job (crate::coord's `own_nas_fits`): also, not
+    /// `fits_own_target` for the lead's own planned job (agentcore::coord's `own_nas_fits`): also, not
     /// waiting, once it weighs the whole itself while no leased job weighs the whole, so a whole
     /// one isn't held back by the lead's own stream of smaller jobs.
     pub fn fits_own_job(running: u32, own: u32, heaviest: u32, w: u32, waited: bool) -> bool {
@@ -274,9 +274,9 @@ impl Limits {
 /// The steps that wait for a quiet NAS (task #451): never urgent, they start only beside nothing
 /// that weighs anything, or within the whole by their own measured weight, never by an aged wait
 /// (`fits_quiet`), never hold room for themselves, and yield at a safe point to a job held back
-/// for the budget `OWN_AGE` that their going would let start (crate::coord's `nas_yield`).
+/// for the budget `OWN_AGE` that their going would let start (agentcore::coord's `nas_yield`).
 /// Unmeasured the way they run now, they weigh the whole and go as the lead's own unmeasured NAS
-/// steps do (crate::coord::sched's `own_nas_fits`), so their first run measures them.
+/// steps do (agentcore::coord::sched's `own_nas_fits`), so their first run measures them.
 pub const QUIET_STEPS: [&str; 1] = ["gc"];
 
 /// How long a quiet step's job is held back for a quiet NAS before it goes as an aged job of the

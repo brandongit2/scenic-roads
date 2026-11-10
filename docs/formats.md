@@ -956,7 +956,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     sorted, duplicates once) and `index` (`{fmt, release, zoom, tiles: {"8/x/y": count}}`, written
     last).
   - `sources/trees/leaf/lat<top>_lon<left>.tif` (a 10° square's dominant leaf type at 0.0005°: u8,
-    0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `pipeline::leaftype`, GDAL's GeoTIFF
+    0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `trees::leaftype`, GDAL's GeoTIFF
     bytes; tag `complete=1` when whole; chunks kept in `parts/lat<top>_lon<left>/<row>-<col>.npy`
     (numpy's format) or `.none` while made; a NALCMS square's warp is GDAL's step for step with
     `det`'s maths, the same bytes on every Mac, and its `source` tag says so

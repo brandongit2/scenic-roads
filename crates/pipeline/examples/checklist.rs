@@ -1,4 +1,4 @@
-//! The build's checklist (crate::agent::build::checklist, folded by stage: what the agent's status
+//! The build's checklist (pipeline::agent::build::checklist, folded by stage: what the agent's status
 //! carries, and the build page and `scenic status` show) worked out from a NAS project folder,
 //! read only, and written as JSON: a look at the page against real data without an agent.
 //!

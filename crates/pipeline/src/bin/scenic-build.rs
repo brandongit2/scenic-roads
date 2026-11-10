@@ -234,7 +234,7 @@ fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
             &out.scratch_file("lint"),
         ));
     }
-    // (Its cost noted, as every step's: measured, a check goes beside running jobs, crate::coord.)
+    // (Its cost noted, as every step's: measured, a check goes beside running jobs, agentcore::coord.)
     let target = format!("inputs/{unit}");
     let c = cost_start("inputs", &target);
     let said = ::inputs::inputs::gate::run(out, &unit, flag(&args, "--full"), planned)?;
@@ -1329,7 +1329,7 @@ struct Reads {
 impl Reads {
     /// Notes the job's NAS reads on the target being measured (crate::costin: `nas_read` and
     /// `nas_secs`, the same on each of its targets, so each says the job's own rate as it read:
-    /// crate::needs::nas_rate).
+    /// agentcore::needs::nas_rate).
     fn note(&self) {
         buildstore::costin::set("nas_read", self.bytes);
         buildstore::costin::set("nas_secs", self.secs);
@@ -1702,7 +1702,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
     Ok(())
 }
 
-/// Lists of encoded tiles as a kept piece's payload (crate::resume_log::Put).
+/// Lists of encoded tiles as a kept piece's payload (jobrt::resume_log::Put).
 fn put_encoded(lists: &[&[codecs::tiling::Encoded]]) -> Vec<u8> {
     let mut p = jobrt::resume_log::Put::default();
     p.u64(lists.len() as u64);
@@ -2210,7 +2210,7 @@ fn catalogue(
     match post {
         Some(to) if !held => {
             // (Whole, under a temporary name renamed into place: the agent takes it once the job
-            // has ended, crate::agent::publish::MapLog.)
+            // has ended, agentcore::agent::publish::MapLog.)
             let b = catalogue.encode()?;
             if let Some(dir) = to.parent() {
                 std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
@@ -2308,7 +2308,7 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
 
 /// Target `target` of `step` begins, for `note_cost`: its time, and the job's peak memory started
 /// again; noted for the agent (`SCENIC_COSTS`, a `started` line), which keeps what the job holds
-/// while a target is under way as what that target takes at least (crate::agent::memguard).
+/// while a target is under way as what that target takes at least (agentcore::agent::memguard).
 fn cost_start(step: &str, target: &str) -> std::time::Instant {
     jobrt::sys::reset_group_peak();
     note_started(&agentcore::coord::cost_key(step, target));
@@ -2368,7 +2368,7 @@ fn run_drop(step: &str, target: &str, drop: impl FnOnce() -> Result<usize>) -> R
 /// What a job of `step` took for `target` (since its `cost_start`): the most memory the job's
 /// processes held together meanwhile (sampled: a pool's workers summed, an earlier target's peak
 /// not counted) and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a helper only
-/// work that fits its memory (crate::coord::job_peak); with its inputs' measures (buildstore::costin).
+/// work that fits its memory (agentcore::coord::job_peak); with its inputs' measures (buildstore::costin).
 fn note_cost(step: &str, target: &str, t0: std::time::Instant) {
     write_cost_line(step, target, &done_line(step, target, t0));
 }
@@ -2546,7 +2546,7 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
             handoff.as_deref(),
             &|l| eprintln!("{l}"),
             &|d, t| jobrt::jobs::report(d, t, "elevation tiles"),
-            // (Each tile asked a safe point: crate::control::reached, for the job's measure.)
+            // (Each tile asked a safe point: jobrt::control::reached, for the job's measure.)
             &|| {
                 jobrt::control::reached();
                 jobrt::control::draining_lately()
@@ -2554,7 +2554,7 @@ fn pyramids_fill(out: &Out, args: &[String]) -> Result<bool> {
         )?;
         most = most.max(f.bytes);
         // (The tiles it asked of the network, the work its time is weighed by: a z6 tile whose
-        // tiles were all stored took seconds, not the hours of one fetching them, crate::needs::per_work.)
+        // tiles were all stored took seconds, not the hours of one fetching them, agentcore::needs::per_work.)
         buildstore::costin::set("fetched", f.fetched + f.none + f.failed.len() as u64);
         println!(
             "{}",
@@ -4004,7 +4004,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             a.on(&u.slash());
             a.say(true);
         });
-        // (Under way, for the agent, crate::agent::memguard; its processes' most held from here,
+        // (Under way, for the agent, agentcore::agent::memguard; its processes' most held from here,
         // its measure.)
         jobrt::sys::reset_group_peak();
         note_started(&agentcore::coord::cost_key("unit", &u.slash()));
@@ -4052,7 +4052,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             );
             let (root, blobs) = (o.root().clone(), blobs.clone());
             ahead = Some(std::thread::spawn(move || {
-                // (A phase beside the main thread's: crate::timings.)
+                // (A phase beside the main thread's: jobrt::timings.)
                 let _p = phase("copying the next z6 tile's piece and packs ahead");
                 // (Under this process's own temporary name, renamed whole: another job on this Mac
                 // may be copying the same file.)
@@ -6573,7 +6573,7 @@ mod tests {
         let log =
             |name: &str, ts: &str| std::fs::read_to_string(d.path().join(format!("{name}-{}.log", ts.len()))).unwrap();
         // (Told `a` once the child listens on its channel: from its first safe point on, which keeps
-        // it open, each say heard in order, one a safe point, crate::control::Say.)
+        // it open, each say heard in order, one a safe point, jobrt::control::Say.)
         let answer = |child: &mut std::process::Child, a: jobrt::control::Say| {
             store::testkit::wait_for("the batch listening", || {
                 match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
@@ -6912,7 +6912,7 @@ mod tests {
     }
 
     /// docs/maplog.md §8, step 6: the step posts its map to the lead's agent, which appends it to the
-    /// map's log (its thread, crate::agent::publish::MapLog), and writes no catalogue: no `catalog/`
+    /// map's log (its thread, agentcore::agent::publish::MapLog), and writes no catalogue: no `catalog/`
     /// folder anywhere. The next map is numbered after it, its sizes the map's and the records'.
     #[test]
     fn the_step_publishes_with_no_catalog_folder() {

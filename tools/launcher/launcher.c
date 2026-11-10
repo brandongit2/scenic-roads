@@ -16,7 +16,7 @@
 //
 // Scenic.app carries a copy of its own (Contents/MacOS/scenic-launcher, built and signed with the
 // app in every publish), which runs the build service as the app's launchd job: there a child that
-// exits with 76 (the agent quit as the app asked, pipeline::control::QUIT_EXIT) ends the launcher
+// exits with 76 (the agent quit as the app asked, jobrt::control::QUIT_EXIT) ends the launcher
 // too, cleanly, so launchd leaves it stopped until the app starts it again. Two variables serve the
 // app's copy: SCENIC_RUN_DIR, the folder of run files in place of ~/Library/Application
 // Support/scenic/run (a sandboxed test app's own), and SCENIC_LAUNCHER_LOG, a file (a leading "~/"
@@ -34,7 +34,7 @@
 #include <unistd.h>
 
 extern char **environ;
-// pipeline::control::QUIT_EXIT.
+// jobrt::control::QUIT_EXIT.
 #define QUIT_EXIT 76
 static volatile pid_t child = 0;
 static volatile sig_atomic_t stopping = 0;

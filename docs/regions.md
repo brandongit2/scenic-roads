@@ -44,7 +44,7 @@ check requires, while only some of it is built.
 - heritage registers (`inputs/heritage/`, docs/inputs.md §6.5);
 - timetables: the Mobility Database feeds of the countries the coverage is in, declared feeds and
   static timetables (docs/steps.md, Rail service; docs/inputs.md §6.7);
-- leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`pipeline::leaftype`);
+- leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`trees::leaftype`);
 - the languages spoken there (docs/names.md; docs/inputs.md §6.2);
 - credits (`inputs::rules::CREDITS`; a catalogue lists those meeting its coverage + 20 km or its
   z6 tiles' ways).

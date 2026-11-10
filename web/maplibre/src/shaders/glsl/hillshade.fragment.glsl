@@ -185,7 +185,7 @@ void main() {
     highp vec2 texturePos = (v_pos * (size - 4.0) + 2.0) / size;
     vec4 pixel = texture(u_image, texturePos);
 
-    // Scenic Roads: a shading tile as stored (pipeline::shade_codec, roadcore::shade): R the mean
+    // Scenic Roads: a shading tile as stored (codecs::shade_codec, roadcore::shade): R the mean
     // steepness (sqrt-coded to 400 %), G and B the mean uphill unit direction (128 + 120 u), so its
     // length c is how much the faces beneath agree. Shaded along that direction with the
     // steepness, flattened toward the rough ground's shading as c falls: c × I(s û) + (1 − c) ×

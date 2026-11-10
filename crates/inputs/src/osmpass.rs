@@ -814,7 +814,7 @@ pub fn previous_outlines<'a>(
 }
 
 /// The pass's administrative and ISO 3166 outlines (buildstore::outlines::assemble) from its outline
-/// set, as `sources/osm/<date>/outlines`: the outlines step's work (crate::agent::build::
+/// set, as `sources/osm/<date>/outlines`: the outlines step's work (pipeline::agent::build::
 /// outlines_work, keyed on the set, the previous outlines and `OUTLINES_V`). The set is copied
 /// into `scratch` first (osmium reads it twice); the previous pass's outlines
 /// (`previous_outlines`) are what a country this planet can't assemble keeps.
@@ -926,7 +926,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
         mark(scratch, "sets-added")?;
     }
     // (The outlines are their own step, from the outline set uploaded above: `make_outlines`,
-    // crate::agent::build::outlines_work.)
+    // pipeline::agent::build::outlines_work.)
     // From here the filtered file is read twice more (the basemap's filter, the first cut): from
     // the local copy while there's room, else from the NAS's.
     let free = |p: &Path| jobrt::room::free_past(p, target);
@@ -1192,7 +1192,7 @@ pub fn pass_done(root: &store::nasfs::NasRoot, date: &str) -> bool {
 }
 
 // A job's environment: a pass is complete when its records say so (`latest_pass`; the agent sets
-// it with `state/pool/resume` on: crate::agent::resume).
+// it with `state/pool/resume` on: agentcore::agent::resume).
 use jobrt::resume_log::RESUME_ENV;
 
 /// The date of the newest complete pass: by the records when the job's agent says so
@@ -1514,7 +1514,7 @@ mod tests {
 
     /// A pass stopped after its filter, resumed by its Mac before the lead merged that stage's
     /// entry: its marker says the stage is done, and the snapshot with this Mac's unmerged
-    /// hand-offs laid over it (crate::agent::resume) names the filtered planet the next stages read.
+    /// hand-offs laid over it (agentcore::agent::resume) names the filtered planet the next stages read.
     #[test]
     fn a_pass_resumed_finds_its_earlier_stages_unmerged() {
         let d = tempfile::tempdir().unwrap();

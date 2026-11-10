@@ -576,7 +576,7 @@ fn canopy_tiff(file: File) -> Result<Tiff> {
 /// #656: ~3.5 min; the agent remounts a share that's gone); else its error, marked read where it
 /// lies. (A Mac taking a task whose share dropped failed the canopy step, which its lead then ran
 /// itself from its own copies: task #903.) The build pausing stops its retries at
-/// once: the program exits as paused (crate::control::PAUSED_EXIT), and its task is given back,
+/// once: the program exits as paused (jobrt::control::PAUSED_EXIT), and its task is given back,
 /// not failed (`unit::run`, `scenic run-task`).
 fn where_it_lies<T>(path: &Path, f: impl FnMut() -> Result<T>) -> Result<T> {
     let r = store::retry::any_until(

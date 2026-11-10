@@ -8,18 +8,18 @@
 //! when it last succeeded (`state/build/jobs.json`) isn't run again; an unchanged output keeps its
 //! content name, so what depends on it keeps its key too.
 
-use super::jobs::Work;
-use super::nasread;
-use super::progress::{Checklist, Item, Line, RegionState};
-use super::publish::{
+use super::steps::{along_add, along_add_built, readiness, ready, Ready, View};
+use super::tiles::{Reader, TerrainTiles, Tile, Unread};
+use ::inputs::dem::spacing::Fine;
+use agentcore::agent::jobs::Work;
+use agentcore::agent::nasread;
+use agentcore::agent::progress::{Checklist, Item, Line, RegionState};
+use agentcore::agent::publish::{
     PublishLine, PublishRegion, Publishing, CATALOGUE_CAP_S, CATALOGUE_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S,
     NAMES_TODO_EVERY_S, OVERLAYS_EVERY_S,
 };
-use super::seam::{Left, NamesTodo, PassJob, PassWork, Planned, Publish, RegionLeft};
-use super::steps::{along_add, along_add_built, readiness, ready, Ready, View};
-use super::tiles::{Reader, TerrainTiles, Tile, Unread};
-use crate::pool::records::Keys;
-use ::inputs::dem::spacing::Fine;
+use agentcore::agent::seam::{Left, NamesTodo, PassJob, PassWork, Planned, Publish, RegionLeft};
+use agentcore::pool::records::Keys;
 use buildstore::coverage::coverage_tiles;
 use buildstore::coverage::Coverage;
 use codecs::legacy::TileId;
@@ -289,7 +289,7 @@ pub fn pass_work(
     names: Option<&dyn Fn() -> NamesTodo>,
 ) -> PassWork {
     let mut w = PassWork::default();
-    let wait = |step: Option<&str>, what: &str, why: String| super::Waiting {
+    let wait = |step: Option<&str>, what: &str, why: String| agentcore::agent::Waiting {
         step: step.map(str::to_string),
         what: what.into(),
         why,
@@ -1337,7 +1337,7 @@ pub fn deep_outputs_named(m: &BTreeMap<String, String>, t: (u32, u32)) -> bool {
 }
 
 /// Whether `key` is target `t` of `step`'s "none" key (`steps::none_key`): a drop, its run dropping
-/// its packs and reading nothing (scenic-build's `run_drop`, crate::needs::DROPS).
+/// its packs and reading nothing (scenic-build's `run_drop`, agentcore::needs::DROPS).
 pub fn is_none_key(step: &str, t: &str, key: &str) -> bool {
     super::steps::none_key(step, t).as_deref() == Some(key)
 }
@@ -1856,7 +1856,10 @@ pub fn terrain_work(tt: &TerrainTargets, x: &KeyCtx, done: &Keys) -> TerrainWork
         // until it's made.)
         w.left.unknown_for.insert(
             "root-tiles",
-            super::seam::UnknownFor { targets: tt.reads_root.clone(), until: ("terrain-root", "terrain-root".into()) },
+            agentcore::agent::seam::UnknownFor {
+                targets: tt.reads_root.clone(),
+                until: ("terrain-root", "terrain-root".into()),
+            },
         );
         match readiness("terrain-root", "terrain-root", &w.left) {
             Ready::Waits(n) => w.held.push(("terrain-root", super::steps::wait_note(&n))),
@@ -1942,7 +1945,7 @@ pub struct TreeWork {
     pub stale_lo: BTreeSet<String>,
     /// The stale assemblies that can't run yet wait for their z6 tiles' mids: their waiting note.
     pub lo_held: Option<String>,
-    /// The z6 tiles an assembly waits for: not current with their mid (crate::agent::seam::Left's
+    /// The z6 tiles an assembly waits for: not current with their mid (agentcore::agent::seam::Left's
     /// `mids`).
     pub unmid: BTreeSet<String>,
 }
@@ -2932,7 +2935,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
 }
 
 /// The map tiles `targets` to draw, a z6 tile's together, a group a halo (task #260: a job of the map
-/// tiles takes one group, its base packs opened once, crate::needs::HALO_STEPS): grouped by the z6 tile
+/// tiles takes one group, its base packs opened once, agentcore::needs::HALO_STEPS): grouped by the z6 tile
 /// whose change made each stale (its base pack or road values in `m` not what the served catalogue
 /// `served` has: the owners as `restaled_by` takes them), the z6 tiles in the order
 /// they're built (`spatial_order`), a tile two z6 tiles made stale with the first; those no z6 tile's
@@ -2995,7 +2998,7 @@ fn by_unit(
 /// `targets` of `step` in compact blocks when another step reads several of them for one of its own
 /// (steps::read_together: slope-deep a z10 tile's terrain-deep and its 8 neighbours', an assembly
 /// its z6 tiles), by steps::block_order; else as they are. A job takes a run of its step's targets
-/// in this order (crate::coord::sched's `pick_every`), so the runs are squares and what reads them
+/// in this order (agentcore::coord::sched's `pick_every`), so the runs are squares and what reads them
 /// is ready a neighbourhood at a time, not once a row is done (task #909).
 pub fn blocks(step: &str, mut targets: Vec<(String, String)>) -> Vec<(String, String)> {
     if super::steps::read_together(step) && targets.iter().all(|t| super::steps::block_order(&t.0).is_some()) {
@@ -3867,7 +3870,7 @@ pub fn depth_tiles(cov: &Coverage, sources: &[terrain::depth::grids::Source]) ->
     (lo, hi)
 }
 
-/// The depth's targets' tiles for GC (crate::agent::gc::DepthKeep, at `now`): the z3 and z6 tiles
+/// The depth's targets' tiles for GC (agentcore::agent::gc::DepthKeep, at `now`): the z3 and z6 tiles
 /// `depth_tiles` finds, whatever their water's keys (a target waiting for its water is still one),
 /// and the z6 tile and ring of each lake-depth target not yet made once (`done`).
 /// None while the depth's sources can't be read, or none is declared, or the coverage is empty: no
@@ -3878,7 +3881,7 @@ pub fn depth_kept(
     tiles: &TerrainTiles,
     done: &Keys,
     now: u64,
-) -> Option<crate::agent::gc::DepthKeep> {
+) -> Option<agentcore::agent::gc::DepthKeep> {
     let sources = tiles.depth(m)?;
     if sources.is_empty() || (cov.shapes.is_empty() && cov.depth_only.is_empty()) {
         return None;
@@ -3892,7 +3895,7 @@ pub fn depth_kept(
             hi.extend(terrain::depth::lakes::ring(t));
         }
     }
-    Some(crate::agent::gc::DepthKeep { at: now, lo: lo.into_iter().collect(), hi })
+    Some(agentcore::agent::gc::DepthKeep { at: now, lo: lo.into_iter().collect(), hi })
 }
 
 /// The water the depth's targets read, as the terrain-water job works their digests out: an
@@ -4348,7 +4351,7 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
 }
 
 /// The chains' work still to run, as if each step succeeded (`remaining`): the trains', the
-/// landmarks', the 3D buildings', the depths' and the polar caps', for the forecast (crate::agent::forecast; the
+/// landmarks', the 3D buildings', the depths' and the polar caps', for the forecast (agentcore::agent::forecast; the
 /// regions' map tiles are each region's, `RegionLeft::packs`, and the whole-map steps go by their
 /// cadence).
 pub fn chains_left(x: &KeyCtx, done: &Keys) -> [Vec<Work>; 5] {
@@ -4608,7 +4611,7 @@ pub fn catalogue_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, Str
 #[cfg(all(test, not(in_agentcore)))]
 mod tests {
     use super::*;
-    use crate::agent::publish::{LastCatalogue, GATED};
+    use agentcore::agent::publish::{LastCatalogue, GATED};
     use buildstore::recipes::Recipe;
     use roads::reach::{LongWay, Reach};
     use terrain::depth::build::depth_hi_box_read;
@@ -4652,8 +4655,8 @@ mod tests {
         crate::agent::steps::read_targets(step, t, None)
             .into_iter()
             .filter_map(|r| match r {
-                crate::agent::forecast::ReadTarget::One(s, u) => Some((s, u)),
-                crate::agent::forecast::ReadTarget::Whole(_) => None,
+                agentcore::agent::forecast::ReadTarget::One(s, u) => Some((s, u)),
+                agentcore::agent::forecast::ReadTarget::Whole(_) => None,
             })
             .collect()
     }
@@ -6782,7 +6785,7 @@ mod tests {
     /// check (agent::pool::check) and the steps table's write-sets take it.
     #[test]
     fn a_removal_only_hand_off_is_taken() {
-        use crate::pool::journal::Entry;
+        use agentcore::pool::journal::Entry;
         for (step, t, ls) in [
             ("terrain-hi", "6/40/20", vec!["layers/terrain/hi/6-40-20", "work/terrain-mid/6-40-20"]),
             ("slope-hi", "6/40/20", vec!["layers/slope/hi/6-40-20", "work/slope-mid/6-40-20"]),
@@ -6797,16 +6800,16 @@ mod tests {
             h.done = Some((step.to_string(), vec![(t.to_string(), k)]));
             let e = Entry {
                 member: "m-0000000000000001".into(),
-                lease: crate::pool::journal::LeaseId { term: 1, n: 1 },
+                lease: agentcore::pool::journal::LeaseId { term: 1, n: 1 },
                 step: step.into(),
                 handoff: h,
                 at: 1_791_500_000,
             };
             assert_eq!(
-                crate::agent::pool::check(
+                agentcore::agent::pool::check(
                     crate::agent::theplan::the_plan(),
                     &e,
-                    &crate::pool::records::Records::default()
+                    &agentcore::pool::records::Records::default()
                 ),
                 Ok(()),
                 "{step}"
@@ -7045,7 +7048,7 @@ mod tests {
         assert_ne!(a, b, "the tiles it makes changed: its z6 tile's key with them");
     }
 
-    /// Task #780: a redo (`scenic redo`, crate::agent::redo) forgets one target's key, so the plan
+    /// Task #780: a redo (`scenic redo`, agentcore::agent::redo) forgets one target's key, so the plan
     /// offers that target again under the key it has, alone; nothing else changes; the same redo
     /// again changes nothing. Built again to new content, what reads it follows by content: its z3
     /// tile's assembly and its slope.
@@ -7078,10 +7081,10 @@ mod tests {
         // (A restore's or the scheme-2 save's done record of before step 4b, a hand-off still
         // waiting: nothing recorded, nothing forgotten.)
         let old = [(format!("terrain-hi {t} {key}"), "0123456789abcdef".to_string())];
-        done.record(crate::agent::redo::STEP, &old);
+        done.record(agentcore::agent::redo::STEP, &old);
         assert_eq!(done, keys0, "an old restore's record changes nothing");
-        let redo = [(crate::agent::redo::done_target("terrain-hi", t), String::new())];
-        done.record(crate::agent::redo::STEP, &redo);
+        let redo = [(agentcore::agent::redo::done_target("terrain-hi", t), String::new())];
+        done.record(agentcore::agent::redo::STEP, &redo);
         assert_eq!(done.recorded("terrain-hi", t), None);
         let mut back = done.clone();
         back.record("terrain-hi", &[(t.to_string(), key.clone())]);
@@ -7094,7 +7097,7 @@ mod tests {
         );
         assert_eq!(m, m0, "the manifest as it was: its files served until rebuilt");
         let again = done.clone();
-        done.record(crate::agent::redo::STEP, &redo);
+        done.record(agentcore::agent::redo::STEP, &redo);
         assert_eq!(done, again, "a second redo changes nothing");
         // Built again, to new content: its assembly and its slope follow.
         done.record("terrain-hi", &[(t.to_string(), key)]);
@@ -11879,8 +11882,8 @@ mod tests {
         };
         let mut t = t;
         // (The records as the agent reads them: the current term's brief.)
-        let crate::pool::records::Brief { manifest: m, keys, .. } =
-            crate::pool::records::Brief::now(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        let agentcore::pool::records::Brief { manifest: m, keys, .. } =
+            agentcore::pool::records::Brief::now(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         let date = ::inputs::osmpass::latest_pass_by(&store::nasfs::NasRoot::local_for_test(&root), false).unwrap();
         let a = ::inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
         lap("reading records", &mut t);

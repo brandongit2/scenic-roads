@@ -182,19 +182,17 @@ names, webpenc as now).
 
 Every user names the crate that owns a moved module (`pyport::pyjson`, `inputs::dem`,
 `agentcore::coord`): the steps' moves left a `pub use` at each old path, and #1084 rewrote what
-still went through them and cut them. Two kinds stay, both because the plan's files (pipeline's
-agent/build.rs, steps.rs, idents.rs, theplan.rs, tiles.rs) are compiled into agentcore's unit tests
-too (§6.3, 6f4), so a path in them must mean the same in either crate:
+still went through them and cut them. Neither pipeline's root nor its agent.rs re-exports anything.
+The plan's files (pipeline's agent/build.rs, steps.rs, idents.rs, theplan.rs, tiles.rs), compiled
+into agentcore's unit tests too (§6.3, 6f4), name the runtime by its crate as well
+(`agentcore::coord`, `agentcore::agent::jobs::Work`): agentcore's root is `extern crate self as
+agentcore`, so the path means the same in either crate. They name each other by `crate::agent::…`
+or `super::…`, which is the plan's module in both.
 
-- pipeline's root re-exports agentcore's `answers`, `coord`, `needs` and `pool`, which the plan
-  names as `crate::coord` and so on (inside agentcore, `agentcore::coord` names nothing);
-- pipeline's agent.rs is `pub use agentcore::agent::*` beside the plan's modules, so the plan's
-  `crate::agent::gc` or `super::forecast` is the runtime's module in either crate.
-
-agentcore's root re-exports nothing. Inside the runtime, a few of its modules still re-export what
-the steps moved below them, for the runtime's own code: `agent::recipes` (buildstore's) and the
-items of `agent::room` and `agent::jobs` that §1's table lists. Nothing outside agentcore names
-them there.
+agentcore's root re-exports nothing. Inside the runtime, some of its modules still re-export what
+the steps moved below them, for the runtime's own code: `agent::recipes` (buildstore's), and items
+in `agent::room`, `agent::jobs`, `agent::resume`, `agent::cond` and `coord::asks` (§1's table).
+Nothing outside agentcore names them there.
 
 ## 3. The binaries
 
@@ -558,8 +556,7 @@ Final layering, bottom to top (each line depends only on lines above it):
    agent's only use) reads the families' `KIND`s through `Plan` as the other family constants
    do (below), and running a task on a worker (`run_task`, over unit's steps; only the `scenic`
    binary calls it) stays pipeline's;
-4. **pipeline**: the agent's plan, the binaries, the re-exports. It names everything; nothing
-   names it.
+4. **pipeline**: the agent's plan and the binaries. It names everything; nothing names it.
 
 The choices, against the alternatives:
 
@@ -1112,9 +1109,9 @@ commit; re-exports at the old paths as before.
       `crates/agentcore` (~61k lines without tests), on inputs and the crates below it (det,
       roadcore, store, codecs, jobrt, buildstore, coordwire, offload), beside the families.
       pipeline keeps the plan (~9k lines without tests), offload's `run_task`, `out::open`, the
-      family tests, the binaries (~13k) and the re-exports: its `agent` is `pub use
-      agentcore::agent::*` beside the plan's modules, its root re-exports the rest at their old
-      paths, and the plan names the runtime's items by them as before. The runtime names
+      family tests, the binaries (~13k) and, until #1084 cut them (§2), the re-exports: its `agent`
+      was `pub use agentcore::agent::*` beside the plan's modules, its root re-exported the rest at
+      their old paths, and the plan named the runtime's items by them. The runtime names
       `buildstore::out` and the offload crate directly (it held no `out` or `offload` of its own
       but pipeline's re-exports).
       - **Untangled first**, a commit each, behaviour unchanged: the Catalogues map's step times
@@ -1127,9 +1124,9 @@ commit; re-exports at the old paths as before.
         (a planner, a coordinator, the forecast), so they couldn't move to pipeline without making
         most of the runtime's insides public, nor run on a stand-in table. agentcore's unit tests
         compile the plan's modules in (`#[cfg(test)] #[path = "../../../pipeline/src/agent/…"]` in
-        agent/mod.rs, the families as dev-dependencies and re-exported under `cfg(test)` at
-        pipeline's paths, as is an `out` without `open`), so every runtime test is where it was,
-        unchanged. The plan's own tests stay pipeline's: agentcore's build script sets
+        agent/mod.rs, the families as dev-dependencies; until #1084 they were re-exported under
+        `cfg(test)` at pipeline's paths, as was an `out` without `open`), so every runtime test is
+        where it was, unchanged. The plan's own tests stay pipeline's: agentcore's build script sets
         `in_agentcore`, and their modules are `#[cfg(all(test, not(in_agentcore)))]`. The cost: a
         test build compiles the plan twice (pipeline's and agentcore's tests), as a dev build
         doesn't. A plan file's edit runs agentcore's unit tests whole (`affected-tests.sh`: a file

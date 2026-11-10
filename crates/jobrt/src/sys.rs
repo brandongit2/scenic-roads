@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn the_macs_memory_pressure_and_swap_read() {
-        // (What the memory guard reads: crate::agent::memguard.)
+        // (What the memory guard reads: agentcore::agent::memguard.)
         let mem = memsize().expect("hw.memsize");
         assert!(mem >= 4 << 30, "{mem}");
         assert!(memory_pressure().is_some_and(|p| [1, 2, 4].contains(&p)), "{:?}", memory_pressure());

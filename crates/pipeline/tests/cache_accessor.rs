@@ -43,7 +43,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/trees/src/trees/squares.rs", "new", "says where a run's canopy rows are kept: rows_here reads and makes them through the accessor"),
     ("crates/buildstore/src/localread.rs", "new", "names its folders: reads go through store::blobs (store::cachefile holds); copying/ holds only lock files"),
     ("crates/agentcore/src/answers.rs", "*", "the items and heritage answers, which room-making never deletes"),
-    ("crates/landmarks/src/items.rs", "run", "the items job's answers (crate::answers), which room-making never deletes"),
+    ("crates/landmarks/src/items.rs", "run", "the items job's answers (agentcore::answers), which room-making never deletes"),
     ("crates/roads/src/unit.rs", "scenic_kept", "the units' kept results (scenic-units/), which room-making never deletes"),
     ("crates/roads/src/unit.rs", "move_kept_to_shared", "the units' kept results (scenic-units/), which room-making never deletes"),
     ("crates/codecs/src/basepart.rs", "index_path", "a path: open reads, keeps and removes the index through store::cachefile"),

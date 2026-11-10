@@ -97,7 +97,7 @@ float shadeR(vec2 coord) {
 void main() {
     vec4 col;
     // Scenic Roads: a shading tile (known by its encoding's base shift, 32768.5: the app's
-    // basemap.ts SHADE_SHIFT; pipeline::shade_codec) holds each pixel's mean steepness in R,
+    // basemap.ts SHADE_SHIFT; codecs::shade_codec) holds each pixel's mean steepness in R,
     // sqrt-coded to 400 %, which the slope tint colours. Masked (the app's whitewater), from the
     // layer's least coverage `scenic:mask-cover` (u_cover) to whole: a pixel partly covered is a
     // shore, its steepness the bank's, not the water's.

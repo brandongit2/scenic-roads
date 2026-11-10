@@ -33,9 +33,9 @@ Not seen: a run through a shell function or alias, a script file, or a substitut
   passed and publish failed on write_sets, which nothing mapped to it.)
 - The tracing goes one level: `crate::<mod>`, the parent naming it, children using `super::`,
   the crate's own binaries, its `tests/`; other crates' modules naming `<crate>::<mod>`, or
-  `crate::<mod>` where their root re-exports it (`pub use <crate>::…`, #916) or a module of theirs
-  does by glob (`pub use agentcore::agent::*` in pipeline's agent.rs: `crate::agent::jobs` there is
-  agentcore's), and so on through their own re-exports, their binaries and their integration tests.
+  `crate::<mod>` where their root re-exports it (`pub use <crate>::…`) or a module of theirs does by
+  glob (`pub use <crate>::<mod>::*;`), and so on through their own re-exports (none is left between
+  the workspace's crates since #1084), their binaries and their integration tests.
   Users of those users aren't traced; publish's full run catches them. Python tests (dem/) are outside
   the script.
 - Filters name a module path (`agent::tests::`, `agent::tests::unit_key`), never a bare word: a filter starts with one of the crate's modules, so

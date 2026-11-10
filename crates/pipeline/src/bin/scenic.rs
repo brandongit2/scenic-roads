@@ -898,7 +898,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-/// `scenic steps [--json]`: the steps table (crate::agent::steps, docs/pipeline.md), a stage at a
+/// `scenic steps [--json]`: the steps table (pipeline::agent::steps, docs/pipeline.md), a stage at a
 /// time, each step one line of the same columns; `--json` as `/work/steps` serves it.
 fn steps(json: bool) -> Result<()> {
     use agent::every::Place;
@@ -1434,7 +1434,7 @@ fn main() -> Result<()> {
                 // (Taken above, before the NAS is looked for: it needs none.)
                 Some(PoolCmd::Set { .. }) => {}
                 Some(PoolCmd::Release { member, job: Some(job) }) => {
-                    // A job's progress on a member's Mac given up (crate::agent::resume): the lead
+                    // A job's progress on a member's Mac given up (agentcore::agent::resume): the lead
                     // runs it wherever it fits from then. Told the lead (docs/coordination.md step
                     // 7), which keeps it; for an older lead (404), or a member on an older app whose
                     // progress the lead reads on the NAS, the gate's file there, made once.
@@ -1450,7 +1450,7 @@ fn main() -> Result<()> {
                 }
                 Some(PoolCmd::Release { member, job: None }) => {
                     // A member's leases released by the owner (docs/coordination.md §6.1,
-                    // crate::coord::held): its targets go to others.
+                    // agentcore::coord::held): its targets go to others.
                     let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
                         .context("no lead's coordinator to ask")?;
                     let (code, v) = c.post_json("/pool/release", &serde_json::json!({ "member": member }))?;
@@ -1514,7 +1514,7 @@ fn main() -> Result<()> {
                     );
                 }
                 Some(PoolCmd::Floors { clear, step, target }) => {
-                    // The targets' floors the lead's coordinator keeps (crate::agent::memguard):
+                    // The targets' floors the lead's coordinator keeps (agentcore::agent::memguard):
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`
                     // one target's (a step fixed, or a floor learned wrong).
                     let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
@@ -1693,7 +1693,7 @@ fn lead_answer(home: &std::path::Path, key: &str, at: u64) -> Result<bool> {
 const NOT_ANSWERED: &str = "the lead hasn't answered yet: this Mac's agent asks it until it does, and a refusal shows in the menu bar and on the build page";
 
 /// `scenic pause` (`pause`) or `scenic resume`: an ask to this Mac's agent, which passes it on to
-/// the lead's (crate::control); `--here` or a member: that Mac alone (task #224). An ask the lead
+/// the lead's (jobrt::control); `--here` or a member: that Mac alone (task #224). An ask the lead
 /// refuses (agentcore::agent::answered) exits 1 with its reason.
 fn pause_resume(pause: bool, now: bool, here: bool, member: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     use jobrt::control::{Mode, Pause};

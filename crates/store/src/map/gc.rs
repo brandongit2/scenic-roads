@@ -535,7 +535,7 @@ impl GcQueue {
         self.lock().due_by(h, &|_| true)
     }
 
-    /// Those due now that `take` lets a chunk take (the queue's own: crate::agent::gc::by_the_queue
+    /// Those due now that `take` lets a chunk take (the queue's own: agentcore::agent::gc::by_the_queue
     /// in pipeline), sorted.
     pub fn due_by(&self, h: &Holders, take: &dyn Fn(&str) -> bool) -> Vec<String> {
         self.lock().due_by(h, take)

@@ -585,7 +585,7 @@ fn param<'a>(q: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// A job's ask of the answers' lease (`/lease/answers?op=<take|renew|release>&token=<t>&pid=<p>`,
-/// the pipeline's crate::answers::Lease), asked of the lead (`Budget::answers`): 200 with the
+/// agentcore::answers::Lease), asked of the lead (`Budget::answers`): 200 with the
 /// lead's word (`super::LeaseSaid`) when done, 409 with it when not (another holds it, or it's no
 /// longer this holder's); 501 when the budget has no lead (take it on the NAS); 503 when the lead
 /// didn't answer.

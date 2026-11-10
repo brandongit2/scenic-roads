@@ -1,9 +1,9 @@
-//! Every rule that grants a job lives in the scheduler (crate::coord::sched, docs/pool.md §7.2):
+//! Every rule that grants a job lives in the scheduler (agentcore::coord::sched, docs/pool.md §7.2):
 //! the live coordinator and the forecast both call `Sched::pack`, so neither can keep a second copy
 //! that drifts. Outside `#[cfg(test)]` code, no line of any crate's source (this one's, the runtime
 //! crate's, crates/jobrt, where the budgets are, and every crate split out of this one: task #916)
 //! names a grant rule (`RULES`) but in the scheduler itself and where the budget's limits are
-//! defined (crate::budget::nas), or as listed in `EXEMPT` with why; an exemption that no longer
+//! defined (jobrt::budget::nas), or as listed in `EXEMPT` with why; an exemption that no longer
 //! matches fails too, so the list can't go stale.
 //!
 //! scans: crates

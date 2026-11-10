@@ -1,6 +1,6 @@
 //! The catalogue's files an area needs (docs/macs.md, "Mirror, per Mac"): what a download of a
 //! region or a view copies (the map server's downloads), and what a region's download weighs (the
-//! build page's regions, crate::agent::regionsview). Areas are rings of [lon, lat] degrees, each
+//! build page's regions, agentcore::agent::regionsview). Areas are rings of [lon, lat] degrees, each
 //! read as a filled area.
 
 use roadcore::geo;

@@ -248,7 +248,7 @@ makes the same bytes on every Mac.
   - **trees-lo**, an assembly per z3 tile (`trees --assemble-lo`): zoom 8–4 from its z6 tiles' mids.
   - Together the same bytes as a z3 tile's whole run (`trees --z3`, `scenic-build trees 3/x/y`), from
     Meta's canopy squares (`sources/canopy/`, each downloaded once under a `<file>.lock`) and the
-    leaf-type squares (`sources/trees/leaf/`, made by `pipeline::leaftype`: the EEA's chunks, or
+    leaf-type squares (`sources/trees/leaf/`, made by `trees::leaftype`: the EEA's chunks, or
     NALCMS resampled as GDAL's warper did).
   - Reading (task #606): a run reads this Mac's whole copies of the canopy squares (`chm10/`, the
     z6 tiles' canopy step's) where it has them, held for the job; else only the rows its blocks need

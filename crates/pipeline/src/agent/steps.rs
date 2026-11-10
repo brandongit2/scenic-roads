@@ -3,7 +3,7 @@
 //!
 //! - **id** (`name`): the step's stored name, in the records, the journal, the leases, the timings
 //!   and the floors, and the name every reader shows (task #659: no display names); renamed only
-//!   with crate::pool::records::RENAMED (a rename would re-key what's built: so a z6 tile's roads
+//!   with agentcore::pool::records::RENAMED (a rename would re-key what's built: so a z6 tile's roads
 //!   are still `unit`).
 //! - **does**: one sentence of what it makes from what.
 //! - **kind**: where its output goes (`Kind`: a fetch from outside, a derived work file, a pack the
@@ -13,13 +13,13 @@
 //! - **stage**: where it sits in the build's order (`STAGES`): the checklist's lines, the page's
 //!   groups and colours.
 //! - **place**: which Mac runs it (`Place`: the lead alone, or any member), derived from the pool's
-//!   rules (crate::agent::every), never kept by hand.
+//!   rules (agentcore::agent::every), never kept by hand.
 //! - **resources**: whether members take it (the shared steps; which ready job goes first is derived from the
 //!   reads, `readers_first`, never kept by hand), whether it's the lead's alone (a
-//!   run alone of the whole build, or one that keeps the pass's answers: crate::agent::every), and
+//!   run alone of the whole build, or one that keeps the pass's answers: agentcore::agent::every), and
 //!   what it may write (its write-set: the logical names its jobs may add, change or remove in the
 //!   build's manifest). How many targets go in a job is measured, not kept here: as many as fit a
-//!   batch length (crate::coord::sched::Sched::batch_len), a step kept to the lead's in one job.
+//!   batch length (agentcore::coord::sched::Sched::batch_len), a step kept to the lead's in one job.
 //!
 //! Every human text about a step is templated from its row (its id, `said`, `counted`): the jobs'
 //! names, the checklist, the build page, `scenic status`. The tasks a job offers (`TASKS`) are
@@ -39,14 +39,14 @@
 //! they can't disagree (docs/pool.md §7.3, §12 phase 4's sixth batch): a job's `Out`, bound to its
 //! step (buildstore::out::Out::for_step), puts and removes only names it gives, a name outside failing
 //! the job; and the pool's lead refuses every journal entry with a change outside it (`outside`,
-//! in crate::agent::pool's check). A shared step's files for its targets (`saves`, which
-//! crate::coord's check of a member's hand-off and the merge's check use) are checked beside it.
+//! in agentcore::agent::pool's check). A shared step's files for its targets (`saves`, which
+//! agentcore::coord's check of a member's hand-off and the merge's check use) are checked beside it.
 
-use super::every::{self, Place};
+use agentcore::agent::every::{self, Place};
 
-use super::forecast::ReadTarget;
-use super::seam::{Along, Left};
-pub use crate::pool::records::current;
+use agentcore::agent::forecast::ReadTarget;
+use agentcore::agent::seam::{Along, Left};
+pub use agentcore::pool::records::current;
 use codecs::legacy::TileId;
 use serde::{Deserialize, Serialize};
 
@@ -143,16 +143,16 @@ pub struct Step {
     /// Other members take its jobs (the shared steps). No preference among them is kept here:
     /// which ready job goes first is derived from the reads (`readers_first`).
     pub shared: bool,
-    /// A run of the whole build's, the lead's alone (not offered to members: crate::agent::every).
+    /// A run of the whole build's, the lead's alone (not offered to members: agentcore::agent::every).
     pub alone: bool,
-    /// It keeps the pass's Wikidata and Wikipedia answers (crate::answers): none starts while the
+    /// It keeps the pass's Wikidata and Wikipedia answers (agentcore::answers): none starts while the
     /// agent sends them as it starts.
     pub answered: bool,
     /// Its write-set: whether a job of it may write `logical` (`removal`: removes it), for some
     /// target of its own.
     pub writes: fn(&str, bool) -> bool,
     /// Its jobs only change build records (no file made, read or removed): packed beside any jobs at
-    /// one thread counted for no cores, at its measured memory (task #838, crate::coord::sched).
+    /// one thread counted for no cores, at its measured memory (task #838, agentcore::coord::sched).
     pub records_only: bool,
     /// Everything one target of it reads, and so waits for (`Read`, docs/readiness.md §2): the
     /// planner, the forecast, the page and `scenic status` all answer readiness per target from it
@@ -162,7 +162,7 @@ pub struct Step {
     /// first, then codecs and borrowed code. The key's `v` lines (`key_lines`); empty for a step
     /// whose key isn't derived from its reads (`derived`).
     pub versions: &'static [(&'static str, fn() -> String)],
-    /// The way it runs now, as far as its memory and time go (crate::coord::cost_version): a cost
+    /// The way it runs now, as far as its memory and time go (agentcore::coord::cost_version): a cost
     /// measured another way says nothing of what a run takes now. Bumped with a change that moves
     /// them; never a build key.
     pub cost_v: u32,
@@ -301,7 +301,7 @@ pub fn read_targets_passing(step: &str, t: &str, along: Option<&Along>) -> Vec<(
 /// holds its reader while it waits itself (`held`: a `Read::Targets` of a grain that `passes_on`,
 /// a `Read::Mids`), and so does a step read whole none of whose targets is left while anything it
 /// reads is (`whole_left`: a `Read::Whole` of a grain that passes on); an `Along` or `Built` read
-/// holds it only while left. The one rule `readiness` and the forecast (crate::agent::forecast's
+/// holds it only while left. The one rule `readiness` and the forecast (agentcore::agent::forecast's
 /// `Waits`, through `read_targets_passing` and `read_steps`) wait by.
 fn passes_on(r: &Read) -> bool {
     match *r {
@@ -1429,7 +1429,7 @@ pub const TABLE: [Step; 60] = [
             w_none,
         )
     },
-    // (The 3D buildings: offered by the rows they read, crate::needs::OFFERED_BY.)
+    // (The 3D buildings: offered by the rows they read, agentcore::needs::OFFERED_BY.)
     Step {
         shared: true,
         versions: &[("bldprep", || ::bld::bld::BLDPREP_V.to_string())],
@@ -1796,7 +1796,7 @@ pub fn readers_first<T>(v: Vec<T>, step: impl Fn(&T) -> &str) -> Vec<T> {
     out
 }
 
-/// The shared steps: other members take their jobs (crate::coord leases them), in the table's
+/// The shared steps: other members take their jobs (agentcore::coord leases them), in the table's
 /// order (no preference: which ready job goes first is derived from the reads, `readers_first`).
 pub const SHARED: [&str; 12] = set_of(Set::Shared);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
@@ -1816,13 +1816,13 @@ pub fn made(logical: &str) -> bool {
 
 /// Whether journal entry `e`'s changes are all within its step's write-set; why not when they
 /// aren't (the first outside it, and how many), or when the table has no row for its step.
-pub fn outside(e: &crate::pool::journal::Entry) -> Option<String> {
+pub fn outside(e: &agentcore::pool::journal::Entry) -> Option<String> {
     outside_by(e, &|l, removal| writes(&e.step, l, removal))
 }
 
 /// `outside`, by outputs function `writes` (None: the step isn't known): the simulator's steps have
-/// a function of their own (crate::pool::sim).
-pub fn outside_by(e: &crate::pool::journal::Entry, writes: &dyn Fn(&str, bool) -> Option<bool>) -> Option<String> {
+/// a function of their own (agentcore::pool::sim).
+pub fn outside_by(e: &agentcore::pool::journal::Entry, writes: &dyn Fn(&str, bool) -> Option<bool>) -> Option<String> {
     let out: Vec<&String> = match e
         .handoff
         .changes
@@ -1942,7 +1942,7 @@ pub fn output_named(step: &str, target: &str, m: &std::collections::BTreeMap<Str
 
 /// The published files' names (under `layers/` or `base/`) a job of `step` saves for tile `target`,
 /// any of which names its output (`output_named`; the build page's map asks the latest catalogue,
-/// crate::agent::builtview, task #866). None for a step whose files aren't told by name here.
+/// agentcore::agent::builtview, task #866). None for a step whose files aren't told by name here.
 pub fn output_names(step: &str, target: &str) -> Option<Vec<String>> {
     let t = TileId::parse(target)?;
     let dash = target.replace('/', "-");
@@ -2028,10 +2028,10 @@ fn w_none(_: &str, _: bool) -> bool {
     false
 }
 
-/// The clean-up's: it removes the names removed steps made (crate::agent::gc::RETIRED) and the
-/// depth packs no current target names (crate::agent::gc::DepthKeep), and writes nothing.
+/// The clean-up's: it removes the names removed steps made (agentcore::agent::gc::RETIRED) and the
+/// depth packs no current target names (agentcore::agent::gc::DepthKeep), and writes nothing.
 fn w_gc(l: &str, removal: bool) -> bool {
-    removal && (crate::agent::gc::retired(l) || w_depth(l, true) || w_depth_lo(l, true))
+    removal && (agentcore::agent::gc::retired(l) || w_depth(l, true) || w_depth_lo(l, true))
 }
 
 /// The pass's sources (`sources/osm/<date>/…`: its filtered planet, sets, outlines, extracts, road
@@ -2427,11 +2427,11 @@ mod tests {
         assert_eq!(readiness("terrain-deep", "10/900/400", &left), Ready::Yes);
     }
 
-    /// Task #701: no step makes a removed step's names (crate::agent::gc::RETIRED); the clean-up
+    /// Task #701: no step makes a removed step's names (agentcore::agent::gc::RETIRED); the clean-up
     /// removes them, and nothing else.
     #[test]
     fn no_step_makes_a_retired_name() {
-        for p in crate::agent::gc::RETIRED {
+        for p in agentcore::agent::gc::RETIRED {
             for l in [format!("{p}v1"), format!("{p}v3-max")] {
                 assert!(!made(&l), "{l}");
                 assert_eq!(writes("gc", &l, true), Some(true));
@@ -2466,7 +2466,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::pool::journal::{Entry, LeaseId};
+    use agentcore::pool::journal::{Entry, LeaseId};
     use buildstore::handoff::Handoff;
 
     /// The worker page's schedule colours each stage from STAGE_COLOURS (web/work/dash.js), falling
@@ -2765,7 +2765,7 @@ mod tests {
             assert!(s.does.ends_with('.') && s.does.len() > 20, "{}: {:?}", s.name, s.does);
             assert!(ids.insert(s.name), "{} twice", s.name);
             assert!(stage(s.stage).is_some(), "{}: stage {}", s.name, s.stage);
-            if !super::super::every::names_target(s.name) {
+            if !agentcore::agent::every::names_target(s.name) {
                 assert_eq!(s.scope, World, "{}: a step whose target isn't named is worldwide", s.name);
             }
         }

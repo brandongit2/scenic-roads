@@ -3,9 +3,9 @@
 //! each time the owners of a map tile are worked out. Jobs only read the file, filling what it
 //! lacks in memory from their own manifest's packs (`fill`), and write nothing: one writer, so no
 //! update is lost between jobs, and the tiles' keys change only when the lead's file does. A base
-//! pack's ways should lie where its unit's reach puts them (crate::agent::build::unit_ways); one
+//! pack's ways should lie where its unit's reach puts them (pipeline::agent::build::unit_ways); one
 //! built by other reaches may lie further, and the owners take that in
-//! (crate::agent::build::unit_reach).
+//! (pipeline::agent::build::unit_reach).
 
 use anyhow::Result;
 use std::collections::BTreeMap;

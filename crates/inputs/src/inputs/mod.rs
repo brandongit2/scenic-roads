@@ -811,7 +811,7 @@ pub fn read_acceptance(root: &store::nasfs::NasRoot, unit: &str, id: &str) -> Re
         .with_context(|| format!("parse {}", p.display()))
 }
 
-/// This Mac's member id as its agent keeps it (crate::pool::member_id), never made here: "-" when
+/// This Mac's member id as its agent keeps it (agentcore::pool::member_id), never made here: "-" when
 /// it has none yet.
 pub fn member_of(agent_home: &Path) -> String {
     std::fs::read_to_string(agent_home.join("member"))

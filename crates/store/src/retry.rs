@@ -4,7 +4,7 @@
 //! Mac's time (`log`, to match against the NAS's own log), instead of
 //! failing the job and the hour of work behind it. Before the last try the share's mount is looked
 //! at (the kernel's table, then a stat under a deadline); a share that's gone is waited for a
-//! little (the agent's self-heal, crate::agent::heal, remounts it; a job never does). Past the
+//! little (the agent's self-heal, agentcore::agent::heal, remounts it; a job never does). Past the
 //! bound the job fails with the original error, marked `Exhausted` so an outer retry doesn't start
 //! over.
 //!

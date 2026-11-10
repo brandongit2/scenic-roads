@@ -1,5 +1,5 @@
 //! Every request a job makes to Wikimedia goes through its agent's proxy, taken from the pool's one
-//! budget (docs/pool.md §7.7, §12 phase 4's seventh batch; crate::budget). The proxy and the sandbox
+//! budget (docs/pool.md §7.7, §12 phase 4's seventh batch; jobrt::budget). The proxy and the sandbox
 //! enforce it at egress whatever a step's code says (with the budgets on, a job has no other way
 //! out); this lint, best-effort (a scan of the source's text) and run by tools/app/publish.sh, keeps
 //! the steps honest besides:
@@ -7,7 +7,7 @@
 //! - every file of the jobs' code (the crates' Rust, dem/'s Python) that names a metered host is
 //!   listed in `ASKS` with how its requests go (through the proxy, a client honouring
 //!   `HTTPS_PROXY`), or that it asks nothing (a step that sees a 429 tells the proxy:
-//!   crate::budget::seen, so the budget holds every process and Mac);
+//!   jobrt::budget::seen, so the budget holds every process and Mac);
 //! - nothing turns the proxy off (`.proxy(None)`, `ProxyHandler({})`, curl's `--noproxy`, a
 //!   `no_proxy` of its own) but what `BYPASS` lists, with why.
 //!

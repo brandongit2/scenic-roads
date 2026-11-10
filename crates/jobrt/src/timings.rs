@@ -31,7 +31,7 @@
 //!   the Python twin, dem/timings.py, measures them the same way). No phase is classed by hand.
 //! - Live: the top-level phase open on the main thread, and since when, is said in the
 //!   job's counts file (store::nasio::set_phase, a few stores in mapped memory) as it opens, and
-//!   cleared as it ends; the agent shows it under the job (crate::agent::jobs::Live).
+//!   cleared as it ends; the agent shows it under the job (agentcore::agent::jobs::Live).
 //! - `finish(ok)` ends the run: the readable table in the log (stderr), and the record, where
 //!   `SCENIC_TIMINGS` says (the agent collects it), or as a child's phases where `SCENIC_PHASES_TO`
 //!   says. A run never `start`ed (a program run by hand, a test) keeps nothing and prints nothing.
@@ -1325,7 +1325,7 @@ pub struct PhaseShare {
     pub bytes: f64,
 }
 
-/// The step a run of `kind` is a job of (crate::agent::steps' id): a leased task's runs are timed
+/// The step a run of `kind` is a job of (pipeline::agent::steps' id): a leased task's runs are timed
 /// as "task <its step>" (`scenic task`), every other job under its step's id.
 pub fn step_of(kind: &str) -> &str {
     kind.strip_prefix("task ").unwrap_or(kind)

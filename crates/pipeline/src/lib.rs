@@ -2,12 +2,6 @@ pub mod agent;
 pub mod offload;
 pub mod out;
 
-// The runtime's modules the plan names at the crate's root (`crate::coord`, …): the plan's files
-// are compiled into agentcore's unit tests too (agentcore's agent/mod.rs), where these are
-// agentcore's own, so the plan can't name them by the agentcore crate. Everything else names the
-// crate that owns it (task #916, docs/crates.md §2).
-pub use agentcore::{answers, coord, needs, pool};
-
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an
 /// `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs, as it was while
 /// fetch was pipeline's: run by the loader as the test binary starts (an initializer section's

@@ -1,7 +1,7 @@
 //! Pausing the build (docs/building.md §2, Pausing): what a pause is, how a Mac asks for one, and the
 //! channel a running job hears it on.
 //!
-//! One pause holds for every machine. The lead's coordinator keeps it (crate::coord: on its
+//! One pause holds for every machine. The lead's coordinator keeps it (agentcore::coord: on its
 //! disk, mirrored to the NAS) and tells its workers, in its answers to their asks and beats. Each
 //! Mac's agent asks for a pause, or for the build to go on, as that Mac's menu, `scenic pause` or the
 //! map says (`Request`: a file in the agent's folder, taken up within seconds), and passes it on to
@@ -149,7 +149,7 @@ pub fn clear_quit(home: &Path) {
 /// back, not failed (no retry delay, nothing kept from its Mac), its in-progress work dropped (its
 /// scratch for the target cleared; targets it finished are kept). With `rerun_after_update` the
 /// target is held until the lead runs a newer app than the one it was cancelled on
-/// (crate::coord::lease::Hold), so the Mac that takes it then runs the newer; an update waiting on
+/// (agentcore::coord::lease::Hold), so the Mac that takes it then runs the newer; an update waiting on
 /// that job restarts at once, its slot free. On the lead, or a member: a job on another Mac is told
 /// through the lead's coordinator, in its beat's answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -692,18 +692,18 @@ pub struct HoldState {
 /// The hold's file in the agent's folder.
 pub const HOLD: &str = "hold.json";
 
-/// A member's hold on the NAS, by member id: the rollout gate's (crate::coord::asks), read and
+/// A member's hold on the NAS, by member id: the rollout gate's (agentcore::coord::asks), read and
 /// written only while an older app may.
 pub fn hold_path(member: &str) -> String {
     format!("state/pool/holds/{member}.json")
 }
 
-/// The owner's settings asks of the pool's lead (`scenic pool set`, crate::coord::asks), one file
+/// The owner's settings asks of the pool's lead (`scenic pool set`, agentcore::coord::asks), one file
 /// each in this folder of the agent's, taken up by its agent (`take_setting_asks`), which sends them
 /// to the lead.
 pub const SETTING_ASKS: &str = "setting-asks";
 
-/// The pool's settings as this Mac's agent last had them from the lead (crate::coord::asks::Settings),
+/// The pool's settings as this Mac's agent last had them from the lead (agentcore::coord::asks::Settings),
 /// for `scenic pool set` and the menu bar to read without the NAS.
 pub const POOL_SETTINGS: &str = "pool-settings.json";
 

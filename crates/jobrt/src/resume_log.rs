@@ -12,7 +12,7 @@
 //!   naming the step's kind and the run's identity (`id`), then a log appended once a block (its
 //!   block and what the step keeps of it, each record with its length and BLAKE3, so a record cut
 //!   short or damaged is dropped with what follows it). At the top, the agent's sampler counts it in
-//!   the job's disk (crate::agent::memguard's `top_bytes`), so the step's measured disk, and the room
+//!   the job's disk (agentcore::agent::memguard's `top_bytes`), so the step's measured disk, and the room
 //!   asked for it, hold it.
 //! - **Read a record at a time:** a log is streamed as it opens (`Log::open`'s `take`), never read
 //!   whole, so what a resumed run holds is what its step keeps of the blocks, as the run it resumes

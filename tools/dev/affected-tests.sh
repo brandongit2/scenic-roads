@@ -216,8 +216,8 @@ def aliases(c, path):
     """Where else crate c's module `path` is named, as (crate, module path) (#916: modules moved to
     their own crates keep their old paths): a crate's root re-exporting its top module
     (`pub use c::{…top…}`), and a module of a crate re-exporting a module of c by glob
-    (`pub use c::<m>::*;` in pipeline's agent.rs: its `agent::jobs` is agentcore's), and so on
-    through those crates' own re-exports."""
+    (`pub use c::<m>::*;`), and so on through those crates' own re-exports (none is left between
+    the workspace's crates since #1084)."""
     out, todo = [], [(c, path)]
     while todo:
         c0, p0 = todo.pop(0)

@@ -1,4 +1,4 @@
-//! The agent's parts share nothing mutable but through `crate::agent::bus` (docs/agent-parts.md §3,
+//! The agent's parts share nothing mutable but through `agentcore::agent::bus` (docs/agent-parts.md §3,
 //! task #871): no `Mutex<` in the agent's modules (crates/agentcore/src/agent/, the runtime's, and
 //! crates/pipeline/src/agent/, the plan's) outside bus.rs and nasread.rs (its own call pools). The files not yet split into parts keep the count they have, listed in `LEFT`, until
 //! their migration step lands (§7): a file with more fails here, and so does one with fewer, so the

@@ -3,6 +3,11 @@
 //! steps, idents, tiles) sits above it and is asked through `agent::seam::Plan`, which the binaries
 //! hand in.
 
+// The plan's files are compiled into this crate's unit tests (agent/mod.rs's `#[path]` modules) and
+// name the runtime as pipeline does, by this crate's name (`agentcore::coord`): here that's this
+// crate itself.
+extern crate self as agentcore;
+
 pub mod agent;
 pub mod answers;
 pub mod cli;

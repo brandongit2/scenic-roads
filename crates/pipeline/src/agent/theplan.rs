@@ -2,14 +2,16 @@
 //! answered from the steps table and build.rs. The binaries hand `the_plan()` to the runtime.
 
 use super::build::{self, KeyCtx, KeyMemo};
-use super::forecast::ReadTarget;
-use super::jobs::Work;
-use super::nasread;
-use super::progress::{Item, Line};
-use super::seam::{Along, Left, NamesTodo, PassAsk, PassWork, Plan, PlanHeld, Planned, Publish, RegionCounts, Round};
 use super::steps::{self, Kind, Read};
 use super::tiles::TerrainTiles;
-use crate::pool::records::Keys;
+use agentcore::agent::forecast::ReadTarget;
+use agentcore::agent::jobs::Work;
+use agentcore::agent::nasread;
+use agentcore::agent::progress::{Item, Line};
+use agentcore::agent::seam::{
+    Along, Left, NamesTodo, PassAsk, PassWork, Plan, PlanHeld, Planned, Publish, RegionCounts, Round,
+};
+use agentcore::pool::records::Keys;
 use roads::reach::Reaches;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -86,12 +88,12 @@ impl Plan for ThePlan {
     fn writes(&self) -> buildstore::out::Writes {
         steps::writes
     }
-    fn outside(&self, e: &crate::pool::journal::Entry) -> Option<String> {
+    fn outside(&self, e: &agentcore::pool::journal::Entry) -> Option<String> {
         steps::outside(e)
     }
     fn outside_by(
         &self,
-        e: &crate::pool::journal::Entry,
+        e: &agentcore::pool::journal::Entry,
         writes: &dyn Fn(&str, bool) -> Option<bool>,
     ) -> Option<String> {
         steps::outside_by(e, writes)
@@ -390,7 +392,7 @@ impl PlanHeld for Held {
     fn begin_round(&self, root: &NasRoot, manifest: &BTreeMap<String, String>, done: &Keys, date: &str) {
         *self.reach_now.borrow_mut() = self.current_reach(root, manifest, done, date).ok().flatten();
     }
-    fn plan(&self, r: &Round, publish: Publish, refilter: bool) -> (Planned, Option<super::gc::DepthKeep>) {
+    fn plan(&self, r: &Round, publish: Publish, refilter: bool) -> (Planned, Option<agentcore::agent::gc::DepthKeep>) {
         let reach = self.reach_now.borrow().clone();
         let reused = if refilter { self.kept.borrow_mut().take().zip(self.memo.borrow_mut().take()) } else { None };
         let reused = reused.filter(|(_, memo)| {
@@ -462,7 +464,7 @@ impl PlanHeld for Held {
         root: &NasRoot,
         date: String,
         manifest: BTreeMap<String, String>,
-        covs: Arc<super::Coverages>,
+        covs: Arc<agentcore::agent::Coverages>,
         keys: Keys,
     ) -> Box<dyn FnOnce() -> RegionCounts + Send> {
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();

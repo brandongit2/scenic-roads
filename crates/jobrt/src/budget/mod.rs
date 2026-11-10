@@ -47,7 +47,7 @@
 //! within its window, and the lead gives none once its gate says the NAS (docs/coordination.md
 //! step 7).
 //!
-//! The answers' lease (the pipeline's crate::answers) is the lead's too: a job asks its proxy
+//! The answers' lease (agentcore::answers) is the lead's too: a job asks its proxy
 //! (`/lease/answers`), which asks the lead (`Budget::answers`); with no lead given, the proxy says
 //! so (501) and the job takes it on the NAS, as before.
 //!
