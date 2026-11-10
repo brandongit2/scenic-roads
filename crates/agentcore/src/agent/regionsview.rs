@@ -96,8 +96,7 @@ pub fn make(
 
 /// The bytes a download of each region the catalogue records copies of its files (module doc).
 pub fn bytes_of(cat: &store::catalogue::Catalogue) -> BTreeMap<String, u64> {
-    let recorded: Vec<DrawnRegion> =
-        cat.coverage.get("regions").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let recorded: Vec<DrawnRegion> = cat.coverage.regions().unwrap_or_default();
     recorded
         .iter()
         .map(|r| (r.id.clone(), crate::areafiles::files_of(cat, &crate::areafiles::outer_rings(r)).bytes))

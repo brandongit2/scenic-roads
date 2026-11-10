@@ -1199,7 +1199,9 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   process's footprint, and a dense z6 tile's scenic-build held 6–7 GB of them while its programs ran.
   The agent, started by launchd with it, starts itself again in its place without it as it starts
   (`store::spawn::without_large_cache`): the lead's held 1.5 GB of freed blocks after 18 h (3 Nov,
-  #930), and macOS 27's `malloc_zone_pressure_relief` gives none back. The map's server keeps it.
+  #930), and macOS 27's `malloc_zone_pressure_relief` gives none back. So does the map's server
+  (#1092: on the mini's map of 10 Nov, 146 MB after its start and a few requests with it off, 781 MB
+  on).
   The cost is speed: each block over 32 KB is mapped afresh, ~3 µs a block and ~50 ms a GB
   allocated (a C loop of malloc, touch, free on the M4, against ~1 ms a GB with the cache).
 - **Below the floor** (§7.1, The memory floor: the jobs together past their room, what they hold

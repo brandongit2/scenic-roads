@@ -855,11 +855,18 @@ fn reach(asked: &Asked, cat: &Catalogue) -> Reach {
         return Reach::World;
     }
     let ids: HashSet<&str> = asked.regions.iter().map(|r| r.id.as_str()).collect();
-    let recorded = cat.coverage.get("regions").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    // (An object's id, read from its text: the regions asked are parsed whole.)
+    #[derive(serde::Deserialize)]
+    struct Id {
+        #[serde(default)]
+        id: Value,
+    }
+    let recorded = cat.coverage.region_texts();
     let rings: Vec<Vec<Vec<[f64; 2]>>> = recorded
         .iter()
-        .filter(|r| r["id"].as_str().is_some_and(|id| ids.contains(id)))
-        .filter_map(|r| serde_json::from_value::<buildstore::coverage::DrawnRegion>(r.clone()).ok())
+        .filter(|r| r.starts_with('{'))
+        .filter(|r| serde_json::from_str::<Id>(r).is_ok_and(|r| r.id.as_str().is_some_and(|id| ids.contains(id))))
+        .filter_map(|r| serde_json::from_str::<buildstore::coverage::DrawnRegion>(r).ok())
         .map(|r| outer_rings(&r))
         .collect();
     let tiles = rings.iter().flat_map(|r| tiles_meeting(r, NEAR_KM));

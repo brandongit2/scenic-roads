@@ -2827,15 +2827,19 @@ impl Planner {
         map: Option<&store::catalogue::Catalogue>,
         recipes: &[recipes::Recipe],
     ) -> (BTreeMap<String, bool>, Option<u64>) {
+        // (Each region's id and outline entries, read from its text: an object's, both there.)
+        #[derive(serde::Deserialize)]
+        struct Head {
+            id: String,
+            outline: Vec<String>,
+        }
         let regions_of = |c: &store::catalogue::Catalogue| -> BTreeMap<String, Vec<String>> {
             c.coverage
-                .get("regions")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|r| {
-                    Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))
-                })
+                .region_texts()
+                .iter()
+                .filter(|r| r.starts_with('{'))
+                .filter_map(|r| serde_json::from_str::<Head>(r).ok())
+                .map(|h| (h.id, h.outline))
                 .collect()
         };
         let mut cached = self.last_catalogue.borrow_mut();

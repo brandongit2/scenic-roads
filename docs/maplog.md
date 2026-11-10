@@ -22,8 +22,12 @@ Where it departs from this doc:
   regions are 76 MB): the map holds 85 MB (691 MB as `serde_json::Value`s); a snapshot's decode
   peaks at 89 MB (734 MB), the log's open at 194 MB (978 MB), and a batch
   setting a 27 MB region is parsed and applied in place at 54 MB (403 MB). A batch's values are
-  shared with the map it's applied to. The catalogue made of it (`Map::catalogue`) is 376 MB as
-  before, parsed from the values in about 0.3 s (0.1 s when it cloned them). A posted map's entries
+  shared with the map it's applied to. The catalogue made of it (`Map::catalogue`) holds its
+  coverage as text (`store::catalogue::Coverage`, #1092): each region is the map's own entry, shared,
+  and a reader parses what it wants of each region's text. Measured on the map server's saved map
+  of 10 Nov (77,666 entries, 999 regions, 134 MB of their JSON, 6.3 million points): the map holds
+  115 MB; the catalogue made of it 15 MB beside it, in 0.12 s (654 MB and 7.8 million allocations
+  when it held the regions as `Value`s). A posted map's entries
   are made one at a time to diff and check it, a batch is applied in place (to a copy only while a
   reader holds the map), and the snapshots are streamed into zstd.
 
@@ -39,10 +43,7 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
 
 - **Wherever the server runs:** the Mac mini alone since #874, so no gate of its own. Its map
   costs what the lead's does (above), and the catalogue made of it at each batch beside it (the
-  one before still held while it's swapped). Measured on a copy of its saved map (seq 1457, 51,473
-  entries) through the server's steps in a test (#936's review, not the server process itself):
-  about 0.52 GB with the map and its catalogue held (1.1 GB with `Value`s), 0.89 GB while the next
-  catalogue is made beside it (1.46 GB), 0.91 GB at a save (1.49 GB).
+  one before still held while it's swapped): 15 MB each, sharing the map's regions (above).
 - **The catalogue is made from the map at each batch** (`Map::catalogue`), as the consumers still
   read a `Catalogue`.
 - **No save at a clean stop** (§5.3): at most every 10 minutes; a start asks the batches since.
@@ -54,7 +55,7 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
 
 - **The map the plan reads** (`served()` before): `agent::publish::Here`, which the shadow keeps
   beside its feed: the catalogue it last checked equal to the map, else one made of the map
-  (`Here::catalogue`), kept only while a reader holds it (#930: ~370 MB, made again in ~0.1 s, so a
+  (`Here::catalogue`), kept only while a reader holds it (15 MB beside the map since #1092, made again in ~0.1 s, so a
   plan may make it twice); the plan's `map_now`. Without the lead's log (a lead whose log hasn't
   started, a dry run) the newest NAS snapshot, read once a `seq` (§5.2). The status's catalogue is
   its `seq` and its batch's time; the plan's regions on the map (`on_map`), its map tiles' owners

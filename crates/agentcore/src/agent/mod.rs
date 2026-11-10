@@ -10386,7 +10386,8 @@ mod tests {
         };
         c.files.insert("base/6-40-31".into(), f);
         c.coverage = serde_json::json!({ "regions": [{ "id": "a", "name": "Alpha", "outline": ["osm:5"],
-            "shapes": { "osm:5": [[[[50.0, 0.5], [50.1, 0.5], [50.1, 0.6], [50.0, 0.6], [50.0, 0.5]]]] } }] });
+            "shapes": { "osm:5": [[[[50.0, 0.5], [50.1, 0.5], [50.1, 0.6], [50.0, 0.6], [50.0, 0.5]]]] } }] })
+        .into();
         // (The map as a lead without its log reads it: the NAS's snapshot, docs/maplog.md §5.2.)
         let nas = store::nasfs::NasRoot::local_for_test(root);
         store::map::write_nas_snapshot(&nas, &store::map::Map::of(&c).unwrap()).unwrap();

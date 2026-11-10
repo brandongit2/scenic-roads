@@ -2269,11 +2269,7 @@ fn catalogue_coverage(
     };
     // (The first held catalogue keeps the regions as the served one has them: `last`, the caller's.)
     let had: BTreeMap<String, pipeline::coverage::DrawnRegion> = last
-        .and_then(|c| {
-            c.coverage
-                .get("regions")
-                .and_then(|v| serde_json::from_value::<Vec<pipeline::coverage::DrawnRegion>>(v.clone()).ok())
-        })
+        .and_then(|c| c.coverage.regions::<pipeline::coverage::DrawnRegion>())
         .unwrap_or_default()
         .into_iter()
         .map(|d| (d.id.clone(), d))

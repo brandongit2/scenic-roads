@@ -405,7 +405,7 @@ fn unwatched(map: &store::map::Map) -> Option<String> {
 pub fn inputs_key(cat: &store::catalogue::Catalogue) -> String {
     let mut parts: Vec<String> = vec![format!("names-todo inputs {VERSION}")];
     parts.extend(cat.units.iter().cloned());
-    parts.push(cat.coverage.get("regions").map(|r| r.to_string()).unwrap_or_default());
+    parts.push(cat.coverage.regions_json().unwrap_or_default());
     let mut logical: Vec<&str> = Vec::new();
     logical.extend(cat.global.get("spoken").map(String::as_str));
     if let Some(l) = cat.layers.get("labels") {
@@ -443,8 +443,7 @@ fn tile_of(key: &str) -> Option<(u32, u32)> {
 
 /// The coverage the catalogue records, as shapes for point tests (none: a catalogue that records none).
 fn coverage(cat: &store::catalogue::Catalogue) -> Vec<buildstore::coverage::Shape> {
-    let regions: Vec<buildstore::coverage::DrawnRegion> =
-        cat.coverage.get("regions").and_then(|r| serde_json::from_value(r.clone()).ok()).unwrap_or_default();
+    let regions: Vec<buildstore::coverage::DrawnRegion> = cat.coverage.regions().unwrap_or_default();
     let e7 = |p: &[f64; 2]| [(p[0] * 1e7).round() as i32, (p[1] * 1e7).round() as i32];
     regions
         .iter()

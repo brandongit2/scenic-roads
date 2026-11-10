@@ -118,7 +118,8 @@ fn catalogue(root: &store::nasfs::NasRoot) -> Catalogue {
     c.coverage = json!({"recorded": true, "regions": [
         {"id": "london", "name": "London", "outline": ["osm:175342"], "shapes": {"osm:175342": [[rect(-0.3, 51.4, -0.1, 51.6)]]}},
         {"id": "east", "name": "East", "outline": ["osm:1"], "shapes": {"osm:1": [[rect(-0.06, 51.4, -0.03, 51.6)]]}},
-    ]});
+    ]})
+    .into();
     c.validate().unwrap();
     store::testkit::map_root(&root.unchecked_path(), &c);
     c
@@ -463,6 +464,7 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
             {"id": "se", "name": "South East", "outline": ["osm:1"], "shapes": {"osm:1": [[se.clone()]]},
              "tiles": {"built": built, "total": 2}},
         ]})
+        .into()
     };
     let mut first = full.clone();
     first.files.retain(|l, _| !l.contains("6-32-21"));
@@ -829,11 +831,11 @@ async fn a_download_with_nothing_to_copy_moves_on_by_itself() {
     let mut two = cat.clone();
     two.n = 2;
     put(&root, &mut two, "layers/roads/hi/6-30-21", 99);
-    let mut cov = two.coverage.clone();
+    let mut cov = two.coverage.to_value();
     cov["regions"].as_array_mut().unwrap().push(
         json!({"id": "kanto", "name": "Kanto", "outline": ["osm:2"], "shapes": {"osm:2": [[rect(-0.06, 51.45, -0.05, 51.5)]]}}),
     );
-    two.coverage = cov;
+    two.coverage = cov.into();
     two.validate().unwrap();
     store::testkit::map_root(&nas.path(), &two);
     assert!(tokio::task::block_in_place(|| s.data.serve_root_map()));
@@ -1408,7 +1410,8 @@ async fn two_regions(home: &std::path::Path, nas: &std::path::Path) -> (std::pat
     cat.coverage = json!({"recorded": true, "regions": [
         {"id": "london", "name": "London", "outline": ["osm:175342"], "shapes": {"osm:175342": [[rect(-0.3, 51.4, -0.1, 51.6)]]}},
         {"id": "east", "name": "East", "outline": ["osm:1"], "shapes": {"osm:1": [[rect(-0.06, 51.4, 5.7, 51.6)]]}},
-    ]});
+    ]})
+    .into();
     cat.n = 2;
     cat.validate().unwrap();
     store::testkit::map_root(&root, &cat);

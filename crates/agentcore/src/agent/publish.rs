@@ -270,8 +270,8 @@ fn watches(the_plan: &dyn crate::agent::seam::Plan) -> Vec<&'static str> {
 /// The lead's map as its agent reads it (docs/maplog.md §6.5): the log's feed (the map, its batches
 /// held, the log's marks), GC's queue (told of each batch here, of each records save by the agent's
 /// loop: super::gcqueue), and the head's catalogue: the one posted and checked equal to the map,
-/// else made of the map (`catalogue`), kept only while one is held (#930: 367 MB beside the map's
-/// own 660 MB on 4 Nov, made again in 0.1 s).
+/// else made of the map (`catalogue`), kept only while one is held (15 MB beside the map's own
+/// 115 MB on 10 Nov, its regions the map's: store::catalogue::Coverage; made again in 0.1 s).
 pub struct Here {
     pub feed: std::sync::Arc<store::map::feed::Feed>,
     pub gc: std::sync::Arc<store::map::gc::GcQueue>,

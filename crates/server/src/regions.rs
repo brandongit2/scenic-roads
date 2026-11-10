@@ -1233,27 +1233,53 @@ pub async fn outlines(State(s): State<S>, axum::extract::Query(q): axum::extract
 /// The regions a catalogue records (its `coverage`), each with its outlines simplified for drawing;
 /// none for a catalogue made before they were recorded (or one whose coverage this app can't read).
 pub fn recorded(cat: &store::catalogue::Catalogue) -> Vec<DrawnRegion> {
-    cat.coverage.get("regions").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
+    cat.coverage.regions().unwrap_or_default()
 }
 
 /// The regions a catalogue records, without their outlines (id, name and outline entries), read straight from its coverage: /api/catalog asks
 /// for them every minute.
 pub fn recorded_list(cat: &store::catalogue::Catalogue) -> Vec<Value> {
-    let regions = cat.coverage.get("regions").and_then(Value::as_array);
-    regions
-        .map(|rs| {
-            rs.iter()
-                .filter(|r| r.is_object())
-                .map(|r| json!({ "id": r["id"], "name": r["name"], "outline": r["outline"] }))
-                .collect()
-        })
-        .unwrap_or_default()
+    // (Each object's three members, null where it has none, read from its text.)
+    #[derive(serde::Deserialize)]
+    struct Head {
+        #[serde(default)]
+        id: Value,
+        #[serde(default)]
+        name: Value,
+        #[serde(default)]
+        outline: Value,
+    }
+    cat.coverage
+        .region_texts()
+        .iter()
+        .filter(|r| r.starts_with('{'))
+        .filter_map(|r| serde_json::from_str::<Head>(r).ok())
+        .map(|h| json!({ "id": h.id, "name": h.name, "outline": h.outline }))
+        .collect()
+}
+
+/// `recorded_list` of the catalogue served, kept for it: /api/catalog asks every minute, and each
+/// region's text is read through (~0.1 s for the world's).
+pub fn recorded_list_kept(cat: &Arc<store::catalogue::Catalogue>) -> Arc<Vec<Value>> {
+    type Listed = Option<(std::sync::Weak<store::catalogue::Catalogue>, Arc<Vec<Value>>)>;
+    static LISTED: Mutex<Listed> = Mutex::new(None);
+    // (Its Weak keeps the catalogue's allocation, so a pointer equal to it is that catalogue.)
+    if let Some((w, l)) = LISTED.lock().unwrap().as_ref() {
+        if std::ptr::eq(w.as_ptr(), Arc::as_ptr(cat)) {
+            return l.clone();
+        }
+    }
+    let l = Arc::new(recorded_list(cat));
+    *LISTED.lock().unwrap() = Some((Arc::downgrade(cat), l.clone()));
+    l
 }
 
 /// The recorded regions' outlines as GeoJSON features, one per entry in each recipe's order, with
 /// the properties the panel reads: region, region_name, entry, and an osm: entry's area fields when
-/// the pass's outlines can be read (`ix`).
-fn recorded_features(regions: &[DrawnRegion], ix: Option<&OutlineIndex>) -> Vec<Value> {
+/// the pass's outlines can be read (`ix`). Each borrows its points from `regions`, written out as
+/// they are (as a `Value`, the world's were ~650 MB and 7 million allocations a request, #1092); its
+/// members in the order a `Value` writes them.
+fn recorded_features<'a>(regions: &'a [DrawnRegion], ix: Option<&OutlineIndex>) -> Vec<Feature<'a>> {
     let mut feats = Vec::new();
     for r in regions {
         for entry in &r.outline {
@@ -1268,10 +1294,30 @@ fn recorded_features(regions: &[DrawnRegion], ix: Option<&OutlineIndex>) -> Vec<
                     p.entry(k).or_insert(v);
                 }
             }
-            feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": props }));
+            feats.push(Feature {
+                geometry: Geometry { coordinates: coords, kind: "MultiPolygon" },
+                properties: props,
+                kind: "Feature",
+            });
         }
     }
     feats
+}
+
+/// A recorded outline entry as a GeoJSON feature (`recorded_features`).
+#[derive(serde::Serialize)]
+struct Feature<'a> {
+    geometry: Geometry<'a>,
+    properties: Value,
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct Geometry<'a> {
+    coordinates: &'a Vec<Vec<Vec<[f64; 2]>>>,
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 /// The coverage for drawing, as the current catalogue recorded it, with the regions it was built for
@@ -1288,11 +1334,19 @@ pub async fn coverage(State(s): State<S>) -> Response {
             eprintln!("coverage: the pass's outlines: {e:#}");
             None
         });
-        let feats = recorded_features(&regions, ix.as_deref());
-        Ok(Json(
-            json!({ "type": "FeatureCollection", "features": feats, "regions": recorded_list(&cat), "catalog": cat.n }),
-        )
-        .into_response())
+        // (Its members in the order a `Value` writes them.)
+        #[derive(serde::Serialize)]
+        struct Collection<'a> {
+            catalog: u64,
+            features: Vec<Feature<'a>>,
+            regions: &'a [Value],
+            #[serde(rename = "type")]
+            kind: &'static str,
+        }
+        let features = recorded_features(&regions, ix.as_deref());
+        let listed = recorded_list_kept(&cat);
+        let body = Collection { catalog: cat.n, features, regions: &listed, kind: "FeatureCollection" };
+        Ok(Json(body).into_response())
     })
     .await
     .map(|r| r.unwrap_or_else(|e| err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"))))
@@ -1511,7 +1565,7 @@ mod tests {
 
     fn catalogue(coverage: Value) -> store::catalogue::Catalogue {
         let mut c = store::catalogue::Catalogue::new(3);
-        c.coverage = coverage;
+        c.coverage = coverage.into();
         c
     }
 
@@ -1526,8 +1580,11 @@ mod tests {
         assert_eq!(r.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
         // A feature per entry with an outline, with what the panel reads (an osm: entry's area
         // fields come from the pass's outlines, none here).
-        let f = recorded_features(&r, None);
-        assert_eq!(f.len(), 1);
+        let feats = recorded_features(&r, None);
+        let f = serde_json::to_value(&feats).unwrap();
+        assert_eq!(f.as_array().unwrap().len(), 1);
+        // (Written as the `Value` of it is: the same bytes.)
+        assert_eq!(serde_json::to_string(&feats).unwrap(), f.to_string());
         assert_eq!(f[0]["properties"], json!({"region": "b", "region_name": "B", "entry": "poly:b.poly"}));
         assert_eq!(f[0]["geometry"], json!({"type": "MultiPolygon", "coordinates": [[ring]]}));
         // The regions, outlines left out; every region recorded, drawn or not.

@@ -94,7 +94,7 @@ const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/src/bin/tools/lakefill.rs", "catalogue_add"),
     // (A unit test's root, `TEST_ROOT`, only while `buildstore::out::testing`: refused when live.)
     ("crates/agentcore/src/agent/mod.rs", "find_root"),
-    ("crates/server/src/main.rs", "main"),
+    ("crates/server/src/main.rs", "serve"),
     ("crates/server/src/data.rs", "find_nas"),
     ("crates/pipeline/examples/checklist.rs", "main"),
     ("crates/pipeline/examples/lo_root_measure.rs", "main"),

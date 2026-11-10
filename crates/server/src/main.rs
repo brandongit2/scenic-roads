@@ -332,10 +332,19 @@ fn raise_open_files() {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen, on_demand } =
-        <Cli as clap::Parser>::parse();
+fn main() -> Result<()> {
+    let cli = <Cli as clap::Parser>::parse();
+    // (Started again, in its place, without malloc's cache of freed large blocks, as the agent is:
+    // store::spawn::without_large_cache. The map's regions are replaced whole by its batches, tens
+    // of MB each, task #1092. Before any thread starts: the runtime's are made below.)
+    if let Err(e) = store::spawn::without_large_cache() {
+        eprintln!("server: WARNING: can't start again without malloc's large cache ({e}): what it frees of large blocks stays in its footprint");
+    }
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(serve(cli))
+}
+
+async fn serve(cli: Cli) -> Result<()> {
+    let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen, on_demand } = cli;
     raise_open_files();
     // On demand, this Mac's loopback is taken first of all: a second server (another click, one
     // installed) holds it, and this one ends before it reads the map or touches the mirror.
@@ -1034,7 +1043,7 @@ async fn catalogue_h(State(s): State<S>) -> Response {
         "layers": cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!({"encoding": l.encoding, "minzoom": l.minzoom, "maxzoom": l.maxzoom, "version": salted(&s, s.data.layer_version(k))}))).collect::<serde_json::Map<_, _>>(),
         // The regions it was built for; their outlines are /api/coverage's (this is asked every
         // minute).
-        "coverage": {"regions": regions::recorded_list(&cat)},
+        "coverage": {"regions": *regions::recorded_list_kept(&cat)},
         "credits": credits_of(&cat),
         "online": s.data.online(),
         "nas": s.data.nas_root().map(|p| p.display().to_string()),

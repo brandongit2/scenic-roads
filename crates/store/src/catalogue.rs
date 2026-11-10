@@ -11,6 +11,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::Write;
 
+mod coverage;
+pub use coverage::Coverage;
+
 /// The stored and wire name of the step that publishes the map (`catalog`), its history event and
 /// the JSON keys naming it. It keeps its old spelling (task #547: stored in the history and job logs,
 /// and the pool runs mixed app versions): only the Rust names around it say "catalogue".
@@ -85,10 +88,10 @@ pub struct Catalogue {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dem_labels: BTreeMap<u8, String>,
     /// The coverage it was built for: `{"regions": [{"id", "name", "outline", "shapes"}]}`, each
-    /// outline entry's polygons simplified for drawing (pipeline::coverage::DrawnRegion). No
-    /// regions in catalogues made before they were recorded.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub coverage: Value,
+    /// outline entry's polygons simplified for drawing (pipeline::coverage::DrawnRegion), kept as
+    /// JSON text (`Coverage`). No regions in catalogues made before they were recorded.
+    #[serde(default, skip_serializing_if = "Coverage::is_null")]
+    pub coverage: Coverage,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -276,7 +279,8 @@ mod tests {
             {"what": "Road elevation, Japan", "source": "GSI Tiles", "terms": "PDL 1.0", "areas": [[122.5, 20.0, 154.0, 46.5]]}
         ]);
         c.coverage = json!({"regions": [{"id": "northumberland", "name": "Northumberland", "outline": ["osm:88066"],
-            "shapes": {"osm:88066": [[[[-2.68941, 55.80271], [-1.46055, 55.07428], [-2.56493, 54.78346], [-2.68941, 55.80271]]]]}}]});
+            "shapes": {"osm:88066": [[[[-2.68941, 55.80271], [-1.46055, 55.07428], [-2.56493, 54.78346], [-2.68941, 55.80271]]]]}}]})
+        .into();
         c
     }
 

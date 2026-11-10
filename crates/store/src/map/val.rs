@@ -23,9 +23,15 @@ pub struct Val(Arc<RawValue>);
 impl Val {
     /// The value whose canonical JSON `json` is (the caller's word: `Canon`'s output, a `Value`'s
     /// serialization).
-    fn of_canonical(json: String) -> Val {
+    pub(crate) fn of_canonical(json: String) -> Val {
         let raw = RawValue::from_string(json).expect("canonical JSON is JSON");
         Val(Arc::from(raw))
+    }
+
+    /// Whether it's the same text as `o`, not a copy of it (tests).
+    #[cfg(test)]
+    pub(crate) fn shares(&self, o: &Val) -> bool {
+        Arc::ptr_eq(&self.0, &o.0)
     }
 
     /// Its canonical JSON.

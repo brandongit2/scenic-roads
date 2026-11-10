@@ -6,7 +6,7 @@
 //! map's `seq`, `created` its batch's time), and `entries` turns a catalogue into entries, the two
 //! exact inverses (tests: on test catalogues and a recorded chain of real ones).
 
-use crate::catalogue::{Catalogue, FileRef, Layer};
+use crate::catalogue::{Catalogue, Coverage, FileRef, Layer};
 use crate::nasfs::NasRoot;
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -127,7 +127,7 @@ pub fn each_entry(cat: &Catalogue, f: &mut dyn FnMut(&str, Val) -> Result<()>) -
     if !cat.dem_labels.is_empty() {
         f("m/dem_labels", serde_json::to_value(&cat.dem_labels)?.into())?;
     }
-    coverage_entries(&cat.coverage, f)?;
+    cat.coverage.each_entry(f)?;
     for (k, v) in &cat.extra {
         f(&format!("m/extra/{k}"), v.into())?;
     }
@@ -146,35 +146,11 @@ fn sections(cat: &Catalogue) -> [(&'static str, &BTreeMap<String, String>); 6] {
     ]
 }
 
-/// The coverage: each region an entry `r/<id>` with its place in the order (`{"i", "region"}`), and
-/// the rest of it in `m/coverage`, `m/regions` saying how many regions there are. A coverage whose
-/// regions aren't a list of objects with distinct ids stays whole in `m/coverage`.
-fn coverage_entries(cov: &Value, f: &mut dyn FnMut(&str, Val) -> Result<()>) -> Result<()> {
-    if cov.is_null() {
-        return Ok(());
-    }
-    let split = cov.get("regions").and_then(Value::as_array).filter(|rs| {
-        let ids: std::collections::BTreeSet<&str> =
-            rs.iter().filter_map(|r| r.get("id").and_then(Value::as_str)).collect();
-        ids.len() == rs.len()
-    });
-    let (Some(rs), Some(o)) = (split, cov.as_object()) else {
-        return f("m/coverage", cov.into());
-    };
-    for (i, r) in rs.iter().enumerate() {
-        let id = r.get("id").and_then(Value::as_str).expect("checked above");
-        f(&format!("r/{id}"), Val::region(i, r))?;
-    }
-    let rest = o.iter().filter(|(k, _)| *k != "regions").map(|(k, v)| (k.clone(), v.clone())).collect();
-    f("m/coverage", Value::Object(rest).into())?;
-    f("m/regions", Value::from(rs.len()).into())
-}
-
 /// The catalogue entries make, numbered `n` and made at `created` (§4.1): `entries`' inverse.
 pub fn catalogue(e: &Entries, n: u64, created: &str) -> Result<Catalogue> {
     let mut c = Catalogue { n, created: created.to_string(), ..Default::default() };
     let mut layer_parts: Vec<(&str, &str, &str, &Val)> = Vec::new();
-    let mut regions: Vec<(u64, Value)> = Vec::new();
+    let mut regions: Vec<(&str, &Val)> = Vec::new();
     let (mut cov, mut n_regions) = (None, None);
     let s = |v: &Val, k: &str| v.as_str().map(String::from).with_context(|| format!("{k}: not a name"));
     for (k, v) in e {
@@ -206,11 +182,7 @@ pub fn catalogue(e: &Entries, n: u64, created: &str) -> Result<Catalogue> {
                 m.insert(key.into(), s(v, k)?);
             }
             "u" => c.units.push(rest.into()),
-            "r" => {
-                let mut r = v.value();
-                let i = r.get("i").and_then(Value::as_u64).with_context(|| format!("entry {k:?}: no place"))?;
-                regions.push((i, r.get_mut("region").map(Value::take).unwrap_or_default()));
-            }
+            "r" => regions.push((rest, v)),
             "m" => match rest {
                 "fmt" => c.fmt = v.parse().context("m/fmt")?,
                 "app" => c.app = s(v, k)?,
@@ -219,7 +191,7 @@ pub fn catalogue(e: &Entries, n: u64, created: &str) -> Result<Catalogue> {
                 "credits" => c.credits = v.value(),
                 "dem_labels" => c.dem_labels = v.parse().context("m/dem_labels")?,
                 "units" => c.units = v.parse().context("m/units")?,
-                "coverage" => cov = Some(v.value()),
+                "coverage" => cov = Some(v),
                 "regions" => n_regions = Some(v.parse::<u64>().context("m/regions")? as usize),
                 _ => match rest.strip_prefix("extra/") {
                     Some(x) => {
@@ -247,26 +219,7 @@ pub fn catalogue(e: &Entries, n: u64, created: &str) -> Result<Catalogue> {
         };
         m.insert(tile.into(), s(v, tile)?);
     }
-    match n_regions {
-        None => {
-            ensure!(regions.is_empty(), "regions without their count");
-            c.coverage = cov.unwrap_or(Value::Null);
-        }
-        Some(count) => {
-            regions.sort_by_key(|r| r.0);
-            ensure!(
-                regions.len() == count && regions.iter().enumerate().all(|(i, r)| r.0 == i as u64),
-                "{} regions, {count} counted, or their places aren't 0 to {count}",
-                regions.len()
-            );
-            let mut o = match cov {
-                Some(Value::Object(o)) => o,
-                _ => bail!("regions without the coverage they're in"),
-            };
-            o.insert("regions".into(), Value::Array(regions.into_iter().map(|r| r.1).collect()));
-            c.coverage = Value::Object(o);
-        }
-    }
+    c.coverage = Coverage::of_entries(cov, regions, n_regions)?;
     Ok(c)
 }
 

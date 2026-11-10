@@ -56,7 +56,8 @@ fn sample(n: u64) -> Catalogue {
     c.dem_labels = [(1u8, "SRTM".to_string())].into();
     c.coverage = json!({"recorded": true, "regions": [
         {"id": "northumberland", "name": "Northumberland", "outline": ["osm:88066"], "shapes": {}},
-        {"id": "alps", "name": "Alps", "outline": ["osm:1"], "shapes": {}}]});
+        {"id": "alps", "name": "Alps", "outline": ["osm:1"], "shapes": {}}]})
+    .into();
     c.extra.insert("future".into(), json!({"x": 1}));
     c
 }
@@ -84,13 +85,13 @@ fn every_catalogue_round_trips() {
             // (Odd but readable: units out of order, a coverage that isn't split, a null meta.)
             let mut c = sample(8);
             c.units = vec!["6/9/9".into(), "6/1/1".into()];
-            c.coverage = json!({"regions": [{"name": "no id"}]});
+            c.coverage = json!({"regions": [{"name": "no id"}]}).into();
             c.meta = Value::Null;
             c
         },
         {
             let mut c = sample(9);
-            c.coverage = json!({"regions": []});
+            c.coverage = json!({"regions": []}).into();
             c
         },
     ] {
@@ -126,7 +127,9 @@ fn incremental_digest_is_the_whole_digest() {
     c.units.push("6/40/40".into());
     c.files.remove("global/pois");
     c.global.clear();
-    c.coverage["regions"].as_array_mut().unwrap().reverse();
+    let mut cov = c.coverage.to_value();
+    cov["regions"].as_array_mut().unwrap().reverse();
+    c.coverage = cov.into();
     let m = Map::of(&a).unwrap();
     let b = m.batch_to(&entries(&c).unwrap(), 8, &c.created, "", "");
     assert_eq!(b.digest, hex(digest_of(&entries(&c).unwrap())));
