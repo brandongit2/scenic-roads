@@ -1364,7 +1364,7 @@ impl Driver {
             });
         }
         // (Saved again unchanged `RESAVE_S` on: an older save landed late over the one path is read
-        // that long at most.)
+        // that long at most. That save failing leaves nothing unsaved: tried again next step.)
         if l.dirty || io.awake().saturating_sub(l.saved_at) >= RESAVE_S {
             match l.records.save(io, &|b| io.keep(b), self.per_term) {
                 Ok(()) => {
@@ -1372,7 +1372,6 @@ impl Driver {
                     self.saved.records = Some((l.records.term, l.records.seq));
                 }
                 Err(err) => {
-                    l.dirty = true;
                     let what =
                         if matches!(err, records::Unsaved::Kept(_)) { "keep the records" } else { "save the records" };
                     out.events.push(Event::Failed { what, why: format!("term {e}: {err:#}") })

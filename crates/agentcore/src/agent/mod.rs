@@ -15902,9 +15902,8 @@ mod pool_tests {
                 .is_some_and(|r| r.pending.contains_key("work/backup.0123456789abcdef.json") && r.raw.is_empty())
         });
         assert!(a.pooled().unwrap().named_raw.is_empty());
-        let term = a.pooled().unwrap().side.driver().records().unwrap().term;
         until(&mut a, |_| {
-            let s = std::fs::read_to_string(r.join(crate::pool::records::path(term))).unwrap_or_default();
+            let s = std::fs::read_to_string(r.join(crate::pool::records::ONE)).unwrap_or_default();
             s.contains("work/backup.0123456789abcdef.json") && !s.contains("00000000000000aa")
         });
         // (The index as it was: nothing read or named.)
