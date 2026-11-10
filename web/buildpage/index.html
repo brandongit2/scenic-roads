@@ -182,7 +182,8 @@ async function call(path, body) {
 // crates/agentcore/src/coord/oldpage.rs. Not installed there, and an install from before removed,
 // so none is left once that address goes.)
 const oldAddress = ROOT.endsWith("/work");
-if (oldAddress && "serviceWorker" in navigator) navigator.serviceWorker.getRegistration().then((r) => r?.unregister(), () => {});
+// (The worker of /work/'s own scope alone: one at the root, which scope covers /work/ too, stays.)
+if (oldAddress && "serviceWorker" in navigator) navigator.serviceWorker.getRegistration().then((r) => r && new URL(r.scope).pathname.endsWith("/work/") && r.unregister(), () => {});
 if (!oldAddress && !viewer && "serviceWorker" in navigator && window.isSecureContext) {
   let had = !!navigator.serviceWorker.controller;
   // (Asked about whenever the page comes back to the front, and every half hour: an installed app
