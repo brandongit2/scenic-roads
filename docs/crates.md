@@ -1335,7 +1335,7 @@ round (load 70-113) is given apart:
 
 | edit | main | 7b |
 |---|---|---|
-| terrain's road_terrain.rs | 4.4, 5.4, 6.8, 6.6, 4.7, 4.8 s (CPU 7.4-8.2 s); families done at 2.5-3.6 s, landmarks starting after roads at 1.4-1.8 s. First round: 20.3 s | 3.9, 4.1, 4.4, 4.4, 4.5, 6.6 s (CPU 7.3-7.7 s); families done at 2.1-2.5 s (3.8 s in the 6.6 s run, load 68), landmarks beside trees from 0.6-0.7 s. First round: 17.6 s |
+| terrain's road_terrain.rs | 5.4, 4.4, 6.8, 6.6, 4.7, 4.8 s (CPU 7.4-8.2 s); families done at 2.5-3.6 s, landmarks starting after roads at 1.4-1.8 s. First round: 20.3 s | 6.6, 3.9, 4.1, 4.4, 4.4, 4.5 s (CPU 7.3-7.7 s); families done at 2.1-2.5 s (3.8 s in the 6.6 s run, load 68), landmarks beside trees from 0.6-0.7 s (1.5 s in that run). First round: 17.6 s |
 | trees' treepacks.rs | 4.1, 9.6, 4.0, 5.1, 4.1, 4.1 s (CPU 5.4-6.3 s); families done at 1.9-4.4 s. First round: 14.8 s | 4.8, 3.2, 3.3, 3.7, 3.6, 3.6 s (CPU 5.0-5.2 s); families done at 1.4-1.8 s, landmarks not rebuilt. First round: 12.0 s |
 
 Peak memory unchanged: one rustc of 1.35 GB. So a terrain edit's families finish ~0.4-0.6 s
