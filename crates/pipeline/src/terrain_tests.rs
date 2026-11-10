@@ -140,7 +140,7 @@ fn live_coverage(out: &Out) -> Coverage {
     inputs::inputs::regions::read::accepted_coverage(root, &a, None).unwrap()
 }
 
-/// By hand, on the build's own data (docs/workers.md §3): z6 tiles `TT_PIECES` ("6/x/y,…") made
+/// By hand, on the build's own data (docs/coordinator.md §3): z6 tiles `TT_PIECES` ("6/x/y,…") made
 /// again in a scratch root over the NAS (`TT_ROOT`: its terrain hi packs' and mids' folders its
 /// own, the rest read only; `TT_SCRATCH`, `TT_RAW` the raw tiles' cache), expecting the same as
 /// the manifest has them (hi pack and mid), some of each z6 tile's subtrees made by another worker

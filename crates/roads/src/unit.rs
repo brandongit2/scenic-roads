@@ -148,7 +148,7 @@ pub struct Tools {
     /// keeps no copies of them (a task's); None: this Mac's copies (`cache/chm10/`), from the NAS.
     pub chm: Option<PathBuf>,
     /// The NAS's stores (`sources/`) only read: a task's worker reads them where they lie, and
-    /// neither downloads into them nor removes from them (docs/workers.md §2); its programs are
+    /// neither downloads into them nor removes from them (docs/coordinator.md §2); its programs are
     /// told so (`SCENIC_STORES_READ_ONLY`).
     pub stores_read_only: bool,
     /// The declared elevation datasets' accepted version (inputs::inputs::elevation): a z6 tile's
@@ -546,7 +546,7 @@ pub fn build_folder(
     Ok(rep)
 }
 
-/// A z6 tile's build up to its tail (docs/workers.md: what needs the NAS): its ways from the extract,
+/// A z6 tile's build up to its tail (docs/coordinator.md: what needs the NAS): its ways from the extract,
 /// those touching the coverage, the global-source layers staged from the packs over `area` with the deep terrain
 /// under its vertices and the datasets' codes (what its elevations read: terrain::road_terrain), the
 /// heritage inputs, area flags and land cover; then its scenic results from its last run restored

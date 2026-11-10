@@ -197,9 +197,10 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
                 a.progress_released = super::budgets::heard(s, p);
             }
         }
-        a.speaks = [super::beats::SPEAKS, super::beats::PAGE, super::beats::ASKS, super::beats::BUDGETS]
-            .map(str::to_string)
-            .to_vec();
+        a.speaks =
+            [super::beats::SPEAKS, super::beats::PAGE, super::beats::ROOT, super::beats::ASKS, super::beats::BUDGETS]
+                .map(str::to_string)
+                .to_vec();
         if s.handoffs.is_some() {
             a.speaks.push(super::beats::HANDOFF.to_string());
         }

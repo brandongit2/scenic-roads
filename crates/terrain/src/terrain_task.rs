@@ -1,4 +1,4 @@
-//! A terrain z6 tile's z8 subtrees as tasks (kind `terrainsub`; docs/workers.md §3, docs/steps.md
+//! A terrain z6 tile's z8 subtrees as tasks (kind `terrainsub`; docs/coordinator.md §3, docs/steps.md
 //! Terrain): a z6 tile (a z6 tile's levels z12 → z9, crate::terrain_pack::build_piece) is 16 z8
 //! subtrees, each a z8 tile's z9–12 tiles near the coverage. A tile's making reads only its own raw
 //! tile (the pool's base tile: crate::terrain_base) and its children, all within its subtree: so a
@@ -303,7 +303,7 @@ pub fn spec(group: &[(u32, u32)], version: &str, input: u64) -> serde_json::Valu
         reads: vec![format!("{{dir}}/{INPUT}")],
     };
     let first = group.first().map(|(x, y)| format!("8/{x}/{y}")).unwrap_or_default();
-    // (`unit`: the task spec's key for its tile, kept: docs/workers.md §3.)
+    // (`unit`: the task spec's key for its tile, kept: docs/coordinator.md §3.)
     serde_json::json!({ "unit": first, "subtrees": subtrees_arg(group), "version": version, "runs": [run], "inputs": [[format!("u/{INPUT}"), input]], "places": offload::places() })
 }
 

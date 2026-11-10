@@ -384,7 +384,7 @@ fn own_targets(spec: &JobSpec) -> Vec<(String, String)> {
     }
 }
 
-/// Slot `k`'s job as a worker (the build's history, the forecast's machines, the worker page): the
+/// Slot `k`'s job as a worker (the build's history, the forecast's machines, the build page): the
 /// Mac's name, and past the first slot its number (`<host> #2`, `#3`, …).
 pub fn slot_worker(host: &str, k: usize) -> String {
     if k == 0 {
@@ -627,7 +627,7 @@ const UPCOMING_EVERY: Duration = Duration::from_secs(5 * 60);
 /// member that can't reach the lead keeps no stale order for long.
 const UPCOMING_STALE_S: u64 = 3600;
 
-/// This Mac's (`host`) tiles to come in a `/work/tocome` answer (`forecast::ToCome::answer`), as
+/// This Mac's (`host`) tiles to come in a `/api/tocome` answer (`forecast::ToCome::answer`), as
 /// cache hints at the forecast's time, with that time (none placed on it: no hints); None when the
 /// answer isn't a forecast's (a lead before its first answers 200 with `making`).
 fn upcoming_of(
@@ -1560,7 +1560,7 @@ pub struct Agent {
     built_view: Option<std::sync::Arc<builtview::BuiltView>>,
     pageview_reading: bool,
     /// This Mac's live store (crate::agent::live), kept in its folder and answered on its port's
-    /// `/work/live`: made as the loop starts, on a real Mac with the agent's lock alone.
+    /// `/api/live`: made as the loop starts, on a real Mac with the agent's lock alone.
     live: Option<std::sync::Arc<live::Store>>,
     /// The pages' cancel and retry asks waiting for the pool's run (a tick held it).
     page_acts: Vec<crate::pool::driver::Act>,
@@ -2275,7 +2275,7 @@ impl Agent {
         step_args(&self.o, step, date)
     }
 
-    /// A member's tiles to come in the lead's forecast (`/work/tocome`, `{"raw": true}`: every
+    /// A member's tiles to come in the lead's forecast (`/api/tocome`, `{"raw": true}`: every
     /// Mac's, as the lead last made them), this Mac's taken as cache hints (`upcoming`, task #843):
     /// asked on a thread of its own (the loop never waits on the lead), at most every
     /// `UPCOMING_EVERY`; the last answer kept while a new one fails.
@@ -2295,7 +2295,7 @@ impl Agent {
         self.upcoming_ask.1 = Some(Instant::now());
         let ask = move || -> Option<(u64, room::Hints)> {
             let c = crate::coord::client::Client::at(urls, token, &host);
-            let (code, v) = c.post_json("/work/tocome", &serde_json::json!({ "raw": true })).ok()?;
+            let (code, v) = c.post_api("tocome", &serde_json::json!({ "raw": true })).ok()?;
             upcoming_of(the_plan, code, &v, &host)
         };
         match std::thread::Builder::new().name("upcoming".into()).spawn(ask) {
@@ -4440,7 +4440,7 @@ impl Agent {
         if let Some(c) = &self.coord {
             c.set_root(root.as_ref());
         }
-        // (Where the owner's settings lie, for the build page's `/work/settings`, whichever serves it.)
+        // (Where the owner's settings lie, for the build page's `/api/settings`, whichever serves it.)
         for c in self.coord.iter().chain(&self.viewer) {
             c.set_settings(&self.o.home, root.as_ref());
         }
@@ -4869,7 +4869,7 @@ impl Agent {
         match self.client(root, &mut waiting) {
             Some(c) => {
                 for t in tell {
-                    if let Err(e) = c.post_json("/work/inputs", &t) {
+                    if let Err(e) = c.post_api("inputs", &t) {
                         eprintln!("agent: telling the lead of {t}: {e:#} (it lists the inputs folders within two minutes all the same)");
                     }
                 }
@@ -8011,7 +8011,9 @@ impl Agent {
         let served = self.beats.as_ref().map_or(Err(None), |b| b.lead_page(now));
         let url = self.client.as_ref().map(|c| (c.urls(), c.page())).filter(|(u, _)| !u.is_empty());
         match (served, url) {
-            (Ok(()), Some((urls, https))) => PageAt::Lead { urls, https },
+            (Ok(()), Some((urls, https))) => {
+                PageAt::Lead { urls, https, root: self.beats.as_ref().is_some_and(|b| b.lead_root()) }
+            }
             (served, _) => PageAt::Away {
                 lead: self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()?.lead.as_ref()).map(|l| l.host.clone()),
                 since: served.err().flatten(),
@@ -10152,7 +10154,7 @@ mod tests {
         assert!(runs.len() >= 8, "{}", runs.len());
     }
 
-    /// Task #843: a member takes its own Mac's tiles to come from the lead's `/work/tocome` answer
+    /// Task #843: a member takes its own Mac's tiles to come from the lead's `/api/tocome` answer
     /// (as `ToCome::answer` writes it), at the forecast's time; none from a lead still `making`.
     #[test]
     fn a_member_takes_its_own_tiles_to_come_as_cache_hints() {
@@ -10261,7 +10263,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Task #780: the owner's redo, as the lead's coordinator takes it (`/work/redo`), kept in its
+    /// Task #780: the owner's redo, as the lead's coordinator takes it (`/api/redo`), kept in its
     /// agent's folder (not by a dry run), planned as a job of the `redo` step whose done record
     /// names "<step> <target>", and dropped once that job succeeded; a failure keeps it.
     #[test]
@@ -16551,7 +16553,7 @@ mod pool_tests {
         // The lead's page reads the member's live store at its broker, with CORS (the page itself is
         // the lead's: docs/roles.md §3.3).
         let page_origin = crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).unwrap();
-        let (code, _, acao) = http_post(bport, "/work/live", &[("Origin", &page_origin)], "{}");
+        let (code, _, acao) = http_post(bport, "/api/live", &[("Origin", &page_origin)], "{}");
         assert!(matches!(code, 200 | 503) && acao.as_deref() == Some(page_origin.as_str()), "{code} {acao:?}");
         // A worker (another Mac's agent, with the pool's key) takes the member's task from the
         // member's broker, and the lead's from the lead.
@@ -16603,7 +16605,7 @@ mod pool_tests {
         let env = std::fs::read_to_string(bin.join("env-slope-hi")).unwrap();
         assert!(env.contains(&format!("SCENIC_COORD=http://127.0.0.1:{bport}")), "{env}");
         // (Another Mac's page: this test's lead is on loopback, whose pages this Mac always answers.)
-        assert_eq!(http_post(lport, "/work/swarm", &[("Origin", "http://m4.local:8090")], "{}").0, 403);
+        assert_eq!(http_post(lport, "/api/swarm", &[("Origin", "http://m4.local:8090")], "{}").0, 403);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }

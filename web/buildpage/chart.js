@@ -1,5 +1,5 @@
 // The build page's charts over time, on a canvas (its sums in chartmath.js, tested): series of
-// /work/live's points ([t, least, mean, most]) over [from, to], a line a series (its least-to-most
+// /api/live's points ([t, least, mean, most]) over [from, to], a line a series (its least-to-most
 // band faint when asked, filled or stacked when asked), the scale's lines and its top in the unit,
 // reference lines (a Mac's cores), the gaps where its Mac was silent shaded, the time below when
 // asked; under the pointer, the time and each series' value there.

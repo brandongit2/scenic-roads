@@ -18,7 +18,7 @@ Not seen: a run through a shell function or alias, a script file, or a substitut
   module (`agent/build.rs` → `-p pipeline --lib -- agent::build::`), the modules using it one level
   out, and the integration tests naming it (a crate's whole targets on one line, one cargo run
   building them in parallel), and a module's own tests when a file it compiles in changed
-  (`include_str!`, `include_bytes!` or `include!` outside a `#[test]` function: web/work's pages
+  (`include_str!`, `include_bytes!` or `include!` outside a `#[test]` function: web/buildpage's pages
   in coord/mod.rs, #969), and a crate's whole unit tests when its source compiles the file in from
   another crate by `#[path]` (agentcore's tests, which run on the plan, after an edit of pipeline's
   agent/build.rs, steps.rs, idents.rs, theplan.rs or tiles.rs: they reach it through
@@ -125,7 +125,7 @@ For the tests part, what HEAD's commands run again:
 - every test in a program linking a changed source's crate, main's or the branch's own: that crate's
   targets, and those of the crates reaching it through their dependencies (read from the manifests:
   a program holds its crate's dependencies of any kind, and theirs but for their dev-dependencies).
-  A file compiled in outside a `#[test]` function counts as the source compiling it (web/work's
+  A file compiled in outside a `#[test]` function counts as the source compiling it (web/buildpage's
   pages in coord/mod.rs). Nothing nearer can be shown: the one-level tracing above bounds what a
   branch's first check runs, but a test's result can change through a user's user, a trait's impl,
   a macro or a re-export, none naming the file changed;
@@ -515,9 +515,9 @@ Generated state, all ignored: `.claude/health-stamp`, `.claude/sweep-targets.log
 
 ## The build page on a phone: touch-test.mjs and safari-sim.sh (#614, 23 Oct)
 
-Every brief that changes web/work runs both and looks at the screenshots. Neither presses a button
+Every brief that changes web/buildpage runs both and looks at the screenshots. Neither presses a button
 that changes anything: the page opens as `?view` from a read-only server (`touch-test.mjs --serve`,
-port 8097) that serves web/work and forwards only the reading calls (swarm, steps, regions,
+port 8097) that serves web/buildpage and forwards only the reading calls (swarm, steps, regions,
 settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusing the rest.
 - `node tools/dev/touch-test.mjs [--out DIR]` (35–55 s on the M1): headless Chrome as a 390×844 phone (DPR 3,
   mobile, 5 touch points, iPhone user agent), real touches through CDP. Each tab: no sideways
@@ -527,7 +527,7 @@ settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusi
   with a pinch (its touch-action turns `none`, its zoomed-in sign) and pans
   with a drag (pixels changed once it held still), the page staying put; the Jobs tab's stages counting done and left, no job squares; no share of a whole in the header, the Overview or the legend; a region row lighting its region on the map (a mouse); the panels' split (#685) stacked at phone width
   and side by side 2:1 at 1280 px, its bar dragged, a double click back to 2:1; the schedule's timeline (#787) pans with one finger sideways and zooms with a pinch, no dropdown; settings fields focus on a
-  tap without a jump (never Set); the map (#685: in its own panel, published tiles off at first, a step's legend item soloing it while hovered and holding it on a click or tap, its published tiles painted by age; the age controls' timeline, mark labels never overlapping, a mark hovered lighting its tiles, the range inputs' swap and one-span rule; `--catalogs FILE` answers `/work/catalogs` from `scenic catalogues > FILE`, `--width W --scheme dark|light --only-map` for its screenshots). At 720 px or wider (`--width`) the "no text cut off" check is skipped: a desktop keeps labels on one line, ellipsis and all (#617). `--agent H:P` reads another Mac's agent (the lead's, for its forecast's queue: an agent before #685 is asked a Mac at a time). `--member NAME --tocome FILE` checks a member's queued tiles (#622). One PASS/FAIL line a check, exit 1 on a FAIL. The other Macs'
+  tap without a jump (never Set); the map (#685: in its own panel, published tiles off at first, a step's legend item soloing it while hovered and holding it on a click or tap, its published tiles painted by age; the age controls' timeline, mark labels never overlapping, a mark hovered lighting its tiles, the range inputs' swap and one-span rule; `--catalogs FILE` answers `/api/catalogs` from `scenic catalogues > FILE`, `--width W --scheme dark|light --only-map` for its screenshots). At 720 px or wider (`--width`) the "no text cut off" check is skipped: a desktop keeps labels on one line, ellipsis and all (#617). `--agent H:P` reads another Mac's agent (the lead's, for its forecast's queue: an agent before #685 is asked a Mac at a time). `--member NAME --tocome FILE` checks a member's queued tiles (#622). One PASS/FAIL line a check, exit 1 on a FAIL. The other Macs'
   live/settings calls fail from this test origin (CORS) or when away: counted on an INFO line.
   Chrome is its own child, killed by PID; its profile is a temp folder, deleted.
 - `tools/dev/safari-sim.sh [out-dir] [device]` (~1.5 min; this M1 only, the M4 has no simulators):

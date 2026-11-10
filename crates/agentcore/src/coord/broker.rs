@@ -1,6 +1,6 @@
 //! A member's broker (docs/roles.md §3.2, docs/pool.md §8): the tasks of its Mac's own jobs, the
-//! `/work/*` calls those jobs and the pages taking their tasks make, and what the lead's build page
-//! asks of this Mac (`/work/live`, `/work/settings`). The page itself is the lead's: asked here, it
+//! `/work/*` calls those jobs make, and what the lead's build page
+//! asks of this Mac (`/api/live`, `/api/settings`). The page itself is the lead's: asked here, it
 //! is sent there, or this Mac's own is shown while the lead isn't reached (crate::coord::memberpage,
 //! docs/roles.md §3.3). Not a
 //! coordinator: it offers no plan, holds no job's lease, reads none of the files a lead kept in
@@ -100,12 +100,12 @@ impl Broker {
         self.c.set_page_at(at)
     }
 
-    /// Where this Mac's settings lie (`/work/settings`, `/work/hold`; its own page's status).
+    /// Where this Mac's settings lie (`/api/settings`, `/api/hold`; its own page's status).
     pub fn set_settings(&self, home: &Path, root: Option<&store::nasfs::NasRoot>) {
         self.c.set_settings(home, root)
     }
 
-    /// `/work/live` answered from `store` from here on.
+    /// `/api/live` answered from `store` from here on.
     pub fn set_live(&self, store: Arc<crate::agent::live::Store>) {
         self.c.set_live(store)
     }

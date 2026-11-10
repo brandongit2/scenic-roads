@@ -1,4 +1,4 @@
-//! A `unit` job's tasks (docs/workers.md §3): the part of a z6 tile's tail any worker can run, offered
+//! A `unit` job's tasks (docs/coordinator.md §3): the part of a z6 tile's tail any worker can run, offered
 //! through the lead's coordinator (agentcore::coord) while the job prepares its next z6 tiles. The
 //! steps that read the caches (the canopy files) run here, where the data is; those that read only
 //! the z6 tile's folder (`Run::reads`) may run anywhere: the files they read are cloned into the task's
@@ -28,7 +28,7 @@ use coordwire::client::Client;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// One program a task runs (docs/workers.md §3): its name (the build's `bin/<prog>`), its arguments and environment, in which `{dir}` is the z6 tile's
+/// One program a task runs (docs/coordinator.md §3): its name (the build's `bin/<prog>`), its arguments and environment, in which `{dir}` is the z6 tile's
 /// folder, `{cache}` the canopy cache, `{scache}` the folder's scenic cache, `{buildings}` its
 /// roadside buildings, `{store}` the NAS's canopy store to download into, and what's read where it
 /// lies: `{sources}` the NAS's sources, `{chm}` its canopy squares, `{net}`

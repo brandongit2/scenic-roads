@@ -1,4 +1,4 @@
-//! A z8 tile of `bldtiles T` as a task (docs/buildings3d.md §3.6, docs/workers.md §3): its files cut
+//! A z8 tile of `bldtiles T` as a task (docs/buildings3d.md §3.6, docs/coordinator.md §3): its files cut
 //! from T's and its neighbours' work files where the job runs, the program `bldtile` making the z8
 //! tile's tiles from them, and the job taking them into T's
 //! pack in the z8 tile's turn.

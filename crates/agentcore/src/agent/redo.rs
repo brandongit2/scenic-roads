@@ -3,7 +3,7 @@
 //! A target's job recorded it done under its key; a run that saved something wrong under the right
 //! key (25 Oct: terrain-hi packs saved without their water while the NAS restarted) is never made
 //! again by the plan. The owner names the targets; `scenic redo` asks the lead's coordinator
-//! (`/work/redo`), whose agent keeps the ask in its folder (`ASKS`) and runs a job of the `redo` step
+//! (`/api/redo`), whose agent keeps the ask in its folder (`ASKS`) and runs a job of the `redo` step
 //! for it, the lead's own. The job changes no file; its done record ("<step> <target>", no key)
 //! makes the merge forget those targets' keys (`crate::pool::records::Keys::record`), so the plan offers them again
 //! under the key it has, and what reads their outputs follows by content: the new packs' names

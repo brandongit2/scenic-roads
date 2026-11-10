@@ -1,7 +1,7 @@
 """How the map is built (docs/steps.md, docs/building.md, docs/pipeline.md): OpenStreetMap comes from one worldwide download, cut
 by z6 tile; a region is only an outline of what to build. Every step runs per z6 tile, per z3 tile near the coverage, or once,
 worldwide; ⇄ marks the steps whose jobs any member of the pool may take (the rest are the lead's), TASK the steps with parts any
-worker may run (docs/workers.md). A card's last line is its time and memory: measured (docs/phase-times.md, the steps table's
+worker may run (docs/coordinator.md). A card's last line is its time and memory: measured (docs/phase-times.md, the steps table's
 notes) or the steps table's first guess. The curated inputs (sheets with a folded corner) are what a person or an agent made by
 hand, with how reproducible each is today (curated.py lists them)."""
 from diag import COLS, Diagram

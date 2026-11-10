@@ -307,7 +307,8 @@ pub fn served_https(port: u16) -> Option<String> {
 /// `served_https` from what `tailscale serve status --json` says.
 pub fn https_in(v: &serde_json::Value, port: u16) -> Option<String> {
     for (host, site) in v["Web"].as_object()? {
-        // (At the root alone: the pages ask for /api/…, /work/…, not under a path a proxy adds.)
+        // (At the root alone: the build page and its calls are at the coordinator's root, not under
+        // a path a proxy adds.)
         let Some(h) = site["Handlers"].get("/") else { continue };
         let proxy = h["Proxy"].as_str().unwrap_or("");
         if proxy.ends_with(&format!(":{port}")) || proxy.ends_with(&format!(":{port}/")) {

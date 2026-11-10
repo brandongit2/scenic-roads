@@ -1,4 +1,4 @@
-//! A `unit` job's tasks run on a worker (docs/workers.md §3): `run_task`, a task's steps over the
+//! A `unit` job's tasks run on a worker (docs/coordinator.md §3): `run_task`, a task's steps over the
 //! files fetched from the lead's coordinator (agentcore::coord); a task's kind by its first step is the
 //! plan's (`Plan::task_kind`). What the steps offering tasks name (`Offload`, its waits, a task's places) is the
 //! offload crate's (docs/crates.md, task #916 step 6e), re-exported here at its old paths.

@@ -1,4 +1,4 @@
-//! Local copies of the store's content-named files, on this Mac's disk (docs/workers.md §4: the
+//! Local copies of the store's content-named files, on this Mac's disk (docs/coordinator.md §4: the
 //! SSD tier). A file is copied from the NAS once, whole, in one sequential read, and read locally
 //! after that: a unit's staging made thousands of small reads of the NAS's packs, one per tile, at
 //! milliseconds each under load. Content names never change meaning, so a copy is never stale, and

@@ -656,6 +656,18 @@ impl Client {
         Ok((code, v))
     }
 
+    /// `post_json` to the build page's data and the owner's asks, `/api/<name>`. An older
+    /// coordinator's 404 with no body (its router's: it served them under `/work/`, before task
+    /// #1101) is asked again there. (Gated: cut with agentcore's coord::oldpage, once every Mac runs
+    /// an app serving `/api/`.)
+    pub fn post_api(&self, name: &str, body: &serde_json::Value) -> Result<Reply> {
+        let r = self.post_json(&format!("/api/{name}"), body)?;
+        if r.0 != 404 || !r.1.is_null() {
+            return Ok(r);
+        }
+        self.post_json(&format!("/work/{name}"), body)
+    }
+
     /// A file (a task's input).
     pub fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
         match self.request("GET", path, None)? {

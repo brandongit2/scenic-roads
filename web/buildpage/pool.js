@@ -1,8 +1,8 @@
 // The pool on the build page (docs/pool.md §10, §11): who leads and since when (the Mac mini, the
 // fixed lead: nothing on the page moves it), each member with its state, and "no lead" with what to
-// do when the lead is out of touch. From the agent's status the coordinator serves (`/work/swarm`'s
+// do when the lead is out of touch. From the agent's status the coordinator serves (`/api/swarm`'s
 // agent: its `pool.lead`, crates/agentcore/src/agent/lead.rs View). Each member a Pause/Resume of
-// its own (task #873): the hold ask (`POST /work/hold`, docs/pool.md §11) of this page's agent,
+// its own (task #873): the hold ask (`POST /api/hold`, docs/pool.md §11) of this page's agent,
 // always by member id (its own set at once; another's written on the NAS as that member's hold,
 // taken up when it reads it: so one out of touch has it queued), and its hold's stage as its own status serves it
 // (`Status::hold`, control::HoldView: asked, pausing with its jobs named, paused, resuming).

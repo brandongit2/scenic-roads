@@ -293,7 +293,7 @@ test("routes: nothing else is open", async () => {
 
 test("the app's pages, the board's schema and the dashboard's timeline are served", async () => {
   for (const [url, type] of [["/", /text\/html/], ["/task-board/", /text\/html/], ["/task-board/709", /text\/html/], ["/task-board/shim.js", /javascript/],
-    ["/task-board/schema.mjs", /javascript/], ["/jobs/", /text\/html/], ["/jobs/jobs.js", /javascript/], ["/lib/work/timeline.js", /javascript/], ["/lib/work/dom.js", /javascript/], ["/lib/work/words.js", /javascript/], ["/favicon.svg", /svg/]]) {
+    ["/task-board/schema.mjs", /javascript/], ["/jobs/", /text\/html/], ["/jobs/jobs.js", /javascript/], ["/lib/buildpage/timeline.js", /javascript/], ["/lib/buildpage/dom.js", /javascript/], ["/lib/buildpage/words.js", /javascript/], ["/favicon.svg", /svg/]]) {
     const r = await fetch(base + url);
     assert.equal(r.status, 200, url);
     assert.match(r.headers.get("content-type"), type, url);
@@ -309,7 +309,7 @@ test("the app's pages, the board's schema and the dashboard's timeline are serve
   // (And its page's API, at the old proxy path's.)
   assert.deepEqual(await (await fetch(base + "/task-board/api/c/meta/status")).json(), await (await fetch(base + "/api/c/meta/status")).json());
   // (Only the build page's modules the dashboard imports, nothing else of the checkout.)
-  for (const url of ["/lib/work/dash.js", "/lib/work/../../../README.md", "/../server.mjs", "/task-board/../../jobs.mjs"]) assert.equal((await fetch(base + url)).status, 404, url);
+  for (const url of ["/lib/buildpage/dash.js", "/lib/buildpage/../../../README.md", "/../server.mjs", "/task-board/../../jobs.mjs"]) assert.equal((await fetch(base + url)).status, 404, url);
 });
 
 test("after all of that, every item, event and meta document fits the schema", () => {

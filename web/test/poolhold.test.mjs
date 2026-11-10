@@ -1,8 +1,8 @@
-// A pool member's Pause/Resume (web/work/pool.js holdControl, task #873): from its status's hold
+// A pool member's Pause/Resume (web/buildpage/pool.js holdControl, task #873): from its status's hold
 // stage (control::HoldView), in touch or not, and a press under way.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { holdControl } from "../work/pool.js";
+import { holdControl } from "../buildpage/pool.js";
 
 const m4 = { member: "id-m4", host: "m4" }, me = { member: "id-m6", host: "m6", me: true };
 

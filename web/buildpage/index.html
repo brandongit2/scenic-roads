@@ -7,7 +7,7 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
-<!-- An app to install: home screen, full screen (manifest, sw.js: docs/workers.md §7). -->
+<!-- An app to install: home screen, full screen (manifest, sw.js: docs/coordinator.md §7). -->
 <link rel="manifest" href="manifest.webmanifest" id="manifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -139,7 +139,7 @@
 </div></footer>
 <script type="module">
 import { dashboard } from "./dash.js";
-// The build's page (docs/workers.md §7): the whole build at a glance for anyone it answers, and the
+// The build's page (docs/coordinator.md §7): the whole build at a glance for anyone it answers, and the
 // owner's controls. It reads and asks; it never runs the build's work (pages stopped helping,
 // #875: the Macs' agents do it all).
 //
@@ -152,14 +152,10 @@ const viewer = new URLSearchParams(location.search).has("view");
 const here = new URLSearchParams(location.search).get("mac") || null;
 if (here) { $("title").textContent = `Scenic build · ${here}`; document.title = `Scenic build · ${here}`; }
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
-// (What an older page kept here to help with the build: gone with it.)
-try {
-  for (const k of Object.keys(localStorage)) if (k.startsWith("running:") || ["helping", "ceiling", "lowered", "near", "startV", "running", "id", "peers"].includes(k)) localStorage.removeItem(k);
-} catch {}
 
-// Where this page's member answers: the path before /work/ ("" straight, "/build" through
-// tools/caddy's proxy), so its requests go there.
-const ROOT = location.pathname.slice(0, location.pathname.lastIndexOf("/work/"));
+// Where this page's member answers: the page's folder ("" at the coordinator's root, "/build"
+// through tools/caddy's proxy), so its requests go there.
+const ROOT = location.pathname.replace(/\/[^/]*$/, "");
 const label = (() => {
   const ua = navigator.userAgent;
   const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "browser";
@@ -168,7 +164,7 @@ const label = (() => {
 })();
 
 // A POST of JSON to this page's member (at ROOT).
-const READING = new Set(["/work/swarm", "/work/history", "/work/catalogs"]);
+const READING = new Set(["/api/swarm", "/api/history", "/api/catalogs"]);
 async function call(path, body) {
   const r = await fetch(ROOT + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (r.status === 204) return [204, null];
@@ -182,7 +178,12 @@ async function call(path, body) {
 // The page as an app (sw.js, manifest.webmanifest): kept for when its Mac doesn't answer. A new
 // version taking over (a newly published app): reloaded into it. (A first install takes over too:
 // that's no reason to reload.)
-if (!viewer && "serviceWorker" in navigator && window.isSecureContext) {
+// (Served at its old address, /work/, while an app before task #1101 may send it there:
+// crates/agentcore/src/coord/oldpage.rs. Not installed there, and an install from before removed,
+// so none is left once that address goes.)
+const oldAddress = ROOT.endsWith("/work");
+if (oldAddress && "serviceWorker" in navigator) navigator.serviceWorker.getRegistration().then((r) => r?.unregister(), () => {});
+if (!oldAddress && !viewer && "serviceWorker" in navigator && window.isSecureContext) {
   let had = !!navigator.serviceWorker.controller;
   // (Asked about whenever the page comes back to the front, and every half hour: an installed app
   // stays open for days.)
@@ -245,7 +246,7 @@ function setSplit(f, keep) {
 }
 
 // ---- The footer: the charts' range (this browser's own, kept), and the Live dot ---------------------
-// (The range is the Machines tab's live charts', from each Mac's /work/live: live.js, docs/pipeline.md §5.)
+// (The range is the Machines tab's live charts', from each Mac's /api/live: live.js, docs/pipeline.md §5.)
 const RANGES = [[60, "1 min"], [300, "5 min"], [600, "10 min"], [1800, "30 min"], [3600, "1 h"], [7200, "2 h"], [21600, "6 h"], [86400, "24 h"], [259200, "72 h"], [604800, "7 days"]];
 {
   const kept = store.get("range", 3600);

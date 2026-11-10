@@ -7,45 +7,45 @@
 //
 //   node tools/dev/touch-test.mjs [--out DIR] [--port N]   the Chrome run
 //   node tools/dev/touch-test.mjs --serve [--port N]       only the server (for Mobile Safari)
-//   --catalogs FILE   /work/catalogs answered from FILE (`scenic catalogs > FILE`: an agent before
+//   --catalogs FILE   /api/catalogs answered from FILE (`scenic catalogs > FILE`: an agent before
 //                     #629 hasn't the call), `after` honoured, `steps` not (a solo then aged by any
 //                     step's times); else forwarded as the other reads
-//   --tocome FILE     /work/tocome answered from FILE ({at, macs: {mac: {step: [[tile, s]…]}}}, the
+//   --tocome FILE     /api/tocome answered from FILE ({at, macs: {mac: {step: [[tile, s]…]}}}, the
 //                     lead's forecast::ToCome, the map's queue); without it an agent before #685,
 //                     which answers one Mac at a time, is asked for each and the answers put together
-//   --forecast FILE   the lead's forecast in /work/swarm replaced by FILE's (a Forecast as JSON:
+//   --forecast FILE   the lead's forecast in /api/swarm replaced by FILE's (a Forecast as JSON:
 //                     forecast.rs recorded_timing's SCENIC_FORECAST_OUT), its times moved so it was
 //                     made when this server started; with --tocome FILE (SCENIC_TOCOME_OUT, the same
-//                     run's) /work/tocome is FILE's whole, its runs and dependencies the schedule's
+//                     run's) /api/tocome is FILE's whole, its runs and dependencies the schedule's
 //                     arrows (#787), its `at` the forecast's; `none`: no forecast (the lead's
 //                     first not made yet: the page's loading dots)
-//   --built FILE      /work/built answered from FILE ({at, steps: {step: [z/x/y…]}}, agent::builtview:
+//   --built FILE      /api/built answered from FILE ({at, steps: {step: [z/x/y…]}}, agent::builtview:
 //                     an agent before #674 hasn't the call)
-//   --live FILE       /work/live's `net.hosts` given FILE's hosts ({host: {in, out, requests, conns,
+//   --live FILE       /api/live's `net.hosts` given FILE's hosts ({host: {in, out, requests, conns,
 //                     open, retries, holds, limit, robots}}) beside the agent's own (an agent before
 //                     #635 tells no robots.txt; a paused build moves nothing), the Activity tab's rows
-//   --steps FILE      /work/regions with `steps` answered from FILE ({at, regions: {id: {step:
+//   --steps FILE      /api/regions with `steps` answered from FILE ({at, regions: {id: {step:
 //                     [built, all]}}}, the lead's build::region_steps: an agent before #636 hasn't
 //                     them); the Regions tab's stage bars then checked saying what's left by them
 //   --member NAME     the map's "Show only for" set to NAME: its queued tiles counted, a card of
 //                     one found, screenshots (chrome-member*), then set back
-//   --history FILE    /work/history answered from FILE (the coordinator's history.jsonl, an event a
+//   --history FILE    /api/history answered from FILE (the coordinator's history.jsonl, an event a
 //                     line), its times moved so its last event is now, `since` and `max` honoured;
-//                     /work/swarm's `seq` and `epoch` then FILE's (the schedule's past jobs and the
+//                     /api/swarm's `seq` and `epoch` then FILE's (the schedule's past jobs and the
 //                     arrows between them by what each waited on, #791)
 //   --width W         the Chrome run at W px wide (default 390, a phone; 768 or more: a desktop, DPR 2)
 //   --scheme S        dark or light (prefers-color-scheme; default the system's)
 //   --agent H:P       the agent read (default 127.0.0.1:8090; the lead's to see the NAS tab filled)
-//   --phase-times FILE  the lead's `phase_times` in /work/swarm replaced by FILE's (a PhaseTimes
+//   --phase-times FILE  the lead's `phase_times` in /api/swarm replaced by FILE's (a PhaseTimes
 //                     as JSON, crate::timings: an agent before #844 hasn't it), its `at` now; the
 //                     Jobs tab's time breakdowns then checked at two ranges, each phase split into
 //                     its measured segments where its `w` says (#870), and a part's card
 //                     (chrome-time-6h, chrome-time-7d, chrome-time-card)
-//   --over-bound STEP:GAP  the lead's `phase_shares` in /work/swarm saying STEP's last runs went GAP
+//   --over-bound STEP:GAP  the lead's `phase_shares` in /api/swarm saying STEP's last runs went GAP
 //                     seconds without a safe point, past the bound (task #897: an agent before it
 //                     hasn't `over_bound`); the Jobs tab's step row then checked for its mark and
 //                     its card for the words (chrome-over-bound)
-//   --loop-stuck AGE:PHASE  the lead's status in /work/swarm saying its loop last finished a round
+//   --loop-stuck AGE:PHASE  the lead's status in /api/swarm saying its loop last finished a round
 //                     AGE s ago, in PHASE, past a threshold (`loop_stuck_s`) of 300 s (task #899:
 //                     an agent before it says no threshold); the Machines tab's lead card then
 //                     checked for its chip, the Overview for its alert (chrome-loop-stuck)
@@ -57,14 +57,14 @@
 //   --zoom-on X,Y     the map then zoomed in on world point X,Y (Web Mercator 0–1000; Ontario and
 //                     Québec: 275,330), a solo held and let go: chrome-solo-zoom, chrome-nosolo-zoom
 //
-// The page comes from a read-only server on its own port (8097): web/work as /work/, and only the
+// The page comes from a read-only server on its own port (8097): web/buildpage at its root, and only the
 // reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
-// page can't act or set a setting. Its Pause is the test's own (#673): /work/pause is
-// answered here, never forwarded, and /work/swarm's `pause` is this server's (none until a press;
+// page can't act or set a setting. Its Pause is the test's own (#673): /api/pause is
+// answered here, never forwarded, and /api/swarm's `pause` is this server's (none until a press;
 // then PAUSE_LAG ms after it, as the build takes seconds to say so), so the pool is never paused. The page opens as `?view`.
-// (Other Macs' /work/settings and /work/live the page asks straight; it only reads them.) A setting
+// (Other Macs' /api/settings and /api/live the page asks straight; it only reads them.) A setting
 // the page sets (the limits' drags and editor, #612) never leaves it: the page's fetch is wrapped
-// before its scripts run, a POST to any /work/settings with a setting in its body recorded in
+// before its scripts run, a POST to any /api/settings with a setting in its body recorded in
 // `window.__posted` and sent as a read ({}) instead; this server refuses such a body anyway.
 import { spawn } from "node:child_process";
 import { createServer, request } from "node:http";
@@ -76,7 +76,7 @@ import { fileURLToPath } from "node:url";
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
 const PORT = +arg("--port", 8097);
 const OUT = arg("--out", join(tmpdir(), "scenic-touch"));
-const WEB = join(dirname(fileURLToPath(import.meta.url)), "../../web/work");
+const WEB = join(dirname(fileURLToPath(import.meta.url)), "../../web/buildpage");
 // (`--agent HOST:PORT`: another Mac's agent read instead, e.g. the lead's: the page is then its own
 // Mac's, the NAS tab's answer its own, no cross-origin call the test origin isn't allowed.)
 const AGENT = (([host, port]) => ({ host, port: +port }))(arg("--agent", "127.0.0.1:8090").split(":"));
@@ -122,14 +122,11 @@ const PHASE_TIMES = arg("--phase-times", null);
 const OVER_BOUND = arg("--over-bound", null)?.split(":") ?? null;
 const LOOP_STUCK = arg("--loop-stuck", null)?.split(/:(.*)/s) ?? null;
 const ZOOM_ON = arg("--zoom-on", null)?.split(",").map(Number) ?? null;
-// Served names whose file on disk is named otherwise, as the coordinator's list has them
-// (crate::coord's page files): the route keeps its old spelling (task #547).
-const ON_DISK = { "catalogs.js": "catalogues.js" };
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
 function serve() {
   const srv = createServer((req, res) => {
     const url = new URL(req.url, "http://x");
-    const call = url.pathname.match(/^\/work\/([a-z]+)$/)?.[1];
+    const call = url.pathname.match(/^\/api\/([a-z]+)$/)?.[1];
     if (call && call in READS) {
       let body = "";
       req.on("data", (c) => (body += c));
@@ -163,13 +160,13 @@ function serve() {
           // (FILE's, its `at` the agent's forecast's, as the page takes this Mac's answer only for the
           // forecast its status shows (else asks the lead), the offsets kept from FILE's own `at`;
           // else the agent's, put together a Mac at a time from one before #685.)
-          const ask = (body) => fetch(`http://${AGENT.host}:${AGENT.port}/work/tocome`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
+          const ask = (body) => fetch(`http://${AGENT.host}:${AGENT.port}/api/tocome`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
           let a;
           try {
             if (TOCOME && shifted) a = { ...JSON.parse(readFileSync(TOCOME, "utf8")), at: shifted.at };
             else if (TOCOME) {
               const f = JSON.parse(readFileSync(TOCOME, "utf8"));
-              const at = await fetch(`http://${AGENT.host}:${AGENT.port}/work/swarm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((w) => w.agent?.forecast?.at ?? f.at, () => f.at);
+              const at = await fetch(`http://${AGENT.host}:${AGENT.port}/api/swarm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((w) => w.agent?.forecast?.at ?? f.at, () => f.at);
               a = { at, macs: Object.fromEntries(Object.entries(f.macs).map(([mac, steps]) => [mac, Object.fromEntries(Object.entries(steps).map(([k, ts]) => [k, ts.map(([t, s]) => [t, Math.max(0, s + f.at - at)])]))])) };
             } else if (v.raw || v.renumber) a = await ask(v);
             else {
@@ -195,7 +192,7 @@ function serve() {
         }
         const out = JSON.stringify(v);
         if (call === "live" && LIVE && v.net !== false) {
-          const a = await fetch(`http://${AGENT.host}:${AGENT.port}/work/live`, { method: "POST", headers: { "Content-Type": "application/json" }, body: out }).then((r) => r.json(), () => ({}));
+          const a = await fetch(`http://${AGENT.host}:${AGENT.port}/api/live`, { method: "POST", headers: { "Content-Type": "application/json" }, body: out }).then((r) => r.json(), () => ({}));
           a.net = { events: [], ...a.net, hosts: { ...a.net?.hosts, ...JSON.parse(readFileSync(LIVE, "utf8")) } };
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify(a));
@@ -212,11 +209,11 @@ function serve() {
       return;
     }
     if (req.method === "GET" && url.pathname === "/__posts") { res.writeHead(200); return res.end(String(fake.posts)); }
-    if (req.method !== "GET" || !url.pathname.startsWith("/work/")) { res.writeHead(403); return res.end(); }
+    if (req.method !== "GET" || url.pathname.startsWith("/api/")) { res.writeHead(403); return res.end(); }
     // (No service worker: it would cache the page across runs.)
-    if (url.pathname === "/work/sw.js") { res.writeHead(404); return res.end(); }
-    const rel = normalize(url.pathname.slice(6) || "index.html").replace(/^(\.\.[/\\])+/, "");
-    let p = join(WEB, ON_DISK[rel] || rel);
+    if (url.pathname === "/sw.js") { res.writeHead(404); return res.end(); }
+    const rel = normalize(url.pathname.slice(1) || "index.html").replace(/^(\.\.[/\\])+/, "");
+    let p = join(WEB, rel);
     if (existsSync(p) && statSync(p).isDirectory()) p = join(p, "index.html");
     if (!existsSync(p)) { res.writeHead(404); return res.end(); }
     res.writeHead(200, { "Content-Type": TYPES[extname(p)] || "application/octet-stream", "Cache-Control": "no-store" });
@@ -227,7 +224,7 @@ function serve() {
 
 if (process.argv.includes("--serve")) {
   await serve();
-  console.log(`serving http://localhost:${PORT}/work/?view (reads forwarded to ${AGENT.host}:${AGENT.port}); Ctrl-C stops`);
+  console.log(`serving http://localhost:${PORT}/?view (reads forwarded to ${AGENT.host}:${AGENT.port}); Ctrl-C stops`);
 } else await run();
 
 // ---- Chrome ------------------------------------------------------------------------------------------
@@ -289,7 +286,7 @@ async function run() {
     const still = () => until(`!${MAP}?.dataset.fading`, 5000);
 
     await page.send("Page.addScriptToEvaluateOnNewDocument", { source: stub() });
-    await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/work/?view${MAC ? `&mac=${encodeURIComponent(MAC)}` : ""}#overview` });
+    await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?view${MAC ? `&mac=${encodeURIComponent(MAC)}` : ""}#overview` });
     await until(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length && !!${MAP}?.width`, 20000);
 
     // `?mac=` (the menu bar's panel on a member, sent to the lead's page): the page opens on it.
@@ -328,7 +325,7 @@ async function run() {
       const marks = await js(`document.querySelectorAll("#mappane .cat-tl g.mk").length`);
       check("ages: the timeline marks the catalogues in its span", marks > 0, `${marks} marks; ${await js(`document.querySelector(".cat-status")?.textContent`)}`);
       // (The step with the most tiles built that the legend names: its published tiles painted.)
-      const built = await js(`fetch("/work/built", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((v) => Object.entries(v.steps || {}).sort((p, q) => q[1].length - p[1].length).map(([k, t]) => [k, t.length]), () => [])`);
+      const built = await js(`fetch("/api/built", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((v) => Object.entries(v.steps || {}).sort((p, q) => q[1].length - p[1].length).map(([k, t]) => [k, t.length]), () => [])`);
       const named = await js(`[...document.querySelectorAll("#mappane .wmap-steps .lg.step")].map((b) => b.dataset.name)`);
       const want = arg("--solo", null);
       const [step, nBuilt] = (want && named.includes(want) ? built.find(([k]) => k === want) || [want, 0] : null) || built.find(([k]) => named.includes(k)) || [named[0], 0];
@@ -573,7 +570,7 @@ async function run() {
           const row = await js(`(() => { const r = [...document.querySelectorAll(".rrow")].find((e) => { const q = e.getBoundingClientRect(); return document.elementFromPoint(q.left + 40, q.top + q.height / 2)?.closest(".rrow") === e; }); if (!r) return null; const b = r.getBoundingClientRect(); return [b.left + 40, b.top + b.height / 2, r.dataset.id]; })()`);
           if (row) {
             await mouse(row[0], row[1]);
-            // (Outlined on the map only where the agent gave the region's outline: /work/regions.)
+            // (Outlined on the map only where the agent gave the region's outline: /api/regions.)
             const lit = await until(`document.querySelector(".rrow.lit")?.dataset.id === ${JSON.stringify(row[2])} && ${MAP}.dataset.held === "mr " + ${JSON.stringify(row[2])}`, 3000);
             check("regions: a row under the pointer lights its region on the map", lit >= 0, `${row[2]}, ${await js(`${MAP}.dataset.outlined`)} outlined`);
             const { data } = await page.send("Page.captureScreenshot", { format: "png" });
@@ -625,7 +622,7 @@ async function run() {
     // Cancel asks nothing either; the confirmed one is pending at once (its words, disabled, the
     // header still saying what the build says), the page asks again each second so the state shows
     // within a few seconds of the lag, not at the next 10 s poll; then Resume the same way. The
-    // asks go to this server's own /work/pause (never the pool's).
+    // asks go to this server's own /api/pause (never the pool's).
     {
       errors.length = 0;
       await show("overview");
@@ -696,7 +693,7 @@ async function run() {
     // cards as the mockup's.
     {
       errors.length = 0;
-      const t = await js(`fetch("/work/steps", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json())`);
+      const t = await js(`fetch("/api/steps", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json())`);
       const steps = new Set((t.steps || []).map((s) => s.id)), stages = (t.stages || []).map((g) => g.id);
       const tiled = (t.steps || []).filter((s) => !s.of && (["area", "tile", "z10"].includes(s.scope) || /-root$/.test(s.id))).map((s) => s.id);
       await show("overview");
@@ -731,7 +728,7 @@ async function run() {
       const area = new Set(["root", "lo", "hi", "deep"]);
       // (A job an older app runs, taken over at an update (the status's `old_app`), may be of a
       // step this app no longer has, e.g. terrain-z8 after #670: its name is that app's code's.)
-      const sw = await js(`fetch("/work/swarm", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).catch(() => ({}))`);
+      const sw = await js(`fetch("/api/swarm", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).catch(() => ({}))`);
       const oldJobs = new Set(JSON.stringify(sw).match(/"old_app":\[[^\]]*\]/g)?.flatMap((m) => [...m.matchAll(/"job":"([^" ]+)/g)].map((x) => x[1])) || []);
       const bad = [
         ...names.legend.filter((x) => !steps.has(x) && !stages.includes(x) && !area.has(x)).map((x) => `legend ${x}`), ...names.legendText.filter((x) => !steps.has(x)).map((x) => `legend ${x}`),
@@ -772,14 +769,14 @@ async function run() {
         if (!PHONE) await mouse(2, 2);
         if (c && !c.none && c.map > 0) { jc = c; break; }
       }
-      const ended = jc ? 0 : await js(`(async () => { const tail = await fetch("/work/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()); const h = await fetch("/work/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ since: Math.max(0, (tail.seq || 0) - 5000), max: 5000 }) }).then((r) => r.json()); const from = Date.now() / 1000 - 6 * 3600; return (h.events || []).filter((e) => ["end", "done"].includes(e.kind) && e.ok !== false && e.t >= from && ${JSON.stringify(tiled)}.includes(e.step)).length; })()`);
+      const ended = jc ? 0 : await js(`(async () => { const tail = await fetch("/api/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()); const h = await fetch("/api/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ since: Math.max(0, (tail.seq || 0) - 5000), max: 5000 }) }).then((r) => r.json()); const from = Date.now() / 1000 - 6 * 3600; return (h.events || []).filter((e) => ["end", "done"].includes(e.kind) && e.ok !== false && e.t >= from && ${JSON.stringify(tiled)}.includes(e.step)).length; })()`);
       if (!jc && !ended) console.log("INFO jobs card: no finished or running job of a tiled step in the last 6 h (the live build's state), its map not checked");
       else if (!jc) check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", false, `the history has ${ended} finished jobs of tiled steps in 6 h, none shown in 20 s`);
       else if (jc.none) check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", false, "no card shown on a job's box");
       else check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", !jc.wide && jc.w <= 282 && steps.has(String(jc.title).split(/[ :]/)[0]) && jc.map > 0 && jc.map <= 280, `${jc.kick} / ${jc.title}, map ${jc.map} px`);
       // (#834) A job to come of a tiled step, as a job that ran: its targets named and listed, a
       // world map of them (the forecast's run of the scheduler's grants: one job a run, the next
-      // hours; `/work/tocome`'s runs). Its card shot as it shows (chrome-job-to-come.png).
+      // hours; `/api/tocome`'s runs). Its card shot as it shows (chrome-job-to-come.png).
       const next = `(document.querySelector(".panel:not([hidden]) .sched .lanewrap")?.spots?.(["next"]) || [])`;
       let nc = null, dc = null;
       const nNext = await js(`${next}.length`);
@@ -992,7 +989,7 @@ async function run() {
     }
 
     // Settings fields (Machines): a tap focuses each without the page jumping. Never pressed Set.
-    // (The fields come with the Macs' /work/settings answers, asked when the tab shows: waited
+    // (The fields come with the Macs' /api/settings answers, asked when the tab shows: waited
     // for, up to 10 s, rather than a fixed pause a slow answer outlasts.)
     await show("machines");
     let n = 0;
@@ -1029,10 +1026,11 @@ function stub() {
   const real = window.fetch.bind(window);
   window.__posted = [];
   window.fetch = (u, o = {}) => {
-    // (Anything but a bare read to a /work/settings is recorded and sent as one: a Request object,
-    // a body not JSON, a trailing slash; this test's server refuses a write to its own Mac besides.)
+    // (Anything but a bare read to a /api/settings (or an older app's /work/settings) is recorded
+    // and sent as one: a Request object, a body not JSON, a trailing slash; this test's server
+    // refuses a write to its own Mac besides.)
     const url = typeof u === "string" || u instanceof URL ? String(u) : u.url;
-    if (/\\/work\\/settings\\/?$/.test(new URL(url, location.href).pathname) && (typeof u === "object" && !(u instanceof URL) || (o.body != null && String(o.body).trim() !== "{}"))) {
+    if (/\\/(api|work)\\/settings\\/?$/.test(new URL(url, location.href).pathname) && (typeof u === "object" && !(u instanceof URL) || (o.body != null && String(o.body).trim() !== "{}"))) {
       let b = o.body;
       try { b = JSON.parse(o.body); } catch {}
       window.__posted.push({ url, body: b });
@@ -1113,7 +1111,7 @@ async function limitChecks({ js, at, touch, tap, page, check, shot, PHONE }) {
   check("machines: the battery floor's tag is settable, not pool-wide", await js(`[...${own}.querySelectorAll(".reftag.set")].some((t) => t.title.includes("battery floor") && !/pool-wide/.test(t.textContent))`) || !(await js(`[...${own}.querySelectorAll(".reftag")].some((t) => /battery/.test(t.textContent))`)), "");
   // A limit at the chart's very top (every core) is still drawn, settable, its tag under the line.
   const top = await js(`(async () => {
-    const { draw } = await import("/work/chart.js");
+    const { draw } = await import("/chart.js");
     const box = document.createElement("div"); box.id = "toptest"; box.style.cssText = "position:relative;width:420px";
     const c = document.createElement("canvas"); c.style.cssText = "display:block;width:100%;height:62px"; box.append(c);
     ${own}.append(box); box.scrollIntoView({ block: "center" });

@@ -3,7 +3,7 @@
 // Mac's jobs are moving now (the NAS files they opened or made and the internet transfers that
 // ended, newest first) and the internet by website (each host's requests and MB a second over the
 // last `RATE_S`, the connections open now, retries and 429 holds since each Mac's agent started,
-// the budget it is metered by, its robots.txt). Each Mac a chip in its colour on the page. From each Mac's /work/live (`files` and `net`), asked every `EVERY_MS`
+// the budget it is metered by, its robots.txt). Each Mac a chip in its colour on the page. From each Mac's /api/live (`files` and `net`), asked every `EVERY_MS`
 // while the tab shows: this page's own Mac through its own calls, the others at their addresses
 // (live.js's `remote`). A host's robots.txt is as a job fetching its pages told its Mac's proxy
 // (crate::budget::net::Robots), the newest told of any Mac; one never told is an API's or a data
@@ -83,7 +83,7 @@ async function ask(m) {
   try {
     let ans;
     if (!m) {
-      const [code, v] = await cfg.call("/work/live", body);
+      const [code, v] = await cfg.call("/api/live", body);
       if (code !== 200 || !v) throw new Error(code === 503 ? "not measuring yet" : `answered ${code}`);
       ans = v;
       if (!ownHost) { ownHost = ans.host; kept.delete(""); kept.set(ownHost, st); }

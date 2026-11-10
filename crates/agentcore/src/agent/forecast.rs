@@ -1,4 +1,4 @@
-//! The build's forecast (docs/building.md §2, The forecast; the worker page's road to done): when each
+//! The build's forecast (docs/building.md §2, The forecast; the build page's road to done): when each
 //! step, each region and the whole build will be done, when each region reaches the map, when the
 //! cadenced publishes may next go out, and what each machine does next.
 //!
@@ -714,7 +714,7 @@ pub struct Forecast {
     #[serde(skip)]
     pub placed: Vec<Placed>,
     /// The schedule's runs (`lanes`), their targets and what each waits on: the build page's
-    /// (`/work/tocome`, with `placed`'s tiles: `ToCome::runs`). Not in the status.
+    /// (`/api/tocome`, with `placed`'s tiles: `ToCome::runs`). Not in the status.
     #[serde(skip)]
     pub runs: Runs,
     /// The items' dependencies, what each job started from now on waited on is read from
@@ -754,7 +754,7 @@ pub struct Placed {
 }
 
 /// The tiles each Mac will work on, from a forecast's `placed` (task #622): the build page's
-/// world map's queue, every tile left to build (task #685; `/work/tocome`, asked once a forecast;
+/// world map's queue, every tile left to build (task #685; `/api/tocome`, asked once a forecast;
 /// never in the status). Each Mac's (its lanes' `Machine::mac`, else name), by step, each tile once (a target that names
 /// no z/x/y tile, a region's or the world's, left out) at its first placing's start, in time order:
 /// [tile, seconds from `at`].
@@ -803,7 +803,7 @@ impl ToCome {
         out
     }
 
-    /// `/work/tocome`'s answer: {at, macs: {mac: {step: [[tile, s from at]…]}}, runs: [[target…]…],
+    /// `/api/tocome`'s answer: {at, macs: {mac: {step: [[tile, s from at]…]}}, runs: [[target…]…],
     /// jobs: [n…], deps: [[a, b]…], after: [[seq…]…]}, every Mac's; runs and their jobs numbered as
     /// `Runs` says, `deps` job to job, `after` each job's finished dependencies (the history's event
     /// numbers; the coordinator adds the `epoch` they're numbered in).
@@ -4318,7 +4318,7 @@ mod tests {
     }
 
     /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed. For profiling at live scale (unset: nothing);
-    /// SCENIC_FORECAST_OUT and SCENIC_TOCOME_OUT write its forecast and its `/work/tocome` answer.
+    /// SCENIC_FORECAST_OUT and SCENIC_TOCOME_OUT write its forecast and its `/api/tocome` answer.
     #[test]
     fn recorded_timing() {
         let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") else { return };
@@ -4361,7 +4361,7 @@ mod tests {
         if let Ok(out) = std::env::var("SCENIC_FORECAST_OUT") {
             std::fs::write(out, serde_json::to_vec_pretty(&f).unwrap()).unwrap();
         }
-        // (`/work/tocome`'s answer as the lead would make it: for the page's tests, touch-test.mjs --tocome.)
+        // (`/api/tocome`'s answer as the lead would make it: for the page's tests, touch-test.mjs --tocome.)
         if let Ok(out) = std::env::var("SCENIC_TOCOME_OUT") {
             let (tc, _, _) = ToCome::take(&mut f.clone(), &r.input.machines);
             std::fs::write(out, serde_json::to_vec(&tc.answer()).unwrap()).unwrap();

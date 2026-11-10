@@ -273,7 +273,7 @@ pub enum Cmd {
     },
     /// The build page's Catalogues map as this Mac's agent last kept it (docs/pool.md §10): each
     /// batch of the map's log, its number, time and the map tiles it published, as JSON (what
-    /// `/work/catalogs` answers)
+    /// `/api/catalogs` answers)
     #[command(name = "catalogs")] // the command keeps its old spelling (task #547)
     Catalogues {
         /// Only those after this catalogue

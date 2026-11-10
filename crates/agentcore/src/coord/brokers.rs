@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn origins_are_every_address_a_members_page_is_served_at() {
         assert_eq!(origin("http://100.70.85.80:8090"), Some("http://100.70.85.80:8090".into()));
-        assert_eq!(origin("https://Mac.tail1.ts.net/work/"), Some("https://mac.tail1.ts.net".into()));
+        assert_eq!(origin("https://Mac.tail1.ts.net/"), Some("https://mac.tail1.ts.net".into()));
         assert_eq!(origin("ftp://x"), None);
         assert_eq!(origin("https:///x"), None);
         let own = Broker {

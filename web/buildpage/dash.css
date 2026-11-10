@@ -1,4 +1,4 @@
-/* The build at a glance (dash.js), the page at /work/. The page's own tokens
+/* The build at a glance (dash.js), the page at the coordinator's root (/build/ through tools/caddy). The page's own tokens
    (index.html's :root) are used throughout. What's in the tabs' panel answers to its width, not
    the window's (`@container tabs`, index.html): a phone's, or the panel dragged narrow beside the
    map, lays out as a phone. */

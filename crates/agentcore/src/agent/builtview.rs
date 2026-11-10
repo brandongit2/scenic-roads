@@ -1,6 +1,6 @@
 //! The build page's map's finished tiles (task #674): every tile target the build has recorded as
 //! built, by step, from its keys (`state/build/jobs.json`, crate::pool::records::Keys), for
-//! `/work/built`. The history's job ends (what the map read before) reach back only as far as the
+//! `/api/built`. The history's job ends (what the map read before) reach back only as far as the
 //! page has read them and the history keeps; the keys hold every target built, whenever, and every
 //! Mac reads the same file, so each Mac's page draws the same tiles.
 //!

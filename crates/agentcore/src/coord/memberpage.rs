@@ -3,12 +3,13 @@
 //! a browser's address bar, the menu bar's web view), with a 307 to the lead's same path and query
 //! at its address of the same network as the one asked (`location`),
 //! while the lead answers its beats and says it serves its members' pages (`beats::PAGE`). Without
-//! such a lead (none known, not answering, or an older app's) it answers `/work/` with a small page
+//! such a lead (none known, not answering, or an older app's) it answers `/` with a small page
 //! of its own: this Mac's status, from its `helper.json`, and since when the lead isn't reached.
 //!
-//! Not redirected: `/work/live`, `/work/settings` and `/work/asked` asked by the lead's page from any origin it is served at
+//! Not redirected: `/api/live`, `/api/settings` and `/api/asked` asked by the lead's page from any origin it is served at
 //! (CORS, `Coordinator::set_brokers`), the jobs' calls (a key), and `sw.js` (an installed page's
-//! worker updates from its own origin, then follows the redirects: web/work/sw.js).
+//! worker updates from its own origin, then follows the redirects: web/buildpage/sw.js).
+//! A lead before task #1101 is sent to its old addresses (crate::coord::oldpage).
 
 use std::path::Path;
 
@@ -17,8 +18,8 @@ use std::path::Path;
 pub enum PageAt {
     /// The lead's, at its coordinator's addresses (`urls`: its contact's, the tailnet's then its
     /// LAN name, coordwire::net::urls; `https`: its HTTPS page when `tailscale serve` proxies it,
-    /// `Contact::page`).
-    Lead { urls: Vec<String>, https: Option<String> },
+    /// `Contact::page`; `root`: it serves the page at its root, beats::ROOT, else at `/work/`).
+    Lead { urls: Vec<String>, https: Option<String>, root: bool },
     /// The lead not reached since `since` (unix s; None: not since this agent started), `lead` its
     /// name when known: this Mac's own page.
     Away { lead: Option<String>, since: Option<u64> },
@@ -37,7 +38,7 @@ pub enum Answer {
     Lead,
     /// The page's address itself: the lead's, or this Mac's own page.
     Page,
-    /// Answered here as before (`/work/live`, `sw.js`, the jobs' calls).
+    /// Answered here (`/api/live`, `sw.js`, the jobs' calls).
     Here,
 }
 
@@ -45,17 +46,15 @@ pub enum Answer {
 pub fn answer(path: &str, get: bool, page_file: impl Fn(&str) -> bool) -> Answer {
     if get {
         return match path {
-            "/work" | "/work/" | "/work/index.html" => Answer::Page,
-            "/work/sw.js" => Answer::Here,
-            p if p.strip_prefix("/work/").is_some_and(&page_file) => Answer::Lead,
+            "/" | "/index.html" => Answer::Page,
+            "/sw.js" => Answer::Here,
+            p if p.strip_prefix('/').is_some_and(&page_file) => Answer::Lead,
             _ => Answer::Here,
         };
     }
-    match path {
-        "/work/live" => Answer::Here,
-        "/work/swarm" | "/work/history" | "/work/steps" | "/work/regions" | "/work/catalogs" | "/work/tocome"
-        | "/work/built" | "/work/pause" | "/work/inputs" | "/work/act" | "/work/settings" | "/work/hold"
-        | "/work/asked" | "/work/timings" | "/work/floors" | "/work/redo" => Answer::Lead,
+    match path.strip_prefix("/api/") {
+        Some("live") => Answer::Here,
+        Some(n) if super::API.contains(&n) => Answer::Lead,
         _ => Answer::Here,
     }
 }
@@ -67,7 +66,7 @@ pub fn answer(path: &str, get: bool, page_file: impl Fn(&str) -> bool) -> Answer
 /// (a device on the LAN, perhaps without Tailscale), its LAN name; else (this Mac itself, the menu
 /// bar's web view) its first.
 pub fn location(lead: &PageAt, path_and_query: &str, proxied: bool, host: &str) -> Option<String> {
-    let PageAt::Lead { urls, https } = lead else { return None };
+    let PageAt::Lead { urls, https, root } = lead else { return None };
     let name = host.rsplit_once(':').filter(|(h, p)| !h.ends_with(']') || p.is_empty()).map_or(host, |(h, _)| h);
     let name = name.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
     let ip = name.parse::<std::net::IpAddr>().ok();
@@ -75,6 +74,7 @@ pub fn location(lead: &PageAt, path_and_query: &str, proxied: bool, host: &str) 
     let lan = |u: &str| u.split("://").nth(1).and_then(|a| a.split(':').next()).is_some_and(|h| h.ends_with(".local"));
     let pick = |f: &dyn Fn(&str) -> bool| urls.iter().find(|u| f(u)).cloned();
     let base = match https.as_deref().filter(|_| proxied) {
+        // (An older lead's contact names its page under `work/`: crate::coord::oldpage.)
         Some(h) => h.strip_suffix("work/").unwrap_or(h).to_string(),
         None if is_tailnet(&name) || name.ends_with(".ts.net") => pick(&tailnet).or_else(|| urls.first().cloned())?,
         None if name.ends_with(".local") || ip.is_some_and(|ip| !ip.is_loopback()) => {
@@ -82,7 +82,8 @@ pub fn location(lead: &PageAt, path_and_query: &str, proxied: bool, host: &str) 
         }
         None => urls.first()?.clone(),
     };
-    Some(format!("{}/{}", base.trim_end_matches('/'), path_and_query.trim_start_matches('/')))
+    let pq = if *root { path_and_query.to_string() } else { super::oldpage::old_path(path_and_query) };
+    Some(format!("{}/{}", base.trim_end_matches('/'), pq.trim_start_matches('/')))
 }
 
 /// Whether `host` is a tailnet address (100.64.0.0/10).
@@ -163,35 +164,46 @@ mod tests {
 
     #[test]
     fn the_page_and_its_asks_go_to_the_lead_the_jobs_and_live_stay() {
-        let file = |p: &str| ["dash.js", "dash.css", "sw.js"].contains(&p);
-        assert_eq!(answer("/work/", true, file), Answer::Page);
-        assert_eq!(answer("/work", true, file), Answer::Page);
-        assert_eq!(answer("/work/dash.js", true, file), Answer::Lead);
-        assert_eq!(answer("/work/sw.js", true, file), Answer::Here);
+        let file = |p: &str| ["", "index.html", "dash.js", "dash.css", "sw.js"].contains(&p);
+        assert_eq!(answer("/", true, file), Answer::Page);
+        assert_eq!(answer("/index.html", true, file), Answer::Page);
+        assert_eq!(answer("/dash.js", true, file), Answer::Lead);
+        assert_eq!(answer("/sw.js", true, file), Answer::Here);
         assert_eq!(answer("/work/in/1/a", true, file), Answer::Here);
-        for p in ["/work/swarm", "/work/pause", "/work/settings", "/work/hold", "/work/act"] {
+        assert_eq!(answer("/map/snapshot", true, file), Answer::Here);
+        for p in ["/api/swarm", "/api/pause", "/api/settings", "/api/hold", "/api/act"] {
             assert_eq!(answer(p, false, file), Answer::Lead, "{p}");
         }
-        for p in ["/work/live", "/work/ask", "/work/beat", "/task/x"] {
+        for p in ["/api/live", "/api/nope", "/work/ask", "/work/beat", "/task/x"] {
             assert_eq!(answer(p, false, file), Answer::Here, "{p}");
         }
         let lead = PageAt::Lead {
             urls: vec!["http://100.71.2.3:18091".into(), "http://mini.local:18091".into()],
-            https: Some("https://mini.tail.ts.net/work/".into()),
+            https: Some("https://mini.tail.ts.net/".into()),
+            root: true,
         };
-        let at = |host: &str, proxied: bool| location(&lead, "/work/?view&mac=m1", proxied, host).unwrap();
+        let at = |host: &str, proxied: bool| location(&lead, "/?view&mac=m1", proxied, host).unwrap();
         // (Each device sent the way it came: the tailnet, the LAN (a phone without Tailscale), this
         // Mac itself, `tailscale serve`.)
-        assert_eq!(at("100.80.0.1:18091", false), "http://100.71.2.3:18091/work/?view&mac=m1");
-        assert_eq!(at("m1.tail.ts.net:18091", false), "http://100.71.2.3:18091/work/?view&mac=m1");
-        assert_eq!(at("m1.local:18091", false), "http://mini.local:18091/work/?view&mac=m1");
-        assert_eq!(at("192.168.1.20:18091", false), "http://mini.local:18091/work/?view&mac=m1");
-        assert_eq!(at("127.0.0.1:18091", false), "http://100.71.2.3:18091/work/?view&mac=m1");
-        assert_eq!(at("m1.tail.ts.net", true), "https://mini.tail.ts.net/work/?view&mac=m1");
+        assert_eq!(at("100.80.0.1:18091", false), "http://100.71.2.3:18091/?view&mac=m1");
+        assert_eq!(at("m1.tail.ts.net:18091", false), "http://100.71.2.3:18091/?view&mac=m1");
+        assert_eq!(at("m1.local:18091", false), "http://mini.local:18091/?view&mac=m1");
+        assert_eq!(at("192.168.1.20:18091", false), "http://mini.local:18091/?view&mac=m1");
+        assert_eq!(at("127.0.0.1:18091", false), "http://100.71.2.3:18091/?view&mac=m1");
+        assert_eq!(at("m1.tail.ts.net", true), "https://mini.tail.ts.net/?view&mac=m1");
         // (A lead with one address: that one, whichever way.)
-        let one = PageAt::Lead { urls: vec!["http://100.71.2.3:18091".into()], https: None };
-        assert_eq!(location(&one, "/work/", true, "m1.local").unwrap(), "http://100.71.2.3:18091/work/");
-        assert!(location(&PageAt::default(), "/work/", false, "x").is_none());
+        let one = PageAt::Lead { urls: vec!["http://100.71.2.3:18091".into()], https: None, root: true };
+        assert_eq!(location(&one, "/", true, "m1.local").unwrap(), "http://100.71.2.3:18091/");
+        assert!(location(&PageAt::default(), "/", false, "x").is_none());
+        // (A lead before task #1101: its page and data at its old addresses, its contact's page under
+        // work/.)
+        let older = PageAt::Lead {
+            urls: vec!["http://100.71.2.3:18091".into()],
+            https: Some("https://mini.tail.ts.net/work/".into()),
+            root: false,
+        };
+        assert_eq!(location(&older, "/?view", false, "x").unwrap(), "http://100.71.2.3:18091/work/?view");
+        assert_eq!(location(&older, "/api/swarm", true, "x").unwrap(), "https://mini.tail.ts.net/work/swarm");
     }
 
     #[test]

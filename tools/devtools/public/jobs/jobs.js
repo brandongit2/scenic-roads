@@ -2,7 +2,7 @@
 // Macs record (tools/dev/devjob.zsh, devjob.py), from the app's /api/jobs (jobs.mjs).
 //   Runs     each Mac's runs on a timeline, a lane a kind (check, publish, tests, cargo, a
 //            measurement, a backtest), with the Mac's load and memory under them; the build page's
-//            timeline (web/work/timeline.js), moved and zoomed the same way. A run is on the Mac it
+//            timeline (web/buildpage/timeline.js), moved and zoomed the same way. A run is on the Mac it
 //            ran on (jobs.mjs `on`): a tests job whose run went to the test Mac on that Mac, check's
 //            and publish's too (the API's `away`).
 //   Run      one run opened: what it is (who, task, commit, its Mac's load), its spans on a timeline
@@ -11,9 +11,9 @@
 //   By name  one kind of span over all time: each name's runs, failures and times.
 // The page's address keeps what's open (?range=24h&run=<id>&kind=test). Live: the app's event
 // stream says when a Mac sent more.
-import { createTimeline } from "../lib/work/timeline.js";
-import { h, token } from "../lib/work/dom.js";
-import { pad } from "../lib/work/words.js";
+import { createTimeline } from "../lib/buildpage/timeline.js";
+import { h, token } from "../lib/buildpage/dom.js";
+import { pad } from "../lib/buildpage/words.js";
 
 const API = "../api/jobs/";
 const RANGES = [["6h", 6 * 3600], ["24h", 86400], ["7d", 7 * 86400], ["30d", 30 * 86400], ["all", null]];

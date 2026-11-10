@@ -1,8 +1,8 @@
 // node web/test/catalogues.test.mjs (tools/dev/check.sh's web part): the Catalogues tab's sums
-// (web/work/catalogues.js): the range's inputs (parsing, the sides' signs, one span at a time, the
+// (web/buildpage/catalogues.js): the range's inputs (parsing, the sides' signs, one span at a time, the
 // swap), the tiles' times, the colour map, the timeline.
 import assert from "node:assert/strict";
-import { axisTicks, commit, formatWhen, keyOf, labelled, markLabels, mergeCatalogues, pairAt, paint, parseWhen, publishedAt, RAMP, rampColour, rangeOf, stepPublishedAt, tablesOf, tileTimes, timelineSpan } from "../work/catalogues.js";
+import { axisTicks, commit, formatWhen, keyOf, labelled, markLabels, mergeCatalogues, pairAt, paint, parseWhen, publishedAt, RAMP, rampColour, rangeOf, stepPublishedAt, tablesOf, tileTimes, timelineSpan } from "../buildpage/catalogues.js";
 
 process.env.TZ = "UTC";
 const NOW = Date.UTC(2026, 9, 24, 12, 0, 0) / 1000;
@@ -85,7 +85,7 @@ assert.equal(publishedAt(any, { z: 10, x: 17, y: 31 }).n, 2);
 assert.equal(publishedAt(any, { z: 12, x: 64, y: 124 }).n, 1);
 assert.equal(publishedAt(any, { z: 10, x: 18, y: 31 }), null);
 
-// A step's tile by its own outputs (#994): `/work/catalogs`' `steps` answer for it, not any step's.
+// A step's tile by its own outputs (#994): `/api/catalogs`' `steps` answer for it, not any step's.
 // Catalogue 2 published slope-deep's pack at 10/17/31 alone: terrain-deep's there stays 1's.
 const both = tablesOf([{ n: 1, t: 100, first: true, z10: [31 * 1024 + 17] }, { n: 2, t: 200, z10: [31 * 1024 + 17] }]);
 const steps = { "terrain-deep": [{ n: 1, t: 100, first: true, z10: [31 * 1024 + 17] }], "slope-deep": [{ n: 2, t: 200, z10: [31 * 1024 + 17] }], "terrain-hi": [{ n: 1, t: 100, first: true, z6: [1 * 64 + 1] }] };

@@ -3,8 +3,8 @@
 //!
 //! The asks come as files in the agent's folder (jobrt::control: `hold-request.json`,
 //! `quit-request.json`, `cancel-requests/`, the settings' files), whoever writes them: the menu bar,
-//! `scenic`, an older CLI, or the agent's HTTP endpoint (crate::coord's `/work/hold`, `/work/quit`,
-//! `/work/settings`, which write the same files). A watcher on the folder (kqueue on macOS) looks
+//! `scenic`, an older CLI, or the agent's HTTP endpoints (crate::coord's `/api/hold` and
+//! `/api/settings`, which write the same files). A watcher on the folder (kqueue on macOS) looks
 //! the moment one changes, and a sweep every `SWEEP` backs it up (an event coalesced or missed).
 //!
 //! What control owns, published as snapshots (crate::agent::bus) for the loop and the beat:

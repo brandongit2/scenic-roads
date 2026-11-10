@@ -1,10 +1,10 @@
-//! What happened in the build, in order (the worker page's activity: docs/workers.md, The page):
+//! What happened in the build, in order (the build page's activity: docs/coordinator.md, The page):
 //! each job the lead started and ended, each lease a worker took, handed back, failed or let
 //! lapse, each task done or failed, the catalogues written and the map tiles planned, the pauses,
 //! the workers first heard from, the devices let help or not, the agents started, the
 //! lead's conditions changing, and each Mac's build caches cleared or freed. Kept on the
 //! lead's disk (`history.jsonl`, a line an event, the last week's, KEEP_MAX at most), served by
-//! `/work/history` (the events after a number) and summed by the hour for the page (`rates`).
+//! `/api/history` (the events after a number) and summed by the hour for the page (`rates`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};

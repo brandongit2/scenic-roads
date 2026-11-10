@@ -1,5 +1,5 @@
 // The build page's words for numbers, one way for every module (and the dev job dashboard's, which
-// imports it: tools/devtools serves it at /lib/work/).
+// imports it: tools/devtools serves it at /lib/buildpage/).
 
 /** A count as the page writes it: "12,480". */
 export const n = (v) => Number(v).toLocaleString("en-US");

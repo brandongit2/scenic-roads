@@ -29,8 +29,8 @@ export function wholeProgress(lines, fc) {
 // after t0 and starting by t1), in the order given.
 export const busyLanes = (names, lanes, t0, t1) => names.filter((nm) => (lanes[nm] || []).some((l) => l.until >= t0 && l.from <= t1));
 
-// While this Mac hasn't read the build's state (a 503 from /work/swarm: its page view reads only
-// while asked lately, crates/agentcore/src/agent/pageview.rs; a 503 from /work/history alone waits
+// While this Mac hasn't read the build's state (a 503 from /api/swarm: its page view reads only
+// while asked lately, crates/agentcore/src/agent/pageview.rs; a 503 from /api/history alone waits
 // for the next regular poll): asked again every READ_RETRY_MS while the page is seen, with a quiet
 // line, not an error, until READ_WAIT_MS after the first 503 in a row; then an error, asked again
 // only with the regular poll. `since` is when the 503s began (ms),

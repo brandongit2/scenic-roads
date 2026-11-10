@@ -1,9 +1,9 @@
-// node --test tools/check/worksums.test.mjs: the build page's sums (web/work/sums.js): the
+// node --test tools/check/worksums.test.mjs: the build page's sums (web/buildpage/sums.js): the
 // headline's share of the whole build's work, the schedule's lanes worth a row, its past jobs,
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, jobLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea, phaseBreakdown, phaseSplit } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, jobLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea, phaseBreakdown, phaseSplit } from '../../web/buildpage/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -88,7 +88,7 @@ test('map: a tile built with nothing to publish is its own state, hidden until s
 
 test('map: published only while the latest catalogue names its output; a drop leaves the map (#866)', () => {
   // (Live, 29-30 Oct: Alaska's deep drops ran at ~22:35, catalogue 756 dropped their packs; their
-  // records are none keys, out of /work/built, but their job ends had drawn them as published.)
+  // records are none keys, out of /api/built, but their job ends had drawn them as published.)
   const readAt = 100000;
   const ends = [
     { kind: 'end', step: 'terrain-deep', t: 80000, worker: 'mini #1', targets: ['10/10/337'] }, // a drop's
@@ -369,7 +369,7 @@ test('regions: a virtual list\'s window', () => {
 });
 
 test('settings: an answer lacking a setting shows "not set" for it alone, the others as said', async () => {
-  const { macRows, poolRows } = await import('../../web/work/settings.js');
+  const { macRows, poolRows } = await import('../../web/buildpage/settings.js');
   const live = { mac: 'm1', in_use: { cores: 2, of: 10, set: false, default: 2 }, memory: { mb: 10240, default_mb: 2048, total_mb: 16384, set: true, by: 'x' }, room: { bytes: null, free: null, disk: null }, sweep_margin: { bytes: 10 * 2 ** 30, default: 10 * 2 ** 30, set: false } };
   assert.deepEqual(macRows(live).map((r) => r.now), ['2 of 10 cores', '10.0 GB', 'off', '10.0 GB']);
   assert.ok(macRows(live).every((r) => r.input));

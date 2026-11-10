@@ -117,7 +117,7 @@ fn timings(a: &cli::Timings) -> Result<()> {
             let root = root(&a.places.root, false)?;
             let c = agentcore::coord::client::Client::from_nas(&root, &store::sys::host_name())?
                 .context("no coordinator to ask")?;
-            let (code, v) = c.post_json("/work/timings", &serde_json::json!({ "kind": kind, "last": last }))?;
+            let (code, v) = c.post_api("timings", &serde_json::json!({ "kind": kind, "last": last }))?;
             anyhow::ensure!(code == 200, "the coordinator answered {code} (an older app?)");
             Ok(serde_json::from_value(v["runs"].clone())?)
         })();
@@ -879,7 +879,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
         .and_then(|b| serde_json::from_slice::<agentcore::coord::Contact>(&b).ok());
     let page = match (page, contact) {
         (Some(p), _) => Some(p),
-        (None, Some(c)) => c.urls.first().map(|u| format!("{u}/work/")),
+        (None, Some(c)) => c.urls.first().map(|u| format!("{u}/")),
         _ => None,
     };
     // The build's page (its dashboard, and where a device helps).
@@ -899,7 +899,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
 }
 
 /// `scenic steps [--json]`: the steps table (pipeline::agent::steps, docs/pipeline.md), a stage at a
-/// time, each step one line of the same columns; `--json` as `/work/steps` serves it.
+/// time, each step one line of the same columns; `--json` as `/api/steps` serves it.
 fn steps(json: bool) -> Result<()> {
     use agent::every::Place;
     use pipeline::agent::steps::{self, Kind, Scope};
@@ -1309,7 +1309,7 @@ fn job_cancel(target: &str, step: Option<&str>, rerun_after_update: bool, home: 
 }
 
 /// `scenic redo <step> <target>… [--run]` (agentcore::agent::redo): what the newest records hold for
-/// the targets; with --run, an ask of the lead's coordinator (`/work/redo`), followed until its merge
+/// the targets; with --run, an ask of the lead's coordinator (`/api/redo`), followed until its merge
 /// lands in the records.
 fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> Result<()> {
     use agentcore::agent::redo;
@@ -1341,7 +1341,7 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
     let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
         .context("no lead's coordinator to ask")?;
     let by = format!("scenic redo on {}", store::sys::host_name());
-    let (code, v) = c.post_json("/work/redo", &serde_json::json!({ "step": step, "targets": todo, "by": by }))?;
+    let (code, v) = c.post_api("redo", &serde_json::json!({ "step": step, "targets": todo, "by": by }))?;
     anyhow::ensure!(
         code == 200,
         "the lead's coordinator answered {code} ({v}): a lead on an app from before `scenic redo` can't take it; nothing asked"
@@ -1519,10 +1519,8 @@ fn main() -> Result<()> {
                     // one target's (a step fixed, or a floor learned wrong).
                     let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
                         .context("no lead's coordinator to ask")?;
-                    let (code, v) = c.post_json(
-                        "/work/floors",
-                        &serde_json::json!({ "clear": clear, "step": step, "target": target }),
-                    )?;
+                    let (code, v) =
+                        c.post_api("floors", &serde_json::json!({ "clear": clear, "step": step, "target": target }))?;
                     anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
                     if clear {
                         // (What the running coordinator took out of its memory: the clear reached it.)

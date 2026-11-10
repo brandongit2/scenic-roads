@@ -171,12 +171,12 @@ come from GTFS, hand-checked timetables, or OSM `interval` + `opening_hours`; ne
 The pool's lead, the Mac mini (`scenic agent`, `crates/agentcore/src/agent`), builds the map into the
 NAS from a worldwide OpenStreetMap download, a z6 tile at a time, and publishes a catalogue that the
 map server switches to in place. The other Macs and any browser on the LAN help through its
-coordinator (`docs/workers.md`, `docs/pool.md`). The build runs on a Mac while Scenic
+coordinator (`docs/coordinator.md`, `docs/pool.md`). The build runs on a Mac while Scenic
 (/Applications/Scenic.app, installed by `tools/app/install.sh`) is open there.
 
 - `scenic status` shows what the build is doing; `scenic pause` / `scenic resume` pause the whole
   build; `scenic lead` shows who leads; `scenic --help` lists the commands. The menu bar item and the
-  lead's build page (`/work/`) show and control the same.
+  lead's build page (at its coordinator's root, `/build/` through Caddy) show and control the same.
 - **Inputs** are NAS inputs folders, each checked before use (`docs/inputs.md`): regions
   (`inputs/regions/`, §6.1), translations and descriptions (`inputs/translations/`,
   `inputs/descriptions/`; what still lacks them is listed in each `todo/`), heritage registers
@@ -200,7 +200,7 @@ coordinator (`docs/workers.md`, `docs/pool.md`). The build runs on a Mac while S
 | `docs/pipeline.md` | Every build step as one row of one table. |
 | `docs/steps.md` | Each step in detail, its keys. |
 | `docs/storage.md`, `docs/formats.md` | The NAS and its files. |
-| `docs/macs.md`, `docs/pool.md`, `docs/workers.md` | Each Mac's agent, server and mirror; the pool and its lead; the coordinator and its workers. |
+| `docs/macs.md`, `docs/pool.md`, `docs/coordinator.md` | Each Mac's agent, server and mirror; the pool and its lead; the coordinator and its workers. |
 | `docs/regions.md`, `docs/inputs.md` | Coverage and regions; the inputs folders and their checks. |
 | `docs/names.md`, `docs/sizes.md`, `docs/buildings3d.md` | Names and descriptions; sizes; 3D buildings. |
 | `docs/polar.md` | The polar caps past 85° (planned: built and tested, not yet in the live build). |

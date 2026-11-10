@@ -144,7 +144,7 @@ if has 'web/*' || has 'tools/check/*.test.mjs'; then
   webtests=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
   part web zsh -c "tools/dev/web-deps.sh && node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)webtests}} && cd web && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
 else skip web "web/ unchanged"; fi
-if has 'tools/devtools/*' || has 'web/work/(timeline|sums|chartmath).js'; then part devtools zsh -c "cd tools/devtools && node --test test/*.test.mjs"
+if has 'tools/devtools/*' || has 'web/buildpage/(timeline|sums|chartmath).js'; then part devtools zsh -c "cd tools/devtools && node --test test/*.test.mjs"
 else skip devtools "tools/devtools unchanged"; fi
 if has 'tools/dev/devjob*' || has 'tools/dev/test/(devjob.zsh|test_devjob.py)'; then part devjob zsh tools/dev/test/devjob.zsh
 else skip devjob "the dev jobs' recorder unchanged"; fi

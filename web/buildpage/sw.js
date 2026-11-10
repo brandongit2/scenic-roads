@@ -1,4 +1,4 @@
-// The build page's service worker (docs/workers.md §7, The page as an app). The page's files are kept
+// The build page's service worker (docs/coordinator.md §7, The page as an app). The page's files are kept
 // as this version installs, and come from the lead whenever it answers well within WAIT_MS (a
 // newly published app's page at once), else as kept: a Mac that doesn't (asleep, away, or its
 // agent restarting: tailscale serve answers 502) is taken for away for AWAY_MS, what was kept used
@@ -9,10 +9,10 @@
 // VERSION is the page's own (the coordinator's hash of its files) and PAGE their addresses (the
 // coordinator's list): a new version is a new worker, which takes over; the page then reloads into
 // it.
-// ROOT: the path before /work/ where this worker was found ("" straight, "/build" through
-// tools/caddy's proxy); the coordinator's list names the page's files under /work/.
+// ROOT: the folder this worker was found in ("" at the coordinator's root, "/build" through
+// tools/caddy's proxy); the coordinator's list names the page's files from its root.
 const VERSION = "__VERSION__";
-const ROOT = self.location.pathname.slice(0, self.location.pathname.lastIndexOf("/work/"));
+const ROOT = self.location.pathname.replace(/\/[^/]*$/, "");
 const PAGE = __PAGE__.map((p) => ROOT + p);
 const SHELL = `shell-${VERSION}`;
 const WAIT_MS = 4000;
@@ -33,8 +33,7 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil((async () => {
     for (const k of await caches.keys()) {
-      // (And the programs' WebAssembly an older page kept to help with the build: "progs".)
-      if ((k.startsWith("shell-") && k !== SHELL) || k === "progs") await caches.delete(k);
+      if (k.startsWith("shell-") && k !== SHELL) await caches.delete(k);
     }
     await self.clients.claim();
   })());
@@ -43,7 +42,7 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== self.location.origin) return;
-  const p = url.pathname === `${ROOT}/work` ? `${ROOT}/work/` : url.pathname;
+  const p = url.pathname === ROOT ? `${ROOT}/` : url.pathname;
   if (PAGE.includes(p)) e.respondWith(page(e, p));
 });
 

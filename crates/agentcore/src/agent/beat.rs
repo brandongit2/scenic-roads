@@ -105,10 +105,18 @@ impl ToLead {
             h.pool.beat = status.beat;
             h
         });
-        let mut speaks: Vec<String> =
-            [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS, beats::RECORDS]
-                .map(str::to_string)
-                .to_vec();
+        let mut speaks: Vec<String> = [
+            held::SPEAKS,
+            beats::SPEAKS,
+            beats::VIEW,
+            beats::ASKS,
+            beats::HANDOFF,
+            beats::BUDGETS,
+            beats::RECORDS,
+            beats::ROOT,
+        ]
+        .map(str::to_string)
+        .to_vec();
         if self.beats.by_lead() {
             speaks.push(beats::BY_LEAD.to_string());
         }
@@ -800,11 +808,11 @@ mod tests {
         // The build's pause, in a mode the lead doesn't know.
         let w = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), Y);
         let e = w
-            .post_json("/work/pause", &serde_json::json!({ "pause": { "mode": "sideways", "by": "t", "at": 1 } }))
+            .post_json("/api/pause", &serde_json::json!({ "pause": { "mode": "sideways", "by": "t", "at": 1 } }))
             .unwrap_err();
         assert!(crate::coord::client::refused(&e).is_some_and(|w| w.contains("sideways")), "{e:#}");
         c.stop();
-        let e = w.post_json("/work/pause", &serde_json::json!({ "pause": null })).unwrap_err();
+        let e = w.post_json("/api/pause", &serde_json::json!({ "pause": null })).unwrap_err();
         assert!(crate::coord::client::refused(&e).is_none(), "not reached: no refusal");
     }
 

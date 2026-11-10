@@ -5,7 +5,7 @@
 // takes, the pool's NAS calls waiting (against their threads) and timed out, the NAS's disks busy
 // (against the owner's target), then the pool's use against the limits the lead's probes give:
 // data moved, files created, entries listed, files looked up, and the files opened. All from the
-// lead's /work/live answer (live.js asks it while the tab shows; the pool's series are the lead's
+// lead's /api/live answer (live.js asks it while the tab shows; the pool's series are the lead's
 // alone, task #517 and #634) and its status's `agent.nas` (the limits, the target, the mount). A
 // measure missing is said so, never zero.
 import { draw } from "./chart.js";

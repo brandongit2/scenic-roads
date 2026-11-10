@@ -1,6 +1,6 @@
 //! The build page's Catalogues map (docs/pool.md §10, task #629; docs/maplog.md §6.6): the map log's
 //! batches (store::map::Batch, `seq` the catalogue's number) as the map tiles each published, for
-//! `/work/catalogs`.
+//! `/api/catalogs`.
 //!
 //! A batch publishes a tile when it sets or deletes a key of that tile in one of the map's tile
 //! sections (`s/base/…`, `s/roads/…`, `s/hidata/…`, `s/markdata/…`, `s/ovdata/…`, a layer's
@@ -464,7 +464,7 @@ fn write_kept(path: &std::path::Path, k: &Kept) -> anyhow::Result<()> {
     store::whole::write(path, &enc.finish()?)
 }
 
-/// `/work/catalogs`' answer from entries `entries` after `after` (all with none).
+/// `/api/catalogs`' answer from entries `entries` after `after` (all with none).
 fn answer_of(entries: &[Entry], latest: Option<u64>, reading: bool, error: Option<&str>, after: Option<u64>) -> Value {
     let list: Vec<&Entry> = entries.iter().filter(|e| after.is_none_or(|a| e.n > a)).collect();
     serde_json::json!({ "latest": latest, "reading": reading, "error": error, "catalogs": list })
@@ -534,7 +534,7 @@ impl CataloguesView {
         a
     }
 
-    /// What's kept at `path` as `/work/catalogs` answers it (`scenic catalogs`: this Mac's agent's
+    /// What's kept at `path` as `/api/catalogs` answers it (`scenic catalogs`: this Mac's agent's
     /// view, read without it).
     pub fn answer_kept(path: &std::path::Path, after: Option<u64>) -> Value {
         let k = read_kept(path);

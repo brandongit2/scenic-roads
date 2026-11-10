@@ -7,8 +7,8 @@ export const finished = (x) => (x.left != null ? x.left === 0 : x.total != null 
 // after t0 and starting by t1), in the order given.
 export const busyLanes = (names, lanes, t0, t1) => names.filter((nm) => (lanes[nm] || []).some((l) => l.until >= t0 && l.from <= t1));
 
-// While this Mac hasn't read the build's state (a 503 from /work/swarm: its page view reads only
-// while asked lately, crates/agentcore/src/agent/pageview.rs; a 503 from /work/history alone waits
+// While this Mac hasn't read the build's state (a 503 from /api/swarm: its page view reads only
+// while asked lately, crates/agentcore/src/agent/pageview.rs; a 503 from /api/history alone waits
 // for the next regular poll): asked again every READ_RETRY_MS while the page is seen, with a quiet
 // line, not an error, until READ_WAIT_MS after the first 503 in a row; then an error, asked again
 // only with the regular poll. `since` is when the 503s began (ms),
@@ -142,7 +142,7 @@ export function viewPan(v, dt, now, lo, hi, min = SCHED_MIN_SPAN) {
   return viewOf(r.t0 + dt, r.span, now, lo, hi, min);
 }
 
-// The forecast's runs numbered as `/work/tocome` numbers them (forecast::Runs): the lanes by name
+// The forecast's runs numbered as `/api/tocome` numbers them (forecast::Runs): the lanes by name
 // in byte order (Rust's BTreeMap of strings: UTF-8 bytes), each lane's runs in order. {first: {lane:
 // its first run's number}, total}.
 const utf8 = new TextEncoder();
@@ -160,7 +160,7 @@ export function runNumbers(lanes) {
   }
   return { first, total };
 }
-// The jobs to come numbered as `/work/tocome` numbers them (forecast::Runs): each run's jobs (its
+// The jobs to come numbered as `/api/tocome` numbers them (forecast::Runs): each run's jobs (its
 // `jobs`, one per `runJobs` cut) after the runs before it's. `first[run]`: its first job's number.
 export function jobNumbers(jobs) {
   const first = [];
@@ -168,7 +168,7 @@ export function jobNumbers(jobs) {
   for (const n of jobs || []) { first.push(total); total += n; }
   return { first, total };
 }
-// The jobs' dependencies (`/work/tocome`'s `deps`, [a, b]: job b waits on job a, from what its
+// The jobs' dependencies (`/api/tocome`'s `deps`, [a, b]: job b waits on job a, from what its
 // targets read) both ways: `on` each job's jobs it waits on, `then` those waiting on it.
 export function jobLinks(deps) {
   const on = new Map(), then = new Map();
@@ -214,7 +214,7 @@ export function jobRelations(s, all, jobSegs, links) {
   return { on, arrows };
 }
 
-// Where to ask `/work/history` from (its `since`) to reach back to time `from`, given the oldest
+// Where to ask `/api/history` from (its `since`) to reach back to time `from`, given the oldest
 // event held (`first`, {seq, t}): up to `chunk` events before it; null once it's reached (`first.t`
 // at or before `from`, or the first event) or with nothing held.
 export function pastFrom(first, from, chunk = 5000) {
@@ -292,17 +292,17 @@ export function runningTiles(runs, eachS, now) {
 }
 
 // The finished tiles, by key ("<step> z/x/y"), each {t, step, worker} (#674): every tile the build's
-// keys record as built (`built`, `/work/built`'s steps: {step: [z/x/y]}, crate::agent::builtview),
+// keys record as built (`built`, `/api/built`'s steps: {step: [z/x/y]}, crate::agent::builtview),
 // whenever it was, and those jobs finished well at or after `from` (not merged into the keys yet);
 // the time and worker of the last of the history's ends held for it (a lead's "end", a worker's
 // "done"), at any time; a recorded tile with none held, null for both, and `before`: `heldFrom`,
 // the oldest event the page holds (its end, not held, came before it). A recorded tile that made
-// nothing to publish (`empty`, `/work/built`'s: {step: [index into its steps list]}, #839: a deep
+// nothing to publish (`empty`, `/api/built`'s: {step: [index into its steps list]}, #839: a deep
 // tile with no fine data there) has `none`, kept when an end held is taken for it.
-// Which are published (#866): `published` (`/work/built`'s: {step: [index]}, the targets the latest
+// Which are published (#866): `published` (`/api/built`'s: {step: [index]}, the targets the latest
 // catalogue still names an output of, for every step whose files are told by name) gives a told
 // step's recorded tiles `pub` (true or false, kept when an end is taken). An end for a tile whose
-// record is a drop's (`dropped`, /work/built's {step: [z/x/y]}: its none key, left out of `built`),
+// record is a drop's (`dropped`, /api/built's {step: [z/x/y]}: its none key, left out of `built`),
 // ended by when the keys were read (`readAt`), is the drop run's: not a tile, left out (Alaska's deep
 // drops, 29 Oct, had been drawn as published from their job ends).
 export function finishedTiles(ends, from, built = {}, heldFrom = null, empty = {}, { published = null, dropped = null, readAt = 0 } = {}) {
@@ -340,7 +340,7 @@ export function tileCovers({ z, x, y }) {
 }
 
 // The queue (task #685): every tile the lead's last forecast places, by key ("<step> z/x/y"), each
-// {step, at (unix s, its first start), mac}: `/work/tocome`'s answer ({at, macs: {mac: {step:
+// {step, at (unix s, its first start), mac}: `/api/tocome`'s answer ({at, macs: {mac: {step:
 // [[z/x/y, s from at]…]}}}, forecast::ToCome), the earliest where two Macs name one.
 export function queuedTiles(a) {
   const out = new Map();
@@ -482,7 +482,7 @@ export function stageSegments(work, stageOf, stages = []) {
 }
 
 // A region's targets built of all by stage (`stageOf(step)`), from its steps' counts as the lead
-// gives them (`/work/regions` with `steps`: {step: [built, all]}): {stage: [built, all]}.
+// gives them (`/api/regions` with `steps`: {step: [built, all]}): {stage: [built, all]}.
 export function stageFill(steps, stageOf) {
   const out = {};
   for (const [s, [b, a]] of Object.entries(steps || {})) {

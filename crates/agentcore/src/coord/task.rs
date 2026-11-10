@@ -1,4 +1,4 @@
-//! Tasks (docs/workers.md §2): pure work a running job offers to any worker. A task is programs run
+//! Tasks (docs/coordinator.md §2): pure work a running job offers to any worker. A task is programs run
 //! in order over a folder of files; the job says which programs and which files they read, the
 //! coordinator serves exactly those files from this Mac's disk to the worker that leases it and
 //! takes back the files it wrote, and the job checks and uses them. Nothing a task does needs the

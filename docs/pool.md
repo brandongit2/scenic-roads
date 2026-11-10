@@ -5,7 +5,7 @@ merges results into the build's records and publishes; the others are **members*
 fixed: the Mac mini, the member `state/build/lead-member.json` declares (§6.1, task #881). No other
 Mac ever leads: there is no election, handover or takeover. With the mini gone, the members finish
 the jobs they hold, keep their hand-offs, and wait for it. The Macs' agents are the only
-workers (§8, workers.md): the build page shows the build and takes the owner's asks. The pool's code is `crate::pool` (the declaration, terms, records, hand-offs, the
+workers (§8, coordinator.md): the build page shows the build and takes the owner's asks. The pool's code is `crate::pool` (the declaration, terms, records, hand-offs, the
 driver) and `crate::agent::pool` (the agent's side of it). It is always on.
 
 The records' readers read the term's snapshot; the lead writes today's files too only while a
@@ -522,7 +522,7 @@ job starting beside others waits on the target, its own measured room and the ot
 reservations (a job alone in the first slot on the target alone); room-making alone makes room for the leases granted and not yet started too, and
 the owner's room-target freeing (`room::toward`) frees toward the target plus the reservations,
 the jobs' hints merged (`Agent::hints`: the queued and running jobs', and those the lead's forecast
-places on this Mac, a member's asked of the lead's `/work/tocome` every 5 minutes; docs/building.md
+places on this Mac, a member's asked of the lead's `/api/tocome` every 5 minutes; docs/building.md
 §2, Room on the disk). The disk guard stays the backstop (§7.7). `scenic
 status` shows each member's in its capacity line, as `coord::disk_words` says it (`disk 49 GB free ·
 20 GB for jobs (20 GB room target, 9 GB reserved by its jobs)`). Every job is told the target
@@ -1245,7 +1245,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   with room; past every Mac's, it waits; a lead-only step past the lead's waits, the status saying
   to see to the lead's memory floor or the step's. `scenic pool floors [--clear
   [<step> [<target>]]]` lists or clears them: the clear is a request to the running lead's coordinator
-  (`/work/floors`), which takes them out of its memory, its files and its next state at once (no
+  (`/api/floors`), which takes them out of its memory, its files and its next state at once (no
   restart), and the command says how many floors and disk floors it cleared. A floor learned before a
   step's fix stops counting once the step's `cost_version` is raised for the fix (`bld-fetch` 1, task #557).
 
@@ -1556,7 +1556,7 @@ yet shows the sparse pairs costing the forecast or the placement accuracy.
 **Batch length** (`Sched::batch_len`, `Sched::batch_secs`, task #927): a job of a shared step takes
 its targets in plan order (its first whatever its time) while their measured time on the Mac asking
 stays within the batch length: the pool's setting `batch-minutes` (`scenic pool set batch-minutes
-<minutes>|off`, or the build page's Settings, the pool box, from any device (docs/workers.md §7); a
+<minutes>|off`, or the build page's Settings, the pool box, from any device (docs/coordinator.md §7); a
 minute to a day, kept by the lead, docs/coordination.md step 5; not set, 15: `coord::JOB_S`, the
 owner's choice), carried in the scheduler's state so the forecast's runs size by it too. (At
 slope-deep's 5 to 12 s of start a job, below, a quarter hour spends about 1 % of a job on its start;
@@ -2279,9 +2279,9 @@ copies: the same report byte for byte (codes 6 and 7, train and test), 46 minute
 ## 8. Tasks
 
 A job is a step's run over targets on a Mac with the NAS. A **task** is a pure piece a running job
-offers: programs over a folder of files, giving files back (kinds and protocol: workers.md §3, §5).
+offers: programs over a folder of files, giving files back (kinds and protocol: coordinator.md §3, §5).
 Any member's idle slot takes it (`scenic run-task`). Pages take none (#875: their asks are refused,
-workers.md §5).
+coordinator.md §5).
 
 - **Brokers** (`crate::agent::brokers`, `crate::coord::brokers`, in the pool): each
   member's agent runs a broker for its jobs' tasks (`coord::Broker`, docs/roles.md §3.2, on the
@@ -2306,7 +2306,7 @@ workers.md §5).
 A member's messages to the lead go by HTTP to its coordinator (`POST /pool/mail`), the lead's to a
 member in the answer to that member's next beat (`POST /pool/beat`, docs/coordination.md step 5;
 §9.1). Jobs go through the lead's coordinator (`/work/*`), tasks through each member's broker
-(§8), and the worker page's lead asks through `/work/lead`. Every member answers on port 8090. A
+(§8). Every member answers on port 8090. A
 member that can't reach the lead keeps its jobs running and starts nothing new. A member's agent
 passes its owner's job cancels to the lead through `/work/cancel` (§11), and its owner's other
 asks (another Mac's pause, a pool setting) through `/pool/hold` and `/pool/settings`
@@ -2472,7 +2472,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   drain still waits by the target under way's time left (its next safe point).
 - **Coordinator view**, written by the lead per term (`state/coord/term/<E>/view.json`,
   `Coordinator::view`, in its pool step: `pool_lead_files`): `{at, view}`, the view what the
-  worker page's `/work/swarm` takes from the coordinator's memory: the pause, each lease (worker,
+  build page's `/api/swarm` takes from the coordinator's memory: the pause, each lease (worker,
   step, targets' count, progress, when granted, its last beat and when it lapses), each
   worker (label, kind, memory, cores, done/failed, `can`, `fit`, when last seen), the tasks by
   state. Times are unix seconds, so it is the
@@ -2496,7 +2496,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   not gated). Read by each Mac's page data (below).
 - **The page's data on the lead** (`agent::pageview`, task #409; the lead's alone since #882 step 4,
   docs/roles.md §3.3: a member's port sends the page there): in the pool, the lead's port 8090
-  answers `/work/swarm` and `/work/history` from its pageview (`/work/steps` is the steps table);
+  answers `/api/swarm` and `/api/history` from its pageview (`/api/steps` is the steps table);
   out of the pool the coordinator answers from its memory, as before. While a page has asked in
   the last 60 s, a thread of the agent asks the lead's view every 2 s (its coordinator in process,
   as `POST /pool/view` answers, docs/coordination.md step 4): its coordinator's view, the pause (on the lead the
@@ -2509,10 +2509,10 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   time; a whole 4 MiB without a line's end passed over, counted and logged; from the start again when the file is now shorter than that). A day before yesterday
   read to its end isn't read again. Of the events, the last week's are kept, without their
   `data` (the page doesn't show it), the newest 50 000 at most (`history::KEEP_MAX`, as the
-  lead's own history): `/work/history` answers from those. Measured on the NAS's real history (23 Oct: two writers, 3.9 MB over the
+  lead's own history): `/api/history` answers from those. Measured on the NAS's real history (23 Oct: two writers, 3.9 MB over the
   days kept, 9 719 events in the week): the first read 1.4–10 s (the NAS's own speed: a plain
   `cat` of the same files took 4.6 s), its peak memory about 20 MB; each read after it 0.13–0.15 s;
-  `/work/history` with all 9 719 events about 1.9 MB of JSON, made in ~20 ms. The reads are off
+  `/api/history` with all 9 719 events about 1.9 MB of JSON, made in ~20 ms. The reads are off
   the answers' path, so a page waits only on its first (the 503s above). The agent's loop hands it only what it
   holds already (the members' ids from the pool's driver, this Mac's app): no NAS
   read on the loop, and this Mac's lanes worked out only while a page asks. Every read is done
@@ -2524,7 +2524,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   ("since you last looked" goes by the events' time, so it outlives a restart). Until its first
   read a Mac answers 503 (never its memory's views: another numbering), and the page says it's
   reading the build's state (quietly, not as an error) and asks again every 2 s, saying it as an
-  error only after a minute of 503s (`sums.js` `notRead`; a 503 from `/work/history` alone waits for the next 10 s poll; no retry while the page is hidden). The forecast is run here from the input, its time brought
+  error only after a minute of 503s (`sums.js` `notRead`; a 503 from `/api/history` alone waits for the next 10 s poll; no retry while the page is hidden). The forecast is run here from the input, its time brought
   to now and this Mac's own lanes as its slots are now, worked out as the lead works out its own
   (`forecast::SlotJob`: its own estimate, or its targets left at its speed, a minute at least; its
   running job too); a target missing from the cost table is a bug, logged once. It runs on a
@@ -2629,7 +2629,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   whose ask isn't recorded: `forecast::MacRoom`); each
   lane's runs (`forecast::Lane`) are a step's jobs one after another (two minutes apart at most),
   each job as granted (task #834): a run's `cuts` say where each job after its first starts and how
-  many of the run's targets (`/work/tocome`'s `runs`, in time order) come before it, so the page
+  many of the run's targets (`/api/tocome`'s `runs`, in time order) come before it, so the page
   draws every job to come, over the whole forecast, as a block of its own with its targets (~10
   bytes a job: 29 Oct's record, 5,397 jobs over 2.5 days in 571 runs, its lanes 35 KB without the
   cuts and 91 KB with them, the status ~236 KB to ~291 KB, +23 %); each
@@ -2657,14 +2657,14 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   lead's agent near a whole core, stalled its loop 300 s after each catalogue and took this view
   136 s on 26 Oct). regions.json is about 0.96 MB. Written by
   the lead's pool step as `state/build/term/<E>/regions.json` (again in each new term), read by
-  each Mac's page data when its time changes. Every Mac's port answers `POST /work/regions` with
+  each Mac's page data when its time changes. Every Mac's port answers `POST /api/regions` with
   no key: in the pool from that read, out of it from this Mac's agent's; a page that has the
   outlines of the answer's version says so (`{"have": version}`) and gets it without `fill` and
   `edge` (asked again with each catalogue for its sizes, as often as each poll while the lead
   publishes; on 7 Nov's 1,025 regions 0.1 MB without them, 3.1 MB with them). Until there is one it answers 200 with `{making: why}` (task #798: never an error
   while the agent is busy; the lead's loop can take minutes after a restart before it makes them), and
   the Regions tab says why in place of its rows.
-  Steps (task #636): `POST /work/regions` with `{"steps": true}` answers each region's targets
+  Steps (task #636): `POST /api/regions` with `{"steps": true}` answers each region's targets
   built of all by step, `{at, regions: {id: {step: [built, all]}}}` (`build::region_steps`: the
   plan's targets of each step that builds regions, counted whole: "unit" its z6 tiles,
   "terrain-hi", "terrain-deep" and "terrain-lo" those of the z3 tiles it reads, "slope-deep",
@@ -2678,7 +2678,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   Regions tab shows): again after a job ends or each minute; held in memory (a few numbers a
   region), nothing written to the NAS. Not counted yet (a member's port, or the lead's before its first count): 200
   with `{making: why}`; the page then asks the lead's addresses.
-  To come (tasks #622, #685): the lead's port answers `POST /work/tocome` (`{}`; no key) with every
+  To come (tasks #622, #685): the lead's port answers `POST /api/tocome` (`{}`; no key) with every
   Mac's tiles in its last forecast (`forecast::ToCome`, made of `Forecast::placed` on the
   forecast's thread before `placed` is dropped): `{at, macs: {mac: {step: [[z/x/y, s from at]…]}}}`,
   each tile once a Mac and step at its first start, targets naming no tile left out: the page's
@@ -2691,7 +2691,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   record (31,132 items, 850 runs): `macs` 642 KB, `runs` 366 KB, `deps` 117 KB (12,046 pairs);
   ~275 KB gzipped whole, and sent gzipped to a client that sends `Accept-Encoding: gzip` (the agent gzips every answer of 32 bytes or more except images, event streams, raw bytes (octet-stream, tar, zip) and parts of a file). In the pool (task #836) every Mac's port, the lead's too, answers from
   its own pageview (§10, `PageView::tocome`): the tiles and runs of the very forecast run its
-  `/work/swarm` carries (the lead's record run there at now), so its `at` is the status's forecast's
+  `/api/swarm` carries (the lead's record run there at now), so its `at` is the status's forecast's
   and `after` is in that pageview's numbering, with its `epoch` (none before its history's first
   read); the page sends the `at` it read (`{"at"}`) and gets that run's, the last or the one
   before (a run ended between the two asks), else the last. The lead's agent's own (its forecast
@@ -2704,7 +2704,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   once and asks the new lead. Asked once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast
   (3,618 targets placed, 3,615 tiles): about 62 KB (the Mac mini's 52 KB, 3,053 tiles, the M4's
   10 KB); held by the agent: ~150 KB.
-  Every Mac's port also answers `POST /work/built` (no key; task #674) for the map's finished
+  Every Mac's port also answers `POST /api/built` (no key; task #674) for the map's finished
   tiles: `{at, steps: {step: [z/x/y…]}, empty: {step: [i…]}, error}`, every tile target the build's keys
   (`state/build/jobs.json`) record, by step, and `empty`: indexes into a step's list of the targets
   whose published files the manifest doesn't name (`agent::steps::output_named`: a deep tile with
@@ -2720,7 +2720,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   thread of its own while a page asks, again a minute after the last read at most (~600 KB over
   SMB), the last read kept when the file can't be read now. The page asks each minute while the
   map is drawn.
-  Every Mac's port also answers `POST /work/catalogs` (`{"after": n, "steps": [step…]}`, both
+  Every Mac's port also answers `POST /api/catalogs` (`{"after": n, "steps": [step…]}`, both
   optional; no key) for the
   map's age controls (task #629, `agent::cataloguesview`; the page asks the lead's): each batch of
   the map's log (docs/maplog.md §6.6; its `seq` the catalogue's number) as
@@ -2745,7 +2745,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   (the log no longer holds its batches: a new lead's log), it takes the map again and says in
   `error` that the batches it missed aren't shown. Kept in the agent's folder
   (`catalogues-view.json.zst`, written when a batch was applied): the entries, each tile section's
-  key with its name's hash, and each `f/` name's hash with its file's (what `/work/built`'s
+  key with its name's hash, and each `f/` name's hash with its file's (what `/api/built`'s
   `published` reads, #866) and its last publish (a view kept before #994 takes each name's from its
   deepest tile's newest entry, any layer's), never a catalogue; so a restarted agent goes on from where it was, as
   deep as it has followed the log. `scenic catalogs [--after N]` prints the same JSON from this
@@ -2882,7 +2882,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   costs, was given no tag or folder; a job taken over from an earlier agent counts no internet bytes, its tag begun by that agent's proxy). The counted relay copies in 64 KB
   chunks: 4 GiB over loopback in ~1.0 s on the M1, against ~2.6 s with `io::copy`'s 8 KB it
   replaced (task #516), so the counting costs nothing measurable. Every Mac's port
-  answers `POST /work/live` with no key: `{range}` (seconds back from now, an hour by default,
+  answers `POST /api/live` with no key: `{range}` (seconds back from now, an hour by default,
   seven days at most) or `{since}` (unix seconds: the points from then on, the last again as it
   may have grown), `series` to pick names; the answer `{host, now, step, from, series: {name:
   [[t, lo, mean, hi], …]}, net, files}` from the finest ring covering the window, its buckets grouped
@@ -2893,23 +2893,23 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   proxy runs; `files`, the file stream, oldest first (`[{t, kind: read|wrote, path, bytes, ms,
   slot}]`; both left out when asked with `net: false`). A series missing has no
   measure yet (or none in the window): readers say so, never zero. 503 until the agent gives its
-  port the store. Another Mac's page reads it directly: `/work/swarm`'s `macs` lists each member's
+  port the store. Another Mac's page reads it directly: `/api/swarm`'s `macs` lists each member's
   host and addresses (`{host, urls, https}`, its heartbeat's broker; none with the brokers'
   switch off), and the answer is allowed to the members' origins (CORS as for tasks, §8; the
   M6's https://map.brandontsang.net among them), the page reading by the scheme it was served
   over. The build page's Machines tab draws it (docs/pipeline.md §5, Machines), asking with
   `net: false` (the proxy's counts left out); an answer also says the Mac's size, `mac: {cores,
   cores_e, mem_gb, nas_threads}` (read once: `nas_threads` its NAS call threads, the most calls in
-  flight at once), the charts' scales. Its NAS section (`web/work/nas.js`) reads the same answers:
+  flight at once), the charts' scales. Its NAS section (`web/buildpage/nas.js`) reads the same answers:
   the lead's `nas_ms`, `pool_nas_*` and `nas_disk_busy_pct` (missing from a member's answer); beside the
   status's `nas` (`NasView`). The
-  Activity tab (`web/work/activity.js`) asks every Mac every 2 s while it shows, with no series:
+  Activity tab (`web/buildpage/activity.js`) asks every Mac every 2 s while it shows, with no series:
   their `files` and `net` for the file stream and the internet by website, each host's `robots`
   among them: a job fetching a host's pages (`FETCHES = "page"`) tells its proxy the robots.txt
   state (`POST /robots?host=…&state=unchecked|allowed|disallowed[&t=<read, unix ms>]`, crate::budget::net::Robots: a host name, at most 4096 hosts,
   with when), null for a host never told: an API's or a data download's, read without robots.txt
   (docs/inputs.md §6.9).
-- **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
+- **Views** (menu bar, build page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): the lead and its term, the declared lead when another term's lead
   is current, each member's state, "no lead" and why, the last change of term.
@@ -2923,16 +2923,16 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
 
 ## 11. Controls
 
-`crate::agent::lead`, `tools/status/main.swift`, `web/work/pool.js`:
+`crate::agent::lead`, `tools/status/main.swift`, `web/buildpage/pool.js`:
 
-- **No control of who leads** (task #881): the menu bar, the worker page and `scenic lead` show the
+- **No control of who leads** (task #881): the menu bar, the build page and `scenic lead` show the
   pool (the lead, its term, each member's state, who can't reach whom), and none moves the lead.
   The owner moves it only by editing the declaration (§6.1).
-- **Worker page:** Pause, and the asks below, from a page on any device (task #521: no page of the
+- **Build page:** Pause, and the asks below, from a page on any device (task #521: no page of the
   Mac's own first). On a Mac not leading, these go to its agent, which passes them on (the pause as
   its menu's, `crate::control::request`; the inputs' acceptances from their queues, as on the
   lead).
-- **Cancel and try again from the page** (task #409): a page on any device (`/work/act`)
+- **Cancel and try again from the page** (task #409): a page on any device (`/api/act`)
   cancels a running job
   and tries a failed target again. A cancel goes the way `scenic job cancel` does: on the lead to
   its agent; on a member, an ask in its agent's folder (`crate::control::request_cancel`), passed
@@ -2940,7 +2940,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   once; on the lead, its coordinator's failures of the target too (no worker held off it,
   `Coordinator::clear_failed`, in the state it writes this step, so a restart keeps it); on a
   member, mailed to the lead (`Msg::Retry`), only to a lead on its own app: with none, or one on
-  another app, `/work/act` answers 409 and the page says why. Each mailed message is read alone, so
+  another app, `/api/act` answers 409 and the page says why. Each mailed message is read alone, so
   one an app doesn't know is passed over and read past. **Still open:** a lead rolled back to an app
   from before these messages fails to read the whole mailbox of a member that mailed one, until
   that message leaves the member's last few sent (`KEPT`); and a member rolled back reads its own
@@ -2972,7 +2972,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   NAS restarted) stays until named here. Without `--run` it reads the newest records and prints,
   per target, the key it would clear and the files that stay served until the target is rebuilt
   (a target with no key: nothing to clear); it changes nothing. With `--run` it posts the targets
-  that have a key to the lead's coordinator (`/work/redo`, the build's key: not a page's), whose
+  that have a key to the lead's coordinator (`/api/redo`, the build's key: not a page's), whose
   agent keeps the ask in its folder (`redo.json`, over restarts) and plans a job of the `redo`
   step for it, the lead's own (`every::LEAD_ONLY`). That job changes no file (its write-set is
   empty) and hands off a done record of `<step> <target>` with no key; the merge checks it as any
@@ -3017,9 +3017,8 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   told "drain" through their channels, and the beat told, which writes the heartbeat with the
   hold's stage then, here and on the NAS, within a second on a hung NAS or during a plan (not
   at the loop's next pass, which on a slow NAS took minutes). The agent's HTTP endpoint asks the
-  same way (`POST /work/hold` `{"held": true|false, "member"?: …}`, from any device, answered
-  once it's taken up; `POST /work/quit` `{"mode": "now"|"finish"}` from this Mac only), and so
-  does an older CLI's file. Another member's ask is taken at once by the jobs' own thread
+  same way (`POST /api/hold` `{"held": true|false, "member"?: …}`, from any device, answered
+  once it's taken up), and so does an older CLI's file (the menu bar's quit writes its own). Another member's ask is taken at once by the jobs' own thread
   (crate::agent::slots, docs/agent-parts.md §4.5: the pool's lock tried every 100 ms, never
   waited on; that member's hold written on the NAS under nasread's deadline). This Mac's setting
   on the NAS stays the loop's (read every 30 s, written back once changed), which it gives
@@ -3142,7 +3141,7 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
 - **The M6's on 8444** (`tailscale serve --bg --https=8444 8090`, #550): its port 443 is Caddy's,
   for https://map.brandontsang.net (docs/macs.md, Devices), and `tailscale serve` on 443 would take
   every connection to the tailnet address there, whatever name it asks (it can't share the port by
-  name). Caddy serves the build page under `/build` too (`/build/work/`), and the page asks its own
+  name). Caddy serves the build page under `/build` too (`/build/`), and the page asks its own
   member under that path; its broker address stays the 8444 one (a broker's address is a root:
-  the members' pages call `/work/…` on it).
+  the members' pages call `/api/…` on it).
 - **Work order:** every slot from the front of the plan, in contiguous runs.

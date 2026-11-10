@@ -87,7 +87,7 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
   `mirror/<host>` cursors' rounds (`mirror-start`, `mirror-end`) the same way (step 7b).
 - **The Catalogues map** (`cataloguesview`, docs/pool.md §10) follows the log, each loop and each
   ask (20 s apart at most): the lead's feed in process, on the lead alone (the build page is the
-  lead's; a member's port sends `/work/catalogs` to it, `coord::memberpage::answer`). It keeps, in the agent's folder
+  lead's; a member's port sends `/api/catalogs` to it, `coord::memberpage::answer`). It keeps, in the agent's folder
   (`catalogues-view.json.zst`), its entries, the `seq` they reach, each tile section's key with its
   name's hash and each `f/` name's hash with its file's and last publish (a soloed step's tiles' ages,
   #994): a batch setting a file again unchanged (its
@@ -97,7 +97,7 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
   isn't known), and one told to reset (the log no longer holds its batches: a new lead's log, a
   member away long) takes the map again with no entry for what it missed, said in `error`. Its depth
   is what it has followed since it began, not the log's (the lead's log keeps an hour of batches on
-  disk). `/work/built`'s `published` reads its `f/` names.
+  disk). `/api/built`'s `published` reads its `f/` names.
 - **Departures:** `regionsview` sums every region once a `seq`, not only those the batch's keys
   touch.
 
@@ -456,7 +456,7 @@ map) as one.
 
 ### 6.6 The build page: publish history and ages
 
-- `cataloguesview` (`/work/catalogs`, the Catalogues map, task #629) reads every catalogue on the
+- `cataloguesview` (`/api/catalogs`, the Catalogues map, task #629) reads every catalogue on the
   NAS, oldest first, to find what each one published: a tile is published by a catalogue when a file
   it names for that tile is new or other. From the log this is direct: a batch's `set` and `del`
   keys *are* the tiles it published and dropped. The view tails the log in process (on the lead) or
@@ -513,7 +513,7 @@ from the agent.
 
 Every stored or wire name that keeps the old spelling today (docs/formats.md) keeps it where it
 survives: the step `catalog`, the route `/api/catalog`, the history event `catalog`, JSON keys
-`catalog_t` and the like, the page's `/work/catalogs`.
+`catalog_t` and the like, the page's `/api/catalogs`.
 
 ## 7. GC: continuous, by the log
 
@@ -778,7 +778,7 @@ steps left.
 | The map app | `web/src/catalogue.ts:107` (`/api/catalog` each minute, its own Mac's server) | the server's map as a catalogue status | nothing |
 | Consistency of tile sets | the gate picks a batch's contents; `crates/pipeline/src/bin/scenic-build.rs:500` (the `catalog` step posts its map); `crates/agentcore/src/agent/publish.rs:67` (`MapLog`, one batch appended whole); clients swap a batch in whole | the batch | nothing |
 | Publish history and ages | `crates/agentcore/src/agent/cataloguesview.rs:322` (`CataloguesView`), built only on the lead (`crates/agentcore/src/agent/mod.rs:7728`, `tend_pageview`); adoptions and the mirrors' rounds noted there (`publish_marks`); `crates/agentcore/src/pubtimes.rs:414` (the history's `catalog` events), the mirrors' `mirror-start`/`mirror-end` events | the lead's feed in process | nothing |
-| `/work/catalogs` | `crates/agentcore/src/coord/mod.rs:4900`; a member's port sends it to the lead (`crates/agentcore/src/coord/memberpage.rs:56`) | the view above | nothing |
+| `/api/catalogs` | `crates/agentcore/src/coord/mod.rs:4900`; a member's port sends it to the lead (`crates/agentcore/src/coord/memberpage.rs:56`) | the view above | nothing |
 | `scenic catalogs` | `crates/agentcore/src/cli/scenic.rs:274` | the view this Mac's agent kept (`cataloguesview::KEPT`) | nothing |
 | publish.rs and coordwire | `crates/coordwire/src/lib.rs:39` (`map_now`: `/map/snapshot`, else the NAS's newest), `publish.rs:67` (`MapLog`), `:95` (`Here`: the head's catalogue, made of the map while read) | the lead's log | nothing |
 | gc.rs and the queue | `crates/agentcore/src/agent/gc.rs:841` (`run`), `:903` (`drain`: the queue's chunks), `:935` (`remove_told`), `:1052` (`orphan_walk`), `:1156` (`inputs_walk`), `:50` (`Lead`), `:219` (`by_the_queue`); `crates/agentcore/src/coord/mod.rs:4527` (`/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing`); `crates/agentcore/src/agent/gcqueue.rs:42` (`refusal`); `crates/agentcore/src/agent/plan.rs:1132` (`gc_work`); `crates/store/src/map/gc.rs:452` (`GcQueue::chunk`), `:539` (`bringing`), `:27` (`GRACE_S`) | GC's queue on the lead (the map's names, the records', what a hand-off brings) | nothing |

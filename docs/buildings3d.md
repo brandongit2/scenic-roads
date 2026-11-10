@@ -8,7 +8,7 @@ fill-extrusion (meshes, z14 tiles) and far by a ray-marched density field (§4.8
 
 Code: `bld::bld` (fetch, overture, ghsl, prep, fill, tiles, field, job, task),
 `agent::build` (`bld_targets`, `bld_work`), `web/src/buildings.ts`, `web/src/bldfield.ts`.
-Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/formats.md` (bytes), `docs/workers.md` and
+Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/formats.md` (bytes), `docs/coordinator.md` and
 `docs/pool.md` (sharing the work).
 
 ## 1. What the map shows
@@ -224,7 +224,7 @@ docs/formats.md has the bytes. In brief:
   6/x/y", "bldtiles 6/x/y"); a target is offered by the rows its tile's sources hold
   (`needs::OFFERED_BY`), each run notes the rows it read, and a target not run yet is sized by its
   step's fit over them, else its neighbours' or its step's runs (docs/pool.md §7.7).
-- **Tasks** (docs/workers.md §3, `bld::bld::task`): under the agent, a `bldtiles` job offers
+- **Tasks** (docs/coordinator.md §3, `bld::bld::task`): under the agent, a `bldtiles` job offers
   some of each tile's z8 tiles as tasks of kind `bldtile` while workers that take them are around
   (one per worker, three at once, from the far end of the tile's list). The task's files, cut on the
   lead: the blocks of T's and its neighbours' work files the z8 tile reads, the coverage's shapes that

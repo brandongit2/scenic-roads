@@ -1455,7 +1455,7 @@ impl LogTail {
     }
 }
 
-/// The page's chart ranges (the build page's footer, "Charts show the last": web/work/index.html's
+/// The page's chart ranges (the build page's footer, "Charts show the last": web/buildpage/index.html's
 /// `RANGES`), in seconds: `PhaseTimes` sums a step's runs by the first of these its end is within.
 pub const TIMES_EDGES: [u64; 10] = [60, 300, 600, 1800, 3600, 7200, 21600, 86400, 259200, 604800];
 

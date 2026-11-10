@@ -1,5 +1,5 @@
 // The charts' sums, apart from the canvas so Node tests them (web/test/chartmath.test.mjs): scales,
-// units, time ticks, the gaps where a Mac slept, a chart's footer, and merging /work/live's
+// units, time ticks, the gaps where a Mac slept, a chart's footer, and merging /api/live's
 // answers (docs/pool.md §10, Live: a point is [t, least, mean, most]).
 import { pad } from "./words.js";
 
@@ -148,7 +148,7 @@ export function topOf(seriesList, { band = false, least = 0, stacked = false } =
   return niceMax(top);
 }
 
-// /work/live's answers kept: `have` (an earlier answer's `series`, or null) and `ans` (an answer to
+// /api/live's answers kept: `have` (an earlier answer's `series`, or null) and `ans` (an answer to
 // `{since}` or `{range}`), the points before `from` dropped; each series' points from the first new
 // one's time on replaced (the last one asked again may have grown). Returns a new series map.
 export function merge(have, ans, from) {

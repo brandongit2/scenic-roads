@@ -194,7 +194,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 - **What it writes:** `state/inputs/accepted/<unit>/<finding id>.json`, create-new (pool.md §2),
   holding who, when, how, and the message. The asking Mac writes it itself (the menu bar and map via
   their agent, the build page via the lead's coordinator), then tells the lead's coordinator
-  (`/work/inputs`) so it lists at once; the check's key changes and the file is taken in.
+  (`/api/inputs`) so it lists at once; the check's key changes and the file is taken in.
 - **Undoing:** `scenic inputs unaccept <unit> <finding id>`; the finding holds again from the next
   check (never the version already in).
 - An acceptance outlives its finding; `scenic inputs` lists stale ones and `scenic inputs unaccept
@@ -246,7 +246,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   its first 50 `lines` and `more`; `together` and `unread` appear when they apply.
 - **The menu bar item** (`tools/status`): a warning badge on whatever icon the build has, a line per
   held unit with Accept (warnings, after confirming) and Show on the Build Page.
-- **The build page** (`web/work/dash.js`): a banner per held unit with its files, findings, places,
+- **The build page** (`web/buildpage/dash.js`): a banner per held unit with its files, findings, places,
   Accept and Accept All; a quiet line while checking.
 - **The Regions panel** marks a held region (§6.1.9).
 - **`scenic status`** prints held or checking units; `scenic inputs` lists every unit's version,
@@ -319,7 +319,7 @@ dataset (registers, static GTFS), or the declaration itself (feeds, elevation).
 | `licence_url`, `source` | URL | no | the terms; the page it comes from |
 | `retrieved` | date | no | the owner's record |
 | `territory` | ISO 3166 codes, or `"world"` | yes | where it applies, checked against the data where possible |
-| `redistribute` | bool, default true | yes | false: never in the World download nor sent to a worker page |
+| `redistribute` | bool, default true | yes | false: never in the World download |
 | `notes` | string | no | free text |
 
 Parsed by `inputs::credits::parse_description`. Keyed fields enter the file's `keyed` digest
@@ -346,7 +346,7 @@ for its host and port in the z6 tile job's cache (`fetch-down/<host>`, with `_<p
 fail at once for the next 30 minutes instead of each waiting out its retries, and a step that ends so
 exits 69, which the `unit` job reads as the z6 tile's server being down: it sets that z6 tile aside, builds
 its other z6 tiles, and fails at its end naming the z6 tiles set aside, which the agent's retry builds later. The data servers a worker's task may read through the coordinator
-(docs/workers.md §3) are derived from the accepted declarations (`coord::hosts`): the hosts of the
+(docs/coordinator.md §3) are derived from the accepted declarations (`coord::hosts`): the hosts of the
 roads' elevation datasets' web files (their `urls`, their index's URLs, their tile template; not a
 dataset kept in the store, nor the terrain's) and of the land-cover source's. A dataset kept in a store (`[data] store`, §6.8) is
 filled once by its own tool and only read by builds. Fetched data is content-named

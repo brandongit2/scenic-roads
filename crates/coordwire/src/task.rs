@@ -1,4 +1,4 @@
-//! A task's side that its job and its worker share (docs/workers.md §2): the offer a job makes
+//! A task's side that its job and its worker share (docs/coordinator.md §2): the offer a job makes
 //! (`Offer`), the outputs a worker hands back (`Output`), the paths a worker may name (`safe`), a
 //! task's files cloned (`clone`), and whether a worker's pace beats the job's own run (`beats`,
 //! `MARGIN`). The coordinator's own side (the tasks it holds, their leases and paces) is pipeline's

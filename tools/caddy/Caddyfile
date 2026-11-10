@@ -11,9 +11,8 @@
 https://{$SCENIC_MAP_NAME}:443 {
 	tls {$SCENIC_CERT} {$SCENIC_KEY}
 
-	# The build page (the agent's coordinator, docs/workers.md §7), its page at /build/work/.
-	redir /build /build/work/
-	redir /build/ /build/work/
+	# The build page (the agent's coordinator, docs/coordinator.md §7), at /build/.
+	redir /build /build/
 	handle_path /build/* {
 		reverse_proxy 127.0.0.1:8090
 	}

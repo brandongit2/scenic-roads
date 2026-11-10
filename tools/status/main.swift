@@ -1,6 +1,6 @@
 // Scenic's menu bar item: the build agent's state at a glance (docs/building.md §2, Status). An icon for
 // the state (building, paused, waiting, nothing to do, a problem, the lead out of touch); a
-// click opens the panel, the build page in a popover (`Panel`: this Mac's own agent's `/work/?view`, a viewer
+// click opens the panel, the build page in a popover (`Panel`: this Mac's own agent's `/?view`, a viewer
 // only), and a right-click, or the panel's "⋯", the menu: the state in a line, this Mac's downloads
 // and build caches, and the controls below. Its timers run in
 // the run loop's common modes, so the polls and the icon go on while a menu is
@@ -829,7 +829,7 @@ func holdItems(_ r: Reply?, own: Own?) -> [(title: String, held: Bool?, tip: Str
 func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     var out = [Line(text: line, style: .title)]
     guard let r = r, let s = r.status else { return out }
-    // When it'll be done and the map next gets new data (as the worker page and the map say it).
+    // When it'll be done and the map next gets new data (as the build page and the map say it).
     if let f = s.forecast, r.now - s.beat <= outOfTouch(r) {
         var t = f.done_at.map { "Done ≈ \(soon($0))" } ?? "No finish to forecast: \(f.why ?? "unknown")"
         if let rg = f.range, rg.count == 2, f.done_at != nil { t += " (\(soon(rg[0]))–\(soon(rg[1])))" }
@@ -1095,7 +1095,7 @@ final class Flipped: NSView {
 /// page, asked of this Mac's own agent's port (`Panel.page`, 8090: on a member it answers with a
 /// redirect to the lead's, or, the lead not reached, a small page of this Mac's own: docs/roles.md
 /// §3.3) with `?view&mac=<this Mac>` (`viewURL`), so it only ever watches and opens on this Mac
-/// (web/work/index.html), in
+/// (web/buildpage/index.html), in
 /// a web view of its own that keeps nothing (no stored data: never a page that helps); made as the
 /// popover first opens and kept for the next opening (#408), its polling stopped while closed. Its
 /// height is the page's, within 900 pt and the screen; its links out of the page open in the
@@ -1105,7 +1105,7 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     static let pageWidth: CGFloat = 780
     static let footerHeight: CGFloat = 30
     /// This Mac's agent's build page (a sandbox's own: Info.plist's ScenicPage).
-    static let page = info["ScenicPage"] as? String ?? "http://127.0.0.1:8090/work/"
+    static let page = info["ScenicPage"] as? String ?? "http://127.0.0.1:8090/"
     /// The page's address: `page` with `?view`, and `&mac=<host>` once this Mac's agent said its
     /// name (its own status's `host`).
     static func viewURL(_ page: String, mac: String?) -> URL {
@@ -1114,9 +1114,11 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         return c.url!
     }
     /// Whether `u` is the build page's own, on any Mac (the lead's, after this Mac's port sent it
-    /// there): its `/work` path over HTTP or HTTPS. Anything else opens in the browser.
+    /// there): a coordinator's root over HTTP or HTTPS, `?view` kept (an older lead's, before task
+    /// #1101: its `/work/`, crates/agentcore/src/coord/oldpage.rs). Anything else opens in the browser.
     static func inPage(_ u: URL) -> Bool {
-        ["http", "https"].contains(u.scheme ?? "") && (u.path == "/work" || u.path.hasPrefix("/work/"))
+        let view = URLComponents(url: u, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "view" } ?? false
+        return ["http", "https"].contains(u.scheme ?? "") && view && ["", "/", "/index.html", "/work", "/work/"].contains(u.path)
     }
     /// This Mac's name as its agent says it (its status's `host`): the page's `mac=`.
     var mac: String?

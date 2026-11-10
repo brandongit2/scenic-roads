@@ -1,6 +1,6 @@
 # Macs
 
-Each Mac's agent, the map server and its mirror (on the Mac mini alone), and the devices the map opens on. The pool itself is `docs/pool.md`; tasks for any worker, `docs/workers.md`.
+Each Mac's agent, the map server and its mirror (on the Mac mini alone), and the devices the map opens on. The pool itself is `docs/pool.md`; tasks for any worker, `docs/coordinator.md`.
 
 **Each Mac's agent.** Every Mac runs the agent (`scenic agent`, set up by `tools/app/install.sh`), a
 member of the pool (docs/building.md §2, The pool): the Mac mini's leads (the declared lead,
@@ -121,7 +121,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
 **The M1 (16 GB)** is a member: it builds what the lead's coordinator
 gives it (docs/building.md §2, The pool): any shared step's jobs that fit the memory it has available above its memory floor
 (`scenic memory`, 2 GB by default, its running jobs' growth reserved: docs/pool.md §7.1) and its disk (its room target kept free past each job's measured disk; a task 5 GB, tree cover's rows and terrain's subtrees 1 GB), a run from the front of the plan's order
-(docs/pool.md §7.2), else z6 tiles' tails (`docs/workers.md`). A z6 tile's predicted peak is the most its job's
+(docs/pool.md §7.2), else z6 tiles' tails (`docs/coordinator.md`). A z6 tile's predicted peak is the most its job's
 processes held together last time, else about ten times its extract, never under 3.7 GB nor below its
 floor (docs/pool.md §7.2). A member's status goes to the lead in its beat (docs/coordination.md step 3), the lead listing
 the members' in its own (`state/status.json`, `helpers`).
@@ -442,7 +442,7 @@ tailnet: **https://map.brandontsang.net**, or `tailscale serve`'s
   `~/Library/Logs/scenic/caddy.log`) serves it on port 443 with the owner's Let's Encrypt
   certificate (`~/certs/map.crt`, `map.key`; acme.sh with Cloudflare DNS renews it and restarts
   Caddy, the owner's token never in the repo): `/` the map (:7311), `/build` the build page (the
-  agent, :8090; the page at `/build/work/`), `/dev` the dev tools app (:8077: `/dev/task-board/` the
+  agent, :8090, the page at its root: `/build/`), `/dev` the dev tools app (:8077: `/dev/task-board/` the
   board, `/dev/jobs/` the dev job dashboard; `/task-board/…` goes to `/dev/task-board/…`). The macOS firewall
   must let Caddy in (`socketfilterfw --add` its Cellar binary, again after `brew upgrade caddy`).
   `tailscale serve` holds port 443 on the tailnet address whatever the name asked (it ends any

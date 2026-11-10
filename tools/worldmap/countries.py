@@ -1,4 +1,4 @@
-# The build page world map's country outlines: makes web/work/countries.json (task #835), from Natural
+# The build page world map's country outlines: makes web/buildpage/countries.json (task #835), from Natural
 # Earth's 1:50m admin-0 countries (public domain), as the NAS keeps them in the Natural Earth vector
 # package: sources/basemap/natural_earth_vector.sqlite.zip (5.1.2), table ne_50m_admin_0_countries.
 # Every polygon's outer ring (holes left out), in Web Mercator 0-1000 each way (y down, as
@@ -8,7 +8,7 @@
 #   python3 -I tools/worldmap/countries.py [natural_earth_vector.sqlite.zip] [out.json]
 #
 # Defaults: the NAS's zip (read only; its 850 MB sqlite is unpacked to a temporary folder, removed
-# at the end) and web/work/countries.json. The page serves the file from the pipeline binary
+# at the end) and web/buildpage/countries.json. The page serves the file from the pipeline binary
 # (crates/agentcore/src/coord/mod.rs include_bytes), so rebuild after a change.
 import struct, sys, math, json, os, sqlite3, tempfile, zipfile
 

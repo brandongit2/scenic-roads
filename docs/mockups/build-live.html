@@ -2,7 +2,7 @@
 <title>Build Live Widgets</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
-/* Layout: the build page's own grid of boxes (web/work/dash.css), dark-first; every widget a .box with an uppercase h2,
+/* Layout: the build page's own grid of boxes (web/buildpage/dash.css), dark-first; every widget a .box with an uppercase h2,
    a "source" footer saying what feeds it today and what would have to change. Mock data ticks once a second. */
 :root {
   color-scheme: dark;
@@ -236,7 +236,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: var(--font); 
 .lw.jobwrap .job .head .slot, .lw.jobwrap .job .head > b { display: none; }
 .lw.lwpart { margin-top: 14px; }
 .lw.lwpart:first-child { margin-top: 0; margin-bottom: 14px; }
-/* Today's build page: web/work/dash.css and index.html's base rules, scoped to #today and kept off the new widgets (.lw). */
+/* Today's build page: web/buildpage/dash.css and index.html's base rules, scoped to #today and kept off the new widgets (.lw). */
 #today .card:not(.lw, .lw *) { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
 #today .k:not(.lw, .lw *) { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 #today .v:not(.lw, .lw *) { font-size: 15px; margin-top: 2px; }
@@ -480,7 +480,7 @@ body > .tip { position: fixed; z-index: 20; pointer-events: none; background: va
   <div class="rates" id="rates"></div>
   <div class="src">
     <b class="need">today</b><span>nothing: the page shows one "NAS 5 ms" chip per heartbeat (20 s to 2 min). No byte counter wraps any NAS read or write; <code>fetch::net::FETCHED</code> counts some download bytes process-wide, never per host or per second.</span>
-    <b class="have">change</b><span>count bytes and calls in the three choke points every transfer already passes (<code>Out::put_file</code>/<code>store::range</code> for the NAS, <code>fetch::net</code> and the budget proxy's <code>relay</code> for the internet); each Mac serves them from memory at <code>/work/live</code>; the page asks every Mac directly every 1–2 s. Nothing new is written to the NAS.</span>
+    <b class="have">change</b><span>count bytes and calls in the three choke points every transfer already passes (<code>Out::put_file</code>/<code>store::range</code> for the NAS, <code>fetch::net</code> and the budget proxy's <code>relay</code> for the internet); each Mac serves them from memory at <code>/api/live</code>; the page asks every Mac directly every 1–2 s. Nothing new is written to the NAS.</span>
   </div>
 </section>
 
@@ -489,7 +489,7 @@ body > .tip { position: fixed; z-index: 20; pointer-events: none; background: va
   <div class="vitals" id="vitals-grid"></div>
   <div class="src">
     <b class="part">today</b><span><code>Resources</code> in the heartbeat: load1, memory free %, disk free, cache GB (every 10 min), battery and mains. The memory guard samples each job's footprint 4× a second but only its peak leaves the Mac. Pressure level and swap are read in <code>sys.rs</code> and not exposed.</span>
-    <b class="part">today</b><span>the live store's 1 s sampler (#514, #515): cores busy (all, E, P from <code>host_processor_info</code>), memory free, pressure, swap, the build's cores and memory against the other apps', the disks' write rate (IOKit) and each job's, served by <code>/work/live</code>. The thermal state (#609, the public thermal-pressure notification) and compressed memory too.</span>
+    <b class="part">today</b><span>the live store's 1 s sampler (#514, #515): cores busy (all, E, P from <code>host_processor_info</code>), memory free, pressure, swap, the build's cores and memory against the other apps', the disks' write rate (IOKit) and each job's, served by <code>/api/live</code>. The thermal state (#609, the public thermal-pressure notification) and compressed memory too.</span>
   </div>
 </section>
 
@@ -518,7 +518,7 @@ body > .tip { position: fixed; z-index: 20; pointer-events: none; background: va
     </div>
   </div>
   <div class="src">
-    <b class="part">today</b><span>latency: a listing of the project's folder every 5 s while a build runs, in the live store (<code>/work/live</code>, #514); the chip its last. The budget shares are on the page (the NAS bar). The probe's MB/s and creates/s live only in the coordinator's memory and one log line; calls in flight (<code>Calls::busy</code>) and deadline misses never leave the process. Volume busy needs the Synology (SNMP or DSM's API), not in the code at all.</span>
+    <b class="part">today</b><span>latency: a listing of the project's folder every 5 s while a build runs, in the live store (<code>/api/live</code>, #514); the chip its last. The budget shares are on the page (the NAS bar). The probe's MB/s and creates/s live only in the coordinator's memory and one log line; calls in flight (<code>Calls::busy</code>) and deadline misses never leave the process. Volume busy needs the Synology (SNMP or DSM's API), not in the code at all.</span>
     <b class="have">change</b><span>stat every second instead of per loop; put <code>Probe</code> and <code>Limits</code> in the status; count calls and deadline misses in <code>Deadlined::run</code>; optionally read DSM's resource monitor from the lead for the volume's utilisation.</span>
   </div>
 </section>
@@ -529,7 +529,7 @@ body > .tip { position: fixed; z-index: 20; pointer-events: none; background: va
   <div class="legend" id="legend"></div>
   <div class="src">
     <b class="have">today</b><span>a job's targets are already on the wire: <code>leases[].what</code> is "terrain 6/2/31 6/3/27 …", and a target is a z6 tile ("6/x/y", about 5.6°), a z3 area ("3/x/y", 8×8 of those) or a world step. The region outlines are served at <code>/api/coverage</code>. The tile the job is on now is in its <code>parts[]</code> text and lease progress.</span>
-    <b class="part">change</b><span>say the current target and its fraction in the beat as fields (<code>coord::Beat</code> has only a progress string and <code>frac</code>); the finished tiles of the last hour come from <code>/work/history</code> done events as is.</span>
+    <b class="part">change</b><span>say the current target and its fraction in the beat as fields (<code>coord::Beat</code> has only a progress string and <code>frac</code>); the finished tiles of the last hour come from <code>/api/history</code> done events as is.</span>
   </div>
 </section>
 
@@ -547,7 +547,7 @@ body > .tip { position: fixed; z-index: 20; pointer-events: none; background: va
   <div class="log" id="log"></div>
   <div class="src">
     <b class="need">today</b><span>nothing on the page. The OSM pass logs "copy: X/Y GB (N MB/s)" every 2 GB; <code>Out::put_file_with</code> has a progress callback; the mirror's <code>Copying {name, size, have}</code> exists for the map server's downloads panel.</span>
-    <b class="have">change</b><span>a ring of the last 200 transfer events per Mac (kind, path, bytes, ms, job) in memory, in <code>/work/live</code>.</span>
+    <b class="have">change</b><span>a ring of the last 200 transfer events per Mac (kind, path, bytes, ms, job) in memory, in <code>/api/live</code>.</span>
   </div>
 </section>
 
@@ -567,7 +567,7 @@ body > .tip { position: fixed; z-index: 20; pointer-events: none; background: va
     <tr><td>What a job builds, geographically</td><td class="have">on the wire, not drawn</td><td>target strings in <code>leases[].what</code>, <code>parts[]</code>; z6/z3 tiles → bounds by the slippy formula; outlines at <code>/api/coverage</code></td><td>with the lease</td><td>a map widget; a <code>target</code> field in the beat for the tile under way</td></tr>
     <tr><td>Which region a tile is for</td><td class="part">derivable</td><td>jobs carry no region (builds depend on coverage); <code>forecast-input.json</code> has <code>RegionLeft</code> per region with its tiles; <code>DrawnRegion::meets_rect</code></td><td>per forecast, ≤ 1 min</td><td>look each tile up in the regions' boxes on the page (overlaps allowed)</td></tr>
     <tr><td>NAS bytes read / written per Mac</td><td class="none">not counted</td><td>job-level totals only at the end: <code>costin</code> bytes, wrote, creates; timings phases' bytes</td><td>per job end</td><td>atomics in <code>Out</code>, <code>store::range</code>, <code>pool::nas::Share</code>, <code>Deadlined</code>; a rate from a 1 s sampler</td></tr>
-    <tr><td>NAS latency</td><td class="have">measured</td><td><code>nas_ms</code> in the live store: a listing of the project's folder every 5 s while a build runs (<code>nasread::probe</code>), <code>/work/live</code></td><td>5 s</td><td>the chart above</td></tr>
+    <tr><td>NAS latency</td><td class="have">measured</td><td><code>nas_ms</code> in the live store: a listing of the project's folder every 5 s while a build runs (<code>nasread::probe</code>), <code>/api/live</code></td><td>5 s</td><td>the chart above</td></tr>
     <tr><td>NAS calls in flight, deadline misses</td><td class="none">internal</td><td><code>nasread::Calls::busy()</code>, one log line per timeout streak</td><td>live, in memory</td><td>expose the counts; add a timeouts counter</td></tr>
     <tr><td>NAS limits (MB/s, creates/s, listings/s, stats/s)</td><td class="none">log only</td><td>the lead's <code>Probes</code>, best of 24 h, lost on restart; one log line</td><td>every 30 min</td><td>put the last probe and <code>Limits</code> in the status; persist probes.jsonl</td></tr>
     <tr><td>NAS budget shares per Mac</td><td class="have">shown</td><td><code>Status.nas_share</code> from leased jobs' weights</td><td>per status write</td><td>as is; add the per-target weight to the job card</td></tr>
@@ -585,8 +585,8 @@ body > .tip { position: fixed; z-index: 20; pointer-events: none; background: va
   </tbody></table></div>
   <h3>How it would get to the page <span>one transport for everything live</span></h3>
   <div class="plan">
-    <div><b>Nothing live goes through the NAS</b><p>The NAS takes 20–55 small-file creates a second and listings take seconds under load. Live data stays in each agent's memory and is read over HTTP, like the worker page already reads its own Mac.</p></div>
-    <div><b><code>/work/live</code> on every Mac</b><p>One JSON answer for a chosen range (or an event stream for what follows): rates, vitals, transfer events, the jobs' current target and phase. The page asks each Mac in the pool directly; the heartbeat already lists their addresses.</p></div>
+    <div><b>Nothing live goes through the NAS</b><p>The NAS takes 20–55 small-file creates a second and listings take seconds under load. Live data stays in each agent's memory and is read over HTTP, like the build page already reads its own Mac.</p></div>
+    <div><b><code>/api/live</code> on every Mac</b><p>One JSON answer for a chosen range (or an event stream for what follows): rates, vitals, transfer events, the jobs' current target and phase. The page asks each Mac in the pool directly; the heartbeat already lists their addresses.</p></div>
     <div><b>The coarse feeds stay as they are</b><p>status.json, view.json, forecast-input and the history keep their cadence and remain the truth; the live charts read the history store below, which is for the eye: losing it loses no build work.</p></div>
     <div><b>History that outlives the page</b><p>Each agent writes its samples to a small file on its own Mac's disk (never the NAS): every second for the last hour, a 10 s summary for a day, a 1 min summary for 72 h, each summary keeping the low, mean and high so spikes survive. About 4 MB a Mac, flushed once a minute, so a page opened later, or an agent restarted, still has the history. A Mac asleep or off shows as a gap.</p></div>
     <div><b>Cheapest first</b><p>1. the map and per-target table from fields already on the wire. 2. byte counters at the three choke points plus the 1 s sampler. 3. the probe and the proxy's counters into the status. 4. live phases. 5. the Synology's own view, if an account is made for it.</p></div>
@@ -601,9 +601,9 @@ import { dashboard } from "./today/dash.js";
 const { swarm: sw, steps, hist } = SNAP;
 const shift = (o) => { const d = Math.round(Date.now() / 1000 - sw.now); return JSON.parse(JSON.stringify(o), (k, v) => (typeof v === "number" && v > 1.78e9 && v < 1.81e9 ? v + d : v)); };
 const call = async (path, body) => {
-  if (path === "/work/swarm") return [200, shift(sw)];
-  if (path === "/work/steps") return [200, steps];
-  if (path === "/work/history") { const h2 = shift(hist); return [200, { ...h2, events: h2.events.filter((e) => e.seq > (body?.since ?? 0)).slice(0, body?.max ?? 1000) }]; }
+  if (path === "/api/swarm") return [200, shift(sw)];
+  if (path === "/api/steps") return [200, steps];
+  if (path === "/api/history") { const h2 = shift(hist); return [200, { ...h2, events: h2.events.filter((e) => e.seq > (body?.since ?? 0)).slice(0, body?.max ?? 1000) }]; }
   return [200, {}];
 };
 const store = { get(k, d) { try { const v = localStorage.getItem("today-" + k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem("today-" + k, JSON.stringify(v)); } catch {} } };

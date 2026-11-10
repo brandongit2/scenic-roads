@@ -1,8 +1,8 @@
 // Live on each Mac (the build page's Machines tab; docs/pipeline.md §5): each Mac's own measures
-// over time from its own port's /work/live (docs/pool.md §10, Live), asked every 1.5 s while the
+// over time from its own port's /api/live (docs/pool.md §10, Live), asked every 1.5 s while the
 // Machines tab is on screen: the window the footer's range picks at first, then the points since
 // the newest it has (the same ring, so one resolution). This page's own Mac through its own calls;
-// the others at their addresses in /work/swarm's `macs` (by the scheme the page came over).
+// the others at their addresses in /api/swarm's `macs` (by the scheme the page came over).
 // Drawn per Mac as docs/mockups/build-live.html draws it (a row a measure: its name over its words, its chart beside): each core's share busy now, its transfers
 // (the jobs' NAS reads and writes, the internet in and out, each with a second line on its own scale:
 // files opened, files made, the proxy's requests a second), then a chart a measure: CPU use (the
@@ -79,7 +79,7 @@ async function ask(m) {
   try {
     let ans;
     if (!m) {
-      const [code, v] = await cfg.call("/work/live", body);
+      const [code, v] = await cfg.call("/api/live", body);
       if (code !== 200 || !v) throw new Error(code === 503 ? "not measuring yet" : `answered ${code}`);
       ans = v;
       if (!ownHost) { ownHost = ans.host; kept.delete(""); kept.set(ownHost, st); }
@@ -97,7 +97,8 @@ async function ask(m) {
 // Another Mac's answer, at its addresses (HTTPS over an HTTPS page: a browser refuses plain HTTP
 // there), the last one that answered first; `path` the call (activity.js asks with it too, and the
 // world map its member's tiles to come: dash.js).
-export async function remote(m, st, body, path = "/work/live") {
+export async function remote(m, st, body, path = "/api/live") {
+  const post = (u, p) => fetch(`${u.replace(/\/$/, "")}${p}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
   const https = location.protocol === "https:";
   const urls = https ? [m.https].filter(Boolean) : [...(m.urls || [])];
   if (!urls.length) throw new Error(https ? "no HTTPS address (this page came over HTTPS)" : "no address");
@@ -105,7 +106,10 @@ export async function remote(m, st, body, path = "/work/live") {
   let last;
   for (const u of urls) {
     try {
-      const r = await fetch(`${u.replace(/\/$/, "")}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
+      let r = await post(u, path);
+      // (A Mac on an app before task #1101 has its calls under /work/, refusing /api/: asked there.
+      // Gone with crates/agentcore/src/coord/oldpage.rs.)
+      if (r.status === 403 || r.status === 404) r = await post(u, path.replace(/^\/api\//, "/work/"));
       if (!r.ok) throw new Error(r.status === 503 ? "not measuring yet" : r.status === 404 ? "its app is older (no live measures)" : `answered ${r.status}`);
       st.url = u;
       return await r.json();
@@ -227,7 +231,7 @@ function paint(host) {
   const loop = (k) => latest(s[k], now, LOOP_FRESH_S);
   // (Every chart says the time under it, as the mockup's.)
   // (A settable limit (#612): its line dragged, or its ✎'s editor, sets it on this Mac through
-  // /work/settings as Settings' rows do; set, the line holds the
+  // /api/settings as Settings' rows do; set, the line holds the
   // new value till the agent's loop reads it (LOOP_FRESH_S at most).)
   const id = (key) => `${host}|${key}`;
   // (Dropped once the loop says it, or says otherwise twice since: set elsewhere since, or refused.)

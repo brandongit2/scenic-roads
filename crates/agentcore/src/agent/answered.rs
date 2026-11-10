@@ -1,5 +1,5 @@
 //! The lead's answers to the owner's asks this Mac passed on (task #922): the build's pause
-//! (`/work/pause`), a Mac's hold and the pool's settings (`/pool/hold`, `/pool/settings`,
+//! (`/api/pause`), a Mac's hold and the pool's settings (`/pool/hold`, `/pool/settings`,
 //! crate::coord::asks), each last answer by what it's about (`key`), kept in the agent's folder
 //! (`FILE`) so a restart keeps them.
 //!
@@ -7,12 +7,12 @@
 //! crate::coord::asks::Refused) leaves its queue, since asking again gets the same, and is said
 //! here: what was asked, from which Mac, the lead's reason, when. The agent's status carries those
 //! the owner hasn't seen (`unseen`, `Status::refused`), so the build page shows them by Mac and the
-//! menu bar shows this Mac's, until the owner marks one seen (the page's Dismiss, `/work/asked`) or
+//! menu bar shows this Mac's, until the owner marks one seen (the page's Dismiss, `/api/asked`) or
 //! a later ask for the same thing is taken (`note`). `scenic pause` and `resume` read the answer to
 //! their own ask here (`of`).
 //!
 //! Only this Mac's agent process writes the file (its loop, its beat's poster, its coordinator's
-//! `/work/asked`), one at a time (`locked`: a lock on `LOCK_FILE`, which any process honours), each
+//! `/api/asked`), one at a time (`locked`: a lock on `LOCK_FILE`, which any process honours), each
 //! a whole document.
 
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ use std::path::Path;
 /// The answers, in the agent's folder.
 pub const FILE: &str = "asks-answered.json";
 
-/// The build's pause, as a key (`/work/pause`).
+/// The build's pause, as a key (`/api/pause`).
 pub const PAUSE: &str = "pause";
 
 /// The lead's last answer to an ask about `key`.

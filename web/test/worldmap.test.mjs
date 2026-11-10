@@ -1,7 +1,7 @@
 // node web/test/worldmap.test.mjs (tools/dev/check.sh's web part): the build page's world map's
-// view rule (web/work/worldmap.js constrain, #865).
+// view rule (web/buildpage/worldmap.js constrain, #865).
 import assert from "node:assert/strict";
-import { constrain, minZoom, pannable, wheelSplit } from "../work/worldmap.js";
+import { constrain, minZoom, pannable, wheelSplit } from "../buildpage/worldmap.js";
 
 const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} ≉ ${b}`);
 const wide = { w: 1600, h: 800 }, narrow = { w: 400, h: 900 }, square = { w: 600, h: 600 };

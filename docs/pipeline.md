@@ -4,7 +4,7 @@ How the build is described, so that a few concepts read the whole of it: every s
 one table, every job is a step over targets, every text about a step is templated from its row,
 and the build page, the menu bar and `scenic status` show the same checklist of stages and steps.
 What each step does in detail is `docs/steps.md`; how jobs are placed on Macs, `docs/pool.md`;
-tasks for any worker, `docs/workers.md`.
+tasks for any worker, `docs/coordinator.md`.
 
 ## 1. The concepts
 
@@ -15,11 +15,11 @@ tasks for any worker, `docs/workers.md`.
 | **z6 tile** | the build's working grid: most per-tile steps (terrain-hi, slope-hi, trees, `unit`, …) make a z6 tile's files at a time; `6/x/y`, named `6-x-y` in files | `Scope::Z6` |
 | **z10 tile** | 16 × 16 per z6 tile: a deep pack's (the terrain's and the slope's past z12: terrain-deep, slope-deep); `10/x/y`, `10-x-y` | `Scope::Z10` |
 | **z3 tile** | 8 × 8 z6 tiles: the zoomed-out levels (the `…-lo` steps) are assembled per z3 tile; `3/x/y`, `3-x-y` | `Scope::Z3` |
-| **z8 tile** | 4 × 4 per z6 tile: the 3D buildings' tasks (`bldtile`), tree cover's blocks and terrain's subtrees are made per z8 tile; the terrain's deep levels are planned over theirs | `bld::task`, docs/workers.md §3 |
+| **z8 tile** | 4 × 4 per z6 tile: the 3D buildings' tasks (`bldtile`), tree cover's blocks and terrain's subtrees are made per z8 tile; the terrain's deep levels are planned over theirs | `bld::task`, docs/coordinator.md §3 |
 | **area** | geography only: a polygon or map feature (a region's outline, protected and heritage areas, the area overlays, a rule's areas), never a grid tile; a number is a *size* (km²) | |
 | **key** | a target's version and inputs by content; a target is done when its record's key is the plan's | the records' `keys` (`Records::keys`, docs/steps.md §12) |
 | **job** | a step over a batch of its targets, run on one Mac | `agent::jobs::JobSpec` |
-| **task** | a pure piece a running job offers any worker, described as a step is | `steps::TASKS`, workers.md §3 |
+| **task** | a pure piece a running job offers any worker, described as a step is | `steps::TASKS`, coordinator.md §3 |
 | **record** | what a job's hand-off puts in the records, within its step's write-set | the manifest and jobs (pool.md §7.3) |
 | **stage** | a group of steps in the build's order: the checklist's lines, the page's cards and colours | `steps::STAGES` |
 
@@ -35,7 +35,7 @@ NAS-loading, quiet and halo steps (`coord::sched::NAS_STEPS`, `budget::nas::QUIE
 | `id` (`name`) | the stored name: in the records, the journal, the leases, the timings, the floors, the `work/` paths; and the name every reader shows (task #659: no display names, the build page's, the menu bar's and `scenic status`' alike); renamed only with its old name read as the new (§3) | `unit`, `terrain-lo`, … |
 | `does` | one sentence: what it makes from what | |
 | `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalogue), `keep` (checks, lists, removals, backups) |
-| `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (an inputs folder); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/work/steps` (the stored words, kept: `Scope`'s serde names) |
+| `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (an inputs folder); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/api/steps` (the stored words, kept: `Scope`'s serde names) |
 | `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
 | `reads` | what one target reads of other tiled steps' targets, and the waiting note said while one is left (`steps::Reads`, task #864): the planner offers a target once none it reads is left, the forecast's waits and `after` arrows and the page's notes derive from it alike. Declared for terrain-lo, slope-deep, slope-hi, slope-lo, trees-lo and unit (the roads: the terrain packs over their tile + `stage::MARGIN_KM`; each checked against its key's inputs where its key names them); a world step's waits are its own plan's. Planned (task #879, docs/readiness.md): every step's waits and key derived from one declaration | slope-deep `10/x/y`: terrain-deep of it and its edge neighbours |
@@ -56,7 +56,7 @@ templated from its row (its `id`, `steps::said`, `counted`):
 | an event | `{who} finished {job's name} in {time}` | "m4 finished unit 6/33/22 (unit: 6 z6 tiles) in 10 min" |
 
 The build page, the menu bar and `scenic status` have no words of their own for a step: the page
-reads the table from the coordinator (`POST /work/steps`: every row and the stages), `scenic
+reads the table from the coordinator (`POST /api/steps`: every row and the stages), `scenic
 steps` prints it.
 
 ## 3. The table
@@ -169,7 +169,7 @@ per step with its count, then its jobs to come; its panel is the page itself), a
 
 ## 5. The build page
 
-`web/work/` (workers.md §7). One rule: an element is a card or a row of the same cells as its
+`web/buildpage/` (coordinator.md §7). One rule: an element is a card or a row of the same cells as its
 kind's others, with templated words.
 
 The shell (task #685): a header kept at the top (the title, the verdict, Pause, Freeze or Resume),
@@ -182,7 +182,7 @@ first, and the page scrolls; what's in the tabs' panel lays out by the panel's w
 the mockup's order, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`, `#nas`,
 `#regions`, `#inputs`, `#activity`, `#details`, `#device`; none or another: Overview), so a
 link or a reload opens the same tab; an alert links to the tab that says more (a held change: Inputs).
-Each answer of the build's (`/work/swarm`, every 10 s) renders the header, the map and the tab
+Each answer of the build's (`/api/swarm`, every 10 s) renders the header, the map and the tab
 shown; another tab is made as it's opened (task #793). What's worked out from the answers is kept
 while its inputs are the same: the map's queued and finished tiles, their counts and cards (made
 again when the queue, the history's ends, the keys' built tiles, the last catalogue, the Macs or
@@ -217,11 +217,11 @@ The Jobs tab's stages are the one exception.
   and zoomed out at most to the whole square (its side the box's shorter one); one rule for every
   pan and zoom input (`constrain`, #865): on each axis by itself the map no bigger than the box is
   centred and fixed, a bigger one pans with its edges kept outside the box, a crosshair over it, the countries (`countries.json`) and large lakes as the sea (`lakes.json`),
-  the regions' outlines (`/work/regions`) coloured by state (on the map or done, building, to
+  the regions' outlines (`/api/regions`) coloured by state (on the map or done, building, to
   come). The tiles (`sums.js` mapTiles), each keyed by its step and tile ("<step> z/x/y"), in its
   stage's colour, a state each (`sums.js` runningState, finishedState):
   - **queued** (task #685): every tile the lead's last forecast places, on any Mac (`sums.js`
-    queuedTiles from `/work/tocome`, asked once a forecast, pool.md §10; a forecast cut at its
+    queuedTiles from `/api/tocome`, asked once a forecast, pool.md §10; a forecast cut at its
     budget, those it placed), and a running job's tiles not begun: faint under a dotted outline;
   - **in progress**: each running job's target tiles (the history's start or lease event, else the
     tiles its id or words name: `sums.js` targetsOf), outlined, filled as far as done (`sums.js`
@@ -229,22 +229,22 @@ The Jobs tab's stages are the one exception.
     one under way at its time so far against the step's `each_s`, under 95%; where `live` is
     missing, the job's progress spread over its tiles);
   - **completed, not yet published** and **published**: the finished tiles (`sums.js`
-    finishedTiles, #674: every tile the build's keys record as built, `/work/built`, and those the
+    finishedTiles, #674: every tile the build's keys record as built, `/api/built`, and those the
     history's ends held finished in the Jobs tab's past window, not merged into the keys yet; its
     time and Mac the last end held for it); published when finished by the last catalogue's time
     (one with no end held when the oldest event the page holds is by then) and, for a step whose
     files are told by name (`agent::steps::output_names`: deep, hi, lo, trees, depth, buildings,
-    unit), only while the latest catalogue still names one of its outputs (`/work/built`'s
+    unit), only while the latest catalogue still names one of its outputs (`/api/built`'s
     `published`, #866: a removal, a delta's null, ends a tile's published life whatever catalogue
     named it before), else completed:
     completed pale under a dashed outline, each fading in as it comes. An end for a tile whose
-    record is a drop's none key (`/work/built`'s `dropped`, ended by when the keys were read) is
+    record is a drop's none key (`/api/built`'s `dropped`, ended by when the keys were read) is
     the drop run's: not drawn at all (Alaska's deep drops of 29 Oct had been
     drawn as published from their job ends). Published tiles are drawn
     only while a step or stage is soloed, by when a catalogue last published each (#833).
   - **built, nothing to publish** (#839): a finished tile whose job made no file to publish (a
     deep tile with no fine data there: its run finds none in its presence grids, logs "nothing
-    stored, no pack" and is recorded done), told by `/work/built`'s `empty` before the catalogue's
+    stored, no pack" and is recorded done), told by `/api/built`'s `empty` before the catalogue's
     time is compared, as no catalogue will name it. Hidden until toggled on in the legend (counted
     there all the same, not in a step's count), then barely tinted under a hairline; its card says
     no files were made. The checklist counts them apart: "7,837 z10 tiles done (6,814 with
@@ -254,13 +254,13 @@ The Jobs tab's stages are the one exception.
     data, not run").
   A tile in two of them is the running one, else the queued one: built before and to be built
   again, its finished tile isn't drawn. It was published before (sums.js publishedBefore) when a
-  catalogue kept published its step's own output there (#994: `/work/catalogs`' `steps`, the last
+  catalogue kept published its step's own output there (#994: `/api/catalogs`' `steps`, the last
   catalogue giving one of its names or a new file of it), record or not; for a step whose files
   aren't told by name, its tile's last catalogue (any step's files there), counted only when its
   step's key records it built (current or not, or an end held names it). A solo then draws the queued tile in that catalogue's
   age colour, fainter than a published one, under its dotted queued outline, and its card says when
-  it was last published. Nothing new is in the status for it: `/work/built` and `/work/catalogs`
-  hold both (the page asks `/work/built` again within seconds while the agent's first read is
+  it was last published. Nothing new is in the status for it: `/api/built` and `/api/catalogs`
+  hold both (the page asks `/api/built` again within seconds while the agent's first read is
   under way). Steps at one spot
   (slope and roads on 6/57/16) are entries of their own, drawn across the whole square as
   diagonal stripes in each step's colour in turn, and each its own card in the stack.
@@ -286,7 +286,7 @@ The Jobs tab's stages are the one exception.
   it's clicked again (a stage's item: its steps). Soloed, no other step's tiles show; the step's
   queued, in progress and completed tiles look as above, and its published tiles, the whole
   world's, are painted by when a catalogue last published that step's own outputs there
-  (`catalogues.js` stepPublishedAt, #994: `/work/catalogs`' `steps`, asked for as a solo first
+  (`catalogues.js` stepPublishedAt, #994: `/api/catalogs`' `steps`, asked for as a solo first
   needs a step; a slope-deep pack published leaves terrain-deep's tile as old as it was). A step
   whose files aren't told by name (pack, lo, peaks, pois, bldprep, pyramids-fill, the roots) takes
   any step's time at its tile (publishedAt: the tile's own z3 or z6 time, a deeper tile's z6 one, the root's newest z3 one). Then "Show only
@@ -308,7 +308,7 @@ The Jobs tab's stages are the one exception.
   of day up to two days, then days; local time, said once). Hovering a mark (a tap holds it,
   again lets it go) names the catalogue (number, time, its tiles) and lights its
   tiles on the map in magenta, apart from the ramp, solo or not, whatever the hide box: z6 tiles
-  filled, z3 outlined. Its data: `/work/catalogs` (docs/pool.md §10), the catalogues after the
+  filled, z3 outlined. Its data: `/api/catalogs` (docs/pool.md §10), the catalogues after the
   last the page has, every 30 s while the page is seen, every 2 s while the agent is reading. The
   sums (`parseWhen`, `commit`, `tileTimes`, `publishedAt`, `stepPublishedAt`, `paint`, `labelled`, the axis) are
   tested by web/test/catalogues.test.mjs.
@@ -326,7 +326,7 @@ The Jobs tab's stages are the one exception.
   only), out of touch, on battery), each segment in its stage's colour (a `--st-<stage>` token in
   index.html, a hue each in either theme): the jobs that ran (the history's job ends: a lead's
   `end` on its slot's lane, a worker's leased `done` or `fail`, which names no slot, on its Mac's
-  first lane free by then; the history's whole seven days, read back from `/work/history` 5 000 events at a time, about 3.4 MB
+  first lane free by then; the history's whole seven days, read back from `/api/history` 5 000 events at a time, about 3.4 MB
   of JSON in four asks for a week's ~18 000 events, measured 23 Oct; runs of one step closer than
   a pixel at the view's zoom packed into one segment: `sums.js` pastRuns, packRuns, laneGroups, pastFrom, tested by
   tools/check/worksums.test.mjs). A Mac's lanes are one group whatever names its slots had: an
@@ -345,13 +345,13 @@ The Jobs tab's stages are the one exception.
   as the view moves, so a pan or zoom lays nothing out (measured 26 Oct in Chrome, windowed at 120 Hz, a week with ~4,200 segments: a frame 8.3 ms median, 10 ms at the 95th percentile while a sideways wheel pans or a pinch zooms, under 1 ms of script; before, as each segment an element, 17–18 ms at the 95th). At its far left end an archive sign: older history is in the archive
   (`state/coord/history-archive`), not reachable from the page. A job hovered (or its card pinned,
   a tap's): red square-cornered arrows from each forecast job it waits on and to each waiting on
-  it (the forecast's jobs and their dependencies, `/work/tocome`'s `runs`, `jobs` and `deps`, job to job from the targets' readiness, task #879: a running job is
+  it (the forecast's jobs and their dependencies, `/api/tocome`'s `runs`, `jobs` and `deps`, job to job from the targets' readiness, task #879: a running job is
   its lane's first run of its step, that run's first job its time left, drawn as the running job
   to its forecast end, never as a job to come, task #863), and for a job that ran or one running, from each job that
   ran it waited on and to each that ran or runs waiting on it (its start's or lease's `after` in
   the history, task #791: per step its targets waited on in the forecast's dependencies, the job
   of that step that finished last; none on events before #791), and for a job to come from each
-  finished job it waits on (`/work/tocome`'s `after`, drawn only when its `epoch` is the history's),
+  finished job it waits on (`/api/tocome`'s `after`, drawn only when its `epoch` is the history's),
   everything else dimmed, its
   tiles lit on the map (only the map's lit tiles drawn again, once a frame); a legend item hovered (a stage, ran, failed, running, to come): its jobs
   at full strength and all their tiles lit on the map.
@@ -365,7 +365,7 @@ The Jobs tab's stages are the one exception.
   disk, internet, CPU, a wait, mixed) and labelled where it has room, the time in no phase last and
   faint; a part hovered: its card (its share, the time summed and a job's, the jobs and how many
   failed, what it waits on, CPU over wall, the NAS's and the internet's bytes where counted, and a
-  line on what it does: web/work/sums.js `PHASE_ABOUT`, else its name and class). A step's card: done and left, what it makes, kind,
+  line on what it does: web/buildpage/sums.js `PHASE_ABOUT`, else its name and class). A step's card: done and left, what it makes, kind,
   where it runs, memory, its forecast; its time by phase as chips.
 - **Cards:** everything in the Jobs tab has a card, drawn as the final mockup's (#659: a head
   with the stage's swatch, a kicker ("terrain-hi · step", "terrain-deep · job under way", "stage")
@@ -390,7 +390,7 @@ The Jobs tab's stages are the one exception.
   agent's `beat::LOOP_STUCK`, which its plan's stall log goes by too; the age, the round's or a running plan's, the older, counted on from the status's `beat`; task #899; an agent that doesn't say both:
   none), also among the Overview's alerts; a block per running
   job by its slot, about that job alone (name, progress in words, running since, memory; frozen or stuck; Cancel);
-  then **Live** (`live.js`): the Mac's own `/work/live`, asked every 1.5 s while the tab is shown
+  then **Live** (`live.js`): the Mac's own `/api/live`, asked every 1.5 s while the tab is shown
   (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,
   tested by web/test/chartmath.test.mjs), as docs/mockups/build-live.html's vitals: each core's
   share busy now (bars, the efficiency and performance groups named: `cores_now`); four transfer
@@ -416,14 +416,14 @@ The Jobs tab's stages are the one exception.
   the mockup draws: its line or tag dragged up or down (a mouse at once; a touch after a long press
   on the tag) previews the value snapped to whole cores, 1 GB or 5 GB, within what
   agent/settings.rs takes (cores 1 to the Mac's, the memory floor 1 GB to under the Mac's, room 1 GB
-  to under its disk), and sets it on release through POST /work/settings, as the Settings
+  to under its disk), and sets it on release through POST /api/settings, as the Settings
   rows do (Escape cancels); its ✎ opens a small editor on the chart (a number, Set, Off, Cancel).
   Each Mac's lines set that Mac's. Set, a line holds the new value till the agent's loop reports it (15
   min at most). The Settings rows stay, for the keyboard. Gaps where the Mac was silent shaded faintly, and a footer with the range, the resolution and how long
   it was silent. What the lead offered a member is one line (its steps and the pieces it can
   take), the steps on a click. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab): each member's card with a
-  Pause/Resume of its own (task #873): `POST /work/hold` to this page's agent, always with the member's id
+  Pause/Resume of its own (task #873): `POST /api/hold` to this page's agent, always with the member's id
   (its own set at once; another's written on the NAS as its hold, so one out of touch has it kept
   until it's back, said in the button's tip), and its hold's stage as its own status serves it,
   matched by member id, never by host (`Status::hold`: asked,
@@ -432,8 +432,8 @@ The Jobs tab's stages are the one exception.
 - **Settings:** `settings.js`, under the pool (the Machines tab): a row per setting (its name, its
   value, who set it and when, a field with Set and Off) for the in-use share, memory floor and disk
   room target, a block per Mac named by its host (this page's own first; each other Mac's asked at
-  its broker's address, as live.js asks `/work/live`), and the pool's NAS reserve once,
-  through the first Mac that reaches the NAS (`/work/settings`, workers.md §7); read every 30 s while the
+  its broker's address, as live.js asks `/api/live`), and the pool's NAS reserve once,
+  through the first Mac that reaches the NAS (`/api/settings`, coordinator.md §7); read every 30 s while the
   Machines tab is shown, and after each Set or Off. Every control on the page (Pause, Freeze,
   Resume, the lead's, Accept, Cancel, Try again, the settings) works from any device.
 - **NAS tab:** `nas.js`, every measure a chart over time (the owner's 04:33 ask, task #634), as
@@ -442,7 +442,7 @@ The Jobs tab's stages are the one exception.
   with dim small lines under it, the chart beside; the same widths, `chart.js`, and the footer's
   range), one column, under a line saying the range, its resolution and when the NAS's capacity
   was last measured (the best of how many probes over the last day). From the lead's status
-  (`nas`) and its `/work/live` answer, which `live.js` asks while the Machines or NAS tab is shown:
+  (`nas`) and its `/api/live` answer, which `live.js` asks while the Machines or NAS tab is shown:
   **response time** (the lead's listing, `nas_ms`; the server's name, protocol and free space,
   `nas.mount`), **requests waiting** (`pool_nas_calls`, every Mac's calls in flight, against
   `pool_nas_threads` dashed), **timed out** (`pool_nas_missed`, a minute; the range's count),
@@ -460,12 +460,12 @@ The Jobs tab's stages are the one exception.
   work left; found by name, id or any folder. A row per region: its folders and name, state, when
   it's done and all on the map, its work in time and download size, and a segmented bar, a
   segment named in it per stage that builds regions: built solid, the one under way striped, to
-  come faint, each saying on hover its targets left (the lead's counts, `/work/regions` with
+  come faint, each saying on hover its targets left (the lead's counts, `/api/regions` with
   `steps`, docs/pool.md §10, Regions: all less built, task #636; else the forecast's), never a
   share. Above, what's left in all regions by step, summed in the page (sums.js `stepTotals`). Its
   card (also in the map's stacks, as above).
 - **Activity:** the hours, and a sentence per event. Below them, as the owner's mockup lays them
-  out, from every Mac's `/work/live` (`activity.js`, asked every 2 s while the tab shows; docs/pool.md
+  out, from every Mac's `/api/live` (`activity.js`, asked every 2 s while the tab shows; docs/pool.md
   §10, Live): the **file stream**, what each Mac is moving now, newest first (the NAS files its
   jobs opened to read or made, with their size and the open's or copy's time, and the internet
   transfers that ended, downloads and breaks), each Mac a chip in its colour on the page, and
@@ -488,7 +488,7 @@ The Jobs tab's stages are the one exception.
   change is held.
 
 Each Mac's measures over time (NAS latency, load, cores busy, memory, the build against the other apps, disk space and writes, power, jobs, its NAS calls in flight and missed, the internet by host and its last transfers; on the lead the NAS's disks' busy share and the pool's NAS traffic) come from its own
-`/work/live` (docs/pool.md §10, Live); a series missing is shown as no measure yet. The Machines,
+`/api/live` (docs/pool.md §10, Live); a series missing is shown as no measure yet. The Machines,
 NAS and Activity tabs draw them, each asking only while it is shown.
 
 Colours are the stage's (`STAGE_COLOURS` in `dash.js`), never a step's own.

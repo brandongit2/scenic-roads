@@ -213,7 +213,7 @@ impl Net {
         h.iter().filter(|(n, _)| pick(n)).map(|(_, c)| field(c).load(Ordering::Relaxed)).sum()
     }
 
-    /// `/work/live`'s `net`: `{hosts: {host: {in, out, requests, conns, open, retries, holds, limit,
+    /// `/api/live`'s `net`: `{hosts: {host: {in, out, requests, conns, open, retries, holds, limit,
     /// robots}}, events: [{t, host, in, out, ms, outcome}, …]}`, the events oldest first; `limit`, the
     /// budget its connections are metered by (`limit_of`), null when none; `robots`, `{state, t}` as
     /// last told (`Robots`: unchecked, allowed, disallowed), null when never told (an API's or data's).

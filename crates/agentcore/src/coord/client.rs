@@ -197,7 +197,7 @@ impl LeaseCalls for Client {
     }
 
     fn set_pause(&self, pause: Option<&jobrt::control::Pause>, at: u64) -> Result<()> {
-        self.post_json("/work/pause", &serde_json::json!({ "pause": pause, "at": at }))?;
+        self.post_api("pause", &serde_json::json!({ "pause": pause, "at": at }))?;
         Ok(())
     }
 

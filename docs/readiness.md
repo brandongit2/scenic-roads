@@ -13,7 +13,7 @@ Three places each encode what a target waits for, and the keys are a fourth:
 |---|---|---|
 | the planner (`agent::build`) | `build::waits` over `Step::reads` for terrain-lo, slope-*, trees-lo and unit (#864); hand-written orderings in `landmarks_work`, `bld_work`, `depth_work`, `polar_next`, the pass's world steps, the z6 tiles' wait for heritage-sites, reach and buildings | |
 | the forecast (`agent::forecast`) | `reads()` over the same declaration for the tiled steps; `chain_deps` (`Step::after` plus its own `pre` list: pois after trailends, peaks after summits, heritage after heritage-sites, and a `reads_terrain` flag that waits on *all* terrain); `UNITS_NEED`; the held-chain guard (#867: a chain job the offers lack waits on its stage's earlier chain jobs) | #863, #867 |
-| the page (`pageview`, `/work/tocome`) | the forecast's run, so whatever the forecast believes; waiting notes from `Reads::why` or hard-coded strings (`HERITAGE_WAIT`, …) | |
+| the page (`pageview`, `/api/tocome`) | the forecast's run, so whatever the forecast believes; waiting notes from `Reads::why` or hard-coded strings (`HERITAGE_WAIT`, …) | |
 | the keys (`build::*_key`) | each assembled by hand from versions, content names, digests and fingerprints | #832 (over-broad: coverage rings within 20 km); slope-lo reads the terrain root but nothing waits for it |
 
 `declared_reads_cover_the_keys` (#864) checks that a key's target inputs are declared reads, one
@@ -207,7 +207,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      heritage-sites, reach and buildings, the landmarks, the 3D buildings, depth, polar, the
      summits' hold in the agent); the forecast's items wait on the same reads (`forecast::Waits`, a
      `Whole` read one shared set); the page and `scenic status` show the planner's notes.
-     `/work/tocome` gives job-to-job dependencies (`jobs`, `deps`, `after` per job) and the build
+     `/api/tocome` gives job-to-job dependencies (`jobs`, `deps`, `after` per job) and the build
      page draws single-job arrows.
    - Declared reads that differ from §5's table, because the planner held them so and the keys
      read so: the peaks wait for all terrain-hi and terrain-lo (their key names every lo pack

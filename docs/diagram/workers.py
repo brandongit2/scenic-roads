@@ -1,4 +1,4 @@
-"""Who builds the map (docs/pool.md, docs/building.md §2, docs/workers.md): the Mac mini, the declared lead, leads: its agent
+"""Who builds the map (docs/pool.md, docs/building.md §2, docs/coordinator.md): the Mac mini, the declared lead, leads: its agent
 plans, its coordinator grants every job (its own too) and lends tasks to any worker, a device's page too, and it alone merges
 the journal into the term's records. No other Mac leads (pool.md §6, task #881). What the pool leaves for later is planned
 (pool.md §12)."""
@@ -59,7 +59,7 @@ def build(check=False):
 
     # The workers: a device's page (watching), the M1 (jobs, and tasks when no job fits it).
     wx, ww = 1148, W - 16 - 1148
-    page = box(wx, top, ww, 'Any device · the build page', ['/work/ on the lead: anyone on its LAN or the',
+    page = box(wx, top, ww, 'Any device · the build page', ['/ on the lead: anyone on its LAN or the',
                                                             'tailnet sees the build and pauses it, no key;',
                                                             'a page does no work'])
     m1 = box(wx, page[1] + page[3] + 22, ww, 'The M1 (16 GB) · a member', ['takes every shared step’s (⇄) jobs that fit',

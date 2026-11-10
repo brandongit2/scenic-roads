@@ -1,11 +1,11 @@
-# The build page world map's large lakes (web/work/lakes.json, task #831), from Natural Earth's
+# The build page world map's large lakes (web/buildpage/lakes.json, task #831), from Natural Earth's
 # 1:10m lakes (public domain), as the NAS keeps them: sources/fetched/natural-earth-lakes-10m.
 # Rings in Web Mercator 0-1000 each way (y down, as countries.json), flat [x0, y0, ...], 1
 # decimal; only lakes of scalerank <= 3, simplified (Douglas-Peucker 0.15), specks dropped.
 #
 #   python3 -I tools/worldmap/lakes.py [ne_10m_lakes.zip] [out.json]
 #
-# Defaults: the NAS's zip (read only) and web/work/lakes.json. The page serves the file from the
+# Defaults: the NAS's zip (read only) and web/buildpage/lakes.json. The page serves the file from the
 # pipeline binary (crates/agentcore/src/coord/mod.rs include_bytes), so rebuild after a change.
 import struct, sys, math, json, os, zipfile
 

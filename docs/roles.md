@@ -64,13 +64,13 @@ thread spent ~10 % serialising mail (`Side::save_mail`).
 | NAS mount, heal, NAS read/write pools (`nas`, `nas-read-*`, `nas-write-*`, `nas-switch-*`, `nas-probe`) | yes | 13 threads | **keep** (jobs read and write the NAS); the switch pool goes with #878 step 5 |
 | Pool step (`pool` thread: mail, beat, hold on the NAS) | yes | ~10 % of a core at the sample | **keep** until #878 steps 3–6 replace it with HTTP |
 | Control, beat, app updater, loop watchdog | yes | small | **keep** |
-| Caches: room target, freeing, clears, `ask_upcoming` (`/work/tocome` from the lead) | yes | cache 4.8 / 55 GB (the work's) | **keep**; already by HTTP |
+| Caches: room target, freeing, clears, `ask_upcoming` (`/api/tocome` from the lead) | yes | cache 4.8 / 55 GB (the work's) | **keep**; already by HTTP |
 | Checklist (`checklist`: records brief, outlines; with each plan, its regions' part the plan's) | yes | the 13–932 s loop phase | **drop** (#871 steps 6–7, merging) |
 | Regions' states (`region-states` thread, `build::region_states`) | yes | the busy core on the M1; 0.7–131 s a run | **drop** on members (#871 steps 6–7 take its output out of the status; this stops computing it) |
 | Terrain pack indexes (`tiles::TerrainTiles`, `agent/pack-idx/`) | yes, for the regions' states | 555 MB each; 358 s of SMB reads on the M1 | **drop** with the regions' states, if no job path reads it (verified in step 2) |
 | Regions loaded for the status (`load_regions` in the member's branch) | yes, each `plan_due` | 24 KB in `helper.json` | **drop** (#871 6–7) |
 | `all_new` (the lead's `state/status.json` read each minute) | yes | one NAS read a minute | **move**: in the beat's answer (#878 step 3) |
-| Build page on the member's port: `pageview` (lead's files every 12 s, history, the forecast run locally), `cataloguesview`, `builtview`, region steps | yes, kept warm by the menu bar's `/work/swarm` ask every 50 s | 1.6 MB `pageview-waits.json` written each read; forecast 5–6 s a run | **move**: the lead serves the page; the member's port redirects (§3.3) |
+| Build page on the member's port: `pageview` (lead's files every 12 s, history, the forecast run locally), `cataloguesview`, `builtview`, region steps | yes, kept warm by the menu bar's `/api/swarm` ask every 50 s | 1.6 MB `pageview-waits.json` written each read; forecast 5–6 s a run | **move**: the lead serves the page; the member's port redirects (§3.3) |
 | `scenic menu` (every 5 s: the lead's `state/status.json` from the NAS when the member's own isn't fresh) | yes | one NAS read each 5 s | **move**: the lead's summary over HTTP (§3.4) |
 | Inputs watch, gate's listing, redo, answers seeding, GC, backup, catalogues, publishing, forecast, coordinator, map log | no (lead only: `!o.helper`, `LEAD_ONLY`, `keeps_publishing`) | — | already lead only; the per-service checks become the role (§1) |
 | Map server | no (retired by #874) | — | done |
@@ -93,7 +93,7 @@ jobs, waiting lines, caches, memory, ramp, budgets, hold, app.
 ### 3.2 The member's broker
 
 A member's broker is `coord::Broker` (built, step 3): the tasks of this Mac's own jobs and the
-`/work/*` calls those jobs make, plus `/work/live` for the lead's page. It runs on the
+`/work/*` calls those jobs make, plus `/api/live` for the lead's page. It runs on the
 coordinator's server and folder (one at a time on a Mac; the jobs' token kept there, so a job
 outlives a change of role), started as a broker: no phase sharer, nothing kept in the pool's store,
 no job lease, and none of the files a lead keeps in the folder read or written (step 6: the leases,
@@ -103,29 +103,32 @@ the contact again (an older member too: it compares the term). Its API is its ow
 coordinator's: its addresses and jobs' token, its member, its jobs' tasks closed and leases lapsed,
 its pause, placement and the members' brokers (`coord::Brokering` is what the run's steps tell,
 the lead's coordinator or a member's broker). Of the page it serves only what the lead's page asks
-of this Mac (`/work/live`, `/work/settings`; step 4, §3.3). The lead's coordinator stays as it is.
+of this Mac (`/api/live`, `/api/settings`; step 4, §3.3). The lead's coordinator stays as it is.
 
 ### 3.3 The build page
 
 The page is the lead's alone (built, step 4: `coord::memberpage`). A member's port (its broker,
-or with tasks brokered by every member off a viewer alone) answers `/work/`, the page's files and
-its data and asks (`/work/swarm`, `/work/history`, `/work/catalogs`, `/work/built`,
-`/work/regions`, `/work/pause`, `/work/act`, `/work/settings`, ...) from a page of its own origin
+or with tasks brokered by every member off a viewer alone) answers `/` (the page), the page's files and
+its data and asks (`/api/swarm`, `/api/history`, `/api/catalogs`, `/api/built`,
+`/api/regions`, `/api/pause`, `/api/act`, `/api/settings`, ...) from a page of its own origin
 or none (an address typed, the menu bar's web view) with a 307 to the lead's same path and query,
 at the lead's address of the network the request came by (`memberpage::location`), so any device
 that reached the member reaches the lead: its HTTPS page when the request came through
 `tailscale serve`; its tailnet address for a request to a tailnet address or `.ts.net` name; its
 LAN name (`<host>.local`) for one to a LAN address or `.local` name (a device without Tailscale);
-else (this Mac itself, the menu bar's web view) its first. Answered there still: `/work/live` and
-`/work/settings` asked by the lead's page from any origin it is served at (CORS, the lead's
+else (this Mac itself, the menu bar's web view) its first. Answered there still: `/api/live` and
+`/api/settings` asked by the lead's page from any origin it is served at (CORS, the lead's
 heartbeat's addresses: docs/pool.md §8, Cross-member calls), the jobs' calls (their key), and
 `sw.js` (an installed page updates its worker from its own origin; the worker follows a redirect
 at once, never answering from what it kept). The build's own asks (pause, inputs, cancel and
-retry) are refused there from any other origin: the lead's page sends them to the lead.
+retry) are refused there from any other origin: the lead's page sends them to the lead. A lead on
+an app before task #1101 (its answer doesn't say `beats::ROOT`) is sent to at its old addresses
+(`/work/`, `/work/<name>`), and this Mac's port answers that lead's page's old ones as the new
+(`coord::oldpage`, docs/coordinator.md §7).
 
 It redirects only to a lead that serves the page: the lead's beat answer says `page`
 (`beats::PAGE`), heard within 35 s (`beats::PAGE_AWAY_S`, three beats). An older lead, none
-known, or one not answering: the member's port answers `/work/` with a small page of its own,
+known, or one not answering: the member's port answers `/` with a small page of its own,
 this Mac's status (from `helper.json`: its jobs, what it waits on) and "The lead (<name>) isn't
 reachable since <time>", refreshed every 10 s, and the page's data calls 503.
 
@@ -201,7 +204,7 @@ files on a laptop are §8.3's.
 | Need | Today | By HTTP (lead's coordinator) |
 | --- | --- | --- |
 | Work | `/work/ask`, `/work/beat`, NAS mail and journal | unchanged; #878 steps 2, 3, 6 |
-| Its jobs to come (caches) | `/work/tocome` | unchanged |
+| Its jobs to come (caches) | `/api/tocome` | unchanged |
 | `all_new`, the pause, the build's state line | the `POST /pool/beat` answer (`held::LeadLine`, built: step 5) | the same |
 | Holds and settings | NAS files | `/pool/hold`, `/pool/settings` (#878 step 5) |
 | The build page | its own NAS readers | a 307 to the lead (§3.3) |
@@ -360,7 +363,7 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 | Service | Today | Proposed | A member reaches it by |
 | --- | --- | --- | --- |
 | Jobs: slots, the memory and disk guards, ramp | every Mac | every Mac | — |
-| The member's broker (its jobs' tasks and `/work/*`, `/work/live`, `/work/settings` for the lead's page) | every Mac (a lead's coordinator on the mini) | every Mac | its jobs at its own port |
+| The member's broker (its jobs' tasks and `/work/*`, `/api/live`, `/api/settings` for the lead's page) | every Mac (a lead's coordinator on the mini) | every Mac | its jobs at its own port |
 | Control (this Mac's hold, quit, settings), the live store, the memory sampler, caches and room, the updater | every Mac | every Mac | local; the hold and settings told the lead by the beat |
 | Beat poster | members | members | `POST /pool/beat` to the mini |
 | Budgets' proxy | every Mac | every Mac (jobs ask it) | it asks the mini (`/pool/budget/take`) |

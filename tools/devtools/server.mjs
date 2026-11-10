@@ -8,8 +8,8 @@
 //   /jobs/        the dev job dashboard (jobs.mjs, its API under /api/jobs/…)
 //   /api/stream   an event stream telling open pages which collection changed
 // The pages' addresses are relative (`../api/…`), so the app works under a proxy's path (tools/caddy's
-// /dev/). The dashboard's timeline is the build page's own (web/work/timeline.js and what it imports,
-// served from the checkout at /lib/work/), as are its elements and words (dom.js, words.js).
+// /dev/). The dashboard's timeline is the build page's own (web/buildpage/timeline.js and what it imports,
+// served from the checkout at /lib/buildpage/), as are its elements and words (dom.js, words.js).
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -22,8 +22,8 @@ import { Refusal, send, fail } from "./http.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json" };
 // The build page's modules the dashboard imports (its timeline, and that's; its elements and words).
-const WORK = path.join(here, "../../web/work");
-const WORK_LIB = new Set(["timeline.js", "sums.js", "chartmath.js", "dom.js", "words.js"]);
+const PAGE_DIR = path.join(here, "../../web/buildpage");
+const PAGE_LIB = new Set(["timeline.js", "sums.js", "chartmath.js", "dom.js", "words.js"]);
 
 export function makeServer({ board: boardStore, jobs: jobsStore }) {
   // ---- change notices: which collection changed, to every open page (a burst sent once) ----------
@@ -52,7 +52,7 @@ export function makeServer({ board: boardStore, jobs: jobsStore }) {
     // (schema.mjs is the board page's too: it checks what it shows by the same rules.)
     if (p === "/task-board/schema.mjs") return path.join(here, "schema.mjs");
     if (p === "/jobs/") return path.join(here, "public/jobs/index.html");
-    if (p.startsWith("/lib/work/")) return WORK_LIB.has(p.slice(10)) ? path.join(WORK, p.slice(10)) : null;
+    if (p.startsWith("/lib/buildpage/")) return PAGE_LIB.has(p.slice(15)) ? path.join(PAGE_DIR, p.slice(15)) : null;
     const f = path.join(here, "public", path.normalize(p));
     return f.startsWith(path.join(here, "public") + path.sep) ? f : null;
   }

@@ -1,5 +1,5 @@
 //! The live store (docs/pool.md §10, Live): each Mac's own measures as series over time, kept in
-//! rings on its own disk (never the NAS) and answered by its port's `POST /work/live`.
+//! rings on its own disk (never the NAS) and answered by its port's `POST /api/live`.
 //!
 //! - **Rings**: each series in four, by resolution (`TIERS`): a point a second for an hour, every
 //!   10 s for a day, a minute for three days, 5 minutes for seven (task #624). A point is a bucket
@@ -272,7 +272,7 @@ fn round(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// A reader's ask (`POST /work/live`'s body): the window back from now (s; an hour by default,
+/// A reader's ask (`POST /api/live`'s body): the window back from now (s; an hour by default,
 /// three days at most), or the points from `since` on (unix s, a bucket's time: the last one
 /// answered again, as it may have grown since); `series`, the names wanted (all when missing);
 /// `net: false` leaves the proxy's counts out (a chart polling every second needs only the series).
@@ -586,7 +586,7 @@ impl Store {
         self.net.lock().ok()?.clone()
     }
 
-    /// `/work/live`'s answer at `now` (unix s): `{host, now, step, from, mac, series: {name: [[t,
+    /// `/api/live`'s answer at `now` (unix s): `{host, now, step, from, mac, series: {name: [[t,
     /// lo, mean, hi], …]}, net, files}`, each series with a point in the window alone; `mac`, its
     /// size (`mac()`); `cores_now`, each core's share busy over the last second (none before the
     /// sampler's second read); unless asked without (`net: false`): `net`, the proxy's counts

@@ -1312,7 +1312,7 @@ impl Planner {
             .collect()
     }
 
-    /// The owner's redo asks this Mac's coordinator took (`/work/redo`), kept in its agent's folder
+    /// The owner's redo asks this Mac's coordinator took (`/api/redo`), kept in its agent's folder
     /// until their jobs are done: not a dry run's.
     pub(super) fn tend_redo(&self) {
         if self.o.dry_run {
@@ -2529,7 +2529,7 @@ impl Planner {
             let took = std::time::Instant::now();
             let mut f = record.forecast(the_plan);
             let entry = fcarchive::Entry::of(&record, &f, &app);
-            // (Each Mac's tiles to come, for the page's map (`/work/tocome`), and the schedule's runs
+            // (Each Mac's tiles to come, for the page's map (`/api/tocome`), and the schedule's runs
             // (their targets and dependencies); the rest of `placed` the archive's alone: neither
             // kept with the forecast the agent holds.)
             let (mut tocome, item_job, jobs) = forecast::ToCome::take(&mut f, &record.input.machines);

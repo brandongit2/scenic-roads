@@ -82,8 +82,7 @@ EOF
   printf '%s\n' "# scenic: keep (the sandbox's stand-in agent)" $home/stub-agent.sh > $home/run/agent
   # The panel's build page, a stand-in (the app's ScenicPage, never the live agent's 8090), a
   # launchd job of its own.
-  mkdir -p $home/www/work
-  print -r -- '<!doctype html><meta charset="utf-8"><body style="font: 13px system-ui; padding: 16px">The sandbox'"'"'s build page (a stand-in)</body>' > $home/www/work/index.html
+  print -r -- '<!doctype html><meta charset="utf-8"><body style="font: 13px system-ui; padding: 16px">The sandbox'"'"'s build page (a stand-in)</body>' > $home/www/index.html
   mkdir -p ${page_plist:h}
   rm -f $page_plist
   plutil -create xml1 $page_plist

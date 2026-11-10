@@ -1,5 +1,5 @@
 // The build page's elements, one way for every module (and the dev job dashboard's, which imports
-// it: tools/devtools serves it at /lib/work/).
+// it: tools/devtools serves it at /lib/buildpage/).
 
 /** An element: `h("div", "cls", ...kids)` or `h("div", {class, style, title, onclick, …}, ...kids)`.
  * An attribute null or false is left out, true is set empty; `style` an object (custom properties,

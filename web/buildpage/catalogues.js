@@ -1,7 +1,7 @@
 // The world map's age controls (task #629; top-level since #685; docs/pipeline.md §5): a soloed
 // step's published tiles coloured by when a catalogue last published that step's own outputs there,
 // over a range set by a pair of inputs, and a timeline of every catalogue (hovering one lights the
-// tiles it published, any step's). Its data: /work/catalogs (crate::agent::cataloguesview: the map
+// tiles it published, any step's). Its data: /api/catalogs (crate::agent::cataloguesview: the map
 // log's batches, each numbered as its catalogue), the catalogues after the last one this page has,
 // and a step's own times (`steps`, #994) as the map needs them. The sums are apart from the DOM so Node tests them (web/test/catalogues.test.mjs).
 import { hhmm, timeTicks } from "./chartmath.js";
@@ -127,7 +127,7 @@ export function publishedAt({ t3, t6, t10 }, { z, x, y }) {
 }
 
 /** When a step's output at `tile` was last published (#994): by its own outputs' times (`own`:
- * `/work/catalogs`' `steps` answer for it, `tablesOf`), marked `own`; for a step whose files aren't
+ * `/api/catalogs`' `steps` answer for it, `tablesOf`), marked `own`; for a step whose files aren't
  * told by name (`own` null), by any step's at that tile (`any`: every catalogue's, `tablesOf`).
  * Null when none kept names it, or the step's times aren't read (`own` undefined). */
 export function stepPublishedAt(own, any, tile) {
@@ -312,7 +312,7 @@ export function createAges({ call, store, onChange }) {
     const steps = [...asking];
     let got = false;
     try {
-      const [code, a] = await call("/work/catalogs", { ...(latest == null ? {} : { after: latest }), steps });
+      const [code, a] = await call("/api/catalogs", { ...(latest == null ? {} : { after: latest }), steps });
       if (code === 200 && a) {
         take(a);
         // (An agent before #994 sends no `steps`: any step's times, as for a step not told by name.)
@@ -414,7 +414,7 @@ export function createAges({ call, store, onChange }) {
     clearTimeout(timer);
     if (document.visibilityState !== "visible") return;
     try {
-      const [code, a] = await call("/work/catalogs", latest == null ? {} : { after: latest });
+      const [code, a] = await call("/api/catalogs", latest == null ? {} : { after: latest });
       if (code === 200 && a) take(a);
       else error = code === 503 ? "this Mac hasn't made the view yet" : `answer ${code}`;
     } catch (e) { error = e.message; }

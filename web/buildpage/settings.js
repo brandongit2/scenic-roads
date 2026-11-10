@@ -1,7 +1,7 @@
-// The owner's settings on the build page (the Machines tab; docs/workers.md §7): this page's Mac's
+// The owner's settings on the build page (the Machines tab; docs/coordinator.md §7): this page's Mac's
 // in-use share, memory floor, disk room target and dev sweep margin, a block per Mac, each set on
 // that Mac, and the pool's NAS reserve and batch length. Read and set through
-// `/work/settings`, which sets each through the same function as its `scenic` command
+// `/api/settings`, which sets each through the same function as its `scenic` command
 // (`scenic in-use`, `memory`, `room`, `nas-room`, `pool set batch-minutes`; the sweep's margin has none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
 import { h } from "./dom.js";
@@ -18,10 +18,10 @@ const EVERY_MS = 30_000;
 // The last section's or load's `call`, `macs`, `done` and `onError`, for putSetting.
 let ctx = null;
 
-// Asks a Mac's `/work/settings` (or `path`, another of its own asks: `/work/asked`): this page's
-// own through `call`, another at its addresses (as live.js's /work/live: HTTPS over an HTTPS page;
+// Asks a Mac's `/api/settings` (or `path`, another of its own asks: `/api/asked`): this page's
+// own through `call`, another at its addresses (as live.js's /api/live: HTTPS over an HTTPS page;
 // its broker answers a member's page, CORS); `st.url` the address that answered last, tried first.
-export async function ask(call, m, st, body, path = "/work/settings") {
+export async function ask(call, m, st, body, path = "/api/settings") {
   if (!m) {
     const [code, v] = await call(path, body);
     if (code !== 200) throw new Error(v?.error || `answered ${code}`);
@@ -35,7 +35,11 @@ export async function ask(call, m, st, body, path = "/work/settings") {
   for (const u of urls) {
     let r;
     try {
-      r = await fetch(`${u.replace(/\/$/, "")}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
+      const post = (p) => fetch(`${u.replace(/\/$/, "")}${p}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
+      r = await post(path);
+      // (A Mac on an app before task #1101 has its asks under /work/, refusing /api/: asked there.
+      // Gone with crates/agentcore/src/coord/oldpage.rs.)
+      if (r.status === 403 || r.status === 404) r = await post(path.replace(/^\/api\//, "/work/"));
     } catch (e) { last = e; continue; }
     st.url = u;
     const v = await r.json().catch(() => null);
@@ -46,7 +50,7 @@ export async function ask(call, m, st, body, path = "/work/settings") {
 }
 
 /** Reads every Mac's again when 30 s old: `call(path, body)` this page's own Mac, `macs` the
- * swarm's (host, urls, https: /work/swarm's `macs`); `done()` after each answer. */
+ * swarm's (host, urls, https: /api/swarm's `macs`); `done()` after each answer. */
 export function loadSettings(call, macs, done) {
   ctx = { ...ctx, call, macs, done };
   const one = async (m) => {
@@ -124,7 +128,7 @@ const poolMac = (list) => {
   return all.find(([, st]) => st.said?.nas_room) || all.find(([, st]) => st.said);
 };
 
-/** Sets `body` (one setting, as /work/settings takes it) from a chart's limit (live.js): on Mac
+/** Sets `body` (one setting, as /api/settings takes it) from a chart's limit (live.js): on Mac
  * `host` (this page's own through its calls), or, for the pool's NAS reserve, through the Mac the
  * Settings' pool box uses. `what` names it in a refusal. Whether it was set. */
 export async function putSetting(host, body, what) {
@@ -151,7 +155,7 @@ function guarded(key, what, make) {
   }
 }
 
-/** A Mac's rows from its `/work/settings` answer `s`: {key, what, now, note, input} each (`input`
+/** A Mac's rows from its `/api/settings` answer `s`: {key, what, now, note, input} each (`input`
  * null: shown, not settable). */
 export function macRows(s) {
   return [

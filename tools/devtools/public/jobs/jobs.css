@@ -1,5 +1,5 @@
 /* The dev job dashboard (jobs.js): the build page's palette, sizes and schedule timeline
-   (web/work/index.html's tokens, dash.css's .sched), dark, the light one where the device is light. */
+   (web/buildpage/index.html's tokens, dash.css's .sched), dark, the light one where the device is light. */
 :root { --fs-s: 11px; --fs-b: 13px; --fs-l: 15px; }
 :root {
   --bg: #0e1013; --panel: #161a1f; --line: #262c33; --text: #d7dce2; --dim: #8a939c; --ok: #6cc28a; --warn: #e0b45a; --bad: #e0716a; --accent: #7aa7e0;
@@ -50,7 +50,7 @@ h2 button { margin-left: auto; text-transform: none; letter-spacing: 0; }
 .box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
 .empty { color: var(--dim); font-size: var(--fs-s); padding: 6px 0; }
 
-/* The timelines: web/work/timeline.js, laid out as the build page's schedule (dash.css's .sched). */
+/* The timelines: web/buildpage/timeline.js, laid out as the build page's schedule (dash.css's .sched). */
 .sched { position: relative; --lw: 132px; }
 @media (max-width: 719px) { .sched { --lw: 84px; } }
 .sched .lanes { display: grid; grid-template-columns: var(--lw) minmax(0, 1fr); gap: 2px 8px; align-items: center; }

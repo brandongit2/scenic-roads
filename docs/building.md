@@ -129,7 +129,7 @@ from the first (`edit_held`).
     the file read furthest ahead first (`room::Hints`, `room::order`): the queued and running jobs'
     (now) last, and the jobs the lead's forecast places on this Mac (its tiles to come,
     `forecast::ToCome`, task #843) at the time each placing starts: the lead's from its own
-    forecast, a member's asked of the lead every 5 minutes (`/work/tocome`, `{"raw": true}`, on a
+    forecast, a member's asked of the lead every 5 minutes (`/api/tocome`, `{"raw": true}`, on a
     thread of its own, each loop whether or not it has a slot free); an hour old, they hint
     nothing. Only an order: nothing is deleted for it. The agent's log says what room-making
     deleted by cache, and each job's end line what it read from this Mac's disk and from the NAS,
@@ -291,7 +291,7 @@ from the first (`edit_held`).
   finish.
 - **The history** (`coord::history`): the last week's events (50,000 at most) on the lead's disk
   (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, catalogues, pauses, workers,
-  agents, conditions, cache clears and freeings. Summed by the hour for the worker page, and the
+  agents, conditions, cache clears and freeings. Summed by the hour for the build page, and the
   forecast's measure of members' pace and of publishing's time.
 - **Timings** (`jobrt::timings`; `dem/timings.py`): every
   job's run is broken into named phases, each with wall time, CPU time (`getrusage`), its wall time
@@ -327,7 +327,7 @@ from the first (`edit_held`).
   and mirrors, the tiles each z6 tile restaled, which of ferries, stations, roadunits, marks and
   names-todo ran, and the medians (the catalogues' phases among them).
 
-**The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/workers.md`),
+**The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/coordinator.md`),
 always on. Every Mac's agent is a member; one leads each term. A process not in the pool (no NAS at
 start, or its member lock held) starts nothing new. `scenic pool [status]` shows it, and `scenic
 status` labels the Mac by its part: "lead, coordinator", "member", or "not in the pool: waiting to
@@ -374,7 +374,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   why in words), since its work would be recorded under keys another app's code made. Its jobs under
   way go on.
 - **The contact:** `state/coordinator.json`, the coordinator's addresses and the agents' token
-  (the build page needs none: docs/workers.md §7), removed when the agent stops.
+  (the build page needs none: docs/coordinator.md §7), removed when the agent stops.
 - **Leases:** ten minutes on the coordinator's clock, renewed by a beat each minute (those the lead's running jobs hold never lapse: docs/pool.md §7.6); a lapsed lease's
   work is offered again, its "lapse" in the history saying why (no word from its worker for ten
   minutes: `coord::lapse_why`). A member's job that fails saying nothing goes to the lead with a
@@ -440,10 +440,10 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
      steps' runs); when its last catalogue went out, and the last with the low zooms made, are the
      map's log's (its head batch, and its last batch whose `why` says so: docs/maplog.md §6.5),
      and records what publishing does and why (`publish::PublishLine`), shown in the build status
-     (`publishing`), the worker page and `scenic status`, and logged when it changes. Beside it the
+     (`publishing`), the build page and `scenic status`, and logged when it changes. Beside it the
      status's `published` (`agent::Published`): the last catalogue (number, when, with the low zooms
      or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the catalogue
-     the map server last adopted (its cursor in the map's log). The worker page's Publishing
+     the map server last adopted (its cursor in the map's log). The build page's Publishing
      card and `scenic status` say these in the same words, with the cadenced publishes next (the
      forecast's `publishes`); `scenic status` and the menu bar say a region
      still building as "x of y tiles, on the map as they come", and when all of it is.
@@ -533,7 +533,7 @@ available. Until work is done, the map serves the last catalogue.
   task #899) gets a line "<Mac>: loop stuck 6 min, in <phase>" (`loop_phase`, the loop's phase
   then); its status still beats on its own timer, so it isn't out of touch.
   - **Its panel:** a click opens the build page in a popover, asked of this Mac's own agent's port
-    (`http://127.0.0.1:8090/work/?view&mac=<this Mac>`: on a member it redirects to the lead's
+    (`http://127.0.0.1:8090/?view&mac=<this Mac>`: on a member it redirects to the lead's
     page, which opens on this Mac, or with the lead not reached shows a small page of this Mac's
     own, docs/roles.md §3.3), in a web view that keeps nothing, kept for the next opening and quiet
     while closed, 900 pt tall at most. With this Mac's agent not answering, one line says so ("The

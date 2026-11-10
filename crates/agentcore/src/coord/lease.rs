@@ -1,4 +1,4 @@
-//! The coordinator's leases (docs/workers.md §5): which worker does which work. Timed on this
+//! The coordinator's leases (docs/coordinator.md §5): which worker does which work. Timed on this
 //! process's monotonic clock (another machine's clock never matters), renewed by heartbeats while
 //! the work goes on (a job paused for its conditions doesn't beat), and lapsing when a worker goes
 //! quiet: its work is offered again. While the build is paused every lease is held (`hold_all`),

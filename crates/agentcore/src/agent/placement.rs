@@ -1,5 +1,5 @@
 //! Placement by how crucial a job is, and work offered ahead (docs/pool.md §7.2, §12 phase 4's
-//! eleventh batch; docs/workers.md §3), behind the switch `state/pool/placement` (`SWITCH`; off
+//! eleventh batch; docs/coordinator.md §3), behind the switch `state/pool/placement` (`SWITCH`; off
 //! while missing or `off` in it: the agent and its coordinator as they were, exactly). It acts only
 //! in the pool.
 //!

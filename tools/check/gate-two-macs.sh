@@ -177,7 +177,7 @@ f = next(p for t in range(e, 0, -1) for p in [f"term/{t}/brief.json", f"term/{t}
     if [[ -n ${PAGE_PORT:-} ]]; then url=http://127.0.0.1:$PAGE_PORT
     else url=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["urls"][0])' $r/state/coordinator.json); fi
     body=$([[ -n $id ]] && print -r -- "{\"unit\": \"$u\", \"accept\": [\"$id\"]}" || print -r -- "{\"unit\": \"$u\", \"all\": true}")
-    curl -sS -X POST -H 'Content-Type: application/json' -d "$body" $url/work/inputs
+    curl -sS -X POST -H 'Content-Type: application/json' -d "$body" $url/api/inputs
     print
     ;;
   menu-accept)

@@ -1,7 +1,7 @@
 // node web/test/chartmath.test.mjs (tools/dev/check.sh's web part): the build page's charts' sums
-// (web/work/chartmath.js).
+// (web/buildpage/chartmath.js).
 import assert from "node:assert/strict";
-import { commonGaps, fmt, footer, gaps, hhmm, latest, merge, niceMax, pressureClass, recentMean, runs, short, spanText, timeTicks, topOf } from "../work/chartmath.js";
+import { commonGaps, fmt, footer, gaps, hhmm, latest, merge, niceMax, pressureClass, recentMean, runs, short, spanText, timeTicks, topOf } from "../buildpage/chartmath.js";
 
 // Scales.
 assert.equal(niceMax(0), 1);

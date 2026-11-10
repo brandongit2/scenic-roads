@@ -1,8 +1,8 @@
-// The whole build at a glance (docs/workers.md, The page): the page at /work/, for anyone it answers.
-// From the coordinator: /work/steps once (the steps table: every step's id, noun, stage and
-// place, docs/pipeline.md), /work/swarm every 10 s (the lead's heartbeat with its checklist,
+// The whole build at a glance (docs/coordinator.md, The page): the page at the coordinator's root, for anyone it answers.
+// From the coordinator: /api/steps once (the steps table: every step's id, noun, stage and
+// place, docs/pipeline.md), /api/swarm every 10 s (the lead's heartbeat with its checklist,
 // forecast and resources, its helpers', every worker and lease, the hours' work), and
-// /work/history after the last event this page has (what happened; further back for the
+// /api/history after the last event this page has (what happened; further back for the
 // schedule's past jobs).
 //
 // One shape for everything: a stage, step, job, target, part or phase is named as the code names it
@@ -27,7 +27,7 @@ import { n, pad, plural } from "./words.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
 import { SPAN0, createTimeline } from "./timeline.js";
-import { HIGHLIGHT, createAges, paint as agePaint, whenText } from "./catalogs.js"; // the route keeps its old spelling (task #547); the file is catalogues.js
+import { HIGHLIGHT, createAges, paint as agePaint, whenText } from "./catalogues.js";
 import { ask as askMac, loadSettings, settingsSection } from "./settings.js";
 import { nasSection } from "./nas.js";
 import { startActivity, transfersPart } from "./activity.js";
@@ -63,7 +63,7 @@ function clock(t) {
 }
 const ago = (now, t) => (t ? `${dur(now - t)} ago` : "never");
 
-// ---- The steps table (crates/pipeline/src/agent/steps.rs, served at /work/steps) ---------------
+// ---- The steps table (crates/pipeline/src/agent/steps.rs, served at /api/steps) ---------------
 // Every word about a step comes from its row: the noun its targets are counted in, its stage (its
 // colour) and where it runs; it's named by its id, as are stages.
 // A stage's colour: its token in index.html (--st-<stage>, a hue each in either theme).
@@ -226,7 +226,7 @@ function loopStuck(st, now) {
 // The owner's asks refused (task #922: the page shows what became of the owner's actions): each
 // Mac's that the lead refused, as its status says them until they're seen (crate::agent::answered,
 // `refused`: what, from which Mac, when, the lead's reason), and this page's own asks that failed
-// (`onError`). Each with its Dismiss: a Mac's marked seen on that Mac (`/work/asked`), this page's
+// (`onError`). Each with its Dismiss: a Mac's marked seen on that Mac (`/api/asked`), this page's
 // gone. `hidden` the ones dismissed meanwhile, by `refusedId`.
 export const refusedId = (host, r) => `${host}\n${r.key}\n${r.at}`;
 export function refusedItems(macs, now, page, hidden) {
@@ -253,7 +253,7 @@ async function dismiss(d) {
     // (The lead's through this page's own calls; a member's at its addresses, as its settings.)
     const m = d.lead ? null : (last?.macs || []).find((x) => x.host === d.host);
     if (!d.lead && !m) throw new Error("its addresses aren't known here");
-    await askMac(ctx.call, m, {}, { seen: { key: d.key, at: d.at } }, "/work/asked");
+    await askMac(ctx.call, m, {}, { seen: { key: d.key, at: d.at } }, "/api/asked");
   } catch (e) {
     dismissed.delete(id);
     ctx.onError?.(`couldn't dismiss ${d.host}'s refused ask: ${e.message}`);
@@ -310,7 +310,7 @@ function alerts(m) {
 // A banner per held unit: its held files, each finding, Accept per warning and Accept All; errors
 // say what to fix. A quiet line per unit being checked; a line saying so when none waits.
 function inputsTab(m) {
-  const accept = (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`));
+  const accept = (body) => ctx.call("/api/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`));
   const units = (m.a.inputs || []).filter((v) => v.state !== "ok");
   const held = units.filter((v) => v.state === "held").length;
   return section("d-inputs", "Inputs", held ? `${plural(held, "change")} held for a look` : "",
@@ -458,7 +458,7 @@ const soloOf = (key) => (!key ? null : key.startsWith("step ") ? { step: key.sli
 // The steps a solo shows: a step's own; a stage's, its steps the map has.
 const soloSteps = (x, groups) => (!x ? null : x.step != null ? [x.step] : groups.find((g) => g.stage === x.stage)?.steps || []);
 
-// The queue (#622, #685): every tile the lead's last forecast places, on any Mac (`/work/tocome`:
+// The queue (#622, #685): every tile the lead's last forecast places, on any Mac (`/api/tocome`:
 // forecast::ToCome), asked once a forecast (the status's `fc.at`, sent as `at`). This Mac's agent
 // answers from the forecast its pageview runs for the status (#836: the same `at`, on the lead and
 // every member); else (no pageview forecast yet) the lead's own, at its addresses. A lead change drops the old lead's answer at once.
@@ -477,16 +477,16 @@ function askToCome(m) {
   // (A member's agent answers `making`, no `at`: it made no forecast, so the lead is asked.)
   // (The lead's answer, its `after` as the lead wrote it (`raw`), is given to this Mac's own agent to
   // renumber into this page's history: its `epoch` and `after` come back.)
-  const fromLead = () => remote(lead, toCome.st, { raw: true }, "/work/tocome").then(async (v) => {
+  const fromLead = () => remote(lead, toCome.st, { raw: true }, "/api/tocome").then(async (v) => {
     if (!v?.after) return v;
-    const [code, r] = await ctx.call("/work/tocome", { renumber: { by: v.by, after: v.after } }).catch(() => [0, null]);
+    const [code, r] = await ctx.call("/api/tocome", { renumber: { by: v.by, after: v.after } }).catch(() => [0, null]);
     return { ...v, epoch: code === 200 ? r?.epoch ?? null : null, after: code === 200 && r?.epoch != null ? r.after : [] };
   });
   // (This Mac's own answer for another forecast than the status's (the lead's tiles lag its
   // status's forecast by one, seen 29 Oct; or a Mac that led before): the lead asked, this one kept
   // when the lead can't be read (an HTTP page whose origin another Mac's port refuses: #833 review,
   // the lead's own page had drawn only the running jobs' 8 tiles as queued).)
-  ctx.call("/work/tocome", { at: m.fc?.at }).catch(() => [0, null])
+  ctx.call("/api/tocome", { at: m.fc?.at }).catch(() => [0, null])
     .then(([code, v]) => { const own = code === 200 && v?.macs ? v : null; return own && own.at === m.fc?.at ? own : lead ? fromLead().then((l) => (l?.macs ? l : own), () => own) : own; })
     .catch(() => null)
     .then((v) => {
@@ -501,7 +501,7 @@ function askToCome(m) {
       render();
     });
 }
-// Every tile the build's keys record as built, by step (`/work/built`: crate::agent::builtview,
+// Every tile the build's keys record as built, by step (`/api/built`: crate::agent::builtview,
 // each Mac's agent reading the NAS's), asked each `BUILT_EVERY_MS` while the map is drawn; again
 // after `BUILT_SOON_MS` while the agent hasn't read them yet (its first answer after a start, `at`
 // 0, empty: its read begins with that ask), so the map isn't a minute without them (#833 review: a
@@ -513,7 +513,7 @@ const BUILT_EVERY_MS = 60000, BUILT_SOON_MS = 3000;
 function askBuilt() {
   if (built.asking || Date.now() - built.asked < (built.soon ? BUILT_SOON_MS : BUILT_EVERY_MS)) return;
   Object.assign(built, { asking: true, asked: Date.now() });
-  ctx.call("/work/built", {}).catch(() => [0, null])
+  ctx.call("/api/built", {}).catch(() => [0, null])
     .then(([code, v]) => {
       built.asking = false;
       built.soon = !(code === 200 && v?.at);
@@ -530,7 +530,7 @@ function askBuilt() {
 // Overview's; `counts`: the member chosen's, the legend's); the regions' cards. Drawn as the view
 // says by `mapView`, again without a render as a solo or the age controls change (`paintMap`).
 let lastMd = null;
-// (The history's job ends the map takes a finished tile from, beside the keys' (`/work/built`): the
+// (The history's job ends the map takes a finished tile from, beside the keys' (`/api/built`): the
 // last 6 h's.)
 const MAP_ENDS_S = 6 * 3600;
 function mapData(m) {
@@ -836,10 +836,10 @@ function progressText(p, j, now) {
 // A job, as every machine's is shown: its name (its step's title and targets), its parts, its
 // progress, how long it's run and what it holds, and why it's stopped or stuck.
 // A page on any device may cancel a job or try a failed target again, through its Mac's agent
-// (/work/act).
+// (/api/act).
 async function act(body, what) {
   try {
-    const [code, r] = await ctx.call("/work/act", body);
+    const [code, r] = await ctx.call("/api/act", body);
     if (code !== 200) throw new Error(r?.error || `answered ${code}`);
     ctx.onState?.(`asked to ${what}`);
     poll();
@@ -1127,7 +1127,7 @@ const fcLoading = () => h("span", { class: "fcload", role: "status", title: "Wai
 // The history the schedule holds (task #787): the page view's seven days (coord::history::DAYS);
 // older days are in the archive (agent::histarchive), not read here.
 const HISTORY_S = 7 * 86400;
-// The jobs' ends from the history further back than the page's own events (`/work/history`, a
+// The jobs' ends from the history further back than the page's own events (`/api/history`, a
 // chunk at a time back to HISTORY_S ago: sums.js pastFrom), in the numbering they were read in.
 const past = { ends: [], epoch: undefined, first: null, asking: false };
 // Every job's end held (a lead's job's "end", a worker's "done" or "fail"), every start (so an end
@@ -1147,7 +1147,7 @@ async function loadPast(sw) {
     const from = sw.now - HISTORY_S;
     let first = past.first || { seq: events[0].seq, t: events[0].t };
     for (let since = pastFrom(first, from); since != null; since = pastFrom(first, from)) {
-      const [code, hist] = await ctx.call("/work/history", { since, max: 5000 });
+      const [code, hist] = await ctx.call("/api/history", { since, max: 5000 });
       if (code !== 200 || !hist?.events?.length || hist.epoch !== past.epoch) break;
       const got = hist.events.filter((e) => e.seq < first.seq);
       if (!got.length) break;
@@ -1220,7 +1220,7 @@ function runCard(m, r, kind, laneName) {
     ]);
   }
   // (One job as the forecast's run of the scheduler grants it (`runJobs`), its targets
-  // `/work/tocome`'s once asked.)
+  // `/api/tocome`'s once asked.)
   const one = targets.length > 0;
   // (A drop (forecast::Lane::drop): tiles no target any more, their packs dropped, nothing built.)
   const what = r.drop ? "drop" : "job";
@@ -1285,7 +1285,7 @@ function scheduleSection(m) {
 }
 
 // A forecast run's jobs (forecast::Lane): each its from and until (unix s), its count and its
-// targets (`targets`, the run's from `/work/tocome`, in time order; none before it's asked). `cuts`,
+// targets (`targets`, the run's from `/api/tocome`, in time order; none before it's asked). `cuts`,
 // each job's after the first: [its start, s from the run's; the run's named targets before it]; a
 // job ends where the next starts. The first job's count holds a job under way's unnamed targets.
 function runJobs(l, targets = []) {
@@ -1298,7 +1298,7 @@ function runJobs(l, targets = []) {
   });
 }
 // A segment's tiles on the map ("z/x/y"): a packed one that ran, its jobs' targets; any other, its
-// job's (one to come: its share of `/work/tocome`'s `runs`, `runJobs`, when it's this forecast's).
+// job's (one to come: its share of `/api/tocome`'s `runs`, `runJobs`, when it's this forecast's).
 function segTiles(s) {
   const r = s.r;
   const targets = s.kind === "past" ? (r.parts || [r]).flatMap((p) => p.targets || []) : r.targets || [];
@@ -1306,7 +1306,7 @@ function segTiles(s) {
 }
 // What a key points at in the schedule (timeline.js `relations`): a job's segment, the single jobs
 // it waits on and those waiting on it, and their arrows (sums.js jobRelations: by the forecast's run
-// links, and by the history's `after`; a run to come's `after`, `/work/tocome`'s finished
+// links, and by the history's `after`; a run to come's `after`, `/api/tocome`'s finished
 // dependencies, when its `epoch` is the history's); a legend item's (`lg stage <id>`,
 // `lg kind <kind>`) segments. Their tiles for the map: the segment's own, the legend item's all.
 function schedRelations(key) {
@@ -1354,7 +1354,7 @@ function schedule(m) {
     const host = hosts.find((hh) => isSlotOf(nm, hh));
     return host ? `${short[host]} · slot ${slotNo(nm, host)}` : nm;
   };
-  // The forecast's runs and their jobs (numbered as `/work/tocome` numbers them) and what each job
+  // The forecast's runs and their jobs (numbered as `/api/tocome` numbers them) and what each job
   // waits on, when its answer is this forecast's.
   const nums = runNumbers(fcLanes);
   const tc = toCome.ans?.at === fc?.at && toCome.ans?.runs?.length === nums.total ? toCome.ans : null;
@@ -1631,7 +1631,7 @@ function rowHeight(w) {
 const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
 
 // Each region as the tab shows it: the forecast's (its `left` by step, rank, times) with its
-// folders, size and outline (/work/regions), its tiles built (the lead's `built`), its targets built
+// folders, size and outline (/api/regions), its tiles built (the lead's `built`), its targets built
 // of all by stage (`fill`: the lead's steps, `steps`), its recipe
 // (the lead's `regions`); those the forecast lacks (or every one without a forecast) without its words.
 function regionRows(m) {
@@ -1970,11 +1970,11 @@ let ctx = null;
 let last = null;
 // The last render's Macs (each with its colour), for activity.js's chips.
 let shownMacs = [];
-// The regions' outlines, folders and sizes (`/work/regions`: crate::agent::regionsview), by id; the
+// The regions' outlines, folders and sizes (`/api/regions`: crate::agent::regionsview), by id; the
 // catalogue they were sized by, and when they were asked.
 const drawn = { byId: {}, catalogue: undefined, version: undefined, at: 0, asking: false, making: undefined };
 const REGIONS_EVERY_MS = 600000;
-// Each region's targets built of all by step (`/work/regions` with `steps`: the lead counts them
+// Each region's targets built of all by step (`/api/regions` with `steps`: the lead counts them
 // while asked, crate::agent::build::region_steps), asked each `STEPS_EVERY_MS` while the Regions tab
 // is drawn: this Mac's agent's when it counts them (the lead, or out of the pool), else the lead's.
 const regionSteps = { regions: {}, at: 0, asked: 0, asking: false, st: {} };
@@ -1987,7 +1987,7 @@ function askSteps(m) {
   const lead = (last?.macs || []).find((x) => x.host === m.a.host);
   // (An agent before #636 answers the outlines, `regions` a list: none counted there.)
   const counted = (v) => v?.regions && !Array.isArray(v.regions);
-  ctx.call("/work/regions", body).then(([code, v]) => (code === 200 && counted(v) ? v : lead ? remote(lead, regionSteps.st, body, "/work/regions") : null))
+  ctx.call("/api/regions", body).then(([code, v]) => (code === 200 && counted(v) ? v : lead ? remote(lead, regionSteps.st, body, "/api/regions") : null))
     .catch(() => null)
     .then((v) => { regionSteps.asking = false; if (counted(v) && v.at !== regionSteps.at) { regionSteps.regions = v.regions; regionSteps.at = v.at; render(); } });
 }
@@ -2062,7 +2062,7 @@ async function askHold(member, held) {
     // (Always by its member id, this page's agent's own too: the pool's view may be the lead's, whose
     // `me` is the lead, not this page's agent; an ask with no member would pause this page's Mac.
     // This page's agent sets its own hold when the id is its own, else writes it on the NAS.)
-    const [code, r] = await ctx.call("/work/hold", { held, member: member.member });
+    const [code, r] = await ctx.call("/api/hold", { held, member: member.member });
     p.said = r?.said || r?.error || (r?.asked ? `Asked: ${member.host}'s agent takes it up at its next round` : `answer ${code}`);
     if (code >= 400 || r?.ok === false) ctx.onError?.(`couldn't ${held ? "pause" : "resume"} ${member.host}: ${p.said}`);
   } catch (e) {
@@ -2202,7 +2202,7 @@ let tableAsked = false;
 async function loadTable() {
   if (tableAsked) return;
   try {
-    const [code, t] = await ctx.call("/work/steps", {});
+    const [code, t] = await ctx.call("/api/steps", {});
     if (code === 200 && t?.steps) {
       table.steps = Object.fromEntries(t.steps.map((s) => [s.id, s]));
       table.stages = t.stages || [];
@@ -2211,7 +2211,7 @@ async function loadTable() {
   } catch { /* (Asked again with the next poll.) */ }
 }
 
-// The regions as `/work/regions` has them: again when the lead's last catalogue changes, else every
+// The regions as `/api/regions` has them: again when the lead's last catalogue changes, else every
 // ten minutes (a region's folder or outline changes with the regions' accepted version), without
 // the outlines while the page has that version's (`have`); not yet made (`making`: why, shown while
 // there are none): asked again next poll.
@@ -2220,7 +2220,7 @@ async function loadRegions(sw) {
   if (drawn.asking || (drawn.at && drawn.catalogue === n && Date.now() - drawn.at < REGIONS_EVERY_MS)) return;
   drawn.asking = true;
   try {
-    const [code, v] = await ctx.call("/work/regions", drawn.version ? { have: drawn.version } : {});
+    const [code, v] = await ctx.call("/api/regions", drawn.version ? { have: drawn.version } : {});
     drawn.making = code === 200 && !v?.regions ? v?.making : undefined;
     if (code !== 200 || !v?.regions) return;
     // (The same answer as the last, asked again while the lead's catalogue is ahead of it: nothing
@@ -2246,7 +2246,7 @@ async function pollOnce() {
   if (!ctx) return;
   try {
     await loadTable();
-    const [code, sw] = await ctx.call("/work/swarm", {});
+    const [code, sw] = await ctx.call("/api/swarm", {});
     // (This Mac's agent hasn't read the build's state yet: a quiet line, asked again in 2 s, an
     // error after a minute of it: sums.js notRead.)
     if (code === 503) return waitRead();
@@ -2269,7 +2269,7 @@ async function pollOnce() {
     if (sw.seq != null) {
       const from = events.length ? events[events.length - 1].seq : Math.max(0, sw.seq - 600);
       if (sw.seq > from) {
-        const [c2, hist] = await ctx.call("/work/history", { since: from, max: 1000 }).catch(() => [0, null]);
+        const [c2, hist] = await ctx.call("/api/history", { since: from, max: 1000 }).catch(() => [0, null]);
         // (A 503 here, the swarm answered: left to the next regular poll.)
         if (c2 === 200 && hist?.events) {
           const last = events.length ? events[events.length - 1].seq : -1;
@@ -2304,7 +2304,7 @@ export function dashboard(opts) {
     render();
     try {
       // (No time of this browser's: the coordinator's clock orders the asks, and stamps it.)
-      const [code] = await ctx.call("/work/pause", { pause: a.pause && { ...a.pause, by: ctx.label, at: 0 } });
+      const [code] = await ctx.call("/api/pause", { pause: a.pause && { ...a.pause, by: ctx.label, at: 0 } });
       if (code !== 200) throw new Error(`answer ${code}`);
     } catch (e) {
       pending = null;

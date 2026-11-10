@@ -285,7 +285,7 @@ def traced(f, whys, scripts, macros, data, files, links):
     integration test's: itself, by affected-tests.sh. An example: none (no test builds or runs one;
     clippy checks it). A file include_str!d or include_bytes!d inside #[test] functions: those
     tests (a source test reading agent/build.rs); outside them, in a crate's source or an
-    integration test: as that source (web/work's pages in coord/mod.rs). A file a crate's source
+    integration test: as that source (web/buildpage's pages in coord/mod.rs). A file a crate's source
     declares a module by #[path]: a source of that crate too (agentcore's unit tests compile the
     plan, pipeline's agent/build.rs …, in). Not: one include!d or named in a macro, or read by a
     build script."""

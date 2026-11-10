@@ -1,5 +1,5 @@
 // The build page's world map, in its left panel (docs/pipeline.md §5): one canvas in Web
-// Mercator (the world 0–1000 each way, y down: countries.json's, lakes.json's and /work/regions' outlines), with
+// Mercator (the world 0–1000 each way, y down: countries.json's, lakes.json's and /api/regions' outlines), with
 // the z3 grid (and z6's when zoomed in enough to see it), the countries, the regions coloured by
 // how far they are, the queue (task #685: every tile to build, faint under a dotted outline), each
 // running job's target tiles in its stage's colour, filled as far as they're done, and the

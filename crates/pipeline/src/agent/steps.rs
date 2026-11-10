@@ -72,7 +72,7 @@ pub enum Kind {
 pub enum Scope {
     /// Everything at once: one target, the step's own name (or a pass's date).
     World,
-    /// A z3 tile ("3/x/y"): 8 × 8 z6 tiles. (Stored and sent as "area": `/work/steps`' `scope`.)
+    /// A z3 tile ("3/x/y"): 8 × 8 z6 tiles. (Stored and sent as "area": `/api/steps`' `scope`.)
     #[serde(rename = "area")]
     Z3,
     /// A z6 tile ("6/x/y"). (Stored and sent as "tile".)
@@ -1554,7 +1554,7 @@ pub const TABLE: [Step; 60] = [
     },
 ];
 
-/// A task a running job offers to any worker (docs/workers.md §3), described as a step is.
+/// A task a running job offers to any worker (docs/coordinator.md §3), described as a step is.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Task {
     /// Its kind: the stored name.
@@ -1638,7 +1638,7 @@ pub fn said(step: &str, n: usize) -> String {
     format!("{t}: {}", counted(step, n))
 }
 
-/// A step's row as the build page and `scenic status` read it (`/work/steps`): everything but the
+/// A step's row as the build page and `scenic status` read it (`/api/steps`): everything but the
 /// write-set.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Info {
@@ -2464,12 +2464,12 @@ mod tests {
     use agentcore::pool::journal::{Entry, LeaseId};
     use buildstore::handoff::Handoff;
 
-    /// The worker page's schedule colours each stage from STAGE_COLOURS (web/work/dash.js), falling
+    /// The build page's schedule colours each stage from STAGE_COLOURS (web/buildpage/dash.js), falling
     /// back to upkeep's grey: every stage has a colour there, and no two stages share one.
     #[test]
     fn every_stage_has_a_colour_of_its_own_on_the_worker_page() {
         // index.html sets each stage's --st-<id> once per theme: the first of each is the dark theme's, the second the light's.
-        let html = include_str!("../../../../web/work/index.html");
+        let html = include_str!("../../../../web/buildpage/index.html");
         let mut themes: [std::collections::BTreeMap<&str, String>; 2] = Default::default();
         for decl in html.split(';') {
             let Some(at) = decl.find("--st-") else { continue };

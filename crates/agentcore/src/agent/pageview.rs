@@ -1,11 +1,11 @@
 //! The build page's data on the lead (docs/pool.md §10, task #409; the page is the lead's alone,
-//! docs/roles.md §3.3): `/work/swarm` and `/work/history` from its coordinator's view and the
+//! docs/roles.md §3.3): `/api/swarm` and `/api/history` from its coordinator's view and the
 //! members' history files.
 //!
 //! While a page has asked in the last `ASKED_FOR_S`, a thread of the agent (`spawn`) asks the
 //! view of the lead's coordinator, in process, every `LEAD_EVERY` (`tick_lead`, `Lead`): its
 //! status, its coordinator's view, the pause, the Macs' addresses (each member's broker: where a
-//! page reads its `/work/live`), and the forecast's input and the page's regions when their time
+//! page reads its `/api/live`), and the forecast's input and the page's regions when their time
 //! changed. A view that can't be had leaves the last one, said with its age. Another thread reads the NAS
 //! (`tick`), every `EVERY` at most, by known name (never a folder listing): what the members'
 //! history files of the last `DAYS` days (`state/coord/history/<day>/<member>.jsonl`) gained since
@@ -172,7 +172,7 @@ struct Snap {
     view: Value,
     pause: Value,
     helpers: Vec<Value>,
-    /// Each member's addresses, from its heartbeat's broker: where a page reads its `/work/live`.
+    /// Each member's addresses, from its heartbeat's broker: where a page reads its `/api/live`.
     macs: Vec<Value>,
     /// When the lead made it (unix s).
     at: Option<u64>,
@@ -196,7 +196,7 @@ struct Runs {
     kept: Option<Instant>,
 }
 
-/// A forecast run here's tiles to come (`/work/tocome`, task #836: made of the same run, so its
+/// A forecast run here's tiles to come (`/api/tocome`, task #836: made of the same run, so its
 /// `at` is the swarm's forecast's), its runs' `after` in this history's numbering (`epoch`; none
 /// before the history's first read). The one before the last kept without its forecast (#836
 /// review: only its tiles are asked for).
@@ -247,7 +247,7 @@ struct State {
     /// history::KEEP_MAX.
     taken: std::collections::BTreeSet<(String, u64, u64, String)>,
     /// Each finished job's number here, by its writer's file and its number there: what a lease's
-    /// or start's `after` and `/work/tocome`'s are written in (task #797 review).
+    /// or start's `after` and `/api/tocome`'s are written in (task #797 review).
     numbered: BTreeMap<(String, u64), u64>,
     history: Option<History>,
     /// The history's numbering: made with the first snapshot (a new one each process).
@@ -525,7 +525,7 @@ impl PageView {
         self.forecast_run(ran.as_ref(), now, &inp.own);
     }
 
-    /// `/work/swarm`'s answer (the page's shape: crate::coord's handler), from the snapshot; None
+    /// `/api/swarm`'s answer (the page's shape: crate::coord's handler), from the snapshot; None
     /// before the first read. A page asked.
     pub fn swarm(&self) -> Option<Value> {
         self.touch();
@@ -544,7 +544,7 @@ impl PageView {
         Some(a)
     }
 
-    /// `/work/tocome`'s answer (task #836) from the forecast run here: the one at `at` (the swarm's
+    /// `/api/tocome`'s answer (task #836) from the forecast run here: the one at `at` (the swarm's
     /// forecast's `at` the page read: the last or the one before), else the last; with the `epoch`
     /// its `after` is numbered in (null before the history's first read: no `after`). None before
     /// the first run. A page asked.
@@ -558,14 +558,14 @@ impl PageView {
         Some(a)
     }
 
-    /// `/work/regions`' answer (crate::agent::regionsview): the lead's as last read; None before
+    /// `/api/regions`' answer (crate::agent::regionsview): the lead's as last read; None before
     /// they're read (or while the lead hasn't written them). A page asked.
     pub fn regions(&self) -> Option<Arc<Value>> {
         self.touch();
         self.state.lock().unwrap().regions.as_ref().map(|r| r.1.clone())
     }
 
-    /// `seqs` (lists of the history's numbers as `member` wrote them: `/work/tocome`'s `after`) in
+    /// `seqs` (lists of the history's numbers as `member` wrote them: `/api/tocome`'s `after`) in
     /// this Mac's numbering, those not taken in here dropped; with the numbering's `epoch`. None
     /// before the first read.
     pub fn renumber(&self, member: &str, seqs: &[Vec<u64>]) -> Option<(String, Vec<Vec<u64>>)> {
@@ -575,7 +575,7 @@ impl PageView {
         Some((st.epoch.clone(), seqs.iter().map(|v| v.iter().filter_map(of).collect()).collect()))
     }
 
-    /// `/work/history`'s answer: the events after number `since` (this Mac's numbering, `epoch`),
+    /// `/api/history`'s answer: the events after number `since` (this Mac's numbering, `epoch`),
     /// at most `max`. None before the first read. A page asked.
     pub fn history(&self, since: u64, max: usize) -> Option<Value> {
         self.touch();
@@ -913,7 +913,7 @@ pub(crate) mod tests {
 
     /// The lead's files for term 7: its status, its view, its forecast's input, two members' history
     /// of a day, a member's status.
-    /// (Also coord's tests': `/work/tocome` from a pageview.)
+    /// (Also coord's tests': `/api/tocome` from a pageview.)
     pub(crate) fn fixture(root: &store::nasfs::NasRoot, now: u64) {
         let view = serde_json::json!({ "at": now, "view": {
             "pause": null,
@@ -959,7 +959,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// (Task #836) `/work/tocome` is the forecast's the swarm's answer carries (the same `at`, its
+    /// (Task #836) `/api/tocome` is the forecast's the swarm's answer carries (the same `at`, its
     /// `after` in this Mac's numbering): the lead's agent's own had lagged a pageview's by a
     /// forecast, so every page dropped its own Mac's answer. The page asks with the `at` it read;
     /// a run done since leaves that one answered, the newest without one.
@@ -1018,7 +1018,7 @@ pub(crate) mod tests {
         assert!(a["agent"]["helpers"][0].get("regions").is_none());
         assert_eq!(a["seq"], 3);
         assert_eq!(a["rates"]["rows"].as_array().unwrap().len(), 24);
-        // (Each member with a broker, where its `/work/live` is read; one without, missing.)
+        // (Each member with a broker, where its `/api/live` is read; one without, missing.)
         assert_eq!(
             a["macs"],
             serde_json::json!([{ "host": "m1", "urls": ["http://100.1.1.1:8090"], "https": "https://m1.t.ts.net/" }])
@@ -1163,7 +1163,7 @@ pub(crate) mod tests {
         assert!(reader.join().unwrap());
     }
 
-    /// (Task #797 review) What a lease waited on and `/work/tocome`'s `after`, written in the
+    /// (Task #797 review) What a lease waited on and `/api/tocome`'s `after`, written in the
     /// lead's numbering, are given in this Mac's: the page matches them against the ends it holds.
     #[test]
     fn what_was_waited_on_is_renumbered_here() {

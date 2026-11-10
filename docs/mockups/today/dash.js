@@ -1,8 +1,8 @@
-// The whole build at a glance (docs/workers.md, The page): the page at /work/, for anyone it answers.
-// From the coordinator: /work/steps once (the steps table: every step's title, noun, stage and
-// place, docs/pipeline.md), /work/swarm every 10 s (the lead's heartbeat with its checklist,
+// The whole build at a glance (docs/coordinator.md, The page): the page at the coordinator's root, for anyone it answers.
+// From the coordinator: /api/steps once (the steps table: every step's title, noun, stage and
+// place, docs/pipeline.md), /api/swarm every 10 s (the lead's heartbeat with its checklist,
 // forecast and resources, its helpers', every worker and lease, the hours' work), and
-// /work/history after the last event this page has (what happened).
+// /api/history after the last event this page has (what happened).
 //
 // One shape for everything: a step is named by its title, its targets counted in its noun ("8 of
 // 480 tiles"), coloured by its stage; a stage is a card of its steps' rows, each row the same
@@ -45,7 +45,7 @@ function clock(t) {
 const ago = (now, t) => (t ? `${dur(now - t)} ago` : "never");
 const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : many}`;
 
-// ---- The steps table (crates/pipeline/src/agent/steps.rs, served at /work/steps) ---------------
+// ---- The steps table (crates/pipeline/src/agent/steps.rs, served at /api/steps) ---------------
 // Every word about a step comes from its row: its title, the noun its targets are counted in, its
 // stage (its colour) and where it runs. Before the table has loaded (or from a lead without it) a
 // step goes by its id.
@@ -370,11 +370,11 @@ function progressText(p, j, now) {
 // A job, as every machine's is shown: its name (its step's title and targets), its parts, its
 // progress, how long it's run and what it holds, and why it's stopped or stuck.
 // This Mac's own page (the app's panel, a browser on this Mac): it may cancel a job or try a failed
-// target again, through this Mac's agent (/work/act: refused from elsewhere).
+// target again, through this Mac's agent (/api/act: refused from elsewhere).
 const OWN = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(location.hostname);
 async function act(body, what) {
   try {
-    const [code, r] = await ctx.call("/work/act", body);
+    const [code, r] = await ctx.call("/api/act", body);
     if (code !== 200) throw new Error(r?.error || `answered ${code}`);
     ctx.onState?.(`asked to ${what}`);
     poll();
@@ -999,7 +999,7 @@ function render() {
   const scrollY = window.scrollY;
   const feedTop = root.querySelector(".feed")?.scrollTop || 0;
   const pool = poolSection(last.agent, m.now) || section("d-pool", "pool", null, null);
-  const banners = gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
+  const banners = gateBanners(m, (body) => ctx.call("/api/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
   root.classList.toggle("gated", banners.length > 0);
   const gate = h("section", { class: "d-inputs", id: "inputs" }, banners);
   const next = [verdict, gate, section("d-overview", "overview", "Overview", null, overview(m)), road, stagesSec, machines, pool, regions, activity, section("d-details", "details", null, null, details(m))];
@@ -1028,7 +1028,7 @@ let tableAsked = false;
 async function loadTable() {
   if (tableAsked) return;
   try {
-    const [code, t] = await ctx.call("/work/steps", {});
+    const [code, t] = await ctx.call("/api/steps", {});
     if (code === 200 && t?.steps) {
       table.steps = Object.fromEntries(t.steps.map((s) => [s.id, s]));
       table.stages = t.stages || [];
@@ -1044,7 +1044,7 @@ async function pollOnce() {
   if (!ctx) return;
   try {
     await loadTable();
-    const [code, sw] = await ctx.call("/work/swarm", {});
+    const [code, sw] = await ctx.call("/api/swarm", {});
     // (This Mac's agent hasn't read the build's state yet: a quiet line, asked again in 2 s, an
     // error after a minute of it: sums.js notRead.)
     if (code === 503) return waitRead();
@@ -1063,7 +1063,7 @@ async function pollOnce() {
     if (sw.seq != null) {
       const from = events.length ? events[events.length - 1].seq : Math.max(0, sw.seq - 600);
       if (sw.seq > from) {
-        const [c2, hist] = await ctx.call("/work/history", { since: from, max: 1000 }).catch(() => [0, null]);
+        const [c2, hist] = await ctx.call("/api/history", { since: from, max: 1000 }).catch(() => [0, null]);
         // (A 503 here, the swarm answered: left to the next regular poll.)
         if (c2 === 200 && hist?.events) {
           const last = events.length ? events[events.length - 1].seq : -1;
@@ -1086,7 +1086,7 @@ export function dashboard(opts) {
   ctx.ask = async (pause) => {
     try {
       // (No time of this browser's: the coordinator's clock orders the asks, and stamps it.)
-      await ctx.call("/work/pause", { pause: pause && { ...pause, by: ctx.label, at: 0 } });
+      await ctx.call("/api/pause", { pause: pause && { ...pause, by: ctx.label, at: 0 } });
       poll();
     } catch (e) {
       ctx.onError?.(`couldn't ask the build to ${pause ? "pause" : "go on"}: ${e.message}`);

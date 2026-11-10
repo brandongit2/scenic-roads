@@ -1,7 +1,7 @@
 //! The build page's regions (docs/pool.md §10, Regions; task #512): each enabled region's outline
 //! for drawing, where it sits in the regions' tree, and what downloading it weighs. Made by the
 //! lead once per regions' accepted version and catalogue (`Agent::regions_view`), written for the
-//! other Macs' pages beside its forecast's input, and answered at `/work/regions`.
+//! other Macs' pages beside its forecast's input, and answered at `/api/regions`.
 //!
 //! - **Outlines** (`fill`, `edge`): the region's drawn shapes (the regions' accepted version's
 //!   `@drawn` files) in Web Mercator, the world 0–1000 each way, simplified to `SIMPLIFY` (about

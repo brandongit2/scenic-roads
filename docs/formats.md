@@ -515,8 +515,7 @@ folders there, read by nothing, go by the `gc` job once every member's app check
 Spelling: the code and docs say catalogue, but every stored or wire name keeps the old spelling, because the
 NAS holds years of data and the pool runs mixed app versions: the file `inputs/hold-catalog`, the steps
 `catalog` and `catalog-held`, the history event kind `catalog`, JSON keys (`catalog`, `catalog_held`,
-`catalog_t`, `catalog_at`, `catalogs`, `catalogs_kept`), the routes `/api/catalog` and `/work/catalogs`
-(and the page's `catalogs.js`), the commands `scenic catalogs` and `lakefill catalog-add`, the
+`catalog_t`, `catalog_at`, `catalogs`, `catalogs_kept`), the routes `/api/catalog` and `/api/catalogs`, the commands `scenic catalogs` and `lakefill catalog-add`, the
 log line prefix `catalog-stats:` and the phase names (scenic-build's "sorting the manifest's files into the catalog's" and "writing the catalog", gc's "reading the catalogs", namestodo's "reading the catalog, the languages spoken and the translations"). In Rust they are
 `store::catalogue::NAME` and `HELD_NAME` or a `serde(rename)`.
 
@@ -725,7 +724,7 @@ Where they're kept:
   a child program writes its phases where `SCENIC_PHASES_TO` says (removed once read).
 - `agent/timings.jsonl`: every job this Mac's agent ran.
 - `agent/coord/timings.jsonl` (the lead's coordinator): every worker's, sent with `/work/done`;
-  read by `/work/timings {kind?, last?}` (`{runs: [...]}`, each kind's last 20 by default).
+  read by `/api/timings {kind?, last?}` (`{runs: [...]}`, each kind's last 20 by default).
 - Each log is cut to its newer half past 16 MB.
 
 ## The forecasts' archive (`state/coord/forecasts/<day>.jsonl.zst`; agentcore::agent::fcarchive, docs/pool.md §7.9)
@@ -992,7 +991,7 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **Kept for z6 tiles' later runs** (`cache/`, not swept): `cache/scenic-units/<u>/` (canopy.keys, canopy.tiles, view.keys,
   view.tiles, near.i8, roadside.u8, samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst,
   basis.json `{v: SCENIC_V, basis: [[[x, y], hash16], …]}`).
-- **Workers** (docs/workers.md):
+- **Workers** (docs/coordinator.md):
   - `state/coordinator.json`: `{urls: [Tailscale's, then the LAN name's], token, page}`, while the
     lead's agent runs (`page`: the build page over HTTPS when `tailscale serve` proxies it).
   - On the lead, `agent/coord/`: `workers-token` (32 hex digits, mode 600); `page`; `store/` (the
@@ -1048,12 +1047,12 @@ class, id) within a tile. The client sends the id with the clicked point.
     the file replaced whole by `control::grant` at the job's start and each re-grant;
     `SCENIC_THREADS_FILE`, docs/pool.md §7.1, Threads re-granted), `done.txt` (`<step> <target>` lines, `SCENIC_DONE`). A job stopped at a safe
     point exits 75. Coordinator answers carry the pause (409 `{error, pause}`, beats `{ok, pause}`);
-    `POST /work/pause {pause, at}`; `/work/fail {…, interrupted}` returns a lease unheld.
+    `POST /api/pause {pause, at}`; `/work/fail {…, interrupted}` returns a lease unheld.
     `state/build/pause.json` mirrors the lead's.
   - **Input check asks** (`inputs::inputs::Ask`, docs/inputs.md §4.5): `inputs-asks/<at, 20
     digits>-<pid or "menu">-….json`, `{unit, accept, all, unaccept, check, full, forget, by, at}`,
     from the menu and `scenic inputs check`; taken up at the agent's next
-    loop. A member's agent tells the lead's coordinator (`POST /work/inputs`); the build page posts
+    loop. A member's agent tells the lead's coordinator (`POST /api/inputs`); the build page posts
     there directly (never `forget`).
   - **The lead's declaration** (`agentcore::pool::term::Declared`, docs/pool.md §6.1), on the NAS:
     `state/build/lead-member.json`, `{member, host, since}`, made once with create-new; moved by

@@ -114,7 +114,7 @@ makes the same bytes on every Mac.
       z12 tiles' quarters over its z10 tiles' deep mids, its hi pack, and its mid
       (`work/terrain-mid/6-x-y`: its z9 tiles' means). It waits for its own z10 tiles' terrain-deep
       targets alone (its declared reads, docs/readiness.md): a z6 tile with none waits for nothing.
-      Its z8 subtrees may go to other workers (`terrainsub`, docs/workers.md §3), each alone (a tile
+      Its z8 subtrees may go to other workers (`terrainsub`, docs/coordinator.md §3), each alone (a tile
       reads nothing past its subtree), not where it takes in deep mids. Each level a block at a time
       (a z8 subtree's tiles at z12: `blocks`), each tile made whole and let go. Its blocks kept as
       made (crate::terrain_resume), a resumed run takes them.
@@ -262,7 +262,7 @@ makes the same bytes on every Mac.
     target's NAS weight (`bytes`; `coord::cost_version` 3).
   - Lossless WebP by `codecs::webp`.
   - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a
-    task (`treeblock`, docs/workers.md §3), the same bytes at any thread count.
+    task (`treeblock`, docs/coordinator.md §3), the same bytes at any thread count.
 - **Area overlays** (the heritage and designated areas' outlines): `docs/phase5.md`. The `overlays` job runs after marks (it needs the World
   Heritage dots' ids).
 - **3D buildings:** `docs/buildings3d.md`. Every building in the coverage from the Overture release,

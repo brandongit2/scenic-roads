@@ -110,7 +110,7 @@ for t in sorted(glob.glob("crates/*/tests/*.rs")):
     hit = next((f for f in dict.fromkeys(changed) if any(f == q or f.startswith(q.rstrip("/") + "/") for q in pre)), None)
     if hit: scan_hits.append((t.split("/")[1], "--test " + os.path.basename(t).removesuffix(".rs"), "scans " + hit))
 # A file compiled into a module's code (include_str!, include_bytes! or include! outside a #[test]
-# function: web/work's pages in coord/mod.rs) runs that module's own tests (#969): its users see it
+# function: web/buildpage's pages in coord/mod.rs) runs that module's own tests (#969): its users see it
 # only through what the module makes of it. (One a #[test] function includes is that test's read:
 # check-reuse.py runs it again after a pass.)
 import importlib.util

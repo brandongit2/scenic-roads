@@ -1,4 +1,4 @@
-//! A row of a tree cover z6 tile's zoom-8 blocks as a task (kind `treeblock`; docs/workers.md §3,
+//! A row of a tree cover z6 tile's zoom-8 blocks as a task (kind `treeblock`; docs/coordinator.md §3,
 //! docs/steps.md §2, Trees): the blocks of one z6 tile in one zoom-8 row, made together by the
 //! `trees` program (`--blocks`). A row's blocks read the same
 //! canopy rows (a canopy square's strips are rows of its whole 10° width), so one worker reads each
@@ -162,7 +162,7 @@ pub fn spec(
     };
     let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
     let first = row.first().map(|(x, y)| format!("{ZBLOCK}/{x}/{y}")).unwrap_or_default();
-    // (`unit`: the task spec's key for its tile, kept: docs/workers.md §3.)
+    // (`unit`: the task spec's key for its tile, kept: docs/coordinator.md §3.)
     serde_json::json!({ "unit": first, "blocks": blocks_arg(row), "version": version, "runs": [run], "inputs": list, "places": offload::places() })
 }
 

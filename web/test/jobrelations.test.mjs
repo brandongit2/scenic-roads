@@ -1,8 +1,8 @@
 // node web/test/jobrelations.test.mjs (tools/dev/check.sh's web part): the build page's schedule
-// ties a hovered job to single jobs, by `/work/tocome`'s job-to-job dependencies (from the targets'
-// readiness, task #879) and the history's `after` (web/work/sums.js jobRelations, #884).
+// ties a hovered job to single jobs, by `/api/tocome`'s job-to-job dependencies (from the targets'
+// readiness, task #879) and the history's `after` (web/buildpage/sums.js jobRelations, #884).
 import assert from "node:assert/strict";
-import { jobLinks, jobNumbers, jobRelations } from "../work/sums.js";
+import { jobLinks, jobNumbers, jobRelations } from "../buildpage/sums.js";
 
 const job = (kind, no, r = {}) => ({ kind, job: no, r });
 // Jobs 0–1 (a run of two), 2–8 (a run of seven: job 5 waits on job 1, the others on job 0, and on

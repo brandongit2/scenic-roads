@@ -219,7 +219,7 @@ pub fn test_mem_mb() -> Option<u64> {
     })
 }
 
-/// This Mac's resources, for the status (the worker page's machines): its memory and the share of
+/// This Mac's resources, for the status (the build page's machines): its memory and the share of
 /// it free now, its cores and load, its disk's free space and the caches it may drop to make room,
 /// how long the NAS took to answer and the NAS's free space.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

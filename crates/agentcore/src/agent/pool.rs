@@ -2168,7 +2168,7 @@ fn outbox_entries(the_plan: &dyn crate::agent::seam::Plan, outbox: &Path, member
     out
 }
 
-/// The coordinator's view of term `term` (§10): what the worker page takes from its memory.
+/// The coordinator's view of term `term` (§10): what the build page takes from its memory.
 pub fn view_path(term: u64) -> String {
     format!("state/coord/term/{term}/view.json")
 }

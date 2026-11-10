@@ -56,7 +56,7 @@ if [[ -n $sandbox ]]; then
   plutil -insert ScenicLegacyAgent -string local.scenic-sandbox.agent "$info"
   plutil -insert ScenicHome -string "$sandbox" "$info"
   plutil -insert ScenicRunDir -string "$sandbox/run" "$info"
-  plutil -insert ScenicPage -string http://127.0.0.1:17399/work/ "$info"
+  plutil -insert ScenicPage -string http://127.0.0.1:17399/ "$info"
   plutil -replace EnvironmentVariables.SCENIC_LAUNCHER_LOG -string "$sandbox/build.log" "$plist"
   plutil -insert EnvironmentVariables.SCENIC_RUN_DIR -string "$sandbox/run" "$plist"
 fi
