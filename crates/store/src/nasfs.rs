@@ -874,17 +874,9 @@ impl Loc<'_> {
         }
     }
 
-    /// What a call on it waits on (crate::waits): for the reads of a `File` it opened (`open`),
-    /// which no guard here covers, `crate::waits::wait(loc.on())` held around each.
-    pub fn on(&self) -> crate::waits::On {
-        match self {
-            Loc::Local(_) => crate::waits::On::Disk,
-            Loc::Nas(_) => crate::waits::On::Nas,
-        }
-    }
-
-    /// Opened for reading, as a `File` (a NAS file's reads not counted, nor waited on, past its
-    /// open: for a library that wants a `File`; its caller's reads hold `crate::waits::wait(on())`).
+    /// Opened for reading, as a `File` (a NAS file's reads not counted, nor waited on, nor tried
+    /// again past its open: for a library that wants a `File`, read through at once; a file kept
+    /// open and read by range is `open_plain`'s, task #1090).
     pub fn open(&self) -> io::Result<std::fs::File> {
         match self {
             Loc::Local(p) => {

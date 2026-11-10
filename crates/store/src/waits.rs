@@ -219,8 +219,8 @@ impl Drop for Guard {
     }
 }
 
-/// A wait on `on` from now until the guard is dropped.
-pub fn wait(on: On) -> Guard {
+/// A wait on `on` from now until the guard is dropped (`nas`, `net`, `disk`, `other`).
+fn wait(on: On) -> Guard {
     if !enabled() {
         return Guard(None);
     }

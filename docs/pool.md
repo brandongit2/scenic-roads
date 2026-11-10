@@ -105,7 +105,14 @@ The share is SMB 3 on a Synology. The design assumes:
   by its path and reads that, each try, and the new handle is kept (task #1090: a slope job's
   every read of one neighbour pack failed for 3 h 50 min on a handle cached dead). A file that
   can't be opened and read again still fails past the bound. A raw tile's archive read tries once
-  (the file opened again if its handle is gone), then takes the tile from the next source.
+  (the file opened again if its handle is gone), then takes the tile from the next source; its
+  archive's entries are read as an open is, within the bound. Each of these files is content-named
+  (a pack's or archive's name is its hash, never rewritten), so the file opened again by its path
+  is the same bytes; a `PlainFile` of a file not named so is checked by its length alone (another
+  length: `InvalidData`, not tried again). Being `PlainFile`s, their reads count in the job's NAS
+  bytes (`store::nasio`, its NAS weight's `bytes`; a copy here, this Mac's disk's) and their
+  descriptors are among the `plain_open_cap` held open (a quarter of the process's open-file limit;
+  the one read longest ago closed past it, opened again at its next read).
   A writer SIGKILLed mid-write leaves only its
   temporary file (test `whole_kill`, on local disk, not SMB). No NAS file is flock'd or opened with O_EXLOCK/O_SHLOCK: every
   lock (`sys::PathLock`: the build lock, the member and agent locks; store::cachefile's holds) is

@@ -216,7 +216,7 @@ pub fn entries_of<'a>(p: impl Into<store::nasfs::Loc<'a>>) -> Result<(store::ran
     let n = u64::from_le_bytes(h[16..24].try_into()?);
     let size = std::mem::size_of::<Entry>() as u64;
     let end = n.checked_mul(size).and_then(|b| b.checked_add(off));
-    ensure!(end.is_some_and(|e| e <= f.len().map_or(0, |l| l)), "{}: its entries run past its end", p.display());
+    ensure!(end.is_some_and(|e| f.len().is_ok_and(|l| e <= l)), "{}: its entries run past its end", p.display());
     let b = f.read_at(off, (n * size) as usize).with_context(|| format!("read {}", p.display()))?;
     let entries: Vec<Entry> = b.chunks_exact(size as usize).map(bytemuck::pod_read_unaligned::<Entry>).collect();
     ensure!(
