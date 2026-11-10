@@ -57,7 +57,7 @@ fn a_server_started_with_the_large_cache_runs_once_without_it() {
     let held = store::spawn::listen("127.0.0.1:0").unwrap();
     let port = held.local_addr().unwrap().port().to_string();
     let home = tempfile::tempdir().unwrap();
-    let mut cmd = store::spawn::command(env!("CARGO_BIN_EXE_server"));
+    let mut cmd = store::spawn::command(std::env::var("CARGO_BIN_EXE_server").expect("CARGO_BIN_EXE_server"));
     cmd.args(["--on-demand", "--port", &port])
         .current_dir(home.path())
         .env("HOME", home.path())
