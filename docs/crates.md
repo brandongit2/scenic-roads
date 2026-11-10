@@ -99,7 +99,7 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | inputs → coverage | `impl Coverage { fn accepted }` in inputs::regions::read, an inherent impl that can't stay once `Coverage` is another crate's | built (step 4): `inputs::regions::read::accepted_coverage`, its callers renamed |
 | dem → terrain_deep, terrain_zoom | the terrain's zoom rule (7 references) | built (step 6d): `PACK_Z`, `CELL_FACTOR`, `DEEPEST`, `zoom_for`, `polar_zoom_for` and `Detail` are dem::zoom's (not codecs': `Detail::of` reads dem's declared datasets); terrain_zoom and terrain_deep re-export them |
 | inputs → lakefill, rail | 2 references to lakefill, 4 to rail, from the input checks | built (step 6d): all three in the inputs crate |
-| cli → polar | one reference to polar | cli stays in pipeline; what the steps below it run programs by, `program` and `TOOLS`, is jobrt::sys's (step 6d; cli re-exports both). #883's steps left edit only `scenic gc`'s flags (cli/scenic.rs), so the rest of cli and net can move any time |
+| cli → polar | one reference to polar | cli stays in agentcore; what the steps below it run programs by, `program` and `TOOLS`, is jobrt::sys's (step 6d; cli re-exports both). The rest of cli has no user below agentcore and stays (task #1026, §7.3); net went to coordwire (step 7a) |
 | layers → ovconv | one item (`MAXZ`, in a test) | built (step 6e): `MAXZ` is codecs::vtgen's; ovconv re-exports it |
 | terrain_task, trees, bld, offload → coord | offloading a step's parts to other Macs | built (step 6e): what the steps offering tasks name is the offload crate's (`Offload`, its waits, unit's `Run`; on coordwire's real client, not a trait); coord appears only in tests that start a coordinator, which move to pipeline with their family (terrain_task's: `terrain_tests`; trees::task's: `trees_tests`; bld::task's: `bld_tests`) |
 
@@ -120,8 +120,8 @@ names, webpenc as now).
    agent::cond), `settings` (the pool's settings and the ask to set one, from coord::asks), the
    resume constants, `DRAIN_GRACE`; cli's `program` and `TOOLS` (step 6d); appupdate (step 7a).
    ~9.6k lines (1 Nov 2026), no pipeline dependency. net went to coordwire instead (step 7a: it
-   reads buildstore's test flag and needs axum). Not planned now: the rest of cli and nasread's NAS
-   reading (§7.3 says why). Offloading a step's parts is no trait here but the **offload** crate (step
+   reads buildstore's test flag and needs axum). The rest of cli and nasread's NAS reading stay in
+   agentcore (task #1026, 10 Nov 2026: §7.3 says why). Offloading a step's parts is no trait here but the **offload** crate (step
    6e: `Offload` on coordwire's client, its waits, unit's `Run`), below the families that offer
    tasks.
 4. **buildstore** (the build's files: the NAS/store layer above `store`; built, step 4): out,
@@ -1318,5 +1318,15 @@ What's left, by gain for its cost (rerun §7.1's measure before each):
    agent ↔ coord name each other 418 and 255 times (tools/dev/modgraph.py agentcore, 7 Nov), pool
    and the forecast are inside the same cycle. Not a move with re-exports: a design of its own,
    after #878 (coordination off the NAS) reshapes coord and pool.
-3. **The rest of cli and nasread's NAS reading** into jobrt (planned in §2 before 6f4): nothing
-   in the build waits on them now; they'd move only if a crate below agentcore needs them.
+Not done, and not planned: **the rest of cli and nasread's NAS reading** into jobrt (planned in
+§2 before 6f4; task #1026 closed it, 10 Nov 2026). Nothing in the build waits on them, and no
+crate below agentcore names either: cli's users are agentcore (the agent's and the plan's checks
+of a job's command line, `check_command`) and pipeline's binaries (each tool's `progs` type);
+nasread's are agentcore's agent and coord and pipeline's agent. The families make their programs'
+command lines with jobrt::sys's `program`, which is already below them, and agentcore's test of
+the tasks' command lines checks every family's specs in one place. nasread can't sit in jobrt at
+all: `Deadlined` implements buildstore's `Nas` (records::nas), its pools' sizes read
+`buildstore::out::testing`, and its term deadline agentcore's `pool::term::DIR`; jobrt is below
+buildstore. The two NAS reads below agentcore that are bounded keep their own bounds on purpose
+(terrain's GeoTIFF opens, `GRIDS_AT_ONCE` at once, would starve nasread's four readers;
+buildstore::nasssh bounds an `ssh`'s start, not a call).
