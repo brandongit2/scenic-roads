@@ -60,8 +60,8 @@ pub const HANDOFF: &str = "handoff";
 pub const BUDGETS: &str = "budgets";
 
 /// What a member's beat says it reads: the build's records at their one path
-/// (buildstore::records::ONE, docs/coordination.md step 8b), not the term's own files. The lead's
-/// saves write those beside while a member heard doesn't say it (`per_term`).
+/// (buildstore::records::ONE, docs/coordination.md step 8b), not the term's own brief. The lead's
+/// saves write that beside while a member heard doesn't say it (`per_term`).
 pub const RECORDS: &str = "records";
 
 /// What a member's beat says while its agent's proxy takes the Wikimedia budget from the lead
@@ -398,7 +398,7 @@ impl Beats {
 
     /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `RECORDS`, or one
     /// on an older app heartbeats on the NAS alone (`nas_too`): its readers read the term's own
-    /// records files, which the lead's saves write beside the one path (the rollout gate of
+    /// brief, which the lead's saves write beside the one path (the rollout gate of
     /// docs/coordination.md step 8b).
     pub fn per_term(&self, now: u64) -> bool {
         self.nas_too() || self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == RECORDS))
@@ -686,7 +686,7 @@ mod tests {
         assert!(b.get("m-a", 100 + FORGET_S).is_none());
     }
 
-    /// docs/coordination.md step 8b's gate: the lead writes the term's own records files beside the
+    /// docs/coordination.md step 8b's gate: the lead writes the term's own brief beside the
     /// one path while a member heard within `FORGET_S` doesn't say `RECORDS`, or one on an older
     /// app heartbeats on the NAS alone; once every member heard says it, no more; a member on an
     /// older app heard again opens it again.

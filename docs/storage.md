@@ -62,8 +62,8 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   These, the unverified uploads and the files' sizes are the build's records
   (`state/build/records.json`, the truth, kept first on the lead's disk: docs/building.md §2, The
   pool; docs/pool.md §6.2; its manifest and keys alone in `brief.json` beside it, for the readers
-  needing no more; each term's own copy in `state/build/term/<E>/` while a member's app reads
-  those). Before the pool they were `state/build/manifest.json`, `jobs.json`, `pending.json` and
+  needing no more; each term's own snapshot in `state/build/term/<E>/`, and its brief there
+  while a member's app reads those). Before the pool they were `state/build/manifest.json`, `jobs.json`, `pending.json` and
   `sizes.json`, which term 1's lead wrote (docs/pool.md §6.2).
 - **Unverified uploads** (content name → its SHA-256, recorded as it lands): a file a job copied to
   the NAS is read back past the client's cache as it lands and checked against its hash, and stays

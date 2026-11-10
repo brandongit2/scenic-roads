@@ -8585,10 +8585,11 @@ impl Agent {
         }
         drop(run);
         if lead && g.leads.is_some() {
-            let saved = !out
-                .events
-                .iter()
-                .any(|e| matches!(e, crate::pool::driver::Event::Failed { what: "save the records", .. }));
+            // (Not kept on its disk is not saved either: the records in memory are on no disk, and
+            // GC's queue told of them would free names the saved ones still hold.)
+            let saved = !out.events.iter().any(|e| {
+                matches!(e, crate::pool::driver::Event::Failed { what: "save the records" | "keep the records", .. })
+            });
             // (The build pages' asks, its own page's and the members' passed on: first, so the
             // coordinator's state written now holds a retry's forgotten failures.)
             self.act_on(&out.acts);

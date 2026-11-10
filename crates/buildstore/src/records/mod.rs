@@ -49,13 +49,14 @@ pub const ONE: &str = "state/build/records.json";
 /// The one path's brief (`BriefOf`): its snapshot's manifest and keys alone, written after it.
 pub const ONE_BRIEF: &str = "state/build/brief.json";
 
-/// The path of term `term`'s snapshot (written beside the one path while a member heard doesn't
-/// read that: the rollout gate of docs/coordination.md step 8b).
+/// The path of term `term`'s snapshot, written beside the one path by that term's lead alone: what
+/// a late write landed over the one path can't hide (docs/coordination.md step 8b).
 pub fn path(term: u64) -> String {
     format!("state/build/term/{term}/records.json")
 }
 
-/// The path of term `term`'s brief (`BriefOf`): its snapshot's manifest and keys alone.
+/// The path of term `term`'s brief (`BriefOf`): its snapshot's manifest and keys alone (written
+/// while a member heard reads it: the rollout gate of docs/coordination.md step 8b).
 pub fn brief_path(term: u64) -> String {
     format!("state/build/term/{term}/brief.json")
 }
@@ -108,19 +109,14 @@ pub fn load<S: Snapshot>(nas: &dyn Nas, term: u64) -> Result<Option<S>> {
     Ok(Some(r))
 }
 
-/// The records a reader (a job, the map server, a catalogue) has while term `term` is current:
-/// its snapshot, or while it has none yet (its lead taking it up, or gone before saving one)
-/// the newest of a term before it; for term 1, as `term_one` says (`today` as it says). None
-/// before any.
-pub fn newest<S: Snapshot>(nas: &dyn Nas, term: u64, today: bool) -> Result<Option<S>> {
-    newest_over(nas, term, None, today)
-}
-
-/// `newest`, walking down only to the term of `one` (the one path's snapshot, behind the current
-/// term: a term after it being taken up, its lead on an app before the one path, or an earlier
-/// save landed there late), which counts as its term's and the earlier terms': once the gate of
-/// docs/coordination.md step 8b shuts, the terms' own snapshots stop, and a walk past it would read
-/// hundreds of terms that have none.
+/// The records a reader (a job, the map server, a catalogue) has while term `term` is current and
+/// the one path holds `one` (its snapshot, behind the current term: a term after it being taken
+/// up, its lead on an app before the one path, or an earlier term's save landed there late): the
+/// current term's own snapshot, or while it has none yet (its lead taking it up, or gone before
+/// saving one) the newest of a term before it, walking down only to `one`'s term, which counts as
+/// its term's and the earlier terms' (the newest of a term above it is its own snapshot, which
+/// only that term's lead writes); with no `one`, down to term 1, as `term_one` says (`today` as it
+/// says). None before any.
 pub fn newest_over<S: Snapshot>(nas: &dyn Nas, term: u64, one: Option<S>, today: bool) -> Result<Option<S>> {
     let floor = one.as_ref().map_or(2, |o| o.term() + 1).max(2);
     for f in (floor..=term).rev() {

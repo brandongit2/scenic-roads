@@ -1073,9 +1073,10 @@ class, id) within a tile. The client sends the id with the clicked point.
     (`agent/pool/records.json`, the same bytes); readers read it (`Records::now`).
     `state/build/brief.json`: `{term, seq, manifest, keys}` of that snapshot, written after it,
     read by readers of those alone (`Brief::now`). `state/build/term/1/first.json` (term 1's first
-    snapshot), and each term's own `state/build/term/<E>/records.json` and (E ≥ 2) `brief.json`,
-    the same forms, written beside while a member's app reads them (docs/coordination.md step 8b's
-    gate). `manifest.json`, `jobs.json`, `pending.json` and `sizes.json` are
+    snapshot), and each term's own `state/build/term/<E>/records.json`, the same form, written
+    beside by its lead (what a late write at the one path can't hide: docs/pool.md §4, invariant
+    5), and (E ≥ 2) `brief.json`, written while a member's app reads it (docs/coordination.md step
+    8b's gate). `manifest.json`, `jobs.json`, `pending.json` and `sizes.json` are
     the records before the pool (term 1's first snapshot is made from them; its saves write them);
     a later term's lead writes them no more (last on the live share 31 Oct: #878 step 8a).
   - `state/journal/<day>/<term>-<n>.json`: a job's entry `{member, lease, step, handoff, at}`

@@ -89,7 +89,7 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | osmpass, layers, … → agent::jobs | progress reporting (`stage`, `report`, `part`, `within`, `run_watched`, `each_line`) | items moved (step 3): jobrt's `jobs` (with the log's reading: `tail`, `said`, `parts`, `error_of`); agent::jobs re-exports them. The edge goes as for room |
 | coverage, dem → agent::recipes | the `Recipe` type | built (step 4): agent/recipes.rs is buildstore's `recipes`; agent::recipes re-exports it |
 | out → agent::steps | `steps::writes` (each step's write set, checked on every save) | built (step 6a): `Out::open` takes the write set as a function (`out::Writes`); pipeline's `out::open(root, scratch, step)` passes `agent::steps::writes` |
-| out → pool::records | out's two wrappers (`records_now`, `brief_now`), and `Out` itself: it opens from `Records::now`'s manifest and pending, and a catalogue's sizes are its (`recorded_sizes`) | built (steps 4, 6a): the wrappers are gone; which file holds the records now (`now`, `newest`, `brief_now`, term 1's fallbacks), the NAS's operations and the current term are buildstore's `records`, generic over what's read: `Out` reads its `Recorded`, the pool its `Records`. `read_manifest` is buildstore's |
+| out → pool::records | out's two wrappers (`records_now`, `brief_now`), and `Out` itself: it opens from `Records::now`'s manifest and pending, and a catalogue's sizes are its (`recorded_sizes`) | built (steps 4, 6a): the wrappers are gone; which file holds the records now (`now`, `newest_over`, `brief_now`, term 1's fallbacks), the NAS's operations and the current term are buildstore's `records`, generic over what's read: `Out` reads its `Recorded`, the pool its `Records`. `read_manifest` is buildstore's |
 | out → inputs | `in_inputs_folder` | built (step 4): it and `DROP_ROOTS` are buildstore's `inputs_folder`; inputs re-exports both |
 | out → pool::term, agent::resume | `term::DIR` (whether the pool has begun), `UNMERGED_ENV` | built (step 4): `out::TERMS` and `out::UNMERGED_ENV`; `pool::term::DIR` is `out::TERMS`, agent::resume re-exports the other |
 | fetch → control | `draining_lately` | built (step 3): `control` is jobrt's |
@@ -577,7 +577,7 @@ The choices, against the alternatives:
   term.rs's read half (`records::term`: `current`, `read`, `next`, `path`, `Term`, `Current`,
   `DIR`, `HINT`, `app_at_least`, `is_version`; `Term::after` and `Term::lead` with it, so
   `Member` and `is_member_id` moved too, which inputs names) and records.rs's choice of file
-  (`load`, `newest`, `now`, `brief_now`, `term_one`, `no_pool`, `FIRST`, `TODAY`, the paths,
+  (`load`, `newest_over`, `now`, `brief_now`, `term_one`, `no_pool`, `FIRST`, `TODAY`, the paths,
   `read_or_default`, `FirstUnreadable`), written once, generic over the snapshot read
   (`Snapshot`: `pool::records::Records`, which carries the agent's `Keys`, and buildstore's
   `Recorded`, which reads only the term, manifest, pending and sizes) and the brief

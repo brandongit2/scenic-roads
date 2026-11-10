@@ -157,7 +157,10 @@ impl Io for Clocked<'_> {
         }
     }
     fn keep(&self, records: &[u8]) -> Result<()> {
-        store::whole::write(&self.dir.join(RECORDS), records)
+        // (Its rename made durable too, the folder flushed, before the NAS has them: a power cut
+        // after a save acknowledged on the NAS never leaves an older copy here, which a take-up
+        // would start from without reading the NAS.)
+        store::seglog::write_durable(&self.dir.join(RECORDS), records)
     }
 }
 

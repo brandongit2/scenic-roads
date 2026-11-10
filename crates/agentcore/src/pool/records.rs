@@ -2,12 +2,13 @@
 //! verified, the raw tiles' archives waiting to be named, and the journal entries they reflect,
 //! numbered by their term and a sequence number one more each save. The lead keeps them on its
 //! own disk first (docs/coordination.md step 8b: what its take-up starts from), then writes them
-//! whole to one path on the NAS, `state/build/records.json` (and its brief), and while a member
-//! heard doesn't read that (the rollout gate) to its term's own, `state/build/term/<E>/`. A reader
-//! never pairs keys from one version with a manifest of another (invariant 4); a save landing late
-//! over a later one at the one path is read until the lead's next save (`driver::RESAVE_S` at
-//! most), and its term's own file, written beside, is no one's once a later term has its own
-//! (invariant 5).
+//! whole to one path on the NAS, `state/build/records.json` (and its brief), and to its term's own
+//! snapshot, `state/build/term/<E>/records.json` (its brief there too while a member heard reads
+//! those: the rollout gate). A reader never pairs keys from one version with a manifest of another
+//! (invariant 4). A save of an earlier term's lead landing late over the one path is passed over:
+//! a term after its own is made, so a reader or a take-up from the NAS reads the later term's own
+//! (invariant 5); one of this term's (an earlier process's take-up of it) is read until the lead's
+//! next save (`driver::RESAVE_S` at most).
 //!
 //! Term 1 is today's layout, `state/build/manifest.json`, `jobs.json` and `pending.json` (nothing
 //! moves when the pool begins): its first snapshot is made from them before term 1 itself is, in a
@@ -359,9 +360,9 @@ pub struct Records {
     pub last: BTreeMap<String, BTreeMap<String, LeaseId>>,
 }
 
-/// A term's snapshot's manifest and keys alone (a quarter of its bytes: the unverified uploads,
-/// the sizes and the journal's names left out), written whole by its lead after each snapshot of a
-/// term after the first, for the readers that need no more (`Brief::now`): the map server's syncs,
+/// A snapshot's manifest and keys alone (a quarter of its bytes: the unverified uploads, the sizes
+/// and the journal's names left out), written whole by the lead after each snapshot (`ONE_BRIEF`;
+/// a term's own past the first while the gate writes them), for the readers that need no more (`Brief::now`): the map server's syncs,
 /// the hosts, the agent's planning, a catalog's checks. One read pairs keys and manifest of one
 /// version (invariant 4).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -377,9 +378,9 @@ pub struct Brief {
 }
 
 impl Brief {
-    /// `Records::now`'s manifest and keys, reading a term's brief where it has one (its snapshot
-    /// where it has none: a lead on an app from before briefs, or one stopped between the two
-    /// writes); today's two files before the pool (buildstore::records::brief_now).
+    /// `Records::now`'s manifest and keys: the one path's brief while it's the current term's, else a
+    /// term's brief where it has one (its snapshot where it has none); today's two files before the
+    /// pool (buildstore::records::brief_now).
     pub fn now(nas: &dyn Nas) -> Result<Brief> {
         buildstore::records::brief_now::<Records, Brief>(nas)
     }
@@ -441,9 +442,11 @@ impl Records {
         buildstore::records::load(nas, term)
     }
 
-    /// The records a reader has while term `term` is current (buildstore::records::newest).
+    /// The terms' own snapshots as a reader walks them while term `term` is current, the one path
+    /// left out (buildstore::records::newest_over): the tests' look at them.
+    #[cfg(test)]
     pub fn newest(nas: &dyn Nas, term: u64, today: bool) -> Result<Option<Records>> {
-        buildstore::records::newest(nas, term, today)
+        buildstore::records::newest_over(nas, term, None, today)
     }
 
     /// The build's records as today's three files hold them (term 1's, as the pool begins). The
@@ -462,18 +465,21 @@ impl Records {
         })
     }
 
-    /// The build's records as a reader has them now (§6.2; buildstore::records::now): the current
-    /// term's snapshot, or the newest before it; before the pool's first term, today's files.
+    /// The build's records as a reader has them now (§6.2; buildstore::records::now): the one path's
+    /// while it's the current term's, else the current term's own snapshot, or the newest before
+    /// it; before the pool's first term, today's files.
     pub fn now(nas: &dyn Nas) -> Result<Records> {
         buildstore::records::now(nas)
     }
 
     /// Saves them as the next snapshot (`seq` one more): kept by `keep` first (the lead's own
     /// disk, what its take-up starts from: docs/coordination.md step 8b), nothing written to the
-    /// NAS unless that's done; then whole to the one path and its brief (`ONE`, `ONE_BRIEF`); with
-    /// `per_term` (a member heard doesn't read the one path: the rollout gate) to their term's own
-    /// too (`path`, and past term 1 `brief_path`); term 1's to today's files after. The number goes
-    /// up even when a write fails, so no two versions that may land share one.
+    /// NAS unless that's done; then whole to the one path and its brief (`ONE`, `ONE_BRIEF`), and to
+    /// their term's own snapshot (`path`: only this term's lead writes it, so a late write of an
+    /// earlier term's lead, landed over the one path, never hides it from a take-up or a reader);
+    /// with `per_term` (a member heard reads the terms' own briefs: the rollout gate) past term 1
+    /// to the term's own brief (`brief_path`); term 1's to today's files after. The number goes up
+    /// even when a write fails, so no two versions that may land share one.
     pub fn save(&mut self, nas: &dyn Nas, keep: Keep, per_term: bool) -> std::result::Result<(), Unsaved> {
         if self.term < 1 {
             return Err(Unsaved::Kept(anyhow::anyhow!("records of no term")));
@@ -501,11 +507,11 @@ impl Records {
             serde_json::to_vec(&B { term: self.term, seq: self.seq, manifest: &self.manifest, keys: &self.keys })?;
         nas.write_whole(ONE, b)?;
         nas.write_whole(ONE_BRIEF, &brief)?;
-        if per_term {
-            nas.write_whole(&path(self.term), b)?;
-            if self.term >= 2 {
-                nas.write_whole(&brief_path(self.term), &brief)?;
-            }
+        // (The term's own snapshot, always: what fences a late write at the one path from a take-up
+        // that reads the NAS, docs/coordination.md step 8b.)
+        nas.write_whole(&path(self.term), b)?;
+        if per_term && self.term >= 2 {
+            nas.write_whole(&brief_path(self.term), &brief)?;
         }
         if self.term == 1 {
             nas.write_whole(TODAY[0], &serde_json::to_vec_pretty(&self.manifest)?)?;

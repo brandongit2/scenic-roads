@@ -135,10 +135,12 @@ Checked by the simulator (§13):
    gate's) stays in the journal, which a lead taking up its next term replays.
 4. Each records snapshot is one file written whole.
 5. A late write of an earlier save never sends the lead back: it takes up from the records it
-   kept on its own disk (§6.2), reading the NAS's only after another Mac led. At the one path a
-   late write is what readers read until the lead's next save (`driver::RESAVE_S`, 10 minutes,
-   at most); at a term's own files (written beside while the gate holds) no one reads it once a
-   later term saves.
+   kept on its own disk (§6.2), reading the NAS's only after another Mac led. One of an earlier
+   term's goes to its own term's snapshot, which no one reads once a later term saves, and to the
+   one path, where it's passed over: a later term is made, so a reader, and a lead taking up from
+   the NAS, read that term's own snapshot, which its lead alone writes. One of this term's (an
+   earlier process's take-up of it) is read until the lead's next save (`driver::RESAVE_S`, 10
+   minutes, at most).
 
 ## 5. Roles
 
@@ -222,14 +224,17 @@ of the lead's, between restarts and sleeps.
   and refused (with why), the lease that last set each target, its term and `seq` (one more each
   save). Also saved, unchanged, `driver::RESAVE_S` (10 min) after the last save reached the NAS.
   A save (docs/coordination.md step 8b, task #1093) goes:
-  1. to the lead's own disk, `agent/pool/records.json` (`Io::keep`: written whole and flushed); a
-     failure there writes nothing else, and a take-up isn't done (tried again next step);
+  1. to the lead's own disk, `agent/pool/records.json` (`Io::keep`: written whole and flushed, its
+     folder too, `seglog::write_durable`); a failure there writes nothing else, and a take-up
+     isn't done (tried again next step);
   2. to the NAS's one path, `state/build/records.json`, and its brief `state/build/brief.json`
      (`records::ONE`, `ONE_BRIEF`), whatever the term (`Nas::write_whole`);
-  3. while a member heard within 20 min doesn't say it reads those (its beat's `records` word,
-     `beats::RECORDS`; `Beats::per_term`, also while one on an older app heartbeats on the NAS
-     alone: the rollout gate), to the term's own as before, `state/build/term/<E>/records.json` and
-     `brief.json`.
+  3. to the term's own snapshot, `state/build/term/<E>/records.json`, always (invariant 5: what a
+     late write at the one path can't hide); and while a member heard within 20 min doesn't say it
+     reads the one path (its beat's `records` word, `beats::RECORDS`; `Beats::per_term`, also while
+     one on an older app heartbeats on the NAS alone: the rollout gate), the term's own
+     `brief.json` (an older app's reader finds none once the gate lifts, and reads the term's
+     snapshot).
   A save kept on the lead's disk and not written whole to the NAS (past its 20-s deadline, or
   refused while an earlier write to that path still runs, crate::agent::nasread) leaves the lead
   leading: it acknowledges nothing and isn't caught up (no catalogue, no GC) until a save reaches
@@ -243,7 +248,7 @@ of the lead's, between restarts and sleeps.
   an earlier process's write left running as it stopped, can't send it back). Else (the owner moved
   the lead here, or its disk's copy is lost or older than its last save) the newest snapshot the
   NAS has: the one path's, unless a term after its own has a snapshot of its own (walking down from
-  E+1 to it); a stale read fails and is retried; never from
+  E+1 to it: a late write of an earlier term's at the one path finds term E's own); a stale read fails and is retried; never from
   records older than those its lead saved last, `Saved::records`, or than the term it led last,
   §7.3). A term made after another member's (the owner moved the lead) is taken up only `STALE_S`
   (10 min) after it was made, and a lead acknowledges a hand-off only while a stat after its save
@@ -262,7 +267,7 @@ of the lead's, between restarts and sleeps.
   five). A term after it made (being taken up, its lead on an app before the one path, or an
   earlier save landed late there), they read the current term's own, walking down to the one
   path's term and taking the one path's where none has one (`newest_over`); with no one path,
-  the current term's own (`Records::newest`), falling back to an earlier term's; before any term,
+  the current term's own (`newest_over` with no one path), falling back to an earlier term's; before any term,
   today's files `manifest.json`, `jobs.json`,
   `pending.json` and `sizes.json`, which a Mac's own jobs write without a pool; no term found once
   term 1's first snapshot is there, a stale read, is an error, never today's files. Readers of the
@@ -274,7 +279,7 @@ of the lead's, between restarts and sleeps.
   agent's plan digest stats the one path's snapshot and the current term's. The map server reads
   them through its own pool (`pool::nas::ReadOnly`); it runs the lead's app once it has restarted
   into it, after a minute of the map idle (docs/macs.md, the updater), and until then reads the
-  term's own files, the gate's.
+  term's own files: its brief while the gate writes it, its snapshot after.
 - **Today's files** are the records before the pool: term 1's first snapshot is made from them and
   its saves write them. A later term's lead writes them no more (the rollout's copy for apps that
   read them, last written on the live share 31 Oct, was deleted with #878 step 8a); this app reads
@@ -3025,7 +3030,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
 
 ## 12. Getting there from today
 
-Built and always on: the declared lead and its terms, the records on the lead's disk and at one path on the NAS (each term's own beside while the gate is open), hand-offs by HTTP (the journal while the gate is open), the driver,
+Built and always on: the declared lead and its terms, the records on the lead's disk and at one path on the NAS (each term's own snapshot beside, and its brief while the gate is open), hand-offs by HTTP (the journal while the gate is open), the driver,
 the views, the steps table, the memory and disk guards, write-sets, the budgets and answers' lease,
 every step to every member, every job by grant (the lead's too) and packing, the equal-machines
 forecast. Gone: the pool's on/off switch and shadow run, claims, the named writer
