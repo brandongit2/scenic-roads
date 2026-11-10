@@ -246,9 +246,11 @@ impl RangeRead for PooledFile {
 
 /// A file read with plain positioned reads (no pool, never mapped): for build steps, which may read
 /// the NAS directly (they run alone, and a stalled share just stalls the step).
-/// Its reads are counted as this Mac's own disk's (`LOCAL`) when it's on one. A read the share fails
-/// for a moment (crate::retry::transient) is tried again, the file opened again by its path (a
-/// dropped SMB session's handle stays dead), within crate::retry's bound.
+/// Its reads are counted as this Mac's own disk's (`LOCAL`) when it's on one. A read that fails as
+/// a gone handle does (crate::retry::handle_gone: a dropped SMB session's handle stays dead, every
+/// read of it failing, task #1090) is tried again on the file opened again by its path, each try
+/// opening it again, within crate::retry's bound (once, inside another retry's try: that retry
+/// waits and tries again); the descriptor that read then is the one kept.
 /// Its descriptor is held only while it's among the `plain_open_cap` files read last: past that the
 /// one read longest ago is closed, and opened again by its path at its next read (its length
 /// unchanged: else `InvalidData`). A run that keeps thousands open (a pool's GLO-30 tiles and their
@@ -391,6 +393,18 @@ impl PlainFile {
         f.read_exact_at(b, off)
     }
 
+    /// Test builds: its descriptor made dead in place (a write-only one put in its stead), so its
+    /// next read fails with EBADF, as a handle a dropped SMB session left does.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn kill_handle(&self) {
+        use std::os::fd::AsRawFd;
+        let g = lock(&self.slot.file);
+        let Some(f) = g.as_ref() else { return };
+        let w = std::fs::OpenOptions::new().write(true).open("/dev/null").expect("/dev/null");
+        // SAFETY: both descriptors are open; dup2 puts w's file in f's descriptor in place.
+        assert!(unsafe { libc::dup2(w.as_raw_fd(), f.as_raw_fd()) } >= 0, "dup2");
+    }
+
     /// Its descriptor, opened again by its path when it was closed (`plain_open_cap`).
     fn handle(&self) -> std::io::Result<Arc<File>> {
         self.slot.used.store(tick(), std::sync::atomic::Ordering::Relaxed);
@@ -430,11 +444,11 @@ impl RangeRead for PlainFile {
         let _w = if self.local { crate::waits::disk() } else { crate::waits::nas() };
         let mut b = vec![0u8; len];
         if let Err(e) = self.handle().and_then(|f| self.read_once(&f, &mut b, off)) {
-            if !crate::retry::transient(&e) {
+            if !crate::retry::handle_gone(&e) {
                 return Err(IoError::Io(e));
             }
             let what = format!("{}: read {len} bytes at {off}", self.path.display());
-            eprintln!("{what}: {e}");
+            crate::retry::log(format_args!("{what}: {e}; opened again"));
             // (Opened again each try: a "not found" then is the share's moment, the file was open.)
             crate::retry::io(
                 &what,
@@ -587,6 +601,36 @@ mod tests {
         *f.faults.lock().unwrap() = (1, libc::EIO);
         std::fs::write(&p, b"01234").unwrap();
         assert!(f.read_at(0, 3).unwrap_err().to_string().contains("5 bytes now"));
+    }
+
+    /// Task #1090: a handle that's dead (every read of it failing) is let go: the read that meets
+    /// it opens the file again and reads, and the reads after use the new one. A file that can't
+    /// be opened again still fails, past the bound, not for ever.
+    #[test]
+    fn a_dead_handle_is_opened_again() {
+        crate::retry::fast();
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f");
+        std::fs::write(&p, b"0123456789").unwrap();
+        let f = PlainFile::open(&p).unwrap();
+        f.kill_handle();
+        assert_eq!(f.read_at(2, 5).unwrap(), b"23456");
+        assert_eq!(f.read_at(0, 3).unwrap(), b"012", "the new handle kept");
+        // Inside another retry's try: opened again once, at once.
+        f.kill_handle();
+        {
+            let _a = crate::retry::attempt();
+            assert_eq!(f.read_at(7, 3).unwrap(), b"789");
+        }
+        // Gone for good: its error, past the bound, marked so an outer retry doesn't start over.
+        f.kill_handle();
+        std::fs::remove_file(&p).unwrap();
+        let e = match f.read_at(0, 3) {
+            Err(IoError::Io(e)) => e,
+            r => panic!("{r:?}"),
+        };
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        assert!(!crate::retry::transient_or_missing(&e));
     }
 
     #[test]

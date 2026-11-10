@@ -563,22 +563,12 @@ pub trait Terrain {
 pub struct HiPacks {
     root: store::nasfs::NasRoot,
     packs: BTreeMap<(u32, u32), String>,
-    open: std::sync::Mutex<HashMap<(u32, u32), Option<std::sync::Arc<(std::fs::File, store::pack::PackIndex)>>>>,
+    /// Each pack open (store::range::PlainFile, kept for the job: a read meeting its handle gone
+    /// opens it again, task #1090) and its index.
+    open: std::sync::Mutex<
+        HashMap<(u32, u32), Option<std::sync::Arc<(store::range::PlainFile, store::pack::PackIndex)>>>,
+    >,
     cache: std::sync::Mutex<HashMap<(u32, u32), Option<std::sync::Arc<Vec<f32>>>>>,
-}
-
-struct FileAt<'a>(&'a std::fs::File, u64);
-
-impl store::range::RangeRead for FileAt<'_> {
-    fn len(&self) -> Result<u64, store::iopool::IoError> {
-        Ok(self.1)
-    }
-    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
-        use store::sys::PosIo;
-        let mut b = vec![0u8; len];
-        self.0.read_exact_at(&mut b, off).map_err(store::iopool::IoError::Io)?;
-        Ok(b)
-    }
 }
 
 impl HiPacks {
@@ -596,7 +586,7 @@ impl HiPacks {
         HiPacks { root: root.clone(), packs, open: Default::default(), cache: Default::default() }
     }
 
-    fn pack(&self, t: (u32, u32)) -> Result<Option<std::sync::Arc<(std::fs::File, store::pack::PackIndex)>>> {
+    fn pack(&self, t: (u32, u32)) -> Result<Option<std::sync::Arc<(store::range::PlainFile, store::pack::PackIndex)>>> {
         if let Some(p) = self.open.lock().unwrap().get(&t) {
             return Ok(p.clone());
         }
@@ -604,9 +594,8 @@ impl HiPacks {
             None => None,
             Some(c) => {
                 let path = self.root.join(c);
-                let f = store::nasfs::Loc::from(&path).open().with_context(|| format!("{}", path.display()))?;
-                let len = f.metadata()?.len();
-                let idx = store::pack::PackIndex::read_from(&FileAt(&f, len))
+                let f = path.open_plain().with_context(|| format!("{}", path.display()))?;
+                let idx = store::pack::PackIndex::read_from(&f)
                     .with_context(|| format!("the index of {}", path.display()))?;
                 Some(std::sync::Arc::new((f, idx)))
             }
@@ -624,15 +613,12 @@ impl Terrain for HiPacks {
         let k = TERRAIN_Z - 6;
         let t = match self.pack((x >> k, y >> k))? {
             None => None,
-            Some(p) => {
-                let len = p.0.metadata()?.len();
-                match p.1.get(&FileAt(&p.0, len), TERRAIN_Z, x, y)? {
-                    None => None,
-                    Some((_, b)) => Some(std::sync::Arc::new(
-                        roadcore::grid::decode_terrain(&b).with_context(|| format!("terrain {TERRAIN_Z}/{x}/{y}"))?,
-                    )),
-                }
-            }
+            Some(p) => match p.1.get(&p.0, TERRAIN_Z, x, y)? {
+                None => None,
+                Some((_, b)) => Some(std::sync::Arc::new(
+                    roadcore::grid::decode_terrain(&b).with_context(|| format!("terrain {TERRAIN_Z}/{x}/{y}"))?,
+                )),
+            },
         };
         let mut c = self.cache.lock().unwrap();
         // (A few hundred kept: 256 KB each.)

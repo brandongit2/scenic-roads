@@ -30,7 +30,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use store::nasfs::NasPath;
 use store::range::RangeRead;
-use store::sys::PosIo;
 
 /// The stored pyramids' folder, under the build's root.
 pub const DIR: &str = buildstore::rawpack::PYRAMIDS;
@@ -80,8 +79,9 @@ pub fn of(plan: &Plan) -> Vec<(String, u32, Option<Vec<[f64; 4]>>)> {
     v
 }
 
-/// A shard's archives as read: each one's file and entries, newest first.
-type Opened = Vec<(std::fs::File, Vec<Entry>)>;
+/// A shard's archives as read: each one's file and entries, newest first. Kept for the run, so
+/// each file is a store::range::PlainFile: a read meeting its handle gone opens it again.
+type Opened = Vec<(store::range::PlainFile, Vec<Entry>)>;
 
 /// One pyramid's store as read.
 struct Layer {
@@ -127,8 +127,8 @@ impl Layer {
         let key = tile_key(z, x, y);
         for (f, entries) in opened {
             let Ok(i) = entries.binary_search_by_key(&key, |e| e.key) else { continue };
-            let mut b = vec![0u8; entries[i].len as usize];
-            f.read_exact_at(&mut b, entries[i].offset)
+            let b = f
+                .read_at(entries[i].offset, entries[i].len as usize)
                 .with_context(|| format!("pyramids: {z}/{x}/{y} of {}", self.store.display()))?;
             if b.is_empty() {
                 return Ok(Some(None));

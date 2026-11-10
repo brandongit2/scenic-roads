@@ -204,25 +204,20 @@ fn named_right<'a>(p: impl Into<store::nasfs::Loc<'a>>, name: &str) -> Result<bo
 }
 
 /// An archive's entries, read alone (not the whole archive: over SMB, one from the NAS's), and the
-/// file, open.
-pub fn entries_of<'a>(p: impl Into<store::nasfs::Loc<'a>>) -> Result<(std::fs::File, Vec<Entry>)> {
+/// file, open for its tiles' reads (store::range::PlainFile: a reader keeping it for a job has a
+/// handle a dropped SMB session left dead opened again, task #1090).
+pub fn entries_of<'a>(p: impl Into<store::nasfs::Loc<'a>>) -> Result<(store::range::PlainFile, Vec<Entry>)> {
+    use store::range::RangeRead;
     let p = p.into();
-    let f = p.open().with_context(|| format!("open {}", p.display()))?;
-    let _w = store::waits::wait(p.on());
-    let mut h = [0u8; 24];
-    f.read_exact_at(&mut h, 0).with_context(|| format!("read {}", p.display()))?;
+    let f = p.open_plain().with_context(|| format!("open {}", p.display()))?;
+    let h = f.read_at(0, 24).with_context(|| format!("read {}", p.display()))?;
     ensure!(&h[..8] == MAGIC, "{}: not a tile archive", p.display());
     let off = u64::from_le_bytes(h[8..16].try_into()?);
     let n = u64::from_le_bytes(h[16..24].try_into()?);
     let size = std::mem::size_of::<Entry>() as u64;
     let end = n.checked_mul(size).and_then(|b| b.checked_add(off));
-    ensure!(
-        end.is_some_and(|e| e <= f.metadata().map_or(0, |m| m.len())),
-        "{}: its entries run past its end",
-        p.display()
-    );
-    let mut b = vec![0u8; (n * size) as usize];
-    f.read_exact_at(&mut b, off).with_context(|| format!("read {}", p.display()))?;
+    ensure!(end.is_some_and(|e| e <= f.len().map_or(0, |l| l)), "{}: its entries run past its end", p.display());
+    let b = f.read_at(off, (n * size) as usize).with_context(|| format!("read {}", p.display()))?;
     let entries: Vec<Entry> = b.chunks_exact(size as usize).map(bytemuck::pod_read_unaligned::<Entry>).collect();
     ensure!(
         entries.iter().all(|e| e.offset >= 28 && e.offset.checked_add(e.len as u64).is_some_and(|end| end <= off)),
@@ -1288,8 +1283,7 @@ pub fn check(store: &store::nasfs::NasPath, every: usize) -> Result<Checked> {
                 for e in entries.iter().step_by(every.max(1)).take(if every == 0 { 0 } else { usize::MAX }) {
                     let (z, x, y) =
                         ((e.key >> 58) as u8, ((e.key >> 29) & 0x1fff_ffff) as u32, (e.key & 0x1fff_ffff) as u32);
-                    let mut b = vec![0u8; e.len as usize];
-                    f.read_exact_at(&mut b, e.offset)?;
+                    let b = store::range::RangeRead::read_at(&f, e.offset, e.len as usize)?;
                     let loose = if b.is_empty() {
                         store.join(format!("{z}/{x}/{y}.none"))
                     } else {

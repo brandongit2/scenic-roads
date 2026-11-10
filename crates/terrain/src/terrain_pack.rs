@@ -423,12 +423,23 @@ pub struct ManifestTiles {
     copies: Option<(std::path::PathBuf, Mutex<HashMap<String, std::path::PathBuf>>)>,
 }
 
-/// A pack open: its file and index.
+/// A pack open: its file and index. Kept for the job's life, so its reads go through a
+/// store::range::PlainFile: a read meeting a handle gone (a dropped SMB session leaves it dead,
+/// every read of it failing: task #1090) opens the file again by its path and reads that.
 struct OpenPack {
-    file: std::fs::File,
-    /// What its reads wait on (the NAS, or this Mac's disk for a copy): held around each.
-    on: store::waits::On,
+    file: store::range::PlainFile,
     idx: store::pack::PackIndex,
+}
+
+impl OpenPack {
+    /// `len` bytes at `off` (`PlainFile`'s reads: counted, waited on, a gone handle opened again).
+    fn read(&self, off: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        use store::range::RangeRead;
+        self.file.read_at(off, len).map_err(|e| match e {
+            store::iopool::IoError::Io(e) => e,
+            e => std::io::Error::other(e.to_string()),
+        })
+    }
 }
 
 impl ManifestTiles {
@@ -471,12 +482,9 @@ impl ManifestTiles {
     fn open_file(p: store::nasfs::Place) -> anyhow::Result<std::sync::Arc<OpenPack>> {
         let shown = p.loc().display();
         let open = nas_call(&shown, NAS_DEADLINE, &store::retry::waits(), move || {
-            let file = p.loc().open()?;
-            let on = p.loc().on();
-            let _w = store::waits::wait(on);
-            let len = file.metadata()?.len();
-            let idx = store::pack::PackIndex::read_from(&FileSource(&file, len)).map_err(store::retry::as_io)?;
-            Ok(std::sync::Arc::new(OpenPack { file, on, idx }))
+            let file = p.loc().open_plain()?;
+            let idx = store::pack::PackIndex::read_from(&file).map_err(store::retry::as_io)?;
+            Ok(std::sync::Arc::new(OpenPack { file, idx }))
         });
         anyhow::Context::with_context(open, || format!("open the pack {shown}"))
     }
@@ -506,16 +514,14 @@ impl ManifestTiles {
         Ok(open.get(&logical).cloned().flatten())
     }
 
+    /// Tile (z, x, y), read under `nas_call`'s deadline and retries (each try on its pack's file
+    /// opened again where the last met its handle gone: `OpenPack`).
     pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
-        use store::sys::PosIo;
         let Some(e) = self.pack(z, x, y)? else { return Ok(None) };
         let Some(ent) = e.idx.find(z, x, y) else { return Ok(None) };
         let (off, len) = (ent.offset, ent.len as usize);
         let b = nas_call(&format!("{}'s {z}/{x}/{y}", self.layer), NAS_DEADLINE, &store::retry::waits(), move || {
-            let mut b = vec![0u8; len];
-            let _w = store::waits::wait(e.on);
-            e.file.read_exact_at(&mut b, off)?;
-            Ok(b)
+            e.read(off, len)
         })?;
         Ok(Some(b))
     }
@@ -524,10 +530,10 @@ impl ManifestTiles {
     /// pack's order, neighbours a gap of under `SPAN_GAP` apart read together, up to `SPAN_MAX` a
     /// read, the spans in parallel. A z6 tile reading thousands of a pack's tiles makes a few dozen
     /// reads of the share instead of a round trip a tile, and moves little it doesn't use. Each
-    /// span's read is under `nas_call`'s deadline and retries, on `SPAN_READERS` threads of its own
-    /// (not rayon's: a job computing meanwhile, the peaks' next z6 tile read ahead, doesn't hold them up).
+    /// span's read is under `nas_call`'s deadline and retries (as `get`'s), on `SPAN_READERS` threads
+    /// of its own (not rayon's: a job computing meanwhile, the peaks' next z6 tile read ahead,
+    /// doesn't hold them up).
     pub fn get_many(&self, want: &[(u8, u32, u32)]) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
-        use store::sys::PosIo;
         const SPAN_GAP: u64 = 256 << 10;
         const SPAN_MAX: u64 = 32 << 20;
         let mut got: Vec<Option<Vec<u8>>> = vec![None; want.len()];
@@ -569,12 +575,7 @@ impl ManifestTiles {
                             let Some((e, s0, s1, ts)) = spans.get(k) else { break };
                             let (e, s0, n) = (e.clone(), *s0, (s1 - s0) as usize);
                             let what = format!("{}'s bytes {s0}..{s1}", self.layer);
-                            let b = nas_call(&what, NAS_DEADLINE, &store::retry::waits(), move || {
-                                let mut b = vec![0u8; n];
-                                let _w = store::waits::wait(e.on);
-                                e.file.read_exact_at(&mut b, s0)?;
-                                Ok(b)
-                            });
+                            let b = nas_call(&what, NAS_DEADLINE, &store::retry::waits(), move || e.read(s0, n));
                             mine.push(b.map_err(anyhow::Error::from).map(|b| {
                                 ts.iter()
                                     .map(|&(o, l, i)| {
@@ -711,20 +712,6 @@ pub fn nas_call<T: Send + 'static>(
     })
 }
 
-struct FileSource<'a>(&'a std::fs::File, u64);
-
-impl store::range::RangeRead for FileSource<'_> {
-    fn len(&self) -> Result<u64, store::iopool::IoError> {
-        Ok(self.1)
-    }
-    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
-        use store::sys::PosIo;
-        let mut b = vec![0u8; len];
-        self.0.read_exact_at(&mut b, off).map_err(store::iopool::IoError::Io)?;
-        Ok(b)
-    }
-}
-
 /// The index file a version of the raw tiles' index is (`Stamp`): its inode (on the NAS, the
 /// server's file ID on the share), time and size. The index is only ever written by a temporary
 /// name and renamed over (rawpack's `Index::save`, codecs::whole), and a renamed file has a new file
@@ -781,7 +768,7 @@ enum Opened {
 /// A shard's archives read by range: each one's NAS file and its entries. Shared, so a tile is
 /// read from them outside the shard's lock (`archived_by`: a read of the NAS held every other
 /// thread wanting a tile of the shard).
-type RangedArchives = std::sync::Arc<Vec<(std::fs::File, Vec<roadcore::archive::Entry>, store::waits::On)>>;
+type RangedArchives = std::sync::Arc<Vec<(store::range::PlainFile, Vec<roadcore::archive::Entry>)>>;
 
 /// The tiles of a shard read straight from the NAS's archives before they're copied here whole.
 const RANGED: usize = 16;
@@ -934,7 +921,7 @@ impl RawTiles {
                     _ => store::nasfs::Place::Nas(st.join("packs").join(&p.name)),
                 };
                 match buildstore::rawpack::entries_of(&at) {
-                    Ok(e) => v.push((e.0, e.1, at.loc().on())),
+                    Ok(e) => v.push(e),
                     // (Gone from the NAS: the index read before is out of date.)
                     Err(e) if !fresh && buildstore::rawpack::not_found(&e) => break,
                     Err(e) => {
@@ -1036,15 +1023,21 @@ impl RawTiles {
         match here {
             Ok(here) => here.iter().find_map(|a| a.get(z, x, y).and_then(|b| whole(b))),
             Err(archives) => {
-                for (f, entries, on) in archives.iter() {
+                for (f, entries) in archives.iter() {
                     let Ok(i) = entries.binary_search_by_key(&key, |e| e.key) else { continue };
-                    let mut b = vec![0u8; entries[i].len as usize];
-                    let w = store::waits::wait(*on);
-                    if let Err(e) = store::sys::PosIo::read_exact_at(f, &mut b, entries[i].offset) {
-                        eprintln!("terrain: {z}/{x}/{y} from an archive of {shard}: {e}");
-                        return None;
-                    }
-                    drop(w);
+                    // (Tried once, its handle opened again if it's gone (store::range::PlainFile);
+                    // failing, the tile is taken from the next source, not waited for.)
+                    let read = {
+                        let _a = store::retry::attempt();
+                        store::range::RangeRead::read_at(f, entries[i].offset, entries[i].len as usize)
+                    };
+                    let b = match read {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("terrain: {z}/{x}/{y} from an archive of {shard}: {e}");
+                            return None;
+                        }
+                    };
                     if let Some(t) = whole(&b) {
                         return Some(t);
                     }
@@ -1072,7 +1065,7 @@ impl RawTiles {
         match c.as_ref() {
             Some(Opened::Here(h)) => h.iter().any(|a| a.get(z, x, y).is_some()),
             Some(Opened::Ranged { archives, .. }) => {
-                archives.iter().any(|(_, e, _)| e.binary_search_by_key(&key, |e| e.key).is_ok())
+                archives.iter().any(|(_, e)| e.binary_search_by_key(&key, |e| e.key).is_ok())
             }
             None => false,
         }
@@ -2317,6 +2310,42 @@ pub(crate) mod tests {
         let one_by_one: Vec<Option<Vec<u8>>> = ask.iter().map(|t| plain.get(t.0, t.1, t.2).unwrap()).collect();
         assert_eq!(plain.get_many(&ask).unwrap(), one_by_one);
         assert_eq!(one_by_one.iter().filter(|t| t.is_none()).count(), 2);
+    }
+
+    /// Task #1090: a pack whose kept handle is dead (a dropped SMB session's: every read of it
+    /// failing) is opened again by the read that meets it, `get`'s and `get_many`'s, and read; one
+    /// that can't be opened again fails past the retries, not for ever.
+    #[test]
+    fn a_pack_whose_handle_died_is_opened_again() {
+        store::retry::fast();
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("root");
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
+        let tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> =
+            (0..4u32).map(|i| (9, 40 + i, 56, format!("tile 9/{}/56", 40 + i).into_bytes(), 1)).collect();
+        crate::layers::write_pack(
+            &mut out,
+            "terrain",
+            codecs::terrain_codec::ENCODING,
+            false,
+            "hi",
+            (6, 5, 7),
+            &mut tiles.into_iter(),
+        )
+        .unwrap();
+        let m = ManifestTiles::new(&out, "terrain");
+        let kill = |m: &ManifestTiles| m.open.lock().unwrap().values().flatten().for_each(|p| p.file.kill_handle());
+        assert_eq!(m.get(9, 40, 56).unwrap(), Some(b"tile 9/40/56".to_vec()));
+        kill(&m);
+        assert_eq!(m.get(9, 41, 56).unwrap(), Some(b"tile 9/41/56".to_vec()));
+        kill(&m);
+        let ask = [(9, 42, 56), (9, 43, 56)];
+        assert_eq!(m.get_many(&ask).unwrap(), vec![Some(b"tile 9/42/56".to_vec()), Some(b"tile 9/43/56".to_vec())]);
+        // Gone for good: an error, past the retries.
+        kill(&m);
+        std::fs::remove_file(out.path(out.get("layers/terrain/hi/6-5-7").unwrap()).unchecked_path()).unwrap();
+        let e = m.get(9, 40, 56).unwrap_err();
+        assert!(store::retry::io_of(&e).is_some_and(|i| !store::retry::transient_or_missing(&i)), "{e:#}");
     }
 
     /// A NAS call stuck past its deadline fails (`TimedOut`, not tried again); a transient failure

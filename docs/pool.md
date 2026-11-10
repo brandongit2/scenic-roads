@@ -89,7 +89,8 @@ The share is SMB 3 on a Synology. The design assumes:
   which fail at once, and the server's, 5 s: EIO, ENXIO "Device not configured", ETIMEDOUT and the other
   disconnects, EAGAIN, ESTALE; a "not found" only on a file known to be there: one open, one the
   store's listing has, a source the release lists) is tried again after 1, 2, 4, 8, 16 s, then
-  30 s six times (211 s in all), each try logged; a process's retries run one at a time. Before
+  30 s six times (211 s in all), each try logged with this Mac's time to the second and its UTC
+  offset (`retry::log`, to match against the NAS's log); a process's retries run one at a time. Before
   the last try the share's mount is looked at, and a share gone or not answering is waited for a
   minute (the agent remounts it; a job never does). Past that the job fails with the original
   error. Covered: plain-file reads (`store::range::PlainFile`, reopened by path each try: the
@@ -97,6 +98,14 @@ The share is SMB 3 on a Synology. The design assumes:
   check (`dem::generic::stored`: a tile the store's listing lacks fails at once, one cut short
   too), terrain and slope packs' opens and spans (`terrain_pack::nas_call`), source grids' opens
   (`depth::grids::open_retrying`), slope mids, and bldprep's parquet footers and row groups.
+  A file a job keeps open for its life is a `PlainFile` too: the packs `ManifestTiles` reads, the
+  raw tiles' archives read by range (`RawTiles`, `rawpack::entries_of`), the stored pyramids'
+  archives, the lake depth's hi packs. A dropped SMB session leaves its handles dead (ENXIO, then
+  EIO on every read; `retry::handle_gone`, EBADF too), so a read meeting one opens the file again
+  by its path and reads that, each try, and the new handle is kept (task #1090: a slope job's
+  every read of one neighbour pack failed for 3 h 50 min on a handle cached dead). A file that
+  can't be opened and read again still fails past the bound. A raw tile's archive read tries once
+  (the file opened again if its handle is gone), then takes the tile from the next source.
   A writer SIGKILLed mid-write leaves only its
   temporary file (test `whole_kill`, on local disk, not SMB). No NAS file is flock'd or opened with O_EXLOCK/O_SHLOCK: every
   lock (`sys::PathLock`: the build lock, the member and agent locks; store::cachefile's holds) is

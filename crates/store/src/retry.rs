@@ -1,6 +1,7 @@
 //! Riding out a short NAS outage (task #656, docs/pool.md §3): a build job's NAS read that fails
 //! with an error the share gives for a moment (its SMB session dropped and reconnecting, the NAS
-//! restarting) is tried again after each of `WAITS`, ~3.5 min in all, each retry logged, instead of
+//! restarting) is tried again after each of `WAITS`, ~3.5 min in all, each retry logged with this
+//! Mac's time (`log`, to match against the NAS's own log), instead of
 //! failing the job and the hour of work behind it. Before the last try the share's mount is looked
 //! at (the kernel's table, then a stat under a deadline); a share that's gone is waited for a
 //! little (the agent's self-heal, crate::agent::heal, remounts it; a job never does). Past the
@@ -123,6 +124,14 @@ pub fn transient(e: &io::Error) -> bool {
         )
 }
 
+/// Whether an error from a read of an open file means its handle is gone: `transient`'s errors (a
+/// dropped SMB session leaves its handles dead, ENXIO then EIO on every read, task #1090) and
+/// EBADF. A read through a handle kept open is tried again only on the file opened again by its
+/// path (crate::range::PlainFile).
+pub fn handle_gone(e: &io::Error) -> bool {
+    transient(e) || e.raw_os_error() == Some(libc::EBADF)
+}
+
 /// `transient`, or a "not found" (for a file known to be there: SMB's moment of ENOENT on a file
 /// that's there, a file open a moment ago).
 pub fn transient_or_missing(e: &io::Error) -> bool {
@@ -189,7 +198,7 @@ pub fn io<T>(
         let Some(&w) = waits.get(tries) else { return Err(exhausted(e)) };
         tries += 1;
         let last = tries == waits.len();
-        eprintln!("{what}: {e}; try {} of {} in {w:?}", tries + 1, waits.len() + 1);
+        log(format_args!("{what}: {e}; try {} of {} in {w:?}", tries + 1, waits.len() + 1));
         std::thread::sleep(w);
         if last {
             if let Some(p) = path {
@@ -249,7 +258,7 @@ pub fn any_until<T>(
         if stop() {
             return Err(e);
         }
-        eprintln!("{what}: {e:#}; try {} of {} in {w:?}", tries + 1, waits.len() + 1);
+        log(format_args!("{what}: {e:#}; try {} of {} in {w:?}", tries + 1, waits.len() + 1));
         let until = std::time::Instant::now() + w;
         while let Some(left) = until.checked_duration_since(std::time::Instant::now()).filter(|d| !d.is_zero()) {
             std::thread::sleep(left.min(STOP_EVERY));
@@ -268,6 +277,36 @@ pub fn any_until<T>(
     }
 }
 
+/// A retry's line in the log, with this Mac's local time to the second, to match against the NAS's
+/// own log (task #1090).
+pub fn log(line: std::fmt::Arguments<'_>) {
+    eprintln!("{} {line}", local_now());
+}
+
+/// Now on this Mac's clock, `2026-11-10 14:03:22 -0800`.
+fn local_now() -> String {
+    let t =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as libc::time_t;
+    // SAFETY: `tm` is plain old data, filled in by the call; `t` and `tm` are valid for it.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return format!("@{t}");
+    }
+    let off = tm.tm_gmtoff / 60;
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} {}{:02}{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        if off < 0 { '-' } else { '+' },
+        off.abs() / 60,
+        off.abs() % 60
+    )
+}
+
 /// How often `any_until` looks at its stop while it waits.
 const STOP_EVERY: Duration = Duration::from_millis(500);
 
@@ -279,14 +318,14 @@ fn share_check(what: &str, p: &Path, every: Duration) {
         if !p.starts_with("/Volumes") {
             return;
         }
-        eprintln!("{what}: the NAS share isn't mounted; waiting for the agent to mount it again");
+        log(format_args!("{what}: the NAS share isn't mounted; waiting for the agent to mount it again"));
         return wait_share(what, every);
     };
     if !p.starts_with(&m.point) {
         return;
     }
     if !answers(&m.point, every.max(Duration::from_millis(10))) {
-        eprintln!("{what}: the NAS share ({}) doesn't answer; waiting for it", m.point.display());
+        log(format_args!("{what}: the NAS share ({}) doesn't answer; waiting for it", m.point.display()));
         wait_share(what, every);
     }
 }
@@ -297,12 +336,12 @@ fn wait_share(what: &str, every: Duration) {
         std::thread::sleep(every);
         if let Some(m) = crate::nas::find_mount(crate::nas::HOST, crate::nas::SHARE) {
             if answers(&m.point, every) {
-                eprintln!("{what}: the NAS share is back");
+                log(format_args!("{what}: the NAS share is back"));
                 return;
             }
         }
     }
-    eprintln!("{what}: the NAS share isn't back; the last try anyway");
+    log(format_args!("{what}: the NAS share isn't back; the last try anyway"));
 }
 
 /// Whether a stat of `dir` answers within `deadline` (its thread left behind when it doesn't).
@@ -435,6 +474,25 @@ mod tests {
         assert!(!io_of(&e).is_some_and(|i| transient(&i)), "marked exhausted");
         let e = any("t", None, &ms(2), transient, || -> anyhow::Result<()> { anyhow::bail!("cut short") }).unwrap_err();
         assert_eq!(e.to_string(), "cut short");
+    }
+
+    /// Task #1090: a retry's line says when, to the second, with its offset from UTC.
+    #[test]
+    fn a_retry_line_has_its_time() {
+        let t = local_now();
+        let b = t.as_bytes();
+        assert_eq!(t.len(), 25, "{t}");
+        assert!(b[4] == b'-' && b[10] == b' ' && b[13] == b':' && b[19] == b' ' && matches!(b[20], b'+' | b'-'), "{t}");
+        assert!(t[..4].parse::<u32>().unwrap() >= 2024, "{t}");
+    }
+
+    #[test]
+    fn a_dead_handle_is_gone() {
+        for code in [libc::ENXIO, libc::EIO, libc::ESTALE, libc::EBADF, libc::ENOTCONN] {
+            assert!(handle_gone(&io::Error::from_raw_os_error(code)), "errno {code}");
+        }
+        assert!(!handle_gone(&io::Error::from_raw_os_error(libc::EISDIR)));
+        assert!(!handle_gone(&io::Error::new(io::ErrorKind::InvalidData, "not a pack")));
     }
 
     /// Task #903: a stop ends the retries at once, mid-wait, with the last error (not Exhausted).
