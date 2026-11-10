@@ -1013,13 +1013,13 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 .and_then(|t| TileId::parse(t))
                 .filter(|u| u.z == 6 || u.z == 3 || u.z == terrain::terrain_deep::PACK_Z)
                 .context("terrain-same <6/x/y | 3/x/y | 10/x/y>")?;
-            if t.z == terrain::terrain_deep::PACK_Z {
-                return terrain_same_deep(&out, &args, &cov, (t.x, t.y));
-            }
             let raw_dir = PathBuf::from(
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
             let raw = raw_tiles(&out, &raw_dir)?;
+            if t.z == terrain::terrain_deep::PACK_Z {
+                return terrain_same_deep(&out, &raw, &cov, (t.x, t.y));
+            }
             let whole = flag(&args, "--whole");
             let lo = t.z == 3;
             anyhow::ensure!(!(lo && whole), "--whole is a z6 tile's");
@@ -5498,18 +5498,19 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
 /// terrain-same 10/x/y: z10 tile `t`'s deep pack and mid made as its terrain-deep run makes them
 /// (`terrain_deep_step`), written in the scratch folder only; their content names said beside the
 /// manifest's, with the time.
-fn terrain_same_deep(out: &Out, args: &[String], cov: &buildstore::coverage::Coverage, t: (u32, u32)) -> Result<()> {
+fn terrain_same_deep(
+    out: &Out,
+    raw: &terrain::terrain_pack::RawTiles,
+    cov: &buildstore::coverage::Coverage,
+    t: (u32, u32),
+) -> Result<()> {
     use terrain::terrain_deep as td;
-    let raw_dir = PathBuf::from(
-        opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
-    );
-    let raw = raw_tiles(out, &raw_dir)?;
     let sets = zoom_sets(out)?;
     let levels = td::levels(cov, &sets, t);
     anyhow::ensure!(!levels.is_empty(), "10/{}/{} is no terrain-deep target", t.0, t.1);
     let pool = base_pool(out, td::PACK_Z, &[t])?;
     let t0 = std::time::Instant::now();
-    let (made, mid) = with_fills(&raw, &pool, cov, &sets, &|_, _| false, |tiles, src| {
+    let (made, mid) = with_fills(raw, &pool, cov, &sets, &|_, _| false, |tiles, src| {
         terrain::terrain_pack::make_piece_logged(tiles, src, levels, None)
     })?;
     let secs = t0.elapsed().as_secs_f64();
