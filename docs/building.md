@@ -588,7 +588,9 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
    refuses without the signing identity, or when codesign can't use its key unprompted;
 2. refuses while the lead's role's old name appears in the code, docs or UI (the task board's list
    of where tasks ran, `tools/devtools/schema.mjs`, exempt), or when its commit doesn't contain the live version's (below);
-3. builds the server and pipeline;
+3. builds the server and pipeline, and runs the release server through `crates/server/tests/serves.rs`
+   (below), on this Mac, before the suite: the suite's run of it starts the test profile's program,
+   this one the program published (the test's binary run with `CARGO_BIN_EXE_server` naming it);
 4. runs the crates' tests, the type check and the web build, and checks every Python step loads
    from a copy of `dem/` in a fresh environment and passes pyflakes. Among the tests, the built
    server on a fixture map (`crates/server/tests/serves.rs`: packs written with the build's codecs,

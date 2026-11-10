@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Publish the app (docs/building.md §2, App publishing): build the server and the web app, run the
-# tests (the server's routes among them, on a fixture map: crates/server/tests/serves.rs), then copy it
+# tests (the server's routes among them, on a fixture map: crates/server/tests/serves.rs, run against
+# the release server too), then copy it
 # to the NAS (app/<version>/) and point app/current.json at it. Every Mac's agent copies it within
 # five minutes (jobrt::appupdate) and restarts into it by its update drain; the Mac mini's map
 # server, the only one, restarts into it once the map has been idle a minute.
@@ -171,6 +172,24 @@ tests_ok=0
 # (Tests that pass over what a Mac lacks fail instead when they're run for a publish: uv for the
 # translations' checker.)
 export SCENIC_PUBLISH=1
+# The release server on a fixture map (crates/server/tests/serves.rs: every route the app starts with
+# and a tile of each kind, the program on a free port, no NAS), run against target/release/server,
+# the program signed and copied below: the suite runs it against the test profile's, so a fault only
+# an optimised build shows stops the publish here, before the suite (the test itself takes under
+a second; its build is the test profile's of the server and the crates it uses). The test's own binary run directly,
+# with CARGO_BIN_EXE_server naming the release program: cargo and nextest set that variable as they
+# run a test, to the program they built beside it. Built as the suite builds it (the workspace's
+# features, the test profile): when this is the test Mac the suite's build reuses it, and a test
+# build changes nothing in target/release. (Its output the log's first part, the suite's after it.)
+step "release server"
+serves=$(cargo test --workspace --test serves --no-run --message-format=json-render-diagnostics 2>>$tests_log \
+  | python3 -c 'import json, sys
+for l in sys.stdin:
+    m = json.loads(l)
+    if m.get("reason") == "compiler-artifact" and m["target"]["name"] == "serves" and m.get("executable"): print(m["executable"])') || true
+[[ -x $serves ]] || { tail -40 $tests_log; echo "the server's fixture-map test didn't build; whole output: $tests_log"; exit 1; }
+CARGO_BIN_EXE_server=$PWD/target/release/server $serves >> $tests_log 2>&1 \
+  || { tail -40 $tests_log; echo "the release server failed on the fixture map; whole output: $tests_log"; exit 1; }
 # The tests build without debug info (task #660; Cargo.toml's [profile.test] since #918): on macOS
 # each build's line tables stay in its object files beside the binaries (split-debuginfo
 # "unpacked"), 80 GB of the 122 GB this tree's target/debug had grown to in 3.5 days on the mini
@@ -197,7 +216,7 @@ done
 cleanup+=("unhold $cache/tests.busy")
 step "Rust tests"
 dj_attr $djrun tests_log $tests_log
-zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok=$?
+zsh tools/app/remote-tests.sh publish $snap $suite >> $tests_log 2>&1 || tests_ok=$?
 # Then every test outside the Rust workspace (tools/app/other-tests.zsh, #848: web/test and
 # tools/check/*.test.mjs by glob, the dev tools app's, the dev jobs' recorder's, the status app's
 # Swift self-test, shell.zsh and test-guard.zsh; their parts at once, ~1 min, most of it swiftc),

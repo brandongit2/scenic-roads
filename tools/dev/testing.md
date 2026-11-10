@@ -47,6 +47,9 @@ Not seen: a run through a shell function or alias, a script file, or a substitut
 - `--release` only for performance work: mark the command `#perf` (it may use `--workspace`).
 - Full suites run in `tools/app/publish.sh` before a publish, the PM's; and once by the PM on main
   after a merge batch, in the background, before publishing. Publish runs (#848):
+  - first, on the publishing Mac, `crates/server/tests/serves.rs` against the release server it
+    publishes (#1114: the test's binary, built as the suite builds it, run with `CARGO_BIN_EXE_server`
+    naming `target/release/server`; cargo and nextest set that variable themselves as they run a test);
   - `cargo nextest run --workspace`: every workspace crate's libraries, binaries and integration
     tests (det, roadcore, pipeline, server, store, names, pyport, codecs, jobrt, buildstore, coordwire, offload, landmarks, mapview, inputs, terrain, trees, roads, bld, agentcore, webpenc), on the test Mac;
   - then `tools/app/other-tests.zsh`, on the publishing Mac, its parts at once: `node --test` of
