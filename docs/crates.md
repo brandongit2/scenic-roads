@@ -7,7 +7,7 @@
 `crates/bld`), 6f1 to 6f4 (§6.3: `build::pass_work`, the frozen-plan check, the `Plan` trait, test
 time, and the runtime in `crates/agentcore`), and 7a (§7: the map server on neither pipeline nor
 agentcore). The big cycle is gone: what §2 planned as "coordination" is agentcore (6f4), and
-pipeline holds the plan and the binaries. Planned: §7.3's next steps.
+pipeline holds the plan and the binaries. Planned: §7.4's next steps.
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -99,7 +99,7 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | inputs → coverage | `impl Coverage { fn accepted }` in inputs::regions::read, an inherent impl that can't stay once `Coverage` is another crate's | built (step 4): `inputs::regions::read::accepted_coverage`, its callers renamed |
 | dem → terrain_deep, terrain_zoom | the terrain's zoom rule (7 references) | built (step 6d): `PACK_Z`, `CELL_FACTOR`, `DEEPEST`, `zoom_for`, `polar_zoom_for` and `Detail` are dem::zoom's (not codecs': `Detail::of` reads dem's declared datasets); terrain_zoom and terrain_deep re-export them |
 | inputs → lakefill, rail | 2 references to lakefill, 4 to rail, from the input checks | built (step 6d): all three in the inputs crate |
-| cli → polar | one reference to polar | cli stays in agentcore; what the steps below it run programs by, `program` and `TOOLS`, is jobrt::sys's (step 6d). The rest of cli has no user below agentcore and stays (task #1026, §7.3); net went to coordwire (step 7a) |
+| cli → polar | one reference to polar | cli stays in agentcore; what the steps below it run programs by, `program` and `TOOLS`, is jobrt::sys's (step 6d). The rest of cli has no user below agentcore and stays (task #1026, §7.4); net went to coordwire (step 7a) |
 | layers → ovconv | one item (`MAXZ`, in a test) | built (step 6e): `MAXZ` is codecs::vtgen's; ovconv re-exports it |
 | terrain_task, trees, bld, offload → coord | offloading a step's parts to other Macs | built (step 6e): what the steps offering tasks name is the offload crate's (`Offload`, its waits, unit's `Run`; on coordwire's real client, not a trait); coord appears only in tests that start a coordinator, which move to pipeline with their family (terrain_task's: `terrain_tests`; trees::task's: `trees_tests`; bld::task's: `bld_tests`) |
 
@@ -121,7 +121,7 @@ names, webpenc as now).
    resume constants, `DRAIN_GRACE`; cli's `program` and `TOOLS` (step 6d); appupdate (step 7a).
    ~9.6k lines (1 Nov 2026), no pipeline dependency. net went to coordwire instead (step 7a: it
    reads buildstore's test flag and needs axum). The rest of cli and nasread's NAS reading stay in
-   agentcore (task #1026, 10 Nov 2026: §7.3 says why). Offloading a step's parts is no trait here but the **offload** crate (step
+   agentcore (task #1026, 10 Nov 2026: §7.4 says why). Offloading a step's parts is no trait here but the **offload** crate (step
    6e: `Offload` on coordwire's client, its waits, unit's `Run`), below the families that offer
    tasks.
 4. **buildstore** (the build's files: the NAS/store layer above `store`; built, step 4): out,
@@ -137,15 +137,14 @@ names, webpenc as now).
    and buildstore; no pipeline dependency.
 6. Step families. They are not independent: modgraph.py showed trees → terrain (treepacks packs
    its layers by terrain::layers), roads → trees and terrain (unit → trees, landcover, road_terrain;
-   stage → the terrain's packs), names → roads and terrain (heritage → stage's `tiles_in`, marksjob
-   → candidates' `Cand`, ovconv → timetables' `FERRY_LINES` and layers; gtfs → lakefill, rail), bld
-   → names and roads (bld → heritage; buildtiles → reach, stage), and pipeline's offload → bld,
-   trees, unit (only `run_task` and `task_kind`: the offload crate the families name is below
-   them all). So the crates stack: inputs, then terrain, trees, roads, landmarks (its step 5a part
-   now with the names family, so above roads too) and bld, one after another, none
-   beside another. Treepacks' use of layers is eight functions (the packs' names, writing and
-   dropping them), not one item to move down. An edit in a family still rebuilds every family
-   above it and pipeline.
+   stage → the terrain's packs), names → terrain (ovconv → layers; gtfs → lakefill, rail; its
+   three items of roads went below in step 7b: `tiles_in` to roadcore::geo, `FERRY_LINES` to
+   inputs::inputs::gtfs, `Cand` to codecs::marks), bld → names and roads (bld → heritage;
+   buildtiles → reach, stage), and pipeline's offload → bld, trees, unit (only `run_task` and
+   `task_kind`: the offload crate the families name is below them all). So the crates stack:
+   inputs, then terrain; then trees and roads one after the other, landmarks beside them; then bld.
+   Treepacks' use of layers is eight functions (the packs' names, writing and dropping them), not
+   one item to move down. An edit in a family still rebuilds every family above it and pipeline.
    - **terrain** (built, step 6e): terrain_base, terrain_deep, terrain_pack, terrain_resume,
      terrain_task, terrain_zoom, pyramids, road_terrain, slope_pack, depth, polar, layers. ~17.6k
      lines with their tests (6 Nov 2026), on det, roadcore, store, codecs, jobrt, buildstore,
@@ -163,7 +162,7 @@ names, webpenc as now).
      filterprops, interest, items, pageviews, labels, areadetails, whsshapes), the rest in 6e
      (heritage, ferries, gtfs, railfeeds, ovconv, markconv, marksjob, namestodo). ~15.9k lines
      with their tests (6 Nov 2026), on det, roadcore, store, names, pyport, codecs, jobrt,
-     buildstore, coordwire, inputs, terrain and roads.
+     buildstore, coordwire, inputs and terrain (and roads until step 7b).
    - **bld** (built, step 6e): bld (the 3D buildings) and buildtiles (the roadside buildings).
      ~9.6k lines with their tests (6 Nov 2026), on det, roadcore, store, names, pyport, codecs,
      jobrt, buildstore, offload, landmarks, inputs, terrain and roads. The free space its steps
@@ -171,7 +170,7 @@ names, webpenc as now).
      to buildstore::room (§6.3).
 7. **agentcore** (planned as "coordination"; built, step 6f4): the runtime: the agent but its plan,
    coord, pool, needs, paces, uses, pubtimes, answers, menu, cli. ~60k lines without tests, beside
-   the families (on inputs and below). agent ↔ coord ↔ pool are still one cycle inside it (§7.3).
+   the families (on inputs and below). agent ↔ coord ↔ pool are still one cycle inside it (§7.4).
    The app's updater went to jobrt and net to coordwire (step 7a), for the map server.
 8. **pipeline** (kept under this name so `cargo run -p pipeline --bin …` stays): the plan (agent's
    build, steps, idents, tiles, theplan; ~18k lines with tests), offload's `run_task`, `out::open`,
@@ -277,7 +276,8 @@ programs' names unchanged. Files paused branches edit (#879: agent/steps.rs, age
    `crates/bld`) the step families; then 6f (built) the agent's plan split from its runtime
    (`crates/agentcore`).
 6. **coordination**: built as agentcore (6f4).
-7. **After the split** (§7): 7a (built) the map server off pipeline and agentcore; then §7.3.
+7. **After the split** (§7): 7a (built) the map server off pipeline and agentcore; 7b (built)
+   landmarks beside trees and roads; then §7.4.
 8. Path rewrites: the step modules' were step 6b's, the server's 7a's; the rest (the plan's, the
    binaries') per crate as it moves, `crate::x` → `<crate>::x`, and the re-exports dropped.
 
@@ -795,7 +795,7 @@ commit; re-exports at the old paths as before.
      marksjob and namestodo, their mentions of landmarks' own modules (`landmarks::interest`)
      made `crate::`. Not the cuts that would have names compile beside roads: heritage names
      stage's `tiles_in`, marksjob candidates' `Cand`, ovconv timetables' `FERRY_LINES`, three
-     items of three modules; landmarks sits on roads.
+     items of three modules; landmarks sat on roads until step 7b (§7.3).
    Pipeline re-exports eighteen of the twenty modules at their old paths (`pub use ::trees::{…}`,
    `roads::{…}`, `landmarks::{…}`); each new crate's unit tests start offline (lib.rs `TEST_START`,
    test_start.rs), the trees and landmarks crates' testkit modules behind their `testkit`
@@ -1224,7 +1224,7 @@ runtime or the plan 0.3-0.5 s and a quarter to a third of its CPU.
   build in 0.6-0.9 s, pipeline's lib tests in 7-9.5 s (§5). A family's crate brings that to its
   steps' tests (terrain's, inputs' …), which today each rebuild pipeline's whole test library.
 
-## 7. After the split (7a built)
+## 7. After the split (7a, 7b built)
 
 ### 7.1 What a build waits on (7 Nov 2026, main at 6f90a4df)
 
@@ -1306,19 +1306,45 @@ tail is scenic-build's, ~3-4 s shorter (~10 %). Peak memory unchanged: one rustc
 an edit, agentcore's 2.0-2.15 GB clean (the server's rustc now runs beside agentcore's, not after
 it). A server test build no longer compiles pipeline's lib.
 
-### 7.3 Next
+### 7.3 7b, landmarks beside trees and roads (built, task #1024, 10 Nov 2026)
+
+landmarks named roads for three items only; each moved below, unchanged, its users naming it there
+(no re-export at the old path):
+
+- stage's `tiles_in` (heritage's four calls), with `tile_range`, which it is built on: roadcore::geo,
+  beside `tile_box` and `tile_of` (both pure Web Mercator arithmetic), with stage's test of it;
+- timetables' `FERRY_LINES` (ovconv's piece), with `RAIL_LINES`, the other piece the timetables job
+  merges: inputs::inputs::gtfs, beside the job's `REPORT`;
+- candidates' `Cand` (marksjob's `from_unit` takes one): codecs::marks; roads::candidates keeps
+  reading and writing `work/pois/<u>`.
+
+So landmarks depends on terrain and below: after a terrain edit it compiles beside trees and roads,
+and a trees edit no longer rebuilds it. bld still needs roads (reach's `Reach`, `LongWay`,
+`near_box`) and landmarks (heritage's logical names, `slice_parts`, `latest_date`), so it stays
+last of the families.
+
+Measured on the M4 (load 12-113, falling through the runs: the pool's jobs and other agents'
+builds), §7.1's command (`cargo build --workspace --bins --timings`, dev, sccache), in one clone and
+target folder of its own (not the shared one), main at 794bf4ac against this step, interleaved
+(before, after; then after, before; …), seven runs of each, each run from a built tree, one comment
+line appended to the file and built at once. Families done: bld's end in `--timings`. The first
+round (load 70-113) is given apart:
+
+| edit | main | 7b |
+|---|---|---|
+| terrain's road_terrain.rs | 4.4, 5.4, 6.8, 6.6, 4.7, 4.8 s (CPU 7.4-8.2 s); families done at 2.5-3.6 s, landmarks starting after roads at 1.4-1.8 s. First round: 20.3 s | 3.9, 4.1, 4.4, 4.4, 4.5, 6.6 s (CPU 7.3-7.7 s); families done at 2.1-2.5 s (3.8 s in the 6.6 s run, load 68), landmarks beside trees from 0.6-0.7 s. First round: 17.6 s |
+| trees' treepacks.rs | 4.1, 9.6, 4.0, 5.1, 4.1, 4.1 s (CPU 5.4-6.3 s); families done at 1.9-4.4 s. First round: 14.8 s | 4.8, 3.2, 3.3, 3.7, 3.6, 3.6 s (CPU 5.0-5.2 s); families done at 1.4-1.8 s, landmarks not rebuilt. First round: 12.0 s |
+
+Peak memory unchanged: one rustc of 1.35 GB. So a terrain edit's families finish ~0.4-0.6 s
+sooner (medians: wall 5.1 → 4.4 s), and a trees edit's ~0.5 s sooner with landmarks' compile gone
+(medians: wall 4.1 → 3.6 s, CPU −0.4 s); in both the programs (scenic-build 1.3-2.2 s) still
+follow pipeline's lib. landmarks' and bld's own edits: unchanged.
+
+### 7.4 Next
 
 What's left, by gain for its cost (rerun §7.1's measure before each):
 
-1. **landmarks beside trees and roads** (an edit in terrain or trees: ~0.6-1.0 s off a ~4-5 s chain;
-   landmarks' and bld's own edits: unchanged). landmarks names roads for three items only: stage's
-   `tiles_in` (heritage, four calls; a tile range, terrain-level), timetables' `FERRY_LINES` (a path)
-   and candidates' `Cand` (marksjob's `from_unit`). Moved below (`tiles_in`, `FERRY_LINES` to
-   terrain or codecs; `from_unit` up to bld or pipeline, or `Cand` down), landmarks depends on terrain
-   alone. bld still needs roads (reach's `Reach`, `LongWay`, `near_box`) and landmarks (heritage's
-   logical names, `slice_parts`, `latest_date`), so it stays last of the families. After #842, which
-   edits terrain_deep and the plan.
-2. **Splitting agentcore** is the only lever for a runtime edit's own 2.1-4.0 s; the programs'
+1. **Splitting agentcore** is the only lever for a runtime edit's own 2.1-4.0 s; the programs'
    1.2-1.9 s follow any edit. A crate split off below agentcore makes its own edits slower (it,
    then agentcore, then the programs), so only a part with nothing of the runtime above it helps:
    agent ↔ coord name each other 418 and 255 times (tools/dev/modgraph.py agentcore, 7 Nov), pool
