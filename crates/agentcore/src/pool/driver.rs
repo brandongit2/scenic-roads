@@ -154,14 +154,29 @@ pub const UNREADABLE_S: u64 = 3600;
 pub const MOVED_ON_S: u64 = STALE_S;
 /// How long an entry waits to be read whole before its lead says so, once (s).
 const WAIT_SAID_S: u64 = 600;
+/// A lead saves its records again, changed or not, once this long awake has passed since its last
+/// save reached the NAS (s), so that an older save landing late over the one path (records::ONE) is
+/// what readers read for this long at most (docs/coordination.md step 8b). Within one process a
+/// write past its deadline holds back the next to its path until it ends (crate::agent::nasread's
+/// `InFlight`); one an earlier process left running as it stopped, or a lead's before the owner
+/// moved it, may land after any.
+pub const RESAVE_S: u64 = STALE_S;
 
-/// What the driver needs of the world: the NAS's operations, and this Mac's clocks.
+/// What the driver needs of the world: the NAS's operations, this Mac's clocks, and its own copy
+/// of the records it leads.
 pub trait Io: Nas {
     /// This Mac's wall clock: unix seconds (§6.7: no NAS clock; each Mac's own).
     fn now(&self) -> u64;
     /// Seconds this Mac has been awake since some start: a clock that stops while it sleeps (on
     /// macOS, Rust's `Instant`), so the wall clock's lead over it is the time it slept.
     fn awake(&self) -> u64;
+    /// The records this Mac last saved leading, as kept on its own disk (`keep`); None when it has
+    /// none (it never led, or its disk lost them).
+    fn kept(&self) -> anyhow::Result<Option<Vec<u8>>>;
+    /// Keeps the records it saves leading on its own disk, whole and flushed, before they go to the
+    /// NAS (docs/coordination.md step 8b): what its next take-up starts from, a late NAS write
+    /// notwithstanding.
+    fn keep(&self, records: &[u8]) -> anyhow::Result<()>;
 }
 
 /// A message between members, over the pool's API.
@@ -246,6 +261,10 @@ pub struct Heard {
     /// docs/coordination.md step 6): it lists the journal no more, and is caught up without a
     /// listing. (The rollout gate, deleted with it.)
     pub http_only: bool,
+    /// Leading: every member heard reads the records at their one path (crate::coord::beats::
+    /// RECORDS): its saves write the term's own files no more (docs/coordination.md step 8b's
+    /// rollout gate, deleted with it).
+    pub one_only: bool,
     /// A member: the term its lead's beat answered it leads, that answer fresh (within
     /// crate::coord::beats::PAGE_AWAY_S: crate::coord::beats::Beats::lead_says). Its lead and term
     /// are learnt from it, and the NAS's declaration and terms aren't read; None (an older lead, a
@@ -422,8 +441,10 @@ struct Lead {
     /// When it asked for the newest listing of every day it merged (its take-up's, or a later one):
     /// None before one is merged.
     listed_at: Option<u64>,
-    /// Changes not saved yet.
+    /// Changes not saved to the NAS yet (on its own disk or not), and when its last save reached
+    /// the NAS (awake clock: `RESAVE_S`).
     dirty: bool,
+    saved_at: u64,
     /// Entries refused: their refusals to note once that's saved.
     refused: Vec<(String, String)>,
     /// Entries its check holds (`records::HOLD`), with why: merged again every step.
@@ -485,8 +506,10 @@ pub struct Driver {
     /// Since when (awake clock) a take-up has found term 1 with no snapshot that reads whole (its
     /// lead's, or its first).
     first_unread: Option<u64>,
-    /// Leading: a member writes the journal (`Heard::journal`), as its last step heard.
+    /// Leading: a member writes the journal (`Heard::journal`), as its last step heard; its saves
+    /// write the term's own files too (not `Heard::one_only`).
     journal: bool,
+    per_term: bool,
     /// The lead's declaration as last read (crate::pool::term::declared): the member that leads.
     declared: Option<String>,
 }
@@ -543,6 +566,7 @@ impl Driver {
             first: None,
             first_unread: None,
             journal: true,
+            per_term: true,
             declared: None,
         }
     }
@@ -640,6 +664,7 @@ impl Driver {
         }
         self.saved.mine.acked_all(&heard.merged);
         self.journal = !heard.http_only;
+        self.per_term = !heard.one_only;
         let busy = start.1 + BUSY_S;
         self.finish(io, &mut out);
         // What it heard.
@@ -950,7 +975,9 @@ impl Driver {
         let unrecorded = t.term > self.saved.made;
         let mut older = unrecorded;
         if t.term > self.saved.led && !unrecorded && !self.taking.as_ref().is_some_and(|r| r.term == t.term) {
-            match io.exists(&records::path(t.term)) {
+            // (Its own disk's copy first; the term's own file on the NAS while the gate writes it.)
+            let kept = self.kept(io, out).is_some_and(|r| r.term >= t.term);
+            match if kept { Ok(true) } else { io.exists(&records::path(t.term)) } {
                 Ok(there) => older = there,
                 Err(e) => {
                     return out.events.push(Event::Waits {
@@ -1028,14 +1055,42 @@ impl Driver {
         (self.declared.as_deref() == Some(self.me.id.as_str()), read)
     }
 
-    /// Takes up term `t`, which names this Mac (§6.2): from the newest records a read finds (its
-    /// own, for a term it led), its first snapshot saved. Not
-    /// readable yet, or not saved: tried again next step, numbered on.
+    /// The records it kept on its own disk leading (`Io::kept`), when its saved state is its own
+    /// (another member's folder's, or one set aside, says nothing of what it led); one that can't be
+    /// read is said, and counts as none.
+    fn kept(&self, io: &dyn Io, out: &mut Out) -> Option<Records> {
+        if !self.known {
+            return None;
+        }
+        match io.kept().and_then(|b| b.map(|b| serde_json::from_slice::<Records>(&b)).transpose().map_err(Into::into)) {
+            Ok(r) => r,
+            Err(e) => {
+                out.events.push(Event::Failed { what: "read its own records", why: format!("{e:#}") });
+                None
+            }
+        }
+    }
+
+    /// Saves its records (`Records::save`): on its own disk, then the NAS's one path, and the
+    /// term's own files while a member heard reads those (`per_term`).
+    fn save(&self, io: &dyn Io, r: &mut Records) -> Result<(), records::Unsaved> {
+        r.save(io, &|b| io.keep(b), self.per_term)
+    }
+
+    /// Takes up term `t`, which names this Mac (§6.2): from its own records when it led the term
+    /// before (in memory, or kept on its disk: docs/coordination.md step 8b, no NAS read), else the
+    /// newest a read finds; its first snapshot saved. Not readable yet, or not kept on its disk:
+    /// tried again next step, numbered on. Kept and not written to the NAS: it leads all the
+    /// same, its NAS files written at its next step, nothing acknowledged until then.
     fn take_up(&mut self, io: &dyn Io, out: &mut Out, t: &Term) {
+        // (Nor from records older than those it saved last, or than its term led's: a stale read,
+        // or its disk's copy restored from a backup.)
+        let saved = self.saved.records.or((self.saved.led > 0).then_some((self.saved.led, 0))).filter(|_| self.known);
         let own = match &self.taking {
             Some(r) if r.term == t.term => Some(r.clone()),
-            _ => self.spare.clone(),
-        };
+            _ => self.spare.clone().or_else(|| self.kept(io, out)),
+        }
+        .filter(|r| saved.is_none_or(|s| (r.term, r.seq) >= s));
         // (Term 1 with no snapshot that reads whole, its lead's or its first: from today's files
         // only once it has stayed so for `STALE_S` awake, no stale read of them, or of today's
         // files, left.)
@@ -1044,8 +1099,8 @@ impl Driver {
         // acknowledges until it finds this term, read after each save (`lead_step`), and its last
         // save may read stale a while: the records are read `STALE_S` after this term was made, so
         // that what it acknowledged, on no member's disk now, is in them. docs/coordination.md
-        // step 6.)
-        if t.from >= 1 {
+        // step 6. Its own records of the term before: it led that, and reads no term.)
+        if t.from >= 1 && own.as_ref().is_none_or(|r| r.term < t.from) {
             let before = match term::read(io, t.from) {
                 Ok(b) => b,
                 Err(e) => {
@@ -1069,8 +1124,6 @@ impl Driver {
                 });
             }
         }
-        // (Nor from records older than those it saved last, or than its term led's: a stale read.)
-        let saved = self.saved.records.or((self.saved.led > 0).then_some((self.saved.led, 0))).filter(|_| self.known);
         let mut r = match records::start(io, t, own.as_ref(), today, saved) {
             Ok(r) => {
                 self.first_unread = None;
@@ -1085,13 +1138,24 @@ impl Driver {
         };
         // (Nothing merged yet: its members tell it of their entries once they know it leads, and a
         // listing of the journal follows.)
-        if let Err(e) = r.save(io) {
-            self.taking = Some(r);
-            return out
-                .events
-                .push(Event::Failed { what: "save the records", why: format!("taking up term {}: {e:#}", t.term) });
-        }
-        self.saved.records = Some((r.term, r.seq));
+        let dirty = match self.save(io, &mut r) {
+            Ok(()) => {
+                self.saved.records = Some((r.term, r.seq));
+                false
+            }
+            Err(records::Unsaved::Kept(e)) => {
+                self.taking = Some(r);
+                return out.events.push(Event::Failed {
+                    what: "keep the records",
+                    why: format!("taking up term {}: {e:#}", t.term),
+                });
+            }
+            Err(e) => {
+                out.events
+                    .push(Event::Failed { what: "save the records", why: format!("taking up term {}: {e:#}", t.term) });
+                true
+            }
+        };
         // The lead's hint (§6.1: for old apps, and to save a listing; never the truth).
         if let Err(e) = term::write_hint(io, t) {
             out.events.push(Event::Failed { what: "write the lead's hint", why: format!("{e:#}") });
@@ -1113,7 +1177,8 @@ impl Driver {
             said: BTreeSet::new(),
             turn: 0,
             listed_at: None,
-            dirty: false,
+            dirty,
+            saved_at: io.awake(),
             refused: Vec::new(),
             held: BTreeMap::new(),
         });
@@ -1298,14 +1363,19 @@ impl Driver {
                 done: Vec::new(),
             });
         }
-        if l.dirty {
-            match l.records.save(io) {
+        // (Saved again unchanged `RESAVE_S` on: an older save landed late over the one path is read
+        // that long at most.)
+        if l.dirty || io.awake().saturating_sub(l.saved_at) >= RESAVE_S {
+            match l.records.save(io, &|b| io.keep(b), self.per_term) {
                 Ok(()) => {
-                    l.dirty = false;
+                    (l.dirty, l.saved_at) = (false, io.awake());
                     self.saved.records = Some((l.records.term, l.records.seq));
                 }
                 Err(err) => {
-                    out.events.push(Event::Failed { what: "save the records", why: format!("term {e}: {err:#}") })
+                    l.dirty = true;
+                    let what =
+                        if matches!(err, records::Unsaved::Kept(_)) { "keep the records" } else { "save the records" };
+                    out.events.push(Event::Failed { what, why: format!("term {e}: {err:#}") })
                 }
             }
         }
@@ -1455,6 +1525,10 @@ mod tests {
         short: std::cell::RefCell<Option<String>>,
         /// Its reads of paths holding this answer that there's no such file (a stale read).
         gone: std::cell::RefCell<Option<String>>,
+        /// The records its lead kept on its own disk (`Io::keep`); while `local_fails`, keeping
+        /// them fails.
+        local: std::cell::RefCell<Option<Vec<u8>>>,
+        local_fails: Cell<bool>,
     }
 
     impl<'a> Mac<'a> {
@@ -1468,6 +1542,8 @@ mod tests {
                 wfail: Default::default(),
                 short: Default::default(),
                 gone: Default::default(),
+                local: Default::default(),
+                local_fails: Cell::new(false),
             }
         }
 
@@ -1524,6 +1600,16 @@ mod tests {
         fn awake(&self) -> u64 {
             self.awake.get()
         }
+        fn kept(&self) -> Result<Option<Vec<u8>>> {
+            Ok(self.local.borrow().clone())
+        }
+        fn keep(&self, records: &[u8]) -> Result<()> {
+            if self.local_fails.get() {
+                anyhow::bail!("its own disk: full");
+            }
+            *self.local.borrow_mut() = Some(records.to_vec());
+            Ok(())
+        }
     }
 
     /// A Mac on a share under load: each create, read, stat and whole write takes `.1` s, awake.
@@ -1560,6 +1646,12 @@ mod tests {
         }
         fn awake(&self) -> u64 {
             self.0.awake()
+        }
+        fn kept(&self) -> Result<Option<Vec<u8>>> {
+            self.0.kept()
+        }
+        fn keep(&self, records: &[u8]) -> Result<()> {
+            self.0.keep(records)
         }
     }
 
@@ -1609,6 +1701,12 @@ mod tests {
         }
         fn awake(&self) -> u64 {
             self.0.awake()
+        }
+        fn kept(&self) -> Result<Option<Vec<u8>>> {
+            self.0.kept()
+        }
+        fn keep(&self, records: &[u8]) -> Result<()> {
+            self.0.keep(records)
         }
     }
 
@@ -2009,6 +2107,7 @@ mod tests {
     fn a_take_up_never_starts_from_records_older_than_it_saved() {
         // (docs/coordination.md step 6) What a save acknowledged is on no member's disk now: a
         // restart whose read of its newest records is stale waits for them rather than lose it.
+        // (Step 8b: a restart reads the NAS's only with its own disk's copy lost.)
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
@@ -2020,17 +2119,20 @@ mod tests {
         step(&mut a, &ia, Heard { handed: vec![e], http_only: true, ..able() });
         let saved = a.saved();
         assert_eq!(saved.records, Some((1, Records::load(&mem, 1).unwrap().unwrap().seq)));
-        // (Its newest snapshot read stale: gone a while.)
+        // (Its newest snapshots read stale: gone a while.)
         let newest = mem.read(&records::path(1)).unwrap().unwrap();
         mem.remove(&records::path(1)).unwrap();
-        ia.pass(20);
+        mem.remove(records::ONE).unwrap();
+        let ib = Mac::new(&mem);
+        ib.wall.set(ia.now() + 20);
+        ib.awake.set(ia.awake() + 20);
         let mut b = Driver::unlocked(member(A, "Mac-mini", V1), saved);
-        let o = step(&mut b, &ia, able());
+        let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, None, "{:?}", o.events);
         assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what: "take up", why } if why.contains("older"))));
-        mem.write_whole(&records::path(1), &newest).unwrap();
-        ia.pass(20);
-        let o = step(&mut b, &ia, able());
+        mem.write_whole(records::ONE, &newest).unwrap();
+        ib.pass(20);
+        let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert!(b.records().unwrap().handles(&key));
     }
@@ -2081,6 +2183,12 @@ mod tests {
         }
         fn awake(&self) -> u64 {
             self.mac.awake()
+        }
+        fn kept(&self) -> Result<Option<Vec<u8>>> {
+            self.mac.kept()
+        }
+        fn keep(&self, records: &[u8]) -> Result<()> {
+            self.mac.keep(records)
         }
     }
 
@@ -2138,33 +2246,214 @@ mod tests {
     fn a_moved_lead_s_last_acknowledgement_is_in_the_next_lead_s_records() {
         // (Task #878 step 6 review) B has made term 2; A's reads of the declaration and of term 2
         // are stale, so it merges, saves and acknowledges a hand-off (its member drops it). B, taking
-        // up `STALE_S` after its term was made, reads that save: nothing lost.
+        // up `STALE_S` after its term was made, reads that save: nothing lost. So with the term's
+        // own files written beside the one path (step 8b's gate open), and without (B reads the one
+        // path alone: none of term 1's own is newer than A's first save).
+        for one_only in [false, true] {
+            let mem = Mem::default();
+            setup(&mem);
+            let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+            let http = || Heard { http_only: true, one_only, ..able() };
+            let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+            assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+            let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+            step(&mut b, &ib, http());
+            let was = mem.read(term::LEAD).unwrap();
+            declare(&mem, B);
+            ib.pass(20);
+            assert_eq!(step(&mut b, &ib, http()).leads, None, "waits");
+            let e = entry(B, 1, 5, "6-1-5");
+            let key = e.key().unwrap();
+            ia.wall.set(ib.now());
+            let stale = Racing {
+                mac: &ia,
+                stale: [(term::LEAD.to_string(), was), (term::path(2), None)].into(),
+                before: Default::default(),
+            };
+            let o = a.step(&stale, Heard { handed: vec![e], ..http() }, &any);
+            assert_eq!(o.merged, std::slice::from_ref(&key), "acknowledged, stale: {:?}", o.events);
+            assert_eq!(Records::load(&mem, 1).unwrap().is_some_and(|r| r.handles(&key)), !one_only);
+            ib.pass(STALE_S);
+            let o = step(&mut b, &ib, http());
+            assert_eq!(o.leads, Some(2), "{:?}", o.events);
+            assert!(b.records().unwrap().handles(&key), "in B's records (one only: {one_only})");
+        }
+    }
+
+    /// A Mac's NAS calls noted in order ("read <path>", "stat …", "write …", "create …", "list …").
+    struct Logged<'a>(&'a Mac<'a>, std::cell::RefCell<Vec<String>>);
+
+    impl Logged<'_> {
+        fn note(&self, op: &str, path: &str) {
+            self.1.borrow_mut().push(format!("{op} {path}"));
+        }
+        fn take(&self) -> Vec<String> {
+            std::mem::take(&mut self.1.borrow_mut())
+        }
+    }
+
+    impl Nas for Logged<'_> {
+        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
+            self.note("create", path);
+            self.0.create_new(path, bytes)
+        }
+        fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            self.note("write", path);
+            self.0.write_whole(path, bytes)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            self.note("read", path);
+            self.0.read(path)
+        }
+        fn exists(&self, path: &str) -> Result<bool> {
+            self.note("stat", path);
+            self.0.exists(path)
+        }
+        fn list(&self, dir: &str) -> Result<Vec<String>> {
+            self.note("list", dir);
+            self.0.list(dir)
+        }
+        fn remove(&self, path: &str) -> Result<()> {
+            self.note("remove", path);
+            self.0.remove(path)
+        }
+    }
+
+    impl Io for Logged<'_> {
+        fn now(&self) -> u64 {
+            self.0.now()
+        }
+        fn awake(&self) -> u64 {
+            self.0.awake()
+        }
+        fn kept(&self) -> Result<Option<Vec<u8>>> {
+            self.0.kept()
+        }
+        fn keep(&self, records: &[u8]) -> Result<()> {
+            self.0.keep(records)
+        }
+    }
+
+    /// docs/coordination.md step 8b: a lead restarted takes up its next term from the records it
+    /// kept on its own disk, reading no records and no term on the NAS, where an earlier process's
+    /// save may have landed late over a later one (its write left running past its deadline as it
+    /// stopped); its take-up's save puts the newest back. Its disk's copy lost, it reads the NAS's:
+    /// the one path, and the terms' own above it.
+    #[test]
+    fn a_restarted_lead_takes_up_from_its_own_disk_with_no_records_read() {
         let mem = Mem::default();
         setup(&mem);
-        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let ia = Mac::new(&mem);
         let http = || Heard { http_only: true, ..able() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
         assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
-        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
-        step(&mut b, &ib, http());
-        let was = mem.read(term::LEAD).unwrap();
-        declare(&mem, B);
-        ib.pass(20);
-        assert_eq!(step(&mut b, &ib, http()).leads, None, "waits");
-        let e = entry(B, 1, 5, "6-1-5");
+        let e = entry(A, 1, 1, "6-1-1");
         let key = e.key().unwrap();
-        ia.wall.set(ib.now());
-        let stale = Racing {
-            mac: &ia,
-            stale: [(term::LEAD.to_string(), was), (term::path(2), None)].into(),
-            before: Default::default(),
-        };
-        let o = a.step(&stale, Heard { handed: vec![e], ..http() }, &any);
-        assert_eq!(o.merged, std::slice::from_ref(&key), "acknowledged, stale: {:?}", o.events);
-        ib.pass(STALE_S);
-        let o = step(&mut b, &ib, http());
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { handed: vec![e], ..http() });
+        assert_eq!(o.merged, std::slice::from_ref(&key), "{:?}", o.events);
+        // An earlier save lands late over the one path and the term's own.
+        let late = serde_json::to_vec(&Records { term: 1, seq: 1, ..Default::default() }).unwrap();
+        mem.write_whole(records::ONE, &late).unwrap();
+        mem.write_whole(&records::path(1), &late).unwrap();
+        // Restarted: from its own disk's copy, no records read.
+        let saved = a.saved();
+        let io = Logged(&ia, Default::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), saved.clone());
+        ia.pass(20);
+        let o = a.step(&io, http(), &any);
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
-        assert!(b.records().unwrap().handles(&key), "in B's records");
+        assert!(a.records().unwrap().handles(&key), "its own disk's records");
+        let calls = io.take();
+        eprintln!("a restart's step, its records on its disk: {calls:#?}");
+        let read = |c: &&String| c.starts_with("read ") || c.starts_with("stat ") || c.starts_with("list ");
+        assert!(!calls.iter().filter(read).any(|c| c.contains("records.json")), "{calls:#?}");
+        assert_eq!(calls.iter().filter(|c| c.starts_with("write ") && c.contains("records.json")).count(), 2);
+        let now: Records = buildstore::records::now(&mem).unwrap();
+        assert_eq!((now.term, now.handles(&key)), (2, true), "the take-up's save over the late one");
+        // Its disk's copy lost (and the late landing gone): from the NAS's one path.
+        let ib = Mac::new(&mem);
+        ib.wall.set(ia.now());
+        ib.awake.set(ia.awake());
+        let io = Logged(&ib, Default::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
+        ib.pass(20);
+        let o = a.step(&io, http(), &any);
+        assert_eq!(o.leads, Some(3), "{:?}", o.events);
+        assert!(a.records().unwrap().handles(&key));
+        let calls = io.take();
+        eprintln!("a restart's step, its disk's records lost: {calls:#?}");
+        assert!(calls.iter().filter(read).any(|c| c == &format!("read {}", records::ONE)), "{calls:#?}");
+    }
+
+    /// docs/coordination.md step 8b, as on 9 Nov at 20:40Z: a lead re-asserting whose take-up's NAS
+    /// write fails (past its deadline, or refused while an earlier one still runs) leads on from
+    /// the records kept on its disk, acknowledging nothing and not caught up (no catalogue, no GC)
+    /// until a save reaches the NAS. Not kept on its disk, it doesn't lead yet, and takes the term
+    /// up at a later step.
+    #[test]
+    fn a_lead_whose_take_up_s_nas_save_fails_leads_on() {
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let http = || Heard { http_only: true, ..able() };
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        *ia.wfail.borrow_mut() = Some("records.json".into());
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { reassert: true, ..http() });
+        assert_eq!((o.leads, o.fresh, o.caught_up), (Some(2), true, false), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::Failed { what: "save the records", .. })));
+        let e = entry(A, 2, 1, "6-1-1");
+        let key = e.key().unwrap();
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { handed: vec![e.clone()], ..http() });
+        assert!(o.merged.is_empty() && !o.caught_up && o.duties, "{:?}", o.events);
+        *ia.wfail.borrow_mut() = None;
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { handed: vec![e], ..http() });
+        assert_eq!((o.leads, o.caught_up), (Some(2), true), "{:?}", o.events);
+        assert_eq!(o.merged, [key.clone()]);
+        let now: Records = buildstore::records::now(&mem).unwrap();
+        assert_eq!((now.term, now.handles(&key)), (2, true));
+        // Its own disk refusing: no lead until it keeps them.
+        ia.local_fails.set(true);
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { reassert: true, ..http() });
+        assert_eq!(o.leads, None, "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::Failed { what: "keep the records", .. })));
+        ia.local_fails.set(false);
+        ia.pass(20);
+        let o = step(&mut a, &ia, http());
+        assert_eq!(o.leads, Some(3), "{:?}", o.events);
+        assert!(a.records().unwrap().handles(&key));
+    }
+
+    /// docs/coordination.md step 8b: a save of an earlier process's landing late over the one path
+    /// is read until the lead saves again, `RESAVE_S` at most with nothing changed.
+    #[test]
+    fn a_late_save_over_the_one_path_is_saved_over() {
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let http = || Heard { http_only: true, one_only: true, ..able() };
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        let e = entry(A, 1, 1, "6-1-1");
+        let key = e.key().unwrap();
+        ia.pass(20);
+        step(&mut a, &ia, Heard { handed: vec![e], ..http() });
+        assert_eq!(Records::load(&mem, 1).unwrap(), None, "the gate shut: no term's own");
+        mem.write_whole(records::ONE, &serde_json::to_vec(&Records { term: 1, seq: 1, ..Default::default() }).unwrap())
+            .unwrap();
+        let read = || buildstore::records::now::<Records>(&mem).unwrap().handles(&key);
+        let mut steps = 0;
+        while !read() {
+            ia.pass(20);
+            step(&mut a, &ia, http());
+            steps += 1;
+            assert!(steps * 20 <= RESAVE_S + 20, "still the late save after {steps} steps");
+        }
     }
 
     #[test]
@@ -2903,17 +3192,18 @@ mod tests {
         let t1 = term::bootstrap(&Cut(&mem), &member(A, "Mac-mini", V1), T0).unwrap().unwrap();
         assert!(Records::newest(&mem, 1, false).unwrap().is_some(), "written whole before term 1 is made");
         let mut r = records::start(&mem, &t1, None, false, None).unwrap();
-        r.save(&mem).unwrap();
+        r.save(&mem, &|_| Ok(()), true).unwrap();
         let old_jobs = mem.read("state/build/jobs.json").unwrap().unwrap();
         let e = entry(A, 1, 1, "6-1-4");
         r.apply(&e.key().unwrap(), &e);
-        r.save(&mem).unwrap();
+        r.save(&mem, &|_| Ok(()), true).unwrap();
         let t2 =
             Term::after(&term::current(&mem).unwrap(), &member(A, "Mac-mini", V1), "re-asserted after a gap", T0 + 60)
                 .unwrap();
         let stale = Stale(
             &mem,
             vec![
+                (records::ONE.into(), None),
                 (records::path(1), None),
                 (records::FIRST.into(), Some(Vec::new())),
                 ("state/build/jobs.json".into(), Some(old_jobs)),
@@ -3013,10 +3303,10 @@ mod tests {
 
     #[test]
     fn a_take_up_whose_save_landed_unanswered_is_tried_again() {
-        // A, restarted, takes up the term it made, and its save of the records lands with its answer
-        // lost: the records there are this process's own try's, taken up again next step, numbered
-        // on. (Not re-asserted, as a term whose records are there is when its state is older: a
-        // backup restored.)
+        // A, restarted, takes up the term it made, and its save of the records lands on the NAS with
+        // its answer lost: it leads on from the records kept on its disk (docs/coordination.md step
+        // 8b), its NAS save made again by its step, numbered on; taken up once. (Not re-asserted, as
+        // a term whose records are there is when its state is older: a backup restored.)
         struct Lost<'a>(&'a Mac<'a>, Cell<bool>);
         impl Nas for Lost<'_> {
             fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
@@ -3049,6 +3339,12 @@ mod tests {
             fn awake(&self) -> u64 {
                 self.0.awake()
             }
+            fn kept(&self) -> Result<Option<Vec<u8>>> {
+                self.0.kept()
+            }
+            fn keep(&self, records: &[u8]) -> Result<()> {
+                self.0.keep(records)
+            }
         }
         let mem = Mem::default();
         setup(&mem);
@@ -3058,12 +3354,14 @@ mod tests {
         ib.pass(20);
         let mut b = Driver::unlocked(member(A, "Mac-mini", V1), a.saved());
         let o = b.step(&Lost(&ib, Cell::new(true)), able(), &any);
-        assert!(o.leads.is_none() && Records::load(&mem, 2).unwrap().is_some_and(|r| r.seq == 1), "{:?}", o.events);
+        assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::Failed { what: "save the records", .. })));
+        assert_eq!(Records::load(&mem, 2).unwrap().map(|r| r.seq), Some(2), "saved again by its step, numbered on");
         ib.pass(20);
         let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { term: 2, .. })), "{:?}", o.events);
-        assert_eq!(Records::load(&mem, 2).unwrap().map(|r| r.seq), Some(2), "numbered on");
+        assert!(!o.events.iter().any(|e| matches!(e, Event::TookUp { .. } | Event::Failed { .. })), "{:?}", o.events);
+        assert_eq!(Records::load(&mem, 2).unwrap().map(|r| r.seq), Some(2));
     }
 
     #[test]

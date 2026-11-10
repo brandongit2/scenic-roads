@@ -1309,14 +1309,11 @@ fn job_cancel(target: &str, step: Option<&str>, rerun_after_update: bool, home: 
 /// lands in the records.
 fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> Result<()> {
     use pipeline::agent::redo;
-    use pipeline::pool::{records::Records, term};
+    use pipeline::pool::records::Records;
     let t0 = std::time::Instant::now();
     let (step, targets) = redo::checked(step, targets)?;
     let r = root(root_, false)?;
-    let mut records = || -> Result<Records> {
-        let cur = term::current(&r).context("the current term")?;
-        Records::newest(&r, cur.term, true)?.context("no records")
-    };
+    let mut records = || -> Result<Records> { Records::now(&r).context("the records") };
     let rec = records()?;
     for l in redo::said(agent::theplan::the_plan(), &rec.keys, &rec.manifest, &step, &targets) {
         println!("{l}");

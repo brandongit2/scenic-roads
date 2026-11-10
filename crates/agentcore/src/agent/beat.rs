@@ -106,7 +106,7 @@ impl ToLead {
             h
         });
         let mut speaks: Vec<String> =
-            [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS]
+            [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS, beats::RECORDS]
                 .map(str::to_string)
                 .to_vec();
         if self.beats.by_lead() {

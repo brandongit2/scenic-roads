@@ -70,6 +70,9 @@ const MEMBERS_EVERY: Duration = Duration::from_secs(crate::pool::beat::OUT_OF_TO
 pub const FORGET_AFTER: Duration = Duration::from_secs(2 * crate::pool::beat::OUT_OF_TOUCH_S);
 /// The members forgotten (`Side::forgotten`), in the agent's pool folder: kept across restarts.
 const FORGOTTEN: &str = "forgotten.json";
+/// The records this Mac last saved leading, in the agent's pool folder (crate::pool::driver::Io::
+/// keep, docs/coordination.md step 8b): what its next take-up starts from.
+pub const RECORDS: &str = "records.json";
 /// A failed listing is made again after this.
 const AGAIN: Duration = Duration::from_secs(60);
 /// The heartbeat is written at least this often.
@@ -103,14 +106,15 @@ pub fn read_view(home: &Path) -> Option<PoolFile> {
 /// A NAS the driver's steps and the listings' thread share.
 pub type SharedNas = Arc<dyn Nas + Send + Sync>;
 
-/// The driver's world: a NAS and this process's clocks (the awake one, `Instant`, stops while the
-/// Mac sleeps).
+/// The driver's world: a NAS, this process's clocks (the awake one, `Instant`, stops while the
+/// Mac sleeps), and the agent's pool folder `dir`, where it keeps the records it leads (`RECORDS`).
 struct Clocked<'a> {
     nas: &'a dyn Nas,
     clock: &'a dyn store::clock::Clock,
     start: Instant,
     /// Both clocks moved on this far (s): the tests' way of letting time pass.
     ahead: u64,
+    dir: &'a Path,
 }
 
 impl Nas for Clocked<'_> {
@@ -143,6 +147,17 @@ impl Io for Clocked<'_> {
     }
     fn awake(&self) -> u64 {
         self.clock.now().saturating_duration_since(self.start).as_secs() + self.ahead
+    }
+    fn kept(&self) -> Result<Option<Vec<u8>>> {
+        let p = self.dir.join(RECORDS);
+        match std::fs::read(&p) {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("read {}", p.display())),
+        }
+    }
+    fn keep(&self, records: &[u8]) -> Result<()> {
+        store::whole::write(&self.dir.join(RECORDS), records)
     }
 }
 
@@ -373,10 +388,12 @@ impl Side {
         // no longer there, and would hold this member's view above the terms. Counted as lost: its
         // jobs' hand-offs not written yet alone kept, as the driver keeps another member's. A stat
         // of that term's file, never a listing of the terms: no term file is ever removed, and the
-        // folder holds one a re-assertion, 794 on 7 Nov, a listing of 3 to 33 s under load.)
+        // folder holds one a re-assertion, 794 on 7 Nov, a listing of 3 to 33 s under load. The
+        // records it kept leading then go: their terms are that time's.)
         if saved.term > 0 && nas.exists(&crate::pool::term::path(saved.term)).is_ok_and(|there| !there) {
             eprintln!("pool: the NAS has no term {}: this member's saved state is from an earlier time the pool was on; set aside", saved.term);
             std::fs::rename(dir.join("saved.json"), dir.join("saved.earlier.json")).ok();
+            std::fs::remove_file(dir.join(RECORDS)).ok();
             saved = Saved { mine: saved.mine.unwritten_only(), ..Default::default() };
         }
         let mail: Mail =
@@ -579,7 +596,7 @@ impl Side {
     }
 
     fn io(&self) -> Clocked<'_> {
-        Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead }
+        Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead, dir: &self.dir }
     }
 
     /// The listings asked for and not handed back yet (asked, being made, made).
@@ -644,10 +661,11 @@ impl Side {
             merged: self.http.take_merged(),
             route: self.http.handoff_route(),
             http_only: !self.http.journal_on(now),
+            one_only: !self.http.per_term(now),
             lead_says: self.http.lead_says(now),
         };
         self.conds = give.conds;
-        let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead };
+        let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead, dir: &self.dir };
         let Some(driver) = self.driver.as_mut() else {
             return Out { stop: self.stopped.clone(), ..Default::default() };
         };

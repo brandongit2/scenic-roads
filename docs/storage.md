@@ -59,11 +59,12 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
 - **Catalogues** list every file the map reads, with the coverage they were built for and the credits
   of their sources. Readers take the highest that decodes.
 - **The build manifest** lists everything built; **job keys** say what each output was made from.
-  These, the unverified uploads and the files' sizes are the term's records
-  (`state/build/term/<E>/records.json`, the truth: docs/building.md §2, The pool; its manifest and
-  keys alone in `brief.json` beside it, for the readers needing no more). Before the pool they were `state/build/manifest.json`, `jobs.json`, `pending.json` and
-  `sizes.json`, which the lead still writes while a member's older app reads them (docs/pool.md
-  §6.2).
+  These, the unverified uploads and the files' sizes are the build's records
+  (`state/build/records.json`, the truth, kept first on the lead's disk: docs/building.md §2, The
+  pool; docs/pool.md §6.2; its manifest and keys alone in `brief.json` beside it, for the readers
+  needing no more; each term's own copy in `state/build/term/<E>/` while a member's app reads
+  those). Before the pool they were `state/build/manifest.json`, `jobs.json`, `pending.json` and
+  `sizes.json`, which term 1's lead wrote (docs/pool.md §6.2).
 - **Unverified uploads** (content name → its SHA-256, recorded as it lands): a file a job copied to
   the NAS is read back past the client's cache as it lands and checked against its hash, and stays
   pending until checked on the NAS itself; one a job found there and reused is pending too (nothing

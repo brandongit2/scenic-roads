@@ -282,17 +282,17 @@ fn role_name(r: Role) -> &'static str {
 }
 
 /// The build's records' manifest and keys as a reader has them now (crate::pool::records::Brief::now), read
-/// within `nasread::DEADLINE` (a call on the briefs' folder, `BRIEFS`): none (empty ones) when they
-/// can't be read now.
+/// within `nasread::DEADLINE` (a call named by the brief's one path, `BRIEFS`): none (empty ones)
+/// when they can't be read now.
 fn records_deadlined(root: &store::nasfs::NasRoot) -> crate::pool::records::Brief {
     let r = root.clone();
     nasread::with(&root.join(BRIEFS), move || crate::pool::records::Brief::now(&r).map_err(std::io::Error::other))
         .unwrap_or_default()
 }
 
-/// The folder of the terms' briefs (crate::pool::records::brief_path), as the NAS calls reading
-/// them name it.
-const BRIEFS: &str = "state/build/term";
+/// The brief's one path (crate::pool::records::ONE_BRIEF), as the NAS calls reading the briefs
+/// name it.
+const BRIEFS: &str = crate::pool::records::ONE_BRIEF;
 
 /// `SCENIC_TEST_WORKER` when set: the name the agent works and reports under in place of its Mac's
 /// (the two-Mac test's alone, tools/check/pool-two-macs.sh: a member beside the lead on one Mac,

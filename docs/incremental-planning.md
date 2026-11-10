@@ -356,8 +356,9 @@ reference.
   checklist or `TerrainTiles` on a member), so the incremental state is held on the mini only and
   costs the laptops nothing. The forecast and the build page's data stay readers of `PlanView`.
 - **#878 (coordination off the NAS).** Today each plan reads the records' brief from the NAS (5 MB
-  for term 752) and stats the snapshot for `plan_seen`. Step 8 of docs/coordination.md ("terms out")
-  moves the records to `state/build/records.json` and `brief.json` with the store's epoch;
+  for term 752) and stats the snapshot for `plan_seen`. Step 8b of docs/coordination.md put the
+  records at `state/build/records.json` and `brief.json` (the lead's own copy on its disk first);
+  step 8c names them by the store's epoch;
   `GET /pool/brief` is an open decision there. On the lead the records are the pool driver's, in
   the same process: step 7 here takes the brief from it (a channel or a `Snap`, after the merge is
   saved), so the plan reads no records over SMB, and the trigger is the merge's saved generation

@@ -59,6 +59,11 @@ pub const HANDOFF: &str = "handoff";
 /// progress file there while its lead doesn't say it.
 pub const BUDGETS: &str = "budgets";
 
+/// What a member's beat says it reads: the build's records at their one path
+/// (buildstore::records::ONE, docs/coordination.md step 8b), not the term's own files. The lead's
+/// saves write those beside while a member heard doesn't say it (`per_term`).
+pub const RECORDS: &str = "records";
+
 /// What a member's beat says while its agent's proxy takes the Wikimedia budget from the lead
 /// (crate::budget::Budget::set_lead): the lead gives batches only while every member heard says it
 /// (crate::coord::budgets::gives), so none leases on the NAS as another takes from the lead.
@@ -391,6 +396,14 @@ impl Beats {
         self.nas_too() || self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == HANDOFF))
     }
 
+    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `RECORDS`, or one
+    /// on an older app heartbeats on the NAS alone (`nas_too`): its readers read the term's own
+    /// records files, which the lead's saves write beside the one path (the rollout gate of
+    /// docs/coordination.md step 8b).
+    pub fn per_term(&self, now: u64) -> bool {
+        self.nas_too() || self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == RECORDS))
+    }
+
     /// Whether the asks' NAS files go on (the rollout gate, crate::coord::asks): on a member, while
     /// its lead doesn't serve `ASKS` or says a member heard doesn't speak it; on the lead, while a
     /// member heard doesn't (`held::on_nas`, said at each beat).
@@ -671,6 +684,29 @@ mod tests {
         b.heard(hb("m-b", 100 + FORGET_S, true), Vec::new(), None, 100 + FORGET_S);
         assert_eq!(ids(b.members(100 + FORGET_S, "m-x")), ["m-b", "m-lead"], "m-a forgotten");
         assert!(b.get("m-a", 100 + FORGET_S).is_none());
+    }
+
+    /// docs/coordination.md step 8b's gate: the lead writes the term's own records files beside the
+    /// one path while a member heard within `FORGET_S` doesn't say `RECORDS`, or one on an older
+    /// app heartbeats on the NAS alone; once every member heard says it, no more; a member on an
+    /// older app heard again opens it again.
+    #[test]
+    fn the_terms_own_records_go_on_while_a_member_heard_reads_them() {
+        let b = Beats::default();
+        assert!(b.per_term(100), "no word yet: on the NAS too");
+        b.set_nas_too(false);
+        assert!(!b.per_term(100), "no member heard");
+        let all = || [SPEAKS, HANDOFF, RECORDS].map(str::to_string).to_vec();
+        b.heard(hb("m-a", 100, true), all(), None, 100);
+        b.heard(hb("m-b", 100, true), [SPEAKS, HANDOFF].map(str::to_string).to_vec(), None, 100);
+        assert!(b.per_term(110), "m-b reads the term's own");
+        b.heard(hb("m-b", 120, true), all(), None, 120);
+        assert!(!b.per_term(130));
+        b.heard(hb("m-c", 2000, true), vec![SPEAKS.into()], None, 2000);
+        assert!(b.per_term(2000), "an older member back");
+        assert!(!b.per_term(2000 + FORGET_S), "forgotten");
+        b.set_nas_too(true);
+        assert!(b.per_term(2000 + FORGET_S), "one on the NAS alone");
     }
 
     /// A member's NAS copies go on until a lead speaking the beat says nobody reads them: an older

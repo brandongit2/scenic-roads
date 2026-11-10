@@ -1,7 +1,8 @@
 //! The build's records as a reader finds them (docs/pool.md §6.2; task #916 step 6a,
 //! docs/crates.md §6): the NAS's operations (`nas`), the current term (`term`), and which file holds
-//! the records now: the current term's snapshot or brief, or before the pool today's files. Written
-//! once, generic over what is read of a snapshot (`Snapshot`): the pool's whole records
+//! the records now: the one path's snapshot or brief while it's the current term's (`ONE`,
+//! docs/coordination.md step 8b), else the current term's own, or before the pool today's files.
+//! Written once, generic over what is read of a snapshot (`Snapshot`): the pool's whole records
 //! (pipeline::pool::records::Records, with the agent's keys) or what an `Out` reads (`Recorded`).
 //! Writing them (saving, merging, taking a term up) is the pool's.
 
@@ -40,7 +41,16 @@ pub const TODAY: [&str; 3] = ["state/build/manifest.json", "state/build/jobs.jso
 /// writes.
 pub const FIRST: &str = "state/build/term/1/first.json";
 
-/// The path of term `term`'s snapshot.
+/// The records' one path (docs/coordination.md step 8b): the lead's newest snapshot, whatever its
+/// term, written after each save on its own disk. A reader reads it first and stats the term after
+/// its own (`at_one`): a read and a stat, where the term's own took five calls.
+pub const ONE: &str = "state/build/records.json";
+
+/// The one path's brief (`BriefOf`): its snapshot's manifest and keys alone, written after it.
+pub const ONE_BRIEF: &str = "state/build/brief.json";
+
+/// The path of term `term`'s snapshot (written beside the one path while a member heard doesn't
+/// read that: the rollout gate of docs/coordination.md step 8b).
 pub fn path(term: u64) -> String {
     format!("state/build/term/{term}/records.json")
 }
@@ -103,41 +113,80 @@ pub fn load<S: Snapshot>(nas: &dyn Nas, term: u64) -> Result<Option<S>> {
 /// the newest of a term before it; for term 1, as `term_one` says (`today` as it says). None
 /// before any.
 pub fn newest<S: Snapshot>(nas: &dyn Nas, term: u64, today: bool) -> Result<Option<S>> {
-    for f in (2..=term).rev() {
+    newest_over(nas, term, None, today)
+}
+
+/// `newest`, walking down only to the term of `one` (the one path's snapshot, behind the current
+/// term: a term after it being taken up, its lead on an app before the one path, or an earlier
+/// save landed there late), which counts as its term's and the earlier terms': once the gate of
+/// docs/coordination.md step 8b shuts, the terms' own snapshots stop, and a walk past it would read
+/// hundreds of terms that have none.
+pub fn newest_over<S: Snapshot>(nas: &dyn Nas, term: u64, one: Option<S>, today: bool) -> Result<Option<S>> {
+    let floor = one.as_ref().map_or(2, |o| o.term() + 1).max(2);
+    for f in (floor..=term).rev() {
         if let Some(r) = load(nas, f)? {
             return Ok(Some(r));
         }
     }
-    if term == 0 {
-        return Ok(None);
+    if one.is_some() || term == 0 {
+        return Ok(one);
     }
     term_one(nas, today).map(Some)
 }
 
-/// The build's records as a reader has them now (§6.2): the current term's snapshot, or while
-/// it has none the newest of a term before it (`newest`); before the pool's first term, today's
-/// files (a Mac's own records, its jobs saving them: crate::out::Out::save_held). A reader
-/// never reads today's files beside a term's snapshot: they're the lead's, for older apps'
-/// readers, and stop once every member reads these (pipeline::agent::pool::Run::keep_today).
+/// What's at one path `p` (`ONE`, `ONE_BRIEF`), parsed, and whether it's the current term's: no
+/// term after its own made (a stat, `term::next`). None: nothing there (no lead on an app that
+/// writes it yet).
+fn at_one<T: DeserializeOwned>(nas: &dyn Nas, p: &str, term_of: impl Fn(&T) -> u64) -> Result<Option<(T, bool)>> {
+    let Some(b) = nas.read(p)? else { return Ok(None) };
+    let r: T = serde_json::from_slice(&b).with_context(|| format!("parse {p}"))?;
+    let current = !term::next(nas, term_of(&r))?;
+    Ok(Some((r, current)))
+}
+
+/// The one path's snapshot (`ONE`) as read now, whatever its term; None when there's none: the
+/// take-up of a lead whose Mac led no term before it reads it (pipeline::pool::records::start).
+pub fn load_one<S: Snapshot>(nas: &dyn Nas) -> Result<Option<S>> {
+    let Some(b) = nas.read(ONE)? else { return Ok(None) };
+    Ok(Some(serde_json::from_slice(&b).with_context(|| format!("parse {ONE}"))?))
+}
+
+/// The build's records as a reader has them now (§6.2): the one path's while no term after its own
+/// is made (`ONE`: a read and a stat); else the current term's snapshot, or while it has none the
+/// newest of a term before it, down to the one path's (`newest_over`); before the pool's first
+/// term, today's files (a Mac's own records, its jobs saving them: crate::out::Out::save_held). A
+/// reader never reads today's files beside a term's snapshot.
 pub fn now<S: Snapshot>(nas: &dyn Nas) -> Result<S> {
+    let one = match at_one::<S>(nas, ONE, S::term)? {
+        Some((r, true)) => return Ok(r),
+        Some((r, false)) => Some(r),
+        None => None,
+    };
     let cur = term::current(nas).context("the current term")?;
-    if cur.term == 0 {
+    if cur.term == 0 && one.is_none() {
         no_pool(nas)?;
         return S::today(nas);
     }
-    Ok(newest(nas, cur.term, true)?.unwrap_or_default())
+    Ok(newest_over(nas, cur.term, one, true)?.unwrap_or_default())
 }
 
-/// `now`'s brief (`B`), reading a term's brief where it has one (its snapshot where it has none: a
-/// lead on an app from before briefs, or one stopped between the two writes); today's files before
+/// `now`'s brief (`B`): the one path's (`ONE_BRIEF`) while no term after its own is made; else a
+/// term's brief where it has one (its snapshot where it has none: a lead on an app from before
+/// briefs, or one stopped between the two writes), down to the one path's; today's files before
 /// the pool. One read pairs keys and manifest of one version (invariant 4).
 pub fn brief_now<S: Snapshot, B: BriefOf<S>>(nas: &dyn Nas) -> Result<B> {
+    let one = match at_one::<B>(nas, ONE_BRIEF, B::term)? {
+        Some((b, true)) => return Ok(b),
+        Some((b, false)) => Some(b),
+        None => None,
+    };
     let cur = term::current(nas).context("the current term")?;
-    if cur.term == 0 {
+    if cur.term == 0 && one.is_none() {
         no_pool(nas)?;
         return B::today(nas);
     }
-    for f in (2..=cur.term).rev() {
+    let floor = one.as_ref().map_or(2, |o| o.term() + 1).max(2);
+    for f in (floor..=cur.term).rev() {
         if let Some(b) = nas.read(&brief_path(f))? {
             let b: B = serde_json::from_slice(&b).with_context(|| format!("parse {}", brief_path(f)))?;
             ensure!(b.term() == f, "{} holds term {}'s brief", brief_path(f), b.term());
@@ -147,7 +196,10 @@ pub fn brief_now<S: Snapshot, B: BriefOf<S>>(nas: &dyn Nas) -> Result<B> {
             return Ok(B::of(r));
         }
     }
-    Ok(B::of(term_one::<S>(nas, true)?))
+    match one {
+        Some(b) => Ok(b),
+        None => Ok(B::of(term_one::<S>(nas, true)?)),
+    }
 }
 
 /// Term 1's records as a take-up or a reader starts from them: its lead's newest snapshot; while it
@@ -284,5 +336,89 @@ mod tests {
         assert_eq!(read_manifest(&nas).unwrap().len(), 1, "its brief");
         write(&brief_path(2), r#"{"term":1,"seq":3,"manifest":{},"keys":{}}"#);
         assert!(read_manifest(&nas).is_err(), "another term's");
+    }
+
+    /// A NAS whose calls are counted (reads, stats, listings).
+    struct Counted<'a>(&'a NasRoot, std::cell::Cell<u64>);
+
+    impl Nas for Counted<'_> {
+        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<nas::Created> {
+            self.0.create_new(path, bytes)
+        }
+        fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            self.0.write_whole(path, bytes)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            self.1.set(self.1.get() + 1);
+            self.0.read(path)
+        }
+        fn exists(&self, path: &str) -> Result<bool> {
+            self.1.set(self.1.get() + 1);
+            self.0.exists(path)
+        }
+        fn list(&self, dir: &str) -> Result<Vec<String>> {
+            self.1.set(self.1.get() + 1);
+            self.0.list(dir)
+        }
+        fn remove(&self, path: &str) -> Result<()> {
+            self.0.remove(path)
+        }
+    }
+
+    /// docs/coordination.md step 8b: a reader reads the one path and stats the term after its own,
+    /// two NAS calls where the current term's own took five (the lead's hint read, its term stat'd,
+    /// the next stat'd, the term read, its snapshot read). Behind the current term (a term after it
+    /// being taken up, a lead on an older app, an earlier save landed late), it walks the terms down
+    /// to the one path's term alone, and reads the one path's where they have none.
+    #[test]
+    fn a_reader_reads_the_one_path_and_stats_the_next_term() {
+        let d = tempfile::tempdir().unwrap();
+        let root = NasRoot::local_for_test(d.path());
+        let nas = Counted(&root, Default::default());
+        let write = |p: &str, b: &str| root.write_whole(p, b.as_bytes()).unwrap();
+        let term = |e: u64| {
+            format!(
+                r#"{{"term":{e},"member":"m-000000000000000a","host":"h","app":"x","since":1,"how":"h","from":{}}}"#,
+                e - 1
+            )
+        };
+        let snap = |e: u64, seq: u64, c: &str| {
+            format!(r#"{{"term":{e},"seq":{seq},"manifest":{{"a":"{c}"}},"pending":{{}},"sizes":{{}}}}"#)
+        };
+        let brief = |e: u64, c: &str| format!(r#"{{"term":{e},"manifest":{{"a":"{c}"}}}}"#);
+        write(FIRST, r#"{"term":1,"seq":1,"manifest":{},"keys":{},"pending":{}}"#);
+        for e in 1..=3 {
+            write(&term::path(e), &term(e));
+        }
+        write(term::HINT, &term(3));
+        write(&path(3), &snap(3, 4, "a.3"));
+        write(&brief_path(3), &brief(3, "a.3"));
+        // Before (a lead on an app without the one path): five calls past the one path's read.
+        let calls = |f: &dyn Fn() -> String| {
+            nas.1.set(0);
+            (f(), nas.1.get())
+        };
+        let manifest = || now::<Recorded>(&nas).unwrap().manifest["a"].clone();
+        let briefed = || read_manifest(&nas).unwrap()["a"].clone();
+        assert_eq!(calls(&manifest), ("a.3".into(), 6), "the one path read, then the term's own five");
+        // After: the one path, current.
+        write(ONE, &snap(3, 5, "a.3.5"));
+        write(ONE_BRIEF, &brief(3, "a.3.5"));
+        assert_eq!(calls(&manifest), ("a.3.5".into(), 2));
+        assert_eq!(calls(&briefed), ("a.3.5".into(), 2));
+        // Term 4 made and not saved yet: the one path's still, no walk past it.
+        write(&term::path(4), &term(4));
+        assert_eq!(calls(&manifest).0, "a.3.5");
+        assert_eq!(calls(&briefed).0, "a.3.5");
+        // Its own saved (its lead on an older app): its own.
+        write(&path(4), &snap(4, 1, "a.4"));
+        write(&brief_path(4), &brief(4, "a.4"));
+        assert_eq!(calls(&manifest).0, "a.4");
+        assert_eq!(calls(&briefed).0, "a.4");
+        // An earlier term's save landed late over the one path: the term's own while it's written.
+        write(ONE, &snap(2, 9, "a.2"));
+        write(ONE_BRIEF, &brief(2, "a.2"));
+        assert_eq!(calls(&manifest).0, "a.4");
+        assert_eq!(calls(&briefed).0, "a.4");
     }
 }

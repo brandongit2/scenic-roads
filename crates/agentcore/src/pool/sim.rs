@@ -256,6 +256,9 @@ struct MacW {
     op_at: u64,
     /// Its driver's last step said it leads, its records caught up.
     caught: bool,
+    /// The records its driver kept on its own disk leading (driver::Io::keep): through restarts,
+    /// lost with its saved state.
+    local: Option<Vec<u8>>,
 }
 
 impl MacW {
@@ -457,6 +460,7 @@ impl World {
                     woke: 0,
                     op_at: 0,
                     caught: false,
+                    local: None,
                 }
             })
             .collect();
@@ -905,7 +909,7 @@ impl World {
     }
 
     fn remove(&mut self, me: usize, path: &str) {
-        if term_of(path).is_some() || records_of(path).is_some() || path == records::FIRST {
+        if term_of(path).is_some() || records_of(path).is_some() || path == records::FIRST || path == records::ONE {
             self.wrong(format!("mac{me} removed {path}"));
         }
         if let Some(key) = entry_of(path) {
@@ -975,6 +979,24 @@ impl World {
             }
             self.note(|| format!("mac{me} saves term {e}'s records at {} ({} entries)", r.seq, handled.len()));
             self.landed.insert(e, (r.seq, handled));
+        } else if path == records::ONE {
+            // The one path (docs/coordination.md step 8b): any term's lead's snapshot, consistent;
+            // a late one may land over a later (read until the lead's next save).
+            match serde_json::from_slice::<Records>(b) {
+                Ok(r) => {
+                    if let Err(why) = consistent(&r) {
+                        self.wrong(format!("the one path's records at {} aren't consistent: {why}", r.seq));
+                    }
+                    let lead = self.files.get(&term::path(r.term)).and_then(|b| serde_json::from_slice::<Term>(b).ok());
+                    if lead.is_none_or(|t| t.member != self.macs[me].id) {
+                        self.wrong(format!("mac{me} wrote term {}'s records at the one path, not its lead", r.term));
+                    }
+                    if self.landed.get(&r.term).is_some_and(|(seq, _)| *seq > r.seq) {
+                        self.count("the one path's records landed late");
+                    }
+                }
+                Err(err) => self.wrong(format!("the one path's records can't be parsed: {err}")),
+            }
         } else if path == records::FIRST {
             // Term 1's first snapshot: made with create-new before term 1 is, its bytes landing
             // when its maker gets to them (late at times, read by none once term 1's lead has
@@ -1392,6 +1414,18 @@ impl Io for Sim {
     fn awake(&self) -> u64 {
         self.look(|w, me| w.awake_clock(me))
     }
+
+    fn kept(&self) -> Result<Option<Vec<u8>>> {
+        let (me, mut b) = (self.me, None);
+        self.quiet(|w| b = w.macs[me].local.clone());
+        Ok(b)
+    }
+
+    fn keep(&self, records: &[u8]) -> Result<()> {
+        let me = self.me;
+        self.quiet(|w| w.macs[me].local = Some(records.to_vec()));
+        Ok(())
+    }
 }
 
 /// A simulated Mac: the agent's part around the pool's driver, as the agent will play it.
@@ -1458,8 +1492,10 @@ impl Mac {
             if self.sim.op(|w, me| {
                 let lost = w.cfg.lose && w.rng.chance(0.3);
                 if lost {
-                    // (Its memory and its saved state both gone: what it believed starts again.)
+                    // (Its memory, its saved state and the records it kept all gone: what it
+                    // believed starts again.)
                     w.macs[me].view = 0;
+                    w.macs[me].local = None;
                     w.count("saved states lost");
                 }
                 lost
@@ -1527,9 +1563,11 @@ impl Mac {
                 return Err(e);
             }
         }
-        // A job reading the records.
+        // A job reading the records: the one path's, else the terms' (today's files left out: the
+        // stale reads of them are term 1's take-up's to wait out).
         if out.term > 0 && self.rng.chance(P_READ) {
-            if let Ok(Some(r)) = Records::newest(&self.sim, out.term, false) {
+            let one = buildstore::records::load_one::<Records>(&self.sim);
+            if let Ok(Some(r)) = one.and_then(|o| buildstore::records::newest_over(&self.sim, out.term, o, false)) {
                 if let Err(why) = consistent(&r) {
                     self.sim.op(|w, me| {
                         w.wrong(format!("mac{me} read term {}'s records at {}, not consistent: {why}", r.term, r.seq))

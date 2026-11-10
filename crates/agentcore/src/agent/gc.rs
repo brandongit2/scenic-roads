@@ -539,7 +539,7 @@ pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
     }
     let nas = root.clone();
     let cur = term::current(&nas).context("the current term")?;
-    let r = Records::newest(&nas, cur.term, true).context("the newest records")?.unwrap_or_default();
+    let r = Records::now(&nas).context("the newest records")?;
     // (Led: a term readable whole; only then does anyone refuse.)
     let led = cur.lead.is_some();
     let cutoff = journal::day(now.saturating_sub(PASS_OVER_S)).unwrap_or_default();
@@ -2182,7 +2182,7 @@ mod tests {
         crate::pool::term::bootstrap(&nas, &me, 1_791_500_000).unwrap().unwrap();
         let mut rec = crate::pool::records::Records { term: 1, ..Default::default() };
         rec.reflected.insert(e.key().unwrap());
-        rec.save(&nas).unwrap();
+        rec.save(&nas, &|_| Ok(()), true).unwrap();
         let u = unmerged(&nas, now).unwrap();
         assert!(u.entries == 0 && !u.files.contains(a));
         // A term led: an entry that doesn't read whole, or reads damaged, is an error until refused.
@@ -2198,10 +2198,10 @@ mod tests {
         let damaged_key = format!("{}/1-6", journal::day(now).unwrap());
         entry_at(&damaged_key, b"{\"not\": \"an entry\"}");
         rec.rejected.insert(short_key, "never whole".into());
-        rec.save(&nas).unwrap();
+        rec.save(&nas, &|_| Ok(()), true).unwrap();
         assert!(format!("{:#}", unmerged(&nas, now).unwrap_err()).contains("damaged"));
         rec.rejected.insert(damaged_key, "damaged".into());
-        rec.save(&nas).unwrap();
+        rec.save(&nas, &|_| Ok(()), true).unwrap();
         assert!(unmerged(&nas, now).unwrap().warnings.is_empty());
         // No term led (its term not readable whole): no one refuses. An entry unreadable from today
         // is an error; one whose day is over `PASS_OVER_S` past is passed over, said.
