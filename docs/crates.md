@@ -1318,6 +1318,9 @@ landmarks named roads for three items only; each moved below, unchanged, its use
 - candidates' `Cand` (marksjob's `from_unit` takes one): codecs::marks; roads::candidates keeps
   reading and writing `work/pois/<u>`.
 
+Cut: roads::timetables' re-export of `REPORT` (its two users, the plan's write set and the job's
+test, name inputs::inputs::gtfs's, beside the pieces' paths); roads::candidates' serde import.
+
 So landmarks depends on terrain and below: after a terrain edit it compiles beside trees and roads,
 and a trees edit no longer rebuilds it. bld still needs roads (reach's `Reach`, `LongWay`,
 `near_box`) and landmarks (heritage's logical names, `slice_parts`, `latest_date`), so it stays

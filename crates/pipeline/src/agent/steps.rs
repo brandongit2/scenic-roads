@@ -2296,7 +2296,7 @@ fn w_rail(l: &str, _: bool) -> bool {
 /// The timetables' report (its to-do list is written into the inputs folder's todo/, outside the
 /// records).
 fn w_timetables_todo(l: &str, _: bool) -> bool {
-    l == roads::timetables::REPORT
+    l == inputs::inputs::gtfs::REPORT
 }
 
 fn w_bldprep(l: &str, _: bool) -> bool {
