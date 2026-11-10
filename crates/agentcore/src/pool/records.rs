@@ -35,8 +35,8 @@
 use super::journal::{self, Entry, LeaseId};
 use super::nas::{Created, Nas};
 use super::term::Term;
-use buildstore::rawpack::Pack;
 use anyhow::{bail, Context, Result};
+use buildstore::rawpack::Pack;
 use buildstore::records::{read_or_default, BriefOf, Snapshot, TODAY};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
