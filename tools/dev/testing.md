@@ -482,7 +482,10 @@ list with its time. `cargo test` runs have no such bound.
   `proc_listpidspath(PROC_ALL_PIDS, …)`, which resolves the path of every open file of every
   process on the Mac), sat in state U for 7 min while the owner's work stalled the NAS's SMB share,
   then would not exit; the scan is gone (the agent's lock names its holder, docs/surface.md). Reading
-  one process by its pid (`proc_pidinfo`, `proc_pidpath`) touches none of its open files.
+  one process by its pid (`proc_pidinfo`, `proc_pidpath`) touches none of its open files. `lsof`
+  without `-p` walks them all the same way (publish's smoke test sat 16 min in one in check.sh's
+  shell part, 10 Nov): who listens on a port is `listeners <port>` (tools/app/lib.zsh: `netstat
+  -anv`'s socket table).
 
 ## Setting up a Mac (tools/dev is tracked, #548)
 

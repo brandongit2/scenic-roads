@@ -62,8 +62,14 @@ unload() {  # unload <label>…: each stopped, waited for until launchd has let 
     if [[ -e $agents/$l.plist ]]; then mkdir -p $aside; mv -f $agents/$l.plist $aside/$l.plist.$stamp; fi
     say "stopped $l (its plist in $aside)"
   done
-  for (( i = 0; i < 100; i++ )); do lsof -nP -iTCP:8077 -sTCP:LISTEN >/dev/null 2>&1 || return 0; sleep 0.1; done
-  die "something still listens on 8077: $(lsof -nP -iTCP:8077 -sTCP:LISTEN | tail -n +2)"
+  # (The socket table, never lsof: it walks every process's open files and blocks in the kernel
+  # while the NAS's SMB share stalls, #1108.)
+  local on
+  for (( i = 0; i < 100; i++ )); do
+    on=$(netstat -anv -p tcp 2>/dev/null | awk '$6 == "LISTEN" && $4 ~ /[.]8077$/')
+    [[ -z $on ]] && return 0; sleep 0.1
+  done
+  die "something still listens on 8077: $on"
 }
 answers() {  # answers <items' count>: the app answers the board's API with that many items
   local i n

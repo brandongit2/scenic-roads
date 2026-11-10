@@ -179,6 +179,14 @@ fast_forward() {
 # live_version <current.json>: its version's name.
 live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }
 
+# listeners <port>: the pids listening on TCP <port> (IPv4 or IPv6), one a line, from the kernel's
+# socket table (`netstat -anv`'s process:pid). Never lsof (#1108): it walks every process's open
+# files, resolving each, and a file open on the NAS while SMB stalls blocked it in the kernel,
+# uninterruptibly (check.sh's shell part sat 16 min in this smoke test's lsof, 10 Nov).
+listeners() {
+  netstat -anv -p tcp 2>/dev/null | awk -v p=$1 '$6 == "LISTEN" && $4 ~ ("[.]" p "$") { n = split($11, a, ":"); print a[n] }' | sort -u
+}
+
 # smoke <port> <pid> <log> <seconds> <path>...: the smoke test of the server <pid> started on <port>,
 # its output in <log>. It waits up to <seconds> for /api/ping (the server listens only once it has
 # read the map, its own Mac's kept copy or else the NAS's newest snapshot; it prints "map <seq> ·
@@ -212,7 +220,7 @@ smoke() {
     sleep 0.5
   done
   if (( ok )); then
-    holder=$(lsof -nP -t -iTCP:$port -sTCP:LISTEN 2>/dev/null)
+    holder=$(listeners $port)
     if [[ $holder != $pid ]]; then
       print -r -- "smoke test: port $port answered, but it is held by process ${${holder//$'\n'/, }:-unknown (another user's?)}, not the server started ($pid)"
       ok=0
