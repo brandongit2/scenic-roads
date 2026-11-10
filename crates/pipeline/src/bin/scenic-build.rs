@@ -5496,7 +5496,7 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
 }
 
 /// terrain-same 10/x/y: z10 tile `t`'s deep pack and mid made as its terrain-deep run makes them
-/// (`terrain_deep_step`), written in the scratch folder only; their content names said beside the
+/// (`terrain_deep_step`; terrain::terrain_deep::write_local), written in the scratch folder only; their content names said beside the
 /// manifest's, with the time.
 fn terrain_same_deep(
     out: &Out,
@@ -5515,15 +5515,8 @@ fn terrain_same_deep(
     })?;
     let secs = t0.elapsed().as_secs_f64();
     let n = made.len();
-    let mut it = made.into_iter().map(|(z, x, y, b)| {
-        let n = b.len() as u32;
-        (z, x, y, b, n)
-    });
-    let key = (td::PACK_Z, t.0, t.1);
-    let pack = layers::write_pack_local(out, "terrain", codecs::terrain_codec::ENCODING, false, "deep", key, &mut it)?;
+    let (pack, mid_path) = td::write_local(out, t, made, &mid)?;
     let ml = td::mid_logical(t.0, t.1);
-    let mid_path = out.scratch_file(&format!("{ml}.sect"));
-    terrain::terrain_pack::write_mid_of(&mid_path, key, &mid)?;
     let said = serde_json::json!({
         "tile": format!("{}/{}/{}", td::PACK_Z, t.0, t.1), "tiles": n, "secs": secs,
         "fetched_bytes": buildstore::fetch::fetched_bytes(),

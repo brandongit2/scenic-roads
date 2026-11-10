@@ -333,6 +333,28 @@ pub fn build_target(
     let _p = jobrt::timings::phase("writing and uploading its deep pack and mid");
     rep.tiles = made.len();
     rep.bytes = made.iter().map(|m| m.3.len() as u64).sum();
+    let (pack, mid_path) = write_local(out, t, made, &mid)?;
+    let mut gone = named_under(&out.manifest, PACK_Z, t.0, t.1);
+    let ml = mid_logical(t.0, t.1);
+    if let Some(p) = pack {
+        gone.retain(|l| *l != p.logical);
+        rep.packs = 1;
+        out.put_file(&p.logical, "pack", &p.local)?;
+    }
+    rep.dropped = crate::layers::drop(out, &gone);
+    out.put_file(&ml, "sect", &mid_path)?;
+    std::fs::remove_file(jobrt::resume_log::path(&out.scratch, (PACK_Z, t.0, t.1))).ok();
+    Ok(rep)
+}
+
+/// Deep target `t`'s tiles `made` and mid `mid` written in the scratch folder, not put: its deep
+/// pack (None: no tile) and its mid's file (`build_target`; `scenic-build terrain-same 10/x/y`).
+pub fn write_local(
+    out: &Out,
+    t: (u32, u32),
+    made: Vec<crate::terrain_pack::Made>,
+    mid: &crate::terrain_pack::Mid,
+) -> Result<(Option<crate::layers::LocalPack>, std::path::PathBuf)> {
     let mut it = made.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
         (z, x, y, b, n)
@@ -346,19 +368,9 @@ pub fn build_target(
         (PACK_Z, t.0, t.1),
         &mut it,
     )?;
-    let mut gone = named_under(&out.manifest, PACK_Z, t.0, t.1);
-    let ml = mid_logical(t.0, t.1);
-    let mid_path = out.scratch_file(&format!("{ml}.sect"));
-    crate::terrain_pack::write_mid_of(&mid_path, (PACK_Z, t.0, t.1), &mid)?;
-    if let Some(p) = pack {
-        gone.retain(|l| *l != p.logical);
-        rep.packs = 1;
-        out.put_file(&p.logical, "pack", &p.local)?;
-    }
-    rep.dropped = crate::layers::drop(out, &gone);
-    out.put_file(&ml, "sect", &mid_path)?;
-    std::fs::remove_file(jobrt::resume_log::path(&out.scratch, (PACK_Z, t.0, t.1))).ok();
-    Ok(rep)
+    let mid_path = out.scratch_file(&format!("{}.sect", mid_logical(t.0, t.1)));
+    crate::terrain_pack::write_mid_of(&mid_path, (PACK_Z, t.0, t.1), mid)?;
+    Ok((pack, mid_path))
 }
 
 /// Z10 tile `t` no deep target any more (no place there past z12, or the coverage gone): its deep
