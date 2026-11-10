@@ -590,11 +590,13 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
    of where tasks ran, `tools/devtools/schema.mjs`, exempt), or when its commit doesn't contain the live version's (below);
 3. builds the server and pipeline;
 4. runs the crates' tests, the type check and the web build, and checks every Python step loads
-   from a copy of `dem/` in a fresh environment and passes pyflakes;
-5. smoke-tests a server on a spare port against the NAS's catalogue (waiting up to 10 min for its first
-   answer, which comes only once it has read the catalogue, and saying once after 30 s that it is still
-   starting and whether it is still reading the catalogue; one that exits, is still starting at 10 min, or
-   whose port another process holds and answers on, is said so), and signs the programs and Scenic.app;
+   from a copy of `dem/` in a fresh environment and passes pyflakes. Among the tests, the built
+   server on a fixture map (`crates/server/tests/serves.rs`: packs written with the build's codecs,
+   the program on a free port, no NAS) answers every route the app starts with (`/api/ping`,
+   `/api/meta`, `/api/catalog`, the page) and a terrain, road, slope and depth-shade tile, as stored
+   and made from an ancestor (past one from before the shading's encoding and one that won't
+   decode), each 200 with a body that decodes;
+5. signs the programs and Scenic.app;
 6. takes the lock on the NAS (`app/publish.lock`, create-new; one over six hours old taken over),
    waiting while another publish holds it, checks the order again, writes `app/<version>/` and
    `app/current.json` with every file's SHA-256, copies `tools/nas/fetch-planet.sh` to the NAS's
@@ -603,8 +605,7 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
 Two publishes may run at once: the second takes a second tree (`tree-2`, kept as a build cache
 like the first, failed builds included, and removed by a publish that finds it unused for 3 days;
 each publish prunes the `target/` of the tree it builds in; a third waits, polling every 2 s and
-saying so once, until one of the two frees, never making a third tree), its smoke test a port of its
-own, and
+saying so once, until one of the two frees, never making a third tree), and
 its tests wait for the first's (`tests.busy`, per Mac), then it installs once the first has freed
 the lock. Publishes from two Macs queue their tests only through the test Mac's `publish` key
 (tools/app/remote-tests.sh: after 30 min one runs on its own Mac), and the test Mac's own publish

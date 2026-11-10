@@ -75,7 +75,7 @@ fn road() -> roadcore::tile::TileLine {
     }
 }
 
-/// The map: a catalogue naming terrain, roads, slope and depth-shade packs around the smoke test's
+/// The map: a catalogue naming terrain, roads, slope and depth-shade packs around the tiles asked
 /// tiles, written as the NAS's newest map snapshot in `root`.
 fn map(root: &Path) {
     use store::catalogue::Layer;

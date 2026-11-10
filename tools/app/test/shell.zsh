@@ -6,8 +6,7 @@
 lib=${0:A:h:h}/lib.zsh
 tmp=$(mktemp -d)
 trap 'rm -rf $tmp' EXIT
-# (zsh skips the EXIT trap on a signal: a stopped publish removes $tmp too, which ends the gated fake
-# servers below.)
+# (zsh skips the EXIT trap on a signal: a stopped publish removes $tmp too.)
 trap 'exit 143' TERM; trap 'exit 130' INT
 failed=0
 ok() { print "PASS  $1" }
@@ -230,61 +229,5 @@ out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-1000-$C" 
   [[ $out == *'rolled back'* ]] && ok "fast_forward begun before a rollback refused" || no "fast_forward rollback" "$out"; }
 out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-0953-$B" 2>&1) && ok "fast_forward begun after a rollback" || no "fast_forward after rollback" "$out"
 rm -f $nas/app/previous.json
-
-# smoke: two publishes' smoke tests at once (task #698), each its own port and fake server (a
-# Python stand-in that listens only once its gate file exists, as the server listens only once its
-# map is read). No timing (task #956: a fixed 3 s start against a 20 s wait failed a publish at
-# a load of 29): the first's server opens only after the second's smoke test has passed, so the
-# first's is waited for (saying once that it is still starting), not reported as six 000s, however
-# slow the Mac. One never opened, past the wait, and one that exits, are each said so, with whether
-# it printed anything.
-fake=$tmp/fake.py
-print -r -- 'import os, sys, time, http.server
-if len(sys.argv) > 3: print(sys.argv[3], flush=True)
-while not os.path.exists(sys.argv[2]):
-    if not os.path.isdir(os.path.dirname(sys.argv[2])): sys.exit("its folder is gone")
-    time.sleep(0.05)
-class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self): self.send_response(200); self.send_header("X-Pid", str(os.getpid())); self.end_headers()
-    def log_message(self, *a): pass
-http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()' > $fake
-sm() {  # <name> <port> <wait> [smoke_say]: smoke against a fake server gated on $tmp/go-<name>, its output in $tmp/smoke-<name>
-  python3 -I $fake $2 $tmp/go-$1 > $tmp/log-$1 2>&1 &
-  local p=$! rc
-  zsh -c "source ${(q)lib}; smoke_say=${4:-30}; smoke $2 $p $tmp/log-$1 $3 /api/ping /api/meta /" > $tmp/smoke-$1 2>&1; rc=$?
-  kill $p 2>/dev/null; wait $p 2>/dev/null
-  return $rc
-}
-p1=$(( 20000 + RANDOM % 20000 )); p2=$(( p1 + 1 ))
-touch $tmp/go-second
-sm first $p1 600 0 & s1=$!; sm second $p2 600 & s2=$!
-wait $s2; r2=$?
-kill -0 $s1 2>/dev/null; waiting=$?
-touch $tmp/go-first; wait $s1; r1=$?
-if (( r1 || r2 )); then no "smoke two at once" "$r1/$r2: $(<$tmp/smoke-first) $(<$tmp/smoke-second)"
-elif (( waiting )); then no "smoke two at once" "the first's ended before its server opened: $(<$tmp/smoke-first)"
-elif [[ $(grep -c 'still starting' $tmp/smoke-first) != 1 ]]; then no "smoke two at once" "the first's didn't say once it waited: $(<$tmp/smoke-first)"
-else ok "smoke: two at once, the first's server opened after the second passed, both pass"; fi
-sm slow $p1 1 && no "smoke still starting" "passed" || {
-  [[ $(<$tmp/smoke-slow) == *"didn't answer"*'still reading the map'*'printed nothing'* && $(<$tmp/smoke-slow) != *000* ]] && ok "smoke: a server still starting past the wait said so" || no "smoke still starting" "$(<$tmp/smoke-slow)"; }
-# One that said it has read the map ("map <seq> · NAS …", the server's line) and isn't listening yet:
-# said so.
-python3 -I $fake $p1 $tmp/go-read 'map 1689 · NAS /some/share' > $tmp/log-read 2>&1 & fp=$!
-out=$(zsh -c "source ${(q)lib}; smoke $p1 $fp $tmp/log-read 3 /api/ping")
-kill $fp 2>/dev/null; wait $fp 2>/dev/null
-[[ $out == *"didn't answer"*'its map read, not yet listening'* ]] && ok "smoke: a server that read the map but isn't listening said so" || no "smoke map read" "$out"
-# A port another process holds (a server a killed publish left) answers for one that couldn't
-# listen: said so, not passed.
-touch $tmp/go-other
-python3 -I $fake $p2 $tmp/go-other > $tmp/log-other 2>&1 & other=$!
-until curl -sf -o /dev/null http://127.0.0.1:$p2/api/ping || ! kill -0 $other 2>/dev/null; do sleep 0.1; done
-sleep 600 & stand=$!
-out=$(zsh -c "source ${(q)lib}; smoke $p2 $stand $tmp/log-other 600 /api/ping")
-r=$?; kill $other $stand 2>/dev/null; wait $other $stand 2>/dev/null
-(( r )) && [[ $out == *"held by process $other, not the server started ($stand)"* ]] && ok "smoke: a port another process holds said so" || no "smoke port held" "$r: $out"
-print -r -- 'import sys; print("boom", file=sys.stderr); sys.exit(3)' > $tmp/die.py
-# (Started by the shell that runs smoke, as publish.sh does: its status is that shell's to wait for.)
-out=$(zsh -c "source ${(q)lib}; python3 -I $tmp/die.py > $tmp/log-die 2>&1 & smoke $p1 \$! $tmp/log-die 600 /api/ping") && no "smoke exited" "passed" || {
-  [[ $out == *'exited (status 3)'*boom* ]] && ok "smoke: a server that exited said so, with its log" || no "smoke exited" "$out"; }
 
 exit $failed

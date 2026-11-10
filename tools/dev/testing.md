@@ -484,10 +484,11 @@ no such bound.
   process on the Mac), sat in state U for 7 min while the owner's work stalled the NAS's SMB share,
   then would not exit; the scan is gone (the agent's lock names its holder, docs/surface.md). Reading
   one process by its pid (`proc_pidinfo`, `proc_pidpath`) touches none of its open files. `lsof`
-  without `-p` walks them all the same way (publish's smoke test sat 16 min in one in check.sh's
-  shell part, 10 Nov): the smoke test reads who answered from the server itself (`/api/ping`'s
-  `X-Pid`). (`netstat -anv -p tcp` isn't a stand-in: started from mise's Python, as check.sh's parts
-  are through devjob.py, it printed no Internet sockets at all.)
+  without `-p` walks them all the same way (one sat 16 min in check.sh's shell part, 10 Nov, asking
+  who held a port). A server a test starts takes a free port and says which (`--port 0`, its
+  listening line: crates/server/tests/serves.rs), so no test asks who holds one. (`netstat -anv -p
+  tcp` isn't a stand-in: started from mise's Python, as check.sh's parts are through devjob.py, it
+  printed no Internet sockets at all.)
 
 ## Setting up a Mac (tools/dev is tracked, #548)
 
