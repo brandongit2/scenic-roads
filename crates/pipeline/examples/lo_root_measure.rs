@@ -1,6 +1,6 @@
 //! Terrain-root's and an assembly's time and peak footprint by the rule (task #929), on the build's
 //! real records, writing nothing but the Terrarium tiles' local cache: the root from the lo packs'
-//! z3 tiles and the relief (pipeline::terrain_pack::make_root), then z3 tile `q`'s z8 → z3 with no
+//! z3 tiles and the relief (terrain::terrain_pack::make_root), then z3 tile `q`'s z8 → z3 with no
 //! z6 tile's mid (its quarters outside every region the relief's, an assembly's most reading), under
 //! a footprint guard. Its count of the assembly's tiles is not an assembly's: a quarter inside a
 //! region is its children's and, with no mid given, void (a tile of only those is none), and the
@@ -25,35 +25,35 @@ fn main() -> anyhow::Result<()> {
     let q = (q[1], q[2]);
     let nas = store::nasfs::NasRoot::from_arg(root);
     let scratch = std::path::Path::new(raw).join("scratch");
-    let out = pipeline::out::Out::unbound(&nas, &scratch)?;
+    let out = buildstore::out::Out::unbound(&nas, &scratch)?;
     let m = out.manifest.clone();
-    let src = pipeline::inputs::regions::read::source(&nas, &m)?;
-    let cov = pipeline::inputs::regions::read::accepted_coverage(&nas, &src, None)?;
-    let sets = pipeline::terrain_zoom::Declared::read(&nas, &m)?.map(|d| d.sets).unwrap_or_default();
-    let url = pipeline::terrain_base::terrarium_template(&nas, &m)?;
-    let rt = pipeline::terrain_pack::RawTiles::with_store(
+    let src = ::inputs::inputs::regions::read::source(&nas, &m)?;
+    let cov = ::inputs::inputs::regions::read::accepted_coverage(&nas, &src, None)?;
+    let sets = terrain::terrain_zoom::Declared::read(&nas, &m)?.map(|d| d.sets).unwrap_or_default();
+    let url = terrain::terrain_base::terrarium_template(&nas, &m)?;
+    let rt = terrain::terrain_pack::RawTiles::with_store(
         std::path::Path::new(raw),
         &nas.join("sources/aws-terrarium"),
         &url,
     );
     println!("start: {} MB", mb());
     for (what, b) in
-        [("root", pipeline::terrain_base::tiles_box(0, &[(0, 0)])), ("lo", pipeline::terrain_base::tiles_box(3, &[q]))]
+        [("root", terrain::terrain_base::tiles_box(0, &[(0, 0)])), ("lo", terrain::terrain_base::tiles_box(3, &[q]))]
     {
-        let pool = pipeline::terrain_base::Pool::read(&nas, &m, b)?;
+        let pool = terrain::terrain_base::Pool::read(&nas, &m, b)?;
         let relief = pool.relief();
         let none = |_: u32, _: u32| false;
-        let fill = pipeline::terrain_pack::fill_of(&cov, &sets, &none);
-        let native = |z: u8, x: u32, y: u32| pipeline::terrain_pack::native_of(&fill, z, x, y);
-        let s = pipeline::terrain_pack::Sources { native: Some(&native), sets: &sets };
+        let fill = terrain::terrain_pack::fill_of(&cov, &sets, &none);
+        let native = |z: u8, x: u32, y: u32| terrain::terrain_pack::native_of(&fill, z, x, y);
+        let s = terrain::terrain_pack::Sources { native: Some(&native), sets: &sets };
         let t0 = std::time::Instant::now();
         let n = pool.with_tiles(&rt, |tiles| {
             relief.with_tiles(&rt, |rel| -> anyhow::Result<usize> {
-                let reaching = |z: u8, x: u32, y: u32| pipeline::terrain_zoom::reaching(&sets, z, x, y);
-                let fills = pipeline::terrain_pack::Fills::new(tiles, rel, &fill, &reaching);
+                let reaching = |z: u8, x: u32, y: u32| terrain::terrain_zoom::reaching(&sets, z, x, y);
+                let fills = terrain::terrain_pack::Fills::new(tiles, rel, &fill, &reaching);
                 Ok(match what {
-                    "root" => pipeline::terrain_pack::make_root(&out, &fills, &s)?.len(),
-                    _ => pipeline::terrain_pack::make_lo_from(&fills, &s, q, &[])?.len(),
+                    "root" => terrain::terrain_pack::make_root(&out, &fills, &s)?.len(),
+                    _ => terrain::terrain_pack::make_lo_from(&fills, &s, q, &[])?.len(),
                 })
             })
         })???;

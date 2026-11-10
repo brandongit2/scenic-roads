@@ -58,7 +58,7 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   labels aren't all "behind the terrain" in tilted views.
 - **Hill-shading from stored shading tiles** (`draw_hillshade.ts`, `hillshade.fragment.glsl`,
   `hillshade_program.ts`): a `hillshade` layer draws a source of precomputed shading tiles (the
-  app's `slope` and `depth-shade`: pipeline::shade_codec), each pixel's mean steepness s (R,
+  app's `slope` and `depth-shade`: codecs::shade_codec), each pixel's mean steepness s (R,
   √-coded to 400 %) and mean unit gradient direction u (G, B: 128 + 120 u), its length c the
   coherence. The colour is c × I(s û) + (1 − c) × I_rough(s), I the layer's method on that
   gradient and I_rough its mean over 16 aspects: the shading of broken ground whose faces cancel

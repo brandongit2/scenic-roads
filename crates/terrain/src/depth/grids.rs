@@ -611,7 +611,7 @@ pub static STRIP_CELLS: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 /// How many of a source's grids are opened, or sampled, at once.
 pub const GRIDS_AT_ONCE: usize = 8;
 
-/// A GeoTIFF opened, its header read. (Not on pipeline::agent::nasread's readers: their four
+/// A GeoTIFF opened, its header read. (Not on agentcore::agent::nasread's readers: their four
 /// threads, busy, fail a call at once, and the grids are opened `GRIDS_AT_ONCE` at once.)
 /// An I/O error in its header's read keeps its kind (a transient one is tried again); a header
 /// that isn't a GeoTIFF's is `InvalidData` (never tried again).

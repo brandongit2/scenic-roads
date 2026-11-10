@@ -1,15 +1,15 @@
 //! A polar cap's terrain and shading tiles from the elevation pool into a folder, by the steps' own
-//! code (pipeline::polar: each block's terrain, then each one's shading from the folder's terrain,
+//! code (terrain::polar: each block's terrain, then each one's shading from the folder's terrain,
 //! then the root; docs/polar.md): for measuring and the check page (web/test/polar.html). It reads
 //! the build's records and the pool's datasets and writes only its `--out` folder. Its command
-//! line: pipeline::cli::progs::Polar.
+//! line: agentcore::cli::progs::Polar.
 
+use agentcore::cli::progs::Polar;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use pipeline::cli::progs::Polar;
-use pipeline::polar::{self, BLOCK_Z};
 use roadcore::polar::Pole;
 use std::path::{Path, PathBuf};
+use terrain::polar::{self, BLOCK_Z};
 
 pub fn main(args: Vec<String>) -> Result<()> {
     let a = Polar::parse_from(args);
@@ -17,18 +17,18 @@ pub fn main(args: Vec<String>) -> Result<()> {
     if let Some(w) = a.workers {
         rayon::ThreadPoolBuilder::new().num_threads(w.max(1)).build_global()?;
     }
-    let out = pipeline::out::Out::unbound(&store::nasfs::NasRoot::from_arg(&a.root), &a.out.join("scratch"))?;
+    let out = buildstore::out::Out::unbound(&store::nasfs::NasRoot::from_arg(&a.root), &a.out.join("scratch"))?;
     let max_z = match a.max_z {
         Some(z) => z,
         None => polar::finest_now(&out, pole)?,
     };
-    if !(BLOCK_Z..=pipeline::terrain_zoom::DEEPEST).contains(&max_z) {
-        bail!("--max-z is {BLOCK_Z} to {}", pipeline::terrain_zoom::DEEPEST);
+    if !(BLOCK_Z..=terrain::terrain_zoom::DEEPEST).contains(&max_z) {
+        bail!("--max-z is {BLOCK_Z} to {}", terrain::terrain_zoom::DEEPEST);
     }
     // (Over the root's latitudes: z0–3 reach about 80.6° past the cap.)
-    let base = pipeline::terrain_base::Pool::read(out.root(), &out.manifest, roadcore::polar::lat_box(pole, 0, 0, 0))?;
-    let net = pipeline::fetch::Fetcher::from_env();
-    let o = pipeline::dem::generic::Opts { fetch: &net, store: Some(base.store.clone()), local: None };
+    let base = terrain::terrain_base::Pool::read(out.root(), &out.manifest, roadcore::polar::lat_box(pole, 0, 0, 0))?;
+    let net = buildstore::fetch::Fetcher::from_env();
+    let o = ::inputs::dem::generic::Opts { fetch: &net, store: Some(base.store.clone()), local: None };
     let plans = polar::plans(&base.plan, max_z);
     let samplers = polar::samplers(&plans, &o)?;
     let dir = a.out.join(pole.letter().to_string());
@@ -66,7 +66,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             b,
             max_z,
             &voids,
-            &mut pipeline::resume_log::Pieces::none(),
+            &mut jobrt::resume_log::Pieces::none(),
             &mut |z, x, y, t| write("terrain", z, x, y, &t),
             &mut |_, _| {},
         )?;
@@ -79,7 +79,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             b,
             max_z,
             &|z, x, y| Ok(terrain(path("terrain", z, x, y))?.map(std::sync::Arc::new)),
-            &mut pipeline::resume_log::Pieces::none(),
+            &mut jobrt::resume_log::Pieces::none(),
             &mut |z, x, y, s| write("shade", z, x, y, &s),
             &mut |_, _| {},
         )?;

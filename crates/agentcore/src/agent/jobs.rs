@@ -11,7 +11,7 @@
 //! agent that restarts (a newer app, its launcher restarted, a crash) leaves its jobs running, and
 //! the next one takes them over (`adopt`).
 
-use crate::sys::Signal;
+use jobrt::sys::Signal;
 
 /// A job's id: its step (a task's kind for a leased task, crate::agent::steps::TASKS), then what
 /// it's for ("unit 6/31/20", "terrain-hi 3/4/2 3/4/3", "osm-pass 2026-10-01", "tail 6/1/1"); a job
@@ -67,17 +67,17 @@ pub fn root_arg(root: &store::nasfs::NasRoot) -> String {
 
 /// Notes what a job's run of `target` of `step` cost in its costs file (`SCENIC_COSTS`, as
 /// scenic-build's steps do; nothing outside a job): the most memory its processes held (sampled,
-/// crate::sys::group_peak), `secs`, its step's way (crate::coord::cost_version) and its inputs'
-/// measures (crate::costin). The clean-up's (crate::agent::gc) and a redo's (crate::agent::redo),
+/// jobrt::sys::group_peak), `secs`, its step's way (crate::coord::cost_version) and its inputs'
+/// measures (buildstore::costin). The clean-up's (crate::agent::gc) and a redo's (crate::agent::redo),
 /// run by the `scenic` program.
 pub fn note_cost(v: u32, step: &str, target: &str, secs: u64) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
     let line = serde_json::json!({
         "unit": crate::coord::cost_key(step, target),
-        "peak_mb": crate::sys::group_peak() >> 20,
+        "peak_mb": jobrt::sys::group_peak() >> 20,
         "secs": secs,
         "v": v,
-        "sizes": crate::costin::take(),
+        "sizes": buildstore::costin::take(),
     });
     let r = std::fs::OpenOptions::new()
         .create(true)
@@ -99,13 +99,13 @@ pub struct Needs {
 }
 
 /// What a running job is doing now (docs/pool.md §10, Live; task #518), as the agent reads it for
-/// its status and its lease's beat: the phase its main thread has open (crate::timings, said in its
+/// its status and its lease's beat: the phase its main thread has open (jobrt::timings, said in its
 /// counts file: store::nasio::set_phase) and since when; the target under way (its
 /// costs file: crate::agent::memguard::targets) and since when, and how many of its targets ended;
 /// its NAS bytes read and written, files made and metadata work (its processes' counts,
 /// store::nasio: the lead weighs a job past its predicted time by them, crate::coord::sched's
 /// `job_weight`) and its internet bytes in
-/// and out (the proxy's count of its tag, crate::budget::net), since it began; the CPU time its
+/// and out (the proxy's count of its tag, jobrt::budget::net), since it began; the CPU time its
 /// processes took (the lead counts a job past its first target or its predicted time for the cores
 /// it keeps busy by it, crate::coord::sched's `busy_now`); and how long it has run. Each None: not
 /// said (a step that times no phases or notes no costs, a job its agent gave no folder or tag, one
@@ -211,14 +211,14 @@ impl Live {
         ])
     }
 
-    /// Its job's mean NAS rate (crate::budget::nas::Rate) over the `secs` since `base` (an earlier
+    /// Its job's mean NAS rate (jobrt::budget::nas::Rate) over the `secs` since `base` (an earlier
     /// beat's view of the same job): what it moved over that time; None when either says not all
     /// it moved (`nas_moved`).
-    pub fn nas_rate(&self, base: &Live, secs: f64) -> Option<crate::budget::nas::Rate> {
+    pub fn nas_rate(&self, base: &Live, secs: f64) -> Option<jobrt::budget::nas::Rate> {
         let (now, then) = (self.nas_moved()?, base.nas_moved()?);
         let s = secs.max(1.0);
         let per = |i: usize| now[i].saturating_sub(then[i]) as f64 / s;
-        Some(crate::budget::nas::Rate {
+        Some(jobrt::budget::nas::Rate {
             bytes_s: per(0),
             creates_s: per(1),
             listed_s: per(2),
@@ -275,7 +275,7 @@ pub struct Running {
     pub log: PathBuf,
     /// Why it's frozen where it is, while it is.
     pub paused: Option<String>,
-    /// Why it's stopping at its next safe point (crate::control), while it is.
+    /// Why it's stopping at its next safe point (jobrt::control), while it is.
     pub pausing: Option<String>,
     /// When it started (one taken over: when the agent before this one started it).
     pub(crate) started_at: Instant,
@@ -292,7 +292,7 @@ pub struct Running {
     /// progress hasn't moved in a long while may be stuck.
     pub moved: Option<(f64, u64)>,
     /// The worker threads it was given (RAYON_NUM_THREADS), then as re-granted (its threads file,
-    /// crate::control::THREADS_ENV: docs/pool.md §7.1, Threads re-granted).
+    /// jobrt::control::THREADS_ENV: docs/pool.md §7.1, Threads re-granted).
     pub threads: usize,
     /// Since when its targets run on the threads they do now, its CPU time (ns) then, and those
     /// threads, as the agent last saw them (`Agent::tend_grant`): what it used on them, for its lead's
@@ -310,7 +310,7 @@ struct Record {
     started: u64,
     #[serde(default)]
     leader_start: u64,
-    /// Its step's targets and keys, and where it notes those it finished (crate::control::done):
+    /// Its step's targets and keys, and where it notes those it finished (jobrt::control::done):
     /// what an agent started after a crash records of it.
     #[serde(default)]
     work: Option<Work>,
@@ -343,12 +343,12 @@ pub fn status_path(record: &Path) -> PathBuf {
 /// ends as the command did (a signal's end raised again, so its parent sees it as before).
 const HEAD: &str = r#"s=$1; shift; "$@"; c=$?; printf '%s\n' "$c" > "$s.tmp" && mv -f "$s.tmp" "$s"; if [ "$c" -gt 128 ]; then kill -"$((c - 128))" $$; fi; exit "$c""#;
 
-use crate::sys::{group_members, process_start};
+use jobrt::sys::{group_members, process_start};
 
 impl Running {
     /// Starts `spec` with `threads` worker threads (RAYON_NUM_THREADS) and `env`, its output
     /// appended to `log`, and records it in `record` (with `done_file`, where it notes the targets
-    /// it finishes); under `sandbox`, a profile of `sandbox-exec` (crate::budget::SANDBOX: no way
+    /// it finishes); under `sandbox`, a profile of `sandbox-exec` (jobrt::budget::SANDBOX: no way
     /// out but through its agent's proxy), when given.
     pub fn start(
         spec: JobSpec,
@@ -396,7 +396,7 @@ impl Running {
             .stdout(out)
             .stderr(err);
         // Its own process group, so pausing and stopping reach every process it starts.
-        crate::sys::own_group(&mut c);
+        jobrt::sys::own_group(&mut c);
         let child = store::spawn::spawn(&mut c).with_context(|| format!("start {}", spec.id))?;
         let pgid = child.id() as i32;
         if buildstore::out::testing() {
@@ -445,7 +445,7 @@ impl Running {
     /// Pauses the job's whole process group (`why` goes to the status), and lets the Mac sleep.
     pub fn pause(&mut self, why: &str) {
         if self.paused.is_none() {
-            crate::sys::signal_group(self.pgid, Signal::Stop);
+            jobrt::sys::signal_group(self.pgid, Signal::Stop);
             if let Some(mut c) = self.caffeinate.take() {
                 let _ = c.kill();
             }
@@ -461,13 +461,13 @@ impl Running {
     /// stopped again at once until every member read stopped, 89 of 3,200 ran on).
     pub fn keep_paused(&self) {
         if self.paused.is_some() {
-            crate::sys::signal_group(self.pgid, Signal::Stop);
+            jobrt::sys::signal_group(self.pgid, Signal::Stop);
         }
     }
 
     pub fn resume(&mut self) {
         if self.paused.take().is_some() {
-            crate::sys::signal_group(self.pgid, Signal::Cont);
+            jobrt::sys::signal_group(self.pgid, Signal::Cont);
             self.caffeinate = keep_awake(self.pgid as u32);
         }
     }
@@ -686,8 +686,8 @@ pub const KILL_AGAIN: Duration = Duration::from_secs(2);
 /// while `still` (some of it runs, and it's still the job's) for `KILL_AGAIN` at most
 /// (`kill_until_gone`). Whether any of it still runs.
 fn stop_group(pgid: i32, grace: Duration, still: impl FnMut() -> bool) -> bool {
-    crate::sys::signal_group(pgid, Signal::Cont);
-    crate::sys::signal_group(pgid, Signal::Term);
+    jobrt::sys::signal_group(pgid, Signal::Cont);
+    jobrt::sys::signal_group(pgid, Signal::Term);
     let t = Instant::now();
     while t.elapsed() < grace {
         if live_members(pgid).is_empty() {
@@ -708,7 +708,7 @@ fn stop_group(pgid: i32, grace: Duration, still: impl FnMut() -> bool) -> bool {
 fn kill_until_gone(pgid: i32, mut still: impl FnMut() -> bool) -> bool {
     let t = Instant::now();
     loop {
-        crate::sys::signal_group(pgid, Signal::Kill);
+        jobrt::sys::signal_group(pgid, Signal::Kill);
         // (bound ok: what was signalled ends meanwhile; the loop's bound is KILL_AGAIN)
         std::thread::sleep(Duration::from_millis(10));
         if !still() {
@@ -760,7 +760,7 @@ impl Group {
     pub fn kill_again(&self) -> bool {
         let left = self.is_the_jobs();
         if left {
-            crate::sys::signal_group(self.pgid, Signal::Kill);
+            jobrt::sys::signal_group(self.pgid, Signal::Kill);
         }
         left
     }
@@ -782,7 +782,7 @@ impl Outlived {
     pub fn kill_again(&mut self) -> bool {
         let Some(c) = self.head.as_mut() else { return self.group.kill_again() };
         if !live_members(self.group.pgid).is_empty() {
-            crate::sys::signal_group(self.group.pgid, Signal::Kill);
+            jobrt::sys::signal_group(self.group.pgid, Signal::Kill);
             return true;
         }
         matches!(c.try_wait(), Ok(None))
@@ -790,7 +790,7 @@ impl Outlived {
 }
 
 /// Stops a job left running by an agent that ended without stopping it (a crash, a kill), from its
-/// record; removes the record. What it finished, for the agent to record (crate::control::done),
+/// record; removes the record. What it finished, for the agent to record (jobrt::control::done),
 /// and whether it's gone (`Orphan`).
 pub fn stop_orphan(record: &Path) -> Orphan {
     stop_orphan_within(record, Duration::from_secs(30))
@@ -823,9 +823,9 @@ mod test_groups {
 
     extern "C" fn reap() {
         for &g in STARTED.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-            if !crate::sys::group_members(g).is_empty() {
+            if !jobrt::sys::group_members(g).is_empty() {
                 eprintln!("test left job group {g} running: killed");
-                crate::sys::signal_group(g, crate::sys::Signal::Kill);
+                jobrt::sys::signal_group(g, jobrt::sys::Signal::Kill);
             }
         }
     }
@@ -902,13 +902,13 @@ mod tests {
     #[test]
     fn a_job_asked_to_stop_does_at_its_next_safe_point() {
         // A job that builds its targets in turn, noting each done, and stops at the next safe point
-        // once its channel says so (crate::control's protocol, as scenic-build's steps). It says
+        // once its channel says so (jobrt::control's protocol, as scenic-build's steps). It says
         // which target it's on; its third takes until the ask comes (a minute at most), so the ask
         // comes while it builds that one, whatever the Mac's load: it finishes that one, notes it
         // done, and ends there, starting no other.
         let d = tempfile::tempdir().unwrap();
         let (control, done, on) = (d.path().join("control"), d.path().join("done.txt"), d.path().join("on"));
-        crate::control::tell(&control, crate::control::Say::Run).unwrap();
+        jobrt::control::tell(&control, jobrt::control::Say::Run).unwrap();
         let script = r#"for t in 6/1/1 6/1/2 6/1/3 6/1/4 6/1/5 6/1/6 6/1/7 6/1/8; do
             if grep -q drain "$SCENIC_CONTROL"; then exit 75; fi
             echo "$t" > "$ON"
@@ -918,8 +918,8 @@ mod tests {
             echo "unit $t" >> "$SCENIC_DONE"
         done"#;
         let env = [
-            (crate::control::CONTROL_ENV, control.to_str().unwrap()),
-            (crate::control::DONE_ENV, done.to_str().unwrap()),
+            (jobrt::control::CONTROL_ENV, control.to_str().unwrap()),
+            (jobrt::control::DONE_ENV, done.to_str().unwrap()),
             ("ON", on.to_str().unwrap()),
         ];
         let mut r = Running::start(
@@ -935,18 +935,18 @@ mod tests {
         wait_for(&mut r, "on its third target", |_| {
             std::fs::read_to_string(&on).is_ok_and(|s| s.trim() == "6/1/3").then_some(())
         });
-        crate::control::tell(&control, crate::control::Say::Drain).unwrap();
+        jobrt::control::tell(&control, jobrt::control::Say::Drain).unwrap();
         let st = wait_for(&mut r, "stopped at its next safe point", |r| r.poll().unwrap());
-        assert_eq!(st.code(), Some(crate::control::PAUSED_EXIT));
-        assert_eq!(crate::control::read_done(&done, "unit"), ["6/1/1", "6/1/2", "6/1/3"]);
+        assert_eq!(st.code(), Some(jobrt::control::PAUSED_EXIT));
+        assert_eq!(jobrt::control::read_done(&done, "unit"), ["6/1/1", "6/1/2", "6/1/3"]);
     }
 
-    /// A job under the budgets' sandbox (crate::budget::SANDBOX) can't connect out but to this
+    /// A job under the budgets' sandbox (jobrt::budget::SANDBOX) can't connect out but to this
     /// Mac: a step that goes around the proxy fails at once (denied, not timed out); through the
     /// proxy, its request is metered (a plain HTTP request to a Wikimedia host, answered here).
     #[test]
     fn a_sandboxed_job_reaches_out_only_through_the_proxy() {
-        use crate::budget::{Budget, Proxy, StepClock};
+        use jobrt::budget::{Budget, Proxy, StepClock};
         use std::sync::Arc;
         let d = tempfile::tempdir().unwrap();
         // (This Mac's own: a listener here, its backlog answering nc's connect; the upstream the
@@ -988,7 +988,7 @@ mod tests {
             log.clone(),
             &d.path().join("job.json"),
             None,
-            Some(crate::budget::SANDBOX),
+            Some(jobrt::budget::SANDBOX),
         )
         .unwrap();
         let st = r.wait().unwrap();
@@ -998,7 +998,7 @@ mod tests {
         assert!(text.contains("here=0"), "{text}");
         assert!(text.contains("upstream saw: GET /w/api.php HTTP/1.1") && text.contains("curl=0"), "{text}");
         assert_eq!(budget.ledger().len(), 1, "the Wikimedia request metered");
-        // (curl sent its tag: its bytes counted as the job's, crate::budget::net.)
+        // (curl sent its tag: its bytes counted as the job's, jobrt::budget::net.)
         let (got, sent) = proxy.net().unwrap().job("job1").unwrap();
         assert!(got > 0 && sent > 0, "{got} {sent}");
         drop(here);
@@ -1106,7 +1106,7 @@ mod tests {
             if code == "kill" {
                 // (Its status file not written: killed with its head. The head is still this
                 // test's child, as it isn't once its agent has ended: reaped here, as launchd would.)
-                crate::sys::signal_group(pgid, Signal::Kill);
+                jobrt::sys::signal_group(pgid, Signal::Kill);
                 unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
             } else {
                 // (Opened once it reads, blocked till then: the job is past its `ready`.)
@@ -1158,13 +1158,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         let pgid = r.pgid;
-        assert!(crate::sys::signal_group(pgid, Signal::Probe), "the sleep is still in the group");
+        assert!(jobrt::sys::signal_group(pgid, Signal::Probe), "the sleep is still in the group");
         // (Given ten minutes' grace, it's stopped well before: by the SIGTERM, which a sleep
         // doesn't outlive; one that didn't stop it would have it wait the grace out.)
         let t = Instant::now();
         stop_orphan_within(&rec, Duration::from_secs(600));
         assert!(t.elapsed() < Duration::from_secs(600), "stopped by SIGTERM, not after the grace");
-        assert!(!crate::sys::signal_group(pgid, Signal::Probe));
+        assert!(!jobrt::sys::signal_group(pgid, Signal::Probe));
         assert!(!rec.exists());
     }
 
@@ -1175,7 +1175,7 @@ mod tests {
     }
 
     fn sleeps(pgid: i32) -> usize {
-        live_members(pgid).into_iter().filter_map(crate::sys::process).filter(|p| p.exe == "sleep").count()
+        live_members(pgid).into_iter().filter_map(jobrt::sys::process).filter(|p| p.exe == "sleep").count()
     }
 
     /// A `sleep` started into group `pgid` after a signal to it: a member that signal missed, as a
@@ -1237,7 +1237,7 @@ mod tests {
     fn a_group_left_after_its_stop_is_killed_again() {
         let mut c = store::spawn::command("/bin/sh");
         c.args(["-c", "/bin/sleep 3600 & exit 0"]);
-        crate::sys::own_group(&mut c);
+        jobrt::sys::own_group(&mut c);
         let head = store::spawn::spawn(&mut c).unwrap();
         let pgid = head.id() as i32;
         store::testkit::eventually("its head ended, the sleep left", || {
@@ -1302,7 +1302,7 @@ mod tests {
     fn a_group_killed_again_kills_what_its_last_sigkill_missed() {
         let mut c = store::spawn::command("/bin/sh");
         c.args(["-c", "/bin/sleep 3600 & exit 0"]);
-        crate::sys::own_group(&mut c);
+        jobrt::sys::own_group(&mut c);
         // (Its head ended, held unreaped till the end: the group stays, so a member can join it
         // after the SIGKILL.)
         let mut head = store::spawn::spawn(&mut c).unwrap();

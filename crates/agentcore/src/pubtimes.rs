@@ -45,14 +45,14 @@ pub struct CatalogueStats {
     pub files: u64,
     pub stated: u64,
     /// Its phases' wall times, in order (a name from before task #844 read as its new one:
-    /// crate::phase_names).
+    /// jobrt::phase_names).
     #[serde(default, deserialize_with = "current_names")]
     pub phases: Vec<(String, f64)>,
 }
 
 fn current_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, f64)>, D::Error> {
     let v = Vec::<(String, f64)>::deserialize(d)?;
-    Ok(v.into_iter().map(|(n, s)| (crate::phase_names::current(&n).into_owned(), s)).collect())
+    Ok(v.into_iter().map(|(n, s)| (jobrt::phase_names::current(&n).into_owned(), s)).collect())
 }
 
 /// The start of a catalogue's line in its log: stored in the job logs on the NAS, so it keeps its old
@@ -60,9 +60,9 @@ fn current_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, 
 pub const CATALOGUE_LINE: &str = "catalog-stats: ";
 
 impl CatalogueStats {
-    /// Catalogue `n`'s, with the job's phases as timed so far (crate::timings; none untimed).
+    /// Catalogue `n`'s, with the job's phases as timed so far (jobrt::timings; none untimed).
     pub fn now(n: u64, files: u64, stated: u64) -> CatalogueStats {
-        let phases = crate::timings::snapshot(true)
+        let phases = jobrt::timings::snapshot(true)
             .map(|r| r.phases.into_iter().map(|p| (p.name, p.wall_s)).collect())
             .unwrap_or_default();
         CatalogueStats { n, files, stated, phases }
@@ -457,7 +457,7 @@ fn gap(a: Option<u64>, b: Option<u64>) -> Option<f64> {
 }
 
 fn s(x: Option<f64>) -> String {
-    x.map_or_else(|| "-".into(), crate::timings::secs)
+    x.map_or_else(|| "-".into(), jobrt::timings::secs)
 }
 
 /// The stages a z6 tile goes through, each's time.

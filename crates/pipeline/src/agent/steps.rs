@@ -37,7 +37,7 @@
 //!
 //! The write-sets: one outputs function per step (`writes`, its row's), which both ends use, so
 //! they can't disagree (docs/pool.md §7.3, §12 phase 4's sixth batch): a job's `Out`, bound to its
-//! step (crate::out::Out::for_step), puts and removes only names it gives, a name outside failing
+//! step (buildstore::out::Out::for_step), puts and removes only names it gives, a name outside failing
 //! the job; and the pool's lead refuses every journal entry with a change outside it (`outside`,
 //! in crate::agent::pool's check). A shared step's files for its targets (`saves`, which
 //! crate::coord's check of a member's hand-off and the merge's check use) are checked beside it.
@@ -46,8 +46,8 @@ use super::every::{self, Place};
 
 use super::forecast::ReadTarget;
 use super::seam::{Along, Left};
-use crate::legacy::TileId;
 pub use crate::pool::records::current;
+use codecs::legacy::TileId;
 use serde::{Deserialize, Serialize};
 
 /// Where a step's output goes.
@@ -78,9 +78,9 @@ pub enum Scope {
     /// A z6 tile ("6/x/y"). (Stored and sent as "tile".)
     #[serde(rename = "tile")]
     Z6,
-    /// A z10 tile ("10/x/y"): a deep pack's (crate::terrain_deep::PACK_Z).
+    /// A z10 tile ("10/x/y"): a deep pack's (terrain::terrain_deep::PACK_Z).
     Z10,
-    /// A polar block ("s/4/x/y": a pole and a z4 tile of its grid, crate::polar::target).
+    /// A polar block ("s/4/x/y": a pole and a z4 tile of its grid, terrain::polar::target).
     Polar,
     /// An input's inputs folder (docs/inputs.md §4.3).
     Input,
@@ -189,12 +189,12 @@ pub enum Read {
     /// can't be worked out.
     Input { name: &'static str, of: Ident },
     /// Some targets of another step that a target reads along its own long ways (z6 tiles':
-    /// crate::stage::Area), past those its name gives (its step's `Targets` read of the same step):
+    /// roads::stage::Area), past those its name gives (its step's `Targets` read of the same step):
     /// from the pass's reaches, which the caller has worked out into its view (`View::along`: the
     /// planner's `Left::along`, the forecast's input), none where it hasn't. Waited for as a
     /// `Targets` read with a `Grain::Tiles`, only for them and not what they wait for; keyed by
     /// that `Targets` read's tiles, which name what's read in them.
-    Along { step: &'static str, of: fn(&str, &crate::reach::Reach) -> Vec<String> },
+    Along { step: &'static str, of: fn(&str, &roads::reach::Reach) -> Vec<String> },
     /// Some targets of another step that a target reads where what's built says, not its name (the
     /// terrain's lo packs under an enclosed sea, which the water step finds: task #982): worked out
     /// by the caller from what it holds into its view (`along_add_built`: the planner's
@@ -231,7 +231,7 @@ impl Grain {
 }
 
 /// Target `t` of `step`'s `Read::Along`s, with its reach `r`, into `along`.
-pub fn along_add(along: &mut Along, step: &str, t: &str, r: &crate::reach::Reach) {
+pub fn along_add(along: &mut Along, step: &str, t: &str, r: &roads::reach::Reach) {
     for x in row(step).map_or(&[][..], |r| r.reads) {
         if let Read::Along { step: s, of } = *x {
             along.put(step, t, s, of(t, r));
@@ -648,7 +648,7 @@ fn at(t: &str, z: u8) -> Option<(u32, u32)> {
     TileId::parse(t).filter(|u| u.z == z).map(|u| (u.x, u.y))
 }
 
-/// A tile and its edge neighbours (Horn's border: crate::slope_pack::slope_tile).
+/// A tile and its edge neighbours (Horn's border: terrain::slope_pack::slope_tile).
 fn with_edges(z: u8, x: u32, y: u32) -> impl Iterator<Item = (u32, u32)> {
     std::iter::once((x, y)).chain(super::build::edge_neighbours(z, x, y))
 }
@@ -666,13 +666,13 @@ fn z6_of_z3(t: &str) -> Vec<String> {
 
 /// terrain-deep 10/x/y: its z6 tile (the pyramids-fill target that fetches its pyramids' tiles).
 fn z6_of_z10(t: &str) -> Vec<String> {
-    let pz = crate::terrain_deep::PACK_Z;
+    let pz = terrain::terrain_deep::PACK_Z;
     named(6, at(t, pz).into_iter().map(|(x, y)| (x >> (pz - 6), y >> (pz - 6))))
 }
 
 /// slope-deep 10/x/y: the deep packs of it and its edge neighbours (`slope_deep_from`).
 fn sd_deep(t: &str) -> Vec<String> {
-    let pz = crate::terrain_deep::PACK_Z;
+    let pz = terrain::terrain_deep::PACK_Z;
     named(pz, at(t, pz).into_iter().flat_map(|(x, y)| with_edges(pz, x, y)))
 }
 
@@ -686,7 +686,7 @@ fn sh_lo(t: &str) -> Vec<String> {
     named(3, at(t, 6).into_iter().flat_map(|(x, y)| with_edges(6, x, y)).map(|(x, y)| (x >> 3, y >> 3)))
 }
 fn sh_deep(t: &str) -> Vec<String> {
-    let pz = crate::terrain_deep::PACK_Z;
+    let pz = terrain::terrain_deep::PACK_Z;
     let s = 1u32 << (pz - 6);
     named(pz, at(t, 6).into_iter().flat_map(|(x, y)| (0..s * s).map(move |i| (x * s + i % s, y * s + i / s))))
 }
@@ -694,13 +694,13 @@ fn sh_deep(t: &str) -> Vec<String> {
 /// lake-depth 6/x/y: the terrain hi packs of it and the ring of 8 around it (its small lakes'
 /// slope, read up to 160 m past a lake reaching its edge).
 fn ld_hi(t: &str) -> Vec<String> {
-    named(6, at(t, 6).into_iter().flat_map(|(x, y)| crate::depth::lakes::ring((x, y))))
+    named(6, at(t, 6).into_iter().flat_map(|(x, y)| terrain::depth::lakes::ring((x, y))))
 }
 
 /// depth 6/x/y and depth-lo 3/x/y: the lake-depth packs their sources' reads meet
-/// (crate::depth::lakes::read_by).
+/// (terrain::depth::lakes::read_by).
 fn d_lakes(t: &str) -> Vec<String> {
-    TileId::parse(t).map_or_else(Vec::new, |u| named(6, crate::depth::lakes::read_by(u.z, u.x, u.y)))
+    TileId::parse(t).map_or_else(Vec::new, |u| named(6, terrain::depth::lakes::read_by(u.z, u.x, u.y)))
 }
 
 /// slope-lo 3/x/y: the lo terrain of it and its edge neighbours.
@@ -708,14 +708,14 @@ fn sl_lo(t: &str) -> Vec<String> {
     named(3, at(t, 3).into_iter().flat_map(|(x, y)| with_edges(3, x, y)))
 }
 
-/// unit 6/x/y: the terrain packs over its tile + crate::stage::MARGIN_KM its staged tiles and its
+/// unit 6/x/y: the terrain packs over its tile + roads::stage::MARGIN_KM its staged tiles and its
 /// roads' heights read (`build::unit_terrain_from`, `build::unit_deep_tiles`): the lo packs of z4–8's
 /// z3 tiles, the hi packs of its box's z6 tiles (z9–12's), its box's deep packs. Those along its own
-/// long ways, which it stages too (crate::stage::Area), are its `Read::Along`s (`ua_*`).
+/// long ways, which it stages too (roads::stage::Area), are its `Read::Along`s (`ua_*`).
 fn unit_reads(t: &str, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
-    let b = roadcore::geo::tile_box_grown(6, x, y, crate::stage::MARGIN_KM);
-    named(z, packs_over(z, |zz| crate::stage::tiles_in(zz, b)))
+    let b = roadcore::geo::tile_box_grown(6, x, y, roads::stage::MARGIN_KM);
+    named(z, packs_over(z, |zz| roads::stage::tiles_in(zz, b)))
 }
 
 /// The packs at zoom `z` (3: lo, 6: hi, `terrain_deep::PACK_Z`: deep) holding the tiles a z6 tile
@@ -732,19 +732,19 @@ fn packs_over(z: u8, tiles: impl Fn(u8) -> Vec<(u32, u32)>) -> std::collections:
         6 => under(9..=12, 6),
         _ => {}
     }
-    if z == 6 || z == crate::terrain_deep::PACK_Z {
+    if z == 6 || z == terrain::terrain_deep::PACK_Z {
         v.extend(tiles(z));
     }
     v
 }
 
-/// unit 6/x/y's packs at zoom `z` along its own long ways (crate::stage::Area, its reach `r`) past
+/// unit 6/x/y's packs at zoom `z` along its own long ways (roads::stage::Area, its reach `r`) past
 /// those of its box (`unit_reads`: the packs at `z` meeting it, give or take one on its edge, which
 /// would be read twice over).
-fn unit_reads_along(t: &str, r: &crate::reach::Reach, z: u8) -> Vec<String> {
+fn unit_reads_along(t: &str, r: &roads::reach::Reach, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
-    let area = crate::stage::Area::of(TileId { z: 6, x, y }, Some(r));
-    let [x0, x1, y0, y1] = crate::stage::tile_range(z, area.b);
+    let area = roads::stage::Area::of(TileId { z: 6, x, y }, Some(r));
+    let [x0, x1, y0, y1] = roads::stage::tile_range(z, area.b);
     let boxed = |&(a, c): &(u32, u32)| (x0..=x1).contains(&a) && (y0..=y1).contains(&c);
     named(z, packs_over(z, |zz| area.along_tiles(zz)).into_iter().filter(|p| !boxed(p)))
 }
@@ -755,29 +755,30 @@ fn u_hi(t: &str) -> Vec<String> {
     unit_reads(t, 6)
 }
 fn u_deep(t: &str) -> Vec<String> {
-    unit_reads(t, crate::terrain_deep::PACK_Z)
+    unit_reads(t, terrain::terrain_deep::PACK_Z)
 }
-fn ua_lo(t: &str, r: &crate::reach::Reach) -> Vec<String> {
+fn ua_lo(t: &str, r: &roads::reach::Reach) -> Vec<String> {
     unit_reads_along(t, r, 3)
 }
-fn ua_hi(t: &str, r: &crate::reach::Reach) -> Vec<String> {
+fn ua_hi(t: &str, r: &roads::reach::Reach) -> Vec<String> {
     unit_reads_along(t, r, 6)
 }
-fn ua_deep(t: &str, r: &crate::reach::Reach) -> Vec<String> {
-    unit_reads_along(t, r, crate::terrain_deep::PACK_Z)
+fn ua_deep(t: &str, r: &roads::reach::Reach) -> Vec<String> {
+    unit_reads_along(t, r, terrain::terrain_deep::PACK_Z)
 }
 
-/// polar-slope s/4/x/y: its block's terrain and its neighbours' (crate::polar::around).
+/// polar-slope s/4/x/y: its block's terrain and its neighbours' (terrain::polar::around).
 fn ps_terrain(t: &str) -> Vec<String> {
-    crate::polar::parse_target(t).map_or_else(Vec::new, |(pole, b)| {
-        std::iter::once(b).chain(crate::polar::around(pole, b)).map(|n| crate::polar::target(pole, n)).collect()
+    terrain::polar::parse_target(t).map_or_else(Vec::new, |(pole, b)| {
+        std::iter::once(b).chain(terrain::polar::around(pole, b)).map(|n| terrain::polar::target(pole, n)).collect()
     })
 }
 
-/// polar-root `s`: its pole's blocks (crate::polar::blocks).
+/// polar-root `s`: its pole's blocks (terrain::polar::blocks).
 fn pole_blocks(t: &str) -> Vec<String> {
-    roadcore::polar::Pole::of_letter(t)
-        .map_or_else(Vec::new, |p| crate::polar::blocks(p).into_iter().map(|b| crate::polar::target(p, b)).collect())
+    roadcore::polar::Pole::of_letter(t).map_or_else(Vec::new, |p| {
+        terrain::polar::blocks(p).into_iter().map(|b| terrain::polar::target(p, b)).collect()
+    })
 }
 
 /// bldtiles 6/x/y: the normalized files of it and its 8 neighbours (`build::bld_around`).
@@ -898,7 +899,7 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         alone: true,
-        versions: &[("reach", || crate::reach::REACH_V.to_string())],
+        versions: &[("reach", || roads::reach::REACH_V.to_string())],
         reads: &[In { name: "pieces", of: idents::pieces }],
         ..step("pass", Derive, World, "reach", "Works out how far each tile's roads reach.", w_reach)
     },
@@ -944,7 +945,7 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         alone: true,
-        versions: &[("water", || crate::water::VERSION.to_string())],
+        versions: &[("water", || ::inputs::water::VERSION.to_string())],
         reads: &[In { name: "basemap", of: idents::basemap }, In { name: "lakefill", of: idents::lakefill }],
         ..step("pass", Pack, World, "water", "Draws the world's water at every zoom.", w_water)
     },
@@ -960,7 +961,7 @@ pub const TABLE: [Step; 60] = [
             w_spoken,
         )
     },
-    // The regions' extract (crate::inputs::regions::extract): the pass's planet read three times,
+    // The regions' extract (inputs::inputs::regions::extract): the pass's planet read three times,
     // a heavy NAS reader.
     Step {
         alone: true,
@@ -973,11 +974,11 @@ pub const TABLE: [Step; 60] = [
             w_regions_extract,
         )
     },
-    // The coastline's land (crate::inputs::regions::land): the pass's coastline set assembled and
+    // The coastline's land (inputs::inputs::regions::land): the pass's coastline set assembled and
     // cut by 2° cell, every node and ring held at once.
     Step {
         alone: true,
-        versions: &[("regions-land", || crate::inputs::regions::land::LAND_V.to_string())],
+        versions: &[("regions-land", || ::inputs::inputs::regions::land::LAND_V.to_string())],
         reads: &[In { name: "pass", of: idents::pass }, In { name: "set:coastline", of: idents::set_coastline }],
         ..step(
             "pass",
@@ -1017,10 +1018,10 @@ pub const TABLE: [Step; 60] = [
         )
     },
     // (The lead's: its archives go under `sources/pyramids/`, outside the records, handed off for
-    // the lead to name in their stores' indexes, as AWS's raw tiles' are: crate::pyramids. A z6
+    // the lead to name in their stores' indexes, as AWS's raw tiles' are: terrain::pyramids. A z6
     // tile's fetch at most 4,096 tiles in memory at once, its wanted set a few MB.)
     Step {
-        versions: &[("pyramids-fill", || crate::pyramids::V.to_string())],
+        versions: &[("pyramids-fill", || terrain::pyramids::V.to_string())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "pyramids", of: idents::pyramids }, In { name: "deep-targets", of: idents::deep_targets }],
         ..step(
             "terrain",
@@ -1032,15 +1033,15 @@ pub const TABLE: [Step; 60] = [
         )
     },
     // (Its memory offered by target, the agent's terrain_peak: a z6 tile's levels' bound,
-    // crate::terrain_pack::piece_peak_mb, and its z10 tiles' deep mids taken in,
-    // crate::terrain_pack::DEEP_MIDS_MB, and the z6 tile before's uploads in flight,
-    // crate::out::UPLOAD_HELD; with the coverage its process reads,
-    // crate::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says. It waits for its z10
+    // terrain::terrain_pack::piece_peak_mb, and its z10 tiles' deep mids taken in,
+    // terrain::terrain_pack::DEEP_MIDS_MB, and the z6 tile before's uploads in flight,
+    // buildstore::out::UPLOAD_HELD; with the coverage its process reads,
+    // buildstore::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says. It waits for its z10
     // tiles' terrain-deep targets alone: their mids are its z12 tiles' quarters there.)
     Step {
         cost_v: 8,
         shared: true,
-        versions: &[("terrain-hi", || crate::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        versions: &[("terrain-hi", || terrain::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, In { name: "makes-hi", of: idents::makes_hi }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Read(idents::terrain_deep_mids) }, Of { step: "pyramids-fill", of: own, grain: Grain::Read(idents::nothing) }],
         ..step(
             "terrain",
@@ -1054,7 +1055,7 @@ pub const TABLE: [Step; 60] = [
     Step {
         cost_v: 1,
         shared: true,
-        versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || crate::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        versions: &[("terrain-deep", || super::build::TERRAIN_DEEP_V.to_string()), ("terrain-hi", || terrain::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[In { name: "coverage:piece", of: idents::coverage_piece }, In { name: "datasets:terrain", of: idents::datasets_terrain }, In { name: "zoom-lines", of: idents::zoom_lines }, Of { step: "pyramids-fill", of: z6_of_z10, grain: Grain::Read(idents::nothing) }],
         ..step(
             "terrain",
@@ -1067,7 +1068,7 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         cost_v: 3,
-        versions: &[("terrain-lo", || super::build::TERRAIN_LO_V.to_string()), ("terrain-hi", || crate::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        versions: &[("terrain-lo", || super::build::TERRAIN_LO_V.to_string()), ("terrain-hi", || terrain::terrain_pack::TERRAIN_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[Mids { step: "terrain-hi", of: z6_of_z3, named: idents::terrain_mids }, In { name: "datasets:terrain", of: idents::datasets_terrain }],
         ..step(
             "terrain",
@@ -1082,7 +1083,7 @@ pub const TABLE: [Step; 60] = [
     // docs/readiness.md decision 2.)
     Step {
         cost_v: 1,
-        versions: &[("terrain-root", || 2.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        versions: &[("terrain-root", || 2.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[All { step: "terrain-lo", grain: Outputs }],
         ..step(
             "terrain",
@@ -1096,7 +1097,7 @@ pub const TABLE: [Step; 60] = [
     Step {
         cost_v: 1,
         shared: true,
-        versions: &[("slope-deep", || crate::slope_pack::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
+        versions: &[("slope-deep", || terrain::slope_pack::SLOPE_V.to_string()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[Of { step: "terrain-deep", of: sd_deep, grain: Grain::Tiles(idents::slope_tiles) }],
         ..step(
             "slope",
@@ -1110,7 +1111,7 @@ pub const TABLE: [Step; 60] = [
     Step {
         cost_v: 5,
         shared: true,
-        versions: &[("slope-hi", || crate::slope_pack::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
+        versions: &[("slope-hi", || terrain::slope_pack::SLOPE_V.to_string()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[Of { step: "terrain-hi", of: own, grain: Outputs }, Of { step: "terrain-hi", of: sh_hi, grain: Grain::Tiles(idents::slope_tiles) }, Of { step: "terrain-lo", of: sh_lo, grain: Grain::Tiles(idents::nothing) }, Of { step: "terrain-deep", of: sh_deep, grain: Grain::Tiles(idents::nothing) }, Of { step: "slope-deep", of: sh_deep, grain: Grain::Read(idents::deep_mids) }, In { name: "root-tiles", of: idents::root_tiles }],
         ..step(
             "slope",
@@ -1123,7 +1124,7 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         cost_v: 1,
-        versions: &[("slope-lo", || crate::slope_pack::SLOPE_LO_V.to_string()), ("slope", || crate::slope_pack::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
+        versions: &[("slope-lo", || terrain::slope_pack::SLOPE_LO_V.to_string()), ("slope", || terrain::slope_pack::SLOPE_V.to_string()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[Of { step: "slope-hi", of: z6_of_z3, grain: Grain::Read(idents::slope_mids) }, Of { step: "terrain-lo", of: sl_lo, grain: Outputs }, All { step: "terrain-root", grain: Grain::Read(idents::terrain_root) }],
         ..step(
             "slope",
@@ -1134,11 +1135,11 @@ pub const TABLE: [Step; 60] = [
             w_slope_lo,
         )
     },
-    // The polar caps past the Web Mercator tiles' 85.05° (crate::polar; docs/polar.md): a block's
+    // The polar caps past the Web Mercator tiles' 85.05° (terrain::polar; docs/polar.md): a block's
     // terrain, then its shading, then a pole's root of both.
     Step {
         cost_v: 1,
-        versions: &[("polar-terrain", || crate::polar::TERRAIN_V.to_string()), ("terrain-codec", || crate::terrain_codec::version())],
+        versions: &[("polar-terrain", || terrain::polar::TERRAIN_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version())],
         reads: &[In { name: "datasets:polar", of: idents::datasets_polar }],
         ..step(
             "terrain",
@@ -1150,7 +1151,7 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        versions: &[("polar-slope", || crate::polar::SLOPE_V.to_string()), ("shade-codec", || crate::shade_codec::version())],
+        versions: &[("polar-slope", || terrain::polar::SLOPE_V.to_string()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[Of { step: "polar-terrain", of: ps_terrain, grain: Grain::Read(idents::polar_neighbours) }],
         ..step(
             "slope",
@@ -1163,7 +1164,7 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         cost_v: 1,
-        versions: &[("polar-root", || crate::polar::ROOT_V.to_string()), ("terrain-codec", || crate::terrain_codec::version()), ("shade-codec", || crate::shade_codec::version())],
+        versions: &[("polar-root", || terrain::polar::ROOT_V.to_string()), ("terrain-codec", || codecs::terrain_codec::version()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[In { name: "datasets:polar", of: idents::datasets_polar }, In { name: "polar-blocks", of: idents::polar_blocks }, Of { step: "polar-terrain", of: pole_blocks, grain: Grain::Read(idents::polar_terrain_packs) }, Of { step: "polar-slope", of: pole_blocks, grain: Grain::Read(idents::polar_slope_packs) }],
         ..step(
             "slope",
@@ -1179,13 +1180,13 @@ pub const TABLE: [Step; 60] = [
     Step {
         cost_v: 3,
         shared: true,
-        versions: &[("trees", || crate::treepacks::TREES_V.to_string())],
+        versions: &[("trees", || ::trees::treepacks::TREES_V.to_string())],
         reads: &[In { name: "coverage:inside", of: idents::coverage_inside }, In { name: "trees-sources", of: idents::trees_sources }],
         ..step("trees", Pack, Z6, "trees", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
         cost_v: 1,
-        versions: &[("trees-lo", || crate::treepacks::TREES_LO_V.to_string()), ("trees", || crate::treepacks::TREES_V.to_string())],
+        versions: &[("trees-lo", || ::trees::treepacks::TREES_LO_V.to_string()), ("trees", || ::trees::treepacks::TREES_V.to_string())],
         reads: &[Mids { step: "trees", of: z6_of_z3, named: idents::trees_mids }],
         ..step(
             "trees",
@@ -1198,7 +1199,7 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         shared: true,
-        versions: &[("lake-depth", || crate::depth::lakes::V.to_string())],
+        versions: &[("lake-depth", || terrain::depth::lakes::V.to_string())],
         reads: &[
             In { name: "lake-sources", of: idents::lake_sources },
             In { name: "water-source", of: idents::water_source },
@@ -1258,7 +1259,7 @@ pub const TABLE: [Step; 60] = [
     },
     // (The root: 64 z3 tiles of each layer read, 21 made.)
     Step {
-        versions: &[("depth-root", || crate::depth::build::DEPTH_ROOT_V.to_string()), ("depth", || super::build::depth_versions("depth-root"))],
+        versions: &[("depth-root", || terrain::depth::build::DEPTH_ROOT_V.to_string()), ("depth", || super::build::depth_versions("depth-root"))],
         reads: &[All { step: "depth-lo", grain: Outputs }],
         ..step(
             "depth",
@@ -1272,7 +1273,7 @@ pub const TABLE: [Step; 60] = [
     // (Cost version: a z6 tile's measure its job's processes together, as the memory guard measures a
     // job; 0 was its programs' most, one at a time; 2: its processes started without malloc's large
     // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks; 3: its
-    // elevations sampled in batches, crate::dem::generic::BATCH, where 2's sampled a z6 tile's
+    // elevations sampled in batches, inputs::dem::generic::BATCH, where 2's sampled a z6 tile's
     // vertices at once: 16 GB for the densest.)
     Step {
         cost_v: 3,
@@ -1324,7 +1325,7 @@ pub const TABLE: [Step; 60] = [
         reads: &[In { name: "ferries-reads", of: idents::ferries_reads }],
         ..step("finish", Pack, World, "ferries", "Maps the world's ferries.", w_ferries) },
     Step {
-        versions: &[("slope-root", || 1.to_string()), ("shade-codec", || crate::shade_codec::version())],
+        versions: &[("slope-root", || 1.to_string()), ("shade-codec", || codecs::shade_codec::version())],
         reads: &[All { step: "slope-lo", grain: Outputs }, All { step: "terrain-root", grain: Grain::Read(idents::terrain_root) }],
         ..step(
             "finish",
@@ -1431,7 +1432,7 @@ pub const TABLE: [Step; 60] = [
     // (The 3D buildings: offered by the rows they read, crate::needs::OFFERED_BY.)
     Step {
         shared: true,
-        versions: &[("bldprep", || crate::bld::BLDPREP_V.to_string())],
+        versions: &[("bldprep", || ::bld::bld::BLDPREP_V.to_string())],
         reads: &[In { name: "bld-key", of: idents::bld_key }, In { name: "bld-rows", of: idents::bld_rows }],
         ..step(
             "buildings",
@@ -1444,7 +1445,7 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         shared: true,
-        versions: &[("bldtiles", || crate::bld::BUILDINGS_V.to_string())],
+        versions: &[("bldtiles", || ::bld::bld::BUILDINGS_V.to_string())],
         reads: &[Of { step: "bldprep", of: bt_prep, grain: Grain::Read(idents::bld_prepared) }, In { name: "bld-sources", of: idents::bld_sources }, In { name: "coverage:shapes", of: idents::coverage_shapes }, In { name: "bld-heritage", of: idents::bld_heritage }],
         ..step(
             "buildings",
@@ -1456,7 +1457,7 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        versions: &[("bldfield-lo", || crate::bld::field::LO_V.to_string())],
+        versions: &[("bldfield-lo", || ::bld::bld::field::LO_V.to_string())],
         reads: &[Of { step: "bldtiles", of: z6_of_z3, grain: Grain::Read(idents::bld_mids) }, In { name: "bld-sources", of: idents::bld_sources }],
         ..step(
             "buildings",
@@ -1487,7 +1488,7 @@ pub const TABLE: [Step; 60] = [
             w_none,
         )
     },
-    // The gate's checks (crate::inputs::gate): one per gate unit, ordered before the rest; reading
+    // The gate's checks (inputs::inputs::gate): one per gate unit, ordered before the rest; reading
     // the inputs folders and the accepted copies on the NAS.
     Step {
         ..step(
@@ -1510,7 +1511,7 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        versions: &[("timetables-todo", || crate::timetables::VERSION.to_string())],
+        versions: &[("timetables-todo", || roads::timetables::VERSION.to_string())],
         reads: &[In { name: "transit-lines", of: idents::transit_lines }, In { name: "coverage:all", of: idents::coverage_all }],
         ..step(
             "upkeep",
@@ -1575,15 +1576,20 @@ pub const TASKS: [Task; 4] = [
     },
     // (A file of tens of MB, and their tiles: 1 GB.)
     Task {
-        name: crate::terrain_task::KIND,
+        name: terrain::terrain_task::KIND,
         does: "A group of a terrain tile's z8 subtrees.",
         step: "terrain-hi",
         disk: 1 << 30,
     },
     // (It reads the squares where they lie, and writes ~80 MB: 1 GB.)
-    Task { name: crate::trees::task::KIND, does: "A row of a tree cover tile's blocks.", step: "trees", disk: 1 << 30 },
+    Task {
+        name: ::trees::trees::task::KIND,
+        does: "A row of a tree cover tile's blocks.",
+        step: "trees",
+        disk: 1 << 30,
+    },
     // (A 3D buildings' z8 tile, its blocks: 5 GB.)
-    Task { name: crate::bld::task::KIND, does: "A z8 tile of a 3D buildings tile.", step: "bldtiles", disk: 5 << 30 },
+    Task { name: ::bld::bld::task::KIND, does: "A z8 tile of a 3D buildings tile.", step: "bldtiles", disk: 5 << 30 },
 ];
 
 /// The row of `step` (by its name now: `current`); None for one the table doesn't know (a task's
@@ -1857,51 +1863,51 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let tile = TileId::parse(target);
     let step = current(step);
     match step {
-        "unit" => crate::unit::saved_files(&dash).iter().any(|f| f == l),
+        "unit" => roads::unit::saved_files(&dash).iter().any(|f| f == l),
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
         // (A z6 tile's normalized buildings, and its 3D buildings' hi pack.)
-        "bldprep" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::work_logical(t.x, t.y)),
+        "bldprep" => tile.is_some_and(|t| t.z == 6 && l == ::bld::bld::work_logical(t.x, t.y)),
         "bldtiles" => tile.is_some_and(|t| {
             t.z == 6
-                && (l == crate::bld::pack_logical(t.x, t.y)
-                    || l == crate::bld::field::hi_logical(t.x, t.y)
-                    || l == crate::bld::field::mid_logical(t.x, t.y))
+                && (l == ::bld::bld::pack_logical(t.x, t.y)
+                    || l == ::bld::bld::field::hi_logical(t.x, t.y)
+                    || l == ::bld::bld::field::mid_logical(t.x, t.y))
         }),
-        "bldfield-lo" => tile.is_some_and(|t| t.z == 3 && l == crate::bld::field::lo_logical(t.x, t.y)),
+        "bldfield-lo" => tile.is_some_and(|t| t.z == 3 && l == ::bld::bld::field::lo_logical(t.x, t.y)),
         // (A z6 tile's depth hi packs, a z3 tile's lo packs.)
         "depth" => tile.is_some_and(|t| {
-            t.z == 6 && DEPTH_LAYERS.iter().any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y))
+            t.z == 6 && DEPTH_LAYERS.iter().any(|ly| l == terrain::depth::build::hi_logical(ly, t.x, t.y))
         }),
         "depth-lo" => tile.is_some_and(|t| {
-            t.z == 3 && DEPTH_LAYERS.iter().any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))
+            t.z == 3 && DEPTH_LAYERS.iter().any(|ly| l == terrain::depth::build::lo_logical(ly, t.x, t.y))
         }),
         "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
-            l == crate::treepacks::mid_logical(t.x, t.y)
-                || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))
+            l == ::trees::treepacks::mid_logical(t.x, t.y)
+                || ::trees::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))
         }),
         "trees-lo" => {
             tile.is_some_and(|u| u.z == 3)
-                && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}"))
+                && ::trees::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}"))
         }
         "terrain-hi" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
-            l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")
+            l == terrain::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")
         }),
         "slope-hi" if tile.is_some_and(|u| u.z == 6) => tile
-            .is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
+            .is_some_and(|t| l == terrain::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
         // (Its sources' packs.)
         "lake-depth" => {
-            tile.is_some_and(|t| t.z == 6 && crate::depth::lakes::tile_of(l).is_some_and(|f| f.1 == (t.x, t.y)))
+            tile.is_some_and(|t| t.z == 6 && terrain::depth::lakes::tile_of(l).is_some_and(|f| f.1 == (t.x, t.y)))
         }
         // (A z10 tile's deep pack, a retired one too; slope's and its deep mid.)
         "terrain-deep" => tile.is_some_and(|t| {
-            t.z == crate::terrain_deep::PACK_Z
-                && (crate::terrain_deep::pack_tile(l) == Some((t.x, t.y))
-                    || crate::terrain_deep::mid_tile(l) == Some((t.x, t.y)))
+            t.z == terrain::terrain_deep::PACK_Z
+                && (terrain::terrain_deep::pack_tile(l) == Some((t.x, t.y))
+                    || terrain::terrain_deep::mid_tile(l) == Some((t.x, t.y)))
         }),
         "slope-deep" => tile.is_some_and(|t| {
-            t.z == crate::terrain_deep::PACK_Z
-                && (crate::slope_pack::deep_tile(l) == Some((t.x, t.y))
-                    || crate::slope_pack::deep_mid_tile(l) == Some((t.x, t.y)))
+            t.z == terrain::terrain_deep::PACK_Z
+                && (terrain::slope_pack::deep_tile(l) == Some((t.x, t.y))
+                    || terrain::slope_pack::deep_mid_tile(l) == Some((t.x, t.y)))
         }),
         "terrain-lo" | "slope-lo" => {
             tile.is_some_and(|u| u.z == 3) && l == format!("layers/{}/lo/{dash}", step.trim_end_matches("-lo"))
@@ -1911,7 +1917,7 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
             let layers: &[&str] = match step {
                 "terrain-hi" => &["terrain"],
                 "slope-hi" => &["slope"],
-                _ => &crate::treepacks::LAYERS,
+                _ => &::trees::treepacks::LAYERS,
             };
             layers.iter().any(|layer| {
                 l == format!("layers/{layer}/lo/{dash}")
@@ -1927,7 +1933,7 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
 
 /// Whether manifest `m` names a published file (under `layers/` or `base/`) a job of `step` saves
 /// for tile `target` (`saves`' files of it, looked up by name): false for a target recorded built
-/// that made nothing to publish (a deep tile with no fine data there: crate::terrain_deep,
+/// that made nothing to publish (a deep tile with no fine data there: terrain::terrain_deep,
 /// `PRESENCE`; task #839). None for a step whose files aren't told by name here (a worldwide or
 /// root step's, a work step's, a z3 tile's whole run of the scheme before z6 tiles).
 pub fn output_named(step: &str, target: &str, m: &std::collections::BTreeMap<String, String>) -> Option<bool> {
@@ -1944,24 +1950,24 @@ pub fn output_names(step: &str, target: &str) -> Option<Vec<String>> {
         |ls: &[&str], scope: &str| ls.iter().map(|ly| format!("layers/{ly}/{scope}/{dash}")).collect::<Vec<_>>();
     let step = current(step);
     let names: Vec<String> = match (step, t.z) {
-        ("unit", 6) => crate::unit::saved_files(&dash)
+        ("unit", 6) => roads::unit::saved_files(&dash)
             .into_iter()
             .filter(|l| l.starts_with("layers/") || l.starts_with("base/"))
             .collect(),
-        ("terrain-deep", z) if z == crate::terrain_deep::PACK_Z => {
-            vec![crate::terrain_deep::pack_logical(t.x, t.y), format!("{}{dash}", crate::terrain_deep::RETIRED)]
+        ("terrain-deep", z) if z == terrain::terrain_deep::PACK_Z => {
+            vec![terrain::terrain_deep::pack_logical(t.x, t.y), format!("{}{dash}", terrain::terrain_deep::RETIRED)]
         }
-        ("slope-deep", z) if z == crate::terrain_deep::PACK_Z => vec![crate::slope_pack::deep_logical(t.x, t.y)],
+        ("slope-deep", z) if z == terrain::terrain_deep::PACK_Z => vec![terrain::slope_pack::deep_logical(t.x, t.y)],
         ("terrain-hi", 6) => layers(&["terrain"], "hi"),
         ("slope-hi", 6) => layers(&["slope"], "hi"),
-        ("trees", 6) => layers(&crate::treepacks::LAYERS, "hi"),
+        ("trees", 6) => layers(&::trees::treepacks::LAYERS, "hi"),
         ("terrain-lo", 3) => layers(&["terrain"], "lo"),
         ("slope-lo", 3) => layers(&["slope"], "lo"),
-        ("trees-lo", 3) => layers(&crate::treepacks::LAYERS, "lo"),
-        ("depth", 6) => DEPTH_LAYERS.iter().map(|ly| crate::depth::build::hi_logical(ly, t.x, t.y)).collect(),
-        ("depth-lo", 3) => DEPTH_LAYERS.iter().map(|ly| crate::depth::build::lo_logical(ly, t.x, t.y)).collect(),
-        ("bldtiles", 6) => vec![crate::bld::pack_logical(t.x, t.y), crate::bld::field::hi_logical(t.x, t.y)],
-        ("bldfield-lo", 3) => vec![crate::bld::field::lo_logical(t.x, t.y)],
+        ("trees-lo", 3) => layers(&::trees::treepacks::LAYERS, "lo"),
+        ("depth", 6) => DEPTH_LAYERS.iter().map(|ly| terrain::depth::build::hi_logical(ly, t.x, t.y)).collect(),
+        ("depth-lo", 3) => DEPTH_LAYERS.iter().map(|ly| terrain::depth::build::lo_logical(ly, t.x, t.y)).collect(),
+        ("bldtiles", 6) => vec![::bld::bld::pack_logical(t.x, t.y), ::bld::bld::field::hi_logical(t.x, t.y)],
+        ("bldfield-lo", 3) => vec![::bld::bld::field::lo_logical(t.x, t.y)],
         _ => return None,
     };
     Some(names)
@@ -2030,7 +2036,7 @@ fn w_gc(l: &str, removal: bool) -> bool {
 
 /// The pass's sources (`sources/osm/<date>/…`: its filtered planet, sets, outlines, extracts, road
 /// values, the mark that it's complete) and its basemap; as it completes, the older passes' entries
-/// removed (crate::osmpass::retire_older: their sources, items, heritage, summits, route ends).
+/// removed (inputs::osmpass::retire_older: their sources, items, heritage, summits, route ends).
 fn w_osm_pass(l: &str, removal: bool) -> bool {
     match parts(l).as_slice() {
         ["sources", "osm", d, _, ..] => date(d),
@@ -2079,9 +2085,9 @@ fn w_lakefill(l: &str, _: bool) -> bool {
 }
 
 /// The water's packs, every zoom (those it didn't write removed, and the small water's before it,
-/// which it replaced), and the seas closed off from the world ocean (crate::water::ENCLOSED).
+/// which it replaced), and the seas closed off from the world ocean (inputs::water::ENCLOSED).
 fn w_water(l: &str, removal: bool) -> bool {
-    pack(l, "water", &ALL) || l == crate::water::ENCLOSED || (removal && pack(l, "smallwater", &ALL))
+    pack(l, "water", &ALL) || l == ::inputs::water::ENCLOSED || (removal && pack(l, "smallwater", &ALL))
 }
 
 /// The heritage sites by z6 tile, their positions and areas (those of the pass it didn't write
@@ -2094,19 +2100,19 @@ fn w_heritage_sites(l: &str, _: bool) -> bool {
     }
 }
 
-/// A gate unit's accepted index, its held report and its check's state (crate::inputs::record_of:
+/// A gate unit's accepted index, its held report and its check's state (inputs::inputs::record_of:
 /// `sources/inputs/<unit>/@index`, `…/@held`, `…/@listed`, the unit's name nested or not), the
 /// report removed once nothing's held.
 fn w_inputs(l: &str, _: bool) -> bool {
-    crate::inputs::record_of(l).is_some()
+    ::inputs::inputs::record_of(l).is_some()
 }
 
 fn w_regions_land(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-land"] if crate::osmpass::is_date(d))
+    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-land"] if ::inputs::osmpass::is_date(d))
 }
 
 fn w_regions_extract(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-extract"] if crate::osmpass::is_date(d))
+    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-extract"] if ::inputs::osmpass::is_date(d))
 }
 
 fn w_spoken(l: &str, _: bool) -> bool {
@@ -2119,9 +2125,9 @@ fn w_terrain_hi(l: &str, _: bool) -> bool {
     pack(l, "terrain", &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "terrain-mid", t] if tile(t, 6))
 }
 
-/// A z10 tile's deep pack (crate::terrain_deep), and the retired fine pack there it drops.
+/// A z10 tile's deep pack (terrain::terrain_deep), and the retired fine pack there it drops.
 fn w_terrain_deep(l: &str, _: bool) -> bool {
-    crate::terrain_deep::pack_tile(l).is_some() || crate::terrain_deep::mid_tile(l).is_some()
+    terrain::terrain_deep::pack_tile(l).is_some() || terrain::terrain_deep::mid_tile(l).is_some()
 }
 
 fn w_terrain_lo(l: &str, _: bool) -> bool {
@@ -2133,9 +2139,9 @@ fn w_depth(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["hi"])
 }
 
-/// A z6 tile's lake-depth packs (crate::depth::lakes), a source's each.
+/// A z6 tile's lake-depth packs (terrain::depth::lakes), a source's each.
 fn w_lake_depth(l: &str, _: bool) -> bool {
-    crate::depth::lakes::tile_of(l).is_some()
+    terrain::depth::lakes::tile_of(l).is_some()
 }
 
 /// A z3 tile's depth, class and shading lo packs.
@@ -2147,12 +2153,12 @@ fn w_depth_root(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["root"])
 }
 
-/// The depth steps' layers: the depth, its classes and the floor's shading (crate::depth).
-const DEPTH_LAYERS: [&str; 3] = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER];
+/// The depth steps' layers: the depth, its classes and the floor's shading (terrain::depth).
+const DEPTH_LAYERS: [&str; 3] = [terrain::depth::LAYER, terrain::depth::CLASS_LAYER, terrain::depth::SHADE_LAYER];
 
 /// The water's index for the depth's repairs, by the content it's made of.
 fn w_terrain_water(l: &str, _: bool) -> bool {
-    l.strip_prefix(crate::terrain_water::IDX_PREFIX).is_some_and(|k| !k.is_empty() && !k.contains('/'))
+    l.strip_prefix(codecs::terrain_water::IDX_PREFIX).is_some_and(|k| !k.is_empty() && !k.contains('/'))
 }
 
 fn w_terrain_root(l: &str, _: bool) -> bool {
@@ -2165,9 +2171,9 @@ fn w_slope_hi(l: &str, _: bool) -> bool {
     pack(l, "slope", &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "slope-mid", t] if tile(t, 6))
 }
 
-/// A z10 tile's deep pack and deep mid (crate::slope_pack::build_deep).
+/// A z10 tile's deep pack and deep mid (terrain::slope_pack::build_deep).
 fn w_slope_deep(l: &str, _: bool) -> bool {
-    crate::slope_pack::deep_tile(l).is_some() || crate::slope_pack::deep_mid_tile(l).is_some()
+    terrain::slope_pack::deep_tile(l).is_some() || terrain::slope_pack::deep_mid_tile(l).is_some()
 }
 
 fn w_slope_lo(l: &str, _: bool) -> bool {
@@ -2180,11 +2186,11 @@ fn w_slope_root(l: &str, _: bool) -> bool {
 
 /// A polar layer's (`kind`) block packs (`layers/polar-<kind>-<pole>/polar/4-x-y`) or root.
 fn polar_pack(l: &str, kind: &str, scope: &str) -> bool {
-    crate::polar::POLES.iter().any(|&p| match parts(l).as_slice() {
+    terrain::polar::POLES.iter().any(|&p| match parts(l).as_slice() {
         ["layers", ly, sc, t] => {
-            *ly == crate::polar::layer(kind, p)
+            *ly == terrain::polar::layer(kind, p)
                 && *sc == scope
-                && (if scope == "root" { *t == "0-0-0" } else { tile(t, u32::from(crate::polar::BLOCK_Z)) })
+                && (if scope == "root" { *t == "0-0-0" } else { tile(t, u32::from(terrain::polar::BLOCK_Z)) })
         }
         _ => false,
     })
@@ -2205,17 +2211,17 @@ fn w_polar_root(l: &str, _: bool) -> bool {
 /// The tree layers' hi packs and a z6 tile's mid (a z6 tile); a z3 tile's whole run their lo packs
 /// too.
 fn w_trees(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| crate::treepacks::LAYERS.contains(&ly), &["lo", "hi"])
+    pack_of(l, &|ly| ::trees::treepacks::LAYERS.contains(&ly), &["lo", "hi"])
         || matches!(parts(l).as_slice(), ["work", "trees-mid", t] if tile(t, 6))
 }
 
 fn w_trees_lo(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| crate::treepacks::LAYERS.contains(&ly), &["lo"])
+    pack_of(l, &|ly| ::trees::treepacks::LAYERS.contains(&ly), &["lo"])
 }
 
-/// A z6 tile's files (crate::unit::saved_files), of a z6 tile.
+/// A z6 tile's files (roads::unit::saved_files), of a z6 tile.
 fn w_unit(l: &str, _: bool) -> bool {
-    l.rsplit_once('/').is_some_and(|(_, t)| tile(t, 6) && crate::unit::saved_files(t).iter().any(|f| f == l))
+    l.rsplit_once('/').is_some_and(|(_, t)| tile(t, 6) && roads::unit::saved_files(t).iter().any(|f| f == l))
 }
 
 fn w_pois(l: &str, _: bool) -> bool {
@@ -2254,8 +2260,8 @@ fn w_marks(l: &str, _: bool) -> bool {
     pack_of(l, &kind, &["root", "lo"])
         || matches!(parts(l).as_slice(), ["layers", ly, "all"] if kind(ly))
         || matches!(parts(l).as_slice(), ["markdata", t] if tile(t, 6))
-        || l == crate::marks::MARKDATA_BUNDLE
-        || l == crate::markconv::HERITAGE_DOTS
+        || l == codecs::marks::MARKDATA_BUNDLE
+        || l == landmarks::markconv::HERITAGE_DOTS
         || l == "global/marks/summary"
 }
 
@@ -2278,7 +2284,7 @@ fn w_stations(l: &str, _: bool) -> bool {
 }
 
 fn w_ferries(l: &str, _: bool) -> bool {
-    pack(l, "ferries", &ALL) || l == crate::timetables::FERRY_LINES
+    pack(l, "ferries", &ALL) || l == roads::timetables::FERRY_LINES
 }
 
 /// The timetable feeds: each feed's zip, the lists of those checked, fetched and kept (the rail
@@ -2289,13 +2295,13 @@ fn w_rail_feeds(l: &str, _: bool) -> bool {
 }
 
 fn w_rail(l: &str, _: bool) -> bool {
-    l == "work/rail/used" || l == "global/railfreq" || l == crate::timetables::RAIL_LINES
+    l == "work/rail/used" || l == "global/railfreq" || l == roads::timetables::RAIL_LINES
 }
 
 /// The timetables' report (its to-do list is written into the inputs folder's todo/, outside the
 /// records).
 fn w_timetables_todo(l: &str, _: bool) -> bool {
-    l == crate::timetables::REPORT
+    l == roads::timetables::REPORT
 }
 
 fn w_bldprep(l: &str, _: bool) -> bool {
@@ -2304,13 +2310,13 @@ fn w_bldprep(l: &str, _: bool) -> bool {
 
 /// The 3D buildings' hi packs, their field's and its mids.
 fn w_bldtiles(l: &str, _: bool) -> bool {
-    pack(l, crate::bld::LAYER, &["hi"])
-        || pack(l, crate::bld::field::LAYER, &["hi"])
+    pack(l, ::bld::bld::LAYER, &["hi"])
+        || pack(l, ::bld::bld::field::LAYER, &["hi"])
         || matches!(parts(l).as_slice(), ["work", "bldfield-mid", t] if tile(t, 6))
 }
 
 fn w_bldfield_lo(l: &str, _: bool) -> bool {
-    pack(l, crate::bld::field::LAYER, &["lo"])
+    pack(l, ::bld::bld::field::LAYER, &["lo"])
 }
 
 /// What the regions no longer cover, removed: a z6 tile's files, candidates and peaks, map tiles, the
@@ -2331,13 +2337,13 @@ fn w_prune(l: &str, removal: bool) -> bool {
 #[cfg(all(test, not(in_agentcore)))]
 mod tests {
     /// A z6 tile waits for the terrain packs along its own long ways, which it stages (task #853,
-    /// crate::stage::Area), not only for its box's: they're its `Read::Along`s, worked out from its
+    /// roads::stage::Area), not only for its box's: they're its `Read::Along`s, worked out from its
     /// reach into the view (the planner's `Left::along`, the forecast's input). Without them it
     /// would build, then build again once they're made.
     #[test]
     fn a_unit_waits_for_the_terrain_along_its_long_ways() {
         use super::{along_add, read_targets, readiness, Along, Left, ReadTarget, Ready};
-        use crate::reach::{LongWay, Reach};
+        use roads::reach::{LongWay, Reach};
         // 6/31/19 (its tile reaches 55.8° N; its box, 35 km further) owns a way running 300 km
         // south from 55° N, a node every 2 km.
         let t = "6/31/19";
@@ -2348,7 +2354,7 @@ mod tests {
         along_add(&mut left.along, "unit", t, &reach);
         // Along it, past its box: the hi pack of 6/31/21 (52.5° N on) and the deep packs at its far end.
         let (hi, deep) = (left.along.get("unit", t, "terrain-hi"), left.along.get("unit", t, "terrain-deep"));
-        let far = crate::legacy::TileId::of_point(crate::terrain_deep::PACK_Z, e7(-1.0, 52.4)).slash();
+        let far = codecs::legacy::TileId::of_point(terrain::terrain_deep::PACK_Z, e7(-1.0, 52.4)).slash();
         assert_eq!(hi, ["6/31/21"]);
         assert!(deep.contains(&far), "{deep:?}");
         assert!(left.along.get("unit", t, "terrain-lo").is_empty(), "its box's z3 tile holds the rest");
@@ -2387,13 +2393,13 @@ mod tests {
         use super::{read_targets, readiness, Left, ReadTarget, Ready};
         use roadcore::polar::Pole;
         let reads = read_targets("polar-root", "s", None);
-        let south = crate::polar::blocks(Pole::South);
+        let south = terrain::polar::blocks(Pole::South);
         assert_eq!(reads.len(), 2 * south.len());
         assert!(reads.iter().all(|r| matches!(r, ReadTarget::One(_, t) if t.starts_with("s/"))), "{reads:?}");
         let mut left = Left::default();
-        left.set("polar-terrain", [crate::polar::target(Pole::North, crate::polar::blocks(Pole::North)[0])]);
+        left.set("polar-terrain", [terrain::polar::target(Pole::North, terrain::polar::blocks(Pole::North)[0])]);
         assert_eq!(readiness("polar-root", "s", &left), Ready::Yes, "the other pole's block");
-        let b = crate::polar::target(Pole::South, south[0]);
+        let b = terrain::polar::target(Pole::South, south[0]);
         left.set("polar-slope", [b.clone()]);
         assert_eq!(readiness("polar-root", "s", &left), Ready::Waits(vec![("polar-slope", b)]));
     }
@@ -2460,8 +2466,8 @@ mod tests {
     }
 
     use super::*;
-    use crate::handoff::Handoff;
     use crate::pool::journal::{Entry, LeaseId};
+    use buildstore::handoff::Handoff;
 
     /// The worker page's schedule colours each stage from STAGE_COLOURS (web/work/dash.js), falling
     /// back to upkeep's grey: every stage has a colour there, and no two stages share one.
@@ -2658,22 +2664,20 @@ mod tests {
             // (Every published name `saves` has for it, among the shapes the steps write.)
             let dash = t.replace('/', "-");
             let (x, y) = (3, 4);
-            let mut cands: Vec<String> = crate::unit::saved_files(&dash).to_vec();
+            let mut cands: Vec<String> = roads::unit::saved_files(&dash).to_vec();
             for ly in ["terrain", "slope", "trees-cover", "trees-leaf", "trees-height", "buildings", "buildings-field"]
             {
                 for sc in ["hi", "lo", "deep", "fine"] {
                     cands.push(format!("layers/{ly}/{sc}/{dash}"));
                 }
             }
-            cands.extend(
-                DEPTH_LAYERS.iter().flat_map(|ly| {
-                    [crate::depth::build::hi_logical(ly, x, y), crate::depth::build::lo_logical(ly, x, y)]
-                }),
-            );
+            cands.extend(DEPTH_LAYERS.iter().flat_map(|ly| {
+                [terrain::depth::build::hi_logical(ly, x, y), terrain::depth::build::lo_logical(ly, x, y)]
+            }));
             cands.extend([
-                crate::bld::pack_logical(x, y),
-                crate::bld::field::hi_logical(x, y),
-                crate::bld::field::lo_logical(x, y),
+                ::bld::bld::pack_logical(x, y),
+                ::bld::bld::field::hi_logical(x, y),
+                ::bld::bld::field::lo_logical(x, y),
             ]);
             let mut found = false;
             for l in cands.iter().filter(|l| saves(step, t, l) && (l.starts_with("layers/") || l.starts_with("base/")))

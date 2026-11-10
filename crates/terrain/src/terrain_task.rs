@@ -33,7 +33,7 @@ pub const MOST: usize = 3;
 /// placement is on (jobrt::jobs::ahead_on). Each group then says its head start (the
 /// tiles the run makes before it needs the group, over the group's: `Offers::offer_after`), and the
 /// coordinator gives it to a worker slower than this Mac only while that covers it
-/// (pipeline::coord::task's `covered`). Off: the waiting rule gives a worker only what it would make
+/// (agentcore::coord::task's `covered`). Off: the waiting rule gives a worker only what it would make
 /// sooner than this Mac (`task::beats`), as before.
 pub fn offer_ahead() -> bool {
     jobrt::jobs::ahead_on()

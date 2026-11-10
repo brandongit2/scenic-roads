@@ -3,7 +3,7 @@
 //! the records now: the one path's snapshot or brief while it's the current term's (`ONE`,
 //! docs/coordination.md step 8b), else the current term's own, or before the pool today's files.
 //! Written once, generic over what is read of a snapshot (`Snapshot`): the pool's whole records
-//! (pipeline::pool::records::Records, with the agent's keys) or what an `Out` reads (`Recorded`).
+//! (agentcore::pool::records::Records, with the agent's keys) or what an `Out` reads (`Recorded`).
 //! Writing them (saving, merging, taking a term up) is the pool's.
 
 pub mod member;
@@ -37,7 +37,7 @@ pub fn is_member_id(s: &str) -> bool {
 /// Term 1's records in today's layout: the manifest, the job keys, the unverified uploads.
 pub const TODAY: [&str; 3] = ["state/build/manifest.json", "state/build/jobs.json", "state/build/pending.json"];
 
-/// The path of term 1's first snapshot (pipeline::pool::records::first), which only its maker
+/// The path of term 1's first snapshot (agentcore::pool::records::first), which only its maker
 /// writes.
 pub const FIRST: &str = "state/build/term/1/first.json";
 
@@ -141,7 +141,7 @@ fn at_one<T: DeserializeOwned>(nas: &dyn Nas, p: &str, term_of: impl Fn(&T) -> u
 }
 
 /// The one path's snapshot (`ONE`) as read now, whatever its term; None when there's none: the
-/// take-up of a lead whose Mac led no term before it reads it (pipeline::pool::records::start).
+/// take-up of a lead whose Mac led no term before it reads it (agentcore::pool::records::start).
 pub fn load_one<S: Snapshot>(nas: &dyn Nas) -> Result<Option<S>> {
     let Some(b) = nas.read(ONE)? else { return Ok(None) };
     Ok(Some(serde_json::from_slice(&b).with_context(|| format!("parse {ONE}"))?))
@@ -247,7 +247,7 @@ impl Snapshot for Recorded {
         self.term
     }
 
-    /// The pending read before the manifest, as pipeline::pool::records::Records::today reads them.
+    /// The pending read before the manifest, as agentcore::pool::records::Records::today reads them.
     fn today(nas: &dyn Nas) -> Result<Recorded> {
         let pending = read_or_default(nas, TODAY[2])?;
         Ok(Recorded {

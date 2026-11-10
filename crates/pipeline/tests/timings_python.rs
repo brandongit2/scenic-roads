@@ -1,10 +1,10 @@
-//! dem/timings.py, the Python twin of pipeline::timings: a step program's phases, written where
+//! dem/timings.py, the Python twin of jobrt::timings: a step program's phases, written where
 //! the scenic-build phase that runs it says (SCENIC_PHASES_TO), come in as that phase's
 //! sub-phases (tools/check/timings_py.py writes them).
 //!
 //! scans: tools/check/timings_py.py dem/timings.py
 
-use pipeline::timings;
+use jobrt::timings;
 use std::path::Path;
 
 #[test]

@@ -20,7 +20,7 @@ use store::nasfs::{Loc, NasPath};
 
 /// The user's folders: the inputs folders and the owner's acceptances of the input check's warnings
 /// (docs/inputs.md §4.9).
-pub const FOLDERS: [&str; 2] = ["inputs", crate::inputs::ACCEPTED];
+pub const FOLDERS: [&str; 2] = ["inputs", ::inputs::inputs::ACCEPTED];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Entry {
@@ -114,7 +114,7 @@ fn copy_atomic(src: &NasPath, dst: &Path) -> Result<u64> {
         std::fs::create_dir_all(d)?;
     }
     let n = src.copy_to_local(dst)?;
-    crate::timings::count(n, 1);
+    jobrt::timings::count(n, 1);
     Ok(n)
 }
 
@@ -123,7 +123,7 @@ fn copy_atomic(src: &NasPath, dst: &Path) -> Result<u64> {
 pub fn run(root: &store::nasfs::NasRoot, local: Option<&Path>, today: &str, keep_days: u64) -> Result<Report> {
     let dir = root.join("state/backups");
     let blobs = dir.join("blobs");
-    use crate::timings::phase;
+    use jobrt::timings::phase;
     blobs.create_dir_all()?;
     let prev = {
         let _p = phase("reading the last backup");

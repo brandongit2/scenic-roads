@@ -25,9 +25,9 @@
 
 use super::bus::{BeatMsg, Snap};
 use super::{now_s, write_beat, write_replace, Status};
-use crate::control::HoldState;
 use crate::coord::beats::Beats;
 use crate::coord::client::LeaseCalls;
+use jobrt::control::HoldState;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
@@ -268,7 +268,7 @@ impl Beat {
         let v = v.as_ref().as_ref()?;
         let hold = self.hold.get();
         let mut status = v.status.clone();
-        let asked = crate::control::peek_hold_request(&self.home);
+        let asked = jobrt::control::peek_hold_request(&self.home);
         status.say(asked.as_ref(), &hold, hold.held.is_none() && hold.at > v.hold_at);
         status.refused = super::answered::unseen(&self.home);
         status.beat = now_s();
@@ -499,7 +499,7 @@ impl Drop for Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::Hold;
+    use jobrt::control::Hold;
 
     fn view(local: PathBuf, shared: Option<NasPath>) -> LoopView {
         LoopView {
@@ -602,7 +602,7 @@ mod tests {
         assert!(said(&local).held.is_some() && said(&shared).held.is_some());
         hold.set(HoldState { held: None, at: 6 });
         b.changed();
-        assert_eq!(said(&local).hold.map(|h| h.stage), Some(crate::control::HoldStage::Resuming));
+        assert_eq!(said(&local).hold.map(|h| h.stage), Some(jobrt::control::HoldStage::Resuming));
         b.part_changed();
         std::fs::remove_file(&shared).unwrap();
         b.changed();

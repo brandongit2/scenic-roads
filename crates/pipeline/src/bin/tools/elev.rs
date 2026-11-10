@@ -1,19 +1,19 @@
 //! Elevations at every road vertex from the finished terrain staged in the unit's folder
-//! (`pipeline::road_terrain`: `terrain.tiles`, `fine.tiles`, `codes.json`): its outputs elev.f32,
-//! src.u8 and dem-stats.json. Its command line: pipeline::cli::progs::Elev. It reads nothing else:
+//! (`terrain::road_terrain`: `terrain.tiles`, `fine.tiles`, `codes.json`): its outputs elev.f32,
+//! src.u8 and dem-stats.json. Its command line: agentcore::cli::progs::Elev. It reads nothing else:
 //! no NAS, no network.
 
+use agentcore::cli::progs::Elev;
 use anyhow::{Context, Result};
 use clap::Parser;
-use pipeline::cli::progs::Elev;
 
 pub fn main(args: Vec<String>) -> Result<()> {
     let Elev { build_dir: dir } = Elev::parse_from(args);
-    pipeline::timings::job("elev", || -> Result<()> {
+    jobrt::timings::job("elev", || -> Result<()> {
         let t = std::time::Instant::now();
         let va = roadcore::Array::<[i32; 2]>::open(&dir.join("verts.bin")).context("verts.bin")?;
         let verts = va.get();
-        let (elev, src) = pipeline::road_terrain::heights(&dir, verts)?;
+        let (elev, src) = terrain::road_terrain::heights(&dir, verts)?;
         for (name, bytes) in [("elev.f32", bytemuck::cast_slice::<f32, u8>(&elev)), ("src.u8", &src[..])] {
             let tmp = dir.join(format!("{name}.tmp"));
             std::fs::write(&tmp, bytes)?;

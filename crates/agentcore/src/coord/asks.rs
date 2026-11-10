@@ -15,8 +15,8 @@
 //!   (`Answer::asks_on_nas`), the NAS's files go on beside (a hold's `state/pool/holds/<member>.json`,
 //!   the settings' switch files), so an older app reads what a newer one set and the reverse.
 
-use crate::control::{Hold, HoldState};
 use anyhow::{ensure, Result};
+use jobrt::control::{Hold, HoldState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -35,8 +35,8 @@ pub use jobrt::settings::{
 pub fn file(name: &str) -> Option<&'static str> {
     match name {
         PLACEMENT => Some(crate::agent::placement::SWITCH),
-        NAS_BUDGET => Some(crate::budget::nas::SWITCH),
-        NAS_TARGET => Some(crate::budget::nas::TARGET_FILE),
+        NAS_BUDGET => Some(jobrt::budget::nas::SWITCH),
+        NAS_TARGET => Some(jobrt::budget::nas::TARGET_FILE),
         _ => None,
     }
 }

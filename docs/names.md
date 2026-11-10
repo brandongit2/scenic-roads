@@ -62,7 +62,7 @@ punctuation or spacing, and not one of main's parts.
   are left out).
 - Where lines share a name, kind and language, the later file (by path) wins, then the later line.
 - The server copies the accepted version the lead's records name (crate::accepted,
-  pipeline::inputs::served), checking every minute while in use.
+  inputs::inputs::served), checking every minute while in use.
 - Compiled per file into one arena indexed by name (`names::table`), shared through one `Arc`
   (`names::Namer`).
 - **Versions:** each language's is a hash of the accepted files holding lines in it. A tile's ETag
@@ -80,7 +80,7 @@ their source area's languages, not each language spoken where their things are.
 carried (the landmark and area popups keep the English Wikipedia article's title, `wd.w_en`, as a
 link only).
 
-**To-do** (`pipeline::namestodo`, the `names-todo` job, after a batch of the map's log that changed
+**To-do** (`landmarks::namestodo`, the `names-todo` job, after a batch of the map's log that changed
 what it reads (`namestodo::INPUTS`, the log's last batch touching them: docs/maplog.md §6.8): at most daily while z6 tiles build, after any such once none's left):
 - **`inputs/translations/todo/<language>.jsonl`:** each name something in the coverage has with no
   English of its own and no line in any language spoken there. Read from labels, roads and rail

@@ -129,7 +129,7 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 
 | Job | Reads | Writes |
 |---|---|---|
-| OSM pass sets | the filtered planet | `summits` (`-v2`), `hikes`, `named` (the heritage chain's filter plus World Heritage tags), `whs` (pipeline::whsshapes' objects and every multipolygon, with their references), `marks` |
+| OSM pass sets | the filtered planet | `summits` (`-v2`), `hikes`, `named` (the heritage chain's filter plus World Heritage tags), `whs` (landmarks::whsshapes' objects and every multipolygon, with their references), `marks` |
 | `trailends` (per pass) | `hikes` | `work/trailends/<d>`: every simple linear hiking route's two ends |
 | `summits` (per pass; once terrain-hi and terrain-lo have no work left) | `summits` set, the terrain lo packs' z8 | `work/summits/<d>` |
 | `heritage-sites` (before the z6 tiles) | the registers meeting the cover, the matches (docs/inputs.md §6.5), the pass's `areas` set, the coverage | `work/heritage/<d>/base/…` and per z6 tile slices |
@@ -194,7 +194,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   its first read, without keeping the tile. Each summit's z8 pixel is raised to its `ele` when
   plausible: at most 8,900 m, at most 1,500 m over the highest z8 pixel within one pixel, and at
   most twice that plus 300 m.
-- **`peaks`** (per z6 tile, `pipeline::peaks`):
+- **`peaks`** (per z6 tile, `roads::peaks`):
   - z12 is the terrain hi pack's tile when the manifest has it, else none (0 m). A z6 tile's pack tiles
     are read in spans (neighbours under 256 KB apart together, up to 32 MB a read, 8 reads at
     once, each under a 2-minute deadline and retried after 2, 5, 15, 30 s when it fails
@@ -208,7 +208,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   - "Sea" is ≤ 0 m: heights below 0 m are 0 m, before the tiles are despiked (the terrain keeps
     its source's bathymetry at sea, so an islet's pixel would otherwise read as a spike over it).
   - **Output:** `work/peaks/<u>` by candidate key: e, p, pl, c, ce, iso, il, hi.
-- **`items`** (`pipeline::items`, then `pipeline::pageviews`, per pass): Wikidata facts for single-QID
+- **`items`** (`landmarks::items`, then `landmarks::pageviews`, per pass): Wikidata facts for single-QID
   tags, and pageviews for the first QID: the mean of the last November, February, May and August ended 20 days before the pass.
   Everything is fetched again each pass; between passes only QIDs not seen. Caches are appended
   5,000 items at a time. The answers are kept on the NAS (`sources/items/<d>/answers.tar.zst`:
@@ -224,8 +224,8 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
 
 ### Heritage and area flags
 
-The heritage chain (heritage.py, pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails, pipeline::whsshapes,
-pipeline::filterprops, pipeline::pageviews, pipeline::interest) runs in a stand-in root laid out as the
+The heritage chain (heritage.py, landmarks::heritagewd, landmarks::heritagedetails, landmarks::areadetails, landmarks::whsshapes,
+landmarks::filterprops, landmarks::pageviews, landmarks::interest) runs in a stand-in root laid out as the
 repository (`dem/` the app's scripts, `data/heritage/` the pass's working copy of the answers;
 docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikidata.
 - **The registers** are an input (docs/inputs.md §6.5): heritage-sites links the accepted registers
@@ -239,7 +239,7 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   (`pos/6-x-y`), World Heritage components among them (`parts/6-x-y`), and the area polygons meeting
   it with their flag bits (`areas/6-x-y`).
 - **The z6 tiles** read the slices within U + `stage::MARGIN_KM`: `heritage.json` feeds the flags step, and
-  `areaflags` (pipeline::areaflags) rasterises the polygons onto the z6 tile's grid. Their keys name the
+  `areaflags` (codecs::areaflags) rasterises the polygons onto the z6 tile's grid. Their keys name the
   slices.
 - **The `heritage` job** (after items, before marks) runs the rest of the chain over the same cover:
   the pass's areas and named objects within it, and for whsshapes the pass's `whs` set clipped to
@@ -248,11 +248,11 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   every multipolygon, with what they reference, so the clip (osmium's smart strategy) holds what
   whsshapes reads of the filtered planet's clip (task #496: the same export and relations on a
   sample z6 tile), from about a fifth of the bytes: copied here first when there's room, read
-  three times by osmium. pipeline::heritagewd indexes named objects with a Wikidata item on a 0.01°
+  three times by osmium. landmarks::heritagewd indexes named objects with a Wikidata item on a 0.01°
   grid and asks what the answers lack through crate::wikiask (declared APIs, so no robots.txt is
   read: their usage policy, a User-Agent and a polite rate, kept by the job's proxy, docs/inputs.md
-  §6.9); pipeline::areadetails asks Wikidata for parks the answers lack; pipeline::pageviews takes the
-  pass's months. The map's layers are written last, in Rust (`pipeline::heritage_layers`: the lean
+  §6.9); landmarks::areadetails asks Wikidata for parks the answers lack; landmarks::pageviews takes the
+  pass's months. The map's layers are written last, in Rust (`landmarks::heritage_layers`: the lean
   layer files, the sites' popup records, the areas simplified by a port of GEOS's topology-preserving
   simplifier, `pyport::tpsimplify`). The layers' `en` is the things' own; the server adds
   translations. Outputs:

@@ -11,15 +11,15 @@
 //!   filled); `edge` the lines to stroke, the stretches two of its shapes share along a parallel
 //!   or meridian (where an outline entry was cut by a tile's edge) left out.
 //! - **Crumbs**: the names of the folders it's in, from the top (their `_group.toml` names), then
-//!   its own (crate::inputs::regions::read::tree).
-//! - **Bytes**: the catalogue's files a download of it copies (crate::areafiles::files_of over the
+//!   its own (inputs::inputs::regions::read::tree).
+//! - **Bytes**: the catalogue's files a download of it copies (inputs::areafiles::files_of over the
 //!   outlines the catalogue records), summed once per catalogue; its pieces of the basemap and of
 //!   the layers' roots and lo packs (store::pieces), worked out by each Mac's map server from their
 //!   directories and indexes, and its terrain detail aren't counted. None for a
 //!   region the catalogue doesn't have yet.
 
-use crate::coverage::DrawnRegion;
-use crate::inputs::regions::read::Folder;
+use ::inputs::inputs::regions::read::Folder;
+use buildstore::coverage::DrawnRegion;
 use det::Det;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -43,8 +43,8 @@ pub struct Made {
 /// fails is logged, its part left out.
 pub fn build(
     root: &store::nasfs::NasRoot,
-    a: &crate::inputs::Accepted,
-    regions: &[crate::agent::recipes::Recipe],
+    a: &::inputs::inputs::Accepted,
+    regions: &[buildstore::recipes::Recipe],
     cat: Option<std::sync::Arc<store::catalogue::Catalogue>>,
     had: Option<(u64, BTreeMap<String, u64>)>,
 ) -> Made {
@@ -55,9 +55,9 @@ pub fn build(
         (Some(c), _) => Some((c.n, bytes_of(&c))),
         (None, _) => None,
     };
-    let view = match crate::inputs::regions::read::drawn(root, a, regions) {
+    let view = match ::inputs::inputs::regions::read::drawn(root, a, regions) {
         Ok(drawn) => {
-            let tree = crate::inputs::regions::read::tree(&a.index);
+            let tree = ::inputs::inputs::regions::read::tree(&a.index);
             let b = bytes.as_ref().map(|(_, b)| b.clone()).unwrap_or_default();
             Some(make(&a.version, n, regions, &drawn, &tree, &b))
         }
@@ -75,7 +75,7 @@ pub fn build(
 pub fn make(
     version: &str,
     catalogue: Option<u64>,
-    regions: &[crate::agent::recipes::Recipe],
+    regions: &[buildstore::recipes::Recipe],
     drawn: &[DrawnRegion],
     tree: &Folder,
     bytes: &BTreeMap<String, u64>,
@@ -99,7 +99,7 @@ pub fn bytes_of(cat: &store::catalogue::Catalogue) -> BTreeMap<String, u64> {
     let recorded: Vec<DrawnRegion> = cat.coverage.regions().unwrap_or_default();
     recorded
         .iter()
-        .map(|r| (r.id.clone(), crate::areafiles::files_of(cat, &crate::areafiles::outer_rings(r)).bytes))
+        .map(|r| (r.id.clone(), ::inputs::areafiles::files_of(cat, &::inputs::areafiles::outer_rings(r)).bytes))
         .collect()
 }
 
@@ -297,7 +297,7 @@ fn chain(segs: &[Seg]) -> Vec<Vec<[i64; 2]>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::recipes::Recipe;
+    use buildstore::recipes::Recipe;
 
     fn square(w: f64, s: f64, e: f64, n: f64) -> Vec<Vec<[f64; 2]>> {
         vec![vec![[w, s], [e, s], [e, n], [w, n], [w, s]]]

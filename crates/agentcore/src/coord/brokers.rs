@@ -18,13 +18,13 @@ pub struct Broker {
     /// Its address over HTTPS, when its owner has `tailscale serve` proxy it ("https://<name>/").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub https: Option<String>,
-    /// Its LAN addresses (crate::net::lan_urls): where a device on the LAN may have opened its page
+    /// Its LAN addresses (coordwire::net::lan_urls): where a device on the LAN may have opened its page
     /// by address. Origins of its pages alone, never contacted (any device's on the network to
     /// claim).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lan: Vec<String>,
     /// The other origins its page is served from: a proxy on it under a public name
-    /// (crate::net::names; "https://map.brandontsang.net" on the M6), whose pages may call the
+    /// (coordwire::net::names; "https://map.brandontsang.net" on the M6), whose pages may call the
     /// members too. Never a broker's address: the proxy serves the page under a path.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<String>,
@@ -113,7 +113,7 @@ pub fn origins_of(b: &Broker) -> BTreeSet<String> {
 
 /// Whether `ip` is one of a member's addresses (`origins`, `origins_of`'s): a request from that Mac
 /// itself, so a page of its own loopback (localhost: the lead's page opened on the lead) is the
-/// member's page, as it is the lead's own there (crate::net::from_the_page).
+/// member's page, as it is the lead's own there (coordwire::net::from_the_page).
 pub fn member_ip(origins: &BTreeSet<String>, ip: std::net::IpAddr) -> bool {
     let ip = match ip {
         std::net::IpAddr::V6(v) => v.to_ipv4_mapped().map_or(std::net::IpAddr::V6(v), std::net::IpAddr::V4),

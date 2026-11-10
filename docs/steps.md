@@ -39,7 +39,7 @@ makes the same bytes on every Mac.
    sectioned file, with simplified copies. Made by their own step (`outlines`,
    `osmpass::make_outlines`, keyed by `OUTLINES_V`, the pass, the set and the previous outlines);
    nothing reading outlines is planned while it has work (after three failures the rest goes on).
-   - osmium silently leaves out a relation whose rings don't close. `pipeline::outlines::assemble`
+   - osmium silently leaves out a relation whose rings don't close. `buildstore::outlines::assemble`
      finds those: **countries and territories** are assembled by joining ways and closing gaps of up
      to 1 km (`MAX_GAP_M`) with straight lines crossing nothing, flagged `REPAIRED`; one that still
      can't be keeps the previous pass's outline, flagged `STALE`; with none, the step fails.
@@ -47,7 +47,7 @@ makes the same bytes on every Mac.
    - A country's code is its own assigned `ISO3166-1` tag, else read from its ISO 3166-2 code.
 6. **Basemap:** Planetiler on (b), worldwide (`layers/basemap/world-<date>`), its jar and data pinned
    in `sources/basemap/`. The pass refuses a jar of another version than
-   `pipeline::water::PLANETILER_VERSION` until `tools/coastcheck` has checked it.
+   `inputs::water::PLANETILER_VERSION` until `tools/coastcheck` has checked it.
 7. **Cut (a) into z6 tile extracts:** a depth-first quad tree, four outputs per osmium run (osmium
    keeps ~4 GB of id sets per output). Ways whole, multipolygons completed, 10 km buffer. Each
    extract (stored in `sources/osm/<date>/pieces/`: the folder's old name, kept) is uploaded with
@@ -59,9 +59,9 @@ makes the same bytes on every Mac.
 
 ## 2. Global-source layers
 
-- **Terrain** (`pipeline::terrain_pack`): one pyramid, z0 to each place's finest zoom, built by one
+- **Terrain** (`terrain::terrain_pack`): one pyramid, z0 to each place's finest zoom, built by one
   rule at every zoom (task #929, the owner's), its jobs split where scheduling wants them:
-  - **Each place's finest zoom** (`pipeline::terrain_zoom`) is derived from the declared elevation
+  - **Each place's finest zoom** (`terrain::terrain_zoom`) is derived from the declared elevation
     datasets meeting it (docs/inputs.md §6.8), never typed: a dataset's finest zoom at a latitude is
     the finest whose pixels are no finer than its cell there (`CELL_FACTOR` 1, the owner's), its cell
     its latitude band's (`Measured::bands`, measured per file by the input check), else its
@@ -139,7 +139,7 @@ makes the same bytes on every Mac.
     are read through this Mac's cache and the NAS's archives (fetched once, packed onto the NAS:
     docs/macs.md), the stored datasets from their store (`sources/fetched/`): a file the job reads
     half of or more copied whole to the Mac's SSD once and read there (task #689:
-    pipeline::localread, where the disk has room past the owner's target; else NAS range reads; the
+    buildstore::localread, where the disk has room past the owner's target; else NAS range reads; the
     same bytes either way). A run's samplers keep the files they most recently read open, and their
     fill masks, each within the run's own budget (`dem::generic::TileMemo`, `TILE_MEMO_BYTES`), the
     least recently read let go first, so a run's memory is its working set's (task #929: kept for
@@ -162,7 +162,7 @@ makes the same bytes on every Mac.
     coarser (`Sources::quantum`), ties to even, then to Terrarium's 1/256 m: at most 0.39 cm and
     5.1 cm off. Chrome and Safari decode it natively, every value exact; a z12 tile is ~47 KB, 0.71×
     the PNG it replaced (.claude/notes/SHADING-PYRAMID.md, S1b).
-- **Slope: the shading pyramid** (`pipeline::slope_pack`; the owner's decisions of 24 Oct,
+- **Slope: the shading pyramid** (`terrain::slope_pack`; the owner's decisions of 24 Oct,
   .claude/notes/SHADING-PYRAMID.md): one precomputed pyramid serves both the slope tint and the
   hill-shading. Each pixel holds the mean steepness of the ground beneath it and the mean of its
   unit gradient directions (`roadcore::shade`), whose length, the coherence, is 1 on a plain face
@@ -217,7 +217,7 @@ makes the same bytes on every Mac.
   three levels of its top in parallel and each subtree below them on one thread, on at most 16 of
   the job's threads; its tiles don't depend on the threads (each
   pixel the mean of its four children's in a fixed order, nothing summed across tiles).
-- **The polar caps** (`pipeline::polar`; docs/polar.md): the terrain and shading past the Web
+- **The polar caps** (`terrain::polar`; docs/polar.md): the terrain and shading past the Web
   Mercator tiles' 85.05°, on each pole's polar stereographic grid (EPSG:3031 south, 3413 north;
   `roadcore::polar`), z0 to the cap's finest zoom (`polar::finest`: the terrain's rule on the grid's
   pixel, z8 for the declared datasets now), of the poles built (`polar::POLES`: the south; the north is sea level
@@ -228,7 +228,7 @@ makes the same bytes on every Mac.
   the grid, "s/4/x/y", where the coverage meets its latitudes: `polar::built`): its cap tiles at the finest
   zoom sampled, each coarser level its children's means (a quarter with none, past the cap, sea
   level: no dataset is published at every zoom on this grid, so there is no relief to read), coded
-  as the Mercator terrain is: its pack `layers/polar-terrain-<pole>/polar/4-x-y`, the stored files it reads half of or more copied to the Mac's SSD as the terrain's are (pipeline::localread, the area the block's latitudes). **polar-slope**, a
+  as the Mercator terrain is: its pack `layers/polar-terrain-<pole>/polar/4-x-y`, the stored files it reads half of or more copied to the Mac's SSD as the terrain's are (buildstore::localread, the area the block's latitudes). **polar-slope**, a
   run per block once its and its neighbours' terrain is built: Horn's method at the finest zoom on the stored
   terrain (its neighbours' edge tiles for the border), each coarser level its children's means at
   full precision (a quarter with none flat), as `shade-webp`: its pack
@@ -241,8 +241,8 @@ makes the same bytes on every Mac.
 - **Grids (z11):** land cover, canopy and cover, for analysis only. Each `unit` job makes the grid tiles
   its packs lack and uploads them as its z6 tile's `grid-*` hi packs; they aren't in those jobs' keys
   (made from fixed datasets, the same whether read or made).
-- **Trees** (cover, height, leaf type), zoom 4–12, clipped to the coverage (`pipeline::treepacks`,
-  running the `trees` program, `pipeline::trees`):
+- **Trees** (cover, height, leaf type), zoom 4–12, clipped to the coverage (`trees::treepacks`,
+  running the `trees` program, `trees::trees`):
   - **trees**, a run per z6 tile the coverage meets (`trees --z6`): its zoom 9–12 hi packs and its
     mid (`work/trees-mid/6-x-y`: zoom-8 tiles and values).
   - **trees-lo**, an assembly per z3 tile (`trees --assemble-lo`): zoom 8–4 from its z6 tiles' mids.
@@ -266,7 +266,7 @@ makes the same bytes on every Mac.
 - **Area overlays** (the heritage and designated areas' outlines): `docs/phase5.md`. The `overlays` job runs after marks (it needs the World
   Heritage dots' ids).
 - **3D buildings:** `docs/buildings3d.md`. Every building in the coverage from the Overture release,
-  tiles z12–14 per z6 tile (`bldprep`, `bldtiles`; `pipeline::bld`), a z6 tile's
+  tiles z12–14 per z6 tile (`bldprep`, `bldtiles`; `bld::bld`), a z6 tile's
   z8 tiles offered as tasks (`bldtile`); below zoom 14 the far buildings' field (buildings3d.md
   §4.8; `?bldfield=off` leaves it out). Planned: national heights (PLATEAU, BD TOPO).
 
@@ -274,7 +274,7 @@ The server builds missing deeper terrain and shading tiles from their ancestors.
 
 ## 3. Depth (per z3 and z6 tile, from the depth sources)
 
-Depth under the seas and lakes (`pipeline::depth`; its sources docs/inputs.md §6.10; its files
+Depth under the seas and lakes (`terrain::depth`; its sources docs/inputs.md §6.10; its files
 docs/formats.md, Depth), split by tile like the terrain, so downloads and the mirror take it as it is.
 - **The rule** (task #804), the terrain's (§2, Terrain: the rule), for the depth and
   the floor's shading alike, with no zoom special: each place's depth is composed from the sources
@@ -506,11 +506,11 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
 
 The basemap's water drops small polygons at each zoom and its vector fills' anti-aliasing pushes
 shores out, so zoomed out small islands and lakes went missing. The water layer
-(`pipeline::water`) gives each pixel its exact share of water at every zoom, sea and inland apart,
+(`inputs::water`) gives each pixel its exact share of water at every zoom, sea and inland apart,
 drawn as a raster.
 - **The water** is the basemap's own at z14 (simplified by 1/4096 of a tile, nothing over 1/256 px²
   left out). The sea is OpenMapTiles' class `ocean`, the rest inland; water in tunnels is left out.
-- **Coverage is exact** (`pipeline::watercov::Raster`: each edge adds its area to the pixels it
+- **Coverage is exact** (`codecs::watercov::Raster`: each edge adds its area to the pixels it
   crosses).
 - **Tiles:** 512 px, two channels (sea, inland). The bytes also say whether a pixel holds anything
   but sea, and any land at all (`water::bytes`), so a tiny island stays land zoomed out, for the
@@ -567,7 +567,7 @@ drawn as a raster.
   against full detail over 137 views, and with `--screen` the screen in the app's colours against
   full detail rendered and shrunk in linear light. Visible difference is about 0.03 % (0.15 % on
   the densest small-water views), against 7.7 % for the earlier dots over polygons.
-- **Lakes filled from Canada's own data** (`pipeline::lakefill`; the `lakefill` step once a pass,
+- **Lakes filled from Canada's own data** (`inputs::lakefill`; the `lakefill` step once a pass,
   before the water, and the `lakefill` tool). OSM's CanVec import skipped some map sheets, whose
   small lakes vanish in rectangles.
   - **The survey** (`lakefill::run::survey`, `gaps`): every NTS 1:50,000 sheet in the Canadian
@@ -658,7 +658,7 @@ Landmark candidates and peaks have their own per-z6-tile jobs (`docs/phase5.md`)
 
 ## 7. Roadside buildings: the world, once per release
 
-The buildings job (`pipeline::buildtiles`) makes Overture's building boxes for the world from one
+The buildings job (`bld::buildtiles`) makes Overture's building boxes for the world from one
 pinned release, before any `unit` job runs: `buildtiles::scan` reads the release's bbox columns from
 Overture's bucket (each file's footer, then its row groups' bbox chunks alone), 8 files at a time, into local parts by z8 tile (each file marked done once written, so a run cut
 short resumes); each tile's parts are merged onto the NAS, then the index. A z6 tile's key names the
@@ -700,7 +700,7 @@ index, so a new release rebuilds every z6 tile.
 - **Water** (per pass): above.
 - **Spoken languages** (per pass, the `spoken` job): `global/spoken` (docs/names.md).
 - **Rail stops:** from the rail set, for the built z6 tiles + 20 km.
-- **Ferries:** worldwide, from the ferries set, the ferry feeds (`pipeline::gtfs::ferrycount`, docs/inputs.md
+- **Ferries:** worldwide, from the ferries set, the ferry feeds (`landmarks::gtfs::ferrycount`, docs/inputs.md
   §6.7.0) and the static timetables (docs/inputs.md §6.7.2).
 - **Rail service** (below).
 - **Landmarks:** `docs/phase5.md`.
@@ -715,14 +715,14 @@ index, so a new release rebuilds every z6 tile.
 ## 10. Rail service
 
 Trains a day on each rail way of the coverage (`global/railfreq`), from operators' GTFS timetables
-and static timetables compiled by hand (`pipeline::rail`; docs/inputs.md §6.7). Two jobs, in a chain
+and static timetables compiled by hand (`inputs::rail`; docs/inputs.md §6.7). Two jobs, in a chain
 of their own (docs/building.md §2):
-- **`rail-feeds`** (`pipeline::railfeeds`) finds the feeds from the accepted declarations of
+- **`rail-feeds`** (`landmarks::railfeeds`) finds the feeds from the accepted declarations of
   `inputs/timetables/feeds/` (docs/inputs.md §6.7.1):
   - The Mobility Database catalogue's active, keyless GTFS feeds of the countries the coverage is in
-    (`pipeline::rail::countries`: a country holding 5 % of one of the coverage's outlines, or half of
+    (`inputs::rail::countries`: a country holding 5 % of one of the coverage's outlines, or half of
     whose area the coverage holds; a territory with an ISO 3166-2 code brings its country too) whose
-    box meets it (as `pipeline::coverage` answers: an outline's edge meeting the box grown by its
+    box meets it (as `buildstore::coverage` answers: an outline's edge meeting the box grown by its
     buffer as a rectangle, else the box inside it under the even–odd rule; never of the outlines
     merged). The declaration's `own_code` and `country` correct the catalogue's codes.
   - Of those, the ones running rail, checked once by reading `routes.txt` with range requests (only
@@ -735,7 +735,7 @@ of their own (docs/building.md §2):
     without an answer is tried three times; a feed still without one fails the job, and after 3 days
     is left out until rail-feeds next runs. A definite refusal leaves it out.
   - It also lists the ferry feeds (all of them: ferries are worldwide).
-- **`rail`** counts the trains (`pipeline::gtfs::railcount`: each feed's median-busy Tuesday to Thursday from
+- **`rail`** counts the trains (`landmarks::gtfs::railcount`: each feed's median-busy Tuesday to Thursday from
   30 days before to 90 after its zip's day, a train in two feeds counted once; the static
   timetables likewise, or their count rows as given), marks stops beyond the coverage, and
   `railfreq` matches the pairs onto the pass's rail ways touching the coverage (`extract` at 8 m).

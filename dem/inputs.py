@@ -1,7 +1,7 @@
 """The inputs folders' accessor for the Python steps (docs/inputs.md §7.1).
 
 A step never builds an inputs folder path: it's given its inputs' paths on its command line, by the agent,
-which takes them from the accepted versions (the Rust side's `pipeline::inputs::open`). Every step
+which takes them from the accepted versions (the Rust side's `inputs::inputs::open`). Every step
 opens an input argument through `arg`, which refuses a path in an inputs folder (under `inputs/`,
 `translations/` or `descriptions/`, but the checked copies under `sources/inputs/`, what's fetched
 under `sources/fetched/` and the job's own scratch folder), so a step handed an inputs folder fails

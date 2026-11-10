@@ -60,7 +60,7 @@ pub struct Cut {
 
 impl Cut {
     /// What a task of it is offered at (MB): its files, what its worker holds at least. The
-    /// coordinator sizes it by its kind's measured runs (pipeline::coord's `/task/offer`, task #979).
+    /// coordinator sizes it by its kind's measured runs (agentcore::coord's `/task/offer`, task #979).
     pub fn files_mb(&self) -> u64 {
         self.bytes.div_ceil(1 << 20)
     }

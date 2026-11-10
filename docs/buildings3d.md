@@ -6,7 +6,7 @@ then from GHSL's 100 m heights in high-rise cores, then from the footprint's siz
 z6 tile in a chain of its own (shared with helper Macs and pages), drawn near by MapLibre's
 fill-extrusion (meshes, z14 tiles) and far by a ray-marched density field (§4.8).
 
-Code: `pipeline::bld` (fetch, overture, ghsl, prep, fill, tiles, field, job, task),
+Code: `bld::bld` (fetch, overture, ghsl, prep, fill, tiles, field, job, task),
 `agent::build` (`bld_targets`, `bld_work`), `web/src/buildings.ts`, `web/src/bldfield.ts`.
 Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/formats.md` (bytes), `docs/workers.md` and
 `docs/pool.md` (sharing the work).
@@ -60,7 +60,7 @@ grow ~1.2 m a floor and rarely reach 20 m, so they rank after floors).
 ### 2.3 Filling the missing heights
 
 Each building's height is the first of these it has; it records which (`s`, 0–5) for the hover and
-the source colouring (`pipeline::bld::fill`). The order, fits and defaults were set by a held-out
+the source colouring (`bld::bld::fill`). The order, fits and defaults were set by a held-out
 tenth of the measured heights (measured when the tables were fitted; median error of the chain 0.7 m, p90 2.9 m;
 tall unmeasured buildings still come out low).
 
@@ -99,7 +99,7 @@ else. Building heights don't enter the roadside factor, the horizons or the view
 
 ### 2.6 Downloads
 
-`bld-fetch` (`pipeline::bld::fetch`, §3.1) fetches whole files onto the NAS:
+`bld-fetch` (`bld::bld::fetch`, §3.1) fetches whole files onto the NAS:
 - Overture's files with a row group within 20 km of the coverage (buildings and parts), into
   `sources/overture/<release>/theme=buildings/type=<type>/`, with `buildings.json` and
   `footers.json.gz` (every row group's box, from the footers);
@@ -122,19 +122,19 @@ release (§5).
 | `bldtiles` | z6 tile T | `work/bld/` of T and its 8 neighbours, the coverage, T's heritage slices | `layers/buildings/hi/6-x-y`, `layers/buildings-field/hi/6-x-y`, `work/bldfield-mid/6-x-y` |
 | `bldfield-lo` | z3 tile | its z6 tiles' mids | `layers/buildings-field/lo/3-x-y` |
 
-(`buildings` is the roadside buildings' step, `pipeline::buildtiles`; hence `bldtiles`.)
+(`buildings` is the roadside buildings' step, `bld::buildtiles`; hence `bldtiles`.)
 
-- **`bld-fetch`** (`pipeline::bld::fetch`), with the coverage's outlines. A network job; it skips
+- **`bld-fetch`** (`bld::bld::fetch`), with the coverage's outlines. A network job; it skips
   what's there. Once the release has left S3 it checks against the footers: a file
   the coverage needs and lacks fails the job.
 - **`bldprep T`**, per z6 tile within 1 km of the coverage with a downloaded row group or GHSL tile
-  meeting it (`pipeline::bld::prep`): the row groups meeting T are read (`bld::overture`, parts: T
+  meeting it (`bld::bld::prep`): the row groups meeting T are read (`bld::overture`, parts: T
   grown by 0.02°, so an outline finds its parts; a row group's chunks of the columns read in one
   read through store::range, its waits counted as the NAS's, task #998) with the GHSL windows (`bld::ghsl`), as columns
   (geometry as WKB); centroids (area-weighted) and areas computed in f64, rounded to E7, what's
   centred in T kept, GHSL sampled, the normalized file written. Checks the columns' names and
   types, failing on a schema change.
-- **`bldtiles T`**, per z6 tile meeting the coverage, a z8 tile at a time (`pipeline::bld::job`):
+- **`bldtiles T`**, per z6 tile meeting the coverage, a z8 tile at a time (`bld::bld::job`):
   the buildings of T touching the coverage, heights filled (reading the buildings within 620 m
   around the z8 tile), the z14 tiles encoded (`bld::tiles`), and the field's levels 14–9 and each
   z8 tile's level-8 planes (`bld::field`). A building within 310 m beyond the z8 tile that reaches into
@@ -147,11 +147,11 @@ No `unit` (roads) key reads any of them.
 
 ### 3.2 Keys and versions
 
-- `BLDPREP_V` and `BUILDINGS_V` (the fill and the tiles) in `pipeline::bld`; `BLD_FETCH_V` in
+- `BLDPREP_V` and `BUILDINGS_V` (the fill and the tiles) in `bld::bld`; `BLD_FETCH_V` in
   `agent::build`. `Keys` holds `bldprep`, `bldtiles` and `bldfield-lo` by tile; a prune forgets them.
 - **`bldprep T`:** `BLDPREP_V`, the release, and each downloaded file with a row group meeting T
   (name, ETag, row group indexes), and the GHSL tiles meeting T by name and size
-  (`pipeline::bld::sources`, from `buildings.json`, `footers.json.gz` and `index.json`).
+  (`bld::bld::sources`, from `buildings.json`, `footers.json.gz` and `index.json`).
   `agent::theplan::input_digests` puts each as "bldprep 6/x/y" in the plan's inputs, recomputed only when an
   index changes; "bld-release" is the release, "" before any download, "?" when unreadable (the
   chain then waits).
@@ -210,7 +210,7 @@ docs/formats.md has the bytes. In brief:
   lo packs').
 - **Devices:** the service worker keeps building tiles in a cache of their own (`bld`), so they
   don't crowd out roads and terrain.
-- **Credits** (`pipeline::rules::CREDITS`, everywhere): Overture (ODbL 1.0, the release named) and
+- **Credits** (`inputs::rules::CREDITS`, everywhere): Overture (ODbL 1.0, the release named) and
   GHSL (CC BY 4.0), as their declarations' descriptions credit them once accepted (docs/inputs.md
   §4.8, §6.9); `CREDITS`' entries stand until then, a test tying Overture's to the staged
   declaration's release.
@@ -224,7 +224,7 @@ docs/formats.md has the bytes. In brief:
   6/x/y", "bldtiles 6/x/y"); a target is offered by the rows its tile's sources hold
   (`needs::OFFERED_BY`), each run notes the rows it read, and a target not run yet is sized by its
   step's fit over them, else its neighbours' or its step's runs (docs/pool.md §7.7).
-- **Tasks** (docs/workers.md §3, `pipeline::bld::task`): under the agent, a `bldtiles` job offers
+- **Tasks** (docs/workers.md §3, `bld::bld::task`): under the agent, a `bldtiles` job offers
   some of each tile's z8 tiles as tasks of kind `bldtile` while workers that take them are around
   (one per worker, three at once, from the far end of the tile's list). The task's files, cut on the
   lead: the blocks of T's and its neighbours' work files the z8 tile reads, the coverage's shapes that
@@ -357,7 +357,7 @@ gabled roofs inferred for small houses); distance-based detail under our control
 ### 4.8 Far away, the field
 
 The aim: buildings at every zoom looking as full detail would, rendered at high resolution and
-downsampled. Builder `pipeline::bld::field` (in `bldtiles` and `bldfield-lo`); renderer
+downsampled. Builder `bld::bld::field` (in `bldtiles` and `bldfield-lo`); renderer
 `web/src/bldfield.ts` with `bldfield.worker.ts`, loaded by `import()` from `ctl/buildings.ts` where the
 catalogue has the layer `buildings-field` (`?bldfield=off`: off; `?bldfield=<url>`: tiles from there).
 `web/src/bldcmp.ts` (`?bldcmp`) and `tools/bldcheck/` compare it with full detail.

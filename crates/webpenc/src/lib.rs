@@ -1,7 +1,7 @@
 //! Lossless WebP encoding of 8-bit RGB images through libwebp 1.6.0 (libwebp-sys's copy, compiled
 //! by cc and linked statically, natively and in the WebAssembly build alike): the bytes `cwebp
 //! -lossless -z <level> -exact -metadata none` makes. For the terrain's Terrarium tiles
-//! (pipeline::terrain_codec), which Chrome and Safari decode natively with every value exact.
+//! (codecs::terrain_codec), which Chrome and Safari decode natively with every value exact.
 
 mod entropy;
 

@@ -45,7 +45,7 @@ it (store::nasio) and retries the reads, stats and listings the share fails for 
   from local files, renames (`rename`, `rename_over`, `rename_no_replace`), removes (one `Deletes`),
   `create_dir_all`, `set_modified` (a reuse's touch, not counted).
 - **`Loc` and `Place`** are a file on this Mac or on the NAS (`Loc` borrowed, `Place` owned), for the
-  readers that take both: a local copy or the NAS's file (pipeline::localread), the catalogues'
+  readers that take both: a local copy or the NAS's file (buildstore::localread), the catalogues'
   folder (a Mac's copies and the NAS's), the packs a step reads. A caller passes a `&Path` or a
   `&NasPath`.
 - **The escape** is `unchecked_path()` on a `NasRoot`, a `NasPath` or a `Loc`. It is for a program's
@@ -77,7 +77,7 @@ it (store::nasio) and retries the reads, stats and listings the share fails for 
   (`nasio::written`) and the file as it lands (`NasPath::count_made`), as every upload does (a
   whole copy to the NAS, a NAS-to-NAS copy, a file written through `NasFile`: a job's beats see a
   long upload move, task #990; a file written in one call counts at its end),
-  pipeline::localread's whole copies (store::blobs) count their bytes as they're read, as every
+  buildstore::localread's whole copies (store::blobs) count their bytes as they're read, as every
   whole copy does (`nasfs::copy_counter`: a job's beats see a long copy move, task #986), and the
   file once made (`count_opened`). `costin::meta` and
   `costin::wrote` keep a target's own measures and no longer add to nasio, which the layer does.

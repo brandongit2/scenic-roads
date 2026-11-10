@@ -22,7 +22,7 @@
 //! found. What the take-over reads of processes (`process`: proc_pidinfo and proc_pidpath of one
 //! pid, never its open files) runs within `LOOK`, on a thread of its own: past it, nothing is ended.
 
-use crate::sys::Proc;
+use jobrt::sys::Proc;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -78,10 +78,10 @@ fn take_over_with(
 ) -> anyhow::Result<Option<super::AgentLock>> {
     let lock = home.join("agent.lock");
     let who = within(look, move || {
-        let me = crate::sys::process(std::process::id() as i32);
-        let me_parent = me.and_then(|m| crate::sys::process(m.ppid));
+        let me = jobrt::sys::process(std::process::id() as i32);
+        let me_parent = me.and_then(|m| jobrt::sys::process(m.ppid));
         let holder = find(&lock).filter(|p| p.exe == "scenic")?;
-        let holder_parent = crate::sys::process(holder.ppid);
+        let holder_parent = jobrt::sys::process(holder.ppid);
         Some((me_parent, holder, holder_parent))
     });
     let Some(Some((me_parent, holder, holder_parent))) = who else {
@@ -93,11 +93,11 @@ fn take_over_with(
     let Some((target, why)) = verdict(me_parent.as_ref(), &holder, holder_parent.as_ref()) else { return Ok(None) };
     let pid = target.pid;
     // (Read again right before the signal: a pid freed and reused meanwhile is someone else's.)
-    if !within(look, move || crate::sys::process(pid)).is_some_and(|now| same_process(&target, now.as_ref())) {
+    if !within(look, move || jobrt::sys::process(pid)).is_some_and(|now| same_process(&target, now.as_ref())) {
         return Ok(None);
     }
     eprintln!("agent: {why}: asking pid {pid} to stop (SIGTERM), its jobs left for this agent");
-    if !crate::sys::terminate(pid) {
+    if !jobrt::sys::terminate(pid) {
         return Ok(None);
     }
     let t = Instant::now();
@@ -113,9 +113,9 @@ fn take_over_with(
 }
 
 /// Writes the holder's record in the lock it took (`holder` reads it): this process's pid and start.
-pub fn note_holder(lock: &crate::sys::PathLock) -> std::io::Result<()> {
+pub fn note_holder(lock: &jobrt::sys::PathLock) -> std::io::Result<()> {
     let me = std::process::id() as i32;
-    let start = crate::sys::process(me).map_or(0, |p| p.start_us);
+    let start = jobrt::sys::process(me).map_or(0, |p| p.start_us);
     lock.note(&format!("{me} {start}\n"))
 }
 
@@ -124,7 +124,7 @@ pub fn note_holder(lock: &crate::sys::PathLock) -> std::io::Result<()> {
 fn holder(lock: &Path) -> Option<Proc> {
     let s = std::fs::read_to_string(lock).ok()?;
     let (pid, start) = s.trim().split_once(' ')?;
-    let p = crate::sys::process(pid.parse().ok()?)?;
+    let p = jobrt::sys::process(pid.parse().ok()?)?;
     (p.start_us == start.parse::<u64>().ok()?).then_some(p)
 }
 
@@ -192,7 +192,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let l = crate::agent::AgentLock::try_take(d.path()).unwrap().unwrap();
         let f = d.path().join("agent.lock");
-        let me = crate::sys::process(std::process::id() as i32).unwrap();
+        let me = jobrt::sys::process(std::process::id() as i32).unwrap();
         assert!(me.start_us > 0 && me.ppid > 0);
         assert_eq!(holder(&f), Some(me.clone()));
         std::fs::write(&f, format!("{} {}\n", me.pid, me.start_us + 1)).unwrap();

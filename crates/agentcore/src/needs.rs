@@ -20,7 +20,7 @@
 //!   its measured runs by least squares and raised to cover every one of them (an upper envelope),
 //!   times `MARGIN`, capped at the most a run it was made from measured (a target past the sizes it
 //!   saw isn't extrapolated past what's known: its floor, learned when it runs, holds it after), never
-//!   below the target's floor. A size is one of the run's input measures (`sizes`, crate::costin) or
+//!   below the target's floor. A size is one of the run's input measures (`sizes`, buildstore::costin) or
 //!   the target tile's area (km², from its key). Each size is tried and judged on runs held out of
 //!   its fit (`FOLDS`-fold): one that misses more than `MAX_MISS` of them, or is off by more than
 //!   `MAX_ERR` on the median one, is poor and not used. The best of the good ones is used, when the
@@ -64,8 +64,8 @@ pub const MAX_ERR: f64 = 0.5;
 pub const GUESS_FIRST: [&str; 2] = ["unit", "pois"];
 
 /// The steps whose plan offers each target by an input measure of it rather than a memory guess,
-/// with the measure (crate::costin): the 3D buildings by the rows their tile's sources hold
-/// (crate::bld::sources::Sources::rows_for, the plan's "bldprep-rows" input). Their runs note the
+/// with the measure (buildstore::costin): the 3D buildings by the rows their tile's sources hold
+/// (bld::bld::sources::Sources::rows_for, the plan's "bldprep-rows" input). Their runs note the
 /// rows they read (bldprep the sources' rows of its tile; bldtiles its normalized files', at most
 /// those), so the step's fit over them predicts a target from its offer before it runs.
 pub const OFFERED_BY: [(&str, &str); 2] = [("bldprep", "rows"), ("bldtiles", "rows")];
@@ -86,14 +86,14 @@ pub fn offered_by(step: &str) -> Option<&'static str> {
 pub const HALO_STEPS: [&str; 2] = ["pack", "lo"];
 
 /// The steps whose time is the work a target finds to do, not the target itself (task #830), with
-/// the measure (crate::costin) that counts it: a pyramids-fill z6 tile whose tiles were all stored
+/// the measure (buildstore::costin) that counts it: a pyramids-fill z6 tile whose tiles were all stored
 /// already took 17–37 s, one fetching 170,000 of them 4,950 s, and five such no-op runs made the
 /// step's time 30 s a z6 tile (a fill running 3 h shown as "of ≈ 28 s"). Its runs count in its step's
 /// time weighted by that work (`time_weight`); a run that did none, or doesn't say, counts for
 /// nothing there (its own target keeps its own time).
 pub const PER_WORK: [(&str, &str); 1] = [("pyramids-fill", "fetched")];
 
-/// The measure (crate::costin) a "none" target's run notes, the packs it dropped (crate::agent::build's
+/// The measure (buildstore::costin) a "none" target's run notes, the packs it dropped (crate::agent::build's
 /// none keys: a z10 tile no deep target any more, its packs still named): such a run reads nothing
 /// and takes a second or two where its step's builds take minutes and gigabytes. It counts for
 /// nothing in its step's model (`runs`, `prior`, `time_weight`); its step's drops are modelled
@@ -141,10 +141,10 @@ pub fn batch_disk(step: &str, each: impl IntoIterator<Item = u64>) -> u64 {
 /// `cache_mb`). (`pack` and `lo` read only the parts of the base packs they need, into their own
 /// scratch, since Task #396: their disk is their own.) The one shared cache: the whole local copies
 /// of the basemap and the depth sources' packs the depth's and the water's steps read
-/// (crate::localread, task #551), copied only where the Mac has room for it past its room target,
+/// (buildstore::localread, task #551), copied only where the Mac has room for it past its room target,
 /// else read in place: reserved only on a Mac with that room (crate::coord's `missing`).
 pub const CACHES: [(&str, &[&str]); 1] =
-    [(crate::localread::CACHE, &["depth", "depth-lo", "terrain-water", "lakefill", "water"])];
+    [(buildstore::localread::CACHE, &["depth", "depth-lo", "terrain-water", "lakefill", "water"])];
 
 /// The shared cache a job of `step` reads (`CACHES`), if any.
 pub fn cache_of(step: &str) -> Option<&'static str> {
@@ -494,7 +494,7 @@ impl Curve {
 pub struct Cache(
     Mutex<(u64, roadcore::fx::FxMap<String, Vec<(Measure, std::sync::Arc<Model>)>>)>,
     Mutex<(u64, BTreeMap<String, Option<(Cores, bool)>>)>,
-    Mutex<(u64, BTreeMap<String, Option<crate::budget::nas::Rate>>)>,
+    Mutex<(u64, BTreeMap<String, Option<jobrt::budget::nas::Rate>>)>,
     /// Each target's `Book::nas` (step → target → it): the NAS budget weighs each target offered
     /// and leased for every ask.
     Mutex<(u64, Rates)>,
@@ -511,7 +511,7 @@ pub struct Cache(
     Mutex<(u64, ByTarget<Vec<SecsAsked>>)>,
     /// Each target's own run's NAS rate and time (`Book::own_rate`, step → target): the NAS budget
     /// weighs every target offered and leased by it for each offer an ask weighs.
-    Mutex<(u64, ByTarget<Option<(crate::budget::nas::Rate, f64)>>)>,
+    Mutex<(u64, ByTarget<Option<(jobrt::budget::nas::Rate, f64)>>)>,
 );
 
 /// What `Cache` keeps of each target: step → target → it (looked up without making a key).
@@ -521,7 +521,7 @@ type ByTarget<T> = roadcore::fx::FxMap<String, roadcore::fx::FxMap<String, T>>;
 type SecsAsked = ((u32, Option<String>), Option<(u64, bool)>);
 
 /// `Cache`'s targets' NAS rates: step → target → `Book::nas`.
-type Rates = ByTarget<Option<crate::budget::nas::Rate>>;
+type Rates = ByTarget<Option<jobrt::budget::nas::Rate>>;
 
 /// The measures needs are read from: what each target cost (crate::coord::Cost), and, where kept,
 /// the floors (crate::agent::memguard) and disk floors (MB, by cost key); the models made from them
@@ -573,7 +573,7 @@ fn sizes_of(key: &str, c: Option<&Cost>) -> BTreeMap<String, f64> {
         })
         .unwrap_or_default();
     if let (false, Some((z, x, y))) = (m.contains_key("km2"), tile(key)) {
-        m.insert("km2".into(), crate::costin::tile_km2(z, x, y) as f64);
+        m.insert("km2".into(), buildstore::costin::tile_km2(z, x, y) as f64);
     }
     m
 }
@@ -669,7 +669,7 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
 /// first, b38: a share of the job's reads over the target's own time, often 0 s, so every job
 /// weighed the whole NAS) counts its writes alone. With the time (s) it is over: a job's rate is its
 /// targets' moves over their times together (`Book::nas_load`).
-fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(crate::budget::nas::Rate, f64)> {
+fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(jobrt::budget::nas::Rate, f64)> {
     let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
     // (A halo step's writes are spread over its job's time too, not over its own write phase:
     // pack's `secs` is that phase's 0-1 s, which weighed a pack at the whole NAS, 25 Oct.)
@@ -681,7 +681,7 @@ fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(crate::budget:
         (g("bytes") - g("local")).max(0.0) / secs
     };
     (c.v >= the_plan.cost_version(step) && c.sizes.contains_key("bytes")).then(|| {
-        let r = crate::budget::nas::Rate {
+        let r = jobrt::budget::nas::Rate {
             bytes_s: read_s + g("wrote") / secs,
             creates_s: g("creates") / secs,
             listed_s: g("listed") / secs,
@@ -693,9 +693,9 @@ fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(crate::budget:
 }
 
 /// Rate `r` of a run `pace` times as long (each of its counts over that time).
-fn per_pace(r: crate::budget::nas::Rate, pace: f64) -> crate::budget::nas::Rate {
+fn per_pace(r: jobrt::budget::nas::Rate, pace: f64) -> jobrt::budget::nas::Rate {
     let d = |x: f64| x / pace.max(1e-6);
-    crate::budget::nas::Rate {
+    jobrt::budget::nas::Rate {
         bytes_s: d(r.bytes_s),
         creates_s: d(r.creates_s),
         listed_s: d(r.listed_s),
@@ -1198,8 +1198,8 @@ impl<'a> Book<'a> {
     /// What a drop of `step` (`DROPS`) takes, by its step's drops run the way it runs now: their
     /// mean time (s, rounded up) and the 90th percentile of their memory (MB). Before any of its
     /// step's has run, every step's drops' alike: a drop of any step reads the manifest alone and
-    /// deletes names from it (crate::terrain_deep::drop_target, crate::terrain_pack::drop_piece,
-    /// crate::slope_pack::drop_lo …), so one step's measure is the next's best first guess, never a
+    /// deletes names from it (terrain::terrain_deep::drop_target, terrain::terrain_pack::drop_piece,
+    /// terrain::slope_pack::drop_lo …), so one step's measure is the next's best first guess, never a
     /// build's minutes and gigabytes. None while no drop of any step ran.
     pub fn drop_need(&self, step: &str) -> Option<(u64, u64)> {
         let of = |only: Option<&str>| -> Vec<&Cost> {
@@ -1259,7 +1259,7 @@ impl<'a> Book<'a> {
         s
     }
 
-    /// The cores a job of `step` for `target` takes, as measured (crate::costin's `sizes`): its own
+    /// The cores a job of `step` for `target` takes, as measured (buildstore::costin's `sizes`): its own
     /// run's, else the most of its step's runs the way it runs now (each of `Cores` its most); None
     /// when none of them says (what packs jobs beside each other, crate::coord's packing, then
     /// packs none beside it). (A run waiting on a crowded NAS reads less busy, which would pack more
@@ -1414,11 +1414,11 @@ impl<'a> Book<'a> {
         c
     }
 
-    /// The NAS rate a job of `step` for `target` runs at, as measured (crate::costin: `bytes` read
+    /// The NAS rate a job of `step` for `target` runs at, as measured (buildstore::costin: `bytes` read
     /// plus `wrote`, and `creates`, each over its wall time): its own run's, else its step's 90th
     /// percentile of each over its runs the way it runs now; None when none of them was measured.
-    /// What crate::budget::nas weighs it by.
-    pub fn nas(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
+    /// What jobrt::budget::nas weighs it by.
+    pub fn nas(&self, step: &str, target: &str) -> Option<jobrt::budget::nas::Rate> {
         let CacheRef::Kept(cache) = &self.cache else {
             return self.nas_own(step, target).or_else(|| self.nas_prior(step));
         };
@@ -1446,7 +1446,7 @@ impl<'a> Book<'a> {
 
     /// `nas` on `worker`: its own run's as it ran, else its step's 90th percentile at the worker's
     /// pace (`paces`; a Mac twice as slow moves the same bytes over twice the time).
-    pub fn nas_for(&self, step: &str, target: &str, worker: &str) -> Option<crate::budget::nas::Rate> {
+    pub fn nas_for(&self, step: &str, target: &str, worker: &str) -> Option<jobrt::budget::nas::Rate> {
         if let Some(r) = self.nas_own(step, target) {
             return Some(r);
         }
@@ -1454,13 +1454,13 @@ impl<'a> Book<'a> {
     }
 
     /// `nas`'s own run's rate alone.
-    pub fn nas_own(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
+    pub fn nas_own(&self, step: &str, target: &str) -> Option<jobrt::budget::nas::Rate> {
         self.own_rate(step, target).map(|r| r.0)
     }
 
     /// Target `target`'s own run's NAS rate and time (`nas_rate`), kept with the models while the
     /// measures stand.
-    fn own_rate(&self, step: &str, target: &str) -> Option<(crate::budget::nas::Rate, f64)> {
+    fn own_rate(&self, step: &str, target: &str) -> Option<(jobrt::budget::nas::Rate, f64)> {
         let cache = match &self.cache {
             CacheRef::Own(c) => c,
             CacheRef::Kept(c) => *c,
@@ -1486,7 +1486,7 @@ impl<'a> Book<'a> {
         step: &str,
         target: &str,
         worker: Option<&str>,
-    ) -> Option<(crate::budget::nas::Rate, Option<f64>)> {
+    ) -> Option<(jobrt::budget::nas::Rate, Option<f64>)> {
         if let Some((r, secs)) = self.own_rate(step, target) {
             return Some((r, Some(secs)));
         }
@@ -1499,7 +1499,7 @@ impl<'a> Book<'a> {
 
     /// `nas`'s step's 90th percentile alone: kept with the models while the measures stand (the
     /// NAS budget weighs every target offered and leased by it, task #544).
-    pub fn nas_prior(&self, step: &str) -> Option<crate::budget::nas::Rate> {
+    pub fn nas_prior(&self, step: &str) -> Option<jobrt::budget::nas::Rate> {
         let CacheRef::Kept(cache) = &self.cache else { return self.nas_p90(step) };
         let mut g = cache.2.lock().unwrap_or_else(|e| e.into_inner());
         if g.0 != self.rev {
@@ -1519,9 +1519,9 @@ impl<'a> Book<'a> {
     /// mostly from this Mac's cache, between runs of a minute or more at 10 MB/s; taken run by run,
     /// its 90th percentile was 248 MB/s, three times the NAS, where its runs moved 19 MB/s over
     /// their time together).
-    fn nas_p90(&self, step: &str) -> Option<crate::budget::nas::Rate> {
+    fn nas_p90(&self, step: &str) -> Option<jobrt::budget::nas::Rate> {
         // (Each at the lead's pace: its time there shorter or longer by its worker's pace.)
-        let runs: Vec<(crate::budget::nas::Rate, f64)> = self
+        let runs: Vec<(jobrt::budget::nas::Rate, f64)> = self
             .costs
             .iter()
             .filter(|(k, _)| step_of_key(k) == step)
@@ -1531,8 +1531,8 @@ impl<'a> Book<'a> {
                 Some((per_pace(r, 1.0 / pace), secs / pace))
             })
             .collect();
-        let p = |f: fn(&crate::budget::nas::Rate) -> f64| p90_by_time(runs.iter().map(|(r, s)| (f(r), *s)).collect());
-        Some(crate::budget::nas::Rate {
+        let p = |f: fn(&jobrt::budget::nas::Rate) -> f64| p90_by_time(runs.iter().map(|(r, s)| (f(r), *s)).collect());
+        Some(jobrt::budget::nas::Rate {
             bytes_s: p(|r| r.bytes_s)?,
             creates_s: p(|r| r.creates_s)?,
             listed_s: p(|r| r.listed_s)?,
@@ -1899,7 +1899,7 @@ mod tests {
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(
             b.nas("slope", "6/1/1"),
-            Some(crate::budget::nas::Rate { bytes_s: 100.0, creates_s: 0.5, ..Default::default() })
+            Some(jobrt::budget::nas::Rate { bytes_s: 100.0, creates_s: 0.5, ..Default::default() })
         );
         // (Rates 20..110, and 100 the first's: the 90th percentile of 11 the 10th, 100.)
         assert_eq!(b.nas("slope", "6/9/9").map(|r| r.bytes_s), Some(100.0));
@@ -1963,20 +1963,20 @@ mod tests {
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
         assert_eq!(
             b.nas("pack", "6/1/1"),
-            Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5, ..Default::default() })
+            Some(jobrt::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5, ..Default::default() })
         );
         assert_eq!(
             b.nas("pack", "6/1/2"),
-            Some(crate::budget::nas::Rate { bytes_s: 1_500_020.0, creates_s: 0.25, ..Default::default() }),
+            Some(jobrt::budget::nas::Rate { bytes_s: 1_500_020.0, creates_s: 0.25, ..Default::default() }),
             "its writes over the job's 20 s, not its own 0 s (pack 6/39/21 weighed the whole NAS)"
         );
         assert_eq!(
             b.nas("pack", "6/1/3"),
-            Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5, ..Default::default() }),
+            Some(jobrt::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5, ..Default::default() }),
             "b38's: writes alone"
         );
         // (On a NAS of 100 MB/s and 40 creates/s: its 1.5 MB/s and 0.25 creates/s, not the whole.)
-        let l = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+        let l = jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         assert_eq!(l.weight(b.nas("pack", "6/1/2").unwrap()), 22);
         assert_eq!(batch_disk("pack", [1300, 1300, 1200]), 1300);
         assert_eq!(batch_disk("slope", [1300, 1300, 1200]), 3800);
@@ -1999,7 +1999,7 @@ mod tests {
         assert_eq!(b.disk("peaks", "6/1/1", 0), Some(67_890), "no shared cache: its own whole");
         assert_eq!(
             (cache_of("pack"), cache_of("lo"), cache_of("depth"), cache_of("slope")),
-            (None, None, Some(crate::localread::CACHE), None)
+            (None, None, Some(buildstore::localread::CACHE), None)
         );
     }
 
@@ -2035,7 +2035,7 @@ mod tests {
         assert_eq!(b.secs_for("slope-hi", "10/12/0", 0, Some("m4")), Some(600), "no runs on m4: twice another's");
         assert_eq!(b.secs_p90("slope-hi", "10/99/0", 0, Some("m1")), Some(300));
         // (NAS rates: 3 MB/s on the lead, a third of that on m1.)
-        let mb_s = |r: crate::budget::nas::Rate| (r.bytes_s / 1e6).round();
+        let mb_s = |r: jobrt::budget::nas::Rate| (r.bytes_s / 1e6).round();
         assert_eq!(raw.nas("slope-hi", "10/99/0").map(mb_s), Some(3.0), "as measured: the lead's p90");
         assert_eq!(b.nas_for("slope-hi", "10/99/0", "mini").map(mb_s), Some(3.0));
         assert_eq!(b.nas_for("slope-hi", "10/99/0", "m1").map(mb_s), Some(1.0), "a third on m1");
@@ -2072,7 +2072,7 @@ mod tests {
         // (z6 tiles from the equator northward: their areas fall.)
         for y in 0..20u32 {
             let t = format!("6/1/{}", 2 + y);
-            let km2 = crate::costin::tile_km2(6, 1, 2 + y);
+            let km2 = buildstore::costin::tile_km2(6, 1, 2 + y);
             costs.insert(format!("bldprep {t}"), cost(100 + km2 / 100, 60, &[]));
         }
         let b = Book::new(crate::agent::seam::for_tests(), &costs);
@@ -2082,9 +2082,9 @@ mod tests {
         assert!(f.good(), "{f:?}");
         let (mb, from) = b.mem("bldprep", "6/1/20", 0, 1);
         assert_eq!(from, From::Measured);
-        assert_eq!(mb, 100 + crate::costin::tile_km2(6, 1, 20) / 100);
+        assert_eq!(mb, 100 + buildstore::costin::tile_km2(6, 1, 20) / 100);
         // Between the sizes seen: the fit, within its margin.
-        let want = (100 + crate::costin::tile_km2(6, 2, 10) / 100) as f64;
+        let want = (100 + buildstore::costin::tile_km2(6, 2, 10) / 100) as f64;
         let (mb, from) = b.mem("bldprep", "6/2/10", 0, 1);
         assert_eq!(from, From::Fit);
         assert!((mb as f64) >= want && (mb as f64) <= want * MARGIN + 2.0, "{mb} for {want}");

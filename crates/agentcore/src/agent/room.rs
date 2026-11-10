@@ -9,7 +9,7 @@
 //! square; scenic-metrics marks a square used when it reads it), AWS's raw terrain tiles
 //! (`aws-terrarium/`, read once per terrain run), the copies of the records' files staging
 //! reads (`blobs/`, store::blobs), and the pageview months' indexes (`items/months/`, ~600 MB each,
-//! read once per items or heritage run: crate::pageviews's copies, which it marks used as it reads
+//! read once per items or heritage run: landmarks::pageviews's copies, which it marks used as it reads
 //! them). They fill again from the NAS (`sources/canopy/`, `sources/aws-terrarium/`, the store,
 //! `sources/pageviews/`), never from the internet.
 //! - Canopy squares, copies of the records' files and pageview months not read in the last hour go
@@ -26,15 +26,15 @@
 //!   here this run, and has each canopy square asked about alone), has it at the same size (asked
 //!   about once more when the listing lacks it). A canopy square the NAS lacks, or has at another
 //!   size (downloaded before it kept them, or a copy cut short), is copied there first (whole and
-//!   flushed: crate::whole: one large file), and kept here when that fails; a raw tile it lacks
+//!   flushed: codecs::whole: one large file), and kept here when that fails; a raw tile it lacks
 //!   stays here until it reaches the NAS in bulk (copied a tile at a time, with a flush each, small
 //!   files stall the NAS: ~23 a second, and each Mac's processes wait on it meanwhile). One that
 //!   isn't whole itself (cut short, or a temporary file) is deleted without being kept anywhere.
-//! - Raw tiles the NAS lacks are packed onto it first (crate::rawpack: an archive of their own for
+//! - Raw tiles the NAS lacks are packed onto it first (buildstore::rawpack: an archive of their own for
 //!   each shard, one large write each, none kept here), then go; the copies of its archives here
 //!   (`aws-terrarium/packs/`) go as the copies of the records' files do, each by its own use (a
 //!   job marks one used when it opens it), without asking it.
-//! - A pageview month's index goes once the NAS has it at its size; one it lacks stays (crate::pageviews
+//! - A pageview month's index goes once the NAS has it at its size; one it lacks stays (landmarks::pageviews
 //!   puts it there when it next reads it): none is copied there from here. Any other file there
 //!   (an older format's counts, a dead stream's temporary file) goes as any unheld cache file.
 //!
@@ -102,7 +102,7 @@
 //! agent left runs (the agent's to see to: its programs may not hold what they use).
 //!
 //! Nothing goes through a link: a folder or file of the cache that's a link, at any depth (`walk`;
-//! crate::rawpack's packer passes them over too), or a folder in the NAS's project folder by its
+//! buildstore::rawpack's packer passes them over too), or a folder in the NAS's project folder by its
 //! real path (`ours`), is left as it is and not counted, so the NAS's own files never go. (The agent
 //! runs a clear or a freeing on a thread of its own, jobs starting meanwhile.)
 //!
@@ -149,7 +149,7 @@ fn ns(t: SystemTime) -> u128 {
 const CHEAP: [(&str, &str); 4] =
     [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", ""), (MONTHS, "pageviews")];
 
-/// The pageview months' indexes here (crate::pageviews's copies of the NAS's `sources/pageviews/`).
+/// The pageview months' indexes here (landmarks::pageviews's copies of the NAS's `sources/pageviews/`).
 pub const MONTHS: &str = "items/months";
 
 /// Bytes the cheap caches hold (what `make_room` can free on the lead: a member's,
@@ -164,7 +164,7 @@ pub fn cheap_bytes(cache: &Path, sources: Option<&NasPath>) -> u64 {
 }
 
 /// The bytes of the pageview months here that room-making or a clear can free: the indexes the NAS's
-/// `sources` has at their size (one it lacks stays, for crate::pageviews to put there) and every
+/// `sources` has at their size (one it lacks stays, for landmarks::pageviews to put there) and every
 /// other file there (`fate`). Nothing in the NAS's project folder (`ours`).
 fn months_bytes(cache: &Path, sources: &NasPath) -> u64 {
     let mut files = Vec::new();
@@ -248,7 +248,7 @@ const GONE: &str = "heritage-gone-";
 
 /// The pass's date of the heritage chain's working copy `name` (`heritage-<date>`).
 fn epoch_date(name: &str) -> Option<&str> {
-    name.strip_prefix("heritage-").filter(|d| crate::osmpass::is_date(d))
+    name.strip_prefix("heritage-").filter(|d| ::inputs::osmpass::is_date(d))
 }
 
 /// Whether cache `kind` is costly to make again, so only a deep clear empties it (`Level::Deep`).
@@ -472,7 +472,7 @@ pub struct Freed {
     pub freed: BTreeMap<String, u64>,
     /// What stays of what it went through: files the NAS hasn't (a helper's loose raw tiles, which
     /// only its own jobs pack; a canopy square it couldn't take now; a pageview month's index, which
-    /// crate::pageviews puts there when it next reads it).
+    /// landmarks::pageviews puts there when it next reads it).
     #[serde(default)]
     pub left: u64,
     /// A clear's level (None: a freeing, or a clear from before levels: `Level::Caches`).
@@ -609,7 +609,7 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
 
 /// The owner's ask to clear this Mac's build caches (the menu bar's Clear the Build's Caches and
 /// Clear Caches Deeply, `scenic clean [--deep]`): a file in its agent's folder (`CLEAR_REQUEST`)
-/// the agent takes up within seconds, as it does a pause's (crate::control): it clears them or
+/// the agent takes up within seconds, as it does a pause's (jobrt::control): it clears them or
 /// says why it can't now, in its status (`Caches::cleared`, `cleared_deep` or `declined`, with
 /// when this was asked), and the ask goes. Pinned on both sides by
 /// tools/status/test/clear-request-*.json (the menu bar's selfTest, this module's tests).
@@ -1433,11 +1433,11 @@ fn fate(cache: &Path, sources: &NasPath, p: &Path, listed: &mut Listed) -> Fate 
     if names.get(name) == Some(&len) || there() {
         return Fate::Go;
     }
-    // (An index the NAS lacks: crate::pageviews puts it there when it next reads it.)
+    // (An index the NAS lacks: landmarks::pageviews puts it there when it next reads it.)
     if month {
         return Fate::Stay;
     }
-    if store::whole::is_tmp(p) || !crate::whole::file_whole(p) {
+    if store::whole::is_tmp(p) || !codecs::whole::file_whole(p) {
         eprintln!("room: {} isn't whole: deleted, not kept", p.display());
         return Fate::Go;
     }
@@ -1505,7 +1505,7 @@ fn free_cheap(
     let mut packed = 0;
     if let Some(root) = root.filter(|r| ours(&tiles, Some(r))) {
         let before = loose_bytes(&tiles);
-        if let Err(e) = crate::rawpack::pack_local(&tiles, &sources.join("aws-terrarium"), root, false) {
+        if let Err(e) = buildstore::rawpack::pack_local(&tiles, &sources.join("aws-terrarium"), root, false) {
             eprintln!("room: raw tiles not packed now ({e:#}); they stay");
         }
         packed = before.saturating_sub(loose_bytes(&tiles));
@@ -1939,12 +1939,12 @@ mod tests {
         f.set_modified(t).unwrap();
     }
 
-    /// A whole file of `p`'s kind (crate::whole), `age_s` old; its length.
+    /// A whole file of `p`'s kind (codecs::whole), `age_s` old; its length.
     fn whole(p: &Path, age_s: u64) -> u64 {
         let b = if p.extension().is_some_and(|x| x == "png") {
-            crate::whole::testfiles::png()
+            codecs::whole::testfiles::png()
         } else {
-            crate::whole::testfiles::tiff(false)
+            codecs::whole::testfiles::tiff(false)
         };
         bytes(p, &b, age_s);
         b.len() as u64
@@ -2240,7 +2240,7 @@ mod tests {
         whole(&c.join("aws-terrarium/12/2048/1366.png"), 9000);
         bytes_at(
             &c.join("aws-terrarium/12/2049/1365.png"),
-            &crate::whole::testfiles::png(),
+            &codecs::whole::testfiles::png(),
             SystemTime::now() + Duration::from_secs(3600),
         );
         let all = used(c);
@@ -2248,7 +2248,8 @@ mod tests {
         make_room_spared(c, nas, a, a, &disk).unwrap();
         // Packed onto the NAS (an archive for their shard, named in the index), gone here.
         let index =
-            crate::rawpack::Index::load(&store::nasfs::NasPath::local_for_test(&nas.join("aws-terrarium"))).unwrap();
+            buildstore::rawpack::Index::load(&store::nasfs::NasPath::local_for_test(&nas.join("aws-terrarium")))
+                .unwrap();
         let name = &index.of("6-32-21")[0].name;
         assert!(nas.join("aws-terrarium/packs").join(name).exists());
         assert!(!c.join("aws-terrarium/packs").join(name).exists(), "the disk is short: not kept here");
@@ -2670,7 +2671,7 @@ mod tests {
             file(&c.join(format!("dem-cache.{n}")), len, 60);
         }
         // What stays: the answers the NAS keeps too (they free little), a pageview month the NAS
-        // lacks (said as kept: crate::pageviews puts it there when it next reads it), what frees next to
+        // lacks (said as kept: landmarks::pageviews puts it there when it next reads it), what frees next to
         // nothing, the agent's own timings, what z6 tiles kept that isn't on the NAS yet; and
         // everything outside the caches (the agent's state, logs, work and outbox, the map's
         // mirror).
@@ -3120,7 +3121,7 @@ mod nas_tests {
     fn a_file_a_short_listing_lacks_is_asked_about_before_a_copy() {
         let d = tempfile::tempdir().unwrap();
         let (c, nas) = (d.path().join("cache"), d.path().join("nas"));
-        let png = crate::whole::testfiles::png();
+        let png = codecs::whole::testfiles::png();
         for p in [c.join("aws-terrarium/9/1/2.png"), nas.join("aws-terrarium/9/1/2.png")] {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, &png).unwrap();
@@ -3140,7 +3141,7 @@ mod nas_tests {
         );
         // Its canopy squares are asked about alone: one the NAS has at its size may go, one it
         // lacks stays.
-        let tif = crate::whole::testfiles::tiff(false);
+        let tif = codecs::whole::testfiles::tiff(false);
         for p in [c.join("chm10/a.tif"), nas.join("canopy/a.tif"), c.join("chm10/b.tif")] {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, &tif).unwrap();
@@ -3161,7 +3162,7 @@ mod nas_tests {
         let d = tempfile::tempdir().unwrap();
         let c = d.path().join("cache");
         std::fs::create_dir_all(c.join("chm10")).unwrap();
-        std::fs::write(c.join("chm10/a.tif"), crate::whole::testfiles::tiff(false)).unwrap();
+        std::fs::write(c.join("chm10/a.tif"), codecs::whole::testfiles::tiff(false)).unwrap();
         // The NAS's store is a file, not a folder: nothing can be copied there.
         let nas = d.path().join("nas/sources");
         std::fs::create_dir_all(d.path().join("nas")).unwrap();
@@ -3178,20 +3179,20 @@ mod nas_tests {
     fn only_whole_files_are_kept_on_the_nas() {
         let d = tempfile::tempdir().unwrap();
         let (c, nas) = (d.path().join("cache"), d.path().join("nas/sources"));
-        let png = crate::whole::testfiles::png();
+        let png = codecs::whole::testfiles::png();
         let put = |p: &Path, b: &[u8]| {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, b).unwrap();
         };
         // Cut short, or a temporary file: deleted here, not kept there.
         put(&c.join("aws-terrarium/9/1/1.png"), &png[..png.len() - 5]);
-        put(&c.join("chm10/a.tif.m4.12.tmp"), &crate::whole::testfiles::tiff(false));
+        put(&c.join("chm10/a.tif.m4.12.tmp"), &codecs::whole::testfiles::tiff(false));
         // The NAS has it at the same size: deleted here, the NAS's copy left as it is.
         put(&c.join("aws-terrarium/9/1/2.png"), &png);
         put(&nas.join("aws-terrarium/9/1/2.png"), &vec![7u8; png.len()]);
         // The NAS has it cut short: a canopy square's copy replaced with this whole one; a raw tile
         // kept here, to reach it in bulk.
-        let tif = crate::whole::testfiles::tiff(false);
+        let tif = codecs::whole::testfiles::tiff(false);
         put(&c.join("chm10/b.tif"), &tif);
         put(&nas.join("canopy/b.tif"), &tif[..10]);
         put(&c.join("aws-terrarium/9/1/3.png"), &png);

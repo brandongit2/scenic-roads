@@ -3,8 +3,8 @@
 //! docs/crates.md §6.2), so they're pipeline's, as inputs_tests are.
 #![cfg(test)]
 
-use crate::ovconv::testkit::drop_stale;
 use buildstore::out::Out;
+use landmarks::ovconv::testkit::drop_stale;
 use std::collections::BTreeMap;
 
 /// A step's sweep of its stale packs removes only names its outputs function allows: a legacy

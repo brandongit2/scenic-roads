@@ -99,7 +99,7 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | inputs → coverage | `impl Coverage { fn accepted }` in inputs::regions::read, an inherent impl that can't stay once `Coverage` is another crate's | built (step 4): `inputs::regions::read::accepted_coverage`, its callers renamed |
 | dem → terrain_deep, terrain_zoom | the terrain's zoom rule (7 references) | built (step 6d): `PACK_Z`, `CELL_FACTOR`, `DEEPEST`, `zoom_for`, `polar_zoom_for` and `Detail` are dem::zoom's (not codecs': `Detail::of` reads dem's declared datasets); terrain_zoom and terrain_deep re-export them |
 | inputs → lakefill, rail | 2 references to lakefill, 4 to rail, from the input checks | built (step 6d): all three in the inputs crate |
-| cli → polar | one reference to polar | cli stays in agentcore; what the steps below it run programs by, `program` and `TOOLS`, is jobrt::sys's (step 6d; cli re-exports both). The rest of cli has no user below agentcore and stays (task #1026, §7.3); net went to coordwire (step 7a) |
+| cli → polar | one reference to polar | cli stays in agentcore; what the steps below it run programs by, `program` and `TOOLS`, is jobrt::sys's (step 6d). The rest of cli has no user below agentcore and stays (task #1026, §7.3); net went to coordwire (step 7a) |
 | layers → ovconv | one item (`MAXZ`, in a test) | built (step 6e): `MAXZ` is codecs::vtgen's; ovconv re-exports it |
 | terrain_task, trees, bld, offload → coord | offloading a step's parts to other Macs | built (step 6e): what the steps offering tasks name is the offload crate's (`Offload`, its waits, unit's `Run`; on coordwire's real client, not a trait); coord appears only in tests that start a coordinator, which move to pipeline with their family (terrain_task's: `terrain_tests`; trees::task's: `trees_tests`; bld::task's: `bld_tests`) |
 
@@ -180,13 +180,21 @@ names, webpenc as now).
    crates/server depends on neither pipeline nor agentcore since step 7a: buildstore, codecs,
    coordwire, inputs, jobrt and terrain (agentcore in two tests only, §7).
 
-Each moved module stays reachable at its old path by a `pub use` in `pipeline`'s lib.rs while
-pipeline's modules above the steps or its binaries name it there. The step modules name the lower
-crates directly since step 6b (`crate::pyjson` → `pyport::pyjson`), and the re-exports they alone
-used went with it; the rest go as their users move. The inputs crate (6d) they still name by
-pipeline's paths (`crate::dem`, ~210 mentions in 23 modules, the depth's among them): each family's
-are rewritten as it moves (6e: the terrain, trees, roads, names and bld families'), not in the files others are editing now. The list in lib.rs is the
-record of what still goes through them.
+Every user names the crate that owns a moved module (`pyport::pyjson`, `inputs::dem`,
+`agentcore::coord`): the steps' moves left a `pub use` at each old path, and #1084 rewrote what
+still went through them and cut them. Two kinds stay, both because the plan's files (pipeline's
+agent/build.rs, steps.rs, idents.rs, theplan.rs, tiles.rs) are compiled into agentcore's unit tests
+too (§6.3, 6f4), so a path in them must mean the same in either crate:
+
+- pipeline's root re-exports agentcore's `answers`, `coord`, `needs` and `pool`, which the plan
+  names as `crate::coord` and so on (inside agentcore, `agentcore::coord` names nothing);
+- pipeline's agent.rs is `pub use agentcore::agent::*` beside the plan's modules, so the plan's
+  `crate::agent::gc` or `super::forecast` is the runtime's module in either crate.
+
+agentcore's root re-exports nothing. Inside the runtime, a few of its modules still re-export what
+the steps moved below them, for the runtime's own code: `agent::recipes` (buildstore's) and the
+items of `agent::room` and `agent::jobs` that §1's table lists. Nothing outside agentcore names
+them there.
 
 ## 3. The binaries
 
@@ -207,10 +215,9 @@ record of what still goes through them.
 | areaflags | 0.01k | areaflags, cli | jobrt |
 
 Since #917 only `scenic` and `scenic-build` are binaries; the other rows are scenic-build's tools
-(`scenic-build tool <name>`, src/bin/tools/, `pipeline::cli::TOOLS`), linked into it once. A tool's
+(`scenic-build tool <name>`, src/bin/tools/, `jobrt::sys::TOOLS`), linked into it once. A tool's
 file stays with scenic-build; the last column is the crate the modules it uses go to, which a
-step moves only with its whole set. Jobs and tasks run a tool by its name (`jobrt::sys::program`,
-which pipeline::cli re-exports).
+step moves only with its whole set. Jobs and tasks run a tool by its name (`jobrt::sys::program`).
 
 ## 4. Steps
 

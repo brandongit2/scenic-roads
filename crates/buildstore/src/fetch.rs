@@ -59,7 +59,7 @@ pub fn is_unreachable(e: &anyhow::Error) -> bool {
 }
 
 /// A program's exit status when a server it needs gave no answer (EX_UNAVAILABLE): the unit job
-/// sets that z6 tile aside and goes on with its others (pipeline::unit::SourceDown).
+/// sets that z6 tile aside and goes on with its others (roads::unit::SourceDown).
 pub const UNREACHABLE_EXIT: u8 = 69;
 
 /// A program's end: its error printed as `main`'s would be, its status `UNREACHABLE_EXIT` when a
@@ -1394,7 +1394,7 @@ mod tests {
     /// helpers) declares what it fetches, kinds of `Kind` (`FETCHES = "api, data"`; a shell
     /// script's `# FETCHES: data`), and one that fetches pages reads robots.txt and tells its proxy
     /// what it found (`/robots`: jobrt::budget::net::Robots, the Activity tab's column). (The declarations'
-    /// `kind` is pipeline::inputs::sources::parse's.)
+    /// `kind` is inputs::inputs::sources::parse's.)
     #[test]
     fn every_fetching_script_declares_its_kinds() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

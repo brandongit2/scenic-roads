@@ -32,7 +32,7 @@ Where it departs from this doc:
   reader holds the map), and the snapshots are streamed into zstd.
 
 **Built (step 3):** the lead's coordinator answers `GET /map/changes` and `/map/snapshot`
-(`pipeline::coord::maproutes`, with the build's key) from `store::map::feed::Feed`, which the
+(`agentcore::coord::maproutes`, with the build's key) from `store::map::feed::Feed`, which the
 shadow's writer keeps: the map, the batches it appended or replayed at its open (64 MB of them at
 most; a `since` older than those, or past the head, is told to reset), the cursors heard (saved with
 the log's snapshot) and the snapshot made once per `seq`; no NAS, no disk. A long poll looks each

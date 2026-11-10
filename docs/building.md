@@ -94,7 +94,7 @@ from the first (`edit_held`).
   why. Pauses, the memory guard and the disk guard keep their own rules. The lead
   grants nothing to an agent on another app, and an agent with a newer app waiting asks for
   nothing.
-- **Pausing** (`pipeline::control`): one pause for the whole build, every Mac's jobs and the pages'
+- **Pausing** (`jobrt::control`): one pause for the whole build, every Mac's jobs and the pages'
   tasks.
   - **Asked for** from the menu bar (Pause Building; Option: Pause Building Now), the map's build
     panel or `scenic pause [--now]`, lifted by Resume or `scenic resume`: an ask in the agent's folder
@@ -293,7 +293,7 @@ from the first (`edit_held`).
   (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, catalogues, pauses, workers,
   agents, conditions, cache clears and freeings. Summed by the hour for the worker page, and the
   forecast's measure of members' pace and of publishing's time.
-- **Timings** (`pipeline::timings`; `dem/timings.py`): every
+- **Timings** (`jobrt::timings`; `dem/timings.py`): every
   job's run is broken into named phases, each with wall time, CPU time (`getrusage`), its wall time
   split by measured waits (task #870: NAS, network, local disk, other work, the rest computing;
   the Python twin measures its own the same way; pages still declare a class), spans, bytes and files. One
@@ -310,7 +310,7 @@ from the first (`edit_held`).
   (docs/formats.md, Timings) goes to `SCENIC_TIMINGS`; the agent keeps `timings.jsonl`, the lead's
   coordinator `coord/timings.jsonl` for every worker. `scenic timings [kind] [--last N] [--host
   mac]` prints them (`--here` this Mac's own).
-- **Publishing's times** (`pipeline::pubtimes`, task #250): each stage from a z6 tile's job to its
+- **Publishing's times** (`agentcore::pubtimes`, task #250): each stage from a z6 tile's job to its
   tiles on every Mac's map leaves an event. In the history: the z6 tile's job ending; its hand-off
   merged (`merged`: each journal entry's key, member, step and targets); the map tiles
   first planned at their keys (`planned`: noted once per tile and key, what was noted known again
@@ -345,7 +345,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   jobs are left running for the next agent, which joins as it starts and takes them over
   (Restarts).
 - **Who leads** is fixed: the Mac mini, the member `state/build/lead-member.json` declares
-  (pool.md §6.1, task #881). It plans, runs a coordinator (`pipeline::coord`, port 8090) from which
+  (pool.md §6.1, task #881). It plans, runs a coordinator (`agentcore::coord`, port 8090) from which
   every other worker asks for work, and merges the journal into the records. Restarting or waking,
   it makes the next term naming itself (`state/build/terms/`) and goes on with its leases. No other
   Mac leads: with the mini gone, the members finish their jobs and wait (pool.md §6.3). Each Mac
@@ -386,7 +386,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   docs/coordination.md §4); the workers' token and accepted devices are the pool's
   (`state/coord/`); the history is each writer's own file per day (`state/coord/history/`; days older than a week one tar each in `state/coord/history-archive/`, docs/pool.md §7.5).
 - **Every job hands off:** under a lease `<term>-<id>` it saves into `agent/pool/jobs/<term>-<id>/`
-  (`SCENIC_HANDOFF`, `pipeline::handoff`), then as an entry (its done record and costs) kept by its
+  (`SCENIC_HANDOFF`, `buildstore::handoff`), then as an entry (its done record and costs) kept by its
   member and posted to the lead by HTTP (docs/coordination.md step 6; to the journal,
   `state/journal/<day>/<term>-<id>.json`, for a lead on an older app). The lead merges entries
   into its term's records all or nothing, checking each against its step's write-set
@@ -520,7 +520,7 @@ available. Until work is done, the map serves the last catalogue.
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean [--deep]`, `scenic room` (Room on the
   disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the memory floor, the memory the Mac keeps available: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
-- **The menu bar item** runs `scenic menu` (`pipeline::menu`, every 5 s, 10 s at most), which
+- **The menu bar item** runs `scenic menu` (`agentcore::menu`, every 5 s, 10 s at most), which
   reads this Mac's disk alone, never the NAS (docs/roles.md §3.4): this Mac's agent's status, and
   on a member the build in a line as the lead's last beat answer carried it (`agent/lead-view.json`:
   its state, its pause, when the lead answered). An agent or a lead not heard from for ten minutes (the status's `out_of_touch_s`, the pool's
@@ -630,11 +630,11 @@ The check: `ssh m6 'security unlock-keychain -p "$(<~/.config/scenic/signing-key
 
 **Programs:** three binaries: `scenic` (the user's command and the agent), `scenic-build` (the
 build steps) and `server`. The programs the steps and tasks run are scenic-build's tools,
-`scenic-build tool <name> …` (`pipeline::cli::TOOLS`, src/bin/tools/): the `unit` job's `extract`,
+`scenic-build tool <name> …` (`agentcore::cli::TOOLS`, src/bin/tools/): the `unit` job's `extract`,
 `elev`, `areaflags`, `landcover`, `tile`, `scenic-metrics` (rail runs `extract` and `railfreq`, tree
 cover `trees`, the tasks `trees`, `bldtile`, `terrainsub`), and `lakefill`, `coastcheck` and
 `scenic-polar` run by hand. Jobs and tasks name a tool as a program (a task's spec its `prog`), and
-`pipeline::cli::program` runs it from the app version's own folder: through its scenic-build, or,
+`agentcore::cli::program` runs it from the app version's own folder: through its scenic-build, or,
 in a version from before #917, its binary of that name; so a task offered by one version runs on a
 worker with the other. One binary for them all links the library once (measured on the M1, 1 Nov 2026, release: the
 shipped binaries 112 MB as 13 files, 84 MB as 3; the binaries' phase of a release build, 15 thin-LTO
@@ -644,7 +644,7 @@ identifier (`local.scenic.agent`), which Network privacy and the firewall know i
 steps), Scenic.app, `web/` and `fonts/`. The Python steps run in one environment per lock file
 (`dem/uv.lock` with `dem/.python-version`), in `~/Library/Application Support/scenic/pyenv/<key>/`
 beside the versions, never inside one, and shared by every version with that lock
-(`pipeline::pyenv`): `install.sh` makes it (`scenic-build pyenv`), and a Python step makes it when
+(`jobrt::pyenv`): `install.sh` makes it (`scenic-build pyenv`), and a Python step makes it when
 it's missing (an update with a new lock). It's made by `uv sync` into a `.tmp-` folder and renamed
 into place, one making per lock file at a time (a flock on `pyenv/.lock-<key>`). The updater removes an environment no installed
 version uses a day after its last use. `tools/app/install.sh` gives the agent a PATH with uv, osmium, zstd
@@ -654,13 +654,13 @@ and Java 21.
 prints its usage and exits 0; an unknown flag, command or argument, a flag without its value or
 given twice, or two that can't go together is refused with the usage (exit 2). Nothing is run
 either way: no default action on a typo. The Rust binaries parse with clap: each one's definition
-is in `pipeline::cli` (the server's in its `main.rs`), where the agent's tests also check the
+is in `agentcore::cli` (the server's in its `main.rs`), where the agent's tests also check the
 command lines it makes for its jobs and tasks (`cli::check_command`); `scenic-build`'s steps read
 their flags by name from the line clap checked. `scenic-status` (Swift) has a small parser of the
 same rules (`argsProblem`; a mode at a time). The shell tools in `tools/` do the same with a `case`
 on their arguments, first thing. `crates/pipeline/tests/cli.rs` runs every binary of the workspace
 with `--help` and a flag it doesn't take, in an empty home (a new binary fails it until added to
-`pipeline::cli`), checks the calls in the docs and in `tools/` against the definitions, and that
+`agentcore::cli`), checks the calls in the docs and in `tools/` against the definitions, and that
 every shell tool checks its arguments; `crates/server/tests/cli.rs` does the same for the server.
 Planned: the launcher (`tools/launcher/launcher.c`, one argument, its run file's name, else exit 2)
 taking `--help` too (a change to it changes its signature's hash, so it's done on its own).

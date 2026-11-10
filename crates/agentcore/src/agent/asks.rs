@@ -1,7 +1,7 @@
 //! **control** (docs/agent-parts.md §4.1, task #871 step 3; its first slice task #846): the owner's
 //! asks of this Mac's agent taken up at once, on a thread of their own, whatever the loop waits on.
 //!
-//! The asks come as files in the agent's folder (crate::control: `hold-request.json`,
+//! The asks come as files in the agent's folder (jobrt::control: `hold-request.json`,
 //! `quit-request.json`, `cancel-requests/`, the settings' files), whoever writes them: the menu bar,
 //! `scenic`, an older CLI, or the agent's HTTP endpoint (crate::coord's `/work/hold`, `/work/quit`,
 //! `/work/settings`, which write the same files). A watcher on the folder (kqueue on macOS) looks
@@ -23,7 +23,7 @@
 
 use super::bus::{BeatMsg, ControlMsg, Snap};
 use super::{memfloor, room, share};
-use crate::control::{self, HoldAnswer, HoldState, Quit};
+use jobrt::control::{self, HoldAnswer, HoldState, Quit};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -190,7 +190,7 @@ pub struct Handle {
     pub hold: Arc<Snap<HoldState>>,
     pub quit: Arc<Snap<Option<Quit>>>,
     pub settings: Arc<Snap<Settings>>,
-    /// The running jobs (each one's channel, crate::control::CONTROL_ENV), as the loop last
+    /// The running jobs (each one's channel, jobrt::control::CONTROL_ENV), as the loop last
     /// published them; shared with **jobs**' thread.
     pub jobs: Arc<Snap<Vec<super::slots::JobRef>>>,
     /// What changed, for the loop's wait (control's, and **jobs**' thread's: `waker`).
@@ -448,7 +448,7 @@ impl Drop for Kqueue {
 pub(crate) mod tests {
     use super::super::Status;
     use super::*;
-    use crate::control::{Hold, HoldStage};
+    use jobrt::control::{Hold, HoldStage};
 
     fn job(id: &str, slot: usize) -> super::super::JobView {
         super::super::JobView {

@@ -33,7 +33,7 @@ pub const K: usize = 2;
 const MAX_Z: u8 = crate::terrain_zoom::DEEPEST;
 /// Tiles in flight at once while a level is sampled (`Tiles::prefetch_counted`): the memory
 /// `sampling_mb` declares (in crate::terrain_pack::piece_peak_mb, and what terrain-hi 7's and
-/// terrain-lo 2's runs measured, pipeline::coord::cost_version), shared among the chunks sampled at
+/// terrain-lo 2's runs measured, agentcore::coord::cost_version), shared among the chunks sampled at
 /// once (`at_once`), each `chunk_tiles` of them.
 const IN_FLIGHT: usize = 64;
 

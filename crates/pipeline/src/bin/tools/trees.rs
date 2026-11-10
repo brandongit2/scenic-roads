@@ -1,20 +1,20 @@
-//! The tree cover layers' tiles (`pipeline::trees`): the `--z3` run, its command line,
+//! The tree cover layers' tiles (`trees::trees`): the `--z3` run, its command line,
 //! outputs and progress lines; a z6 tile's run and a z3 tile's assembly from them, as the build makes
 //! the layers; and the same work a block at a time, for workers. Its command line:
-//! pipeline::cli::progs::Trees, one mode a run:
+//! agentcore::cli::progs::Trees, one mode a run:
 //!
 //!   trees --z3 x,y --coverage cov.json --sources sources.json --chm dir --chm-store dir --leaf dir --out dir
 //!         [--workers n]
 //!       z3 tile x,y: its canopy squares read from this Mac's whole copies in `chm`, else the
-//!       rows it needs of the NAS's `chm-store` (pipeline::trees::squares::rows_here), its
+//!       rows it needs of the NAS's `chm-store` (trees::trees::squares::rows_here), its
 //!       leaf-type squares in `leaf` (made where missing: trees::leaftype),
 //!       out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles;
 //!       `sources.json`: where the declared canopy and leaf-type sources are
-//!       (pipeline::trees::RunSources, written by the trees job)
+//!       (trees::trees::RunSources, written by the trees job)
 //!   trees --z6 x,y (the same options) [--keep dir]
 //!       z6 tile x,y alone: out/trees-*.tiles holding its zoom 9–12 tiles, and out/trees-mid.sect
 //!       its mid (its blocks' zoom-8 tiles and values); `--keep`: each row of blocks kept in a
-//!       resume log there as it's made, a run stopped resumed from it (pipeline::resume_log::Pieces)
+//!       resume log there as it's made, a run stopped resumed from it (jobrt::resume_log::Pieces)
 //!   trees --assemble-lo --out dir [--workers n] <mid>…
 //!       a z3 tile's zoom 8–4 from its z6 tiles' mids: out/trees-*.tiles
 //!   trees --block 8/x/y --coverage cov.json --chm dir|url --leaf dir|url --out dir [--record dir]
@@ -24,30 +24,30 @@
 //!   trees --blocks 8/x/y,… --coverage cov.json --chm dir|url --leaf dir|url --out dir
 //!         [--squares top,left;…] [--record dir] [--workers n]
 //!       blocks of one row made together, each strip of the canopy read once for them all
-//!       (a row's task, pipeline::trees::task): out/8-x-y/ for each, as --block's out;
+//!       (a row's task, trees::trees::task): out/8-x-y/ for each, as --block's out;
 //!       `--squares`: the canopy squares the job found there (one not found fails the run,
 //!       never a block without its trees)
 //!   trees --assemble --out dir <block out dir>…
 //!       the blocks' archives and zoom 7–4 from their values: the z3 tile's archives
 //!
-//!   SCENIC_FETCH_*  mirror folders, recording, no network (`pipeline::fetch`)
+//!   SCENIC_FETCH_*  mirror folders, recording, no network (`buildstore::fetch`)
 
+use ::trees::trees::{self, mask::Shapes, Inputs, Source};
+use agentcore::cli::progs::Trees;
 use anyhow::{bail, Context, Result};
+use buildstore::fetch::Fetcher;
 use clap::Parser;
-use pipeline::cli::progs::Trees;
-use pipeline::fetch::Fetcher;
-use pipeline::trees::{self, mask::Shapes, Inputs, Source};
 use std::path::PathBuf;
 
 pub fn main(args: Vec<String>) -> Result<()> {
     let a = Trees::parse_from(args);
-    // (Its phases, for the job's phase that runs it: pipeline::timings.)
-    let r = pipeline::timings::job("trees", || run(&a));
+    // (Its phases, for the job's phase that runs it: jobrt::timings.)
+    let r = jobrt::timings::job("trees", || run(&a));
     // (Paused at a row kept, task #889: its job takes the exit as the pause's.)
     if let Err(e) = &r {
-        if pipeline::control::is_paused(e) {
+        if jobrt::control::is_paused(e) {
             eprintln!("trees: {e:#}");
-            std::process::exit(pipeline::control::PAUSED_EXIT);
+            std::process::exit(jobrt::control::PAUSED_EXIT);
         }
     }
     r
@@ -59,24 +59,24 @@ fn need<'a, T>(v: &'a Option<T>, k: &str) -> Result<&'a T> {
 }
 
 fn run(a: &Trees) -> Result<()> {
-    // (Threads as many as said, else rayon's. Its blocks in a job told its grant (pipeline::control::
+    // (Threads as many as said, else rayon's. Its blocks in a job told its grant (jobrt::control::
     // THREADS_ENV's file named) get a pool as wide as pace allows, under permits: as many at once
-    // as the file says now (pipeline::inputs::pace). Assembling takes no permits: as said.)
+    // as the file says now (inputs::inputs::pace). Assembling takes no permits: as said.)
     let mut pool = rayon::ThreadPoolBuilder::new();
     if let Some(w) = a.workers {
-        let paced = !(a.assemble || a.assemble_lo) && std::env::var_os(pipeline::control::THREADS_ENV).is_some();
-        let wide = if paced { pipeline::inputs::pace::cores().min(pipeline::inputs::pace::MOST) } else { 1 };
+        let paced = !(a.assemble || a.assemble_lo) && std::env::var_os(jobrt::control::THREADS_ENV).is_some();
+        let wide = if paced { ::inputs::inputs::pace::cores().min(::inputs::inputs::pace::MOST) } else { 1 };
         pool = pool.num_threads(w.max(wide).max(1));
     }
     let pool = pool.build().ok();
-    let within = |f: &(dyn Fn() -> Result<()> + Sync)| pipeline::dem::sample::within(pool.as_ref(), f);
+    let within = |f: &(dyn Fn() -> Result<()> + Sync)| ::inputs::dem::sample::within(pool.as_ref(), f);
     let out = a.out.clone();
     if a.assemble || a.assemble_lo {
         if a.inputs.is_empty() {
             bail!("nothing to assemble");
         }
         return within(&|| {
-            let said = |done, total| pipeline::agent::jobs::report(done, total, "zoom 7–4 tiles");
+            let said = |done, total| jobrt::jobs::report(done, total, "zoom 7–4 tiles");
             let n = if a.assemble_lo {
                 trees::assemble_lo(&a.inputs, &out, &said)?
             } else {
@@ -132,7 +132,7 @@ fn run(a: &Trees) -> Result<()> {
         });
     }
     let b = need(&a.block, "block")?;
-    let u = pipeline::legacy::TileId::parse(b)
+    let u = codecs::legacy::TileId::parse(b)
         .filter(|u| u.z == trees::ZBLOCK)
         .with_context(|| format!("--block 8/x/y, not {b}"))?;
     within(&|| {

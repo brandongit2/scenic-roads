@@ -1,9 +1,9 @@
 //! What the internet answered the steps that ask it a great deal, kept on the NAS (docs/pool.md §2,
 //! durable state on the NAS): the items job's Wikidata facts and Wikipedia articles, and the
-//! heritage chain's (crate::heritagewd's and crate::whsshapes' Wikidata and Wikipedia
-//! caches, pipeline::areadetails' park facts). A step keeps them on its Mac, in its cache, where its scripts add to them as
+//! heritage chain's (landmarks::heritagewd's and landmarks::whsshapes' Wikidata and Wikipedia
+//! caches, landmarks::areadetails' park facts). A step keeps them on its Mac, in its cache, where its scripts add to them as
 //! they fetch (a chunk or a file at a time), and on the NAS as one archive a pass (`Kept::nas`: tar,
-//! zstd with its checksum), written whole (crate::whole) when the step starts and the NAS hasn't what
+//! zstd with its checksum), written whole (codecs::whole) when the step starts and the NAS hasn't what
 //! this Mac has, and when it ends, failed or not, if it changed them: a few large writes a run, never
 //! an answer at a time (the NAS takes some 20–55 small files a second). A step stopped (the agent's
 //! SIGTERM: scenic-build has no handler) doesn't run its end: what it fetched goes at the next start.
@@ -403,7 +403,7 @@ impl Kept {
 
 /// A file both sides changed made one (`Kept::reconcile`), by its name: answers kept as a JSON line
 /// per item (`.jsonl`: by its "qid", or its "prop" and "id"), or as a JSON object's entries
-/// (crate::heritagewd's short descriptions, pipeline::areadetails' park facts), which
+/// (landmarks::heritagewd's short descriptions, landmarks::areadetails' park facts), which
 /// runs only add to: the NAS's, then this Mac's the NAS's lack; and the days the items job fetched
 /// (`fetched-<date>.json`), the first and the last. None for any other file, or one that isn't
 /// what its name says.
@@ -422,7 +422,7 @@ fn merge(name: &str, theirs: &[u8], ours: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// JSON lines by key: `theirs`, then those of `ours` with a key `theirs` lacks. (A last line cut
-/// short, a run stopped mid-write, is dropped: crate::items's reader does the same.)
+/// short, a run stopped mid-write, is dropped: landmarks::items's reader does the same.)
 fn merge_lines(theirs: &[u8], ours: &[u8]) -> Option<Vec<u8>> {
     let lines = |b: &[u8]| -> Option<Vec<(String, Vec<u8>)>> {
         let whole = &b[..b.iter().rposition(|&c| c == b'\n').map_or(0, |i| i + 1)];
@@ -438,7 +438,7 @@ fn merge_lines(theirs: &[u8], ours: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// A JSON line's key: its "qid", or its "prop" and "id" (crate::heritagewd's answers by register ID).
+/// A JSON line's key: its "qid", or its "prop" and "id" (landmarks::heritagewd's answers by register ID).
 fn line_key(line: &[u8]) -> Option<String> {
     let v: serde_json::Value = serde_json::from_slice(line).ok()?;
     if let Some(q) = v.get("qid").and_then(|q| q.as_str()) {
@@ -568,7 +568,7 @@ fn unpack<'a>(from: impl Into<store::nasfs::Loc<'a>>, dir: &Path) -> Result<()> 
     Ok(())
 }
 
-/// The items job's answers for pass `date` in its cache `dir` (crate::items's): the items' facts,
+/// The items job's answers for pass `date` in its cache `dir` (landmarks::items's): the items' facts,
 /// their Wikipedia articles and the days they were fetched.
 pub fn items_files(dir: &Path, date: &str) -> Vec<String> {
     [format!("facts-{date}.jsonl"), format!("wp-{date}.jsonl"), format!("fetched-{date}.json")]
@@ -589,8 +589,8 @@ pub fn items(root: &store::nasfs::NasRoot, dir: &Path, date: &str) -> Kept {
 }
 
 /// What the heritage chain makes again on every run from the pass, in its working copy: not answers.
-/// The named places' export (`osm/`, the heritage job's), crate::whsshapes' extracts of the pass's
-/// planet (`whs/`) and crate::heritagewd's matches (`wd/items.jsonl`).
+/// The named places' export (`osm/`, the heritage job's), landmarks::whsshapes' extracts of the pass's
+/// planet (`whs/`) and landmarks::heritagewd's matches (`wd/items.jsonl`).
 const REMADE: [&str; 6] = [
     "whs/tagged.osm.pbf",
     "whs/ids.txt",
@@ -658,7 +658,9 @@ pub fn heritage_start(
         return Ok(None);
     }
     let mut earlier: Vec<String> = match root.join("sources/items").read_dir() {
-        Ok(rd) => rd.into_iter().map(|e| e.name).filter(|d| crate::osmpass::is_date(d) && d.as_str() < date).collect(),
+        Ok(rd) => {
+            rd.into_iter().map(|e| e.name).filter(|d| ::inputs::osmpass::is_date(d) && d.as_str() < date).collect()
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e).context("list sources/items"),
     };
@@ -733,7 +735,7 @@ pub fn heritage_start(
 /// it waits for those under way, and none starts meanwhile), and each archive's keep under the
 /// answers' lease.
 pub fn seed(root: &store::nasfs::NasRoot, cache: &Path, scratch: &Path, lease: Option<Leasing>) -> Result<Vec<String>> {
-    let Some(date) = crate::osmpass::latest_pass(root) else { return Ok(Vec::new()) };
+    let Some(date) = ::inputs::osmpass::latest_pass(root) else { return Ok(Vec::new()) };
     let _local = if lease.is_some() { Some(Local::writer(cache)?) } else { None };
     let lacks = |k: &Kept| -> Result<bool> {
         match k.nas.metadata() {
@@ -763,7 +765,7 @@ pub fn seed(root: &store::nasfs::NasRoot, cache: &Path, scratch: &Path, lease: O
 
 /// The answers' lease (docs/pool.md §7.7, "answered"): one sync or keep at a time across the Macs,
 /// so two Macs making their answers one with the NAS's never each send theirs over the other's (a
-/// merge lost: the answers fetched again). With the budgets on (crate::budget), in place of the
+/// merge lost: the answers fetched again). With the budgets on (jobrt::budget), in place of the
 /// agent holding the steps that keep answers while it seeds them. The lead's (docs/coordination.md
 /// step 7, crate::coord::budgets), asked through this Mac's agent's proxy (`/lease/answers`), and,
 /// while the gate's code is in (deleted one release after every member says `budgets` for a day),
@@ -786,9 +788,9 @@ pub struct Leasing {
 
 impl Leasing {
     /// A job's, with the budgets on (its agent's proxy named in its environment,
-    /// crate::budget::PROXY_ENV); None, off.
+    /// jobrt::budget::PROXY_ENV); None, off.
     pub fn for_job(root: &store::nasfs::NasRoot) -> Option<Leasing> {
-        let proxy = std::env::var(crate::budget::PROXY_ENV).ok()?;
+        let proxy = std::env::var(jobrt::budget::PROXY_ENV).ok()?;
         Some(Leasing { nas: root.join(LEASE), proxy: Some(proxy) })
     }
 }
@@ -842,7 +844,7 @@ enum Asked {
     /// Done (taken, renewed, given up).
     Done,
     /// Not done: another holds it (who, until when), or it's no longer this holder's.
-    Not(crate::budget::LeaseSaid),
+    Not(jobrt::budget::LeaseSaid),
     /// The lead doesn't take it (501; an older proxy's 404): the NAS's.
     Nas,
     /// The proxy or the lead didn't answer: why.
@@ -850,7 +852,7 @@ enum Asked {
 }
 
 /// Asks the agent's proxy at `proxy` for the lead's lease (`/lease/answers`): `op` by holder `token`.
-fn ask(proxy: &str, op: crate::budget::LeaseOp, token: &str) -> Asked {
+fn ask(proxy: &str, op: jobrt::budget::LeaseOp, token: &str) -> Asked {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .proxy(None)
         .http_status_as_error(false)
@@ -908,7 +910,7 @@ impl Lease {
         if let Some(proxy) = &at.proxy {
             let mut renewed = std::time::Instant::now();
             loop {
-                match ask(proxy, crate::budget::LeaseOp::Take, &token) {
+                match ask(proxy, jobrt::budget::LeaseOp::Take, &token) {
                     Asked::Done => {
                         lead = Some(proxy.clone());
                         break;
@@ -939,7 +941,7 @@ impl Lease {
                         // may have it aside a moment and put it back; `ours`, before each write,
                         // asks again then.)
                         let renewed = renew_lease(&p, &t, crate::agent::jobs::now_s())
-                            & l.as_ref().is_none_or(|proxy| ask(proxy, crate::budget::LeaseOp::Renew, &t) == Asked::Done);
+                            & l.as_ref().is_none_or(|proxy| ask(proxy, jobrt::budget::LeaseOp::Renew, &t) == Asked::Done);
                         if !renewed {
                             eprintln!("answers: the answers' lease wasn't this process's as it renewed it (lapsed and taken, aside a moment, or the lead not answering): its next write checks it first");
                         }
@@ -956,7 +958,7 @@ impl Lease {
     pub fn ours(&self) -> Result<()> {
         lease_is(&self.nas, &self.token, crate::agent::jobs::now_s())?;
         let Some(proxy) = &self.lead else { return Ok(()) };
-        match ask(proxy, crate::budget::LeaseOp::Renew, &self.token) {
+        match ask(proxy, jobrt::budget::LeaseOp::Renew, &self.token) {
             Asked::Done => Ok(()),
             Asked::Not(h) if h.by.is_empty() => {
                 anyhow::bail!("the answers' lease lapsed, or was given up: nothing written")
@@ -987,7 +989,7 @@ impl Drop for Lease {
             t.join().ok();
         }
         if let Some(proxy) = &self.lead {
-            ask(proxy, crate::budget::LeaseOp::Release, &self.token);
+            ask(proxy, jobrt::budget::LeaseOp::Release, &self.token);
         }
         release_lease(&self.nas, &self.token);
     }
@@ -1164,12 +1166,12 @@ impl Local {
     }
 
     /// The step's hold as a job's run takes it: with the budgets on (its agent's proxy named in its
-    /// environment, crate::budget::PROXY_ENV), a reader's of the agent's cache `cache`; else none.
+    /// environment, jobrt::budget::PROXY_ENV), a reader's of the agent's cache `cache`; else none.
     pub fn for_job(cache: &Path) -> Result<Option<Local>> {
-        if std::env::var_os(crate::budget::PROXY_ENV).is_none() {
+        if std::env::var_os(jobrt::budget::PROXY_ENV).is_none() {
             return Ok(None);
         }
-        let _p = crate::timings::phase("waiting for the agent to send the pass's answers (if it is)");
+        let _p = jobrt::timings::phase("waiting for the agent to send the pass's answers (if it is)");
         Local::reader(cache).map(Some)
     }
 }
@@ -1963,7 +1965,7 @@ mod tests {
     /// lead (501), the NAS's alone.
     #[test]
     fn the_answers_lease_is_the_leads_through_the_proxy() {
-        use crate::budget::{Budget, Proxy, SysClock};
+        use jobrt::budget::{Budget, Proxy, SysClock};
         use std::sync::Arc;
         let d = tempfile::tempdir().unwrap();
         let (root, cache, scratch) = (d.path().join("nas"), d.path().join("cache"), d.path().join("scratch"));

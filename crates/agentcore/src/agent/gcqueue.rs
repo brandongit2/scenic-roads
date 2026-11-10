@@ -19,7 +19,7 @@
 //! refuses (`refusal`): a hand-off bringing a name being removed, or one deleted after its lease
 //! was granted (its job may have found the file on the NAS before it went, and reused it); its
 //! targets are done again. A hand-off the merge takes holds the names it brings (its changes, its
-//! uploads and the files it reused: crate::handoff::Handoff::reused) from every chunk until the
+//! uploads and the files it reused: buildstore::handoff::Handoff::reused) from every chunk until the
 //! records after it are seen.
 
 use crate::pool::journal::{Entry, LeaseId};

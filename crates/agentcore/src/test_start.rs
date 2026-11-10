@@ -23,7 +23,7 @@ fn a_unit_test_process_is_offline_from_its_start() {
 #[test]
 fn probe() {
     if std::env::var_os(PROBE).is_some() {
-        let e = crate::fetch::online("https://example.org/x").unwrap_err();
+        let e = buildstore::fetch::online("https://example.org/x").unwrap_err();
         assert!(format!("{e:#}").contains("no network here"), "{e:#}");
         assert!(buildstore::out::testing(), "an `Out`'s waits a test's");
     }

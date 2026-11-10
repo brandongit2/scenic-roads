@@ -19,7 +19,7 @@ is marked planned.
 
 ## 2. The model
 
-- **The coordinator** (`pipeline::coord`) runs in the lead's agent on port 8090: it grants jobs,
+- **The coordinator** (`agentcore::coord`) runs in the lead's agent on port 8090: it grants jobs,
   holds leases, serves the data plane (§4) and brokers tasks (§5). Each member also brokers its own
   jobs' tasks (docs/pool.md §8).
 - **Jobs** of the plan (the z6 tile runs of terrain, slope, tree cover, roads (`unit`), candidates, peaks,
@@ -48,15 +48,15 @@ Four kinds, all with the same spec shape (`unit` (stored: the task's z6 or z8 ti
   the files into the task's folder (copy-on-write) and offers at most three tails at once. A z6
   tile resumed (docs/pool.md §7.2) offers only the steps its last run didn't keep
   (`unit::split_kept`): a worker starts from the folder a run here would take up.
-- **The 3D buildings' z8 tiles** (`bldtile`, `pipeline::bld::task`, docs/buildings3d.md §3.6): a
+- **The 3D buildings' z8 tiles** (`bldtile`, `bld::bld::task`, docs/buildings3d.md §3.6): a
   `bldtiles` job offers some of a z6 tile's z8 tiles, cut from its work files; the run is `bldtile`
   over `{dir}`, writing `area.tiles` and `area.json` (the files' names from when a z8 tile was
   called an area: kept, as the task's files' names and the `"area"` in their meta are stored).
-- **Tree cover's rows of blocks** (`treeblock`, `pipeline::trees::task`, docs/steps.md §2, Trees): a z6 tile's
+- **Tree cover's rows of blocks** (`treeblock`, `trees::trees::task`, docs/steps.md §2, Trees): a z6 tile's
   run offers rows (up to four z8 blocks sharing canopy rows), run as `trees --blocks … --coverage
   {dir}/coverage.json --chm {chm} --leaf {sources}/trees/leaf --squares … --out {dir}`. The task's
   one file is the coverage cut to the row; canopy strips are read where they lie.
-- **Terrain's z8 subtrees** (`terrainsub`, `pipeline::terrain_task`, docs/steps.md §2, Terrain): a z6 tile's
+- **Terrain's z8 subtrees** (`terrainsub`, `terrain::terrain_task`, docs/steps.md §2, Terrain): a z6 tile's
   16 subtrees go out each alone (a tile reads nothing past its subtree: its raw tile, its
   children, its water). Its one file `u/in.sect` holds all it reads;
   the run `terrainsub --in {dir}/in.sect --out {dir}` writes `hi.sect` and `mid.sect`.
@@ -65,7 +65,7 @@ Common rules:
 
 - **Its programs** (a run's `prog`: `trees`, `bldtile`, `terrainsub`, a tail's `elev`, `tile`,
   `scenic-metrics`) are scenic-build's tools, run by the worker from its own app version's folder as
-  `scenic-build tool <prog> …` (`pipeline::cli::program`; docs/building.md, Programs). A version from
+  `scenic-build tool <prog> …` (`agentcore::cli::program`; docs/building.md, Programs). A version from
   before #917 runs its binary of that name, so a task reads the same to either.
 
 - **Read where they lie** (`/net` in a task's places): `{sources}` (the NAS's `sources/`; `{chm}`

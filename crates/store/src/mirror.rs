@@ -1094,7 +1094,7 @@ pub fn copy_order(cat: &Catalogue, logicals: &mut [&str]) {
     });
 }
 
-/// The 3D buildings' layers in the catalogue (pipeline::bld::LAYER, pipeline::bld::field::LAYER).
+/// The 3D buildings' layers in the catalogue (bld::bld::LAYER, bld::bld::field::LAYER).
 const BUILDINGS_LAYERS: [&str; 2] = ["buildings", "buildings-field"];
 const LAST_GROUP: u8 = 6;
 

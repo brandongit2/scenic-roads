@@ -38,7 +38,7 @@ fn a_tile_encodes_to_the_same_lossless_webp_each_time() {
 
 /// Every Mac makes the same bytes (a tile's content name and so its pack's follow them), and the
 /// WebAssembly build (pipeline's terrainsub) the same as natively: golden hashes at the terrain's
-/// level (6: pipeline::terrain_codec::LEVEL). A libwebp change, or a build taking another SIMD
+/// level (6: codecs::terrain_codec::LEVEL). A libwebp change, or a build taking another SIMD
 /// path to other bytes, shows here.
 #[test]
 fn every_mac_makes_the_same_bytes() {

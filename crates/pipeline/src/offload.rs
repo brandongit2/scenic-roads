@@ -1,13 +1,13 @@
 //! A `unit` job's tasks run on a worker (docs/workers.md §3): `run_task`, a task's steps over the
-//! files fetched from the lead's coordinator (crate::coord); a task's kind by its first step is the
+//! files fetched from the lead's coordinator (agentcore::coord); a task's kind by its first step is the
 //! plan's (`Plan::task_kind`). What the steps offering tasks name (`Offload`, its waits, a task's places) is the
 //! offload crate's (docs/crates.md, task #916 step 6e), re-exported here at its old paths.
 
 pub use ::offload::{places, Offered, Offload, Patience, Settled, WaitNote, Waiting, LEASE_WAIT, WAITING_ENV};
 
-use crate::unit::Run;
 use anyhow::{Context, Result};
 use coordwire::client::Client;
+use roads::unit::Run;
 use std::path::{Path, PathBuf};
 
 /// Runs task `lease` here, natively (a worker's agent): its files fetched from the
@@ -33,7 +33,7 @@ pub fn run_task(
     let steps = runs.len() as u64 + 2;
     jobrt::jobs::stage(0, steps, "steps (fetching its files)");
     let names: Vec<String> = runs.iter().map(|r| r.what.clone()).collect();
-    crate::unit::on_stage(Some(Box::new(move |what, frac, _| {
+    roads::unit::on_stage(Some(Box::new(move |what, frac, _| {
         if let Some(i) = names.iter().position(|n| n == what) {
             jobrt::jobs::report_f((1 + i) as f64 + frac, steps, &format!("steps ({what})"));
         }
@@ -74,7 +74,7 @@ pub fn run_task(
             _ => Ok(None),
         }
     };
-    let tools = crate::unit::Tools {
+    let tools = roads::unit::Tools {
         bin: bin.to_path_buf(),
         cache: dir.join("cache"),
         buildings: Some(dir.join("b")),
@@ -86,11 +86,11 @@ pub fn run_task(
         elevation: None,
         declared: None,
     };
-    crate::unit::take_peak();
+    roads::unit::take_peak();
     let t = std::time::Instant::now();
-    crate::unit::run_tail(&runs, &dir.join("u"), &tools)?;
-    let (secs, peak_mb) = (t.elapsed().as_secs_f64(), crate::unit::take_peak() >> 20);
-    crate::unit::on_stage(None);
+    roads::unit::run_tail(&runs, &dir.join("u"), &tools)?;
+    let (secs, peak_mb) = (t.elapsed().as_secs_f64(), roads::unit::take_peak() >> 20);
+    roads::unit::on_stage(None);
     jobrt::jobs::stage(steps - 1, steps, "steps (sending what they wrote)");
     let had: std::collections::BTreeSet<&str> = inputs.iter().map(|(p, _)| p.as_str()).collect();
     let sending = jobrt::timings::phase("sending back what they wrote");
@@ -130,8 +130,8 @@ fn files_under(dir: &Path, prefix: &str) -> Result<Vec<(String, PathBuf)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coord::client::LeaseCalls;
     use ::offload::owner;
+    use agentcore::coord::client::LeaseCalls;
     use codecs::legacy::TileId;
     use std::sync::{Arc, Mutex};
 
@@ -140,7 +140,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let (c, port) =
-            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
+            agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         // The z6 tile's folder, and a stand-in step: it writes one file, removes another, and writes
         // a third again as it was.
         let dir = d.path().join("unit");
@@ -173,16 +173,16 @@ mod tests {
         let t = o.offer(u, &dir, None, &runs).unwrap();
         // The M1: asks, runs it natively, hands it back.
         let m1 = Client::at(vec![url], c.contact.token.clone(), "m1");
-        let ask = crate::coord::Ask {
+        let ask = agentcore::coord::Ask {
             kind: "native".into(),
             can: vec!["unit".into(), "tail".into()],
             mem_mb: 4096,
             ..Default::default()
         };
         let g = m1.ask(&ask).unwrap().unwrap();
-        let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+        let agentcore::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
         let r = run_task(&m1, g.lease, &task, &d.path().join("m1"), &bin, None).unwrap();
-        let done = crate::coord::Done {
+        let done = agentcore::coord::Done {
             lease: g.lease,
             outputs: serde_json::from_value(r["outputs"].clone()).unwrap(),
             removed: serde_json::from_value(r["removed"].clone()).unwrap(),
@@ -191,15 +191,15 @@ mod tests {
         assert_eq!(done.removed, ["u/gone.bin"]);
         // (What it wrote as it was isn't sent.)
         assert_eq!(done.outputs.iter().map(|o| o.path.as_str()).collect::<Vec<_>>(), ["u/out.bin"]);
-        assert_eq!(m1.done(&done).unwrap(), crate::coord::client::Handed::Taken);
+        assert_eq!(m1.done(&done).unwrap(), agentcore::coord::client::Handed::Taken);
         // The job takes the worker's result: its outputs in the z6 tile's folder, nothing run here.
         let mut ran = false;
         let mut here = || {
             ran = true;
-            crate::unit::run_tail(
+            roads::unit::run_tail(
                 &runs,
                 &dir,
-                &crate::unit::Tools {
+                &roads::unit::Tools {
                     bin: bin.clone(),
                     cache: d.path().join("cache"),
                     buildings: None,
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&child.stdout).trim().parse::<u32>().unwrap(), owner());
         let d = tempfile::tempdir().unwrap();
         let (c, port) =
-            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
+            agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let job = Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job"));
         let prog = Offload::at(url, c.job_token.clone(), &d.path().join("prog"));
@@ -254,7 +254,7 @@ mod tests {
         // with a new key for its jobs: each task out is settled by running it here, the job going on.
         let d = tempfile::tempdir().unwrap();
         let (c, port) =
-            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
+            agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let offer = |o: &Offload, name: &str| {
             let root = o.task_root(name);
@@ -296,9 +296,10 @@ mod tests {
     /// the folder, the step's programs, its runs).
     fn setup(
         d: &Path,
-    ) -> (Arc<store::clock::Virtual>, crate::coord::Coordinator, String, Offload, PathBuf, PathBuf, Vec<Run>) {
+    ) -> (Arc<store::clock::Virtual>, agentcore::coord::Coordinator, String, Offload, PathBuf, PathBuf, Vec<Run>) {
         use std::os::unix::fs::PermissionsExt;
-        let (c, port) = crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.join("coord"), "m4", "");
+        let (c, port) =
+            agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.join("coord"), "m4", "");
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
         let dir = d.join("unit");
@@ -339,22 +340,22 @@ mod tests {
         home: PathBuf,
         after: f64,
         took: f64,
-    ) -> Arc<Mutex<Option<crate::coord::client::Handed>>> {
+    ) -> Arc<Mutex<Option<agentcore::coord::client::Handed>>> {
         let (m, bin) = (Client::at(vec![url.to_string()], token.to_string(), name), bin.to_path_buf());
         let handed = Arc::new(Mutex::new(None));
         let (h, c) = (handed.clone(), clock.clone());
         clock.after(std::time::Duration::from_secs_f64(after), move || {
-            let ask = crate::coord::Ask {
+            let ask = agentcore::coord::Ask {
                 kind: "native".into(),
                 can: vec!["tail".into()],
                 mem_mb: 4096,
                 ..Default::default()
             };
             let g = m.ask(&ask).unwrap().expect("given the task");
-            let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+            let agentcore::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
             let r = run_task(&m, g.lease, &task, &home, &bin, None).unwrap();
             c.after(std::time::Duration::from_secs_f64(took), move || {
-                let done = crate::coord::Done {
+                let done = agentcore::coord::Done {
                     lease: g.lease,
                     outputs: serde_json::from_value(r["outputs"].clone()).unwrap(),
                     secs: took,
@@ -376,14 +377,18 @@ mod tests {
         // (Its agent told while it waits on a worker: `WAITING_ENV`.)
         let note = d.path().join("waiting");
         let o = o.noting(&note);
-        let ask =
-            crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
+        let ask = agentcore::coord::Ask {
+            kind: "native".into(),
+            can: vec!["tail".into()],
+            mem_mb: 4096,
+            ..Default::default()
+        };
         let here = |dir: &Path| {
             clock.advance(Duration::from_millis(100));
-            crate::unit::run_tail(
+            roads::unit::run_tail(
                 &runs,
                 dir,
-                &crate::unit::Tools {
+                &roads::unit::Tools {
                     bin: bin.clone(),
                     cache: d.path().join("cache"),
                     buildings: None,
@@ -404,7 +409,7 @@ mod tests {
         let waited = |from: (u64, Duration)| clock.slept().1 - from.1;
         // No one asking but one sparing too little for it (300 MB at least): taken back at once.
         let small = Client::at(vec![url.clone()], c.contact.token.clone(), "m9");
-        assert!(small.ask(&crate::coord::Ask { mem_mb: 200, ..ask.clone() }).unwrap().is_none());
+        assert!(small.ask(&agentcore::coord::Ask { mem_mb: 200, ..ask.clone() }).unwrap().is_none());
         let t = o.offer(unit, &dir, None, &runs).unwrap();
         assert_eq!(status(&t)["takers"], serde_json::json!([]));
         let began = clock.slept();
@@ -426,7 +431,7 @@ mod tests {
         assert!(!t.root.exists());
         assert!(w.lock().unwrap().is_none(), "the worker is still at it");
         clock.advance(Duration::from_secs(10));
-        assert_eq!(*w.lock().unwrap(), Some(crate::coord::client::Handed::Taken));
+        assert_eq!(*w.lock().unwrap(), Some(agentcore::coord::client::Handed::Taken));
         let pace = c.shared.lock().unwrap().tasks.pace("m2", "tail").unwrap();
         assert!((pace - 20.0).abs() < 1e-9, "2 s against this Mac's 0.1: {pace}");
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty(), "closed once measured");
@@ -471,7 +476,7 @@ mod tests {
         let seen = told.lock().unwrap().clone().expect("read during the wait").expect("the file kept");
         assert_eq!((seen.pid, seen.worker.as_str(), seen.task), (std::process::id(), "m1", t.id));
         assert!(!note.exists());
-        assert_eq!(*w.lock().unwrap(), Some(crate::coord::client::Handed::Taken));
+        assert_eq!(*w.lock().unwrap(), Some(agentcore::coord::client::Handed::Taken));
         assert!(matches!(s, Settled::Remote(ref w) if w == "m1") && !ran);
         assert_eq!(waited(began), Duration::from_secs(2), "a second for it to take it, one for it to finish");
         assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), b"in");
@@ -489,8 +494,8 @@ mod tests {
     /// them gone; once the job has closed the task, its lease is gone (410), not an input missing.
     #[test]
     fn a_tail_offered_after_a_pause_and_resume_runs_to_the_same_folder_as_here() {
-        use crate::unit::{run_tail_kept, split_kept, PREPARE};
         use jobrt::resume_log::{Pieces, STOP_AFTER};
+        use roads::unit::{run_tail_kept, split_kept, PREPARE};
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let bin = d.path().join("bin");
@@ -503,7 +508,7 @@ echo \"$2 $(($(wc -l < \"$1/out.txt\")))\" >> \"$1/out.txt\"\n",
         )
         .unwrap();
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let tools = crate::unit::Tools {
+        let tools = roads::unit::Tools {
             bin: bin.clone(),
             cache: d.path().join("cache"),
             buildings: None,
@@ -558,7 +563,7 @@ echo \"$2 $(($(wc -l < \"$1/out.txt\")))\" >> \"$1/out.txt\"\n",
         assert_eq!((here.len(), anywhere.len()), (1, 2), "the step run before its pause stays here, as kept");
         run_tail_kept(here, 0, &dir, &[&dir], &tools, &mut p).unwrap();
         let (c, port) =
-            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
+            agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let o = Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job"));
         let t = o.offer(TileId::parse("6/1/2").unwrap(), &dir, None, anywhere).unwrap();
@@ -566,21 +571,25 @@ echo \"$2 $(($(wc -l < \"$1/out.txt\")))\" >> \"$1/out.txt\"\n",
         // scratch): the lease's stay.
         std::fs::remove_dir_all(&t.root).unwrap();
         let m4 = Client::at(vec![url], c.contact.token.clone(), "m4");
-        let ask =
-            crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
+        let ask = agentcore::coord::Ask {
+            kind: "native".into(),
+            can: vec!["tail".into()],
+            mem_mb: 4096,
+            ..Default::default()
+        };
         let g = m4.ask(&ask).unwrap().unwrap();
-        let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+        let agentcore::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
         let r = run_task(&m4, g.lease, &task, &d.path().join("m4"), &bin, None).unwrap();
-        let done = crate::coord::Done {
+        let done = agentcore::coord::Done {
             lease: g.lease,
             outputs: serde_json::from_value(r["outputs"].clone()).unwrap(),
             removed: serde_json::from_value(r["removed"].clone()).unwrap(),
             ..Default::default()
         };
-        assert_eq!(m4.done(&done).unwrap(), crate::coord::client::Handed::Taken);
+        assert_eq!(m4.done(&done).unwrap(), agentcore::coord::client::Handed::Taken);
         // The worker's result, used: its outputs placed in the folder, as a run here would leave it.
         let s = o
-            .settle(&t, &dir, false, Patience { here_s: None }, &mut || crate::unit::run_tail(anywhere, &dir, &tools))
+            .settle(&t, &dir, false, Patience { here_s: None }, &mut || roads::unit::run_tail(anywhere, &dir, &tools))
             .unwrap()
             .unwrap();
         assert!(matches!(s, Settled::Remote(ref w) if w == "m4"));
@@ -599,7 +608,7 @@ echo \"$2 $(($(wc -l < \"$1/out.txt\")))\" >> \"$1/out.txt\"\n",
     fn a_task_is_offered_only_with_inputs_it_can_serve() {
         let d = tempfile::tempdir().unwrap();
         let (c, port) =
-            crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
+            agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
         let o = Offload::at(format!("http://127.0.0.1:{port}"), c.job_token.clone(), &d.path().join("job"));
         let root = o.task_root("a");
         std::fs::create_dir_all(root.join("u")).unwrap();

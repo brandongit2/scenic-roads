@@ -3,10 +3,10 @@
 //! (crate::out::open, crate::agent::steps), and the plan's reading of the lake fill
 //! (crate::agent::build). A crate below pipeline can't dev-depend on it, so they live here.
 
-/// The gate's jobs (crate::inputs::gate), as its tests in the inputs crate have them otherwise.
+/// The gate's jobs (inputs::inputs::gate), as its tests in the inputs crate have them otherwise.
 #[cfg(test)]
 mod gate {
-    use crate::inputs::*;
+    use ::inputs::inputs::*;
     use std::collections::{BTreeMap, BTreeSet};
 
     const GT: &gatetest::GateTest = &gatetest::GateTest(TEST_UNIT);
@@ -247,10 +247,10 @@ mod gate {
     }
 }
 
-/// The rail-feeds job's (crate::rail).
+/// The rail-feeds job's (inputs::rail).
 #[cfg(test)]
 mod rail {
-    use crate::rail::*;
+    use ::inputs::rail::*;
     use buildstore::out::Out;
     use serde_json::Value;
     use std::path::{Path, PathBuf};
@@ -367,7 +367,7 @@ mod rail {
     }
 }
 
-/// The lake fill in the plan (crate::lakefill, crate::agent::build).
+/// The lake fill in the plan (inputs::lakefill, crate::agent::build).
 #[cfg(test)]
 mod lakefill {
     #[test]
@@ -383,7 +383,7 @@ mod lakefill {
         use crate::agent::build;
         let date = "2026-09-28";
         let mut m = std::collections::BTreeMap::new();
-        let done = crate::pool::records::Keys::default();
+        let done = agentcore::pool::records::Keys::default();
         // Without the pass's basemap and outlines, or the source: nothing.
         assert!(build::lakefill_work(date, &m, &done, Some("a.zip 1")).is_none());
         m.insert(format!("layers/basemap/world-{date}"), "layers/basemap/world-x.0123456789abcdef.pmtiles".to_string());
@@ -391,7 +391,7 @@ mod lakefill {
         assert!(build::lakefill_work(date, &m, &done, None).is_none());
         let w = build::lakefill_work(date, &m, &done, Some("a.zip 1")).unwrap();
         assert_eq!(w.step, "lakefill");
-        let mut done2 = crate::pool::records::Keys::default();
+        let mut done2 = agentcore::pool::records::Keys::default();
         done2.record("lakefill", &w.targets);
         assert!(build::lakefill_work(date, &m, &done2, Some("a.zip 1")).is_none(), "done");
         assert!(build::lakefill_work(date, &m, &done2, Some("a.zip 2")).is_some(), "a zip replaced");
@@ -400,16 +400,16 @@ mod lakefill {
             [0]
         .1
         .clone();
-        let pin = crate::terrain_pack::water_source_pin(&m).unwrap();
+        let pin = terrain::terrain_pack::water_source_pin(&m).unwrap();
         assert_eq!(pin, "layers/basemap/world-x.0123456789abcdef.pmtiles");
-        m.insert(crate::lakefill::logical(date), "work/lakefill/2026-09-28.0123456789abcdef.sect".to_string());
+        m.insert(::inputs::lakefill::logical(date), "work/lakefill/2026-09-28.0123456789abcdef.sect".to_string());
         let filled = build::water_work(&crate::agent::build::PassCtx::default().ctx(date, &m), &done).unwrap().targets
             [0]
         .1
         .clone();
         assert_ne!(filled, water);
         assert_eq!(
-            crate::terrain_pack::water_source_pin(&m).unwrap(),
+            terrain::terrain_pack::water_source_pin(&m).unwrap(),
             "layers/basemap/world-x.0123456789abcdef.pmtiles + work/lakefill/2026-09-28.0123456789abcdef.sect"
         );
         // A newer pass's basemap: the older pass's fill is drawn by neither, until one is made from it.
@@ -418,20 +418,20 @@ mod lakefill {
             format!("layers/basemap/world-{newer}"),
             "layers/basemap/world-y.fedcba9876543210.pmtiles".to_string(),
         );
-        assert_eq!(crate::lakefill::current(&m), None);
+        assert_eq!(::inputs::lakefill::current(&m), None);
         assert_eq!(
-            crate::terrain_pack::water_source_pin(&m).unwrap(),
+            terrain::terrain_pack::water_source_pin(&m).unwrap(),
             "layers/basemap/world-y.fedcba9876543210.pmtiles"
         );
         let w_new = build::water_work(&crate::agent::build::PassCtx::default().ctx(newer, &m), &done).unwrap().targets
             [0]
         .1
         .clone();
-        m.insert(crate::lakefill::logical(newer), "work/lakefill/2027-03-01.0123456789abcdef.sect".to_string());
+        m.insert(::inputs::lakefill::logical(newer), "work/lakefill/2027-03-01.0123456789abcdef.sect".to_string());
         assert_ne!(
             build::water_work(&crate::agent::build::PassCtx::default().ctx(newer, &m), &done).unwrap().targets[0].1,
             w_new
         );
-        assert_eq!(crate::lakefill::current(&m).map(|(l, _)| l), Some(crate::lakefill::logical(newer)));
+        assert_eq!(::inputs::lakefill::current(&m).map(|(l, _)| l), Some(::inputs::lakefill::logical(newer)));
     }
 }

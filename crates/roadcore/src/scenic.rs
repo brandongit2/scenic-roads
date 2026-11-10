@@ -86,7 +86,7 @@ pub mod ch {
     /// Roadside tree height, 1/8 m units.
     pub const TREEH: usize = 11;
     /// Buildings lining the road: share of the frontage within ±50 m (both sides) with a building
-    /// within 30 m of the centreline, fading to none at 80 m, ×255 (`pipeline::buildings`).
+    /// within 30 m of the centreline, fading to none at 80 m, ×255 (`mapview::buildings`).
     pub const BLDG: usize = 12;
     /// Channels computed by `scenic view` (samples.metrics.u8); the rest are merged in by `flags`.
     pub const NBASE: usize = 12;

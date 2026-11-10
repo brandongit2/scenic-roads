@@ -10,7 +10,7 @@ use super::seam::{Along, Left, NamesTodo, PassAsk, PassWork, Plan, PlanHeld, Pla
 use super::steps::{self, Kind, Read};
 use super::tiles::TerrainTiles;
 use crate::pool::records::Keys;
-use crate::reach::Reaches;
+use roads::reach::Reaches;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -83,7 +83,7 @@ impl Plan for ThePlan {
     fn saves(&self, step: &str, target: &str, l: &str) -> bool {
         steps::saves(step, target, l)
     }
-    fn writes(&self) -> crate::out::Writes {
+    fn writes(&self) -> buildstore::out::Writes {
         steps::writes
     }
     fn outside(&self, e: &crate::pool::journal::Entry) -> Option<String> {
@@ -136,57 +136,57 @@ impl Plan for ThePlan {
         build::checklist_to_come()
     }
     fn depth_layers(&self) -> [&'static str; 3] {
-        [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER]
+        [terrain::depth::LAYER, terrain::depth::CLASS_LAYER, terrain::depth::SHADE_LAYER]
     }
     fn terrain_peak(&self, z6: usize) -> u64 {
-        crate::terrain_pack::piece_peak_mb()
+        terrain::terrain_pack::piece_peak_mb()
             + (z6 as u64).saturating_sub(1) * 20
-            + z6 as u64 * crate::terrain_pack::DEEP_MIDS_MB
-            + crate::out::UPLOAD_HELD.div_ceil(1 << 20)
+            + z6 as u64 * terrain::terrain_pack::DEEP_MIDS_MB
+            + buildstore::out::UPLOAD_HELD.div_ceil(1 << 20)
     }
     fn task_what(&self, kind: &str, task: &serde_json::Value, unit: &str) -> String {
         match kind {
-            crate::bld::task::KIND => format!("{kind}: z8 tile {unit}"),
-            crate::trees::task::KIND => format!("{kind}: blocks {}", task["blocks"].as_str().unwrap_or(unit)),
-            crate::terrain_task::KIND => format!("{kind}: subtrees {}", task["subtrees"].as_str().unwrap_or(unit)),
+            ::bld::bld::task::KIND => format!("{kind}: z8 tile {unit}"),
+            ::trees::trees::task::KIND => format!("{kind}: blocks {}", task["blocks"].as_str().unwrap_or(unit)),
+            terrain::terrain_task::KIND => format!("{kind}: subtrees {}", task["subtrees"].as_str().unwrap_or(unit)),
             _ => format!("tail {unit}"),
         }
     }
     fn tree_task_kind(&self) -> &'static str {
-        crate::trees::task::KIND
+        ::trees::trees::task::KIND
     }
     /// By its first step: "tail" (a z6 tile's last steps), or the 3D buildings', tree cover's or
-    /// terrain's (crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND).
+    /// terrain's (bld::bld::task::KIND, trees::trees::task::KIND, terrain::terrain_task::KIND).
     fn task_kind(&self, spec: &serde_json::Value) -> String {
         let first = &spec["runs"][0];
-        if first["prog"] == crate::bld::task::KIND {
-            crate::bld::task::KIND.to_string()
-        } else if first["what"] == crate::trees::task::KIND {
-            crate::trees::task::KIND.to_string()
-        } else if first["what"] == crate::terrain_task::KIND {
-            crate::terrain_task::KIND.to_string()
+        if first["prog"] == ::bld::bld::task::KIND {
+            ::bld::bld::task::KIND.to_string()
+        } else if first["what"] == ::trees::trees::task::KIND {
+            ::trees::trees::task::KIND.to_string()
+        } else if first["what"] == terrain::terrain_task::KIND {
+            terrain::terrain_task::KIND.to_string()
         } else {
             "tail".to_string()
         }
     }
     fn names_todo_inputs(&self) -> &'static [&'static str] {
-        &crate::namestodo::INPUTS
+        &landmarks::namestodo::INPUTS
     }
     fn names_todo_key(
         &self,
         marks: &BTreeMap<String, store::map::Mark>,
         map: Option<&store::map::Map>,
     ) -> Option<String> {
-        crate::namestodo::inputs_seq(marks, map)
+        landmarks::namestodo::inputs_seq(marks, map)
     }
     fn canopy_files(&self, b: [f64; 4]) -> Vec<String> {
-        crate::trees::squares_of(b)
+        ::trees::trees::squares_of(b)
             .into_iter()
-            .flat_map(|(top, left)| ["median", "p95", "cover5m"].map(|kind| crate::trees::chm_name(top, left, kind)))
+            .flat_map(|(top, left)| ["median", "p95", "cover5m"].map(|kind| ::trees::trees::chm_name(top, left, kind)))
             .collect()
     }
     fn unit_margin_km(&self) -> f64 {
-        crate::stage::MARGIN_KM
+        roads::stage::MARGIN_KM
     }
     fn held(&self, index_dir: PathBuf) -> Box<dyn PlanHeld> {
         Box::new(Held {
@@ -206,33 +206,33 @@ impl Plan for ThePlan {
 /// timetable feeds' declarations as rail-feeds' key names them ("feed-keys": the key names they
 /// fetch with; "feeds": the digest of what of them it reads; "?" while their index can't be read,
 /// and rail-feeds waits) and the declared elevation datasets' spacing, which the rail and
-/// candidates keys name ("?" while it can't be read, and they wait: crate::dem::spacing). Every
+/// candidates keys name ("?" while it can't be read, and they wait: inputs::dem::spacing). Every
 /// reader keying targets reads these (the plan, the checklist, the regions' counts).
 pub(super) fn key_inputs(
     root: &store::nasfs::NasRoot,
     manifest: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut inputs = input_digests(root);
-    if let Some(ix) = manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
-        let d = crate::inputs::feeds::declared(root, ix);
+    if let Some(ix) = manifest.get(&::inputs::inputs::logical(::inputs::inputs::feeds::UNIT)) {
+        let d = ::inputs::inputs::feeds::declared(root, ix);
         inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
         inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
     }
     inputs.insert(
-        crate::dem::spacing::INPUT.into(),
-        crate::dem::spacing::digest_read(root, manifest).unwrap_or_else(|_| "?".into()),
+        ::inputs::dem::spacing::INPUT.into(),
+        ::inputs::dem::spacing::digest_read(root, manifest).unwrap_or_else(|_| "?".into()),
     );
     inputs
 }
 
 /// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds
 /// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bld-key", "bldprep 6/x/y",
-/// "bldprep-rows 6/x/y": crate::bld::sources::digests).
+/// "bldprep-rows 6/x/y": bld::bld::sources::digests).
 pub(super) fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
-    // The heritage registers as the heritage sites' key names them (crate::heritage::registers_line);
+    // The heritage registers as the heritage sites' key names them (landmarks::heritage::registers_line);
     // "?" when they can't be read now (the heritage sites then wait), none without an accepted version.
-    match crate::heritage::registers_now(root) {
+    match landmarks::heritage::registers_now(root) {
         Ok(Some(line)) => {
             inputs.insert("heritage".into(), line);
         }
@@ -245,16 +245,17 @@ pub(super) fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, St
     // then waits).
     inputs.insert(
         "regions".into(),
-        crate::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()),
+        ::inputs::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()),
     );
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
-    // The 3D buildings' sources, of the declared releases (crate::inputs::sources): what each z6
+    // The 3D buildings' sources, of the declared releases (inputs::inputs::sources): what each z6
     // tile's bldprep reads, and its rows, and what the keys name of the declarations ("bld-key");
     // none before they're accepted (no 3D buildings' work), "?" while they can't be read now.
-    match crate::inputs::sources::open_now(root).and_then(|s| s.map(|s| crate::bld::sources::declared(&s)).transpose())
+    match ::inputs::inputs::sources::open_now(root)
+        .and_then(|s| s.map(|s| ::bld::bld::sources::declared(&s)).transpose())
     {
         Ok(Some((release, ghsl, key))) => {
-            inputs.extend(crate::bld::sources::digests(root, &release, &ghsl));
+            inputs.extend(::bld::bld::sources::digests(root, &release, &ghsl));
             inputs.insert("bld-key".into(), key);
         }
         Ok(None) => {}
@@ -318,7 +319,7 @@ impl Held {
         self.tiles.borrow()
     }
 
-    /// The pass's reaches (crate::reach), once they're made for the current version (Ok(None)
+    /// The pass's reaches (roads::reach), once they're made for the current version (Ok(None)
     /// until then: no z6 tile is planned, and the reach job comes first among the pass's worldwide
     /// jobs), or why they can't be read.
     fn current_reach(
@@ -327,14 +328,14 @@ impl Held {
         manifest: &BTreeMap<String, String>,
         keys: &Keys,
         date: &str,
-    ) -> Result<Option<Arc<Reaches>>, crate::reach::LoadError> {
+    ) -> Result<Option<Arc<Reaches>>, roads::reach::LoadError> {
         let cx = build::PassCtx::default();
         if build::reach_work(&cx.ctx(date, manifest), keys).is_some() {
             return Ok(None);
         }
-        let Some(c) = manifest.get(&crate::reach::logical(date)) else { return Ok(None) };
-        // (Read again when the base packs' extents kept with them change too: crate::extents.)
-        let c = &format!("{c} {}", crate::extents::stamp(root));
+        let Some(c) = manifest.get(&roads::reach::logical(date)) else { return Ok(None) };
+        // (Read again when the base packs' extents kept with them change too: codecs::extents.)
+        let c = &format!("{c} {}", codecs::extents::stamp(root));
         let mut cached = self.reach.borrow_mut();
         if let Some((have, r)) = cached.as_ref() {
             if have == c {
@@ -379,7 +380,7 @@ impl PlanHeld for Held {
     ) -> PassWork {
         let planning = names.is_some();
         let reads = build::PassReads {
-            release: date.and_then(|_| crate::buildtiles::release_of(root, manifest).ok()),
+            release: date.and_then(|_| ::bld::buildtiles::release_of(root, manifest).ok()),
             lakefill: ask.lakefill,
             reach: &|| date.filter(|_| planning).and_then(|d| self.current_reach(root, manifest, keys, d).err()),
             failures: ask.failures,
@@ -403,7 +404,7 @@ impl PlanHeld for Held {
             ))
         });
         let depth =
-            build::depth_kept(r.cov, r.manifest, &self.terrain_tiles(r.root, r.manifest), r.done, super::jobs::now_s());
+            build::depth_kept(r.cov, r.manifest, &self.terrain_tiles(r.root, r.manifest), r.done, jobrt::jobs::now_s());
         let (planned, memo) = match reused {
             Some(k) => k,
             None => {

@@ -14,7 +14,7 @@ use std::time::Duration;
 #[derive(Debug)]
 pub struct Refused {
     pub why: String,
-    pub pause: Option<crate::control::Pause>,
+    pub pause: Option<jobrt::control::Pause>,
 }
 
 impl std::fmt::Display for Refused {
@@ -78,7 +78,7 @@ pub trait LeaseCalls {
     fn beat(&self, lease: u64, progress: Option<&str>) -> Result<bool>;
 
     /// `beat`, and the build's pause, while it's paused (the job pauses with it).
-    fn beat_paused(&self, lease: u64, progress: Option<&str>) -> Result<(bool, Option<crate::control::Pause>)>;
+    fn beat_paused(&self, lease: u64, progress: Option<&str>) -> Result<(bool, Option<jobrt::control::Pause>)>;
 
     /// `beat_paused`, with what its job is doing now (crate::agent::jobs::Live), and the owner's
     /// cancel of the lease's job (`scenic job cancel`), when there's one: the job stops and gives
@@ -89,19 +89,19 @@ pub trait LeaseCalls {
         progress: Option<&str>,
         live: Option<crate::agent::jobs::Live>,
         slot: Option<u32>,
-    ) -> Result<(bool, Option<crate::control::Pause>, Option<crate::control::Cancel>)>;
+    ) -> Result<(bool, Option<jobrt::control::Pause>, Option<jobrt::control::Cancel>)>;
 
     /// The member's beat listing the leases it holds (crate::coord::held, docs/coordination.md
     /// §6.1); None from a lead that doesn't take it (an older app's: 404).
     fn pool_beat(&self, b: &super::held::Beat) -> Result<Option<super::held::Answer>>;
 
-    /// Passes on the owner's cancel (crate::control::Cancel) to the lead: the leases it told to stop,
+    /// Passes on the owner's cancel (jobrt::control::Cancel) to the lead: the leases it told to stop,
     /// as (lease, worker, what).
-    fn cancel(&self, c: &crate::control::Cancel) -> Result<Vec<(u64, String, String)>>;
+    fn cancel(&self, c: &jobrt::control::Cancel) -> Result<Vec<(u64, String, String)>>;
 
-    /// Passes on this Mac's ask (crate::control::Request): the build paused, or going on, as asked
+    /// Passes on this Mac's ask (jobrt::control::Request): the build paused, or going on, as asked
     /// at `at` (unix seconds: an ask older than the build's last change is passed over).
-    fn set_pause(&self, pause: Option<&crate::control::Pause>, at: u64) -> Result<()>;
+    fn set_pause(&self, pause: Option<&jobrt::control::Pause>, at: u64) -> Result<()>;
 
     /// Hands work back: taken; gone (its lease ended: drop the work, it was offered again, and a
     /// late hand-off could undo a newer build); or refused (not what the lease asked for: give the
@@ -160,7 +160,7 @@ impl LeaseCalls for Client {
         Ok(self.beat_paused(lease, progress)?.0)
     }
 
-    fn beat_paused(&self, lease: u64, progress: Option<&str>) -> Result<(bool, Option<crate::control::Pause>)> {
+    fn beat_paused(&self, lease: u64, progress: Option<&str>) -> Result<(bool, Option<jobrt::control::Pause>)> {
         self.beat_told(lease, progress, None, None).map(|(alive, pause, _)| (alive, pause))
     }
 
@@ -170,7 +170,7 @@ impl LeaseCalls for Client {
         progress: Option<&str>,
         live: Option<crate::agent::jobs::Live>,
         slot: Option<u32>,
-    ) -> Result<(bool, Option<crate::control::Pause>, Option<crate::control::Cancel>)> {
+    ) -> Result<(bool, Option<jobrt::control::Pause>, Option<jobrt::control::Cancel>)> {
         let b = super::Beat { worker: self.worker.clone(), lease, progress: progress.map(str::to_string), live, slot };
         let v = self.post_json("/work/beat", &serde_json::to_value(&b)?)?.1;
         Ok((
@@ -187,7 +187,7 @@ impl LeaseCalls for Client {
         }
     }
 
-    fn cancel(&self, c: &crate::control::Cancel) -> Result<Vec<(u64, String, String)>> {
+    fn cancel(&self, c: &jobrt::control::Cancel) -> Result<Vec<(u64, String, String)>> {
         let v = self.post_json("/work/cancel", &serde_json::to_value(c)?)?.1;
         let s = |t: &serde_json::Value, k: &str| t[k].as_str().unwrap_or("").to_string();
         Ok(v["told"]
@@ -196,7 +196,7 @@ impl LeaseCalls for Client {
             .unwrap_or_default())
     }
 
-    fn set_pause(&self, pause: Option<&crate::control::Pause>, at: u64) -> Result<()> {
+    fn set_pause(&self, pause: Option<&jobrt::control::Pause>, at: u64) -> Result<()> {
         self.post_json("/work/pause", &serde_json::json!({ "pause": pause, "at": at }))?;
         Ok(())
     }

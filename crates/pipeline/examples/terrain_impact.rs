@@ -7,8 +7,8 @@
 //! usage: cargo run -p pipeline --example terrain_impact -- <root>
 
 use buildstore::coverage::near_coverage;
-use pipeline::terrain_zoom::{finest, Set};
 use std::collections::BTreeMap;
+use terrain::terrain_zoom::{finest, Set};
 
 /// The latitude cap before (z12 to 67°, z11 to 79°, z10 beyond).
 fn cap_before(lat: f64) -> u8 {
@@ -23,32 +23,32 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let [_, root] = args.as_slice() else { anyhow::bail!("usage: terrain_impact <root>") };
     let root = store::nasfs::NasRoot::from_arg(root);
-    let m = pipeline::out::read_manifest(&root)?;
-    let src = pipeline::inputs::regions::read::source(&root, &m)?;
-    let cov = pipeline::inputs::regions::read::accepted_coverage(&root, &src, None)?;
-    let declared = pipeline::terrain_zoom::Declared::read(&root, &m)?.expect("an accepted elevation version");
+    let m = buildstore::records::read_manifest(&root)?;
+    let src = ::inputs::inputs::regions::read::source(&root, &m)?;
+    let cov = ::inputs::inputs::regions::read::accepted_coverage(&root, &src, None)?;
+    let declared = terrain::terrain_zoom::Declared::read(&root, &m)?.expect("an accepted elevation version");
     let sets: &[Set] = &declared.sets;
 
     // (The rule before: datasets finer than the worldwide ones (rank above 0) by a tenth, each to the
     // finest zoom whose pixels are no finer than half its resolution, a pyramid to its own.)
-    let ds = pipeline::dem::declared::accepted(&declared.elevation)?;
+    let ds = ::inputs::dem::declared::accepted(&declared.elevation)?;
     let base = ds
         .iter()
         .filter(|d| d.declaration.rank.unwrap_or(0) > 0)
         .map(|d| d.measured.resolution)
         .fold(f64::INFINITY, f64::min);
-    let old_zoom = |d: &pipeline::dem::declared::Accepted, lat: f64| -> u8 {
-        if let pipeline::dem::declared::Data::Tiles { zoom, .. } = &d.declaration.data {
+    let old_zoom = |d: &::inputs::dem::declared::Accepted, lat: f64| -> u8 {
+        if let ::inputs::dem::declared::Data::Tiles { zoom, .. } = &d.declaration.data {
             return (*zoom).min(16) as u8;
         }
         let mut z = 0u8;
-        while z < 16 && pipeline::dem::generic::tile_resolution(z as u32 + 1, lat) >= d.measured.resolution / 2.0 - 1e-9
+        while z < 16 && ::inputs::dem::generic::tile_resolution(z as u32 + 1, lat) >= d.measured.resolution / 2.0 - 1e-9
         {
             z += 1;
         }
         z
     };
-    let fine: Vec<(&pipeline::dem::declared::Accepted, &Set)> = ds
+    let fine: Vec<(&::inputs::dem::declared::Accepted, &Set)> = ds
         .iter()
         .filter(|d| d.measured.resolution < base * 0.9)
         .filter_map(|d| sets.iter().find(|s| s.id == d.id).map(|s| (d, s)))
@@ -76,7 +76,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
     println!("cap before: z12 0–67°, z11 67–79°, z10 79–85°");
-    println!("polar finest after: z{} (before z9)", pipeline::polar::finest(sets, roadcore::polar::Pole::South));
+    println!("polar finest after: z{} (before z9)", terrain::polar::finest(sets, roadcore::polar::Pole::South));
 
     // The z6 tiles near the coverage and their levels.
     let z6: Vec<(u32, u32)> = buildstore::coverage::coverage_tiles(&cov).into_values().flatten().collect();
@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
                     if !near_coverage(&cov, z, x, y) {
                         continue;
                     }
-                    if z <= cap_before(pipeline::terrain_pack::tile_lat(z, y)) {
+                    if z <= cap_before(terrain::terrain_pack::tile_lat(z, y)) {
                         *before.entry(z).or_default() += 1;
                     }
                     if z <= finest(sets, z, x, y) {
@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        makes += pipeline::terrain_pack::makes_hi(&cov, sets, t) as usize;
+        makes += terrain::terrain_pack::makes_hi(&cov, sets, t) as usize;
         let k = 4;
         for x in t.0 << k..(t.0 + 1) << k {
             for y in t.1 << k..(t.1 + 1) << k {
@@ -116,7 +116,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        deep_after += pipeline::terrain_deep::targets_in(sets, &cov, t).len();
+        deep_after += terrain::terrain_deep::targets_in(sets, &cov, t).len();
     }
     println!("\n## Targets (every key bumps: TERRAIN_V 8, TERRAIN_DEEP_V 2, TERRAIN_LO_V 3, SLOPE_V 3, polar 3/2/3)");
     println!("terrain-hi and slope-hi z6 tiles: {} ({} making hi tiles)", z6.len(), makes);
@@ -155,7 +155,7 @@ fn main() -> anyhow::Result<()> {
     println!("root tiles: 21, {root_relief} with a quarter the relief's; z3 tiles outside the lo packs no longer sampled: {}", 64 - z3.len());
     // Road spacing by band.
     println!("\n## Road spacing (dem::spacing): the worldwide row's zoom by latitude, before → after");
-    let f = pipeline::dem::spacing::Fine::of_accepted(&ds);
+    let f = ::inputs::dem::spacing::Fine::of_accepted(&ds);
     let mut last = None;
     for y in (-60..85).step_by(1) {
         let b = cap_before((y as f64).abs().max((y as f64 + 1.0).abs()));
@@ -163,8 +163,8 @@ fn main() -> anyhow::Result<()> {
         if last != Some((b, a)) {
             println!(
                 "from {y}°: z{b} → z{a} ({:.1} m → {:.1} m)",
-                pipeline::dem::spacing::spacing_at(b, y as f64),
-                pipeline::dem::spacing::spacing_at(a, y as f64)
+                ::inputs::dem::spacing::spacing_at(b, y as f64),
+                ::inputs::dem::spacing::spacing_at(a, y as f64)
             );
             last = Some((b, a));
         }

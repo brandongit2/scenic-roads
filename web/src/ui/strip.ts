@@ -388,7 +388,7 @@ export class Strip {
 }
 
 /** The app's own credits, whatever data it shows: the colour ramps and icons it ships. The data's come with
- * its catalogue (pipeline::rules::CREDITS, those of the sources its data comes from). */
+ * its catalogue (inputs::rules::CREDITS, those of the sources its data comes from). */
 const APP_CREDITS: Credit[] = [
   {
     what: 'Colour ramps',

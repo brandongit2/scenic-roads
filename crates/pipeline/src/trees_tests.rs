@@ -1,13 +1,13 @@
-//! trees' tests that start a coordinator (crate::coord: trees::task's rows to workers and back) or
-//! make room as the agent does (crate::agent::room): the trees crate's own tests can't (a family
+//! trees' tests that start a coordinator (agentcore::coord: trees::task's rows to workers and back) or
+//! make room as the agent does (agentcore::agent::room): the trees crate's own tests can't (a family
 //! doesn't depend on pipeline; docs/crates.md §6.2), so they're pipeline's, as terrain_tests are.
 #![cfg(test)]
 
-use crate::coord::client::{Client, LeaseCalls};
-use crate::trees::task::testkit::{block_files, COV};
-use crate::trees::task::{parse_blocks, parse_squares, KIND};
-use crate::trees::testkit::{sources_file, squares_dir, ROWS_DIR};
-use crate::trees::{block_dir, blocks_files, chm_name, mask::Shapes, z3, Inputs, Run, Source, LAYERS, MID, ZBLOCK};
+use ::trees::trees::task::testkit::{block_files, COV};
+use ::trees::trees::task::{parse_blocks, parse_squares, KIND};
+use ::trees::trees::testkit::{sources_file, squares_dir, ROWS_DIR};
+use ::trees::trees::{block_dir, blocks_files, chm_name, mask::Shapes, z3, Inputs, Run, Source, LAYERS, MID, ZBLOCK};
+use agentcore::coord::client::{Client, LeaseCalls};
 use offload::Offload;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,7 +29,7 @@ fn piece(d: &Path, sq: &Path, out: &str, offload: Option<&Offload>) {
         .num_threads(4)
         .build()
         .unwrap()
-        .install(|| crate::trees::z6_with(&a, offload))
+        .install(|| ::trees::trees::z6_with(&a, offload))
         .unwrap();
 }
 
@@ -44,8 +44,8 @@ fn same_piece(a: &Path, b: &Path) -> bool {
 
 /// A coordinator on a virtual clock, and the clock: the job's waits are counted in it, and a
 /// worker acts at its moments (`worker`).
-fn coordinator(p: &Path) -> (crate::coord::Coordinator, String, Arc<store::clock::Virtual>) {
-    let (c, port) = crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &p.join("coord"), "m4", "");
+fn coordinator(p: &Path) -> (agentcore::coord::Coordinator, String, Arc<store::clock::Virtual>) {
+    let (c, port) = agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &p.join("coord"), "m4", "");
     let clock = store::clock::Virtual::new();
     c.shared.lock().unwrap().clock = clock.clone();
     (c, format!("http://127.0.0.1:{port}"), clock)
@@ -69,9 +69,9 @@ fn worker(
     let slot = given.clone();
     clock.after(std::time::Duration::from_secs(1), move || {
         let ask =
-            crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+            agentcore::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
         let Some(g) = m.ask(&ask).unwrap() else { return };
-        let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+        let agentcore::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
         *slot.lock().unwrap() = Some(task.clone());
         if hold {
             return;
@@ -112,11 +112,11 @@ fn worker(
                 let bytes = std::fs::read(block_dir(&u, b).join(&f)).unwrap();
                 let path = format!("u/{}-{}-{}/{f}", ZBLOCK, b.0, b.1);
                 m.put_bytes(&format!("/work/out/{}/{path}", g.lease), &bytes).unwrap();
-                outputs.push(crate::coord::task::Output { path, size: bytes.len() as u64 });
+                outputs.push(agentcore::coord::task::Output { path, size: bytes.len() as u64 });
             }
         }
-        let done = crate::coord::Done { lease: g.lease, outputs, peak_mb: 400, secs: 0.5, ..Default::default() };
-        assert_eq!(m.done(&done).unwrap(), crate::coord::client::Handed::Taken);
+        let done = agentcore::coord::Done { lease: g.lease, outputs, peak_mb: 400, secs: 0.5, ..Default::default() };
+        assert_eq!(m.done(&done).unwrap(), agentcore::coord::client::Handed::Taken);
     });
     given
 }
@@ -130,7 +130,8 @@ fn a_pieces_rows_go_to_workers_and_come_back_the_same() {
     let (c, url, clock) = coordinator(p);
     let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job")).clock(clock.clone());
     let tok = c.contact.token.clone();
-    let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+    let ask =
+        agentcore::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
     // No worker around: nothing offered, the same z6 tile.
     piece(p, sq.path(), "none", Some(&o));
     assert!(same_piece(&p.join("alone"), &p.join("none")));
@@ -167,7 +168,8 @@ fn a_row_waits_on_no_worker_but_one_measured_faster() {
     let (c, url, clock) = coordinator(p);
     let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job")).clock(clock.clone());
     let tok = c.contact.token.clone();
-    let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+    let ask =
+        agentcore::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
     // A worker measured slower than this Mac, asking: never given the row, never waited for.
     let slow = Client::at(vec![url.clone()], tok.clone(), "slow");
     assert!(slow.ask(&ask).unwrap().is_none());
@@ -239,7 +241,7 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
         let room = s.spawn(|| {
             let mut n = 0;
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                crate::agent::room::make_room(
+                agentcore::agent::room::make_room(
                     &cache,
                     &store::nasfs::NasPath::local_for_test(&sources),
                     u64::MAX,

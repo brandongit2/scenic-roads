@@ -16,7 +16,7 @@ use std::path::Path;
 #[derive(Clone, Debug, PartialEq)]
 pub enum PageAt {
     /// The lead's, at its coordinator's addresses (`urls`: its contact's, the tailnet's then its
-    /// LAN name, crate::net::urls; `https`: its HTTPS page when `tailscale serve` proxies it,
+    /// LAN name, coordwire::net::urls; `https`: its HTTPS page when `tailscale serve` proxies it,
     /// `Contact::page`).
     Lead { urls: Vec<String>, https: Option<String> },
     /// The lead not reached since `since` (unix s; None: not since this agent started), `lead` its

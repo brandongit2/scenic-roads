@@ -1,21 +1,22 @@
-//! bld::task's test that starts a coordinator (crate::coord: a bldtiles job's z8 tiles to workers
+//! bld::task's test that starts a coordinator (agentcore::coord: a bldtiles job's z8 tiles to workers
 //! and back): the bld crate's own tests can't (a family doesn't depend on pipeline; docs/crates.md
 //! §6.2), so it's pipeline's, as terrain_tests and trees_tests are.
 #![cfg(test)]
 
-use crate::bld::job;
-use crate::bld::task::testkit::{collect, coverage, files, here_s, out, records, Tiles};
-use crate::bld::task::{run, take_z8, Offers, KIND, OUTPUTS};
-use crate::coord::client::LeaseCalls;
+use ::bld::bld::job;
+use ::bld::bld::task::testkit::{collect, coverage, files, here_s, out, records, Tiles};
+use ::bld::bld::task::{run, take_z8, Offers, KIND, OUTPUTS};
+use agentcore::coord::client::LeaseCalls;
 use codecs::legacy::TileId;
 use std::path::Path;
 
 /// A worker in this process: asks, fetches the task's files, runs the program's code over them,
 /// sends back what it wrote (`spoil`: its tiles spoilt first), done.
-fn worker_runs(m1: &crate::coord::client::Client, dir: &Path) -> Option<serde_json::Value> {
-    let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+fn worker_runs(m1: &agentcore::coord::client::Client, dir: &Path) -> Option<serde_json::Value> {
+    let ask =
+        agentcore::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
     let g = m1.ask(&ask).unwrap()?;
-    let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+    let agentcore::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
     assert_eq!(task["runs"][0]["prog"], KIND);
     assert_eq!(task["runs"][0]["args"][0], "{dir}");
     let a = TileId::parse(task["unit"].as_str().unwrap()).unwrap();
@@ -31,10 +32,10 @@ fn worker_runs(m1: &crate::coord::client::Client, dir: &Path) -> Option<serde_js
     for f in OUTPUTS {
         let Ok(b) = std::fs::read(u.join(f)) else { continue };
         m1.put_bytes(&format!("/work/out/{}/u/{f}", g.lease), &b).unwrap();
-        outputs.push(crate::coord::task::Output { path: format!("u/{f}"), size: b.len() as u64 });
+        outputs.push(agentcore::coord::task::Output { path: format!("u/{f}"), size: b.len() as u64 });
     }
-    let done = crate::coord::Done { lease: g.lease, outputs, peak_mb: 300, secs: 1.0, ..Default::default() };
-    assert_eq!(m1.done(&done).unwrap(), crate::coord::client::Handed::Taken);
+    let done = agentcore::coord::Done { lease: g.lease, outputs, peak_mb: 300, secs: 1.0, ..Default::default() };
+    assert_eq!(m1.done(&done).unwrap(), agentcore::coord::client::Handed::Taken);
     Some(task)
 }
 
@@ -46,7 +47,7 @@ fn z8_tiles_go_to_workers_and_come_back_the_same() {
     let cov = coverage();
     let z8s = job::z8_tiles_of(&files);
     let (c, port) =
-        crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
+        agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &d.path().join("coord"), "m4", "");
     // (The coordinator and the job on a virtual clock: the job's waits are counted in it.)
     let clock = store::clock::Virtual::new();
     c.shared.lock().unwrap().clock = clock.clone();
@@ -58,7 +59,7 @@ fn z8_tiles_go_to_workers_and_come_back_the_same() {
     offers.top_up(&files, &cov, &z8s, 0).unwrap();
     assert!(out(&offers).is_empty());
     // A worker that takes them asks (nothing yet), and is counted.
-    let m1 = crate::coord::client::Client::at(vec![url], c.contact.token.clone(), "m1");
+    let m1 = agentcore::coord::client::Client::at(vec![url], c.contact.token.clone(), "m1");
     assert!(worker_runs(&m1, &d.path().join("m1")).is_none());
     offers.top_up(&files, &cov, &z8s, 0).unwrap();
     // The far end's z8 tile offered (one worker: one out), never the one under way.
@@ -98,8 +99,9 @@ fn z8_tiles_go_to_workers_and_come_back_the_same() {
     // than this Mac): taken back and run here at once. (What it would take here: its buildings
     // at the pace of those made here.)
     c.shared.lock().unwrap().tasks.paces.insert(("m1".into(), KIND.into()), 2.0);
-    let m2 = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m2");
-    m2.ask(&crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 10, ..Default::default() })
+    let m2 =
+        agentcore::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m2");
+    m2.ask(&agentcore::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 10, ..Default::default() })
         .unwrap();
     let mut offers = Offers::new(Some(&o), &scratch, t, z8s.len(), &[]);
     offers.top_up(&files, &cov, &z8s, 0).unwrap();

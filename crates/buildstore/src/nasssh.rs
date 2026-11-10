@@ -1,5 +1,5 @@
 //! An `ssh` to the NAS, its start bounded (`SSH_START`, `watched`): out's `verify` and the OSM
-//! pass's streams (pipeline::osmpass) take it; and the job's proxy's address, which `ssh` and
+//! pass's streams (inputs::osmpass) take it; and the job's proxy's address, which `ssh` and
 //! fetch's requests go through.
 
 use anyhow::{ensure, Context, Result};
@@ -8,7 +8,7 @@ use anyhow::{ensure, Context, Result};
 /// authenticate, its key from the SSH agent, 1Password's, which waits for an approval while it's
 /// locked, unbounded (ConnectTimeout doesn't cover it); a working one starts within seconds. The
 /// call past it is stopped and fails `TimedOut`, as a NAS call past its deadline does
-/// (pipeline::agent::nasread): the job fails and is tried again later.
+/// (agentcore::agent::nasread): the job fails and is tried again later.
 pub const SSH_START: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Runs `f` with `pid` (a child not yet waited for: the caller waits after) stopped (SIGTERM) if

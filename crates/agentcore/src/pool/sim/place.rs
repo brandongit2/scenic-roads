@@ -66,7 +66,7 @@ pub struct Step {
     pub disk_mb: u64,
     pub secs: u64,
     pub threads: u32,
-    /// What a job of one target reads and writes on the NAS (MB together, as crate::costin's `bytes`
+    /// What a job of one target reads and writes on the NAS (MB together, as buildstore::costin's `bytes`
     /// and `wrote`), and the files it makes there (`creates`).
     pub nas_mb: u64,
     pub creates: u64,
@@ -84,9 +84,9 @@ pub struct Cfg {
     /// The jobs a member runs at once; 0: as the agent has them, by its Mac's cores
     /// (crate::agent::job_slots).
     pub member_slots: usize,
-    /// The NAS budget on (crate::budget::nas), with the NAS's limits as a probe would measure them.
+    /// The NAS budget on (jobrt::budget::nas), with the NAS's limits as a probe would measure them.
     /// None: off.
-    pub nas: Option<crate::budget::nas::Limits>,
+    pub nas: Option<jobrt::budget::nas::Limits>,
     /// The members' owners using them, each member's in-use share keeping these cores free of its
     /// jobs (crate::agent::share). None: not in use.
     pub in_use: Option<u32>,
@@ -206,7 +206,7 @@ fn written(j: &Job, t: u64) -> u64 {
 }
 
 /// What a run of one target of `s` given `threads` on a Mac of pace `pace` (`Cfg::pace`) measures,
-/// as crate::costin records it: its memory and time, the threads it was given and the CPU time it took (its step's threads busy, at
+/// as buildstore::costin records it: its memory and time, the threads it was given and the CPU time it took (its step's threads busy, at
 /// most those given), and what it read and wrote on the NAS, half of `nas_mb` each (a halo step's
 /// reads its `nas_read` over `nas_secs`, its run; its `bytes` its halo's base packs' files, as
 /// crate::needs reads them).
@@ -261,7 +261,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         c.add_costs(&ts.iter().map(|tg| (cost_key(s.name, tg), measures(s, s.threads, 1))).collect::<Vec<_>>());
         c.add_disks(&ts.iter().map(|tg| (cost_key(s.name, tg), s.disk_mb)).collect::<Vec<_>>());
     }
-    let limits = cfg.nas.unwrap_or(crate::budget::nas::Limits {
+    let limits = cfg.nas.unwrap_or(jobrt::budget::nas::Limits {
         bytes_s: 100e6,
         creates_s: 40.0,
         downloads: None,
@@ -270,7 +270,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     let pace = |k: usize| cfg.pace.get(cfg.macs[k].name).copied().unwrap_or(1).max(1);
     let weight = |s: &Step, pace: u64| {
         let secs = (s.secs * pace).max(1) as f64;
-        limits.weight(crate::budget::nas::Rate {
+        limits.weight(jobrt::budget::nas::Rate {
             bytes_s: (s.nas_mb << 20) as f64 / secs,
             creates_s: s.creates as f64 / secs,
             ..Default::default()
@@ -515,18 +515,18 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 ));
             }
             // (The NAS budget on, a member's job only within what the pool's jobs leave by their
-            // true weights (crate::budget::nas::Limits::fits_job, an aged whole one let past them):
+            // true weights (jobrt::budget::nas::Limits::fits_job, an aged whole one let past them):
             // the budget's rules checked by outcome, not by a copy of them.)
             if k > 0 && cfg.nas.is_some() {
                 let members: u32 = running[1..].iter().flatten().map(|j| j.nas).sum();
                 let all: u32 = running.iter().flatten().map(|j| j.nas).sum();
                 let heaviest = running.iter().flatten().map(|j| j.nas).max().unwrap_or(0);
-                if !crate::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true) {
+                if !jobrt::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true) {
                     return Err(format!(
                         "{} placed {step} {targets:?} past the NAS budget: {all} + {} > {} (members' {members})",
                         cfg.macs[k].name,
                         job.nas,
-                        crate::budget::nas::WHOLE
+                        jobrt::budget::nas::WHOLE
                     ));
                 }
             }
@@ -929,7 +929,7 @@ mod tests {
             s.nas_mb = 24_000;
         }
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let mut macs = m4_m1();
         macs.push(Mac { name: "mini", total_mb: 16_384, cores: 8, disk_mb: 100_000 });
         let c = Cfg {
@@ -962,10 +962,10 @@ mod tests {
         let mut macs = m4_m1();
         macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let off = run(&cfg(macs.clone(), 8)).unwrap();
         let on = run(&Cfg { nas: Some(limits), ..cfg(macs, 8) }).unwrap();
-        assert!(off.most_nas > crate::budget::nas::WHOLE, "off: past the NAS: {off:?}");
+        assert!(off.most_nas > jobrt::budget::nas::WHOLE, "off: past the NAS: {off:?}");
         assert!(on.most_nas < off.most_nas, "on: less of the NAS at once: {on:?} against {off:?}");
         assert!(on.turned_away > off.turned_away, "on: asks queued: {on:?} against {off:?}");
     }
@@ -1055,7 +1055,7 @@ mod tests {
             creates: 30,
         };
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let c = Cfg {
             steps: vec![pack, unit],
             nas: Some(limits),
@@ -1072,7 +1072,7 @@ mod tests {
         }
         assert_eq!(r.granted_disk["pack"], 1_300, "its halo's disk once: {r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
-        assert!(r.most_nas <= crate::budget::nas::WHOLE, "{r:?}");
+        assert!(r.most_nas <= jobrt::budget::nas::WHOLE, "{r:?}");
     }
 
     /// The low zooms (task #381): a halo step too, a pass's z3 tiles one offer (one halo: the
@@ -1093,17 +1093,17 @@ mod tests {
             creates: 5,
         };
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let c = Cfg { steps: vec![lo], nas: Some(limits), halo: 16, known: vec!["lo"], ..cfg(m4_m1(), 0) };
         let r = run(&c).unwrap();
         assert_eq!(r.granted_disk.get("lo"), Some(&500), "its halo's disk once: {r:?}");
         assert_eq!(r.most_of.get(&("m4", "lo".to_string())), Some(&2), "{r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
-        assert!(r.most_nas <= crate::budget::nas::WHOLE, "{r:?}");
+        assert!(r.most_nas <= jobrt::budget::nas::WHOLE, "{r:?}");
     }
 
     /// Task #392, the M4 as measured on 18 Oct (48 GB, 14 cores, 85 GB free; its caches on its
-    /// disk): jobs of a step reading a shared cache (the local copies, crate::localread), 6.6 GB
+    /// disk): jobs of a step reading a shared cache (the local copies, buildstore::localread), 6.6 GB
     /// writing 6 GB each (their disks' 90th percentile, 5.9 GB), `pack` 0.3 GB and `lo` 0.5 GB
     /// each; the cache's fill measured before, but there: none reserved.
     /// Where one job at a time ran before, bound by reservations of the most a job ever took,
@@ -1150,7 +1150,7 @@ mod tests {
             steps: vec![depth, pack, lo],
             halo: 20,
             known: vec!["depth", "pack", "lo"],
-            warm: vec![crate::localread::CACHE],
+            warm: vec![buildstore::localread::CACHE],
             ..cfg(vec![m4], 0)
         };
         let r = run(&c).unwrap();
@@ -1232,7 +1232,7 @@ mod tests {
         let r = run(&base).unwrap();
         assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "{r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
-        let r = run(&Cfg { fill_parts: 1, clear: Some((1, 1_200, crate::localread::CACHE)), ..base }).unwrap();
+        let r = run(&Cfg { fill_parts: 1, clear: Some((1, 1_200, buildstore::localread::CACHE)), ..base }).unwrap();
         assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "filled, emptied, filled again: {r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
     }

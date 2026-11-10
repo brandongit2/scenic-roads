@@ -21,8 +21,8 @@
 //! the loop takes the cancels itself (`Handle::look`).
 
 use super::bus::{ControlMsg, Snap};
-use crate::control::{self, Cancel, HoldAnswer, HoldState};
 use crate::coord::asks::{Ask, HoldAsk};
+use jobrt::control::{self, Cancel, HoldAnswer, HoldState};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -37,7 +37,7 @@ pub const GRACE: Duration = Duration::from_secs(30);
 /// A running job as the loop last published it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobRef {
-    /// Its control channel (crate::control::CONTROL_ENV): "drain" asks it to stop at a safe point.
+    /// Its control channel (jobrt::control::CONTROL_ENV): "drain" asks it to stop at a safe point.
     pub chan: PathBuf,
     /// Its process group, as the loop's `Running` knows it (pgid 0: none, a job taken over as
     /// ended): confirmed the job's (`Group::is_the_jobs`: its head the process the job started, or
@@ -155,8 +155,8 @@ impl Part {
                     continue;
                 }
                 eprintln!("agent: {target} cancelled: stopping its job's group {} now", g.pgid);
-                crate::sys::signal_group(g.pgid, crate::sys::Signal::Cont);
-                crate::sys::signal_group(g.pgid, crate::sys::Signal::Term);
+                jobrt::sys::signal_group(g.pgid, jobrt::sys::Signal::Cont);
+                jobrt::sys::signal_group(g.pgid, jobrt::sys::Signal::Term);
                 self.stopping.push((g, Instant::now() + GRACE, false));
             }
         }

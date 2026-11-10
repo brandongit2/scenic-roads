@@ -49,13 +49,13 @@ impl<T> Snap<T> {
 /// loop's wait between rounds, so it acts on it at once rather than after its 20 s.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlMsg {
-    /// This Mac's hold changed (`crate::control::HoldState`, the later `at` winning).
+    /// This Mac's hold changed (`jobrt::control::HoldState`, the later `at` winning).
     Hold,
     /// The app asks to quit, or no longer does.
     Quit,
     /// The owner's settings changed (room target, in-use share, memory floor).
     Settings,
-    /// A cancel ask waits (`crate::control::CANCEL_REQUESTS`), or a hold ask for another member:
+    /// A cancel ask waits (`jobrt::control::CANCEL_REQUESTS`), or a hold ask for another member:
     /// told to **jobs**' thread (crate::agent::slots), which takes them at once; the loop is woken
     /// for a cancel it took (to record it), or for both when that thread doesn't run.
     Ask,

@@ -22,7 +22,7 @@
 //! Deletions go through SMB: on this share they're permanent (no Recycle Bin entry; tested
 //! 2026-10-02), and the M4 can't use SSH unattended (1Password asks each session). The newest
 //! pass, a planet waiting for its pass, the rest of `sources/` (the packed tile stores,
-//! `aws-terrarium/` and `pyramids/`, kept by their own indexes, crate::rawpack), the user's folders
+//! `aws-terrarium/` and `pyramids/`, kept by their own indexes, buildstore::rawpack), the user's folders
 //! (the inputs folders), state and the app are never touched. The lead not reached, nothing is
 //! removed.
 
@@ -224,7 +224,7 @@ pub fn by_the_queue(n: &str, passes_before: Option<&str>) -> bool {
     }
     match (top, parts.next(), parts.next(), parts.next()) {
         ("sources", Some("osm" | "items"), Some(date), Some(_)) => {
-            crate::osmpass::is_date(date) && passes_before.is_some_and(|newest| date < newest)
+            ::inputs::osmpass::is_date(date) && passes_before.is_some_and(|newest| date < newest)
         }
         _ => false,
     }
@@ -278,7 +278,7 @@ impl DepthKeep {
     /// for a tile the coverage left since it was planned keeps its tile's packs this run.
     pub fn with_leased(mut self, leased: &[(String, String)]) -> DepthKeep {
         for (step, t) in leased {
-            if let Some(u) = crate::legacy::TileId::parse(t) {
+            if let Some(u) = codecs::legacy::TileId::parse(t) {
                 match (step.as_str(), u.z) {
                     ("depth", 6) => self.hi.insert((u.x, u.y)),
                     ("depth-lo", 3) => self.lo.insert((u.x, u.y)),
@@ -318,14 +318,14 @@ fn dropped(the_plan: &dyn Plan, l: &str, depth: Option<&DepthKeep>) -> bool {
 }
 
 /// The content names the build reads by `manifest`: its own, and the files each accepted inputs'
-/// index it names lists (crate::inputs: a unit's checked copies, uploaded by its check, named by no
+/// index it names lists (inputs::inputs: a unit's checked copies, uploaded by its check, named by no
 /// manifest entry of their own). An error when such an index can't be read now.
 fn read_by(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<BTreeSet<String>> {
     let mut named: BTreeSet<String> = manifest.values().cloned().collect();
     for (l, c) in manifest {
-        if crate::inputs::record_of(l).is_some_and(|(_, r)| r == "@index") {
+        if ::inputs::inputs::record_of(l).is_some_and(|(_, r)| r == "@index") {
             named.extend(
-                crate::inputs::read_index(root, c)?
+                ::inputs::inputs::read_index(root, c)?
                     .files
                     .values()
                     .flat_map(|f| f.stored().into_iter().map(str::to_string)),
@@ -463,7 +463,7 @@ pub fn verify_pending(
             Err(e) => return Err(e),
         };
         // (The NAS looked each up: counted as stats, in its cost line and its live counts, which
-        // its weight goes by, crate::budget::nas.)
+        // its weight goes by, jobrt::budget::nas.)
         meta(0, batch.len() as u64, 0);
         store::nasio::add(store::nasio::Count::Stats, batch.len() as u64);
         v.ok += ok.len();
@@ -480,10 +480,10 @@ pub fn verify_pending(
 }
 
 /// The command line `verify_pending` reaches the NAS by: `ssh` in batch mode (no prompts), through
-/// the job's proxy when it has one (crate::budget::SANDBOX, as crate::osmpass's), its host last.
+/// the job's proxy when it has one (jobrt::budget::SANDBOX, as inputs::osmpass's), its host last.
 fn nas_ssh() -> Vec<String> {
     let mut a: Vec<String> = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20"].map(String::from).into();
-    if let Some(p) = std::env::var(crate::budget::PROXY_ENV).ok().and_then(|u| buildstore::nasssh::proxy_addr(&u)) {
+    if let Some(p) = std::env::var(jobrt::budget::PROXY_ENV).ok().and_then(|u| buildstore::nasssh::proxy_addr(&u)) {
         a.extend(["-o".into(), format!("ProxyCommand=/usr/bin/nc -X connect -x {p} %h %p")]);
     }
     a.push(store::nas::SSH.into());
@@ -612,7 +612,7 @@ pub fn inputs_kept(
     named.extend(um.changes.iter().filter_map(ours));
     let index_files = |c: &str, keep: &mut BTreeSet<String>| -> Result<()> {
         keep.extend(
-            crate::inputs::read_index(root, c)?
+            ::inputs::inputs::read_index(root, c)?
                 .files
                 .values()
                 .flat_map(|f| f.stored().into_iter().map(str::to_string))
@@ -622,7 +622,7 @@ pub fn inputs_kept(
         Ok(())
     };
     for (l, c) in named {
-        if crate::inputs::record_of(&l).is_some_and(|(_, r)| r == "@index") {
+        if ::inputs::inputs::record_of(&l).is_some_and(|(_, r)| r == "@index") {
             index_files(&c, &mut keep)?;
         }
         keep.insert(c);
@@ -645,7 +645,7 @@ pub fn inputs_kept(
             let rel = e.path.rel().to_string();
             let Some(record) = store::naming::parse_content_name(&rel)
                 .filter(|n| n.ext == "json")
-                .and_then(|n| crate::inputs::record_of(n.logical))
+                .and_then(|n| ::inputs::inputs::record_of(n.logical))
                 .map(|(_, r)| r)
             else {
                 continue;
@@ -662,7 +662,7 @@ pub fn inputs_kept(
             match record {
                 "@index" => index_files(&rel, &mut keep)?,
                 "@listed" => {
-                    if let Some(old) = crate::inputs::read_listed_file(root, &rel)?.replaced {
+                    if let Some(old) = ::inputs::inputs::read_listed_file(root, &rel)?.replaced {
                         index_files(&old, &mut keep)?;
                     }
                 }
@@ -690,8 +690,8 @@ pub fn set_way(v: u32) {
 }
 
 /// Notes what this run cost so far in the job's costs file (`SCENIC_COSTS`, as scenic-build's steps
-/// do): its NAS work (crate::costin: bytes read, and the folder entries listed, files statted and
-/// deleted, `meta`) over its time, its memory: the clean-up's NAS weight (crate::budget::nas) as the
+/// do): its NAS work (buildstore::costin: bytes read, and the folder entries listed, files statted and
+/// deleted, `meta`) over its time, its memory: the clean-up's NAS weight (jobrt::budget::nas) as the
 /// coordinator weighs it from then on, measured, never guessed (docs/pool.md §7.7, task #451).
 pub fn note_cost() {
     crate::agent::jobs::note_cost(
@@ -708,10 +708,10 @@ pub fn note_cost() {
 fn yield_point() {
     #[cfg(test)]
     YIELD_CHECKS.set(YIELD_CHECKS.get() + 1);
-    crate::control::reached();
-    if crate::control::draining() {
+    jobrt::control::reached();
+    if jobrt::control::draining() {
         note_cost();
-        crate::control::stop_paused(STEP);
+        jobrt::control::stop_paused(STEP);
     }
 }
 
@@ -727,10 +727,10 @@ thread_local! {
     static COUNTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Counts NAS metadata work (crate::costin::meta) while this process notes it (`COUNTING`).
+/// Counts NAS metadata work (buildstore::costin::meta) while this process notes it (`COUNTING`).
 fn meta(listed: u64, stats: u64, deletes: u64) {
     if COUNTING.get() {
-        crate::costin::meta(listed, stats, deletes);
+        buildstore::costin::meta(listed, stats, deletes);
     }
 }
 
@@ -830,7 +830,7 @@ pub struct Asked<'a> {
 pub struct Ways<'a> {
     pub the_plan: &'a dyn Plan,
     pub lead: &'a dyn Lead,
-    /// Whether to stop at this safe point (a job's: the agent asking it to, crate::control).
+    /// Whether to stop at this safe point (a job's: the agent asking it to, jobrt::control).
     pub yielding: &'a dyn Fn() -> bool,
     /// Removes a file from the NAS (one SMB call; a test's to fail or stop).
     pub remove: &'a dyn Fn(&NasPath) -> std::io::Result<()>,
@@ -840,8 +840,8 @@ pub struct Ways<'a> {
 /// build pausing, or a job held back long for the NAS it holds: docs/pool.md §7.7). Read at most
 /// once a second.
 pub fn job_yielding() -> bool {
-    crate::control::reached();
-    crate::control::draining_lately()
+    jobrt::control::reached();
+    jobrt::control::draining_lately()
 }
 
 /// A file's removal over SMB, counted as a delete (`meta`).
@@ -864,7 +864,7 @@ pub fn run(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Result<R
     STARTED.get_or_init(std::time::Instant::now);
     if std::env::var_os("SCENIC_COSTS").is_some() {
         COUNTING.set(true);
-        crate::costin::begin();
+        buildstore::costin::begin();
     }
     let r = run_counted(root, asked, ways);
     note_cost();
@@ -874,10 +874,10 @@ pub fn run(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Result<R
 fn run_counted(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Result<Report> {
     let dry_run = asked.dry_run;
     let mut rep = Report { dry_run, ..Default::default() };
-    let latest = crate::osmpass::latest_pass(root);
+    let latest = ::inputs::osmpass::latest_pass(root);
     crate::agent::jobs::stage(0, 2, "steps (removing what GC's queue frees)");
     let (flow, tops) = {
-        let _p = crate::timings::phase("removing what GC's queue frees");
+        let _p = jobrt::timings::phase("removing what GC's queue frees");
         drain(root, ways, dry_run, latest.as_deref(), &mut rep)?
     };
     if flow == Flow::Paused {
@@ -1099,7 +1099,7 @@ fn orphan_walk(
     at: &mut dyn FnMut(&str) -> Result<()>,
     rep: &mut Report,
 ) -> Result<Flow> {
-    let _p = crate::timings::phase("sweeping for orphans");
+    let _p = jobrt::timings::phase("sweeping for orphans");
     let mut roots: Vec<Root> = tops
         .iter()
         .filter(|t| !NEVER.contains(&t.as_str()))
@@ -1130,7 +1130,7 @@ fn orphan_walk(
         for kind in ["osm", "items"] {
             meta(1, 0, 0);
             let Ok(rd) = root.join("sources").join(kind).read_dir() else { continue };
-            for e in rd.into_iter().filter(|e| crate::osmpass::is_date(&e.name) && e.name.as_str() < latest) {
+            for e in rd.into_iter().filter(|e| ::inputs::osmpass::is_date(&e.name) && e.name.as_str() < latest) {
                 roots.push(Root { dir: format!("sources/{kind}/{}", e.name), only: None, pass: true });
             }
         }
@@ -1202,7 +1202,7 @@ fn inputs_walk(
     at: &mut dyn FnMut(&str) -> Result<()>,
     rep: &mut Report,
 ) -> Result<Flow> {
-    let _p = crate::timings::phase("sweeping the inputs' copies");
+    let _p = jobrt::timings::phase("sweeping the inputs' copies");
     let read_keep = |rep: &mut Report| -> Result<BTreeSet<String>> {
         let m = buildstore::records::read_manifest(root).context("the build manifest")?;
         let um = unmerged(root, crate::agent::jobs::now_s()).context("the pool's records or journal")?;
@@ -1970,12 +1970,12 @@ mod tests {
         assert!(s.each["orphans"].ended.is_some() && s.each["orphans"].reached.is_none());
     }
 
-    /// Task #451: a run in a job counts its NAS metadata work (crate::costin: `listed`, `stats`,
+    /// Task #451: a run in a job counts its NAS metadata work (buildstore::costin: `listed`, `stats`,
     /// `deletes`), its weight beside its bytes; outside one (no `SCENIC_COSTS`) nothing. A chunk
     /// costs a delete a file and nothing else on the share.
     #[test]
     fn a_run_counts_its_listings_stats_and_deletes() {
-        let _l = crate::costin::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _l = buildstore::costin::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (d, q_dir, home) =
             (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = d.path();
@@ -1984,23 +1984,23 @@ mod tests {
         let lead = InProcess { q: &q, now: Cell::new(now_s()) };
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let sweeps = sweeps_ended(home.path(), now_s(), &[]);
-        crate::costin::begin();
+        buildstore::costin::begin();
         COUNTING.set(true);
         let r =
             run_counted(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap();
-        let m = crate::costin::take();
+        let m = buildstore::costin::take();
         assert_eq!(r.removed, 2);
         assert_eq!((m.get("deletes"), m.get("listed"), m.get("stats")), (Some(&2), None, None), "{m:?}");
         // The orphan sweep lists and looks at each entry.
         let sweeps = sweeps_ended(home.path(), now_s(), &["orphans"]);
-        crate::costin::begin();
+        buildstore::costin::begin();
         run_counted(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap();
         COUNTING.set(false);
-        let m = crate::costin::take();
+        let m = buildstore::costin::take();
         assert!(m["listed"] >= 1 && m["stats"] >= 1, "{m:?}");
-        crate::costin::begin();
+        buildstore::costin::begin();
         meta(5, 5, 5);
-        assert!(!crate::costin::take().contains_key("listed"), "not in a job: not counted");
+        assert!(!buildstore::costin::take().contains_key("listed"), "not in a job: not counted");
     }
 
     /// The gate's copies (docs/inputs.md §4.9): kept while the manifest's index or report names
@@ -2062,7 +2062,7 @@ mod tests {
             member: "m-0000000000000001".into(),
             lease: crate::pool::journal::LeaseId { term: 1, n: 7 },
             step: "inputs".into(),
-            handoff: crate::handoff::Handoff {
+            handoff: buildstore::handoff::Handoff {
                 changes: [(format!("{u}/@index"), Some(format!("{u}/@index.6666666666666666.json")))].into(),
                 ..Default::default()
             },
@@ -2160,7 +2160,7 @@ mod tests {
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         // An entry of a member away three weeks, written, never merged: its change and its upload.
         let nas = store::nasfs::NasRoot::local_for_test(root);
-        let mut h = crate::handoff::Handoff::default();
+        let mut h = buildstore::handoff::Handoff::default();
         h.changes.insert("layers/roads/hi/6-1-2".into(), Some(a.into()));
         h.pending.insert(b.into(), "0".repeat(64));
         let e = Entry {
@@ -2434,7 +2434,7 @@ mod tests {
         out.remove("sources/terrain-z8-v3");
         out.unpend("sources/terrain-z8-v3.3333333333333333.pack");
         out.save().unwrap();
-        let hs = crate::handoff::written_in(&hand).unwrap().unwrap();
+        let hs = buildstore::handoff::written_in(&hand).unwrap().unwrap();
         assert_eq!(hs.len(), 1);
         // (Its upload, never verified, leaves the records' pending as the lead merges it.)
         assert_eq!(hs[0].checked, ["sources/terrain-z8-v3.3333333333333333.pack".to_string()]);

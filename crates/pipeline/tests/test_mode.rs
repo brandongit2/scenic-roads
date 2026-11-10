@@ -12,7 +12,7 @@ fn a_build_with_the_dev_dependencies_has_no_test_time_behaviour() {
     assert_eq!(buildstore::out::nas_call_deadline(buildstore::out::testing()).as_secs(), 180);
     // (The environment is this test's: the binary's other reads only files.)
     std::env::remove_var("SCENIC_FETCH_OFFLINE");
-    assert!(pipeline::fetch::online("https://example.org/x").is_ok());
+    assert!(buildstore::fetch::online("https://example.org/x").is_ok());
 }
 
 /// `buildstore::out::testing` is true exactly where the runtime's `cfg(test)` applied when it was

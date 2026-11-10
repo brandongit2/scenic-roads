@@ -60,7 +60,7 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
     ("outlines", 1, &["r/boundary=administrative", "r/ISO3166-1", "r/ISO3166-2"]),
     // The coastline, for the regions' land (crate::inputs::regions::land).
     ("coastline", 1, &["w/natural=coastline"]),
-    // The labels by importance (pipeline::labels): places, seas, bays and straits, water and parks.
+    // The labels by importance (landmarks::labels): places, seas, bays and straits, water and parks.
     (
         "labels",
         1,
@@ -76,7 +76,7 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
     // Summits, worldwide, for prominence and isolation: peaks and volcanoes, nodes and ways (2: ways
     // too, as the peaks among the candidates are).
     ("summits", 2, &["nw/natural=peak,volcano"]),
-    // Hiking and foot routes with their member ways, for the routes' ends (pipeline::trailends).
+    // Hiking and foot routes with their member ways, for the routes' ends (codecs::trailends).
     ("hikes", 1, &["r/route=hiking,foot"]),
     // The heritage chain's named objects (heritage, museums, lighthouses, stations, protected areas
     // and parks), and World Heritage objects, for locating register records.
@@ -1385,7 +1385,7 @@ fn buildinfo_version(props: &str) -> Option<&str> {
 }
 
 /// Stops on a Planetiler jar other than the one the water layer was checked against
-/// (pipeline::water::PLANETILER_VERSION: its own `buildinfo.properties` says which it is), so a
+/// (inputs::water::PLANETILER_VERSION: its own `buildinfo.properties` says which it is), so a
 /// new one's basemap isn't drawn until its z14 water is checked again as full detail.
 pub fn check_planetiler(jar: &Path) -> Result<()> {
     let o =
@@ -1396,7 +1396,7 @@ pub fn check_planetiler(jar: &Path) -> Result<()> {
     let v =
         buildinfo_version(&props).with_context(|| format!("no version in {}'s buildinfo.properties", jar.display()))?;
     let pinned = crate::water::PLANETILER_VERSION;
-    ensure!(v == pinned, "{} is Planetiler {v}, but the water layer was checked against Planetiler {pinned}'s z14 water (pipeline::water, docs/steps.md): check {v}'s with tools/coastcheck, then pin it", jar.display());
+    ensure!(v == pinned, "{} is Planetiler {v}, but the water layer was checked against Planetiler {pinned}'s z14 water (inputs::water, docs/steps.md): check {v}'s with tools/coastcheck, then pin it", jar.display());
     Ok(())
 }
 

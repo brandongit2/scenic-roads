@@ -39,7 +39,7 @@ pub struct Report {
     pub days_archived: usize,
     pub files_removed: usize,
     pub tmp_removed: usize,
-    /// NAS metadata work, for the job's costs (crate::costin::meta): folders listed, files statted.
+    /// NAS metadata work, for the job's costs (buildstore::costin::meta): folders listed, files statted.
     pub listed: u64,
     pub stats: u64,
     pub warnings: Vec<String>,

@@ -791,7 +791,7 @@ pub struct Coverage {
 pub struct Kept {
     /// `coverage_tiles`.
     pub tiles: std::sync::OnceLock<BTreeMap<(u32, u32), Vec<(u32, u32)>>>,
-    /// pipeline::terrain_pack::makes_hi, by z6 tile.
+    /// terrain::terrain_pack::makes_hi, by z6 tile.
     pub makes_hi: std::sync::Mutex<std::collections::HashMap<(u32, u32), bool>>,
 }
 
@@ -865,7 +865,7 @@ impl Coverage {
     }
 
     /// The memory a step's process takes to read this coverage (MB; `coverage_of` in scenic-build,
-    /// through `pipeline::inputs::regions::read::accepted_coverage`), worked out from the coverage
+    /// through `inputs::inputs::regions::read::accepted_coverage`), worked out from the coverage
     /// itself: every shape's rings (`Rings`), grid (`Grid`) and edge tree (`EdgeTree`) as held, the
     /// kept file's stream buffer and what reading one shape holds in passing (`from_kept`: read as a
     /// stream, task #807; its closing points marked, and its edge tree's runs as they're made), and
@@ -941,12 +941,12 @@ pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
 }
 
 /// The environment variable the agent names its jobs' cache folder in (`<home>/cache`), where
-/// `pipeline::inputs::regions::read::accepted_coverage` keeps the coverage it reads.
+/// `inputs::inputs::regions::read::accepted_coverage` keeps the coverage it reads.
 pub const CACHE_ENV: &str = "SCENIC_CACHE";
 
 const KEPT_MAGIC: &[u8; 8] = b"RDCOV006";
 
-/// The coverage's shapes as kept (`pipeline::inputs::regions::read::accepted_coverage`): their
+/// The coverage's shapes as kept (`inputs::inputs::regions::read::accepted_coverage`): their
 /// source, country, buffer, whether water, rings (`Rings`), box and grid (`Grid`, its rank aside:
 /// worked out again), as held (task #807: the grids made again from the rings were 14 s of CPU a
 /// job). Written and read as a stream (`write_kept`, `from_kept`), never whole in memory: the file
@@ -1106,7 +1106,7 @@ impl Coverage {
     /// A coverage for the tests, from fixtures as regions name them (`<id>: <entry>`): `place:<lon>,
     /// <lat>,<km>`, a circle of the 64 points the old `place:` parts had, and `poly:<file>`, a
     /// `.poly` in `dir` (a square, mostly). Never the app's: its regions are the accepted version's
-    /// (`pipeline::inputs::regions::read::accepted_coverage`).
+    /// (`inputs::inputs::regions::read::accepted_coverage`).
     #[cfg(any(test, feature = "testkit"))]
     pub fn fixture(recipes: &[Recipe], _outlines: Option<&Outlines>, dir: &Path) -> Result<Coverage> {
         let mut shapes = Vec::new();
@@ -1130,7 +1130,7 @@ impl Coverage {
         Ok(Coverage { shapes, ..Default::default() })
     }
 
-    /// Each region's own coverage (its shapes, as `pipeline::inputs::regions::read::accepted_coverage` made them for it: "<id>: <from>"),
+    /// Each region's own coverage (its shapes, as `inputs::inputs::regions::read::accepted_coverage` made them for it: "<id>: <from>"),
     /// in the order its first shape comes: no outline read again.
     pub fn by_region(&self) -> Vec<(String, Coverage)> {
         let mut out: Vec<(String, Coverage)> = Vec::new();

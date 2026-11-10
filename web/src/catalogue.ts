@@ -5,7 +5,7 @@
 // (api.ts onVersions), and what can't follow asks for a reload instead (the status bar shows it).
 import { setPacks, setVersions, type Meta } from './api';
 
-/** A data source's credit (pipeline::rules::Credit): what came from it, the source as its terms
+/** A data source's credit (inputs::rules::Credit): what came from it, the source as its terms
  * ask to be named, the terms, and the areas [w, s, e, n] whose data comes from it (none: anywhere). */
 export interface Credit {
   what: string;
@@ -36,7 +36,7 @@ export interface CatalogueStatus {
   marks?: import('./marksview').MarksCfg | null;
   /** The catalogue's layers by name (their encodings and zooms). */
   layers?: Record<string, unknown>;
-  /** The depth's sources (pipeline::depth): absent without depth. */
+  /** The depth's sources (terrain::depth): absent without depth. */
   depth?: { sources?: import('./depth').DepthSource[] } | null;
 }
 

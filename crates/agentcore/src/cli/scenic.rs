@@ -62,7 +62,7 @@ pub enum Cmd {
     /// What the lead is doing, what waits and why, the build to the end by stage and step, regions
     Status(StatusArgs),
     /// What the menu bar item (Scenic.app) shows, as JSON, from this Mac's disk alone: its agent's
-    /// status, a member's lead's line as last heard, this Mac's asks and hold (pipeline::menu)
+    /// status, a member's lead's line as last heard, this Mac's asks and hold (agentcore::menu)
     Menu(Home),
     /// The steps table (docs/pipeline.md): every step's title, what it does, its kind, scope, stage
     /// and where it runs
@@ -239,7 +239,7 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
-    /// The jobs' timings (pipeline::timings): each kind's phases over its last N runs, with their
+    /// The jobs' timings (jobrt::timings): each kind's phases over its last N runs, with their
     /// totals and shares; the build's (its coordinator's log, asked of it from another Mac), or
     /// with --here this Mac's own jobs' alone
     Timings(Timings),
@@ -337,14 +337,14 @@ pub enum PoolCmd {
         /// The target
         target: Option<String>,
     },
-    /// The NAS budget's probe once (pipeline::budget::nas): small files made, a larger one written
+    /// The NAS budget's probe once (jobrt::budget::nas): small files made, a larger one written
     /// and read back, in a folder of its own (made, then removed), printing MB/s and creates/s
     NasProbe {
         /// The probe's folder (default: one under the project folder's state/pool/nas-probe)
         #[arg(long, value_name = "FOLDER")]
         dir: Option<PathBuf>,
     },
-    /// Each step's model of what its jobs need (pipeline::needs): its fits' errors on held-out runs
+    /// Each step's model of what its jobs need (agentcore::needs): its fits' errors on held-out runs
     /// (memory, time, disk) and the steps that don't fit. Reads only
     Needs {
         /// The fits (the one view so far)

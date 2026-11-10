@@ -1450,7 +1450,7 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         for k in 0..3 {
-            c.set_pause(Some(crate::control::Pause::new(crate::control::Mode::Drain, &format!("m{k}"))), now + k);
+            c.set_pause(Some(jobrt::control::Pause::new(jobrt::control::Mode::Drain, &format!("m{k}"))), now + k);
             pv.state.lock().unwrap().lead_last = None;
             assert!(pv.tick_lead(now));
             settle(&pv);

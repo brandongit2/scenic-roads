@@ -8,7 +8,7 @@
 //!
 //! The unit job stages what this reads into the unit's folder: the terrain's tiles over its box to
 //! z12 and its deep tiles under its vertices and their neighbours across a near edge (`deep_tiles`),
-//! in one archive (`TERRAIN_FILE`, pipeline::stage), and the pool's datasets' codes by coverage
+//! in one archive (`TERRAIN_FILE`, roads::stage), and the pool's datasets' codes by coverage
 //! (`codes.json`: `Codes`), which name each vertex's source (`src.u8`): the first dataset in the
 //! order whose coverage (its measured 1° cells) holds it. That's a label, not the terrain's own
 //! record: in a cell a dataset covers only in part, it names that dataset where the terrain took the
@@ -23,7 +23,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
-/// The staged terrain tiles in a unit's folder (pipeline::stage).
+/// The staged terrain tiles in a unit's folder (roads::stage).
 pub const TERRAIN_FILE: &str = "terrain.tiles";
 /// The datasets' codes by coverage (`Codes`).
 pub const CODES_FILE: &str = "codes.json";

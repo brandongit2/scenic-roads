@@ -14,41 +14,6 @@ pub mod pool;
 pub mod pubtimes;
 pub mod uses;
 
-// The crates below, at the paths the runtime names them by (as pipeline's root did).
-pub use buildstore::{costin, coverage, fetch, handoff, localread, outlines, rawpack};
-pub use codecs::{extents, legacy, whole};
-pub use coordwire::net;
-pub use jobrt::{budget, control, phase_names, pyenv, resume_log, sys, timings};
-
-// (`::inputs`: the crate, not its module of the same name.)
-pub use ::inputs::{areafiles, dem, inputs, lakefill, osmpass, rail};
-
-// The plan's modules (agent/mod.rs) and the families its code and the runtime's tests name, in the
-// unit tests alone, at pipeline's paths.
-/// Where the plan's steps put their outputs, at pipeline's path (its `out`, but `open`).
-#[cfg(test)]
-pub mod out {
-    pub use buildstore::out::*;
-    pub use buildstore::records::read_manifest;
-}
-#[cfg(test)]
-pub use ::inputs::{rules, water};
-#[cfg(test)]
-pub use codecs::{hipack, marks, shade_codec, terrain_codec, terrain_water};
-#[cfg(test)]
-pub use landmarks::{heritage, markconv, namestodo, ovconv};
-#[cfg(test)]
-pub use roads::{reach, stage, timetables, unit};
-#[cfg(test)]
-pub use terrain::{
-    depth, layers, polar, pyramids, slope_pack, terrain_deep, terrain_pack, terrain_resume, terrain_task, terrain_zoom,
-};
-// (`::trees` and `::bld`: the crates, not their modules of the same name.)
-#[cfg(test)]
-pub use ::bld::{bld, buildtiles};
-#[cfg(test)]
-pub use ::trees::{treepacks, trees};
-
 /// The runtime's unit tests' process is offline from its start (buildstore::fetch::go_offline), and
 /// an `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs: run by the
 /// loader as the test binary starts (an initializer section's entry), as pipeline's root does for

@@ -1,8 +1,8 @@
 use super::*;
-use crate::handoff::Handoff;
 use crate::pool::journal;
 use crate::pool::nas::Mem;
 use crate::pool::records::{self, Records};
+use buildstore::handoff::Handoff;
 use serde_json::json;
 use std::collections::BTreeMap;
 use store::map::{Batch, Cursor, Map};

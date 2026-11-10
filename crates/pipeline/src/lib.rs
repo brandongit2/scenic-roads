@@ -2,48 +2,11 @@ pub mod agent;
 pub mod offload;
 pub mod out;
 
-// The runtime (step 6f4's: crates/agentcore), at its old paths; the plan's modules in `agent`.
-pub use agentcore::{answers, cli, coord, menu, needs, pool, pubtimes};
-
-// Moved to their own crates (task #916, docs/crates.md), kept at their old paths for the modules above
-// the steps and the binaries (the step modules name their crates: step 6b). Step 2's:
-pub use codecs::{
-    areaflags, basepack, basepart, bytes_bar, count_bar, extents, hipack, legacy, marks, morton, shade_codec, summary,
-    terrain_codec, terrain_water, tiling, trailends, watercov, whole, ProgressRead,
-};
-
-// Step 3's:
-pub use jobrt::{budget, control, pyenv, resume_log, sys, timings};
-// Step 7a's (what the map server names, moved below the runtime):
-pub use coordwire::net;
-pub use jobrt::appupdate;
-
-// Step 4's (out is pipeline's own: its `open` gives buildstore's `Out` the steps' write sets):
-pub use buildstore::{costin, coverage, fetch, geotiff, handoff, localread, outlines, rawpack};
-
-// Step 5a's:
-pub use landmarks::{
-    areadetails, filterprops, heritage_layers, heritagedetails, heritagewd, interest, items, labels, pageviews,
-    whsshapes,
-};
-
-// Step 5b's:
-pub use mapview::{buildings, scache, terr, view};
-
-// Step 6d's (`::inputs`: the crate, not its module of the same name):
-pub use ::inputs::{areafiles, dem, inputs, lakefill, osmpass, rail, rules, water};
-
-// Step 6e's:
-pub use terrain::{
-    depth, layers, polar, pyramids, road_terrain, slope_pack, terrain_base, terrain_deep, terrain_pack, terrain_resume,
-    terrain_task, terrain_zoom,
-};
-// (`::trees`: the crate, not its module of the same name.)
-pub use ::trees::{landcover, treepacks, trees};
-pub use landmarks::{gtfs, heritage, markconv, marksjob, namestodo, ovconv, railfeeds};
-pub use roads::{candidates, elev, peaks, reach, stage, summits, timetables, unit};
-// (`::bld`: the crate, not its module of the same name.)
-pub use ::bld::{bld, buildtiles};
+// The runtime's modules the plan names at the crate's root (`crate::coord`, …): the plan's files
+// are compiled into agentcore's unit tests too (agentcore's agent/mod.rs), where these are
+// agentcore's own, so the plan can't name them by the agentcore crate. Everything else names the
+// crate that owns it (task #916, docs/crates.md §2).
+pub use agentcore::{answers, coord, needs, pool};
 
 /// Pipeline's unit tests' process is offline from its start (buildstore::fetch::go_offline), and an
 /// `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs, as it was while

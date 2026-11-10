@@ -77,7 +77,7 @@ pub struct Table(BTreeMap<String, Vec<Lang>>);
 
 impl Table {
     /// A `territories.tsv` read (`<code>\t<language>,<language>…` a line; `#` lines are comments),
-    /// as the input check takes it (pipeline::inputs::languages raises its faults): a line without
+    /// as the input check takes it (inputs::inputs::languages raises its faults): a line without
     /// a tab is passed over, a language that can't be read left out, a code's last line kept.
     pub fn parse(text: &str) -> Table {
         let mut m = BTreeMap::new();

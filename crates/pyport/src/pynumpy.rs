@@ -1,5 +1,5 @@
 //! numpy's arithmetic as the Python steps ported from it need it, so their outputs stay the bytes
-//! the Python made (pipeline::whsshapes): `default_rng(seed)` (SeedSequence and PCG64) and its
+//! the Python made (landmarks::whsshapes): `default_rng(seed)` (SeedSequence and PCG64) and its
 //! `choice(n, size, replace=False)`, the pairwise summation behind `sum` and `mean`, and `arange`
 //! and `linspace` of floats. Each is numpy 2.5's algorithm step for step; the tests hold them to
 //! numpy's outputs.

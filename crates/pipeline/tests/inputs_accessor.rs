@@ -1,4 +1,4 @@
-//! The inputs folders are read only through their accessor (docs/inputs.md §7.1): `pipeline::inputs`
+//! The inputs folders are read only through their accessor (docs/inputs.md §7.1): `inputs::inputs`
 //! (`inputs::open`, and the gate's check job, `inputs::gate::run`), and in Python `dem/inputs.py`'s
 //! `arg`. Every item outside `#[cfg(test)]` code whose text names an inputs folder (`MARKERS`, and each
 //! gate unit's name) calls the accessor, or is listed in `EXEMPT` by name with why: no reader, only
@@ -105,10 +105,10 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
 /// `inputs/heritage`, `inputs/heritage-matches`, `inputs/elevation`, `inputs/sources`, which
 /// `MARKERS` catches.)
 fn unit_markers() -> Vec<String> {
-    use pipeline::inputs::{elevation, heritage, heritage_matches, regions, sources};
-    pipeline::inputs::UNITS
+    use ::inputs::inputs::{elevation, heritage, heritage_matches, regions, sources};
+    ::inputs::inputs::UNITS
         .iter()
-        .chain([&pipeline::inputs::TEST_UNIT])
+        .chain([&::inputs::inputs::TEST_UNIT])
         .filter(|u| {
             ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT, sources::UNIT].contains(*u)
         })
@@ -256,7 +256,7 @@ static D: [&str; 1] = ["translations"];"#;
 fn the_steps_root_refuses_an_inputs_folder_path() {
     let d = tempfile::tempdir().unwrap();
     let out =
-        pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("s")).unwrap();
+        buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("s")).unwrap();
     for p in [
         "inputs/regions/wales.toml",
         "inputs/_gate-test/a.jsonl",

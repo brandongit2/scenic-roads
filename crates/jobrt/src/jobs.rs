@@ -264,7 +264,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let log = d.path().join("log");
         assert_eq!(parts(&log), None);
-        // As a step prints them (pipeline::agent::jobs::part), with its output between.
+        // As a step prints them (`part`), with its output between.
         let names = ["Getting ready (osmium)", "Details: Wikidata's facts", "Uploading"];
         let line = |i: usize| format!("parts: {i} {}\n", serde_json::to_string(&names).unwrap());
         std::fs::write(

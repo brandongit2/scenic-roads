@@ -243,7 +243,7 @@ pub fn open_water(out: &Out) -> anyhow::Result<inputs::lakefill::FilledWater<cod
 
 /// `open_water`, the basemap and the lakes' fill read from `local`'s whole copies where it gives them
 /// (buildstore::localread: the steps reading the basemap in thousands of ranges and every job's fill,
-/// its shared cache's, pipeline::needs::CACHES; without a copy the fill is read whole from the NAS).
+/// its shared cache's, agentcore::needs::CACHES; without a copy the fill is read whole from the NAS).
 pub fn open_water_with(
     out: &Out,
     local: Option<&buildstore::localread::Local>,

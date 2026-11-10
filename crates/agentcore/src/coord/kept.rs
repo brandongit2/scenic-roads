@@ -78,7 +78,7 @@ pub struct Loaded {
     pub disks: BTreeMap<String, u64>,
     pub job_disks: BTreeMap<String, Vec<u64>>,
     pub fills: BTreeMap<String, u64>,
-    pub pause: Option<(Option<crate::control::Pause>, u64)>,
+    pub pause: Option<(Option<jobrt::control::Pause>, u64)>,
     pub members: BTreeMap<String, Heard>,
 }
 
@@ -213,7 +213,7 @@ impl Kept {
     }
 
     /// The build's pause, as it changed at `at`.
-    pub fn pause(&self, pause: Option<&crate::control::Pause>, at: u64) {
+    pub fn pause(&self, pause: Option<&jobrt::control::Pause>, at: u64) {
         self.submit([("pause".into(), serde_json::json!({ "pause": pause, "at": at }))].into(), Vec::new());
     }
 

@@ -8,7 +8,7 @@ anyhow = "1"
 rayon = "1.10"
 memmap2 = "0.9"
 bytemuck = { version = "1.19", features = ["derive", "extern_crate_alloc"] }
-# Every program's command line (pipeline::cli; docs/building.md, "Command lines"): strict, its
+# Every program's command line (agentcore::cli; docs/building.md, "Command lines"): strict, its
 # usage generated. No colour: plain text in logs and in the pages' consoles.
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "string"] }
 # (Help text and errors' context natively only, crates/pipeline/Cargo.toml: the WebAssembly programs
@@ -43,7 +43,7 @@ debug = false
 [profile.test.package."*"]
 opt-level = 3
 
-# GEOS 3.13.1, the version shapely 2.1.2's wheel ships (pipeline::whsshapes computes as shapely
+# GEOS 3.13.1, the version shapely 2.1.2's wheel ships (landmarks::whsshapes computes as shapely
 # did; crates.io's geos-src has 3.12.1, 3.14.1 and 3.15 dev, whose inscribed circles differ by an
 # ulp): crates/geos-src is geos-src 0.2.4's build with GEOS 3.13.1's release tarball (its tests
 # left out), built by CMake and linked statically.

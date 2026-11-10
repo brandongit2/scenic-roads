@@ -620,7 +620,7 @@ pub fn prepare_folder(
         c.arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));
         run_in(c, "classifying the land cover (landcover)", &log, dir, tools)?;
     }
-    // Its last run's scenic results (pipeline::scache: the canopy and view steps copy what's
+    // Its last run's scenic results (mapview::scache: the canopy and view steps copy what's
     // unchanged), restored over the staged grids they were made from.
     if let Some(c) = carry {
         let s = stage("restoring scenic results");
@@ -652,7 +652,7 @@ pub use ::offload::Run;
 
 /// The files a `unit` job saves for a z6 tile (its tile's dash name: `6-31-20`): its base pack, road
 /// values, roads' English and the grids its packs lacked (scenic-build's `commit_unit`). All a
-/// helper's hand-off may change (pipeline::coord).
+/// helper's hand-off may change (agentcore::coord).
 pub fn saved_files(dash: &str) -> [String; 7] {
     [
         "base",

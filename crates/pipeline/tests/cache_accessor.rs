@@ -65,8 +65,8 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_snap", "the unit's tools' arguments"),
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_step", "the unit's tools' arguments; the squares and packs held as they're copied ahead"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rail_step", "the rail job's own stop pairs (pairs-*.bin), which room-making never deletes"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "heritage_step", "links the items job's pageview months: pipeline::pageviews holds each it reads (store::cachefile)"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "items_step", "the items job's arguments: pipeline::pageviews holds each month it reads (store::cachefile)"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "heritage_step", "links the items job's pageview months: landmarks::pageviews holds each it reads (store::cachefile)"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "items_step", "the items job's arguments: landmarks::pageviews holds each month it reads (store::cachefile)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "heritage_epoch", "the heritage epoch's folder, which room-making never deletes"),
     ("crates/pipeline/src/bin/scenic-build.rs", "peaks_step", "the peaks job's arguments: RawTiles holds what it reads"),
     ("crates/pipeline/src/bin/scenic-build.rs", "terrain_step", "the terrain job's arguments: RawTiles holds what it reads"),
@@ -166,7 +166,7 @@ fn every_exemption_names_a_function_there() {
     }
 }
 
-/// Every request to the internet asks `pipeline::fetch::online` first, so a check run on scratch
+/// Every request to the internet asks `buildstore::fetch::online` first, so a check run on scratch
 /// data with SCENIC_FETCH_OFFLINE=1 (or a test's `go_offline`) can't download, whatever path it
 /// takes: each function making a request (`.call()`) asks, or is listed with why it needn't.
 #[test]
@@ -206,5 +206,5 @@ fn every_internet_request_asks_first() {
             bad.push(format!("{rel}:{} in fn {name}", i + 1));
         }
     }
-    assert!(bad.is_empty(), "requests that don't ask pipeline::fetch::online first:\n{}", bad.join("\n"));
+    assert!(bad.is_empty(), "requests that don't ask buildstore::fetch::online first:\n{}", bad.join("\n"));
 }

@@ -70,13 +70,13 @@ export interface Meta {
   packs?: Record<string, LayerPacks>;
   /** Whether the labels by importance are served (labels.tiles, /tiles/labels). */
   labelTiles?: boolean;
-  /** Whether the water is served as exact coverage (/tiles/water: pipeline::water). */
+  /** Whether the water is served as exact coverage (/tiles/water: inputs::water). */
   water?: boolean;
   /** The catalogue's number (catalogue.ts follows it). */
   catalog?: number; // the JSON key keeps its old spelling (task #547)
   /** The catalogue's tile layers and their zooms (the 3D buildings: `buildings`). */
   layers?: Record<string, [number, number]>;
-  /** Where the terrain goes past z12 (pipeline::terrain_deep): its z10 tiles with deep packs,
+  /** Where the terrain goes past z12 (terrain::terrain_deep): its z10 tiles with deep packs,
    * "x/y", and the native zoom of each. */
   terrainAreas?: TerrainAreas;
 }

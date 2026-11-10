@@ -37,7 +37,7 @@ const SPECKS_IDLE_MS = 250;
 export const TIERS = ['w.c', 'w.n', 'n.top', 'n.second', 'n.lower', 'n.mon', 'n.land', 'n.hist', 'n.fed', 'p.des', 'p.reg', 'p.area', 'm.des', 'm.reg', 'm.area', 'm.agr'];
 const GROUPS = ['w', 'n', 'p', 'm'];
 
-/** A kind's filters' properties, in the order of its tiles' `fvals` (pipeline::marks::fields). */
+/** A kind's filters' properties, in the order of its tiles' `fvals` (codecs::marks::fields). */
 export const FIELDS: Record<string, string[]> = {
   viewpoint: ['ele', 'pan', 'tw'], peak: ['ele', 'pr', 'is'], waterfall: ['h'], lighthouse: ['h', 'fh', 'rg', 'y'],
   covered_bridge: ['len', 'y'], rest: ['fac'], trailhead: ['fac'], heritage: ['by', 'dy', 'wp'],

@@ -463,10 +463,10 @@ mod tests {
         assert!(idle(crate::agent::seam::for_tests(), &st, &[]).is_empty());
         // A Mac paused alone isn't flagged; nor is any while the build is paused.
         st.waiting = vec![wait("slope-hi", "wait for terrain-root")];
-        st.helpers.push(Status { host: "m1".into(), held: Some(crate::control::Hold::new("t")), ..Default::default() });
+        st.helpers.push(Status { host: "m1".into(), held: Some(jobrt::control::Hold::new("t")), ..Default::default() });
         assert!(idle(crate::agent::seam::for_tests(), &st, &[]).is_empty());
         st.helpers.clear();
-        st.pause = Some(crate::control::Pause::new(crate::control::Mode::Drain, "t"));
+        st.pause = Some(jobrt::control::Pause::new(jobrt::control::Mode::Drain, "t"));
         assert!(of(crate::agent::seam::for_tests(), &st, &[], &[], 3.0, 0).is_empty());
     }
 
@@ -559,7 +559,7 @@ mod tests {
         );
         // A Mac paused alone isn't flagged.
         let mut st = lead();
-        st.helpers.push(Status { host: "m1".into(), held: Some(crate::control::Hold::new("t")), ..Default::default() });
+        st.helpers.push(Status { host: "m1".into(), held: Some(jobrt::control::Hold::new("t")), ..Default::default() });
         assert!(stuck(&st, &[run("terrain-hi", 20 * 60, Some(240))], 3.0).is_empty());
     }
 

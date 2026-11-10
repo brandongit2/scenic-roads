@@ -6,7 +6,7 @@
 //!
 //! With each step's tiles, those that made nothing to publish (task #839): a target recorded built
 //! whose published files (crate::agent::steps::output_named) the manifest doesn't name, e.g. a deep
-//! tile with no fine data there (crate::terrain_deep, `PRESENCE`), sent as `empty: {step: [i]}`,
+//! tile with no fine data there (terrain::terrain_deep, `PRESENCE`), sent as `empty: {step: [i]}`,
 //! indexes into the step's list (6,276 of terrain-deep's 7,243 in term 599's brief, 29 Oct: ~50 KB on 247 KB). The keys and the
 //! manifest come from one read of the records' brief.
 //!

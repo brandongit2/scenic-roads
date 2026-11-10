@@ -1656,7 +1656,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// A newer version installed (the agent put it under app/: pipeline::appupdate): this app replaced by it and opened
+    /// A newer version installed (the agent put it under app/: jobrt::appupdate): this app replaced by it and opened
     /// again; the build service left running (its own update drain restarts it into that version).
     func updateIfReplaced() {
         guard build.quitting == nil, let new = newerApp() else { return }
@@ -2126,7 +2126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: the map on this Mac (docs/roles.md §8.3, 7a)
 
-/// This Mac's map server's address (pipeline::net::DEFAULT_PORT).
+/// This Mac's map server's address (coordwire::net::DEFAULT_PORT).
 let mapHere = URL(string: "http://localhost:7311/")!
 
 /// The server's command line for this Mac's map on demand, from the installed app as

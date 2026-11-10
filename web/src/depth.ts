@@ -5,7 +5,7 @@
 //    depth.worker.ts makes from the server's depth tiles (crates/server/src/depth.rs: a tile the
 //    layer lacks comes from its nearest ancestor), and a hillshade layer over the floor's shading
 //    as the build stores it (the `depth-shade` layer: each pixel's steepness and mean direction,
-//    pipeline::depth's shading; served by crates/server/src/terrain.rs), shaded as the terrain's
+//    terrain::depth's shading; served by crates/server/src/terrain.rs), shaded as the terrain's
 //    is. Drawn as the water itself where the map has the water tiles: our MapLibre draws them over
 //    the water layer's own tiles, as those tiles' alpha (`scenic:mask`, maplibre/src/webgl/draw/
 //    water_mask.ts), the depth interpolated bilinearly and reaching a few pixels past its data so no
@@ -48,7 +48,7 @@ import { Dist } from './roads/stats';
 
 type RGB = [number, number, number];
 
-/** A depth source as the catalogue names it (pipeline::depth::grids). */
+/** A depth source as the catalogue names it (terrain::depth::grids). */
 export interface DepthSource {
   code: number;
   id: string;

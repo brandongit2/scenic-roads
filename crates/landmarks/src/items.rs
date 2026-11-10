@@ -11,7 +11,7 @@
 //!   wp-<epoch>.jsonl         QID → its Wikipedia articles (crate::heritagewd::wikipedias)
 //!   fetched-<epoch>.json     the first and last days anything was fetched for the epoch
 //! They are kept on the NAS too (sources/items/<epoch>/answers.tar.zst, with kept-<epoch>.json
-//! here saying which of its archives they last matched: pipeline::answers), so a run on another Mac,
+//! here saying which of its archives they last matched: agentcore::answers), so a run on another Mac,
 //! or here after the cache is lost, asks only about items not seen yet. To ask Wikidata again,
 //! delete facts-<epoch>.jsonl (or wp-) here: the deletion goes to the NAS with the next run, which
 //! asks about every item again. Older epochs' files go at the end of a run.

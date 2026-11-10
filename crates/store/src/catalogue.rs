@@ -78,17 +78,17 @@ pub struct Catalogue {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub meta: Value,
     /// The credits of the sources its data comes from: `[{"what", "source", "terms", "areas"?}]`
-    /// (pipeline::rules::Credit). Empty in catalogues made before they were recorded. Kept as JSON,
+    /// (inputs::rules::Credit). Empty in catalogues made before they were recorded. Kept as JSON,
     /// as `coverage` is, so a part the app can't read never makes the catalogue unreadable.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub credits: Value,
     /// The elevation datasets' labels by source byte (`src.u8`), from their declarations
-    /// (pipeline::inputs::credits::dem_labels): how the map names a road's elevation sources. None
+    /// (inputs::inputs::credits::dem_labels): how the map names a road's elevation sources. None
     /// in catalogues made before they were recorded.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dem_labels: BTreeMap<u8, String>,
     /// The coverage it was built for: `{"regions": [{"id", "name", "outline", "shapes"}]}`, each
-    /// outline entry's polygons simplified for drawing (pipeline::coverage::DrawnRegion), kept as
+    /// outline entry's polygons simplified for drawing (buildstore::coverage::DrawnRegion), kept as
     /// JSON text (`Coverage`). No regions in catalogues made before they were recorded.
     #[serde(default, skip_serializing_if = "Coverage::is_null")]
     pub coverage: Coverage,
@@ -128,14 +128,14 @@ pub struct Layer {
     #[serde(default)]
     pub hi: BTreeMap<String, String>,
     /// Deep packs (z13 and finer) by z10 tile: the terrain's where a dataset is finer than the
-    /// worldwide ones (pipeline::terrain_deep).
+    /// worldwide ones (terrain::terrain_deep).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deep: BTreeMap<String, String>,
-    /// The native zoom of each deep pack's z10 tile, past the base's (pipeline::terrain_deep::
+    /// The native zoom of each deep pack's z10 tile, past the base's (terrain::terrain_deep::
     /// native_zoom; elsewhere the base's finest, z12 to 67°): the map's zoom by area.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub native_zoom: BTreeMap<String, u8>,
-    /// A polar layer's block packs (z4–9) by z4 tile of its pole's grid ("4/x/y": pipeline::polar,
+    /// A polar layer's block packs (z4–9) by z4 tile of its pole's grid ("4/x/y": terrain::polar,
     /// docs/polar.md); its `root` then holds z0–3. A polar layer is named `polar-<kind>-<pole>`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub polar: BTreeMap<String, String>,

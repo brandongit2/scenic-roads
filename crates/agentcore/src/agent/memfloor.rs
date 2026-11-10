@@ -28,7 +28,7 @@ pub const OLD_FILE: &str = "build-memory.json";
 /// M4's 48, 4 of the Mac mini's 32, 2 of the M1's 16). On 4 Nov each of the three, busy and
 /// compressing, held a file cache of 11–12 % of its memory that macOS kept rather than dropped
 /// (the M4 5.4 GB of 48, the Mac mini 3.6 of 32, the M1 1.8 of 16: docs/pool.md §7.1), so its
-/// available memory (crate::sys::memory_available) fell below an eighth once macOS compressed
+/// available memory (jobrt::sys::memory_available) fell below an eighth once macOS compressed
 /// rather than dropped cache: the floor sits just above where the Mac starts to compress. 0 for a
 /// Mac whose memory isn't known.
 pub fn default_mb(total_mb: u64) -> u64 {

@@ -118,7 +118,7 @@ pub struct Entry {
     /// Each step's pace against its costs the run took (`Input::step_pace`; code 2 on).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub step_pace: BTreeMap<String, f64>,
-    /// The NAS budget the scheduler held to (crate::budget::nas::Limits), when it had one.
+    /// The NAS budget the scheduler held to (jobrt::budget::nas::Limits), when it had one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nas: Option<serde_json::Value>,
     /// The steps the lanes' `jobs` name, by index.

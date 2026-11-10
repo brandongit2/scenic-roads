@@ -139,7 +139,7 @@ lead (by member id), its settings at its own port (CORS).
 
 ### 3.4 The menu bar
 
-Built (step 5). `scenic menu` (`pipeline::menu`) reads this Mac's disk alone: its own agent's
+Built (step 5). `scenic menu` (`agentcore::menu`) reads this Mac's disk alone: its own agent's
 status (the fresher of `status.json` and `helper.json`: a file left from a part this Mac had
 before is the staler), and on a member the lead's line, which the beat's answer carries
 (`held::Answer::lead`, `LeadLine`: the lead's Mac and app, the build in a line, the build's pause,

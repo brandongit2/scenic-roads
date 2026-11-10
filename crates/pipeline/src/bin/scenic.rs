@@ -51,19 +51,20 @@
 //!   scenic inputs test on|off [--forget]  the test unit `_gate-test` on the gate, or off it
 //!                                       (--forget: its acceptances and records removed)
 //!   scenic timings [<kind>] [--last N] [--host <mac>] [--here | --file <f>] [--json]  the jobs'
-//!                                       timings (pipeline::timings): each kind's phases over its
+//!                                       timings (jobrt::timings): each kind's phases over its
 //!                                       last N runs (20), with their totals and shares; the
 //!                                       build's (its coordinator's log, asked of it from another
 //!                                       Mac), or with --here this Mac's own jobs' alone
 //!
 //! `--root <dir>` points at the NAS project folder (default: the mounted share). The command line
-//! is pipeline::cli::scenic's: `--help` (or `-h`) on any command prints its usage and does nothing;
+//! is agentcore::cli::scenic's: `--help` (or `-h`) on any command prints its usage and does nothing;
 //! an unknown command, flag or argument is refused before anything runs.
 
+use agentcore::agent::{self, backup, gc, Options};
+use agentcore::cli::scenic::{self as cli, Cmd};
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use pipeline::agent::{self, backup, gc, jobs::now_s, Options};
-use pipeline::cli::scenic::{self as cli, Cmd};
+use jobrt::jobs::now_s;
 use std::path::{Path, PathBuf};
 
 /// `~/Library/Application Support/scenic`.
@@ -95,9 +96,9 @@ fn ago(t: u64) -> String {
     }
 }
 
-/// `scenic timings`: the jobs' phases, summed by kind (pipeline::timings::summary).
+/// `scenic timings`: the jobs' phases, summed by kind (jobrt::timings::summary).
 fn timings(a: &cli::Timings) -> Result<()> {
-    use pipeline::timings::{read_log, summary, summary_text, RunRec};
+    use jobrt::timings::{read_log, summary, summary_text, RunRec};
     if let Some(cli::TimingsCmd::Publish { last, file, json, places }) = &a.cmd {
         return timings_publish(*last, file.as_deref(), *json, places);
     }
@@ -114,7 +115,7 @@ fn timings(a: &cli::Timings) -> Result<()> {
     } else {
         let asked = (|| -> Result<Vec<RunRec>> {
             let root = root(&a.places.root, false)?;
-            let c = pipeline::coord::client::Client::from_nas(&root, &store::sys::host_name())?
+            let c = agentcore::coord::client::Client::from_nas(&root, &store::sys::host_name())?
                 .context("no coordinator to ask")?;
             let (code, v) = c.post_json("/work/timings", &serde_json::json!({ "kind": kind, "last": last }))?;
             anyhow::ensure!(code == 200, "the coordinator answered {code} (an older app?)");
@@ -142,11 +143,11 @@ fn timings(a: &cli::Timings) -> Result<()> {
     Ok(())
 }
 
-/// `scenic timings publish [--last N]`: publishing end to end (pipeline::pubtimes), from the
+/// `scenic timings publish [--last N]`: publishing end to end (agentcore::pubtimes), from the
 /// build's history (the NAS's, else this Mac's coordinator's; `--file` a history file): each
 /// catalogue of the last N (10) and its z6 tiles, then the medians.
 fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::Places) -> Result<()> {
-    use pipeline::pubtimes;
+    use agentcore::pubtimes;
     let home = home_or_default(&places.home);
     let root = root(&places.root, false).ok();
     let days = 8;
@@ -175,7 +176,7 @@ fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::P
 /// `scenic lead`: the pool's lead as this Mac's agent sees it (docs/pool.md §11): the lead is
 /// fixed (the member `state/build/lead-member.json` declares), so there's nothing to ask of it.
 fn lead(a: &cli::Lead) -> Result<()> {
-    use pipeline::agent::lead as l;
+    use agentcore::agent::lead as l;
     let home = home_or_default(&a.home);
     let v = l::own_status(&home)
         .and_then(|s| s.pool)
@@ -189,11 +190,11 @@ fn lead(a: &cli::Lead) -> Result<()> {
 
 /// `scenic inputs`: the gate (docs/inputs.md §4.5, §4.7), from the records on the NAS.
 fn inputs(a: &cli::Inputs) -> Result<()> {
+    use ::inputs::inputs::{self as gi, view};
     use cli::{InputsCmd, OnOff};
-    use pipeline::inputs::{self as gi, view};
     let home = home_or_default(&a.home);
     let r = root(&a.root, false)?;
-    let manifest = pipeline::out::read_manifest(&r)?;
+    let manifest = buildstore::records::read_manifest(&r)?;
     let units = gi::units(&r);
     // (Checking, as the lead's status says.)
     let status = agent::read_status(Some(&r), &home);
@@ -393,22 +394,22 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
 /// jobs' growth · 1.2 GB for a new job (8.0 GB held) · 6 of 8 cores free · disk 120 GB free · 100 GB
 /// for jobs (20 GB room target) · on power · in use · NAS reachable · leases 12, 14 · 20 s ago";
 /// no new job, why ("memory: no new job: the memory brake: …").
-fn capacity_line_mem(c: &pipeline::coord::Capacity) -> String {
+fn capacity_line_mem(c: &agentcore::coord::Capacity) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
     match &c.mem_held_back {
         Some(why) => format!("memory: no new job: {why} ({} held)", gb(c.held_mb)),
-        None => format!("memory {} ({} held)", pipeline::coord::mem_words(c, c.mem_mb), gb(c.held_mb)),
+        None => format!("memory {} ({} held)", agentcore::coord::mem_words(c, c.mem_mb), gb(c.held_mb)),
     }
 }
 
 /// `capacity_line_mem` and the rest of a Mac's capacity in a line.
-fn capacity_line(c: &pipeline::coord::Capacity) -> String {
+fn capacity_line(c: &agentcore::coord::Capacity) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
     let mut v = vec![
         capacity_line_mem(c),
         format!("{} of {} cores free", c.cores_free, c.cores),
         if c.free_mb > 0 {
-            format!("disk {}", pipeline::coord::disk_words(c, c.disk_mb))
+            format!("disk {}", agentcore::coord::disk_words(c, c.disk_mb))
         } else {
             format!(
                 "disk {} free{}",
@@ -748,20 +749,21 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
             println!(
                 "  {mark} {}: {}{}",
                 l.what,
-                l.counts(agent::theplan::the_plan()).join(" · "),
+                l.counts(pipeline::agent::theplan::the_plan()).join(" · "),
                 l.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default()
             );
             if l.finished() {
                 continue;
             }
             for i in &l.items {
-                let noun = format!("{}s", agent::steps::noun(&i.step));
+                let noun = format!("{}s", pipeline::agent::steps::noun(&i.step));
                 let here = now.iter().any(|n| n == &i.step);
-                let place = if agent::every::place(agent::theplan::the_plan(), &i.step) == agent::every::Place::Any {
-                    " ⇄"
-                } else {
-                    ""
-                };
+                let place =
+                    if agent::every::place(pipeline::agent::theplan::the_plan(), &i.step) == agent::every::Place::Any {
+                        " ⇄"
+                    } else {
+                        ""
+                    };
                 println!(
                     "      {} {}: {}{place}",
                     if i.finished() {
@@ -771,7 +773,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
                     } else {
                         "○"
                     },
-                    agent::steps::current(&i.step),
+                    pipeline::agent::steps::current(&i.step),
                     count_line(i.done, i.total, i.left, &noun) + &apart(i.empty, i.nodata)
                 );
             }
@@ -805,11 +807,11 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
         }
     }
     // The gate (docs/inputs.md §4.7): a line per unit held or checking.
-    for v in st.inputs.iter().filter(|v| v.state != pipeline::inputs::view::State::Ok) {
+    for v in st.inputs.iter().filter(|v| v.state != ::inputs::inputs::view::State::Ok) {
         println!(
             "Inputs: {}{}",
             v.line(),
-            if v.state == pipeline::inputs::view::State::Held { " (`scenic inputs` says what holds it)" } else { "" }
+            if v.state == ::inputs::inputs::view::State::Held { " (`scenic inputs` says what holds it)" } else { "" }
         );
     }
     println!(
@@ -873,8 +875,8 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
         .filter(|p| !p.is_empty());
     let contact = root
         .as_ref()
-        .and_then(|r| pipeline::coord::contact_path(r).read().ok())
-        .and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
+        .and_then(|r| agentcore::coord::contact_path(r).read().ok())
+        .and_then(|b| serde_json::from_slice::<agentcore::coord::Contact>(&b).ok());
     let page = match (page, contact) {
         (Some(p), _) => Some(p),
         (None, Some(c)) => c.urls.first().map(|u| format!("{u}/work/")),
@@ -900,7 +902,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
 /// time, each step one line of the same columns; `--json` as `/work/steps` serves it.
 fn steps(json: bool) -> Result<()> {
     use agent::every::Place;
-    use agent::steps::{self, Kind, Scope};
+    use pipeline::agent::steps::{self, Kind, Scope};
     let rows = steps::table();
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "steps": rows, "stages": steps::STAGES }))?);
@@ -1032,11 +1034,11 @@ fn in_use(cores_asked: Option<u32>, off: bool, home: &Option<PathBuf>) -> Result
 }
 
 /// `scenic pool set [<name> [<value> | off]]` (and `scenic nas-target`, its NAS target's): one of
-/// the pool's settings (pipeline::coord::asks) asked of this Mac's agent (its folder `home`),
+/// the pool's settings (agentcore::coord::asks) asked of this Mac's agent (its folder `home`),
 /// which sends it to the lead with its next beat; with none, how they stand as the agent last had
 /// them from the lead (control::POOL_SETTINGS), no NAS read.
 fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> {
-    use pipeline::coord::asks::{self, SettingAsk};
+    use agentcore::coord::asks::{self, SettingAsk};
     if let Some(name) = name {
         anyhow::ensure!(asks::NAMES.contains(&name), "the pool's settings: {}, not {name}", asks::NAMES.join(", "));
         if let (asks::BATCH | asks::OVERDUE, Some(v)) = (name, value) {
@@ -1063,12 +1065,12 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
             };
             let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             let by = format!("scenic pool set on {}", store::sys::host_name());
-            pipeline::control::request_setting(home, &SettingAsk { name: name.to_string(), value, by, at })?;
+            jobrt::control::request_setting(home, &SettingAsk { name: name.to_string(), value, by, at })?;
             println!("{name}: asked of this Mac's agent, which sends it to the lead with its next beat");
             return Ok(());
         }
     }
-    let Some(s) = pipeline::control::read_pool_settings(home) else {
+    let Some(s) = jobrt::control::read_pool_settings(home) else {
         println!("The pool's settings: not had from the lead yet (this Mac's agent writes them as it has them)");
         return Ok(());
     };
@@ -1080,11 +1082,11 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
     }
     println!(
         "NAS target: the budget grants while the NAS's busiest disk is under {} % busy",
-        pipeline::budget::nas::target_pct(s.nas_target().as_ref())
+        jobrt::budget::nas::target_pct(s.nas_target().as_ref())
     );
     println!(
         "Batch length: a job of a shared step is sized to {} min of its targets' measured time on its Mac",
-        s.batch_s().unwrap_or(pipeline::coord::JOB_S) / 60
+        s.batch_s().unwrap_or(agentcore::coord::JOB_S) / 60
     );
     let f = s.overdue().0;
     println!(
@@ -1096,7 +1098,8 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
 /// `scenic nas-room [<GB> | off]`: the NAS reserve (buildstore::room::NAS_RESERVE), set in the project
 /// folder on the NAS, which every job reads; off: none; with none, how it stands.
 fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
-    use agent::room::{nas_reserve, size};
+    use agent::room::size;
+    use buildstore::room::nas_reserve;
     let r = root(root_, true)?;
     let by = format!("scenic nas-room on {}", store::sys::host_name());
     if let Some(what) = what {
@@ -1106,7 +1109,7 @@ fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
         Some(t) => println!("NAS reserve: {} (set {} by {})", size(t.bytes), ago(t.at), t.by),
         None => println!("NAS reserve: off (`scenic nas-room <GB>` sets one)"),
     }
-    if let Ok(f) = pipeline::agent::room::nas_free(&r) {
+    if let Ok(f) = buildstore::room::nas_free(&r) {
         println!("Free on the NAS now: {}", size(f));
     }
     Ok(())
@@ -1119,7 +1122,7 @@ fn memory(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     use agent::memfloor;
     let home = home_or_default(home);
     let by = format!("scenic memory on {}", store::sys::host_name());
-    let total_mb = pipeline::sys::memsize().map_or(0, |b| b >> 20);
+    let total_mb = jobrt::sys::memsize().map_or(0, |b| b >> 20);
     // (A build memory left by a release before the floor: replaced, said.)
     if let Some(said) = memfloor::migrate(&home, total_mb) {
         println!("{}", said[..1].to_uppercase() + &said[1..]);
@@ -1150,10 +1153,11 @@ fn memory_line(set: Option<&agent::memfloor::Floor>, total_mb: u64, ago: impl Fn
     }
 }
 
-/// `scenic room [<GB> | off]`: this Mac's disk room target (agent::room::Target), set in its agent's
+/// `scenic room [<GB> | off]`: this Mac's disk room target (buildstore::room::Target), set in its agent's
 /// folder, which the agent reads each loop; and how it stands, as the agent's status says.
 fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
-    use agent::room::{size, target};
+    use agent::room::size;
+    use buildstore::room::target;
     let home = home_or_default(home);
     let by = format!("scenic room on {}", store::sys::host_name());
     match what {
@@ -1162,7 +1166,7 @@ fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
             println!("the disk room target is off: this Mac's agent fills its caches again as its jobs need");
         }
         Some(gb) => {
-            let free = agent::room::disk_free(&home).ok();
+            let free = buildstore::room::disk_free(&home).ok();
             let bytes = agent::settings::set_room(&home, gb, &by)?.map_or(0, |t| t.bytes);
             let short = free.map(|f| bytes.saturating_sub(f)).unwrap_or(0);
             if short > 0 {
@@ -1173,7 +1177,7 @@ fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
         }
         None => {
             let t = target(&home);
-            let free = agent::room::disk_free(&home).ok();
+            let free = buildstore::room::disk_free(&home).ok();
             match &t {
                 Some(t) => println!("Disk room target: {} (set {} by {})", size(t.bytes), ago(t.at), t.by),
                 None => println!("Disk room target: off (`scenic room <GB>` sets one)"),
@@ -1283,16 +1287,16 @@ fn clean(yes: bool, deep: bool, home: &Option<PathBuf>) -> Result<()> {
     }
 }
 
-/// `scenic job cancel <target>`: an ask to this Mac's agent (pipeline::control::Cancel), followed
+/// `scenic job cancel <target>`: an ask to this Mac's agent (jobrt::control::Cancel), followed
 /// until it says what it stopped.
 fn job_cancel(target: &str, step: Option<&str>, rerun_after_update: bool, home: &Option<PathBuf>) -> Result<()> {
     let home = home_or_default(home);
     let host = store::sys::host_name();
-    let c = pipeline::control::Cancel::new(target, step, rerun_after_update, &format!("scenic job cancel on {host}"));
-    pipeline::control::request_cancel(&home, &c)?;
+    let c = jobrt::control::Cancel::new(target, step, rerun_after_update, &format!("scenic job cancel on {host}"));
+    jobrt::control::request_cancel(&home, &c)?;
     let t = std::time::Instant::now();
     loop {
-        if let Some(a) = pipeline::control::cancel_answer(&home, &c) {
+        if let Some(a) = jobrt::control::cancel_answer(&home, &c) {
             println!("{}", a.said);
             anyhow::ensure!(a.hit, "nothing cancelled");
             return Ok(());
@@ -1304,18 +1308,18 @@ fn job_cancel(target: &str, step: Option<&str>, rerun_after_update: bool, home: 
     }
 }
 
-/// `scenic redo <step> <target>… [--run]` (pipeline::agent::redo): what the newest records hold for
+/// `scenic redo <step> <target>… [--run]` (agentcore::agent::redo): what the newest records hold for
 /// the targets; with --run, an ask of the lead's coordinator (`/work/redo`), followed until its merge
 /// lands in the records.
 fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> Result<()> {
-    use pipeline::agent::redo;
-    use pipeline::pool::records::Records;
+    use agentcore::agent::redo;
+    use agentcore::pool::records::Records;
     let t0 = std::time::Instant::now();
     let (step, targets) = redo::checked(step, targets)?;
     let r = root(root_, false)?;
     let mut records = || -> Result<Records> { Records::now(&r).context("the records") };
     let rec = records()?;
-    for l in redo::said(agent::theplan::the_plan(), &rec.keys, &rec.manifest, &step, &targets) {
+    for l in redo::said(pipeline::agent::theplan::the_plan(), &rec.keys, &rec.manifest, &step, &targets) {
         println!("{l}");
     }
     let todo: Vec<String> = redo::clears(&rec.keys, &step, &targets)
@@ -1326,15 +1330,15 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
     // (A job's run, the lead's redo job, ends here: its cost noted, redo::note_cost.)
     if todo.is_empty() {
         println!("nothing to clear");
-        redo::note_cost(agent::theplan::the_plan().cost_version(redo::STEP), t0);
+        redo::note_cost(pipeline::agent::theplan::the_plan().cost_version(redo::STEP), t0);
         return Ok(());
     }
     if !run {
         println!("a dry run: `scenic redo {step} {} --run` asks the lead to clear them", todo.join(" "));
-        redo::note_cost(agent::theplan::the_plan().cost_version(redo::STEP), t0);
+        redo::note_cost(pipeline::agent::theplan::the_plan().cost_version(redo::STEP), t0);
         return Ok(());
     }
-    let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+    let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
         .context("no lead's coordinator to ask")?;
     let by = format!("scenic redo on {}", store::sys::host_name());
     let (code, v) = c.post_json("/work/redo", &serde_json::json!({ "step": step, "targets": todo, "by": by }))?;
@@ -1345,7 +1349,7 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
     println!("asked the lead (redo {}); its job clears them, merged within minutes", v["n"]);
     // The redo's job is leased after `after`; an older lead's answer lacks it: each target's mark.
     let floor = match serde_json::from_value::<(u64, u64)>(serde_json::json!([v["after"]["term"], v["after"]["n"]])) {
-        Ok((term, n)) => vec![Some(pipeline::pool::journal::LeaseId { term, n }); todo.len()],
+        Ok((term, n)) => vec![Some(agentcore::pool::journal::LeaseId { term, n }); todo.len()],
         Err(_) => redo::marks(&rec, &step, &todo),
     };
     let landed = redo::follow(
@@ -1371,7 +1375,7 @@ fn main() -> Result<()> {
         None => status(&cli.status, None),
         Some(Cmd::Status(a)) => status(&a.places, a.flags.then(|| a.since.unwrap_or(now_s().saturating_sub(6 * 3600)))),
         Some(Cmd::Menu(h)) => {
-            println!("{}", pipeline::menu::status(&home_or_default(&h.home), now_s()));
+            println!("{}", agentcore::menu::status(&home_or_default(&h.home), now_s()));
             Ok(())
         }
         Some(Cmd::Lead(a)) => lead(&a),
@@ -1383,7 +1387,7 @@ fn main() -> Result<()> {
             }
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let o = Options {
-                the_plan: agent::theplan::the_plan(),
+                the_plan: pipeline::agent::theplan::the_plan(),
                 home: home_or_default(&places.home),
                 root: places.root.map(store::nasfs::NasRoot::from_arg),
                 bin,
@@ -1399,11 +1403,11 @@ fn main() -> Result<()> {
             if extra > 0 {
                 eprintln!("agent: WARNING: SCENIC_TEST_DISK_EXTRA_MB: this agent counts {extra} MB more free on its disk than there is (the two-Mac test's alone, never a real agent's)");
             }
-            pipeline::sys::raise_open_files();
-            // (Every Mac's app kept current from here, the map server's Mac too: pipeline::appupdate.)
+            jobrt::sys::raise_open_files();
+            // (Every Mac's app kept current from here, the map server's Mac too: jobrt::appupdate.)
             // (And its copies of old catalogues gone, docs/maplog.md §8 step 9.)
             if places.home.is_none() {
-                pipeline::appupdate::spawn(app_home(), o.root.clone());
+                jobrt::appupdate::spawn(app_home(), o.root.clone());
                 let user = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
                 for d in gc::remove_this_macs_catalogues(&app_home(), &user) {
                     eprintln!("agent: removed {} (an old catalogue's copy)", d.display());
@@ -1414,7 +1418,7 @@ fn main() -> Result<()> {
             // (Quit as Scenic asked: the launcher ends with it rather than starting it again.)
             if a.quit_done() {
                 drop(a);
-                std::process::exit(pipeline::control::QUIT_EXIT);
+                std::process::exit(jobrt::control::QUIT_EXIT);
             }
             Ok(())
         }
@@ -1434,7 +1438,7 @@ fn main() -> Result<()> {
                     // runs it wherever it fits from then. Told the lead (docs/coordination.md step
                     // 7), which keeps it; for an older lead (404), or a member on an older app whose
                     // progress the lead reads on the NAS, the gate's file there, made once.
-                    let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+                    let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
                         .context("no lead's coordinator to ask")?;
                     let (code, v) =
                         c.post_json("/pool/progress/release", &serde_json::json!({ "member": member, "job": job }))?;
@@ -1447,7 +1451,7 @@ fn main() -> Result<()> {
                 Some(PoolCmd::Release { member, job: None }) => {
                     // A member's leases released by the owner (docs/coordination.md §6.1,
                     // crate::coord::held): its targets go to others.
-                    let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+                    let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
                         .context("no lead's coordinator to ask")?;
                     let (code, v) = c.post_json("/pool/release", &serde_json::json!({ "member": member }))?;
                     anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
@@ -1458,13 +1462,13 @@ fn main() -> Result<()> {
                     }
                 }
                 Some(PoolCmd::Needs { fit: _, costs }) => {
-                    // Each step's model of what its jobs need (pipeline::needs): `--fit` prints its
+                    // Each step's model of what its jobs need (agentcore::needs): `--fit` prints its
                     // fits' errors on held-out runs and the steps that don't fit. Read only: the
                     // coordinator's costs (`--costs <costs.json | costs.jsonl>`, else this Mac's
                     // agent's), its disk floors beside them.
                     let p = costs.unwrap_or_else(|| app_home().join("agent/coord/costs.json"));
                     let (costs, mut disks) =
-                        pipeline::needs::read_costs(&p).with_context(|| format!("reading {}", p.display()))?;
+                        agentcore::needs::read_costs(&p).with_context(|| format!("reading {}", p.display()))?;
                     let kept: std::collections::BTreeMap<String, u64> = std::fs::read(p.with_file_name("disks.json"))
                         .ok()
                         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -1473,8 +1477,8 @@ fn main() -> Result<()> {
                     println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
                     print!(
                         "{}",
-                        pipeline::needs::fit_table(&pipeline::needs::Book::with(
-                            agent::theplan::the_plan(),
+                        agentcore::needs::fit_table(&agentcore::needs::Book::with(
+                            pipeline::agent::theplan::the_plan(),
                             &costs,
                             None,
                             Some(&disks)
@@ -1482,24 +1486,23 @@ fn main() -> Result<()> {
                     );
                     // Where each step's memory peaks: the phase (a program it runs) that held the
                     // most over its last runs, from the build's timings beside the costs
-                    // (pipeline::timings::peak_holders).
-                    let runs = pipeline::timings::read_log(&p.with_file_name("timings.jsonl"));
-                    let holders = pipeline::timings::peak_holders(&runs, 20);
+                    // (jobrt::timings::peak_holders).
+                    let runs = jobrt::timings::read_log(&p.with_file_name("timings.jsonl"));
+                    let holders = jobrt::timings::peak_holders(&runs, 20);
                     if !holders.is_empty() {
                         println!(
                             "\nwhere each step's memory peaks (its phase holding the most, its last 20 timed runs):"
                         );
-                        print!("{}", pipeline::timings::peak_text(&holders));
+                        print!("{}", jobrt::timings::peak_text(&holders));
                     }
                 }
                 Some(PoolCmd::NasProbe { dir }) => {
-                    // The NAS budget's probe once (pipeline::budget::nas), in `--dir <folder>` (made,
+                    // The NAS budget's probe once (jobrt::budget::nas), in `--dir <folder>` (made,
                     // then removed with what it holds), else a folder of its own under the project
                     // folder's `state/pool/nas-probe`.
-                    let dir = dir.unwrap_or_else(|| pipeline::budget::nas::probe_dir(&r, &store::sys::host_name()));
+                    let dir = dir.unwrap_or_else(|| jobrt::budget::nas::probe_dir(&r, &store::sys::host_name()));
                     anyhow::ensure!(!dir.exists(), "{} exists: the probe makes its own folder", dir.display());
-                    let p =
-                        pipeline::budget::nas::probe(&dir).with_context(|| format!("probing in {}", dir.display()))?;
+                    let p = jobrt::budget::nas::probe(&dir).with_context(|| format!("probing in {}", dir.display()))?;
                     println!(
                         "{}: {:.1} MB/s (written and read back), {:.1} creates/s, {:.0} entries listed/s, {:.1} stats/s, {:.1} deletes/s",
                         dir.display(),
@@ -1514,7 +1517,7 @@ fn main() -> Result<()> {
                     // The targets' floors the lead's coordinator keeps (crate::agent::memguard):
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`
                     // one target's (a step fixed, or a floor learned wrong).
-                    let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+                    let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
                         .context("no lead's coordinator to ask")?;
                     let (code, v) = c.post_json(
                         "/work/floors",
@@ -1529,7 +1532,7 @@ fn main() -> Result<()> {
                             v["cleared"]["disks"].as_u64().unwrap_or(0)
                         );
                     }
-                    let floors: std::collections::BTreeMap<String, pipeline::agent::memguard::Floor> =
+                    let floors: std::collections::BTreeMap<String, agentcore::agent::memguard::Floor> =
                         serde_json::from_value(v["floors"].clone())?;
                     if floors.is_empty() {
                         println!("no floors");
@@ -1562,7 +1565,7 @@ fn main() -> Result<()> {
                 .filter(|u| !u.is_empty())
                 .map(str::to_string)
                 .collect();
-            let client = pipeline::coord::client::Client::at(
+            let client = agentcore::coord::client::Client::at(
                 urls,
                 std::env::var("SCENIC_COORD_TOKEN").unwrap_or_default(),
                 &std::env::var("SCENIC_WORKER").unwrap_or_default(),
@@ -1570,7 +1573,7 @@ fn main() -> Result<()> {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             // (Timed as a task of its kind: a tail's, a 3D buildings' z3 tile's, tree cover's blocks'.)
             let kind = format!("task {}", pipeline::agent::theplan::the_plan().task_kind(&spec));
-            let r = pipeline::timings::job(&kind, || {
+            let r = jobrt::timings::job(&kind, || {
                 pipeline::offload::run_task(
                     &client,
                     lease,
@@ -1588,8 +1591,8 @@ fn main() -> Result<()> {
             store::whole::write(&result, v.to_string().as_bytes())?;
             // (A step stopped as the build pauses: the task exits as paused, given back by its
             // agent, not failed.)
-            if r.as_ref().is_err_and(pipeline::control::is_paused) {
-                std::process::exit(pipeline::control::PAUSED_EXIT);
+            if r.as_ref().is_err_and(jobrt::control::is_paused) {
+                std::process::exit(jobrt::control::PAUSED_EXIT);
             }
             r.map(|_| ())
         }
@@ -1614,8 +1617,8 @@ fn main() -> Result<()> {
                     .ok()
                     .flatten()
             });
-            pipeline::timings::job("gc", || {
-                gc::set_way(agent::theplan::the_plan().cost_version(gc::STEP));
+            jobrt::timings::job("gc", || {
+                gc::set_way(pipeline::agent::theplan::the_plan().cost_version(gc::STEP));
                 let asked = gc::Asked { dry_run, depth: keep.as_ref(), sweeps: sweeps.as_deref(), old_catalogues };
                 // (Every removal marked deleted on the lead's GC queue first: gc::Lead.)
                 let root = root(&r.root, true)?;
@@ -1624,7 +1627,7 @@ fn main() -> Result<()> {
                     &root,
                     &asked,
                     &gc::Ways {
-                        the_plan: agent::theplan::the_plan(),
+                        the_plan: pipeline::agent::theplan::the_plan(),
                         lead: &lead,
                         yielding: &gc::job_yielding,
                         remove: &gc::unlink,
@@ -1636,7 +1639,7 @@ fn main() -> Result<()> {
                 }
                 println!("{}", serde_json::to_string_pretty(&r)?);
                 if r.paused {
-                    pipeline::control::stop_paused(gc::STEP);
+                    jobrt::control::stop_paused(gc::STEP);
                 }
                 Ok(())
             })?;
@@ -1645,8 +1648,7 @@ fn main() -> Result<()> {
         Some(Cmd::Redo { step, targets, run, root: r }) => redo(&step, &targets, run, &r.root),
         Some(Cmd::Backup { local, root: r }) => {
             let today = backup::format_day(std::time::SystemTime::now());
-            let r =
-                pipeline::timings::job("backup", || backup::run(&root(&r.root, true)?, local.as_deref(), &today, 30))?;
+            let r = jobrt::timings::job("backup", || backup::run(&root(&r.root, true)?, local.as_deref(), &today, 30))?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -1657,7 +1659,7 @@ fn main() -> Result<()> {
             forecast_check(from, to, replay.then_some(split), json, &r.root)
         }
         Some(Cmd::Catalogues { after, home }) => {
-            use pipeline::agent::cataloguesview::{CataloguesView, KEPT};
+            use agentcore::agent::cataloguesview::{CataloguesView, KEPT};
             let kept = home_or_default(&home.home).join(KEPT);
             println!("{}", serde_json::to_string(&CataloguesView::answer_kept(&kept, after))?);
             Ok(())
@@ -1668,7 +1670,7 @@ fn main() -> Result<()> {
 /// How long `scenic pause` and `resume` wait for the lead's answer to an ask passed on to it.
 const LEAD_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// The lead's answer about `key` to the ask at `at` (pipeline::agent::answered), waited for up to
+/// The lead's answer about `key` to the ask at `at` (agentcore::agent::answered), waited for up to
 /// `LEAD_WAIT`: an error with the lead's reason when it refused it; whether it answered (a later
 /// ask's answer counts: it overtook this one).
 fn lead_answer(home: &std::path::Path, key: &str, at: u64) -> Result<bool> {
@@ -1692,17 +1694,17 @@ const NOT_ANSWERED: &str = "the lead hasn't answered yet: this Mac's agent asks 
 
 /// `scenic pause` (`pause`) or `scenic resume`: an ask to this Mac's agent, which passes it on to
 /// the lead's (crate::control); `--here` or a member: that Mac alone (task #224). An ask the lead
-/// refuses (pipeline::agent::answered) exits 1 with its reason.
+/// refuses (agentcore::agent::answered) exits 1 with its reason.
 fn pause_resume(pause: bool, now: bool, here: bool, member: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
-    use pipeline::control::{Mode, Pause};
+    use jobrt::control::{Mode, Pause};
     let home = home_or_default(home);
     let host = store::sys::host_name();
     if here || member.is_some() {
-        let held = pause.then(|| pipeline::control::Hold::new(&format!("scenic pause on {host}")));
-        let r = pipeline::control::request_hold(&home, member, held)?;
+        let held = pause.then(|| jobrt::control::Hold::new(&format!("scenic pause on {host}")));
+        let r = jobrt::control::request_hold(&home, member, held)?;
         let waited = std::time::Instant::now();
         while waited.elapsed() < std::time::Duration::from_secs(60) {
-            if let Some(a) = pipeline::control::hold_answer(&home, &r) {
+            if let Some(a) = jobrt::control::hold_answer(&home, &r) {
                 anyhow::ensure!(a.ok, "{}", a.said);
                 // (Another member's, passed on to the lead: its answer waited for.)
                 let pending = match &a.lead_key {
@@ -1725,7 +1727,7 @@ fn pause_resume(pause: bool, now: bool, here: bool, member: Option<&str>, home: 
         bail!("this Mac's agent hasn't taken the ask up in a minute (is it running?); it stays asked");
     }
     let p = pause.then(|| Pause::new(if now { Mode::Freeze } else { Mode::Drain }, &format!("scenic pause on {host}")));
-    let r = pipeline::control::request(&home, p)?;
+    let r = jobrt::control::request(&home, p)?;
     let pending =
         if lead_answer(&home, agent::answered::PAUSE, r.at)? { String::new() } else { format!(" ({NOT_ANSWERED})") };
     println!(
@@ -1747,9 +1749,9 @@ mod tests {
     /// none.
     #[test]
     fn the_capacity_line_shows_the_disk_reserved() {
-        let c = pipeline::coord::Capacity { disk_mb: 12 << 10, reserved_mb: 8 << 10, ..Default::default() };
+        let c = agentcore::coord::Capacity { disk_mb: 12 << 10, reserved_mb: 8 << 10, ..Default::default() };
         assert!(capacity_line(&c).contains("disk 12.0 GB free (8.0 GB reserved)"), "{}", capacity_line(&c));
-        let c = pipeline::coord::Capacity { disk_mb: 12 << 10, ..Default::default() };
+        let c = agentcore::coord::Capacity { disk_mb: 12 << 10, ..Default::default() };
         assert!(!capacity_line(&c).contains("reserved"));
     }
 
@@ -1839,7 +1841,7 @@ mod tests {
             let mut st = with("m4", n, true);
             assert!(st.job.is_none() && st.beside.is_none() && st.more.is_empty(), "the old fields not written");
             st.helpers = vec![with("m1", 4 - n, false)];
-            st.capacity = vec![("m4".into(), pipeline::coord::Capacity { limit_mb: 20 << 10, ..Default::default() })];
+            st.capacity = vec![("m4".into(), agentcore::coord::Capacity { limit_mb: 20 << 10, ..Default::default() })];
             st.packing = [("m1".to_string(), "cores: 0 of 8 left".to_string())].into();
             st.nas_share = [("m4".to_string(), 250), ("m1 #2".to_string(), 100)].into();
             st.ramp = Some(agent::RampView {
@@ -1910,7 +1912,7 @@ mod tests {
             memory_line(None, 48 << 10, ago),
             "Memory floor: keep at least 6.0 GB available on this Mac, the default (an eighth of its 48.0 GB; `scenic memory <GB>` sets another)"
         );
-        let c = pipeline::coord::Capacity {
+        let c = agentcore::coord::Capacity {
             limit_mb: 42 << 10,
             build_mb: 10 << 10,
             mem_mb: 1 << 10,
@@ -1927,7 +1929,7 @@ mod tests {
         let l = capacity_line(&c);
         assert!(l.starts_with("memory 9.0 GB available (1.5 GB by compressing) · 6.0 GB floor · 3.0 GB reserved for its jobs' growth · 1.0 GB for a new job (8.0 GB held)"), "{l}");
         assert!(l.contains("disk 38 GB free · 18 GB for jobs (20 GB room target)"), "{l}");
-        let c = pipeline::coord::Capacity {
+        let c = agentcore::coord::Capacity {
             mem_held_back: Some("the memory brake: macOS's memory pressure is at warning".into()),
             ..c
         };
@@ -1951,7 +1953,7 @@ fn forecast_check(
     json: bool,
     r: &Option<PathBuf>,
 ) -> Result<()> {
-    use pipeline::agent::{fcarchive, fccheck};
+    use agentcore::agent::{fcarchive, fccheck};
     let now = now_s();
     let at = |s: &Option<String>, or: u64| -> Result<u64> {
         match s {
@@ -1965,13 +1967,13 @@ fn forecast_check(
     let root = root(r, false)?;
     // (A day before `from` too: what each step's pace reads.)
     let days = now.saturating_sub(from) / 86_400 + 2;
-    let events = fccheck::dedup(pipeline::pubtimes::load_history(Some(&root), None, days));
+    let events = fccheck::dedup(agentcore::pubtimes::load_history(Some(&root), None, days));
     if let Some(split) = replay {
         let inputs = fccheck::inputs(&root, from, to);
         anyhow::ensure!(!inputs.is_empty(), "no forecast input recorded in the span");
         let last = inputs.iter().map(|i| i.at).max().unwrap_or(to);
         let split = at(&split, last.saturating_sub(86_400))?;
-        let b = fccheck::backtest(agent::theplan::the_plan(), &inputs, &events, from, to, split);
+        let b = fccheck::backtest(pipeline::agent::theplan::the_plan(), &inputs, &events, from, to, split);
         if json {
             println!("{}", serde_json::to_string_pretty(&b)?);
         } else {

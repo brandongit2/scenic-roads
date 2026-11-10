@@ -2,7 +2,7 @@
 // tiles stop at 85.05°; past it each pole has its own tiles, in polar stereographic
 // (crates/roadcore/src/polar.rs: EPSG:3413 north, EPSG:3031 south, a quadtree over ±2^20 m): the
 // terrain's heights (Terrarium in WebP) and the stored shading (the slope pyramid's codes,
-// pipeline::shade_codec). This module has the projection, the tile choice and the tiles' loading
+// codecs::shade_codec). This module has the projection, the tile choice and the tiles' loading
 // and decoding, for any view that draws a cap: the globe's layer (polarglobe.ts) now, a flat polar
 // projection later. Nothing here assumes a globe.
 

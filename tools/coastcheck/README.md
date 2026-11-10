@@ -7,7 +7,7 @@ pixel.
 - **The app**, in eval mode (`?eval`, `web/src/evalmode.ts`): the view as its link gives it, with
   everything but land and water off, land white and water black. A pixel's water is 1 less its grey.
 - **The reference**: the water's exact share of each pixel, from `coastcheck serve`
-  (`crates/pipeline/src/bin/tools/coastcheck.rs`, `pipeline::watercov`), as raster tiles drawn in the same
+  (`crates/pipeline/src/bin/tools/coastcheck.rs`, `codecs::watercov`), as raster tiles drawn in the same
   page and camera at 4 × the pixel ratio (2 × with 3D terrain) and box-filtered back, so the
   projection, globe and terrain are MapLibre's own. The full detail is the basemap's water polygons
   plus the water areas of the pass's filtered planet (`coastcheck build`, once a pass); each edge adds its exact area to the

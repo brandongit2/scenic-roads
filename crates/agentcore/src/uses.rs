@@ -42,7 +42,7 @@
 //! (its use 2 on the mini, 4 on the M4 and the M1), terrain-lo on the M4 at 2 (1), and leaves
 //! slope-deep, terrain-hi and terrain-deep at their use (docs/pool.md §7.1).
 //!
-//! A run whose targets ran on their job's grant as each began (crate::control::on_grant) says what
+//! A run whose targets ran on their job's grant as each began (jobrt::control::on_grant) says what
 //! each thread count held (`timings::RunRec::held`): its use is read at each (`Run::of`).
 //!
 //! A step none of whose runs on a Mac is in the window has none here: the cost book's rule decides
@@ -80,7 +80,7 @@ pub struct Run {
     pub phases: Vec<(f64, f64)>,
 }
 
-/// A top-level phase as the floor reads it (crate::timings::PhaseRec's fields).
+/// A top-level phase as the floor reads it (jobrt::timings::PhaseRec's fields).
 #[derive(Clone, Debug, Default, Deserialize)]
 struct Phase {
     wall_s: f64,
@@ -113,7 +113,7 @@ fn kept(phases: &[Phase]) -> Vec<(f64, f64)> {
 /// The most threads a floor says (past any Mac's cores: the grant is fitted to them anyway).
 const MOST_FLOOR: u32 = 64;
 
-/// The fields of a timings record (crate::timings::RunRec) a `Run` is read from: a log's line read
+/// The fields of a timings record (jobrt::timings::RunRec) a `Run` is read from: a log's line read
 /// for these alone, not its phases.
 #[derive(Deserialize)]
 struct Line {
@@ -127,7 +127,7 @@ struct Line {
     #[serde(default)]
     threads: Option<u32>,
     #[serde(default)]
-    held: Vec<crate::timings::Held>,
+    held: Vec<jobrt::timings::Held>,
     #[serde(default)]
     phases: Vec<Phase>,
     ok: bool,
@@ -156,7 +156,7 @@ impl Run {
             wall_s,
             ..Default::default()
         };
-        let held: Vec<&crate::timings::Held> = l.held.iter().filter(|h| h.threads > 0 && h.wall_s > 0.0).collect();
+        let held: Vec<&jobrt::timings::Held> = l.held.iter().filter(|h| h.threads > 0 && h.wall_s > 0.0).collect();
         let (wall, cpu) = held.iter().fold((l.wall_s, cpu_s), |(w, c), h| (w - h.wall_s, c - h.cpu_s));
         let mut runs: Vec<Run> = held.iter().map(|h| part(h.threads, h.cpu_s, h.wall_s)).collect();
         if wall > 0.0 {
@@ -170,7 +170,7 @@ impl Run {
     }
 
     /// The runs a timings record says.
-    pub fn of(the_plan: &dyn crate::agent::seam::Plan, r: &crate::timings::RunRec) -> Vec<Run> {
+    pub fn of(the_plan: &dyn crate::agent::seam::Plan, r: &jobrt::timings::RunRec) -> Vec<Run> {
         let phases = r
             .phases
             .iter()
@@ -393,14 +393,14 @@ mod tests {
     }
 
     /// A phase as recorded: its wall, CPU, and on another thread (`background`) or overlapped by one.
-    fn phase(wall_s: f64, cpu_s: f64, overlapped: bool, background: bool) -> crate::timings::PhaseRec {
-        crate::timings::PhaseRec { wall_s, cpu_s: Some(cpu_s), overlapped, background, n: 1, ..Default::default() }
+    fn phase(wall_s: f64, cpu_s: f64, overlapped: bool, background: bool) -> jobrt::timings::PhaseRec {
+        jobrt::timings::PhaseRec { wall_s, cpu_s: Some(cpu_s), overlapped, background, n: 1, ..Default::default() }
     }
 
-    fn timed(step: &str, threads: u32, wall_s: f64, cpu_s: f64, phases: Vec<crate::timings::PhaseRec>) -> Vec<Run> {
+    fn timed(step: &str, threads: u32, wall_s: f64, cpu_s: f64, phases: Vec<jobrt::timings::PhaseRec>) -> Vec<Run> {
         Run::of(
             crate::agent::seam::for_tests(),
-            &crate::timings::RunRec {
+            &jobrt::timings::RunRec {
                 v: 1,
                 kind: step.into(),
                 host: "m4".into(),
@@ -506,7 +506,7 @@ mod tests {
     /// count it held, the rest at the threads it started on; its phases once.
     #[test]
     fn a_run_is_read_at_each_thread_count_it_held() {
-        let rec = crate::timings::RunRec {
+        let rec = jobrt::timings::RunRec {
             v: 1,
             kind: "slope-deep".into(),
             host: "m4 #2".into(),
@@ -515,8 +515,8 @@ mod tests {
             cpu_s: Some(150.0),
             threads: Some(8),
             held: vec![
-                crate::timings::Held { threads: 8, wall_s: 30.0, cpu_s: 30.0 },
-                crate::timings::Held { threads: 2, wall_s: 60.0, cpu_s: 110.0 },
+                jobrt::timings::Held { threads: 8, wall_s: 30.0, cpu_s: 30.0 },
+                jobrt::timings::Held { threads: 2, wall_s: 60.0, cpu_s: 110.0 },
             ],
             ok: true,
             phases: vec![phase(100.0, 150.0, false, false)],
@@ -538,7 +538,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("timings.jsonl");
         let now = 10 * crate::paces::PACE_S;
-        let rec = |kind: &str, host: &str, start: u64, cpu: Option<f64>, ok: bool| crate::timings::RunRec {
+        let rec = |kind: &str, host: &str, start: u64, cpu: Option<f64>, ok: bool| jobrt::timings::RunRec {
             v: 1,
             kind: kind.into(),
             host: host.into(),
@@ -556,7 +556,7 @@ mod tests {
             rec("terrain-deep", "m4", now - 200, None, true),
             rec("terrain-deep", "m4", now - 200, Some(400.0), false),
         ] {
-            crate::timings::append(&p, &r).unwrap();
+            jobrt::timings::append(&p, &r).unwrap();
         }
         let runs = Run::read_log(crate::agent::seam::for_tests(), &p, now);
         assert_eq!(runs, vec![run_at("terrain-deep", "m4", 4, 200.0, now - 100)]);
@@ -574,7 +574,7 @@ mod tests {
     fn a_run_of_an_older_way_of_its_step_isnt_read() {
         let v = crate::coord::cost_version("slope-deep");
         assert!(v > 0);
-        let rec = |kind: &str, cost_v: Option<u32>| crate::timings::RunRec {
+        let rec = |kind: &str, cost_v: Option<u32>| jobrt::timings::RunRec {
             v: 1,
             kind: kind.into(),
             host: "m4".into(),
@@ -595,7 +595,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("timings.jsonl");
         for r in [rec("slope-deep", None), rec("slope-deep", Some(v))] {
-            crate::timings::append(&p, &r).unwrap();
+            jobrt::timings::append(&p, &r).unwrap();
         }
         assert_eq!(Run::read_log(crate::agent::seam::for_tests(), &p, 1100).len(), 1);
     }

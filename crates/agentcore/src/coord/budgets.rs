@@ -6,8 +6,8 @@
 //! - **The budget** (`POST /pool/budget/take {class}`, `POST /pool/budget/hold {s}`): each
 //!   window's tokens counted in memory (`Windows`), by the lead's clock alone, one a take, so a
 //!   429's hold stops every Mac at its next token; a token is spendable for what is left of its
-//!   window (crate::budget::Given). The one source: a Mac that can't reach the lead takes nothing
-//!   (crate::budget). Not durable: a restarted lead gives
+//!   window (jobrt::budget::Given). The one source: a Mac that can't reach the lead takes nothing
+//!   (jobrt::budget). Not durable: a restarted lead gives
 //!   nothing in the window it first hears an ask in (its process before may have given that
 //!   window's tokens), so a restart only slows. A 429's hold is kept in the store (`budget-hold`),
 //!   so a restarted lead keeps it.
@@ -33,8 +33,8 @@
 
 use super::{beats, Shared};
 use crate::agent::resume::Progress;
-use crate::budget::{Class, Given, Lead, LeaseOp, LeaseSaid};
 use anyhow::Result;
+use jobrt::budget::{Class, Given, Lead, LeaseOp, LeaseSaid};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -88,9 +88,9 @@ impl Windows {
         Given::Batch { n: 1, window: w, for_ms: end - now }
     }
 
-    /// Every class held `secs` from `now` (capped at crate::budget::HOLD_MAX_S): until when (ms).
+    /// Every class held `secs` from `now` (capped at jobrt::budget::HOLD_MAX_S): until when (ms).
     pub fn hold(&mut self, secs: u64, now: u64) -> u64 {
-        self.hold_until = self.hold_until.max(now + secs.clamp(1, crate::budget::HOLD_MAX_S) * 1000);
+        self.hold_until = self.hold_until.max(now + secs.clamp(1, jobrt::budget::HOLD_MAX_S) * 1000);
         self.hold_until
     }
 }
@@ -162,8 +162,8 @@ pub fn take(s: &mut Shared, class: Class) -> Result<Given> {
 /// Whether it gives batches (the gate, docs/coordination.md step 7): every member heard within
 /// `beats::FORGET_S` says `beats::BUDGETS` (none on the NAS: `on_nas`) and says its proxy takes
 /// from the lead (`beats::BY_LEAD`), and its own agent's proxy does: no Mac leases on the NAS
-/// meanwhile, nor holds a batch from it (a move drops it, crate::budget::Budget::set_lead). A
-/// member that moves back to the NAS waits a window first (crate::budget::SWITCH_MS), by which
+/// meanwhile, nor holds a batch from it (a move drops it, jobrt::budget::Budget::set_lead). A
+/// member that moves back to the NAS waits a window first (jobrt::budget::SWITCH_MS), by which
 /// time every batch given before the gate turned has ended.
 pub fn gives(s: &Shared) -> bool {
     let unix = super::held::wall(s);
@@ -272,7 +272,7 @@ pub fn on_nas(s: &Shared) -> bool {
 }
 
 /// The lead's coordinator over HTTP, a member's agent's (its proxy's lead,
-/// crate::budget::Budget::set_lead).
+/// jobrt::budget::Budget::set_lead).
 pub struct OverHttp {
     pub urls: Vec<String>,
     pub token: String,
@@ -334,16 +334,16 @@ mod tests {
     /// token comes from the lead, and every request is served.
     #[test]
     fn the_wiki_budget_holds_across_three_macs() {
-        use crate::budget::{Budget, Source, StepClock};
+        use jobrt::budget::{Budget, Source, StepClock};
         use std::sync::{Arc, Mutex};
         struct Here(Arc<Mutex<Windows>>, Arc<StepClock>);
         impl Lead for Here {
             fn take(&self, class: Class) -> std::result::Result<Given, String> {
-                use crate::budget::Clock;
+                use jobrt::budget::Clock;
                 Ok(self.0.lock().unwrap().take(class, self.1.now_ms()))
             }
             fn hold(&self, secs: u64) -> std::result::Result<(), String> {
-                use crate::budget::Clock;
+                use jobrt::budget::Clock;
                 self.0.lock().unwrap().hold(secs, self.1.now_ms());
                 Ok(())
             }
@@ -386,10 +386,10 @@ mod tests {
         let last = per.keys().filter(|(c, _)| *c == Class::Wiki).map(|(_, w)| *w).max().unwrap();
         let back = lead.lock().unwrap().take(Class::Wiki, (last - 1) * 10_000);
         assert_eq!(back, Given::Wait { ms: 20_000 });
-        assert!(!d.path().join(crate::budget::DIR).exists(), "nothing on the NAS");
+        assert!(!d.path().join(jobrt::budget::DIR).exists(), "nothing on the NAS");
         // (Another Mac's 429 held the lead just after this Mac took a token: no Mac spends one
         // till the hold ends, this one neither.)
-        use crate::budget::Clock;
+        use jobrt::budget::Clock;
         macs[0].take(Class::Wiki);
         let now = clock.now_ms();
         let until = lead.lock().unwrap().hold(25, now);

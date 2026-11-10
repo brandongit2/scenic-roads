@@ -3,7 +3,7 @@
 //! the share (`NasRoot`) and against the simulator's model of its faults. Paths are relative to the
 //! NAS project folder, parts separated by `/`. (In the build's files' crate since task #916 step 6a,
 //! docs/crates.md §6: `Out` and the map server read the records through it; the pool, at
-//! pipeline::pool::nas, writes them.)
+//! agentcore::pool::nas, writes them.)
 
 use anyhow::{Context, Result};
 use store::nasfs::NasRoot;

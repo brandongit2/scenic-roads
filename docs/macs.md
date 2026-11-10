@@ -22,7 +22,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   pageviews (`sources/pageviews/<month>.tsv.zst`, every article of the map's languages counted, so a
   dump is streamed once). A Mac's copy is a cache filled from the NAS; one the NAS lacks is uploaded
   the next time it's looked up.
-  - **AWS's raw terrain tiles** are packed onto the NAS (`pipeline::rawpack`,
+  - **AWS's raw terrain tiles** are packed onto the NAS (`buildstore::rawpack`,
     `sources/aws-terrarium/packs/`, listed in `index.json`) in archives grouped as the terrain's
     packs are (z9–12 by z6 tile, z3–8 by z3 tile, z0–2 together). A job's new tiles go up at its end
     as one archive beside its shard's others (the NAS's small-file writes run at ~23 a second). A
@@ -32,7 +32,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     puts its archives there unlisted and hands them off. A tile is read by range for a shard's first
     16, then each archive is copied whole once and checked against its name.
   - **GSI's elevation tiles** (the pyramids read tile by tile, `[data] encoding = gsi-png`) are
-    packed the same way (`pipeline::pyramids`, `sources/pyramids/<host-path>/packs/`, one store a
+    packed the same way (`terrain::pyramids`, `sources/pyramids/<host-path>/packs/`, one store a
     URL template, a z14/z15 tile in its z6 tile's shard), by their own step, the lead's
     (`pyramids-fill`, a job per z6 tile a declared pyramid meets, one at a time so GSI sees one
     process's `HOST_REQUESTS`, tasks #810 and #823; its cold start granted a thread, task #896): it fetches each tile
@@ -54,13 +54,13 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     back. `scenic-build pyramids-fill <6/x/y …> --into <dir>` fills a scratch store by hand
     (`terrain-same --pyramids <dir>` reads one); `--sizes` says each store's size.
   - **The Wikidata and Wikipedia answers** the items job and the heritage chain got for a pass
-    (`pipeline::answers`) are kept as one archive per pass (`sources/items/<date>/answers.tar.zst`,
+    (`agentcore::answers`) are kept as one archive per pass (`sources/items/<date>/answers.tar.zst`,
     `heritage.tar.zst`), written as the step starts (when the NAS lacks what the Mac has) and as it
     ends. The two sides are merged by key where both changed; a file deleted by hand stays deleted;
     an archive that doesn't read whole is moved aside, not written over. A new pass's answers start
     from the last pass's.
   - **Whole:** each copy is written by a temporary name, flushed and its length checked before the
-    rename, and checked whole when read (`pipeline::whole`; written whole by `store::whole`). One that isn't is taken
+    rename, and checked whole when read (`codecs::whole`; written whole by `store::whole`). One that isn't is taken
     again from the NAS, else the source.
   - **"Not there"** (a 404, or S3's 403) is remembered only once the source says so twice.
   - **What's fetched again** is only new data (a planet, Wikidata facts and pageviews, timetables, an
@@ -72,7 +72,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     (`chm10/`), raw terrain tiles and archive copies (`aws-terrarium/`),
     copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles; with the
     basemap, the lakes' fill and the depth sources' packs the depth's and water's steps read, the stored GLO-30 tiles
-    and fill masks a terrain or polar terrain job reads half or more of, task #689: pipeline::localread; and the
+    and fill masks a terrain or polar terrain job reads half or more of, task #689: buildstore::localread; and the
     canopy rows the trees read of the NAS's squares, `trees::squares::RowsCache`), pageview month indexes (`items/months/`).
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
     pack(T) and lo), the
@@ -187,7 +187,7 @@ and codesign.
   constraint, the next, 30 s later, takes); `sandbox.sh clean <dir>`. A server started
   any other way (such as the desktop app's preview) waits on macOS's network-volume prompt; test
   servers run from the shell.
-- **The updater** (`pipeline::appupdate`): every Mac's agent checks the NAS's `app/current.json`
+- **The updater** (`jobrt::appupdate`): every Mac's agent checks the NAS's `app/current.json`
   every five minutes, copies a newer app locally checking every file's SHA-256, points
   `app/current` at it and restarts into it by its update drain; on the Mac mini the map server
   checks too (so the map updates with the agent stopped), one check at a time (`app/update.lock`),
@@ -448,11 +448,11 @@ tailnet: **https://map.brandontsang.net**, or `tailscale serve`'s
   `tailscale serve` holds port 443 on the tailnet address whatever the name asked (it ends any
   other name's TLS), so the M6's own `tailscale serve` of the agent is on 8444 instead (pool.md §14).
 - **Who's answered:** the server answers only this Mac, its LAN and the tailnet, also through a
-  proxy on this Mac (`tailscale serve`, Caddy) from those alone (`pipeline::net::reached`); anything
+  proxy on this Mac (`tailscale serve`, Caddy) from those alone (`coordwire::net::reached`); anything
   else is 403, Funnel included. No key.
 - **A page elsewhere is never the map's:** the `Host` must be an address, localhost, a name only a
   tailnet or local network resolves, or a name the owner gave this Mac (`~/.config/scenic/names`, a
-  name a line, written by `tools/caddy/install.sh`; `pipeline::net::names`, read again each minute,
+  name a line, written by `tools/caddy/install.sh`; `coordwire::net::names`, read again each minute,
   so a new name is taken within a minute, no restart): DNS rebinding refused.
   An `Origin` must be the map's own page or this Mac's; CORS only to this Mac's own pages.
 - **The address** is `<home>/map-page` (`crates/server/src/remote.rs`): the first name in

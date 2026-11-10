@@ -8,7 +8,7 @@
 //! funiculars). Tracks without a route relation are kept when their type says what they are
 //! (tram, subway, funicular, preserved or tourist lines).
 //!
-//! Its command line: pipeline::cli::progs::Extract (`extract <out_dir> <spacing> <file.osm.pbf>...`).
+//! Its command line: agentcore::cli::progs::Extract (`extract <out_dir> <spacing> <file.osm.pbf>...`).
 //!
 //! Pass 1 collects matching ways; pass 2 resolves node coordinates and private gates.
 //! Besides the ways: rail-rels.bin, each rail track's primary service (the route relation that
@@ -18,12 +18,12 @@
 //! Output geometry is densified so consecutive vertices are at most the spacing apart, which lets
 //! the DEM stage sample every raster cell a road crosses. `<spacing>` is metres, the same
 //! everywhere, or a spacing file (a unit's `spacing.json`): by the declared elevation datasets at
-//! each way's first node (pipeline::dem::spacing, docs/inputs.md §6.8).
+//! each way's first node (inputs::dem::spacing, docs/inputs.md §6.8).
 
 use anyhow::{Context, Result};
+use codecs::{bytes_bar, morton, ProgressRead};
 use det::Det;
 use osmpbf::{Element, ElementReader};
-use pipeline::{bytes_bar, morton, ProgressRead};
 use rayon::prelude::*;
 use roadcore::{class, dist_m, flag, WayRec, E7, WAYS_MAGIC};
 use std::collections::HashMap;
@@ -603,7 +603,7 @@ fn parse_colour(v: Option<&str>) -> u32 {
 }
 
 /// A way raised on fill across water or low ground: its heights are a structure's, straight between
-/// its ends (pipeline::elev), not the terrain's beside it.
+/// its ends (roads::elev), not the terrain's beside it.
 fn is_causeway(t: &Tags) -> bool {
     t.is("embankment", "yes") || t.is("causeway", "yes") || t.is("man_made", "causeway")
 }
@@ -712,10 +712,10 @@ fn route_per_way(scenic: &mut Vec<(i64, String)>) {
 
 pub fn main(args: Vec<String>) -> Result<()> {
     // (`--candidates`: the landmark candidates' points (poi_kind), for the pois job; `--trailends`:
-    // the pass's hiking-route ends (pipeline::trailends), instead of working them out from the input.)
-    let pipeline::cli::progs::Extract { out_dir: out, spacing, inputs, rail_rels_only, candidates, trailends } =
-        <pipeline::cli::progs::Extract as clap::Parser>::parse_from(args);
-    use pipeline::dem::spacing::{Fine, Spacing, Uniform};
+    // the pass's hiking-route ends (codecs::trailends), instead of working them out from the input.)
+    let agentcore::cli::progs::Extract { out_dir: out, spacing, inputs, rail_rels_only, candidates, trailends } =
+        <agentcore::cli::progs::Extract as clap::Parser>::parse_from(args);
+    use ::inputs::dem::spacing::{Fine, Spacing, Uniform};
     let spacing: Box<dyn Spacing + Sync> = match spacing.parse::<f64>() {
         Ok(m) => Box::new(Uniform(m)),
         Err(_) => Box::new(Fine::read(std::path::Path::new(&spacing))?),
@@ -951,8 +951,8 @@ pub fn main(args: Vec<String>) -> Result<()> {
 
     // ---- Pass 1b: end nodes of hiking-route member ways (relations come after ways in a file) ----
     // (Not when the pass's ends are given: those are the whole routes', and carry their positions.)
-    let given_ends: Option<Vec<pipeline::trailends::End>> =
-        trailends.as_deref().map(pipeline::trailends::read).transpose()?;
+    let given_ends: Option<Vec<codecs::trailends::End>> =
+        trailends.as_deref().map(codecs::trailends::read).transpose()?;
     if given_ends.is_some() {
         hikes.clear();
     }
@@ -1039,7 +1039,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
                     lon,
                     lat,
                     name: t.get("name").unwrap_or("").to_string(),
-                    ele: pipeline::candidates::parse_ele(t.get("ele")),
+                    ele: roads::candidates::parse_ele(t.get("ele")),
                     osm: Some(format!("n{id}")),
                     key: None,
                     tags: kept_tags(&t, kind),
@@ -1235,9 +1235,9 @@ pub fn main(args: Vec<String>) -> Result<()> {
     }
 
     // ---- Assemble, drop gated minor roads, densify --------------------------------
-    // (The spacing by each way's first node: pipeline::dem::spacing. The code is versioned as
-    // "spacing" in pipeline::rules; the units' reach densifies long ways the same way,
-    // pipeline::reach::LongWay::touches.)
+    // (The spacing by each way's first node: inputs::dem::spacing. The code is versioned as
+    // "spacing" in inputs::rules; the units' reach densifies long ways the same way,
+    // roads::reach::LongWay::touches.)
     let lookup = |id: i64| -> Option<(usize, i32, i32)> {
         let i = needed.binary_search(&id).ok()?;
         let v = coords[i].load(Relaxed);
@@ -1392,9 +1392,9 @@ pub fn main(args: Vec<String>) -> Result<()> {
     ww.write_all(bytemuck::cast_slice(&recs))?;
     ww.flush()?;
     std::fs::write(roadcore::tmp(&out, "strings.txt"), strings.join("\n"))?;
-    // The causeways and embankments among the ways kept (pipeline::elev::CAUSEWAYS).
+    // The causeways and embankments among the ways kept (roads::elev::CAUSEWAYS).
     let kept: Vec<i64> = recs.iter().map(|r| r.id).filter(|id| causeways.binary_search(id).is_ok()).collect();
-    std::fs::write(roadcore::tmp(&out, pipeline::elev::CAUSEWAYS), bytemuck::cast_slice(&kept))?;
+    std::fs::write(roadcore::tmp(&out, roads::elev::CAUSEWAYS), bytemuck::cast_slice(&kept))?;
     std::fs::write(roadcore::tmp(&out, "name-en.json"), serde_json::to_vec(&name_en)?)?;
     // Points of interest for the map and the scenic metrics, in their one order.
     pois.sort_by(|a, b| a.order().cmp(&b.order()));
@@ -1423,15 +1423,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
     )?;
     roadcore::commit(
         &out,
-        &[
-            "verts.bin",
-            "ways.bin",
-            "strings.txt",
-            "name-en.json",
-            "pois.json",
-            "rail-rels.bin",
-            pipeline::elev::CAUSEWAYS,
-        ],
+        &["verts.bin", "ways.bin", "strings.txt", "name-en.json", "pois.json", "rail-rels.bin", roads::elev::CAUSEWAYS],
     )?;
 
     eprintln!(

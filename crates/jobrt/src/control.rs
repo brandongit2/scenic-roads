@@ -931,7 +931,7 @@ fn now() -> u64 {
 
 /// The file a running job's agent keeps its grant in (docs/pool.md §7.1, Threads re-granted): the
 /// threads it may use now, a number, rewritten when its lead re-decides them. A job reads it as each
-/// target begins (`on_grant`); a paced one (pipeline::inputs::pace) every second.
+/// target begins (`on_grant`); a paced one (inputs::inputs::pace) every second.
 pub const THREADS_ENV: &str = "SCENIC_THREADS_FILE";
 
 /// Tells a job its grant: `THREADS_ENV`'s file `f` replaced whole (store::whole::write), so a read
@@ -995,7 +995,7 @@ pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     let main = crate::timings::Main::here();
     let (t0, cpu0) = (std::time::Instant::now(), crate::timings::cpu_us());
     let r = pool.install(move || main.run(f));
-    // (What it held, for the run's record: its threads' use is read by them, pipeline::uses.)
+    // (What it held, for the run's record: its threads' use is read by them, agentcore::uses.)
     let cpu = cpu0.zip(crate::timings::cpu_us()).map_or(0.0, |(a, b)| b.saturating_sub(a) as f64 / 1e6);
     crate::timings::held(n as u32, t0.elapsed().as_secs_f64(), cpu);
     IN_FORCE.store(0, Ordering::Relaxed);
@@ -1156,7 +1156,7 @@ mod tests {
             std::thread::scope(|s| s.spawn(|| on_target_pool(rayon::current_num_threads)).join().unwrap()),
             global
         );
-        // (What each held, for its step's use by threads: pipeline::uses.)
+        // (What each held, for its step's use by threads: agentcore::uses.)
         assert_eq!(r.held.iter().map(|h| h.threads).collect::<Vec<_>>(), [1, 3, 5]);
         assert!(r.held.iter().all(|h| h.wall_s > 0.0 && h.wall_s <= r.wall_s), "{:?}", r.held);
         // Without the file: the job's own pool.

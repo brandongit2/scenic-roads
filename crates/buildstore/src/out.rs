@@ -49,10 +49,10 @@ pub fn go_testing() {
 static TESTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(test));
 
 /// A job's environment: the file of its member's unacknowledged hand-offs for its step
-/// (`unmerged`), which `Out` lays over the snapshot (pipeline::agent::resume).
+/// (`unmerged`), which `Out` lays over the snapshot (agentcore::agent::resume).
 pub const UNMERGED_ENV: &str = "SCENIC_UNMERGED";
 
-/// The folder of the pool's terms (pipeline::pool::term::DIR): once it's there, the pool has
+/// The folder of the pool's terms (agentcore::pool::term::DIR): once it's there, the pool has
 /// begun, and no step saves the records (`check_writer`).
 pub const TERMS: &str = "state/build/terms";
 
@@ -305,7 +305,7 @@ impl Out {
 
     /// The records at `root`, with this Mac's hand-offs for the job's step its lead hasn't merged
     /// (`unmerged`: a file of one hand-off, their changes laid in order, made by its agent with
-    /// `state/pool/resume` on: pipeline::agent::resume) laid over the snapshot, as
+    /// `state/pool/resume` on: agentcore::agent::resume) laid over the snapshot, as
     /// `Keys::load_with` lays the done records: a job resuming its own work (the OSM pass after
     /// sleep) finds its earlier stages' outputs (docs/pool.md §7.4). Its agent gives them only to a
     /// job that hands off (`SCENIC_HANDOFF`): one that saves the records has none. They're the snapshot's,
@@ -401,12 +401,12 @@ impl Out {
 
     /// The NAS path of a content name. A path in an inputs folder (`inputs/`, `translations/`,
     /// `descriptions/`) is refused, naming the caller: a step reads an input's accepted version
-    /// through `pipeline::inputs::open` alone (docs/inputs.md §7.1), so a reader missed fails its
+    /// through `inputs::inputs::open` alone (docs/inputs.md §7.1), so a reader missed fails its
     /// first run instead of bypassing the gate.
     #[track_caller]
     pub fn path(&self, content: &str) -> NasPath {
         if crate::inputs_folder::in_inputs_folder(content) {
-            panic!("{}: {content} is in an inputs folder; a step reads an input through pipeline::inputs::open alone (docs/inputs.md §7.1)", std::panic::Location::caller());
+            panic!("{}: {content} is in an inputs folder; a step reads an input through inputs::inputs::open alone (docs/inputs.md §7.1)", std::panic::Location::caller());
         }
         self.root.join(content)
     }
@@ -666,7 +666,7 @@ impl Out {
     }
 
     /// Uploads bytes as `<logical>.<hash16>.<ext>` without naming them in the manifest (the gate's
-    /// checked copies, which its index names: pipeline::inputs::gate), and returns the content name.
+    /// checked copies, which its index names: inputs::inputs::gate), and returns the content name.
     /// One there already is reused (`reused`), as `put_file` does.
     pub fn store_bytes(&mut self, logical: &str, ext: &str, bytes: &[u8]) -> Result<String> {
         let h = store::naming::hash16(bytes);
@@ -726,7 +726,7 @@ impl Out {
     }
 
     /// Drops content name `c` from the unverified uploads (`pending`) at the next save, as a check
-    /// would: a removed step's file GC drops (pipeline::agent::gc::drop_names), never verified now.
+    /// would: a removed step's file GC drops (agentcore::agent::gc::drop_names), never verified now.
     pub fn unpend(&mut self, c: &str) {
         self.checked.insert(c.to_string());
     }
@@ -929,7 +929,7 @@ pub fn sh_quoted(s: &str) -> String {
 /// regular file's from its metadata and reads its last block at most), no SMB client's cache between.
 /// The names there at their size (any size, for one the records hold none of), and those of another
 /// size or not there; nothing is removed or written (GC's job takes the first out of the records'
-/// pending: pipeline::agent::gc::verify_pending). Its bytes were hashed as they landed, read back
+/// pending: agentcore::agent::gc::verify_pending). Its bytes were hashed as they landed, read back
 /// past this Mac's cache (`store::naming::write_atomic`), and the NAS's file system checksums them as
 /// it reads them; what is left to check is that the file is still there, whole.
 pub fn verify(

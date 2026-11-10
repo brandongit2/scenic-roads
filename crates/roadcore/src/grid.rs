@@ -144,7 +144,7 @@ pub fn terrarium_decode(rgb: &[u8], channels: usize, out: &mut [f32]) {
 }
 
 /// Decode a Terrarium PNG to metres (256 × 256): a raw tile's (AWS's, the elevation pool's as
-/// pipeline::terrain_base samples it), never a stored one's.
+/// terrain::terrain_base samples it), never a stored one's.
 fn decode_terrain_png(bytes: &[u8]) -> Result<Vec<f32>> {
     let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -162,8 +162,8 @@ fn decode_terrain_png(bytes: &[u8]) -> Result<Vec<f32>> {
 }
 
 /// Decode a terrain tile to metres: a stored one, Terrarium RGB as lossless WebP
-/// (pipeline::terrain_codec; docs/formats.md, Pack), or a raw one, a Terrarium PNG (AWS's, the
-/// elevation pool's as pipeline::terrain_base samples it).
+/// (codecs::terrain_codec; docs/formats.md, Pack), or a raw one, a Terrarium PNG (AWS's, the
+/// elevation pool's as terrain::terrain_base samples it).
 pub fn decode_terrain(bytes: &[u8]) -> Result<Vec<f32>> {
     if !bytes.starts_with(b"RIFF") {
         return decode_terrain_png(bytes);

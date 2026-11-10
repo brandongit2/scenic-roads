@@ -77,11 +77,11 @@ impl Broker {
     }
 
     /// Its jobs' tasks paused as the build is (the lead's pause, as this member knows it).
-    pub fn pause(&self) -> Option<crate::control::Pause> {
+    pub fn pause(&self) -> Option<jobrt::control::Pause> {
         self.c.pause()
     }
 
-    pub fn set_pause(&self, pause: Option<crate::control::Pause>, at: u64) {
+    pub fn set_pause(&self, pause: Option<jobrt::control::Pause>, at: u64) {
         self.c.set_pause(pause, at)
     }
 

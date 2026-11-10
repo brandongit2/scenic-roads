@@ -7,7 +7,7 @@
 //!   landmark candidates and peaks), for workers that mount the NAS (a member's agent). A
 //!   worker's job saves through the coordinator: its hand-off (its manifest changes and done record,
 //!   one per job) is journaled on this Mac's disk, written whole, then merged into the records by the
-//!   agent (crate::handoff::merge_from), all of it or none.
+//!   agent (buildstore::handoff::merge_from), all of it or none.
 //! - **Tasks** (`task`): pure work a running job offers, for any worker, a web page's included.
 //!
 //! Leases (`lease`) say who does what; this Mac's own jobs hold them too, so a job is never done
@@ -21,9 +21,9 @@
 //! the LAN's) and the token the Macs' agents carry. The build page asks with no key: it reads the
 //! build and takes the owner's asks (pausing, settings), never work (pages stopped helping, #875:
 //! `NO_PAGE_HELPERS`). It answers this Mac, its LAN and the
-//! tailnet only, also through a proxy on this Mac from those alone (crate::net::reached), a request
-//! naming this Mac and from no web page elsewhere (crate::net::ours, from_the_page); a running job's
-//! (`/task/…`) from this Mac itself, through no proxy (crate::net::own).
+//! tailnet only, also through a proxy on this Mac from those alone (coordwire::net::reached), a request
+//! naming this Mac and from no web page elsewhere (coordwire::net::ours, from_the_page); a running job's
+//! (`/task/…`) from this Mac itself, through no proxy (coordwire::net::own).
 
 pub mod asks;
 pub mod beats;
@@ -48,8 +48,8 @@ pub use broker::{Broker, Brokering};
 pub use coordwire::{contact_path, Contact, POOL_MEMBER, POOL_TERM};
 
 use crate::agent::memguard::Floor;
-use crate::handoff::Handoff;
 use anyhow::Result;
+use buildstore::handoff::Handoff;
 use lease::{Lease, Leases, Work};
 pub use sched::{ask_cores, outside_cores, JOB_S};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 pub const PORT: u16 = 8090;
 /// The address a coordinator (or a member's broker, or viewer) listens on: every interface, for
 /// the other Macs; loopback alone in a unit test (`buildstore::out::testing`), whose members are in
-/// the same process and reach it at 127.0.0.1 (crate::net::urls): a freshly built test binary is no
+/// the same process and reach it at 127.0.0.1 (coordwire::net::urls): a freshly built test binary is no
 /// app a Mac's firewall lets its Tailscale or LAN addresses reach (#596).
 pub fn listen_ip() -> &'static str {
     if buildstore::out::testing() {
@@ -163,7 +163,7 @@ pub const NO_PAGE_HELPERS: &str = "pages no longer help with the build: reload t
 
 /// What a job's target cost last time (a z6 tile's, another shared step's, a task's): its peak memory
 /// (MB) and its wall time, the worker it was measured on (None: the lead, or not said), and
-/// the way its step was run then (`cost_version`), and its inputs' measures then (crate::costin;
+/// the way its step was run then (`cost_version`), and its inputs' measures then (buildstore::costin;
 /// none from a job before them, and a reader before them ignores them).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
@@ -193,7 +193,7 @@ fn is_zero64(v: &u64) -> bool {
 /// together; terrain 3 and slope 3: a z6 tile a run, their assemblies 1; terrain 4: a z6 tile's
 /// tiles made a group of z8 subtrees at a time; 5: its deep levels too, task #633; terrain-hi 6 and
 /// slope-hi 4: named so, their deep levels their own steps', task #639; terrain-hi 7 and terrain-lo
-/// 2: the pool's base tiles sampled up to 4 chunks at once, crate::terrain_base::sampling_mb, task
+/// 2: the pool's base tiles sampled up to 4 chunks at once, terrain::terrain_base::sampling_mb, task
 /// #695). A task's kind, or a step the table doesn't know: 0.
 #[cfg(test)]
 pub fn cost_version(step: &str) -> u32 {
@@ -236,7 +236,7 @@ impl<'a> CostKey<'a> {
     pub fn parse(key: &'a str) -> Self {
         match key.split_once(' ') {
             Some((step, target)) => CostKey { step, target },
-            None if crate::legacy::TileId::parse(key).is_some_and(|u| u.z == 6) => {
+            None if codecs::legacy::TileId::parse(key).is_some_and(|u| u.z == 6) => {
                 CostKey { step: "unit", target: key }
             }
             None => CostKey { step: key, target: "" },
@@ -392,9 +392,9 @@ pub struct Shared {
     /// no other, whatever pass is offered.
     pub resume: Option<(String, Offer)>,
     pub tasks: task::Tasks,
-    /// The build's pause (crate::control), while it's paused: no work is given, a worker's beat is
+    /// The build's pause (jobrt::control), while it's paused: no work is given, a worker's beat is
     /// told (its job pauses too), and no lease lapses. Kept in `pause.json`, so a restart keeps it.
-    pub paused: Option<crate::control::Pause>,
+    pub paused: Option<jobrt::control::Pause>,
     /// When the pause last changed, as the ask said (unix seconds): an ask older than that (a Mac's
     /// held while it couldn't reach this one) is passed over.
     pub pause_at: u64,
@@ -409,7 +409,7 @@ pub struct Shared {
     /// may be old, and its next step re-asserts before it grants again.
     pub told: Option<u64>,
     /// The app the newer of the readers' switches was recorded on (the regions', the elevation
-    /// datasets': crate::inputs::regions::read::switch_app), as the lead's agent last read it: no
+    /// datasets': inputs::inputs::regions::read::switch_app), as the lead's agent last read it: no
     /// work for an older app, whatever else it matches.
     pub min_app: Option<String>,
     /// The pool's member this coordinator is (its agent's), while it leads: every answer says so,
@@ -443,8 +443,8 @@ pub struct Shared {
     /// the forecast's input and the page's regions, each with when it was handed (unix ms).
     pub page: PageFiles,
     /// The build page's acceptances of the gate's warnings (`/work/inputs`), for the agent to write
-    /// (crate::inputs::apply_ask).
-    pub inputs_asks: Vec<crate::inputs::Ask>,
+    /// (inputs::inputs::apply_ask).
+    pub inputs_asks: Vec<::inputs::inputs::Ask>,
     /// The owner's asks to build targets again (`/work/redo`: `scenic redo`), for the agent to keep
     /// and run (crate::agent::redo).
     pub redo_asks: Vec<crate::agent::redo::Ask>,
@@ -454,12 +454,12 @@ pub struct Shared {
     /// the lead's slots' ramp holds and its stretch starts again (crate::agent's `tend_ramp`); one
     /// alone (a hiccup every few hours, probes being half an hour apart) is neither.
     pub nas_failures: u32,
-    /// The gate on the NAS's own disk load (crate::budget::nas::Loop): held, `nas` and `nas_own`
+    /// The gate on the NAS's own disk load (jobrt::budget::nas::Loop): held, `nas` and `nas_own`
     /// say so (`Limits::held`); read by the lead's waiting lines (`Coordinator::nas_held`).
-    pub nas_loop: crate::budget::nas::Loop,
+    pub nas_loop: jobrt::budget::nas::Loop,
     /// The probes the lead's prober keeps (`nas_prober`'s, as read from and written to
-    /// crate::budget::nas::PROBES_FILE), and the disks' busy shares it read last (%): the status's.
-    pub nas_probes: Vec<crate::budget::nas::Probe>,
+    /// jobrt::budget::nas::PROBES_FILE), and the disks' busy shares it read last (%): the status's.
+    pub nas_probes: Vec<jobrt::budget::nas::Probe>,
     pub nas_disks: Vec<f64>,
     /// The NAS's mount as the prober last read it (`NasMount`), each `MOUNT_EVERY_S`.
     pub nas_mount: Option<NasMount>,
@@ -890,13 +890,13 @@ pub struct Coordinator {
     taken: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// Each step's phase shares over its last runs (crate::timings::PhaseShares) and its time by phase
-/// over the page's chart ranges (crate::timings::PhaseTimes), kept by `phase_sharer`, apart from
+/// Each step's phase shares over its last runs (jobrt::timings::PhaseShares) and its time by phase
+/// over the page's chart ranges (jobrt::timings::PhaseTimes), kept by `phase_sharer`, apart from
 /// the pool's lock.
 #[derive(Default)]
 struct Phases {
-    shares: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>>,
-    times: Arc<Mutex<Option<Arc<crate::timings::PhaseTimes>>>>,
+    shares: Arc<Mutex<BTreeMap<String, jobrt::timings::PhaseShares>>>,
+    times: Arc<Mutex<Option<Arc<jobrt::timings::PhaseTimes>>>>,
 }
 
 /// What a coordinator started as (`Coordinator::start_with`).
@@ -1038,7 +1038,7 @@ pub struct Capacity {
     /// a new job's peak may be.
     pub mem_mb: u64,
     /// Its memory against its floor (MB, docs/pool.md §7.1; memguard::Reading): what's available
-    /// (crate::sys::memory_available) and what compressing frees among it, the floor, the swap
+    /// (jobrt::sys::memory_available) and what compressing frees among it, the floor, the swap
     /// grown lately (off what's available), and what's reserved for its running jobs' growth to
     /// come (each one's predicted need less what it holds).
     pub avail_mb: u64,
@@ -1089,7 +1089,7 @@ pub struct Capacity {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub idle: Vec<u64>,
     /// Its running jobs that take a re-grant as their next target begins (docs/pool.md §7.1,
-    /// Threads re-granted; crate::control::on_grant), each with the threads it runs on now and what
+    /// Threads re-granted; jobrt::control::on_grant), each with the threads it runs on now and what
     /// it used on them: the lead re-decides only these (`sched::Sched::regrant`). An older agent's
     /// capacity says none: its jobs keep their grant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1130,7 +1130,7 @@ pub struct OldAppJob {
 /// under way runs on, and the CPU time it took (ms) over the time it has run on them (ms, its
 /// stops left out: crate::agent's `tend_grant`); the threads its agent has told it (its threads
 /// file: its next target's), and the most it can run on (its Mac's cores less those its owner
-/// keeps, a paced job's `crate::inputs::pace::MOST` at most).
+/// keeps, a paced job's `inputs::inputs::pace::MOST` at most).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobThreads {
     pub lease: u64,
@@ -1150,15 +1150,15 @@ pub struct WaitingJob {
 }
 
 /// The NAS as the lead sees it, for the status (`Coordinator::nas_view`): the day's probes kept
-/// (crate::budget::nas::PROBES_FILE's), the limits they give the lead's own jobs, the load gate's
+/// (jobrt::budget::nas::PROBES_FILE's), the limits they give the lead's own jobs, the load gate's
 /// reading (the busiest disk smoothed, its target, held) and the disks' last busy shares, and the
 /// pool's NAS traffic, the fresh members' summed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NasView {
-    pub probes: Vec<crate::budget::nas::Probe>,
+    pub probes: Vec<jobrt::budget::nas::Probe>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub limits: Option<crate::budget::nas::Limits>,
+    pub limits: Option<jobrt::budget::nas::Limits>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_pct: Option<f64>,
     pub target_pct: u32,
@@ -1334,9 +1334,9 @@ pub struct Done {
     /// ends and its targets are kept out of offers, but nothing is journaled here.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub journaled: bool,
-    /// Its run's timings (crate::timings), kept in `timings.jsonl` (an older worker sends none).
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::timings::lenient")]
-    pub timings: Option<crate::timings::RunRec>,
+    /// Its run's timings (jobrt::timings), kept in `timings.jsonl` (an older worker sends none).
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "jobrt::timings::lenient")]
+    pub timings: Option<jobrt::timings::RunRec>,
 }
 
 /// Work failed: why, and for a task out of memory, the peak it reached (MB).
@@ -1526,12 +1526,12 @@ impl Coordinator {
         // agent's, the pause alone).
         let kept: serde_json::Value =
             first_fill("pause.json").and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let (paused, pause_at): (Option<crate::control::Pause>, u64) = match kept.get("at") {
+        let (paused, pause_at): (Option<jobrt::control::Pause>, u64) = match kept.get("at") {
             Some(at) if kept.get("pause").is_some() => {
                 (serde_json::from_value(kept["pause"].clone()).ok().flatten(), at.as_u64().unwrap_or(0))
             }
             _ => {
-                let p: Option<crate::control::Pause> = serde_json::from_value(kept).ok();
+                let p: Option<jobrt::control::Pause> = serde_json::from_value(kept).ok();
                 let at = p.as_ref().map_or(0, |p| p.at);
                 (p, at)
             }
@@ -1960,9 +1960,9 @@ impl Coordinator {
         s.last.retain(|(_, st), _| steps.contains(st));
     }
 
-    /// The NAS budget's limits (crate::budget::nas; None: off). Its probes set them while the
+    /// The NAS budget's limits (jobrt::budget::nas; None: off). Its probes set them while the
     /// switch is on (`nas_prober`); the tests and the simulator set them here.
-    pub fn set_nas(&self, limits: Option<crate::budget::nas::Limits>) {
+    pub fn set_nas(&self, limits: Option<jobrt::budget::nas::Limits>) {
         let mut s = self.shared.lock().unwrap();
         (s.nas, s.nas_own) = (limits, limits);
     }
@@ -1984,17 +1984,17 @@ impl Coordinator {
         self.shared.lock().unwrap().nas_failures = n;
     }
 
-    /// Whether the pool's leased jobs' NAS weights together pass the whole (crate::budget::nas::WHOLE)
+    /// Whether the pool's leased jobs' NAS weights together pass the whole (jobrt::budget::nas::WHOLE)
     /// by the NAS's limits as probed (`nas_own`), as the budget's own rules let them (§7.7: the
     /// lead's own jobs alone, an aged job weighing the whole). False before the NAS is probed. (Not
     /// the lead's ramp's trouble since task #433: a grant by the rules says nothing about its slots.)
     pub fn nas_over(&self) -> bool {
         let s = self.shared.lock().unwrap();
         let now = s.now();
-        s.nas_room(now, true).is_some_and(|(_, running, _, _)| running > crate::budget::nas::WHOLE)
+        s.nas_room(now, true).is_some_and(|(_, running, _, _)| running > jobrt::budget::nas::WHOLE)
     }
 
-    /// Whether this Mac's running job of a quiet step (crate::budget::nas::QUIET_STEPS: the clean-up)
+    /// Whether this Mac's running job of a quiet step (jobrt::budget::nas::QUIET_STEPS: the clean-up)
     /// over `targets` should yield the NAS (task #451): a target held back for the budget alone for
     /// `OWN_AGE` (`Shared::nas_reserved`) that doesn't fit beside the leased jobs now but would
     /// without this one. Why, in words; None: it goes on.
@@ -2015,12 +2015,12 @@ impl Coordinator {
             Some(l) => s.job_weight(&nw, l, now),
             None => sched::Sched::job_nas(&nw, step, Some(&self.me), targets.iter().map(String::as_str)),
         };
-        let whole = crate::budget::nas::WHOLE;
+        let whole = jobrt::budget::nas::WHOLE;
         (w > 0 && running.saturating_add(rw) > whole && running.saturating_sub(w).saturating_add(rw) <= whole).then(
             || {
                 format!(
                     "yields the NAS to {st} {t}, held back for it {} min or more",
-                    crate::budget::nas::OWN_AGE.as_secs() / 60
+                    jobrt::budget::nas::OWN_AGE.as_secs() / 60
                 )
             },
         )
@@ -2029,7 +2029,7 @@ impl Coordinator {
     /// The targets waiting on the NAS budget alone for longer than `NAS_WAIT_SAY_S` (passed over in
     /// the last two minutes): (step, target, minutes), for the status's waiting lines.
     /// Why the NAS budget is held by the NAS's own load, if it is ("held by NAS load (91 % >
-    /// target 85 %)", crate::budget::nas::Loop::why).
+    /// target 85 %)", jobrt::budget::nas::Loop::why).
     pub fn nas_held(&self) -> Option<String> {
         self.shared.lock().unwrap().nas_loop.why()
     }
@@ -2109,18 +2109,18 @@ impl Coordinator {
 
     /// Each step's phase shares over its last runs, as its thread last read the build's timings
     /// (`phase_sharer`; empty till then).
-    pub fn phase_shares(&self) -> BTreeMap<String, crate::timings::PhaseShares> {
+    pub fn phase_shares(&self) -> BTreeMap<String, jobrt::timings::PhaseShares> {
         self.phases.as_ref().map(|p| p.shares.lock().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_default()
     }
 
     /// Each step's time by phase over the page's chart ranges, as its thread last summed them
     /// (`phase_sharer`, every minute; None till then).
-    pub fn phase_times(&self) -> Option<Arc<crate::timings::PhaseTimes>> {
+    pub fn phase_times(&self) -> Option<Arc<jobrt::timings::PhaseTimes>> {
         self.phases.as_ref().and_then(|p| p.times.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     /// Each worker's share of the NAS budget now: its leased jobs' NAS weights summed, in
-    /// thousandths of the whole (crate::budget::nas::WHOLE). Empty before the NAS is probed.
+    /// thousandths of the whole (jobrt::budget::nas::WHOLE). Empty before the NAS is probed.
     pub fn nas_shares(&self) -> BTreeMap<String, u32> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
@@ -2198,7 +2198,7 @@ impl Coordinator {
     /// The build paused (how, by whom), or going on, as asked at `at` (unix seconds; an ask older
     /// than the last change is passed over): no work given and no lease lapsing meanwhile, and
     /// workers told. Kept on disk.
-    pub fn set_pause(&self, pause: Option<crate::control::Pause>, at: u64) {
+    pub fn set_pause(&self, pause: Option<jobrt::control::Pause>, at: u64) {
         set_pause(&mut self.shared.lock().unwrap(), pause, at);
     }
 
@@ -2210,7 +2210,7 @@ impl Coordinator {
     }
 
     /// The build's pause, while it's paused.
-    pub fn pause(&self) -> Option<crate::control::Pause> {
+    pub fn pause(&self) -> Option<jobrt::control::Pause> {
         self.shared.lock().unwrap().paused.clone()
     }
 
@@ -2220,17 +2220,17 @@ impl Coordinator {
         s.leases.held(step, s.now())
     }
 
-    /// The owner's cancel (`scenic job cancel`, crate::control::Cancel), from this Mac's agent:
+    /// The owner's cancel (`scenic job cancel`, jobrt::control::Cancel), from this Mac's agent:
     /// every live job lease holding its target (of its step, when it names one) told to stop and
     /// give its work back (`cancel_of`, a member's beat), and with `rerun_after_update` the target
     /// held until this coordinator runs a newer app (`hold_for_update`). The leases told: (lease,
     /// worker, what).
-    pub fn cancel(&self, c: &crate::control::Cancel) -> Vec<(u64, String, String)> {
+    pub fn cancel(&self, c: &jobrt::control::Cancel) -> Vec<(u64, String, String)> {
         cancel_in(&mut self.shared.lock().unwrap(), c)
     }
 
     /// The owner's cancel of lease `id`, while it stands (`cancel`).
-    pub fn cancel_of(&self, id: u64) -> Option<crate::control::Cancel> {
+    pub fn cancel_of(&self, id: u64) -> Option<jobrt::control::Cancel> {
         let s = self.shared.lock().unwrap();
         s.leases.cancel_ask(id).cloned()
     }
@@ -2319,9 +2319,9 @@ impl Coordinator {
         }
     }
 
-    /// A job's timings (crate::timings), kept with the build's (`timings.jsonl`), its run among the
+    /// A job's timings (jobrt::timings), kept with the build's (`timings.jsonl`), its run among the
     /// uses' (crate::uses).
-    pub fn add_timings(&self, rec: &crate::timings::RunRec) {
+    pub fn add_timings(&self, rec: &jobrt::timings::RunRec) {
         keep_timings(&self.shared, rec);
     }
 
@@ -2705,7 +2705,7 @@ impl Coordinator {
 
     /// A batch of the Wikimedia budget's `class` for its own agent's proxy, in process
     /// (crate::coord::budgets::InProcess), as `/pool/budget/take` gives a member's.
-    pub fn budget_take(&self, class: crate::budget::Class) -> Result<crate::budget::Given> {
+    pub fn budget_take(&self, class: jobrt::budget::Class) -> Result<jobrt::budget::Given> {
         budgets::take(&mut self.shared.lock().unwrap(), class)
     }
 
@@ -2716,7 +2716,7 @@ impl Coordinator {
 
     /// The answers' lease asked of it in process, as `/pool/lease/answers`: on its disk before it
     /// returns.
-    pub fn answers_lease(&self, op: crate::budget::LeaseOp, by: &str, token: &str) -> Result<crate::budget::LeaseSaid> {
+    pub fn answers_lease(&self, op: jobrt::budget::LeaseOp, by: &str, token: &str) -> Result<jobrt::budget::LeaseSaid> {
         let (said, keep) = {
             let mut s = self.shared.lock().unwrap();
             (budgets::answers(&mut s, op, by, token)?, s.keep.clone())
@@ -2758,7 +2758,7 @@ impl Coordinator {
     }
 
     /// Member `member`'s hold as it keeps it.
-    pub fn hold_of(&self, member: &str) -> Option<crate::control::HoldState> {
+    pub fn hold_of(&self, member: &str) -> Option<jobrt::control::HoldState> {
         self.shared.lock().unwrap().asks.holds.get(member).cloned()
     }
 
@@ -2882,7 +2882,7 @@ impl Coordinator {
     }
 
     /// The build page's acceptances since the last call (`/work/inputs`).
-    pub fn take_inputs_asks(&self) -> Vec<crate::inputs::Ask> {
+    pub fn take_inputs_asks(&self) -> Vec<::inputs::inputs::Ask> {
         std::mem::take(&mut self.shared.lock().unwrap().inputs_asks)
     }
 
@@ -3220,18 +3220,18 @@ pub struct PoolState {
     #[serde(default)]
     pub failed: Vec<(String, String, u64, u32)>,
     #[serde(default)]
-    pub pause: Option<crate::control::Pause>,
+    pub pause: Option<jobrt::control::Pause>,
     #[serde(default)]
     pub pause_at: u64,
 }
 
-/// The owner's cancel (crate::control::Cancel) taken up in `s`: `Coordinator::cancel`, and the
+/// The owner's cancel (jobrt::control::Cancel) taken up in `s`: `Coordinator::cancel`, and the
 /// `/work/cancel` of a member's agent.
 ///
 /// The target noted at the newest plan's number (the one running included, past the last offered,
 /// and never below the time in ms) and left out of the offers standing (lease::Cancelled): a plan begun before the cancel
 /// grants it to no one, its offers set before the cancel or after.
-fn cancel_in(s: &mut Shared, c: &crate::control::Cancel) -> Vec<(u64, String, String)> {
+fn cancel_in(s: &mut Shared, c: &jobrt::control::Cancel) -> Vec<(u64, String, String)> {
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
     // (Past the last offered plan too: a plan numbered `plan + 1` because the clock stepped back
     // may have started before `plan_started` told of it.)
@@ -3314,7 +3314,7 @@ fn app_when(v: &str) -> String {
     }
 }
 
-/// The NAS budget's probes (crate::budget::nas), on a thread of their own while the coordinator
+/// The NAS budget's probes (jobrt::budget::nas), on a thread of their own while the coordinator
 /// runs: while the NAS's project folder is known (`root`), each 10 s the switch is read; on, the NAS
 /// is probed every `EVERY_S` (in a folder of this process's, removed after) and the limits set to
 /// the best of the last day's probes, held shut while the NAS's own disk load read each round is
@@ -3327,14 +3327,14 @@ fn nas_prober(
     stopped: Arc<std::sync::atomic::AtomicBool>,
     me: String,
 ) {
-    use crate::budget::nas;
+    use jobrt::budget::nas;
     let run = move || {
         let mut probes = nas::Probes::default();
         // (The kept probes read: till then, read again each round and never saved over.)
         let mut loaded = false;
         let mut nas_loop = nas::Loop::default();
         // (Its config file removed when this thread ends: the lead stood down or stopped.)
-        let mut session: Option<crate::budget::snmp::Session> = None;
+        let mut session: Option<jobrt::budget::snmp::Session> = None;
         let mut told_unusable: Option<&'static str> = None;
         let mut last: Option<std::time::Instant> = None;
         let mut cleaned = false;
@@ -3396,10 +3396,10 @@ fn nas_prober(
                 }
                 // (The NAS's own disk load against the owner's target, read outside the
                 // lock: up to snmp::TIMEOUT.)
-                let keys = crate::budget::snmp::read_keys(&r);
+                let keys = jobrt::budget::snmp::read_keys(&r);
                 // (Keys that are there but unusable: said once, and again when that changes.)
                 let unusable = match keys {
-                    Err(crate::budget::snmp::NoKeys::Unusable(k)) => Some(k),
+                    Err(jobrt::budget::snmp::NoKeys::Unusable(k)) => Some(k),
                     _ => None,
                 };
                 if unusable != told_unusable {
@@ -3412,7 +3412,7 @@ fn nas_prober(
                 }
                 if keys.as_ref().map_or(true, |k| !session.as_ref().is_some_and(|s| s.is_for(k))) {
                     session = keys.ok().and_then(|k| {
-                        crate::budget::snmp::Session::new(k)
+                        jobrt::budget::snmp::Session::new(k)
                             .inspect_err(|e| eprintln!("coordinator: no SNMP session: {e}"))
                             .ok()
                     });
@@ -3488,17 +3488,17 @@ const SHARES_EVERY_S: u64 = 60;
 
 /// Keeps `into` to each step's phase shares over its last runs in the timings log at `log`, and
 /// `times` to each step's time by phase over the page's chart ranges, read on its own thread every
-/// `SHARES_EVERY_S` as it grows (crate::timings::LogTail: its size first, then only what was
+/// `SHARES_EVERY_S` as it grows (jobrt::timings::LogTail: its size first, then only what was
 /// added; the ranges summed again each time, as they move on), never under the pool's lock; till
 /// the coordinator stops.
 fn phase_sharer(
     log: PathBuf,
-    into: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>>,
-    times: Arc<Mutex<Option<Arc<crate::timings::PhaseTimes>>>>,
+    into: Arc<Mutex<BTreeMap<String, jobrt::timings::PhaseShares>>>,
+    times: Arc<Mutex<Option<Arc<jobrt::timings::PhaseTimes>>>>,
     stopped: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let run = move || {
-        let mut tail = crate::timings::LogTail::default();
+        let mut tail = jobrt::timings::LogTail::default();
         while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
             if tail.read(&log) {
                 *into.lock().unwrap_or_else(|e| e.into_inner()) = tail.shares();
@@ -3522,13 +3522,13 @@ fn phase_sharer(
 /// uses' (crate::uses: what a job is granted threads by); stamped with its step's cost version
 /// (`cost_version`, as the lead stamps each end and done: `history::Event::v`), so a run of an
 /// older way of the step stops counting once the version is raised.
-fn keep_timings(shared: &Mutex<Shared>, rec: &crate::timings::RunRec) {
-    let rec = &crate::timings::RunRec {
+fn keep_timings(shared: &Mutex<Shared>, rec: &jobrt::timings::RunRec) {
+    let rec = &jobrt::timings::RunRec {
         cost_v: rec.cost_v.or(Some(shared.lock().unwrap().the_plan.cost_version(&rec.kind))),
         ..rec.clone()
     };
     let dir = shared.lock().unwrap().dir.clone();
-    if let Err(e) = crate::timings::append(&dir.join("timings.jsonl"), rec) {
+    if let Err(e) = jobrt::timings::append(&dir.join("timings.jsonl"), rec) {
         eprintln!("coordinator: keeping a run's timings: {e}");
     }
     shared.lock().unwrap().add_use(rec, unix_now());
@@ -3568,8 +3568,8 @@ fn check_handoff(
     }
     anyhow::ensure!(the_plan.shared().contains(&step), "a hand-off of {step} isn't work a worker does");
     for (shard, p) in &h.raw {
-        anyhow::ensure!(crate::rawpack::is_shard(shard), "{shard} isn't a shard of raw tiles");
-        anyhow::ensure!(crate::rawpack::named_for(&p.name, shard), "{} isn't an archive of {shard}", p.name);
+        anyhow::ensure!(buildstore::rawpack::is_shard(shard), "{shard} isn't a shard of raw tiles");
+        anyhow::ensure!(buildstore::rawpack::named_for(&p.name, shard), "{} isn't an archive of {shard}", p.name);
     }
     // (Of the targets it says it did: one it didn't finish may have saved part of its files.)
     let did: Vec<&(String, String)> = h.done.as_ref().map(|d| d.1.iter().collect()).unwrap_or_default();
@@ -3830,7 +3830,7 @@ fn floors_cleared(s: &mut Shared, clear: bool, step: Option<&str>, target: Optio
 
 /// The build paused (how, by whom) or going on (`Coordinator::set_pause`, `/work/pause`), kept in
 /// `pause.json` so the next agent starts with it.
-fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
+fn set_pause(s: &mut Shared, pause: Option<jobrt::control::Pause>, at: u64) {
     if at < s.pause_at {
         eprintln!(
             "coordinator: an ask to {} from before the last change passed over",
@@ -3850,7 +3850,7 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
                 note: format!(
                     "{} ({})",
                     p.by,
-                    if p.mode == crate::control::Mode::Freeze { "at once" } else { "at safe points" }
+                    if p.mode == jobrt::control::Mode::Freeze { "at once" } else { "at safe points" }
                 ),
                 ..history::Event::new("pause")
             },
@@ -3863,21 +3863,22 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
 }
 
 /// The raw tiles' archives of a hand-off not taken, each well named for its shard, journaled on their
-/// own (crate::handoff::RAW_AGAIN) for the next merge to name: they're on the NAS, and unnamed they'd
+/// own (buildstore::handoff::RAW_AGAIN) for the next merge to name: they're on the NAS, and unnamed they'd
 /// go two days later, their tiles fetched again.
 fn raw_again(journal: &Path, h: Option<&Handoff>) {
-    let raw: Vec<(String, crate::rawpack::Pack)> = h
+    let raw: Vec<(String, buildstore::rawpack::Pack)> = h
         .into_iter()
         .flat_map(|h| h.raw.iter())
-        .filter(|(a, p)| crate::rawpack::is_shard(a) && crate::rawpack::named_for(&p.name, a))
+        .filter(|(a, p)| buildstore::rawpack::is_shard(a) && buildstore::rawpack::named_for(&p.name, a))
         .cloned()
         .collect();
     if raw.is_empty() {
         return;
     }
-    if let Err(e) =
-        crate::handoff::write(&journal.join(crate::handoff::RAW_AGAIN), &Handoff { raw, ..Default::default() })
-    {
+    if let Err(e) = buildstore::handoff::write(
+        &journal.join(buildstore::handoff::RAW_AGAIN),
+        &Handoff { raw, ..Default::default() },
+    ) {
         eprintln!(
             "coordinator: a hand-off's raw tiles' archives not kept for naming ({e:#}): they go as unnamed ones do"
         );
@@ -4153,7 +4154,7 @@ const AHEAD_S: u64 = 60;
 /// Who's asking a request, as `http::gate` found: this Mac itself (`local`: from loopback, through
 /// no proxy), with the build's own key (`owner`: the Macs' agents, this Mac's menu bar and
 /// `scenic`), or a page (no key: the owner's asks alone); and from where
-/// (crate::net::source).
+/// (coordwire::net::source).
 #[derive(Clone, Debug, Default)]
 struct Caller {
     local: bool,
@@ -4224,7 +4225,7 @@ fn route(
                 return Ok((409, serde_json::json!({ "error": why })));
             }
             // Nor one older than the app a readers' switch was recorded on (its keys and code are
-            // from before it: crate::inputs::regions::read::needed_app).
+            // from before it: inputs::inputs::regions::read::needed_app).
             if let Some(min) = s.min_app.clone() {
                 let theirs = a.app.clone().unwrap_or_default();
                 if !crate::pool::term::app_at_least(&theirs, &min) {
@@ -4342,9 +4343,9 @@ fn route(
             Ok((200, serde_json::json!({ "ok": alive, "pause": s.paused, "cancel": cancel })))
         }
         "/work/cancel" => {
-            // A member's agent passing on its owner's `scenic job cancel` (crate::control::Cancel):
+            // A member's agent passing on its owner's `scenic job cancel` (jobrt::control::Cancel):
             // the leases told, by their worker.
-            let mut c: crate::control::Cancel = serde_json::from_slice(body)?;
+            let mut c: jobrt::control::Cancel = serde_json::from_slice(body)?;
             (c.target, c.by) = (plain(&c.target, 200), plain(&c.by, WHAT_MAX));
             c.step = c.step.map(|st| plain(&st, 100));
             // (When it was asked, by the asker's clock: no later than AHEAD_S from now by this one's,
@@ -4361,7 +4362,7 @@ fn route(
             // A Mac's ask (its menu, `scenic pause`, the map), passed on by its agent, or a page's
             // (its Pause): the build paused or going on, for every worker.
             let b: serde_json::Value = serde_json::from_slice(body)?;
-            let mut pause: Option<crate::control::Pause> = serde_json::from_value(b["pause"].clone())?;
+            let mut pause: Option<jobrt::control::Pause> = serde_json::from_value(b["pause"].clone())?;
             // (When it was asked: an agent says, by its Mac's clock, no later than AHEAD_S from now by
             // this one's; a page or an older helper doesn't, and it's now, by this Mac's: a browser's
             // clock isn't to be trusted with the order. A page's pause is by the build page.)
@@ -4407,10 +4408,10 @@ fn route(
             };
             let by = if caller.page { format!("the build page ({})", caller.from) } else { caller.from.clone() };
             let ask =
-                crate::control::request_hold(&home, member.as_deref(), held.then(|| crate::control::Hold::new(&by)))?;
+                jobrt::control::request_hold(&home, member.as_deref(), held.then(|| jobrt::control::Hold::new(&by)))?;
             let t = Instant::now();
             while t.elapsed() < wait {
-                if let Some(a) = crate::control::hold_answer(&home, &ask) {
+                if let Some(a) = jobrt::control::hold_answer(&home, &ask) {
                     return Ok((200, serde_json::json!({ "ok": a.ok, "said": a.said })));
                 }
                 std::thread::sleep(Duration::from_millis(20));
@@ -4436,15 +4437,15 @@ fn route(
             Ok((200, serde_json::json!({ "refused": crate::agent::answered::unseen(&home) })))
         }
         "/work/quit" => {
-            // The app quits (crate::control::Quit): `{"mode": "now" | "finish"}`, from this Mac only.
+            // The app quits (jobrt::control::Quit): `{"mode": "now" | "finish"}`, from this Mac only.
             // Asked of its agent as the app asks (the quit ask's file), taken up at once.
             if !caller.local {
                 return Ok((403, serde_json::json!({ "error": "only this Mac quits its app" })));
             }
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let mode = match b["mode"].as_str() {
-                Some("now") => crate::control::QuitMode::Now,
-                Some("finish") => crate::control::QuitMode::Finish,
+                Some("now") => jobrt::control::QuitMode::Now,
+                Some("finish") => jobrt::control::QuitMode::Finish,
                 _ => anyhow::bail!("mode: \"now\" or \"finish\""),
             };
             let Some((home, _)) = shared.lock().unwrap().settings.clone() else {
@@ -4453,7 +4454,7 @@ fn route(
                     serde_json::json!({ "error": "this Mac's agent hasn't said where its folder is yet" }),
                 ));
             };
-            crate::control::request_quit(&home, mode, &caller.from)?;
+            jobrt::control::request_quit(&home, mode, &caller.from)?;
             Ok((200, serde_json::json!({ "asked": true })))
         }
         "/work/settings" => {
@@ -4526,7 +4527,7 @@ fn route(
             let act = match (b.get("cancel"), b.get("retry")) {
                 (Some(c), None) => {
                     let (target, step) = one(c)?;
-                    crate::pool::driver::Act::Cancel(crate::control::Cancel {
+                    crate::pool::driver::Act::Cancel(jobrt::control::Cancel {
                         target,
                         step,
                         rerun_after_update: false,
@@ -4536,7 +4537,7 @@ fn route(
                 }
                 (None, Some(r)) => {
                     let (target, step) = one(r)?;
-                    crate::pool::driver::Act::Retry(crate::control::Retry { target, step, by, at: unix_now() })
+                    crate::pool::driver::Act::Retry(jobrt::control::Retry { target, step, by, at: unix_now() })
                 }
                 _ => anyhow::bail!("{{\"cancel\": {{\"target\": …}}}} or {{\"retry\": {{\"target\": …}}}}"),
             };
@@ -4664,7 +4665,7 @@ fn route(
             let v: serde_json::Value = serde_json::from_slice(body)?;
             let class = v["class"]
                 .as_str()
-                .and_then(crate::budget::Class::named)
+                .and_then(jobrt::budget::Class::named)
                 .ok_or_else(|| anyhow::anyhow!("{{\"class\": \"wiki\" | \"query\"}}"))?;
             Ok((200, serde_json::to_value(budgets::take(&mut shared.lock().unwrap(), class)?)?))
         }
@@ -4680,7 +4681,7 @@ fn route(
             let v: serde_json::Value = serde_json::from_slice(body)?;
             let op = v["op"]
                 .as_str()
-                .and_then(crate::budget::LeaseOp::named)
+                .and_then(jobrt::budget::LeaseOp::named)
                 .ok_or_else(|| anyhow::anyhow!("{{\"op\": \"take\" | \"renew\" | \"release\", …}}"))?;
             let (by, token) = (v["by"].as_str().unwrap_or_default(), v["token"].as_str().unwrap_or_default());
             let said = budgets::answers(&mut shared.lock().unwrap(), op, by, token)?;
@@ -4719,13 +4720,13 @@ fn route(
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let unit = b["unit"]
                 .as_str()
-                .filter(|u| u.len() <= 64 && crate::inputs::valid_unit(u))
+                .filter(|u| u.len() <= 64 && ::inputs::inputs::valid_unit(u))
                 .ok_or_else(|| anyhow::anyhow!("{{\"unit\": <unit>, \"accept\": [<id>…] | \"all\": true}}"))?;
             let accept: Vec<String> = b["accept"]
                 .as_array()
                 .map(|a| {
                     a.iter()
-                        .filter_map(|i| i.as_str().filter(|i| crate::inputs::valid_id(i)).map(str::to_string))
+                        .filter_map(|i| i.as_str().filter(|i| ::inputs::inputs::valid_id(i)).map(str::to_string))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -4742,7 +4743,7 @@ fn route(
             } else {
                 format!("a member ({})", caller.from)
             };
-            shared.lock().unwrap().inputs_asks.push(crate::inputs::Ask {
+            shared.lock().unwrap().inputs_asks.push(::inputs::inputs::Ask {
                 unit: unit.to_string(),
                 accept,
                 all,
@@ -4759,7 +4760,7 @@ fn route(
             let mut d: Done = serde_json::from_slice(body)?;
             // Its timings kept, whatever became of its lease (by who ran it, as the lease says).
             if let Some(t) = d.timings.take() {
-                keep_timings(shared, &crate::timings::RunRec { host: d.worker.clone(), ..t });
+                keep_timings(shared, &jobrt::timings::RunRec { host: d.worker.clone(), ..t });
             }
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.get(d.lease, &d.worker, now).cloned() else {
@@ -4819,7 +4820,7 @@ fn route(
                     // under way): journaled, to be merged as any hand-off is.)
                     drop(s);
                     let wrote =
-                        if pooled { Ok(()) } else { crate::handoff::write(&journal.join(folder(&d.worker)), &h) };
+                        if pooled { Ok(()) } else { buildstore::handoff::write(&journal.join(folder(&d.worker)), &h) };
                     if let Err(e) = wrote {
                         let mut s = shared.lock().unwrap();
                         for (t, _) in &targets {
@@ -5255,14 +5256,14 @@ fn route(
             Ok((200, serde_json::json!({ "floors": floors, "disks": s.disks, "cleared": cleared })))
         }
         "/work/timings" => {
-            // The runs' timings kept (crate::timings), the last `last` of each kind (or of `kind`):
+            // The runs' timings kept (jobrt::timings), the last `last` of each kind (or of `kind`):
             // `scenic timings` on another Mac.
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
             let last = b["last"].as_u64().map_or(20, |m| m.min(500)) as usize;
             let dir = shared.lock().unwrap().dir.clone();
             Ok((
                 200,
-                serde_json::json!({ "runs": crate::timings::last_runs(&crate::timings::read_log(&dir.join("timings.jsonl")), b["kind"].as_str(), last) }),
+                serde_json::json!({ "runs": jobrt::timings::last_runs(&jobrt::timings::read_log(&dir.join("timings.jsonl")), b["kind"].as_str(), last) }),
             ))
         }
         p if p.starts_with("/task/") && !local => anyhow::bail!("{p} is for this Mac's jobs"),
@@ -5480,20 +5481,20 @@ mod http {
         pub cors: Arc<std::sync::RwLock<Option<BTreeSet<String>>>>,
     }
 
-    pub use crate::net::{allowed, random, served_https, urls};
+    pub use coordwire::net::{allowed, random, served_https, urls};
 
     /// The workers' token: made once and kept (`workers-token`), so workers keep theirs across
     /// restarts. (`token`, the one pages carried long ago, in their address and their storage, is no
     /// key any more: gone. The Macs' agents read the new one from the NAS once theirs is refused.)
     pub fn token(dir: &Path) -> Result<String> {
         std::fs::remove_file(dir.join("token")).ok();
-        crate::net::kept_token(&dir.join("workers-token"))
+        coordwire::net::kept_token(&dir.join("workers-token"))
     }
 
     /// This Mac's jobs' token (`/task/…`): made once and kept (`jobs-token`, this Mac's alone, never
     /// published), so a running job's stays good across its agent's restarts and its coordinator's.
     pub fn job_token(dir: &Path) -> Result<String> {
-        crate::net::kept_token(&dir.join("jobs-token"))
+        coordwire::net::kept_token(&dir.join("jobs-token"))
     }
 
     /// The answers worth gzipping: tower-http's defaults (not under 32 bytes, images, gRPC, event streams),
@@ -5599,7 +5600,8 @@ mod http {
             .build()?;
         std::thread::Builder::new().name("coordinator".into()).spawn(move || {
             let kept = rt.block_on(async move {
-                match (crate::net::Listener::new(listener), loopback.map(crate::net::Listener::new).transpose()) {
+                match (coordwire::net::Listener::new(listener), loopback.map(coordwire::net::Listener::new).transpose())
+                {
                     (Ok(l), Ok(lo)) => {
                         let (l, lo) = accept(l, lo, app, stopped, wake, taken).await;
                         Some(super::Listeners { listener: l.into_std(), loopback: lo.map(|l| l.into_std()) })
@@ -5656,13 +5658,13 @@ mod http {
     /// time (which closes idle ones too), and its whole life bounded. Stopped: its listeners
     /// handed back.
     async fn accept(
-        listener: crate::net::Listener,
-        loopback: Option<crate::net::Listener>,
+        listener: coordwire::net::Listener,
+        loopback: Option<coordwire::net::Listener>,
         app: Router,
         stopped: Arc<std::sync::atomic::AtomicBool>,
         wake: Arc<tokio::sync::Notify>,
         taken: Arc<std::sync::atomic::AtomicU64>,
-    ) -> (crate::net::Listener, Option<crate::net::Listener>) {
+    ) -> (coordwire::net::Listener, Option<coordwire::net::Listener>) {
         use tower::ServiceExt;
         let room = Arc::new(tokio::sync::Semaphore::new(CONNECTIONS));
         // (Its connections: each ended, its socket closed, before a stop returns.)
@@ -5786,13 +5788,13 @@ mod http {
     }
 
     /// Who may ask what. This Mac, its LAN and the tailnet alone (and through the proxy on this Mac,
-    /// from those alone: never the internet's, Tailscale Funnel's: crate::net::reached), and a
-    /// request naming this Mac and from no web page elsewhere (crate::net::ours, from_the_page: DNS
+    /// from those alone: never the internet's, Tailscale Funnel's: coordwire::net::reached), and a
+    /// request naming this Mac and from no web page elsewhere (coordwire::net::ours, from_the_page: DNS
     /// rebinding, a site's requests through a browser that reaches here). Then: the page and what
     /// its dashboard reads, anyone's; the Macs' agents' requests, with the build's key; a page's,
     /// with no key, for the owner's asks alone (pausing, settings; never work: `NO_PAGE_HELPERS`,
     /// `page_work`); and a job's
-    /// (`/task/…`), with its own key, from this Mac itself (crate::net::own: `tailscale serve` hands
+    /// (`/task/…`), with its own key, from this Mac itself (coordwire::net::own: `tailscale serve` hands
     /// the tailnet's requests over from loopback). A key that isn't one is refused (401), so an
     /// agent with an old one reads the new one. Who it is goes on to the request (`Caller`).
     /// Every answer says the pool's term and member this coordinator is, while it has them.
@@ -5823,24 +5825,24 @@ mod http {
         next: Next,
     ) -> Response {
         let ip = peer.ip();
-        if !crate::net::reached(ip, req.headers()) {
+        if !coordwire::net::reached(ip, req.headers()) {
             return error(StatusCode::FORBIDDEN, "not from here");
         }
-        let from = crate::net::source(ip, req.headers());
-        let local = crate::net::own(ip, req.headers());
+        let from = coordwire::net::source(ip, req.headers());
+        let local = coordwire::net::own(ip, req.headers());
         // (No Host at all: not a browser.)
-        if req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(|h| !crate::net::ours(h)) {
+        if req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(|h| !coordwire::net::ours(h)) {
             return error(StatusCode::FORBIDDEN, "not this lead's address");
         }
         // (A loopback page is this Mac's own only from this Mac: from another, that Mac's: a
         // member's page opened on itself when the request is from a member's address, `member_page`.)
-        let own_page = crate::net::from_the_page(req.headers())
-            && (crate::net::loopback(ip)
+        let own_page = coordwire::net::from_the_page(req.headers())
+            && (coordwire::net::loopback(ip)
                 || !req
                     .headers()
                     .get(header::ORIGIN)
                     .and_then(|o| o.to_str().ok())
-                    .is_some_and(crate::net::local_origin));
+                    .is_some_and(coordwire::net::local_origin));
         if !own_page && member_page(&c, ip, req.headers()).is_none() {
             return error(StatusCode::FORBIDDEN, "not from the build page");
         }
@@ -5855,8 +5857,8 @@ mod http {
                 return r;
             }
         }
-        let owner = key.as_deref().is_some_and(|k| crate::net::same(k, &c.token));
-        let job = key.as_deref().is_some_and(|k| crate::net::same(k, &c.job_token));
+        let owner = key.as_deref().is_some_and(|k| coordwire::net::same(k, &c.token));
+        let job = key.as_deref().is_some_and(|k| coordwire::net::same(k, &c.job_token));
         req.extensions_mut().insert(Caller { local, page: key.is_none(), from });
         let is_page = req.method() == Method::GET
             && (path == "/work" || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
@@ -5987,7 +5989,8 @@ mod http {
         let s = o.to_str().ok()?.to_ascii_lowercase();
         let cors = c.cors.read().unwrap_or_else(|e| e.into_inner());
         let set = cors.as_ref()?;
-        (set.contains(&s) || (crate::net::local_origin(&s) && super::brokers::member_ip(set, peer))).then(|| o.clone())
+        (set.contains(&s) || (coordwire::net::local_origin(&s) && super::brokers::member_ip(set, peer)))
+            .then(|| o.clone())
     }
 
     /// CORS for the members' pages (docs/pool.md §8), around the gate: a preflight from one
@@ -6376,7 +6379,7 @@ mod tests {
             id
         };
         c.add_costs(&[("6/1/1".into(), Cost { peak_mb: 700, secs: 9, ..Default::default() })]);
-        let pause = crate::control::Pause { mode: crate::control::Mode::Freeze, by: "owner".into(), at: 5 };
+        let pause = jobrt::control::Pause { mode: jobrt::control::Mode::Freeze, by: "owner".into(), at: 5 };
         c.set_pause(Some(pause.clone()), 5);
         c.stop();
         let (b, _) = start_for_test(d.path(), "m4", "");
@@ -7075,11 +7078,11 @@ mod tests {
         .unwrap();
         let old = client::Client::at(w.urls(), c.contact.token.clone(), "old");
         old.ask(&Ask { cap: Some(Capacity { at: unix_now(), ..Default::default() }), ..ask(4096) }).unwrap();
-        let p = crate::budget::nas::Probe { at: unix_now(), bytes_s: 80e6, creates_s: 40.0, ..Default::default() };
+        let p = jobrt::budget::nas::Probe { at: unix_now(), bytes_s: 80e6, creates_s: 40.0, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             s.nas_probes = vec![p];
-            s.nas_own = crate::budget::nas::Probes(vec![p]).limits(None);
+            s.nas_own = jobrt::budget::nas::Probes(vec![p]).limits(None);
             s.nas_loop.read(&[60.0, 91.0], 85);
             s.nas_disks = vec![60.0, 91.0];
         }
@@ -7219,7 +7222,7 @@ mod tests {
 
     #[test]
     fn a_runs_timings_come_with_its_hand_off_and_are_read_from_another_mac() {
-        use crate::timings::{PhaseRec, RunRec};
+        use jobrt::timings::{PhaseRec, RunRec};
         let (d, c, w) = start();
         c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
         let g = w.ask(&ask(4096)).unwrap().unwrap();
@@ -7244,7 +7247,7 @@ mod tests {
             client::Handed::Taken
         );
         c.add_timings(&run("gc", "m4"));
-        let kept = crate::timings::read_log(&d.path().join("coord/timings.jsonl"));
+        let kept = jobrt::timings::read_log(&d.path().join("coord/timings.jsonl"));
         assert_eq!(
             kept.iter().map(|r| (r.kind.as_str(), r.host.as_str())).collect::<Vec<_>>(),
             [("unit", "m1"), ("gc", "m4")]
@@ -7365,7 +7368,7 @@ mod tests {
     /// over HTTP the same.
     #[test]
     fn a_cancelled_job_is_given_back_and_held_until_a_newer_app() {
-        use crate::control::Cancel;
+        use jobrt::control::Cancel;
         let (old, new) = ("20261018-0100-aaaaaaa", "20261018-0300-bbbbbbb");
         let d = tempfile::tempdir().unwrap();
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", old);
@@ -7440,7 +7443,7 @@ mod tests {
         // Task #907: a plan starts, the owner cancels one of its targets, and its offers come after:
         // no worker is granted it, the lead's own job of it neither; a lead restarted meanwhile
         // keeps the cancel; the next plan grants it again.
-        use crate::control::Cancel;
+        use jobrt::control::Cancel;
         let d = tempfile::tempdir().unwrap();
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
@@ -7475,7 +7478,7 @@ mod tests {
     #[test]
     fn a_cancel_drops_the_offers_standing() {
         // Offers set before the cancel, from a plan no newer: its target left out at once.
-        use crate::control::Cancel;
+        use jobrt::control::Cancel;
         let d = tempfile::tempdir().unwrap();
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
@@ -7491,7 +7494,7 @@ mod tests {
 
     #[test]
     fn the_builds_pause_holds_for_every_worker() {
-        use crate::control::{Mode, Pause};
+        use jobrt::control::{Mode, Pause};
         let (d, c, w) = start();
         let units: Vec<(String, String, u64)> =
             (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
@@ -7723,7 +7726,7 @@ mod tests {
         // A step reading a shared cache (task #392; `depth`, the local copies, task #551): a run past
         // its target's output that cache's fill (`fills`), not a floor of each job; a warm run's
         // leaves it.
-        let (u, cache) = (["6/1/1".to_string()], crate::localread::CACHE);
+        let (u, cache) = (["6/1/1".to_string()], buildstore::localread::CACHE);
         c.add_job_run("depth", &u, 18_584);
         assert_eq!((c.job_disk("depth"), c.fill_mb(cache)), (0, 18_584));
         for _ in 0..20 {
@@ -7760,7 +7763,7 @@ mod tests {
         let mut measured: BTreeMap<String, u64> =
             [(cost_key("pack", "6/1/1"), 300), (cost_key("depth", "6/1/1"), 584), (cost_key("peaks", "6/1/1"), 500)]
                 .into();
-        let fill = || -> BTreeMap<String, u64> { [(crate::localread::CACHE.to_string(), 30_000)].into() };
+        let fill = || -> BTreeMap<String, u64> { [(buildstore::localread::CACHE.to_string(), 30_000)].into() };
         assert_eq!(
             job_disks_load(old.path(), &mut measured),
             (BTreeMap::new(), fill()),
@@ -7845,7 +7848,7 @@ mod tests {
         .unwrap();
         let (c, _port) = start_for_test(&dir, "m4", "");
         assert_eq!(
-            (c.fill_mb("base packs"), c.fill_mb("DEM"), c.fill_mb(crate::localread::CACHE)),
+            (c.fill_mb("base packs"), c.fill_mb("DEM"), c.fill_mb(buildstore::localread::CACHE)),
             (0, 0, 900),
             "only the caches there are: the base packs' and the DEM cache's gone"
         );
@@ -8213,7 +8216,7 @@ mod tests {
                 (cost_key("peaks", "6/1/1"), 900),
             ]
             .into(),
-            fills: [("base packs".to_string(), 67_985), (crate::localread::CACHE.to_string(), 900)].into(),
+            fills: [("base packs".to_string(), 67_985), (buildstore::localread::CACHE.to_string(), 900)].into(),
             leases: serde_json::json!({ "next": 1, "leases": [] }),
             ..Default::default()
         };
@@ -8223,7 +8226,7 @@ mod tests {
             (disks.get("pack 6/16/20"), disks.get("lo 3/0/1"), disks.get("peaks 6/1/1")),
             (None, None, Some(&900))
         );
-        assert_eq!((c.fill_mb("base packs"), c.fill_mb(crate::localread::CACHE)), (0, 900));
+        assert_eq!((c.fill_mb("base packs"), c.fill_mb(buildstore::localread::CACHE)), (0, 900));
         assert_eq!(c.pool_state().disks_v, DISKS_V, "a state written now says its generation");
         p.disks_v = DISKS_V;
         p.disks = [(cost_key("pack", "6/16/20"), 1_300)].into();
@@ -8521,7 +8524,7 @@ mod tests {
             .collect()
     }
 
-    /// The NAS budget (crate::budget::nas): with packing, an ask is granted only the jobs whose NAS
+    /// The NAS budget (jobrt::budget::nas): with packing, an ask is granted only the jobs whose NAS
     /// weights fit what every job leased in the pool leaves (the lead's own held ones among them);
     /// the rest wait until one ends. Off, as before. A fetching step's jobs only under the
     /// downloads' cap.
@@ -8548,7 +8551,7 @@ mod tests {
             }
         };
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let a = Ask { want: 6, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         let (_d, c, w, _clock) = every((0, 0));
         heavy(&c, "slope-hi");
@@ -8569,7 +8572,7 @@ mod tests {
         // Downloads: a fetching step's jobs under the cap (the lead's own: no fetching step is
         // offered to every member).
         let (_d, c, _w, _clock) = every((0, 0));
-        c.set_nas(Some(crate::budget::nas::Limits { downloads: Some(1), ..limits }));
+        c.set_nas(Some(jobrt::budget::nas::Limits { downloads: Some(1), ..limits }));
         packable(&c, "rail-feeds", 1, Some(1));
         packable(&c, "bld-fetch", 1, Some(1));
         let own = |step: &str| Offer {
@@ -8597,7 +8600,7 @@ mod tests {
     fn a_job_of_several_targets_is_weighed_by_its_moves_over_their_times() {
         let (_d, c, m1, _clock) = every((0, 0));
         let m2 = client::Client::at(m1.urls(), c.contact.token.clone(), "m2");
-        c.set_nas(Some(crate::budget::nas::Limits {
+        c.set_nas(Some(jobrt::budget::nas::Limits {
             bytes_s: 100e6,
             creates_s: 40.0,
             downloads: None,
@@ -8751,7 +8754,7 @@ mod tests {
     fn a_job_past_its_predicted_time_is_weighed_by_what_it_moved() {
         let (_d, c, m1, clock) = every((0, 0));
         let m2 = client::Client::at(m1.urls(), c.contact.token.clone(), "m2");
-        c.set_nas(Some(crate::budget::nas::Limits {
+        c.set_nas(Some(jobrt::budget::nas::Limits {
             bytes_s: 100e6,
             creates_s: 40.0,
             downloads: None,
@@ -8817,7 +8820,7 @@ mod tests {
     #[test]
     fn a_job_taken_over_is_weighed_by_what_it_moved_since_its_lease() {
         let (_d, c, _w, clock) = every((0, 0));
-        c.set_nas(Some(crate::budget::nas::Limits {
+        c.set_nas(Some(jobrt::budget::nas::Limits {
             bytes_s: 84_473_317.0,
             creates_s: 47.9,
             listed_s: 79_844.7,
@@ -8896,7 +8899,7 @@ mod tests {
             };
             c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
         }
-        c.set_nas(Some(crate::budget::nas::Limits {
+        c.set_nas(Some(jobrt::budget::nas::Limits {
             bytes_s: 100e6,
             creates_s: 40.0,
             downloads: None,
@@ -9335,7 +9338,7 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         heavy_slope(&c);
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (None, Some(limits));
@@ -9370,11 +9373,11 @@ mod tests {
     fn a_missing_switch_holds_the_members_too() {
         let settings = crate::coord::asks::Settings::default();
         assert_eq!(settings.nas_budget(), Some(Default::default()), "not set: on");
-        assert_eq!(crate::budget::nas::parse("off\n"), None, "`off`: off");
+        assert_eq!(jobrt::budget::nas::parse("off\n"), None, "`off`: off");
         let (_d, c, w, _clock) = every((0, 0));
         heavy_slope(&c);
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -9417,7 +9420,7 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         heavy_slope(&c);
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -9479,7 +9482,7 @@ mod tests {
     fn the_leads_aged_own_jobs_go_one_at_a_time() {
         let (_d, c, w, clock) = every((0, 0));
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -9515,7 +9518,7 @@ mod tests {
         };
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "beside the member's job, past the whole");
         assert_eq!(waits(&c), ["6/1/1", "6/1/2"], "both noted waiting");
-        clock.advance(crate::budget::nas::OWN_AGE);
+        clock.advance(jobrt::budget::nas::OWN_AGE);
         let g = c.ask_own(&a, &BTreeSet::new(), 0).expect("aged: one goes");
         assert!(g.more.is_empty(), "one at a time: {g:?}");
         assert_eq!(waits(&c), ["6/1/2"], "the granted one's wait forgotten");
@@ -9531,7 +9534,7 @@ mod tests {
     #[test]
     fn the_draw_weighs_the_pace_and_the_cache_held() {
         use crate::agent::placement::CACHE_PREFER;
-        let cache = crate::localread::CACHE;
+        let cache = buildstore::localread::CACHE;
         let mut s = sched::Sched::from_state(
             crate::agent::seam::for_tests(),
             &sched::State::default(),
@@ -9660,7 +9663,7 @@ mod tests {
     fn a_step_granted_one_by_one_doesnt_keep_the_reservation() {
         let (_d, c, w, clock) = every((0, 0));
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -9705,7 +9708,7 @@ mod tests {
         assert!(c.ask_own(&lead, &BTreeSet::new(), 0).is_none(), "800 + 300: past the whole");
         // (Aged, the leases kept alive, the waits passed over again lately.)
         for _ in 0..20 {
-            clock.advance(crate::budget::nas::OWN_AGE / 20);
+            clock.advance(jobrt::budget::nas::OWN_AGE / 20);
             for n in ["m1", "m2"] {
                 assert!(by(n).beat(lease_of(n), None).unwrap());
             }
@@ -9732,7 +9735,7 @@ mod tests {
         for asker in ["m1", "m4"] {
             let (_d, c, w, clock) = every((0, 0));
             let limits =
-                crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+                jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
             {
                 let mut s = c.shared.lock().unwrap();
                 (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -9770,11 +9773,11 @@ mod tests {
             };
             assert!(granted(&by, &ask(asker, "unit")).is_empty(), "{asker}: 103 + 946, past the whole");
             for _ in 0..19 {
-                clock.advance(crate::budget::nas::OWN_AGE / 20);
+                clock.advance(jobrt::budget::nas::OWN_AGE / 20);
                 assert!(w2.beat(terrain, None).unwrap());
                 assert!(granted(&by, &ask(asker, "unit")).is_empty(), "{asker}: not aged yet");
             }
-            clock.advance(crate::budget::nas::OWN_AGE / 20);
+            clock.advance(jobrt::budget::nas::OWN_AGE / 20);
             assert!(granted(&w2, &ask("m2", "slope-hi")).is_empty(), "{asker}: room held for the aged unit");
             assert_eq!(granted(&by, &ask(asker, "unit")), ["6/1/1"], "{asker}: the aged unit goes beside the terrain");
             assert!(granted(&w2, &ask("m2", "slope-hi")).is_empty(), "{asker}: 1049 leased, past the whole");
@@ -9790,7 +9793,7 @@ mod tests {
     #[test]
     fn the_clean_up_waits_for_a_quiet_nas_and_yields_to_a_held_job() {
         let (_d, c, w, clock) = every((0, 0));
-        let limits = crate::budget::nas::Limits {
+        let limits = jobrt::budget::nas::Limits {
             bytes_s: 100e6,
             creates_s: 40.0,
             listed_s: 1000.0,
@@ -9848,7 +9851,7 @@ mod tests {
         let daily = [("threads", 1), ("bytes", 119_607_616_284), ("listed", 295_768), ("stats", 288_071)];
         c.add_costs_by(&[(cost_key("gc", "gc"), Cost { v: 0, ..cost("gc", &daily) })], "m4");
         assert!(cost_version("gc") > 0, "the queue's way is its own");
-        let held = crate::budget::nas::Limits { held: true, ..limits };
+        let held = jobrt::budget::nas::Limits { held: true, ..limits };
         c.shared.lock().unwrap().nas_own = Some(held);
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "the NAS's own load over its target: held");
         c.shared.lock().unwrap().nas_own = Some(limits);
@@ -9871,7 +9874,7 @@ mod tests {
         let m2 = Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert!(all_granted(&w, &m2).is_empty(), "the member's 500 held back");
         assert_eq!(c.nas_yield("gc", &["gc".into()]), None, "not held long yet");
-        age(crate::budget::nas::OWN_AGE);
+        age(jobrt::budget::nas::OWN_AGE);
         assert!(all_granted(&w, &m2).is_empty());
         let why = c.nas_yield("gc", &["gc".into()]).expect("yields to the held job");
         assert!(why.contains("slope-hi 6/1/2"), "{why}");
@@ -9882,7 +9885,7 @@ mod tests {
         members.borrow_mut().push(g2.lease);
         // Beside 800 it waits, however long.
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none());
-        age(crate::budget::nas::OWN_AGE * 3);
+        age(jobrt::budget::nas::OWN_AGE * 3);
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "never urgent");
     }
 
@@ -9893,7 +9896,7 @@ mod tests {
     #[test]
     fn an_unmeasured_clean_up_goes_and_a_held_one_ages_in_after_a_day() {
         let (_d, c, w, clock) = every((0, 0));
-        let limits = crate::budget::nas::Limits {
+        let limits = jobrt::budget::nas::Limits {
             bytes_s: 100e6,
             creates_s: 40.0,
             listed_s: 1000.0,
@@ -9963,9 +9966,9 @@ mod tests {
             }
         };
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "700 + 400: held");
-        age(crate::budget::nas::QUIET_AGE / 2);
+        age(jobrt::budget::nas::QUIET_AGE / 2);
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_none(), "half a day: still held");
-        age(crate::budget::nas::QUIET_AGE / 2);
+        age(jobrt::budget::nas::QUIET_AGE / 2);
         assert!(c.ask_own(&a, &BTreeSet::new(), 0).is_some(), "a day held back: it goes as an aged job");
     }
 
@@ -9976,7 +9979,7 @@ mod tests {
     fn the_leads_whole_job_goes_beside_its_own_running_job() {
         let (_d, c, w, _clock) = every((0, 0));
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -10207,7 +10210,7 @@ mod tests {
                 c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
             }
         };
-        let run = |host: &str, threads: u32, cpu_s: f64| crate::timings::RunRec {
+        let run = |host: &str, threads: u32, cpu_s: f64| jobrt::timings::RunRec {
             v: 1,
             kind: "slope-hi".into(),
             host: host.into(),
@@ -10797,7 +10800,7 @@ mod tests {
     }
 
     /// A shared cache reserved once per Mac (task #392, crate::needs::CACHES): `depth`'s z6 tiles
-    /// read one copy of the local copies (crate::localread), so of three jobs of them granted together only the first carries the cache (the fill
+    /// read one copy of the local copies (buildstore::localread), so of three jobs of them granted together only the first carries the cache (the fill
     /// measured) beside its own output; the others their output alone. A Mac whose disk can't hold
     /// the cache is granted none of them.
     #[test]
@@ -10837,7 +10840,7 @@ mod tests {
                 cores_free: 8,
                 disk_mb: 20_000,
                 caches: have
-                    .map(|h| (crate::localread::CACHE.to_string(), CacheHere { have_mb: h }))
+                    .map(|h| (buildstore::localread::CACHE.to_string(), CacheHere { have_mb: h }))
                     .into_iter()
                     .collect(),
                 ..Default::default()
@@ -10868,7 +10871,7 @@ mod tests {
             packable(&c, "depth", 6, Some(1));
             c.add_job_run("depth", &["6/1/1".to_string()], 30_100);
             c.offer("p", (1..=3).map(one).collect());
-            assert_eq!(c.fill_mb(crate::localread::CACHE), 30_000);
+            assert_eq!(c.fill_mb(buildstore::localread::CACHE), 30_000);
             let a = Ask {
                 want: 1,
                 can: vec!["depth".into()],
@@ -11337,7 +11340,7 @@ mod tests {
         };
         c.add_costs_by(&[(cost_key("slope-hi", "6/1/6"), cost)], "m1");
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let offer = {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -11360,7 +11363,7 @@ mod tests {
             s.pick_every(&six, &a3, now)
         };
         assert!(take(&c).is_empty(), "the budget full: waits");
-        clock.advance(crate::budget::nas::OWN_AGE - Duration::from_secs(1));
+        clock.advance(jobrt::budget::nas::OWN_AGE - Duration::from_secs(1));
         {
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
@@ -11400,7 +11403,7 @@ mod tests {
             weigh(&format!("6/1/{i}"), 12_000_000_000);
         }
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let offer = {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -11423,7 +11426,7 @@ mod tests {
         };
         // (A third of `OWN_AGE` passing, the leases `ids` beating every 10 s, as their workers do.)
         let tick = |c: &Coordinator, ids: &[u64]| {
-            for _ in 0..crate::budget::nas::OWN_AGE.as_secs() / 30 {
+            for _ in 0..jobrt::budget::nas::OWN_AGE.as_secs() / 30 {
                 clock.advance(Duration::from_secs(10));
                 let mut s = c.shared.lock().unwrap();
                 let now = s.now();
@@ -11467,7 +11470,7 @@ mod tests {
         let (_d, c, _w, clock) = every((0, 0));
         heavy_slope(&c);
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let offer = {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -11686,7 +11689,7 @@ mod tests {
             let changes = files.iter().map(|l| (l.to_string(), Some(format!("{l}.0000000000000003.pack")))).collect();
             let raw = raw
                 .iter()
-                .map(|(a, n)| (a.to_string(), crate::rawpack::Pack { name: n.to_string(), bytes: 1 }))
+                .map(|(a, n)| (a.to_string(), buildstore::rawpack::Pack { name: n.to_string(), bytes: 1 }))
                 .collect();
             Handoff { changes, done: Some((step.into(), ts(t))), raw, ..Default::default() }
         };
@@ -11901,17 +11904,17 @@ mod tests {
         let mut bad = handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")]);
         bad.changes.insert("base/6-9-9".into(), None);
         bad.raw = vec![
-            ("6-1-1".into(), crate::rawpack::Pack { name: "6-1-1.0123456789abcdef.tiles".into(), bytes: 9 }),
-            ("6-1-1".into(), crate::rawpack::Pack { name: "../x.tiles".into(), bytes: 9 }),
+            ("6-1-1".into(), buildstore::rawpack::Pack { name: "6-1-1.0123456789abcdef.tiles".into(), bytes: 9 }),
+            ("6-1-1".into(), buildstore::rawpack::Pack { name: "../x.tiles".into(), bytes: 9 }),
         ];
         assert!(matches!(
             w.done(&Done { lease: g.lease, handoff: Some(bad), ..Default::default() }).unwrap(),
             client::Handed::Refused(_)
         ));
-        let kept = crate::handoff::waiting_in(&c.journal()).unwrap();
+        let kept = buildstore::handoff::waiting_in(&c.journal()).unwrap();
         assert_eq!(kept.len(), 1);
         assert!(
-            kept[0].0.parent().unwrap().ends_with(crate::handoff::RAW_AGAIN)
+            kept[0].0.parent().unwrap().ends_with(buildstore::handoff::RAW_AGAIN)
                 && kept[0].1.done.is_none()
                 && kept[0].1.changes.is_empty()
         );
@@ -11933,7 +11936,7 @@ mod tests {
             .unwrap(),
             client::Handed::Taken
         );
-        let waiting = crate::handoff::waiting_in(&c.journal()).unwrap();
+        let waiting = buildstore::handoff::waiting_in(&c.journal()).unwrap();
         assert_eq!(waiting.len(), 1);
         assert!(waiting[0].1.done.is_some() && waiting[0].1.changes.contains_key("base/6-1-3"));
         assert!(!w.beat(g.lease, None).unwrap(), "the lease ended with its hand-off");
@@ -12008,13 +12011,13 @@ mod tests {
     #[test]
     fn the_page_is_over_https_where_tailscale_serves_it() {
         let v = serde_json::json!({ "TCP": { "443": { "HTTPS": true } }, "Web": { "mac.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:8090" } } } } }); // (pool port: not bound)
-        assert_eq!(crate::net::https_in(&v, 8090).as_deref(), Some("https://mac.tail1.ts.net/"));
-        assert_eq!(crate::net::https_in(&v, 8091), None);
-        assert_eq!(crate::net::https_in(&serde_json::json!({}), 8090), None);
+        assert_eq!(coordwire::net::https_in(&v, 8090).as_deref(), Some("https://mac.tail1.ts.net/"));
+        assert_eq!(coordwire::net::https_in(&v, 8091), None);
+        assert_eq!(coordwire::net::https_in(&serde_json::json!({}), 8090), None);
         // The map's own port, beside it; one under a path doesn't serve the pages' /api/….
         let both = serde_json::json!({ "Web": { "mac.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:8090" }, "/map": { "Proxy": "http://127.0.0.1:8080" } } }, "mac.tail1.ts.net:8443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:18085" } } } } }); // (pool port: not bound)
-        assert_eq!(crate::net::https_in(&both, 18085).as_deref(), Some("https://mac.tail1.ts.net:8443/"));
-        assert_eq!(crate::net::https_in(&both, 8080), None);
+        assert_eq!(coordwire::net::https_in(&both, 18085).as_deref(), Some("https://mac.tail1.ts.net:8443/"));
+        assert_eq!(coordwire::net::https_in(&both, 8080), None);
     }
 
     #[test]
@@ -12361,7 +12364,7 @@ mod tests {
         assert_eq!(send(&addr, "POST", "/work/hold", None, &far, &held).0, 503, "no folder said yet");
         let home = tempfile::tempdir().unwrap();
         c.set_settings(home.path(), None);
-        let hold = crate::agent::bus::Snap::new(crate::control::HoldState::default());
+        let hold = crate::agent::bus::Snap::new(jobrt::control::HoldState::default());
         let (beat, _beats) = std::sync::mpsc::channel();
         let mut control = crate::agent::asks::Handle::new(home.path().to_path_buf(), hold.clone(), beat);
         // (Only an answer ends the request's wait, and only the watcher's event takes the ask up:
@@ -12373,16 +12376,16 @@ mod tests {
         let (code, _, b) = send(&addr, "POST", "/work/hold", None, &far, &held);
         assert_eq!((code, b["ok"].as_bool()), (200, Some(true)), "{b}");
         assert!(hold.get().held.as_ref().is_some_and(|h| h.by == "the build page (100.101.1.2)"));
-        assert!(crate::control::read_hold(home.path()).held.is_some());
+        assert!(jobrt::control::read_hold(home.path()).held.is_some());
         let (code, _, b) = send(&addr, "POST", "/work/hold", None, &far, &serde_json::json!({ "held": false }));
         assert_eq!((code, b["ok"].as_bool()), (200, Some(true)), "{b}");
         assert!(hold.get().held.is_none());
         assert_eq!(send(&addr, "POST", "/work/hold", None, &far, &serde_json::json!({})).0, 400);
         let quit = serde_json::json!({ "mode": "finish" });
         assert_eq!(send(&addr, "POST", "/work/quit", None, &far, &quit).0, 403);
-        assert!(crate::control::peek_quit(home.path()).is_none());
+        assert!(jobrt::control::peek_quit(home.path()).is_none());
         assert_eq!(send(&addr, "POST", "/work/quit", None, &[], &quit).0, 200);
-        assert!(crate::control::peek_quit(home.path()).is_some_and(|q| q.mode == crate::control::QuitMode::Finish));
+        assert!(jobrt::control::peek_quit(home.path()).is_some_and(|q| q.mode == jobrt::control::QuitMode::Finish));
         store::testkit::eventually("control took the quit up", || control.quit.get().is_some());
     }
 
@@ -12550,7 +12553,7 @@ mod tests {
         c.set_pageview(pv);
         let pause = || send(&addr, "POST", "/work/swarm", None, &[], &serde_json::json!({})).2["pause"].clone();
         assert!(pause().is_null());
-        let p = crate::control::Pause { mode: crate::control::Mode::Freeze, by: "x".into(), at: 1 };
+        let p = jobrt::control::Pause { mode: jobrt::control::Mode::Freeze, by: "x".into(), at: 1 };
         c.set_pause(Some(p), 1);
         assert_eq!(pause()["mode"], "freeze", "the lead's own, before its mirror");
     }
@@ -13301,7 +13304,7 @@ mod tests {
         let dir = d.path().join("coord");
         let ask = Ask { kind: "native".into(), can: vec!["slope-hi".into()], mem_mb: 64_000, ..Default::default() };
         let (lead, _) = start_for_test(&dir, "m4", "");
-        lead.add_timings(&crate::timings::RunRec::default());
+        lead.add_timings(&jobrt::timings::RunRec::default());
         lead.offer(
             "2026-10-31",
             vec![Offer { step: "slope-hi".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], job: None }],

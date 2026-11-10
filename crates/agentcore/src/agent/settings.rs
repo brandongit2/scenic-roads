@@ -50,7 +50,7 @@ pub fn set_memory(home: &Path, what: &str, by: &str) -> Result<Option<memfloor::
     }
     let gb = gb(what, "the memory floor")?;
     let mb = (gb * 1024.0) as u64;
-    let total_mb = crate::sys::memsize().map_or(0, |b| b >> 20);
+    let total_mb = jobrt::sys::memsize().map_or(0, |b| b >> 20);
     anyhow::ensure!(
         total_mb == 0 || mb < total_mb,
         "a floor of {gb} GB is all this Mac has or more ({:.0} GB): no job could start",
@@ -128,7 +128,7 @@ pub fn set_nas_room(root: &store::nasfs::NasRoot, what: &str, by: &str) -> Resul
 /// Asks the lead to set the pool's batch length (task #927, docs/pool.md §7.7, Batch length): `what`
 /// in minutes (a minute to a day: jobrt::settings::BATCH_RANGE), or "off": its default again
 /// (crate::coord::JOB_S). Asked of this Mac's agent (its folder `home`), which sends it to the lead
-/// with its next beat (crate::control::request_setting), as every pool setting is.
+/// with its next beat (jobrt::control::request_setting), as every pool setting is.
 pub fn set_batch(home: &Path, what: &str, by: &str) -> Result<()> {
     use crate::coord::asks::{SettingAsk, BATCH};
     let value = match what.trim() {
@@ -142,13 +142,13 @@ pub fn set_batch(home: &Path, what: &str, by: &str) -> Result<()> {
     };
     anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
     let a = SettingAsk { name: BATCH.into(), value, by: by.to_string(), at: super::jobs::now_s() };
-    crate::control::request_setting(home, &a)
+    jobrt::control::request_setting(home, &a)
 }
 
 /// The pool's batch length as this Mac's agent last had the pool's settings from the lead (in
 /// `home`; `had` false: not yet), in minutes.
 fn batch_view(home: &Path) -> serde_json::Value {
-    let s = crate::control::read_pool_settings(home);
+    let s = jobrt::control::read_pool_settings(home);
     let set = s.as_ref().and_then(|s| s.values.get(crate::coord::asks::BATCH)).filter(|v| !v.value.is_null());
     let default = crate::coord::JOB_S / 60;
     serde_json::json!({
@@ -197,13 +197,13 @@ pub fn set_overdue(home: &Path, what: &str, by: &str) -> Result<()> {
         by: by.to_string(),
         at: super::jobs::now_s(),
     };
-    crate::control::request_setting(home, &ask)
+    jobrt::control::request_setting(home, &ask)
 }
 
 /// The pool's overdue factor as this Mac's agent last had the pool's settings from the lead (in
 /// `home`; `had` false: not yet).
 fn overdue_view(home: &Path) -> serde_json::Value {
-    let s = crate::control::read_pool_settings(home);
+    let s = jobrt::control::read_pool_settings(home);
     let (factor, set) = s.as_ref().map_or((crate::coord::asks::OVERDUE_DEFAULT, false), |s| s.overdue());
     let v = s.as_ref().and_then(|s| s.values.get(crate::coord::asks::OVERDUE)).filter(|_| set);
     serde_json::json!({
@@ -220,7 +220,7 @@ fn overdue_view(home: &Path) -> serde_json::Value {
 /// pool's NAS reserve (under `root`; null while the NAS is away), and its batch length and overdue
 /// factor (as this Mac's agent last had them from the lead). Sizes in bytes, memory in MB.
 pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Value {
-    let total_mb = crate::sys::memsize().map_or(0, |b| b >> 20);
+    let total_mb = jobrt::sys::memsize().map_or(0, |b| b >> 20);
     let mem = memfloor::read(home);
     let sh = share::read(home);
     let cores = cores();
@@ -284,7 +284,7 @@ mod tests {
             assert!(set_nas_room(&store::nasfs::NasRoot::local_for_test(h), bad, "t").is_err(), "{bad}");
         }
         assert!(set_memory(h, "1000000", "t").is_err(), "more than this Mac has");
-        let all = (crate::sys::memsize().unwrap() >> 30).to_string();
+        let all = (jobrt::sys::memsize().unwrap() >> 30).to_string();
         assert!(set_memory(h, &all, "t").is_err(), "all this Mac has: no job could start");
         assert!(set_room(h, "1000000000", "t").is_err(), "more than the disk holds");
         assert!(set_sweep_margin(h, "1000000000", "t").is_err(), "more than the disk holds");
@@ -330,7 +330,7 @@ mod tests {
         assert!(set_batch(&h.join("nope"), "20", "t").is_err(), "no agent");
         let ask = |what: &str| {
             set_batch(h, what, "the build page").unwrap();
-            let a = crate::control::take_setting_asks(h);
+            let a = jobrt::control::take_setting_asks(h);
             assert!(a.len() == 1 && a[0].name == BATCH, "{a:?}");
             a[0].clone()
         };
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(asked[0].value, 20);
         let mut s = crate::coord::asks::Settings::default();
         assert!(s.take(&asked[0]));
-        std::fs::write(h.join(crate::control::POOL_SETTINGS), serde_json::to_vec(&s).unwrap()).unwrap();
+        std::fs::write(h.join(jobrt::control::POOL_SETTINGS), serde_json::to_vec(&s).unwrap()).unwrap();
         let b = &view(h, None)["batch"];
         assert_eq!(
             (b["minutes"].as_u64(), b["set"].as_bool(), b["by"].as_str()),

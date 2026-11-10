@@ -305,7 +305,7 @@ fn view(run: &Run) -> View {
     // (The app a member needs: the term's, and once a readers' switch is recorded, the one it was
     // recorded on, whichever is newer: an older one is "app too old".)
     let regions = side.regions_app();
-    let need = crate::inputs::regions::read::needed_app(
+    let need = ::inputs::inputs::regions::read::needed_app(
         cur.lead.as_ref().map(|t| t.app.as_str()),
         regions.as_ref().ok().and_then(|r| r.as_deref()),
     );

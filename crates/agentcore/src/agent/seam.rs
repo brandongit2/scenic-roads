@@ -10,8 +10,8 @@ use super::forecast::ReadTarget;
 use super::jobs::Work;
 use super::progress::{Checklist, Item, Line, RegionState};
 use super::publish::{PublishLine, Publishing};
-use crate::coverage::Coverage;
 use crate::pool::records::Keys;
+use buildstore::coverage::Coverage;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use store::nasfs::NasRoot;
@@ -56,7 +56,7 @@ pub struct PassWork {
 }
 
 /// What the plan builds the regions by, one at a time, and publishes them by, as they're done:
-/// each region's own coverage, as the recipes list them (crate::coverage::Coverage::by_region); the
+/// each region's own coverage, as the recipes list them (buildstore::coverage::Coverage::by_region); the
 /// regions the map's catalogue has, and its z6 tiles; when the last catalogue went out.
 #[derive(Clone, Copy)]
 pub struct Publish<'a> {
@@ -372,7 +372,7 @@ pub struct Round<'a> {
 }
 
 /// What the planner reads for the pass's worldwide steps (`PlanHeld::pass_work`): the lake fill's
-/// planned source (crate::lakefill::run::planned_source), and each job's failures in a row by its
+/// planned source (inputs::lakefill::run::planned_source), and each job's failures in a row by its
 /// id (counted on this Mac).
 pub struct PassAsk<'a> {
     pub lakefill: std::result::Result<Option<String>, String>,

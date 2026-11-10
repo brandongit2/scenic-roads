@@ -1,4 +1,4 @@
-//! Every program's command line (pipeline::cli), run as the built program: every binary of the
+//! Every program's command line (agentcore::cli), run as the built program: every binary of the
 //! workspace has one; with `--help` (or `-h`) each command prints its usage and exits 0, with a
 //! flag it doesn't take it's refused with its usage (exit 2), and neither does anything: its home
 //! (HOME, the working folder) is left empty, no NAS or agent reached. And the calls of these
@@ -6,8 +6,8 @@
 //!
 //! scans: crates docs tools README.md
 
+use agentcore::cli::{command, PROGRAMS};
 use clap::Command;
-use pipeline::cli::{command, PROGRAMS};
 use std::path::Path;
 
 fn repo() -> std::path::PathBuf {
@@ -21,12 +21,12 @@ fn exe(prog: &str) -> String {
         "scenic" | "scenic-build" => {
             std::env::var(format!("CARGO_BIN_EXE_{prog}")).unwrap_or_else(|_| panic!("CARGO_BIN_EXE_{prog} not set"))
         }
-        p => panic!("no binary for {p}: add it to exe() and pipeline::cli::PROGRAMS"),
+        p => panic!("no binary for {p}: add it to exe() and agentcore::cli::PROGRAMS"),
     }
 }
 
 /// Every binary in the workspace (crates/*/src/bin/*.rs, crates/*/src/main.rs) is one of
-/// pipeline::cli's programs, run by the tests below, or the map server, whose own tests
+/// agentcore::cli's programs, run by the tests below, or the map server, whose own tests
 /// (crates/server/tests/cli.rs) run it the same way. A new binary fails here until it's added.
 #[test]
 fn every_binary_has_a_checked_command_line() {
@@ -44,20 +44,20 @@ fn every_binary_has_a_checked_command_line() {
     bins.sort();
     let mut known: Vec<String> = PROGRAMS.iter().map(|p| p.to_string()).chain(["server".to_string()]).collect();
     known.sort();
-    assert_eq!(bins, known, "the workspace's binaries and pipeline::cli::PROGRAMS (and server) differ");
+    assert_eq!(bins, known, "the workspace's binaries and agentcore::cli::PROGRAMS (and server) differ");
     for p in PROGRAMS {
         assert!(Path::new(&exe(p)).exists(), "{p}");
     }
 }
 
-/// Each tool (pipeline::cli::TOOLS) runs as `scenic-build tool <name>` with its own command line,
+/// Each tool (jobrt::sys::TOOLS) runs as `scenic-build tool <name>` with its own command line,
 /// and every one of them is one of `scenic-build tool`'s commands (the loop below runs them all).
 #[test]
 fn the_tools_run_through_scenic_build() {
     let c = command("scenic-build").unwrap();
     let t = c.find_subcommand("tool").unwrap();
     let mut listed: Vec<&str> = t.get_subcommands().map(|s| s.get_name()).collect();
-    let mut tools = pipeline::cli::TOOLS.to_vec();
+    let mut tools = jobrt::sys::TOOLS.to_vec();
     (listed.sort(), tools.sort());
     assert_eq!(listed, tools);
     let s = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();

@@ -35,7 +35,7 @@ pub struct Item {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub empty: usize,
     /// Of `done`, the targets settled without a run: no data there (task #842: a deep tile whose
-    /// fine datasets' presence a finer read found empty, crate::terrain_zoom::hollow), counted apart;
+    /// fine datasets' presence a finer read found empty, terrain::terrain_zoom::hollow), counted apart;
     /// 0 left out.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub nodata: usize,

@@ -1,5 +1,5 @@
 //! A target's input measures, for its done line in the job's costs file (`SCENIC_COSTS`;
-//! pipeline::coord::Cost's `sizes`): what the step already counts as it reads, noted here as it goes
+//! agentcore::coord::Cost's `sizes`): what the step already counts as it reads, noted here as it goes
 //! and taken as the target's cost is noted. No pass over data is made just to count.
 //!
 //! Keys (docs/formats.md, costs.jsonl): `bytes` (always: what the store's readers read for the
@@ -11,15 +11,15 @@
 //! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), `waited_ms`
 //! (the wall time over it in which the process waited on the NAS, the network, the disk or other
 //! work, store::waits by its wall clock, where the job's run is timed: `waited`; task #896, what
-//! pipeline::needs::Book::cores reads the cores it computed on from), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
+//! agentcore::needs::Book::cores reads the cores it computed on from), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
 //! the base packs met), `nas_read` and `nas_secs` (pack, lo: the bytes the job read of the base packs
 //! from the NAS and the seconds that took, the same on each of its targets), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
 //! (the target's area: terrain, slope, trees and their assemblies, the z6 tiles' elevations), `fetched`
-//! (pyramids-fill: the tiles it asked of the network, what weighs its time, pipeline::needs::PER_WORK), and,
+//! (pyramids-fill: the tiles it asked of the network, what weighs its time, agentcore::needs::PER_WORK), and,
 //! where the job wrote to the NAS through its `Out` (crate::out), `wrote` (the bytes of the files
 //! it made there) and `creates` (how many), and its NAS metadata work (`meta`: `listed`, `stats`,
 //! `deletes`, task #451): with `bytes`, the target's NAS weight
-//! (pipeline::needs::Book::nas, jobrt::budget::nas).
+//! (agentcore::needs::Book::nas, jobrt::budget::nas).
 
 use det::Det;
 use std::collections::BTreeMap;
@@ -220,7 +220,7 @@ pub struct Taken {
 
 /// Runs `f` (a z6 tile's tail steps run here after its measures were taken, before the next z6 tile
 /// begins) and gives back what it read, the GeoTIFFs it opened and the CPU it took: its programs'
-/// own (their counts added to this process's as each ends: pipeline::unit's `run`; their CPU as each
+/// own (their counts added to this process's as each ends: roads::unit's `run`; their CPU as each
 /// is waited for) among them. (Reads and CPU on other threads meanwhile are counted too.)
 pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
     let (at, c0, p0, w0) = (store::nasio::own(), jobrt::timings::cpu_us(), stopped_ms(), waited());
@@ -235,7 +235,7 @@ pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
 }
 
 /// Adds measures taken by `measured` to a target's: its CPU and time stopped too, so a z6 tile's `cpu_ms` counts its
-/// tail's programs run after its measures were taken (pipeline::needs::Book::cores reads it over the
+/// tail's programs run after its measures were taken (agentcore::needs::Book::cores reads it over the
 /// target's whole time, the tail's included).
 pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     *m.entry("bytes".into()).or_default() += t.bytes;

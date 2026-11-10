@@ -226,7 +226,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   digests of the files it reads (heritage-sites names only the registers meeting its cover).
 - **The map's server** reads the translations, descriptions, languages and regions' drawn files from
   the accepted copies the lead's manifest names, copied to the Mac (crates/server/src/accepted.rs,
-  pipeline::inputs::served), and from that copy away from the NAS. The Regions panel reads the
+  inputs::inputs::served), and from that copy away from the NAS. The Regions panel reads the
   region files read-only plus the accepted index and held report. `names-todo` reads the accepted
   translations and descriptions the agent names.
 - Planned: the catalogue recording the accepted index of every unit it was built from.
@@ -255,7 +255,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 ### 4.8 Credits from the inputs
 
 - The catalogue's `credits` (formats.md, Catalogue) are made from the accepted descriptions (§5.1) by
-  crate::inputs::credits, beside `pipeline::rules::CREDITS` for sources with no description yet
+  crate::inputs::credits, beside `inputs::rules::CREDITS` for sources with no description yet
   (descriptions win for a source both name), with one rule for which to list: those whose extent
   meets the coverage, 20 km around it, or a built z6 tile's ways (`rules::listed`). A description's
   extent is `facts.extent` in the index (a box, or `"world"`), derived from the data, never typed;
@@ -338,7 +338,7 @@ A declaration adds, under `[data]`:
 | `version` | a pinned release where the source has releases |
 | `[data.fetch]` | `method`: `get` (default), `get-key-header` (`header`, `key` naming a key in `inputs/keys.env`), `get-key-json-link` (also `link`, the JSON path of the download link) |
 
-Fetch methods are protocols, generic code used by any declaration, through `pipeline::fetch`, which
+Fetch methods are protocols, generic code used by any declaration, through `buildstore::fetch`, which
 asks before any internet request. A range read (a GeoTIFF's tiles) is streamed, and one that breaks
 off goes on from the bytes received with a new range request (`fetch::net`: only a request that
 moves nothing counts against the retries). A server that gives no answer after its retries is noted
@@ -924,7 +924,7 @@ Derived: `facts.box`, `facts.entries`, and `facts.extent` (the box) for the cred
 
 **Ingesting.**
 - **One generic reader:** the heritage-sites job (docs/steps.md; docs/phase5.md) lays out every accepted
-  register whose box meets one of its cover's z6 tiles (`pipeline::heritage::registers_meeting`)
+  register whose box meets one of its cover's z6 tiles (`landmarks::heritage::registers_meeting`)
   for dem/heritage.py, which reads them in id order: a point is a site; a polygon a heritage area
   (and a site at its representative point with `dot`); a line a site at its representative point; a
   `special` point is matched to the OSM boundary named `osm_name` (else its name) or drawn as a
@@ -941,18 +941,18 @@ Derived: `facts.box`, `facts.entries`, and `facts.extent` (the box) for the cred
   overlays with it).
 - **Credits and popups** by register (§4.8). A register's whole box decides where it's credited.
 - The chain's caches (Wikidata, Wikipedia, World Heritage answers) are the pass's answers
-  (`sources/items/<date>/heritage.tar.zst`, `pipeline::answers::heritage`), a new pass starting
+  (`sources/items/<date>/heritage.tar.zst`, `agentcore::answers::heritage`), a new pass starting
   from the last one's. With no pass's archive yet, the first start seeds its working copy from the
   old snapshot `sources/registers/legacy`'s caches (read only) and the answers kept beside it
-  (`pipeline::answers::heritage_start`); a snapshot named but unreadable fails the job.
+  (`agentcore::answers::heritage_start`); a snapshot named but unreadable fails the job.
 
 #### 6.5.1 What stays generic in the heritage chain
 
 The chain's scripts (docs/phase5.md) read the registers' fields, not per-register knowledge:
-pipeline::heritagewd looks a site up by `ref` under its register's `wikidata_property` (a World Heritage
-site by `site`) and links through OSM by `osm_ref_tags`; pipeline::whsshapes finds a site by `site`, its
+landmarks::heritagewd looks a site up by `ref` under its register's `wikidata_property` (a World Heritage
+site by `site`) and links through OSM by `osm_ref_tags`; landmarks::whsshapes finds a site by `site`, its
 components by `ref`, its area by `site_area_km2`, its outlines by OSM's World Heritage tags;
-pipeline::filterprops takes `t` from `tier`. Names chosen per language (`lang_at`) are the producers'.
+landmarks::filterprops takes `t` from `tier`. Names chosen per language (`lang_at`) are the producers'.
 
 #### 6.5.2 The heritage chain's stand-in root
 
@@ -964,12 +964,12 @@ pass's working copy of the chain's answers (`cache/heritage-<date>/`).
 #### 6.5.3 English names, park facts and pageviews
 
 The old `sources/registers/legacy-seeds` archive is read by nothing:
-- **English:** the heritage layers' `en` is the thing's own English only (`pipeline::heritage_layers`
+- **English:** the heritage layers' `en` is the thing's own English only (`landmarks::heritage_layers`
   `english_at`: a site's UNESCO name or English Wikipedia title, an area's `name_en`). Other English
   is the server's, from the translations as it serves the layers (docs/names.md). A name lacking English
-  goes onto the translations' to-do (`pipeline::namestodo` reads the landmarks' `en`).
-- **Park facts:** pipeline::areadetails' cache is the pass's answers (`areas-wikidata.json`,
-  `pipeline::answers`), asking Wikidata only for parks it lacks.
+  goes onto the translations' to-do (`landmarks::namestodo` reads the landmarks' `en`).
+- **Park facts:** landmarks::areadetails' cache is the pass's answers (`areas-wikidata.json`,
+  `agentcore::answers`), asking Wikidata only for parks it lacks.
 - **Pageviews:** the items job's months' indexes (`sources/pageviews/`, docs/steps.md).
 
 #### 6.5.4 Heritage matches: the owner's judgment calls
@@ -1003,12 +1003,12 @@ counter, whichever unit its timetables come from.
 
 #### 6.7.0 The counters, per mode
 
-- **Rail** (`pipeline::gtfs::railcount`): trains per stop pair on the typical day, as the PAIR records the
+- **Rail** (`landmarks::gtfs::railcount`): trains per stop pair on the typical day, as the PAIR records the
   `rail` job matches onto the tracks (`rail::PAIR`: two stops' positions, a mode byte, trains a
   day). A feed's typical day is its median-busy Tuesday–Thursday from 30 days before its zip's fetch
   day to 90 after; a train in two feeds counts once (keyed by first and last stops and times, the
   operator's feed first).
-- **Ferries** (`pipeline::gtfs::ferrycount`, run by the `ferries` job's `pipeline::ferries`): per OSM ferry line,
+- **Ferries** (`landmarks::gtfs::ferrycount`, run by the `ferries` job's `pipeline::ferries`): per OSM ferry line,
   the record the map shows (`info["freq"]`): `per_day` (each way, on days it runs; under four days
   a week, weekly ÷ 7), `per_day_low` (the quietest month's), `headway` (median gap 07:00–19:00),
   `days`, `months`, `season` (`year`, `some-days`, `seasonal`), `overnight`, `source`, `url`,
@@ -1240,7 +1240,7 @@ declaration's fields wrong: unknown `surface`, `heights` or encoding, no `code`,
 placeholders, not exactly one way of naming files (`el-decl`); an unparsable index (`el-index`); an
 index or files missing (`el-missing`); unreadable or unmeasurable data: a header, a missing file, a
 CRS the app can't project (EPSG 4326, 4269, 3979, NAD83 / UTM 26901–26923, polar stereographic 3031
-and 3413: `pipeline::dem::proj`,
+and 3413: `inputs::dem::proj`,
 `declared::known_crs`) or contradicting its index, a pyramid without a known territory or with
 non-256 tiles (`el-data`); heights no chain of the accepted geoid sources brings to EGM2008
 (step 3), or whose chain's grids can't be read (`el-geoid`: declare the geoid source first).
@@ -1761,7 +1761,7 @@ field. **P:** moves to a producer. Configuration and generic code (formats, prot
 rules, storey heights per country, OSM name heuristics, the Wikidata properties asked for, the user
 agent) stay.
 
-- **Credits:** `pipeline::rules::CREDITS` and its area boxes (D: each source's description, extents
+- **Credits:** `inputs::rules::CREDITS` and its area boxes (D: each source's description, extents
   derived), and the server's `credits_of` fallback; the tree tiles' meta source string (D); source lines in web/src's layer help and popups
   (trees.ts, ferries.ts, overlays.ts, details.ts: D, from the catalogue's credits). The World
   Heritage outlines' popup (overlays.ts, "site: UNESCO World Heritage Centre"): planned, the
@@ -1781,4 +1781,4 @@ agent) stay.
   the fill's rule (§6.9).
 - **Kept by design:** `budget`'s metered hosts (the polite-use budget, by
   host: §7.2); `markconv.rs`'s id schemes (`whc:`, `reg:dfhd:`, `legacy:`: ids must not
-  change, docs/phase5.md, Ids); `pipeline::legacy` (a name for live code).
+  change, docs/phase5.md, Ids); `codecs::legacy` (a name for live code).

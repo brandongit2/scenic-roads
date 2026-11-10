@@ -101,7 +101,7 @@ export interface FerryCoverage {
   known: number;
 }
 
-/** A block of ferries by view (pipeline::ovconv): the ways touching its tile, the terminals near
+/** A block of ferries by view (landmarks::ovconv): the ways touching its tile, the terminals near
  * it, its lines' records. */
 type Block = { features: Feature[]; lines: Record<string, FerryLine> };
 /** The blocks' zoom for a view's: the world's below 3, z3 tiles' below 6, z6 tiles' from 6. */

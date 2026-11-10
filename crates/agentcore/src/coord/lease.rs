@@ -136,7 +136,7 @@ impl Lease {
 
     /// Its job's NAS rate over its last `WINDOW` or so of beats: None until a view said `WINDOW`
     /// before the newest, or when one doesn't say all it moved (crate::agent::jobs::Live::nas_rate).
-    pub fn lately(&self) -> Option<crate::budget::nas::Rate> {
+    pub fn lately(&self) -> Option<jobrt::budget::nas::Rate> {
         self.rate_since(self.window.front())
     }
 
@@ -146,7 +146,7 @@ impl Lease {
     /// at an agent's take-over), so they're never put over the lease's own time (task #991: a
     /// 5 MB/s download taken over five hours in weighed 56 MB/s, two thirds of the NAS). None
     /// until the two are `WINDOW` apart, or when one doesn't say all it moved.
-    pub fn mean(&self) -> Option<crate::budget::nas::Rate> {
+    pub fn mean(&self) -> Option<jobrt::budget::nas::Rate> {
         self.rate_since(self.first.as_ref())
     }
 
@@ -163,7 +163,7 @@ impl Lease {
     }
 
     /// What its job moved from view `from` to the newest, a second, the two `WINDOW` or more apart.
-    fn rate_since(&self, from: Option<&(Instant, crate::agent::jobs::Live)>) -> Option<crate::budget::nas::Rate> {
+    fn rate_since(&self, from: Option<&(Instant, crate::agent::jobs::Live)>) -> Option<jobrt::budget::nas::Rate> {
         self.since(from, crate::agent::jobs::Live::nas_rate)
     }
 
@@ -253,7 +253,7 @@ fn began_by_wall(at: u64, unix: u64, now: Instant) -> Option<Instant> {
 }
 
 /// A target held out of every offer and start until the lead runs a newer app than the one it was
-/// cancelled on (`scenic job cancel <target> --rerun-after-update`, crate::control::Cancel): its
+/// cancelled on (`scenic job cancel <target> --rerun-after-update`, jobrt::control::Cancel): its
 /// step, its target, the lead's app then, who asked and when (unix seconds). A worker gets work only
 /// on the lead's app (crate::coord's `app_ok`), so whichever Mac takes it then runs the newer one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,7 +275,7 @@ impl Hold {
     }
 }
 
-/// A target the owner cancelled (`scenic job cancel`, crate::control::Cancel), told to the lead
+/// A target the owner cancelled (`scenic job cancel`, jobrt::control::Cancel), told to the lead
 /// while its plan numbered `at` or older ran or was offered (`at`: that number, and never below the
 /// time in ms then, so it compares with any lead's plan numbers, crate::agent::plan's `next_n`):
 /// no offer of a plan no newer has it (`Leases::unoffered`), so a plan started before the cancel
@@ -311,11 +311,11 @@ pub struct Leases {
     /// (`Coordinator::keep_own`): one whose job ended, finished or not, leaves it and lapses as any.
     /// Not saved: a new agent says its own.
     pub mine: BTreeSet<u64>,
-    /// The owner's cancels of running jobs (`scenic job cancel`, crate::control::Cancel), by lease:
+    /// The owner's cancels of running jobs (`scenic job cancel`, jobrt::control::Cancel), by lease:
     /// told to the lease's worker in its beat's answer (this Mac's own, `Coordinator::cancel_of`),
     /// which stops its job and gives the lease back, not failed. Each goes with its lease (finished,
     /// given back, withdrawn, dropped or lapsed); not saved.
-    cancels: BTreeMap<u64, crate::control::Cancel>,
+    cancels: BTreeMap<u64, jobrt::control::Cancel>,
     /// The targets cancelled while a plan no newer than its `at` was the newest (`Cancelled`).
     cancelled: Vec<Cancelled>,
     /// The members (hosts, crate::agent::host_of) whose jobs' leases end only by their word
@@ -512,7 +512,7 @@ impl Leases {
     }
 
     /// Lease `id`'s job cancelled by the owner (`cancels`), while the lease stands.
-    pub fn ask_cancel(&mut self, id: u64, c: crate::control::Cancel) {
+    pub fn ask_cancel(&mut self, id: u64, c: jobrt::control::Cancel) {
         if self.by_id.contains_key(&id) {
             self.cancels.insert(id, c);
         }
@@ -554,7 +554,7 @@ impl Leases {
     }
 
     /// The owner's cancel of lease `id`, if there's one.
-    pub fn cancel_ask(&self, id: u64) -> Option<&crate::control::Cancel> {
+    pub fn cancel_ask(&self, id: u64) -> Option<&jobrt::control::Cancel> {
         self.cancels.get(&id)
     }
 

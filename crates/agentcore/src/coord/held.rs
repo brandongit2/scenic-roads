@@ -100,7 +100,7 @@ pub struct Answer {
     pub msgs: Vec<(u64, serde_json::Value)>,
     /// This member's pause as the lead keeps it (`/pool/hold`: another Mac's, or its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hold: Option<crate::control::HoldState>,
+    pub hold: Option<jobrt::control::HoldState>,
     /// The settings' generation (`/pool/settings`): a member fetches them when it moves.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub settings_gen: u64,
@@ -150,7 +150,7 @@ pub struct LeadLine {
     pub app: String,
     pub said: crate::agent::Verdict,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pause: Option<crate::control::Pause>,
+    pub pause: Option<jobrt::control::Pause>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all_new: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

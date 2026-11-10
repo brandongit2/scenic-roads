@@ -1,6 +1,6 @@
-//! Scenic analysis of a unit's roads: the unit's steps (pipeline::unit).
+//! Scenic analysis of a unit's roads: the unit's steps (roads::unit).
 //!
-//! Its command line: pipeline::cli::progs::Metrics
+//! Its command line: agentcore::cli::progs::Metrics
 //! (`scenic-metrics <unit_dir> prep|canopy|view|buildings <dir>|flags`).
 //!
 //! prep    road sample points (~100 m apart) with observer eye heights; per-vertex drape
@@ -9,20 +9,20 @@
 //!           · z11 grid layers: canopy height (p75 of 5 m max-pooled cells) and cover
 //!           · near-field horizons: 32 rays per sample through terrain + trees to 300 m
 //!           · roadside tree height and forest cover per sample
-//!         Cached (pipeline::scache): grid tiles and samples done before are copied, and only
+//!         Cached (mapview::scache): grid tiles and samples done before are copied, and only
 //!         10° canopy tiles with something new are read.
 //! view    far-field viewshed and landscape metrics → per-sample and per-vertex channels
 //! buildings  roadside buildings per sample from the footprints (the folder given)
 //! flags   the flag channels again (heritage, areas, buildings) on the view's metrics
 
+use agentcore::cli::progs::{Metrics, MetricsStep};
 use anyhow::{bail, ensure, Context, Result};
 use clap::Parser;
+use codecs::count_bar;
 use det::Det;
-use pipeline::cli::progs::{Metrics, MetricsStep};
-use pipeline::count_bar;
-use pipeline::scache::{self, GridChange};
-use pipeline::terr::TerrainCache;
-use pipeline::view::eye_height;
+use mapview::scache::{self, GridChange};
+use mapview::terr::TerrainCache;
+use mapview::view::eye_height;
 use rayon::prelude::*;
 use roadcore::archive::Archive;
 use roadcore::grid::{GridIndex, CELLS};
@@ -37,8 +37,8 @@ use std::sync::LazyLock;
 
 pub fn main(args: Vec<String>) -> std::process::ExitCode {
     let a = Metrics::parse_from(args);
-    // (A server that gave no answer: its own exit status, pipeline::fetch::UNREACHABLE_EXIT.)
-    pipeline::fetch::exit_with(run(a))
+    // (A server that gave no answer: its own exit status, buildstore::fetch::UNREACHABLE_EXIT.)
+    buildstore::fetch::exit_with(run(a))
 }
 
 fn run(Metrics { unit_dir: dir, step, dir: footprints }: Metrics) -> Result<()> {
@@ -46,9 +46,9 @@ fn run(Metrics { unit_dir: dir, step, dir: footprints }: Metrics) -> Result<()> 
     match step {
         MetricsStep::Prep => prep(&dir)?,
         MetricsStep::Canopy => canopy(&dir)?,
-        MetricsStep::View => pipeline::view::run(&dir)?,
-        MetricsStep::Flags => pipeline::view::flags(&dir)?,
-        MetricsStep::Buildings => pipeline::buildings::run(&dir, &footprints.context("buildings <dir>")?)?,
+        MetricsStep::View => mapview::view::run(&dir)?,
+        MetricsStep::Flags => mapview::view::flags(&dir)?,
+        MetricsStep::Buildings => mapview::buildings::run(&dir, &footprints.context("buildings <dir>")?)?,
     }
     eprintln!("scenic {}: done in {:.0?}", step.name(), t0.elapsed());
     Ok(())
@@ -94,7 +94,7 @@ fn prep(dir: &Path) -> Result<()> {
                     let h = if tunnel { e } else { t };
                     drape.push(h.round().clamp(-500.0, 9000.0) as i16);
                 }
-                if w.class == class::FERRY || own.is_some_and(|tb| !pipeline::unit::owns(tb, v[0])) {
+                if w.class == class::FERRY || own.is_some_and(|tb| !roads::unit::owns(tb, v[0])) {
                     pb.inc(1);
                     continue;
                 }
@@ -167,7 +167,7 @@ fn prep(dir: &Path) -> Result<()> {
 // and the share of 1 m pixels taller than 5 m. (The 1.2 m tiles themselves total ~550 GB
 // for this region.) Median height is used for occlusion, so scattered trees in a field
 // don't wall off a view; p95 gives roadside tree height. (Where the declared canopy source keeps
-// them: its index, read into the unit's sources.json, pipeline::unit::UnitSources.)
+// them: its index, read into the unit's sources.json, roads::unit::UnitSources.)
 
 const C10: usize = 40_000;
 const C10_RES: f64 = 0.00025;
@@ -267,19 +267,19 @@ impl Chm10 {
 
 /// A canopy file, opened: the local cache's copy (`path`), else the NAS's (`store`, copied here),
 /// else downloaded once, into the NAS's store first; None for an empty file, which marks one Meta
-/// doesn't have. Each copy is written whole and checked whole when opened (pipeline::whole: its
+/// doesn't have. Each copy is written whole and checked whole when opened (codecs::whole: its
 /// directories, not its data): one that isn't (cut short) is deleted and taken from the next source.
 /// The bands then read only the strips they need from it (Tiff), never the whole file.
 /// `read_only`: the files read where they lie (a task's worker, the NAS's store): what's there
 /// whole, else an error; nothing downloaded, written, touched or removed there. `url`: the file's
-/// URL by the declared canopy source's index (pipeline::unit::UnitSources); none when it lists none.
+/// URL by the declared canopy source's index (roads::unit::UnitSources); none when it lists none.
 fn fetch_file(url: Option<&str>, path: &Path, store: Option<&Path>, read_only: bool) -> Result<Option<File>> {
     if read_only {
         let f = File::open(path).with_context(|| format!("{} isn't there to read", path.display()))?;
         if f.metadata()?.len() == 0 {
             return Ok(None);
         }
-        ensure!(pipeline::whole::tiff_whole(&f), "{} isn't whole", path.display());
+        ensure!(codecs::whole::tiff_whole(&f), "{} isn't whole", path.display());
         return Ok(Some(f));
     }
     // A kept copy: Some(None) for Meta's "none there", None when it's missing or not whole (then
@@ -291,7 +291,7 @@ fn fetch_file(url: Option<&str>, path: &Path, store: Option<&Path>, read_only: b
         if len == 0 {
             return Some(None);
         }
-        if pipeline::whole::tiff_whole(&f) {
+        if codecs::whole::tiff_whole(&f) {
             return Some(Some(f));
         }
         eprintln!("canopy: {} isn't whole ({len} bytes): taken again", p.display());
@@ -308,11 +308,11 @@ fn fetch_file(url: Option<&str>, path: &Path, store: Option<&Path>, read_only: b
         return Ok(f);
     }
     // The NAS's copy, downloaded into it once when it isn't there whole (the trees step's own
-    // protocol, pipeline::trees::squares::ensure_square: a unit on one Mac and a trees job on the
+    // protocol, trees::trees::squares::ensure_square: a unit on one Mac and a trees job on the
     // other may want the same square at once), then copied here.
     if let Some(st) = store {
         let dir = st.parent().context("a canopy store file's folder")?;
-        pipeline::trees::squares::ensure_square(dir, st, url, &|_| {})?;
+        ::trees::trees::squares::ensure_square(dir, st, url, &|_| {})?;
         return match kept(st) {
             Some(None) => {
                 store::cachefile::create_bytes(path, b"")?;
@@ -333,7 +333,7 @@ fn fetch_file(url: Option<&str>, path: &Path, store: Option<&Path>, read_only: b
     };
     let mut there = true;
     store::cachefile::create(path, &mut |tmp| {
-        there = pipeline::fetch::download(url, tmp, &pipeline::whole::tiff_file_whole, &|_| {})
+        there = buildstore::fetch::download(url, tmp, &codecs::whole::tiff_file_whole, &|_| {})
             .map_err(std::io::Error::other)?;
         Ok(())
     })?;
@@ -584,11 +584,11 @@ fn where_it_lies<T>(path: &Path, f: impl FnMut() -> Result<T>) -> Result<T> {
         Some(path),
         &store::retry::waits(),
         store::retry::transient,
-        pipeline::control::draining,
+        jobrt::control::draining,
         f,
     );
-    if r.is_err() && pipeline::control::draining() {
-        pipeline::control::stop_paused("canopy");
+    if r.is_err() && jobrt::control::draining() {
+        jobrt::control::stop_paused("canopy");
     }
     r.with_context(|| format!("{} (read where it lies)", path.display()))
 }
@@ -738,7 +738,7 @@ fn canopy(dir: &Path) -> Result<()> {
     let store = std::env::var_os("SCENIC_CANOPY_STORE").map(PathBuf::from).filter(|_| !read_only);
     // (Where the declared canopy source has each file, by the unit job: none needed where they're
     // read where they lie.)
-    let urls = if read_only { Default::default() } else { pipeline::unit::UnitSources::read(dir)?.canopy };
+    let urls = if read_only { Default::default() } else { roads::unit::UnitSources::read(dir)?.canopy };
     let band = std::env::var("SCENIC_CANOPY_BAND")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -746,7 +746,7 @@ fn canopy(dir: &Path) -> Result<()> {
         .unwrap_or(BAND_ROWS);
 
     // 10° tiles needed: (top latitude, left longitude).
-    let mut need: BTreeSet<(i32, i32)> = pipeline::unit::canopy_squares(&grid.tiles);
+    let mut need: BTreeSet<(i32, i32)> = roads::unit::canopy_squares(&grid.tiles);
     // Previous results: samples and grid tiles done in the last run (its outputs are still here),
     // unless new terrain is within reach.
     let cdir = scache::dir(dir);
@@ -865,7 +865,7 @@ fn canopy(dir: &Path) -> Result<()> {
             continue;
         }
         let rows = row1 - row0;
-        let name = |st: &str| pipeline::trees::chm_name(top, left, st);
+        let name = |st: &str| ::trees::trees::chm_name(top, left, st);
         let height: fn(u16) -> u8 = |v| ((v as u32 + 50) / 100).min(254) as u8;
         let share: fn(u16) -> u8 = |v| ((v as u32).min(1000) * 255 / 1000) as u8;
         let layers: Vec<Option<Layer>> = [("median", height), ("p95", height), ("cover5m", share)]
@@ -1155,7 +1155,7 @@ mod tests {
     fn windows_decoded_straight_into_place() {
         let (w, h) = (5, 7);
         let b = tiff(w, h, 3);
-        assert!(pipeline::whole::tiff_bytes_whole(&b));
+        assert!(codecs::whole::tiff_bytes_whole(&b));
         let st = parse_tiff(&at(&b)).unwrap();
         let f = |v: u16| (v % 251) as u8;
         // Windows starting and ending mid-strip, one row, all rows; all columns, or some.

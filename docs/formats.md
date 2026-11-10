@@ -38,17 +38,17 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
 - Root pack: z0–2 (root "0/0/0"). Lo pack: z3–8 under one z3 tile. Hi pack: z9–14 under one z6
   tile. **The terrain** (one terrain, z0 to each place's native zoom: steps.md §2) adds deep packs,
   `layers/terrain/deep/10-<x>-<y>` (scope `deep`): z13–16 under one z10 tile, only where a dataset
-  reaches past z12 (pipeline::terrain_deep; a z6 tile's would be up to 130 GB). Every terrain tile, in
+  reaches past z12 (terrain::terrain_deep; a z6 tile's would be up to 130 GB). Every terrain tile, in
   every scope, is Terrarium RGB as lossless WebP (`RIFF…WEBPVP8L`, the packs' encoding
-  `terrarium-webp`: pipeline::terrain_codec), served as `image/webp`. **Heights are rounded once,
+  `terrarium-webp`: codecs::terrain_codec), served as `image/webp`. **Heights are rounded once,
   as stored:** a job carries its levels' heights unrounded (each coarser level the 2×2 means of the
   finer's before rounding), and each tile is rounded as it's encoded, to 1 cm where it is its
-  place's finest zoom (pipeline::terrain_zoom) and to 10 cm coarser, ties to even (a 2×2 mean of
+  place's finest zoom (terrain::terrain_zoom) and to 10 cm coarser, ties to even (a 2×2 mean of
   rounded heights lands on a tie about a quarter of the time: rounding ties away from zero would
   lift heights by about a quarter quantum a level), then to Terrarium's 1/256 m. Only what a job
   reads of another's packs (the root of the lo packs' z3) is rounded before its means. The catalogue names the deep packs
   under the layer's `deep`, each one's z10 tile's native zoom under `native_zoom`
-  (`terrain_deep::native_zoom`: its places' finest, pipeline::terrain_zoom; elsewhere their finest is
+  (`terrain_deep::native_zoom`: its places' finest, terrain::terrain_zoom; elsewhere their finest is
   z12 or coarser), and the terrain's
   `maxzoom` is the finest of those. The app's meta passes `native_zoom` on as `terrainAreas`
   (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes its terrain and shading tiles to that
@@ -59,13 +59,13 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   `packs.terrain.deep` gives each deep pack's version by z10 tile (`"10/x/y"`), as `lo` and `hi` do
   theirs, so a tile past z12 there carries its deep pack's `?v=` and a new catalogue asks again only
   for the tiles of the deep packs it changed. **The terrain's shading** (the `slope` layer:
-  pipeline::slope_pack, steps.md §2) has the same packs, its deep packs `layers/slope/deep/10-<x>-<y>`
+  terrain::slope_pack, steps.md §2) has the same packs, its deep packs `layers/slope/deep/10-<x>-<y>`
   beside the terrain's; **the floor's** (`depth-shade`) the depth's (Depth below). Every shading tile
-  is encoding `shade-webp` (pipeline::shade_codec), RGB as lossless WebP, served as `image/webp`:
+  is encoding `shade-webp` (codecs::shade_codec), RGB as lossless WebP, served as `image/webp`:
   R = 255 × √(steepness ÷ 400 %) of the mean steepness beneath the pixel, G and B its mean unit
   gradient direction (east, south) as 128 + 120 u in steps of 8 (8–248), (128, 128) where that
   direction's length (the coherence) is under 0.25 or the ground is flat (roadcore::shade).
-  **The polar caps** (`polar-terrain-<pole>`, `polar-slope-<pole>`: pipeline::polar, docs/polar.md)
+  **The polar caps** (`polar-terrain-<pole>`, `polar-slope-<pole>`: terrain::polar, docs/polar.md)
   are tiled on their pole's polar stereographic grid, not Web Mercator: their root pack
   (`layers/<layer>/root/0-0-0`) holds z0–3 and a block pack (`layers/<layer>/polar/4-<x>-<y>`, scope
   `polar`, root "4/x/y" of the grid) z4–9 under one z4 tile; the catalogue names the blocks under the
@@ -89,10 +89,10 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
 Files made per tile by one job, in one pack keyed by the tile (`roadcore::archive::tile_key`), each
 member a whole file as it would be on its own, not gzip'd, starting on a 64-byte boundary
 (`PackWriter::aligned`), so a sectioned file in it is mapped and cast in place as on its own
-(`pipeline::layers::write_file_bundle`). `markdata/all` (meta `{"bundle": "markdata", "fmt": 1}`):
+(`terrain::layers::write_file_bundle`). `markdata/all` (meta `{"bundle": "markdata", "fmt": 1}`):
 the landmark points, a member per z6 tile. The catalogue's `markdata` names it for each tile it holds;
 a reader finds the member through the pack's index (kept as a pack's is) and reads it in place
-(`SectView::open_at`; `pipeline::marks::markdata_files`). A catalogue naming a `.sect` per tile (before
+(`SectView::open_at`; `codecs::marks::markdata_files`). A catalogue naming a `.sect` per tile (before
 task #449) is read as before.
 
 ## Sectioned file (`.sect`, RDSECT v1): named arrays
@@ -214,7 +214,7 @@ The record types are `roadcore::packs`.
 
 ## Landmark points (a member per z6 tile of `markdata/all.<h>.pack`; docs/phase5.md)
 
-Every point of the 8 kinds (`pipeline::marks::KINDS`) positioned in the tile, sorted by kind, then
+Every point of the 8 kinds (`codecs::marks::KINDS`) positioned in the tile, sorted by kind, then
 id. Meta: `{"fmt": 1, "tile": "6/x/y", "block": 256, "fields": {kind: [prop, …]}}` (a reader
 checks the filter properties against its own).
 
@@ -255,7 +255,7 @@ server makes z6 blocks from markdata. Each column starts 8-byte aligned.
 A thinned tile at zoom z holds the points with kz ≤ z, the rest as speck cells. Served props carry
 `main`/`sub` (and `cmain`/`csub` from `cn`).
 
-## Overlays, stations and ferries by view (pipeline::ovconv; docs/phase5.md)
+## Overlays, stations and ferries by view (landmarks::ovconv; docs/phase5.md)
 
 Made by the `overlays`, `stations` and `ferries` jobs; `overlays` also writes
 `global/heritage/{layer-summary,heritage-sources}`.
@@ -277,7 +277,7 @@ Made by the `overlays`, `stations` and `ferries` jobs; `overlays` also writes
   meets the tile grown by 30 km (id `way × 4 + 1`, whole length `km`; simplified to 5 km at zoom 0,
   300 m at 3), terminals within 30 km (from zoom 3), the records of its ways' lines.
 
-## Water (`layers/water/{root,lo,hi}`; pipeline::water)
+## Water (`layers/water/{root,lo,hi}`; inputs::water)
 
 Each pixel's exact share of water, z0–9, from the basemap's z14 water (docs/steps.md §4). Encoding
 `water-png`, blobs not gzip'd: 512 × 512 8-bit grey-and-alpha PNG, grey the sea's share
@@ -303,7 +303,7 @@ u32s), by row and first; the bodies' count (u64), then each body's pixels (u64) 
 the water's surface, sea level only on the world ocean; the water version (`w=`) names it. The
 depth steps read it too: an enclosed sea's depth is below its own surface (Depth, below).
 
-## Lakes filled from Canada's own data (`work/lakefill/<date>.<h>.sect`; pipeline::lakefill)
+## Lakes filled from Canada's own data (`work/lakefill/<date>.<h>.sect`; inputs::lakefill)
 
 Lakes OSM lacks in Canada's unimported map sheets (docs/steps.md §4), from CanVec. Meta `{"fmt":
 "lakefill-1", "grid_z": 8, "lakes", "rings", "points", "source", "layer", "field", "keep",
@@ -324,7 +324,7 @@ The catalogue names it in `global` (`"lakefill"`); the server draws its lakes in
 zooms as a z14 tile beside the basemap's (layer `water`, class `lake`, extent 4096, clipped to the
 tile grown by a sixteenth).
 
-## 3D buildings (pipeline::bld; docs/buildings3d.md §3.4)
+## 3D buildings (bld::bld; docs/buildings3d.md §3.4)
 
 **Normalized buildings** (`work/bld/6-<x>-<y>.<h>.sect`, in the manifest, not served): every
 building and part of the pinned Overture release whose centroid is in the z6 tile, underground ones
@@ -350,9 +350,9 @@ non-underground part naming it read in the tile or 0.02° around), the height's 
 centroid (`u16` dm, 0 none), the OSM id where OSM gave the footprint (`u64`: 1 << 62 a way, 2 << 62
 a relation, or'ed with the id; 0 none).
 
-**The sources' indexes** (written by `bld-fetch`, `pipeline::bld::fetch`, beside the downloads,
+**The sources' indexes** (written by `bld-fetch`, `bld::bld::fetch`, beside the downloads,
 outside the manifest, as Python's `json` wrote them;
-read by `pipeline::bld::sources`): `sources/overture/<release>/buildings.json` (`{"fmt": 1,
+read by `bld::bld::sources`): `sources/overture/<release>/buildings.json` (`{"fmt": 1,
 "release", "source", "terms", "coverage": {"regions", "margin_km", "at"}, "files": {<name>: {"size",
 "etag", "rows", "row_groups", "rows_near", "bbox", "checked"}}}`); `footers.json.gz` (every file of
 the release: `{"release/<release>/<name>": {"etag", "size", "rows", "rgs": [[w, s, e, n, rows],
@@ -381,7 +381,7 @@ No names. Feature id: x << 34 | y << 20 | the index among its own z14 tile's rec
 building's id). Features sorted by their centroid's Morton code in the tile (12 bits an axis), then
 id.
 
-**The field** (`pipeline::bld::field`, docs/buildings3d.md §4.8): every building and part extruded
+**The field** (`bld::bld::field`, docs/buildings3d.md §4.8): every building and part extruded
 (not an outline with parts, not a copy) as densities on 512 × 512 texels a tile, levels 4–14 (a
 level's tiles are that zoom's), in five classes by top (under 8 m, 8–20, 20–40, 40–100, 100 m and
 up): `f` the texel's share under the class's roofs (exact areas, summed, clamped to 1), `w` Σ wall
@@ -408,7 +408,7 @@ the coarser texel's centre).
   with a building, by x then y: u32 x, u32 y, u32 heritage list bytes and that list, u8 class mask,
   each held class's `f`, `w`, `v`, `ox`, `oy` planes as 512 × 512 f32 (the level-8 values exactly).
 
-**A z8 tile's task** (`pipeline::bld::task`, docs/buildings3d.md §3.6; a folder on the job's Mac,
+**A z8 tile's task** (`bld::bld::task`, docs/buildings3d.md §3.6; a folder on the job's Mac,
 sent to the worker as `u/…`, not in the manifest): `6-<x>-<y>.sect` for each of T's and its 8
 neighbours' normalized files with a block the z8 tile reads (its own and those within 620 m), each
 with the same meta and only those blocks as stored; `coverage.sect` (meta `{"fmt": 1, "shapes":
@@ -424,12 +424,12 @@ from when a z8 tile was called an area, and stay),
 
 Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in the manifest.
 
-- **A row of tree cover blocks** (`pipeline::trees::task`, docs/steps.md §2, Trees): `coverage.json`
+- **A row of tree cover blocks** (`trees::trees::task`, docs/steps.md §2, Trees): `coverage.json`
   (`{"shapes": [[ring, …], …]}`, rings `[[lon, lat], …]`, only those whose box meets the row's box
   grown by 0.01°). `trees --blocks` writes `8-<x>-<y>/` per block: `trees-cover.tiles`,
   `trees-height.tiles`, `trees-leaf.tiles` (RDTILES, meta `trees::META`: zoom 8–12 tiles) and
   `trees-tops.bin` (`pyramid::Tops::to_bytes`).
-- **A terrain z6 tile's subtrees** (`pipeline::terrain_task`, docs/steps.md §2, Terrain): `in.sect`, meta
+- **A terrain z6 tile's subtrees** (`terrain::terrain_task`, docs/steps.md §2, Terrain): `in.sect`, meta
   `{"fmt": 2, "step": "terrainsub", "v": TERRAIN_V, "piece": "6/x/y", "subtrees": "8/x/y,…",
   "levels": [[z, [[x, y], …]], …] (z12 → z9), "water", "native": [[z, x, y], …] (its tiles at their
   place's finest zoom: rounded to 1 cm)}`; sections `r-<z>-<x>-<y>` (a raw PNG tile, its sampled and
@@ -467,7 +467,7 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   (landmarks; `source` the heritage register's id, docs/inputs.md §6.5) and `{"qid", "id", "name",
   "kind", "bbox", "area_km2", "enwiki", "fame"}` (areas), by fame; with `README.md`.
 
-## Depth (`layers/depth/`, `layers/depth-class/`, `layers/depth-shade/`; pipeline::depth)
+## Depth (`layers/depth/`, `layers/depth-class/`, `layers/depth-shade/`; terrain::depth)
 
 Three layers of 256-px tiles in packs like the terrain's: `root/0-0-0` (z0–2, the means of the lo
 packs' z3), `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16, only where a source has grids finer than z8);
@@ -491,7 +491,7 @@ ancestor's neighbours' edges; nearest for classes).
   a source's grid at the tile's zoom or finer, 2 a coarser grid's, scaled up, 3 estimated, 4 filled
   to the shore), bit 3 dries at low tide, bits 4–7 the
   source's `code` (docs/inputs.md §6.10).
-- Both are libwebp 1.6.0's `-lossless -z 6 -exact` (pipeline::depth::fall), decoded exact by Chrome
+- Both are libwebp 1.6.0's `-lossless -z 6 -exact` (terrain::depth::fall), decoded exact by Chrome
   and Safari; readers still take the PNGs of packs from before (`terrarium-png`, `class-png`, grey)
   until the depth is rebuilt.
 - **`depth-shade`** (encoding `shade-webp`, as the terrain's shading: Pack above): the floor's
@@ -550,13 +550,13 @@ log line prefix `catalog-stats:` and the phase names (scenic-build's "sorting th
 - `files` holds every file the catalogue references.
 - `fmt` 2 (task #449): `markdata` may name the bundle of every tile ("Bundles"). Readers take 1 and 2;
   an app that reads only 1 passes a catalogue of 2 over and keeps the last it can read until it updates.
-- `credits`: `pipeline::rules::CREDITS` plus the inputs' accepted descriptions
-  (`pipeline::inputs::credits`, docs/inputs.md §4.8; a description replaces the table's entry of its
+- `credits`: `inputs::rules::CREDITS` plus the inputs' accepted descriptions
+  (`inputs::inputs::credits`, docs/inputs.md §4.8; a description replaces the table's entry of its
   `what`), those whose areas meet the coverage + 20 km or a built z6 tile's extent. `areas` are w, s, e,
   n boxes in degrees, left out for credits that hold everywhere. A heritage register's credit has
   `register`, which popups name their source by (docs/inputs.md §6.5).
 - `dem_labels`: the elevation datasets' labels by source byte (`src.u8`), from their accepted
-  declarations (`label`, else `name`; `pipeline::inputs::credits::dem_labels`, docs/inputs.md
+  declarations (`label`, else `name`; `inputs::inputs::credits::dem_labels`, docs/inputs.md
   §6.8): how a road's details name its elevation sources. Left out when none; a catalogue without
   it gets "source <n>".
 - `coverage`: the regions built for: those done at publish time as their recipes then were
@@ -589,7 +589,7 @@ agent/quit-request.json Scenic's ask to quit (control::Quit: finish or now), unt
 app/<version>/          server, scenic, scenic-build, dem/, Scenic.app,
                         web/, fonts/ (app/current → the one in use)
 pyenv/<key>/            the Python steps' environment of a lock file (dem/uv.lock + .python-version),
-                        shared by the versions with it (pipeline::pyenv); .used: its last use
+                        shared by the versions with it (jobrt::pyenv); .used: its last use
 pyenv/.lock-<key>       flock'd by the one making of that key (kept: removing a held lock breaks it)
 app/current.json, previous.json   {version, files, sha256}
 mirror/<content name>   downloads, named as on the NAS (docs/macs.md, Mirror; .partial/: in progress)
@@ -602,7 +602,7 @@ mirror/.packs/<hash16>/ the pieces of a root or lo pack (store::pieces::plan_pac
                         and meta, each blob once, its index); sizes.json {piece: bytes}
 idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)
 accepted/<unit>/        accepted inputs copied from the NAS: @index.json ({"version", "index"}) and
-                        each file by content name (pipeline::inputs::served); a sync leaves the
+                        each file by content name (inputs::inputs::served); a sync leaves the
                         other `@` names at its top, the server's own:
 accepted/regions/@listed.json   the inputs folder's region files as last listed (crates/server/src/
                         regions.rs, `Listing`): {"files": {"<path>": {len, modified (ns), read:
@@ -657,7 +657,7 @@ catalogues-view.json.zst  the build page's Catalogues map as followed (agent::ca
                         entries, `seq`, tile keys' and `f/` names' hashes)
 clear-request.json      the owner's ask to clear build caches ({by, at, level: caches | deep}, agent::room::ClearRequest;
                         renamed .taken when taken up)
-room-target.json        the owner's free-disk target {bytes, by, at} (agent::room::Target; none: off)
+room-target.json        the owner's free-disk target {bytes, by, at} (buildstore::room::Target; none: off)
 sweep-margin.json       the dev sweep's margin past it {bytes, by, at} (agent::settings::SWEEP_MARGIN;
                         none: SWEEP_MARGIN_DEFAULT_GB; read by tools/dev/sweep-targets.sh)
 member                  this Mac's pool member id `m-<16 hex>`, then its hardware UUID
@@ -687,9 +687,9 @@ deleted only under an exclusive flock taken without waiting.
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and
 `[FISHANDCHIPS.LOCAL:PERSONAL]`, both `soft=yes`.
 
-## Timings (`timings.jsonl`; pipeline::timings, docs/building.md §2)
+## Timings (`timings.jsonl`; jobrt::timings, docs/building.md §2)
 
-A job's run, a JSON object, `pipeline::timings::RunRec`:
+A job's run, a JSON object, `jobrt::timings::RunRec`:
 
 ```
 {v: 1, kind, id, host, start, wall_s, cpu_s, threads, held, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, cost_v}
@@ -728,7 +728,7 @@ Where they're kept:
   read by `/work/timings {kind?, last?}` (`{runs: [...]}`, each kind's last 20 by default).
 - Each log is cut to its newer half past 16 MB.
 
-## The forecasts' archive (`state/coord/forecasts/<day>.jsonl.zst`; pipeline::agent::fcarchive, docs/pool.md §7.9)
+## The forecasts' archive (`state/coord/forecasts/<day>.jsonl.zst`; agentcore::agent::fcarchive, docs/pool.md §7.9)
 
 A day's file (UTC) is zstd frames appended one after another (read frame by frame, a damaged frame
 skipped to the next frame's magic number): each a
@@ -767,7 +767,7 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
 - A forecast the same as the last written (docs/pool.md §7.9) isn't written. Days older than 7 go
   into `state/coord/forecasts-archive/<YYYY-MM>.tar`, a ustar of `<day>.jsonl.zst`, kept for good.
 
-## The forecast inputs' archive (`state/coord/forecast-inputs/<day>.jsonl.zst`; pipeline::agent::fcinputs, docs/pool.md §7.9)
+## The forecast inputs' archive (`state/coord/forecast-inputs/<day>.jsonl.zst`; agentcore::agent::fcinputs, docs/pool.md §7.9)
 
 A day's file (UTC) is zstd frames appended one after another (read as the forecasts' archive's
 are: a damaged frame skipped to the next frame's magic number), each frame lines, a line an input:
@@ -833,7 +833,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   `warning`, `waiting`), `v`, `marks` (tiles with points, kinds with tiles, totals), `depth` (the
   catalogue meta's: its sources, Depth below). The map's meta: `/api/meta`.
 - **Depth:** `/tiles/depth/…` and `/tiles/depth-class/…`: the stored tile, else made from its nearest
-  stored ancestor (`pipeline::depth::fall`), 204 where it has no ancestor, 404 past its zooms; versions `depth.tiles`,
+  stored ancestor (`terrain::depth::fall`), 204 where it has no ancestor, 404 past its zooms; versions `depth.tiles`,
   `depth-class.tiles`. `/tiles/terrain/{z}/{x}/{y}?floor=1`: the water's surface less the depth where
   the class tile says water (the floor under the water, for a 3D floor); the terrain as it is without
   depth in the catalogue. `?surface=1`: the water's surface (sea level where the water tiles say
@@ -872,7 +872,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
 - **Regions** (read only): `GET /api/regions`; `/api/regions/outlines?z=Z[&bbox=w,s,e,n][&ids=a,b][&union=1]`,
   every region's outline for drawing at zoom Z (0–12, deeper as 12): a GeoJSON feature per region,
   its every shape in one MultiPolygon simplified to half a pixel there (Douglas–Peucker,
-  `pipeline::outlines::simplify`, 0.5 × 40,075 km ÷ (512 × 2^Z) m; rings smaller than that left out
+  `buildstore::outlines::simplify`, 0.5 × 40,075 km ÷ (512 × 2^Z) m; rings smaller than that left out
   but its largest polygon), properties `region`, `name`, `disabled`, `bbox`, `label` (a point inside
   its largest polygon for its name) and `area` (its first osm: part's `iso`, `country`, `in`: its
   flag), and `z`; `bbox` keeps the regions whose box meets it, `ids` those named; `union=1` sends
@@ -908,7 +908,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   `reach.json.zst` (`{fmt, date, units: {"6/x/y" (`units`: the stored key): {owned: [w, s, e, n] | null, long: [{owned,
   ferry, verts}], cells: [[x, y]]}}}`, E7: the box of a z6 tile's ways within it + 20 km, every
   way reaching further, whole, and the 1° cells (west, south corners, degrees) its ways other than
-  ferries start in; `pipeline::reach`); `pass.json`.
+  ferries start in; `roads::reach`); `pass.json`.
 - **Global files:** `global/roads/<u>` (above); `global/roadids/<u>` (`ids`: the z6 tile's road ids,
   sorted u64, each once); `global/roadunits` (`pairs`: sorted u64 road, u64 z6 tile key; `srcs`: JSON
   `[ROADUNITS_V, [[z6 tile key, content name of what it read]]]`); `global/railfreq` (as `/api/railfreq`); `global/marks/summary` (`{fmt, kinds,
@@ -941,12 +941,12 @@ class, id) within a tile. The client sends the id with the clicked point.
   column and row on that zoom's global pixel grid, size, and its GeoTIFF's place in the tar; then
   the GeoTIFFs, in the depth grids' standard, docs/inputs.md §6.10: EPSG:3857, float32, NaN for
   none, Deflate with the floating-point predictor, overviews by averaging; one a source the
-  lake-depth step makes and z6 tile with a lake of it; `pipeline::depth::lakes`);
+  lake-depth step makes and z6 tile with a lake of it; `terrain::depth::lakes`);
   `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
   "terrain-water", pin, digests: {target: [from, digest]}}`: per depth target, what decides its
-  tiles and a hash16 over its water tiles' polygons; `pipeline::terrain_water::WaterIdx`).
+  tiles and a hash16 over its water tiles' polygons; `codecs::terrain_water::WaterIdx`).
 - **Other sources:**
-  - `sources/items/<date>/{facts,views,meta}.json`; `answers.tar.zst` (pipeline::answers: the
+  - `sources/items/<date>/{facts,views,meta}.json`; `answers.tar.zst` (agentcore::answers: the
     items job's caches `facts-<date>.jsonl`, `wp-<date>.jsonl`, `fetched-<date>.json`; tar + zstd,
     rewritten whole as a step starts and ends; one that doesn't read moved aside as
     `<name>.bad-<unix seconds>`) and `heritage.tar.zst` (the heritage chain's working copy, but what
@@ -971,10 +971,10 @@ class, id) within a tile. The client sends the id with the clicked point.
     read newest first; `gone` deleted a day after; `merged` those of `gone` merged away, never
     named again from a hand-off), and loose `sources/aws-terrarium/<z>/<x>/<y>.png` (`.none`);
     `sources/pageviews/<YYYY-MM>.tsv.zst` (a `#langs\t<lang>,…` line, then
-    `<lang>|<Title>\t<views>` lines; pipeline::pageviews); `sources/fetched/<dataset>/<file>` (a
+    `<lang>|<Title>\t<views>` lines; landmarks::pageviews); `sources/fetched/<dataset>/<file>` (a
     declared elevation dataset's `store` files, deflate GeoTIFF, `.none` where missing;
     docs/inputs.md §6.8).
-- **Rail sources** (`sources/rail/`, content-named, in the manifest, never swept; `pipeline::rail`,
+- **Rail sources** (`sources/rail/`, content-named, in the manifest, never swept; `inputs::rail`,
   docs/steps.md §10):
   - `catalogue.csv`: the Mobility Database catalogue as downloaded (docs/inputs.md §6.7.1);
   - `checked.json`: every catalogue feed checked for rail routes, by `id`: `id`, `provider`, `name`,
@@ -986,7 +986,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `feeds.json`: `{fmt: 1, feeds: [{id, provider, name?, country, url, licence, replaces?,
     rail_routes?, zip, fetched} or {…, status}]}`, the coverage's feeds in the rail counter's order;
   - `ferry-feeds.json`: likewise, `{id, name, url, source, ferry_routes, zip, fetched}` or `status`.
-- **Stop pairs** (`pipeline::gtfs::railcount`'s, docs/inputs.md §6.7.2): 21-byte records, f32 lon_a, lat_a, lon_b,
+- **Stop pairs** (`landmarks::gtfs::railcount`'s, docs/inputs.md §6.7.2): 21-byte records, f32 lon_a, lat_a, lon_b,
   lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; +0x80 a lower bound; +0x20 / +0x40 stop A /
   B beyond the coverage), f32 trains A → B on a typical weekday.
 - **Kept for z6 tiles' later runs** (`cache/`, not swept): `cache/scenic-units/<u>/` (canopy.keys, canopy.tiles, view.keys,
@@ -996,13 +996,13 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/coordinator.json`: `{urls: [Tailscale's, then the LAN name's], token, page}`, while the
     lead's agent runs (`page`: the build page over HTTPS when `tailscale serve` proxies it).
   - On the lead, `agent/coord/`: `workers-token` (32 hex digits, mode 600); `page`; `store/` (the
-    pool's store, `pipeline::pool::store`, docs/coordination.md §4: `snapshot.json`, `{epoch, seq,
+    pool's store, `agentcore::pool::store`, docs/coordination.md §4: `snapshot.json`, `{epoch, seq,
     docs}`, written whole, and segments `<first seq>.jsonl`, one line per change after it, `{seq,
-    epoch?, set: {key: value}, del: [key]}`; its documents, `pipeline::coord::kept`: `leases`
+    epoch?, set: {key: value}, del: [key]}`; its documents, `agentcore::coord::kept`: `leases`
     (`{next, holds, cancelled}`), `lease/<id>` (`{id, term, granted_at, worker, work, progress,
     …}`), `cost/<key>`, `floor/<key>`, `disk/<key>`, `job_disks`, `fills` and `pause`, each as the
     files below held them; and `member/<host>`, `{speaks: ["held-leases"], at}`, a member as its
-    last beat said, `pipeline::coord::held`). Read once, into a store not made yet (an agent before the store's), and
+    last beat said, `agentcore::coord::held`). Read once, into a store not made yet (an agent before the store's), and
     no longer written: `leases.json` (`{next, leases: [{id, worker, work, progress}]}`); `costs.json` (`{<cost key>: {peak_mb,
     secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a z6 tile, `"<step> <target>"`, or `"<kind> <tile>"` for tasks: `tail 6/x/y`,
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,
@@ -1022,8 +1022,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     of z3 `terrain` and `trees` runs, an old step shape, dropped from `costs.json`, `floors.json`
     and `disks.json` as they're read); `journal/<worker>/` (hand-offs sent rather than journaled, drained into the
     pool's journal); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,
-    at}`, `pipeline::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` (`unit`: the target, stored so) as a target
-    begins, `{unit, peak_mb, secs, v, disk_mb, sizes}` as it ends; `sizes`, `pipeline::costin`, a
+    at}`, `jobrt::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` (`unit`: the target, stored so) as a target
+    begins, `{unit, peak_mb, secs, v, disk_mb, sizes}` as it ends; `sizes`, `buildstore::costin`, a
     map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `local` (of `bytes`, those read from this Mac's own disk: a mapped or local file's, its whole local copies', task #551, and the part of a NAS file copied whole that this Mac's page cache held as the copy began, task #939) where any were, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a z6 tile's with its tail's steps run here after its other measures were taken) where it can be read, `paused_ms` (the time its process was stopped over the target (SIGSTOP), its tail's too) where it was, `waited_ms` (the wall time over the target in which its process waited on the NAS, the network, the disk or other work, store::waits by its wall clock, its tail's too) where its run was timed (task #896)
     (bytes: what the store's readers read for the target, plus a step's own inputs: a z6 tile's extract,
     pack's and lo's base packs, pois' extract); `km2` (the tile's size in km²) and `tiffs` (GeoTIFFs opened)
@@ -1041,7 +1041,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   - On a member, `agent/outbox/<lease>/`: a leased task's files, `costs.jsonl`, `timings.json`,
     `spec.json`, `task.json` (`scenic run-task`'s result), `result.json` (`{ok, done: [step,
     [[target, key], …]] | null, failed, interrupted, task, error}`), until the coordinator has them.
-  - **Pausing** (`pipeline::control`), in each agent's folder: `pause-request.json` (`{pause, at}`,
+  - **Pausing** (`jobrt::control`), in each agent's folder: `pause-request.json` (`{pause, at}`,
     from the menu or `scenic pause`), `pause.json`, `control` (`run` or `drain`, a
     line, the file replaced whole; one an app before task #957 wrote unended is read the same;
     `SCENIC_CONTROL`, `control::Say`), `threads` (the threads the job is granted now, a number,
@@ -1050,15 +1050,15 @@ class, id) within a tile. The client sends the id with the clicked point.
     point exits 75. Coordinator answers carry the pause (409 `{error, pause}`, beats `{ok, pause}`);
     `POST /work/pause {pause, at}`; `/work/fail {…, interrupted}` returns a lease unheld.
     `state/build/pause.json` mirrors the lead's.
-  - **Input check asks** (`pipeline::inputs::Ask`, docs/inputs.md §4.5): `inputs-asks/<at, 20
+  - **Input check asks** (`inputs::inputs::Ask`, docs/inputs.md §4.5): `inputs-asks/<at, 20
     digits>-<pid or "menu">-….json`, `{unit, accept, all, unaccept, check, full, forget, by, at}`,
     from the menu and `scenic inputs check`; taken up at the agent's next
     loop. A member's agent tells the lead's coordinator (`POST /work/inputs`); the build page posts
     there directly (never `forget`).
-  - **The lead's declaration** (`pipeline::pool::term::Declared`, docs/pool.md §6.1), on the NAS:
+  - **The lead's declaration** (`agentcore::pool::term::Declared`, docs/pool.md §6.1), on the NAS:
     `state/build/lead-member.json`, `{member, host, since}`, made once with create-new; moved by
     the owner's edit alone.
-  - A hand-off (`pipeline::handoff`): `{changes: {logical: content name | null}, pending: {content
+  - A hand-off (`buildstore::handoff`): `{changes: {logical: content name | null}, pending: {content
     name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[shard,
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last
     merged; `.bad` one set aside unparsed.
@@ -1114,7 +1114,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/pool/mail/<to>/<from>.json`: the last 64 messages, `{msgs: [[n, msg], …]}`, `msg` one of
     `{"Tell": [keys]}`, `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`,
     `{"HandTo": member}`.
-  - `state/lead/store.json`: the lead's store's backup (`pipeline::pool::store::Snapshot`, `{epoch,
+  - `state/lead/store.json`: the lead's store's backup (`agentcore::pool::store::Snapshot`, `{epoch,
     seq, member, at, docs}`), each 10 min while it changed; `state/coord/token`;
     `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`; days older than 7 are
     `state/coord/history-archive/<day>.tar`, a ustar of `<day>/<member>.jsonl`);
@@ -1133,7 +1133,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   `shared`: docs/pipeline.md §4), `caches`
   (agent::room::Caches: `clearable`, `clearable_deep`, `each`, `why_not`, `cleared`, `cleared_deep`, `declined`, `room`),
   `pool`, `lead` (crate::agent::lead::View), `inputs`
-  (pipeline::inputs::view::InputView: per unit `version`, `state` ok | checking | held, `checked`,
+  (inputs::inputs::view::InputView: per unit `version`, `state` ok | checking | held, `checked`,
   `held`, `findings`, `accepted`, `stale`). `state/build/{manifest,jobs,pending,summaries,pause}.json`
   (`jobs.json`: job keys by step, target → key: `terrain_hi`, `slope_hi` (read from `terrain` and
   `slope` too, their names before task #639), `terrain_deep`, `slope_deep` (z10 tiles, "10/x/y"),

@@ -1,5 +1,5 @@
 //! Nothing writes the build's records but through `Out` (docs/pool.md §7.3, §7.7, §12 phase 4's
-//! sixth batch): a step's job changes the manifest only through `pipeline::out::Out`, which puts
+//! sixth batch): a step's job changes the manifest only through `buildstore::out::Out`, which puts
 //! and removes only its step's outputs (crate::agent::steps::writes, the function the lead's merge
 //! checks every entry by). So every item outside `#[cfg(test)]` code that makes or writes a
 //! hand-off (`handoff::write(`, a `Handoff { … }` or `Handoff::default()` made) or a journal entry
@@ -37,8 +37,8 @@ fn writes_records(l: &str, c: &str) -> bool {
 /// The writers outside `Out`: by file (from the repository's root), item name and what the line
 /// says (an anchor), with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
-    ("crates/agentcore/src/coord/mod.rs", "raw_again", "crate::handoff::write(&journal.join(crate::handoff::RAW_AGAIN)", "a hand-off not taken: its raw tiles' archives alone, kept for the next merge to name (outside the manifest)"),
-    ("crates/agentcore/src/coord/mod.rs", "route", "crate::handoff::write(&journal.join(folder(&d.worker)), &h)", "the coordinator journaling a helper's hand-off (its job's Out wrote it) while its pool is off: the merge's path"),
+    ("crates/agentcore/src/coord/mod.rs", "raw_again", "buildstore::handoff::write(&journal.join(buildstore::handoff::RAW_AGAIN)", "a hand-off not taken: its raw tiles' archives alone, kept for the next merge to name (outside the manifest)"),
+    ("crates/agentcore/src/coord/mod.rs", "route", "buildstore::handoff::write(&journal.join(folder(&d.worker)), &h)", "the coordinator journaling a helper's hand-off (its job's Out wrote it) while its pool is off: the merge's path"),
     ("crates/buildstore/src/rawpack.rs", "finish_with", "^crate::handoff::write(&dir,&crate::handoff::Handoff { raw:", "a job's raw tiles' archives, named by their area (crate::rawpack::named_for, which the merge checks), outside the manifest"),
     ("crates/agentcore/src/agent/plan.rs", "plan_seen", "\"state/build/manifest.json\"", "reads only the manifest's and the jobs' records' size and time (an idle agent's plan digest, task #154)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"state/build/manifest.json\"", "regions-fixture: a scratch folder's records for a two-Mac procedure, never the project folder's"),
@@ -118,7 +118,7 @@ fn anchored(lines: &[&str], i: usize, l: &str, anchor: &str) -> Option<usize> {
 #[test]
 fn nothing_writes_the_records_but_through_out() {
     let (bad, _) = scan();
-    assert!(bad.is_empty(), "the records written outside pipeline::out::Out (a hand-off, a journal entry, the manifest's file); write through Out, or list the item in EXEMPT with why:\n{}", bad.join("\n"));
+    assert!(bad.is_empty(), "the records written outside buildstore::out::Out (a hand-off, a journal entry, the manifest's file); write through Out, or list the item in EXEMPT with why:\n{}", bad.join("\n"));
 }
 
 /// Every exemption still matches a line it exempts.

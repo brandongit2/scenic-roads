@@ -2,7 +2,7 @@
 # Publish the app (docs/building.md §2, App publishing): build the server and the web app, run the
 # tests, smoke-test the new server on a spare port against the map (as this Mac's server reads it), then copy it
 # to the NAS (app/<version>/) and point app/current.json at it. Every Mac's agent copies it within
-# five minutes (pipeline::appupdate) and restarts into it by its update drain; the Mac mini's map
+# five minutes (jobrt::appupdate) and restarts into it by its update drain; the Mac mini's map
 # server, the only one, restarts into it once the map has been idle a minute.
 #
 #   tools/app/publish.sh              build, test, publish

@@ -1,6 +1,6 @@
 //! Assemble outlines from an outline set and look up points:
 //!   [PREVIOUS=<previous outlines.sect> PREVIOUS_DATE=<its pass's date>] cargo run --release -p pipeline --example outlines -- <set.osm.pbf> <out.sect> [lon,lat …]
-use pipeline::outlines::{assemble, Outlines};
+use buildstore::outlines::{assemble, Outlines};
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {

@@ -33,7 +33,7 @@ Where state lives:
 | --- | --- | --- | --- |
 | Records, built files, catalogues | NAS: `state/build/`, content-named files | caches (`agent/cache/…`) | reads them |
 | Downloads | NAS: `sources/` | cache copies | nothing |
-| A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`pipeline::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
+| A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`agentcore::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
 | Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, a depth, terrain-hi or terrain-deep target's blocks, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a depth, terrain-hi or terrain-deep target's when it runs there again; the rest redone |
 | The coordinator's state, token, history | NAS: `state/coord/` | `agent/coord/` | loads it (§6.2, §7.5) |
@@ -1430,7 +1430,7 @@ never correctness, politeness or work.
 | Need | How |
 | --- | --- |
 | memory | measured per target (`peak_mb`, the guard's floors, §7.2) |
-| input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `pipeline::costin`: bytes read, threads, area, GeoTIFFs opened, the bytes and files its `Out` made on the NAS (`wrote`, `creates`), and the counts a step has: ways and vertices, buildings, peaks); read by the step's model (below) |
+| input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `buildstore::costin`: bytes read, threads, area, GeoTIFFs opened, the bytes and files its `Out` made on the NAS (`wrote`, `creates`), and the counts a step has: ways and vertices, buildings, peaks); read by the step's model (below) |
 | disk | measured per target: bytes written through `store::cachefile` and the scratch writers (`SCENIC_WRITTEN`), plus a look each minute at the largest files in a slot's scratch folder; kept as the target's disk floor (`disks.json`). **Disk guard:** when free space falls below the owner's room target (less a thirtieth of it, so a job just let in at the target isn't frozen at once: `memguard::disk_short_of`), the fastest-growing job is frozen (another too if the disk falls past half the target), room is made from caches no job holds (`room::toward`), and it goes on once the target is free again or is given back. No target is set until the owner picks one (Off is none); with none, the guard fires only at an actually full disk, with no other floor. Given-back jobs' scratch folders are deleted oldest first when room is short (`room::free_given_back`) |
 | jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2; one only waiting on a worker by what it holds and no cores, §7.2, A job waiting on a worker; one leaving the cores idle by its measures and no cores, §7.2, A job leaving the cores idle), and only while every member reports the new app (§7.1, Mixed versions); a cold start by its provisional need (§7.7) |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its shard's archives when the index changed (`RawTiles::get`, `refresh_shard`; a shard is the z6 tile, z3 tile or `root` whose archives hold a tile: docs/macs.md) |
@@ -1440,7 +1440,7 @@ never correctness, politeness or work.
 | write-set | `agent::steps::writes`, enforced by `Out` and the merge (§7.3). Raw archives, answers and `bld-fetch`'s sources are outside the manifest, each written whole under its module's names |
 | targets per job | as many as fit the batch length of measured time on the Mac (the pool's `batch-minutes`, else 15: `Sched::batch_len`, Batch length below), the lead's and a member's alike; a step kept to the lead in one job |
 
-**One model per step** (`pipeline::needs::Book`: `need(step, target, threads, guess)`, and `mem`
+**One model per step** (`agentcore::needs::Book`: `need(step, target, threads, guess)`, and `mem`
 alone for the picks): only what was measured the way the step runs now counts
 (`coord::cost_version`, the steps table's `cost_v`); a run or floor of an older way of it (a z6 tile's before v3, its elevations sampled whole; the heritage job's before v1, its clip of the filtered planet, whose 21.9 GB floor no run since 20 Oct came near: 6.4 GB) is neither a
 target's memory or time measure, nor a fit's run, nor part of a prior (disk floors, `disks.json`, carry no version and always count). A target's memory, disk and time are its own
@@ -2872,7 +2872,7 @@ too while that member doesn't say `asks`; mailboxes are read while a member hear
   prediction) is from that start, not its lease's grant: a lease read back at a lead's restart is
   younger than its job. Read back, an end whose lease began before a lead's restart reads at
   least its time since its "lease" event (`history::mend_runs`). The phase is the top-level phase its
-  main thread has open (pipeline::timings: its name and class, since when, unix s), said in the
+  main thread has open (jobrt::timings: its name and class, since when, unix s), said in the
   job's counts file after its counts (`store::nasio::set_phase`: a sequence number, odd while it's
   written, its time and 48 bytes of text, a few stores in the mapped page, ~40 ns a call measured; never
   summed), read from the newest set among the folder's running processes' files, each read twice and taken only when both reads give the same even sequence number (so a text torn by a write mid-copy is never taken). The target is

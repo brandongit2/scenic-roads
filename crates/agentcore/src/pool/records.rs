@@ -35,7 +35,7 @@
 use super::journal::{self, Entry, LeaseId};
 use super::nas::{Created, Nas};
 use super::term::Term;
-use crate::rawpack::Pack;
+use buildstore::rawpack::Pack;
 use anyhow::{bail, Context, Result};
 use buildstore::records::{read_or_default, BriefOf, Snapshot, TODAY};
 use serde::{Deserialize, Serialize};
@@ -101,11 +101,11 @@ pub struct Keys {
     /// The lakes' estimated depth, per z6 tile ("6/x/y": `depth_targets`' `lakes`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lake_depth: BTreeMap<String, String>,
-    /// The elevation pyramids' tiles stored on the NAS (crate::pyramids), per z6 tile ("6/x/y":
+    /// The elevation pyramids' tiles stored on the NAS (terrain::pyramids), per z6 tile ("6/x/y":
     /// `terrain_slope_targets`' `pyramids`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pyramids_fill: BTreeMap<String, String>,
-    /// The polar caps' blocks ("s/4/x/y": crate::polar::target) and roots ("s"): `polar_targets`.
+    /// The polar caps' blocks ("s/4/x/y": terrain::polar::target) and roots ("s"): `polar_targets`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub polar_terrain: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -142,7 +142,7 @@ impl Keys {
     }
 
     /// The keys with the done records of the hand-offs waiting under each of `bases` on top (the
-    /// coordinator's journal on this Mac: crate::handoff), and the files they save (`handed`).
+    /// coordinator's journal on this Mac: buildstore::handoff), and the files they save (`handed`).
     pub fn load_with(root: &store::nasfs::NasRoot, bases: &[std::path::PathBuf]) -> anyhow::Result<Keys> {
         Keys::load_strict(root)?.with_waiting(bases)
     }
@@ -151,7 +151,7 @@ impl Keys {
     pub fn with_waiting(mut self, bases: &[std::path::PathBuf]) -> anyhow::Result<Keys> {
         let mut hs = Vec::new();
         for b in bases {
-            hs.extend(crate::handoff::waiting_in(b)?);
+            hs.extend(buildstore::handoff::waiting_in(b)?);
         }
         let k = &mut self;
         for (_, h) in hs {
@@ -342,8 +342,8 @@ pub struct Records {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sizes: BTreeMap<String, u64>,
     /// Raw terrain tiles' and stored pyramids' archives handed off, to be named in their stores'
-    /// indexes (crate::rawpack::handed_place): the lead names them
-    /// (crate::rawpack::name_handed_places), then takes them off here (crate::pool::driver::Heard::
+    /// indexes (buildstore::rawpack::handed_place): the lead names them
+    /// (buildstore::rawpack::name_handed_places), then takes them off here (crate::pool::driver::Heard::
     /// named_raw), saved with its next snapshot. One named but not yet off (a restart between) is
     /// named again: passed over unread.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -527,7 +527,7 @@ impl Records {
         self.reflected.contains(key) || self.rejected.contains_key(key)
     }
 
-    /// Applies journal entry `e`, under key `key`, as crate::handoff's merge did: its manifest
+    /// Applies journal entry `e`, under key `key`, as buildstore::handoff's merge did: its manifest
     /// changes, its uploads pending and checked, its done record in the keys, its raw archives to
     /// name; and names it. Passed over (named, nothing applied: false) when a later lease's entry
     /// set any of its targets already (lease order across merges: a member back from sleep tells
@@ -806,7 +806,7 @@ mod tests {
     use super::super::term::{self, Current};
     use super::super::Member;
     use super::*;
-    use crate::handoff::Handoff;
+    use buildstore::handoff::Handoff;
     use std::cell::Cell;
 
     const DAY: u64 = 1_791_300_000;

@@ -1,5 +1,5 @@
 //! The elevation pool's memory as a sampling run holds it (task #929): tiles of one zoom sampled from
-//! the pool over their box (pipeline::terrain_base), one at a time, this process's footprint said
+//! the pool over their box (terrain::terrain_base), one at a time, this process's footprint said
 //! after each, under a footprint guard. A measure on real data, writing nothing but the Terrarium
 //! tiles' local cache.
 //!
@@ -7,8 +7,8 @@
 //!
 //! `<root>`: the build's root (its records and stores, read only).
 
-use pipeline::terrain_pack::RawSource;
 use std::sync::atomic::AtomicU64;
+use terrain::terrain_pack::RawSource;
 
 fn mb() -> u64 {
     jobrt::sys::footprint().unwrap_or(0) / 1_000_000
@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
     };
     jobrt::sys::footprint_guard("pool_memory", max.parse()?);
     let root = store::nasfs::NasRoot::from_arg(root);
-    let m = pipeline::out::read_manifest(&root)?;
+    let m = buildstore::records::read_manifest(&root)?;
     let ts: Vec<(u8, u32, u32)> = tiles
         .iter()
         .map(|t| {
@@ -33,9 +33,9 @@ fn main() -> anyhow::Result<()> {
     let z = ts.first().map_or(0, |t| t.0);
     anyhow::ensure!(ts.iter().all(|t| t.0 == z), "the tiles are of one zoom");
     let xy: Vec<(u32, u32)> = ts.iter().map(|t| (t.1, t.2)).collect();
-    let pool = pipeline::terrain_base::Pool::read(&root, &m, pipeline::terrain_base::tiles_box(z, &xy))?;
-    let url = pipeline::terrain_base::terrarium_template(&root, &m)?;
-    let raw = pipeline::terrain_pack::RawTiles::with_store(
+    let pool = terrain::terrain_base::Pool::read(&root, &m, terrain::terrain_base::tiles_box(z, &xy))?;
+    let url = terrain::terrain_base::terrarium_template(&root, &m)?;
+    let raw = terrain::terrain_pack::RawTiles::with_store(
         std::path::Path::new(raw),
         &root.join("sources/aws-terrarium"),
         &url,

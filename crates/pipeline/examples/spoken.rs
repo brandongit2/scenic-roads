@@ -57,10 +57,10 @@ fn main() -> anyhow::Result<()> {
     let path = args.get(1).expect(usage);
     let table = names::Table::parse(&std::fs::read_to_string(args.get(2).expect(usage))?);
     let t0 = Instant::now();
-    let o = pipeline::outlines::Outlines::open(std::path::Path::new(path))?;
+    let o = buildstore::outlines::Outlines::open(std::path::Path::new(path))?;
     eprintln!("{} outlines' records and names read in {:.1?}", o.recs.len(), t0.elapsed());
     let areas =
-        pipeline::outlines::spoken_areas(&table, &o.recs, |i| o.string(i).to_owned(), |r| o.simple_polygons(r))?;
+        buildstore::outlines::spoken_areas(&table, &o.recs, |i| o.string(i).to_owned(), |r| o.simple_polygons(r))?;
     let points: usize = areas.iter().map(|a| a.polygons.iter().flatten().map(Vec::len).sum::<usize>()).sum();
     let read = t0.elapsed();
     let t1 = Instant::now();

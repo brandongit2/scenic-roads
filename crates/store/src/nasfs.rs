@@ -989,7 +989,7 @@ impl Loc<'_> {
 }
 
 /// A file on this Mac's disk or on the NAS, owned (a reader's choice of a local copy or the NAS's
-/// file: pipeline::localread). Readers take it as a `Loc` (`&place`).
+/// file: buildstore::localread). Readers take it as a `Loc` (`&place`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
     Local(PathBuf),

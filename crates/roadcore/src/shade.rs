@@ -89,7 +89,7 @@ pub fn pixels(b: &[u8], ch: usize) -> Vec<Px> {
     b.chunks_exact(ch).map(|p| value([p[0], p[1], p[2]])).collect()
 }
 
-/// A stored tile's pixels (lossless WebP: pipeline::shade_codec).
+/// A stored tile's pixels (lossless WebP: codecs::shade_codec).
 pub fn decode(bytes: &[u8]) -> Result<Vec<Px>> {
     let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes)).map_err(|e| anyhow::anyhow!("WebP: {e}"))?;
     let (w, h) = d.dimensions();

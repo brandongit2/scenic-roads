@@ -262,7 +262,7 @@ pub const LOW: &str = "the low zooms";
 pub const LOW_WATCH: &str = "why:the low zooms";
 
 /// What the log watches (store::map::log::Log::open_watching): the low zooms' batches, and the
-/// names' to-do lists' inputs (crate::namestodo::INPUTS).
+/// names' to-do lists' inputs (landmarks::namestodo::INPUTS).
 fn watches(the_plan: &dyn crate::agent::seam::Plan) -> Vec<&'static str> {
     std::iter::once(LOW_WATCH).chain(the_plan.names_todo_inputs().iter().copied()).collect()
 }

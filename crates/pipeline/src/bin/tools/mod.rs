@@ -1,7 +1,7 @@
-//! The programs `scenic-build tool <name> …` runs (pipeline::cli::TOOLS; task #917): once binaries
+//! The programs `scenic-build tool <name> …` runs (jobrt::sys::TOOLS; task #917): once binaries
 //! of their own, each linking the library again; folded into scenic-build so the shared code links
-//! once. Each keeps its command line (pipeline::cli::progs) and its exit status; jobs and tasks run
-//! them by name through pipeline::cli::program.
+//! once. Each keeps its command line (agentcore::cli::progs) and its exit status; jobs and tasks run
+//! them by name through jobrt::sys::program.
 
 pub mod areaflags;
 pub mod bldtile;

@@ -3,7 +3,7 @@
 //! docs/crates.md §6.2), so they're pipeline's, as inputs_tests are.
 #![cfg(test)]
 
-use crate::timetables::{run, FERRY_LINES, RAIL_LINES, REPORT, TODO_FILE};
+use roads::timetables::{run, FERRY_LINES, RAIL_LINES, REPORT, TODO_FILE};
 
 #[test]
 fn the_job_writes_into_todo_and_puts_the_report() {
@@ -38,9 +38,12 @@ fn the_job_writes_into_todo_and_puts_the_report() {
     // The inputs folder's listing never takes todo/ in, nor counts it as a change.
     std::fs::write(root.join("inputs/timetables/gtfs/a.zip"), b"z").unwrap();
     for recursive in [false, true] {
-        let listed =
-            crate::inputs::list(&store::nasfs::NasRoot::local_for_test(&root), crate::inputs::gtfs::UNIT, recursive)
-                .unwrap();
+        let listed = ::inputs::inputs::list(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            ::inputs::inputs::gtfs::UNIT,
+            recursive,
+        )
+        .unwrap();
         assert_eq!(listed.files.keys().collect::<Vec<_>>(), vec!["a.zip"], "{listed:?}");
         assert!(listed.strays.is_empty(), "{listed:?}");
     }

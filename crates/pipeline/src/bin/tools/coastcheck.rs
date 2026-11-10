@@ -9,16 +9,16 @@
 //! `build` reads every water area the basemap draws from the pass's filtered planet (osmium
 //! tags-filter by `watercov::SET_FILTER` into the store folder, then osmium export, its areas
 //! assembled; the ~6 GB filtered file deleted after, on failure too, and as much free as the planet asked
-//! first) and every ring of the sea's water polygons into a store (pipeline::watercov).
+//! first) and every ring of the sea's water polygons into a store (codecs::watercov).
 //! `serve` answers `/cov/{z}/{x}/{y}?s=<size>&k=<all|sea|inland>` (size 1–2048, 512 by default)
 //! with a grey PNG, each pixel 255 × (1 − its water coverage): white land, black water, exact
 //! anti-aliasing between; with `&raw=1`, the shares as the server's water tiles give them raw (red
 //! the sea's, green the inland water's), for the coastal shading's reference.
 
+use agentcore::cli::progs::{Coastcheck, CoastcheckCmd as C};
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use pipeline::cli::progs::{Coastcheck, CoastcheckCmd as C};
-use pipeline::watercov::{self as wc, Geom, GeomWriter};
+use codecs::watercov::{self as wc, Geom, GeomWriter};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,13 +29,13 @@ pub fn main(args: Vec<String>) -> Result<()> {
         C::Serve { store, port } => serve(&store, port),
         C::Stats { store, z, sample, size } => stats(&store, z, sample, size),
         C::WaterPacks { tiles, root } => {
-            // water-build's tiles as the water layer's packs (pipeline::layers' scopes) in a test
+            // water-build's tiles as the water layer's packs (terrain::layers' scopes) in a test
             // root, and its map one newer with them (its `map/<seq>.json.zst`). Never the NAS's.
             anyhow::ensure!(!root.starts_with("/Volumes"), "a test root, not the NAS's");
             let nas = store::nasfs::NasRoot::from_arg(&root);
             let mut cat = store::map::newest_nas(&nas)?.context("no map in the root")?.catalogue()?;
             let mut all: Vec<(u8, u32, u32, PathBuf)> = Vec::new();
-            for z in 0..=pipeline::water::STORED_MAXZ {
+            for z in 0..=::inputs::water::STORED_MAXZ {
                 let zd = tiles.join(z.to_string());
                 let Ok(xs) = std::fs::read_dir(&zd) else { continue };
                 for xe in xs {
@@ -52,13 +52,13 @@ pub fn main(args: Vec<String>) -> Result<()> {
             let mut groups: std::collections::BTreeMap<(&str, u8, u32, u32), Vec<(u8, u32, u32, PathBuf)>> =
                 Default::default();
             for t in all {
-                let (scope, pz, px, py) = pipeline::layers::pack_of(t.0, t.1, t.2);
+                let (scope, pz, px, py) = terrain::layers::pack_of(t.0, t.1, t.2);
                 groups.entry((scope, pz, px, py)).or_default().push(t);
             }
             let mut layer = store::catalogue::Layer {
                 encoding: "water-png".into(),
                 minzoom: 0,
-                maxzoom: pipeline::water::STORED_MAXZ,
+                maxzoom: ::inputs::water::STORED_MAXZ,
                 ..Default::default()
             };
             for ((scope, pz, px, py), ts) in groups {
@@ -102,9 +102,9 @@ pub fn main(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         C::WaterBuild { basemap, only, lakefill, out: dir } => {
-            // pipeline::water's build as the step runs it, its tiles written as files
+            // inputs::water's build as the step runs it, its tiles written as files
             // (<dir>/z/x/y.png), for a regional run measured without the NAS.
-            use pipeline::water as wt;
+            use ::inputs::water as wt;
             let t = std::time::Instant::now();
             let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&basemap)?))?;
             let z14 = wt::Z14::read(&pm)?;
@@ -116,7 +116,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             });
             // (--lakefill f: the lakes filled from Canada's own data drawn too.)
             let fill = match lakefill {
-                Some(f) => Some(pipeline::lakefill::Fill::open(&f, &f.to_string_lossy())?),
+                Some(f) => Some(::inputs::lakefill::Fill::open(&f, &f.to_string_lossy())?),
                 None => None,
             };
             let (tiles, made) = wt::build(
@@ -124,7 +124,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
                 &z14,
                 fill.as_ref().map(|f| f as &dyn wt::Extra),
                 only.as_deref(),
-                &std::sync::Mutex::new(pipeline::resume_log::Pieces::none()),
+                &std::sync::Mutex::new(jobrt::resume_log::Pieces::none()),
                 &|d, n| eprintln!("coastcheck: {d}/{n} z5 tiles"),
             )?;
             for (z, x, y, png) in &tiles {
@@ -199,7 +199,7 @@ fn build(osm: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
     );
     let t = std::time::Instant::now();
     let st = store::spawn::spawn(
-        pipeline::osmpass::osmium()
+        ::inputs::osmpass::osmium()
             .args(["tags-filter", "--overwrite", "-F", "pbf", "-o"])
             .arg(&set)
             .arg(osm)
@@ -239,7 +239,7 @@ fn build(osm: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
         }))?,
     )?;
     let mut child = store::spawn::spawn(
-        pipeline::osmpass::osmium()
+        ::inputs::osmpass::osmium()
             .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "--overwrite", "-o", "-"])
             .arg("-c")
             .arg(&cfg)
@@ -352,7 +352,7 @@ fn serve(store: &Path, port: u16) -> Result<()> {
     let app = axum::Router::new().route("/cov/{z}/{x}/{y}", axum::routing::get(tile)).with_state(g);
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build()?;
     rt.block_on(async {
-        let l = pipeline::net::Listener::new(store::spawn::listen(("127.0.0.1", port))?)?;
+        let l = coordwire::net::Listener::new(store::spawn::listen(("127.0.0.1", port))?)?;
         axum::serve(l, app).await?;
         anyhow::Ok(())
     })?;

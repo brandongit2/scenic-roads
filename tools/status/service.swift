@@ -9,7 +9,7 @@
 //   quit (crates/jobrt/src/control.rs Quit), and it exits cleanly, so launchd leaves it stopped.
 // - The map server is no part of it: a launchd service of its own on the Mac mini alone
 //   (tools/app/install.sh; docs/macs.md, task #874).
-// - An update: the agent installs each published version under app/<version> (pipeline::appupdate);
+// - An update: the agent installs each published version under app/<version> (jobrt::appupdate);
 //   the app, installed
 //   at /Applications/Scenic.app, copies the version's Scenic.app over itself and quits, and a
 //   helper (`--reopen`) opens the new one once it has ended, retrying until it runs (the build

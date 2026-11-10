@@ -14,10 +14,6 @@ use clap::CommandFactory;
 /// Every program of this crate (its src/bin/), by name.
 pub const PROGRAMS: [&str; 2] = ["scenic", "scenic-build"];
 
-// The programs folded into scenic-build, and how a job runs one: jobrt::sys's (task #916 step 6d:
-// the steps below pipeline run them), kept at these paths.
-pub use jobrt::sys::{program, TOOLS};
-
 /// A program's command line, by its name (`PROGRAMS`).
 pub fn command(prog: &str) -> Option<clap::Command> {
     Some(match prog {
@@ -70,7 +66,7 @@ mod tests {
         for p in PROGRAMS {
             command(p).unwrap().debug_assert();
         }
-        for t in TOOLS {
+        for t in jobrt::sys::TOOLS {
             let c = tool(t).unwrap();
             assert_eq!(c.get_name(), t);
             c.debug_assert();

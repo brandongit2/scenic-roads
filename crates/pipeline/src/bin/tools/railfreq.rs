@@ -1,8 +1,8 @@
 //! Passenger rail service frequency on the OSM track network: trains a day each way per rail way.
 //!
-//! Its command line: pipeline::cli::progs::Railfreq (`railfreq <build_dir> <pairs.bin>...`).
+//! Its command line: agentcore::cli::progs::Railfreq (`railfreq <build_dir> <pairs.bin>...`).
 //!
-//! Input pairs (pipeline::gtfs::railcount: the feeds' and static files' trains, and the static files' count rows): little-endian records
+//! Input pairs (landmarks::gtfs::railcount: the feeds' and static files' trains, and the static files' count rows): little-endian records
 //! f32 lon_a, lat_a, lon_b, lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; bit 0x80: the
 //! count is a lower bound; 0x20 / 0x40: stop A / B is beyond the map), f32 trains — the trains from stop A to stop B on a typical weekday. Each pair is matched onto the rail ways
 //! of ways.bin: each stop snaps to its nearest few tracks within 300 m, or 1 km when there are none
@@ -122,13 +122,13 @@ fn mode_bits(mode: u8) -> u8 {
 }
 
 pub fn main(args: Vec<String>) -> Result<()> {
-    let pipeline::cli::progs::Railfreq { build_dir: dir, pairs: files } =
-        <pipeline::cli::progs::Railfreq as clap::Parser>::parse_from(args);
+    let agentcore::cli::progs::Railfreq { build_dir: dir, pairs: files } =
+        <agentcore::cli::progs::Railfreq as clap::Parser>::parse_from(args);
     let t0 = std::time::Instant::now();
     let mut pairs: Vec<Pair> = Vec::new();
     for p in &files {
         let b = std::fs::read(p)?;
-        for r in pipeline::rail::Pair::all(&b) {
+        for r in ::inputs::rail::Pair::all(&b) {
             pairs.push(Pair {
                 a: r.a.map(f64::from),
                 b: r.b.map(f64::from),

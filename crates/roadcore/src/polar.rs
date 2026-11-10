@@ -233,7 +233,7 @@ pub fn cap_tiles(pole: Pole, z: u8) -> Vec<(u32, u32)> {
 }
 
 /// The zoom of a block: a `polar-terrain` and `polar-slope` target, its subtree z4 to the finest
-/// one pack (131 km a side; 76 make the south cap). (Task #916 step 6d: from pipeline::polar,
+/// one pack (131 km a side; 76 make the south cap). (Task #916 step 6d: from terrain::polar,
 /// which re-exports it and `blocks`.)
 pub const BLOCK_Z: u8 = 4;
 

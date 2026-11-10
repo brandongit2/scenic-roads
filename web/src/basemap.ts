@@ -146,18 +146,18 @@ const inline = (main: ExpressionSpecification, sub: ExpressionSpecification = SU
   ['case', ['==', sub, ''], main, ['concat', main, ' (', sub, ')']];
 export const HALO = '#0b0e13';
 /** The shading sources' base shift (Terrarium's + ½): marks their tiles (each pixel's steepness and
- * mean direction, pipeline::shade_codec) for our MapLibre's colour-relief and hillshade shaders. */
+ * mean direction, codecs::shade_codec) for our MapLibre's colour-relief and hillshade shaders. */
 export const SHADE_SHIFT = 32768.5;
 /** Steepness (percent) at a shading tile's R channel's top (roadcore::shade::SLOPE_MAX). */
 export const SLOPE_MAX = 400;
-/** Names appear once a place's interest isolation spans this many pixels (pipeline::interest's mz: the zoom
+/** Names appear once a place's interest isolation spans this many pixels (landmarks::interest's mz: the zoom
  * where it spans one), the best-known winning collisions: the default label spacing (state.ts
  * LabelDensity). */
 export const LABEL_SPACING_PX = DEFAULT_DENSITY.px;
 export const spacingFilter = (px: number): ExpressionSpecification | null =>
   px > 0 ? ['>=', ['zoom'], ['+', ['coalesce', ['get', 'mz'], -99], Math.log2(px)]] : null;
 
-/** The labels by importance (pipeline::labels, served at /tiles/labels): layer → its kind and
+/** The labels by importance (landmarks::labels, served at /tiles/labels): layer → its kind and
  * classes. Each shows from the zoom where its isolation spans the label spacing (applyLabelDensity). */
 export const LABEL_TILE_LAYERS: Record<string, { kind: string; classes: string[] | null; density: DensityKind }> = {
   'place-city': { kind: 'place', classes: ['city'], density: 'places' },
@@ -188,7 +188,7 @@ export const OV_SOURCES: Record<string, string> = { 'heritage-areas': 'heritage-
 export const OV_LAYER = 'a';
 /** The rail stops' tiles' layer (`/tiles/stations`). */
 export const STATION_LAYER = 's';
-/** The water as exact coverage (`/tiles/water`: pipeline::water, crates/server/src/water.rs),
+/** The water as exact coverage (`/tiles/water`: inputs::water, crates/server/src/water.rs),
  * where the catalogue has it: each pixel's share of sea and of inland water at every zoom, from the
  * basemap's full-detail z14 water, drawn as a raster at the screen's density (512 px for 256 CSS
  * px). Without it, the basemap's own water polygons (simplified, small ones left out zoomed out,
@@ -553,7 +553,7 @@ export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDe
       'dem-floor': { ...dem, tiles: [tiles['dem-floor']] },
       'dem-surface': { ...dem, tiles: [tiles['dem-surface']] },
       // The terrain's shading, as the build stores it to each place's finest zoom (the slope layer:
-      // pipeline::slope_pack): each pixel's mean steepness and direction, which the slope tint
+      // terrain::slope_pack): each pixel's mean steepness and direction, which the slope tint
       // colours and the hill-shading shades (web/maplibre's color_relief and hillshade shaders). The
       // encoding is Terrarium's with a half-unit shift: the colour ramp's stops are packed with it as
       // usual, and the shaders know the source by it. Up to two zooms finer than the screen where the
@@ -745,7 +745,7 @@ export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDe
         layout: hvis,
         paint: { 'line-color': '#e7a0ff', 'line-opacity': 0.7, 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.6, 15, 1.6] },
       },
-      // World Heritage Sites as their lines and areas (pipeline::whsshapes: a canal, a wall, a site
+      // World Heritage Sites as their lines and areas (landmarks::whsshapes: a canal, a wall, a site
       // boundary), under the dots, with the Heritage sites overlay (overlays.ts filters them by
       // the World Heritage kinds shown).
       {
@@ -927,7 +927,7 @@ export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDe
           'text-halo-width': 1.3,
         },
       },
-      // The components of a World Heritage Site shown as one dot (pipeline::heritage_layers: pt, cn), small
+      // The components of a World Heritage Site shown as one dot (landmarks::heritage_layers: pt, cn), small
       // and unnamed, fading in from zoom 10, under the dots.
       {
         id: 'heritage-part',

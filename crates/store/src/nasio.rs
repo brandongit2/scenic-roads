@@ -1,10 +1,10 @@
 //! This process's I/O counts, kept where they happen: its NAS traffic (the store's readers, a
-//! build's `Out` through pipeline::costin::wrote, the metadata walks costin::meta notes: bytes read
+//! build's `Out` through buildstore::costin::wrote, the metadata walks costin::meta notes: bytes read
 //! and written, files opened for reading, files made, folder entries listed, files statted and
 //! deleted), and beside it the bytes read from this Mac's own disk (`Local`: crate::range's mapped
 //! and local files, crate::cachefile's reads, and the part of a NAS file copied whole that this
 //! Mac's page cache held, crate::nasfs) and the GeoTIFFs opened. The one per-process counter
-//! set: a build target's input measures (pipeline::costin) are its deltas.
+//! set: a build target's input measures (buildstore::costin) are its deltas.
 //!
 //! A job's processes count into files of their own on the agent's disk, so the agent sees a job's
 //! traffic while it runs with no channel to it (docs/pool.md §10, Live): when `ENV` names a folder
@@ -16,10 +16,10 @@
 //! small; a job's totals only grow. Without `ENV` (or its file not made) the counts stay in this
 //! process's memory alone. A program a step runs gets a folder of its own inside its runner's
 //! (`program_dir`: summed one level down, so it shows as it runs), whose sums its runner takes into
-//! its own as it ends (`take_program`; pipeline::unit's `run`).
+//! its own as it ends (`take_program`; roads::unit's `run`).
 //!
 //! After the counts, the same file says what the process is doing now (`set_phase`: the phase
-//! pipeline::timings has open on a job's main thread, and since when), written under a sequence
+//! jobrt::timings has open on a job's main thread, and since when), written under a sequence
 //! number (odd while it's written) so a reader never takes half of one; never summed or folded.
 //! The agent reads it from the newest running process's file at the folder's top (`phase_in`).
 //!

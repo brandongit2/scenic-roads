@@ -14,9 +14,9 @@
 //!   (`FILE`) every `SAVE_EVERY` and as the agent stops, read back as it starts. A bucket older than
 //!   its ring's span is never answered.
 //! - **Sampled** on threads of the agent's own (`spawn`), never its loop: every second the load,
-//!   memory free (the kernel's percentage), the memory available (crate::sys::memory_available, as
+//!   memory free (the kernel's percentage), the memory available (jobrt::sys::memory_available, as
 //!   the memory floor reads it) and what compressing frees among it, its pressure, the swap, the memory compressed (`host_statistics64`), macOS's
-//!   thermal state (crate::sys::thermal_state) and the jobs running; the cores busy (all, the efficiency
+//!   thermal state (jobrt::sys::thermal_state) and the jobs running; the cores busy (all, the efficiency
 //!   cores, the performance ones: `host_processor_info`'s ticks, the efficiency cores the first
 //!   processors, as many as the last perf level's; the performance ones every other); the build's CPU and memory (its jobs' processes' `proc_pid_rusage`)
 //!   and the rest of the Mac's (the cores busy, and the memory in use (the Mac's less what's
@@ -90,7 +90,7 @@ const MAGIC_V1: &[u8; 8] = b"SCLIVE01";
 pub const NAS_MS: &str = "nas_ms";
 pub const LOAD: &str = "load1";
 pub const MEM_FREE: &str = "mem_free_pct";
-/// The memory available (GB: crate::sys::memory_available), and what compressing idle memory frees
+/// The memory available (GB: jobrt::sys::memory_available), and what compressing idle memory frees
 /// among it (its `compressible`).
 pub const MEM_AVAIL: &str = "mem_avail_gb";
 pub const MEM_COMPRESSIBLE: &str = "mem_compressible_gb";
@@ -114,10 +114,10 @@ pub const DISK_WRITE: &str = "disk_write_mbs";
 pub const JOB_WRITE: &str = "job_write_mbs.";
 /// The sampler's own CPU time a second (ms).
 pub const SAMPLER: &str = "sampler_cpu_ms";
-/// The bytes through the proxy, in (to the jobs) and out (MB/s; crate::budget::net).
+/// The bytes through the proxy, in (to the jobs) and out (MB/s; jobrt::budget::net).
 pub const NET_IN: &str = "net_in_mbs";
 pub const NET_OUT: &str = "net_out_mbs";
-/// The requests the proxy was asked, a second (a tunnel one; crate::budget::net::Host::requests).
+/// The requests the proxy was asked, a second (a tunnel one; jobrt::budget::net::Host::requests).
 pub const NET_REQ: &str = "net_req_s";
 pub const DISK: &str = "disk_free_gb";
 pub const DISK_SIZE: &str = "disk_size_gb";
@@ -147,7 +147,7 @@ pub const POOL_CALLS: [&str; 3] = ["pool_nas_calls", "pool_nas_missed", "pool_na
 /// The span a member's missed calls are averaged over for its lead (s): longer than the asks
 /// between its capacities, so no second's misses fall between two.
 pub const CALLS_SPAN: u64 = 30;
-/// The NAS's disks' busy share (%), as the lead's load gate reads them every 10 s (crate::budget::snmp):
+/// The NAS's disks' busy share (%), as the lead's load gate reads them every 10 s (jobrt::budget::snmp):
 /// the busiest, and each disk's (`NAS_DISK_BUSY`, a dot, its number from 1).
 pub const NAS_DISK_BUSY: &str = "nas_disk_busy_pct";
 
@@ -291,9 +291,9 @@ fn mac() -> &'static serde_json::Value {
     static MAC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     MAC.get_or_init(|| {
         serde_json::json!({
-            "cores": crate::inputs::pace::cores(),
-            "cores_e": crate::sys::efficiency_cores(),
-            "mem_gb": crate::sys::memsize().map(|b| round(b as f64 / GB)),
+            "cores": ::inputs::inputs::pace::cores(),
+            "cores_e": jobrt::sys::efficiency_cores(),
+            "mem_gb": jobrt::sys::memsize().map(|b| round(b as f64 / GB)),
             // (Its NAS call threads, crate::agent::nasread: the most calls in flight at once.)
             "nas_threads": crate::agent::nasread::threads_in_all(),
             // (How long without a touch makes the owner away.)
@@ -317,7 +317,7 @@ pub struct Store {
     /// The NAS's root whenever the agent reads it (`set_root`): the days archived there.
     root: Mutex<Option<store::nasfs::NasRoot>>,
     /// The proxy's counts (`set_net`): answered as `net`, their rates sampled.
-    net: Mutex<Option<Arc<crate::budget::net::Net>>>,
+    net: Mutex<Option<Arc<jobrt::budget::net::Net>>>,
     /// The file stream (module doc), oldest first.
     files: Mutex<std::collections::VecDeque<FileNote>>,
     sampling: AtomicBool,
@@ -550,7 +550,7 @@ impl Store {
     }
 
     /// The proxy's counts, answered and sampled from here on.
-    pub fn set_net(&self, net: Arc<crate::budget::net::Net>) {
+    pub fn set_net(&self, net: Arc<jobrt::budget::net::Net>) {
         if let Ok(mut n) = self.net.lock() {
             *n = Some(net);
         }
@@ -582,7 +582,7 @@ impl Store {
         self.net.lock().is_ok_and(|n| n.is_some())
     }
 
-    fn net(&self) -> Option<Arc<crate::budget::net::Net>> {
+    fn net(&self) -> Option<Arc<jobrt::budget::net::Net>> {
         self.net.lock().ok()?.clone()
     }
 
@@ -590,7 +590,7 @@ impl Store {
     /// lo, mean, hi], …]}, net, files}`, each series with a point in the window alone; `mac`, its
     /// size (`mac()`); `cores_now`, each core's share busy over the last second (none before the
     /// sampler's second read); unless asked without (`net: false`): `net`, the proxy's counts
-    /// (crate::budget::net::Net::view) once it has them, and `files`, the file stream (`FileNote`s,
+    /// (jobrt::budget::net::Net::view) once it has them, and `files`, the file stream (`FileNote`s,
     /// oldest first).
     pub fn answer(&self, a: &Ask, now: u64) -> serde_json::Value {
         let max = TIERS[TIERS.len() - 1].0 * TIERS[TIERS.len() - 1].1 as u64;
@@ -735,9 +735,9 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
             let mut rates = Rates::default();
             loop {
                 let t = now_s();
-                let cpu = crate::sys::thread_cpu_ns();
+                let cpu = jobrt::sys::thread_cpu_ns();
                 rates.sample(&s, &home, &guard, t);
-                s.record(SAMPLER, t, crate::sys::thread_cpu_ns().saturating_sub(cpu) as f64 / 1e6);
+                s.record(SAMPLER, t, jobrt::sys::thread_cpu_ns().saturating_sub(cpu) as f64 / 1e6);
                 if saved.elapsed() >= SAVE_EVERY {
                     s.save();
                     saved = std::time::Instant::now();
@@ -782,7 +782,7 @@ struct Rates {
     nas: NasRates,
     cores: Option<Vec<(u64, u64)>>,
     /// Per job (process group): the most of each count yet read, and when.
-    jobs: BTreeMap<i32, (crate::sys::Usage, u64)>,
+    jobs: BTreeMap<i32, (jobrt::sys::Usage, u64)>,
     disk: Option<(u64, u64)>,
     /// The proxy's bytes in and out, its requests, and when.
     net: Option<(u64, u64, u64, u64)>,
@@ -801,25 +801,25 @@ impl Rates {
             }
         };
         put(LOAD, super::cond::load1());
-        let free = crate::sys::memory_free_pct();
+        let free = jobrt::sys::memory_free_pct();
         put(MEM_FREE, free.map(f64::from));
-        let avail = crate::sys::memory_available();
+        let avail = jobrt::sys::memory_available();
         put(MEM_AVAIL, avail.map(|a| a.total() as f64 / GB));
         put(MEM_COMPRESSIBLE, avail.map(|a| a.compressible as f64 / GB));
         let avail = avail.map(|a| a.total());
-        put(PRESSURE, crate::sys::memory_pressure().map(f64::from));
-        put(SWAP, crate::sys::swap_used().map(|b| (b >> 20) as f64));
-        put(COMPRESSED, crate::sys::memory_compressed().map(|b| b as f64 / GB));
-        put(THERMAL, crate::sys::thermal_state().map(f64::from));
+        put(PRESSURE, jobrt::sys::memory_pressure().map(f64::from));
+        put(SWAP, jobrt::sys::swap_used().map(|b| (b >> 20) as f64));
+        put(COMPRESSED, jobrt::sys::memory_compressed().map(|b| b as f64 / GB));
+        put(THERMAL, jobrt::sys::thermal_state().map(f64::from));
         let jobs = guard.jobs();
         put(JOBS, Some(jobs.len() as f64));
         if t % 10 == 0 {
             put(DISK, super::room::disk_free(home).ok().map(|b| b as f64 / GB));
             put(DISK_SIZE, store::sys::disk_size(home).ok().map(|b| b as f64 / GB));
         }
-        let now = crate::sys::core_ticks();
+        let now = jobrt::sys::core_ticks();
         let busy = match (&self.cores, &now) {
-            (Some(was), Some(now)) => cores_busy(was, now, crate::sys::efficiency_cores() as usize),
+            (Some(was), Some(now)) => cores_busy(was, now, jobrt::sys::efficiency_cores() as usize),
             _ => None,
         };
         self.cores = now;
@@ -834,21 +834,21 @@ impl Rates {
             put(CORES_E, Some(e));
             put(CORES_P, Some(p));
         }
-        let used: Vec<_> = jobs.iter().map(|(k, pgid, _)| (*k, *pgid, crate::sys::usage_of_group(*pgid))).collect();
+        let used: Vec<_> = jobs.iter().map(|(k, pgid, _)| (*k, *pgid, jobrt::sys::usage_of_group(*pgid))).collect();
         let b = self.jobs(&used, t);
         put(BUILD_CORES, b.cores);
         if let (Some(all), Some(c)) = (busy, b.cores) {
             put(OTHERS_CORES, Some((all[0] - c).max(0.0)));
         }
         put(BUILD_MEM, b.mem.map(|m| m as f64 / GB));
-        if let (Some(m), Some(total), Some(avail)) = (b.mem, crate::sys::memsize(), avail) {
+        if let (Some(m), Some(total), Some(avail)) = (b.mem, jobrt::sys::memsize(), avail) {
             let used = total.saturating_sub(avail) as f64;
             put(OTHERS_MEM, Some((used - m as f64).max(0.0) / GB));
         }
         for (k, v) in b.writes {
             s.record(&format!("{JOB_WRITE}{k}"), t, v);
         }
-        if let Some(w) = crate::sys::disk_written() {
+        if let Some(w) = jobrt::sys::disk_written() {
             if let Some((was, at)) = self.disk {
                 put(DISK_WRITE, Some(w.saturating_sub(was) as f64 / MB / t.saturating_sub(at).max(1) as f64));
             }
@@ -908,7 +908,7 @@ impl Rates {
     /// the second, of the jobs read a second time; None with none such) and each one's disk writes
     /// (MB/s). A job first seen sets its baseline; each count kept at the most seen (a process that
     /// ended takes its counts with it: its last moment isn't counted).
-    fn jobs(&mut self, jobs: &[(usize, i32, Option<crate::sys::Usage>)], t: u64) -> JobUse {
+    fn jobs(&mut self, jobs: &[(usize, i32, Option<jobrt::sys::Usage>)], t: u64) -> JobUse {
         let none = jobs.is_empty();
         let mut out = JobUse { mem: none.then_some(0), cores: none.then_some(0.0), writes: vec![] };
         let mut seen = BTreeMap::new();
@@ -941,7 +941,7 @@ struct JobUse {
 const GB: f64 = (1u64 << 30) as f64;
 const MB: f64 = (1u64 << 20) as f64;
 
-/// The cores busy between two reads of their ticks (`crate::sys::core_ticks`), in cores' worth:
+/// The cores busy between two reads of their ticks (`jobrt::sys::core_ticks`), in cores' worth:
 /// all, the first `e` (the efficiency cores), the rest; and each core's share; None when the
 /// cores changed.
 fn cores_busy(was: &[(u64, u64)], now: &[(u64, u64)], e: usize) -> Option<([f64; 3], Vec<f64>)> {
@@ -1155,7 +1155,7 @@ mod tests {
 
     #[test]
     fn the_jobs_cpu_memory_and_writes() {
-        use crate::sys::Usage;
+        use jobrt::sys::Usage;
         let u = |cpu_s: u64, gb: u64, mb: u64| Usage {
             cpu_ns: cpu_s * 1_000_000_000,
             footprint: gb << 30,
@@ -1187,11 +1187,11 @@ mod tests {
         let guard = super::super::memguard::Sampler::new(2);
         let mut r = Rates::default();
         let t0 = now_s();
-        let cpu = crate::sys::thread_cpu_ns();
+        let cpu = jobrt::sys::thread_cpu_ns();
         for i in 0..20 {
             r.sample(&s, home.path(), &guard, t0 + i);
         }
-        let ms = crate::sys::thread_cpu_ns().saturating_sub(cpu) as f64 / 1e6 / 20.0;
+        let ms = jobrt::sys::thread_cpu_ns().saturating_sub(cpu) as f64 / 1e6 / 20.0;
         eprintln!("a round: {ms:.3} ms of CPU");
         assert!(ms < 20.0, "a round took {ms} ms of CPU");
         for n in [
@@ -1210,7 +1210,7 @@ mod tests {
         ] {
             assert!(s.latest(n, t0 + 19, 5).is_some(), "{n} not sampled");
         }
-        let cores = crate::sys::core_ticks().unwrap().len() as f64;
+        let cores = jobrt::sys::core_ticks().unwrap().len() as f64;
         assert!(s.latest(CORES, t0 + 19, 5).unwrap() <= cores);
     }
 
@@ -1321,7 +1321,7 @@ mod tests {
     /// Task #516: the proxy's counts answered as `net`, and its bytes as rates by the second.
     #[test]
     fn the_proxys_traffic_is_answered_and_sampled_as_rates() {
-        use crate::budget::net::{Net, Outcome};
+        use jobrt::budget::net::{Net, Outcome};
         let s = Store::new(None, "m4");
         let t0 = 1_000_000_000;
         assert!(s.answer(&Ask::default(), t0).get("net").is_none());

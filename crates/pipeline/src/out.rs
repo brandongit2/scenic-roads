@@ -1,11 +1,8 @@
-//! Where build steps put their outputs: buildstore::out (task #916 steps 4 and 6a,
-//! docs/crates.md), kept at this path. A step's job opens its `Out` here (`open`), held to its
-//! step's write set as the steps table has it (crate::agent::steps::writes).
-
-pub use buildstore::out::*;
-pub use buildstore::records::read_manifest;
+//! A step's job opens its `Out` (buildstore::out, where build steps put their outputs) here,
+//! held to its step's write set as the steps table has it (crate::agent::steps::writes).
 
 use anyhow::Result;
+use buildstore::out::Out;
 use std::path::Path;
 use store::nasfs::NasRoot;
 
@@ -19,6 +16,7 @@ pub fn open(root: &NasRoot, scratch: &Path, step: &str) -> Result<Out> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buildstore::records::read_manifest;
 
     /// `Out` opened here reads the pool's records and holds a job to its step's write set as the
     /// steps table has it (buildstore's tests check the layer itself with a table of their own).

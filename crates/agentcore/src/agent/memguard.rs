@@ -4,9 +4,9 @@
 //!
 //! - **Sampled on a thread of its own** (`Sampler`, every `EVERY`, whatever the agent's loop is
 //!   waiting on: a share that stalls stalls the loop, not this): each running job's processes'
-//!   physical footprints summed (crate::sys::footprint_of_group), kept per target as the most the
+//!   physical footprints summed (jobrt::sys::footprint_of_group), kept per target as the most the
 //!   job held while that target was under way (`Watch::current`); and with them the Mac's memory
-//!   (`Reading`): what is available (crate::sys::memory_available: what macOS hands out at no
+//!   (`Reading`): what is available (jobrt::sys::memory_available: what macOS hands out at no
 //!   cost, and what it frees by compressing idle memory with its pressure left normal), the swap
 //!   grown lately, and the kernel's pressure level.
 //! - **Learned:** what a job held while a target was under way is that target's
@@ -54,11 +54,11 @@ pub const COOL_WAIT: Duration = SWAP_WINDOW;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Reading {
-    /// The memory available (crate::sys::memory_available), and the jobs' memory together.
+    /// The memory available (jobrt::sys::memory_available), and the jobs' memory together.
     pub avail_mb: u64,
     pub held_mb: u64,
     /// Of `avail_mb`, what macOS frees by compressing idle memory with its pressure left normal
-    /// (crate::sys::Available's `compressible`).
+    /// (jobrt::sys::Available's `compressible`).
     pub compress_mb: u64,
     /// The floor in force.
     pub floor_mb: u64,
@@ -260,7 +260,7 @@ pub fn current(costs: &Path) -> Option<String> {
 /// s), and how many ended (each a `peak_mb` line after the `started` line of its target: the
 /// step's own per-target completion, the one notion of a target done for the batch's percent, its
 /// time left and the flags' count); and the threads the last to begin runs on, where its `started`
-/// line says (a target run on its job's grant as it began, crate::control::on_grant: docs/pool.md
+/// line says (a target run on its job's grant as it began, jobrt::control::on_grant: docs/pool.md
 /// §7.1, Threads re-granted).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Targets {
@@ -458,7 +458,7 @@ impl Watch {
             return Some(k);
         }
         if !self.targets.is_empty() {
-            let done = crate::control::read_done(&self.done, &self.step);
+            let done = jobrt::control::read_done(&self.done, &self.step);
             return self.targets.iter().find(|t| !done.contains(*t)).map(|t| crate::coord::cost_key(&self.step, t));
         }
         self.own_key.clone()
@@ -683,7 +683,7 @@ impl Sampler {
         if w.frozen || !real {
             return true;
         }
-        crate::sys::signal_group(w.pgid, crate::sys::Signal::Cont)
+        jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Cont)
     }
 
     /// This Mac's floor (crate::agent::memfloor) and memory (MB; 0: unknown, the guard guards
@@ -792,7 +792,7 @@ impl Sampler {
         let real = g.held_set.is_none();
         let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut).filter(|w| !w.frozen) else { return false };
         if real {
-            crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
+            jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
         }
         w.frozen = true;
         true
@@ -804,7 +804,7 @@ impl Sampler {
         let Ok(g) = self.inner.lock() else { return };
         let Some(w) = g.watches.get(k).and_then(Option::as_ref) else { return };
         if (w.frozen && g.held_set.is_none()) || (w.disk_frozen && g.held_set.is_none() && g.disk_set.is_none()) {
-            crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
+            jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
         }
     }
 
@@ -817,7 +817,7 @@ impl Sampler {
         if w.disk_frozen {
             return true;
         }
-        crate::sys::signal_group(w.pgid, crate::sys::Signal::Cont)
+        jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Cont)
     }
 
     /// Whether the brake acts now (`Reading::acts`), as the last sample read it.
@@ -846,10 +846,10 @@ impl Sampler {
         let set = g.avail_set.or(g.idle_set.map(|i| i.saturating_sub(held_mb)));
         let (avail_mb, compress_mb) = match set {
             Some(mb) => (mb, 0),
-            None => crate::sys::memory_available().map(|a| (a.total() >> 20, a.compressible >> 20))?,
+            None => jobrt::sys::memory_available().map(|a| (a.total() >> 20, a.compressible >> 20))?,
         };
         let now = std::time::Instant::now();
-        let swap = g.swap_set.or_else(|| crate::sys::swap_used().map(|b| b >> 20));
+        let swap = g.swap_set.or_else(|| jobrt::sys::swap_used().map(|b| b >> 20));
         if let Some(n) = swap {
             g.swap.push_back((now, n));
         }
@@ -860,7 +860,7 @@ impl Sampler {
         let pressure = match g.trouble_set {
             Some(true) => 2,
             Some(false) => 1,
-            None => crate::sys::memory_pressure().unwrap_or(0),
+            None => jobrt::sys::memory_pressure().unwrap_or(0),
         };
         Some(Reading {
             avail_mb,
@@ -897,12 +897,12 @@ impl Sampler {
         for (k, pgid) in watches {
             let held = match &set {
                 Some(v) => v.get(k).copied().flatten(),
-                None => crate::sys::footprint_of_group(pgid).map(|b| b >> 20),
+                None => jobrt::sys::footprint_of_group(pgid).map(|b| b >> 20),
             };
             let key =
                 self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
             got.push((k, pgid, held, key));
-            cpu.push((k, pgid, crate::sys::cpu_of_group(pgid)));
+            cpu.push((k, pgid, jobrt::sys::cpu_of_group(pgid)));
         }
         let live: Option<(PathBuf, Live)>;
         let over: Vec<usize> = {
@@ -975,7 +975,7 @@ impl Sampler {
             let (reading, real) = (g.reading.unwrap_or_default(), g.held_set.is_none());
             let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut) else { continue };
             if real {
-                crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
+                jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
             }
             w.frozen = true;
             let what = format!(
@@ -1091,7 +1091,7 @@ impl Sampler {
                 for (k, w) in g.watches.iter_mut().enumerate() {
                     let Some(w) = w.as_mut().filter(|w| !w.disk_frozen) else { continue };
                     if real && !w.frozen {
-                        crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
+                        jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
                     }
                     w.disk_frozen = true;
                     said.push(format!("froze slot {k}'s job too: the disk has {:.1} GB free, under half the {} GB room target, while another job is frozen for it", free.unwrap_or(0) as f64 / (1u64 << 30) as f64, floor >> 30));
@@ -1117,7 +1117,7 @@ impl Sampler {
         let floor = g.floor;
         let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut) else { return };
         if real && !w.frozen {
-            crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
+            jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
         }
         w.disk_frozen = true;
         let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
@@ -1332,7 +1332,7 @@ mod tests {
         // (Memory, in GB: free, file cache, active and idle anonymous, the compressor and the GB
         // it holds.)
         let mac = |free: f64, file: f64, active: f64, idle: f64, comp: f64, stored: f64| -> Reading {
-            let p = crate::sys::Pages {
+            let p = jobrt::sys::Pages {
                 free: page(free),
                 file: page(file),
                 active: page(active),

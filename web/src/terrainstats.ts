@@ -26,7 +26,7 @@ const CAP_RINGS = 12, CAP_STEPS = 96;
 const BINS = 1024;
 
 /** The distribution of a raster-dem source's values over the ground in view, in `domain`; null
- * while no tile in view is loaded. `shade`: a shading source (pipeline::shade_codec), its value the
+ * while no tile in view is loaded. `shade`: a shading source (codecs::shade_codec), its value the
  * mean steepness in R, 255 × √(steepness ÷ max). `caps`: the polar caps' heights past the Mercator
  * tiles (polarglobe.ts capGround), counted with an elevation source's. */
 export function terrainDist(map: MLMap, source: string, domain: [number, number], outline: [number, number][], shade: { max: number } | null = null, caps: ((lng: number, lat: number) => number | null) | null = null): Dist | null {

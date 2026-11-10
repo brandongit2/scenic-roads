@@ -1,5 +1,5 @@
 //! AWS's raw terrain tiles on the NAS, packed (docs/macs.md, Downloads), in archives grouped the
-//! way the terrain's packs are (pipeline::terrain_pack::build_q), so a job copies the archives of what
+//! way the terrain's packs are (terrain::terrain_pack::build_q), so a job copies the archives of what
 //! it makes and no more. A tile's *shard* (`shard`) is where its archives are kept: z9–12 by their
 //! z6 tile (`6-<x>-<y>`), z3–8 by their z3 tile (`3-<x>-<y>`), z0–2 together (`root`). Each archive is roadcore::archive's RDTILES1 (an empty entry for
 //! a tile AWS doesn't have), content-named (`<shard>.<hash16>.tiles`) in
@@ -52,7 +52,7 @@ const GROUP: u64 = 1 << 30;
 pub type Progress<'a> = &'a (dyn Fn(&str, u64, u64) + Sync);
 
 /// The archives' metadata: AWS's raw tiles' (`Packer::new`); a stored pyramid's says its own
-/// (`Packer::for_pyramid`, pipeline::pyramids).
+/// (`Packer::for_pyramid`, terrain::pyramids).
 const META: &str = r#"{"kind":"aws-terrarium raw tiles"}"#;
 
 /// The shard a tile is packed in, as the terrain is: its z6 tile's for z9–12, its z3 tile's for
@@ -308,7 +308,7 @@ impl Packer {
         Packer::open(dir, store, root, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from))
     }
 
-    /// `new`, for a stored pyramid's store (pipeline::pyramids, its `folder`): its archives saying
+    /// `new`, for a stored pyramid's store (terrain::pyramids, its `folder`): its archives saying
     /// `meta`, handed off to `handoff` (a job's, `SCENIC_HANDOFF`) as that store's
     /// (`handed_place`); None, the index changed here.
     pub fn for_pyramid(
@@ -765,7 +765,7 @@ impl Packer {
 /// answer for now is in `Named::again`, kept on the lead's records); how many were new
 /// to it. One its shard names already, or that the index lists as merged away, is passed over
 /// unread, and the index saved only when it changed: a restarted lead names again those its records
-/// still hold (named, not yet taken off them: pipeline::pool::driver::Heard::named_raw). The caller
+/// still hold (named, not yet taken off them: agentcore::pool::driver::Heard::named_raw). The caller
 /// holds the build lock (merging the hand-offs).
 pub fn name_handed(
     store: &store::nasfs::NasPath,
@@ -870,7 +870,7 @@ fn shard_of_key(key: u64) -> String {
     shard((key >> 58) as u8, ((key >> 29) & m) as u32, (key & m) as u32)
 }
 
-/// The stored pyramids' folder, under the build's root (pipeline::pyramids::DIR).
+/// The stored pyramids' folder, under the build's root (terrain::pyramids::DIR).
 pub const PYRAMIDS: &str = "sources/pyramids";
 
 /// A hand-off's archive's place (crate::handoff::Handoff::raw): `<shard>`, AWS's raw tiles' store
@@ -884,7 +884,7 @@ pub fn handed_place(root: &store::nasfs::NasRoot, a: &str) -> (store::nasfs::Nas
 }
 
 /// `a`'s shard past its pyramid's folder (`handed_place`), when that folder is one
-/// pipeline::pyramids::folder could name.
+/// terrain::pyramids::folder could name.
 fn bare_shard(a: &str) -> Option<&str> {
     match a.split_once('/') {
         None => Some(a),

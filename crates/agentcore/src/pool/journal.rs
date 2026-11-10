@@ -22,8 +22,8 @@
 //! (invariant 3).
 
 use super::nas::{short, Created, Nas};
-use crate::handoff::Handoff;
 use anyhow::{bail, Context, Result};
+use buildstore::handoff::Handoff;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

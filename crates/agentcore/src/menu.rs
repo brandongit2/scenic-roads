@@ -24,10 +24,10 @@ pub fn status(home: &Path, now: u64) -> serde_json::Value {
     let job = status["jobs"][0]["id"].as_str().or(status["job"]["id"].as_str());
     let log =
         job.map(|id| home.join("logs").join(format!("{}.log", id.replace([' ', '/'], "-"))).display().to_string());
-    // This Mac paused alone (crate::control::Hold, task #224), as its agent keeps it, and its ask
+    // This Mac paused alone (jobrt::control::Hold, task #224), as its agent keeps it, and its ask
     // while the agent hasn't taken it up.
-    let held_here = crate::control::read_hold(home).held;
-    let hold_asked = home.join(crate::control::HOLD_REQUEST).exists();
+    let held_here = jobrt::control::read_hold(home).held;
+    let hold_asked = home.join(jobrt::control::HOLD_REQUEST).exists();
     // (`local`: always, for a menu bar before docs/roles.md step 5, which requires it.)
     let mut out = serde_json::json!({"status": status, "local": true, "now": now, "log": log, "held_here": held_here, "hold_asked": hold_asked});
     if is_member {
@@ -43,8 +43,8 @@ mod tests {
     use crate::agent::bus::Snap;
     use crate::agent::jobs::now_s;
     use crate::agent::{Status, Verdict};
-    use crate::control::HoldState;
     use crate::coord::beats::{Beats, LEAD_VIEW};
+    use jobrt::control::HoldState;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -103,7 +103,7 @@ mod tests {
         c.set_beats(Some(Arc::new(Beats::default())));
         let said = Verdict { state: "building".into(), said: "Building on mini: 3 jobs".into() };
         c.set_said("mini", said.clone(), Vec::new());
-        let pause = crate::control::Pause::new(crate::control::Mode::Drain, "the build page");
+        let pause = jobrt::control::Pause::new(jobrt::control::Mode::Drain, "the build page");
         c.set_pause(Some(pause.clone()), pause.at);
         let (mut h, to) = member(d.path(), port, &c.contact.token, Arc::new(|_, _| Ok(())));
         publish(&mut h, &to, d.path(), Vec::new());
@@ -181,7 +181,7 @@ mod tests {
         lead.say(None, &HoldState::default(), false);
         let said = lead.build_said(1_700_000_025);
         let pause =
-            crate::control::Pause { mode: crate::control::Mode::Drain, by: "the build page".into(), at: 1_700_000_010 };
+            jobrt::control::Pause { mode: jobrt::control::Mode::Drain, by: "the build page".into(), at: 1_700_000_010 };
         let line = crate::coord::held::LeadLine {
             host: "mini".into(),
             app: "2026-10-30".into(),
@@ -219,7 +219,7 @@ mod tests {
             "Nothing to build",
             "out of touch"
         );
-        lead.pause = Some(crate::control::Pause::new(crate::control::Mode::Drain, "t"));
+        lead.pause = Some(jobrt::control::Pause::new(jobrt::control::Mode::Drain, "t"));
         lead.say(None, &HoldState::default(), false);
         assert_eq!(lead.build_said(1_000).state, "paused");
     }

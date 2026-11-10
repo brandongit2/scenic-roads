@@ -1,5 +1,5 @@
 // Filters for Stops & sights (Layers panel): min–max ranges and must-have flags per overlay, on the
-// numbers stamped onto the features (pipeline::interest::poi_filter_props). Applied as MapLibre
+// numbers stamped onto the features (landmarks::interest::poi_filter_props). Applied as MapLibre
 // filters (with each layer's own filter) and to the in-view counts.
 import type { ExpressionSpecification } from 'maplibre-gl';
 import type { OverlayKey } from './state';

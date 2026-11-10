@@ -1,5 +1,5 @@
 //! JSON as Python's `json` module reads and writes it, for files whose bytes must stay what the
-//! Python steps made (the heritage chain's: pipeline::filterprops, pipeline::heritage_layers): objects keep
+//! Python steps made (the heritage chain's: landmarks::filterprops, landmarks::heritage_layers): objects keep
 //! their keys' order (a repeated key keeps its first place and its last value), integers stay
 //! integers of any size (their digits) and floats floats (`1` and `1.0`; NaN and Infinity read),
 //! surrogate pairs join, and `dumps` writes as `json.dumps(v, ensure_ascii=False,

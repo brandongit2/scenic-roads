@@ -97,7 +97,7 @@ const ROWS_READERS: usize = 4;
 /// (`sources/canopy/<file>.<length>.<first>-<end>.rows`), so the next z6 tile's run reading the same
 /// strips (a strip is a row of the square's whole width: the tiles of a row read the same ones)
 /// reads them here. As the other copies there: made and held through store::cachefile, the least
-/// recently used freed by room-making (pipeline::agent::room, without asking the NAS: a square's
+/// recently used freed by room-making (agentcore::agent::room, without asking the NAS: a square's
 /// file is written once), and made only with room for them past the owner's room target
 /// (jobrt::room), else read into the run's scratch and gone with it.
 #[derive(Clone, Debug)]

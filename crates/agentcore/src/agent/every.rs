@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 /// The steps kept to the lead: the catalogues and prune (their gates:
 /// crate::agent's catalogue and sweep), the 3D buildings' sources' fetch and the elevation
 /// pyramids' (written outside the records, under `sources/`: one Mac's fetcher holds a host to its
-/// limit, crate::fetch), and its duties outside the plan (the OSM pass, offered only to the Mac holding
+/// limit, buildstore::fetch), and its duties outside the plan (the OSM pass, offered only to the Mac holding
 /// its progress: crate::agent::resume; GC, a redo (crate::agent::redo), the backup, the input checks, the names and timetables to do: written into the inputs folders'
 /// `todo/`, outside the records).
 pub const LEAD_ONLY: [&str; 13] = [

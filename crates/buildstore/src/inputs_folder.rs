@@ -1,5 +1,5 @@
 //! The inputs folders (docs/inputs.md §7.1): the owner's drop folders, which only the gate and
-//! `pipeline::inputs::open` read under; a step's `Out::path` refuses a path in one
+//! `inputs::inputs::open` read under; a step's `Out::path` refuses a path in one
 //! (`in_inputs_folder`).
 
 /// The folders that hold the inputs folders (`inputs/`, and the request–fulfil inputs' folders until

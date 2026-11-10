@@ -924,7 +924,7 @@ pub fn group_peak() -> u64 {
     GROUP_PEAK.lock().map_or(now, |g| g.1.max(now))
 }
 
-/// The osmium program, found in Homebrew's folder first (task #916: from pipeline::osmpass, which
+/// The osmium program, found in Homebrew's folder first (task #916: from inputs::osmpass, which
 /// re-exports it).
 pub fn osmium() -> Command {
     let path = format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default());
@@ -935,9 +935,9 @@ pub fn osmium() -> Command {
 }
 
 /// The programs folded into `scenic-build` (task #917): run as `scenic-build tool <name> …`, each
-/// with its own command line (pipeline::cli::tool); jobs and tasks name them as programs
+/// with its own command line (agentcore::cli::tool); jobs and tasks name them as programs
 /// (`program`), so a task's spec (`unit::Run::prog`) reads the same to an app from before the fold,
-/// which has them as binaries. (Task #916 step 6d: from pipeline::cli, which re-exports both.)
+/// which has them as binaries. (Task #916 step 6d: from agentcore::cli, which re-exports both.)
 pub const TOOLS: [&str; 13] = [
     "scenic-metrics",
     "extract",

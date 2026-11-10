@@ -1,9 +1,9 @@
 //! A `unit` job's tasks (docs/workers.md §3): the part of a z6 tile's tail any worker can run, offered
-//! through the lead's coordinator (pipeline::coord) while the job prepares its next z6 tiles. The
+//! through the lead's coordinator (agentcore::coord) while the job prepares its next z6 tiles. The
 //! steps that read the caches (the canopy files) run here, where the data is; those that read only
 //! the z6 tile's folder (`Run::reads`) may run anywhere: the files they read are cloned into the task's
 //! own folder (copy-on-write: instant, and the job may go on in the z6 tile's), the coordinator clones
-//! them again into its own (pipeline::coord::task::Tasks::offer: they stay readable until the task
+//! them again into its own (agentcore::coord::task::Tasks::offer: they stay readable until the task
 //! ends there, whatever the job does with its folders meanwhile), serves them to the worker that
 //! takes the task, and takes back what it wrote. A task that ends while its worker still fetches
 //! (the job ran it itself) answers it 410: that lease is gone.
@@ -42,7 +42,7 @@ pub struct Run {
     pub env: Vec<(String, String)>,
     /// The files it reads of the z6 tile's own (`{dir}/<name>`, `{buildings}/<name>`; a trailing `*`
     /// for any name so begun), earlier steps' outputs too: a task sends those there when it
-    /// starts, so it may run on any worker. None: it stays here (pipeline::unit::keep_here).
+    /// starts, so it may run on any worker. None: it stays here (roads::unit::keep_here).
     #[serde(default)]
     pub reads: Vec<String>,
 }
@@ -273,7 +273,7 @@ impl Offload {
     }
 
     /// `offer_spec`, saying how much of the job's own work comes before it needs the task (`ahead`,
-    /// in tasks' worth of this Mac's time at its kind: pipeline::coord::task::Task::ahead), when its
+    /// in tasks' worth of this Mac's time at its kind: agentcore::coord::task::Task::ahead), when its
     /// agent tells it to offer ahead (jobrt::jobs::ahead_on); else as `offer_spec`.
     pub fn offer_spec_ahead(
         &self,

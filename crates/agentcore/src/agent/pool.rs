@@ -40,13 +40,13 @@
 //! Mac is a member (task #881). (`state/pool/enabled`, the switch of before, is no longer read; an
 //! older app reads it, so it stays on the NAS until none runs.)
 
-use crate::handoff::Handoff;
 use crate::pool::driver::{self, Driver, Event, Heard, Io, Listed, Listing, Msg, Out, Saved};
 use crate::pool::journal::{self, Entry};
 use crate::pool::nas::{Created, Nas};
 use crate::pool::records::Records;
 use crate::pool::{Beat, Member, MemberLock};
 use anyhow::{Context, Result};
+use buildstore::handoff::Handoff;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -272,7 +272,7 @@ pub struct Conds {
     /// The battery's charge (%), when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub battery: Option<u8>,
-    /// Paused alone (crate::control::Hold, task #224): it takes no work until resumed. Left out by
+    /// Paused alone (jobrt::control::Hold, task #224): it takes no work until resumed. Left out by
     /// apps before it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
@@ -416,7 +416,7 @@ impl Side {
         let mail_dirty = mail.sent.keys().cloned().collect();
         let http: Arc<crate::coord::beats::Beats> = Arc::default();
         http.keep_asks(&dir.join(crate::coord::asks::QUEUE));
-        http.had_settings(crate::control::read_pool_settings(home));
+        http.had_settings(jobrt::control::read_pool_settings(home));
         http.keep_lead_view(&home.join(crate::coord::beats::LEAD_VIEW));
         Ok(Some(Side {
             me,
@@ -566,12 +566,12 @@ impl Side {
     }
 
     /// The app the newer readers' switch (the regions', the elevation datasets') was recorded on, when the records have it
-    /// (crate::inputs::regions::read::switch_app): a member on an older one is "app too old".
+    /// (inputs::inputs::regions::read::switch_app): a member on an older one is "app too old".
     pub fn regions_app(&self) -> std::result::Result<Option<String>, String> {
         let read =
             |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };
         let m = crate::pool::records::Brief::now(&*self.nas).map_err(|e| format!("the records: {e:#}"))?.manifest;
-        crate::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
+        ::inputs::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
     }
 
     /// Member `m`'s heartbeat as it wrote it (None: none, or one that can't be read now).
@@ -1103,7 +1103,7 @@ pub fn check(the_plan: &dyn crate::agent::seam::Plan, e: &Entry, _r: &Records) -
         return Err(why);
     }
     for (shard, p) in &h.raw {
-        if !crate::rawpack::is_shard(shard) || !crate::rawpack::named_for(&p.name, shard) {
+        if !buildstore::rawpack::is_shard(shard) || !buildstore::rawpack::named_for(&p.name, shard) {
             return Err(format!("{} isn't an archive of {shard}", p.name));
         }
     }
@@ -1386,7 +1386,7 @@ pub struct Cx {
     pub lead_answered: Option<u64>,
     /// This Mac's broker (docs/pool.md §8, crate::agent::brokers): the lead's coordinator, or a
     /// member's broker; None with tasks brokered by every member off. Its address over HTTPS, when
-    /// `tailscale serve` proxies it. Its LAN addresses (crate::net::lan_urls).
+    /// `tailscale serve` proxies it. Its LAN addresses (coordwire::net::lan_urls).
     pub broker: Option<crate::coord::Brokering>,
     pub broker_https: Option<String>,
     pub broker_lan: Vec<String>,
@@ -1939,7 +1939,7 @@ impl Run {
     /// lease. Each is removed once a saved state holding its entry is on disk.
     pub fn drain(&mut self, journal: &Path) {
         let me = self.side.member().id.clone();
-        let found = match crate::handoff::waiting_in(journal) {
+        let found = match buildstore::handoff::waiting_in(journal) {
             Ok(hs) => hs,
             Err(e) => {
                 eprintln!("pool: draining {}: {e:#}", journal.display());
@@ -2056,7 +2056,7 @@ pub fn entry_of(
     done: &[(String, String)],
     at: u64,
 ) -> Result<Option<Entry>> {
-    let saves = crate::handoff::written_in(dir)?.context("one of its saves is damaged")?;
+    let saves = buildstore::handoff::written_in(dir)?.context("one of its saves is damaged")?;
     let mut h = Handoff::default();
     for x in saves {
         h.absorb(x);
@@ -2104,7 +2104,7 @@ pub fn left_jobs(
             std::fs::remove_dir_all(&d).ok();
             continue;
         };
-        let names = crate::control::read_done(&d.join("done.txt"), &k.step);
+        let names = jobrt::control::read_done(&d.join("done.txt"), &k.step);
         let done: Vec<(String, String)> = k.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect();
         match entry_of(the_plan, &d, member, k.lease, &k.step, &done, crate::agent::jobs::now_s()) {
             Ok(Some(e)) => out.push((e, d)),
@@ -2146,7 +2146,7 @@ fn outbox_entries(the_plan: &dyn crate::agent::seam::Plan, outbox: &Path, member
                 .map(|d| d.1)
                 .unwrap_or_default(),
             None => {
-                let names = crate::control::read_done(&d.join("done.txt"), &w.step);
+                let names = jobrt::control::read_done(&d.join("done.txt"), &w.step);
                 w.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect()
             }
         };
@@ -3340,8 +3340,8 @@ mod tests {
             pending: [(c.to_string(), "aa".to_string())].into(),
             ..Default::default()
         };
-        crate::handoff::write(&dir, &save("base/6-1-1", "base/6-1-1.1111111111111111.base")).unwrap();
-        crate::handoff::write(&dir, &save("base/6-1-2", "base/6-1-2.2222222222222222.base")).unwrap();
+        buildstore::handoff::write(&dir, &save("base/6-1-1", "base/6-1-1.1111111111111111.base")).unwrap();
+        buildstore::handoff::write(&dir, &save("base/6-1-2", "base/6-1-2.2222222222222222.base")).unwrap();
         let lease = LeaseId { term: 1, n: 3 };
         // A shared step's: only the files of the targets it finished.
         let e = entry_of(
@@ -3391,8 +3391,8 @@ mod tests {
         // The coordinator's journal here (a member out of the pool's hand-offs), and this member's
         // outbox (a job it ran out of the pool, never told).
         let journal = home.join("coord/journal");
-        crate::handoff::write(&journal.join("m1"), &done("6/2/1", "k21")).unwrap();
-        crate::handoff::write(&journal.join("m1"), &done("6/2/2", "k22")).unwrap();
+        buildstore::handoff::write(&journal.join("m1"), &done("6/2/1", "k21")).unwrap();
+        buildstore::handoff::write(&journal.join("m1"), &done("6/2/2", "k22")).unwrap();
         let ob = home.join("outbox/1791328399374");
         std::fs::create_dir_all(&ob).unwrap();
         std::fs::write(
@@ -3404,7 +3404,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        crate::handoff::write(
+        buildstore::handoff::write(
             &ob,
             &Handoff {
                 changes: [("base/6-2-3".to_string(), Some("base/6-2-3.3333333333333333.base".to_string()))].into(),
@@ -3456,7 +3456,7 @@ mod tests {
             (Some("k21"), Some("k22"), Some("k23"))
         );
         assert_eq!(rec.manifest.get("base/6-2-3").map(String::as_str), Some("base/6-2-3.3333333333333333.base"));
-        assert!(crate::handoff::waiting_in(&journal).unwrap().is_empty() && !ob.exists());
+        assert!(buildstore::handoff::waiting_in(&journal).unwrap().is_empty() && !ob.exists());
         // (Marked merged: a file whose removal had failed isn't drained again.)
         assert!(journal.join("m1").with_extension("merged").exists());
         assert!(home.join("outbox/1791328399375").exists() && !failed.exists());
@@ -3650,7 +3650,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        crate::handoff::write(
+        buildstore::handoff::write(
             &dir,
             &Handoff {
                 changes: [
@@ -3709,9 +3709,10 @@ mod tests {
             .unwrap_err()
             .contains("isn't a content name of base/6-1-3"));
         let mut raw = e.clone();
-        raw.handoff
-            .raw
-            .push(("3-1-2".into(), crate::rawpack::Pack { name: "3-1-3.0123456789abcdef.tiles".into(), bytes: 1 }));
+        raw.handoff.raw.push((
+            "3-1-2".into(),
+            buildstore::rawpack::Pack { name: "3-1-3.0123456789abcdef.tiles".into(), bytes: 1 },
+        ));
         assert!(check(crate::agent::seam::for_tests(), &raw, &r).is_err());
         let mut none = e.clone();
         none.handoff.done = Some(("unit".into(), Vec::new()));

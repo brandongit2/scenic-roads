@@ -3,7 +3,7 @@
 //! and the water's water), the lakes' fill the water's readers open whole (`work/lakefill/<date>.…`),
 //! the depth sources' packs (`sources/fetched/<id>/<z6 tile>.<hash>.tar`),
 //! and the stored elevation datasets' GeoTIFFs (`sources/fetched/<id>/<name>.tif`, task #689:
-//! pipeline::dem::generic::stored) a terrain job reads half or more of (pipeline::dem::generic::COPY_SHARE).
+//! inputs::dem::generic::stored) a terrain job reads half or more of (inputs::dem::generic::COPY_SHARE).
 //! A random 64 KB read of the NAS waits ~40 ms on its disks' seeks, the Mac's own SSD's 0.2 ms: a
 //! file read in thousands of ranges is copied once, whole, in one sequential read, and read here.
 //!
@@ -12,26 +12,26 @@
 //! written once (store-fetch; one cut short is deleted and fetched again), so its copy is read only
 //! while its length is the NAS file's (`path_sized`: one that isn't is deleted). Kept between jobs, so the targets after share them; held while a
 //! job reads them, and otherwise freed by room-making, the least recently used first
-//! (pipeline::agent::room::toward). A copy is made only when the disk has room for it past the
+//! (agentcore::agent::room::toward). A copy is made only when the disk has room for it past the
 //! owner's room target; short of it (a laptop), or with no cache named (a job run by
 //! hand, a test), the NAS's file is read in place, as before. The copies' reads count as the local
 //! disk's (store::nasio's `Local`, crate::costin's `local`), so the NAS's weight of a run that
-//! reads them is what it copied (pipeline::needs::nas_rate); the copies are one shared cache a Mac
-//! fills once (pipeline::needs::CACHES: `CACHE`), reserved only on a Mac with room for it
-//! (pipeline::coord's `missing`). One process copies a file at a time (`making`, and across processes a
+//! reads them is what it copied (agentcore::needs::nas_rate); the copies are one shared cache a Mac
+//! fills once (agentcore::needs::CACHES: `CACHE`), reserved only on a Mac with room for it
+//! (agentcore::coord's `missing`). One process copies a file at a time (`making`, and across processes a
 //! lock file in the cache's `copying/`): another wanting it waits, then reads that copy.
 //!
 //! (A copy room-making frees between jobs is copied again by the next job that reads it, its reads
 //! the NAS's then, as before, plus the copy's. The basemap's, 27 GB, waits while smaller files can
 //! free a shortage smaller than it, until they've freed its own bytes in its place, and goes last
-//! while a job here reads it: pipeline::agent::room.)
+//! while a job here reads it: agentcore::agent::room.)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use store::nasfs::{NasPath, Place};
 
-/// The shared cache's name (pipeline::needs::CACHES).
+/// The shared cache's name (agentcore::needs::CACHES).
 pub const CACHE: &str = "whole copies";
 
 /// This Mac's copies of the NAS's files under `root`.

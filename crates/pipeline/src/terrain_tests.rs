@@ -1,16 +1,16 @@
-//! terrain_task's tests that start a coordinator (crate::coord): the terrain crate's own tests
+//! terrain_task's tests that start a coordinator (agentcore::coord): the terrain crate's own tests
 //! can't (a family doesn't depend on pipeline; docs/crates.md §6.2), so they're pipeline's, as the
 //! write-set tests are (crate::inputs_tests).
 #![cfg(test)]
 
-use crate::coord::client::{Client, LeaseCalls};
-use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles, Sources};
-use crate::terrain_task::testkit::north_piece;
-use crate::terrain_task::{groups, subtrees_arg, write_hi, Inputs, HI, KIND, MID};
+use agentcore::coord::client::{Client, LeaseCalls};
 use buildstore::coverage::Coverage;
 use buildstore::out::Out;
 use offload::Offload;
 use std::path::{Path, PathBuf};
+use terrain::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles, Sources};
+use terrain::terrain_task::testkit::north_piece;
+use terrain::terrain_task::{groups, subtrees_arg, write_hi, Inputs, HI, KIND, MID};
 
 /// The z6 tile's run with `offload` into root `name` under `d`: its hi pack's and mid's content
 /// names.
@@ -33,7 +33,7 @@ fn piece(
         .install(|| build_piece_with(&mut out, raw, t, cov, src, false, &|_, _, _| {}, offload))
         .unwrap();
     (
-        out.get(&crate::layers::hi_logical("terrain", t.0, t.1)).map(str::to_string),
+        out.get(&terrain::layers::hi_logical("terrain", t.0, t.1)).map(str::to_string),
         out.get(&mid_logical(t.0, t.1)).map(|c| {
             let (_, m) = read_mid(&out.path(c)).unwrap();
             format!(
@@ -53,7 +53,7 @@ fn worker(url: &str, token: &str, name: &str, home: PathBuf) -> std::thread::Joi
     let m = Client::at(vec![url.to_string()], token.to_string(), name);
     std::thread::spawn(move || {
         let ask =
-            crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+            agentcore::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
         let mut g = None;
         for _ in 0..100 {
             if let Some(x) = m.ask(&ask).unwrap() {
@@ -63,7 +63,7 @@ fn worker(url: &str, token: &str, name: &str, home: PathBuf) -> std::thread::Joi
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         let g = g?;
-        let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+        let agentcore::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
         let u = home.join("u");
         std::fs::create_dir_all(&u).unwrap();
         for i in task["inputs"].as_array().unwrap() {
@@ -80,16 +80,16 @@ fn worker(url: &str, token: &str, name: &str, home: PathBuf) -> std::thread::Joi
         let inp = Inputs::open(Path::new(&args[1])).unwrap();
         let (hi, mid) = inp.make().unwrap();
         write_hi(&u.join(HI), &inp.meta.piece, &inp.meta.subtrees, &hi).unwrap();
-        crate::terrain_pack::write_mid(&u.join(MID), inp.piece().unwrap(), &mid).unwrap();
+        terrain::terrain_pack::write_mid(&u.join(MID), inp.piece().unwrap(), &mid).unwrap();
         let mut outputs = Vec::new();
         for f in [HI, MID] {
             let bytes = std::fs::read(u.join(f)).unwrap();
             let path = format!("u/{f}");
             m.put_bytes(&format!("/work/out/{}/{path}", g.lease), &bytes).unwrap();
-            outputs.push(crate::coord::task::Output { path, size: bytes.len() as u64 });
+            outputs.push(agentcore::coord::task::Output { path, size: bytes.len() as u64 });
         }
-        let done = crate::coord::Done { lease: g.lease, outputs, peak_mb: 300, secs: 0.5, ..Default::default() };
-        assert_eq!(m.done(&done).unwrap(), crate::coord::client::Handed::Taken);
+        let done = agentcore::coord::Done { lease: g.lease, outputs, peak_mb: 300, secs: 0.5, ..Default::default() };
+        assert_eq!(m.done(&done).unwrap(), agentcore::coord::client::Handed::Taken);
         Some(task)
     })
 }
@@ -99,14 +99,15 @@ fn a_pieces_subtrees_go_to_workers_and_come_back_the_same() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path();
     let (t, cov, raw) = north_piece(p);
-    let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
-    let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
+    let levels = piece_levels(&cov, &terrain::terrain_zoom::test_world(12), t);
+    let src = Sources { sets: terrain::terrain_zoom::test_world_ref(), ..Default::default() };
     let alone = piece(p, "alone", t, &cov, &raw, &src, None);
     assert!(alone.0.is_some() && alone.1.is_some());
-    let (c, port) = crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &p.join("coord"), "m4", "");
+    let (c, port) = agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &p.join("coord"), "m4", "");
     let url = format!("http://127.0.0.1:{port}");
     let tok = c.contact.token.clone();
-    let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+    let ask =
+        agentcore::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
     // No worker around: nothing offered, the same z6 tile.
     let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job"));
     assert_eq!(piece(p, "none", t, &cov, &raw, &src, Some(&o)), alone);
@@ -135,8 +136,8 @@ fn a_pieces_subtrees_go_to_workers_and_come_back_the_same() {
 /// The coverage of `out`'s regions, as scenic-build's steps read it (the latest pass's outlines).
 fn live_coverage(out: &Out) -> Coverage {
     let root = out.root();
-    let a = crate::inputs::regions::read::source(root, &out.manifest).unwrap();
-    crate::inputs::regions::read::accepted_coverage(root, &a, None).unwrap()
+    let a = ::inputs::inputs::regions::read::source(root, &out.manifest).unwrap();
+    ::inputs::inputs::regions::read::accepted_coverage(root, &a, None).unwrap()
 }
 
 /// By hand, on the build's own data (docs/workers.md §3): z6 tiles `TT_PIECES` ("6/x/y,…") made
@@ -156,11 +157,12 @@ fn live_pieces_with_a_worker() {
     let raw = RawTiles::with_store(
         &PathBuf::from(env("TT_RAW")),
         &store::nasfs::NasPath::local_for_test(&root.join("sources/aws-terrarium")),
-        &crate::terrain_base::terrarium_template(&store::nasfs::NasRoot::local_for_test(&root), &out.manifest).unwrap(),
+        &terrain::terrain_base::terrarium_template(&store::nasfs::NasRoot::local_for_test(&root), &out.manifest)
+            .unwrap(),
     );
-    let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
+    let src = Sources { sets: terrain::terrain_zoom::test_world_ref(), ..Default::default() };
     let (c, port) =
-        crate::coord::start_on_test_port(crate::agent::theplan::the_plan(), &scratch.join("coord"), "m4", "");
+        agentcore::coord::start_on_test_port(crate::agent::theplan::the_plan(), &scratch.join("coord"), "m4", "");
     let url = format!("http://127.0.0.1:{port}");
     let off = Offload::at(url.clone(), c.job_token.clone(), &scratch.join("offload"))
         .waiting(crate::offload::Waiting::UntilDone);
@@ -173,7 +175,7 @@ fn live_pieces_with_a_worker() {
             stop.clone(),
         );
         std::thread::spawn(move || {
-            let ask = crate::coord::Ask {
+            let ask = agentcore::coord::Ask {
                 kind: "native".into(),
                 can: vec![KIND.into()],
                 mem_mb: 8192,
@@ -185,9 +187,9 @@ fn live_pieces_with_a_worker() {
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     continue;
                 };
-                let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+                let agentcore::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
                 let r = crate::offload::run_task(&m, g.lease, &task, &dir, &bin, None).unwrap();
-                let done = crate::coord::Done {
+                let done = agentcore::coord::Done {
                     lease: g.lease,
                     outputs: serde_json::from_value(r["outputs"].clone()).unwrap(),
                     secs: r["secs"].as_f64().unwrap(),
@@ -221,13 +223,14 @@ fn live_pieces_with_a_worker() {
         .map(|p| codecs::legacy::TileId::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
         .collect();
     for &t in &pieces {
-        let (hi_l, mid_l) = (crate::layers::hi_logical("terrain", t.0, t.1), mid_logical(t.0, t.1));
+        let (hi_l, mid_l) = (terrain::layers::hi_logical("terrain", t.0, t.1), mid_logical(t.0, t.1));
         let (hi_was, mid_was) = (out.get(&hi_l).map(str::to_string), out.get(&mid_l).map(str::to_string));
         assert!(hi_was.is_some() && mid_was.is_some(), "6/{}/{}: no hi pack or mid in the manifest", t.0, t.1);
         c.shared.lock().unwrap().tasks.paces.insert((who.clone(), KIND.into()), 0.2);
         let t0 = std::time::Instant::now();
         out.remove(&mid_l);
-        crate::terrain_pack::build_piece_with(&mut out, &raw, t, &cov, &src, true, &|_, _, _| {}, Some(&off)).unwrap();
+        terrain::terrain_pack::build_piece_with(&mut out, &raw, t, &cov, &src, true, &|_, _, _| {}, Some(&off))
+            .unwrap();
         assert_eq!(out.get(&hi_l).map(str::to_string), hi_was, "6/{}/{}'s hi pack", t.0, t.1);
         assert_eq!(out.get(&mid_l).map(str::to_string), mid_was, "6/{}/{}'s mid", t.0, t.1);
         let s = c.shared.lock().unwrap();

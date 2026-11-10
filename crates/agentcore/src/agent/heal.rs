@@ -1,6 +1,6 @@
 //! The agent's self-heal for stale SMB handles (docs/pool.md §3, docs/macs.md): when NAS calls on
 //! this Mac (the agent's own, and its Rust jobs' through `store::whole::STUCK_ENV`) keep staying
-//! "Resource busy" past `crate::whole`'s retries, the agent remounts its share, which ends this
+//! "Resource busy" past `codecs::whole`'s retries, the agent remounts its share, which ends this
 //! Mac's SMB session and with it every handle the session held (a process here killed with a file
 //! open). It can't free another Mac's session: that one ends when the server drops it.
 //!

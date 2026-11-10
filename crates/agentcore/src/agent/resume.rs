@@ -29,12 +29,12 @@
 //!   earlier stages' outputs before the lead has merged them.
 //! - **A pass complete by its records:** `sources/osm/<date>/pass` in the merged records (today's
 //!   manifest, which the lead writes from them), not a `pass.*.json` file on the NAS
-//!   (crate::osmpass::latest_pass_by), the agent's planning and its jobs' alike (`RESUME_ENV` in
+//!   (inputs::osmpass::latest_pass_by), the agent's planning and its jobs' alike (`RESUME_ENV` in
 //!   a job's environment).
 
-use crate::handoff::Handoff;
 use crate::pool::journal::Entry;
 use anyhow::{Context, Result};
+use buildstore::handoff::Handoff;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -44,7 +44,7 @@ pub const FILE: &str = "progress.json";
 pub const DIR: &str = "state/pool/progress";
 // How long a job's progress is offered to its Mac alone (§7.2: 24 hours), and the variable saying
 // resuming is on: the runtime crate's (task #916 step 3, docs/crates.md), kept at these paths.
-pub use crate::resume_log::{HOLD_S, RESUME_ENV};
+pub use jobrt::resume_log::{HOLD_S, RESUME_ENV};
 /// A member's progress noted this recently and not finished may be its job running now (a lease
 /// granted less than a loop before a lead was lost isn't in the state the next lead restores): the
 /// lead doesn't run the job itself meanwhile (`running_elsewhere`). Its agent notes it again every
@@ -53,9 +53,9 @@ pub const FRESH_S: u64 = 2 * crate::coord::TTL.as_secs();
 /// How often a running resumable job's `at` is noted again (half a lease's time to live).
 pub const REFRESH_S: u64 = crate::coord::TTL.as_secs() / 2;
 /// The steps whose jobs resume from their progress on their Mac's disk, offered back to it: the OSM
-/// pass (its stages' markers in its scratch folder, crate::osmpass). (A depth, terrain-hi or
+/// pass (its stages' markers in its scratch folder, inputs::osmpass). (A depth, terrain-hi or
 /// terrain-deep target's run resumes from its blocks' log when its Mac runs it again,
-/// crate::resume_log, not offered back.) (A terrain z3 tile's raw tiles, the buildings scan's parts
+/// jobrt::resume_log, not offered back.) (A terrain z3 tile's raw tiles, the buildings scan's parts
 /// and a rail-feeds run's zips are planned: their jobs are a shared step's, offered by target, and
 /// start their targets afresh.)
 pub const RESUMABLE: [&str; 1] = ["osm-pass"];

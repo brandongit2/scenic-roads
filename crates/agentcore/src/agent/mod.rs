@@ -134,7 +134,7 @@ pub struct Options {
 
 // How long a job asked to stop at its next safe point is given before it's frozen: control's, beside
 // the bound on a step's gap between safe points (a third of it; task #916 step 3).
-use crate::control::DRAIN_GRACE;
+use jobrt::control::DRAIN_GRACE;
 /// Why an agent is out of the pool (`Status::out_of_pool`): the NAS not answering as it started.
 const NAS_AWAY: &str = "the NAS didn't answer as this agent started";
 /// Or this Mac's member's lock held by another process past `join_wait`.
@@ -158,7 +158,7 @@ fn join_try() -> Duration {
     }
 }
 
-/// How often a member reads its hold on the NAS (crate::control::hold_path), set there by another
+/// How often a member reads its hold on the NAS (jobrt::control::hold_path), set there by another
 /// Mac's `scenic pause <member>`.
 const HOLD_READ_EVERY: Duration = Duration::from_secs(30);
 
@@ -436,7 +436,7 @@ struct Slot {
     guard_stopped: bool,
     /// Its own job's timings, taken as it ended, for the lead when this Mac no longer leads (the
     /// job's hand-off carries them: `end_lease`).
-    timings_out: Option<crate::timings::RunRec>,
+    timings_out: Option<jobrt::timings::RunRec>,
     /// Its job started beside one that waited on a worker (`waiting_on`), that job's id: while that
     /// job runs (`yielding`), it's the one that yields
     /// to the memory guard when the two then hold too much together (memguard::decide).
@@ -454,9 +454,9 @@ struct Slot {
     /// The disk its lead measured the job given it to take (MB: crate::coord::Grant::disk_mb),
     /// reserved while it holds the lease (`Agent::reservation`).
     reserve_mb: Option<u64>,
-    /// The owner's cancel of its job (crate::control::Cancel), asked here or told by the lead:
+    /// The owner's cancel of its job (jobrt::control::Cancel), asked here or told by the lead:
     /// stopped and given back at the loop's next turn (`Agent::cancel_slot`).
-    cancel: Option<crate::control::Cancel>,
+    cancel: Option<jobrt::control::Cancel>,
     /// What was last saved of it with its job's record (`Agent::save_hands`), not saved again
     /// while it's the same.
     hand_saved: Option<(Hand, Option<String>)>,
@@ -617,7 +617,7 @@ fn helper_steps(the_plan: &dyn seam::Plan, free: u64, cheap: u64, floor: u64) ->
 /// Whether `p` is an archive copy a terrain job's target (`id`: "terrain-hi 6/x/y", a z6 tile;
 /// "terrain-deep 10/x/y", a z10 tile's band past z12; "terrain-lo 3/x/y", an assembly; an older
 /// app's "terrain …" as terrain-hi's) reads at once: a z6 tile its z6 tile's (`6-x-y.…`), a deep
-/// target its z6 tile's, an assembly its z3 tile's (crate::rawpack's shards).
+/// target its z6 tile's, an assembly its z3 tile's (buildstore::rawpack's shards).
 /// How often a member asks the lead for its tiles to come (`Agent::ask_upcoming`): the lead makes
 /// a forecast each `forecast::EVERY`, and the order of a Mac's next jobs moves little in minutes;
 /// an answer is every Mac's (29 Oct's forecast: 5,397 jobs, ~0.5 MB).
@@ -670,8 +670,8 @@ pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
     let (s, Some(t)) = (crate::pool::records::current(j.step), j.rest) else { return BTreeSet::new() };
     let Some((z, x, y)) = tile_of(t) else { return BTreeSet::new() };
     match (s, z) {
-        ("terrain-deep", z) if z == crate::dem::zoom::PACK_Z as u32 => {
-            let k = crate::dem::zoom::PACK_Z as u32 - 6;
+        ("terrain-deep", z) if z == ::inputs::dem::zoom::PACK_Z as u32 => {
+            let k = ::inputs::dem::zoom::PACK_Z as u32 - 6;
             BTreeSet::from([(6, x >> k, y >> k)])
         }
         ("terrain-hi", 6) => BTreeSet::from([(6, x, y)]),
@@ -680,7 +680,7 @@ pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
     }
 }
 
-/// Whether `spec`'s job is paced (crate::inputs::pace: its grant read every second, `Agent::tend_grant`): an input check (the
+/// Whether `spec`'s job is paced (inputs::inputs::pace: its grant read every second, `Agent::tend_grant`): an input check (the
 /// `inputs` step's), or tree cover (`trees`, task #606: its blocks take the cores the Mac has idle).
 fn is_paced(spec: &JobSpec) -> bool {
     matches!(step_of(&spec.id).as_deref(), Some("inputs" | "trees"))
@@ -744,7 +744,7 @@ pub struct WorkerView {
 const TIMINGS_FILE: &str = "timings.json";
 
 /// The timings' record a helper's job left in its folder `dir`, for its hand-off.
-fn read_timings(dir: &Path) -> Option<crate::timings::RunRec> {
+fn read_timings(dir: &Path) -> Option<jobrt::timings::RunRec> {
     std::fs::read(dir.join(TIMINGS_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
@@ -870,12 +870,12 @@ pub struct Status {
     /// the build's timings by the lead's coordinator (crate::coord::Coordinator::phase_shares): by
     /// step. Empty on a member, and until the lead has read them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub phase_shares: BTreeMap<String, crate::timings::PhaseShares>,
+    pub phase_shares: BTreeMap<String, jobrt::timings::PhaseShares>,
     /// Each step's time by phase over the build page's chart ranges, summed from the build's
     /// timings by the lead's coordinator (crate::coord::Coordinator::phase_times): the page's step
     /// rows' time breakdown. None on a member, and until the lead has read them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase_times: Option<crate::timings::PhaseTimes>,
+    pub phase_times: Option<jobrt::timings::PhaseTimes>,
     /// The NAS as the lead sees it: its probes, limits, disk load and the pool's traffic
     /// (crate::coord::Coordinator::nas_view).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -889,16 +889,16 @@ pub struct Status {
     /// Mac's page reads them here, docs/coordination.md step 3, until step 4 serves the view).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub beats: Vec<pool::Heartbeat>,
-    /// The build's pause (crate::control), while it's paused, as this agent knows it.
+    /// The build's pause (jobrt::control), while it's paused, as this agent knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pause: Option<crate::control::Pause>,
-    /// This Mac paused alone (crate::control::Hold, task #224), while it is.
+    pub pause: Option<jobrt::control::Pause>,
+    /// This Mac paused alone (jobrt::control::Hold, task #224), while it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub held: Option<crate::control::Hold>,
-    /// This Mac's own pause's stage (crate::control::HoldView, task #846): asked, pausing (its jobs
+    pub held: Option<jobrt::control::Hold>,
+    /// This Mac's own pause's stage (jobrt::control::HoldView, task #846): asked, pausing (its jobs
     /// finishing), paused, resuming. Set by `Status::say`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hold: Option<crate::control::HoldView>,
+    pub hold: Option<jobrt::control::HoldView>,
     /// This Mac's state in a word and a line (`Status::say`, task #846): what the menu bar and the
     /// build page show for it, out of touch aside (theirs to tell, by `out_of_touch_s`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -927,9 +927,9 @@ pub struct Status {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publishing: Option<publish::PublishLine>,
     /// The timetables' to-do list's counts and the routes matching nothing on the map
-    /// (crate::timetables, docs/inputs.md §6.7.3): the lead's.
+    /// (roads::timetables, docs/inputs.md §6.7.3): the lead's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timetables: Option<crate::inputs::gtfs::View>,
+    pub timetables: Option<::inputs::inputs::gtfs::View>,
     /// The last catalogue the plan read: its number and when it went out (seconds since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "catalog")] // wire key: old spelling
     pub catalogue: Option<CatalogueSeen>,
@@ -952,14 +952,14 @@ pub struct Status {
     /// since when its stretch has been clean.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ramp: Option<RampView>,
-    /// The budgets, while they're on (crate::budget, docs/pool.md §7.7): the proxy's address, what
+    /// The budgets, while they're on (jobrt::budget, docs/pool.md §7.7): the proxy's address, what
     /// it has opened, holds told, the NAS out of reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budgets: Option<crate::budget::View>,
+    pub budgets: Option<jobrt::budget::View>,
     /// The gate (docs/inputs.md §4.7): an entry per gate unit, its version, whether it's checking
     /// or held, and what holds it (the lead's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub inputs: Vec<crate::inputs::view::InputView>,
+    pub inputs: Vec<::inputs::inputs::view::InputView>,
     /// What needs a look (flags::of, task #953: a Mac idle while work it could take waits, a job
     /// stuck or slow, a catalogue stale): the lead's, worked out at each round.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1126,21 +1126,21 @@ impl Status {
     /// its jobs, pause, waits and last jobs: what every surface prints (task #846).
     pub fn say(
         &mut self,
-        asked: Option<&crate::control::HoldRequest>,
-        state: &crate::control::HoldState,
+        asked: Option<&jobrt::control::HoldRequest>,
+        state: &jobrt::control::HoldState,
         resuming: bool,
     ) {
         let jobs = self.jobs();
         let finishing: Vec<String> = jobs.iter().filter(|j| j.paused.is_none()).map(|j| j.id.clone()).collect();
         self.held = state.held.clone();
-        self.hold = crate::control::hold_view(asked, state, resuming, &finishing);
+        self.hold = jobrt::control::hold_view(asked, state, resuming, &finishing);
         self.out_of_touch_s = crate::pool::beat::OUT_OF_TOUCH_S;
         self.verdict = Some(self.verdict_of());
     }
 
     /// Its state in a word and a line (`Verdict`).
     fn verdict_of(&self) -> Verdict {
-        use crate::control::HoldStage;
+        use jobrt::control::HoldStage;
         let v = |state: &str, said: String| Verdict { state: state.into(), said };
         let jobs = self.jobs();
         let n = |k: usize| format!("{k} job{}", if k == 1 { "" } else { "s" });
@@ -1303,7 +1303,7 @@ pub struct Done {
     pub secs: u64,
     /// The log's last lines when it failed.
     pub note: String,
-    /// Cancelled by the owner (crate::control::Cancel): not done, not failed.
+    /// Cancelled by the owner (jobrt::control::Cancel): not done, not failed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cancelled: bool,
 }
@@ -1361,11 +1361,11 @@ fn job_run(c: &crate::coord::Coordinator, step: &str, outcome: Outcome, done: &[
 }
 
 /// What this Mac's cache folder `cache` holds of each shared cache (crate::needs::CACHES; task
-/// #392), read off the disk: the whole local copies (crate::localread::held). Read as it asks, so
+/// #392), read off the disk: the whole local copies (buildstore::localread::held). Read as it asks, so
 /// whatever emptied them (room-making, the OSM pass's clear, a hand) counts.
 fn caches_here(cache: &Path) -> BTreeMap<String, crate::coord::CacheHere> {
-    let have_mb = crate::localread::held(cache) >> 20;
-    BTreeMap::from([(crate::localread::CACHE.to_string(), crate::coord::CacheHere { have_mb })])
+    let have_mb = buildstore::localread::held(cache) >> 20;
+    BTreeMap::from([(buildstore::localread::CACHE.to_string(), crate::coord::CacheHere { have_mb })])
 }
 
 extern "C" fn on_signal(_: i32) {
@@ -1431,13 +1431,13 @@ fn answers_soon(probe: fn(&NasRoot) -> bool, root: &NasRoot) -> bool {
 
 /// The agent's lock (one agent per Mac): an exclusive flock on a local file, held while it runs,
 /// the file naming its holder (takeover::note_holder).
-pub struct AgentLock(#[allow(dead_code)] crate::sys::PathLock);
+pub struct AgentLock(#[allow(dead_code)] jobrt::sys::PathLock);
 
 impl AgentLock {
     /// None when another agent holds it.
     pub fn try_take(home: &Path) -> Result<Option<AgentLock>> {
         std::fs::create_dir_all(home)?;
-        let Some(l) = crate::sys::PathLock::take(&home.join("agent.lock"), false)? else { return Ok(None) };
+        let Some(l) = jobrt::sys::PathLock::take(&home.join("agent.lock"), false)? else { return Ok(None) };
         takeover::note_holder(&l).context("write the agent's lock's holder")?;
         Ok(Some(AgentLock(l)))
     }
@@ -1445,8 +1445,8 @@ impl AgentLock {
 
 /// The coverage of the regions, and each region's own.
 pub struct Coverages {
-    pub all: crate::coverage::Coverage,
-    pub each: Vec<(String, crate::coverage::Coverage)>,
+    pub all: buildstore::coverage::Coverage,
+    pub each: Vec<(String, buildstore::coverage::Coverage)>,
 }
 
 /// How long the regions' work waits after the owner changes a recipe or an outline file, for more
@@ -1528,7 +1528,7 @@ pub struct Agent {
     /// another only if both jobs' measured memory and disk fit what the Mac has left, a cold start
     /// alone; the disk guard on.) (Declared before `_lock`, so dropped first: the proxy's port is
     /// free before the next agent can take the lock and bind it.)
-    proxy: Option<crate::budget::Proxy>,
+    proxy: Option<jobrt::budget::Proxy>,
     /// Where its proxy's budget is taken from, as last said (`budget_lead`).
     budget_from: Option<String>,
     /// Held unless another agent runs (then this one only plans and reports: a dry run).
@@ -1585,7 +1585,7 @@ pub struct Agent {
     /// The NAS's project folder as the loop last found it (a job ending between loops tells the
     /// lead through a client made from it).
     last_root: Option<NasRoot>,
-    /// Quitting as the app asked (crate::control::Quit): whether the loop ended for it (the process
+    /// Quitting as the app asked (jobrt::control::Quit): whether the loop ended for it (the process
     /// then exits with `QUIT_EXIT`).
     quit_done: bool,
     /// The Mac it reads its conditions and resources from (a test's fixed one: cond::Mac::TEST).
@@ -1621,16 +1621,16 @@ pub struct Agent {
     unjournaled: BTreeMap<u64, PathBuf>,
     /// What room-making can free here for a job (`freeable`) and when it was counted.
     cheap: Option<(Instant, u64)>,
-    /// The build's pause as this agent knows it (crate::control): its coordinator's on the
+    /// The build's pause as this agent knows it (jobrt::control): its coordinator's on the
     /// lead; a member's as heard in its asks and beats, or as asked for here and not yet passed on
     /// (`pause_local`). Kept in `pause.json`.
-    pause: Option<crate::control::Pause>,
+    pause: Option<jobrt::control::Pause>,
     pause_local: bool,
     /// The lead's pause as last mirrored to the NAS, and whether this agent's own (kept from
     /// before its coordinator was up) has been given to the coordinator.
-    mirrored: Option<Option<crate::control::Pause>>,
+    mirrored: Option<Option<jobrt::control::Pause>>,
     pause_pushed: bool,
-    /// This Mac paused alone (crate::control::Hold, task #224) is control's (`control.hold`,
+    /// This Mac paused alone (jobrt::control::Hold, task #224) is control's (`control.hold`,
     /// `Agent::hold`); the generation of it last written to the NAS (or read there); when the
     /// NAS's was last read; this member's id as last seen.
     hold_mirrored: Option<u64>,
@@ -1638,7 +1638,7 @@ pub struct Agent {
     hold_me: Option<String>,
     /// The generation of this Mac's hold last told the lead, and the lead's hold of it then
     /// (`tend_hold`: told again when the lead's word changes, as after a lead move or a lost store).
-    hold_told: Option<(u64, Option<crate::control::HoldState>)>,
+    hold_told: Option<(u64, Option<jobrt::control::HoldState>)>,
     /// **control** (crate::agent::asks, docs/agent-parts.md §4.1): the owner's asks of this Mac
     /// (its hold, the quit, the settings) taken up at once, on its thread once the agent runs.
     control: asks::Handle,
@@ -1743,14 +1743,14 @@ pub struct Agent {
 struct Gate {
     /// The inputs folders listed off the loop (the lead's), with the root it
     /// lists.
-    watch: Option<(NasRoot, crate::inputs::watch::Watch)>,
-    view: std::cell::RefCell<Vec<crate::inputs::view::InputView>>,
-    cache: std::cell::RefCell<crate::inputs::view::Cache>,
+    watch: Option<(NasRoot, ::inputs::inputs::watch::Watch)>,
+    view: std::cell::RefCell<Vec<::inputs::inputs::view::InputView>>,
+    cache: std::cell::RefCell<::inputs::inputs::view::Cache>,
     full: std::cell::RefCell<BTreeSet<String>>,
     /// The descriptions' credits' digest as last read (None inside: there are none), for the
     /// catalogue's key while they can't be read.
     credits: std::cell::RefCell<Option<Option<String>>>,
-    /// Each unit's last full check's time, by its check's state's content name (crate::inputs::
+    /// Each unit's last full check's time, by its check's state's content name (inputs::inputs::
     /// Listed: content-named, so read once).
     full_at: std::cell::RefCell<std::collections::HashMap<String, Option<u64>>>,
     /// Units off the gate whose records were asked to be forgotten.
@@ -1824,9 +1824,9 @@ impl Agent {
         // refused for moments at most, within their retries. (That port not to be had: tried
         // again by `tend_proxy`.)
         let early_proxy = match (&lock, told_proxy_port(&o.home), o.root.clone().or_else(|| find_root(false))) {
-            (Some(_), Some(port), Some(root)) if !o.dry_run => crate::budget::listen(port)
+            (Some(_), Some(port), Some(root)) if !o.dry_run => jobrt::budget::listen(port)
                 .ok()
-                .and_then(|l| crate::budget::start_proxy(&root, &me, l).ok())
+                .and_then(|l| jobrt::budget::start_proxy(&root, &me, l).ok())
                 .inspect(|p| eprintln!("agent: the budgets' proxy listens on {} (its jobs left running)", p.url())),
             _ => None,
         };
@@ -1931,7 +1931,7 @@ impl Agent {
         }
         // The build's pause as this agent last knew it (a member that can't reach the lead stays
         // as it was).
-        let hold = crate::control::read_hold(&o.home);
+        let hold = jobrt::control::read_hold(&o.home);
         let hold_snap = bus::Snap::new(hold.clone());
         let mut beat = beat::Handle::new(o.home.clone(), hold_snap.clone());
         let control = asks::Handle::new(o.home.clone(), hold_snap, beat.sender());
@@ -1942,7 +1942,7 @@ impl Agent {
         };
         let nas = nas::Handle::new(finder, o.root.is_none() && !buildstore::out::testing(), probe);
         let jobs_part = slots::Handle::new(o.home.clone(), control.jobs.clone());
-        let pause: Option<crate::control::Pause> =
+        let pause: Option<jobrt::control::Pause> =
             std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A record that doesn't read: none.)
         let catalogues = read_published(&o.home);
@@ -2547,7 +2547,7 @@ impl Agent {
                     "/usr/bin/env".to_string(),
                     format!("SCENIC_HANDOFF={}", dir.display()),
                     format!("SCENIC_COSTS={}", dir.join("costs.jsonl").display()),
-                    format!("{}={}", crate::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display()),
+                    format!("{}={}", jobrt::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display()),
                 ];
                 if resumed {
                     // (Its target the pass's date, its key the planet's path in the NAS's folder.)
@@ -2595,7 +2595,7 @@ impl Agent {
             crate::coord::Grant { lease, work: crate::coord::Granted::Task { task, task_kind, .. }, .. } => {
                 // A task (a z6 tile's tail, or a 3D buildings' z8 tile, for the lead's job), run here
                 // by `scenic run-task` over its files fetched from the coordinator, reading the NAS's
-                // data where it lies (only reading it: crate::unit::Tools::stores_read_only).
+                // data where it lies (only reading it: roads::unit::Tools::stores_read_only).
                 let dir = self.outbox().join(lease.to_string());
                 let spec = dir.join("spec.json");
                 if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&spec, task.to_string())) {
@@ -2610,7 +2610,7 @@ impl Agent {
                     format!("SCENIC_COORD_URLS={}", contact.0),
                     format!("SCENIC_COORD_TOKEN={}", contact.1),
                     format!("SCENIC_WORKER={}", self.host),
-                    format!("{}={}", crate::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display()),
+                    format!("{}={}", jobrt::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display()),
                     s(&self.o.bin.join("scenic")),
                     "run-task".into(),
                     "--spec".into(),
@@ -3303,7 +3303,7 @@ impl Agent {
     }
 
     /// Where slot `k`'s job leaves its timings' record (`SCENIC_TIMINGS`).
-    /// Slot `k`'s running job's own time, from the timings it leaves as it ends (crate::timings:
+    /// Slot `k`'s running job's own time, from the timings it leaves as it ends (jobrt::timings:
     /// its id's), when it has left them.
     fn run_time(&self, k: usize) -> Option<f64> {
         let id = &self.slots[k].running.as_ref()?.spec.id;
@@ -3311,7 +3311,7 @@ impl Agent {
             Some(Held::Leased { dir, .. } | Held::Pooled { dir, own: false, .. }) => dir.join(TIMINGS_FILE),
             _ => self.timings_path(k),
         };
-        let rec: crate::timings::RunRec = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
+        let rec: jobrt::timings::RunRec = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
         (rec.id == *id || rec.id.is_empty()).then_some(rec.wall_s)
     }
 
@@ -3319,7 +3319,7 @@ impl Agent {
         self.o.home.join(format!("timings-run{}.json", slot_suffix(k)))
     }
 
-    /// Slot `k`'s ended job's timings (crate::timings): kept in this Mac's log (`timings.jsonl`),
+    /// Slot `k`'s ended job's timings (jobrt::timings): kept in this Mac's log (`timings.jsonl`),
     /// and in the build's, its coordinator's (`coord/timings.jsonl`), here; a helper's go with its
     /// hand-off (`send_outbox`, `end_lease`), from its folder.
     fn take_timings(&mut self, k: usize) {
@@ -3335,11 +3335,11 @@ impl Agent {
                 .as_deref()
                 .and_then(|p| p.parent())
                 .and_then(read_timings)
-                .map(|r| crate::timings::RunRec { host: self.worker_of(k), ..r }),
-            None => crate::timings::take_record(&self.timings_path(k), &self.worker_of(k)),
+                .map(|r| jobrt::timings::RunRec { host: self.worker_of(k), ..r }),
+            None => jobrt::timings::take_record(&self.timings_path(k), &self.worker_of(k)),
         };
         let Some(rec) = rec else { return };
-        if let Err(e) = crate::timings::append(&self.o.home.join("timings.jsonl"), &rec) {
+        if let Err(e) = jobrt::timings::append(&self.o.home.join("timings.jsonl"), &rec) {
             eprintln!("agent: keeping a job's timings: {e}");
         }
         // (With a coordinator here, its lease ends here, `end_lease`: its timings kept here too; this
@@ -3381,7 +3381,7 @@ impl Agent {
         let r = self.slots[k].running.as_ref()?;
         let n = ::offload::WaitNote::read(&self.waiting_path(k))?;
         let pid = i32::try_from(n.pid).ok()?;
-        (pid == r.pgid || crate::sys::group_members(r.pgid).contains(&pid)).then_some(n)
+        (pid == r.pgid || jobrt::sys::group_members(r.pgid).contains(&pid)).then_some(n)
     }
 
     /// What slot `k`'s job waits on, in words, while it waits on a worker (`waiting_on`).
@@ -3668,7 +3668,7 @@ impl Agent {
     /// Runs until stopped (SIGTERM, SIGINT), or for one loop with `once`.
     pub fn run(&mut self) -> Result<()> {
         // (The handler only stores to an atomic.)
-        crate::sys::on_terminate(on_signal);
+        jobrt::sys::on_terminate(on_signal);
         // The build memory setting a release before task #932 left: replaced by the memory floor,
         // said (memfloor::migrate).
         if let Some(said) = memfloor::migrate(&self.o.home, self.mac_total_mb()) {
@@ -3721,10 +3721,10 @@ impl Agent {
             if self.o.once || stopping() {
                 break;
             }
-            // The app quits (crate::control::Quit): "now", its jobs stopped and given back at once;
+            // The app quits (jobrt::control::Quit): "now", its jobs stopped and given back at once;
             // the loop ends once none runs and the lead is handed away (`quit_due`).
             if let Some(q) = self.quit_ask() {
-                if q.mode == crate::control::QuitMode::Now {
+                if q.mode == jobrt::control::QuitMode::Now {
                     self.stop_jobs(&format!("stopped: Scenic quit ({})", q.by));
                 }
                 if self.quit_due() {
@@ -3811,12 +3811,12 @@ impl Agent {
         }
         // (Quit as the app asked: the ask done, so the next start, the app opened again, builds.)
         if self.quit_done {
-            crate::control::clear_quit(&self.o.home);
+            jobrt::control::clear_quit(&self.o.home);
         }
         Ok(())
     }
 
-    /// Whether the loop ended because the app quit (crate::control::Quit): the process exits with
+    /// Whether the loop ended because the app quit (jobrt::control::Quit): the process exits with
     /// `QUIT_EXIT`, which its launcher takes as the end.
     pub fn quit_done(&self) -> bool {
         self.quit_done
@@ -3945,8 +3945,8 @@ impl Agent {
             // (Its channel "run" unless this Mac's build is paused, the pool's or this Mac's alone:
             // then "drain", so it passes no safe point before `tend` asks it again.)
             let paused = self.own_pause().is_some();
-            let say = if paused { crate::control::Say::Drain } else { crate::control::Say::Run };
-            if let Err(e) = crate::control::tell(&self.control_path(k), say) {
+            let say = if paused { jobrt::control::Say::Drain } else { jobrt::control::Say::Run };
+            if let Err(e) = jobrt::control::tell(&self.control_path(k), say) {
                 eprintln!("agent: telling {id}: {e:#}");
             }
             if let Some(p) = hand.proxy_port {
@@ -4027,7 +4027,7 @@ impl Agent {
     }
 
     /// The app's ask to quit, if one waits (only the agent holding the lock acts on it).
-    fn quit_ask(&self) -> Option<crate::control::Quit> {
+    fn quit_ask(&self) -> Option<jobrt::control::Quit> {
         self._lock.as_ref()?;
         self.control.quit.get().as_ref().clone()
     }
@@ -4036,8 +4036,8 @@ impl Agent {
     fn quit_why(&self) -> Option<String> {
         let q = self.quit_ask()?;
         Some(match q.mode {
-            crate::control::QuitMode::Finish => format!("Scenic quits once the job under way ends ({})", q.by),
-            crate::control::QuitMode::Now => format!("Scenic quits ({})", q.by),
+            jobrt::control::QuitMode::Finish => format!("Scenic quits once the job under way ends ({})", q.by),
+            jobrt::control::QuitMode::Now => format!("Scenic quits ({})", q.by),
         })
     }
 
@@ -4047,9 +4047,9 @@ impl Agent {
         !self.slots.iter().any(|s| s.running.is_some())
     }
 
-    /// This Mac's own jobs' pause: the build's, else this Mac's alone (crate::control::Hold: at
+    /// This Mac's own jobs' pause: the build's, else this Mac's alone (jobrt::control::Hold: at
     /// their next safe point).
-    fn own_pause(&self) -> Option<crate::control::Pause> {
+    fn own_pause(&self) -> Option<jobrt::control::Pause> {
         self.pause.clone().or_else(|| self.hold().held.as_ref().map(|h| h.as_pause()))
     }
 
@@ -4093,13 +4093,13 @@ impl Agent {
     }
 
     /// This Mac's hold as control has it now.
-    fn hold(&self) -> std::sync::Arc<crate::control::HoldState> {
+    fn hold(&self) -> std::sync::Arc<jobrt::control::HoldState> {
         self.control.hold.get()
     }
 
     /// This Mac's hold set (`held`, as of `at`), by control, unless a later one is; whether it was.
-    fn set_hold(&mut self, held: Option<crate::control::Hold>, at: u64) -> bool {
-        self.control.set_hold(crate::control::HoldState { held, at })
+    fn set_hold(&mut self, held: Option<jobrt::control::Hold>, at: u64) -> bool {
+        self.control.set_hold(jobrt::control::HoldState { held, at })
     }
 
     /// What **jobs**' thread needs for other members' hold asks (crate::agent::slots::Members).
@@ -4128,8 +4128,8 @@ impl Agent {
     /// meanwhile its file on the NAS read every `HOLD_READ_EVERY` and its own written there once it
     /// changed, as an older app sets and reads it.
     fn tend_hold(&mut self, root: Option<&store::nasfs::NasRoot>) {
-        use crate::control::HoldState;
         use crate::coord::asks::{Ask, HoldAsk};
+        use jobrt::control::HoldState;
         if self._lock.is_none() || self.o.dry_run {
             return;
         }
@@ -4184,7 +4184,7 @@ impl Agent {
             return;
         }
         let Some(r) = root else { return };
-        let path = r.join(crate::control::hold_path(&me));
+        let path = r.join(jobrt::control::hold_path(&me));
         if self.hold_read.is_none_or(|t| t.elapsed() >= HOLD_READ_EVERY) {
             self.hold_read = Some(Instant::now());
             if let Ok(h) = nasread::read_switch(&path).map(|t| serde_json::from_str::<HoldState>(&t)) {
@@ -4238,7 +4238,7 @@ impl Agent {
         }
         let Some(b) = self.beats.clone() else { return };
         let on_nas = b.asks_on_nas();
-        for a in crate::control::take_setting_asks(&self.o.home) {
+        for a in jobrt::control::take_setting_asks(&self.o.home) {
             if on_nas {
                 match root.map(|r| write_setting(r, &a)) {
                     Some(Ok(())) => {}
@@ -4277,7 +4277,7 @@ impl Agent {
         if let Some(s) = self.pool_settings().filter(|s| self.settings_written != Some(s.gen)) {
             let w = serde_json::to_vec_pretty(&s)
                 .map_err(anyhow::Error::from)
-                .and_then(|j| write_replace(&self.o.home.join(crate::control::POOL_SETTINGS), &j));
+                .and_then(|j| write_replace(&self.o.home.join(jobrt::control::POOL_SETTINGS), &j));
             match w {
                 Ok(()) => self.settings_written = Some(s.gen),
                 Err(e) => eprintln!("agent: the pool's settings for the CLI: {e:#}"),
@@ -4706,7 +4706,7 @@ impl Agent {
         nasread::phase("the status");
         status.set_jobs(views, all_new);
         let hold = self.hold();
-        status.say(crate::control::peek_hold_request(&self.o.home).as_ref(), &hold, false);
+        status.say(jobrt::control::peek_hold_request(&self.o.home).as_ref(), &hold, false);
         // (The build in a line, for the members' menu bars: in the lead's beat answers; and what
         // needs a look, flags::of, the same in both.)
         if let Some(c) = &self.coord {
@@ -4849,11 +4849,11 @@ impl Agent {
         if self.o.dry_run {
             return;
         }
-        let asks = crate::inputs::take_asks(&self.o.home);
+        let asks = ::inputs::inputs::take_asks(&self.o.home);
         if asks.is_empty() {
             return;
         }
-        let member = crate::inputs::member_of(&self.o.home);
+        let member = ::inputs::inputs::member_of(&self.o.home);
         let mut tell: Vec<serde_json::Value> = Vec::new();
         for a in asks {
             if a.forget {
@@ -4932,10 +4932,10 @@ impl Agent {
                 run_time.filter(|w| *w <= r.elapsed().as_secs_f64() + 1.0).unwrap_or_else(|| r.elapsed().as_secs_f64());
             let secs = wall.round() as u64;
             let ok = st.success();
-            // Stopped at a safe point, the build pausing (crate::control): not a failure. (Only
+            // Stopped at a safe point, the build pausing (jobrt::control): not a failure. (Only
             // when it was asked to: a job's own exit 75 for anything else is a failure.)
             // (An adopted job may have been asked by the agent before this one.)
-            let paused = st.code() == Some(crate::control::PAUSED_EXIT) && (draining || r.adopted);
+            let paused = st.code() == Some(jobrt::control::PAUSED_EXIT) && (draining || r.adopted);
             // (An adopted job killed while no agent tended it: interrupted, not failed.)
             let vanished = r.vanished;
             let of = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
@@ -4947,7 +4947,7 @@ impl Agent {
                 .as_ref()
                 .is_some_and(|w| w.targets.iter().any(|(t, key)| self.o.the_plan.is_none_key(&w.step, t, key)));
             // The targets it finished: every one when it succeeded, else those it noted done as
-            // each was saved (crate::control::done), whatever stopped it, so they aren't built
+            // each was saved (jobrt::control::done), whatever stopped it, so they aren't built
             // again: handed off with the job's lease (the journal has their saves).
             let done = self.finished_targets(k, ok);
             let r = self.slots[k].running.as_mut().unwrap();
@@ -5126,7 +5126,7 @@ impl Agent {
         // back for it long, which it alone keeps out: never urgent, docs/pool.md §7.7, task #451.)
         let nas_yield = self.slots[k].running.as_ref().and_then(|r| {
             let step = step_of(&r.spec.id)?;
-            if !crate::budget::nas::QUIET_STEPS.contains(&step.as_str()) {
+            if !jobrt::budget::nas::QUIET_STEPS.contains(&step.as_str()) {
                 return None;
             }
             let ts: Vec<String> = own_targets(&r.spec).into_iter().map(|t| t.0).collect();
@@ -5144,24 +5144,24 @@ impl Agent {
         if let Some(why) = &slot.mem_drain {
             if slot.drain_since.is_none() {
                 eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
-                if let Err(e) = crate::control::tell(&control, crate::control::Say::Drain) {
+                if let Err(e) = jobrt::control::tell(&control, jobrt::control::Say::Drain) {
                     eprintln!("agent: asking {} to stop: {e:#}", r.spec.id);
                 }
                 slot.drain_since = Some(Instant::now());
             }
         }
         match stop_for(&r.spec.needs, c, pause.as_ref())
-            .or_else(|| slot.mem_drain.clone().map(|why| (crate::control::Mode::Drain, why)))
-            .or_else(|| update.clone().map(|why| (crate::control::Mode::Drain, why)))
-            .or_else(|| nas_yield.map(|why| (crate::control::Mode::Drain, why)))
+            .or_else(|| slot.mem_drain.clone().map(|why| (jobrt::control::Mode::Drain, why)))
+            .or_else(|| update.clone().map(|why| (jobrt::control::Mode::Drain, why)))
+            .or_else(|| nas_yield.map(|why| (jobrt::control::Mode::Drain, why)))
         {
-            Some((crate::control::Mode::Freeze, why)) => {
+            Some((jobrt::control::Mode::Freeze, why)) => {
                 if r.paused.is_none() {
                     eprintln!("agent: pausing {}: {why}", r.spec.id);
                 }
                 r.pause(&why);
             }
-            Some((crate::control::Mode::Drain, why)) => {
+            Some((jobrt::control::Mode::Drain, why)) => {
                 // (The update's drain timed from itself: one begun for another reason, a pause
                 // lifted, say, starts its grace again.)
                 let for_update = update.as_deref() == Some(why.as_str());
@@ -5180,7 +5180,7 @@ impl Agent {
                 }
                 let since = *slot.drain_since.get_or_insert_with(|| {
                     eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
-                    if let Err(e) = crate::control::tell(&control, crate::control::Say::Drain) {
+                    if let Err(e) = jobrt::control::tell(&control, jobrt::control::Say::Drain) {
                         eprintln!("agent: asking {} to stop: {e:#}", r.spec.id);
                     }
                     Instant::now()
@@ -5206,9 +5206,9 @@ impl Agent {
             None => {
                 slot.update_wait = None;
                 // (Or told "drain" by control and resumed before this loop timed it.)
-                let told = crate::control::said(&control) == Some(crate::control::Say::Drain);
+                let told = jobrt::control::said(&control) == Some(jobrt::control::Say::Drain);
                 if slot.mem_drain.is_none() && (slot.drain_since.take().is_some() || told) {
-                    if let Err(e) = crate::control::tell(&control, crate::control::Say::Run) {
+                    if let Err(e) = jobrt::control::tell(&control, jobrt::control::Say::Run) {
                         eprintln!("agent: telling {} to go on: {e:#}", r.spec.id);
                     }
                 }
@@ -5767,7 +5767,7 @@ impl Agent {
     fn mac_total_mb(&self) -> u64 {
         match self.mac {
             // (`SCENIC_TEST_MEM_MB`: the two-Mac test's Mac of that memory, its limit squeezed.)
-            cond::Mac::Real => cond::test_mem_mb().unwrap_or_else(|| crate::sys::memsize().map_or(0, |b| b >> 20)),
+            cond::Mac::Real => cond::test_mem_mb().unwrap_or_else(|| jobrt::sys::memsize().map_or(0, |b| b >> 20)),
             _ => (self.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64,
         }
     }
@@ -6226,7 +6226,7 @@ impl Agent {
     }
 
     /// What room-making can free on a member's disk for a job (bytes): its cheap caches
-    /// (room::helper_cheap_bytes) but the whole copies its jobs read (crate::localread::is_shared:
+    /// (room::helper_cheap_bytes) but the whole copies its jobs read (buildstore::localread::is_shared:
     /// counted held by their own rule, a Mac holding one granted no fill for it, so not free twice)
     /// and the files a job holds now (store::cachefile::in_use: room-making leaves them). Counted at
     /// most every ten minutes (a walk of thousands of files), and again after a job, room-making or
@@ -6237,7 +6237,7 @@ impl Agent {
             _ => {
                 let cache = self.o.home.join("cache");
                 let n = room::helper_cheap_bytes(&cache, &|p| {
-                    crate::localread::is_shared(&cache, p) || store::cachefile::in_use(p)
+                    buildstore::localread::is_shared(&cache, p) || store::cachefile::in_use(p)
                 });
                 self.cheap = Some((Instant::now(), n));
                 n
@@ -6253,7 +6253,7 @@ impl Agent {
         let now = self.sampler.disk_now(k).unwrap_or(0);
         let (step, left): (String, Vec<String>) = match r.spec.record.as_ref() {
             Some(w) if !w.targets.is_empty() => {
-                let done = crate::control::read_done(&self.done_path(k), &w.step);
+                let done = jobrt::control::read_done(&self.done_path(k), &w.step);
                 (w.step.clone(), w.targets.iter().map(|t| t.0.clone()).filter(|t| !done.contains(t)).collect())
             }
             _ => {
@@ -6393,7 +6393,7 @@ impl Agent {
             progress,
             parts: r.parts.as_ref().map(|p| p.1.clone()).unwrap_or_default(),
             part: r.parts.as_ref().map(|p| p.0),
-            mem_mb: crate::sys::footprint_of_group(r.pgid).map(|b| b >> 20),
+            mem_mb: jobrt::sys::footprint_of_group(r.pgid).map(|b| b >> 20),
             threads: Some(r.threads),
             waiting,
             slot: Some(k),
@@ -6401,7 +6401,7 @@ impl Agent {
         })
     }
 
-    /// The proxy's tag for slot `k`'s job (crate::budget::net: its internet bytes).
+    /// The proxy's tag for slot `k`'s job (jobrt::budget::net: its internet bytes).
     fn net_tag(k: usize) -> String {
         format!("slot{k}")
     }
@@ -6938,8 +6938,8 @@ impl Agent {
             env.push((jobrt::jobs::AHEAD_ENV.into(), "1".into()));
         }
         // This Mac's cache, where a job keeps what it reads again and again (the coverage:
-        // pipeline::coverage::Coverage::load).
-        env.push((crate::coverage::CACHE_ENV.into(), self.o.home.join("cache").to_string_lossy().into_owned()));
+        // buildstore::coverage::Coverage::load).
+        env.push((buildstore::coverage::CACHE_ENV.into(), self.o.home.join("cache").to_string_lossy().into_owned()));
         // Resuming on (crate::agent::resume): a pass complete by the records; a resumable job given
         // this member's hand-offs of its step its lead hasn't merged (laid over the snapshot as it
         // opens: buildstore::out::Out), and its progress noted as this Mac's.
@@ -6956,20 +6956,20 @@ impl Agent {
             }
         }
         // Its channel, to stop at a safe point when the build pauses, and where it notes each target
-        // done (crate::control), afresh.
+        // done (jobrt::control), afresh.
         let control = self.control_path(k);
-        crate::control::tell(&control, crate::control::Say::Run)?;
+        jobrt::control::tell(&control, jobrt::control::Say::Run)?;
         let done = self.done_path(k);
         std::fs::remove_file(&done).ok();
         self.slots[k].drain_since = None;
-        env.push((crate::control::CONTROL_ENV.into(), control.to_string_lossy().into_owned()));
-        env.push((crate::control::DONE_ENV.into(), done.to_string_lossy().into_owned()));
-        // Where it leaves its timings' record (crate::timings; a helper's leased job: its outbox
+        env.push((jobrt::control::CONTROL_ENV.into(), control.to_string_lossy().into_owned()));
+        env.push((jobrt::control::DONE_ENV.into(), done.to_string_lossy().into_owned()));
+        // Where it leaves its timings' record (jobrt::timings; a helper's leased job: its outbox
         // folder, in its command), taken in as it ends (`take_timings`).
         let timings = self.timings_path(k);
         std::fs::remove_file(&timings).ok();
-        env.push((crate::timings::TIMINGS_ENV.into(), timings.to_string_lossy().into_owned()));
-        env.push((crate::timings::JOB_ID_ENV.into(), spec.id.clone()));
+        env.push((jobrt::timings::TIMINGS_ENV.into(), timings.to_string_lossy().into_owned()));
+        env.push((jobrt::timings::JOB_ID_ENV.into(), spec.id.clone()));
         // Where its accessors count the bytes they add to the caches, afresh (docs/pool.md §7.7).
         let written = self.written_path(k);
         std::fs::remove_file(&written).ok();
@@ -6982,11 +6982,11 @@ impl Agent {
         // The owner's room target it keeps free past what it writes (the OSM pass, pass-sets).
         env.push(self.target_env(&spec));
         // Its grant now, rewritten as its lead re-decides it (`tend_grant`, docs/pool.md §7.1, Threads
-        // re-granted): taken as each target begins (crate::control::on_grant), a paced job's
-        // (crate::inputs::pace) within the second.
+        // re-granted): taken as each target begins (jobrt::control::on_grant), a paced job's
+        // (inputs::inputs::pace) within the second.
         let f = self.threads_path(k);
-        crate::control::grant(&f, threads)?;
-        env.push((crate::control::THREADS_ENV.into(), f.to_string_lossy().into_owned()));
+        jobrt::control::grant(&f, threads)?;
+        env.push((jobrt::control::THREADS_ENV.into(), f.to_string_lossy().into_owned()));
         // Where it says it waits on a worker holding its z6 tile's tail, while it does (`waiting_on`),
         // afresh.
         let waiting = self.waiting_path(k);
@@ -6999,7 +6999,7 @@ impl Agent {
         let sandbox = match &self.proxy {
             Some(p) => {
                 env.extend(p.env_for(&Self::net_tag(k)));
-                Some(crate::budget::SANDBOX)
+                Some(jobrt::budget::SANDBOX)
             }
             None => None,
         };
@@ -7020,7 +7020,7 @@ impl Agent {
         // control's to drain or seen here, so the job is told "drain" before its first safe point.)
         self.publish_jobs();
         if self.hold().held.is_some() {
-            if let Err(e) = crate::control::tell(&control, crate::control::Say::Drain) {
+            if let Err(e) = jobrt::control::tell(&control, jobrt::control::Say::Drain) {
                 eprintln!("agent: asking {} to stop: {e:#}", control.display());
             }
         }
@@ -7160,7 +7160,7 @@ impl Agent {
         let step = r.spec.id.split(' ').next().unwrap_or("").to_string();
         let (targets, alone_s) = match r.spec.record.as_ref() {
             Some(w) => {
-                let done = crate::control::read_done(&self.done_path(k), &w.step);
+                let done = jobrt::control::read_done(&self.done_path(k), &w.step);
                 (w.targets.iter().map(|(t, _)| (t.clone(), done.contains(t))).collect(), None)
             }
             None => (Vec::new(), Some(self.step_secs_here(&step).unwrap_or_else(|| first_secs(&step)))),
@@ -7176,7 +7176,7 @@ impl Agent {
     }
 
     /// The build's pause as this agent knows it, brought up to date: this Mac's ask (its menu,
-    /// `scenic pause`, the map: crate::control::Request) passed on, to this Mac's coordinator, or
+    /// `scenic pause`, the map: jobrt::control::Request) passed on, to this Mac's coordinator, or
     /// from a member to the lead's (and this Mac paused or going on meanwhile, while that can't
     /// be reached); on the lead, then, its coordinator's, mirrored to the NAS
     /// (`state/build/pause.json`, for whoever reads the build's state there). A helper hears the
@@ -7194,11 +7194,11 @@ impl Agent {
             }
             self.pause_pushed = true;
         }
-        match crate::control::take_request(&self.o.home) {
+        match jobrt::control::take_request(&self.o.home) {
             Some(req) => {
                 let answer = |refused| {
                     let what = match &req.pause {
-                        Some(p) if p.mode == crate::control::Mode::Freeze => format!("freeze the build (by {})", p.by),
+                        Some(p) if p.mode == jobrt::control::Mode::Freeze => format!("freeze the build (by {})", p.by),
                         Some(p) => format!("pause the build (by {})", p.by),
                         None => "let the build go on".to_string(),
                     };
@@ -7206,7 +7206,7 @@ impl Agent {
                 };
                 if let Some(c) = &self.coord {
                     c.set_pause(req.pause.clone(), req.at);
-                    crate::control::clear_request(&self.o.home, &req);
+                    jobrt::control::clear_request(&self.o.home, &req);
                     answered::note(&self.o.home, answer(None));
                 } else if self.is_member() {
                     let sent = match root {
@@ -7220,7 +7220,7 @@ impl Agent {
                         .map(str::to_string);
                     match sent {
                         Some(Ok(())) => {
-                            crate::control::clear_request(&self.o.home, &req);
+                            jobrt::control::clear_request(&self.o.home, &req);
                             self.pause_local = false;
                             answered::note(&self.o.home, answer(None));
                         }
@@ -7228,7 +7228,7 @@ impl Agent {
                         // again it gets the same, so it goes, said for the owner; this Mac neither
                         // holds for it nor takes it as the build's.)
                         Some(Err(_)) if refused.is_some() => {
-                            crate::control::clear_request(&self.o.home, &req);
+                            jobrt::control::clear_request(&self.o.home, &req);
                             self.pause_local = false;
                             answered::note(&self.o.home, answer(refused));
                             return;
@@ -7247,7 +7247,7 @@ impl Agent {
                 } else {
                     // (No coordinator here: one that couldn't start. This Mac's own, given to its
                     // coordinator once one's up.)
-                    crate::control::clear_request(&self.o.home, &req);
+                    jobrt::control::clear_request(&self.o.home, &req);
                     self.pause_pushed = false;
                     self.know_pause(req.pause);
                 }
@@ -7284,7 +7284,7 @@ impl Agent {
 
     /// The build's pause as heard, or asked for here (`None`: going on), kept in the agent's folder
     /// (`pause.json`) so a restart keeps it.
-    fn know_pause(&mut self, p: Option<crate::control::Pause>) {
+    fn know_pause(&mut self, p: Option<jobrt::control::Pause>) {
         if p == self.pause {
             return;
         }
@@ -7302,7 +7302,7 @@ impl Agent {
         self.pause = p;
     }
 
-    /// Where slot `k`'s job is told its grant now (crate::control::THREADS_ENV, `tend_grant`).
+    /// Where slot `k`'s job is told its grant now (jobrt::control::THREADS_ENV, `tend_grant`).
     fn threads_path(&self, k: usize) -> PathBuf {
         self.o.home.join(format!("threads{}", slot_suffix(k)))
     }
@@ -7316,11 +7316,11 @@ impl Agent {
     }
 
     /// The most threads `spec`'s job may be re-granted now: `threads_room`, a paced job's
-    /// (crate::inputs::pace) `MOST` at most (it never runs more at once).
+    /// (inputs::inputs::pace) `MOST` at most (it never runs more at once).
     fn grant_most(&self, spec: &JobSpec, c: &Conditions) -> usize {
         let room = self.threads_room(c);
         if is_paced(spec) {
-            room.min(crate::inputs::pace::MOST)
+            room.min(::inputs::inputs::pace::MOST)
         } else {
             room
         }
@@ -7343,8 +7343,8 @@ impl Agent {
 
     /// Slot `k`'s job's grant tended (docs/pool.md §7.1, Threads re-granted): what it uses on the
     /// threads its target under way runs on measured from when it began on them (`Running::on_threads`:
-    /// a job taking its grant as each target begins says them in its costs file, crate::control::
-    /// on_grant; a paced one, crate::inputs::pace, runs on its file's within the second); a stopped
+    /// a job taking its grant as each target begins says them in its costs file, jobrt::control::
+    /// on_grant; a paced one, inputs::inputs::pace, runs on its file's within the second); a stopped
     /// or stopping job measures nothing. Its lead's re-grant (`regrants`), within `grant_most`,
     /// written to its threads file (`Running::threads` says what it holds): it takes it as its next
     /// target begins.
@@ -7366,8 +7366,8 @@ impl Agent {
             r.threads = n;
         }
         let on = if is_paced(&r.spec) {
-            // (As many tasks at once as its file says, `MOST` at most: crate::inputs::pace.)
-            file.map(|n| n.clamp(1, crate::inputs::pace::MOST) as u32)
+            // (As many tasks at once as its file says, `MOST` at most: inputs::inputs::pace.)
+            file.map(|n| n.clamp(1, ::inputs::inputs::pace::MOST) as u32)
         } else {
             memguard::targets(&costs).threads
         };
@@ -7379,7 +7379,7 @@ impl Agent {
             _ => None,
         };
         let Some(t) = told.map(|t| t.min(most).max(1)).filter(|&t| t != r.threads) else { return };
-        match crate::control::grant(&f, t) {
+        match jobrt::control::grant(&f, t) {
             Ok(()) => {
                 eprintln!(
                     "agent: {} re-granted {t} threads (was {}): taken as its next target begins",
@@ -7391,7 +7391,7 @@ impl Agent {
         }
     }
 
-    /// Slot `k`'s job's channel (crate::control: "run" or "drain").
+    /// Slot `k`'s job's channel (jobrt::control: "run" or "drain").
     fn control_path(&self, k: usize) -> PathBuf {
         self.o.home.join(format!("control{}", slot_suffix(k)))
     }
@@ -7399,7 +7399,7 @@ impl Agent {
     /// Whether slot `k`'s job's channel says "drain" (told by control, crate::agent::asks, maybe before this
     /// loop timed it).
     fn told_drain(&self, k: usize) -> bool {
-        crate::control::said(&self.control_path(k)) == Some(crate::control::Say::Drain)
+        jobrt::control::said(&self.control_path(k)) == Some(jobrt::control::Say::Drain)
     }
 
     /// Where slot `k`'s job notes the targets it finishes: a helper's leased job's in its lease's
@@ -7412,13 +7412,13 @@ impl Agent {
     }
 
     /// What slot `k`'s job finished: every target (`all`: it succeeded), else those it noted done
-    /// as each was saved (crate::control::done), whatever stopped it.
+    /// as each was saved (jobrt::control::done), whatever stopped it.
     fn finished_targets(&self, k: usize, all: bool) -> Vec<(String, String)> {
         let Some(w) = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref()) else { return Vec::new() };
         if all {
             return w.targets.clone();
         }
-        let names = crate::control::read_done(&self.done_path(k), &w.step);
+        let names = jobrt::control::read_done(&self.done_path(k), &w.step);
         w.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect()
     }
 
@@ -7441,7 +7441,7 @@ impl Agent {
         self.end_lease(k, Outcome::Interrupted, &done, why);
     }
 
-    /// The owner's cancels (crate::control::Cancel), each loop: the asks in this agent's folder taken
+    /// The owner's cancels (jobrt::control::Cancel), each loop: the asks in this agent's folder taken
     /// up (`take_cancel`), the lead's word for this Mac's own leases (its coordinator's here, a
     /// member's in its beat's answer, `beat`), and each slot so told stopped (`cancel_slot`); the
     /// targets held for a newer app said in `waiting`. True when a job ended.
@@ -7521,7 +7521,7 @@ impl Agent {
     /// An owner's cancel taken up: the slots running its target marked (stopped by `tend_cancels`),
     /// the lead told (this Mac's coordinator, or the lead's by HTTP: its leases elsewhere told, the
     /// target held for a newer app when asked), and the answer written for `scenic job cancel`.
-    fn take_cancel(&mut self, ask: crate::control::Cancel, root: Option<&store::nasfs::NasRoot>) {
+    fn take_cancel(&mut self, ask: jobrt::control::Cancel, root: Option<&store::nasfs::NasRoot>) {
         // (A grant from a plan no newer than this is dropped: `cancelled_since`.)
         let n = self.plan_n.max(self.plan.newest_n());
         self.cancels_at.insert(ask.target.clone(), n);
@@ -7577,13 +7577,13 @@ impl Agent {
             format!("nothing builds {} now ({})", ask.target, said.join("; "))
         };
         eprintln!("agent: {said}");
-        crate::control::answer_cancel(&self.o.home, &crate::control::CancelAnswer { ask, said, hit });
+        jobrt::control::answer_cancel(&self.o.home, &jobrt::control::CancelAnswer { ask, said, hit });
     }
 
     /// Slot `k`'s job cancelled by the owner (`c`): stopped now and given back, not failed (no retry
     /// delay, nothing kept from this Mac), what it finished handed off, and its work under way
     /// dropped (its scratch for the target cleared); noted in the history and the status.
-    fn cancel_slot(&mut self, k: usize, c: &crate::control::Cancel) {
+    fn cancel_slot(&mut self, k: usize, c: &jobrt::control::Cancel) {
         let Some(r) = self.slots[k].running.as_mut() else { return };
         eprintln!("agent: cancelling {} ({})", r.spec.id, c.said());
         self.outlived.extend(r.stop(Duration::from_secs(30)));
@@ -7660,9 +7660,9 @@ impl Agent {
         if self.proxy.is_none() {
             let me = self.member_id.clone().unwrap_or_else(|| self.me.clone());
             // (On the port the jobs taken over were told, while it can be bound: `proxy_port`.)
-            use crate::budget::listen;
+            use jobrt::budget::listen;
             let listener = self.proxy_port.and_then(|p| listen(p).ok()).map_or_else(|| listen(0), Ok);
-            match listener.map_err(anyhow::Error::from).and_then(|l| crate::budget::start_proxy(root, &me, l)) {
+            match listener.map_err(anyhow::Error::from).and_then(|l| jobrt::budget::start_proxy(root, &me, l)) {
                 Ok(p) => {
                     eprintln!("agent: the budgets' proxy listens on {}", p.url());
                     self.proxy = Some(p);
@@ -7692,7 +7692,7 @@ impl Agent {
     fn budget_lead(&mut self) {
         use crate::coord::budgets::{InProcess, OverHttp};
         let Some(p) = &self.proxy else { return };
-        let (lead, said): (Option<std::sync::Arc<dyn crate::budget::Lead>>, String) =
+        let (lead, said): (Option<std::sync::Arc<dyn jobrt::budget::Lead>>, String) =
             match (&self.coord, &self.beats, &self.client) {
                 _ if self.pool.is_none() => (None, "the NAS (out of the pool)".into()),
                 (Some(c), _, _) if !c.budgets_on_nas() => {
@@ -7824,7 +7824,7 @@ impl Agent {
             }
         }
         if brokers::stale(self.broker_https.as_ref().map(|h| h.0), now, brokers::HTTPS_EVERY) {
-            self.broker_https = Some((now, served_https(port), crate::net::lan_urls(port)));
+            self.broker_https = Some((now, served_https(port), coordwire::net::lan_urls(port)));
         }
     }
 
@@ -8020,7 +8020,7 @@ impl Agent {
     }
 
     /// The build pages' asks the lead acts on (crate::pool::driver::Act): a cancel, as the owner's
-    /// `scenic job cancel` (a file in its folder: crate::control::request_cancel, taken up as its
+    /// `scenic job cancel` (a file in its folder: jobrt::control::request_cancel, taken up as its
     /// own); a retry, its target's failures forgotten (the coordinator's, and this agent's own
     /// back-off), so it's offered and run again now.
     fn act_on(&mut self, acts: &[crate::pool::driver::Act]) {
@@ -8028,7 +8028,7 @@ impl Agent {
             match a {
                 crate::pool::driver::Act::Cancel(c) => {
                     eprintln!("agent: {} asks to cancel {}", c.by, c.target);
-                    if let Err(e) = crate::control::request_cancel(&self.o.home, c) {
+                    if let Err(e) = jobrt::control::request_cancel(&self.o.home, c) {
                         eprintln!("agent: the page's cancel of {}: {e:#}", c.target);
                     }
                 }
@@ -8068,7 +8068,7 @@ impl Agent {
     /// The newest complete pass: by the merged records with resuming on (docs/pool.md §7.4), else
     /// by the NAS's `pass.*.json` files, as before.
     fn latest_pass(&self, root: &store::nasfs::NasRoot) -> Option<String> {
-        crate::osmpass::latest_pass_by(root, self.resume_on())
+        ::inputs::osmpass::latest_pass_by(root, self.resume_on())
     }
 
     /// This member's clock, as its pool's steps read it (unix seconds).
@@ -8256,7 +8256,7 @@ impl Agent {
     }
 
     /// The OSM pass's command for the planet `planet` of `date`, in this Mac's scratch folder of it
-    /// (where its stages' markers are: crate::osmpass), the lead's own and a member's resumed alike.
+    /// (where its stages' markers are: inputs::osmpass), the lead's own and a member's resumed alike.
     fn osm_pass_cmd(&self, root: &store::nasfs::NasRoot, planet: &NasPath, date: &str) -> Vec<String> {
         osm_pass_cmd(&self.o, root, planet, date)
     }
@@ -8265,7 +8265,7 @@ impl Agent {
     /// (crate::agent::resume::unmerged): unwritten, handed from a job and not yet stepped, or
     /// written and not acknowledged by the current term's lead (read from the journal; one that
     /// can't be read now left out).
-    fn unmerged_for(&self, step: &str) -> Result<crate::handoff::Handoff> {
+    fn unmerged_for(&self, step: &str) -> Result<buildstore::handoff::Handoff> {
         let Some(shared) = &self.pool else { return Ok(Default::default()) };
         // (A tick holding the run, on a slow share: waited for a while, never for good.)
         let since = Instant::now();
@@ -8725,11 +8725,11 @@ impl Agent {
             if let Some(h) = here.as_ref().filter(|_| saved) {
                 gcqueue::records(&h.gc, rec, crate::coord::wall_now());
             }
-            let new: Vec<(String, crate::rawpack::Pack)> =
+            let new: Vec<(String, buildstore::rawpack::Pack)> =
                 rec.raw.iter().filter(|(_, p)| !run.named_raw.contains(&p.name)).cloned().collect();
             if !new.is_empty() {
                 if let Ok(Some(lock)) = buildstore::out::BuildLock::try_take(root) {
-                    let (settled, n) = crate::rawpack::name_handed_places(root, &new, &lock);
+                    let (settled, n) = buildstore::rawpack::name_handed_places(root, &new, &lock);
                     run.named_raw.extend(settled);
                     if n > 0 {
                         eprintln!(
@@ -8902,7 +8902,7 @@ impl Agent {
             };
             let expected = match r.spec.record.as_ref() {
                 Some(w) => {
-                    let done = crate::control::read_done(&self.done_path(k), &w.step);
+                    let done = jobrt::control::read_done(&self.done_path(k), &w.step);
                     // (The target under way timed from when the job last noted one done, its
                     // done file's change, else its start.)
                     let noted = std::fs::metadata(self.done_path(k))
@@ -8984,7 +8984,7 @@ fn step_args(o: &Options, step: &str, date: &str) -> Vec<String> {
 }
 
 /// The OSM pass's command for the planet `planet` of `date`, in this Mac's scratch folder of it
-/// (where its stages' markers are: crate::osmpass), the lead's own and a member's resumed alike.
+/// (where its stages' markers are: inputs::osmpass), the lead's own and a member's resumed alike.
 fn osm_pass_cmd(o: &Options, root: &store::nasfs::NasRoot, planet: &NasPath, date: &str) -> Vec<String> {
     // (The planet and planetiler as the pass's arguments: tests/nas_access.rs.)
     let (planet, jar) = (planet.unchecked_path(), root.join("sources/basemap/planetiler.jar").unchecked_path());
@@ -9065,14 +9065,14 @@ fn planning_keys(root: &NasRoot, bases: Vec<PathBuf>) -> Result<crate::pool::rec
     keys.context("the build's keys")
 }
 
-/// A gate ask's acceptances applied (crate::inputs::apply_ask) against the unit's held report:
+/// A gate ask's acceptances applied (inputs::inputs::apply_ask) against the unit's held report:
 /// `shown` as the last plan read it, else as the records name it now; what it did logged.
-fn apply_gate_ask(root: &NasRoot, a: &crate::inputs::Ask, shown: Option<crate::inputs::Report>, member: &str) {
+fn apply_gate_ask(root: &NasRoot, a: &::inputs::inputs::Ask, shown: Option<::inputs::inputs::Report>, member: &str) {
     let held = shown.or_else(|| {
         let m = buildstore::records::read_manifest(root).ok()?;
-        crate::inputs::read_report(root, m.get(&crate::inputs::held_logical(&a.unit))?).ok()
+        ::inputs::inputs::read_report(root, m.get(&::inputs::inputs::held_logical(&a.unit))?).ok()
     });
-    match crate::inputs::apply_ask(root, a, held.as_ref(), member) {
+    match ::inputs::inputs::apply_ask(root, a, held.as_ref(), member) {
         Ok(said) => {
             for s in said {
                 eprintln!("agent: {} ({}): {s}", a.unit, a.by);
@@ -9082,7 +9082,7 @@ fn apply_gate_ask(root: &NasRoot, a: &crate::inputs::Ask, shown: Option<crate::i
     }
 }
 
-/// A cancelled job's work under way on `target` dropped (crate::control::Cancel): the entries at
+/// A cancelled job's work under way on `target` dropped (jobrt::control::Cancel): the entries at
 /// the top of its scratch folder `dir` named for the target, as a job names them: `6/55/25` as
 /// `6_55_25` or `6-55-25` (a target of no slash as itself), exactly or with an extension
 /// (`6_55_25.tif`); the paths removed.
@@ -9133,12 +9133,12 @@ fn missing_feed_keys(inputs: &BTreeMap<String, String>) -> Option<String> {
 /// How often an idle agent plans again while the budgets' proxy won't start.
 const PROXY_REPLAN: Duration = Duration::from_secs(60);
 
-/// The regions as the readers read them now (the accepted version: crate::inputs::regions::read),
+/// The regions as the readers read them now (the accepted version: inputs::inputs::regions::read),
 /// sorted by id, and why none can be read when it can't (one line).
 
 fn load_regions(root: &store::nasfs::NasRoot) -> (Vec<recipes::Recipe>, Vec<(String, String)>) {
-    match crate::inputs::regions::read::source_now(root) {
-        Ok(a) => match crate::inputs::regions::read::recipes(&a) {
+    match ::inputs::inputs::regions::read::source_now(root) {
+        Ok(a) => match ::inputs::inputs::regions::read::recipes(&a) {
             Ok(r) => (r, Vec::new()),
             Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
         },
@@ -9194,7 +9194,7 @@ struct Holds {
     sources: bool,
 }
 
-/// The jobs that read the declared sources (crate::inputs::sources, build::reads_sources) taken
+/// The jobs that read the declared sources (inputs::inputs::sources, build::reads_sources) taken
 /// out of `jobs` while no version of them is accepted (`held`), each said in `waiting`: they wait
 /// for the input check to take the declarations in, rather than fail.
 fn hold_for_sources(
@@ -9218,7 +9218,7 @@ fn hold_for_sources(
     kept
 }
 
-/// The jobs that read the pass's lake fill (crate::lakefill: the water, which draws it; the terrain's
+/// The jobs that read the pass's lake fill (inputs::lakefill: the water, which draws it; the terrain's
 /// water digests, whose pin names it; the catalogues, which name it to the server), taken out of
 /// `jobs` while it `held`s them (the lakefill job has work and hasn't failed
 /// build::LAKEFILL_HOLDS times in a row, or its source can't be read), each said in `waiting`.
@@ -9325,18 +9325,18 @@ fn update_why(app: &str) -> String {
 fn stop_for(
     n: &Needs,
     c: &Conditions,
-    pause: Option<&crate::control::Pause>,
-) -> Option<(crate::control::Mode, String)> {
-    use crate::control::Mode;
+    pause: Option<&jobrt::control::Pause>,
+) -> Option<(jobrt::control::Mode, String)> {
+    use jobrt::control::Mode;
     match lapsed(n, c) {
         Some(why) => Some((Mode::Freeze, why)),
         None => pause.map(|p| (p.mode, p.why())),
     }
 }
 
-/// A member's hold (crate::control::HoldState) written whole to `p` on the NAS, on the writers
+/// A member's hold (jobrt::control::HoldState) written whole to `p` on the NAS, on the writers
 /// under a deadline (`nasread::write`).
-fn write_hold(p: &NasPath, st: &crate::control::HoldState) -> Result<()> {
+fn write_hold(p: &NasPath, st: &jobrt::control::HoldState) -> Result<()> {
     let b = serde_json::to_vec(st)?;
     let owned = p.clone();
     nasread::write(p, move || {
@@ -9355,9 +9355,9 @@ fn setting_of(name: &str, text: Option<&str>) -> serde_json::Value {
     match (name, text) {
         (PLACEMENT, t) => t.is_some_and(|t| t.trim() != "off").into(),
         (NAS_BUDGET, Some(t)) => t.into(),
-        (NAS_TARGET, Some(t)) => serde_json::from_str::<crate::budget::nas::Target>(t)
+        (NAS_TARGET, Some(t)) => serde_json::from_str::<jobrt::budget::nas::Target>(t)
             .ok()
-            .filter(|t| crate::budget::nas::TARGET_RANGE.contains(&t.pct))
+            .filter(|t| jobrt::budget::nas::TARGET_RANGE.contains(&t.pct))
             .map_or(serde_json::Value::Null, |t| t.pct.into()),
         _ => serde_json::Value::Null,
     }
@@ -9372,7 +9372,7 @@ fn write_setting(root: &NasRoot, a: &crate::coord::asks::SettingAsk) -> Result<(
     let text = match (a.name.as_str(), &a.value) {
         (_, serde_json::Value::Null) => None,
         (PLACEMENT, v) => Some(if v.as_bool() == Some(true) { "on\n".to_string() } else { "off\n".to_string() }),
-        (NAS_TARGET, v) => Some(serde_json::to_string(&crate::budget::nas::Target {
+        (NAS_TARGET, v) => Some(serde_json::to_string(&jobrt::budget::nas::Target {
             pct: v.as_u64().unwrap_or_default() as u32,
             by: a.by.clone(),
             at: a.at,
@@ -9469,19 +9469,19 @@ fn make_viewer(
     }
 }
 
-/// A port's address over HTTPS, when `tailscale serve` proxies it (crate::net::served_https); none
+/// A port's address over HTTPS, when `tailscale serve` proxies it (coordwire::net::served_https); none
 /// in a unit test (`buildstore::out::testing`: no Mac's own Tailscale decides it).
 fn served_https(port: u16) -> Option<String> {
     if buildstore::out::testing() {
         return None;
     }
-    crate::net::served_https(port)
+    coordwire::net::served_https(port)
 }
 
-/// The origins a proxy on this Mac serves its pages under (crate::net::names, "https://<name>"):
+/// The origins a proxy on this Mac serves its pages under (coordwire::net::names, "https://<name>"):
 /// its broker's `pages`.
 fn proxy_pages() -> Vec<String> {
-    crate::net::names().iter().map(|n| format!("https://{n}")).collect()
+    coordwire::net::names().iter().map(|n| format!("https://{n}")).collect()
 }
 
 /// The app versions the programs `cmds` start are in (`<apps>/<version>/<program>`), the apps'
@@ -9761,8 +9761,8 @@ mod tests {
     #[test]
     fn terrain_peak_counts_the_uploads_beside() {
         let (levels, mids, upload) = (
-            crate::terrain_pack::piece_peak_mb(),
-            crate::terrain_pack::DEEP_MIDS_MB,
+            terrain::terrain_pack::piece_peak_mb(),
+            terrain::terrain_pack::DEEP_MIDS_MB,
             buildstore::out::UPLOAD_HELD >> 20,
         );
         assert_eq!(upload, 8, "an upload's 8 MB hash read");
@@ -9821,16 +9821,16 @@ mod tests {
         std::fs::write(d.path().join("dem-cache.elev.f32"), vec![0u8; 2 << 20]).unwrap();
         std::fs::write(d.path().join("other"), vec![0u8; 5 << 20]).unwrap();
         assert_eq!(caches_here(d.path()).len(), 1, "the depth's copies alone");
-        assert_eq!(have(crate::localread::CACHE), 0);
+        assert_eq!(have(buildstore::localread::CACHE), 0);
         std::fs::create_dir_all(d.path().join("blobs/layers/basemap")).unwrap();
         std::fs::write(d.path().join("blobs/layers/basemap/world-d.0123456789abcdef.pmtiles"), vec![0u8; 3 << 20])
             .unwrap();
         // (A unit's staging copy isn't of it.)
         std::fs::create_dir_all(d.path().join("blobs/layers/lo")).unwrap();
         std::fs::write(d.path().join("blobs/layers/lo/6-1-2.0123456789abcdef.pack"), vec![0u8; 1 << 20]).unwrap();
-        assert_eq!(have(crate::localread::CACHE), 3);
+        assert_eq!(have(buildstore::localread::CACHE), 3);
         std::fs::remove_file(d.path().join("blobs/layers/basemap/world-d.0123456789abcdef.pmtiles")).unwrap();
-        assert_eq!(have(crate::localread::CACHE), 0, "cleared: missing again");
+        assert_eq!(have(buildstore::localread::CACHE), 0, "cleared: missing again");
     }
 
     /// A costs file's done lines read with their inputs' measures (task #235); a line before them
@@ -9965,11 +9965,11 @@ mod tests {
         last = now;
         // The test unit put on the gate, then taken off (its flag), with no plan between.
         std::fs::create_dir_all(root.join("state/inputs")).unwrap();
-        std::fs::write(root.join(crate::inputs::TEST_FLAG), b"").unwrap();
+        std::fs::write(root.join(::inputs::inputs::TEST_FLAG), b"").unwrap();
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last, "on the gate");
         last = now;
-        std::fs::remove_file(root.join(crate::inputs::TEST_FLAG)).unwrap();
+        std::fs::remove_file(root.join(::inputs::inputs::TEST_FLAG)).unwrap();
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last, "off the gate");
         last = now;
@@ -10035,9 +10035,9 @@ mod tests {
         // one's listing as last made, so one finishing after the digest is taken changes it.)
         let w = &p.inputs.watch.as_ref().unwrap().1;
         store::testkit::eventually("the gate's first listing", || {
-            crate::inputs::units(&store::nasfs::NasRoot::local_for_test(&root))
+            ::inputs::inputs::units(&store::nasfs::NasRoot::local_for_test(&root))
                 .into_iter()
-                .all(|u| crate::inputs::checks(u).is_none() || w.get(u).is_some() || w.failed(u).is_some())
+                .all(|u| ::inputs::inputs::checks(u).is_none() || w.get(u).is_some() || w.failed(u).is_some())
         });
         // (A plan made: its result kept, its digest and the leases as it read them.)
         p.n = 5;
@@ -10122,26 +10122,26 @@ mod tests {
         assert_eq!(crate::cli::check_command(&pass), Some(Ok(())));
     }
 
-    /// A z6 tile's tail as it runs its programs (scenic-metrics and the rest: crate::unit::tail),
+    /// A z6 tile's tail as it runs its programs (scenic-metrics and the rest: roads::unit::tail),
     /// and the tasks' programs as their specs run them (trees, bldtile, terrainsub), pass their
     /// command lines (crate::cli): every one of them a program of this crate's.
     #[test]
     fn the_tasks_programs_pass_their_command_lines() {
-        let u = crate::legacy::TileId::parse("6/1/1").unwrap();
+        let u = codecs::legacy::TileId::parse("6/1/1").unwrap();
         let mut runs: Vec<serde_json::Value> =
-            crate::unit::tail(u, true, true).iter().map(|r| serde_json::to_value(r).unwrap()).collect();
+            roads::unit::tail(u, true, true).iter().map(|r| serde_json::to_value(r).unwrap()).collect();
         let none = BTreeMap::new();
         for spec in [
             // (A square south of the equator first: its negative top a value, not a flag.)
-            crate::trees::task::spec(&[(1, 1), (2, 1)], &[(-10, -80), (40, 10)], "v", &none),
-            crate::bld::task::spec(crate::legacy::TileId::parse("8/1/1").unwrap(), "v", &none),
-            crate::terrain_task::spec(&[(1, 1), (1, 2)], "v", 1),
+            ::trees::trees::task::spec(&[(1, 1), (2, 1)], &[(-10, -80), (40, 10)], "v", &none),
+            ::bld::bld::task::spec(codecs::legacy::TileId::parse("8/1/1").unwrap(), "v", &none),
+            terrain::terrain_task::spec(&[(1, 1), (1, 2)], "v", 1),
         ] {
             runs.extend(spec["runs"].as_array().unwrap().iter().cloned());
         }
         for r in &runs {
-            // (As a worker runs it: crate::unit::run_tail.)
-            let c = crate::cli::program(Path::new("/app"), r["prog"].as_str().unwrap());
+            // (As a worker runs it: roads::unit::run_tail.)
+            let c = jobrt::sys::program(Path::new("/app"), r["prog"].as_str().unwrap());
             let cmd: Vec<String> = std::iter::once(c.get_program())
                 .chain(c.get_args())
                 .map(|a| a.to_string_lossy().into_owned())
@@ -10212,29 +10212,30 @@ mod tests {
         keys.record("unit", &[("6/1/1".to_string(), "k1".to_string())]);
         keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         // Hand-offs the coordinator journaled here: they count as built until drained.
-        let done = |u: &str, k: &str| crate::handoff::Handoff {
+        let done = |u: &str, k: &str| buildstore::handoff::Handoff {
             done: Some(("unit".into(), vec![(u.into(), k.into())])),
             ..Default::default()
         };
-        crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/2", "k2")).unwrap();
-        crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/3", "k3")).unwrap();
+        buildstore::handoff::write(&home.join("coord/journal/m1"), &done("6/1/2", "k2")).unwrap();
+        buildstore::handoff::write(&home.join("coord/journal/m1"), &done("6/1/3", "k3")).unwrap();
         // The files they save count too (a tree cover z6 tile's mid: build::tree_work), but one a
         // later hand-off removes.
-        let save = |l: &str, c: Option<&str>| crate::handoff::Handoff {
+        let save = |l: &str, c: Option<&str>| buildstore::handoff::Handoff {
             changes: [(l.to_string(), c.map(str::to_string))].into(),
             ..Default::default()
         };
-        crate::handoff::write(
+        buildstore::handoff::write(
             &home.join("coord/journal/m1"),
             &save("work/trees-mid/6-28-16", Some("work/trees-mid/6-28-16.1111111111111111.sect")),
         )
         .unwrap();
-        crate::handoff::write(
+        buildstore::handoff::write(
             &home.join("coord/journal/m1"),
             &save("layers/trees-cover/hi/6-28-17", Some("layers/trees-cover/hi/6-28-17.2222222222222222.pack")),
         )
         .unwrap();
-        crate::handoff::write(&home.join("coord/journal/m1"), &save("layers/trees-cover/hi/6-28-17", None)).unwrap();
+        buildstore::handoff::write(&home.join("coord/journal/m1"), &save("layers/trees-cover/hi/6-28-17", None))
+            .unwrap();
         let k = a.planning_keys_here(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         assert_eq!(
             (k.recorded("unit", "6/1/1"), k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")),
@@ -10356,15 +10357,16 @@ mod tests {
         let root = d.path();
         let recipes = vec![recipes::Recipe { id: "a".into(), name: "Alpha".into(), outline: vec!["osm:5".into()] }];
         let mut m = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(
+        ::inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(root),
             root.into(),
             &recipes,
             &mut m,
         );
-        let a = crate::inputs::open(&store::nasfs::NasRoot::local_for_test(root), &m, crate::inputs::regions::UNIT)
-            .unwrap()
-            .unwrap();
+        let a =
+            ::inputs::inputs::open(&store::nasfs::NasRoot::local_for_test(root), &m, ::inputs::inputs::regions::UNIT)
+                .unwrap()
+                .unwrap();
         let mut ag = agent(&store::nasfs::NasRoot::local_for_test(root), &home.path().join("home"));
         // No catalogue yet: its name and crumbs, no size.
         ag.planner().regions_view(&store::nasfs::NasRoot::local_for_test(root), &a, &recipes);
@@ -10456,7 +10458,7 @@ mod tests {
             restart_after_sleep: false,
             record: None,
         };
-        let want = [crate::terrain_task::KIND, crate::trees::task::KIND, crate::bld::task::KIND, "tail"];
+        let want = [terrain::terrain_task::KIND, ::trees::trees::task::KIND, ::bld::bld::task::KIND, "tail"];
         let kinds: Vec<_> = want
             .iter()
             .map(|k| {
@@ -10602,25 +10604,25 @@ mod tests {
     fn pause_while(a: &mut Agent, after: Duration, ran: Duration, mut busy: impl FnMut(&mut Agent)) -> Duration {
         let home = a.o.home.clone();
         let chan = home.join("job-control");
-        crate::control::tell(&chan, crate::control::Say::Run).unwrap();
+        jobrt::control::tell(&chan, jobrt::control::Say::Run).unwrap();
         a.control.jobs.set(vec![slots::JobRef::on_chan(chan.clone())]);
         let asker = std::thread::spawn(move || {
             // (sleep ok: the ask comes once the loop is deep in its plan or its hung calls)
             std::thread::sleep(after);
             let t = Instant::now();
-            let ask = crate::control::request_hold(&home, None, Some(crate::control::Hold::new("the menu bar on m1")))
+            let ask = jobrt::control::request_hold(&home, None, Some(jobrt::control::Hold::new("the menu bar on m1")))
                 .unwrap();
             let said = || {
                 std::fs::read(home.join("status.json"))
                     .ok()
                     .and_then(|b| serde_json::from_slice::<Status>(&b).ok())
                     .and_then(|s| s.hold)
-                    .is_some_and(|h| h.stage == crate::control::HoldStage::Pausing && h.finishing == ["unit 6/1/2"])
+                    .is_some_and(|h| h.stage == jobrt::control::HoldStage::Pausing && h.finishing == ["unit 6/1/2"])
             };
             store::testkit::eventually("the pause answered and shown", || {
-                crate::control::hold_answer(&home, &ask).is_some_and(|a| a.ok)
+                jobrt::control::hold_answer(&home, &ask).is_some_and(|a| a.ok)
                     && said()
-                    && crate::control::said(&chan) == Some(crate::control::Say::Drain)
+                    && jobrt::control::said(&chan) == Some(jobrt::control::Say::Drain)
             });
             t.elapsed()
         });
@@ -10665,7 +10667,7 @@ mod tests {
         let chan = a.o.home.join("job-control");
         a.control.jobs.set(vec![slots::JobRef::on_chan(chan.clone())]);
         if a.hold().held.is_some() {
-            crate::control::tell(&chan, crate::control::Say::Drain).unwrap();
+            jobrt::control::tell(&chan, jobrt::control::Say::Drain).unwrap();
         }
     }
 
@@ -10732,9 +10734,9 @@ mod tests {
         assert!(a.root().is_none(), "no root while the mount hangs");
         // A pause goes on: answered by control while the mount still hangs.
         let ask =
-            crate::control::request_hold(&a.o.home, None, Some(crate::control::Hold::new("the menu bar"))).unwrap();
+            jobrt::control::request_hold(&a.o.home, None, Some(jobrt::control::Hold::new("the menu bar"))).unwrap();
         store::testkit::eventually("the pause answered", || {
-            crate::control::hold_answer(&a.o.home, &ask).is_some_and(|x| x.ok)
+            jobrt::control::hold_answer(&a.o.home, &ask).is_some_and(|x| x.ok)
         });
         assert!(a.root().is_none(), "answered while the mount hangs");
         drop(release);
@@ -10813,16 +10815,16 @@ mod tests {
             // (sleep ok: the ask comes once the loop is deep in its plan)
             std::thread::sleep(Duration::from_secs(3));
             let t = Instant::now();
-            let ask = crate::control::Cancel {
+            let ask = jobrt::control::Cancel {
                 target: "6/1/2".into(),
                 step: Some("unit".into()),
                 rerun_after_update: false,
                 by: "scenic job cancel on m1".into(),
                 at: now_s(),
             };
-            crate::control::request_cancel(&home, &ask).unwrap();
+            jobrt::control::request_cancel(&home, &ask).unwrap();
             store::testkit::eventually("the job stopped", || {
-                !crate::sys::signal_group(pgid, crate::sys::Signal::Probe)
+                !jobrt::sys::signal_group(pgid, jobrt::sys::Signal::Probe)
             });
             eprintln!("the cancel stopped the job in {:?}", t.elapsed());
         });
@@ -10839,7 +10841,7 @@ mod tests {
         assert!(a.slots[0].running.as_ref().is_none_or(|r| r.pgid != pgid));
         let j = a.mem.recent.iter().find(|j| j.id == "unit 6/1/2").expect("recorded");
         assert!(j.cancelled, "recorded as cancelled, not failed");
-        assert!(crate::control::peek_cancels(&a.o.home).is_empty());
+        assert!(jobrt::control::peek_cancels(&a.o.home).is_empty());
     }
 
     /// Task #871 step 5: nothing starts under a hold, even one taken up after the round began: a
@@ -10849,7 +10851,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (mut a, _root) = parts_agent(d.path());
         a.round().unwrap();
-        assert!(a.set_hold(Some(crate::control::Hold::new("the menu bar on m1")), now_s()));
+        assert!(a.set_hold(Some(jobrt::control::Hold::new("the menu bar on m1")), now_s()));
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let mut waiting = Vec::new();
         // (A free slot: the step's coordinator may have granted this Mac a duty in the first.)
@@ -10996,7 +10998,7 @@ mod tests {
         let n = a.plan.view.get().n;
         assert!(n >= 1);
         a.take_cancel(
-            crate::control::Cancel {
+            jobrt::control::Cancel {
                 target: "6/1/2".into(),
                 step: Some("unit".into()),
                 rerun_after_update: false,
@@ -11741,7 +11743,7 @@ mod tests {
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
         tend_all(&mut a);
-        assert!((0..3).all(|k| crate::control::said(&a.control_path(k)) == Some(crate::control::Say::Drain)));
+        assert!((0..3).all(|k| jobrt::control::said(&a.control_path(k)) == Some(jobrt::control::Say::Drain)));
         assert!(!a.update_due() && !a.takes_more());
         let long_ago = Instant::now().checked_sub(DRAIN_GRACE + Duration::from_secs(60)).unwrap();
         a.slots[0].drain_since = Some(long_ago);
@@ -11753,7 +11755,7 @@ mod tests {
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         tend_all(&mut a);
-        assert!((0..3).all(|k| crate::control::said(&a.control_path(k)) == Some(crate::control::Say::Run)));
+        assert!((0..3).all(|k| jobrt::control::said(&a.control_path(k)) == Some(jobrt::control::Say::Run)));
         assert!(a.slots.iter().all(|s| s.drain_since.is_none()));
         // The memory guard on a Mac of 32 GB with 18 GB available and no job running, its floor the
         // 6 GB set above: the jobs may hold 12 GB together before it's below the floor. Slot 1's
@@ -11788,7 +11790,7 @@ mod tests {
         // (What stays once it stops, 9 GB, fits: none more drains.)
         tick(&mut a, vec![Some(5 << 10), Some(4 << 10), Some(4 << 10)], false);
         assert!(!a.guard() && a.slots[2].mem_drain.is_none());
-        assert_eq!(crate::control::said(&a.control_path(1)), Some(crate::control::Say::Drain));
+        assert_eq!(jobrt::control::said(&a.control_path(1)), Some(jobrt::control::Say::Drain));
         // (The largest grown, what stays past the room: the next newest drains too.)
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10), Some(4 << 10)], false);
         assert!(!a.guard() && a.slots[2].mem_drain.is_some() && a.slots[0].mem_drain.is_none());
@@ -11949,7 +11951,7 @@ mod tests {
         // The NAS probed: its slots as reached; the stretch, old enough and run at its slots
         // before the hold, grows them at once.
         let limits =
-            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         a.coord.as_ref().unwrap().set_nas(Some(limits));
         a.tend_ramp();
         assert!(!a.ramp_held);
@@ -12377,7 +12379,7 @@ mod tests {
             let env = std::fs::read_to_string(seen.join(format!("{step}.env"))).unwrap();
             assert!(
                 env.contains(&format!("HTTPS_PROXY={}\n", url.replace("http://", &format!("http://slot{k}:x@"))))
-                    && env.contains(&format!("{}={url}\n", crate::budget::PROXY_ENV))
+                    && env.contains(&format!("{}={url}\n", jobrt::budget::PROXY_ENV))
                     && env.contains("NO_PROXY=localhost,127.0.0.1,::1\n"),
                 "{env}"
             );
@@ -12865,7 +12867,7 @@ mod tests {
             a.slots[1].mem_drain
         );
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
-        assert_eq!(crate::control::said(&a.control_path(1)), Some(crate::control::Say::Drain));
+        assert_eq!(jobrt::control::said(&a.control_path(1)), Some(jobrt::control::Say::Drain));
         // (Nothing asked for meanwhile.)
         assert!(a.guard_held(0).is_some_and(|id| id == "terrain-hi 6/1/1") && !a.takes_more());
         // The drained one reaching no safe point in the time a pause gives: stopped at once.
@@ -13186,7 +13188,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let c = home.join("cache");
         let copy = c.join("blobs/layers/terrain/hi/6-1-1.0000000000000001.pack");
-        put(&c.join("chm10/a.tif"), &crate::whole::testfiles::tiff(false));
+        put(&c.join("chm10/a.tif"), &codecs::whole::testfiles::tiff(false));
         put(&copy, &[1; 1000]);
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
         // Work left: nothing stops a clear (task #814), and nothing is freed unasked.
@@ -13332,7 +13334,7 @@ mod tests {
         assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         assert!(a.orphans.is_empty());
         // The job's: held while it runs, not once it's gone.
-        a.orphans.push(group(crate::sys::process_start(pgid).unwrap()));
+        a.orphans.push(group(jobrt::sys::process_start(pgid).unwrap()));
         assert_eq!(
             a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))).as_deref(),
             Some("a job an earlier agent left still runs here (unit 6/1/1)")
@@ -13400,7 +13402,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/writer"), "the-lead").unwrap();
         let c = home.join("cache");
-        let tif = crate::whole::testfiles::tiff(false);
+        let tif = codecs::whole::testfiles::tiff(false);
         put(&c.join("chm10/a.tif"), &tif);
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, true);
         let beat = |at: u64, done: bool, job: Option<&str>| {
@@ -13455,7 +13457,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let c = home.join("cache");
-        let tif = crate::whole::testfiles::tiff(false);
+        let tif = codecs::whole::testfiles::tiff(false);
         put(&c.join("chm10/a.tif"), &tif);
         put(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), &[1; 1000]);
         put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
@@ -13471,7 +13473,7 @@ mod tests {
         let pgid = left.id() as i32;
         a.orphans.push(jobs::Group {
             pgid,
-            leader_start: crate::sys::process_start(pgid).unwrap(),
+            leader_start: jobrt::sys::process_start(pgid).unwrap(),
             started: now_s() - 5,
             id: "backup".into(),
         });
@@ -13582,29 +13584,30 @@ mod tests {
         let recipes =
             vec![recipes::Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:-21.9,64.13,20".into()] }];
         let cov =
-            crate::coverage::Coverage::fixture(&recipes, None, &root.unchecked_path().join("inputs/outlines")).unwrap();
+            buildstore::coverage::Coverage::fixture(&recipes, None, &root.unchecked_path().join("inputs/outlines"))
+                .unwrap();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(root, (&root.join("inputs/outlines")).into(), &recipes, &mut m);
+        ::inputs::inputs::regions::accept_fixture(root, (&root.join("inputs/outlines")).into(), &recipes, &mut m);
         let piece = format!("sources/osm/{date}/pieces/6-28-17");
         m.insert(piece.clone(), format!("{piece}.4444444444444444.osm.pbf"));
-        let mut reaches = crate::reach::Reaches { fmt: 1, date: date.into(), ..Default::default() };
-        reaches.units.insert("6/28/17".into(), crate::reach::Reach { cells: vec![], owned: Some(owned), long: vec![] });
-        let rc = format!("{}.5555555555555555.json.zst", crate::reach::logical(date));
+        let mut reaches = roads::reach::Reaches { fmt: 1, date: date.into(), ..Default::default() };
+        reaches.units.insert("6/28/17".into(), roads::reach::Reach { cells: vec![], owned: Some(owned), long: vec![] });
+        let rc = format!("{}.5555555555555555.json.zst", roads::reach::logical(date));
         put(&root.unchecked_path().join(&rc), &reaches.encode().unwrap());
-        m.insert(crate::reach::logical(date), rc);
+        m.insert(roads::reach::logical(date), rc);
         // (What the z6 tiles wait for: the heritage sites' inputs and outputs, the buildings' index.)
         m.insert(
-            crate::osmpass::set_name(date, "areas"),
+            ::inputs::osmpass::set_name(date, "areas"),
             format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"),
         );
-        crate::inputs::heritage::accept_fixture(root, &mut m);
-        crate::inputs::elevation::accept_fixture(root, &mut m);
+        ::inputs::inputs::heritage::accept_fixture(root, &mut m);
+        ::inputs::inputs::elevation::accept_fixture(root, &mut m);
         m.insert(
-            crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE),
-            format!("{}.6767676767676767.json", crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)),
+            ::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE),
+            format!("{}.6767676767676767.json", ::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE)),
         );
         m.insert(
-            crate::heritage::base_logical(date, "heritage-sources"),
+            landmarks::heritage::base_logical(date, "heritage-sources"),
             format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"),
         );
         let lo = "layers/terrain/lo/3-3-2.1111111111111111.pack";
@@ -13707,13 +13710,13 @@ mod tests {
         );
         let m: BTreeMap<String, String> =
             serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
-        let cov = crate::inputs::regions::read::accepted_coverage(
+        let cov = ::inputs::inputs::regions::read::accepted_coverage(
             &store::nasfs::NasRoot::local_for_test(&root),
-            &crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap(),
+            &::inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap(),
             None,
         )
         .unwrap();
-        let reaches = crate::reach::Reaches::load(&store::nasfs::NasRoot::local_for_test(&root), &m, date)
+        let reaches = roads::reach::Reaches::load(&store::nasfs::NasRoot::local_for_test(&root), &m, date)
             .ok()
             .flatten()
             .expect("the reaches");
@@ -13757,7 +13760,7 @@ mod tests {
         let mf = root.join("state/build/manifest.json");
         let mut m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(&mf).unwrap()).unwrap();
         m.insert(
-            crate::osmpass::set_name(date, "outlines"),
+            ::inputs::osmpass::set_name(date, "outlines"),
             format!("sources/osm/{date}/sets/outlines.2323232323232323.osm.pbf"),
         );
         // (Outlines the pass made itself, before the step: no record of the step's.)
@@ -13806,7 +13809,7 @@ mod tests {
     fn an_app_older_than_the_regions_switch_plans_nothing() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        let sw = crate::inputs::switched_logical(crate::inputs::regions::UNIT);
+        let sw = ::inputs::inputs::switched_logical(::inputs::inputs::regions::UNIT);
         let name = format!("{sw}.1111111111111111.json");
         put(&root.join(&name), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#);
         put(
@@ -13844,7 +13847,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let mut m = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(
+        ::inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &[recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }],
@@ -13885,7 +13888,7 @@ mod tests {
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let mut m = BTreeMap::new();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
-        crate::inputs::regions::accept_fixture(
+        ::inputs::inputs::regions::accept_fixture(
             &nas,
             (&root).into(),
             &[recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }],
@@ -13951,8 +13954,8 @@ mod tests {
         for f in [NAS_CHECK, "state/build", "state/inputs"] {
             std::fs::create_dir_all(root.join(f)).unwrap();
         }
-        std::fs::write(root.join(crate::inputs::TEST_FLAG), b"").unwrap();
-        let unit = crate::inputs::TEST_UNIT;
+        std::fs::write(root.join(::inputs::inputs::TEST_FLAG), b"").unwrap();
+        let unit = ::inputs::inputs::TEST_UNIT;
         let inputs_dir = root.join("inputs").join(unit);
         std::fs::create_dir_all(&inputs_dir).unwrap();
         let put = |name: &str| {
@@ -14006,11 +14009,11 @@ mod tests {
         assert_eq!(plan(&mut a).0, second);
         assert_eq!(kept(), BTreeSet::from([first.clone(), second.clone()]));
         // Its check runs: exactly the listing it was keyed by, one file of the two there now.
-        let given: crate::inputs::Planned = serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
+        let given: ::inputs::inputs::Planned = serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
         let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
-        let said = crate::inputs::gate::run(&mut out, unit, true, Some(given)).unwrap();
+        let said = ::inputs::inputs::gate::run(&mut out, unit, true, Some(given)).unwrap();
         assert!(said.starts_with(&format!("{unit}: 1 file read of 1")), "{said}");
-        let listing = crate::inputs::read_listed(&nas, &out.manifest, unit).unwrap();
+        let listing = ::inputs::inputs::read_listed(&nas, &out.manifest, unit).unwrap();
         assert_eq!(listing.listed.keys().collect::<Vec<_>>(), ["a.jsonl"]);
         let mut keys = crate::pool::records::Keys::load_strict(&nas).unwrap();
         keys.record("inputs", &keyed);
@@ -14019,7 +14022,7 @@ mod tests {
         // Ended and recorded: the next plan keys the folder as it is (a normal check of both files),
         // the first listing named by nothing now, gone; the second the last plan's, gone after.
         let (third, _) = plan(&mut a);
-        let given: crate::inputs::Planned = serde_json::from_slice(&std::fs::read(&third).unwrap()).unwrap();
+        let given: ::inputs::inputs::Planned = serde_json::from_slice(&std::fs::read(&third).unwrap()).unwrap();
         assert_eq!(given.listing.files.len(), 2);
         assert_eq!(kept(), BTreeSet::from([second, third.clone()]));
         assert_eq!(plan(&mut a).0, third);
@@ -14035,7 +14038,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let unit = crate::inputs::TEST_UNIT;
+        let unit = ::inputs::inputs::TEST_UNIT;
         let inputs_dir = root.join("inputs").join(unit);
         std::fs::create_dir_all(&inputs_dir).unwrap();
         let put = |text: &str| {
@@ -14060,7 +14063,7 @@ mod tests {
             .iter()
             .any(|j| j.id.starts_with("inputs ")));
         std::fs::create_dir_all(root.join("state/inputs")).unwrap();
-        std::fs::write(root.join(crate::inputs::TEST_FLAG), b"").unwrap();
+        std::fs::write(root.join(::inputs::inputs::TEST_FLAG), b"").unwrap();
         let watch = |a: &mut Agent| a.planner().inputs.watch.as_ref().unwrap().1.get(unit);
         let ask = |a: &mut Agent| a.planner().inputs.watch.as_ref().unwrap().1.ask();
         ask(&mut a);
@@ -14079,7 +14082,7 @@ mod tests {
         );
         // (Given the listing and acceptances its key was made from: inputs::Planned.)
         let at = plan[0].cmd.iter().position(|a| a == "--listing").unwrap();
-        let given: crate::inputs::Planned =
+        let given: ::inputs::inputs::Planned =
             serde_json::from_slice(&std::fs::read(&plan[0].cmd[at + 1]).unwrap()).unwrap();
         assert_eq!(given.listing.files.keys().cloned().collect::<Vec<_>>(), ["a.jsonl"]);
         let work = plan[0].record.clone().unwrap();
@@ -14088,7 +14091,7 @@ mod tests {
         // one's), then nothing while nothing changes.
         let mut out =
             buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
-        crate::inputs::gate::run(&mut out, unit, true, None).unwrap();
+        ::inputs::inputs::gate::run(&mut out, unit, true, None).unwrap();
         let mut keys = crate::pool::records::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         keys.record("inputs", &work.targets);
         keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
@@ -14109,19 +14112,22 @@ mod tests {
         a.round().unwrap();
         let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &home).unwrap();
         let v = st.inputs.iter().find(|v| v.unit == unit).unwrap();
-        assert_eq!(v.state, crate::inputs::view::State::Held);
+        assert_eq!(v.state, ::inputs::inputs::view::State::Held);
         assert_eq!(v.held, ["a.jsonl"]);
         // An acceptance asked of the agent: written by it (not by a dry run's), and the inputs folders
         // listed again, so its key changes and the unit's checked again.
         a.o.dry_run = false;
-        crate::inputs::ask(
+        ::inputs::inputs::ask(
             &home,
-            &crate::inputs::Ask { unit: unit.into(), all: true, by: "a test".into(), ..Default::default() },
+            &::inputs::inputs::Ask { unit: unit.into(), all: true, by: "a test".into(), ..Default::default() },
         )
         .unwrap();
         a.planner().tend_gate(&store::nasfs::NasRoot::local_for_test(&root));
         a.o.dry_run = true;
-        assert_eq!(crate::inputs::acceptances(&store::nasfs::NasRoot::local_for_test(&root), unit).unwrap().len(), 1);
+        assert_eq!(
+            ::inputs::inputs::acceptances(&store::nasfs::NasRoot::local_for_test(&root), unit).unwrap().len(),
+            1
+        );
         let t = Instant::now();
         while watch(&mut a).is_none_or(|l| l.accepted.is_empty()) {
             assert!(t.elapsed() < store::testkit::WATCHDOG, "listed again");
@@ -14149,16 +14155,16 @@ mod tests {
         );
         // Off the gate: no longer shown, nor checked; its records forgotten when asked, by a job of
         // the lead's.
-        std::fs::remove_file(root.join(crate::inputs::TEST_FLAG)).unwrap();
+        std::fs::remove_file(root.join(::inputs::inputs::TEST_FLAG)).unwrap();
         b.round().unwrap();
         assert!(read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &d.path().join("home-b"))
             .unwrap()
             .inputs
             .is_empty());
         b.o.dry_run = false;
-        crate::inputs::ask(
+        ::inputs::inputs::ask(
             &d.path().join("home-b"),
-            &crate::inputs::Ask { unit: unit.into(), forget: true, ..Default::default() },
+            &::inputs::inputs::Ask { unit: unit.into(), forget: true, ..Default::default() },
         )
         .unwrap();
         b.planner().tend_gate(&store::nasfs::NasRoot::local_for_test(&root));
@@ -14168,12 +14174,12 @@ mod tests {
         assert!(f.cmd.ends_with(&["--forget".to_string()]));
         let mut out =
             buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
-        crate::inputs::gate::forget(&mut out, unit).unwrap();
+        ::inputs::inputs::gate::forget(&mut out, unit).unwrap();
         let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
             &root.join("state/build/manifest.json"),
         ))
         .unwrap();
-        assert!(!m.keys().any(|l| crate::inputs::unit_of(l) == Some(unit)));
+        assert!(!m.keys().any(|l| ::inputs::inputs::unit_of(l) == Some(unit)));
         assert!(
             !b.planner()
                 .plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w)
@@ -14230,13 +14236,13 @@ mod tests {
         };
         let rings = |c: &Coverages| c.all.shapes.iter().map(|s| s.rings.clone()).collect::<Vec<_>>();
         let mut m1 = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(
+        ::inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &r("-21.9,64.13"),
             &mut m1,
         );
-        let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m1).unwrap();
+        let a = ::inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m1).unwrap();
         // A kept file of another format is made again in its place, not read past every time.
         let kept = home.join("cache/coverage").join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
         std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
@@ -14247,8 +14253,8 @@ mod tests {
                 .coverage(&store::nasfs::NasRoot::local_for_test(&root), &m1, false)
                 .unwrap(),
         );
-        assert!(crate::coverage::from_kept(&mut &std::fs::read(&kept).unwrap()[..]).is_some());
-        let geoms: Vec<PathBuf> = crate::inputs::regions::read::listed(&a)
+        assert!(buildstore::coverage::from_kept(&mut &std::fs::read(&kept).unwrap()[..]).is_some());
+        let geoms: Vec<PathBuf> = ::inputs::inputs::regions::read::listed(&a)
             .unwrap()
             .iter()
             .map(|l| root.join(&l.stored.as_ref().unwrap().geometry))
@@ -14269,7 +14275,7 @@ mod tests {
         );
         // A new version isn't the cached one: read from its own files.
         let mut m2 = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(
+        ::inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &r("-21.9,64.2"),
@@ -14294,14 +14300,14 @@ mod tests {
             vec![recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{p},20")] }]
         };
         let mut m1 = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(
+        ::inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &r("-21.9,64.13"),
             &mut m1,
         );
         let mut m2 = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(
+        ::inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &r("-21.9,64.2"),
@@ -14461,7 +14467,7 @@ mod tests {
         let _kill = Kill(pgid);
         // "Finish this job first": the job goes on, nothing new starts (and the status says why),
         // the loop not ended while it runs.
-        crate::control::request_quit(&home, crate::control::QuitMode::Finish, "Scenic on m1").unwrap();
+        jobrt::control::request_quit(&home, jobrt::control::QuitMode::Finish, "Scenic on m1").unwrap();
         // (Taken up by control: in line here, as a single loop's round takes it.)
         a.control.look();
         let mut waiting = Vec::new();
@@ -14484,7 +14490,7 @@ mod tests {
         a.quit_done = true;
         a.o.once = true;
         a.run().unwrap();
-        assert!(a.quit_done() && crate::control::peek_quit(&home).is_none());
+        assert!(a.quit_done() && jobrt::control::peek_quit(&home).is_none());
     }
 
     #[test]
@@ -14556,7 +14562,7 @@ mod tests {
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
         tend(&mut a);
         for k in 0..SLOTS {
-            assert_eq!(crate::control::said(&a.control_path(k)), Some(crate::control::Say::Drain));
+            assert_eq!(jobrt::control::said(&a.control_path(k)), Some(jobrt::control::Say::Drain));
             assert_eq!(
                 a.slots[k].running.as_ref().unwrap().pausing.as_deref(),
                 Some("restarting into the newly installed app (v2)")
@@ -14575,7 +14581,7 @@ mod tests {
         tend(&mut a);
         assert!(!a.update_due());
         for k in 0..SLOTS {
-            assert_eq!(crate::control::said(&a.control_path(k)), Some(crate::control::Say::Run));
+            assert_eq!(jobrt::control::said(&a.control_path(k)), Some(jobrt::control::Say::Run));
             assert!(a.slots[k].running.as_ref().unwrap().pausing.is_none());
         }
         // Every slot free with a newer app: due at once (one free with another's job under way:
@@ -14652,7 +14658,7 @@ mod tests {
         // slot, its lease not ended.
         a.hand_over_jobs();
         assert!(a.slots[0].running.is_none() && a.slots[0].lease.is_none());
-        assert!(crate::sys::signal_group(pgid, crate::sys::Signal::Probe), "the job runs on");
+        assert!(jobrt::sys::signal_group(pgid, jobrt::sys::Signal::Probe), "the job runs on");
         assert!(a.record_path(0).exists());
         assert!(co.held("terrain-hi").contains("6/55/25"), "its lease kept for the next agent");
         let me = a.me.clone();
@@ -14690,7 +14696,7 @@ mod tests {
         // (Its head, still this test's child as it isn't once its agent has ended, reaped here as
         // launchd would.)
         unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
-        assert!(!crate::sys::signal_group(pgid, crate::sys::Signal::Probe), "no process of it left");
+        assert!(!jobrt::sys::signal_group(pgid, jobrt::sys::Signal::Probe), "no process of it left");
     }
 
     /// Task #588: a fetching job taken over keeps its way out. The agent before stops its proxy as
@@ -14714,7 +14720,7 @@ mod tests {
                 let _ = write!(s, "HTTP/1.0 200 OK\r\n\r\nanswered\n");
             }
         });
-        crate::budget::TEST_RESOLVE.with(|r| {
+        jobrt::budget::TEST_RESOLVE.with(|r| {
             *r.borrow_mut() = Some(std::sync::Arc::new(move |_: &str, _: u16| Some(up_addr)));
         });
         let opts = || Options {
@@ -14730,7 +14736,7 @@ mod tests {
         a.free_set = Some(40 << 30);
         let port = a.proxy.as_ref().expect("its proxy").addr.port();
         let (first, go) = (d.path().join("first"), d.path().join("go"));
-        let get = format!("/usr/bin/curl -sS -m 20 http://en.{}/w/api.php", crate::budget::WIKIMEDIA[0]);
+        let get = format!("/usr/bin/curl -sS -m 20 http://en.{}/w/api.php", jobrt::budget::WIKIMEDIA[0]);
         let script = format!(
             "{get} > '{0}.tmp' && mv '{0}.tmp' '{0}'; while [ ! -e '{1}' ]; do sleep 0.05; done; {get}",
             first.display(),
@@ -14759,7 +14765,7 @@ mod tests {
             assert!(t.elapsed() < store::testkit::WATCHDOG, "its first request answered");
             std::thread::sleep(Duration::from_millis(20));
         }
-        let wiki = |p: &crate::budget::Proxy| p.view().wiki;
+        let wiki = |p: &jobrt::budget::Proxy| p.view().wiki;
         assert_eq!(wiki(a.proxy.as_ref().unwrap()), 1);
         // The agent ends, its job left running: its proxy stopped, then its lock let go (dropped
         // in that order).
@@ -14813,11 +14819,11 @@ mod tests {
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         a.hand_over_jobs();
         drop(a);
-        let p = crate::control::Pause::new(crate::control::Mode::Drain, "test");
+        let p = jobrt::control::Pause::new(jobrt::control::Mode::Drain, "test");
         std::fs::write(home.join("pause.json"), serde_json::to_vec(&Some(p)).unwrap()).unwrap();
         let mut b = test_agent(opts()).unwrap();
         assert!(b.slots[0].running.as_ref().is_some_and(|r| r.adopted && r.pgid == pgid));
-        assert_eq!(crate::control::said(&b.control_path(0)), Some(crate::control::Say::Drain));
+        assert_eq!(jobrt::control::said(&b.control_path(0)), Some(jobrt::control::Say::Drain));
         b.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
     }
@@ -14832,12 +14838,12 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let mut c = store::spawn::command("/bin/sleep");
         c.arg("3600");
-        crate::sys::own_group(&mut c);
+        jobrt::sys::own_group(&mut c);
         let mut child = store::spawn::spawn(&mut c).unwrap();
         let pgid = child.id() as i32;
         let rec = serde_json::json!({
             "id": "unit 6/1/2", "pgid": pgid, "started": now_s(),
-            "leader_start": crate::sys::process_start(pgid).unwrap(),
+            "leader_start": jobrt::sys::process_start(pgid).unwrap(),
         });
         std::fs::write(home.join("job.json"), rec.to_string()).unwrap();
         let o = Options {
@@ -14857,7 +14863,7 @@ mod tests {
         let reaper = std::thread::spawn(move || child.wait());
         jobs::stop_orphan(&home.join("job.json"));
         let _ = reaper.join();
-        assert!(!crate::sys::signal_group(pgid, crate::sys::Signal::Probe));
+        assert!(!jobrt::sys::signal_group(pgid, jobrt::sys::Signal::Probe));
     }
 
     #[test]
@@ -14925,19 +14931,19 @@ mod tests {
         a.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
         assert!(!a.update_due(), "the update waits for the job");
         // A cancel of something not running: said, nothing stopped.
-        let miss = crate::control::Cancel::new("6/1/1", None, true, "scenic job cancel on m4");
-        crate::control::request_cancel(&home, &miss).unwrap();
+        let miss = jobrt::control::Cancel::new("6/1/1", None, true, "scenic job cancel on m4");
+        jobrt::control::request_cancel(&home, &miss).unwrap();
         assert!(!a.tend_cancels(Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
-        let ans = crate::control::cancel_answer(&home, &miss).unwrap();
+        let ans = jobrt::control::cancel_answer(&home, &miss).unwrap();
         assert!(!ans.hit && ans.said.contains("nothing builds 6/1/1"), "{}", ans.said);
         // The owner's cancel, to rerun after the update.
-        let ask = crate::control::Cancel::new("6/55/25", None, true, "scenic job cancel on m4");
-        crate::control::request_cancel(&home, &ask).unwrap();
+        let ask = jobrt::control::Cancel::new("6/55/25", None, true, "scenic job cancel on m4");
+        jobrt::control::request_cancel(&home, &ask).unwrap();
         let mut waiting = Vec::new();
         assert!(a.tend_cancels(Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut waiting));
-        let ans = crate::control::cancel_answer(&home, &ask).unwrap();
+        let ans = jobrt::control::cancel_answer(&home, &ask).unwrap();
         assert!(ans.hit && ans.said.contains("terrain-hi 6/55/25 on this Mac"), "{}", ans.said);
-        assert!(crate::control::peek_cancels(&home).is_empty());
+        assert!(jobrt::control::peek_cancels(&home).is_empty());
         // Stopped, its process group gone; given back cleanly: no retry delay, recorded as cancelled,
         // no failure in the history; its lease ended.
         assert!(a.slots[0].running.is_none() && a.slots[0].lease.is_none());
@@ -15096,7 +15102,7 @@ mod tests {
         a.slots[0].running.as_mut().unwrap().spec.record.as_mut().unwrap().targets.push(("6/55/26".into(), "k".into()));
         a.slots[0].running.as_mut().unwrap().started = now_s() - 2 * 3600;
         std::fs::write(a.done_path(0), "elev 6/55/25\n").unwrap();
-        assert_eq!(crate::control::read_done(&a.done_path(0), "elev"), vec!["6/55/25".to_string()]);
+        assert_eq!(jobrt::control::read_done(&a.done_path(0), "elev"), vec!["6/55/25".to_string()]);
         update(&mut a, "v2");
         let (wait, words) = a.slots[0].update_wait.clone().unwrap();
         assert!(wait.is_some_and(|w| w > Duration::from_secs(80 * 60)), "{wait:?} {words}");
@@ -15541,7 +15547,7 @@ mod tests {
         assert!(lapsed(&Needs { nas: false }, &at(true, false, true, None)).is_none());
         // A running job stops at once without the NAS (it can't save), and as the build's pause says;
         // never for the battery.
-        use crate::control::{Mode, Pause};
+        use jobrt::control::{Mode, Pause};
         let (drain, now) =
             (Pause::new(Mode::Drain, "the menu bar on m4"), Pause::new(Mode::Freeze, "scenic pause on m4"));
         let mode = |c: Conditions, p: Option<&Pause>| stop_for(&n, &c, p).map(|s| s.0);
@@ -15863,9 +15869,9 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let store = r.join("sources/aws-terrarium");
-        let named = crate::rawpack::Pack { name: "6-1-1.00000000000000aa.tiles".into(), bytes: 9 };
-        let absent = crate::rawpack::Pack { name: "6-1-1.00000000000000bb.tiles".into(), bytes: 9 };
-        let mut ix = crate::rawpack::Index::default();
+        let named = buildstore::rawpack::Pack { name: "6-1-1.00000000000000aa.tiles".into(), bytes: 9 };
+        let absent = buildstore::rawpack::Pack { name: "6-1-1.00000000000000bb.tiles".into(), bytes: 9 };
+        let mut ix = buildstore::rawpack::Index::default();
         ix.shards.insert("6-1-1".into(), vec![named.clone()]);
         ix.save(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         let mut a = test_agent(Options {
@@ -15912,7 +15918,7 @@ mod pool_tests {
             s.contains("work/backup.0123456789abcdef.json") && !s.contains("00000000000000aa")
         });
         // (The index as it was: nothing read or named.)
-        assert_eq!(crate::rawpack::Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap(), ix);
+        assert_eq!(buildstore::rawpack::Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap(), ix);
         stop_jobs(&mut a);
     }
 
@@ -16297,7 +16303,7 @@ mod pool_tests {
             member: im.clone(),
             lease: LeaseId { term: 1, n: 99 },
             step: "osm-pass".into(),
-            handoff: crate::handoff::Handoff {
+            handoff: buildstore::handoff::Handoff {
                 changes: [(
                     format!("sources/osm/{date}/filtered"),
                     Some(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")),
@@ -16980,7 +16986,7 @@ mod pool_tests {
             member: false,
         })
         .unwrap();
-        let rec = || Some(crate::timings::RunRec { kind: "unit".into(), ..Default::default() });
+        let rec = || Some(jobrt::timings::RunRec { kind: "unit".into(), ..Default::default() });
         // (Left from the slot's last job.) A job starting there carries none of them.
         a.slots[0].timings_out = rec();
         let spec = JobSpec {
@@ -17242,14 +17248,14 @@ mod pool_tests {
             m.round().unwrap();
             lead.round().unwrap();
         }
-        crate::control::request_quit(&lead.o.home, crate::control::QuitMode::Now, "Scenic on l").unwrap();
+        jobrt::control::request_quit(&lead.o.home, jobrt::control::QuitMode::Now, "Scenic on l").unwrap();
         lead.round().unwrap();
         assert!(lead.quit_due(), "no job runs: it quits at once");
         for _ in 0..4 {
             m.round().unwrap();
         }
         assert_eq!(m.pooled().unwrap().side.driver().leads(), None, "the member takes nothing over");
-        crate::control::clear_quit(&lead.o.home);
+        jobrt::control::clear_quit(&lead.o.home);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }
@@ -17298,10 +17304,10 @@ mod pool_tests {
         }
         // The member's owner pauses the lead: asked of the lead (docs/coordination.md step 5), answered.
         let ask =
-            crate::control::request_hold(&m.o.home, Some(&il), Some(crate::control::Hold::new("scenic pause on m")))
+            jobrt::control::request_hold(&m.o.home, Some(&il), Some(jobrt::control::Hold::new("scenic pause on m")))
                 .unwrap();
         m.round().unwrap();
-        let a = crate::control::hold_answer(&m.o.home, &ask).unwrap();
+        let a = jobrt::control::hold_answer(&m.o.home, &ask).unwrap();
         assert!(a.ok, "{a:?}");
         assert!(m.hold().held.is_none(), "the member itself goes on");
         for _ in 0..12 {
@@ -17321,9 +17327,9 @@ mod pool_tests {
         // Paused: its heartbeat says so.
         assert!(lead.pooled().unwrap().conds.unwrap().held);
         // Resumed from the member: taken up by the lead.
-        let ask = crate::control::request_hold(&m.o.home, Some(&il), None).unwrap();
+        let ask = jobrt::control::request_hold(&m.o.home, Some(&il), None).unwrap();
         m.round().unwrap();
-        assert!(crate::control::hold_answer(&m.o.home, &ask).is_some_and(|a| a.ok));
+        assert!(jobrt::control::hold_answer(&m.o.home, &ask).is_some_and(|a| a.ok));
         // (Sent with the member's next beat, taken up by the lead's next round.)
         let end = Instant::now() + WATCHDOG;
         while lead.hold().held.is_some() {
@@ -17332,7 +17338,7 @@ mod pool_tests {
             lead.round().unwrap();
             std::thread::sleep(Duration::from_millis(250));
         }
-        assert!(crate::control::read_hold(&lead.o.home).held.is_none());
+        assert!(jobrt::control::read_hold(&lead.o.home).held.is_none());
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }
@@ -17348,7 +17354,7 @@ mod pool_tests {
             let st = Status {
                 host: host.into(),
                 beat: now_s(),
-                held: held.then(|| crate::control::Hold::new("scenic pause on held-mac")),
+                held: held.then(|| jobrt::control::Hold::new("scenic pause on held-mac")),
                 ..Default::default()
             };
             std::fs::write(r.join(format!("state/helpers/{host}.json")), serde_json::to_vec(&st).unwrap()).unwrap();
@@ -17428,7 +17434,7 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
-        a.set_hold(Some(crate::control::Hold::new("scenic pause --here")), now_s());
+        a.set_hold(Some(jobrt::control::Hold::new("scenic pause --here")), now_s());
         std::fs::create_dir_all(r.join("state/helpers")).unwrap();
         let st = Status { host: "busy-mac".into(), beat: now_s(), ..Default::default() };
         std::fs::write(r.join("state/helpers/busy-mac.json"), serde_json::to_vec(&st).unwrap()).unwrap();
@@ -17474,23 +17480,23 @@ mod pool_tests {
         let home = a.o.home.clone();
         // Paused from a Mac whose clock runs an hour ahead; resumed here: this Mac's ask wins.
         let me = a.pooled().unwrap().side.member().id.clone();
-        let ahead = crate::control::HoldState {
-            held: Some(crate::control::Hold::new("scenic pause on ahead")),
+        let ahead = jobrt::control::HoldState {
+            held: Some(jobrt::control::Hold::new("scenic pause on ahead")),
             at: now_s() + 3600,
         };
-        write_hold(&store::nasfs::NasPath::local_for_test(&r.join(crate::control::hold_path(&me))), &ahead).unwrap();
+        write_hold(&store::nasfs::NasPath::local_for_test(&r.join(jobrt::control::hold_path(&me))), &ahead).unwrap();
         a.hold_read = None;
         a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(a.hold().held.is_some());
-        let ask = crate::control::request_hold(&home, None, None).unwrap();
+        let ask = jobrt::control::request_hold(&home, None, None).unwrap();
         a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
-        assert!(crate::control::hold_answer(&home, &ask).is_some_and(|x| x.ok));
+        assert!(jobrt::control::hold_answer(&home, &ask).is_some_and(|x| x.ok));
         assert!(a.hold().held.is_none() && a.hold().at > ahead.at);
         // Written back over the NAS's older setting.
         a.hold_read = None;
         a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
-        let there: crate::control::HoldState =
-            serde_json::from_slice(&std::fs::read(r.join(crate::control::hold_path(&me))).unwrap()).unwrap();
+        let there: jobrt::control::HoldState =
+            serde_json::from_slice(&std::fs::read(r.join(jobrt::control::hold_path(&me))).unwrap()).unwrap();
         assert_eq!(there, *a.hold());
         // The pool's step busy: an ask naming another Mac waits, and doesn't cut the loop's wait
         // again and again; this Mac's own is taken all the same.
@@ -17504,14 +17510,14 @@ mod pool_tests {
         });
         held_rx.recv().unwrap();
         while a.control.woken.try_recv().is_ok() {}
-        crate::control::request_hold(&home, Some("other-mac"), Some(crate::control::Hold::new("x"))).unwrap();
+        jobrt::control::request_hold(&home, Some("other-mac"), Some(jobrt::control::Hold::new("x"))).unwrap();
         a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(a.control.woken.try_iter().any(|m| m == bus::ControlMsg::Ask));
         a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
-        assert!(home.join(crate::control::HOLD_REQUEST).exists() && a.control.woken.try_recv().is_err());
-        let ask = crate::control::request_hold(&home, None, Some(crate::control::Hold::new("here"))).unwrap();
+        assert!(home.join(jobrt::control::HOLD_REQUEST).exists() && a.control.woken.try_recv().is_err());
+        let ask = jobrt::control::request_hold(&home, None, Some(jobrt::control::Hold::new("here"))).unwrap();
         a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
-        assert!(crate::control::hold_answer(&home, &ask).is_some_and(|x| x.ok) && a.hold().held.is_some());
+        assert!(jobrt::control::hold_answer(&home, &ask).is_some_and(|x| x.ok) && a.hold().held.is_some());
         tx.send(()).unwrap();
         t.join().unwrap();
     }
@@ -17560,16 +17566,16 @@ mod pool_tests {
         // Paused here: the running job asked to stop at its next safe point, nothing new starts
         // (the status says why), the build itself not paused.
         let ask =
-            crate::control::request_hold(&home, None, Some(crate::control::Hold::new("scenic pause on m1"))).unwrap();
+            jobrt::control::request_hold(&home, None, Some(jobrt::control::Hold::new("scenic pause on m1"))).unwrap();
         a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&root)));
-        assert!(crate::control::hold_answer(&home, &ask).is_some_and(|x| x.ok));
+        assert!(jobrt::control::hold_answer(&home, &ask).is_some_and(|x| x.ok));
         assert!(a.hold().held.is_some() && a.pause.is_none());
         a.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
         assert!(a.slots[0]
             .running
             .as_ref()
             .is_some_and(|r| r.pausing.as_deref().is_some_and(|w| w.contains("scenic pause on m1"))));
-        assert_eq!(crate::control::said(&a.control_path(0)), Some(crate::control::Say::Drain));
+        assert_eq!(jobrt::control::said(&a.control_path(0)), Some(jobrt::control::Say::Drain));
         let mut waiting = Vec::new();
         assert!(!a.try_start(
             1,
@@ -17587,9 +17593,9 @@ mod pool_tests {
         assert!(a.hold().held.as_ref().is_some_and(|h| h.by == "scenic pause on m1"));
         assert!(a.hold_why().is_some());
         // Resumed: work starts again.
-        crate::control::request_hold(&home, None, None).unwrap();
+        jobrt::control::request_hold(&home, None, None).unwrap();
         a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&root)));
-        assert!(a.hold().held.is_none() && a.hold_why().is_none() && crate::control::read_hold(&home).held.is_none());
+        assert!(a.hold().held.is_none() && a.hold_why().is_none() && jobrt::control::read_hold(&home).held.is_none());
     }
 
     /// Task #630: a catalogue the pool's records hold back (not caught up) isn't asked of the lead's
@@ -17944,7 +17950,7 @@ mod pool_tests {
         a.client = cl;
         a.tell_owed(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
         assert!(a.owed.is_empty() && a.unjournaled.is_empty());
-        assert_eq!(crate::handoff::waiting_in(&c.journal()).unwrap().len(), 1, "journaled by the lead");
+        assert_eq!(buildstore::handoff::waiting_in(&c.journal()).unwrap().len(), 1, "journaled by the lead");
         assert!(!c.held("unit").contains("6/12/25"));
         assert!(!dir.exists(), "its folder gone");
         // A failure that says nothing still goes with a reason.
@@ -18067,7 +18073,7 @@ mod pool_tests {
             ..Default::default()
         };
         let g = cl.ask(&ask).unwrap().expect("granted");
-        let h = crate::handoff::Handoff {
+        let h = buildstore::handoff::Handoff {
             changes: [(
                 "layers/slope/lo/3-2-2".to_string(),
                 Some("layers/slope/lo/3-2-2.0123456789abcdef.pack".to_string()),
@@ -18079,7 +18085,7 @@ mod pool_tests {
         cl.done(&crate::coord::Done { lease: g.lease, handoff: Some(h), journaled: true, ..Default::default() })
             .unwrap();
         // (Switched off with the member's job under way: its hand-off kept here, to be merged.)
-        assert_eq!(crate::handoff::waiting_in(&c.journal()).unwrap().len(), 1);
+        assert_eq!(buildstore::handoff::waiting_in(&c.journal()).unwrap().len(), 1);
     }
 
     fn agent_dry(root: &store::nasfs::NasRoot, home: &Path) -> Agent {

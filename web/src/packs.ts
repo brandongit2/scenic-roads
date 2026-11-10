@@ -4,8 +4,8 @@ import { DEEP_FIRST_Z, DEEP_PACK_Z } from './config';
 
 /** A tiled layer's packs' versions (meta.packs): the root's (z0–2), the lo packs' (z3–8) by z3
  * tile, the hi packs' (z9–14) by z6 tile and the terrain's deep packs (past z12, where it has
- * any: pipeline::terrain_deep) by z10 tile, "z/x/y"; a polar layer's root (z0–3) and blocks (z4–9)
- * by z4 tile of its pole's grid (pipeline::polar). */
+ * any: terrain::terrain_deep) by z10 tile, "z/x/y"; a polar layer's root (z0–3) and blocks (z4–9)
+ * by z4 tile of its pole's grid (terrain::polar). */
 export interface LayerPacks {
   root?: string;
   lo?: Record<string, string>;
@@ -14,7 +14,7 @@ export interface LayerPacks {
   polar?: Record<string, string>;
 }
 
-/** A polar layer's blocks' zoom (pipeline::polar::BLOCK_Z). */
+/** A polar layer's blocks' zoom (terrain::polar::BLOCK_Z). */
 const POLAR_BLOCK_Z = 4;
 
 
@@ -34,7 +34,7 @@ export function packToken(l: LayerPacks, z: number, x: number, y: number): strin
 
 /** A raster source's finest zoom by area (meta.terrainAreas; our MapLibre's `scenic:zoom-by-area`):
  * its tiles of zoom `zoom` that go past its maxzoom, "x/y", and the native zoom of each (the
- * terrain's: pipeline::terrain_deep::native_zoom). */
+ * terrain's: terrain::terrain_deep::native_zoom). */
 export interface TerrainAreas {
   zoom: number;
   tiles: Record<string, number>;

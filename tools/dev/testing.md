@@ -35,8 +35,7 @@ Not seen: a run through a shell function or alias, a script file, or a substitut
   the crate's own binaries, its `tests/`; other crates' modules naming `<crate>::<mod>`, or
   `crate::<mod>` where their root re-exports it (`pub use <crate>::…`, #916) or a module of theirs
   does by glob (`pub use agentcore::agent::*` in pipeline's agent.rs: `crate::agent::jobs` there is
-  agentcore's), and so on through their own re-exports (pipeline's binaries' `pipeline::coord`), their binaries
-  and their integration tests.
+  agentcore's), and so on through their own re-exports, their binaries and their integration tests.
   Users of those users aren't traced; publish's full run catches them. Python tests (dem/) are outside
   the script.
 - Filters name a module path (`agent::tests::`, `agent::tests::unit_key`), never a bare word: a filter starts with one of the crate's modules, so

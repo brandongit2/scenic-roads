@@ -24,7 +24,7 @@ check requires, while only some of it is built.
 - **What gets built:** a feature that touches the coverage; for a way, any node inside. Ways are kept
   whole, so roads end a little past the edge.
 - **Z6 tiles** are chosen by their reach, worked out once per pass from each z6 tile extract's roads, rail and
-  ferries (`sources/osm/<date>/reach`, `pipeline::reach`): a z6 tile is built when the box of the ways
+  ferries (`sources/osm/<date>/reach`, `roads::reach`): a z6 tile is built when the box of the ways
   it owns meets the coverage, or one of its own long ways touches it. The `unit` step then keeps
   exactly the ways touching the coverage.
 - **Builds depend on coverage, never on regions.** Renaming, splitting or merging regions with the
@@ -37,16 +37,16 @@ check requires, while only some of it is built.
   them.
 
 **By location.** Rules that depend on where a thing is; the z6 tiles' rules are versioned by area in
-`pipeline::rules`, so a changed rule reruns only the z6 tiles it applies to:
-- elevation datasets and their blend (`pipeline::dem`, docs/inputs.md §6.8) and densification
+`inputs::rules`, so a changed rule reruns only the z6 tiles it applies to:
+- elevation datasets and their blend (`inputs::dem`, docs/inputs.md §6.8) and densification
   spacing (8 m where a declared dataset finer than 15 m has data, 15 m elsewhere:
-  `pipeline::dem::spacing`, docs/inputs.md §6.8);
+  `inputs::dem::spacing`, docs/inputs.md §6.8);
 - heritage registers (`inputs/heritage/`, docs/inputs.md §6.5);
 - timetables: the Mobility Database feeds of the countries the coverage is in, declared feeds and
   static timetables (docs/steps.md, Rail service; docs/inputs.md §6.7);
 - leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`pipeline::leaftype`);
 - the languages spoken there (docs/names.md; docs/inputs.md §6.2);
-- credits (`pipeline::rules::CREDITS`; a catalogue lists those meeting its coverage + 20 km or its
+- credits (`inputs::rules::CREDITS`; a catalogue lists those meeting its coverage + 20 km or its
   z6 tiles' ways).
 
 **No seams:** no step knows region borders; per-vertex values are computed once, by the owning z6 tile;

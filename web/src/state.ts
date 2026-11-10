@@ -68,7 +68,7 @@ export const DENSITY_KINDS = [
 export type DensityKind = (typeof DENSITY_KINDS)[number][0];
 export interface LabelDensity {
   /** A label shows once the distance to the nearest label of its kind that matters more spans this
-   * many pixels (pipeline::interest's isolation; rail stops: their line's stop spacing). */
+   * many pixels (landmarks::interest's isolation; rail stops: their line's stop spacing). */
   px: number;
   /** Per kind, a factor on density: ×2 halves its spacing. */
   kinds: Record<DensityKind, number>;
@@ -76,7 +76,7 @@ export interface LabelDensity {
   horizon: number;
 }
 export const DEFAULT_DENSITY: LabelDensity = { px: 90, kinds: { places: 1, water: 1, parks: 1, landmarks: 1, stations: 1 }, horizon: 0.5 };
-/** The label spacing range (px); per kind, no closer than MIN_SPACING_PX (pipeline::labels MIN_PX:
+/** The label spacing range (px); per kind, no closer than MIN_SPACING_PX (landmarks::labels MIN_PX:
  * the label tiles hold a label from the zoom it shows at that). */
 export const SPACING_RANGE: [number, number] = [30, 300];
 export const MIN_SPACING_PX = 16;

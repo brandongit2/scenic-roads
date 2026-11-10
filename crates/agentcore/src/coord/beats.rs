@@ -65,7 +65,7 @@ pub const BUDGETS: &str = "budgets";
 pub const RECORDS: &str = "records";
 
 /// What a member's beat says while its agent's proxy takes the Wikimedia budget from the lead
-/// (crate::budget::Budget::set_lead): the lead gives batches only while every member heard says it
+/// (jobrt::budget::Budget::set_lead): the lead gives batches only while every member heard says it
 /// (crate::coord::budgets::gives), so none leases on the NAS as another takes from the lead.
 pub const BY_LEAD: &str = "budgets-by-lead";
 
@@ -131,7 +131,7 @@ struct Inner {
     /// settings as last fetched and the generation the lead last said.
     from_lead: Vec<(u64, serde_json::Value)>,
     took: u64,
-    hold: Option<crate::control::HoldState>,
+    hold: Option<jobrt::control::HoldState>,
     settings: Option<super::asks::Settings>,
     /// The settings an earlier process last had (`had_settings`), until the lead's are fetched.
     had: Option<super::asks::Settings>,
@@ -497,7 +497,7 @@ impl Beats {
     }
 
     /// This member's hold as the lead keeps it (its last answer's).
-    pub fn lead_hold(&self) -> Option<crate::control::HoldState> {
+    pub fn lead_hold(&self) -> Option<jobrt::control::HoldState> {
         self.inner.lock().unwrap().hold.clone()
     }
 

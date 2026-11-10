@@ -1,6 +1,6 @@
 //! The step programs' command lines: what a unit's tail runs (extract, elev, tile, scenic-metrics,
 //! areaflags, landcover), the tasks' programs (trees, bldtile, terrainsub), the rail step's railfreq, and the tools run by hand (lakefill, coastcheck,
-//! terrain). Each runs as `scenic-build tool <name>` (src/bin/tools/, pipeline::cli::TOOLS) and parses with its own.
+//! terrain). Each runs as `scenic-build tool <name>` (src/bin/tools/, jobrt::sys::TOOLS) and parses with its own.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -24,13 +24,13 @@ pub struct Extract {
     /// The landmark candidates' points too (the pois job)
     #[arg(long)]
     pub candidates: bool,
-    /// The pass's hiking-route ends (pipeline::trailends), instead of working them out
+    /// The pass's hiking-route ends (codecs::trailends), instead of working them out
     #[arg(long, value_name = "FILE")]
     pub trailends: Option<PathBuf>,
 }
 
 /// Elevations at every road vertex from the finished terrain staged in the build folder
-/// (pipeline::road_terrain): terrain.tiles, fine.tiles, codes.json
+/// (terrain::road_terrain): terrain.tiles, fine.tiles, codes.json
 #[derive(Parser, Debug)]
 #[command(name = "elev")]
 pub struct Elev {
@@ -38,7 +38,7 @@ pub struct Elev {
     pub build_dir: PathBuf,
 }
 
-/// A unit folder's sampled elevations post-processed (pipeline::elev): final.u16 and grade.u8
+/// A unit folder's sampled elevations post-processed (roads::elev): final.u16 and grade.u8
 #[derive(Parser, Debug)]
 #[command(name = "tile")]
 pub struct Tile {
@@ -53,7 +53,7 @@ pub enum TileWhat {
     Elev,
 }
 
-/// Scenic analysis of a unit's roads: the unit's steps (pipeline::unit)
+/// Scenic analysis of a unit's roads: the unit's steps (roads::unit)
 #[derive(Parser, Debug)]
 #[command(name = "scenic-metrics")]
 pub struct Metrics {
@@ -93,7 +93,7 @@ impl MetricsStep {
 }
 
 /// A unit's area flags (grid.areas.u8) on its own z11 grid (grid.idx), from the flagged polygons
-/// near it (pipeline::areaflags)
+/// near it (codecs::areaflags)
 #[derive(Parser, Debug)]
 #[command(name = "areaflags")]
 pub struct Areaflags {
@@ -104,9 +104,9 @@ pub struct Areaflags {
     pub shapes: PathBuf,
 }
 
-/// Land cover on the z11 analysis grid from the declared land-cover source (pipeline::landcover),
+/// Land cover on the z11 analysis grid from the declared land-cover source (trees::landcover),
 /// the unit job's (its folder's sources.json). SCENIC_FETCH_*: mirror folders, recording, no
-/// network (pipeline::fetch)
+/// network (buildstore::fetch)
 #[derive(Parser, Debug)]
 #[command(name = "landcover")]
 pub struct Landcover {
@@ -131,9 +131,9 @@ pub struct Railfreq {
     pub pairs: Vec<PathBuf>,
 }
 
-/// The tree cover layers' tiles (pipeline::trees): a z3 or z6 tile's run, a z3 tile's assembly, or
+/// The tree cover layers' tiles (trees::trees): a z3 or z6 tile's run, a z3 tile's assembly, or
 /// the same work a block at a time, for workers. SCENIC_FETCH_*: mirror folders, recording, no
-/// network (pipeline::fetch)
+/// network (buildstore::fetch)
 #[derive(Parser, Debug)]
 #[command(name = "trees")]
 #[command(group = clap::ArgGroup::new("mode").required(true).args(["z3", "z6", "block", "blocks", "assemble", "assemble_lo"]))]
@@ -160,7 +160,7 @@ pub struct Trees {
     /// The coverage (the trees program's JSON)
     #[arg(long, value_name = "COV.JSON")]
     pub coverage: Option<PathBuf>,
-    /// Where the declared canopy and leaf-type sources are (pipeline::trees::RunSources; a run's)
+    /// Where the declared canopy and leaf-type sources are (trees::trees::RunSources; a run's)
     #[arg(long, value_name = "SOURCES.JSON")]
     pub sources: Option<PathBuf>,
     /// The canopy squares: a folder, or URLs (a prefix: through the fetch layer) for blocks
@@ -193,7 +193,7 @@ pub struct Trees {
     pub inputs: Vec<PathBuf>,
 }
 
-/// A z8 tile's 3D buildings tiles from its task folder (pipeline::bld::task; docs/buildings3d.md
+/// A z8 tile's 3D buildings tiles from its task folder (bld::bld::task; docs/buildings3d.md
 /// §3.6): a bldtiles job's task. Writes area.tiles and
 /// area.json in the folder
 #[derive(Parser, Debug)]
@@ -209,7 +209,7 @@ pub struct Bldtile {
     pub workers: Option<usize>,
 }
 
-/// A terrain piece's z8 subtrees made from a task's file (pipeline::terrain_task): a terrainsub
+/// A terrain piece's z8 subtrees made from a task's file (terrain::terrain_task): a terrainsub
 /// task. Writes the group's tiles (dir/hi.sect) and its
 /// mid's part (dir/mid.sect), from what the file holds alone
 #[derive(Parser, Debug)]
@@ -226,7 +226,7 @@ pub struct Terrainsub {
     pub workers: Option<usize>,
 }
 
-/// A polar cap's terrain and shading tiles (pipeline::polar; docs/polar.md, planned) from the
+/// A polar cap's terrain and shading tiles (terrain::polar; docs/polar.md, planned) from the
 /// elevation pool, into a folder of tiles (`<out>/<pole>/{terrain,shade}/z/x/y.webp`). Reads the NAS
 /// (the build's records and the pool's datasets); writes only `--out`
 #[derive(Parser, Debug)]
@@ -238,7 +238,7 @@ pub struct Polar {
     /// The pole: n (EPSG:3413) or s (EPSG:3031)
     #[arg(long, value_name = "n|s")]
     pub pole: String,
-    /// The finest zoom (default: the cap's, pipeline::polar::finest, from the declared datasets)
+    /// The finest zoom (default: the cap's, terrain::polar::finest, from the declared datasets)
     #[arg(long, value_name = "Z")]
     pub max_z: Option<u8>,
     /// The output folder (and its scratch/)
@@ -252,7 +252,7 @@ pub struct Polar {
     pub workers: Option<usize>,
 }
 
-/// Canada's lakes missing from OSM, sheet by sheet: the lakefill step's parts (pipeline::lakefill::run)
+/// Canada's lakes missing from OSM, sheet by sheet: the lakefill step's parts (inputs::lakefill::run)
 /// one at a time, and checks of a fill. Scratch folders only
 #[derive(Parser, Debug)]
 #[command(name = "lakefill")]
@@ -442,7 +442,7 @@ pub enum CoastcheckCmd {
         #[arg(long, value_name = "DIR")]
         root: PathBuf,
     },
-    /// pipeline::water's build as the step runs it, its tiles written as files (<dir>/z/x/y.png)
+    /// inputs::water's build as the step runs it, its tiles written as files (<dir>/z/x/y.png)
     WaterBuild {
         #[arg(long, value_name = "PMTILES")]
         basemap: PathBuf,

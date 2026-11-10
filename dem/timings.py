@@ -1,4 +1,4 @@
-"""A step program's timings: the Python twin of pipeline::timings (docs/building.md §2, Timings).
+"""A step program's timings: the Python twin of jobrt::timings (docs/building.md §2, Timings).
 
 Its run in named phases, each with its wall time, CPU time (user + system, this process's and its
 finished children's), its wall time split by what it waited on (measured, as store::waits does)
@@ -15,7 +15,7 @@ and the bytes and files it moved:
   stage is one phase, with totals, never one per item.
 - Waits (task #870): a call that blocks holds `wait("nas" | "net" | "disk" | "other")` (`reading(path)`:
   the NAS's or this Mac's disk, by the file system `path` is on; `lines(path)`: a file's lines, each
-  read under it). By the process's wall clock, as pipeline::timings: at each instant the process is
+  read under it). By the process's wall clock, as jobrt::timings: at each instant the process is
   waiting on the NAS when any thread is in a NAS call, else on the network, else on the disk, else
   on other work, else computing; a phase's waits are the difference of those totals between its
   ends, so they never sum past its wall time. No phase is classed by hand. Beside them, as
@@ -272,7 +272,7 @@ def count(nbytes: int = 0, files: int = 0) -> None:
 
 
 def record(ok: bool = True) -> dict:
-    """The run so far, as pipeline::timings's record has it."""
+    """The run so far, as jobrt::timings's record has it."""
     with _lock:
         accs = dict(_accs)
     def rec(key, a):

@@ -1,11 +1,11 @@
 //! The wall time this process spends blocked in I/O, measured where it blocks (task #870): every
 //! NAS call (crate::nasfs's paths and files, crate::range's NAS reads, crate::iopool's operations,
-//! crate::naming's and crate::blobs' copies), every network request (pipeline::fetch's `Net`, the
+//! crate::naming's and crate::blobs' copies), every network request (buildstore::fetch's `Net`, the
 //! coordinator's client and the other HTTP callers) and the local disk calls the store makes
 //! (crate::cachefile, crate::range's local files, the NAS's copies to this Mac's disk count as the
 //! NAS's), and the waits on other work a job's code says it blocks in (`other()`: another worker's
 //! subtrees, a thread copying ahead: a wait on a condition or a join, which no I/O call shows). A
-//! caller holds a guard (`nas()`, `net()`, `disk()`) across the call; pipeline::timings
+//! caller holds a guard (`nas()`, `net()`, `disk()`) across the call; jobrt::timings
 //! takes `totals()` as a phase opens and as it closes, and splits the phase's wall time by the
 //! difference.
 //!
@@ -171,7 +171,7 @@ fn lock() -> std::sync::MutexGuard<'static, State> {
     state().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Starts measuring (pipeline::timings::start: a timed run). Before it every guard is a no-op.
+/// Starts measuring (jobrt::timings::start: a timed run). Before it every guard is a no-op.
 pub fn enable() {
     let _ = state();
     ON.store(true, Ordering::Release);

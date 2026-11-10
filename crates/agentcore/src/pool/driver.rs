@@ -199,17 +199,17 @@ pub enum Msg {
     },
     /// A build page's ask to cancel a job (§11), passed on to the lead by the member whose page
     /// asked; sent only to a lead on the sender's own app (an older one wouldn't read it).
-    Cancel(crate::control::Cancel),
+    Cancel(jobrt::control::Cancel),
     /// A build page's ask to try a failed target again now (§11): the lead forgets its failures
     /// (the coordinator's, and its own back-off). Passed on as `Cancel` is.
-    Retry(crate::control::Retry),
+    Retry(jobrt::control::Retry),
 }
 
 /// A build page's ask the lead acts on (`Out::acts`): from its own page, or a member's (`Msg`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Act {
-    Cancel(crate::control::Cancel),
-    Retry(crate::control::Retry),
+    Cancel(jobrt::control::Cancel),
+    Retry(jobrt::control::Retry),
 }
 
 impl Act {
@@ -243,7 +243,7 @@ pub struct Heard {
     /// hands each back once: any of a lead's asks still out counts when it's back.
     pub listed: Option<Listed>,
     /// Raw tiles' archives its records hold (`Records::raw`) that the agent has named in the raw
-    /// store's index since (crate::rawpack::name_handed, the index saved): taken off the records,
+    /// store's index since (buildstore::rawpack::name_handed, the index saved): taken off the records,
     /// saved with this step's snapshot. (One named and not taken off yet, a restart between, is
     /// named again: passed over unread.)
     pub named_raw: Vec<String>,
@@ -1500,8 +1500,8 @@ mod tests {
     use super::super::journal::LeaseId;
     use super::super::nas::{Created, Mem};
     use super::*;
-    use crate::handoff::Handoff;
     use anyhow::Result;
+    use buildstore::handoff::Handoff;
     use std::cell::Cell;
 
     const T0: u64 = 1_791_300_000;
@@ -1760,8 +1760,8 @@ mod tests {
         let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
         assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         step(&mut b, &ib, able());
-        let cancel = Act::Cancel(crate::control::Cancel::new("6/1/2", Some("unit"), false, "the build page (m1)"));
-        let retry = Act::Retry(crate::control::Retry {
+        let cancel = Act::Cancel(jobrt::control::Cancel::new("6/1/2", Some("unit"), false, "the build page (m1)"));
+        let retry = Act::Retry(jobrt::control::Retry {
             target: "6/1/3".into(),
             step: Some("unit".into()),
             ..Default::default()
@@ -2547,7 +2547,7 @@ mod tests {
         let ia = Mac::new(&mem);
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
         assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
-        let pack = |n: &str| crate::rawpack::Pack { name: format!("6-1-1.{n}.tiles"), bytes: 9 };
+        let pack = |n: &str| buildstore::rawpack::Pack { name: format!("6-1-1.{n}.tiles"), bytes: 9 };
         let mut e = entry(A, 1, 1, "6-1-1");
         e.handoff.raw = vec![("6-1-1".into(), pack("0000000000000001")), ("6-1-1".into(), pack("0000000000000002"))];
         ia.pass(5);

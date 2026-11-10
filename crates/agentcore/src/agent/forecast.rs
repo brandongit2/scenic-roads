@@ -49,7 +49,7 @@ pub struct Machine {
     pub busy_s: f64,
     /// What each z6 tile takes it more (seconds): the lead's, while a worker that takes tails is
     /// around, the moment its job gives one to take its tail (::offload::LEASE_WAIT). (A
-    /// terrain z6 tile's subtrees out with workers, crate::terrain_task, take none: they're offered as
+    /// terrain z6 tile's subtrees out with workers, terrain::terrain_task, take none: they're offered as
     /// the z6 tile begins and waited for only after its own run, by then taken or not, and its
     /// measured time, the job's, has those waits in it.)
     pub unit_extra_s: f64,
@@ -187,7 +187,7 @@ pub struct Input<'a> {
     /// Targets the plan holds until another is made (`Unknown`; code 5 on).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unknown: Vec<Unknown>,
-    /// The build is paused (crate::control::Pause; code 3 on): nothing new starts until it's
+    /// The build is paused (jobrt::control::Pause; code 3 on): nothing new starts until it's
     /// resumed, when no one can say, so the forecast places nothing (`PAUSED`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paused: bool,
@@ -1410,7 +1410,7 @@ impl Ready {
 const OFFER_MAX: usize = 64;
 
 /// How long a lane refused work waits before it asks again (s), when nothing ends sooner: an
-/// agent asks every few seconds, and a wait on the NAS budget ages (crate::budget::nas::OWN_AGE).
+/// agent asks every few seconds, and a wait on the NAS budget ages (jobrt::budget::nas::OWN_AGE).
 const ASK_AGAIN_S: f64 = 300.0;
 
 /// How long the run's leases last without a beat: past any run (the scheduler's leases lapse only
@@ -3071,7 +3071,7 @@ mod tests {
         let c = |_: &str, _: &str| Cost { secs: 600.0, known: true, peak_mb: 1000 };
         // (Targets of 100 thousandths of the NAS each, a member's four lanes free, the lead's lane
         // busy, a member's job out for 900 s: held, one at a time while it runs.)
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, held: true, ..Default::default() };
+        let limits = jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, held: true, ..Default::default() };
         let v = crate::coord::cost_version("slope-deep");
         let mut st = State { nas: Some(limits), nas_own: Some(limits), lead_name: "m4".into(), ..Default::default() };
         for t in &regions[0].slope_deep {
@@ -3590,7 +3590,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (c, port) = coord::start_for_test(&d.path().join("coord"), "m4", "");
         let m1 = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
-        c.set_nas(Some(crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, ..Default::default() }));
+        c.set_nas(Some(jobrt::budget::nas::Limits { bytes_s: 100e6, creates_s: 100.0, ..Default::default() }));
         let units: Vec<String> = (0..12).map(|i| format!("6/8/{i}")).collect();
         for (i, u) in units.iter().enumerate() {
             // (40 MB/s of the NAS's 100: 400 of its weight; every other one 3 GB, the rest 1 GB.)
@@ -3620,7 +3620,7 @@ mod tests {
         };
         c.offer("p", offered());
         c.set_capacity(ask(16_000, 14, 4).cap);
-        let run = |host: &str, threads: u32, cpu_s: f64| crate::timings::RunRec {
+        let run = |host: &str, threads: u32, cpu_s: f64| jobrt::timings::RunRec {
             v: 1,
             kind: "unit".into(),
             host: host.into(),
@@ -3953,7 +3953,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let limits = crate::budget::nas::Limits {
+        let limits = jobrt::budget::nas::Limits {
             bytes_s: 37e6,
             creates_s: 30.0,
             listed_s: 836.0,
@@ -4324,7 +4324,7 @@ mod tests {
         let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") else { return };
         let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
         let limit: u64 = std::env::var("SCENIC_FORECAST_LIMIT_S").ok().and_then(|s| s.parse().ok()).unwrap_or(15);
-        let mb = || crate::sys::footprint().unwrap_or(0) >> 20;
+        let mb = || jobrt::sys::footprint().unwrap_or(0) >> 20;
         let base = mb();
         let peak = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4332,7 +4332,7 @@ mod tests {
             let (peak, stop) = (peak.clone(), stop.clone());
             std::thread::spawn(move || {
                 while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                    peak.fetch_max(crate::sys::footprint().unwrap_or(0) >> 20, std::sync::atomic::Ordering::SeqCst);
+                    peak.fetch_max(jobrt::sys::footprint().unwrap_or(0) >> 20, std::sync::atomic::Ordering::SeqCst);
                     std::thread::sleep(Duration::from_millis(20)); // (sleep ok: a sampler)
                 }
             })

@@ -288,9 +288,9 @@ pub struct RunRec {
     pub safe_points: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_gap_s: Option<f64>,
-    /// The cost version of its step it ran as (pipeline::coord::cost_version), stamped by the lead
+    /// The cost version of its step it ran as (agentcore::coord::cost_version), stamped by the lead
     /// as the record comes in: a step's use counts only its runs of the way it runs now
-    /// (pipeline::uses). None: a record from before the stamp, of no known way.
+    /// (agentcore::uses). None: a record from before the stamp, of no known way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_v: Option<u32>,
 }
@@ -1783,7 +1783,7 @@ pub fn read_child(p: &Path) -> Vec<PhaseRec> {
     take_child(p)
 }
 
-/// The UTC day of a time, `YYYY-MM-DD` (task #916: from pipeline::rail).
+/// The UTC day of a time, `YYYY-MM-DD` (task #916: from inputs::rail).
 pub fn day_of(t: std::time::SystemTime) -> String {
     let s = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
     // Civil from days (Howard Hinnant's algorithm).

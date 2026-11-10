@@ -1048,7 +1048,7 @@ impl Tif {
     }
 }
 
-/// A pack of `grids`: a tar (ustar, its headers fixed: pipeline::agent::histarchive's) whose first
+/// A pack of `grids`: a tar (ustar, its headers fixed: agentcore::agent::histarchive's) whose first
 /// member, `INDEX`, lists them (`Packed`), each grid then its GeoTIFF, in order. (Taken, not
 /// copied: a dense tile's are a few hundred MB.)
 pub fn pack(grids: Vec<Tif>) -> Result<Vec<u8>> {

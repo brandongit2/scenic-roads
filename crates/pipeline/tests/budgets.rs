@@ -19,7 +19,7 @@
 mod common;
 
 use common::*;
-use pipeline::budget::{QUERY_DOMAINS, QUERY_HOSTS, WIKIMEDIA};
+use jobrt::budget::{QUERY_DOMAINS, QUERY_HOSTS, WIKIMEDIA};
 
 /// The files of the jobs' code naming a metered host: how their requests go.
 const ASKS: &[(&str, &str)] = &[
