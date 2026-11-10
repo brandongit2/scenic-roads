@@ -60,9 +60,10 @@ pub struct Lease {
     pub live_at: Option<Instant>,
     #[serde(skip)]
     pub window: std::collections::VecDeque<(Instant, crate::agent::jobs::Live)>,
-    /// The first live view it heard that says all its job moved (`Live::nas_moved`), and when: what
-    /// its job's mean NAS rate is reckoned from (`Lease::mean`; in memory alone). One that doesn't
-    /// is replaced by the next, so a mean is had whenever a recent rate is (`Lease::lately`).
+    /// The first live view it heard that says all its job moved (`Live::nas_moved`) and its CPU
+    /// time, and when: what its job's mean NAS rate and busy cores are reckoned from (`Lease::mean`,
+    /// `Lease::cores_mean`; in memory alone). One saying less is replaced by the next that says
+    /// more, so a mean is had whenever a recent rate is (`Lease::lately`, `Lease::cores_lately`).
     #[serde(skip)]
     pub first: Option<(Instant, crate::agent::jobs::Live)>,
     /// Its job's stillness as its worker's beats show it (docs/pool.md §10, Flags; in memory
@@ -144,11 +145,32 @@ impl Lease {
         self.rate_since(self.first.as_ref())
     }
 
+    /// The cores its job kept busy over its last `WINDOW` or so of beats (its CPU time over that
+    /// time, crate::agent::jobs::Live::cores_since): None as `lately`, or where a view doesn't say
+    /// its CPU time.
+    pub fn cores_lately(&self) -> Option<f64> {
+        self.since(self.window.front(), crate::agent::jobs::Live::cores_since)
+    }
+
+    /// The cores its job kept busy since the first view its lease heard (`first`), as `mean`.
+    pub fn cores_mean(&self) -> Option<f64> {
+        self.since(self.first.as_ref(), crate::agent::jobs::Live::cores_since)
+    }
+
     /// What its job moved from view `from` to the newest, a second, the two `WINDOW` or more apart.
     fn rate_since(&self, from: Option<&(Instant, crate::agent::jobs::Live)>) -> Option<crate::budget::nas::Rate> {
+        self.since(from, crate::agent::jobs::Live::nas_rate)
+    }
+
+    /// `of` the newest view, view `from` and the seconds between them, the two `WINDOW` or more apart.
+    fn since<T>(
+        &self,
+        from: Option<&(Instant, crate::agent::jobs::Live)>,
+        of: impl Fn(&crate::agent::jobs::Live, &crate::agent::jobs::Live, f64) -> Option<T>,
+    ) -> Option<T> {
         let (live, at) = (self.live.as_ref()?, self.live_at?);
         let (t, base) = from.filter(|(t, _)| at.saturating_duration_since(*t) >= WINDOW)?;
-        live.nas_rate(base, at.saturating_duration_since(*t).as_secs_f64())
+        of(live, base, at.saturating_duration_since(*t).as_secs_f64())
     }
 
     /// How long its job's work has not moved, by the beats heard: from the last beat at which it
@@ -665,9 +687,10 @@ impl Leases {
                 if let Some(r) = ran {
                     l.began = now.checked_sub(Duration::from_secs(r)).or(l.began);
                 }
-                // (Its work moved: its progress line, or anything its job's view says, changed.)
+                // (Its work moved: its progress line, or anything its job's view says but its CPU
+                // time, changed.)
                 let moved = (progress.is_some() && progress != l.progress)
-                    || live.as_ref().is_some_and(|v| l.live.as_ref() != Some(v));
+                    || live.as_ref().is_some_and(|v| l.live.as_ref().is_none_or(|w| v.moved_from(w)));
                 if moved {
                     l.still_most = l.still_most(now);
                     l.moved = Some(now);
@@ -691,7 +714,13 @@ impl Leases {
                     while l.window.get(1).is_some_and(|(t, _)| now.saturating_duration_since(*t) >= WINDOW) {
                         l.window.pop_front();
                     }
-                    if l.first.as_ref().is_none_or(|(_, f)| f.nas_moved().is_none()) {
+                    // (The first view saying what it moved and its CPU time: one saying less is
+                    // replaced by the next that says more.)
+                    let less = |f: &crate::agent::jobs::Live| {
+                        (f.nas_moved().is_none() && v.nas_moved().is_some())
+                            || (f.cpu_ms.is_none() && v.cpu_ms.is_some())
+                    };
+                    if l.first.as_ref().is_none_or(|(_, f)| less(f)) {
                         l.first = Some((now, v.clone()));
                     }
                     l.live = Some(v);
@@ -1138,6 +1167,34 @@ mod tests {
         assert_eq!(ls.of(id).unwrap().still(), Some(Duration::from_secs(60)));
         assert_eq!(ls.of(id).unwrap().still_most(at(400)), 180, "60 s to 240 s; its end 130 s after its last move");
         assert_eq!(ls.of(id).unwrap().still_most(at(500)), 230);
+    }
+
+    /// The cores a job keeps busy by its beats' CPU time (task #1091): since its first view and over
+    /// its last minute or so, once two are `WINDOW` apart; its CPU time alone moving isn't a move
+    /// (a job spinning on nothing would never be still).
+    #[test]
+    fn a_jobs_busy_cores_are_its_cpu_time_over_its_beats() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut ls = Leases::new(Duration::from_secs(600));
+        let id = ls.grant("m1", Work::Job { step: "unit".into(), targets: vec![] }, t0);
+        let view = |cpu_s: u64| crate::agent::jobs::Live { cpu_ms: Some(cpu_s * 1000), ..Default::default() };
+        assert!(ls.renew_live(id, "m1", None, Some(view(0)), at(20)));
+        assert!(ls.renew_live(id, "m1", None, Some(view(10)), at(50)));
+        assert_eq!(
+            (ls.of(id).unwrap().cores_mean(), ls.of(id).unwrap().cores_lately()),
+            (None, None),
+            "under a minute"
+        );
+        // (0.3 a core for 60 s, then 3 for 60.)
+        assert!(ls.renew_live(id, "m1", None, Some(view(18)), at(80)));
+        for s in [110, 140] {
+            assert!(ls.renew_live(id, "m1", None, Some(view(18 + 3 * (s - 80))), at(s)));
+        }
+        let l = ls.of(id).unwrap();
+        assert_eq!(l.cores_mean(), Some(198.0 / 120.0));
+        assert_eq!(l.cores_lately(), Some(3.0));
+        assert_eq!(l.still(), Some(Duration::from_secs(120)), "its CPU time alone moved");
     }
 
     /// A job's pace by its beats' progress lines (task #990): each target's run of a line is a part;

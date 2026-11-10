@@ -105,9 +105,11 @@ pub struct Needs {
 /// its NAS bytes read and written, files made and metadata work (its processes' counts,
 /// store::nasio: the lead weighs a job past its predicted time by them, crate::coord::sched's
 /// `job_weight`) and its internet bytes in
-/// and out (the proxy's count of its tag, crate::budget::net), since it began; and how long it has
-/// run. Each None: not said (a step that times no phases or notes no costs, a job its agent gave no
-/// folder or tag).
+/// and out (the proxy's count of its tag, crate::budget::net), since it began; the CPU time its
+/// processes took (the lead counts a job past its first target or its predicted time for the cores
+/// it keeps busy by it, crate::coord::sched's `busy_now`); and how long it has run. Each None: not
+/// said (a step that times no phases or notes no costs, a job its agent gave no folder or tag, one
+/// not sampled yet).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Live {
     /// How long it has run (whole seconds): from its process's start, carried through a take-over
@@ -148,6 +150,10 @@ pub struct Live {
     pub net_in: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub net_out: Option<u64>,
+    /// The CPU time its processes took (ms: the memory guard's sampler, every 5 s,
+    /// crate::agent::memguard::Sampler::cpu_ns; set by its agent, not by `read`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_ms: Option<u64>,
 }
 
 impl Live {
@@ -176,7 +182,20 @@ impl Live {
             net_in: net.map(|n| n.0),
             net_out: net.map(|n| n.1),
             ran_s: None,
+            cpu_ms: None,
         }
+    }
+
+    /// Whether its job's work moved from `was` (an earlier view of it): anything it says but its CPU
+    /// time, which a job spinning on nothing moves too (crate::coord::lease's stillness).
+    pub fn moved_from(&self, was: &Live) -> bool {
+        Live { cpu_ms: None, ..self.clone() } != Live { cpu_ms: None, ..was.clone() }
+    }
+
+    /// The cores its job kept busy over the `secs` since `base` (an earlier beat's view of it): its
+    /// CPU time over that time; None when either doesn't say it.
+    pub fn cores_since(&self, base: &Live, secs: f64) -> Option<f64> {
+        Some(self.cpu_ms?.saturating_sub(base.cpu_ms?) as f64 / 1000.0 / secs.max(1.0))
     }
 
     /// What its job has moved on the NAS since it began: bytes read and written, files made,
@@ -1023,6 +1042,7 @@ mod tests {
                 net_in: Some(10),
                 net_out: Some(2),
                 ran_s: None,
+                cpu_ms: None,
             }
         );
     }

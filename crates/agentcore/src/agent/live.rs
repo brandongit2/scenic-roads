@@ -454,6 +454,12 @@ impl Store {
         self.series.lock().ok()?.get(name)?.latest(now.saturating_sub(fresh_s), now)
     }
 
+    /// Series `name`'s mean over the `span_s` to `now`, by the second; None with no point in it.
+    pub fn mean(&self, name: &str, now: u64, span_s: u64) -> Option<f64> {
+        let p = self.series.lock().ok()?.get(name)?.points(0, 1, now.saturating_sub(span_s), now);
+        (!p.is_empty()).then(|| p.iter().map(|x| x[2]).sum::<f64>() / p.len() as f64)
+    }
+
     /// The build's limits at `t`, as the agent's loop read them: the cores it may use, the Mac's
     /// memory floor (MB), the owner's disk room target and the jobs' reservations (bytes).
     pub fn record_limits(&self, t: u64, cores: u32, floor_mb: u64, room: u64, reserved: u64) {

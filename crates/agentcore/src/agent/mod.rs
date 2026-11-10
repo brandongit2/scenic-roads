@@ -5612,7 +5612,15 @@ impl Agent {
             }
         }
         let cores = std::thread::available_parallelism().map_or(4, |n| n.get() as u32);
-        let busy = self.mac.load1().map_or(0, |l| l.ceil() as u32);
+        // (The cores busy over the last minute, by the CPU's ticks (the live store's, task #1091): the
+        // load average counts threads waiting on the NAS too, and read 13 on the M4 on 10 Nov while
+        // its CPU was 8.3 cores busy. Not sampled yet (a fixed Mac's, a dry run's), the load average.)
+        let busy = self
+            .live
+            .as_ref()
+            .and_then(|l| l.mean(live::CORES, now_s(), 60))
+            .or_else(|| self.mac.load1())
+            .map_or(0, |l| l.ceil() as u32);
         let reserved_mb = self.reserved(None) >> 20;
         let r = self.mem_reading();
         let build_mb = self.build_room();
@@ -6401,7 +6409,12 @@ impl Agent {
         let targets = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
         let net = self.proxy.as_ref().and_then(|p| p.net()).and_then(|n| n.job(&Self::net_tag(k)));
         let ran_s = Some(r.elapsed().as_secs());
-        Some(jobs::Live { ran_s, ..jobs::Live::read(&self.nas_counts_path(k), &self.slot_costs(k), targets, net) })
+        let cpu_ms = self.sampler.cpu_ns(k).map(|ns| ns / 1_000_000);
+        Some(jobs::Live {
+            ran_s,
+            cpu_ms,
+            ..jobs::Live::read(&self.nas_counts_path(k), &self.slot_costs(k), targets, net)
+        })
     }
 
     /// This Mac's resources for the status (cond::Resources); its caches counted again on a thread

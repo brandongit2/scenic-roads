@@ -278,6 +278,9 @@ pub(crate) struct Need {
     /// A job held: the threads its lease counts it for (`Lease::threads`, as granted and
     /// re-granted; 0: not said), which its threads and busy cores never pass (`need_cores`).
     held: u32,
+    /// A job held: the cores it keeps busy now, in tenths, once its run says it (`busy_now`), which
+    /// it counts for in place of its measure's.
+    busy_now: Option<u32>,
 }
 
 /// The room a job of the first offer refused for its room alone waits for on a Mac (`Sched::pack`,
@@ -427,16 +430,16 @@ pub fn ask_cores(a: &Ask) -> u32 {
     total.saturating_sub(cap.filter(|c| c.in_use).map_or(0, |c| c.kept_cores)).max(1)
 }
 
-/// The cores `a`'s Mac has busy outside the pool: those its last minute's load average keeps busy
+/// The cores `a`'s Mac has busy outside the pool: those its last minute's CPU keeps busy
 /// (its capacity's `cores` less `cores_free`) past `ours`, the threads of the pool's jobs it holds,
 /// less the cores the in-use share keeps from its jobs already while its owner uses it
 /// (`ask_cores` takes those off). 0 for an ask without a capacity.
-/// The load average is rounded up to whole cores: an excess of one is taken for that and counts
+/// The minute's busy cores are rounded up to whole cores: an excess of one is taken for that and counts
 /// none (task #896: no share of the Mac stands for a job just ended any more; one still in the
-/// load counts as outside it until the load shows it gone, a minute at most, and it keeps half the
+/// minute counts as outside it until the minute shows it gone, a minute at most, and it keeps half the
 /// cores at most meanwhile).
-/// At most half the cores its Mac has for its jobs (`ask_cores`) count (task #684): the load
-/// average can't tell a niced test build (tools/app/remote-tests.sh runs at nice 10) from work
+/// At most half the cores its Mac has for its jobs (`ask_cores`) count (task #684): the cores
+/// busy can't tell a niced test build (tools/app/remote-tests.sh runs at nice 10) from work
 /// that competes, and on 26 Oct an agent's check build held the
 /// lead's load at 47 of 12 cores, so it granted itself nothing for two hours. The owner's own use
 /// keeps the in-use share besides.
@@ -454,6 +457,26 @@ pub fn outside_cores(a: &Ask, ours: u32) -> u32 {
     })
 }
 
+/// The cores held job `l` keeps busy at `now`, in tenths (a tenth at least; task #1091), once its run
+/// says it: the more of the cores it kept busy since its lease's first beat and over its last minute
+/// or so of beats (`Lease::cores_mean`, `Lease::cores_lately`: a job busy late counts for its busy
+/// stretch within two minutes, one quiet a moment between busy stretches for its mean), once it
+/// has ended a target (one read and computed) or run past the time its targets are predicted to
+/// take its Mac (`secs`; none known, `OWN_AGE`). Before, or with no CPU time said (an older
+/// agent's), None: it counts for its measure (`need_cores`), so a job still reading its first
+/// target isn't counted as using nothing. A step's measure is its busiest thread count's over the
+/// window's runs (crate::uses): on 10 Nov it counted the M4's terrain-deep jobs at 3.8 cores each,
+/// from runs at 5 threads two days before, while they kept 2.2–3.5 busy at 4.
+fn busy_now(l: &Lease, secs: Option<u64>, now: Instant) -> Option<u32> {
+    let started = l.live.as_ref().is_some_and(|v| v.targets_done > 0)
+        || l.ran(now).as_secs() > secs.unwrap_or(crate::budget::nas::OWN_AGE.as_secs());
+    if !started {
+        return None;
+    }
+    let cores = l.cores_mean()?.max(l.cores_lately().unwrap_or(0.0));
+    Some(((cores * 10.0).round() as u32).max(1))
+}
+
 /// The threads a job wanting `threads` and counting for `busy` tenths of a core is granted where
 /// `left` tenths are left by the rest of its Mac's work: within the cores left and the threads it
 /// leaves idle (its threads less its busy cores, whole: they add no load), one at least. A grant's
@@ -464,7 +487,7 @@ fn fit_threads(threads: u32, busy: u32, left: u32) -> u32 {
 }
 
 /// The whole cores `t` tenths of a core make, to the nearest (a Mac's jobs' busy cores summed
-/// before rounding, task #697: beside its load average's whole cores).
+/// before rounding, task #697: beside its busy cores' whole cores).
 fn tenths_to_cores(t: u32) -> u32 {
     (t + 5) / 10
 }
@@ -475,7 +498,7 @@ fn tenths(t: u32) -> String {
 }
 
 /// How long a Mac's load is given to show its last grant before it's granted a job past the cores
-/// its jobs' threads leave (`Sched::pack`, task #688 review): the minute its load average spans.
+/// its jobs' threads leave (`Sched::pack`, task #688 review): the minute its busy cores span.
 pub const SETTLE: Duration = Duration::from_secs(60);
 
 /// The steps that load the NAS as they go (reads; the clean-up's deletes, task #1000): one none of
@@ -857,6 +880,14 @@ impl Sched {
         got
     }
 
+    /// Held job `l` of `step` over `targets` as its Mac's packing counts it at `now`: its need
+    /// (`lease_need`) within the threads its lease counts, at the cores it keeps busy now once its
+    /// run says it (`busy_now`).
+    fn held_need(&self, l: &Lease, step: &str, targets: &[(String, String)], now: Instant) -> Need {
+        let (n, secs) = self.lease_need(l, step, targets);
+        Need { held: l.threads, busy_now: busy_now(l, secs, now), ..n }
+    }
+
     /// What leased job `l` weighs of the NAS budget now, and whether it downloads (`job_nas`): its
     /// targets' measured rates, as predicted, until it has run past the time they predict it takes
     /// its worker (`secs_of`, summed; a target of no known time, `OWN_AGE`); then the greater of its
@@ -1062,14 +1093,14 @@ impl Sched {
                 None => (self.provisional(step, targets).unwrap_or_default(), true),
             };
             let m = Measured { disk_mb: 0, ..m };
-            return Need { m, cores, cold, waits: false, idle: false, by_use: false, held: 0 };
+            return Need { m, cores, cold, waits: false, idle: false, by_use: false, held: 0, busy_now: None };
         }
         let used = self.uses.cores(step, crate::paces::mac_of(worker));
         let by_use = used.is_some();
         match self.job_need(step, targets) {
             Some(m) => {
                 let cores = used.or_else(|| book_cores(&self.book(), step, targets));
-                Need { m, cores, cold: false, waits: false, idle: false, by_use, held: 0 }
+                Need { m, cores, cold: false, waits: false, idle: false, by_use, held: 0, busy_now: None }
             }
             // (No figure (`no_figure`): it runs alone, so it's counted at none.)
             None => Need {
@@ -1080,6 +1111,7 @@ impl Sched {
                 idle: false,
                 by_use,
                 held: 0,
+                busy_now: None,
             },
         }
     }
@@ -1156,6 +1188,7 @@ impl Sched {
                 None => (1, 10),
             }
         };
+        let busy = n.busy_now.unwrap_or(busy);
         (threads, if n.waits || n.idle { 0 } else { busy.min(threads * 10) })
     }
 
@@ -1289,7 +1322,7 @@ impl Sched {
         let needs: Vec<Need> = jobs
             .iter()
             .map(|&(l, step, targets)| {
-                let mut n = Need { held: l.threads, ..self.lease_need(l, step, targets).0 };
+                let mut n = self.held_need(l, step, targets, now);
                 // (Its re-grants' growth past its measure: `grown_mb`.)
                 n.m.mem_mb += self.grown_mb(l, step, targets.iter().map(|t| t.0.as_str()), n.m.mem_mb);
                 if let Some(held) = waits(l) {
@@ -1319,7 +1352,7 @@ impl Sched {
             .zip(&jobs)
             .fold(total * 10, |left, (n, (_, st, _))| left.saturating_sub(self.need_cores(st, n, total).1));
         // (Its Mac's load from outside the pool (other processes: builds, tests): the cores its
-        // last minute's load average keeps busy (`Capacity::cores_free`) past those the jobs it
+        // last minute's CPU keeps busy (`Capacity::cores_free`) past those the jobs it
         // holds count for, less those the in-use share keeps already, come off the cores left
         // (task #440), at most half its cores (task #684): a Mac swamped by other work is granted
         // jobs in the other half only. A job keeping more busy than it was measured to shows here.)
@@ -1339,7 +1372,7 @@ impl Sched {
         // (The cores left were its jobs counted at their threads, as before task #688: a grant
         // past them is an overcommit, trusting its busy cores (task #688 review). At most one per
         // ask, and none while its Mac's load hasn't had `SETTLE` to show its last grant or shows
-        // load past its jobs' busy cores by more than a core (the load average's whole cores): the jobs go up one at a time, each measured by the load
+        // load past its jobs' busy cores by more than a core (the minute's whole cores): the jobs go up one at a time, each measured by the load
         // before the next, so jobs busier than their runs said (or #690's reads in parallel) stop
         // the climb within a minute instead of a whole ask's worth landing at once.)
         let mut by_threads = needs
@@ -1679,7 +1712,7 @@ impl Sched {
             Work::Job { step, targets } => {
                 let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
                 let idle = cap.idle.contains(&l.id) || cap.waiting.iter().any(|w| w.lease == l.id);
-                Some((step.clone(), ts.clone(), Need { held: l.threads, idle, ..self.pack_need(step, &ts, &a.worker) }))
+                Some((step.clone(), ts, Need { idle, ..self.held_need(l, step, targets, now) }))
             }
             Work::Task { .. } => None,
         };
@@ -2208,16 +2241,9 @@ impl Sched {
         let ours: u32 = mine
             .iter()
             .map(|l| match &l.work {
-                // (The cores it kept busy within the threads it was granted, else those threads.)
+                // (As its Mac's packing counts it.)
                 Work::Job { step, targets } => {
-                    let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
-                    let n = Need { idle: idle(l), ..self.pack_need(step, &ts, worker) };
-                    let counted = self.need_cores(step, &n, total).1;
-                    match n.cores.and_then(|c| c.busy_tenths) {
-                        _ if counted == 0 || l.threads == 0 => counted,
-                        Some(_) => counted.min(l.threads * 10),
-                        None => l.threads * 10,
-                    }
+                    self.need_cores(step, &Need { idle: idle(l), ..self.held_need(l, step, targets, now) }, total).1
                 }
                 Work::Task { .. } => 0,
             })

@@ -1051,7 +1051,8 @@ pub struct Capacity {
     /// (`sched::pack`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mem_held_back: Option<String>,
-    /// Its cores, and those free by the last minute's load average.
+    /// Its cores, and those its last minute's CPU left free (the agent's live store's busy cores,
+    /// rounded up; not sampled yet, the load average).
     pub cores: u32,
     pub cores_free: u32,
     /// The disk's free space less the owner's room target and the running jobs' reservations (MB).
@@ -10637,6 +10638,86 @@ mod tests {
         let gs = w.ask(&ask(64_000, vec![])).unwrap().unwrap();
         let threads: Vec<u32> = std::iter::once(&gs).chain(&gs.more).map(|g| g.threads).collect();
         assert_eq!(threads, [4, 4, 4], "cores decide");
+    }
+
+    /// Task #1091: a running job counts for the cores it keeps busy now, once its run says it. On
+    /// 10 Nov the M4's three terrain-deep jobs counted 3.8 cores each (their step's runs at 5 threads
+    /// two days before) of the 12 it had, so a fourth was refused ("0.6 of 12 left"), while over
+    /// their runs they kept about 2.5 busy each. Reading their first target (0.2 busy), they count
+    /// for their measure and nothing more goes; past it, for what they keep busy, and a fourth goes.
+    #[test]
+    fn a_running_job_counts_for_the_cores_it_keeps_busy_now() {
+        let (_d, c, w, clock) = every((0, 0));
+        let ts: Vec<String> = (1..=12).map(|i| format!("6/1/{i}")).collect();
+        for t in &ts {
+            let sizes =
+                [("threads".to_string(), 5), ("cpu_ms".to_string(), 2_250_000), ("waited_ms".to_string(), 0)].into();
+            let cost = Cost {
+                peak_mb: 3000,
+                secs: 600,
+                worker: None,
+                v: cost_version("slope-hi"),
+                sizes,
+                ..Default::default()
+            };
+            c.add_costs_by(&[(cost_key("slope-hi", t), cost)], "m1");
+            c.add_disks(&[(cost_key("slope-hi", t), 100)]);
+        }
+        c.offer(
+            "p",
+            vec![Offer {
+                step: "slope-hi".into(),
+                targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+                job: None,
+            }],
+        );
+        let ask = |busy: u32, leases: Vec<u64>| Ask {
+            want: 12,
+            cap: Some(Capacity {
+                at: unix_now(),
+                cores: 12,
+                cores_free: 12 - busy,
+                disk_mb: 64_000,
+                leases,
+                ..Default::default()
+            }),
+            ..every_ask("m1", "slope-hi", 64_000, 64_000)
+        };
+        let gs = w.ask(&ask(0, vec![])).unwrap().unwrap();
+        let mut leases = vec![gs.lease];
+        leases.extend(gs.more.iter().map(|g| g.lease));
+        assert_eq!(leases.len(), 3);
+        // (A beat every 20 s, each job's CPU time `cores` busy since the last, its targets ended.)
+        let mut cpu = 0u64;
+        let mut beat = |cores: f64, done: usize| {
+            clock.advance(Duration::from_secs(20));
+            cpu += (cores * 20_000.0) as u64;
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            for &l in &leases {
+                let v = crate::agent::jobs::Live {
+                    cpu_ms: Some(cpu),
+                    targets: 2,
+                    targets_done: done,
+                    ..Default::default()
+                };
+                assert!(s.leases.renew_live(l, "m1", None, Some(v), now));
+            }
+        };
+        for _ in 0..6 {
+            beat(0.2, 0);
+        }
+        let refused = w.ask(&ask(1, leases.clone())).unwrap();
+        assert!(refused.is_none(), "reading their first target: counted for their measure");
+        let why = c.shared.lock().unwrap().refused.get("m1").map(|r| r.1.clone()).unwrap_or_default();
+        assert!(why.contains("a job of slope-hi takes 3.8"), "{why}");
+        for _ in 0..30 {
+            beat(2.5, 0);
+        }
+        beat(2.5, 1);
+        let g =
+            w.ask(&ask(8, leases.clone())).unwrap().expect("past their first target: 7.5 of 12 busy, a fourth goes");
+        assert!(g.more.is_empty(), "one past their threads at a time");
     }
 
     /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent

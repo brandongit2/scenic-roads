@@ -399,9 +399,13 @@ pub struct Watch {
     /// sample, or a sum that fell as a process ended, starts it again): how long it has been idle,
     /// for an update's wait (crate::agent's `update_due`), whatever its progress lines say.
     pub cpu_mark: Option<(std::time::Instant, u64)>,
-    /// Its CPU time (ns) as last sampled: what its threads used, for its re-grant (crate::agent's
-    /// `tend_grant`).
+    /// Its CPU time (ns) as sampled: each sample's rise over the last summed, so it never falls
+    /// (its processes' sum falls as one ends, its time taken with it: the time it took since the
+    /// sample before is missed). What its threads used, for its re-grant (crate::agent's
+    /// `tend_grant`), and the cores it keeps busy as its lead counts it (crate::agent::jobs::Live::cpu_ms).
     pub cpu_ns: Option<u64>,
+    /// Its processes' summed CPU time at the last sample (ns): what the next one's rise is from.
+    pub cpu_sum: Option<u64>,
 }
 
 /// The CPU time (ns) a job uses for its sampler to call it busy again: a core-minute.
@@ -911,7 +915,11 @@ impl Sampler {
                 let Some(w) = g.watches.get_mut(*k).and_then(Option::as_mut).filter(|w| w.pgid == *pgid) else {
                     continue;
                 };
-                w.cpu_ns = *ns;
+                if let Some(ns) = *ns {
+                    let rise = w.cpu_sum.map_or(ns, |was| ns.saturating_sub(was));
+                    w.cpu_ns = Some(w.cpu_ns.unwrap_or(0) + rise);
+                    w.cpu_sum = Some(ns);
+                }
                 if let Some(ns) = *ns {
                     match w.cpu_mark {
                         Some((_, m)) if ns >= m && ns - m < BUSY_CPU => {}

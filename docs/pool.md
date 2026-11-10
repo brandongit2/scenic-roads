@@ -377,7 +377,10 @@ available and what compressing frees among it, the floor, the swap grown, what's
 jobs' growth, and why no job may start, `mem_held_back`), what its jobs may hold for one to start (`build_mb`) and what's
 left of it less each running job's need (the larger of what it holds and the peak its grant was
 packed at, `Grant::peak_mb`: the lead's measure of its targets, on the lead and a member alike), its
-cores and those the last minute's load leaves free, the disk free less the owner's room target
+cores and those the last minute's CPU leaves free (`cores_free`: the cores busy by the CPU's
+ticks, the live store's `cores_busy` over the minute, rounded up; not sampled yet, the load
+average, which counts threads waiting on the NAS too: on 10 Nov the M4's read 13 while its CPU
+was 8.3 cores busy, task #1091), the disk free less the owner's room target
 and its jobs' reservations (`reserved_mb`, below), and the disk's free space and the target
 themselves (`free_mb`, `target_mb`: the build page, `scenic status` and a refusal say the disk as
 "38 GB free · 18 GB for jobs (20 GB room target)", `coord::disk_words`; nothing kept, no
@@ -617,14 +620,29 @@ disk or the NAS budget is full rather than their threads: terrain-hi kept 1.16 c
 threads on 26 Oct and counts for 1.2, where it counted for 3 and the M4 packed 3–4 of them ("cores:
 2 of 14 left, a job of terrain-hi takes 3") with 22 GB of its 39 GB build memory free. The rule
 reads the runs, not the step: a terrain job reading faster (from this Mac's disk, say) keeps more
-busy and counts for more. A job's threads stay within the cores left plus those it leaves idle
+busy and counts for more. **A running job counts for what it keeps busy now** (task #1091,
+`sched::busy_now`): its beats carry its CPU time (`jobs::Live::cpu_ms`, the memory guard's
+sampler, its processes' rises summed so a process ending never takes it back), and once it has
+ended a target (one read and computed) or run past the time its targets are predicted to take its
+Mac (`OWN_AGE` where none is known), it counts for the more of the cores it kept busy since its
+lease's first beat and over its last minute or so of beats (`Lease::cores_mean`,
+`Lease::cores_lately`, the NAS weight's two windows, §7.7: a job busy late counts for its busy
+stretch, one quiet a moment between busy stretches for its mean), in place of its measure; before
+that, or where its beats say no CPU time (an older agent's), its measure, so a job still reading
+its first target isn't counted as using nothing. The packing, a re-grant's count of its Mac's
+other jobs and placement's `swamped` count it so. A step's measure is its busiest thread count's
+over the window's runs: on 10 Nov it counted the M4's three terrain-deep jobs at 3.8 cores each
+(266 runs at 5 threads on 8–9 Nov kept 3.75 busy; the 4-thread runs since, beside each other on a
+busier NAS, 2.4–2.8), 11.4 of the 12 it had while in use, and a fourth was refused ("cores: 0.6 of
+12 left, a job of terrain-deep takes 3.8") while they kept about 2.5 each busy over their runs.
+A job's threads stay within the cores left plus those it leaves idle
 (its grant less its busy cores). **Past the cores its jobs' threads leave, a Mac climbs one job
 at a time** (task #688 review, `coord::SETTLE`): an ask is granted at most one job that fits only
-by busy cores, and none until a minute has passed since its last grant (the span of the load
-average its capacity reports) or while that load passes its jobs' busy cores by more than a core.
+by busy cores, and none until a minute has passed since its last grant (the span of the cores
+busy its capacity reports) or while those pass its jobs' busy cores by more than a core.
 So the M4 takes four terrain-hi jobs by their threads at once, then one a minute up to what its
 memory, disk and the NAS budget hold, and stops climbing as soon as jobs keep more busy than their
-runs said (a run's busy cores read low where it waited on a busy NAS). Load past the busy cores by more than a core (the load average's rounding) comes off
+runs said (a run's busy cores read low where it waited on a busy NAS). Cores busy past the jobs' by more than a core (the minute's rounding up) come off
 the cores left as outside load does (`outside_cores`, at most half the Mac's), which stops further
 grants but stops no running job. A cold
 start that honours its threads gets one thread (task #896): its run measures it, and it climbs a
@@ -939,13 +957,13 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   what's left: the ask's memory and disk (what its jobs may hold above its memory floor,
   §7.1, `Agent::build_room`, less each job it holds at its expected peak or what it holds, the
   larger; and its free disk) and its Mac's cores (less the in-use share's
-  while its owner uses it, and less the cores busy outside the pool: those its last minute's load
-  average keeps busy (`Capacity::cores_free`, in each ask's capacity) past the threads its
-  jobs were granted (`Lease::threads`), an excess of one core counting none (the load average is
-  rounded up; a job just ended counts until the load shows it gone, a minute at most), and at most half the cores it has
+  while its owner uses it, and less the cores busy outside the pool: those its last minute's CPU
+  keeps busy (`Capacity::cores_free`, in each ask's capacity, §7.1) past the cores its jobs count
+  for (§7.1, Threads granted), an excess of one core counting none (the minute's cores are
+  rounded up; a job just ended counts until the minute shows it gone, a minute at most), and at most half the cores it has
   for jobs (`coord::ask_cores`: less the in-use share; `coord::outside_cores`; task #440: a Mac swamped by other work, builds and tests, gets no job
   beside those it holds past the other half, and its refusal says the cores busy outside the
-  pool; task #684: the load average can't tell a niced test build (`tools/app/remote-tests.sh`
+  pool; task #684: the cores busy can't tell a niced test build (`tools/app/remote-tests.sh`
   runs at nice 20 on the Mac mini, the lead) from work that competes, and on 26 Oct one held the
   lead's load at 47 of 12 cores, its free cores none, for two hours; the owner's own use keeps
   the in-use share besides), less the measured needs of every job it holds and of those granted
