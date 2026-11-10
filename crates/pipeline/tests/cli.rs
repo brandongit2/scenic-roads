@@ -46,7 +46,7 @@ fn every_binary_has_a_checked_command_line() {
     known.sort();
     assert_eq!(bins, known, "the workspace's binaries and pipeline::cli::PROGRAMS (and server) differ");
     for p in PROGRAMS {
-        assert!(Path::new(exe(p)).exists(), "{p}");
+        assert!(Path::new(&exe(p)).exists(), "{p}");
     }
 }
 
