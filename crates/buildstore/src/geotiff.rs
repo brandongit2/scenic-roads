@@ -1054,14 +1054,6 @@ impl Tiff {
             None => Ok(()),
         }
     }
-
-    /// Image `level`'s pixel (`x`, `y`), band 1, as a 32-bit float.
-    pub fn pixel(&self, level: usize, x: u32, y: u32) -> Result<f32> {
-        let img = self.level(level)?;
-        let (bx, by) = (x / img.block_w, y / img.block_h);
-        let b = self.block(level, bx, by)?;
-        Ok(b.f32_at((x - bx * img.block_w) as usize, (y - by * img.block_h) as usize))
-    }
 }
 
 /// The dataset's items of GDAL's metadata XML (`<Item name="…">…</Item>`, those of no domain and no
@@ -1962,7 +1954,7 @@ mod tests {
             assert_eq!(t.transform(1).unwrap(), [100.0, 4.0, 0.0, 500.0, 0.0, -4.0]);
             assert_eq!(t.transform(2).unwrap(), [100.0, 8.0, 0.0, 500.0, 0.0, -2.0 * 30.0 / 8.0]);
             assert_eq!(t.read_window(2, 0, 0, 10, 8).unwrap(), vals[2]);
-            assert_eq!(t.pixel(1, 3, 4).unwrap(), 1403.0);
+            assert_eq!(t.read_window(1, 3, 4, 1, 1).unwrap(), [1403.0]);
             assert_eq!(t.nodata(), Some(-32767.0));
         }
     }

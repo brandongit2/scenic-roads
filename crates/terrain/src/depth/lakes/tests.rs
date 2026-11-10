@@ -175,9 +175,9 @@ fn a_pack_holds_its_grids_where_its_index_says() {
     let px = super::super::grids::px(14);
     assert!((gt[0] - (-super::super::grids::HALF + 512.0 * px)).abs() < 1e-6 && (gt[1] - px).abs() < 1e-9);
     assert_eq!(t.images().len(), 3, "overviews to 64 pixels: 256 and 128 wide");
-    assert_eq!(t.pixel(0, 300, 0).unwrap(), -4.5);
-    assert_eq!(t.pixel(0, 7, 255).unwrap(), -1.25);
-    assert!(t.pixel(0, 0, 0).unwrap().is_nan());
+    assert_eq!(t.read_window(0, 300, 0, 1, 1).unwrap(), [-4.5]);
+    assert_eq!(t.read_window(0, 7, 255, 1, 1).unwrap(), [-1.25]);
+    assert!(t.read_window(0, 0, 0, 1, 1).unwrap()[0].is_nan());
     // (Its tar's own members as a tar reads them.)
     let m = codecs::tar::list_tar(&p).unwrap();
     assert_eq!(m[0].0, INDEX);
