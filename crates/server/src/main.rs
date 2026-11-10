@@ -508,7 +508,20 @@ async fn main() -> Result<()> {
         .route("/api/profiles", get(profiles::get_list).post(profiles::post))
         .route("/api/profiles/{id}", axum::routing::put(profiles::put).delete(profiles::delete))
         .route("/api/profiles/{id}/default", axum::routing::post(profiles::set_default))
-        .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
+        // (X-Pid: which process answered, for publish's smoke test, tools/app/lib.zsh: no scan of
+        // the Mac's processes for the port's holder, #1108.)
+        .route(
+            "/api/ping",
+            get(|| async {
+                (
+                    [
+                        (header::CACHE_CONTROL, "no-store".to_string()),
+                        (header::HeaderName::from_static("x-pid"), std::process::id().to_string()),
+                    ],
+                    "ok",
+                )
+            }),
+        )
         .route("/api/bench", axum::routing::post(bench_h))
         .nest_service(
             "/fonts",

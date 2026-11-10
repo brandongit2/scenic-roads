@@ -484,8 +484,9 @@ list with its time. `cargo test` runs have no such bound.
   then would not exit; the scan is gone (the agent's lock names its holder, docs/surface.md). Reading
   one process by its pid (`proc_pidinfo`, `proc_pidpath`) touches none of its open files. `lsof`
   without `-p` walks them all the same way (publish's smoke test sat 16 min in one in check.sh's
-  shell part, 10 Nov): who listens on a port is `listeners <port>` (tools/app/lib.zsh: `netstat
-  -anv`'s socket table).
+  shell part, 10 Nov): the smoke test reads who answered from the server itself (`/api/ping`'s
+  `X-Pid`). (`netstat -anv -p tcp` isn't a stand-in: started from mise's Python, as check.sh's parts
+  are through devjob.py, it printed no Internet sockets at all.)
 
 ## Setting up a Mac (tools/dev is tracked, #548)
 

@@ -179,14 +179,6 @@ fast_forward() {
 # live_version <current.json>: its version's name.
 live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }
 
-# listeners <port>: the pids listening on TCP <port> (IPv4 or IPv6), one a line, from the kernel's
-# socket table (`netstat -anv`'s process:pid). Never lsof (#1108): it walks every process's open
-# files, resolving each, and a file open on the NAS while SMB stalls blocked it in the kernel,
-# uninterruptibly (check.sh's shell part sat 16 min in this smoke test's lsof, 10 Nov).
-listeners() {
-  /usr/sbin/netstat -anv -p tcp 2>/dev/null | awk -v p=$1 '$6 == "LISTEN" && $4 ~ ("[.]" p "$") { n = split($11, a, ":"); print a[n] }' | sort -u
-}
-
 # smoke <port> <pid> <log> <seconds> <path>...: the smoke test of the server <pid> started on <port>,
 # its output in <log>. It waits up to <seconds> for /api/ping (the server listens only once it has
 # read the map, its own Mac's kept copy or else the NAS's newest snapshot; it prints "map <seq> ·
@@ -197,7 +189,10 @@ listeners() {
 # mini's took over the old 2 min), with its log's last lines or that it printed nothing. A wait past
 # $smoke_say s (30) is said once, with what it waits for, so a slow start shows as one. The answer
 # must come from <pid> itself (task #956 review): a port held by another process (a server left by
-# a killed publish) answering for one that couldn't listen is said so, not passed.
+# a killed publish) answering for one that couldn't listen is said so, not passed. Who answered is
+# the pid /api/ping says (its X-Pid header), never a scan of the Mac's processes (#1108: lsof walks
+# every process's open files, and one open on the NAS while SMB stalled held this check's lsof in
+# the kernel, uninterruptibly, 16 min on 10 Nov).
 smoke() {
   local port=$1 pid=$2 log=$3 wait=$4 u code try t0=$SECONDS ok=1 rc said= where holder
   shift 4
@@ -220,9 +215,9 @@ smoke() {
     sleep 0.5
   done
   if (( ok )); then
-    holder=$(listeners $port)
+    holder=$(curl -s -o /dev/null -D - http://127.0.0.1:$port/api/ping | tr -d '\r' | awk -F': *' 'tolower($1) == "x-pid" { print $2 }')
     if [[ $holder != $pid ]]; then
-      print -r -- "smoke test: port $port answered, but it is held by process ${${holder//$'\n'/, }:-unknown (another user's?)}, not the server started ($pid)"
+      print -r -- "smoke test: port $port answered, but it is held by process ${holder:-unknown (it says no pid: not this version's server)}, not the server started ($pid)"
       ok=0
     fi
   fi

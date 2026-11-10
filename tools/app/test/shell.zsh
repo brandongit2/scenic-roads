@@ -245,7 +245,7 @@ while not os.path.exists(sys.argv[2]):
     if not os.path.isdir(os.path.dirname(sys.argv[2])): sys.exit("its folder is gone")
     time.sleep(0.05)
 class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self): self.send_response(200); self.end_headers()
+    def do_GET(self): self.send_response(200); self.send_header("X-Pid", str(os.getpid())); self.end_headers()
     def log_message(self, *a): pass
 http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()' > $fake
 sm() {  # <name> <port> <wait> [smoke_say]: smoke against a fake server gated on $tmp/go-<name>, its output in $tmp/smoke-<name>
