@@ -2241,9 +2241,16 @@ impl Sched {
         let ours: u32 = mine
             .iter()
             .map(|l| match &l.work {
-                // (As its Mac's packing counts it.)
+                // (As its Mac's packing counts it; with no CPU time measured, now or by its runs, its
+                // lease's threads.)
                 Work::Job { step, targets } => {
-                    self.need_cores(step, &Need { idle: idle(l), ..self.held_need(l, step, targets, now) }, total).1
+                    let n = Need { idle: idle(l), ..self.held_need(l, step, targets, now) };
+                    let counted = self.need_cores(step, &n, total).1;
+                    match (n.busy_now, n.cores.and_then(|c| c.busy_tenths)) {
+                        _ if counted == 0 || l.threads == 0 => counted,
+                        (None, None) => l.threads * 10,
+                        _ => counted,
+                    }
                 }
                 Work::Task { .. } => 0,
             })
