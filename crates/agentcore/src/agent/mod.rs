@@ -14465,7 +14465,8 @@ mod tests {
         let _kill = Kill(pgid);
         // "Finish this job first": the job goes on, nothing new starts (and the status says why),
         // the loop not ended while it runs.
-        jobrt::control::request_quit(&home, jobrt::control::QuitMode::Finish, "Scenic on m1").unwrap();
+        store::whole::write(&home.join(jobrt::control::QUIT_REQUEST), br#"{"mode": "finish", "by": "Scenic on m1"}"#)
+            .unwrap();
         // (Taken up by control: in line here, as a single loop's round takes it.)
         a.control.look();
         let mut waiting = Vec::new();
@@ -17246,7 +17247,11 @@ mod pool_tests {
             m.round().unwrap();
             lead.round().unwrap();
         }
-        jobrt::control::request_quit(&lead.o.home, jobrt::control::QuitMode::Now, "Scenic on l").unwrap();
+        store::whole::write(
+            &lead.o.home.join(jobrt::control::QUIT_REQUEST),
+            br#"{"mode": "now", "by": "Scenic on l"}"#,
+        )
+        .unwrap();
         lead.round().unwrap();
         assert!(lead.quit_due(), "no job runs: it quits at once");
         for _ in 0..4 {

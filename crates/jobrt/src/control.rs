@@ -126,14 +126,6 @@ pub const QUIT_REQUEST: &str = "quit-request.json";
 /// again (tools/launcher/launcher.c).
 pub const QUIT_EXIT: i32 = 76;
 
-/// Asks this Mac's agent (its folder `home`) to quit.
-pub fn request_quit(home: &Path, mode: QuitMode, by: &str) -> anyhow::Result<Quit> {
-    std::fs::create_dir_all(home)?;
-    let q = Quit { mode, by: by.to_string(), at: now() };
-    store::whole::write(&home.join(QUIT_REQUEST), &serde_json::to_vec(&q)?)?;
-    Ok(q)
-}
-
 /// The quit ask waiting in `home`, if any (one that doesn't parse: none, left as it is).
 pub fn peek_quit(home: &Path) -> Option<Quit> {
     serde_json::from_slice(&std::fs::read(home.join(QUIT_REQUEST)).ok()?).ok()
@@ -1200,8 +1192,6 @@ mod tests {
         assert!(peek_quit(d.path()).is_none());
         std::fs::write(d.path().join(QUIT_REQUEST), r#"{"mode": "finish", "by": "Scenic on m1", "at": 7}"#).unwrap();
         assert_eq!(peek_quit(d.path()).map(|q| (q.mode, q.at)), Some((QuitMode::Finish, 7)));
-        request_quit(d.path(), QuitMode::Now, "scenic on m4").unwrap();
-        assert_eq!(peek_quit(d.path()).map(|q| q.mode), Some(QuitMode::Now));
         clear_quit(d.path());
         assert!(peek_quit(d.path()).is_none());
     }

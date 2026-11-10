@@ -674,7 +674,7 @@ pub(crate) mod tests {
         let wait = |want: ControlMsg| {
             store::testkit::wait_for(&format!("{want:?}"), || c.woken.try_recv().ok().filter(|m| *m == want))
         };
-        control::request_quit(&home, control::QuitMode::Finish, "a test").unwrap();
+        store::whole::write(&home.join(control::QUIT_REQUEST), br#"{"mode": "finish", "by": "a test"}"#).unwrap();
         wait(ControlMsg::Quit);
         assert!(c.quit.get().as_ref().as_ref().is_some_and(|q| q.by == "a test"));
         room::set_target(&home, Some(50 << 30), "a test").unwrap();
