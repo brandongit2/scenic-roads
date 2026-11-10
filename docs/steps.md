@@ -124,7 +124,8 @@ makes the same bytes on every Mac.
       relief, at most 21 of its tiles read; seconds.
     `scenic-build terrain-same 6/x/y [--whole]` makes a live z6 tile (its deep mids taken in) and sets
     its pack's and mid's content names beside the manifest's, writing nothing to the NAS;
-    `terrain-same 3/x/y` does so for a z3 tile's lo pack.
+    `terrain-same 3/x/y` does so for a z3 tile's lo pack, `terrain-same 10/x/y` for a z10 tile's
+    deep pack and mid (as its terrain-deep run makes them).
   - **Sources: the elevation pool** (`inputs/elevation/`, docs/inputs.md §6.8; crate::terrain_base),
     the roads' datasets, in the roads' order and blended at their edges as the roads' sampler does
     (crate::dem::generic), so the roads and the terrain use one dataset at every point. A sampled

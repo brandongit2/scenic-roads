@@ -227,6 +227,168 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     assert!(blends > 100 && blends < lon.len() / 2, "{blends} blends of {}", lon.len());
 }
 
+/// Task #1095: across a dataset's files the distance is still the scan's: two files side by side
+/// at different pixel sizes, each with a hole near their shared edge and the first with fill mask
+/// voids there, and nothing below them; each point's band reads its own file's pixels and, past its
+/// edge, the other file's (its nodata and mask voids invalid) or none.
+#[test]
+fn the_distance_across_a_datasets_files_is_the_scans() {
+    use super::super::declared::{Dataset, Plan, Source};
+    use buildstore::geotiff::write_f32;
+    const PX: f64 = 1.0 / 3600.0;
+    let nd = -9999.0f32;
+    // (File 0: 600 × 500 pixels of PX; file 1 right of it: 250 × 250 of 2 PX.)
+    let gts = [[10.0, PX, 0.0, 50.0, 0.0, -PX], [10.0 + 600.0 * PX, 2.0 * PX, 0.0, 50.0, 0.0, -2.0 * PX]];
+    let dims = [(600usize, 500usize), (250, 250)];
+    let mut data: Vec<Vec<f32>> = dims
+        .iter()
+        .enumerate()
+        .map(|(k, &(w, h))| {
+            (0..h).flat_map(|y| (0..w).map(move |x| 100.0 + k as f32 + 0.01 * (x + y) as f32)).collect()
+        })
+        .collect();
+    for (k, (x0, y0, n)) in [(0, (585, 200, 4)), (1, (6, 120, 3)), (0, (300, 300, 2))] {
+        let w = dims[k].0;
+        for y in y0..y0 + n {
+            for x in x0..x0 + n {
+                data[k][y * w + x] = nd;
+            }
+        }
+    }
+    // (File 0's fill mask: voids in a strip by the shared edge.)
+    let mut mask = vec![0.0f32; 600 * 500];
+    for y in 380..386 {
+        for x in 590..598 {
+            mask[y * 600 + x] = 3.0;
+        }
+    }
+    let masked = |x: f64, y: f64| {
+        let (c, r) = (((x - gts[0][0]) / PX).floor(), ((y - gts[0][3]) / -PX).floor());
+        (0.0..600.0).contains(&c) && (0.0..500.0).contains(&r) && mask[r as usize * 600 + c as usize] >= 3.0
+    };
+    let mut f = buildstore::fetch::MapFetch::default();
+    for k in 0..2 {
+        let (w, h) = dims[k];
+        let tif = write_f32(w as u32, h as u32, &data[k], 128, gts[k], 4326, Some(nd as f64)).unwrap();
+        f.0.insert(format!("https://a.org/{k}.tif"), Some(tif));
+    }
+    f.0.insert("https://a.org/0-mask.tif".into(), Some(write_f32(600, 500, &mask, 128, gts[0], 4326, None).unwrap()));
+    let cgt = [9.0, 3.0 * PX, 0.0, 51.0, 0.0, -3.0 * PX];
+    let coarse = write_f32(2000, 2000, &vec![50.0f32; 2000 * 2000], 512, cgt, 4326, Some(nd as f64)).unwrap();
+    f.0.insert("https://b.org/coarse.tif".into(), Some(coarse));
+    let o = Opts { fetch: &f, store: None, local: None };
+    let boxes = [
+        [10.0, 50.0 - 500.0 * PX, 10.0 + 600.0 * PX, 50.0],
+        [10.0 + 600.0 * PX, 50.0 - 500.0 * PX, 10.0 + 1100.0 * PX, 50.0],
+    ];
+    let (rf, rc) = (PX * MERC_M_PER_DEG, 3.0 * PX * MERC_M_PER_DEG);
+    let fine = Dataset {
+        convert: None,
+        id: "fine".into(),
+        code: 1,
+        resolution: rf,
+        cover: None,
+        source: Source::Geotiff {
+            crs: 4326,
+            read_resolution: None,
+            store: false,
+            files: (0..2).map(|k| (format!("https://a.org/{k}.tif"), Some(boxes[k]))).collect(),
+            masks: vec![Some("https://a.org/0-mask.tif".into()), None],
+        },
+        outline: None,
+    };
+    let coarse = Dataset {
+        convert: None,
+        id: "coarse".into(),
+        code: 2,
+        resolution: rc,
+        cover: None,
+        source: Source::Geotiff {
+            crs: 4326,
+            read_resolution: None,
+            store: false,
+            files: vec![("https://b.org/coarse.tif".into(), Some([9.0, 45.0, 15.0, 51.0]))],
+            masks: Vec::new(),
+        },
+        outline: None,
+    };
+    let plan = |ds: Vec<Dataset>| Plan { fmt: 1, version: "t".into(), tag: "1".into(), datasets: ds };
+    // Points: a grid over both files and past their bottom, and rings round the holes and voids.
+    let (mut lon, mut lat) = (Vec::new(), Vec::new());
+    for j in -2..=55 {
+        for i in -2..=112 {
+            lon.push(10.0 + (i as f64 * 10.0 + 0.37) * PX);
+            lat.push(50.0 - (j as f64 * 10.0 + 0.61) * PX);
+        }
+    }
+    for (cx, cy) in [(587.0, 202.0), (614.0, 241.0), (594.0, 383.0), (600.0, 499.0), (301.0, 301.0)] {
+        for k in 0..60 {
+            let a = k as f64 * 0.157;
+            let r = 1.0 + k as f64 * 0.6;
+            lon.push(10.0 + (cx + 0.5 + r * a.dcos()) * PX);
+            lat.push(50.0 - (cy + 0.5 + r * a.dsin()) * PX);
+        }
+    }
+    let both = sample(&plan(vec![fine.clone(), coarse.clone()]), &lon, &lat, &o, &|_| {}).unwrap();
+    let a = sample(&plan(vec![fine]), &lon, &lat, &o, &|_| {}).unwrap();
+    let b = sample(&plan(vec![coarse]), &lon, &lat, &o, &|_| {}).unwrap();
+    // (Whether a pixel centre holds data: the first file whose box holds it and whose raster has it.)
+    let holds = |skip: usize, x: f64, y: f64| -> Option<bool> {
+        (0..2).filter(|&k| k != skip && in_box(&boxes[k], x, y)).find_map(|k| {
+            let gt = gts[k];
+            let (c, r) = (((x - gt[0]) / gt[1]).floor(), ((y - gt[3]) / gt[5]).floor());
+            let (w, h) = dims[k];
+            ((0.0..w as f64).contains(&c) && (0.0..h as f64).contains(&r))
+                .then(|| valid(data[k][r as usize * w + c as usize], Some(nd as f64)) && !(k == 0 && masked(x, y)))
+        })
+    };
+    let band = 4.0 * rc;
+    let (mut blends, mut across) = (0, 0);
+    for i in 0..lon.len() {
+        if both.src[i] != 1 {
+            assert!(!both.blended[i], "point {i}");
+            continue;
+        }
+        let f = (0..2).find(|&k| in_box(&boxes[k], lon[i], lat[i])).unwrap();
+        let gt = gts[f];
+        let (w, h) = (dims[f].0 as i64, dims[f].1 as i64);
+        let (mx, my) = pixel_m(4326, &gt, lat[i]);
+        let cf = (lon[i] - gt[0]) / gt[1] - 0.5;
+        let rfl = (lat[i] - gt[3]) / gt[5] - 0.5;
+        let (rx, ry) = ((band / mx).ceil() as i64 + 1, (band / my).ceil() as i64 + 1);
+        let (c0, r0) = (cf.floor() as i64, rfl.floor() as i64);
+        let (mut best, mut past) = (band, false);
+        for r in r0 - ry..=r0 + 1 + ry {
+            for c in c0 - rx..=c0 + 1 + rx {
+                let d =
+                    (((c as f64 - cf).abs() - 0.5).max(0.0) * mx).dhypot(((r as f64 - rfl).abs() - 0.5).max(0.0) * my);
+                if d >= best {
+                    continue;
+                }
+                let (x, y) = (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
+                let inside = c >= 0 && r >= 0 && c < w && r < h;
+                let ok = if inside {
+                    valid(data[f][(r * w + c) as usize], Some(nd as f64)) && !(f == 0 && masked(x, y))
+                } else {
+                    holds(f, x, y).unwrap_or(false)
+                };
+                if !ok {
+                    (best, past) = (d, !inside);
+                }
+            }
+        }
+        let want = if best < band { blend(a.elev[i], b.elev[i], best, band) } else { a.elev[i] };
+        assert_eq!(
+            (both.elev[i].to_bits(), both.blended[i]),
+            (want.to_bits(), best < band),
+            "point {i} in file {f} at pixel ({cf:.1}, {rfl:.1}): distance {best}"
+        );
+        blends += (best < band) as usize;
+        across += past as usize;
+    }
+    assert!(blends > 300 && across > 50, "{blends} blends, {across} to a pixel past the file");
+}
+
 #[test]
 fn sampling_says_increasing_fractions_to_one_per_chunk() {
     use super::super::declared::{Dataset, Plan, Source};

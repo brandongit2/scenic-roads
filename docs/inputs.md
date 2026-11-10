@@ -1274,10 +1274,15 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
 - **Blended at edges:** where the next dataset with valid data (B) lies beneath the first (A), within
   a band of four of the coarser dataset's pixels of A's invalid area, h = B + (A − B)·s(d / band),
   s(t) = t²(3 − 2t). Past the band, A's height to the bit; the source byte is A's either way. The
-  distance is looked for pixel by pixel only where one can be found: each block (or tile) read for
-  sampling is noted clean when every pixel of it holds data (crate::dem::sample::Clean), and a
-  point whose band lies in clean blocks inside its file is at the band's full distance, no pixel
-  read again. The decoded blocks of every file share one cache (`generic::CACHE_BYTES`, 512 MB),
+  distance is looked for pixel by pixel only where one can be found: the points are grouped (by
+  file and square of 256 pixels, a pyramid's by tile) and the groups measured in parallel; each
+  block (or tile) read is noted clean when every pixel of it holds data
+  (crate::dem::sample::Clean), and a group whose bands lie in clean blocks inside its file is at
+  the band's full distance, no pixel read again. The others share a map of the invalid pixels
+  (past a file's edge, the files holding them read once a group, `generic::Past`) with a count of
+  them over any window (`generic::Invalid`): a point whose band holds none is at its full distance
+  at once, the rest look at two pixels a row and only the rows nearer than the nearest invalid
+  pixel found so far, what a scan of the whole band finds, to the bit (task #1095). The decoded blocks of every file share one cache (`generic::CACHE_BYTES`, 512 MB),
   so a unit opening tens of files holds that much, not a cache's worth per file. A block several
   threads ask for at once is read and decoded once (`Tiff::block`), the others waiting for it.
   A fetched GeoTIFF dataset's blocks are read ahead of their sampling (`generic::read_ahead`,

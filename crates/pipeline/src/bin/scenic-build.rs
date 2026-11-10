@@ -998,20 +998,24 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             return Ok(());
         }
         "terrain-same" => {
-            // terrain-same <6/x/y | 3/x/y> [--whole] [--raw dir] [--pass d] [--regions dir]: z6 tile
-            // 6/x/y made as its job makes it (each level a z8 subtree's worth of tiles at a time:
-            // terrain::terrain_pack::make_piece), or with `--whole` each level's tiles all
+            // terrain-same <6/x/y | 3/x/y | 10/x/y> [--whole] [--raw dir] [--pass d] [--regions dir]:
+            // z6 tile 6/x/y made as its job makes it (each level a z8 subtree's worth of tiles at a
+            // time: terrain::terrain_pack::make_piece), or with `--whole` each level's tiles all
             // together (make_piece_whole, the way before), its hi pack and mid written in the scratch
             // folder only; or z3 tile 3/x/y's lo tiles as its terrain-lo job makes them (make_lo),
-            // its lo pack written there. Their content names said beside the manifest's (the same
-            // inputs give the same bytes), with the time. It only reads the NAS (AWS's raw tiles
-            // copied to this Mac's cache, as a terrain run does).
+            // its lo pack written there; or z10 tile 10/x/y's deep pack and mid as its terrain-deep
+            // job makes them (terrain::terrain_deep). Their content names said beside the
+            // manifest's (the same inputs give the same bytes), with the time. It only reads the NAS
+            // (AWS's raw tiles copied to this Mac's cache, as a terrain run does).
             let cov = coverage_of(&out, &args)?;
             let t = positional(&args)
                 .first()
                 .and_then(|t| TileId::parse(t))
-                .filter(|u| u.z == 6 || u.z == 3)
-                .context("terrain-same <6/x/y | 3/x/y>")?;
+                .filter(|u| u.z == 6 || u.z == 3 || u.z == terrain::terrain_deep::PACK_Z)
+                .context("terrain-same <6/x/y | 3/x/y | 10/x/y>")?;
+            if t.z == terrain::terrain_deep::PACK_Z {
+                return terrain_same_deep(&out, &args, &cov, (t.x, t.y));
+            }
             let raw_dir = PathBuf::from(
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
@@ -5488,6 +5492,46 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     jobrt::control::safe_point(STEP);
     jobrt::jobs::part(names.len() - 1, &names);
     pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| jobrt::jobs::report(done, total, what));
+    Ok(())
+}
+
+/// terrain-same 10/x/y: z10 tile `t`'s deep pack and mid made as its terrain-deep run makes them
+/// (`terrain_deep_step`), written in the scratch folder only; their content names said beside the
+/// manifest's, with the time.
+fn terrain_same_deep(out: &Out, args: &[String], cov: &buildstore::coverage::Coverage, t: (u32, u32)) -> Result<()> {
+    use terrain::terrain_deep as td;
+    let raw_dir = PathBuf::from(
+        opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
+    );
+    let raw = raw_tiles(out, &raw_dir)?;
+    let sets = zoom_sets(out)?;
+    let levels = td::levels(cov, &sets, t);
+    anyhow::ensure!(!levels.is_empty(), "10/{}/{} is no terrain-deep target", t.0, t.1);
+    let pool = base_pool(out, td::PACK_Z, &[t])?;
+    let t0 = std::time::Instant::now();
+    let (made, mid) = with_fills(&raw, &pool, cov, &sets, &|_, _| false, |tiles, src| {
+        terrain::terrain_pack::make_piece_logged(tiles, src, levels, None)
+    })?;
+    let secs = t0.elapsed().as_secs_f64();
+    let n = made.len();
+    let mut it = made.into_iter().map(|(z, x, y, b)| {
+        let n = b.len() as u32;
+        (z, x, y, b, n)
+    });
+    let key = (td::PACK_Z, t.0, t.1);
+    let pack = layers::write_pack_local(out, "terrain", codecs::terrain_codec::ENCODING, false, "deep", key, &mut it)?;
+    let ml = td::mid_logical(t.0, t.1);
+    let mid_path = out.scratch_file(&format!("{ml}.sect"));
+    terrain::terrain_pack::write_mid_of(&mid_path, key, &mid)?;
+    let said = serde_json::json!({
+        "tile": format!("{}/{}/{}", td::PACK_Z, t.0, t.1), "tiles": n, "secs": secs,
+        "fetched_bytes": buildstore::fetch::fetched_bytes(),
+        "deep": pack.as_ref().map(|p| p.content_name()).transpose()?,
+        "deep_manifest": out.get(&td::pack_logical(t.0, t.1)),
+        "mid": store::naming::content_name(&ml, &store::naming::hash16_file(&mid_path)?, "sect"),
+        "mid_manifest": out.get(&ml),
+    });
+    println!("{said}");
     Ok(())
 }
 

@@ -20,14 +20,17 @@
 //!   likewise ahead of their sampling (`read_ahead`): `GEO_FETCHES` at once, up to `GEO_AHEAD`
 //!   blocks past the chunk being sampled, each once (buildstore::geotiff::Tiff::block); so the sampler
 //!   waits on several requests at once, not on a chunk's few blocks in turn.
-//! - **The distance to the invalid area** is looked for pixel by pixel only where it can be found:
-//!   each block (or tile) read for sampling is noted as clean when every pixel of it holds data
-//!   (crate::dem::sample::Clean), and a point whose band lies inside clean blocks of its file is at
-//!   the band's full distance, no pixel read again. The others share a map of the invalid pixels
-//!   around them, a GeoTIFF's by file and square of `DIST_CELL` pixels, a pyramid's by tile: by
-//!   row, each pixel's nearest invalid one either side (`nearest_invalid`), so a point looks at two
-//!   pixels a row of its band, not every one (what a scan of the whole band finds, to the bit).
-//!   The files' decoded blocks share one cache (`CACHE_BYTES`), whatever their number.
+//! - **The distance to the invalid area** is looked for pixel by pixel only where it can be found.
+//!   The points are grouped, a GeoTIFF's by file and square of `DIST_CELL` pixels, a pyramid's by
+//!   tile, and the groups measured in parallel. Each block (or tile) read is noted as clean when
+//!   every pixel of it holds data (crate::dem::sample::Clean), and a group whose bands lie inside
+//!   clean blocks (tiles) is at the bands' full distance, no pixel read again. The others share a
+//!   map of the invalid pixels around them (`Invalid`; past a GeoTIFF's edge, the files holding
+//!   those pixels read once a group): a count of them over any window at once, so a point whose
+//!   band holds none is at its full distance; else by row, each pixel's nearest invalid one either
+//!   side, so a point looks at two pixels a row of its band, and only at the rows nearer than the
+//!   nearest invalid pixel found so far (what a scan of the whole band finds, to the bit). The
+//!   files' decoded blocks share one cache (`CACHE_BYTES`), whatever their number.
 
 use super::declared::{Cover, Dataset, Plan, Source};
 use super::proj::{mercator_tile, projected, Projection};
@@ -566,35 +569,48 @@ impl GeoSet<'_> {
         Ok(self.mask(k)?.is_some_and(|m| m.voids.iter().any(Option::is_some)))
     }
 
-    /// Whether native point (x, y) is a void by file `k`'s fill mask (its nearest pixel there
-    /// `MASK_FILLED` or more); false without a mask, outside it, or in a block of it with none.
-    fn masked(&self, k: usize, x: f64, y: f64) -> Result<bool> {
-        Ok(self.mask(k)?.is_some_and(|m| m.masked(x, y)))
-    }
-
-    fn open(&self, k: usize) -> Result<Option<(Arc<Tiff>, usize)>> {
+    /// File `k` open, with the level read: opened once a run, whatever the threads asking at once
+    /// (a cell a file, as `mask`'s: two opens would each read its blocks into the cache).
+    fn open(&self, k: usize) -> Result<(Arc<Tiff>, usize)> {
         // (By its URL and the detail read: samplers sharing the memo, a level each, read their own
         // overview of it, and their plans' file lists needn't agree.)
         let key = (format!("{} {}", self.id, self.files[k].0), self.read_resolution.map(f64::to_bits));
-        if let Some(t) = self.memo.opened.lock().unwrap().get(&key) {
-            return Ok(t.clone());
-        }
-        let url = &self.files[k].0;
-        // (The share of file `k` read: its level's, of its box inside the job's area.)
-        let inside = match (self.o.local, self.files[k].1) {
-            (Some(c), Some(b)) if self.crs == 4326 => box_share(&b, &c.area),
-            _ => 1.0,
-        };
-        let pick = |t: &Tiff| level_for(t, self.crs, self.read_resolution).map(|l| (l, level_share(t, l) * inside));
-        let t = match self.source(url, pick)? {
-            None => bail!("{}: {url}, which its index lists, isn't on the server (the index is out of date?)", self.id),
-            Some((t, level)) => {
-                let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some((Arc::new(t.with_shared_cache(id, self.cache.clone())), level))
+        let cell = {
+            let mut memo = self.memo.opened.lock().unwrap();
+            match memo.get(&key).cloned() {
+                Some(c) => c,
+                None => {
+                    let c: Arc<OpenCell> = Default::default();
+                    memo.put(key, c.clone(), OPEN_BYTES);
+                    c
+                }
             }
         };
-        self.memo.opened.lock().unwrap().put(key, t.clone(), OPEN_BYTES);
-        Ok(t)
+        cell.get_or_init(|| {
+            (|| -> Result<(Arc<Tiff>, usize)> {
+                let url = &self.files[k].0;
+                // (The share of file `k` read: its level's, of its box inside the job's area.)
+                let inside = match (self.o.local, self.files[k].1) {
+                    (Some(c), Some(b)) if self.crs == 4326 => box_share(&b, &c.area),
+                    _ => 1.0,
+                };
+                let pick =
+                    |t: &Tiff| level_for(t, self.crs, self.read_resolution).map(|l| (l, level_share(t, l) * inside));
+                match self.source(url, pick)? {
+                    None => bail!(
+                        "{}: {url}, which its index lists, isn't on the server (the index is out of date?)",
+                        self.id
+                    ),
+                    Some((t, level)) => {
+                        let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        Ok((Arc::new(t.with_shared_cache(id, self.cache.clone())), level))
+                    }
+                }
+            })()
+            .map_err(|e| format!("{e:#}"))
+        })
+        .clone()
+        .map_err(anyhow::Error::msg)
     }
 
     /// The files whose footprint holds native point (x, y), in order (`kept`: FileGrid::near's).
@@ -628,7 +644,7 @@ impl GeoSet<'_> {
                 continue;
             }
             let (xs, ys): (Vec<f64>, Vec<f64>) = mine.iter().map(|&j| (x[sel[j] as usize], y[sel[j] as usize])).unzip();
-            let Some((t, level)) = self.open(k)? else { continue };
+            let (t, level) = self.open(k)?;
             // (A file whose fill mask has voids: no block of it is known to hold data in every pixel.)
             let has_mask = masks && self.has_voids(k)?;
             let clean = (!has_mask).then(|| &self.clean[k]);
@@ -666,7 +682,7 @@ impl GeoSet<'_> {
                 }
             }
             for (k, (xs, ys)) in by {
-                let Some((t, level)) = self.open(k)? else { continue };
+                let (t, level) = self.open(k)?;
                 let mut b = Vec::new();
                 blocks_read(&t, level, &xs, &ys, seen.entry(k).or_default(), &mut b)?;
                 out.extend(b.into_iter().map(|(bx, by)| (t.clone(), level, bx, by)));
@@ -679,24 +695,13 @@ impl GeoSet<'_> {
         Ok((out, starts, n_ahead))
     }
 
-    /// The value at native point (x, y) of the files but `skip`: the first holding it whose raster
-    /// has it (its nearest pixel); None when none does.
-    fn value_at(&self, x: f64, y: f64, skip: usize) -> Result<Option<f32>> {
-        for k in self.holding(&mut None, x, y).filter(|&k| k != skip) {
-            let Some((t, level)) = self.open(k)? else { continue };
-            let gt = t.transform(level)?;
-            let img = t.level(level)?;
-            let (c, r) = (((x - gt[0]) / gt[1]).floor(), ((y - gt[3]) / gt[5]).floor());
-            if c >= 0.0 && r >= 0.0 && c < img.width as f64 && r < img.height as f64 {
-                let v = t.pixel(level, c as u32, r as u32)?;
-                return Ok(Some(if valid(v, t.nodata()) && !self.masked(k, x, y)? { v } else { f32::NAN }));
-            }
-        }
-        Ok(None)
-    }
-
     /// The distance (m) from each point (native `x`, `y`, latitude `lat`; its file `file`) to the
     /// nearest pixel where the dataset has no data, up to `radius` (m): `radius` when none is nearer.
+    ///
+    /// The points are grouped by file and by a square of `DIST_CELL` pixels (runs of neighbours
+    /// sharing one, the runs sorted, not the points), and the groups measured in parallel
+    /// (`distance_group`): a group's points share one map of the invalid pixels around them.
+    #[allow(clippy::too_many_arguments)]
     fn distance(
         &self,
         sel: &[u32],
@@ -708,67 +713,68 @@ impl GeoSet<'_> {
         step: Said,
     ) -> Result<Vec<f64>> {
         let tally = Tally::new(sel.len(), step);
-        let mut out = vec![0.0; sel.len()];
-        // Each point's band in its file's pixels; one inside blocks holding data in every pixel is
-        // at the radius (nothing in it is invalid), the others grouped by file and by a square of
-        // `DIST_CELL` pixels, so a group's points share one map of the invalid pixels around them.
-        let mut groups: std::collections::BTreeMap<(u32, i64, i64), Vec<Band>> = Default::default();
-        // (By file, what each point reads of it, found once a file, not a point: its open image
-        // is behind a lock. And the last window's blocks and whether they're all clean: the
-        // points in turn mostly share them, and a block's cleanness is of its pixels alone.)
-        let mut at: HashMap<usize, (Arc<Tiff>, usize, [f64; 6], i64, i64, bool)> = HashMap::new();
-        let mut last: Option<((usize, [i64; 4]), bool)> = None;
+        // (By file, its open image's transform, found once a file, not a point: the open image is
+        // behind a lock.)
+        let mut ks = file.to_vec();
+        ks.sort_unstable();
+        ks.dedup();
+        let gts: HashMap<u32, [f64; 6]> = ks
+            .into_iter()
+            .map(|k| {
+                let (t, level) = self.open(k as usize)?;
+                Ok((k, t.transform(level)?))
+            })
+            .collect::<Result<_>>()?;
+        // (Point `j`'s place in its file's pixels, from pixel centres.)
+        let at = |j: usize| {
+            let (i, gt) = (sel[j] as usize, &gts[&file[j]]);
+            ((x[i] - gt[0]) / gt[1] - 0.5, (y[i] - gt[3]) / gt[5] - 0.5)
+        };
+        let keys: Vec<(u32, i64, i64)> = jobrt::control::on_target_pool(|| {
+            (0..sel.len())
+                .into_par_iter()
+                .map(|j| {
+                    let (cf, rf) = at(j);
+                    (file[j], (cf.floor() as i64).div_euclid(DIST_CELL), (rf.floor() as i64).div_euclid(DIST_CELL))
+                })
+                .collect()
+        });
+        // (The groups as runs of neighbours sharing a key, a few thousand where the points are
+        // millions (a sample row's points in one square), the runs sorted, not the points.)
+        let mut runs: Vec<(usize, usize)> = Vec::new();
         for j in 0..sel.len() {
-            let i = sel[j] as usize;
-            let k = file[j] as usize;
-            let (t, level, gt, w, h, voids) = match at.get(&k) {
-                Some(f) => f.clone(),
-                None => {
-                    let (t, level) = self.open(k)?.context("an open file")?;
-                    let gt = t.transform(level)?;
-                    let img = t.level(level)?;
-                    let f = (t.clone(), level, gt, img.width as i64, img.height as i64, self.has_voids(k)?);
-                    at.insert(k, f.clone());
-                    f
-                }
-            };
-            let (mx, my) = pixel_m(self.crs, &gt, lat[i]);
-            let cf = (x[i] - gt[0]) / gt[1] - 0.5;
-            let rf = (y[i] - gt[3]) / gt[5] - 0.5;
-            let rx = (radius[j] / mx).ceil() as i64 + 1;
-            let ry = (radius[j] / my).ceil() as i64 + 1;
-            let (c0, r0) = (cf.floor() as i64, rf.floor() as i64);
-            let win = [c0 - rx, c0 + 1 + rx, r0 - ry, r0 + 1 + ry];
-            let [cs, ce, rs, re] = win;
-            if !voids && cs >= 0 && rs >= 0 && ce < w && re < h && {
-                let blocks = (k, [cs / BLOCK, ce / BLOCK, rs / BLOCK, re / BLOCK]);
-                match last {
-                    Some((b, clean)) if b == blocks => clean,
-                    _ => {
-                        let clean = window_clean(&t, level, &self.clean[k], cs, ce, rs, re)?;
-                        last = Some((blocks, clean));
-                        clean
-                    }
-                }
-            } {
-                out[j] = radius[j];
-                continue;
+            match runs.last_mut() {
+                Some(r) if keys[r.0] == keys[j] => r.1 = j + 1,
+                _ => runs.push((j, j + 1)),
             }
-            let key = (file[j], c0.div_euclid(DIST_CELL), r0.div_euclid(DIST_CELL));
-            groups.entry(key).or_default().push(Band { j, cf, rf, mx, my, win });
         }
-        tally.add(sel.len() - groups.values().map(Vec::len).sum::<usize>());
-        let groups: Vec<((u32, i64, i64), Vec<Band>)> = groups.into_iter().collect();
+        jobrt::control::on_target_pool(|| {
+            runs.par_sort_unstable_by(|a, b| keys[a.0].cmp(&keys[b.0]).then(a.0.cmp(&b.0)))
+        });
+        let groups: Vec<&[(usize, usize)]> = runs.chunk_by(|a, b| keys[a.0] == keys[b.0]).collect();
         let got: Vec<Vec<(usize, f64)>> = jobrt::control::on_target_pool(|| {
             groups
                 .par_iter()
-                .map(|((k, ..), bands)| {
-                    let d = self.distance_group(*k as usize, bands, radius);
+                .map(|g| {
+                    let bands: Vec<Band> = g
+                        .iter()
+                        .flat_map(|&(s, e)| s..e)
+                        .map(|j| {
+                            let (cf, rf) = at(j);
+                            let (mx, my) = pixel_m(self.crs, &gts[&file[j]], lat[sel[j] as usize]);
+                            let rx = (radius[j] / mx).ceil() as i64 + 1;
+                            let ry = (radius[j] / my).ceil() as i64 + 1;
+                            let (c0, r0) = (cf.floor() as i64, rf.floor() as i64);
+                            Band { j, cf, rf, mx, my, win: [c0 - rx, c0 + 1 + rx, r0 - ry, r0 + 1 + ry] }
+                        })
+                        .collect();
+                    let d = self.distance_group(keys[g[0].0].0 as usize, &bands, radius);
                     tally.add(bands.len());
                     d
                 })
                 .collect::<Result<_>>()
         })?;
+        let mut out = vec![0.0; sel.len()];
         for (j, d) in got.into_iter().flatten() {
             out[j] = d;
         }
@@ -776,14 +782,14 @@ impl GeoSet<'_> {
     }
 
     /// The distances of `bands`' points (all of file `k`) to the nearest pixel where the dataset
-    /// has no data, each up to its `radius`: by the map of the invalid pixels over their windows
-    /// (inside the file from its raster, past its edges from the files holding them: `value_at`),
-    /// by row each pixel's nearest invalid one at or left of it and at or right of it. The nearest
-    /// invalid pixel of a row to a point is one of those two (the distance grows with the column's
-    /// offset), so a point looks at two pixels a row of its window, not every one: what a scan of
-    /// the whole window finds, to the bit.
+    /// has no data, each up to its `radius`. A group whose windows lie inside blocks of its file
+    /// known to hold data in every pixel (`Clean`; a block not read yet is read now), the file's
+    /// fill mask having no voids, is at the radius, no pixel looked at. Else by the map of the
+    /// invalid pixels over their windows (inside the file from its raster and fill mask, past its
+    /// edges from the files holding them, `Past`), a point at the radius where its window holds
+    /// none (`Invalid`).
     fn distance_group(&self, k: usize, bands: &[Band], radius: &[f64]) -> Result<Vec<(usize, f64)>> {
-        let (t, level) = self.open(k)?.context("an open file")?;
+        let (t, level) = self.open(k)?;
         let gt = t.transform(level)?;
         let img = t.level(level)?;
         let (w, h) = (img.width as i64, img.height as i64);
@@ -791,59 +797,128 @@ impl GeoSet<'_> {
         let x1 = bands.iter().map(|b| b.win[1]).max().unwrap();
         let y0 = bands.iter().map(|b| b.win[2]).min().unwrap();
         let y1 = bands.iter().map(|b| b.win[3]).max().unwrap();
+        let at_radius = || bands.iter().map(|b| (b.j, radius[b.j])).collect();
+        if x0 >= 0
+            && y0 >= 0
+            && x1 < w
+            && y1 < h
+            && !self.has_voids(k)?
+            && window_clean(&t, level, &self.clean[k], x0, x1, y0, y1)?
+        {
+            return Ok(at_radius());
+        }
         let (mw, mh) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
         let (ics, ice, irs, ire) = (x0.max(0), x1.min(w - 1), y0.max(0), y1.min(h - 1));
         let inside = if ics <= ice && irs <= ire {
-            Some(t.read_window(level, ics as u32, irs as u32, (ice - ics + 1) as u32, (ire - irs + 1) as u32)?)
+            t.read_window(level, ics as u32, irs as u32, (ice - ics + 1) as u32, (ire - irs + 1) as u32)?
         } else {
-            None
+            Vec::new()
         };
         let iw = (ice - ics + 1).max(0) as usize;
         let nodata = t.nodata();
         // (The file's fill mask found once, not a pixel: `mask` clones its handle.)
         let mask = self.mask(k)?;
+        let centre = |c: i64, r: i64| (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
+        let mut past = Past { set: self, skip: k, lo: centre(x0, y0), hi: centre(x1, y1), files: HashMap::new() };
+        let mut kept = None;
         let mut ok = vec![false; mw * mh];
         for r in y0..=y1 {
             for c in x0..=x1 {
                 ok[(r - y0) as usize * mw + (c - x0) as usize] = if c >= ics && c <= ice && r >= irs && r <= ire {
-                    valid(inside.as_ref().unwrap()[(r - irs) as usize * iw + (c - ics) as usize], nodata) && {
-                        let (wx, wy) = (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
+                    valid(inside[(r - irs) as usize * iw + (c - ics) as usize], nodata) && {
+                        let (wx, wy) = centre(c, r);
                         !mask.as_ref().is_some_and(|m| m.masked(wx, wy))
                     }
                 } else {
-                    let (wx, wy) = (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
-                    self.value_at(wx, wy, k)?.is_some_and(|v| v.is_finite())
+                    let (wx, wy) = centre(c, r);
+                    past.ok(&mut kept, wx, wy)?
                 };
             }
         }
-        let (left, right) = nearest_invalid(&ok, mw, mh);
+        let Some(inv) = Invalid::of(&ok, x0, y0, mw, mh) else { return Ok(at_radius()) };
         Ok(bands
             .iter()
             .map(|b| {
-                let [cs, ce, rs, re] = b.win;
-                let at = (b.cf.floor() as i64 - x0) as usize;
-                let mut best = radius[b.j];
-                for r in rs..=re {
-                    let o = (r - y0) as usize * mw;
-                    let dy = ((r as f64 - b.rf).abs() - 0.5).max(0.0) * b.my;
-                    let (l, rt) = (left[o + at], right[o + at + 1]);
-                    for c in [(l != i32::MIN).then(|| x0 + l as i64), (rt != i32::MAX).then(|| x0 + rt as i64)]
-                        .into_iter()
-                        .flatten()
-                    {
-                        if c < cs || c > ce {
-                            continue;
-                        }
-                        let dx = ((c as f64 - b.cf).abs() - 0.5).max(0.0) * b.mx;
-                        let d = dx.dhypot(dy);
-                        if d < best {
-                            best = d;
-                        }
-                    }
-                }
-                (b.j, best)
+                let d = inv.nearest(
+                    b.win,
+                    (b.cf.floor() as i64, b.rf.floor() as i64),
+                    radius[b.j],
+                    |r| ((r as f64 - b.rf).abs() - 0.5).max(0.0) * b.my,
+                    |c, r| {
+                        (((c as f64 - b.cf).abs() - 0.5).max(0.0) * b.mx)
+                            .dhypot(((r as f64 - b.rf).abs() - 0.5).max(0.0) * b.my)
+                    },
+                );
+                (b.j, d)
             })
             .collect())
+    }
+}
+
+/// The pixels of a group's window past file `skip`'s raster (`GeoSet::distance_group`): a pixel's
+/// centre holds data where the first other file whose footprint holds it and whose raster has it
+/// has data there (its nearest pixel valid, not a void by its fill mask: `Mask::masked`); none
+/// holding it, no data. Each such file's part of the window (the box from
+/// centre `lo` to `hi`) is read once, not a pixel at a time.
+struct Past<'s, 'a> {
+    set: &'s GeoSet<'a>,
+    skip: usize,
+    lo: (f64, f64),
+    hi: (f64, f64),
+    files: HashMap<usize, PastFile>,
+}
+
+/// A file's part of a window (`Past`): its image's transform and size, its nodata and fill mask,
+/// and its pixels [c0, c0 + cw) × [r0, …) that the window's box meets (none when it meets none).
+struct PastFile {
+    gt: [f64; 6],
+    w: i64,
+    h: i64,
+    nodata: Option<f64>,
+    mask: Option<Arc<Mask>>,
+    c0: i64,
+    r0: i64,
+    cw: usize,
+    a: Vec<f32>,
+}
+
+impl<'s> Past<'s, '_> {
+    /// Whether native point (x, y) holds data (`kept`: FileGrid::near's).
+    fn ok(&mut self, kept: &mut Kept<'s>, x: f64, y: f64) -> Result<bool> {
+        let set = self.set;
+        for k in set.holding(kept, x, y).filter(|&k| k != self.skip) {
+            let f = match self.files.entry(k) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => e.insert(Self::read(set, k, self.lo, self.hi)?),
+            };
+            let (c, r) = (((x - f.gt[0]) / f.gt[1]).floor(), ((y - f.gt[3]) / f.gt[5]).floor());
+            if c >= 0.0 && r >= 0.0 && c < f.w as f64 && r < f.h as f64 {
+                let v = f.a[(r as i64 - f.r0) as usize * f.cw + (c as i64 - f.c0) as usize];
+                return Ok(valid(v, f.nodata) && !f.mask.as_ref().is_some_and(|m| m.masked(x, y)));
+            }
+        }
+        Ok(false)
+    }
+
+    /// File `k`'s part of the box from centre `lo` to `hi`: the pixels of its raster holding the
+    /// box's points (a point's pixel lies between its corners', the pixel of a coordinate growing
+    /// with it).
+    fn read(set: &GeoSet, k: usize, lo: (f64, f64), hi: (f64, f64)) -> Result<PastFile> {
+        let (t, level) = set.open(k)?;
+        let gt = t.transform(level)?;
+        let img = t.level(level)?;
+        let (w, h) = (img.width as i64, img.height as i64);
+        let px = |x: f64, y: f64| (((x - gt[0]) / gt[1]).floor() as i64, ((y - gt[3]) / gt[5]).floor() as i64);
+        let (a, b) = (px(lo.0, lo.1), px(hi.0, hi.1));
+        let (c0, c1) = (a.0.min(b.0).max(0), a.0.max(b.0).min(w - 1));
+        let (r0, r1) = (a.1.min(b.1).max(0), a.1.max(b.1).min(h - 1));
+        let (cw, a) = if c0 <= c1 && r0 <= r1 {
+            let cw = (c1 - c0 + 1) as usize;
+            (cw, t.read_window(level, c0 as u32, r0 as u32, cw as u32, (r1 - r0 + 1) as u32)?)
+        } else {
+            (0, Vec::new())
+        };
+        Ok(PastFile { gt, w, h, nodata: t.nodata(), mask: set.mask(k)?, c0, r0, cw, a })
     }
 }
 
@@ -862,28 +937,107 @@ struct Band {
     win: [i64; 4],
 }
 
-/// By pixel of a `w` × `h` map of which pixels hold data (`ok`): the column of its row's nearest
-/// invalid pixel at or left of it (i32::MIN: none), and at or right of it (i32::MAX: none).
-fn nearest_invalid(ok: &[bool], w: usize, h: usize) -> (Vec<i32>, Vec<i32>) {
-    let mut left = vec![i32::MIN; w * h];
-    let mut right = vec![i32::MAX; w * h];
-    for row in 0..h {
-        let (o, mut last) = (row * w, i32::MIN);
-        for c in 0..w {
-            if !ok[o + c] {
-                last = c as i32;
-            }
-            left[o + c] = last;
+/// The invalid pixels of a map of which pixels hold data (`Invalid::of`), for the distance
+/// measures (GeoSet's and TileSet's): by pixel, the column of its row's nearest invalid pixel at or
+/// left of it (i32::MIN: none) and at or right of it (i32::MAX: none), and the count of invalid
+/// pixels above and left of it (a summed-area table, so a window holding none is told at once).
+struct Invalid {
+    x0: i64,
+    y0: i64,
+    w: usize,
+    left: Vec<i32>,
+    right: Vec<i32>,
+    sum: Vec<u32>,
+}
+
+impl Invalid {
+    /// The map `ok`, `w` × `h` pixels from (`x0`, `y0`); None when every pixel holds data.
+    fn of(ok: &[bool], x0: i64, y0: i64, w: usize, h: usize) -> Option<Invalid> {
+        if ok.iter().all(|&v| v) {
+            return None;
         }
-        last = i32::MAX;
-        for c in (0..w).rev() {
-            if !ok[o + c] {
-                last = c as i32;
+        let mut left = vec![i32::MIN; w * h];
+        let mut right = vec![i32::MAX; w * h];
+        let mut sum = vec![0u32; (w + 1) * (h + 1)];
+        for row in 0..h {
+            let (o, mut last, mut run) = (row * w, i32::MIN, 0u32);
+            for c in 0..w {
+                if !ok[o + c] {
+                    last = c as i32;
+                    run += 1;
+                }
+                left[o + c] = last;
+                sum[(row + 1) * (w + 1) + c + 1] = sum[row * (w + 1) + c + 1] + run;
             }
-            right[o + c] = last;
+            last = i32::MAX;
+            for c in (0..w).rev() {
+                if !ok[o + c] {
+                    last = c as i32;
+                }
+                right[o + c] = last;
+            }
         }
+        Some(Invalid { x0, y0, w, left, right, sum })
     }
-    (left, right)
+
+    /// Whether window [cs, ce] × [rs, re] (inside the map) holds an invalid pixel.
+    fn any(&self, [cs, ce, rs, re]: [i64; 4]) -> bool {
+        let (a, b) = ((cs - self.x0) as usize, (ce - self.x0) as usize + 1);
+        let (c, d) = ((rs - self.y0) as usize, (re - self.y0) as usize + 1);
+        let s = |r: usize, col: usize| self.sum[r * (self.w + 1) + col] as i64;
+        s(d, b) - s(c, b) - s(d, a) + s(c, a) > 0
+    }
+
+    /// The least distance `dist(c, r)` to an invalid pixel (c, r) of window `win` from a point in
+    /// pixel (`c0`, `r0`), up to `radius`. By row, a point's nearest invalid pixel is the row's
+    /// nearest at or left of c0 or at or right of c0 + 1 (the distance grows with the column's
+    /// offset), so it looks at two pixels a row, not every one; and at the rows outward from the
+    /// point's, each side until a row's least distance (`low(r)`, at most `dist(c, r)` for any c)
+    /// reaches the best found. What a scan of the whole window finds, to the bit.
+    fn nearest(
+        &self,
+        win: [i64; 4],
+        (c0, r0): (i64, i64),
+        radius: f64,
+        low: impl Fn(i64) -> f64,
+        dist: impl Fn(i64, i64) -> f64,
+    ) -> f64 {
+        if !self.any(win) {
+            return radius;
+        }
+        let [cs, ce, rs, re] = win;
+        let at = (c0 - self.x0) as usize;
+        let mut best = radius;
+        let row = |r: i64, best: &mut f64| {
+            let o = (r - self.y0) as usize * self.w;
+            let (l, rt) = (self.left[o + at], self.right[o + at + 1]);
+            for c in [(l != i32::MIN).then(|| self.x0 + l as i64), (rt != i32::MAX).then(|| self.x0 + rt as i64)]
+                .into_iter()
+                .flatten()
+            {
+                if c < cs || c > ce {
+                    continue;
+                }
+                let d = dist(c, r);
+                if d < *best {
+                    *best = d;
+                }
+            }
+        };
+        for r in (rs..=r0).rev() {
+            if low(r) >= best {
+                break;
+            }
+            row(r, &mut best);
+        }
+        for r in r0 + 1..=re {
+            if low(r) >= best {
+                break;
+            }
+            row(r, &mut best);
+        }
+        best
+    }
 }
 
 /// A distance measure's points done, told to its `step` as a share each time another 1 % is
@@ -927,7 +1081,7 @@ pub(crate) struct TileMemo {
     /// None), with the level read:
     /// those most recently read within the memo's budget (`cap`), each weighed at what it may hold
     /// (`OPEN_BYTES`), shared by every sampler of the run, so a run's memory is its working set's.
-    opened: Mutex<Lru<(String, Option<u64>), Option<(Arc<Tiff>, usize)>>>,
+    opened: Mutex<Lru<(String, Option<u64>), Arc<OpenCell>>>,
 }
 
 /// What an open file holds at most (`TileMemo::opened`'s weight): its tile arrays kept
@@ -996,6 +1150,9 @@ impl<K: std::hash::Hash + Eq + Clone, V> Lru<K, V> {
 
 /// A fill mask, read once (None: it has none; Err: why it couldn't be).
 type MaskCell = std::sync::OnceLock<Result<Option<Arc<Mask>>, String>>;
+
+/// An open file's cell (`GeoSet::open`): the file and its level read, or why it couldn't be opened.
+type OpenCell = std::sync::OnceLock<Result<(Arc<Tiff>, usize), String>>;
 
 /// A memo's entry: None while it's being fetched (or its fetch failed), then the file or None.
 type Slot = Arc<Mutex<Option<Option<Arc<[u8]>>>>>;
@@ -1404,10 +1561,8 @@ impl TileSet<'_> {
     /// As GeoSet::distance, on the pyramid's pixels (each tile's neighbours read where a band
     /// crosses into them).
     ///
-    /// A tile's points share one map of the invalid pixels around it: by row, each pixel's nearest
-    /// invalid one at or left of it and at or right of it. The nearest invalid pixel of a row to a
-    /// point is one of those two (the distance grows with the column's offset), so a point looks at
-    /// two pixels a row of its band, not every one: what a scan of the whole band finds, to the bit.
+    /// A tile's points whose bands aren't all in clean tiles share one map of the invalid pixels
+    /// around it (`Invalid`): what a scan of each point's whole band finds, to the bit.
     fn distance(&self, sel: &[u32], lon: &[f64], lat: &[f64], radius: &[f64], step: Said) -> Result<Vec<f64>> {
         let n = 1i64 << self.zoom;
         let groups = self.groups(sel, lon, lat);
@@ -1477,28 +1632,20 @@ impl TileSet<'_> {
                     }
                 }
             }
-            let (left, right) = nearest_invalid(&ok, w, h);
-            for (j, gx, gy, pm, c0, [cs, ce, rs, re]) in bands {
-                let mut best = radius[j];
-                let at = (c0 - x0) as usize;
-                for r in rs..=re {
-                    let o = (r - y0) as usize * w;
-                    let dy = ((r as f64 - gy).abs() - 0.5).max(0.0);
-                    let (l, rt) = (left[o + at], right[o + at + 1]);
-                    for c in [(l != i32::MIN).then(|| x0 + l as i64), (rt != i32::MAX).then(|| x0 + rt as i64)]
-                        .into_iter()
-                        .flatten()
-                    {
-                        if c < cs || c > ce {
-                            continue;
-                        }
-                        let d = ((c as f64 - gx).abs() - 0.5).max(0.0).dhypot(dy) * pm;
-                        if d < best {
-                            best = d;
-                        }
-                    }
-                }
-                out.push((j, best));
+            let inv = Invalid::of(&ok, x0, y0, w, h);
+            for (j, gx, gy, pm, c0, win) in bands {
+                let dy = |r: i64| ((r as f64 - gy).abs() - 0.5).max(0.0);
+                let d = match &inv {
+                    None => radius[j],
+                    Some(inv) => inv.nearest(
+                        win,
+                        (c0, gy.floor() as i64),
+                        radius[j],
+                        |r| dy(r) * pm,
+                        |c, r| ((c as f64 - gx).abs() - 0.5).max(0.0).dhypot(dy(r)) * pm,
+                    ),
+                };
+                out.push((j, d));
             }
             tally.add(g.len());
             Ok(out)
@@ -1609,7 +1756,7 @@ enum Reader<'s, 'a> {
 
 impl Reader<'_, '_> {
     /// `sel` in reading order: a tile's points together (tile pyramids), a file's together and by
-    /// row (GeoTIFFs). Each point is sampled alone, so the values are the same in any order.
+    /// row of its blocks (GeoTIFFs). Each point is sampled alone, so the values are the same in any order.
     fn in_reading_order(&self, sel: Vec<u32>, lon: &[f64], lat: &[f64]) -> Vec<u32> {
         match self {
             Reader::Tiles(t) => {
@@ -1626,25 +1773,26 @@ impl Reader<'_, '_> {
             }
             Reader::Geo(g, xy) => {
                 let (x, y) = native(xy, lon, lat);
-                let keys: Vec<(usize, f64)> = jobrt::control::on_target_pool(|| {
+                // (By file and row of `BLOCK`s in it: a sample row's points share one, so the runs
+                // are long, where a key of each point's own y (a projected CRS's rows aren't the
+                // samples') made a run a point and sorted millions.)
+                let keys: Vec<(usize, i64)> = jobrt::control::on_target_pool(|| {
                     sel.par_iter()
                         .map_init(
-                            || None,
-                            |kept, &i| {
-                                (
-                                    g.holding(kept, x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX),
-                                    y[i as usize],
-                                )
+                            || (None, HashMap::<usize, Option<(f64, f64)>>::new()),
+                            |(kept, rows), &i| {
+                                let (px, py) = (x[i as usize], y[i as usize]);
+                                let k = g.holding(kept, px, py).next().unwrap_or(usize::MAX);
+                                let row = *rows.entry(k).or_insert_with(|| {
+                                    let (t, level) = g.files.get(k).and_then(|_| g.open(k).ok())?;
+                                    t.transform(level).ok().map(|gt| (gt[3], gt[5]))
+                                });
+                                (k, row.map_or(0, |(y0, dy)| (((py - y0) / dy).floor() as i64).div_euclid(BLOCK)))
                             },
                         )
                         .collect()
                 });
-                by_runs(
-                    &sel,
-                    &keys,
-                    |a, b| a.0 == b.0 && a.1.total_cmp(&b.1).is_eq(),
-                    |a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)),
-                )
+                by_runs(&sel, &keys, |a, b| a == b, |a, b| a.cmp(b))
             }
         }
     }
