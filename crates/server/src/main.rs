@@ -448,20 +448,6 @@ async fn serve(cli: Cli) -> Result<()> {
     }
     tokio::spawn(warm(state.clone()));
     regions::spawn_syncer(state.clone());
-    // Other devices (remote.rs): the address to open there, kept current (tailscale serve may start
-    // proxying the server any time); none for one on demand, which answers this Mac alone. (A
-    // `remote-key` an older server kept: unused, removed.)
-    std::fs::remove_file(home.join("remote-key")).ok();
-    if !on_demand {
-        let r = Arc::new(remote::Remote::new(&home));
-        tokio::spawn(async move {
-            loop {
-                let r2 = r.clone();
-                tokio::task::spawn_blocking(move || r2.write_page(port)).await.ok();
-                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-            }
-        });
-    }
 
     let app = Router::new()
         .route("/tiles/roads/{z}/{x}/{y}", get(tiles::road_tile))
@@ -517,20 +503,7 @@ async fn serve(cli: Cli) -> Result<()> {
         .route("/api/profiles", get(profiles::get_list).post(profiles::post))
         .route("/api/profiles/{id}", axum::routing::put(profiles::put).delete(profiles::delete))
         .route("/api/profiles/{id}/default", axum::routing::post(profiles::set_default))
-        // (X-Pid: which process answered, for publish's smoke test, tools/app/lib.zsh: no scan of
-        // the Mac's processes for the port's holder, #1108.)
-        .route(
-            "/api/ping",
-            get(|| async {
-                (
-                    [
-                        (header::CACHE_CONTROL, "no-store".to_string()),
-                        (header::HeaderName::from_static("x-pid"), std::process::id().to_string()),
-                    ],
-                    "ok",
-                )
-            }),
-        )
+        .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/bench", axum::routing::post(bench_h))
         .nest_service(
             "/fonts",
@@ -578,11 +551,29 @@ async fn serve(cli: Cli) -> Result<()> {
             l
         }
         None => {
-            let addr = std::net::SocketAddr::from((listen.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED), port));
-            eprintln!("listening on http://{addr} (devices: the map's address, <home>/map-page)");
-            store::spawn::listen(addr)?
+            let l = store::spawn::listen((listen.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED), port))?;
+            // (The address taken, its port too: `--port 0` takes a free one, as the tests start it,
+            // crates/server/tests/serves.rs.)
+            eprintln!("listening on http://{} (devices: the map's address, <home>/map-page)", l.local_addr()?);
+            l
         }
     };
+    // (Every other socket and the devices' page on the port taken.)
+    let port = v4.local_addr()?.port();
+    // Other devices (remote.rs): the address to open there, kept current (tailscale serve may start
+    // proxying the server any time); none for one on demand, which answers this Mac alone. (A
+    // `remote-key` an older server kept: unused, removed.)
+    std::fs::remove_file(home.join("remote-key")).ok();
+    if !on_demand {
+        let r = Arc::new(remote::Remote::new(&home));
+        tokio::spawn(async move {
+            loop {
+                let r2 = r.clone();
+                tokio::task::spawn_blocking(move || r2.write_page(port)).await.ok();
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            }
+        });
+    }
     let listener = coordwire::net::Listener::new(v4)?.tap_io(|_| ());
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     if listen.is_none() {
