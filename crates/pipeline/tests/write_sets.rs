@@ -37,7 +37,7 @@ fn writes_records(l: &str, c: &str) -> bool {
 /// The writers outside `Out`: by file (from the repository's root), item name and what the line
 /// says (an anchor), with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
-    ("crates/agentcore/src/coord/mod.rs", "raw_again", "buildstore::handoff::write(&journal.join(buildstore::handoff::RAW_AGAIN)", "a hand-off not taken: its raw tiles' archives alone, kept for the next merge to name (outside the manifest)"),
+    ("crates/agentcore/src/coord/mod.rs", "raw_again", "^if let Err(e) = buildstore::handoff::write(&journal.join(buildstore::handoff::RAW_AGAIN),&Handoff { raw,", "a hand-off not taken: its raw tiles' archives alone, kept for the next merge to name (outside the manifest)"),
     ("crates/agentcore/src/coord/mod.rs", "route", "buildstore::handoff::write(&journal.join(folder(&d.worker)), &h)", "the coordinator journaling a helper's hand-off (its job's Out wrote it) while its pool is off: the merge's path"),
     ("crates/buildstore/src/rawpack.rs", "finish_with", "^crate::handoff::write(&dir,&crate::handoff::Handoff { raw:", "a job's raw tiles' archives, named by their area (crate::rawpack::named_for, which the merge checks), outside the manifest"),
     ("crates/agentcore/src/agent/plan.rs", "plan_seen", "\"state/build/manifest.json\"", "reads only the manifest's and the jobs' records' size and time (an idle agent's plan digest, task #154)"),
