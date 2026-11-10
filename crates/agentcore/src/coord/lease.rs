@@ -66,6 +66,11 @@ pub struct Lease {
     /// more, so a mean is had whenever a recent rate is (`Lease::lately`, `Lease::cores_lately`).
     #[serde(skip)]
     pub first: Option<(Instant, crate::agent::jobs::Live)>,
+    /// The CPU time (ms) added to its views' (`Live::cpu_ms`) so they never fall: what a view
+    /// said less than the one before (an agent's take-over of its job counts its processes' time
+    /// afresh, those ended before gone), its views counted on from the last (in memory alone).
+    #[serde(skip)]
+    cpu_carry: u64,
     /// Its job's stillness as its worker's beats show it (docs/pool.md §10, Flags; in memory
     /// alone, a lead restarted counts from its load): the last beat heard, the last at which its
     /// work moved (None: none yet, counted from its grant: `Lease::still`), and the longest stretch
@@ -609,6 +614,7 @@ impl Leases {
                 live_at: None,
                 window: Default::default(),
                 first: None,
+                cpu_carry: 0,
                 heard: None,
                 moved: None,
                 still_most: 0,
@@ -706,7 +712,15 @@ impl Leases {
                 if progress.is_some() {
                     l.progress = progress;
                 }
-                if let Some(v) = live {
+                if let Some(mut v) = live {
+                    // (Its CPU time counted on from the last view's where it fell: `cpu_carry`.)
+                    if let Some(ms) = v.cpu_ms.as_mut() {
+                        *ms += l.cpu_carry;
+                        if let Some(was) = l.live.as_ref().and_then(|w| w.cpu_ms).filter(|w| w > ms) {
+                            l.cpu_carry += was - *ms;
+                            *ms = was;
+                        }
+                    }
                     // (Views older than the newest one `WINDOW` back are let go.)
                     if let Some((at, prev)) = l.live_at.zip(l.live.take()) {
                         l.window.push_back((at, prev));
@@ -1195,6 +1209,16 @@ mod tests {
         assert_eq!(l.cores_mean(), Some(198.0 / 120.0));
         assert_eq!(l.cores_lately(), Some(3.0));
         assert_eq!(l.still(), Some(Duration::from_secs(120)), "its CPU time alone moved");
+        // (Its agent taken over at 140 s: its job's processes' time counted afresh, 50 s where it
+        // was 198, then 3 cores busy. Its views count on from 198: the minute over the take-over
+        // 1.5 busy, not none; its mean from its first view on.)
+        for s in [170, 200] {
+            assert!(ls.renew_live(id, "m1", None, Some(view(50 + 3 * (s - 170))), at(s)));
+        }
+        assert_eq!(ls.of(id).unwrap().cores_lately(), Some(1.5), "a take-over's fall isn't idleness");
+        assert!(ls.renew_live(id, "m1", None, Some(view(50 + 3 * 60)), at(230)));
+        let l = ls.of(id).unwrap();
+        assert_eq!((l.cores_lately(), l.cores_mean()), (Some(3.0), Some((198.0 + 180.0) / 210.0)));
     }
 
     /// A job's pace by its beats' progress lines (task #990): each target's run of a line is a part;

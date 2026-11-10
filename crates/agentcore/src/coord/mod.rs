@@ -10647,6 +10647,21 @@ mod tests {
     /// for their measure and nothing more goes; past it, for what they keep busy, and a fourth goes.
     #[test]
     fn a_running_job_counts_for_the_cores_it_keeps_busy_now() {
+        let g = three_terrain_deep_then_a_fourth(true).expect("past their first target: 7.5 of 12 busy, a fourth goes");
+        assert!(g.more.is_empty(), "one past their threads at a time");
+    }
+
+    /// Task #1091: a member on an older app, its beats saying no CPU time, has its jobs counted for
+    /// their measure past their first target too, never for none: no fourth.
+    #[test]
+    fn a_job_whose_beats_say_no_cpu_time_counts_for_its_measure() {
+        assert!(three_terrain_deep_then_a_fourth(false).is_none());
+    }
+
+    /// Three slope-hi jobs of a measure of 3.8 cores granted a Mac of 12, their beats (saying their
+    /// CPU time if `says_cpu`) 0.2 busy each while on their first target, then 2.5 past it: the
+    /// grants a fourth ask has then. Reading their first target, it has none.
+    fn three_terrain_deep_then_a_fourth(says_cpu: bool) -> Option<Grant> {
         let (_d, c, w, clock) = every((0, 0));
         let ts: Vec<String> = (1..=12).map(|i| format!("6/1/{i}")).collect();
         for t in &ts {
@@ -10696,7 +10711,7 @@ mod tests {
             let now = s.now();
             for &l in &leases {
                 let v = crate::agent::jobs::Live {
-                    cpu_ms: Some(cpu),
+                    cpu_ms: says_cpu.then_some(cpu),
                     targets: 2,
                     targets_done: done,
                     ..Default::default()
@@ -10715,9 +10730,7 @@ mod tests {
             beat(2.5, 0);
         }
         beat(2.5, 1);
-        let g =
-            w.ask(&ask(8, leases.clone())).unwrap().expect("past their first target: 7.5 of 12 busy, a fourth goes");
-        assert!(g.more.is_empty(), "one past their threads at a time");
+        w.ask(&ask(8, leases.clone())).unwrap()
     }
 
     /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent

@@ -443,6 +443,14 @@ pub fn noted_disks(costs: &Path) -> Vec<(String, u64)> {
 }
 
 impl Watch {
+    /// Its processes' summed CPU time `sum` (ns) sampled: `cpu_ns` rises by what it rose since the
+    /// last sample, never falls (a process ending takes its time out of the sum).
+    pub fn note_cpu(&mut self, sum: u64) {
+        let rise = self.cpu_sum.map_or(sum, |was| sum.saturating_sub(was));
+        self.cpu_ns = Some(self.cpu_ns.unwrap_or(0) + rise);
+        self.cpu_sum = Some(sum);
+    }
+
     /// The cost key of the target it's on: the last its costs file says began and hasn't ended;
     /// else the first of its targets it hasn't noted done; else its own (`own_key`).
     pub fn current(&self) -> Option<String> {
@@ -916,11 +924,7 @@ impl Sampler {
                     continue;
                 };
                 if let Some(ns) = *ns {
-                    let rise = w.cpu_sum.map_or(ns, |was| ns.saturating_sub(was));
-                    w.cpu_ns = Some(w.cpu_ns.unwrap_or(0) + rise);
-                    w.cpu_sum = Some(ns);
-                }
-                if let Some(ns) = *ns {
+                    w.note_cpu(ns);
                     match w.cpu_mark {
                         Some((_, m)) if ns >= m && ns - m < BUSY_CPU => {}
                         _ => w.cpu_mark = Some((now, ns)),
@@ -1611,6 +1615,21 @@ mod tests {
         assert_eq!(w.current().as_deref(), Some("osm-pass 2026-09-28"));
         w.own_key = None;
         assert_eq!(w.current(), None);
+    }
+
+    /// Task #1091: a job's CPU time as sampled never falls, a process of it ending (its time gone
+    /// from its processes' sum) or not: each sample adds what the sum rose since the last.
+    #[test]
+    fn a_jobs_cpu_time_never_falls_as_a_process_ends() {
+        let mut w = Watch::default();
+        w.note_cpu(5_000);
+        w.note_cpu(9_000);
+        assert_eq!(w.cpu_ns, Some(9_000));
+        // (A process of 6_000 ends; the rest rose 1_000 meanwhile, missed: its rise is from 3_000.)
+        w.note_cpu(4_000);
+        assert_eq!(w.cpu_ns, Some(9_000), "never falls");
+        w.note_cpu(7_000);
+        assert_eq!(w.cpu_ns, Some(12_000));
     }
 
     #[test]

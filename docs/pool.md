@@ -622,7 +622,9 @@ threads on 26 Oct and counts for 1.2, where it counted for 3 and the M4 packed 3
 reads the runs, not the step: a terrain job reading faster (from this Mac's disk, say) keeps more
 busy and counts for more. **A running job counts for what it keeps busy now** (task #1091,
 `sched::busy_now`): its beats carry its CPU time (`jobs::Live::cpu_ms`, the memory guard's
-sampler, its processes' rises summed so a process ending never takes it back), and once it has
+sampler, its processes' rises summed so a process ending never takes it back; a view saying less
+than the one before, as an agent's take-over of the job counts its processes afresh, is counted on
+from the one before, `Lease::cpu_carry`), and once it has
 ended a target (one read and computed) or run past the time its targets are predicted to take its
 Mac (`OWN_AGE` where none is known), it counts for the more of the cores it kept busy since its
 lease's first beat and over its last minute or so of beats (`Lease::cores_mean`,
@@ -630,7 +632,10 @@ lease's first beat and over its last minute or so of beats (`Lease::cores_mean`,
 stretch, one quiet a moment between busy stretches for its mean), in place of its measure; before
 that, or where its beats say no CPU time (an older agent's), its measure, so a job still reading
 its first target isn't counted as using nothing. The packing, a re-grant's count of its Mac's
-other jobs and placement's `swamped` count it so. A step's measure is its busiest thread count's
+other jobs and placement's `swamped` count it so; the forecast doesn't (`State::cores_left` and
+its packing of the leases as recorded, which carry no beats, count each running job for its
+measure), so where jobs keep less busy than their measure the lead grants a Mac more than the
+forecast foresaw, and logs "the grants departed from the forecast". A step's measure is its busiest thread count's
 over the window's runs: on 10 Nov it counted the M4's three terrain-deep jobs at 3.8 cores each
 (266 runs at 5 threads on 8–9 Nov kept 3.75 busy; the 4-thread runs since, beside each other on a
 busier NAS, 2.4–2.8), 11.4 of the 12 it had while in use, and a fourth was refused ("cores: 0.6 of
