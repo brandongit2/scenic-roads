@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 /// The catalogue's number.
 const N: u64 = 7;
 
-/// A pack at `root`/`logical`.<hash>.pack of `layer`, each tile `(z, x, y, bytes)` stored as given
-/// (gzip'd already when `gzip`), and its catalogue entry: the file's reference.
+/// A pack at `root`/`logical`.<hash>.pack of `layer`, each tile `(z, x, y, bytes, length before
+/// gzip)` stored as given (gzip'd already when `gzip`), and its catalogue entry: the file's reference.
 fn pack(
     root: &Path,
     logical: &str,
@@ -31,7 +31,7 @@ fn pack(
 ) -> store::catalogue::FileRef {
     let file = format!("{logical}.{:016x}.pack", logical.len());
     let path = root.join(&file);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(root.join(logical.rsplit_once('/').unwrap().0)).unwrap();
     let mut w = store::pack::PackWriter::create(&path, serde_json::json!({"layer": layer}), gzip).unwrap();
     for (z, x, y, b, raw) in tiles {
         w.add(*z, *x, *y, b, *raw).unwrap();
