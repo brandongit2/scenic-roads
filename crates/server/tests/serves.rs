@@ -259,7 +259,11 @@ fn the_server_serves_every_route_from_a_map_made_by_the_builds_codecs() {
         .timeout_global(Some(store::testkit::WATCHDOG))
         .build()
         .into();
-    let json = |path: &str| serde_json::from_slice::<serde_json::Value>(&s.get(&agent, path).1).unwrap();
+    let json = |path: &str| {
+        let (ct, b) = s.get(&agent, path);
+        assert_eq!(ct, "application/json", "{path}");
+        serde_json::from_slice::<serde_json::Value>(&b).unwrap()
+    };
 
     assert_eq!(s.get(&agent, "/api/ping").1, b"ok");
     let meta = json("/api/meta");
@@ -278,7 +282,8 @@ fn the_server_serves_every_route_from_a_map_made_by_the_builds_codecs() {
     assert_eq!(ct, "image/webp");
     let h = roadcore::grid::decode_terrain(&b).unwrap();
     assert!(h.len() == 65536 && h.iter().all(|&e| (e - 1234.0).abs() < 0.01), "{:?}", &h[..4]);
-    let (_, b) = s.get(&agent, "/tiles/roads/10/300/380");
+    let (ct, b) = s.get(&agent, "/tiles/roads/10/300/380");
+    assert_eq!(ct, "application/octet-stream");
     let (lines, ext) = roadcore::tile::decode(&b).unwrap();
     assert_eq!(ext, 12);
     assert!(
