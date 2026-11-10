@@ -132,7 +132,7 @@ the members' in its own (`state/status.json`, `helpers`).
 `tools/devtools/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
 away from home: https://map.brandontsang.net (Devices). It publishes the app (`ssh m6 'cd
 ~/projets/scenic-roads && tools/app/publish.sh'`, docs/building.md, App publishing), its tests
-run on the test Mac (`SCENIC_TEST_HOST`, default `m4`; `tools/app/remote-tests.sh`). Its toolchain: brew's mise
+run on the test Mac (`tools/app/remote-tests.sh`: known by its LocalHostName, `SCENIC_TEST_MAC`, default the M4's, on which the tests run in place with no ssh; reached from another Mac by `SCENIC_TEST_HOST`, an ssh alias, default `m4`). Its toolchain: brew's mise
 and rustup (`/opt/homebrew/bin`, `~/.cargo/bin`, which publish.sh puts on the PATH itself) and,
 from `mise install` in the checkout, everything mise.toml and rust-toolchain.toml pin (Rust,
 Node, pnpm, uv, cargo-nextest, CMake); Xcode for swiftc

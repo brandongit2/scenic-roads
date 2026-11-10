@@ -59,7 +59,12 @@
 # side makes runs under a watchdog: the first, a fresh-connection probe, within 20 s; the lock and
 # drop calls within 60 s; the run itself must print its first line within 120 s (its first,
 # "connected", comes at once). Past a bound, the ssh is stopped and the command runs here, saying why.
-host=${SCENIC_TEST_HOST:-m4}  # the test Mac: the M4 by default (owner, 31 Oct); any ssh alias, or this Mac itself (then it runs here)
+# The test Mac, known two ways (owner, 31 Oct and 10 Nov): who it is, its LocalHostName, the pool's name
+# for a Mac (SCENIC_TEST_MAC, the M4 by default), checked here before anything connects, so on it the
+# tests run here at once, with no ssh to itself (no 1Password approval, no 20 s probe); and how to
+# reach it from another Mac (SCENIC_TEST_HOST, an ssh alias, `m4` by default).
+test_mac=${SCENIC_TEST_MAC:-Brandons-MacBook-Pro}
+host=${SCENIC_TEST_HOST:-m4}
 self=${0:A}
 setopt extendedglob
 # Owner ids (proc_id, proc_alive) are tools/app/lib.zsh's: sourced here, and sent ahead of this
@@ -371,13 +376,13 @@ local_main() {  # <key> <source dir> <command>
   local key=$1 src=${2:A} cmd=$3
   [[ $key == [A-Za-z0-9._-]## && $key != .* ]] || { print "remote-tests: bad key $key"; return 2; }
   ( cd $src && versions "this Mac ($(scutil --get LocalHostName 2>/dev/null))" )
-  local why= rname
+  local why=
   if [[ -n ${SCENIC_CHECK_LOCAL:-}${SCENIC_TESTS_LOCAL:-} ]]; then why="SCENIC_CHECK_LOCAL set"
+  elif [[ $(scutil --get LocalHostName 2>/dev/null) == $test_mac ]]; then why="this is the test Mac"
   elif [[ -d $src/data/build ]]; then why="the tree has ignored test data in data/build, which the test Mac's copy wouldn't"
   # (A fresh connection, as the run's own: its key from the agent, which may wait for an approval.)
-  elif ! rname=$(bounded 20 ssh -o ConnectTimeout=10 -o BatchMode=yes -o ControlPath=none $host scutil --get LocalHostName 2>/dev/null); then
+  elif ! bounded 20 ssh -o ConnectTimeout=10 -o BatchMode=yes -o ControlPath=none $host true 2>/dev/null; then
     why="no fresh ssh connection to $host within 20 s (down, or the ssh agent, 1Password, locked or waiting for an approval)"
-  elif [[ $rname == "$(scutil --get LocalHostName 2>/dev/null)" ]]; then why="this is the test Mac"
   fi
   if [[ -n $why ]]; then
     print "remote-tests: running here ($why; load $(loadavg))"

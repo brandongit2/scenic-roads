@@ -397,6 +397,8 @@ fn remote_tests_falls_back_when_ssh_hangs() {
         .args(["k637", src.to_str().unwrap(), "echo ran-here"])
         .env("PATH", path)
         .env("SCENIC_TEST_HOST", "hung-host")
+        // (Not this Mac by name, or the script would run here at once, never trying the ssh.)
+        .env("SCENIC_TEST_MAC", "not-this-mac")
         // (A test's run isn't one of the dev job dashboard's: tools/dev/devjob.zsh.)
         .env("SCENIC_DEVJOB", "0")
         .env_remove("SCENIC_CHECK_LOCAL")

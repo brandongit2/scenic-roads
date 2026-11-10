@@ -393,7 +393,7 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   to the mini, the NAS at ~12 MB/s, jobs slower. Fully offline its jobs fail on the NAS and the
   lead keeps its leases until it's heard or 12 h pass (`held_by_away`). Off the network the M4 is
   also no test Mac: check.sh's tests part and publish's suite fail to reach it
-  (`SCENIC_TEST_HOST`); that is the dev tools', not a role of #882's.
+  (`SCENIC_TEST_HOST`; on the M4 itself, `SCENIC_TEST_MAC`, they run in place); that is the dev tools', not a role of #882's.
 - **A laptop's offline map: broken by #874, a regression; mended by step 7a.** Until #874 every Mac's own server
   served its map and its downloads on localhost with nothing else reachable: the M1's synced its
   mirror until it retired on 31 Oct 00:37 (its `server.log`). Since then no laptop has a server
