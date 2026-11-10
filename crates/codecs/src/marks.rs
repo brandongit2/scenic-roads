@@ -388,6 +388,39 @@ pub fn osm_id(r: &str) -> Option<u64> {
     (id < HASHED).then_some(id)
 }
 
+/// A unit's landmark candidate: one line of `work/pois/<u>` (roads::candidates writes them, the
+/// marks job reads them: landmarks::marksjob::from_unit).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Cand {
+    /// Its OSM object ("n123", "w5") or hiking-route end ("trail:<relation>:<node>"), then ":" and
+    /// its kind (a way can be a point of interest and a covered bridge).
+    pub key: String,
+    pub kind: String,
+    /// E7.
+    pub lon: i32,
+    pub lat: i32,
+    pub name: String,
+    /// Its own English name: name:en, else (Japan) name:ja-Latn or name:ja_rm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub en: Option<String>,
+    /// Metres, as extract rounds it (nodes only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ele: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osm: Option<String>,
+    /// The `wikidata` tag as tagged (one QID or several).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qid: Option<String>,
+    /// The tags its details show.
+    pub tags: std::collections::BTreeMap<String, String>,
+    /// A covered bridge's length, metres.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_m: Option<u32>,
+    /// A peak tagged as a viewpoint too (its details say so).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub viewpoint: bool,
+}
+
 /// A reference's hashed id: 2^51 plus the first 51 bits of its XXH3-64.
 pub fn hashed_id(reference: &str) -> u64 {
     HASHED + (xxhash_rust::xxh3::xxh3_64(reference.as_bytes()) >> 13)

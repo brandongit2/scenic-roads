@@ -572,6 +572,12 @@ pub fn zips(a: &super::Accepted) -> Vec<(String, std::path::PathBuf)> {
     a.files().filter(|(p, _)| p.ends_with(".zip")).map(|(p, c)| (p.clone(), c.unchecked_path())).collect()
 }
 
+/// The timetables' pieces (roads::timetables merges them into the to-do list and the report). The
+/// rail job's piece: the rail lines in the coverage, with how much of each has trains, and its
+/// unmatched routes.
+pub const RAIL_LINES: &str = "work/rail/lines";
+/// The ferries job's piece: the ferry lines no timetable counts, and its unmatched routes.
+pub const FERRY_LINES: &str = "work/ferries/lines";
 /// The report: `{"to_do", "to_do_km", "by_kind", "unmatched": [...]}`.
 pub const REPORT: &str = "work/timetables/report";
 

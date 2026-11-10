@@ -152,7 +152,7 @@ pub fn tiles_geojson(z: u8, tiles: &[(u32, u32)]) -> serde_json::Value {
 
 /// The z6 tile holding a point (degrees), as tiles are cut (half-open).
 fn z6_of(lon: f64, lat: f64) -> (u32, u32) {
-    roads::stage::tiles_in(6, [lon, lat, lon, lat])[0]
+    roadcore::geo::tiles_in(6, [lon, lat, lon, lat])[0]
 }
 
 /// heritage.json's sites' positions (E7) by the z6 tile holding them, each list sorted, no repeats.
@@ -300,7 +300,7 @@ pub fn slice_areas(area_shapes: &str) -> Result<BTreeMap<(u32, u32), Vec<(String
         let h = store::naming::hash16(line.as_bytes());
         let boxes = if b[2] - b[0] > 180.0 { part_boxes(&v["geometry"]) } else { vec![b] };
         let tiles: std::collections::BTreeSet<(u32, u32)> =
-            boxes.into_iter().flat_map(|b| roads::stage::tiles_in(6, b)).collect();
+            boxes.into_iter().flat_map(|b| roadcore::geo::tiles_in(6, b)).collect();
         for t in tiles {
             out.entry(t).or_default().push((h.clone(), line.to_string()));
         }
@@ -402,7 +402,7 @@ pub fn unit_inputs(out: &Out, date: &str, b: [f64; 4], dir: &Path) -> Result<(us
 
 /// The heritage-sites job's slices `unit_inputs` reads for box `b` (content names).
 pub fn unit_contents(out: &Out, date: &str, b: [f64; 4]) -> Vec<String> {
-    roads::stage::tiles_in(6, b)
+    roadcore::geo::tiles_in(6, b)
         .into_iter()
         .flat_map(|(x, y)| [pos_logical(date, x, y), areas_logical(date, x, y)])
         .filter_map(|l| out.get(&l).map(str::to_string))
@@ -430,7 +430,7 @@ pub fn unit_inputs_with(
     };
     let mut sites: Vec<[i32; 2]> = Vec::new();
     let mut polys: BTreeMap<String, String> = BTreeMap::new();
-    for (x, y) in roads::stage::tiles_in(6, b) {
+    for (x, y) in roadcore::geo::tiles_in(6, b) {
         if let Some(c) = out.get(&pos_logical(date, x, y)) {
             let pts: Vec<[i32; 2]> = serde_json::from_slice(&path(c)?.loc().read()?)
                 .with_context(|| format!("{}", pos_logical(date, x, y)))?;

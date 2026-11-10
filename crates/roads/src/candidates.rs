@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use buildstore::coverage::Coverage;
 use codecs::legacy::TileId;
-use serde::{Deserialize, Serialize};
+use codecs::marks::Cand;
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -18,38 +18,6 @@ pub fn parse_ele(v: Option<&str>) -> Option<f32> {
     let num: String = v.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-').collect();
     let n: f32 = num.parse().ok()?;
     Some(if v.contains("ft") || v.contains('\'') { n * 0.3048 } else { n })
-}
-
-/// One candidate.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Cand {
-    /// Its OSM object ("n123", "w5") or hiking-route end ("trail:<relation>:<node>"), then ":" and
-    /// its kind (a way can be a point of interest and a covered bridge).
-    pub key: String,
-    pub kind: String,
-    /// E7.
-    pub lon: i32,
-    pub lat: i32,
-    pub name: String,
-    /// Its own English name: name:en, else (Japan) name:ja-Latn or name:ja_rm.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub en: Option<String>,
-    /// Metres, as extract rounds it (nodes only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ele: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub osm: Option<String>,
-    /// The `wikidata` tag as tagged (one QID or several).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub qid: Option<String>,
-    /// The tags its details show.
-    pub tags: BTreeMap<String, String>,
-    /// A covered bridge's length, metres.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub length_m: Option<u32>,
-    /// A peak tagged as a viewpoint too (its details say so).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub viewpoint: bool,
 }
 
 /// The candidates in extract's `pois.json` (made with `--candidates`) that unit `u` owns and the

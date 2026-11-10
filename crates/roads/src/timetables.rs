@@ -7,21 +7,17 @@
 //! - **The report:** timetable routes that match nothing on the map, as `work/timetables/report`,
 //!   which the lead shows on the build page and in `scenic status`. Never drawn, never held.
 //!
-//! The pieces come from the jobs that match timetables to the map: `rail` (`work/rail/lines`:
+//! The pieces (their paths: inputs::inputs::gtfs's `RAIL_LINES`, `FERRY_LINES`) come from the jobs that match timetables to the map: `rail` (`work/rail/lines`:
 //! [`rail_lines`] and [`rail_unmatched`], from railfreq's misses) and `ferries`
 //! (`work/ferries/lines`, landmarks::ferries' `timetables.json`). The lead-only `timetables-todo` job
 //! ([`run`]) merges them.
 
 use anyhow::{Context, Result};
+use inputs::inputs::gtfs::{FERRY_LINES, RAIL_LINES};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::BufRead;
 
-/// The rail job's piece: the rail lines in the coverage, with how much of each has trains, and its
-/// unmatched routes.
-pub const RAIL_LINES: &str = "work/rail/lines";
-/// The ferries job's piece: the ferry lines no timetable counts, and its unmatched routes.
-pub const FERRY_LINES: &str = "work/ferries/lines";
 /// The report (the status's view of it is the inputs' gtfs::View).
 pub use inputs::inputs::gtfs::REPORT;
 /// The to-do list's file in the inputs folder's `todo/`.

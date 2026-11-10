@@ -16,7 +16,6 @@ codecs = { path = "../codecs" }
 coordwire = { path = "../coordwire" }
 inputs = { path = "../inputs" }
 terrain = { path = "../terrain" }
-roads = { path = "../roads" }
 serde = { version = "1", features = ["derive"] }
 anyhow.workspace = true
 rayon.workspace = true

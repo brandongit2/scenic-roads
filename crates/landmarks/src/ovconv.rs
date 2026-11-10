@@ -481,7 +481,7 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &inputs::inputs::Accepted
     );
     // (The lines no timetable counts and the routes matching none, for the timetables' to-do list
     // and report: roads::timetables.)
-    out.put_file(roads::timetables::FERRY_LINES, "json", &work.join("timetables.json"))?;
+    out.put_file(inputs::inputs::gtfs::FERRY_LINES, "json", &work.join("timetables.json"))?;
     let mut ntiles = 0;
     ferry_blocks(out, &fc, &lines, &mut ntiles)
 }

@@ -199,8 +199,8 @@ fn names_todo_work(
 /// (`work/rail/lines`, `work/ferries/lines`: after each rail and ferries run), coverage (it keeps
 /// the ferry lines in it) or step version. None until both extracts are made.
 pub fn timetables_todo_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    x.m.get(roads::timetables::RAIL_LINES)?;
-    x.m.get(roads::timetables::FERRY_LINES)?;
+    x.m.get(inputs::inputs::gtfs::RAIL_LINES)?;
+    x.m.get(inputs::inputs::gtfs::FERRY_LINES)?;
     let k = world_key("timetables-todo", x)?;
     (done.lo.get("timetables-todo").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "timetables-todo".into(), targets: vec![("timetables-todo".into(), k)] })
@@ -579,7 +579,7 @@ pub fn unit_terrain_tiles(
         }
     }
     for s in &reached_of(r) {
-        let [x0, x1, y0, y1] = roads::stage::tile_range(4, s.bbox());
+        let [x0, x1, y0, y1] = roadcore::geo::tile_range(4, s.bbox());
         for x in x0..=x1 {
             for y in y0..=y1 {
                 if s.meets(tile_deg(4, x, y)) {
@@ -827,12 +827,12 @@ fn held_note<'a>(step: &str, targets: impl IntoIterator<Item = &'a str>, view: &
 
 /// The z6 tiles meeting a box (degrees), x wrapping at the antimeridian.
 pub(crate) fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
-    let mut out = roads::stage::tiles_in(z, [b[0].max(-180.0), b[1], b[2].min(180.0), b[3]]);
+    let mut out = roadcore::geo::tiles_in(z, [b[0].max(-180.0), b[1], b[2].min(180.0), b[3]]);
     if b[0] < -180.0 {
-        out.extend(roads::stage::tiles_in(z, [b[0] + 360.0, b[1], 180.0, b[3]]));
+        out.extend(roadcore::geo::tiles_in(z, [b[0] + 360.0, b[1], 180.0, b[3]]));
     }
     if b[2] > 180.0 {
-        out.extend(roads::stage::tiles_in(z, [-180.0, b[1], b[2] - 360.0, b[3]]));
+        out.extend(roadcore::geo::tiles_in(z, [-180.0, b[1], b[2] - 360.0, b[3]]));
     }
     out.sort_unstable();
     out.dedup();
@@ -987,7 +987,7 @@ pub fn region_steps(
     let tiles_of = |i: usize| -> &Vec<String> {
         unit_tiles[i].get_or_init(|| {
             let ext = unit_reach(Some(reach), m, units[i].0);
-            roads::stage::tiles_in(6, deg(ext))
+            roadcore::geo::tiles_in(6, deg(ext))
                 .into_iter()
                 .filter(|&(x, y)| owns(ext, codecs::hipack::tile_bounds(6, x, y)))
                 .map(|(x, y)| format!("6/{x}/{y}"))
@@ -996,7 +996,7 @@ pub fn region_steps(
     };
     let reads = |i: usize| -> BTreeSet<String> {
         let u = units[i].0;
-        roads::stage::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::stage::MARGIN_KM))
+        roadcore::geo::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::stage::MARGIN_KM))
             .into_iter()
             .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
             .collect()
@@ -2374,7 +2374,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
         .map(|(u, _)| {
             let t = u.slash();
             let along = ["terrain-lo", "terrain-hi"].into_iter().flat_map(|s| left.along.get("unit", &t, s));
-            roads::stage::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::stage::MARGIN_KM))
+            roadcore::geo::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::stage::MARGIN_KM))
                 .into_iter()
                 .chain(along.filter_map(|p| TileId::parse(p)).map(|p| (p.x << (6 - p.z), p.y << (6 - p.z))))
                 .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
@@ -2478,7 +2478,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     let tiles_of = |i: usize| -> &Vec<(u32, u32)> {
         unit_tiles[i].get_or_init(|| {
             let ext = unit_reach(Some(reach), m, units[i].0);
-            roads::stage::tiles_in(6, deg(ext))
+            roadcore::geo::tiles_in(6, deg(ext))
                 .into_iter()
                 .filter(|&(x, y)| owns(ext, codecs::hipack::tile_bounds(6, x, y)))
                 .collect()
@@ -2964,7 +2964,7 @@ fn by_unit(
     let mut units = 0;
     for u in changed {
         let ext = unit_reach(reach, m, u);
-        let mut mine: Vec<usize> = roads::stage::tiles_in(6, deg(ext))
+        let mut mine: Vec<usize> = roadcore::geo::tiles_in(6, deg(ext))
             .into_iter()
             .filter(|&(x, y)| owns(ext, codecs::hipack::tile_bounds(6, x, y)))
             .filter_map(|(x, y)| at.get(format!("6/{x}/{y}").as_str()).copied())
@@ -3143,7 +3143,7 @@ fn pack_lo_targets(
     let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
     let mut tiles: BTreeSet<(u32, u32)> = BTreeSet::new();
     for (_, _, ext) in &base_units {
-        tiles.extend(roads::stage::tiles_in(6, deg(*ext)));
+        tiles.extend(roadcore::geo::tiles_in(6, deg(*ext)));
     }
     // The z6 tiles whose extent meets a tile's box.
     let owners = |z: u8, x: u32, y: u32| -> Vec<String> {
@@ -6197,8 +6197,8 @@ mod tests {
             "sources/osm/d/outlines".to_string(),
             inputs::inputs::logical(inputs::inputs::languages::UNIT),
             inputs::lakefill::logical("d"),
-            roads::timetables::RAIL_LINES.to_string(),
-            roads::timetables::FERRY_LINES.to_string(),
+            inputs::inputs::gtfs::RAIL_LINES.to_string(),
+            inputs::inputs::gtfs::FERRY_LINES.to_string(),
             "sources/items/d/facts".to_string(),
             "sources/items/d/views".to_string(),
             landmarks::markconv::HERITAGE_DOTS.to_string(),
@@ -7966,7 +7966,7 @@ mod tests {
         m.insert(terrain::terrain_deep::pack_logical(0, 0), "layers/terrain/deep/10-0-0.aa".into());
         assert_eq!(key(&m), k1, "a deep pack far away");
         let b = roadcore::geo::tile_box_grown(6, 28, 16, roads::stage::MARGIN_KM);
-        let (x, y) = roads::stage::tiles_in(terrain::terrain_deep::PACK_Z, b)[0];
+        let (x, y) = roadcore::geo::tiles_in(terrain::terrain_deep::PACK_Z, b)[0];
         m.insert(terrain::terrain_deep::pack_logical(x, y), "layers/terrain/deep/x.bb".into());
         assert_eq!(key(&m), k1, "a deep pack over it where no way lies");
     }

@@ -3,7 +3,8 @@
 //! docs/crates.md §6.2), so they're pipeline's, as inputs_tests are.
 #![cfg(test)]
 
-use roads::timetables::{run, FERRY_LINES, RAIL_LINES, REPORT, TODO_FILE};
+use inputs::inputs::gtfs::{FERRY_LINES, RAIL_LINES};
+use roads::timetables::{run, REPORT, TODO_FILE};
 
 #[test]
 fn the_job_writes_into_todo_and_puts_the_report() {

@@ -114,6 +114,24 @@ pub fn tile_of(w: (f64, f64), z: u8) -> (u32, u32) {
     (c(w.0), c(w.1))
 }
 
+/// The tiles at `z` meeting the box (w, s, e, n in degrees).
+pub fn tiles_in(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
+    let [x0, x1, y0, y1] = tile_range(z, b);
+    (x0..=x1).flat_map(|tx| (y0..=y1).map(move |ty| (tx, ty))).collect()
+}
+
+/// `tiles_in` as ranges: [x0, x1, y0, y1], both ends in.
+pub fn tile_range(z: u8, b: [f64; 4]) -> [u32; 4] {
+    let n = 1u32 << z;
+    // (A billionth of a tile up before the floor: a box edge on a tile boundary, from
+    // tile_box_grown's round trip through degrees, can come back a hair below it
+    // and would take in the tile before.)
+    let tile = |t: f64| ((t * n as f64 + 1e-9).floor().max(0.0) as u32).min(n - 1);
+    let x = |lon: f64| tile(merc_x(lon));
+    let y = |lat: f64| tile(merc_clamped(0.0, lat).1);
+    [x(b[0]), x(b[2]), y(b[3]), y(b[1])]
+}
+
 /// A box ([west, south, east, north], degrees) grown by `km` on every side: `km` of latitude each
 /// way (stopping at the poles), and of longitude at the grown box's latitude farthest from the
 /// equator (`lon_span`), taken as `GROW_LAT` past it: a box reaching a pole would otherwise take in
@@ -235,6 +253,15 @@ pub fn winding<T: Coord, R: AsRef<[[T; 2]]>>(rings: &[R], p: [T; 2]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_ranges() {
+        // The z6 tile of Newcastle (6/31/19) grown by 30 km meets its neighbours.
+        let b = tile_box_grown(6, 31, 19, 30.0);
+        let t = tiles_in(6, b);
+        assert!(t.contains(&(31, 19)) && t.contains(&(30, 19)) && t.contains(&(32, 20)), "{t:?}");
+        assert_eq!(tiles_in(11, tile_box(6, 31, 19)).len(), 33 * 33);
+    }
 
     #[test]
     fn mercator_round_trips_and_ends_at_the_tiles() {

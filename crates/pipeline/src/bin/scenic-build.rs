@@ -6103,7 +6103,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let p = phase("uploading");
     out.put_bytes(rail::RAILFREQ, "bin", &freq)?;
     out.put_bytes(
-        roads::timetables::RAIL_LINES,
+        inputs::inputs::gtfs::RAIL_LINES,
         "json",
         &serde_json::to_vec(&serde_json::json!({"lines": lines, "unmatched": unmatched}))?,
     )?;

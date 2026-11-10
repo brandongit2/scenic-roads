@@ -82,13 +82,14 @@ impl Area {
     /// Its tiles at zoom `z`, sorted.
     pub fn tiles(&self, z: u8) -> Vec<(u32, u32)> {
         let t: std::collections::BTreeSet<(u32, u32)> =
-            tiles_in(z, self.b).into_iter().chain(self.along_tiles(z)).collect();
+            roadcore::geo::tiles_in(z, self.b).into_iter().chain(self.along_tiles(z)).collect();
         t.into_iter().collect()
     }
 
     /// Its tiles at zoom `z` along its long ways, sorted (some may be in `b` too).
     pub fn along_tiles(&self, z: u8) -> Vec<(u32, u32)> {
-        let t: std::collections::BTreeSet<(u32, u32)> = self.along.iter().flat_map(|&a| tiles_in(z, a)).collect();
+        let t: std::collections::BTreeSet<(u32, u32)> =
+            self.along.iter().flat_map(|&a| roadcore::geo::tiles_in(z, a)).collect();
         t.into_iter().collect()
     }
 }
@@ -219,24 +220,6 @@ impl<'a> LayerReader<'a> {
     }
 }
 
-/// The tiles at `z` meeting the box (w, s, e, n in degrees).
-pub fn tiles_in(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
-    let [x0, x1, y0, y1] = tile_range(z, b);
-    (x0..=x1).flat_map(|tx| (y0..=y1).map(move |ty| (tx, ty))).collect()
-}
-
-/// `tiles_in` as ranges: [x0, x1, y0, y1], both ends in.
-pub fn tile_range(z: u8, b: [f64; 4]) -> [u32; 4] {
-    let n = 1u32 << z;
-    // (A billionth of a tile up before the floor: a box edge on a tile boundary, from
-    // roadcore::geo::tile_box_grown's round trip through degrees, can come back a hair below it
-    // and would take in the tile before.)
-    let tile = |t: f64| ((t * n as f64 + 1e-9).floor().max(0.0) as u32).min(n - 1);
-    let x = |lon: f64| tile(roadcore::geo::merc_x(lon));
-    let y = |lat: f64| tile(roadcore::geo::merc_clamped(0.0, lat).1);
-    [x(b[0]), x(b[2]), y(b[3]), y(b[1])]
-}
-
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Staged {
     pub terrain_tiles: usize,
@@ -258,7 +241,7 @@ fn copied_whole(z: u8, x: u32, y: u32, b: [f64; 4]) -> bool {
         return false;
     }
     let (x6, y6) = (x >> (z - 6), y >> (z - 6));
-    let [x0, x1, y0, y1] = tile_range(12, b);
+    let [x0, x1, y0, y1] = roadcore::geo::tile_range(12, b);
     let (ax, ay) = ((x6 << 6).max(x0), (y6 << 6).max(y0));
     let (bx, by) = (((x6 + 1) << 6).min(x1 + 1), ((y6 + 1) << 6).min(y1 + 1));
     let inside = (bx.saturating_sub(ax) as u64) * (by.saturating_sub(ay) as u64);
@@ -428,15 +411,6 @@ fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn tile_ranges() {
-        // The z6 tile of Newcastle (6/31/19) grown by 30 km meets its neighbours.
-        let b = roadcore::geo::tile_box_grown(6, 31, 19, 30.0);
-        let t = tiles_in(6, b);
-        assert!(t.contains(&(31, 19)) && t.contains(&(30, 19)) && t.contains(&(32, 20)), "{t:?}");
-        assert_eq!(tiles_in(11, roadcore::geo::tile_box(6, 31, 19)).len(), 33 * 33);
-    }
-
     /// Every sample of a way a z6 tile owns has its far field staged: an ordinary way's (within the
     /// tile grown by `reach::LONG_KM`) inside the tile grown by `MARGIN_KM`, at every latitude; a long
     /// way's along it, at every node and between; a ferry's and a neighbour's long ways not.
@@ -474,11 +448,11 @@ mod tests {
         for w in verts.windows(2) {
             let (a, b) = (w[0].map(|v| v as f64 * 1e-7), w[1].map(|v| v as f64 * 1e-7));
             let seg = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])];
-            for t in tiles_in(11, roadcore::geo::grow(seg, FAR_KM)) {
+            for t in roadcore::geo::tiles_in(11, roadcore::geo::grow(seg, FAR_KM)) {
                 assert!(z11.contains(&t), "{t:?} along {seg:?}");
             }
         }
-        assert!(tiles_in(11, [10.0, 40.0, 11.0, 41.0]).iter().all(|t| !z11.contains(t)));
+        assert!(roadcore::geo::tiles_in(11, [10.0, 40.0, 11.0, 41.0]).iter().all(|t| !z11.contains(t)));
         assert!(area.tiles(11).len() > Area::of(u, None).tiles(11).len());
         // (In runs: a box every 15 km or so of the way's 300, not one a node.)
         assert!(area.along.len() < 40, "{}", area.along.len());

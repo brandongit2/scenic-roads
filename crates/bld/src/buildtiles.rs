@@ -446,7 +446,7 @@ mod tests {
         // Its tile's z8 tiles and those within 20 km (+ 1 km): the same as the tiles meeting that box.
         let b = codecs::hipack::grow(roads::reach::near_box(u), MARGIN_KM);
         let deg = |v: i32| v as f64 * 1e-7;
-        let want: Vec<TileId> = roads::stage::tiles_in(ZOOM, [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])])
+        let want: Vec<TileId> = roadcore::geo::tiles_in(ZOOM, [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])])
             .into_iter()
             .map(|(x, y)| TileId { z: ZOOM, x, y })
             .collect();

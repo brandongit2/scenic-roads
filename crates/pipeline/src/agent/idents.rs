@@ -80,7 +80,7 @@ pub fn lakefill(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// The rail and ferries extracts the timetables' to-do list reads, required.
 pub fn transit_lines(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    required(x, [roads::timetables::RAIL_LINES.to_string(), roads::timetables::FERRY_LINES.to_string()])
+    required(x, [inputs::inputs::gtfs::RAIL_LINES.to_string(), inputs::inputs::gtfs::FERRY_LINES.to_string()])
 }
 
 /// The whole coverage (`build::coverage_all`: each shape's buffer and rings).
@@ -350,7 +350,7 @@ pub fn heritage_slices(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
     Some(named(
         x,
-        roads::stage::tiles_in(6, unit_box(u)).into_iter().flat_map(|(a, b)| {
+        roadcore::geo::tiles_in(6, unit_box(u)).into_iter().flat_map(|(a, b)| {
             [landmarks::heritage::pos_logical(x.date, a, b), landmarks::heritage::areas_logical(x.date, a, b)]
         }),
     ))

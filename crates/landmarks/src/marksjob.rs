@@ -293,9 +293,9 @@ pub fn detail_keys(kind: &str) -> Vec<&'static str> {
     common.iter().chain(own).copied().collect()
 }
 
-/// A unit's candidate (roads::candidates) as the job's: its details record (the kept tags of its kind's lists, `osm`, `length_m`, `viewpoint`, and the facts of a
+/// A unit's candidate (codecs::marks::Cand, from roads::candidates) as the job's: its details record (the kept tags of its kind's lists, `osm`, `length_m`, `viewpoint`, and the facts of a
 /// single-QID tag as `wd`), its peak result (a `work/peaks` record), its key as the reference.
-pub fn from_unit(c: &roads::candidates::Cand, peak: Option<Value>, facts: &HashMap<String, Value>) -> Candidate {
+pub fn from_unit(c: &codecs::marks::Cand, peak: Option<Value>, facts: &HashMap<String, Value>) -> Candidate {
     let mut d = Map::new();
     if let Some(o) = &c.osm {
         d.insert("osm".into(), json!(o));

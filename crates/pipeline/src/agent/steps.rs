@@ -715,7 +715,7 @@ fn sl_lo(t: &str) -> Vec<String> {
 fn unit_reads(t: &str, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
     let b = roadcore::geo::tile_box_grown(6, x, y, roads::stage::MARGIN_KM);
-    named(z, packs_over(z, |zz| roads::stage::tiles_in(zz, b)))
+    named(z, packs_over(z, |zz| roadcore::geo::tiles_in(zz, b)))
 }
 
 /// The packs at zoom `z` (3: lo, 6: hi, `terrain_deep::PACK_Z`: deep) holding the tiles a z6 tile
@@ -744,7 +744,7 @@ fn packs_over(z: u8, tiles: impl Fn(u8) -> Vec<(u32, u32)>) -> std::collections:
 fn unit_reads_along(t: &str, r: &roads::reach::Reach, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
     let area = roads::stage::Area::of(TileId { z: 6, x, y }, Some(r));
-    let [x0, x1, y0, y1] = roads::stage::tile_range(z, area.b);
+    let [x0, x1, y0, y1] = roadcore::geo::tile_range(z, area.b);
     let boxed = |&(a, c): &(u32, u32)| (x0..=x1).contains(&a) && (y0..=y1).contains(&c);
     named(z, packs_over(z, |zz| area.along_tiles(zz)).into_iter().filter(|p| !boxed(p)))
 }
@@ -2279,7 +2279,7 @@ fn w_stations(l: &str, _: bool) -> bool {
 }
 
 fn w_ferries(l: &str, _: bool) -> bool {
-    pack(l, "ferries", &ALL) || l == roads::timetables::FERRY_LINES
+    pack(l, "ferries", &ALL) || l == inputs::inputs::gtfs::FERRY_LINES
 }
 
 /// The timetable feeds: each feed's zip, the lists of those checked, fetched and kept (the rail
@@ -2290,7 +2290,7 @@ fn w_rail_feeds(l: &str, _: bool) -> bool {
 }
 
 fn w_rail(l: &str, _: bool) -> bool {
-    l == "work/rail/used" || l == "global/railfreq" || l == roads::timetables::RAIL_LINES
+    l == "work/rail/used" || l == "global/railfreq" || l == inputs::inputs::gtfs::RAIL_LINES
 }
 
 /// The timetables' report (its to-do list is written into the inputs folder's todo/, outside the
