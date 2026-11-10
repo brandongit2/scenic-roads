@@ -1258,8 +1258,9 @@ pub fn recorded_list(cat: &store::catalogue::Catalogue) -> Vec<Value> {
         .collect()
 }
 
-/// `recorded_list` of the catalogue served, kept for it: /api/catalog asks every minute, and each
-/// region's text is read through (~0.1 s for the world's).
+/// `recorded_list` of the catalogue served, kept for it: /api/catalog asks every minute, the
+/// downloads' state (/api/downloads) as the Regions panel shows it, and each region's text is read
+/// through (~0.15 s for the world's on the M4).
 pub fn recorded_list_kept(cat: &Arc<store::catalogue::Catalogue>) -> Arc<Vec<Value>> {
     type Listed = Option<(std::sync::Weak<store::catalogue::Catalogue>, Arc<Vec<Value>>)>;
     static LISTED: Mutex<Listed> = Mutex::new(None);
@@ -1563,6 +1564,28 @@ mod tests {
         assert_eq!(coverage(State(s.clone())).await.status(), StatusCode::OK, "drawn from the catalogue, away too");
     }
 
+    /// /api/coverage's body: the bytes its `Value` writes (#1092: written from the regions as they
+    /// are, its members in a `Value`'s order).
+    #[tokio::test]
+    async fn the_coverage_is_written_as_its_value() {
+        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
+        let ring = json!([[1.0, 50.0], [2.5, 50.0], [2.0, 51.125], [1.0, 50.0]]);
+        let mut c = catalogue(json!({"recorded": true, "regions": [
+            {"id": "b", "name": "B", "outline": ["poly:b.poly", "osm:7"], "shapes": {"poly:b.poly": [[ring]], "osm:7": [[ring]]}},
+            {"id": "a", "name": "A", "outline": ["place:1,2,3"], "shapes": {}},
+        ]}));
+        c.n = 1_000_000;
+        s.data.set_map(Arc::new(c));
+        let body = axum::body::to_bytes(coverage(State(s.clone())).await.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(std::str::from_utf8(&body).unwrap(), v.to_string());
+        assert_eq!((v["type"].as_str(), v["catalog"].as_u64()), (Some("FeatureCollection"), Some(1_000_000)));
+        assert_eq!(v["features"].as_array().unwrap().len(), 2);
+        assert_eq!(v["features"][1]["geometry"], json!({"type": "MultiPolygon", "coordinates": [[ring]]}));
+        assert_eq!(ids(&v), ["b", "a"]);
+    }
+
     fn catalogue(coverage: Value) -> store::catalogue::Catalogue {
         let mut c = store::catalogue::Catalogue::new(3);
         c.coverage = coverage.into();
@@ -1599,6 +1622,19 @@ mod tests {
         for old in [json!({"regions": []}), Value::Null, json!({"regions": ["northumberland"]})] {
             assert!(recorded(&catalogue(old.clone())).is_empty() && recorded_list(&catalogue(old)).is_empty());
         }
+        // (An object's members it lacks are null, as a `Value`'s index gave; one that isn't left out.)
+        let odd = catalogue(json!({"regions": [{"id": "x"}, 5, {"id": "y", "name": "Y"}]}));
+        assert_eq!(
+            recorded_list(&odd),
+            [json!({"id": "x", "name": null, "outline": null}), json!({"id": "y", "name": "Y", "outline": null})]
+        );
+        // Kept for the catalogue it's of, made again for another.
+        let (c, odd) = (Arc::new(c), Arc::new(odd));
+        let kept = recorded_list_kept(&c);
+        assert_eq!(*kept, recorded_list(&c));
+        assert!(Arc::ptr_eq(&kept, &recorded_list_kept(&c)));
+        assert_eq!(*recorded_list_kept(&odd), recorded_list(&odd));
+        assert_eq!(*recorded_list_kept(&c), *kept);
     }
 
     #[test]

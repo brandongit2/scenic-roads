@@ -47,3 +47,24 @@ fn a_server_on_demand_ends_at_once_when_its_port_is_held() {
     let (code, _, err) = run(&["--on-demand", "--port", &port]);
     assert!(code == 1 && err.contains("this Mac's map already runs"), "{code}: {err}");
 }
+
+/// Started with malloc's large cache (as launchd starts it), it starts itself again in its place
+/// without it (store::spawn::without_large_cache, #1092; the exec itself is store's test): once,
+/// never again and again, its arguments kept, then runs as it would have (here: ends at once, its
+/// port held), with no warning that it couldn't.
+#[test]
+fn a_server_started_with_the_large_cache_runs_once_without_it() {
+    let held = store::spawn::listen("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port().to_string();
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = store::spawn::command(env!("CARGO_BIN_EXE_server"));
+    cmd.args(["--on-demand", "--port", &port])
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env_remove(store::spawn::NO_LARGE_CACHE.0);
+    let o = store::spawn::output(&mut cmd).unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert_eq!(err.matches("this Mac's map already runs").count(), 1, "{err}");
+    assert!(!err.contains("WARNING"), "{err}");
+}

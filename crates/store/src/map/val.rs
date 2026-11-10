@@ -63,15 +63,6 @@ impl Val {
             true => self.parse::<String>().ok().map(Cow::Owned),
         }
     }
-
-    /// The entry of a region (docs/maplog.md §4.1): `{"i": i, "region": region}`, written from the
-    /// region borrowed (never a copy of its tree).
-    pub fn region(i: usize, region: &Value) -> Val {
-        let mut b = format!("{{\"i\":{i},\"region\":").into_bytes();
-        serde_json::to_writer(&mut b, region).expect("a JSON value always serializes");
-        b.push(b'}');
-        Val::of_canonical(String::from_utf8(b).expect("serde_json writes UTF-8"))
-    }
 }
 
 impl From<&Value> for Val {
@@ -524,12 +515,6 @@ mod tests {
         }
         // (Both kinds were made, enough of each to mean something.)
         assert!(good > 50_000 && bad > 10_000, "{good} read, {bad} refused");
-    }
-
-    #[test]
-    fn a_region_entry_is_its_values() {
-        let r = json!({"id": "alps", "shapes": {"b": [[1.5, 2]], "a": "x"}, "name": "Alps"});
-        assert_eq!(Val::region(3, &r), Val::from(json!({"i": 3, "region": r})));
     }
 
     #[test]

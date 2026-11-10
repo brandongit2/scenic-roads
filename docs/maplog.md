@@ -43,7 +43,8 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
 
 - **Wherever the server runs:** the Mac mini alone since #874, so no gate of its own. Its map
   costs what the lead's does (above), and the catalogue made of it at each batch beside it (the
-  one before still held while it's swapped): 15 MB each, sharing the map's regions (above).
+  one before still held while it's swapped): 15 MB each, sharing the map's regions (above); the
+  one before also keeps the text of the regions the batch replaced until its last reader lets it go.
 - **The catalogue is made from the map at each batch** (`Map::catalogue`), as the consumers still
   read a `Catalogue`.
 - **No save at a clean stop** (§5.3): at most every 10 minutes; a start asks the batches since.

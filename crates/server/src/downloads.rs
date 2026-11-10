@@ -1459,9 +1459,9 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         Some(v)
     };
     let asked: HashMap<&str, &AskedRegion> = plan.asked.regions.iter().map(|r| (r.id.as_str(), r)).collect();
-    let listed: BTreeMap<String, Value> = crate::regions::recorded_list(&s.data.catalogue())
-        .into_iter()
-        .filter_map(|r| Some((r["id"].as_str()?.to_string(), r)))
+    let listed: BTreeMap<String, Value> = crate::regions::recorded_list_kept(&s.data.catalogue())
+        .iter()
+        .filter_map(|r| Some((r["id"].as_str()?.to_string(), r.clone())))
         .collect();
     let mut regions = serde_json::Map::new();
     let ids: BTreeSet<&str> = plan.now().regions.keys().map(String::as_str).chain(asked.keys().copied()).collect();
@@ -1669,7 +1669,7 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
             "{id:?} is disabled in its file (disabled = true): nothing is built for it to download"
         );
         let cat = s.data.catalogue();
-        let name = crate::regions::recorded_list(&cat)
+        let name = crate::regions::recorded_list_kept(&cat)
             .iter()
             .find(|r| r["id"] == id.as_str())
             .and_then(|r| r["name"].as_str().map(str::to_string))
