@@ -345,6 +345,10 @@ struct GeoSet<'a> {
     /// By file, its fill mask's URL (empty: none has one; `Source::Geotiff::masks`).
     masks: &'a [Option<String>],
     read_resolution: Option<f64>,
+    /// The height in its CRS of `BLOCK` rows of its pixels at the resolution read
+    /// (`Dataset::resolution`): the reading order's rows (`Reader::in_reading_order`), told without
+    /// opening a file.
+    row: f64,
     store: Option<store::nasfs::NasPath>,
     o: &'a Opts<'a>,
     memo: Arc<TileMemo>,
@@ -992,8 +996,9 @@ impl Invalid {
     /// pixel (`c0`, `r0`), up to `radius`. By row, a point's nearest invalid pixel is the row's
     /// nearest at or left of c0 or at or right of c0 + 1 (the distance grows with the column's
     /// offset), so it looks at two pixels a row, not every one; and at the rows outward from the
-    /// point's, each side until a row's least distance (`low(r)`, at most `dist(c, r)` for any c)
-    /// reaches the best found. What a scan of the whole window finds, to the bit.
+    /// point's, each side until a row's least distance (`low(r)`, at most `dist(c, r)` for any c:
+    /// libm's hypot is never below its larger argument; growing outward) reaches the best found.
+    /// What a scan of the whole window finds, to the bit.
     fn nearest(
         &self,
         win: [i64; 4],
@@ -1691,6 +1696,7 @@ impl<'a> Set<'a> {
                     files,
                     masks,
                     read_resolution: *read_resolution,
+                    row: BLOCK as f64 * if projected(*crs) { ds.resolution } else { ds.resolution / MERC_M_PER_DEG },
                     store,
                     o,
                     memo: memo.clone(),
@@ -1756,7 +1762,8 @@ enum Reader<'s, 'a> {
 
 impl Reader<'_, '_> {
     /// `sel` in reading order: a tile's points together (tile pyramids), a file's together and by
-    /// row of its blocks (GeoTIFFs). Each point is sampled alone, so the values are the same in any order.
+    /// band of about a block's rows (GeoTIFFs). Each point is sampled alone, so the values are the
+    /// same in any order.
     fn in_reading_order(&self, sel: Vec<u32>, lon: &[f64], lat: &[f64]) -> Vec<u32> {
         match self {
             Reader::Tiles(t) => {
@@ -1773,21 +1780,19 @@ impl Reader<'_, '_> {
             }
             Reader::Geo(g, xy) => {
                 let (x, y) = native(xy, lon, lat);
-                // (By file and row of `BLOCK`s in it: a sample row's points share one, so the runs
+                // (By file and band of about `BLOCK` pixel rows (`GeoSet::row`, no file opened for
+                // it: a batch over thousands of files would open them all here, past what the memo
+                // keeps, and again as they're sampled): a sample row's points share one, so the runs
                 // are long, where a key of each point's own y (a projected CRS's rows aren't the
                 // samples') made a run a point and sorted millions.)
+                let row = if g.row > 0.0 && g.row.is_finite() { g.row } else { f64::INFINITY };
                 let keys: Vec<(usize, i64)> = jobrt::control::on_target_pool(|| {
                     sel.par_iter()
                         .map_init(
-                            || (None, HashMap::<usize, Option<(f64, f64)>>::new()),
-                            |(kept, rows), &i| {
+                            || None,
+                            |kept, &i| {
                                 let (px, py) = (x[i as usize], y[i as usize]);
-                                let k = g.holding(kept, px, py).next().unwrap_or(usize::MAX);
-                                let row = *rows.entry(k).or_insert_with(|| {
-                                    let (t, level) = g.files.get(k).and_then(|_| g.open(k).ok())?;
-                                    t.transform(level).ok().map(|gt| (gt[3], gt[5]))
-                                });
-                                (k, row.map_or(0, |(y0, dy)| (((py - y0) / dy).floor() as i64).div_euclid(BLOCK)))
+                                (g.holding(kept, px, py).next().unwrap_or(usize::MAX), (py / row).floor() as i64)
                             },
                         )
                         .collect()

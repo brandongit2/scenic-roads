@@ -231,11 +231,15 @@ grouping below) and the read-ahead (5 %).
 | change | measured |
 |---|---|
 | **The distances by group in parallel** (`GeoSet::distance`, `distance_group`, `Invalid`, `Past`): no serial pass over the points (it tested each point's window for clean blocks, reading missing blocks one at a time); a group whose windows lie in clean blocks at the radius; else a summed-area count of the invalid pixels (a point whose band holds none at the radius at once) and the rows looked at outward only while nearer than the best found; the pixels past a file's edge read once a group from the files holding them, not a lookup a pixel (`value_at`); the groups found as runs of neighbours, not by sorting every point. | 10/321/338: 727, 792, 807 CPU-s before (three runs), 733 after the first part (before the run grouping); the same deep and mid content names as the manifest's (02e54b896b199b6f, e2a73323ce2adb71), before and after |
-| **A GeoTIFF dataset's reading order by file and block row** (`Reader::in_reading_order`): was each point's own y, so in a projected CRS every point was its own run and millions were sorted, for each dataset's sampling and the blends' second heights. | not yet timed: the run was held up by the NAS (the owner's work on it); the heights don't depend on the order |
+| **A GeoTIFF dataset's reading order by file and band of about a block's rows** (`Reader::in_reading_order`, the band's height from the dataset's resolution, `GeoSet::row`: no file opened to order the points, where a batch over more files than the memo keeps would open them all, then each again as sampled): was each point's own y, so in a projected CRS every point was its own run and millions were sorted, for each dataset's sampling and the blends' second heights. | not yet timed: the run was held up by the NAS (the owner's work on it); the heights don't depend on the order |
 | **A file opened once whatever the threads** (`GeoSet::open`: a cell a file): two threads opening one file at once each read its blocks into the cache. | — |
 
 The heights are the scan's to the bit: unit tests compare every point with a scan of its whole
-band, one file and two files of different pixel sizes with fill-mask voids past the edge.
+band (one file; two files of different pixel sizes with fill-mask voids past the edge; four files
+at their corner in a projected CRS, one with no data and a hole across a group's border), and
+`Invalid::nearest` with a scan of its window over random maps (ties, the rows' early stop). The
+early stop is safe as libm's `hypot(x, y)` is never below the larger of x and y, and a row's least
+distance only grows outward.
 
 ## 5. Not done, with what the data says (the ranking of what's left)
 
