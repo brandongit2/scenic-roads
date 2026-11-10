@@ -190,8 +190,8 @@ fn lead(a: &cli::Lead) -> Result<()> {
 
 /// `scenic inputs`: the gate (docs/inputs.md §4.5, §4.7), from the records on the NAS.
 fn inputs(a: &cli::Inputs) -> Result<()> {
-    use ::inputs::inputs::{self as gi, view};
     use cli::{InputsCmd, OnOff};
+    use inputs::inputs::{self as gi, view};
     let home = home_or_default(&a.home);
     let r = root(&a.root, false)?;
     let manifest = buildstore::records::read_manifest(&r)?;
@@ -807,11 +807,11 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
         }
     }
     // The gate (docs/inputs.md §4.7): a line per unit held or checking.
-    for v in st.inputs.iter().filter(|v| v.state != ::inputs::inputs::view::State::Ok) {
+    for v in st.inputs.iter().filter(|v| v.state != inputs::inputs::view::State::Ok) {
         println!(
             "Inputs: {}{}",
             v.line(),
-            if v.state == ::inputs::inputs::view::State::Held { " (`scenic inputs` says what holds it)" } else { "" }
+            if v.state == inputs::inputs::view::State::Held { " (`scenic inputs` says what holds it)" } else { "" }
         );
     }
     println!(

@@ -62,7 +62,7 @@ pub struct TerrainTiles {
     elevation_geoid: Vec<String>,
     /// The declared geoid sources (inputs::inputs::sources::geoid): the accepted sources' index
     /// content name, and them (None: they can't be read now; the terrain's keys naming them wait).
-    geoid: Option<(String, Option<std::sync::Arc<Vec<::inputs::inputs::sources::Source>>>)>,
+    geoid: Option<(String, Option<std::sync::Arc<Vec<inputs::inputs::sources::Source>>>)>,
     /// The declared sources as the z6 tiles' and tree cover's keys name them (inputs::inputs::sources):
     /// the accepted sources' index content name, and what they read of it (None: not declared, or
     /// not to be read now).
@@ -77,7 +77,7 @@ pub struct TerrainTiles {
     /// The seas closed off from the world ocean the water step wrote (inputs::water::Enclosed), by
     /// content name, which the depth's keys read where an enclosed sea's surface is (None: it can't
     /// be read now; those keys wait).
-    enclosed: Option<(String, Option<std::sync::Arc<::inputs::water::Enclosed>>)>,
+    enclosed: Option<(String, Option<std::sync::Arc<inputs::water::Enclosed>>)>,
     /// The declared elevation datasets (terrain::terrain_zoom), their heights
     /// conversions as the roads': what they're read from (`sets_from`), and
     /// the sets (None: they can't be read now; the terrain's z6 tiles wait: their keys name them).
@@ -103,7 +103,7 @@ pub struct KeyedSources {
 pub const TEST_SOURCES: &str = "elevation test";
 
 /// The declared elevation datasets as the z6 tiles' keys name them: each with its coverage.
-pub type Elevation = Vec<(::inputs::dem::declared::Accepted, ::inputs::dem::declared::Cover)>;
+pub type Elevation = Vec<(inputs::dem::declared::Accepted, inputs::dem::declared::Cover)>;
 
 impl TerrainTiles {
     /// None held yet; `dir`: where indexes are kept (the agent's `pack-idx/`).
@@ -189,8 +189,8 @@ impl TerrainTiles {
     /// Holds the declared elevation datasets of the accepted version `m` names, once the build reads
     /// them (one that can't be read now: the z6 tiles' keys wait, tried again with the next load).
     fn load_elevation(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
-        use ::inputs::inputs::elevation;
-        let want = elevation::switched(m).then(|| m.get(&::inputs::inputs::logical(elevation::UNIT))).flatten();
+        use inputs::inputs::elevation;
+        let want = elevation::switched(m).then(|| m.get(&inputs::inputs::logical(elevation::UNIT))).flatten();
         let Some(want) = want else {
             self.elevation = None;
             return;
@@ -202,20 +202,20 @@ impl TerrainTiles {
             self.unread.insert(want.clone(), "the declared geoid sources can't be read now".into());
             return;
         };
-        let named: Vec<String> = geoid.iter().map(::inputs::inputs::sources::Source::named).collect();
+        let named: Vec<String> = geoid.iter().map(inputs::inputs::sources::Source::named).collect();
         if self.elevation.as_ref().is_some_and(|(c, _)| c == want) && self.elevation_geoid == named {
             return;
         }
-        let got = ::inputs::inputs::open(root, m, elevation::UNIT).and_then(|a| {
-            let mut ds = ::inputs::dem::declared::accepted(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?)?;
-            for w in ::inputs::dem::declared::convert(&mut ds, &geoid) {
+        let got = inputs::inputs::open(root, m, elevation::UNIT).and_then(|a| {
+            let mut ds = inputs::dem::declared::accepted(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?)?;
+            for w in inputs::dem::declared::convert(&mut ds, &geoid) {
                 eprintln!("agent: elevation: {w}");
             }
             // (Each with its coverage as sampled, its regions' outlines read: the keys name what's
             // inside a box of them, `cut_note`, never their files, task #832.)
             let read = |n: &str| -> anyhow::Result<Vec<u8>> { Ok(root.join(n).read()?) };
             ds.into_iter()
-                .map(|d| Ok((::inputs::dem::declared::cover_read(&d, &read)?, d)))
+                .map(|d| Ok((inputs::dem::declared::cover_read(&d, &read)?, d)))
                 .collect::<anyhow::Result<Vec<_>>>()
         });
         self.elevation_geoid = named;
@@ -234,14 +234,14 @@ impl TerrainTiles {
 
     /// Holds the declared geoid sources of the accepted sources `m` names (inputs::inputs::sources::geoid).
     fn load_geoid(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
-        let Some(want) = m.get(&::inputs::inputs::logical(::inputs::inputs::sources::UNIT)) else {
+        let Some(want) = m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT)) else {
             self.geoid = None;
             return;
         };
         if self.geoid.as_ref().is_some_and(|(c, g)| c == want && g.is_some()) {
             return;
         }
-        let g = ::inputs::inputs::sources::geoid(root, m)
+        let g = inputs::inputs::sources::geoid(root, m)
             .map_err(|e| {
                 eprintln!("agent: the terrain waits: the declared geoid sources in {want} can't be read ({e:#})")
             })
@@ -252,11 +252,8 @@ impl TerrainTiles {
 
     /// The declared geoid sources of the accepted sources `m` names (inputs::inputs::sources::geoid):
     /// none accepted, none; None while they can't be read now (the terrain's keys naming them wait).
-    pub fn geoid(
-        &self,
-        m: &BTreeMap<String, String>,
-    ) -> Option<std::sync::Arc<Vec<::inputs::inputs::sources::Source>>> {
-        let Some(want) = m.get(&::inputs::inputs::logical(::inputs::inputs::sources::UNIT)) else {
+    pub fn geoid(&self, m: &BTreeMap<String, String>) -> Option<std::sync::Arc<Vec<inputs::inputs::sources::Source>>> {
+        let Some(want) = m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT)) else {
             return Some(Default::default());
         };
         match &self.geoid {
@@ -270,7 +267,7 @@ impl TerrainTiles {
 
     /// Holds the declared buildings source's release of the accepted sources `m` names.
     fn load_buildings(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
-        let Some(want) = m.get(&::inputs::inputs::logical(::inputs::inputs::sources::UNIT)) else {
+        let Some(want) = m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT)) else {
             self.buildings = None;
             return;
         };
@@ -278,11 +275,11 @@ impl TerrainTiles {
             return;
         }
         let r = (|| -> anyhow::Result<KeyedSources> {
-            let s = ::inputs::inputs::sources::read(root, m)?;
+            let s = inputs::inputs::sources::read(root, m)?;
             Ok(KeyedSources {
-                release: ::bld::buildtiles::release_of(root, m)?,
-                unit: ::inputs::inputs::sources::unit_extra(&s)?,
-                trees: ::inputs::inputs::sources::trees_extra(&s)?,
+                release: bld::buildtiles::release_of(root, m)?,
+                unit: inputs::inputs::sources::unit_extra(&s)?,
+                trees: inputs::inputs::sources::trees_extra(&s)?,
             })
         })()
         .map_err(|e| {
@@ -300,7 +297,7 @@ impl TerrainTiles {
         if self.depth.as_ref().is_some_and(|(c, r)| *c == key && r.is_some()) {
             return;
         }
-        let want = &m[&::inputs::inputs::logical(::inputs::inputs::sources::UNIT)];
+        let want = &m[&inputs::inputs::logical(inputs::inputs::sources::UNIT)];
         if self.depth_alone.as_ref().is_none_or(|(c, _)| c != want) {
             match terrain::depth::grids::declared_alone(root, m) {
                 Ok(d) => self.depth_alone = Some((want.clone(), std::sync::Arc::new(d))),
@@ -317,7 +314,7 @@ impl TerrainTiles {
     }
 
     fn load_enclosed(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
-        let Some(c) = m.get(::inputs::water::ENCLOSED) else {
+        let Some(c) = m.get(inputs::water::ENCLOSED) else {
             self.enclosed = None;
             return;
         };
@@ -325,7 +322,7 @@ impl TerrainTiles {
             return;
         }
         let got =
-            root.join(c).read().map_err(anyhow::Error::from).and_then(|b| ::inputs::water::Enclosed::from_bytes(&b));
+            root.join(c).read().map_err(anyhow::Error::from).and_then(|b| inputs::water::Enclosed::from_bytes(&b));
         let e = match got {
             Ok(e) => {
                 self.unread.remove(c);
@@ -341,8 +338,8 @@ impl TerrainTiles {
 
     /// The seas closed off from the world ocean `m` names (Some(None): none written); None while
     /// they can't be read now.
-    pub fn enclosed(&self, m: &BTreeMap<String, String>) -> Option<Option<std::sync::Arc<::inputs::water::Enclosed>>> {
-        let Some(c) = m.get(::inputs::water::ENCLOSED) else { return Some(None) };
+    pub fn enclosed(&self, m: &BTreeMap<String, String>) -> Option<Option<std::sync::Arc<inputs::water::Enclosed>>> {
+        let Some(c) = m.get(inputs::water::ENCLOSED) else { return Some(None) };
         match &self.enclosed {
             Some((k, Some(e))) if k == c => Some(Some(e.clone())),
             _ => None,
@@ -351,24 +348,24 @@ impl TerrainTiles {
 
     /// Holds `e` as the enclosed seas of content name `content` (tests).
     #[cfg(test)]
-    pub fn hold_enclosed(&mut self, content: &str, e: ::inputs::water::Enclosed) {
+    pub fn hold_enclosed(&mut self, content: &str, e: inputs::water::Enclosed) {
         self.enclosed = Some((content.to_string(), Some(std::sync::Arc::new(e))));
     }
 
     /// What the depth sources are held by (`depth`): the accepted sources' index content name and the
     /// lake-depth packs' digest; None with no sources accepted.
     fn depth_key(m: &BTreeMap<String, String>) -> Option<String> {
-        let want = m.get(&::inputs::inputs::logical(::inputs::inputs::sources::UNIT))?;
+        let want = m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT))?;
         Some(format!("{want} {}", terrain::depth::grids::estimates_key(m)))
     }
 
     /// What the declared sets are read from: the accepted elevation index `m` names and the geoid
     /// sources (`geoid`; another source's declaration changed, they're as they were).
     fn sets_from(&self, m: &BTreeMap<String, String>) -> Option<String> {
-        let e = m.get(&::inputs::inputs::logical(::inputs::inputs::elevation::UNIT))?;
+        let e = m.get(&inputs::inputs::logical(inputs::inputs::elevation::UNIT))?;
         let g = self.geoid(m).map_or_else(
             || "geoid unread".to_string(),
-            |g| g.iter().map(::inputs::inputs::sources::Source::named).collect::<Vec<_>>().join(", "),
+            |g| g.iter().map(inputs::inputs::sources::Source::named).collect::<Vec<_>>().join(", "),
         );
         Some(format!("{e} {g}"))
     }
@@ -465,12 +462,12 @@ impl TerrainTiles {
         if self.buildings.is_none() {
             static TEST: std::sync::OnceLock<KeyedSources> = std::sync::OnceLock::new();
             return Some(TEST.get_or_init(|| KeyedSources {
-                release: ::bld::buildtiles::TEST_RELEASE.into(),
+                release: bld::buildtiles::TEST_RELEASE.into(),
                 unit: None,
                 trees: None,
             }));
         }
-        let want = m.get(&::inputs::inputs::logical(::inputs::inputs::sources::UNIT))?;
+        let want = m.get(&inputs::inputs::logical(inputs::inputs::sources::UNIT))?;
         match &self.buildings {
             Some((c, Some(k))) if c == want => Some(k),
             _ => None,
@@ -493,17 +490,17 @@ impl TerrainTiles {
             return Some(TEST_SOURCES.into());
         }
         let e = self.elevation(m).ok()??;
-        Some(format!("elevation {}", ::inputs::dem::declared::meeting(&e, b).join(",")))
+        Some(format!("elevation {}", inputs::dem::declared::meeting(&e, b).join(",")))
     }
 
     /// The declared elevation datasets the z6 tiles' keys name: None before the build reads them; an
     /// error while their accepted version can't be read.
     pub fn elevation(&self, m: &BTreeMap<String, String>) -> Result<Option<std::sync::Arc<Elevation>>, Unread> {
-        use ::inputs::inputs::elevation;
+        use inputs::inputs::elevation;
         if !elevation::switched(m) {
             return Ok(None);
         }
-        let want = m.get(&::inputs::inputs::logical(elevation::UNIT)).ok_or_else(|| {
+        let want = m.get(&inputs::inputs::logical(elevation::UNIT)).ok_or_else(|| {
             Unread("the build reads the declared elevation datasets, but the records name no accepted version".into())
         })?;
         match &self.elevation {
@@ -838,7 +835,7 @@ mod tests {
     /// leaves them as they were, so no run under way starts again; a geoid's changed, they change.
     #[test]
     fn the_terrain_keys_name_the_geoid_declarations_alone() {
-        use ::inputs::inputs::sources;
+        use inputs::inputs::sources;
         let d = tempfile::tempdir().unwrap();
         let root = store::nasfs::NasRoot::local_for_test(d.path());
         let geoid = |url: &str| {
@@ -860,12 +857,12 @@ mod tests {
                 sources::STAGED.iter().copied().filter(|(p, _)| *p != "ne-lakes.toml").collect();
             decls.extend([("ne-lakes.toml", ne.as_bytes()), ("egm2008.toml", g.as_bytes())]);
             let mut m = BTreeMap::new();
-            ::inputs::inputs::elevation::accept_fixture(&root, &mut m);
+            inputs::inputs::elevation::accept_fixture(&root, &mut m);
             sources::accept_files(&root, &mut m, &decls);
             let mut t = TerrainTiles::default();
             t.load(&root, &m);
             (
-                m[&::inputs::inputs::logical(sources::UNIT)].clone(),
+                m[&inputs::inputs::logical(sources::UNIT)].clone(),
                 terrain::terrain_resume::inputs(&m, &t.geoid(&m).unwrap()),
                 terrain::terrain_resume::inputs_read(&root, &m).unwrap(),
                 t.sets_from(&m).unwrap(),
@@ -874,7 +871,7 @@ mod tests {
         let url = "https://cdn.proj.org/us_nga_egm08_25.tif";
         let (index, lines, inputs, sets) = keys("version = \"5.0.0\"", url);
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[0].starts_with(&format!("{}=", ::inputs::inputs::logical(::inputs::inputs::elevation::UNIT))));
+        assert!(lines[0].starts_with(&format!("{}=", inputs::inputs::logical(inputs::inputs::elevation::UNIT))));
         assert!(lines[1].starts_with("source egm2008 "), "{lines:?}");
         assert_eq!(inputs, lines.join("\n"));
         // Another declaration changed: a new sources index, the same lines.
@@ -907,7 +904,7 @@ mod tests {
         )
         .unwrap();
         // (An accepted elevation named: the sets held are its, not the tests' world at z12.)
-        let m = BTreeMap::from([(::inputs::inputs::logical(::inputs::inputs::elevation::UNIT), "e".to_string())]);
+        let m = BTreeMap::from([(inputs::inputs::logical(inputs::inputs::elevation::UNIT), "e".to_string())]);
         let mut tiles = TerrainTiles::default();
         tiles.hold_zoom_sets(&m, terrain::terrain_zoom::test_world(14));
         let sets = tiles.zoom_sets(&m).unwrap();

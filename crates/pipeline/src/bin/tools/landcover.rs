@@ -4,11 +4,11 @@
 //!
 //!   SCENIC_FETCH_*  mirror folders, recording, no network (`buildstore::fetch`)
 
-use ::trees::landcover;
 use agentcore::cli::progs::Landcover;
 use anyhow::{Context, Result};
 use buildstore::fetch::Fetcher;
 use clap::Parser;
+use trees::landcover;
 
 pub fn main(args: Vec<String>) -> std::process::ExitCode {
     let a = Landcover::parse_from(args);

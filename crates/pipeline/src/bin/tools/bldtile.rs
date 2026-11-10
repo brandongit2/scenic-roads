@@ -18,8 +18,8 @@ pub fn main(args: Vec<String>) -> Result<()> {
     }
     let pool = pool.build().ok();
     let t0 = std::time::Instant::now();
-    ::inputs::dem::sample::within(pool.as_ref(), &|| {
-        let s = ::bld::bld::task::run(&dir, a)?;
+    inputs::dem::sample::within(pool.as_ref(), &|| {
+        let s = bld::bld::task::run(&dir, a)?;
         eprintln!(
             "bldtile {}: {} buildings and {} parts in {} tiles ({:.1} s)",
             a.slash(),

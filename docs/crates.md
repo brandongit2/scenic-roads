@@ -187,7 +187,9 @@ The plan's files (pipeline's agent/build.rs, steps.rs, idents.rs, theplan.rs, ti
 into agentcore's unit tests too (§6.3, 6f4), name the runtime by its crate as well
 (`agentcore::coord`, `agentcore::agent::jobs::Work`): agentcore's root is `extern crate self as
 agentcore`, so the path means the same in either crate. They name each other by `crate::agent::…`
-or `super::…`, which is the plan's module in both.
+or `super::…`, which is the plan's module in both. Three crates hold a module of their own name
+(`inputs::inputs`, `trees::trees`, `bld::bld`); a path starts `::trees` only where a `use` has put
+that module in scope under the crate's name (scenic-build's trees step, tools/trees.rs).
 
 agentcore's root re-exports nothing. Inside the runtime, some of its modules still re-export what
 the steps moved below them, for the runtime's own code: `agent::recipes` (buildstore's), and items

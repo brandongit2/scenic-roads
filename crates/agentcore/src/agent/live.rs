@@ -291,7 +291,7 @@ fn mac() -> &'static serde_json::Value {
     static MAC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     MAC.get_or_init(|| {
         serde_json::json!({
-            "cores": ::inputs::inputs::pace::cores(),
+            "cores": inputs::inputs::pace::cores(),
             "cores_e": jobrt::sys::efficiency_cores(),
             "mem_gb": jobrt::sys::memsize().map(|b| round(b as f64 / GB)),
             // (Its NAS call threads, crate::agent::nasread: the most calls in flight at once.)

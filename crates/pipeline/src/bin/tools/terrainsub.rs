@@ -20,7 +20,7 @@ fn run(Terrainsub { input, out, workers }: &Terrainsub) -> Result<()> {
     }
     let pool = pool.build().ok();
     let t0 = std::time::Instant::now();
-    ::inputs::dem::sample::within(pool.as_ref(), || -> Result<()> {
+    inputs::dem::sample::within(pool.as_ref(), || -> Result<()> {
         let inp = terrain::terrain_task::Inputs::open(input)?;
         let piece = inp.piece()?;
         let (hi, mid) = inp.make()?;

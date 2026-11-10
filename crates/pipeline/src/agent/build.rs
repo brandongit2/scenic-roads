@@ -10,7 +10,6 @@
 
 use super::steps::{along_add, along_add_built, readiness, ready, Ready, View};
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
-use ::inputs::dem::spacing::Fine;
 use agentcore::agent::jobs::Work;
 use agentcore::agent::nasread;
 use agentcore::agent::progress::{Checklist, Item, Line, RegionState};
@@ -23,6 +22,7 @@ use agentcore::pool::records::Keys;
 use buildstore::coverage::coverage_tiles;
 use buildstore::coverage::Coverage;
 use codecs::legacy::TileId;
+use inputs::dem::spacing::Fine;
 use jobrt::jobs::h;
 use roadcore::geo::grown_e7;
 use roads::reach::{Reach, Reaches};
@@ -80,7 +80,7 @@ pub const OUTLINES_V: u32 = 3;
 /// the previous outlines it may keep a country from (inputs::osmpass::previous_outlines), by content
 /// name. None without the set (pass-sets makes it).
 pub fn outlines_key(x: &KeyCtx) -> Option<String> {
-    x.m.get(&::inputs::osmpass::set_name(x.date, "outlines"))?;
+    x.m.get(&inputs::osmpass::set_name(x.date, "outlines"))?;
     world_key("outlines", x)
 }
 
@@ -108,8 +108,8 @@ fn outlines_hold(made: bool, failures: u32) -> bool {
 /// `coastline` set, made again when the set or `land::LAND_V` changes or it's missing.
 fn regions_land_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (date, m) = (x.date, x.m);
-    use ::inputs::inputs::regions::land;
-    m.get(&::inputs::osmpass::set_name(date, "coastline"))?;
+    use inputs::inputs::regions::land;
+    m.get(&inputs::osmpass::set_name(date, "coastline"))?;
     let k = world_key("regions-land", x)?;
     (!m.contains_key(&land::logical(date)) || done.lo.get("regions-land").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "regions-land".into(), targets: vec![("regions-land".into(), k)] })
@@ -120,7 +120,7 @@ fn regions_land_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 pub const TRAILENDS_V: u32 = 1;
 
 fn trailends_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    x.m.get(&::inputs::osmpass::set_name(x.date, "hikes"))?;
+    x.m.get(&inputs::osmpass::set_name(x.date, "hikes"))?;
     let k = world_key("trailends", x)?;
     (done.lo.get("trailends").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "trailends".into(), targets: vec![("trailends".into(), k)] })
@@ -149,7 +149,7 @@ pub fn reach_key(x: &KeyCtx) -> Option<String> {
 pub const LABELS_V: u32 = 3;
 
 fn labels_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    x.m.get(&::inputs::osmpass::set_name(x.date, "labels"))?;
+    x.m.get(&inputs::osmpass::set_name(x.date, "labels"))?;
     let k = world_key("labels", x)?;
     (done.lo.get("labels").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "labels".into(), targets: vec![("labels".into(), k)] })
@@ -162,7 +162,7 @@ fn labels_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 fn spoken_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (date, m) = (x.date, x.m);
     m.get(&format!("sources/osm/{date}/outlines"))?;
-    m.get(&::inputs::inputs::logical(::inputs::inputs::languages::UNIT))?;
+    m.get(&inputs::inputs::logical(inputs::inputs::languages::UNIT))?;
     let k = world_key("spoken", x)?;
     (done.lo.get("spoken").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "spoken".into(), targets: vec![("spoken".into(), k)] })
@@ -188,8 +188,8 @@ fn names_todo_work(
         return None;
     }
     let n = served?;
-    let tr = m.get(&::inputs::inputs::logical(::inputs::inputs::translations::UNIT))?;
-    let de = m.get(&::inputs::inputs::logical(::inputs::inputs::descriptions::UNIT))?;
+    let tr = m.get(&inputs::inputs::logical(inputs::inputs::translations::UNIT))?;
+    let de = m.get(&inputs::inputs::logical(inputs::inputs::descriptions::UNIT))?;
     let k = h(&[&format!("names-todo {}", landmarks::namestodo::VERSION), n, tr, de]);
     (done.lo.get("names-todo").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "names-todo".into(), targets: vec![("names-todo".into(), k)] })
@@ -298,12 +298,12 @@ pub fn pass_work(
         let cx = PassCtx::default();
         let px = cx.ctx(date, m);
         let p = vec!["--pass".to_string(), date.to_string()];
-        let sets = !::inputs::osmpass::SETS.iter().all(|st| m.contains_key(&::inputs::osmpass::set_name(date, st.0)));
+        let sets = !inputs::osmpass::SETS.iter().all(|st| m.contains_key(&inputs::osmpass::set_name(date, st.0)));
         let outlines = outlines_work(&px, keys);
         let outlines_made = m.contains_key(&format!("sources/osm/{date}/outlines"));
         let trailends = trailends_work(&px, keys);
         let reach = reach_work(&px, keys);
-        let buildings = reads.release.as_deref().filter(|r| !m.contains_key(&::bld::buildtiles::index_logical(r)));
+        let buildings = reads.release.as_deref().filter(|r| !m.contains_key(&bld::buildtiles::index_logical(r)));
         w.summits = summits_work(&px, keys);
         let labels = labels_work(&px, keys);
         let lakefill = reads.lakefill.as_ref().map(|s| lakefill_work(date, m, keys, s.as_deref()));
@@ -311,9 +311,9 @@ pub fn pass_work(
         w.left = [
             sets,
             outlines.is_some() || !outlines_made,
-            trailends.is_some() || !m.contains_key(&::inputs::osmpass::set_name(date, "hikes")),
+            trailends.is_some() || !m.contains_key(&inputs::osmpass::set_name(date, "hikes")),
             reach.is_some(),
-            reads.release.as_ref().is_none_or(|r| !m.contains_key(&::bld::buildtiles::index_logical(r))),
+            reads.release.as_ref().is_none_or(|r| !m.contains_key(&bld::buildtiles::index_logical(r))),
             w.summits.is_some() || !m.contains_key(&format!("work/summits/{date}")),
             labels.is_some(),
             // (A source folder that can't be read: held, left, as the jobs see it.)
@@ -395,7 +395,7 @@ pub fn pass_work(
         if let Some(l) = labels {
             w.jobs.push(job("labels", p.clone(), Some(l)));
         }
-        let table = m.get(&::inputs::inputs::logical(::inputs::inputs::languages::UNIT));
+        let table = m.get(&inputs::inputs::logical(inputs::inputs::languages::UNIT));
         if let (Some(s), Some(table)) = (spoken_work(&px, keys), table) {
             // (The languages' accepted version the key names.)
             let args = [p.clone(), vec!["--languages-index".to_string(), table.clone()]].concat();
@@ -407,7 +407,7 @@ pub fn pass_work(
                 "the languages' first accepted version (the input check takes inputs/languages/ in)".into(),
             ));
         }
-        if !m.contains_key(&::inputs::inputs::logical(::inputs::inputs::heritage::UNIT)) {
+        if !m.contains_key(&inputs::inputs::logical(inputs::inputs::heritage::UNIT)) {
             w.waits.push(wait(
                 Some("heritage-sites"),
                 "heritage-sites",
@@ -445,13 +445,13 @@ pub fn pass_work(
     // them through the accessor, never the inputs folders.)
     let Some(names) = names else { return w };
     let n = names();
-    let units = [::inputs::inputs::translations::UNIT, ::inputs::inputs::descriptions::UNIT];
+    let units = [inputs::inputs::translations::UNIT, inputs::inputs::descriptions::UNIT];
     if let Some(todo) = names_todo_work(n.key.as_deref(), m, keys, n.since, n.idle) {
         let mut args = Vec::new();
         for unit in units {
             args.extend([
                 format!("--{unit}-index"),
-                m.get(&::inputs::inputs::logical(unit)).cloned().unwrap_or_default(),
+                m.get(&inputs::inputs::logical(unit)).cloned().unwrap_or_default(),
             ]);
         }
         w.jobs.push(PassJob {
@@ -460,7 +460,7 @@ pub fn pass_work(
             args,
             work: Some(todo),
         });
-    } else if n.key.is_some() && units.iter().any(|u| !m.contains_key(&::inputs::inputs::logical(u))) {
+    } else if n.key.is_some() && units.iter().any(|u| !m.contains_key(&inputs::inputs::logical(u))) {
         w.waits.push(wait(
             Some("names-todo"),
             "names-todo",
@@ -773,8 +773,8 @@ pub const HERITAGE_SITES_V: u32 = 5;
 /// the matches' accepted version and the coverage. None while the registers have no accepted
 /// version, or it can't be read now ("?").
 pub fn heritage_sites_key(x: &KeyCtx) -> Option<String> {
-    x.m.get(&::inputs::osmpass::set_name(x.date, "areas"))?;
-    x.m.get(&::inputs::inputs::logical(::inputs::inputs::heritage::UNIT))?;
+    x.m.get(&inputs::osmpass::set_name(x.date, "areas"))?;
+    x.m.get(&inputs::inputs::logical(inputs::inputs::heritage::UNIT))?;
     world_key("heritage-sites", x)
 }
 
@@ -802,7 +802,7 @@ pub const SUMMITS_V: u32 = 1;
 /// The agent runs it only once no terrain-hi or terrain-lo work is left (its readiness: crate::agent::steps), so
 /// a lo pack still to be made doesn't make it twice.
 fn summits_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    x.m.get(&::inputs::osmpass::set_name(x.date, "summits"))?;
+    x.m.get(&inputs::osmpass::set_name(x.date, "summits"))?;
     let k = world_key("summits", x)?;
     (done.lo.get("summits").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "summits".into(), targets: vec![("summits".into(), k)] })
@@ -916,7 +916,7 @@ pub fn pois_units(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> V
 /// pass's hiking-route ends and the spacing its extract reads (inputs::dem::spacing, from the
 /// planner's `inputs`). None while the spacing isn't known: the candidates wait.
 pub fn pois_keys(x: &KeyCtx) -> Option<Vec<(TileId, String)>> {
-    ::inputs::dem::spacing::key_line(x.inputs)?;
+    inputs::dem::spacing::key_line(x.inputs)?;
     Some(
         pois_units(x.cov, x.date, x.m)
             .into_iter()
@@ -926,12 +926,12 @@ pub fn pois_keys(x: &KeyCtx) -> Option<Vec<(TileId, String)>> {
 }
 
 /// Tree cover's targets (trees::treepacks::listed), each keyed (`key_now`).
-pub fn trees_targets(x: &KeyCtx) -> ::trees::treepacks::Targets {
-    let t = ::trees::treepacks::listed(x.cov, x.m);
+pub fn trees_targets(x: &KeyCtx) -> trees::treepacks::Targets {
+    let t = trees::treepacks::listed(x.cov, x.m);
     let k = |step: &str, v: Vec<(String, bool)>| -> Vec<(String, String, bool)> {
         v.into_iter().map(|(t, none)| (t.clone(), key_now(step, &t, none, x), none)).collect()
     };
-    ::trees::treepacks::Targets { pieces: k("trees", t.pieces), lo: k("trees-lo", t.lo) }
+    trees::treepacks::Targets { pieces: k("trees", t.pieces), lo: k("trees-lo", t.lo) }
 }
 
 /// Each region's `RegionState` worked out alone, for the plan's return before its regions (the
@@ -1080,7 +1080,7 @@ pub fn region_steps(
                     &mut trees
                         .pieces
                         .iter()
-                        .filter(|p| !p.2 && ::trees::treepacks::z3_of(&p.0).is_some_and(|q| tree_z3s.contains(&q)))
+                        .filter(|p| !p.2 && trees::treepacks::z3_of(&p.0).is_some_and(|q| tree_z3s.contains(&q)))
                         .map(|p| !trw.stale_pieces.contains(&p.0)),
                 ),
             );
@@ -1404,7 +1404,7 @@ pub fn terrain_water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 /// worked out.
 /// None while the declared elevation datasets can't be read now; none without them.
 pub fn pyramids_targets(x: &KeyCtx) -> Option<Vec<(String, String)>> {
-    use ::inputs::dem::declared::Data;
+    use inputs::dem::declared::Data;
     let (cov, m, tiles) = (x.cov, x.m, x.tiles);
     let Some(e) = tiles.elevation(m).ok()? else { return Some(Vec::new()) };
     let pyr: Vec<_> = e
@@ -1418,7 +1418,7 @@ pub fn pyramids_targets(x: &KeyCtx) -> Option<Vec<(String, String)>> {
     let deep = tiles.deep(m, cov)?;
     let mut out = Vec::new();
     for &(tx, ty) in coverage_tiles(cov).values().flatten() {
-        if ::inputs::dem::declared::meeting(&pyr, roadcore::geo::tile_box(6, tx, ty)).is_empty() {
+        if inputs::dem::declared::meeting(&pyr, roadcore::geo::tile_box(6, tx, ty)).is_empty() {
             continue;
         }
         // (One making no hi tile and no deep target wants nothing: no job.)
@@ -1953,8 +1953,8 @@ pub struct TreeWork {
 /// Tree cover's work (`TreeWork`) for its targets `tt`, the manifest `m` and what was done (with
 /// the hand-offs waiting to be merged: a z6 tile current by one of them has its mid there, not in
 /// `m`, until it's merged: not made again for it, while its assembly waits for it).
-pub fn tree_work(tt: &::trees::treepacks::Targets, m: &BTreeMap<String, String>, done: &Keys) -> TreeWork {
-    use ::trees::treepacks::{mid_logical, z3_of};
+pub fn tree_work(tt: &trees::treepacks::Targets, m: &BTreeMap<String, String>, done: &Keys) -> TreeWork {
+    use trees::treepacks::{mid_logical, z3_of};
     let current = |t: &str, k: &str| done.trees.get(t).map(String::as_str) == Some(k);
     let has_mid = |t: &str| TileId::parse(t).is_some_and(|u| m.contains_key(&mid_logical(u.x, u.y)));
     let mid_handed = |t: &str| TileId::parse(t).is_some_and(|u| done.handed.contains(&mid_logical(u.x, u.y)));
@@ -2297,7 +2297,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     );
     left.world(
         "buildings",
-        tiles.buildings_release(m).is_none_or(|b| !m.contains_key(&::bld::buildtiles::index_logical(b))),
+        tiles.buildings_release(m).is_none_or(|b| !m.contains_key(&bld::buildtiles::index_logical(b))),
     );
     left.world("reach", reach.is_none());
     let mut backfill: Vec<Work> = Vec::new();
@@ -2306,7 +2306,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     }
     backfill.extend(tw.backfill.iter().cloned());
     // A tree cover, terrain or slope target's z3 tile (a z6 tile's z3 tile, an assembly's own).
-    let tree_z3 = |t: &(String, String)| ::trees::treepacks::z3_of(&t.0).unwrap_or_else(|| t.0.clone());
+    let tree_z3 = |t: &(String, String)| trees::treepacks::z3_of(&t.0).unwrap_or_else(|| t.0.clone());
     let z3 = |t: &(String, String)| z3_of(&t.0).unwrap_or_else(|| t.0.clone());
 
     // The z6 tiles wait for the heritage sites, the pass's reaches (which z6 tiles the coverage builds)
@@ -3036,14 +3036,14 @@ fn rail_chain(x: &KeyCtx, done: &Keys) -> Option<Work> {
 ///   accepted index (each zip by content), the pass's rail set and the coverage.
 fn rail_next(x: &KeyCtx, done: &Keys) -> Option<Option<Work>> {
     let (date, m) = (x.date, x.m);
-    m.get(&::inputs::inputs::logical(::inputs::inputs::feeds::UNIT))?;
+    m.get(&inputs::inputs::logical(inputs::inputs::feeds::UNIT))?;
     let k = world_key("rail-feeds", x)?;
     if done.lo.get("rail-feeds").map(String::as_str) != Some(k.as_str()) {
         return Some(Some(Work { step: "rail-feeds".into(), targets: vec![("rail-feeds".into(), k)] }));
     }
-    m.get(::inputs::rail::FEEDS)?;
-    m.get(&::inputs::osmpass::set_name(date, "rail"))?;
-    m.get(&::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT))?;
+    m.get(inputs::rail::FEEDS)?;
+    m.get(&inputs::osmpass::set_name(date, "rail"))?;
+    m.get(&inputs::inputs::logical(inputs::inputs::gtfs::UNIT))?;
     let k = world_key("rail", x)?;
     Some(
         (done.lo.get("rail").map(String::as_str) != Some(k.as_str()))
@@ -3309,10 +3309,10 @@ pub(crate) fn roadunits_key(x: &KeyCtx) -> Option<String> {
 pub(crate) fn transit_key(step: &str, x: &KeyCtx) -> Option<String> {
     let m = x.m;
     m.range("base/".to_string()..).next().filter(|(l, _)| l.starts_with("base/"))?;
-    m.get(&::inputs::osmpass::set_name(x.date, if step == "stations" { "rail" } else { "ferries" }))?;
+    m.get(&inputs::osmpass::set_name(x.date, if step == "stations" { "rail" } else { "ferries" }))?;
     if step == "ferries" {
-        m.get(::inputs::rail::FERRY_FEEDS)?;
-        m.get(&::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT))?;
+        m.get(inputs::rail::FERRY_FEEDS)?;
+        m.get(&inputs::inputs::logical(inputs::inputs::gtfs::UNIT))?;
     }
     world_key(step, x)
 }
@@ -3356,7 +3356,7 @@ pub(crate) fn items_key(x: &KeyCtx) -> String {
 /// are (the marks wait).
 pub(crate) fn heritage_key(x: &KeyCtx) -> Option<String> {
     x.m.get(&landmarks::heritage::base_logical(x.date, "heritage-sources"))?;
-    x.m.get(&::inputs::osmpass::set_name(x.date, "whs"))?;
+    x.m.get(&inputs::osmpass::set_name(x.date, "whs"))?;
     world_key("heritage", x)
 }
 
@@ -3691,9 +3691,9 @@ fn prune_bld(m: &BTreeMap<String, String>, tt: &BldTargets, sources: bool) -> Op
     let tiles: BTreeSet<String> = tt.tiles.iter().map(|t| t.0.replace('/', "-")).collect();
     let lo: BTreeSet<String> = tt.lo.iter().map(|t| t.0.replace('/', "-")).collect();
     let mut t: BTreeSet<String> = BTreeSet::new();
-    let pack = format!("layers/{}/hi/", ::bld::bld::LAYER);
-    let fpack = format!("layers/{}/hi/", ::bld::bld::field::LAYER);
-    let flo = format!("layers/{}/lo/", ::bld::bld::field::LAYER);
+    let pack = format!("layers/{}/hi/", bld::bld::LAYER);
+    let fpack = format!("layers/{}/hi/", bld::bld::field::LAYER);
+    let flo = format!("layers/{}/lo/", bld::bld::field::LAYER);
     for (prefix, keep, kind) in [
         ("work/bld/", &prep, "bldprep"),
         (pack.as_str(), &tiles, "bldtiles"),
@@ -4690,7 +4690,7 @@ mod tests {
     /// where they don't say.
     pub(crate) fn spaced(inputs: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut i = inputs.clone();
-        i.entry(::inputs::dem::spacing::INPUT.into()).or_insert_with(|| "5858585858585858".into());
+        i.entry(inputs::dem::spacing::INPUT.into()).or_insert_with(|| "5858585858585858".into());
         i
     }
 
@@ -4813,7 +4813,7 @@ mod tests {
             t.hold(c, tiles);
         }
         // (The declared elevation datasets `elevation_inputs` names: one, the world's.)
-        if let Some(i) = m.get(&::inputs::inputs::logical(::inputs::inputs::elevation::UNIT)) {
+        if let Some(i) = m.get(&inputs::inputs::logical(inputs::inputs::elevation::UNIT)) {
             t.hold_elevation(i, vec![dataset("world", "w1", None)]);
         }
         t
@@ -4822,11 +4822,11 @@ mod tests {
     /// The declared elevation datasets switched to, as the z6 tiles need them (inputs::inputs::elevation).
     pub(crate) fn elevation_inputs(m: &mut BTreeMap<String, String>) {
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::elevation::UNIT),
+            inputs::inputs::logical(inputs::inputs::elevation::UNIT),
             "sources/inputs/elevation/@index.5656565656565656.json".into(),
         );
         m.insert(
-            ::inputs::inputs::switched_logical(::inputs::inputs::elevation::UNIT),
+            inputs::inputs::switched_logical(inputs::inputs::elevation::UNIT),
             "sources/inputs/elevation/@switched.5757575757575757.json".into(),
         );
     }
@@ -4847,9 +4847,8 @@ mod tests {
         let mut m = BTreeMap::new();
         m.insert("sources/osm/d/pieces/6-28-16".to_string(), "p1".to_string());
         elevation_inputs(&mut m);
-        let with = |d: &str| -> BTreeMap<String, String> {
-            [(::inputs::dem::spacing::INPUT.to_string(), d.to_string())].into()
-        };
+        let with =
+            |d: &str| -> BTreeMap<String, String> { [(inputs::dem::spacing::INPUT.to_string(), d.to_string())].into() };
         let pois = pois_keys(&crate::agent::build::KeyCtx::new(
             &c,
             "d",
@@ -4887,7 +4886,7 @@ mod tests {
             pois[0].1
         );
         // The accepted index unreadable (here: not on disk): "?", and the candidates wait.
-        assert!(::inputs::dem::spacing::digest_read(&store::nasfs::NasRoot::local_for_test(d.path()), &m).is_err());
+        assert!(inputs::dem::spacing::digest_read(&store::nasfs::NasRoot::local_for_test(d.path()), &m).is_err());
         assert!(pois_keys(&crate::agent::build::KeyCtx::new(
             &c,
             "d",
@@ -4949,7 +4948,7 @@ mod tests {
         reach: Option<&Reaches>,
     ) -> Vec<(TileId, String)> {
         let mut m = m.clone();
-        if !m.contains_key(&::inputs::inputs::switched_logical(::inputs::inputs::elevation::UNIT)) {
+        if !m.contains_key(&inputs::inputs::switched_logical(inputs::inputs::elevation::UNIT)) {
             elevation_inputs(&mut m);
         }
         super::unit_keys(&crate::agent::build::KeyCtx::new(
@@ -4980,16 +4979,16 @@ mod tests {
     /// buildings.
     pub(crate) fn unit_inputs(m: &mut BTreeMap<String, String>, date: &str) {
         m.insert(
-            ::inputs::osmpass::set_name(date, "areas"),
+            inputs::osmpass::set_name(date, "areas"),
             format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"),
         );
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::heritage::UNIT),
+            inputs::inputs::logical(inputs::inputs::heritage::UNIT),
             "sources/inputs/heritage/@index.3434343434343434.json".into(),
         );
         m.insert(
-            ::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE),
-            format!("{}.6767676767676767.json", ::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE)),
+            bld::buildtiles::index_logical(bld::buildtiles::TEST_RELEASE),
+            format!("{}.6767676767676767.json", bld::buildtiles::index_logical(bld::buildtiles::TEST_RELEASE)),
         );
         elevation_inputs(m);
     }
@@ -5003,7 +5002,7 @@ mod tests {
             format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"),
         );
         m.insert(
-            ::inputs::osmpass::set_name(date, "whs"),
+            inputs::osmpass::set_name(date, "whs"),
             format!("sources/osm/{date}/sets/whs.7878787878787878.osm.pbf"),
         );
     }
@@ -5064,7 +5063,7 @@ mod tests {
         if w.step == "trees" {
             for (t, k) in &w.targets {
                 let Some(u) = TileId::parse(t).filter(|u| u.z == 6) else { continue };
-                let l = ::trees::treepacks::mid_logical(u.x, u.y);
+                let l = trees::treepacks::mid_logical(u.x, u.y);
                 if *k == crate::agent::steps::none_key("trees", t).unwrap() {
                     m.remove(&l);
                 } else {
@@ -5851,8 +5850,8 @@ mod tests {
     fn pass_work_holds_stay_apart_from_its_works() {
         let date = "d";
         let mut m: BTreeMap<String, String> = BTreeMap::new();
-        for st in ::inputs::osmpass::SETS {
-            let l = ::inputs::osmpass::set_name(date, st.0);
+        for st in inputs::osmpass::SETS {
+            let l = inputs::osmpass::set_name(date, st.0);
             m.insert(l.clone(), format!("{l}.1111111111111111.osm.pbf"));
         }
         for l in [
@@ -5860,10 +5859,10 @@ mod tests {
             format!("sources/osm/{date}/pieces/6-28-16"),
             format!("layers/basemap/world-{date}"),
             format!("work/summits/{date}"),
-            ::inputs::inputs::logical(::inputs::inputs::languages::UNIT),
-            ::inputs::inputs::logical(::inputs::inputs::heritage::UNIT),
-            ::inputs::inputs::logical(::inputs::inputs::translations::UNIT),
-            ::inputs::inputs::logical(::inputs::inputs::descriptions::UNIT),
+            inputs::inputs::logical(inputs::inputs::languages::UNIT),
+            inputs::inputs::logical(inputs::inputs::heritage::UNIT),
+            inputs::inputs::logical(inputs::inputs::translations::UNIT),
+            inputs::inputs::logical(inputs::inputs::descriptions::UNIT),
         ] {
             m.insert(l.clone(), format!("{l}.2222222222222222.bin"));
         }
@@ -5946,7 +5945,7 @@ mod tests {
         let reads = |release| PassReads { release, lakefill: Ok(None), reach: &|| None, failures: &|_| 0 };
         let w = pass_work(Some(date), &m, &keys, reads(None), None);
         assert!(w.buildings_made && left_of(&w, "buildings"), "none readable: counted left, no job");
-        m.insert(::bld::buildtiles::index_logical("r"), "made".into());
+        m.insert(bld::buildtiles::index_logical("r"), "made".into());
         let w = pass_work(Some(date), &m, &keys, reads(Some("r".into())), None);
         assert!(w.buildings_made && !left_of(&w, "buildings"));
 
@@ -5958,7 +5957,7 @@ mod tests {
         assert!(shut.jobs.is_empty() && shut.waits.is_empty(), "{:?}", shut.jobs);
         let due = pass_work(None, &m, &keys, reads(None), Some(&names(Some(NAMES_TODO_EVERY_S))));
         assert!(step_is(&due));
-        m.remove(&::inputs::inputs::logical(::inputs::inputs::translations::UNIT));
+        m.remove(&inputs::inputs::logical(inputs::inputs::translations::UNIT));
         let w = pass_work(None, &m, &keys, reads(None), Some(&names(None)));
         assert!(w.jobs.is_empty() && w.waits[0].step.as_deref() == Some("names-todo"), "{:?}", w.waits);
         // (Without its key, nothing said: no map yet.)
@@ -6188,7 +6187,7 @@ mod tests {
         }
         run_all(&c, &reach(), &mut m, &mut Keys::default());
         for kind in ["outlines", "coastline", "hikes", "summits", "named", "whs", "labels", "ferries"] {
-            let l = ::inputs::osmpass::set_name("d", kind);
+            let l = inputs::osmpass::set_name("d", kind);
             m.entry(l.clone()).or_insert_with(|| format!("{l}.7a7a7a7a7a7a7a7a.osm.pbf"));
         }
         // (The pass's and the chains' other files the steps' keys read, made.)
@@ -6196,8 +6195,8 @@ mod tests {
         let made = [
             "sources/osm/c/outlines".to_string(),
             "sources/osm/d/outlines".to_string(),
-            ::inputs::inputs::logical(::inputs::inputs::languages::UNIT),
-            ::inputs::lakefill::logical("d"),
+            inputs::inputs::logical(inputs::inputs::languages::UNIT),
+            inputs::lakefill::logical("d"),
             roads::timetables::RAIL_LINES.to_string(),
             roads::timetables::FERRY_LINES.to_string(),
             "sources/items/d/facts".to_string(),
@@ -6207,13 +6206,13 @@ mod tests {
             format!("{src}/details-heritage"),
             format!("{src}/props-heritage"),
             format!("{src}/layer-summary"),
-            ::inputs::inputs::logical(::inputs::inputs::feeds::UNIT),
-            ::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT),
-            ::inputs::rail::FEEDS.to_string(),
-            ::inputs::rail::FERRY_FEEDS.to_string(),
+            inputs::inputs::logical(inputs::inputs::feeds::UNIT),
+            inputs::inputs::logical(inputs::inputs::gtfs::UNIT),
+            inputs::rail::FEEDS.to_string(),
+            inputs::rail::FERRY_FEEDS.to_string(),
             "base/6-28-16".to_string(),
             "global/roads/6-28-16".to_string(),
-            ::inputs::osmpass::set_name("d", "rail"),
+            inputs::osmpass::set_name("d", "rail"),
         ];
         for l in made {
             m.entry(l.clone()).or_insert_with(|| format!("{l}.7b7b7b7b7b7b7b7b.bin"));
@@ -6226,10 +6225,10 @@ mod tests {
         // (A pyramid read tile by tile over the coverage, and the world's dataset.)
         let mut pm = BTreeMap::new();
         elevation_inputs(&mut pm);
-        let index = pm[&::inputs::inputs::logical(::inputs::inputs::elevation::UNIT)].clone();
+        let index = pm[&inputs::inputs::logical(inputs::inputs::elevation::UNIT)].clone();
         let pyramids = move |_: &BTreeMap<String, String>| {
             let (mut a, cover) = dataset("gsi", "g1", Some(vec![[-22.0, 64.0, -21.0, 65.0]]));
-            a.declaration.data = ::inputs::dem::declared::Data::Tiles {
+            a.declaration.data = inputs::dem::declared::Data::Tiles {
                 url: "https://g.org/{z}/{x}/{y}.png".into(),
                 zoom: 15,
                 encoding: "gsi-png".into(),
@@ -6265,7 +6264,7 @@ mod tests {
         }
         let mut dm: BTreeMap<String, String> = BTreeMap::new();
         dm.insert(
-            ::inputs::inputs::logical(::inputs::inputs::sources::UNIT),
+            inputs::inputs::logical(inputs::inputs::sources::UNIT),
             "sources/inputs/sources/@index.7d7d7d7d7d7d7d7d.json".into(),
         );
         dm.insert("layers/basemap/world-d".into(), "layers/basemap/world-d.7c7c7c7c7c7c7c7c.pmtiles".into());
@@ -6304,7 +6303,7 @@ mod tests {
                 vec![terrain::terrain_zoom::Set {
                     id: "lidar".into(),
                     line: "lidar k".into(),
-                    cover: ::inputs::dem::declared::Cover::of(None),
+                    cover: inputs::dem::declared::Cover::of(None),
                     detail: terrain::terrain_zoom::Detail::Pyramid(14),
                     cut: None,
                     every_zoom: false,
@@ -6825,7 +6824,7 @@ mod tests {
         use terrain::terrain_zoom::{Detail, Set as FineSet};
         let c = cov();
         let m: BTreeMap<String, String> =
-            [(::inputs::inputs::logical(::inputs::inputs::elevation::UNIT), "elevation-index".to_string())].into();
+            [(inputs::inputs::logical(inputs::inputs::elevation::UNIT), "elevation-index".to_string())].into();
         let with = |sets: Vec<FineSet>| {
             let mut t = TerrainTiles::new(None);
             t.hold_zoom_sets(&m, sets);
@@ -6842,7 +6841,7 @@ mod tests {
         let lidar = |cover: Option<Vec<[f64; 4]>>| FineSet {
             id: "lidar".into(),
             line: "lidar k".into(),
-            cover: ::inputs::dem::declared::Cover::of(cover.as_deref()),
+            cover: inputs::dem::declared::Cover::of(cover.as_deref()),
             detail: Detail::Pyramid(14),
             cut: None,
             every_zoom: false,
@@ -6868,7 +6867,7 @@ mod tests {
         let lidar = FineSet {
             id: "lidar".into(),
             line: "lidar k".into(),
-            cover: ::inputs::dem::declared::Cover::of(None),
+            cover: inputs::dem::declared::Cover::of(None),
             detail: Detail::Pyramid(14),
             cut: None,
             every_zoom: false,
@@ -6960,7 +6959,7 @@ mod tests {
         let u = TileId::parse(&deep[0].0).unwrap();
         let b = roadcore::geo::tile_box(u.z, u.x, u.y);
         let cell = [b[0].floor(), b[1].floor(), b[0].floor() + 1.0, b[1].floor() + 1.0];
-        let cut = vec![FineSet { cover: ::inputs::dem::declared::Cover::of(Some(&[cell])), ..sets[0].clone() }];
+        let cut = vec![FineSet { cover: inputs::dem::declared::Cover::of(Some(&[cell])), ..sets[0].clone() }];
         let p = plan(&m, &done, &cut);
         let mixed = of(&p, "terrain-deep");
         let is_drop = |(t, k): &(String, String)| is_none_key("terrain-deep", t, k);
@@ -7933,9 +7932,9 @@ mod tests {
             }
         }
         // Without the release's buildings (the worldwide job), the z6 tiles wait for them.
-        let index = m.remove(&::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE)).unwrap();
+        let index = m.remove(&bld::buildtiles::index_logical(bld::buildtiles::TEST_RELEASE)).unwrap();
         assert!(!plan(&c, "d", &m, &done, &BTreeMap::new()).iter().any(|w| w.step == "unit"));
-        m.insert(::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE), index);
+        m.insert(bld::buildtiles::index_logical(bld::buildtiles::TEST_RELEASE), index);
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "unit");
         assert_eq!(w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["6/28/16"]);
@@ -7943,8 +7942,8 @@ mod tests {
         let k = unit_keys(&c, "d", &m)[0].1.clone();
         let mut m2 = m.clone();
         m2.insert(
-            ::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE),
-            format!("{}.6868686868686868.json", ::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE)),
+            bld::buildtiles::index_logical(bld::buildtiles::TEST_RELEASE),
+            format!("{}.6868686868686868.json", bld::buildtiles::index_logical(bld::buildtiles::TEST_RELEASE)),
         );
         assert_ne!(unit_keys(&c, "d", &m2)[0].1, k);
         // A z6 tile's key names the heritage slices near it, and only those.
@@ -7978,7 +7977,7 @@ mod tests {
     fn a_terrain_targets_key_names_the_datasets_meeting_it() {
         let mut m = BTreeMap::new();
         elevation_inputs(&mut m);
-        let index = m[&::inputs::inputs::logical(::inputs::inputs::elevation::UNIT)].clone();
+        let index = m[&inputs::inputs::logical(inputs::inputs::elevation::UNIT)].clone();
         let at = |lidar: &str| {
             let mut t = TerrainTiles::new(None);
             t.hold_elevation(
@@ -8009,10 +8008,10 @@ mod tests {
         let c = cov();
         let mut m = BTreeMap::new();
         elevation_inputs(&mut m);
-        let index = m[&::inputs::inputs::logical(::inputs::inputs::elevation::UNIT)].clone();
+        let index = m[&inputs::inputs::logical(inputs::inputs::elevation::UNIT)].clone();
         let gsi = |keyed: &str| {
             let (mut a, cover) = dataset("gsi", keyed, Some(vec![[-22.0, 64.0, -21.0, 65.0]]));
-            a.declaration.data = ::inputs::dem::declared::Data::Tiles {
+            a.declaration.data = inputs::dem::declared::Data::Tiles {
                 url: "https://g.org/{z}/{x}/{y}.png".into(),
                 zoom: 15,
                 encoding: "gsi-png".into(),
@@ -8089,7 +8088,7 @@ mod tests {
         unread.hold_elevation("another", Vec::new());
         let mut switched = m.clone();
         switched.insert(
-            ::inputs::inputs::switched_logical(::inputs::inputs::elevation::UNIT),
+            inputs::inputs::switched_logical(inputs::inputs::elevation::UNIT),
             "sources/inputs/elevation/@switched.2222222222222222.json".into(),
         );
         assert!(
@@ -8114,22 +8113,22 @@ mod tests {
         id: &str,
         keyed: &str,
         cover: Option<Vec<[f64; 4]>>,
-    ) -> (::inputs::dem::declared::Accepted, ::inputs::dem::declared::Cover) {
-        let declaration = ::inputs::dem::declared::Declaration {
+    ) -> (inputs::dem::declared::Accepted, inputs::dem::declared::Cover) {
+        let declaration = inputs::dem::declared::Declaration {
             surface: "ground".into(),
             heights: "EGM2008".into(),
             rank: None,
             code: 1,
             regions: None,
             exclude: Vec::new(),
-            data: ::inputs::dem::declared::Data::Tiles {
+            data: inputs::dem::declared::Data::Tiles {
                 url: "https://e.org/{z}/{x}/{y}.png".into(),
                 zoom: 10,
                 encoding: "terrarium".into(),
                 every_zoom: true,
             },
         };
-        let measured = ::inputs::dem::declared::Measured {
+        let measured = inputs::dem::declared::Measured {
             crs: None,
             resolution: 30.0,
             cover: cover.clone(),
@@ -8140,7 +8139,7 @@ mod tests {
             hollow: None,
         };
         (
-            ::inputs::dem::declared::Accepted {
+            inputs::dem::declared::Accepted {
                 convert: None,
                 id: id.into(),
                 path: format!("{id}.toml"),
@@ -8148,7 +8147,7 @@ mod tests {
                 measured,
                 keyed: keyed.into(),
             },
-            ::inputs::dem::declared::Cover::of(cover.as_deref()),
+            inputs::dem::declared::Cover::of(cover.as_deref()),
         )
     }
 
@@ -8163,12 +8162,12 @@ mod tests {
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         elevation_inputs(&mut m);
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::sources::UNIT),
+            inputs::inputs::logical(inputs::inputs::sources::UNIT),
             "sources/inputs/sources/@index.1212121212121212.json".into(),
         );
         let key = |k: KeyedSources| {
             let mut t = tiles_for(&m);
-            t.hold_keyed(&m[&::inputs::inputs::logical(::inputs::inputs::sources::UNIT)], k);
+            t.hold_keyed(&m[&inputs::inputs::logical(inputs::inputs::sources::UNIT)], k);
             let tt = trees_targets(&KeyCtx::new(&c, "d", &m, &BTreeMap::new(), None, &t));
             (
                 super::unit_keys(&crate::agent::build::KeyCtx::new(
@@ -8184,7 +8183,7 @@ mod tests {
                 tt.pieces[0].1.clone(),
             )
         };
-        let staged = KeyedSources { release: ::bld::buildtiles::TEST_RELEASE.into(), unit: None, trees: None };
+        let staged = KeyedSources { release: bld::buildtiles::TEST_RELEASE.into(), unit: None, trees: None };
         let (u0, t0) = key(staged.clone());
         assert_eq!(
             u0,
@@ -8213,36 +8212,35 @@ mod tests {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
-        let key =
-            |m: &BTreeMap<String, String>,
-             e: Option<Vec<(::inputs::dem::declared::Accepted, ::inputs::dem::declared::Cover)>>| {
-                // (The terrain's tiles alone, and the datasets `e` when given.)
-                let mut bare = m.clone();
-                bare.remove(&::inputs::inputs::logical(::inputs::inputs::elevation::UNIT));
-                let mut t = tiles_for(&bare);
-                if let Some(e) = e {
-                    t.hold_elevation(&m[&::inputs::inputs::logical(::inputs::inputs::elevation::UNIT)], e);
-                }
-                super::unit_keys(&crate::agent::build::KeyCtx::new(
-                    &c,
-                    "d",
-                    m,
-                    &std::collections::BTreeMap::new(),
-                    Some(&reach()),
-                    &t,
-                ))[0]
-                    .1
-                    .clone()
-            };
+        let key = |m: &BTreeMap<String, String>,
+                   e: Option<Vec<(inputs::dem::declared::Accepted, inputs::dem::declared::Cover)>>| {
+            // (The terrain's tiles alone, and the datasets `e` when given.)
+            let mut bare = m.clone();
+            bare.remove(&inputs::inputs::logical(inputs::inputs::elevation::UNIT));
+            let mut t = tiles_for(&bare);
+            if let Some(e) = e {
+                t.hold_elevation(&m[&inputs::inputs::logical(inputs::inputs::elevation::UNIT)], e);
+            }
+            super::unit_keys(&crate::agent::build::KeyCtx::new(
+                &c,
+                "d",
+                m,
+                &std::collections::BTreeMap::new(),
+                Some(&reach()),
+                &t,
+            ))[0]
+                .1
+                .clone()
+        };
         // No key before the switch (the z6 tiles wait for it), nor with the accepted version named alone.
         assert_eq!(key(&m, None), None);
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::elevation::UNIT),
+            inputs::inputs::logical(inputs::inputs::elevation::UNIT),
             "sources/inputs/elevation/@index.1111111111111111.json".into(),
         );
         assert_eq!(key(&m, None), None);
         m.insert(
-            ::inputs::inputs::switched_logical(::inputs::inputs::elevation::UNIT),
+            inputs::inputs::switched_logical(inputs::inputs::elevation::UNIT),
             "sources/inputs/elevation/@switched.2222222222222222.json".into(),
         );
         // Switched, the datasets unread: the key waits.
@@ -8756,7 +8754,7 @@ mod tests {
         // One's mid in a hand-off waiting to be merged (the keys planned with have its record on
         // top, Keys::load_with): not made again for it.
         let mut handed = done.clone();
-        handed.handed.insert(::trees::treepacks::mid_logical(28, 16));
+        handed.handed.insert(trees::treepacks::mid_logical(28, 16));
         assert_eq!(ts(&tree_work(&tt, &m, &handed).backfill), ["6/28/17", "6/29/16"]);
         let p = plan(&m, &done);
         assert_eq!(p.work.last(), Some(&Work { step: "trees".into(), targets: w.backfill.clone() }));
@@ -8776,7 +8774,7 @@ mod tests {
         // Their mids handed off, not yet merged: neither made again, and the assembly waits for them
         // to be merged.
         let mut handed = done.clone();
-        handed.handed.extend([::trees::treepacks::mid_logical(28, 17), ::trees::treepacks::mid_logical(29, 16)]);
+        handed.handed.extend([trees::treepacks::mid_logical(28, 17), trees::treepacks::mid_logical(29, 16)]);
         let wh = tree_work(&tt, &m, &handed);
         assert!(
             wh.pieces.is_empty() && wh.backfill.is_empty() && wh.lo.is_empty() && wh.stale_lo.contains("3/3/2"),
@@ -8793,7 +8791,7 @@ mod tests {
         // A z6 tile made again (its coverage changed) and another without its mid: both, then the
         // assembly.
         done.trees.insert("6/28/16".into(), "0000000000000000".into());
-        m.remove(&::trees::treepacks::mid_logical(29, 16));
+        m.remove(&trees::treepacks::mid_logical(29, 16));
         let tt = trees_targets(&KeyCtx::new(&c, "d", &m, &BTreeMap::new(), None, &tiles_for(&m)));
         let w = tree_work(&tt, &m, &done);
         assert_eq!(
@@ -8856,7 +8854,7 @@ mod tests {
                     c,
                     "d",
                     &m,
-                    &[(::inputs::dem::spacing::INPUT.to_string(), "aaaa".to_string())].into(),
+                    &[(inputs::dem::spacing::INPUT.to_string(), "aaaa".to_string())].into(),
                     None,
                     &crate::agent::tiles::TerrainTiles::default(),
                 ))
@@ -9117,10 +9115,7 @@ mod tests {
     fn ferries_dont_depend_on_the_built_units() {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         for set in ["rail", "ferries"] {
-            m.insert(
-                ::inputs::osmpass::set_name("d", set),
-                format!("sources/osm/d/sets/{set}.5555555555555555.osm.pbf"),
-            );
+            m.insert(inputs::osmpass::set_name("d", set), format!("sources/osm/d/sets/{set}.5555555555555555.osm.pbf"));
         }
         m.insert("base/6-28-16".into(), "base/6-28-16.1111111111111111.sect".into());
         m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.1111111111111111.sect".into());
@@ -9143,10 +9138,10 @@ mod tests {
         };
         // (The ferries wait for the ferry feeds' list and the static files' accepted version.)
         assert!(find(&m, "ferries").is_none());
-        m.insert(::inputs::rail::FERRY_FEEDS.into(), "sources/rail/ferry-feeds.3333333333333333.json".into());
+        m.insert(inputs::rail::FERRY_FEEDS.into(), "sources/rail/ferry-feeds.3333333333333333.json".into());
         assert!(find(&m, "ferries").is_none());
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT),
+            inputs::inputs::logical(inputs::inputs::gtfs::UNIT),
             "sources/inputs/timetables/gtfs/@index.1111111111111111.json".into(),
         );
         let key = |m: &BTreeMap<String, String>, step: &str| find(m, step).unwrap().targets[0].1.clone();
@@ -9170,11 +9165,11 @@ mod tests {
         // Another list (a ferry feed fetched again), other static files: the ferries again.
         let mut m2 = m.clone();
         m2.insert(
-            ::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT),
+            inputs::inputs::logical(inputs::inputs::gtfs::UNIT),
             "sources/inputs/timetables/gtfs/@index.2222222222222222.json".into(),
         );
         assert_ne!(key(&m2, "ferries"), ferries);
-        m.insert(::inputs::rail::FERRY_FEEDS.into(), "sources/rail/ferry-feeds.4444444444444444.json".into());
+        m.insert(inputs::rail::FERRY_FEEDS.into(), "sources/rail/ferry-feeds.4444444444444444.json".into());
         assert_ne!(key(&m, "ferries"), ferries);
     }
 
@@ -9188,7 +9183,7 @@ mod tests {
         let lta: BTreeMap<String, String> = [
             ("keys".to_string(), "LTA_ACCOUNT_KEY".to_string()),
             ("feed-keys".to_string(), "LTA_ACCOUNT_KEY".to_string()),
-            (::inputs::dem::spacing::INPUT.to_string(), "aaaa".to_string()),
+            (inputs::dem::spacing::INPUT.to_string(), "aaaa".to_string()),
         ]
         .into();
         // No accepted declarations: nothing.
@@ -9198,10 +9193,10 @@ mod tests {
         )
         .is_none());
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::feeds::UNIT),
+            inputs::inputs::logical(inputs::inputs::feeds::UNIT),
             "sources/inputs/timetables/feeds/@index.1111111111111111.json".into(),
         );
-        m.insert(::inputs::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
+        m.insert(inputs::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
         let w = rail_chain(
             &crate::agent::build::KeyCtx::new(&c, "d", &m, &lta, None, &crate::agent::tiles::TerrainTiles::default()),
             &done,
@@ -9211,7 +9206,7 @@ mod tests {
         done.record(&w.step, &w.targets);
         // Its list made: then, once the static files have an accepted version, the trains; then
         // nothing, until what decides them changes.
-        m.insert(::inputs::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
+        m.insert(inputs::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
         assert!(
             rail_next(
                 &crate::agent::build::KeyCtx::new(
@@ -9228,7 +9223,7 @@ mod tests {
             "the trains wait for the static files"
         );
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT),
+            inputs::inputs::logical(inputs::inputs::gtfs::UNIT),
             "sources/inputs/timetables/gtfs/@index.1111111111111111.json".into(),
         );
         let w = rail_chain(
@@ -9247,7 +9242,7 @@ mod tests {
         // not known (its index unread): they wait.
         {
             let mut other = lta.clone();
-            other.insert(::inputs::dem::spacing::INPUT.into(), "bbbb".into());
+            other.insert(inputs::dem::spacing::INPUT.into(), "bbbb".into());
             assert_eq!(
                 rail_chain(
                     &crate::agent::build::KeyCtx::new(
@@ -9264,7 +9259,7 @@ mod tests {
                 .step,
                 "rail"
             );
-            other.insert(::inputs::dem::spacing::INPUT.into(), "?".into());
+            other.insert(inputs::dem::spacing::INPUT.into(), "?".into());
             let mut fresh = done.clone();
             fresh.lo.remove("rail");
             assert!(
@@ -9285,8 +9280,8 @@ mod tests {
         }
         // What rail-feeds writes besides the list (the checks, the zips) isn't what anything reads:
         // no rerun for its own sake.
-        m.insert(::inputs::rail::CHECKED.into(), "sources/rail/checked.4444444444444444.json".into());
-        m.insert(::inputs::rail::zip_logical("sncf"), "sources/rail/gtfs/sncf.5555555555555555.zip".into());
+        m.insert(inputs::rail::CHECKED.into(), "sources/rail/checked.4444444444444444.json".into());
+        m.insert(inputs::rail::zip_logical("sncf"), "sources/rail/gtfs/sncf.5555555555555555.zip".into());
         assert!(rail_chain(
             &crate::agent::build::KeyCtx::new(&c, "d", &m, &lta, None, &crate::agent::tiles::TerrainTiles::default()),
             &done
@@ -9334,7 +9329,7 @@ mod tests {
         )
         .is_none());
         let mut m2 = m.clone();
-        m2.insert(::inputs::rail::CATALOGUE.to_string(), "sources/rail/catalogue.9999999999999999.csv".into());
+        m2.insert(inputs::rail::CATALOGUE.to_string(), "sources/rail/catalogue.9999999999999999.csv".into());
         assert_eq!(
             rail_chain(
                 &crate::agent::build::KeyCtx::new(
@@ -9355,7 +9350,7 @@ mod tests {
         // other declarations: the feeds again; unread: nothing.
         let mut m2 = m.clone();
         m2.insert(
-            ::inputs::inputs::logical(::inputs::inputs::feeds::UNIT),
+            inputs::inputs::logical(inputs::inputs::feeds::UNIT),
             "sources/inputs/timetables/feeds/@index.9999999999999999.json".into(),
         );
         assert!(rail_chain(
@@ -9406,10 +9401,10 @@ mod tests {
         );
         // A new list (a feed fetched), a new pass's rail set, other static files: the trains again.
         for (l, f) in [
-            (::inputs::rail::FEEDS.to_string(), "sources/rail/feeds.6666666666666666.json"),
-            (::inputs::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.7777777777777777.osm.pbf"),
+            (inputs::rail::FEEDS.to_string(), "sources/rail/feeds.6666666666666666.json"),
+            (inputs::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.7777777777777777.osm.pbf"),
             (
-                ::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT),
+                inputs::inputs::logical(inputs::inputs::gtfs::UNIT),
                 "sources/inputs/timetables/gtfs/@index.8888888888888888.json",
             ),
         ] {
@@ -9456,14 +9451,14 @@ mod tests {
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::feeds::UNIT),
+            inputs::inputs::logical(inputs::inputs::feeds::UNIT),
             "sources/inputs/timetables/feeds/@index.1111111111111111.json".into(),
         );
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT),
+            inputs::inputs::logical(inputs::inputs::gtfs::UNIT),
             "sources/inputs/timetables/gtfs/@index.1111111111111111.json".into(),
         );
-        m.insert(::inputs::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
+        m.insert(inputs::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
         // From the start, listed after the regions' work (the z6 tiles don't wait for it, nor it for them).
         for step in ["heritage-sites", "terrain-hi", "terrain-lo", "unit", "slope-hi", "slope-lo", "trees", "trees-lo"]
         {
@@ -9490,7 +9485,7 @@ mod tests {
         };
         assert_eq!(line(&m, &done).left, Some(2));
         done.record("rail-feeds", &w[1].targets);
-        m.insert(::inputs::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
+        m.insert(inputs::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
         assert_eq!(line(&m, &done).left, Some(1));
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(steps(&w), vec!["pack", "rail"]);
@@ -9509,7 +9504,7 @@ mod tests {
         };
         assert_eq!(line(&m, &done, &lta).left, None, "no accepted declarations");
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::feeds::UNIT),
+            inputs::inputs::logical(inputs::inputs::feeds::UNIT),
             "sources/inputs/timetables/feeds/@index.1111111111111111.json".into(),
         );
         let w = rail_chain(
@@ -9525,13 +9520,13 @@ mod tests {
         done.record(&w.step, &w.targets);
         // rail-feeds done, but no feeds' list, or no rail set for the pass: not known, not done.
         assert_eq!(line(&m, &done, &lta).left, None, "no rail set, no list");
-        m.insert(::inputs::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
+        m.insert(inputs::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
         assert_eq!(line(&m, &done, &lta).left, None, "no rail set");
         assert!(!line(&m, &done, &lta).finished());
-        m.insert(::inputs::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
+        m.insert(inputs::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
         assert_eq!(line(&m, &done, &lta).left, None, "no static files' accepted version");
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT),
+            inputs::inputs::logical(inputs::inputs::gtfs::UNIT),
             "sources/inputs/timetables/gtfs/@index.1111111111111111.json".into(),
         );
         assert_eq!(line(&m, &done, &lta).left, Some(1));
@@ -9544,7 +9539,7 @@ mod tests {
         assert_eq!(line(&m, &done, &lta).left, Some(0));
         assert!(line(&m, &done, &lta).finished());
         let mut m2 = m.clone();
-        m2.remove(::inputs::rail::FEEDS);
+        m2.remove(inputs::rail::FEEDS);
         assert_eq!(line(&m2, &done, &lta).left, None, "the list gone");
     }
 
@@ -9742,7 +9737,7 @@ mod tests {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         unit_inputs(&mut m, "d");
-        let reg = |id: &str, keyed: &str, b: [f64; 4]| ::inputs::inputs::heritage::Register {
+        let reg = |id: &str, keyed: &str, b: [f64; 4]| inputs::inputs::heritage::Register {
             id: id.into(),
             geojson: String::new(),
             toml: String::new(),
@@ -9751,13 +9746,13 @@ mod tests {
         };
         let iceland = [-22.5, 63.8, -21.0, 64.5];
         let japan = [129.0, 31.0, 146.0, 45.0];
-        let ins = |regs: &[::inputs::inputs::heritage::Register]| {
+        let ins = |regs: &[inputs::inputs::heritage::Register]| {
             BTreeMap::from([("heritage".to_string(), landmarks::heritage::registers_line(regs))])
         };
         // (The line read back as written.)
         let line = landmarks::heritage::registers_line(&[
             reg("is-minjar", "a b", iceland),
-            ::inputs::inputs::heritage::Register { bbox: None, ..reg("empty", "c d", japan) },
+            inputs::inputs::heritage::Register { bbox: None, ..reg("empty", "c d", japan) },
         ]);
         assert_eq!(
             landmarks::heritage::parse_registers(&line),
@@ -9812,7 +9807,7 @@ mod tests {
         );
         let mut mm = m.clone();
         mm.insert(
-            ::inputs::inputs::logical(::inputs::inputs::heritage_matches::UNIT),
+            inputs::inputs::logical(inputs::inputs::heritage_matches::UNIT),
             "sources/inputs/heritage-matches/@index.1111111111111111.json".into(),
         );
         assert_ne!(
@@ -9838,7 +9833,7 @@ mod tests {
             )),
             None
         );
-        m.remove(&::inputs::inputs::logical(::inputs::inputs::heritage::UNIT));
+        m.remove(&inputs::inputs::logical(inputs::inputs::heritage::UNIT));
         assert_eq!(
             heritage_sites_key(&crate::agent::build::KeyCtx::new(
                 &c,
@@ -9874,7 +9869,7 @@ mod tests {
             )),
             None
         );
-        let whs = ::inputs::osmpass::set_name("d", "whs");
+        let whs = inputs::osmpass::set_name("d", "whs");
         m.insert(whs.clone(), "sources/osm/d/sets/whs.1111111111111111.osm.pbf".into());
         let k = heritage_key(&crate::agent::build::KeyCtx::new(
             &c,
@@ -9945,7 +9940,7 @@ mod tests {
         // nothing heritage-related runs, nor is it forecast; the chain done, not the marks either.
         {
             let mut m0 = m.clone();
-            m0.remove(&::inputs::inputs::logical(::inputs::inputs::heritage::UNIT));
+            m0.remove(&inputs::inputs::logical(inputs::inputs::heritage::UNIT));
             let held = ["heritage-sites", "heritage", "marks", "overlays"];
             let w = plan(&c, "d", &m0, &done, &BTreeMap::new());
             assert!(!steps(&w).iter().any(|s| held.contains(&s.as_str())), "{:?}", steps(&w));
@@ -10011,7 +10006,7 @@ mod tests {
         // The registers' accepted version changed: the heritage sites are made again first, the
         // rest of the chain (an hour and a half on them) only after.
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::heritage::UNIT),
+            inputs::inputs::logical(inputs::inputs::heritage::UNIT),
             "sources/inputs/heritage/@index.ffffffffffffffff.json".into(),
         );
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
@@ -10021,7 +10016,7 @@ mod tests {
         // Likewise the candidates and the hiking routes' ends: a new hikes set, the ends made again
         // first.
         m.insert("work/trailends/d".into(), "work/trailends/d.8888888888888888.json".into());
-        m.insert(::inputs::osmpass::set_name("d", "hikes"), "sources/osm/d/sets/hikes.1111111111111111.osm.pbf".into());
+        m.insert(inputs::osmpass::set_name("d", "hikes"), "sources/osm/d/sets/hikes.1111111111111111.osm.pbf".into());
         assert!(!steps(&plan(&c, "d", &m, &done, &BTreeMap::new())).contains(&"pois".to_string()));
         let ends = trailends_work(&crate::agent::build::PassCtx::default().ctx("d", &m), &done).unwrap();
         done.record(&ends.step, &ends.targets);
@@ -10252,8 +10247,8 @@ mod tests {
     #[test]
     fn the_names_to_do_runs_daily_or_when_idle() {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
-        for u in [::inputs::inputs::translations::UNIT, ::inputs::inputs::descriptions::UNIT] {
-            m.insert(::inputs::inputs::logical(u), format!("sources/inputs/{u}/@index.1111111111111111.json"));
+        for u in [inputs::inputs::translations::UNIT, inputs::inputs::descriptions::UNIT] {
+            m.insert(inputs::inputs::logical(u), format!("sources/inputs/{u}/@index.1111111111111111.json"));
         }
         let mut done = Keys::default();
         let w = names_todo_work(Some("a"), &m, &done, None, false).unwrap();
@@ -10329,8 +10324,8 @@ mod tests {
     /// `c` reading something (its digest `d`), and their rows.
     fn bld_inputs(c: &Coverage, d: &str) -> BTreeMap<String, String> {
         let mut inputs = BTreeMap::from([
-            ("bld-release".to_string(), ::bld::buildtiles::TEST_RELEASE.to_string()),
-            ("bld-key".to_string(), ::bld::buildtiles::TEST_RELEASE.to_string()),
+            ("bld-release".to_string(), bld::buildtiles::TEST_RELEASE.to_string()),
+            ("bld-key".to_string(), bld::buildtiles::TEST_RELEASE.to_string()),
         ]);
         for x in 0..64u32 {
             for y in 0..64u32 {
@@ -10424,9 +10419,9 @@ mod tests {
         let tile = tt.tiles[0].0.clone();
         let u = TileId::parse(&tile).unwrap();
         for (l, changes) in [
-            (::bld::bld::work_logical(u.x, u.y), true),
-            (::bld::bld::work_logical(u.x + 1, u.y + 1), true),
-            (::bld::bld::work_logical(u.x + 2, u.y), false),
+            (bld::bld::work_logical(u.x, u.y), true),
+            (bld::bld::work_logical(u.x + 1, u.y + 1), true),
+            (bld::bld::work_logical(u.x + 2, u.y), false),
         ] {
             let mut m2 = m.clone();
             m2.insert(l.clone(), format!("{l}.0123456789abcdef.sect"));
@@ -10526,10 +10521,10 @@ mod tests {
             .meets_rect(codecs::hipack::grow(codecs::hipack::tile_bounds(6, x, y), roadcore::geo::NEAR_COVERAGE_KM)))));
         assert!(bld_tiles(&c).is_empty());
         // Through the stored geometry: a region of water alone goes to `depth_only`.
-        let g = ::inputs::inputs::regions::stored::Geometry {
+        let g = inputs::inputs::regions::stored::Geometry {
             id: "zone".into(),
             osm: "2026-09-28".into(),
-            shapes: vec![::inputs::inputs::regions::stored::Shape {
+            shapes: vec![inputs::inputs::regions::stored::Shape {
                 from: "eez:1".into(),
                 country: String::new(),
                 tolerance_m: 0,
@@ -10539,8 +10534,8 @@ mod tests {
             relations: vec![],
             ways: vec![],
         };
-        let back = ::inputs::inputs::regions::stored::Geometry::decode(&g.encode()).unwrap();
-        let cov = ::inputs::inputs::regions::read::coverage_of(&[back]);
+        let back = inputs::inputs::regions::stored::Geometry::decode(&g.encode()).unwrap();
+        let cov = inputs::inputs::regions::read::coverage_of(&[back]);
         assert!(cov.shapes.is_empty() && cov.depth_only.len() == 1);
     }
 
@@ -10566,7 +10561,7 @@ mod tests {
         }
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
-        m.insert(::inputs::inputs::logical(::inputs::inputs::sources::UNIT), "x".into());
+        m.insert(inputs::inputs::logical(inputs::inputs::sources::UNIT), "x".into());
         m.insert(
             "layers/basemap/world-2026-09-28".into(),
             "layers/basemap/world-2026-09-28.0101010101010101.pmtiles".into(),
@@ -10816,7 +10811,7 @@ mod tests {
         let c = cov();
         let none: BTreeMap<String, String> = BTreeMap::new();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
-        m.insert(::inputs::inputs::logical(::inputs::inputs::sources::UNIT), "x".into());
+        m.insert(inputs::inputs::logical(inputs::inputs::sources::UNIT), "x".into());
         m.insert(
             "layers/basemap/world-2026-09-28".into(),
             "layers/basemap/world-2026-09-28.0101010101010101.pmtiles".into(),
@@ -10893,7 +10888,7 @@ mod tests {
     #[test]
     fn only_a_depth_target_meeting_an_enclosed_sea_waits_for_its_surface() {
         // An enclosed sea in z6 tile 40/23 (z6's pixels, 512 a tile), in z3 tile 5/2.
-        let e = ::inputs::water::Enclosed {
+        let e = inputs::water::Enclosed {
             z: 6,
             runs: vec![[23 * 512 + 100, 40 * 512 + 10, 40 * 512 + 20]],
             bodies: Vec::new(),
@@ -10901,7 +10896,7 @@ mod tests {
         let mut tiles = TerrainTiles::new(None);
         tiles.hold_enclosed("global/water-enclosed.e.bin", e);
         let m: BTreeMap<String, String> =
-            [(::inputs::water::ENCLOSED.to_string(), "global/water-enclosed.e.bin".to_string())].into();
+            [(inputs::water::ENCLOSED.to_string(), "global/water-enclosed.e.bin".to_string())].into();
         let (c, none) = (Coverage::default(), BTreeMap::new());
         let x = KeyCtx::new(&c, "d", &m, &none, None, &tiles);
         // Every lo pack and the water left.
@@ -10937,7 +10932,7 @@ mod tests {
         let done = Keys::default();
         let mut tiles = TerrainTiles::new(None);
         // No basemap (no water source): nothing.
-        m.insert(::inputs::inputs::logical(::inputs::inputs::sources::UNIT), "x".into());
+        m.insert(inputs::inputs::logical(inputs::inputs::sources::UNIT), "x".into());
         tiles.hold_depth("x", depth_sources());
         assert!(depth_work(
             &crate::agent::build::KeyCtx::new(&c, "d", &m, &std::collections::BTreeMap::new(), None, &tiles),
@@ -11242,7 +11237,7 @@ mod tests {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut tiles = TerrainTiles::new(None);
-        m.insert(::inputs::inputs::logical(::inputs::inputs::sources::UNIT), "x".into());
+        m.insert(inputs::inputs::logical(inputs::inputs::sources::UNIT), "x".into());
         tiles.hold_depth("x", depth_sources());
         m.insert(
             "layers/basemap/world-2026-09-28".into(),
@@ -11360,7 +11355,7 @@ mod tests {
                     &m,
                     &BTreeMap::from([
                         ("bld-release".to_string(), String::new()),
-                        ("bld-key".to_string(), ::bld::buildtiles::TEST_RELEASE.to_string())
+                        ("bld-key".to_string(), bld::buildtiles::TEST_RELEASE.to_string())
                     ]),
                     None,
                     &crate::agent::tiles::TerrainTiles::default()
@@ -11408,7 +11403,7 @@ mod tests {
         done.record("bldprep", &prep);
         for (t, k) in &prep {
             let u = TileId::parse(t).unwrap();
-            let l = ::bld::bld::work_logical(u.x, u.y);
+            let l = bld::bld::work_logical(u.x, u.y);
             m.insert(l.clone(), format!("{l}.{k}.sect"));
         }
         let w = bld_work(
@@ -11458,9 +11453,9 @@ mod tests {
         for (t, k) in &w[0].targets {
             let u = TileId::parse(t).unwrap();
             for l in [
-                ::bld::bld::pack_logical(u.x, u.y),
-                ::bld::bld::field::hi_logical(u.x, u.y),
-                ::bld::bld::field::mid_logical(u.x, u.y),
+                bld::bld::pack_logical(u.x, u.y),
+                bld::bld::field::hi_logical(u.x, u.y),
+                bld::bld::field::mid_logical(u.x, u.y),
             ] {
                 m.insert(l.clone(), format!("{l}.{k}.pack"));
             }
@@ -11515,7 +11510,7 @@ mod tests {
         done.record("bldfield-lo", &w[0].targets);
         for (q, k) in &lo {
             let u = TileId::parse(q).unwrap();
-            let l = ::bld::bld::field::lo_logical(u.x, u.y);
+            let l = bld::bld::field::lo_logical(u.x, u.y);
             m.insert(l.clone(), format!("{l}.{k}.pack"));
         }
         assert!(bld_work(
@@ -11573,7 +11568,7 @@ mod tests {
         // nothing.)
         let none = BTreeMap::from([
             ("bld-release".to_string(), String::new()),
-            ("bld-key".to_string(), ::bld::buildtiles::TEST_RELEASE.to_string()),
+            ("bld-key".to_string(), bld::buildtiles::TEST_RELEASE.to_string()),
         ]);
         assert_eq!(
             bld_work(
@@ -11597,7 +11592,7 @@ mod tests {
         // A new fit (BUILDINGS_V) or a neighbour's file made again: its tiles again, nothing else.
         let (t, _) = prep[0].clone();
         let u = TileId::parse(&t).unwrap();
-        m.insert(::bld::bld::work_logical(u.x, u.y), "work/bld/again.1111111111111111.sect".into());
+        m.insert(bld::bld::work_logical(u.x, u.y), "work/bld/again.1111111111111111.sect".into());
         let w = bld_work(
             &crate::agent::build::KeyCtx::new(
                 &c,
@@ -11762,14 +11757,14 @@ mod tests {
         let mut done = Keys::default();
         assert!(spoken_work(&crate::agent::build::PassCtx::default().ctx("d", &m), &done).is_none());
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::languages::UNIT),
+            inputs::inputs::logical(inputs::inputs::languages::UNIT),
             "sources/inputs/languages/@index.0123456789abcdef.json".into(),
         );
         let w = spoken_work(&crate::agent::build::PassCtx::default().ctx("d", &m), &done).unwrap();
         done.lo.insert("spoken".into(), w.targets[0].1.clone());
         assert!(spoken_work(&crate::agent::build::PassCtx::default().ctx("d", &m), &done).is_none());
         m.insert(
-            ::inputs::inputs::logical(::inputs::inputs::languages::UNIT),
+            inputs::inputs::logical(inputs::inputs::languages::UNIT),
             "sources/inputs/languages/@index.fedcba9876543210.json".into(),
         );
         assert!(spoken_work(&crate::agent::build::PassCtx::default().ctx("d", &m), &done).is_some());
@@ -11841,8 +11836,8 @@ mod tests {
         let Ok(root) = std::env::var("SCENIC_BENCH_ROOT") else { return };
         let nr = store::nasfs::NasRoot::local_for_test(std::path::Path::new(&root));
         let m: BTreeMap<String, String> = buildstore::out::read_record(&nr.join("state/build/manifest.json")).unwrap();
-        let a = ::inputs::inputs::regions::read::source(&nr, &m).unwrap();
-        let cov = ::inputs::inputs::regions::read::accepted_coverage(&nr, &a, None).unwrap();
+        let a = inputs::inputs::regions::read::source(&nr, &m).unwrap();
+        let cov = inputs::inputs::regions::read::accepted_coverage(&nr, &a, None).unwrap();
         let wide = |b: [i32; 4]| [b[0] as i64, b[1] as i64, b[2] as i64, b[3] as i64];
         let mut boxes: Vec<[i64; 4]> = Vec::new();
         for x in 0..64u32 {
@@ -11884,11 +11879,11 @@ mod tests {
         // (The records as the agent reads them: the current term's brief.)
         let agentcore::pool::records::Brief { manifest: m, keys, .. } =
             agentcore::pool::records::Brief::now(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
-        let date = ::inputs::osmpass::latest_pass_by(&store::nasfs::NasRoot::local_for_test(&root), false).unwrap();
-        let a = ::inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
+        let date = inputs::osmpass::latest_pass_by(&store::nasfs::NasRoot::local_for_test(&root), false).unwrap();
+        let a = inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
         lap("reading records", &mut t);
         let cov =
-            ::inputs::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(&root), &a, None)
+            inputs::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(&root), &a, None)
                 .unwrap();
         let each = cov.by_region();
         lap(&format!("making the coverage ({} shapes, {} regions)", cov.shapes.len(), each.len()), &mut t);

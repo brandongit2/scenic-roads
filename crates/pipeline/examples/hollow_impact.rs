@@ -11,8 +11,8 @@
 //! `<pack-idx copy>`: a folder the terrain packs' indexes are read into and kept (never an
 //! agent's own), as the checklist example's.
 
-use ::inputs::dem::declared::{Data, Where};
 use agentcore::pool::records::Keys;
+use inputs::dem::declared::{Data, Where};
 use pipeline::agent::build::KeyCtx;
 use pipeline::agent::tiles::TerrainTiles;
 use std::path::PathBuf;
@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     let nas = store::nasfs::NasRoot::from_arg(root);
     let m = buildstore::records::read_manifest(&nas)?;
     let declared = terrain::terrain_zoom::Declared::read(&nas, &m)?.expect("an accepted elevation version");
-    let mut ds = ::inputs::dem::declared::accepted(&declared.elevation)?;
+    let mut ds = inputs::dem::declared::accepted(&declared.elevation)?;
     let fetch = buildstore::fetch::Fetcher::from_env();
     let fetched = nas.join("sources/fetched");
     let mut per_set = serde_json::Map::new();
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         let Data::Geotiff { index: Some(i), store, .. } = &d.declaration.data else { continue };
         let Some(presence) = d.measured.presence.clone() else { continue };
         let t0 = std::time::Instant::now();
-        let ix = ::inputs::dem::declared::parse_index(&declared.elevation.read(i)?).map_err(anyhow::Error::msg)?;
+        let ix = inputs::dem::declared::parse_index(&declared.elevation.read(i)?).map_err(anyhow::Error::msg)?;
         let files: Vec<(String, Option<[f64; 4]>)> = ix
             .files
             .into_iter()
@@ -53,12 +53,12 @@ fn main() -> anyhow::Result<()> {
         let open = |w: &str| -> Result<buildstore::geotiff::Tiff, String> {
             opened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let src: std::sync::Arc<dyn store::range::RangeRead> = if store {
-                ::inputs::dem::generic::stored(&id, &fetched.join(&id), w, None)
+                inputs::dem::generic::stored(&id, &fetched.join(&id), w, None)
                     .map_err(|e| format!("{e:#}"))?
                     .ok_or_else(|| format!("{w}: not in the store"))?
                     .read
             } else {
-                ::inputs::dem::generic::open_url(&fetch, w)
+                inputs::dem::generic::open_url(&fetch, w)
                     .map_err(|e| format!("{w}: {e:#}"))?
                     .ok_or_else(|| format!("{w}: none"))?
             };
@@ -70,8 +70,8 @@ fn main() -> anyhow::Result<()> {
         let h: Vec<[u32; 2]> = match std::fs::read(&kept) {
             Ok(b) => serde_json::from_slice(&b)?,
             Err(_) => {
-                let h = ::inputs::inputs::elevation::hollow_of(crs, &files, &presence, &open)
-                    .map_err(anyhow::Error::msg)?;
+                let h =
+                    inputs::inputs::elevation::hollow_of(crs, &files, &presence, &open).map_err(anyhow::Error::msg)?;
                 std::fs::write(&kept, serde_json::to_vec(&h)?)?;
                 h
             }
@@ -95,10 +95,10 @@ fn main() -> anyhow::Result<()> {
     let with = terrain::terrain_zoom::sets(&ds, &read)?;
 
     // The targets now, which are done (their key recorded), which of those made a pack.
-    let date = ::inputs::osmpass::latest_pass_by(&nas, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
+    let date = inputs::osmpass::latest_pass_by(&nas, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
     let keys = Keys::load(&nas);
-    let a = ::inputs::inputs::regions::read::source(&nas, &m)?;
-    let cov = ::inputs::inputs::regions::read::accepted_coverage(&nas, &a, None)?;
+    let a = inputs::inputs::regions::read::source(&nas, &m)?;
+    let cov = inputs::inputs::regions::read::accepted_coverage(&nas, &a, None)?;
     let reach = roads::reach::Reaches::load(&nas, &m, &date).ok().flatten();
     let mut tiles = TerrainTiles::new(Some(PathBuf::from(idx)));
     tiles.load(&nas, &m);

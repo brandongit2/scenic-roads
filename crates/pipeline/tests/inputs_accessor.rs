@@ -105,10 +105,10 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
 /// `inputs/heritage`, `inputs/heritage-matches`, `inputs/elevation`, `inputs/sources`, which
 /// `MARKERS` catches.)
 fn unit_markers() -> Vec<String> {
-    use ::inputs::inputs::{elevation, heritage, heritage_matches, regions, sources};
-    ::inputs::inputs::UNITS
+    use inputs::inputs::{elevation, heritage, heritage_matches, regions, sources};
+    inputs::inputs::UNITS
         .iter()
-        .chain([&::inputs::inputs::TEST_UNIT])
+        .chain([&inputs::inputs::TEST_UNIT])
         .filter(|u| {
             ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT, sources::UNIT].contains(*u)
         })

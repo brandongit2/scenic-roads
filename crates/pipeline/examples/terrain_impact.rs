@@ -24,31 +24,30 @@ fn main() -> anyhow::Result<()> {
     let [_, root] = args.as_slice() else { anyhow::bail!("usage: terrain_impact <root>") };
     let root = store::nasfs::NasRoot::from_arg(root);
     let m = buildstore::records::read_manifest(&root)?;
-    let src = ::inputs::inputs::regions::read::source(&root, &m)?;
-    let cov = ::inputs::inputs::regions::read::accepted_coverage(&root, &src, None)?;
+    let src = inputs::inputs::regions::read::source(&root, &m)?;
+    let cov = inputs::inputs::regions::read::accepted_coverage(&root, &src, None)?;
     let declared = terrain::terrain_zoom::Declared::read(&root, &m)?.expect("an accepted elevation version");
     let sets: &[Set] = &declared.sets;
 
     // (The rule before: datasets finer than the worldwide ones (rank above 0) by a tenth, each to the
     // finest zoom whose pixels are no finer than half its resolution, a pyramid to its own.)
-    let ds = ::inputs::dem::declared::accepted(&declared.elevation)?;
+    let ds = inputs::dem::declared::accepted(&declared.elevation)?;
     let base = ds
         .iter()
         .filter(|d| d.declaration.rank.unwrap_or(0) > 0)
         .map(|d| d.measured.resolution)
         .fold(f64::INFINITY, f64::min);
-    let old_zoom = |d: &::inputs::dem::declared::Accepted, lat: f64| -> u8 {
-        if let ::inputs::dem::declared::Data::Tiles { zoom, .. } = &d.declaration.data {
+    let old_zoom = |d: &inputs::dem::declared::Accepted, lat: f64| -> u8 {
+        if let inputs::dem::declared::Data::Tiles { zoom, .. } = &d.declaration.data {
             return (*zoom).min(16) as u8;
         }
         let mut z = 0u8;
-        while z < 16 && ::inputs::dem::generic::tile_resolution(z as u32 + 1, lat) >= d.measured.resolution / 2.0 - 1e-9
-        {
+        while z < 16 && inputs::dem::generic::tile_resolution(z as u32 + 1, lat) >= d.measured.resolution / 2.0 - 1e-9 {
             z += 1;
         }
         z
     };
-    let fine: Vec<(&::inputs::dem::declared::Accepted, &Set)> = ds
+    let fine: Vec<(&inputs::dem::declared::Accepted, &Set)> = ds
         .iter()
         .filter(|d| d.measured.resolution < base * 0.9)
         .filter_map(|d| sets.iter().find(|s| s.id == d.id).map(|s| (d, s)))
@@ -155,7 +154,7 @@ fn main() -> anyhow::Result<()> {
     println!("root tiles: 21, {root_relief} with a quarter the relief's; z3 tiles outside the lo packs no longer sampled: {}", 64 - z3.len());
     // Road spacing by band.
     println!("\n## Road spacing (dem::spacing): the worldwide row's zoom by latitude, before → after");
-    let f = ::inputs::dem::spacing::Fine::of_accepted(&ds);
+    let f = inputs::dem::spacing::Fine::of_accepted(&ds);
     let mut last = None;
     for y in (-60..85).step_by(1) {
         let b = cap_before((y as f64).abs().max((y as f64 + 1.0).abs()));
@@ -163,8 +162,8 @@ fn main() -> anyhow::Result<()> {
         if last != Some((b, a)) {
             println!(
                 "from {y}°: z{b} → z{a} ({:.1} m → {:.1} m)",
-                ::inputs::dem::spacing::spacing_at(b, y as f64),
-                ::inputs::dem::spacing::spacing_at(a, y as f64)
+                inputs::dem::spacing::spacing_at(b, y as f64),
+                inputs::dem::spacing::spacing_at(a, y as f64)
             );
             last = Some((b, a));
         }

@@ -8,7 +8,7 @@ use codecs::legacy::TileId;
 
 /// The spacing the extract reads (inputs::dem::spacing::key_line); None while it isn't known.
 pub fn spacing(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(vec![::inputs::dem::spacing::key_line(x.inputs)?])
+    Some(vec![inputs::dem::spacing::key_line(x.inputs)?])
 }
 
 /// The heritage registers meeting the coverage, each by its keyed digest
@@ -16,7 +16,7 @@ pub fn spacing(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// a plan given no such line names the registers' accepted index whole. None while they have no
 /// accepted version or it can't be read ("?").
 pub fn registers(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let index = x.m.get(&::inputs::inputs::logical(::inputs::inputs::heritage::UNIT))?;
+    let index = x.m.get(&inputs::inputs::logical(inputs::inputs::heritage::UNIT))?;
     match x.inputs.get("heritage").map(String::as_str) {
         Some("?") => None,
         Some(line) => {
@@ -65,7 +65,7 @@ pub fn pass_outlines(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// The languages input's accepted index (docs/inputs.md §6.2), required.
 pub fn language_table(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    required(x, [::inputs::inputs::logical(::inputs::inputs::languages::UNIT)])
+    required(x, [inputs::inputs::logical(inputs::inputs::languages::UNIT)])
 }
 
 /// The pass's basemap (`layers/basemap/world-<date>`), required.
@@ -75,7 +75,7 @@ pub fn basemap(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// The pass's lakes filled from Canada's own data (inputs::lakefill::logical), when made.
 pub fn lakefill(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(named(x, [::inputs::lakefill::logical(x.date)]))
+    Some(named(x, [inputs::lakefill::logical(x.date)]))
 }
 
 /// The rail and ferries extracts the timetables' to-do list reads, required.
@@ -90,7 +90,7 @@ pub fn coverage_all(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// The heritage matches' accepted version, when there is one.
 pub fn matches(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(named(x, [::inputs::inputs::logical(::inputs::inputs::heritage_matches::UNIT)]))
+    Some(named(x, [inputs::inputs::logical(inputs::inputs::heritage_matches::UNIT)]))
 }
 
 /// A candidates' z6 tile's extract by content (`build::pois_units`: one meeting the coverage).
@@ -131,7 +131,7 @@ pub fn pois_now(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// Every candidates' z6 tile's `step` file (`work/pois/`, `work/peaks/`), made or not; None while
 /// the spacing their extract reads isn't known (no candidates' targets then).
 fn per_unit(step: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    ::inputs::dem::spacing::key_line(x.inputs)?;
+    inputs::dem::spacing::key_line(x.inputs)?;
     Some(named(
         x,
         super::build::pois_units(x.cov, x.date, x.m).into_iter().map(|(u, _, _)| format!("work/{step}/{}", u.dash())),
@@ -163,8 +163,8 @@ pub fn heritage_sites_out(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// The pass's named and areas sets (when made) and its World Heritage set (required) the heritage
 /// chain reads.
 pub fn heritage_sets(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    let whs = required(x, [::inputs::osmpass::set_name(x.date, "whs")])?;
-    let mut v = named(x, ["named", "areas"].into_iter().map(|k| ::inputs::osmpass::set_name(x.date, k)));
+    let whs = required(x, [inputs::osmpass::set_name(x.date, "whs")])?;
+    let mut v = named(x, ["named", "areas"].into_iter().map(|k| inputs::osmpass::set_name(x.date, k)));
     v.extend(whs);
     Some(v)
 }
@@ -246,7 +246,7 @@ pub fn pass(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// The pass's set `kind` (inputs::osmpass::set_name) by content; None before pass-sets makes it.
 fn set(kind: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(vec![x.m.get(&::inputs::osmpass::set_name(x.date, kind))?.clone()])
+    Some(vec![x.m.get(&inputs::osmpass::set_name(x.date, kind))?.clone()])
 }
 
 /// One `Read::Input` per pass set a step reads, `set_<kind>`.
@@ -263,7 +263,7 @@ sets!(set_outlines "outlines", set_coastline "coastline", set_hikes "hikes", set
 /// The previous pass's outlines the outlines step may keep a country from
 /// (inputs::osmpass::previous_outlines): its date and content, "-" with none.
 pub fn previous_outlines(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(vec![::inputs::osmpass::previous_outlines(x.m, x.date).map_or("-".to_string(), |(d, c)| format!("{d} {c}"))])
+    Some(vec![inputs::osmpass::previous_outlines(x.m, x.date).map_or("-".to_string(), |(d, c)| format!("{d} {c}"))])
 }
 
 /// Nothing read of a step waited for whole, its reads named otherwise: the overlays wait for the
@@ -276,7 +276,7 @@ pub fn nothing(_t: &str, _x: &KeyCtx) -> Option<Vec<String>> {
 
 /// A z6 tile of the roads (`unit`): the tile, its reach (one the coverage builds at the spacing
 /// the declared datasets give, `build::builds`) and that spacing.
-fn unit_of<'a>(t: &str, x: &KeyCtx<'a>) -> Option<(TileId, &'a roads::reach::Reach, ::inputs::dem::spacing::Fine)> {
+fn unit_of<'a>(t: &str, x: &KeyCtx<'a>) -> Option<(TileId, &'a roads::reach::Reach, inputs::dem::spacing::Fine)> {
     let u = TileId::parse(t).filter(|u| u.z == 6)?;
     let fine = super::build::spacing_now(x.m, x.tiles);
     let r = x.reach?.get(u).filter(|r| r.builds(x.cov, &fine))?;
@@ -301,7 +301,7 @@ pub fn ways(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let (u, r, fine) = unit_of(t, x)?;
     Some(vec![
         format!("coverage {}", r.coverage_key(x.cov, u, &fine)),
-        format!("rules {}", ::inputs::rules::versions_meeting(r.extent(u))),
+        format!("rules {}", inputs::rules::versions_meeting(r.extent(u))),
         format!("spacing {}", fine.key(&r.cells)),
     ])
 }
@@ -314,7 +314,7 @@ pub fn elevation(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     x.tiles.keyed(x.m)?;
     let ext = r.extent(u);
     let deg = |v: i32| v as f64 * 1e-7;
-    Some(vec![::inputs::dem::declared::meeting(&e, [deg(ext[0]), deg(ext[1]), deg(ext[2]), deg(ext[3])]).join(",")])
+    Some(vec![inputs::dem::declared::meeting(&e, [deg(ext[0]), deg(ext[1]), deg(ext[2]), deg(ext[3])]).join(",")])
 }
 
 /// The land cover and canopy declarations a z6 tile reads where they aren't as staged
@@ -327,7 +327,7 @@ pub fn unit_sources(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// The roadside buildings' index of the declared release a z6 tile reads (bld::buildtiles).
 pub fn roadside(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let k = x.tiles.keyed(x.m)?;
-    Some(named(x, [::bld::buildtiles::index_logical(&k.release)]))
+    Some(named(x, [bld::buildtiles::index_logical(&k.release)]))
 }
 
 /// The terrain tiles a z6 tile's roads stage (`build::unit_terrain`: their XXH3s, digested); None
@@ -422,7 +422,7 @@ pub fn terrain_deep_mids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// The declared pyramids read tile by tile (not terrarium) meeting a z6 tile, their lines as the
 /// terrain's keys name them (inputs::dem::declared::meeting); None while the datasets can't be read.
 pub fn pyramids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    use ::inputs::dem::declared::Data;
+    use inputs::dem::declared::Data;
     let u = TileId::parse(t)?;
     let e = x.tiles.elevation(x.m).ok()??;
     let pyr: Vec<_> = e
@@ -430,7 +430,7 @@ pub fn pyramids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         .filter(|(a, _)| matches!(&a.declaration.data, Data::Tiles { every_zoom: false, .. }))
         .cloned()
         .collect();
-    Some(::inputs::dem::declared::meeting(&pyr, roadcore::geo::tile_box(6, u.x, u.y)))
+    Some(inputs::dem::declared::meeting(&pyr, roadcore::geo::tile_box(6, u.x, u.y)))
 }
 
 /// The terrain-deep targets over a z6 tile (terrain::terrain_deep::targets_in: whose base tiles the
@@ -476,7 +476,7 @@ pub fn trees_mids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
             .flat_map(|a| (q.y * 8..(q.y + 1) * 8).map(move |b| (a, b)))
             .filter(|&(a, b)| x.cov.meets_rect(codecs::hipack::tile_bounds(6, a, b)))
             .map(|(a, b)| {
-                format!("6/{a}/{b}={}", x.m.get(&::trees::treepacks::mid_logical(a, b)).map_or("-", String::as_str))
+                format!("6/{a}/{b}={}", x.m.get(&trees::treepacks::mid_logical(a, b)).map_or("-", String::as_str))
             })
             .collect(),
     )
@@ -571,10 +571,7 @@ pub fn lake_packs(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// Depth target `t` and the enclosed seas the records name where its tiles meet one
 /// (terrain::depth::surface::meets), Some(None) else; None while those can't be read (its key can't
 /// be worked out then: it waits).
-fn depth_on_enclosed(
-    t: &str,
-    x: &KeyCtx,
-) -> Option<Option<((u8, u32, u32), std::sync::Arc<::inputs::water::Enclosed>)>> {
+fn depth_on_enclosed(t: &str, x: &KeyCtx) -> Option<Option<((u8, u32, u32), std::sync::Arc<inputs::water::Enclosed>)>> {
     let u = TileId::parse(t)?;
     let t = (u.z, u.x, u.y);
     Some(x.tiles.enclosed(x.m)?.filter(|e| terrain::depth::surface::meets(e, t)).map(|e| (t, e)))
@@ -687,7 +684,7 @@ pub fn bld_prepared(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(named(
         x,
         super::build::bld_around(u.x, u.y).into_iter().filter_map(|n| match n {
-            (Some(a), Some(b)) => Some(::bld::bld::work_logical(a, b)),
+            (Some(a), Some(b)) => Some(bld::bld::work_logical(a, b)),
             _ => None,
         }),
     ))
@@ -717,7 +714,7 @@ pub fn bld_mids(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let q = TileId::parse(t).filter(|q| q.z == 3)?;
     Some(named(
         x,
-        (q.y * 8..q.y * 8 + 8).flat_map(|b| (q.x * 8..q.x * 8 + 8).map(move |a| ::bld::bld::field::mid_logical(a, b))),
+        (q.y * 8..q.y * 8 + 8).flat_map(|b| (q.x * 8..q.x * 8 + 8).map(move |a| bld::bld::field::mid_logical(a, b))),
     ))
 }
 
@@ -730,7 +727,7 @@ pub fn feeds_declared(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 /// Of the keys inputs/keys.env holds (`inputs` "keys"), those the feeds' declarations fetch with
 /// ("feed-keys"); None while either can't be read ("?"). Requires the feeds input accepted.
 pub fn feed_keys(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    x.m.get(&::inputs::inputs::logical(::inputs::inputs::feeds::UNIT))?;
+    x.m.get(&inputs::inputs::logical(inputs::inputs::feeds::UNIT))?;
     let keys = x.inputs.get("keys").map_or("", String::as_str);
     let used = x.inputs.get("feed-keys").map_or("", String::as_str);
     if keys == "?" || used == "?" {
@@ -742,17 +739,17 @@ pub fn feed_keys(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 
 /// The feeds' catalogue (inputs::rail::CATALOGUE) and the pass's outlines, as made.
 pub fn feeds_reads(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(named(x, [::inputs::rail::CATALOGUE.to_string(), format!("sources/osm/{}/outlines", x.date)]))
+    Some(named(x, [inputs::rail::CATALOGUE.to_string(), format!("sources/osm/{}/outlines", x.date)]))
 }
 
 /// The rail feeds fetched (inputs::rail::FEEDS), required.
 pub fn rail_feeds(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    required(x, [::inputs::rail::FEEDS.to_string()])
+    required(x, [inputs::rail::FEEDS.to_string()])
 }
 
 /// The accepted static timetables (docs/inputs.md §6.7.2) and the pass's rail set, required.
 pub fn rail_reads(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    required(x, [::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT), ::inputs::osmpass::set_name(x.date, "rail")])
+    required(x, [inputs::inputs::logical(inputs::inputs::gtfs::UNIT), inputs::osmpass::set_name(x.date, "rail")])
 }
 
 /// What the road → z6 tiles index reads (`build::roadunits_reads`: each z6 tile's road ids, or
@@ -786,7 +783,7 @@ pub fn ferries_reads(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let mut v = set("ferries", x)?;
     v.extend(required(
         x,
-        [::inputs::rail::FERRY_FEEDS.to_string(), ::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT)],
+        [inputs::rail::FERRY_FEEDS.to_string(), inputs::inputs::logical(inputs::inputs::gtfs::UNIT)],
     )?);
     Some(v)
 }

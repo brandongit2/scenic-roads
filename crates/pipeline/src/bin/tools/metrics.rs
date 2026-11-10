@@ -312,7 +312,7 @@ fn fetch_file(url: Option<&str>, path: &Path, store: Option<&Path>, read_only: b
     // other may want the same square at once), then copied here.
     if let Some(st) = store {
         let dir = st.parent().context("a canopy store file's folder")?;
-        ::trees::trees::squares::ensure_square(dir, st, url, &|_| {})?;
+        trees::trees::squares::ensure_square(dir, st, url, &|_| {})?;
         return match kept(st) {
             Some(None) => {
                 store::cachefile::create_bytes(path, b"")?;
@@ -865,7 +865,7 @@ fn canopy(dir: &Path) -> Result<()> {
             continue;
         }
         let rows = row1 - row0;
-        let name = |st: &str| ::trees::trees::chm_name(top, left, st);
+        let name = |st: &str| trees::trees::chm_name(top, left, st);
         let height: fn(u16) -> u8 = |v| ((v as u32 + 50) / 100).min(254) as u8;
         let share: fn(u16) -> u8 = |v| ((v as u32).min(1000) * 255 / 1000) as u8;
         let layers: Vec<Option<Layer>> = [("median", height), ("p95", height), ("cover5m", share)]

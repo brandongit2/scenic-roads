@@ -670,8 +670,8 @@ pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
     let (s, Some(t)) = (crate::pool::records::current(j.step), j.rest) else { return BTreeSet::new() };
     let Some((z, x, y)) = tile_of(t) else { return BTreeSet::new() };
     match (s, z) {
-        ("terrain-deep", z) if z == ::inputs::dem::zoom::PACK_Z as u32 => {
-            let k = ::inputs::dem::zoom::PACK_Z as u32 - 6;
+        ("terrain-deep", z) if z == inputs::dem::zoom::PACK_Z as u32 => {
+            let k = inputs::dem::zoom::PACK_Z as u32 - 6;
             BTreeSet::from([(6, x >> k, y >> k)])
         }
         ("terrain-hi", 6) => BTreeSet::from([(6, x, y)]),
@@ -929,7 +929,7 @@ pub struct Status {
     /// The timetables' to-do list's counts and the routes matching nothing on the map
     /// (roads::timetables, docs/inputs.md §6.7.3): the lead's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timetables: Option<::inputs::inputs::gtfs::View>,
+    pub timetables: Option<inputs::inputs::gtfs::View>,
     /// The last catalogue the plan read: its number and when it went out (seconds since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "catalog")] // wire key: old spelling
     pub catalogue: Option<CatalogueSeen>,
@@ -959,7 +959,7 @@ pub struct Status {
     /// The gate (docs/inputs.md §4.7): an entry per gate unit, its version, whether it's checking
     /// or held, and what holds it (the lead's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub inputs: Vec<::inputs::inputs::view::InputView>,
+    pub inputs: Vec<inputs::inputs::view::InputView>,
     /// What needs a look (flags::of, task #953: a Mac idle while work it could take waits, a job
     /// stuck or slow, a catalogue stale): the lead's, worked out at each round.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1743,9 +1743,9 @@ pub struct Agent {
 struct Gate {
     /// The inputs folders listed off the loop (the lead's), with the root it
     /// lists.
-    watch: Option<(NasRoot, ::inputs::inputs::watch::Watch)>,
-    view: std::cell::RefCell<Vec<::inputs::inputs::view::InputView>>,
-    cache: std::cell::RefCell<::inputs::inputs::view::Cache>,
+    watch: Option<(NasRoot, inputs::inputs::watch::Watch)>,
+    view: std::cell::RefCell<Vec<inputs::inputs::view::InputView>>,
+    cache: std::cell::RefCell<inputs::inputs::view::Cache>,
     full: std::cell::RefCell<BTreeSet<String>>,
     /// The descriptions' credits' digest as last read (None inside: there are none), for the
     /// catalogue's key while they can't be read.
@@ -4849,11 +4849,11 @@ impl Agent {
         if self.o.dry_run {
             return;
         }
-        let asks = ::inputs::inputs::take_asks(&self.o.home);
+        let asks = inputs::inputs::take_asks(&self.o.home);
         if asks.is_empty() {
             return;
         }
-        let member = ::inputs::inputs::member_of(&self.o.home);
+        let member = inputs::inputs::member_of(&self.o.home);
         let mut tell: Vec<serde_json::Value> = Vec::new();
         for a in asks {
             if a.forget {
@@ -7320,7 +7320,7 @@ impl Agent {
     fn grant_most(&self, spec: &JobSpec, c: &Conditions) -> usize {
         let room = self.threads_room(c);
         if is_paced(spec) {
-            room.min(::inputs::inputs::pace::MOST)
+            room.min(inputs::inputs::pace::MOST)
         } else {
             room
         }
@@ -7367,7 +7367,7 @@ impl Agent {
         }
         let on = if is_paced(&r.spec) {
             // (As many tasks at once as its file says, `MOST` at most: inputs::inputs::pace.)
-            file.map(|n| n.clamp(1, ::inputs::inputs::pace::MOST) as u32)
+            file.map(|n| n.clamp(1, inputs::inputs::pace::MOST) as u32)
         } else {
             memguard::targets(&costs).threads
         };
@@ -8068,7 +8068,7 @@ impl Agent {
     /// The newest complete pass: by the merged records with resuming on (docs/pool.md §7.4), else
     /// by the NAS's `pass.*.json` files, as before.
     fn latest_pass(&self, root: &store::nasfs::NasRoot) -> Option<String> {
-        ::inputs::osmpass::latest_pass_by(root, self.resume_on())
+        inputs::osmpass::latest_pass_by(root, self.resume_on())
     }
 
     /// This member's clock, as its pool's steps read it (unix seconds).
@@ -9067,12 +9067,12 @@ fn planning_keys(root: &NasRoot, bases: Vec<PathBuf>) -> Result<crate::pool::rec
 
 /// A gate ask's acceptances applied (inputs::inputs::apply_ask) against the unit's held report:
 /// `shown` as the last plan read it, else as the records name it now; what it did logged.
-fn apply_gate_ask(root: &NasRoot, a: &::inputs::inputs::Ask, shown: Option<::inputs::inputs::Report>, member: &str) {
+fn apply_gate_ask(root: &NasRoot, a: &inputs::inputs::Ask, shown: Option<inputs::inputs::Report>, member: &str) {
     let held = shown.or_else(|| {
         let m = buildstore::records::read_manifest(root).ok()?;
-        ::inputs::inputs::read_report(root, m.get(&::inputs::inputs::held_logical(&a.unit))?).ok()
+        inputs::inputs::read_report(root, m.get(&inputs::inputs::held_logical(&a.unit))?).ok()
     });
-    match ::inputs::inputs::apply_ask(root, a, held.as_ref(), member) {
+    match inputs::inputs::apply_ask(root, a, held.as_ref(), member) {
         Ok(said) => {
             for s in said {
                 eprintln!("agent: {} ({}): {s}", a.unit, a.by);
@@ -9137,8 +9137,8 @@ const PROXY_REPLAN: Duration = Duration::from_secs(60);
 /// sorted by id, and why none can be read when it can't (one line).
 
 fn load_regions(root: &store::nasfs::NasRoot) -> (Vec<recipes::Recipe>, Vec<(String, String)>) {
-    match ::inputs::inputs::regions::read::source_now(root) {
-        Ok(a) => match ::inputs::inputs::regions::read::recipes(&a) {
+    match inputs::inputs::regions::read::source_now(root) {
+        Ok(a) => match inputs::inputs::regions::read::recipes(&a) {
             Ok(r) => (r, Vec::new()),
             Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
         },
@@ -9965,11 +9965,11 @@ mod tests {
         last = now;
         // The test unit put on the gate, then taken off (its flag), with no plan between.
         std::fs::create_dir_all(root.join("state/inputs")).unwrap();
-        std::fs::write(root.join(::inputs::inputs::TEST_FLAG), b"").unwrap();
+        std::fs::write(root.join(inputs::inputs::TEST_FLAG), b"").unwrap();
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last, "on the gate");
         last = now;
-        std::fs::remove_file(root.join(::inputs::inputs::TEST_FLAG)).unwrap();
+        std::fs::remove_file(root.join(inputs::inputs::TEST_FLAG)).unwrap();
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last, "off the gate");
         last = now;
@@ -10035,9 +10035,9 @@ mod tests {
         // one's listing as last made, so one finishing after the digest is taken changes it.)
         let w = &p.inputs.watch.as_ref().unwrap().1;
         store::testkit::eventually("the gate's first listing", || {
-            ::inputs::inputs::units(&store::nasfs::NasRoot::local_for_test(&root))
+            inputs::inputs::units(&store::nasfs::NasRoot::local_for_test(&root))
                 .into_iter()
-                .all(|u| ::inputs::inputs::checks(u).is_none() || w.get(u).is_some() || w.failed(u).is_some())
+                .all(|u| inputs::inputs::checks(u).is_none() || w.get(u).is_some() || w.failed(u).is_some())
         });
         // (A plan made: its result kept, its digest and the leases as it read them.)
         p.n = 5;
@@ -10133,8 +10133,8 @@ mod tests {
         let none = BTreeMap::new();
         for spec in [
             // (A square south of the equator first: its negative top a value, not a flag.)
-            ::trees::trees::task::spec(&[(1, 1), (2, 1)], &[(-10, -80), (40, 10)], "v", &none),
-            ::bld::bld::task::spec(codecs::legacy::TileId::parse("8/1/1").unwrap(), "v", &none),
+            trees::trees::task::spec(&[(1, 1), (2, 1)], &[(-10, -80), (40, 10)], "v", &none),
+            bld::bld::task::spec(codecs::legacy::TileId::parse("8/1/1").unwrap(), "v", &none),
             terrain::terrain_task::spec(&[(1, 1), (1, 2)], "v", 1),
         ] {
             runs.extend(spec["runs"].as_array().unwrap().iter().cloned());
@@ -10357,16 +10357,15 @@ mod tests {
         let root = d.path();
         let recipes = vec![recipes::Recipe { id: "a".into(), name: "Alpha".into(), outline: vec!["osm:5".into()] }];
         let mut m = BTreeMap::new();
-        ::inputs::inputs::regions::accept_fixture(
+        inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(root),
             root.into(),
             &recipes,
             &mut m,
         );
-        let a =
-            ::inputs::inputs::open(&store::nasfs::NasRoot::local_for_test(root), &m, ::inputs::inputs::regions::UNIT)
-                .unwrap()
-                .unwrap();
+        let a = inputs::inputs::open(&store::nasfs::NasRoot::local_for_test(root), &m, inputs::inputs::regions::UNIT)
+            .unwrap()
+            .unwrap();
         let mut ag = agent(&store::nasfs::NasRoot::local_for_test(root), &home.path().join("home"));
         // No catalogue yet: its name and crumbs, no size.
         ag.planner().regions_view(&store::nasfs::NasRoot::local_for_test(root), &a, &recipes);
@@ -10458,7 +10457,7 @@ mod tests {
             restart_after_sleep: false,
             record: None,
         };
-        let want = [terrain::terrain_task::KIND, ::trees::trees::task::KIND, ::bld::bld::task::KIND, "tail"];
+        let want = [terrain::terrain_task::KIND, trees::trees::task::KIND, bld::bld::task::KIND, "tail"];
         let kinds: Vec<_> = want
             .iter()
             .map(|k| {
@@ -13587,7 +13586,7 @@ mod tests {
             buildstore::coverage::Coverage::fixture(&recipes, None, &root.unchecked_path().join("inputs/outlines"))
                 .unwrap();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
-        ::inputs::inputs::regions::accept_fixture(root, (&root.join("inputs/outlines")).into(), &recipes, &mut m);
+        inputs::inputs::regions::accept_fixture(root, (&root.join("inputs/outlines")).into(), &recipes, &mut m);
         let piece = format!("sources/osm/{date}/pieces/6-28-17");
         m.insert(piece.clone(), format!("{piece}.4444444444444444.osm.pbf"));
         let mut reaches = roads::reach::Reaches { fmt: 1, date: date.into(), ..Default::default() };
@@ -13597,14 +13596,14 @@ mod tests {
         m.insert(roads::reach::logical(date), rc);
         // (What the z6 tiles wait for: the heritage sites' inputs and outputs, the buildings' index.)
         m.insert(
-            ::inputs::osmpass::set_name(date, "areas"),
+            inputs::osmpass::set_name(date, "areas"),
             format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"),
         );
-        ::inputs::inputs::heritage::accept_fixture(root, &mut m);
-        ::inputs::inputs::elevation::accept_fixture(root, &mut m);
+        inputs::inputs::heritage::accept_fixture(root, &mut m);
+        inputs::inputs::elevation::accept_fixture(root, &mut m);
         m.insert(
-            ::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE),
-            format!("{}.6767676767676767.json", ::bld::buildtiles::index_logical(::bld::buildtiles::TEST_RELEASE)),
+            bld::buildtiles::index_logical(bld::buildtiles::TEST_RELEASE),
+            format!("{}.6767676767676767.json", bld::buildtiles::index_logical(bld::buildtiles::TEST_RELEASE)),
         );
         m.insert(
             landmarks::heritage::base_logical(date, "heritage-sources"),
@@ -13710,9 +13709,9 @@ mod tests {
         );
         let m: BTreeMap<String, String> =
             serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
-        let cov = ::inputs::inputs::regions::read::accepted_coverage(
+        let cov = inputs::inputs::regions::read::accepted_coverage(
             &store::nasfs::NasRoot::local_for_test(&root),
-            &::inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap(),
+            &inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap(),
             None,
         )
         .unwrap();
@@ -13760,7 +13759,7 @@ mod tests {
         let mf = root.join("state/build/manifest.json");
         let mut m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(&mf).unwrap()).unwrap();
         m.insert(
-            ::inputs::osmpass::set_name(date, "outlines"),
+            inputs::osmpass::set_name(date, "outlines"),
             format!("sources/osm/{date}/sets/outlines.2323232323232323.osm.pbf"),
         );
         // (Outlines the pass made itself, before the step: no record of the step's.)
@@ -13809,7 +13808,7 @@ mod tests {
     fn an_app_older_than_the_regions_switch_plans_nothing() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        let sw = ::inputs::inputs::switched_logical(::inputs::inputs::regions::UNIT);
+        let sw = inputs::inputs::switched_logical(inputs::inputs::regions::UNIT);
         let name = format!("{sw}.1111111111111111.json");
         put(&root.join(&name), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#);
         put(
@@ -13847,7 +13846,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let mut m = BTreeMap::new();
-        ::inputs::inputs::regions::accept_fixture(
+        inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &[recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }],
@@ -13888,7 +13887,7 @@ mod tests {
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let mut m = BTreeMap::new();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
-        ::inputs::inputs::regions::accept_fixture(
+        inputs::inputs::regions::accept_fixture(
             &nas,
             (&root).into(),
             &[recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }],
@@ -13954,8 +13953,8 @@ mod tests {
         for f in [NAS_CHECK, "state/build", "state/inputs"] {
             std::fs::create_dir_all(root.join(f)).unwrap();
         }
-        std::fs::write(root.join(::inputs::inputs::TEST_FLAG), b"").unwrap();
-        let unit = ::inputs::inputs::TEST_UNIT;
+        std::fs::write(root.join(inputs::inputs::TEST_FLAG), b"").unwrap();
+        let unit = inputs::inputs::TEST_UNIT;
         let inputs_dir = root.join("inputs").join(unit);
         std::fs::create_dir_all(&inputs_dir).unwrap();
         let put = |name: &str| {
@@ -14009,11 +14008,11 @@ mod tests {
         assert_eq!(plan(&mut a).0, second);
         assert_eq!(kept(), BTreeSet::from([first.clone(), second.clone()]));
         // Its check runs: exactly the listing it was keyed by, one file of the two there now.
-        let given: ::inputs::inputs::Planned = serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
+        let given: inputs::inputs::Planned = serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
         let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
-        let said = ::inputs::inputs::gate::run(&mut out, unit, true, Some(given)).unwrap();
+        let said = inputs::inputs::gate::run(&mut out, unit, true, Some(given)).unwrap();
         assert!(said.starts_with(&format!("{unit}: 1 file read of 1")), "{said}");
-        let listing = ::inputs::inputs::read_listed(&nas, &out.manifest, unit).unwrap();
+        let listing = inputs::inputs::read_listed(&nas, &out.manifest, unit).unwrap();
         assert_eq!(listing.listed.keys().collect::<Vec<_>>(), ["a.jsonl"]);
         let mut keys = crate::pool::records::Keys::load_strict(&nas).unwrap();
         keys.record("inputs", &keyed);
@@ -14022,7 +14021,7 @@ mod tests {
         // Ended and recorded: the next plan keys the folder as it is (a normal check of both files),
         // the first listing named by nothing now, gone; the second the last plan's, gone after.
         let (third, _) = plan(&mut a);
-        let given: ::inputs::inputs::Planned = serde_json::from_slice(&std::fs::read(&third).unwrap()).unwrap();
+        let given: inputs::inputs::Planned = serde_json::from_slice(&std::fs::read(&third).unwrap()).unwrap();
         assert_eq!(given.listing.files.len(), 2);
         assert_eq!(kept(), BTreeSet::from([second, third.clone()]));
         assert_eq!(plan(&mut a).0, third);
@@ -14038,7 +14037,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let unit = ::inputs::inputs::TEST_UNIT;
+        let unit = inputs::inputs::TEST_UNIT;
         let inputs_dir = root.join("inputs").join(unit);
         std::fs::create_dir_all(&inputs_dir).unwrap();
         let put = |text: &str| {
@@ -14063,7 +14062,7 @@ mod tests {
             .iter()
             .any(|j| j.id.starts_with("inputs ")));
         std::fs::create_dir_all(root.join("state/inputs")).unwrap();
-        std::fs::write(root.join(::inputs::inputs::TEST_FLAG), b"").unwrap();
+        std::fs::write(root.join(inputs::inputs::TEST_FLAG), b"").unwrap();
         let watch = |a: &mut Agent| a.planner().inputs.watch.as_ref().unwrap().1.get(unit);
         let ask = |a: &mut Agent| a.planner().inputs.watch.as_ref().unwrap().1.ask();
         ask(&mut a);
@@ -14082,7 +14081,7 @@ mod tests {
         );
         // (Given the listing and acceptances its key was made from: inputs::Planned.)
         let at = plan[0].cmd.iter().position(|a| a == "--listing").unwrap();
-        let given: ::inputs::inputs::Planned =
+        let given: inputs::inputs::Planned =
             serde_json::from_slice(&std::fs::read(&plan[0].cmd[at + 1]).unwrap()).unwrap();
         assert_eq!(given.listing.files.keys().cloned().collect::<Vec<_>>(), ["a.jsonl"]);
         let work = plan[0].record.clone().unwrap();
@@ -14091,7 +14090,7 @@ mod tests {
         // one's), then nothing while nothing changes.
         let mut out =
             buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
-        ::inputs::inputs::gate::run(&mut out, unit, true, None).unwrap();
+        inputs::inputs::gate::run(&mut out, unit, true, None).unwrap();
         let mut keys = crate::pool::records::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         keys.record("inputs", &work.targets);
         keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
@@ -14112,22 +14111,19 @@ mod tests {
         a.round().unwrap();
         let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &home).unwrap();
         let v = st.inputs.iter().find(|v| v.unit == unit).unwrap();
-        assert_eq!(v.state, ::inputs::inputs::view::State::Held);
+        assert_eq!(v.state, inputs::inputs::view::State::Held);
         assert_eq!(v.held, ["a.jsonl"]);
         // An acceptance asked of the agent: written by it (not by a dry run's), and the inputs folders
         // listed again, so its key changes and the unit's checked again.
         a.o.dry_run = false;
-        ::inputs::inputs::ask(
+        inputs::inputs::ask(
             &home,
-            &::inputs::inputs::Ask { unit: unit.into(), all: true, by: "a test".into(), ..Default::default() },
+            &inputs::inputs::Ask { unit: unit.into(), all: true, by: "a test".into(), ..Default::default() },
         )
         .unwrap();
         a.planner().tend_gate(&store::nasfs::NasRoot::local_for_test(&root));
         a.o.dry_run = true;
-        assert_eq!(
-            ::inputs::inputs::acceptances(&store::nasfs::NasRoot::local_for_test(&root), unit).unwrap().len(),
-            1
-        );
+        assert_eq!(inputs::inputs::acceptances(&store::nasfs::NasRoot::local_for_test(&root), unit).unwrap().len(), 1);
         let t = Instant::now();
         while watch(&mut a).is_none_or(|l| l.accepted.is_empty()) {
             assert!(t.elapsed() < store::testkit::WATCHDOG, "listed again");
@@ -14155,16 +14151,16 @@ mod tests {
         );
         // Off the gate: no longer shown, nor checked; its records forgotten when asked, by a job of
         // the lead's.
-        std::fs::remove_file(root.join(::inputs::inputs::TEST_FLAG)).unwrap();
+        std::fs::remove_file(root.join(inputs::inputs::TEST_FLAG)).unwrap();
         b.round().unwrap();
         assert!(read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &d.path().join("home-b"))
             .unwrap()
             .inputs
             .is_empty());
         b.o.dry_run = false;
-        ::inputs::inputs::ask(
+        inputs::inputs::ask(
             &d.path().join("home-b"),
-            &::inputs::inputs::Ask { unit: unit.into(), forget: true, ..Default::default() },
+            &inputs::inputs::Ask { unit: unit.into(), forget: true, ..Default::default() },
         )
         .unwrap();
         b.planner().tend_gate(&store::nasfs::NasRoot::local_for_test(&root));
@@ -14174,12 +14170,12 @@ mod tests {
         assert!(f.cmd.ends_with(&["--forget".to_string()]));
         let mut out =
             buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
-        ::inputs::inputs::gate::forget(&mut out, unit).unwrap();
+        inputs::inputs::gate::forget(&mut out, unit).unwrap();
         let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
             &root.join("state/build/manifest.json"),
         ))
         .unwrap();
-        assert!(!m.keys().any(|l| ::inputs::inputs::unit_of(l) == Some(unit)));
+        assert!(!m.keys().any(|l| inputs::inputs::unit_of(l) == Some(unit)));
         assert!(
             !b.planner()
                 .plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w)
@@ -14236,13 +14232,13 @@ mod tests {
         };
         let rings = |c: &Coverages| c.all.shapes.iter().map(|s| s.rings.clone()).collect::<Vec<_>>();
         let mut m1 = BTreeMap::new();
-        ::inputs::inputs::regions::accept_fixture(
+        inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &r("-21.9,64.13"),
             &mut m1,
         );
-        let a = ::inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m1).unwrap();
+        let a = inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m1).unwrap();
         // A kept file of another format is made again in its place, not read past every time.
         let kept = home.join("cache/coverage").join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
         std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
@@ -14254,7 +14250,7 @@ mod tests {
                 .unwrap(),
         );
         assert!(buildstore::coverage::from_kept(&mut &std::fs::read(&kept).unwrap()[..]).is_some());
-        let geoms: Vec<PathBuf> = ::inputs::inputs::regions::read::listed(&a)
+        let geoms: Vec<PathBuf> = inputs::inputs::regions::read::listed(&a)
             .unwrap()
             .iter()
             .map(|l| root.join(&l.stored.as_ref().unwrap().geometry))
@@ -14275,7 +14271,7 @@ mod tests {
         );
         // A new version isn't the cached one: read from its own files.
         let mut m2 = BTreeMap::new();
-        ::inputs::inputs::regions::accept_fixture(
+        inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &r("-21.9,64.2"),
@@ -14300,14 +14296,14 @@ mod tests {
             vec![recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{p},20")] }]
         };
         let mut m1 = BTreeMap::new();
-        ::inputs::inputs::regions::accept_fixture(
+        inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &r("-21.9,64.13"),
             &mut m1,
         );
         let mut m2 = BTreeMap::new();
-        ::inputs::inputs::regions::accept_fixture(
+        inputs::inputs::regions::accept_fixture(
             &store::nasfs::NasRoot::local_for_test(&root),
             (&root).into(),
             &r("-21.9,64.2"),

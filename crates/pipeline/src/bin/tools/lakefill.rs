@@ -33,12 +33,12 @@
 //!
 //! `lakefill view …`: a box of the basemap's water with the sheets' edges, for checking by eye.
 
-use ::inputs::lakefill::{nts, run};
 use agentcore::cli::progs::{Declaration, Lakefill, LakefillCmd};
 use anyhow::{Context, Result};
 use clap::Parser;
 use codecs::watercov::Raster;
 use det::Det;
+use inputs::lakefill::{nts, run};
 use std::path::Path;
 
 pub fn main(args: Vec<String>) -> Result<()> {
@@ -116,7 +116,7 @@ fn view(base: &Path, b: [f64; 4], z: u8, out: &Path) -> Result<()> {
     for ty in y0.floor() as u32..=y1.floor() as u32 {
         for tx in x0.floor() as u32..=x1.floor() as u32 {
             let Some(raw) = pm.get(z, tx, ty)? else { continue };
-            let tw = ::inputs::water::tile_water(&raw)?;
+            let tw = inputs::water::tile_water(&raw)?;
             let k = T as f64 / tw.extent;
             let (ox, oy) = ((f64::from(tx) - x0) * T as f64, (f64::from(ty) - y0) * T as f64);
             for (is_sea, r) in &tw.rings {
@@ -161,12 +161,12 @@ fn view(base: &Path, b: [f64; 4], z: u8, out: &Path) -> Result<()> {
 
 /// The lake-fill source's declaration (`--declaration <file.toml>`: one as added to
 /// inputs/sources/, producers/sources/canvec-lakes.toml), as the step reads it accepted.
-fn declaration(d: &Declaration) -> Result<::inputs::inputs::sources::Source> {
+fn declaration(d: &Declaration) -> Result<inputs::inputs::sources::Source> {
     let p = &d.declaration;
-    let d = ::inputs::inputs::sources::parse(&std::fs::read(p).with_context(|| p.display().to_string())?)
+    let d = inputs::inputs::sources::parse(&std::fs::read(p).with_context(|| p.display().to_string())?)
         .map_err(|why| anyhow::anyhow!("{}: {}", p.display(), why.join("; ")))?;
     let id = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok(::inputs::inputs::sources::Source { id, data: d.data, keyed: String::new(), index: Vec::new() })
+    Ok(inputs::inputs::sources::Source { id, data: d.data, keyed: String::new(), index: Vec::new() })
 }
 
 fn catalogue_add(root: &Path, fill: &Path) -> Result<()> {
@@ -175,7 +175,7 @@ fn catalogue_add(root: &Path, fill: &Path) -> Result<()> {
     let mut cat = store::map::newest_nas(&nas)?.context("no map in the root")?.catalogue()?;
     let name = fill.file_name().context("a fill file")?.to_string_lossy().into_owned();
     let hash = name.trim_start_matches("lakefill.").trim_end_matches(".sect");
-    let logical = format!("{}test", ::inputs::lakefill::PREFIX);
+    let logical = format!("{}test", inputs::lakefill::PREFIX);
     let content = store::naming::content_name(&logical, hash, "sect");
     std::fs::create_dir_all(root.join(&content).parent().unwrap())?;
     std::fs::copy(fill, root.join(&content))?;
@@ -196,7 +196,7 @@ fn catalogue_add(root: &Path, fill: &Path) -> Result<()> {
 }
 
 fn stats(path: &Path, sheets: &Path) -> Result<()> {
-    use ::inputs::lakefill as lf;
+    use inputs::lakefill as lf;
     let f = lf::Fill::open(path, "stats")?;
     let mut region: std::collections::HashMap<nts::Key, String> = std::collections::HashMap::new();
     let mut rd = std::io::BufRead::lines(std::io::BufReader::new(std::fs::File::open(sheets)?));
@@ -247,8 +247,8 @@ fn stats(path: &Path, sheets: &Path) -> Result<()> {
 }
 
 fn seamcheck(fill: &Path, basemap: &Path, max: usize) -> Result<()> {
-    use ::inputs::lakefill as lf;
-    use ::inputs::lakefill::OsmWater;
+    use inputs::lakefill as lf;
+    use inputs::lakefill::OsmWater;
     let f = lf::Fill::open(fill, "check")?;
     let pm = store::pmtiles::PmTiles::with_leaf_cache(Box::new(store::range::PlainFile::open(basemap)?), 4096)?;
     let osm = lf::BasemapOsm::new(pm);

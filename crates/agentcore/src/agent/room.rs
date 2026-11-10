@@ -248,7 +248,7 @@ const GONE: &str = "heritage-gone-";
 
 /// The pass's date of the heritage chain's working copy `name` (`heritage-<date>`).
 fn epoch_date(name: &str) -> Option<&str> {
-    name.strip_prefix("heritage-").filter(|d| ::inputs::osmpass::is_date(d))
+    name.strip_prefix("heritage-").filter(|d| inputs::osmpass::is_date(d))
 }
 
 /// Whether cache `kind` is costly to make again, so only a deep clear empties it (`Level::Deep`).

@@ -715,7 +715,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
     // the pass's hiking-route ends (codecs::trailends), instead of working them out from the input.)
     let agentcore::cli::progs::Extract { out_dir: out, spacing, inputs, rail_rels_only, candidates, trailends } =
         <agentcore::cli::progs::Extract as clap::Parser>::parse_from(args);
-    use ::inputs::dem::spacing::{Fine, Spacing, Uniform};
+    use inputs::dem::spacing::{Fine, Spacing, Uniform};
     let spacing: Box<dyn Spacing + Sync> = match spacing.parse::<f64>() {
         Ok(m) => Box::new(Uniform(m)),
         Err(_) => Box::new(Fine::read(std::path::Path::new(&spacing))?),

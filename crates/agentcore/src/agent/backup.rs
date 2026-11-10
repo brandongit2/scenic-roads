@@ -20,7 +20,7 @@ use store::nasfs::{Loc, NasPath};
 
 /// The user's folders: the inputs folders and the owner's acceptances of the input check's warnings
 /// (docs/inputs.md §4.9).
-pub const FOLDERS: [&str; 2] = ["inputs", ::inputs::inputs::ACCEPTED];
+pub const FOLDERS: [&str; 2] = ["inputs", inputs::inputs::ACCEPTED];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Entry {

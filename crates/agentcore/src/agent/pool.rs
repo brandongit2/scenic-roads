@@ -571,7 +571,7 @@ impl Side {
         let read =
             |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };
         let m = crate::pool::records::Brief::now(&*self.nas).map_err(|e| format!("the records: {e:#}"))?.manifest;
-        ::inputs::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
+        inputs::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
     }
 
     /// Member `m`'s heartbeat as it wrote it (None: none, or one that can't be read now).

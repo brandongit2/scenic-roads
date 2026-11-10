@@ -27,8 +27,8 @@ fn main() -> anyhow::Result<()> {
     let scratch = std::path::Path::new(raw).join("scratch");
     let out = buildstore::out::Out::unbound(&nas, &scratch)?;
     let m = out.manifest.clone();
-    let src = ::inputs::inputs::regions::read::source(&nas, &m)?;
-    let cov = ::inputs::inputs::regions::read::accepted_coverage(&nas, &src, None)?;
+    let src = inputs::inputs::regions::read::source(&nas, &m)?;
+    let cov = inputs::inputs::regions::read::accepted_coverage(&nas, &src, None)?;
     let sets = terrain::terrain_zoom::Declared::read(&nas, &m)?.map(|d| d.sets).unwrap_or_default();
     let url = terrain::terrain_base::terrarium_template(&nas, &m)?;
     let rt = terrain::terrain_pack::RawTiles::with_store(

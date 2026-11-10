@@ -101,10 +101,10 @@ pub(super) struct PlanView {
     pub built: BTreeMap<String, progress::RegionState>,
     pub forecast: Option<forecast::Forecast>,
     pub publishing: Option<publish::PublishLine>,
-    pub timetables: Option<::inputs::inputs::gtfs::View>,
+    pub timetables: Option<inputs::inputs::gtfs::View>,
     pub catalogue: Option<CatalogueSeen>,
     pub published: Option<Published>,
-    pub inputs: Vec<::inputs::inputs::view::InputView>,
+    pub inputs: Vec<inputs::inputs::view::InputView>,
     pub upcoming: Option<(u64, std::sync::Arc<room::Hints>)>,
     pub queued: Vec<jobs::Work>,
     pub ready: Vec<String>,
@@ -457,7 +457,7 @@ pub(super) struct Planner {
     /// again only when it changes).
     pub(super) publish_line: std::cell::RefCell<Option<publish::PublishLine>>,
     /// The timetables' report as last read (its content name, and what the status shows).
-    pub(super) timetables: std::cell::RefCell<Option<(String, ::inputs::inputs::gtfs::View)>>,
+    pub(super) timetables: std::cell::RefCell<Option<(String, inputs::inputs::gtfs::View)>>,
     pub(super) publish_logged: std::cell::RefCell<String>,
     /// The map's `seq` and when its batch went out (`map_now`), for the status.
     pub(super) catalogue_seen: std::cell::Cell<Option<CatalogueSeen>>,
@@ -801,7 +801,7 @@ impl Planner {
     }
 
     pub(super) fn latest_pass(&self, root: &NasRoot) -> Option<String> {
-        ::inputs::osmpass::latest_pass_by(root, self.resume_on())
+        inputs::osmpass::latest_pass_by(root, self.resume_on())
     }
 
     pub(super) fn newer_app(&self) -> bool {
@@ -984,14 +984,14 @@ impl Planner {
 
     /// The timetables' report, read again when the records name another (a small file).
     pub(super) fn note_timetables(&self, root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) {
-        let Some(c) = manifest.get(::inputs::inputs::gtfs::REPORT) else { return };
+        let Some(c) = manifest.get(inputs::inputs::gtfs::REPORT) else { return };
         if self.timetables.borrow().as_ref().is_some_and(|t| &t.0 == c) {
             return;
         }
         if let Some(v) =
             nasread::read(&root.join(c)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
         {
-            *self.timetables.borrow_mut() = Some((c.clone(), ::inputs::inputs::gtfs::View::of(&v)));
+            *self.timetables.borrow_mut() = Some((c.clone(), inputs::inputs::gtfs::View::of(&v)));
         }
     }
 
@@ -1035,7 +1035,7 @@ impl Planner {
         // flag) and each one's folder and acceptances as last listed. The view above is the last
         // plan's, so a unit taken off the gate, or a drop box listed anew, went unseen until the
         // fallback: #969 review, the gate's test failing on a loaded Mac.)
-        let units = ::inputs::inputs::units(root);
+        let units = inputs::inputs::units(root);
         units.hash(&mut h);
         if let Some((_, w)) = &self.inputs.watch {
             for u in &units {
@@ -1163,7 +1163,7 @@ impl Planner {
 
         // 1. The OSM pass, when the NAS holds a newer planet than the last complete pass.
         let have = self.latest_pass(root);
-        let newer = ::inputs::osmpass::newer_planet(root, have.as_deref()).ok().flatten();
+        let newer = inputs::osmpass::newer_planet(root, have.as_deref()).ok().flatten();
         // (Resuming on: held for, and offered to, the member whose Mac has its progress.)
         let held = self.resume_hold(root, newer.as_ref());
         if let Some((planet, date)) = newer.clone() {
@@ -1387,7 +1387,7 @@ impl Planner {
         };
         // (Once a readers' switch is recorded, an app older than the one it was recorded on reads
         // the wrong regions: it builds nothing, and says so.)
-        let regions_app = ::inputs::inputs::regions::read::switch_app(&manifest, &|n| {
+        let regions_app = inputs::inputs::regions::read::switch_app(&manifest, &|n| {
             root.join(n).read().with_context(|| format!("read {n}"))
         })
         .map_err(|e| format!("{e:#}"));
@@ -1395,7 +1395,7 @@ impl Planner {
         if let (Some(c), Ok(min)) = (&self.coord, &regions_app) {
             c.set_min_app(min.clone());
         }
-        if let Err(why) = ::inputs::inputs::regions::read::may_lead(&self.app, &regions_app) {
+        if let Err(why) = inputs::inputs::regions::read::may_lead(&self.app, &regions_app) {
             waiting.push(Waiting {
                 step: None,
                 what: "All building".into(),
@@ -1405,8 +1405,8 @@ impl Planner {
         }
         // (The regions from the same records as the coverage.)
         let (recipes, unread): (Vec<recipes::Recipe>, Vec<(String, String)>) =
-            match ::inputs::inputs::regions::read::source(root, &manifest).and_then(|a| {
-                let r = ::inputs::inputs::regions::read::recipes(&a)?;
+            match inputs::inputs::regions::read::source(root, &manifest).and_then(|a| {
+                let r = inputs::inputs::regions::read::recipes(&a)?;
                 self.regions_view(root, &a, &r);
                 Ok(r)
             }) {
@@ -1423,7 +1423,7 @@ impl Planner {
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let build_bin = s(&self.o.bin.join("scenic-build"));
         let mut jobs: Vec<JobSpec> = self.gate_work(root, &manifest, &keys, waiting);
-        held.sources = !::inputs::inputs::sources::accepted(&manifest);
+        held.sources = !inputs::inputs::sources::accepted(&manifest);
         // (A job's name is its step's title, from the steps table: `step` is the scenic-build
         // command, the step by its id's.)
         let job = |id: String, step: &str, extra: Vec<String>, record: Option<jobs::Work>| {
@@ -1448,7 +1448,7 @@ impl Planner {
         // the water; then the names to translate and descriptions to write (build::pass_work). The
         // summits come after the regions' plan, below.
         let ask = seam::PassAsk {
-            lakefill: pass.map_or(Ok(None), |_| ::inputs::lakefill::run::planned_source(root, &manifest)),
+            lakefill: pass.map_or(Ok(None), |_| inputs::lakefill::run::planned_source(root, &manifest)),
             failures: &|id| self.inp.mem.retry.get(id).map_or(0, |r| r.0),
         };
         // (Names-to-do's inputs' key: the last batch of the map's log touching what they read. The
@@ -1506,8 +1506,8 @@ impl Planner {
         // stands, or, with none read yet, the catalogue waits; never a key that flips on a failed
         // read.)
         let mut credits_unread = None;
-        match ::inputs::inputs::credits::described(root, &manifest) {
-            Ok(d) => *self.inputs.credits.borrow_mut() = Some(::inputs::inputs::credits::digest(&d)),
+        match inputs::inputs::credits::described(root, &manifest) {
+            Ok(d) => *self.inputs.credits.borrow_mut() = Some(inputs::inputs::credits::digest(&d)),
             Err(e) if self.inputs.credits.borrow().is_none() => credits_unread = Some(format!("{e:#}")),
             Err(_) => {}
         }
@@ -1516,7 +1516,7 @@ impl Planner {
         }
         // (The declared feeds the catalogue credits, for its key: "?" while they can't be read, and
         // the catalogue waits.)
-        match ::inputs::inputs::feeds::credited(root, &manifest) {
+        match inputs::inputs::feeds::credited(root, &manifest) {
             Ok(Some(ids)) => {
                 inputs.insert("feeds-credited".into(), ids.join(","));
             }
@@ -1541,7 +1541,7 @@ impl Planner {
             }
         }
         self.held_plan.begin_round(root, &manifest, &done, date);
-        if !manifest.contains_key(&::inputs::inputs::logical(::inputs::inputs::feeds::UNIT)) {
+        if !manifest.contains_key(&inputs::inputs::logical(inputs::inputs::feeds::UNIT)) {
             waiting.push(Waiting { step: None, what: "trains".into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
             waiting.push(Waiting {
@@ -1559,8 +1559,8 @@ impl Planner {
             waiting.push(Waiting { step: None, what: "trains".into(), why });
         }
         // (The ferries count the ferry feeds: without their list, rail-feeds' to make, they wait.)
-        if manifest.contains_key(&::inputs::osmpass::set_name(date, "ferries"))
-            && !manifest.contains_key(::inputs::rail::FERRY_FEEDS)
+        if manifest.contains_key(&inputs::osmpass::set_name(date, "ferries"))
+            && !manifest.contains_key(inputs::rail::FERRY_FEEDS)
         {
             waiting.push(Waiting {
                 step: Some("ferries".into()),
@@ -1571,12 +1571,12 @@ impl Planner {
         }
         // (The trains and the ferries count the static files too: without their accepted version,
         // they wait, rather than be counted without them.)
-        if !manifest.contains_key(&::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT)) {
+        if !manifest.contains_key(&inputs::inputs::logical(inputs::inputs::gtfs::UNIT)) {
             let why = "the static timetables' first accepted version (inputs/timetables/gtfs/: the input check takes them in)";
-            if manifest.contains_key(::inputs::rail::FEEDS) {
+            if manifest.contains_key(inputs::rail::FEEDS) {
                 waiting.push(Waiting { step: Some("rail".into()), what: "trains".into(), why: why.into() });
             }
-            if manifest.contains_key(&::inputs::osmpass::set_name(date, "ferries")) {
+            if manifest.contains_key(&inputs::osmpass::set_name(date, "ferries")) {
                 waiting.push(Waiting { step: Some("ferries".into()), what: "ferries".into(), why: why.into() });
             }
         }
@@ -1990,10 +1990,7 @@ impl Planner {
             if w.step == "rail-feeds" {
                 extra.extend([
                     "--feeds-index".to_string(),
-                    manifest
-                        .get(&::inputs::inputs::logical(::inputs::inputs::feeds::UNIT))
-                        .cloned()
-                        .unwrap_or_default(),
+                    manifest.get(&inputs::inputs::logical(inputs::inputs::feeds::UNIT)).cloned().unwrap_or_default(),
                 ]);
             }
             // (The static timetables: the accepted version the trains and the ferries were planned
@@ -2001,14 +1998,14 @@ impl Planner {
             if w.step == "rail" || w.step == "ferries" {
                 extra.extend([
                     "--gtfs-index".to_string(),
-                    manifest.get(&::inputs::inputs::logical(::inputs::inputs::gtfs::UNIT)).cloned().unwrap_or_default(),
+                    manifest.get(&inputs::inputs::logical(inputs::inputs::gtfs::UNIT)).cloned().unwrap_or_default(),
                 ]);
             }
             // (The heritage registers' and matches' accepted versions the plan read: the job reads
             // them, never the inputs folders.)
             if w.step == "heritage-sites" {
-                for unit in [::inputs::inputs::heritage::UNIT, ::inputs::inputs::heritage_matches::UNIT] {
-                    if let Some(i) = manifest.get(&::inputs::inputs::logical(unit)) {
+                for unit in [inputs::inputs::heritage::UNIT, inputs::inputs::heritage_matches::UNIT] {
+                    if let Some(i) = manifest.get(&inputs::inputs::logical(unit)) {
                         extra.extend([format!("--{unit}-index"), i.clone()]);
                     }
                 }
@@ -2604,7 +2601,7 @@ impl Planner {
         let mut notes: BTreeMap<&str, String> = BTreeMap::new();
         let have = self.latest_pass(root);
         // The planet: a newer one's under way (or waiting), else done.
-        let newer = matches!(::inputs::osmpass::newer_planet(root, have.as_deref()), Ok(Some(_)));
+        let newer = matches!(inputs::osmpass::newer_planet(root, have.as_deref()), Ok(Some(_)));
         items.push(progress::Item {
             step: "osm-pass".into(),
             left: Some((newer || have.is_none()) as usize),
@@ -2643,8 +2640,7 @@ impl Planner {
             }
         }
         // The pass's worldwide steps, each one run left or none (held or not: build::pass_work's).
-        let ask =
-            seam::PassAsk { lakefill: ::inputs::lakefill::run::planned_source(root, &manifest), failures: &|_| 0 };
+        let ask = seam::PassAsk { lakefill: inputs::lakefill::run::planned_source(root, &manifest), failures: &|_| 0 };
         let left = self.held_plan.pass_work(root, Some(&date), &manifest, &keys, ask, None).left;
         items.extend(self.o.the_plan.worldwide_steps().iter().zip(left).map(|(s, l)| progress::Item {
             step: s.to_string(),
@@ -2710,7 +2706,7 @@ impl Planner {
         edits: bool,
     ) -> Result<std::sync::Arc<Coverages>, String> {
         // (The accepted version: keyed by its index's name, an edit being a new version.)
-        let a = ::inputs::inputs::regions::read::source(root, manifest)
+        let a = inputs::inputs::regions::read::source(root, manifest)
             .map_err(|e| format!("the regions' accepted version: {e:#}"))?;
         if edits {
             let e = a.version.clone();
@@ -2737,7 +2733,7 @@ impl Planner {
         let fresh = if making.as_ref().is_none_or(|(v, h)| *v != a.version && h.is_finished()) {
             let (root, cache, a, v) = (root.long_retry(), self.o.home.join("cache"), a.clone(), a.version.clone());
             let run = std::thread::Builder::new().name("coverage".into()).spawn(move || {
-                let all = ::inputs::inputs::regions::read::accepted_coverage(&root, &a, Some(&cache))
+                let all = inputs::inputs::regions::read::accepted_coverage(&root, &a, Some(&cache))
                     .map_err(|e| format!("{e:#}"))?;
                 Ok(Coverages { each: all.by_region(), all })
             });
@@ -2773,7 +2769,7 @@ impl Planner {
     pub(super) fn regions_view(
         &self,
         root: &store::nasfs::NasRoot,
-        a: &::inputs::inputs::Accepted,
+        a: &inputs::inputs::Accepted,
         regions: &[recipes::Recipe],
     ) {
         self.take_regions();
@@ -3006,23 +3002,21 @@ impl Planner {
     /// writes itself (docs/inputs.md §4.5). A member's go to the lead (`Agent::tell_gate`).
     pub(super) fn tend_gate(&mut self, root: &store::nasfs::NasRoot) {
         if self.inputs.watch.as_ref().is_none_or(|(r, _)| r != root) {
-            self.inputs.watch = Some((
-                root.clone(),
-                ::inputs::inputs::watch::Watch::start(root.clone(), ::inputs::inputs::watch::EVERY),
-            ));
+            self.inputs.watch =
+                Some((root.clone(), inputs::inputs::watch::Watch::start(root.clone(), inputs::inputs::watch::EVERY)));
         }
         // (Not a dry run's: the asks are the agent's that runs.)
         if self.o.dry_run {
             return;
         }
-        let mut asks = ::inputs::inputs::take_asks(&self.o.home);
+        let mut asks = inputs::inputs::take_asks(&self.o.home);
         if let Some(c) = &self.coord {
             asks.extend(c.take_inputs_asks());
         }
         if asks.is_empty() {
             return;
         }
-        let member = ::inputs::inputs::member_of(&self.o.home);
+        let member = inputs::inputs::member_of(&self.o.home);
         for a in asks {
             let by = if a.by.is_empty() { "someone" } else { &a.by };
             if a.forget {
@@ -3039,7 +3033,7 @@ impl Planner {
             if a.all || !a.accept.is_empty() || !a.unaccept.is_empty() {
                 // The unit's held report as the last plan read it, else as the records name it now.
                 let shown =
-                    self.inputs.view.borrow().iter().find(|v| v.unit == a.unit).map(|v| ::inputs::inputs::Report {
+                    self.inputs.view.borrow().iter().find(|v| v.unit == a.unit).map(|v| inputs::inputs::Report {
                         findings: v.findings.iter().map(|s| s.finding.clone()).collect(),
                         ..Default::default()
                     });
@@ -3063,7 +3057,7 @@ impl Planner {
         keys: &crate::pool::records::Keys,
         waiting: &mut Vec<Waiting>,
     ) -> Vec<JobSpec> {
-        let units = ::inputs::inputs::units(root);
+        let units = inputs::inputs::units(root);
         let mut jobs = Vec::new();
         let mut checking: BTreeSet<String> = BTreeSet::new();
         // (The listing files a check may still read, `drop_unnamed`: this plan's, the last plan's
@@ -3092,7 +3086,7 @@ impl Planner {
         if let Some((_, watch)) = &self.inputs.watch {
             let s = |p: &Path| p.to_string_lossy().into_owned();
             for unit in &units {
-                let Some(checks) = ::inputs::inputs::checks(unit) else { continue };
+                let Some(checks) = inputs::inputs::checks(unit) else { continue };
                 if let Some(why) = watch.failed(unit) {
                     waiting.push(Waiting {
                         step: Some("inputs".into()),
@@ -3104,7 +3098,7 @@ impl Planner {
                 // (Nothing added yet and nothing ever taken in or held: nothing to check.)
                 let empty = l.listing.files.is_empty() && l.listing.strays.is_empty() && l.listing.misplaced.is_empty();
                 if empty
-                    && [::inputs::inputs::logical(unit), ::inputs::inputs::held_logical(unit)]
+                    && [inputs::inputs::logical(unit), inputs::inputs::held_logical(unit)]
                         .iter()
                         .all(|r| !manifest.contains_key(r))
                 {
@@ -3112,15 +3106,15 @@ impl Planner {
                 }
                 // (Daily by the records' last full check, whichever Mac made it: a new lead doesn't
                 // repeat one made less than a day ago.)
-                let full_at = manifest.get(&::inputs::inputs::listed_logical(unit)).and_then(|n| {
+                let full_at = manifest.get(&inputs::inputs::listed_logical(unit)).and_then(|n| {
                     let mut seen = self.inputs.full_at.borrow_mut();
                     *seen
                         .entry(n.clone())
-                        .or_insert_with(|| ::inputs::inputs::read_listed_file(root, n).ok().and_then(|l| l.full_at))
+                        .or_insert_with(|| inputs::inputs::read_listed_file(root, n).ok().and_then(|l| l.full_at))
                 });
                 let full = self.inputs.full.borrow().contains(*unit)
                     || full_at.is_none_or(|t| now_s().saturating_sub(t) >= 86400);
-                let mut key = ::inputs::inputs::check_key(checks, &l.listing, &l.accepted, manifest);
+                let mut key = inputs::inputs::check_key(checks, &l.listing, &l.accepted, manifest);
                 if full {
                     key = jobrt::jobs::h(&[&key, "full"]);
                 }
@@ -3140,7 +3134,7 @@ impl Planner {
                     std::fs::create_dir_all(planned.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| {
                         store::whole::write(
                             &planned,
-                            &serde_json::to_vec(&::inputs::inputs::Planned {
+                            &serde_json::to_vec(&inputs::inputs::Planned {
                                 listing: l.listing.clone(),
                                 accepted: l.accepted.clone(),
                             })?,
@@ -3196,13 +3190,13 @@ impl Planner {
         let s = |p: &Path| p.to_string_lossy().into_owned();
         for unit in self.inputs.forget.borrow().iter() {
             let named = [
-                ::inputs::inputs::logical(unit),
-                ::inputs::inputs::held_logical(unit),
-                ::inputs::inputs::listed_logical(unit),
+                inputs::inputs::logical(unit),
+                inputs::inputs::held_logical(unit),
+                inputs::inputs::listed_logical(unit),
             ]
             .iter()
             .any(|l| manifest.contains_key(l));
-            if units.contains(&unit.as_str()) || !named || !::inputs::inputs::valid_unit(unit) {
+            if units.contains(&unit.as_str()) || !named || !inputs::inputs::valid_unit(unit) {
                 continue;
             }
             let cmd = vec![
@@ -3228,14 +3222,8 @@ impl Planner {
             });
         }
         let accepted = self.inputs.watch.as_ref().map(|(_, w)| w.accepted()).unwrap_or_default();
-        *self.inputs.view.borrow_mut() = ::inputs::inputs::view::of(
-            root,
-            manifest,
-            &units,
-            &checking,
-            &accepted,
-            &mut self.inputs.cache.borrow_mut(),
-        );
+        *self.inputs.view.borrow_mut() =
+            inputs::inputs::view::of(root, manifest, &units, &checking, &accepted, &mut self.inputs.cache.borrow_mut());
         jobs
     }
 
@@ -3247,11 +3235,11 @@ impl Planner {
         manifest: &BTreeMap<String, String>,
         keys: &crate::pool::records::Keys,
     ) -> Option<JobSpec> {
-        use ::inputs::inputs::regions::extract;
-        let held = manifest.get(&::inputs::inputs::held_logical(::inputs::inputs::regions::UNIT))?;
-        let report = ::inputs::inputs::read_report(root, held).ok()?;
+        use inputs::inputs::regions::extract;
+        let held = manifest.get(&inputs::inputs::held_logical(inputs::inputs::regions::UNIT))?;
+        let report = inputs::inputs::read_report(root, held).ok()?;
         let date = report.needs.first()?.strip_prefix("pass ")?.to_string();
-        if ::inputs::osmpass::latest_pass_in(manifest).as_deref() != Some(date.as_str()) {
+        if inputs::osmpass::latest_pass_in(manifest).as_deref() != Some(date.as_str()) {
             return None;
         }
         let mut ids: BTreeSet<extract::Id> = report.needs.iter().skip(1).filter_map(|s| s.parse().ok()).collect();
@@ -3327,7 +3315,7 @@ const LISTINGS: &str = "inputs-listing";
 /// The file in `LISTINGS` of unit `unit`'s listing keyed `key`, by the unit's flat name
 /// (`timetables+gtfs`: a nested z6 tile's name is one file's).
 fn listing_name(unit: &str, key: &str) -> String {
-    format!("{}.{key}.json", ::inputs::inputs::flat(unit))
+    format!("{}.{key}.json", inputs::inputs::flat(unit))
 }
 
 /// The files of `dir` not `named` removed (task #971: a job planned before its folder changed found
@@ -3674,8 +3662,8 @@ mod tests {
         lines.push(format!("offered {date}"));
         lines.extend(offered.iter().map(|o| format!("offer {o:?}")));
         eprintln!("frozen: the plan in {:.1} s", t.elapsed().as_secs_f64());
-        let recipes = ::inputs::inputs::regions::read::source(&root, &manifest)
-            .and_then(|a| ::inputs::inputs::regions::read::recipes(&a))
+        let recipes = inputs::inputs::regions::read::source(&root, &manifest)
+            .and_then(|a| inputs::inputs::regions::read::recipes(&a))
             .unwrap_or_default();
         lines.extend(p.checklist(&root, &recipes).iter().map(|l| format!("line {l:?}")));
         std::fs::write(&out, lines.join("\n") + "\n").unwrap();

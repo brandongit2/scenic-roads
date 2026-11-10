@@ -444,7 +444,7 @@ pub struct Shared {
     pub page: PageFiles,
     /// The build page's acceptances of the gate's warnings (`/work/inputs`), for the agent to write
     /// (inputs::inputs::apply_ask).
-    pub inputs_asks: Vec<::inputs::inputs::Ask>,
+    pub inputs_asks: Vec<inputs::inputs::Ask>,
     /// The owner's asks to build targets again (`/work/redo`: `scenic redo`), for the agent to keep
     /// and run (crate::agent::redo).
     pub redo_asks: Vec<crate::agent::redo::Ask>,
@@ -2882,7 +2882,7 @@ impl Coordinator {
     }
 
     /// The build page's acceptances since the last call (`/work/inputs`).
-    pub fn take_inputs_asks(&self) -> Vec<::inputs::inputs::Ask> {
+    pub fn take_inputs_asks(&self) -> Vec<inputs::inputs::Ask> {
         std::mem::take(&mut self.shared.lock().unwrap().inputs_asks)
     }
 
@@ -4720,13 +4720,13 @@ fn route(
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let unit = b["unit"]
                 .as_str()
-                .filter(|u| u.len() <= 64 && ::inputs::inputs::valid_unit(u))
+                .filter(|u| u.len() <= 64 && inputs::inputs::valid_unit(u))
                 .ok_or_else(|| anyhow::anyhow!("{{\"unit\": <unit>, \"accept\": [<id>…] | \"all\": true}}"))?;
             let accept: Vec<String> = b["accept"]
                 .as_array()
                 .map(|a| {
                     a.iter()
-                        .filter_map(|i| i.as_str().filter(|i| ::inputs::inputs::valid_id(i)).map(str::to_string))
+                        .filter_map(|i| i.as_str().filter(|i| inputs::inputs::valid_id(i)).map(str::to_string))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -4743,7 +4743,7 @@ fn route(
             } else {
                 format!("a member ({})", caller.from)
             };
-            shared.lock().unwrap().inputs_asks.push(::inputs::inputs::Ask {
+            shared.lock().unwrap().inputs_asks.push(inputs::inputs::Ask {
                 unit: unit.to_string(),
                 accept,
                 all,

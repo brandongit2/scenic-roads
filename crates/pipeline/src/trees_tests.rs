@@ -3,14 +3,14 @@
 //! doesn't depend on pipeline; docs/crates.md §6.2), so they're pipeline's, as terrain_tests are.
 #![cfg(test)]
 
-use ::trees::trees::task::testkit::{block_files, COV};
-use ::trees::trees::task::{parse_blocks, parse_squares, KIND};
-use ::trees::trees::testkit::{sources_file, squares_dir, ROWS_DIR};
-use ::trees::trees::{block_dir, blocks_files, chm_name, mask::Shapes, z3, Inputs, Run, Source, LAYERS, MID, ZBLOCK};
 use agentcore::coord::client::{Client, LeaseCalls};
 use offload::Offload;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use trees::trees::task::testkit::{block_files, COV};
+use trees::trees::task::{parse_blocks, parse_squares, KIND};
+use trees::trees::testkit::{sources_file, squares_dir, ROWS_DIR};
+use trees::trees::{block_dir, blocks_files, chm_name, mask::Shapes, z3, Inputs, Run, Source, LAYERS, MID, ZBLOCK};
 
 /// Z6 tile 6/33/22's run in `dir/out`, with `offload`.
 fn piece(d: &Path, sq: &Path, out: &str, offload: Option<&Offload>) {
@@ -29,7 +29,7 @@ fn piece(d: &Path, sq: &Path, out: &str, offload: Option<&Offload>) {
         .num_threads(4)
         .build()
         .unwrap()
-        .install(|| ::trees::trees::z6_with(&a, offload))
+        .install(|| trees::trees::z6_with(&a, offload))
         .unwrap();
 }
 

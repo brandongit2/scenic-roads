@@ -28,7 +28,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
     // (Over the root's latitudes: z0–3 reach about 80.6° past the cap.)
     let base = terrain::terrain_base::Pool::read(out.root(), &out.manifest, roadcore::polar::lat_box(pole, 0, 0, 0))?;
     let net = buildstore::fetch::Fetcher::from_env();
-    let o = ::inputs::dem::generic::Opts { fetch: &net, store: Some(base.store.clone()), local: None };
+    let o = inputs::dem::generic::Opts { fetch: &net, store: Some(base.store.clone()), local: None };
     let plans = polar::plans(&base.plan, max_z);
     let samplers = polar::samplers(&plans, &o)?;
     let dir = a.out.join(pole.letter().to_string());

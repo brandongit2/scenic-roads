@@ -128,7 +128,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
     let mut pairs: Vec<Pair> = Vec::new();
     for p in &files {
         let b = std::fs::read(p)?;
-        for r in ::inputs::rail::Pair::all(&b) {
+        for r in inputs::rail::Pair::all(&b) {
             pairs.push(Pair {
                 a: r.a.map(f64::from),
                 b: r.b.map(f64::from),

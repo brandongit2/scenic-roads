@@ -945,7 +945,7 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         alone: true,
-        versions: &[("water", || ::inputs::water::VERSION.to_string())],
+        versions: &[("water", || inputs::water::VERSION.to_string())],
         reads: &[In { name: "basemap", of: idents::basemap }, In { name: "lakefill", of: idents::lakefill }],
         ..step("pass", Pack, World, "water", "Draws the world's water at every zoom.", w_water)
     },
@@ -978,7 +978,7 @@ pub const TABLE: [Step; 60] = [
     // cut by 2° cell, every node and ring held at once.
     Step {
         alone: true,
-        versions: &[("regions-land", || ::inputs::inputs::regions::land::LAND_V.to_string())],
+        versions: &[("regions-land", || inputs::inputs::regions::land::LAND_V.to_string())],
         reads: &[In { name: "pass", of: idents::pass }, In { name: "set:coastline", of: idents::set_coastline }],
         ..step(
             "pass",
@@ -1180,13 +1180,13 @@ pub const TABLE: [Step; 60] = [
     Step {
         cost_v: 3,
         shared: true,
-        versions: &[("trees", || ::trees::treepacks::TREES_V.to_string())],
+        versions: &[("trees", || trees::treepacks::TREES_V.to_string())],
         reads: &[In { name: "coverage:inside", of: idents::coverage_inside }, In { name: "trees-sources", of: idents::trees_sources }],
         ..step("trees", Pack, Z6, "trees", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
         cost_v: 1,
-        versions: &[("trees-lo", || ::trees::treepacks::TREES_LO_V.to_string()), ("trees", || ::trees::treepacks::TREES_V.to_string())],
+        versions: &[("trees-lo", || trees::treepacks::TREES_LO_V.to_string()), ("trees", || trees::treepacks::TREES_V.to_string())],
         reads: &[Mids { step: "trees", of: z6_of_z3, named: idents::trees_mids }],
         ..step(
             "trees",
@@ -1432,7 +1432,7 @@ pub const TABLE: [Step; 60] = [
     // (The 3D buildings: offered by the rows they read, agentcore::needs::OFFERED_BY.)
     Step {
         shared: true,
-        versions: &[("bldprep", || ::bld::bld::BLDPREP_V.to_string())],
+        versions: &[("bldprep", || bld::bld::BLDPREP_V.to_string())],
         reads: &[In { name: "bld-key", of: idents::bld_key }, In { name: "bld-rows", of: idents::bld_rows }],
         ..step(
             "buildings",
@@ -1445,7 +1445,7 @@ pub const TABLE: [Step; 60] = [
     },
     Step {
         shared: true,
-        versions: &[("bldtiles", || ::bld::bld::BUILDINGS_V.to_string())],
+        versions: &[("bldtiles", || bld::bld::BUILDINGS_V.to_string())],
         reads: &[Of { step: "bldprep", of: bt_prep, grain: Grain::Read(idents::bld_prepared) }, In { name: "bld-sources", of: idents::bld_sources }, In { name: "coverage:shapes", of: idents::coverage_shapes }, In { name: "bld-heritage", of: idents::bld_heritage }],
         ..step(
             "buildings",
@@ -1457,7 +1457,7 @@ pub const TABLE: [Step; 60] = [
         )
     },
     Step {
-        versions: &[("bldfield-lo", || ::bld::bld::field::LO_V.to_string())],
+        versions: &[("bldfield-lo", || bld::bld::field::LO_V.to_string())],
         reads: &[Of { step: "bldtiles", of: z6_of_z3, grain: Grain::Read(idents::bld_mids) }, In { name: "bld-sources", of: idents::bld_sources }],
         ..step(
             "buildings",
@@ -1582,14 +1582,9 @@ pub const TASKS: [Task; 4] = [
         disk: 1 << 30,
     },
     // (It reads the squares where they lie, and writes ~80 MB: 1 GB.)
-    Task {
-        name: ::trees::trees::task::KIND,
-        does: "A row of a tree cover tile's blocks.",
-        step: "trees",
-        disk: 1 << 30,
-    },
+    Task { name: trees::trees::task::KIND, does: "A row of a tree cover tile's blocks.", step: "trees", disk: 1 << 30 },
     // (A 3D buildings' z8 tile, its blocks: 5 GB.)
-    Task { name: ::bld::bld::task::KIND, does: "A z8 tile of a 3D buildings tile.", step: "bldtiles", disk: 5 << 30 },
+    Task { name: bld::bld::task::KIND, does: "A z8 tile of a 3D buildings tile.", step: "bldtiles", disk: 5 << 30 },
 ];
 
 /// The row of `step` (by its name now: `current`); None for one the table doesn't know (a task's
@@ -1866,14 +1861,14 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         "unit" => roads::unit::saved_files(&dash).iter().any(|f| f == l),
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
         // (A z6 tile's normalized buildings, and its 3D buildings' hi pack.)
-        "bldprep" => tile.is_some_and(|t| t.z == 6 && l == ::bld::bld::work_logical(t.x, t.y)),
+        "bldprep" => tile.is_some_and(|t| t.z == 6 && l == bld::bld::work_logical(t.x, t.y)),
         "bldtiles" => tile.is_some_and(|t| {
             t.z == 6
-                && (l == ::bld::bld::pack_logical(t.x, t.y)
-                    || l == ::bld::bld::field::hi_logical(t.x, t.y)
-                    || l == ::bld::bld::field::mid_logical(t.x, t.y))
+                && (l == bld::bld::pack_logical(t.x, t.y)
+                    || l == bld::bld::field::hi_logical(t.x, t.y)
+                    || l == bld::bld::field::mid_logical(t.x, t.y))
         }),
-        "bldfield-lo" => tile.is_some_and(|t| t.z == 3 && l == ::bld::bld::field::lo_logical(t.x, t.y)),
+        "bldfield-lo" => tile.is_some_and(|t| t.z == 3 && l == bld::bld::field::lo_logical(t.x, t.y)),
         // (A z6 tile's depth hi packs, a z3 tile's lo packs.)
         "depth" => tile.is_some_and(|t| {
             t.z == 6 && DEPTH_LAYERS.iter().any(|ly| l == terrain::depth::build::hi_logical(ly, t.x, t.y))
@@ -1882,12 +1877,12 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
             t.z == 3 && DEPTH_LAYERS.iter().any(|ly| l == terrain::depth::build::lo_logical(ly, t.x, t.y))
         }),
         "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
-            l == ::trees::treepacks::mid_logical(t.x, t.y)
-                || ::trees::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))
+            l == trees::treepacks::mid_logical(t.x, t.y)
+                || trees::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))
         }),
         "trees-lo" => {
             tile.is_some_and(|u| u.z == 3)
-                && ::trees::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}"))
+                && trees::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}"))
         }
         "terrain-hi" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
             l == terrain::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")
@@ -1917,7 +1912,7 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
             let layers: &[&str] = match step {
                 "terrain-hi" => &["terrain"],
                 "slope-hi" => &["slope"],
-                _ => &::trees::treepacks::LAYERS,
+                _ => &trees::treepacks::LAYERS,
             };
             layers.iter().any(|layer| {
                 l == format!("layers/{layer}/lo/{dash}")
@@ -1960,14 +1955,14 @@ pub fn output_names(step: &str, target: &str) -> Option<Vec<String>> {
         ("slope-deep", z) if z == terrain::terrain_deep::PACK_Z => vec![terrain::slope_pack::deep_logical(t.x, t.y)],
         ("terrain-hi", 6) => layers(&["terrain"], "hi"),
         ("slope-hi", 6) => layers(&["slope"], "hi"),
-        ("trees", 6) => layers(&::trees::treepacks::LAYERS, "hi"),
+        ("trees", 6) => layers(&trees::treepacks::LAYERS, "hi"),
         ("terrain-lo", 3) => layers(&["terrain"], "lo"),
         ("slope-lo", 3) => layers(&["slope"], "lo"),
-        ("trees-lo", 3) => layers(&::trees::treepacks::LAYERS, "lo"),
+        ("trees-lo", 3) => layers(&trees::treepacks::LAYERS, "lo"),
         ("depth", 6) => DEPTH_LAYERS.iter().map(|ly| terrain::depth::build::hi_logical(ly, t.x, t.y)).collect(),
         ("depth-lo", 3) => DEPTH_LAYERS.iter().map(|ly| terrain::depth::build::lo_logical(ly, t.x, t.y)).collect(),
-        ("bldtiles", 6) => vec![::bld::bld::pack_logical(t.x, t.y), ::bld::bld::field::hi_logical(t.x, t.y)],
-        ("bldfield-lo", 3) => vec![::bld::bld::field::lo_logical(t.x, t.y)],
+        ("bldtiles", 6) => vec![bld::bld::pack_logical(t.x, t.y), bld::bld::field::hi_logical(t.x, t.y)],
+        ("bldfield-lo", 3) => vec![bld::bld::field::lo_logical(t.x, t.y)],
         _ => return None,
     };
     Some(names)
@@ -2087,7 +2082,7 @@ fn w_lakefill(l: &str, _: bool) -> bool {
 /// The water's packs, every zoom (those it didn't write removed, and the small water's before it,
 /// which it replaced), and the seas closed off from the world ocean (inputs::water::ENCLOSED).
 fn w_water(l: &str, removal: bool) -> bool {
-    pack(l, "water", &ALL) || l == ::inputs::water::ENCLOSED || (removal && pack(l, "smallwater", &ALL))
+    pack(l, "water", &ALL) || l == inputs::water::ENCLOSED || (removal && pack(l, "smallwater", &ALL))
 }
 
 /// The heritage sites by z6 tile, their positions and areas (those of the pass it didn't write
@@ -2104,15 +2099,15 @@ fn w_heritage_sites(l: &str, _: bool) -> bool {
 /// `sources/inputs/<unit>/@index`, `…/@held`, `…/@listed`, the unit's name nested or not), the
 /// report removed once nothing's held.
 fn w_inputs(l: &str, _: bool) -> bool {
-    ::inputs::inputs::record_of(l).is_some()
+    inputs::inputs::record_of(l).is_some()
 }
 
 fn w_regions_land(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-land"] if ::inputs::osmpass::is_date(d))
+    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-land"] if inputs::osmpass::is_date(d))
 }
 
 fn w_regions_extract(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-extract"] if ::inputs::osmpass::is_date(d))
+    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-extract"] if inputs::osmpass::is_date(d))
 }
 
 fn w_spoken(l: &str, _: bool) -> bool {
@@ -2211,12 +2206,12 @@ fn w_polar_root(l: &str, _: bool) -> bool {
 /// The tree layers' hi packs and a z6 tile's mid (a z6 tile); a z3 tile's whole run their lo packs
 /// too.
 fn w_trees(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| ::trees::treepacks::LAYERS.contains(&ly), &["lo", "hi"])
+    pack_of(l, &|ly| trees::treepacks::LAYERS.contains(&ly), &["lo", "hi"])
         || matches!(parts(l).as_slice(), ["work", "trees-mid", t] if tile(t, 6))
 }
 
 fn w_trees_lo(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| ::trees::treepacks::LAYERS.contains(&ly), &["lo"])
+    pack_of(l, &|ly| trees::treepacks::LAYERS.contains(&ly), &["lo"])
 }
 
 /// A z6 tile's files (roads::unit::saved_files), of a z6 tile.
@@ -2310,13 +2305,13 @@ fn w_bldprep(l: &str, _: bool) -> bool {
 
 /// The 3D buildings' hi packs, their field's and its mids.
 fn w_bldtiles(l: &str, _: bool) -> bool {
-    pack(l, ::bld::bld::LAYER, &["hi"])
-        || pack(l, ::bld::bld::field::LAYER, &["hi"])
+    pack(l, bld::bld::LAYER, &["hi"])
+        || pack(l, bld::bld::field::LAYER, &["hi"])
         || matches!(parts(l).as_slice(), ["work", "bldfield-mid", t] if tile(t, 6))
 }
 
 fn w_bldfield_lo(l: &str, _: bool) -> bool {
-    pack(l, ::bld::bld::field::LAYER, &["lo"])
+    pack(l, bld::bld::field::LAYER, &["lo"])
 }
 
 /// What the regions no longer cover, removed: a z6 tile's files, candidates and peaks, map tiles, the
@@ -2675,9 +2670,9 @@ mod tests {
                 [terrain::depth::build::hi_logical(ly, x, y), terrain::depth::build::lo_logical(ly, x, y)]
             }));
             cands.extend([
-                ::bld::bld::pack_logical(x, y),
-                ::bld::bld::field::hi_logical(x, y),
-                ::bld::bld::field::lo_logical(x, y),
+                bld::bld::pack_logical(x, y),
+                bld::bld::field::hi_logical(x, y),
+                bld::bld::field::lo_logical(x, y),
             ]);
             let mut found = false;
             for l in cands.iter().filter(|l| saves(step, t, l) && (l.starts_with("layers/") || l.starts_with("base/")))

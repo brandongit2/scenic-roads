@@ -21,10 +21,10 @@ fn main() -> anyhow::Result<()> {
     let root = PathBuf::from(root);
     let nr = store::nasfs::NasRoot::from_arg(&root);
     let m = buildstore::records::read_manifest(&nr)?;
-    let date = ::inputs::osmpass::latest_pass_by(&nr, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
+    let date = inputs::osmpass::latest_pass_by(&nr, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
     let keys = Keys::load(&nr);
-    let a = ::inputs::inputs::regions::read::source(&nr, &m)?;
-    let cov = ::inputs::inputs::regions::read::accepted_coverage(&nr, &a, None)?;
+    let a = inputs::inputs::regions::read::source(&nr, &m)?;
+    let cov = inputs::inputs::regions::read::accepted_coverage(&nr, &a, None)?;
     let reach = roads::reach::Reaches::load(&nr, &m, &date).ok().flatten();
     let mut tiles = TerrainTiles::new(Some(PathBuf::from(idx)));
     tiles.load(&nr, &m);

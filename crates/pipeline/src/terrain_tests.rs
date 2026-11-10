@@ -136,8 +136,8 @@ fn a_pieces_subtrees_go_to_workers_and_come_back_the_same() {
 /// The coverage of `out`'s regions, as scenic-build's steps read it (the latest pass's outlines).
 fn live_coverage(out: &Out) -> Coverage {
     let root = out.root();
-    let a = ::inputs::inputs::regions::read::source(root, &out.manifest).unwrap();
-    ::inputs::inputs::regions::read::accepted_coverage(root, &a, None).unwrap()
+    let a = inputs::inputs::regions::read::source(root, &out.manifest).unwrap();
+    inputs::inputs::regions::read::accepted_coverage(root, &a, None).unwrap()
 }
 
 /// By hand, on the build's own data (docs/workers.md §3): z6 tiles `TT_PIECES` ("6/x/y,…") made

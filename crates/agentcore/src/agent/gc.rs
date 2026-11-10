@@ -224,7 +224,7 @@ pub fn by_the_queue(n: &str, passes_before: Option<&str>) -> bool {
     }
     match (top, parts.next(), parts.next(), parts.next()) {
         ("sources", Some("osm" | "items"), Some(date), Some(_)) => {
-            ::inputs::osmpass::is_date(date) && passes_before.is_some_and(|newest| date < newest)
+            inputs::osmpass::is_date(date) && passes_before.is_some_and(|newest| date < newest)
         }
         _ => false,
     }
@@ -323,9 +323,9 @@ fn dropped(the_plan: &dyn Plan, l: &str, depth: Option<&DepthKeep>) -> bool {
 fn read_by(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<BTreeSet<String>> {
     let mut named: BTreeSet<String> = manifest.values().cloned().collect();
     for (l, c) in manifest {
-        if ::inputs::inputs::record_of(l).is_some_and(|(_, r)| r == "@index") {
+        if inputs::inputs::record_of(l).is_some_and(|(_, r)| r == "@index") {
             named.extend(
-                ::inputs::inputs::read_index(root, c)?
+                inputs::inputs::read_index(root, c)?
                     .files
                     .values()
                     .flat_map(|f| f.stored().into_iter().map(str::to_string)),
@@ -612,7 +612,7 @@ pub fn inputs_kept(
     named.extend(um.changes.iter().filter_map(ours));
     let index_files = |c: &str, keep: &mut BTreeSet<String>| -> Result<()> {
         keep.extend(
-            ::inputs::inputs::read_index(root, c)?
+            inputs::inputs::read_index(root, c)?
                 .files
                 .values()
                 .flat_map(|f| f.stored().into_iter().map(str::to_string))
@@ -622,7 +622,7 @@ pub fn inputs_kept(
         Ok(())
     };
     for (l, c) in named {
-        if ::inputs::inputs::record_of(&l).is_some_and(|(_, r)| r == "@index") {
+        if inputs::inputs::record_of(&l).is_some_and(|(_, r)| r == "@index") {
             index_files(&c, &mut keep)?;
         }
         keep.insert(c);
@@ -645,7 +645,7 @@ pub fn inputs_kept(
             let rel = e.path.rel().to_string();
             let Some(record) = store::naming::parse_content_name(&rel)
                 .filter(|n| n.ext == "json")
-                .and_then(|n| ::inputs::inputs::record_of(n.logical))
+                .and_then(|n| inputs::inputs::record_of(n.logical))
                 .map(|(_, r)| r)
             else {
                 continue;
@@ -662,7 +662,7 @@ pub fn inputs_kept(
             match record {
                 "@index" => index_files(&rel, &mut keep)?,
                 "@listed" => {
-                    if let Some(old) = ::inputs::inputs::read_listed_file(root, &rel)?.replaced {
+                    if let Some(old) = inputs::inputs::read_listed_file(root, &rel)?.replaced {
                         index_files(&old, &mut keep)?;
                     }
                 }
@@ -874,7 +874,7 @@ pub fn run(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Result<R
 fn run_counted(root: &store::nasfs::NasRoot, asked: &Asked, ways: &Ways) -> Result<Report> {
     let dry_run = asked.dry_run;
     let mut rep = Report { dry_run, ..Default::default() };
-    let latest = ::inputs::osmpass::latest_pass(root);
+    let latest = inputs::osmpass::latest_pass(root);
     crate::agent::jobs::stage(0, 2, "steps (removing what GC's queue frees)");
     let (flow, tops) = {
         let _p = jobrt::timings::phase("removing what GC's queue frees");
@@ -1130,7 +1130,7 @@ fn orphan_walk(
         for kind in ["osm", "items"] {
             meta(1, 0, 0);
             let Ok(rd) = root.join("sources").join(kind).read_dir() else { continue };
-            for e in rd.into_iter().filter(|e| ::inputs::osmpass::is_date(&e.name) && e.name.as_str() < latest) {
+            for e in rd.into_iter().filter(|e| inputs::osmpass::is_date(&e.name) && e.name.as_str() < latest) {
                 roots.push(Root { dir: format!("sources/{kind}/{}", e.name), only: None, pass: true });
             }
         }

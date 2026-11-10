@@ -3,10 +3,10 @@
 //! §6.2), so it's pipeline's, as terrain_tests and trees_tests are.
 #![cfg(test)]
 
-use ::bld::bld::job;
-use ::bld::bld::task::testkit::{collect, coverage, files, here_s, out, records, Tiles};
-use ::bld::bld::task::{run, take_z8, Offers, KIND, OUTPUTS};
 use agentcore::coord::client::LeaseCalls;
+use bld::bld::job;
+use bld::bld::task::testkit::{collect, coverage, files, here_s, out, records, Tiles};
+use bld::bld::task::{run, take_z8, Offers, KIND, OUTPUTS};
 use codecs::legacy::TileId;
 use std::path::Path;
 

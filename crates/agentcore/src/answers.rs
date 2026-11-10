@@ -658,9 +658,7 @@ pub fn heritage_start(
         return Ok(None);
     }
     let mut earlier: Vec<String> = match root.join("sources/items").read_dir() {
-        Ok(rd) => {
-            rd.into_iter().map(|e| e.name).filter(|d| ::inputs::osmpass::is_date(d) && d.as_str() < date).collect()
-        }
+        Ok(rd) => rd.into_iter().map(|e| e.name).filter(|d| inputs::osmpass::is_date(d) && d.as_str() < date).collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e).context("list sources/items"),
     };
@@ -735,7 +733,7 @@ pub fn heritage_start(
 /// it waits for those under way, and none starts meanwhile), and each archive's keep under the
 /// answers' lease.
 pub fn seed(root: &store::nasfs::NasRoot, cache: &Path, scratch: &Path, lease: Option<Leasing>) -> Result<Vec<String>> {
-    let Some(date) = ::inputs::osmpass::latest_pass(root) else { return Ok(Vec::new()) };
+    let Some(date) = inputs::osmpass::latest_pass(root) else { return Ok(Vec::new()) };
     let _local = if lease.is_some() { Some(Local::writer(cache)?) } else { None };
     let lacks = |k: &Kept| -> Result<bool> {
         match k.nas.metadata() {

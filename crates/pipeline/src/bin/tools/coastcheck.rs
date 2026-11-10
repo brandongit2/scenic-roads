@@ -35,7 +35,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             let nas = store::nasfs::NasRoot::from_arg(&root);
             let mut cat = store::map::newest_nas(&nas)?.context("no map in the root")?.catalogue()?;
             let mut all: Vec<(u8, u32, u32, PathBuf)> = Vec::new();
-            for z in 0..=::inputs::water::STORED_MAXZ {
+            for z in 0..=inputs::water::STORED_MAXZ {
                 let zd = tiles.join(z.to_string());
                 let Ok(xs) = std::fs::read_dir(&zd) else { continue };
                 for xe in xs {
@@ -58,7 +58,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             let mut layer = store::catalogue::Layer {
                 encoding: "water-png".into(),
                 minzoom: 0,
-                maxzoom: ::inputs::water::STORED_MAXZ,
+                maxzoom: inputs::water::STORED_MAXZ,
                 ..Default::default()
             };
             for ((scope, pz, px, py), ts) in groups {
@@ -104,7 +104,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
         C::WaterBuild { basemap, only, lakefill, out: dir } => {
             // inputs::water's build as the step runs it, its tiles written as files
             // (<dir>/z/x/y.png), for a regional run measured without the NAS.
-            use ::inputs::water as wt;
+            use inputs::water as wt;
             let t = std::time::Instant::now();
             let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&basemap)?))?;
             let z14 = wt::Z14::read(&pm)?;
@@ -116,7 +116,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             });
             // (--lakefill f: the lakes filled from Canada's own data drawn too.)
             let fill = match lakefill {
-                Some(f) => Some(::inputs::lakefill::Fill::open(&f, &f.to_string_lossy())?),
+                Some(f) => Some(inputs::lakefill::Fill::open(&f, &f.to_string_lossy())?),
                 None => None,
             };
             let (tiles, made) = wt::build(
@@ -199,7 +199,7 @@ fn build(osm: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
     );
     let t = std::time::Instant::now();
     let st = store::spawn::spawn(
-        ::inputs::osmpass::osmium()
+        inputs::osmpass::osmium()
             .args(["tags-filter", "--overwrite", "-F", "pbf", "-o"])
             .arg(&set)
             .arg(osm)
@@ -239,7 +239,7 @@ fn build(osm: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
         }))?,
     )?;
     let mut child = store::spawn::spawn(
-        ::inputs::osmpass::osmium()
+        inputs::osmpass::osmium()
             .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "--overwrite", "-o", "-"])
             .arg("-c")
             .arg(&cfg)

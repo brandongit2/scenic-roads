@@ -18,9 +18,9 @@
 //!   directories and indexes, and its terrain detail aren't counted. None for a
 //!   region the catalogue doesn't have yet.
 
-use ::inputs::inputs::regions::read::Folder;
 use buildstore::coverage::DrawnRegion;
 use det::Det;
+use inputs::inputs::regions::read::Folder;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -43,7 +43,7 @@ pub struct Made {
 /// fails is logged, its part left out.
 pub fn build(
     root: &store::nasfs::NasRoot,
-    a: &::inputs::inputs::Accepted,
+    a: &inputs::inputs::Accepted,
     regions: &[buildstore::recipes::Recipe],
     cat: Option<std::sync::Arc<store::catalogue::Catalogue>>,
     had: Option<(u64, BTreeMap<String, u64>)>,
@@ -55,9 +55,9 @@ pub fn build(
         (Some(c), _) => Some((c.n, bytes_of(&c))),
         (None, _) => None,
     };
-    let view = match ::inputs::inputs::regions::read::drawn(root, a, regions) {
+    let view = match inputs::inputs::regions::read::drawn(root, a, regions) {
         Ok(drawn) => {
-            let tree = ::inputs::inputs::regions::read::tree(&a.index);
+            let tree = inputs::inputs::regions::read::tree(&a.index);
             let b = bytes.as_ref().map(|(_, b)| b.clone()).unwrap_or_default();
             Some(make(&a.version, n, regions, &drawn, &tree, &b))
         }
@@ -99,7 +99,7 @@ pub fn bytes_of(cat: &store::catalogue::Catalogue) -> BTreeMap<String, u64> {
     let recorded: Vec<DrawnRegion> = cat.coverage.regions().unwrap_or_default();
     recorded
         .iter()
-        .map(|r| (r.id.clone(), ::inputs::areafiles::files_of(cat, &::inputs::areafiles::outer_rings(r)).bytes))
+        .map(|r| (r.id.clone(), inputs::areafiles::files_of(cat, &inputs::areafiles::outer_rings(r)).bytes))
         .collect()
 }
 

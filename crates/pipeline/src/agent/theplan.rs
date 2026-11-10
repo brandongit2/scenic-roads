@@ -148,23 +148,23 @@ impl Plan for ThePlan {
     }
     fn task_what(&self, kind: &str, task: &serde_json::Value, unit: &str) -> String {
         match kind {
-            ::bld::bld::task::KIND => format!("{kind}: z8 tile {unit}"),
-            ::trees::trees::task::KIND => format!("{kind}: blocks {}", task["blocks"].as_str().unwrap_or(unit)),
+            bld::bld::task::KIND => format!("{kind}: z8 tile {unit}"),
+            trees::trees::task::KIND => format!("{kind}: blocks {}", task["blocks"].as_str().unwrap_or(unit)),
             terrain::terrain_task::KIND => format!("{kind}: subtrees {}", task["subtrees"].as_str().unwrap_or(unit)),
             _ => format!("tail {unit}"),
         }
     }
     fn tree_task_kind(&self) -> &'static str {
-        ::trees::trees::task::KIND
+        trees::trees::task::KIND
     }
     /// By its first step: "tail" (a z6 tile's last steps), or the 3D buildings', tree cover's or
     /// terrain's (bld::bld::task::KIND, trees::trees::task::KIND, terrain::terrain_task::KIND).
     fn task_kind(&self, spec: &serde_json::Value) -> String {
         let first = &spec["runs"][0];
-        if first["prog"] == ::bld::bld::task::KIND {
-            ::bld::bld::task::KIND.to_string()
-        } else if first["what"] == ::trees::trees::task::KIND {
-            ::trees::trees::task::KIND.to_string()
+        if first["prog"] == bld::bld::task::KIND {
+            bld::bld::task::KIND.to_string()
+        } else if first["what"] == trees::trees::task::KIND {
+            trees::trees::task::KIND.to_string()
         } else if first["what"] == terrain::terrain_task::KIND {
             terrain::terrain_task::KIND.to_string()
         } else {
@@ -182,9 +182,9 @@ impl Plan for ThePlan {
         landmarks::namestodo::inputs_seq(marks, map)
     }
     fn canopy_files(&self, b: [f64; 4]) -> Vec<String> {
-        ::trees::trees::squares_of(b)
+        trees::trees::squares_of(b)
             .into_iter()
-            .flat_map(|(top, left)| ["median", "p95", "cover5m"].map(|kind| ::trees::trees::chm_name(top, left, kind)))
+            .flat_map(|(top, left)| ["median", "p95", "cover5m"].map(|kind| trees::trees::chm_name(top, left, kind)))
             .collect()
     }
     fn unit_margin_km(&self) -> f64 {
@@ -215,14 +215,14 @@ pub(super) fn key_inputs(
     manifest: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut inputs = input_digests(root);
-    if let Some(ix) = manifest.get(&::inputs::inputs::logical(::inputs::inputs::feeds::UNIT)) {
-        let d = ::inputs::inputs::feeds::declared(root, ix);
+    if let Some(ix) = manifest.get(&inputs::inputs::logical(inputs::inputs::feeds::UNIT)) {
+        let d = inputs::inputs::feeds::declared(root, ix);
         inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
         inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
     }
     inputs.insert(
-        ::inputs::dem::spacing::INPUT.into(),
-        ::inputs::dem::spacing::digest_read(root, manifest).unwrap_or_else(|_| "?".into()),
+        inputs::dem::spacing::INPUT.into(),
+        inputs::dem::spacing::digest_read(root, manifest).unwrap_or_else(|_| "?".into()),
     );
     inputs
 }
@@ -247,17 +247,15 @@ pub(super) fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, St
     // then waits).
     inputs.insert(
         "regions".into(),
-        ::inputs::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()),
+        inputs::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()),
     );
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
     // The 3D buildings' sources, of the declared releases (inputs::inputs::sources): what each z6
     // tile's bldprep reads, and its rows, and what the keys name of the declarations ("bld-key");
     // none before they're accepted (no 3D buildings' work), "?" while they can't be read now.
-    match ::inputs::inputs::sources::open_now(root)
-        .and_then(|s| s.map(|s| ::bld::bld::sources::declared(&s)).transpose())
-    {
+    match inputs::inputs::sources::open_now(root).and_then(|s| s.map(|s| bld::bld::sources::declared(&s)).transpose()) {
         Ok(Some((release, ghsl, key))) => {
-            inputs.extend(::bld::bld::sources::digests(root, &release, &ghsl));
+            inputs.extend(bld::bld::sources::digests(root, &release, &ghsl));
             inputs.insert("bld-key".into(), key);
         }
         Ok(None) => {}
@@ -382,7 +380,7 @@ impl PlanHeld for Held {
     ) -> PassWork {
         let planning = names.is_some();
         let reads = build::PassReads {
-            release: date.and_then(|_| ::bld::buildtiles::release_of(root, manifest).ok()),
+            release: date.and_then(|_| bld::buildtiles::release_of(root, manifest).ok()),
             lakefill: ask.lakefill,
             reach: &|| date.filter(|_| planning).and_then(|d| self.current_reach(root, manifest, keys, d).err()),
             failures: ask.failures,

@@ -6,7 +6,7 @@
 /// The gate's jobs (inputs::inputs::gate), as its tests in the inputs crate have them otherwise.
 #[cfg(test)]
 mod gate {
-    use ::inputs::inputs::*;
+    use inputs::inputs::*;
     use std::collections::{BTreeMap, BTreeSet};
 
     const GT: &gatetest::GateTest = &gatetest::GateTest(TEST_UNIT);
@@ -250,8 +250,8 @@ mod gate {
 /// The rail-feeds job's (inputs::rail).
 #[cfg(test)]
 mod rail {
-    use ::inputs::rail::*;
     use buildstore::out::Out;
+    use inputs::rail::*;
     use serde_json::Value;
     use std::path::{Path, PathBuf};
 
@@ -402,7 +402,7 @@ mod lakefill {
         .clone();
         let pin = terrain::terrain_pack::water_source_pin(&m).unwrap();
         assert_eq!(pin, "layers/basemap/world-x.0123456789abcdef.pmtiles");
-        m.insert(::inputs::lakefill::logical(date), "work/lakefill/2026-09-28.0123456789abcdef.sect".to_string());
+        m.insert(inputs::lakefill::logical(date), "work/lakefill/2026-09-28.0123456789abcdef.sect".to_string());
         let filled = build::water_work(&crate::agent::build::PassCtx::default().ctx(date, &m), &done).unwrap().targets
             [0]
         .1
@@ -418,7 +418,7 @@ mod lakefill {
             format!("layers/basemap/world-{newer}"),
             "layers/basemap/world-y.fedcba9876543210.pmtiles".to_string(),
         );
-        assert_eq!(::inputs::lakefill::current(&m), None);
+        assert_eq!(inputs::lakefill::current(&m), None);
         assert_eq!(
             terrain::terrain_pack::water_source_pin(&m).unwrap(),
             "layers/basemap/world-y.fedcba9876543210.pmtiles"
@@ -427,11 +427,11 @@ mod lakefill {
             [0]
         .1
         .clone();
-        m.insert(::inputs::lakefill::logical(newer), "work/lakefill/2027-03-01.0123456789abcdef.sect".to_string());
+        m.insert(inputs::lakefill::logical(newer), "work/lakefill/2027-03-01.0123456789abcdef.sect".to_string());
         assert_ne!(
             build::water_work(&crate::agent::build::PassCtx::default().ctx(newer, &m), &done).unwrap().targets[0].1,
             w_new
         );
-        assert_eq!(::inputs::lakefill::current(&m).map(|(l, _)| l), Some(::inputs::lakefill::logical(newer)));
+        assert_eq!(inputs::lakefill::current(&m).map(|(l, _)| l), Some(inputs::lakefill::logical(newer)));
     }
 }
