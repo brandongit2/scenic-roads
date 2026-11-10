@@ -471,9 +471,11 @@ wait's own watchdog under a minute (`Instant::now() + 20 s`, a loop on `elapsed(
 lock never let go) defeats it. So nextest bounds every test itself (`.config/nextest.toml`, read by
 check.sh's and publish's `cargo nextest run`, here and on the test Mac): SLOW each minute, ended
 (SIGTERM, 10 s, SIGKILL) and failed as TIMEOUT at 10 min, twice `WATCHDOG`, so a waiting test fails
-itself first, saying what for; 20 min for the tests listed there, measured at 30-65 s (every
-other one ran under 30 s in November's runs). A test that comes to take over 30 s goes on that
-list with its time. `cargo test` runs have no such bound.
+itself first, saying what for; 20 min for the tests listed there: 30-65 s in 9-10 Nov's check.sh
+runs, or over 5 min in 3-10 Nov's (the dev jobs' records), their longest 5-12 min with the Mac
+loaded. Every other one that passed ran under 5 min then (under 30 s on 9-10 Nov). A test that
+comes to take over 5 min, half the bound, goes on that list with its time. `cargo test` runs have
+no such bound.
 - **No signal ends a process stuck in the kernel** (`ps` state U, then E as it exits): nextest
   waits on it, its run with it. A test's run never holds the shared build folder's lock (above),
   so such a hang delays only its own run, never another worktree's build.

@@ -3,12 +3,14 @@
 # its grace period) and fails it as TIMEOUT. On 10 Nov a hung test ran 35 min, nothing ending it.
 #
 # The default, 10 min: twice store::testkit::WATCHDOG (5 min: a test waiting with it fails itself,
-# saying what for, first), over 20 times any test outside the list below (each under 30 s in
-# November's check.sh and publish runs on the M4, loaded).
+# saying what for, first). Every test outside the list below that passed ran under 5 min in the
+# dev jobs' runs of 3-10 Nov (each under 30 s in 9-10 Nov's check.sh runs on the M4; up to 4 min
+# on 5-7 Nov's, the Mac loaded).
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 10 }
 
-# Known slow: 30-65 s in those runs (7-10 Nov). 20 min. A test added here says its time.
+# Known slow: 30-65 s in 9-10 Nov's runs, or over 5 min (half the default) in 3-10 Nov's: their
+# longest 5-12 min. 20 min. A test added here says its time.
 [[profile.default.overrides]]
 filter = """
 (package(agentcore) & (
@@ -24,6 +26,10 @@ filter = """
 | (binary_id(=pipeline::cli) & test(=remote_tests_falls_back_when_ssh_hangs))
 | (package(terrain) & (
     test(=terrain_task::tests::a_groups_tiles_made_from_its_file_are_the_pieces_bytes)
-  | test(=terrain_task::tests::a_z6_tile_stopped_and_resumed_makes_the_same_packs)))
+  | test(=terrain_task::tests::a_z6_tile_stopped_and_resumed_makes_the_same_packs)
+  | test(=slope_pack::tests::a_z6_tile_stores_every_level_down_to_its_deep_terrain)
+  | test(=polar::tests::a_block_paused_at_every_safe_point_resumes_to_the_same_tiles)
+  | test(=depth::tests::a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes)
+  | test(=depth::tests::a_fine_source_in_the_open_sea_is_built_to_its_zoom_and_averaged_down)))
 """
 slow-timeout = { period = "60s", terminate-after = 20 }

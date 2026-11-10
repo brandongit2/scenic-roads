@@ -210,6 +210,19 @@ both=${sh:h}:$s/main/tools/dev/bin:$PATH
 PATH=$both within 60 at a version || fail "version with two shims: $(cat $s/err)"
 PATH=$both within 120 at a build -q || fail "build with two shims: $(cat $s/err)"
 [[ $(cat $s/shared/.scenic-built-by) == $w/a ]] || fail "two shims: built-by not recorded"
+# A mise shim ahead of the real cargo, outside any checkout: mise has no cargo there, so its shim
+# runs the first other cargo on the PATH, the shim (#1108 review: they ran each other ~2,900
+# times). The stand-in mise does as mise does: `which` fails, and as cargo it runs the PATH's next.
+mkdir -p $s/mise/shims $s/nowhere
+cat > $s/mise/mise <<'EOF'
+#!/bin/zsh
+[[ $1 == which ]] && exit 1
+for c in $(whence -ap cargo); do [[ ${c:h} == ${0:h} ]] || exec $c "$@"; done
+exit 127
+EOF
+chmod +x $s/mise/mise; ln -s ../mise $s/mise/shims/cargo
+PATH=${sh:h}:$s/mise/shims:$PATH within 60 zsh -fc "cd $s/nowhere && $sh --version" > $s/out 2>$s/err || fail "a mise shim outside a checkout: $(cat $s/err)"
+grep -q '^cargo ' $s/out || fail "a mise shim outside a checkout: not the real cargo: $(cat $s/out $s/err)"
 
 # #941: what builds nothing passes a held lock; the rest wait in arrival order, a gone waiter's
 # ticket holds no one up, and a long hold is reported with what its holder is doing.

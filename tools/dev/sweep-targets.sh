@@ -147,7 +147,9 @@ make_room() {
 set -uo pipefail
 
 cd $repo || exit 1
-busy=$(for p in $(pgrep -x cargo; pgrep -x rustc); do lsof -a -d cwd -p $p -Fn 2>/dev/null | sed -n 's/^n//p'; done | sort -u)
+# (Each cargo's and rustc's folder, by its pid alone; -b: no stat, readlink or lstat of a mount point
+# or path, which blocked in the kernel while the NAS's SMB share stalled, #1108.)
+busy=$(for p in $(pgrep -x cargo; pgrep -x rustc); do lsof -b -w -a -d cwd -p $p -Fn 2>/dev/null | sed -n 's/^n//p'; done | sort -u)
 keep=$(cat $repo/.claude/sweep-keep 2>/dev/null)
 locks=$(git worktree list --porcelain)
 source ${0:A:h}/board.sh

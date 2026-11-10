@@ -83,8 +83,14 @@ fi
 
 real=
 # (Not another checkout's shim either: with the main checkout's and a worktree's both on the PATH, a
-# command passed straight through had each exec the other for ever, 4 Nov.)
-for c in $(whence -ap cargo); do [[ ${c:A} == ($self|*/tools/dev/bin/cargo) ]] || { real=$c; break; }; done
+# command passed straight through had each exec the other for ever, 4 Nov.) Nor a mise shim where
+# mise has no cargo for this folder (outside a checkout): it runs the first other cargo on the PATH,
+# this shim, which ran it again, about 2,900 times (#1108 review).
+for c in $(whence -ap cargo); do
+  [[ ${c:A} == ($self|*/tools/dev/bin/cargo) ]] && continue
+  [[ ${c:A:t} == mise ]] && ! ${c:A} which cargo >/dev/null 2>&1 && continue
+  real=$c; break
+done
 [[ -n $real ]] || { print -u2 "cargo (tools/dev/bin): no other cargo on the PATH"; exit 127; }
 top=$PWD; while [[ $top != / && ! -e $top/.git ]]; do top=${top:h}; done  # the checkout (a worktree's .git is a file)
 [[ -z ${SCENIC_CARGO_SHARED:-} ]] || exec $real "$@"

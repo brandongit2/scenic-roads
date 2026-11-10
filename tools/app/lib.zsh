@@ -215,7 +215,7 @@ smoke() {
     sleep 0.5
   done
   if (( ok )); then
-    holder=$(curl -s -o /dev/null -D - http://127.0.0.1:$port/api/ping | tr -d '\r' | awk -F': *' 'tolower($1) == "x-pid" { print $2 }')
+    holder=$(curl -s -m 10 -o /dev/null -D - http://127.0.0.1:$port/api/ping | tr -d '\r' | awk -F': *' 'tolower($1) == "x-pid" { print $2 }')
     if [[ $holder != $pid ]]; then
       print -r -- "smoke test: port $port answered, but it is held by process ${holder:-unknown (it says no pid: not this version's server)}, not the server started ($pid)"
       ok=0
