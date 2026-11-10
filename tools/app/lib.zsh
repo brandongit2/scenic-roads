@@ -184,7 +184,7 @@ live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])
 # files, resolving each, and a file open on the NAS while SMB stalls blocked it in the kernel,
 # uninterruptibly (check.sh's shell part sat 16 min in this smoke test's lsof, 10 Nov).
 listeners() {
-  netstat -anv -p tcp 2>/dev/null | awk -v p=$1 '$6 == "LISTEN" && $4 ~ ("[.]" p "$") { n = split($11, a, ":"); print a[n] }' | sort -u
+  /usr/sbin/netstat -anv -p tcp 2>/dev/null | awk -v p=$1 '$6 == "LISTEN" && $4 ~ ("[.]" p "$") { n = split($11, a, ":"); print a[n] }' | sort -u
 }
 
 # smoke <port> <pid> <log> <seconds> <path>...: the smoke test of the server <pid> started on <port>,

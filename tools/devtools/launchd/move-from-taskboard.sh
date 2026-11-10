@@ -66,7 +66,7 @@ unload() {  # unload <label>…: each stopped, waited for until launchd has let 
   # while the NAS's SMB share stalls, #1108.)
   local on
   for (( i = 0; i < 100; i++ )); do
-    on=$(netstat -anv -p tcp 2>/dev/null | awk '$6 == "LISTEN" && $4 ~ /[.]8077$/')
+    on=$(/usr/sbin/netstat -anv -p tcp 2>/dev/null | awk '$6 == "LISTEN" && $4 ~ /[.]8077$/')
     [[ -z $on ]] && return 0; sleep 0.1
   done
   die "something still listens on 8077: $on"
