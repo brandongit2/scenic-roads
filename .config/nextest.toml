@@ -1,0 +1,29 @@
+# Every test runs bounded (#1108; tools/dev/testing.md, "Every test bounded"): nextest says SLOW
+# each period, then ends a test that outlasts terminate-after periods (SIGTERM, then SIGKILL after
+# its grace period) and fails it as TIMEOUT. On 10 Nov a hung test ran 35 min, nothing ending it.
+#
+# The default, 10 min: twice store::testkit::WATCHDOG (5 min: a test waiting with it fails itself,
+# saying what for, first), over 20 times any test outside the list below (each under 30 s in
+# November's check.sh and publish runs on the M4, loaded).
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# Known slow: 30-65 s in those runs (7-10 Nov). 20 min. A test added here says its time.
+[[profile.default.overrides]]
+filter = """
+(package(agentcore) & (
+    test(=agent::forecast::tests::a_live_scale_forecast_runs_whole_and_bounded)
+  | test(=agent::forecast::tests::a_live_scale_forecast_is_whole_and_a_wait_is_no_cpu_time)
+  | test(=agent::tests::beat_steady_while_the_nas_hangs)
+  | test(=agent::tests::beat_steady_while_planning)
+  | test(=agent::tests::a_slow_plan_delays_no_grant_pause_or_heartbeat)
+  | test(=agent::pool_tests::a_lead_paused_from_a_member_keeps_the_lead_and_resumes)))
+| (binary_id(=pipeline) & (
+    test(=offload::tests::a_task_whose_coordinator_is_gone_or_doesnt_know_the_job_is_run_here)
+  | test(=agent::build::tests::a_key_names_exactly_its_reads)))
+| (binary_id(=pipeline::cli) & test(=remote_tests_falls_back_when_ssh_hangs))
+| (package(terrain) & (
+    test(=terrain_task::tests::a_groups_tiles_made_from_its_file_are_the_pieces_bytes)
+  | test(=terrain_task::tests::a_z6_tile_stopped_and_resumed_makes_the_same_packs)))
+"""
+slow-timeout = { period = "60s", terminate-after = 20 }

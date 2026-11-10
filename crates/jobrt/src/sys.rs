@@ -125,43 +125,6 @@ pub fn process(pid: i32) -> Option<Proc> {
     }
 }
 
-/// The processes (other than this one) with a file at `path` open: who holds a lock on it.
-pub fn openers(path: &std::path::Path) -> Vec<i32> {
-    #[cfg(target_os = "macos")]
-    {
-        // libproc's, not in the libc crate.
-        unsafe extern "C" {
-            fn proc_listpidspath(
-                kind: u32,
-                info: u32,
-                path: *const libc::c_char,
-                flags: u32,
-                buf: *mut libc::c_void,
-                size: libc::c_int,
-            ) -> libc::c_int;
-        }
-        const PROC_ALL_PIDS: u32 = 1;
-        let Ok(c) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else { return Vec::new() };
-        let mut buf = vec![0i32; 1024];
-        // SAFETY: the buffer holds `len` pids and its size in bytes is passed; the path is a C string.
-        let n = unsafe {
-            proc_listpidspath(PROC_ALL_PIDS, 0, c.as_ptr(), 0, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int)
-        };
-        if n <= 0 {
-            return Vec::new();
-        }
-        buf.truncate(n as usize / 4);
-        let me = std::process::id() as i32;
-        buf.retain(|&p| p > 0 && p != me);
-        buf
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = path;
-        Vec::new()
-    }
-}
-
 /// SIGTERM to one process; whether it was delivered.
 pub fn terminate(pid: i32) -> bool {
     #[cfg(unix)]
@@ -264,6 +227,17 @@ impl PathLock {
 
     pub fn path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    /// Writes `text` as its file's whole content: who holds it, for one finding it held to read
+    /// (the agent's lock, agent::takeover). A taker's own file, made anew when the last let go, so
+    /// never an earlier holder's.
+    pub fn note(&self, text: &str) -> io::Result<()> {
+        use std::io::{Seek, Write};
+        let mut f = &self.file;
+        f.set_len(0)?;
+        f.seek(io::SeekFrom::Start(0))?;
+        f.write_all(text.as_bytes())
     }
 }
 

@@ -1429,14 +1429,17 @@ fn answers_soon(probe: fn(&NasRoot) -> bool, root: &NasRoot) -> bool {
     rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)
 }
 
-/// The agent's lock (one agent per Mac): an exclusive flock on a local file, held while it runs.
+/// The agent's lock (one agent per Mac): an exclusive flock on a local file, held while it runs,
+/// the file naming its holder (takeover::note_holder).
 pub struct AgentLock(#[allow(dead_code)] crate::sys::PathLock);
 
 impl AgentLock {
     /// None when another agent holds it.
     pub fn try_take(home: &Path) -> Result<Option<AgentLock>> {
         std::fs::create_dir_all(home)?;
-        Ok(crate::sys::PathLock::take(&home.join("agent.lock"), false)?.map(AgentLock))
+        let Some(l) = crate::sys::PathLock::take(&home.join("agent.lock"), false)? else { return Ok(None) };
+        takeover::note_holder(&l).context("write the agent's lock's holder")?;
+        Ok(Some(AgentLock(l)))
     }
 }
 

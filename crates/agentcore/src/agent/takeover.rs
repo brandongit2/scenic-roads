@@ -12,6 +12,15 @@
 //! launcher started (run by hand) ends nothing; nor does one whose holder's launcher
 //! started after its own (the newest launcher is the registered one: two launchers never take turns
 //! ending each other's agents).
+//!
+//! The holder is the process the lock's own record names (`note_holder`: its pid and start, written
+//! as it takes the lock), read again by that pid; no other process is looked at (#1108). A scan of
+//! every process's open files for the lock's (libproc's proc_listpidspath) resolved each one's path
+//! in the kernel, and a file open on the NAS while SMB stalled blocked it there, uninterruptibly: a
+//! test sat 35 min on it (10 Nov), and so could an agent starting meanwhile. A holder with no record
+//! (an agent of an app before #1108, or one between its lock and its record) is left, as one not
+//! found. What the take-over reads of processes (`process`: proc_pidinfo and proc_pidpath of one
+//! pid, never its open files) runs within `LOOK`, on a thread of its own: past it, nothing is ended.
 
 use crate::sys::Proc;
 use std::path::Path;
@@ -19,6 +28,10 @@ use std::time::{Duration, Instant};
 
 /// The launcher's executable (tools/launcher/launcher.c).
 const LAUNCHER: &str = "scenic-launcher";
+
+/// How long what the take-over reads of processes may take (`within`): those reads touch no open
+/// file, so they answer at once; a bound all the same, as on every other call that could stall.
+const LOOK: Duration = Duration::from_secs(10);
 
 /// How long the lock is waited for once its holder is asked to stop: its loop ends within seconds,
 /// then the pool's thread (a minute at most) and a caches' task (a minute at most) are waited for.
@@ -52,21 +65,35 @@ pub fn verdict(me_parent: Option<&Proc>, holder: &Proc, holder_parent: Option<&P
 /// The lock at `lock` held elsewhere: its holder ended when `verdict` says so, and the lock taken
 /// once it lets go (within `wait`). Ok(None): nothing ended, or the lock still held after `wait`.
 pub fn take_over(home: &Path, wait: Duration) -> anyhow::Result<Option<super::AgentLock>> {
+    take_over_with(home, wait, LOOK, holder)
+}
+
+/// `take_over`, the holder found by `find` (`holder`; a test's stand-in), each look at processes
+/// within `look`.
+fn take_over_with(
+    home: &Path,
+    wait: Duration,
+    look: Duration,
+    find: fn(&Path) -> Option<Proc>,
+) -> anyhow::Result<Option<super::AgentLock>> {
     let lock = home.join("agent.lock");
-    let me = crate::sys::process(std::process::id() as i32);
-    let me_parent = me.and_then(|m| crate::sys::process(m.ppid));
-    // (The holder: the one opener that's an agent, `scenic`; a child between its fork and exec
-    // holds a copy of a descriptor for a moment, PathLock's note.)
-    let Some(holder) =
-        crate::sys::openers(&lock).into_iter().filter_map(crate::sys::process).find(|p| p.exe == "scenic")
-    else {
+    let who = within(look, move || {
+        let me = crate::sys::process(std::process::id() as i32);
+        let me_parent = me.and_then(|m| crate::sys::process(m.ppid));
+        let holder = find(&lock).filter(|p| p.exe == "scenic")?;
+        let holder_parent = crate::sys::process(holder.ppid);
+        Some((me_parent, holder, holder_parent))
+    });
+    let Some(Some((me_parent, holder, holder_parent))) = who else {
+        if who.is_none() {
+            eprintln!("agent: the lock's holder not read within {} s: nothing ended", look.as_secs_f64());
+        }
         return Ok(None);
     };
-    let holder_parent = crate::sys::process(holder.ppid);
     let Some((target, why)) = verdict(me_parent.as_ref(), &holder, holder_parent.as_ref()) else { return Ok(None) };
     let pid = target.pid;
     // (Read again right before the signal: a pid freed and reused meanwhile is someone else's.)
-    if !same_process(&target, crate::sys::process(pid).as_ref()) {
+    if !within(look, move || crate::sys::process(pid)).is_some_and(|now| same_process(&target, now.as_ref())) {
         return Ok(None);
     }
     eprintln!("agent: {why}: asking pid {pid} to stop (SIGTERM), its jobs left for this agent");
@@ -83,6 +110,31 @@ pub fn take_over(home: &Path, wait: Duration) -> anyhow::Result<Option<super::Ag
     }
     eprintln!("agent: pid {pid} still holds the lock after {} s", wait.as_secs());
     Ok(None)
+}
+
+/// Writes the holder's record in the lock it took (`holder` reads it): this process's pid and start.
+pub fn note_holder(lock: &crate::sys::PathLock) -> std::io::Result<()> {
+    let me = std::process::id() as i32;
+    let start = crate::sys::process(me).map_or(0, |p| p.start_us);
+    lock.note(&format!("{me} {start}\n"))
+}
+
+/// The process the lock at `lock` names as its holder (`note_holder`), while it's still the one that
+/// wrote it (its start the record's): None with no record, or its writer gone.
+fn holder(lock: &Path) -> Option<Proc> {
+    let s = std::fs::read_to_string(lock).ok()?;
+    let (pid, start) = s.trim().split_once(' ')?;
+    let p = crate::sys::process(pid.parse().ok()?)?;
+    (p.start_us == start.parse::<u64>().ok()?).then_some(p)
+}
+
+/// `f`'s answer within `d`, run on a thread of its own; None past it (the thread left to finish).
+fn within<T: Send + 'static>(d: Duration, f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(d).ok()
 }
 
 /// Whether `now` (the pid read again) is still the process `was`: its start and executable.
@@ -134,18 +186,35 @@ mod tests {
     }
 
     #[test]
-    fn openers_names_who_holds_a_file() {
-        // (This process's own descriptor isn't listed: another's is. The child says when it holds
-        // the file; the scan is then looked at until it names it: on a loaded test Mac one look at
-        // every process's descriptors took over 5 s, 25 Oct.)
+    fn the_lock_names_its_holder() {
+        // (Its record names this process, read again by its pid; a record whose start isn't that
+        // pid's (a pid reused), or none, names no one.)
         let d = tempfile::tempdir().unwrap();
-        let f = d.path().join("held");
-        std::fs::write(&f, b"").unwrap();
-        let mut c = store::testkit::sh("exec 3<\"$0\"; : >\"$READY\"; sleep 600", &[f.as_os_str()]).unwrap();
-        c.ready();
-        store::testkit::eventually("the child named", || crate::sys::openers(&f).contains(&(c.id() as i32)));
-        drop(c);
+        let l = crate::agent::AgentLock::try_take(d.path()).unwrap().unwrap();
+        let f = d.path().join("agent.lock");
         let me = crate::sys::process(std::process::id() as i32).unwrap();
         assert!(me.start_us > 0 && me.ppid > 0);
+        assert_eq!(holder(&f), Some(me.clone()));
+        std::fs::write(&f, format!("{} {}\n", me.pid, me.start_us + 1)).unwrap();
+        assert_eq!(holder(&f), None);
+        std::fs::write(&f, b"").unwrap();
+        assert_eq!(holder(&f), None);
+        drop(l);
+    }
+
+    #[test]
+    fn a_holder_not_read_in_time_ends_nothing() {
+        // (A look at processes that never answers, as the old scan did in the kernel on a stalled
+        // SMB share; its stand-in blocks in a syscall, read(2) of a pipe nothing writes. The
+        // take-over gives up after its look's bound, ending nothing, the thread left blocked.)
+        fn stuck(_: &Path) -> Option<Proc> {
+            let (r, _w) = std::io::pipe().unwrap();
+            let _ = std::io::Read::read(&mut &r, &mut [0u8]);
+            None
+        }
+        let d = tempfile::tempdir().unwrap();
+        let t0 = Instant::now();
+        assert!(take_over_with(d.path(), WAIT, Duration::from_millis(200), stuck).unwrap().is_none());
+        store::testkit::ended_before(t0, store::testkit::WATCHDOG, "a take-over whose look never answers");
     }
 }

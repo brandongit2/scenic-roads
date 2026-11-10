@@ -5,7 +5,9 @@
 
 fn run(args: &[&str]) -> (i32, String, String) {
     let home = tempfile::tempdir().unwrap();
-    let mut cmd = store::spawn::command(env!("CARGO_BIN_EXE_server"));
+    // (The program as cargo and nextest name it when the test runs: never `env!`'s compiled-in path,
+    // tools/dev/testing.md.)
+    let mut cmd = store::spawn::command(std::env::var("CARGO_BIN_EXE_server").expect("CARGO_BIN_EXE_server"));
     cmd.args(args).current_dir(home.path()).env("HOME", home.path());
     let o = store::spawn::output(&mut cmd).unwrap();
     let left: Vec<_> = std::fs::read_dir(home.path()).unwrap().map(|e| e.unwrap().file_name()).collect();

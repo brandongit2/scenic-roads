@@ -73,9 +73,8 @@ mod tests {
         assert!(exe.to_string_lossy().contains("/.scenic-runs/"), "not a clone: {}", exe.display());
         // (In a folder named `deps`, as store::spawn::in_test_program reads it.)
         assert_eq!(exe.parent().and_then(|d| d.file_name()).unwrap(), "deps", "{}", exe.display());
-        // (TOY_LOCKED: run while the lock is held, where a cargo it started must pass through.)
-        let locked = std::env::var("TOY_LOCKED").is_ok();
-        assert_eq!(std::env::var("SCENIC_CARGO_SHARED").is_ok(), locked, "SCENIC_CARGO_SHARED");
+        // (Outside the lock: a cargo it started would take it.)
+        assert!(std::env::var("SCENIC_CARGO_SHARED").is_err(), "SCENIC_CARGO_SHARED");
     }
     #[test]
     fn fails_when_asked() {
@@ -83,12 +82,16 @@ mod tests {
     }
 }
 EOF
-  # CARGO_BIN_EXE_toy names the shared folder's program: this binary runs under the lock.
+  # cli starts the program as the test runs (TOY_HOLD's hold is its own: it says it started, after
+  # the lock went): from a clone, outside the lock, as every test binary (#1108).
   cat > $w/$x/tests/cli.rs <<'EOF'
 #[test]
 fn starts_the_program() {
-    assert_eq!(std::env::var("SCENIC_CARGO_SHARED").as_deref(), Ok("1"), "not under the lock");
-    let o = std::process::Command::new(env!("CARGO_BIN_EXE_toy")).output().unwrap();
+    toy::hold();
+    assert!(std::env::var("SCENIC_CARGO_SHARED").is_err(), "under the lock");
+    let p = std::env::var("CARGO_BIN_EXE_toy").expect("CARGO_BIN_EXE_toy");
+    assert!(p.contains("/.scenic-runs/"), "not a clone: {p}");
+    let o = std::process::Command::new(&p).output().unwrap();
     assert!(o.status.success() && !o.stdout.is_empty());
 }
 EOF
@@ -151,14 +154,14 @@ out=( ${(f)"$(<$s/run.out)"} )
 d=${${out[2]#exe }:h:h:h}; [[ ! -e $d ]] || fail "the run's clones stayed: $d"
 [[ $(cd $w/a && $sh run -q -- 'exit' 2>/dev/null) == a$'\n''arg "exit"' ]] || fail "a second run"
 
-# cargo test: the lib's tests outside the lock (env checks the folder, the environment and the
-# clone), cli under it (CARGO_BIN_EXE_toy), the doctest by rustdoc; another build meanwhile.
-(cd $w/a && TOY_HOLD=$s/go2 $sh test -q --lib > $s/test.out 2>$s/test.err) & held=$!
+# cargo test: the tests outside the lock (env checks the folder, the environment and the clone;
+# cli starts the program's clone), the doctest by rustdoc; another build meanwhile.
+(cd $w/a && TOY_HOLD=$s/go2 $sh test -q --lib --test cli > $s/test.out 2>$s/test.err) & held=$!
 started $s/go2 $s/test.err
 free || fail "the lock is held while the tests run"
-: > $s/go2; wait $held || fail "a's lib tests: $(cat $s/test.out $s/test.err)"
+: > $s/go2; wait $held || fail "a's lib and cli tests: $(cat $s/test.out $s/test.err)"
 at a test || fail "a's tests: $(cat $s/err)"
-grep -q 'Running debug/deps/cli-[0-9a-f]* (under the build lock' $s/err || fail "cli not under the lock: $(cat $s/err)"
+grep -q 'Running debug/deps/cli-[0-9a-f]*$' $s/err || fail "cli not run outside the lock: $(cat $s/err)"
 grep -q 'Running debug/deps/plain-[0-9a-f]*$' $s/err || fail "plain not run outside the lock: $(cat $s/err)"
 grep -q 'Running debug/deps/binexe-[0-9a-f]*$' $s/err || fail "binexe not run outside the lock: $(cat $s/err)"
 grep -q 'Doc-tests toy' $s/err || fail "no doctests: $(cat $s/err)"
@@ -183,17 +186,12 @@ for sig in TERM INT; do
   grep -q 'Running debug/deps/plain-' $s/term.out && fail "ran on after a $sig: $(cat $s/term.out)"
 done
 
-# cargo nextest run: the clones run once nextest starts testing, the lock let go then (kept when a
-# binary names the shared folder's programs).
-(cd $w/a && TOY_HOLD=$s/go3 $sh nextest run --lib > $s/nx.out 2>&1) & held=$!
+# cargo nextest run: the clones run once nextest starts testing, the lock let go then, whatever
+# the binaries (cli starts the program through CARGO_BIN_EXE_toy: #1108's run held it to the end).
+(cd $w/a && TOY_HOLD=$s/go3 $sh nextest run > $s/nx.out 2>&1) & held=$!
 started $s/go3 $s/nx.out
 freed || fail "the lock is held while nextest's tests run"  # (the shim looks every 0.2 s)
 : > $s/go3; wait $held || fail "nextest: $(cat $s/nx.out)"
-(cd $w/a && TOY_HOLD=$s/go4 TOY_LOCKED=1 $sh nextest run > $s/nx.out 2>&1) & held=$!
-started $s/go4 $s/nx.out
-sleep 1  # (absence: five of the shim's looks)
-free && fail "the lock was let go with cli (CARGO_BIN_EXE_toy) in the run"
-: > $s/go4; wait $held || fail "nextest with cli: $(cat $s/nx.out)"
 
 # This shim and another checkout's both on the PATH (check.sh puts its own before the main checkout's):
 # neither is taken for the real cargo, so a command passed straight through (version) and the

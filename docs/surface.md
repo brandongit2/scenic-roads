@@ -56,7 +56,11 @@
   read again just before the signal, its start and executable unchanged) (SIGTERM to the orphan, or to the older launcher, which passes it
   on) and takes the lock once it lets go, waiting up to 150 s; the stopping agent leaves its jobs
   running for it, as for an update (crates/agentcore/src/agent/takeover.rs). An agent run by hand,
-  or under a newer launcher, ends nothing. Before each open the reopen helper ends a running copy
+  or under a newer launcher, ends nothing. The holder is the one the lock file names (`<pid>
+  <start µs>`, written by the agent as it takes the lock), while that pid still started then; no
+  other process is looked at (#1108: a scan of every process's open files blocked in the kernel
+  while the NAS's SMB share stalled). Those reads of processes run within 10 s, else nothing is
+  ended; so is a holder whose lock names no one (an agent of an app before #1108). Before each open the reopen helper ends a running copy
   of the app with its bundle id at another path (`open` would only activate it), and
   `scenic-status` refuses an unknown argument (exit 2) and prints its usage for `--help`/`-h`,
   never starting the app. When the agent's log shows

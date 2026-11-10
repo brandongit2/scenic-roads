@@ -644,7 +644,9 @@ The agent's folder, `agent/`:
 ```
 timings.jsonl, timings-run.json, timings-run-<k>.json   jobs' timings (below)
 status.json             the lead's status; a member not leading writes helper.json
-state.json, job.json, agent.lock, logs/
+state.json, job.json, logs/
+agent.lock              the agent's lock (one agent a Mac), its text its holder's `<pid> <start µs>`
+                        (agent::takeover, docs/surface.md)
 publishing.json         the lead's record of its catalogues {held_at, ran}: when a catalogue due was
                         first held back since (none: none is), the cadenced steps' runs
                         (agent::publish::LastCatalogue); when the last went out, and the last with

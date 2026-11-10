@@ -14,11 +14,13 @@ fn repo() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The built binary of each of this crate's programs.
-fn exe(prog: &str) -> &'static str {
+/// The built binary of each of this crate's programs, as cargo and nextest name it when the test
+/// runs (never `env!`'s compiled-in path: tools/dev/testing.md, "One build folder per Mac").
+fn exe(prog: &str) -> String {
     match prog {
-        "scenic" => env!("CARGO_BIN_EXE_scenic"),
-        "scenic-build" => env!("CARGO_BIN_EXE_scenic-build"),
+        "scenic" | "scenic-build" => {
+            std::env::var(format!("CARGO_BIN_EXE_{prog}")).unwrap_or_else(|_| panic!("CARGO_BIN_EXE_{prog} not set"))
+        }
         p => panic!("no binary for {p}: add it to exe() and pipeline::cli::PROGRAMS"),
     }
 }

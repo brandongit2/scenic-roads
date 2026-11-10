@@ -16,9 +16,9 @@
 # arguments, environment and folder); the lock goes, then they run from APFS clones in
 # $t/.scenic-runs/<pid>/, so another worktree's build can't replace them under a run. `cargo
 # nextest run` gets the runner too: it clones each test binary as nextest lists it (still under
-# the lock) and runs the clone; the lock goes when the first test starts. A test binary that names
-# a program of the shared folder (a CARGO_BIN_EXE_* path, compiled in) runs under the lock: that
-# path can't be redirected to a clone (the CARGO_BIN_EXE_* set as a test runs are: they name clones).
+# the lock) and runs the clone; the lock goes when the first test starts (#1108: never later; a
+# hung test held it 35 min). The CARGO_BIN_EXE_* set as a test runs name clones; a test reads its
+# program's path from them, never env!'s compiled-in path (tools/app/guards.sh refuses that).
 # A program for another target than this Mac's (wasm32) has no runner of ours: cargo runs it under
 # the lock, as before. A signal to this shell goes on to the cargo or program it waits for (fwd).
 #
@@ -55,12 +55,6 @@ clone() {  # clone <program> <dir>: an APFS clone of it in <dir> (made once, ato
   [[ -e $c ]] || { cp -c $1 $c.$$ && mv -f $c.$$ $c } || return 1
   print -r -- $c
 }
-pinned() {  # pinned <test binary>: does it name a program of its profile's folder (CARGO_BIN_EXE_*)?
-  local up=${1:h}; [[ ${up:t} == deps ]] && up=${up:h}
-  local progs=( $up/*(N.x) )
-  # (The folder alone first: one string is searched faster than the list, and most binaries lack it.)
-  (( $#progs )) && LC_ALL=C grep -qaF -- $up/ $1 && print -rl -- $progs | LC_ALL=C grep -qaFf /dev/stdin $1
-}
 if [[ ${1:-} == --scenic-(record|nextest) ]]; then
   mode=${1#--scenic-} dir=$2 e=$3; shift 3
   readz $e; vars=( "${reply[@]}" ); rm -f $e
@@ -71,19 +65,18 @@ if [[ ${1:-} == --scenic-(record|nextest) ]]; then
     print -rN -- "$@" > $n.argv && print -rN -- "${vars[@]}" > $n.env && print -rn -- $PWD > $n.cwd || exit 1
     exit 0
   fi
-  # nextest: it lists every binary (`--list`) before it runs any test, so every one is cloned and
-  # checked under the lock, with the programs its CARGO_BIN_EXE_* name (set as it lists and as it
-  # runs: the clones made while listing are the ones run); the first test run lets the lock go.
+  # nextest: it lists every binary (`--list`) before it runs any test, so every one is cloned
+  # under the lock, with the programs its CARGO_BIN_EXE_* name (set as it lists and as it runs:
+  # the clones made while listing are the ones run); the first test run lets the lock go.
   c=$(clone $1 $dir/bin) || exit 1
   for (( i = 1; i <= $#vars; i++ )); do
     [[ $vars[i] == CARGO_BIN_EXE_[^=]##=$CARGO_TARGET_DIR/* ]] || continue
     x=$(clone ${vars[i]#*=} $dir/bin) || exit 1; vars[i]=${vars[i]%%=*}=$x
   done
-  if (( ${@[(I)--list]} )); then pinned $1 && : >> $dir/pinned
-  else
+  if (( ! ${@[(I)--list]} )); then
     : >> $dir/started
     # (Outside the lock: a cargo it starts takes it.)
-    [[ -e $dir/pinned ]] || vars=( ${vars:#SCENIC_CARGO_SHARED=*} )
+    vars=( ${vars:#SCENIC_CARGO_SHARED=*} )
   fi
   shift; exec /usr/bin/env -i "${vars[@]}" $c "$@"
 fi
@@ -325,7 +318,7 @@ if [[ $mode == nextest ]]; then
   # Nextest builds, lists every binary (each cloned by the runner), then runs tests from the clones.
   spawn realcargo "${args[@]}"
   while kill -0 $child 2>/dev/null && [[ ! -e $r/started ]]; do zselect -t 20; done
-  [[ -e $r/pinned ]] || release  # (a binary naming the shared folder's programs: the lock to the end)
+  release
   # (The build until its first test; then the tests, nextest's run.)
   [[ -e $r/started ]] && { built 0; djnx=$EPOCHREALTIME }
   waitchild; rc=$?
@@ -345,12 +338,12 @@ if (( ! $#recs )); then rm -rf $r; exit $rc; fi
 # As cargo: stop at the first failure unless --no-fail-fast; -q: no "Running" lines. (Only the
 # options before `--`: after it they are the programs'.)
 nff=${own[(I)--no-fail-fast]} quiet=$(( ${own[(I)-q]} + ${own[(I)--quiet]} ))
-prog() {  # prog <record> <clone> <keep SCENIC_CARGO_SHARED>: the program as cargo would start it
+prog() {  # prog <record> <clone>: the program as cargo would start it
   local args vars
   readz $1.argv; args=( "${reply[@]}" )
   readz $1.env; vars=( "${reply[@]}" )
   # (Outside the lock a cargo it starts must take the lock again.)
-  (( $3 )) || vars=( ${vars:#SCENIC_CARGO_SHARED=*} )
+  vars=( ${vars:#SCENIC_CARGO_SHARED=*} )
   cd -- "$(<$1.cwd)" || return 1
   exec /usr/bin/env -i "${vars[@]}" $2 "${(@)args[2,-1]}"
 }
@@ -362,9 +355,9 @@ binexe() {  # binexe <record>: its CARGO_BIN_EXE_* (cargo sets them as it runs a
   done
   print -rN -- "${vars[@]}" > $1.env
 }
-runprog() {  # runprog <record> <keep SCENIC_CARGO_SHARED>: the program as a child (see fwd), its status
+runprog() {  # runprog <record>: the program as a child (see fwd), its status
   local t0=$EPOCHREALTIME x st=ok n
-  spawn prog $1 $cl[$1] $2; waitchild; x=$?
+  spawn prog $1 $cl[$1]; waitchild; x=$?
   # (Its run a span of the cargo's: a test or bench binary's a suite, a run's program a program.)
   n=$(exe $1); n=${${n:t}%-[0-9a-f](#c16)}
   (( x )) && st=fail; (( sig )) && st=stopped
@@ -372,35 +365,24 @@ runprog() {  # runprog <record> <keep SCENIC_CARGO_SHARED>: the program as a chi
   return $x
 }
 exe() { readz $1.argv; print -r -- $reply[1] }
-started() { (( quiet )) || print -u2 -r -- "     Running ${$(exe $1)#$t/}$2" }
+started() { (( quiet )) || print -u2 -r -- "     Running ${$(exe $1)#$t/}" }
 failed() { print -u2 -r -- "error: test failed: ${$(exe $1)#$t/} (exit $2)" }
 # Clones first, under the lock: a run's program with the programs beside it (which it may start from
-# its own folder), a test's with the programs its CARGO_BIN_EXE_* name. A test binary naming the
-# shared folder's programs in its code (env!) runs now, under the lock.
-typeset -A cl; first=0; later=()
+# its own folder), a test's with the programs its CARGO_BIN_EXE_* name.
+typeset -A cl; first=0
 for rec in $recs; do
   x=$(exe $rec)
   if [[ $sub == (run|r) ]]; then
     for p in ${x:h}/*(N.x); do [[ $p == $x ]] || clone $p $r/bin >/dev/null; done
   fi
   cl[$rec]=$(clone $x $r/bin) && binexe $rec || { print -u2 "cargo: could not clone $x into $r/bin"; rm -rf $r; exit 1; }
-  if [[ $sub != (run|r) ]] && pinned $x; then
-    started $rec " (under the build lock: it names the shared folder's programs)"
-    runprog $rec 1; x=$?
-    stopped $x
-    if (( x )); then
-      failed $rec $x; (( first )) || first=$x
-      (( nff )) || { rm -rf $r; exit $x; }
-    fi
-  else later+=( $rec ); fi
 done
 release
 # Each a child, the last too, so its run is timed and its status known (a signal to this shell goes
 # on to it, see fwd).
-for (( i = 1; i <= $#later; i++ )); do
-  rec=$later[i]
+for rec in $recs; do
   started $rec
-  runprog $rec 0; x=$?
+  runprog $rec; x=$?
   stopped $x
   if (( x )); then
     failed $rec $x; (( first )) || first=$x

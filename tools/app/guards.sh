@@ -53,6 +53,14 @@ for t in sorted(glob.glob("crates/*/tests/*.rs")):
             print(t + ": reads " + p + ", under no prefix of its `//! scans:` line (tools/dev/testing.md)"); bad.append(t)
 sys.exit(1 if bad else 0)
 PY
+# A test finds a program it runs by the CARGO_BIN_EXE_* cargo and nextest set as it runs, never by
+# env!'s compiled-in path (#1108): in an agent worktree that path is the shared build folder's,
+# which another worktree's build may replace mid-run; the clones the shim runs are named only at
+# run time (tools/dev/testing.md, "One build folder per Mac").
+if grep -rnE 'env!\(\s*"CARGO_BIN_EXE_' crates --include='*.rs'; then
+  echo "a test names its program by env!(\"CARGO_BIN_EXE_…\"): read std::env::var(\"CARGO_BIN_EXE_…\") as it runs (tools/app/guards.sh says why)"
+  exit 1
+fi
 # No test reaches a live program's port on this Mac (#906: a unit test's coordinator on 127.0.0.1:8090,
 # beside the mini's agent, took its jobs' connections): test code (Rust test modules and tests/, the
 # node, shell, Swift and Python tests) names none of store::spawn::POOL_PORTS on a loopback or

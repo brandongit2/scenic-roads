@@ -245,15 +245,17 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   clones in `<shared folder>/.scenic-runs/<pid>/bin/<its folder's name>/` (a run's program with
   the programs beside it; a test's in `deps`, as `store::spawn::in_test_program` reads it), so
   another worktree's build can't replace them meanwhile; the `CARGO_BIN_EXE_*` cargo and nextest
-  set as a test runs name clones too. `cargo nextest run` runs its test binaries from such clones,
-  made as it lists them; the lock goes when its first test starts. A signal to the shim (a `kill` of
+  set as a test runs name clones too, so a test reads its program's path from them
+  (`std::env::var("CARGO_BIN_EXE_…")`), never `env!`'s compiled-in path, which names the shared
+  folder's program (tools/app/guards.sh refuses it). `cargo nextest run` runs its test binaries from such clones,
+  made as it lists them; the lock goes when its first test starts, whatever the binaries (#1108:
+  a binary with `env!("CARGO_BIN_EXE_…")`, pipeline's and server's `tests/cli.rs` then, kept it to
+  the run's end, so on 10 Nov a hung test held every worktree's builds 35 min). A signal to the shim (a `kill` of
   the pid `ps` shows as cargo) goes on to the cargo or program it waits for, and the shim keeps the
   lock until that is gone (the build scripts and rustc of a killed cargo still run on, as they
   would from a plain cargo killed by its pid). Kept under
-  the lock: a test binary naming a program of the shared folder (`env!("CARGO_BIN_EXE_…")`, as
-  pipeline's and server's `tests/cli.rs`), whose path a clone can't change (cargo test runs it
-  first; nextest keeps the lock to the end), doctests (rustdoc compiles and runs them in one go),
-  and programs for another target (wasm32). On 4 Nov a `cargo run --release --example` held the
+  the lock: doctests (rustdoc compiles and runs them in one go) and programs for another target
+  (wasm32). On 4 Nov a `cargo run --release --example` held the
   lock 24 minutes while two check.sh runs waited; with a 60 s `cargo run` and two toy checks
   started 2 s after it, the checks waited 58 and 59 s before and 1 and 0 s after (M4, 4 Nov).
   A clones folder of a gone process is deleted by the next such run.
@@ -462,6 +464,25 @@ through their dev-dependency on store, `features = ["testkit"]`):
 these replace: an assert of a short `elapsed()` bound, a fixed sleep then an assert, and (#662) a
 wait's own watchdog under a minute (`Instant::now() + 20 s`, a loop on `elapsed() < 5 s`,
 `recv_timeout(10 s)` expected to succeed). A bound that isn't a wait says why: `// (bound ok: …)`.
+
+### Every test bounded (#1108, 10 Nov)
+
+`WATCHDOG` is checked between looks: a look that never returns (a call blocked in the kernel, a
+lock never let go) defeats it. So nextest bounds every test itself (`.config/nextest.toml`, read by
+check.sh's and publish's `cargo nextest run`, here and on the test Mac): SLOW each minute, ended
+(SIGTERM, 10 s, SIGKILL) and failed as TIMEOUT at 10 min, twice `WATCHDOG`, so a waiting test fails
+itself first, saying what for; 20 min for the tests listed there, measured at 30-65 s (every
+other one ran under 30 s in November's runs). A test that comes to take over 30 s goes on that
+list with its time. `cargo test` runs have no such bound.
+- **No signal ends a process stuck in the kernel** (`ps` state U, then E as it exits): nextest
+  waits on it, its run with it. A test's run never holds the shared build folder's lock (above),
+  so such a hang delays only its own run, never another worktree's build.
+- **What a test calls must not block in the kernel on the NAS.** On 10 Nov
+  `agent::takeover`'s test, through `jobrt::sys::openers` (libproc's
+  `proc_listpidspath(PROC_ALL_PIDS, …)`, which resolves the path of every open file of every
+  process on the Mac), sat in state U for 7 min while the owner's work stalled the NAS's SMB share,
+  then would not exit; the scan is gone (the agent's lock names its holder, docs/surface.md). Reading
+  one process by its pid (`proc_pidinfo`, `proc_pidpath`) touches none of its open files.
 
 ## Setting up a Mac (tools/dev is tracked, #548)
 
