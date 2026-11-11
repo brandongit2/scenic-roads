@@ -648,13 +648,10 @@ impl Side {
         self.driver.as_ref().and_then(|d| d.declared().map(str::to_string))
     }
 
-    /// The messages its members sent it since it last read, each once by its number: what they
-    /// posted (its inbox, leading), and the lead's in its last beat answer (a member). What it read
-    /// of the inbox dropped from it once its marks are on disk, and the lead told the mark in its
-    /// next beat (`Beats::set_took`).
+    /// The messages its members posted it (its inbox, leading) since it last read, each once by its
+    /// number. What it read dropped from the inbox once its marks are on disk.
     fn take_mail(&mut self) -> Vec<(String, Msg)> {
         let mut msgs = Vec::new();
-        let lead = self.lead().filter(|l| *l != self.me.id);
         let mut posted = self.inbox.held();
         posted.retain(|from, _| *from != self.me.id && !self.forgotten.contains(from));
         // (A sender it doesn't know yet: known once its beat is heard; none heard, passed over and
@@ -671,10 +668,7 @@ impl Side {
         }
         let others: Vec<String> = self.members.iter().filter(|m| **m != self.me.id).cloned().collect();
         for from in others {
-            let mut got = posted.remove(&from).unwrap_or_default();
-            if lead.as_ref() == Some(&from) {
-                got.extend(self.http.from_lead());
-            }
+            let got = posted.remove(&from).unwrap_or_default();
             let last = self.mail.read.get(&from).copied().unwrap_or(0);
             let (got, top) = after(got, last);
             msgs.extend(got.into_iter().map(|m| (from.clone(), m)));
@@ -685,9 +679,6 @@ impl Side {
         if self.save_mail() {
             let forgotten = &self.forgotten;
             self.inbox.read_up_to(&self.mail.read, |m| !forgotten.contains(m) && !strangers.contains(m));
-            if let Some(l) = lead {
-                self.http.set_took(self.mail.read.get(&l).copied().unwrap_or(0));
-            }
         }
         msgs
     }
@@ -710,19 +701,14 @@ impl Side {
         self.mail_dirty.insert(to.to_string());
     }
 
-    /// Sends what it queued since: to the lead by HTTP (`post_mail`), kept while it doesn't take
-    /// them (sent with the next, once it answers the member's beats again); leading, into the
-    /// queue its members' beats' answers carry (crate::coord::inbox). Nothing goes member to
+    /// Sends what it queued since to the lead by HTTP (`post_mail`), kept while it doesn't take
+    /// them (sent with the next, once it answers the member's beats again). Nothing goes to a
     /// member.
     fn send_mail(&mut self) {
-        let lead = self.lead();
-        let leading = lead.as_ref() == Some(&self.me.id);
+        let lead = self.lead().filter(|l| *l != self.me.id);
         let answering = self.http.lead_answering(self.now());
         for to in std::mem::take(&mut self.mail_dirty) {
-            if leading {
-                let q = self.mail.sent.get(&to).into_iter().flatten();
-                self.inbox.queue(&to, q.filter_map(|(n, m)| Some((*n, serde_json::to_value(m).ok()?))).collect());
-            } else if lead.as_ref() == Some(&to) && !(answering && self.post_mail(&to)) {
+            if lead.as_ref() == Some(&to) && !(answering && self.post_mail(&to)) {
                 self.mail_dirty.insert(to);
             }
         }
@@ -2355,7 +2341,6 @@ mod tests {
                     .map(str::to_string)
                     .to_vec(),
                 heartbeat: self.b.http_beats().own(),
-                took: self.b.http_beats().took(),
                 handoffs: self.b.http_beats().handoff_keys(),
                 ..Default::default()
             };

@@ -41,8 +41,8 @@ pub const PAGE: &str = "page";
 pub const ROOT: &str = "page-root";
 
 /// What a member's beat says it speaks, and a lead's answer that it serves (docs/coordination.md
-/// step 5, crate::coord::asks): the lead's messages, this member's hold and the settings'
-/// generation in the answer; its own mail, holds and settings by HTTP alone.
+/// step 5, crate::coord::asks): this member's hold and the settings' generation in the answer;
+/// its own mail, holds and settings by HTTP alone.
 pub const ASKS: &str = "asks";
 
 /// What a member's beat says it speaks, and a lead's answer that it takes (docs/coordination.md
@@ -119,11 +119,8 @@ struct Inner {
     lead_root: bool,
     /// The asks (`ASKS`): whether the lead serves them.
     lead_asks: bool,
-    /// On a member: the lead's messages to it as its last answer carried them, the number up to
-    /// which its pool side took them (its beat says it), its hold as the lead keeps it, the
-    /// settings as last fetched and the generation the lead last said.
-    from_lead: Vec<(u64, serde_json::Value)>,
-    took: u64,
+    /// On a member: its hold as the lead keeps it, the settings as last fetched and the generation
+    /// the lead last said.
     hold: Option<jobrt::control::HoldState>,
     settings: Option<super::asks::Settings>,
     /// The settings an earlier process last had (`had_settings`), until the lead's are fetched.
@@ -179,8 +176,6 @@ impl Default for Beats {
                 lead_root: false,
                 leading: None,
                 lead_asks: false,
-                from_lead: Vec::new(),
-                took: 0,
                 hold: None,
                 settings: None,
                 had: None,
@@ -262,7 +257,6 @@ impl Beats {
         g.threads = a.threads.clone();
         g.lead_asks = a.speaks.iter().any(|w| w == ASKS);
         if g.lead_asks {
-            g.from_lead = a.msgs.clone();
             g.hold = a.hold.clone();
             g.settings_gen = a.settings_gen;
         }
@@ -381,22 +375,6 @@ impl Beats {
     pub fn lead_says(&self, now: u64) -> Option<crate::pool::Member> {
         let g = self.inner.lock().unwrap();
         g.leading.as_ref().filter(|(_, at)| *at <= now && now - at < PAGE_AWAY_S).map(|(m, _)| m.clone())
-    }
-
-    /// The lead's messages to this member as its last answer carried them, after those taken.
-    pub fn from_lead(&self) -> Vec<(u64, serde_json::Value)> {
-        let g = self.inner.lock().unwrap();
-        g.from_lead.iter().filter(|(n, _)| *n > g.took).cloned().collect()
-    }
-
-    /// The number up to which this member took the lead's messages (its pool side's mark, on its
-    /// disk): its beat says it, and the lead drops them.
-    pub fn set_took(&self, n: u64) {
-        self.inner.lock().unwrap().took = n;
-    }
-
-    pub fn took(&self) -> u64 {
-        self.inner.lock().unwrap().took
     }
 
     /// This member's hold as the lead keeps it (its last answer's).

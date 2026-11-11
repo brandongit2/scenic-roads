@@ -125,7 +125,6 @@ impl ToLead {
             held_age_s: 0,
             heartbeat,
             status: serde_json::to_value(&status).ok(),
-            took: 0,
             handoffs: Vec::new(),
             cap: self.cap.clone(),
             progress: self.beats.progress(),
@@ -214,7 +213,6 @@ impl ToLead {
         }
         let b = crate::coord::held::Beat {
             held_age_s: age.as_secs_f64().ceil() as u64,
-            took: self.beats.took(),
             handoffs: self.beats.handoff_keys(),
             ..b.clone()
         };

@@ -51,10 +51,6 @@ pub struct Beat {
     /// Its agent's status (crate::agent::Status), its plan's parts left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<serde_json::Value>,
-    /// The number up to which it took the lead's messages to it (crate::coord::asks): those the
-    /// lead drops; the answer carries the rest.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub took: u64,
     /// Its jobs' hand-offs it keeps whole that the lead hasn't acknowledged, by key
     /// (crate::coord::handoffs): the answer says which are merged and which the lead lacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -88,10 +84,6 @@ pub struct Answer {
     /// The other members' heartbeats as the lead hears them, its own among them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<crate::agent::pool::Heartbeat>,
-    /// The lead's messages to this member after the number its beat said it took (`Beat::took`),
-    /// each numbered (crate::pool::driver::Msg as JSON; docs/coordination.md step 5).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub msgs: Vec<(u64, serde_json::Value)>,
     /// This member's pause as the lead keeps it (`/pool/hold`: another Mac's, or its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<jobrt::control::HoldState>,
@@ -171,9 +163,6 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
             s.keep.beat(&id, &h, unix);
             beats.heard(h, b.speaks.clone(), b.status.clone(), unix);
             a.members = beats.members(unix, &id);
-            if let Some(i) = s.inbox.as_ref() {
-                a.msgs = i.to(&id, b.took);
-            }
             a.hold = s.asks.holds.get(&id).cloned();
             if let Some(h) = s.handoffs.as_ref() {
                 (a.merged, a.lacks) = h.answer(&id, &b.handoffs);
