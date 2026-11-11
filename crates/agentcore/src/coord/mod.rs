@@ -2833,7 +2833,7 @@ impl Coordinator {
 
     /// `set_moving` as of `as_of` (this Mac's wall clock, unix s): when the pool's step that decided
     /// it ran, not when it's told (whatever ran between, a write on a hung share, doesn't stretch
-    /// the time it grants for: `STALL_S` from the step's checks).
+    /// the time it grants for: `UNTOLD_S` from the step's checks).
     pub fn set_moving_as_of(&self, why: Option<String>, as_of: u64) {
         let mut s = self.shared.lock().unwrap();
         s.moving = why;
@@ -4130,7 +4130,7 @@ pub fn wall_now() -> u64 {
 
 impl Shared {
     /// Why the pool's lead grants nothing now (`moving`), or its agent not heard from for
-    /// `STALL_S` (`told`).
+    /// `UNTOLD_S` (`told`).
     fn moving_now(&self, now: u64) -> Option<String> {
         self.moving.clone().or_else(|| {
             self.told
@@ -4222,7 +4222,7 @@ fn route(
                 return Ok((409, serde_json::json!({ "error": p.why(), "pause": p })));
             }
             // An agent on another app than this one's waits until the two run the same (its updater
-            // run, or this Mac's: an agent switches between jobs, a lead re-asserting on its new app;
+            // run, or this Mac's: an agent switches between jobs, a lead taking up on its new app;
             // or the lead handed to a Mac on the newer): its work would be built with other code than
             // the keys it records say. (Before it's seen as a worker that does tasks: a `unit` job's
             // tails would wait for it.) Jobs it runs already go on.
@@ -6731,7 +6731,7 @@ mod tests {
         w.ask(&ask(4096)).unwrap();
     }
 
-    /// A pool lead's coordinator whose agent hasn't said it may grant for `STALL_S` (held up, or
+    /// A pool lead's coordinator whose agent hasn't said it may grant for `UNTOLD_S` (held up, or
     /// just woken before its step: its view maybe old) grants nothing; told again, it does.
     #[test]
     fn a_lead_not_stepped_for_a_stall_grants_nothing() {

@@ -25,7 +25,7 @@
 //! reading the records. Once the faults stop every Mac stays awake for a while; then the declared
 //! lead must lead, alone, its records at the one path must name every entry ever written, and no
 //! take-up may have been made in the run's last ten minutes. Every entry a lead acknowledged is in
-//! every snapshot of a later epoch.
+//! every snapshot of its epoch or a later one.
 
 mod place;
 
@@ -82,7 +82,7 @@ const P_LOSE_LIST: f64 = 0.1;
 const P_KEEP: f64 = 0.85;
 /// Per loop of a Mac while the faults last: that one of its jobs ends (a journal entry); that one
 /// reads the current records; leading, that its coordinator grants a job, or that its agent is
-/// about to sweep (GC) and has its driver re-assert first.
+/// about to sweep (GC), which needs its step's read of the declaration.
 const P_JOB: f64 = 0.35;
 const P_READ: f64 = 0.2;
 const P_GRANT: f64 = 0.3;
@@ -132,7 +132,7 @@ struct Cfg {
     /// Reads that fail: an entry's file erroring on every read for good (its lead refuses it after
     /// an hour), and a Mac whose reads the share doesn't answer for a while.
     fails: bool,
-    /// Now and then an operation the share stalls on for minutes: its step past `STALL_S`.
+    /// Now and then an operation the share stalls on for minutes: its step minutes long.
     stalls: bool,
     /// Now and then a listing its agent loses (its listing's thread gone), never handed back: its
     /// lead asks again once it's overdue (`driver::OVERDUE_S`).

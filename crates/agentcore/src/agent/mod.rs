@@ -339,7 +339,7 @@ fn write_published(home: &Path, r: &publish::LastCatalogue) -> Result<()> {
 }
 
 /// The loop's pool steps passed over in a row, a tick holding the run, before the status says the
-/// pool's step hangs (about a minute of the loop's steps; or at once past `STALL_S`).
+/// pool's step hangs (about a minute of the loop's steps; or at once past `coord::UNTOLD_S`).
 const HUNG_SKIPS: u32 = 3;
 /// What the coordinator says while its pool step hangs on the share (`Agent::pool_skipped`).
 const HUNG: &str = "its pool step hangs (the NAS not answering)";
@@ -15521,7 +15521,7 @@ mod pool_tests {
         t.join().unwrap();
         a.round().unwrap();
         assert_eq!(a.pool_skips, 0);
-        // A tick that never returns (the share hung): held past STALL_S by its own account.
+        // A tick that never returns (the share hung): held past UNTOLD_S by its own account.
         let ticking = a.ticking.clone().unwrap();
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
@@ -15540,7 +15540,7 @@ mod pool_tests {
         assert_eq!(moving(&a).as_deref(), Some(HUNG));
         assert!(a.published.is_none() && a.pool_hung.is_some(), "its contact off the NAS");
         let member = |a: &Agent| a.coord.as_ref().unwrap().shared.lock().unwrap().pool_member.clone();
-        assert_eq!(member(&a), None, "its answers say no term: not late, not gone");
+        assert_eq!(member(&a), None, "its answers say no epoch: not late, not gone");
         a.round().unwrap();
         assert!(a.published.is_none(), "kept off while it hangs");
         let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &a.o.home).unwrap();
