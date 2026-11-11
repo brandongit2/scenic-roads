@@ -266,6 +266,12 @@ pub struct Saved {
     /// starts from older ones, whose saves acknowledged hand-offs no member keeps now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records: Option<(u64, u64)>,
+    /// The declaration it last took the records up under (its `since`, lead::Declared): a take-up
+    /// under another (the owner declared it anew: moved the lead away and back) waits `STALE_S`
+    /// from its own records too, the lead between maybe granting still. None: none known (a state
+    /// of before task #1038 takes up at once, as before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_under: Option<u64>,
 }
 
 /// The records this Mac leads.
@@ -311,6 +317,8 @@ pub struct Driver {
     /// when it's this Mac).
     declared: Option<String>,
     lead_member: Option<Member>,
+    /// The declaration's `since` as last read naming this member (`Saved::led_under`).
+    declared_since: Option<u64>,
 }
 
 impl Driver {
@@ -345,6 +353,7 @@ impl Driver {
             wait_until: None,
             declared: None,
             lead_member: None,
+            declared_since: None,
         }
     }
 
@@ -581,12 +590,14 @@ impl Driver {
     fn declare(&mut self, io: &dyn Io, out: &mut Out) -> (bool, bool) {
         let read = match lead::declared(io) {
             Ok(Some(d)) => {
+                self.declared_since = (d.member == self.me.id).then_some(d.since);
                 self.know(Some(Member { id: d.member, host: d.host, app: String::new() }));
                 true
             }
             Ok(None) => match io.exists(records::ONE).and_then(|one| Ok(one || io.exists(records::ONE_BRIEF)?)) {
                 Ok(false) => match lead::declare(io, &self.me, io.now()) {
                     Ok(d) => {
+                        self.declared_since = d.as_ref().filter(|d| d.member == self.me.id).map(|d| d.since);
                         self.know(d.map(|d| Member { id: d.member, host: d.host, app: String::new() }));
                         true
                     }
@@ -673,6 +684,11 @@ impl Driver {
         // (Nor from records older than those it saved last: a stale read, or its disk's copy
         // restored from a backup.)
         let saved = self.saved.records.filter(|_| self.known);
+        // (Declared anew since it last took up: the owner moved the lead away and back, the lead
+        // between granting until `VOUCH_S` after its last read naming it. Task #1038, the
+        // simulator's seed 20055: a lead moved back took up its own records at once, a late save
+        // of its own over the one path's leaving none newer, beside the lead between.)
+        let anew = self.known && self.saved.led_under.is_some_and(|u| Some(u) != self.declared_since);
         let retry = self.taking.is_some();
         let own = match &self.taking {
             Some(r) => Some(r.clone()),
@@ -695,6 +711,9 @@ impl Driver {
                     return wait(self, out, "the one path's records are newer than its own: another lead saved them");
                 }
                 (o, "the one path's records, newer than its own")
+            }
+            (Some(_), _) if anew && !waited => {
+                return wait(self, out, "declared anew since it last led: the lead before may grant still");
             }
             (Some(r), _) => (r, "its own records"),
             (None, Some(_)) if !waited => {
@@ -786,6 +805,9 @@ impl Driver {
         self.taking = None;
         self.spare = None;
         (self.declared_at, self.wait_until) = (None, None);
+        if self.declared_since.is_some() {
+            self.saved.led_under = self.declared_since;
+        }
         out.events.push(Event::TookUp { epoch, how: how.to_string() });
         self.lead = Some(Lead {
             epoch,
@@ -1583,6 +1605,44 @@ mod tests {
         ia.pass(STALE_S - VOUCH_S);
         let o = step(&mut a, &ia, able());
         assert!(o.leads.is_some_and(|e| e > 2) && o.duties, "{:?}", o.events);
+    }
+
+    /// Task #1038 (the simulator's seed 20055): a lead restarted under the declaration it led under
+    /// takes up its own records at once; one the owner moved away and back (declared anew) waits
+    /// `STALE_S` though its own records are the newest it finds (the lead between's take-up saved
+    /// over by a late save of its own), the lead between granting until `VOUCH_S` after its last
+    /// read naming it.
+    #[test]
+    fn a_lead_declared_anew_waits_before_taking_up_its_own_records() {
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let declare_at = |to: &str, since: u64| {
+            mem.write_whole(lead::LEAD, format!("{{\"member\": \"{to}\", \"since\": {since}}}").as_bytes()).unwrap()
+        };
+        declare_at(A, 100);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert!(step(&mut a, &ia, able()).leads.is_some());
+        assert_eq!(a.saved().led_under, Some(100));
+        ia.restart();
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
+        ia.pass(20);
+        let o = step(&mut a, &ia, able());
+        assert!(o.leads.is_some(), "restarted under its declaration: at once: {:?}", o.events);
+        // Moved to B and back: declared anew.
+        declare_at(B, 200);
+        declare_at(A, 300);
+        ia.restart();
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
+        ia.pass(20);
+        let o = step(&mut a, &ia, able());
+        assert_eq!(o.leads, None, "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("declared anew"))));
+        ia.pass(STALE_S);
+        let o = step(&mut a, &ia, able());
+        assert!(o.leads.is_some(), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
+        assert_eq!(a.saved().led_under, Some(300));
     }
 
     /// docs/coordination.md step 8b, as on 9 Nov at 20:40Z: a lead whose take-up's NAS write fails
