@@ -272,6 +272,43 @@ the pool's, taken in by the main thread's phase while the threads' own phases we
 for 1,721 spans, 0.02 % of the run. The deep pack and mid had the manifest's content names
 (02e54b896b199b6f, e2a73323ce2adb71).
 
+## 4f. What task #1096 did (10 Nov): reads on threads of their own
+
+Before, from the lead's `coord/timings.jsonl` (the runs of 7–10 Nov over 20 s, median a run; busy is
+CPU over wall; the waits are the top-level phases' by wall clock, store::waits):
+
+| step | Mac | runs | wall s | busy of threads | NAS wait s | network wait s |
+|---|---|---|---|---|---|---|
+| terrain-deep | mini | 295 | 612 | 3.41 of 5 | 24 | 178 |
+| terrain-deep | all | 693 | 688 | 3.45 of 5 | 25 | 219 |
+| slope-deep | mini | 311 | 158 | 2.70 of 4 | 50 | 0 |
+| terrain-hi | all | 146 | 130 | 0.66 of 2 | 75 | 0 |
+| slope-hi | all | 43 | 111 | 0.46 of 2 | 87 | 0 |
+| terrain-lo | all | 12 | 107 | 1.33 of 3 | 65 | 0 |
+
+Where the threads waited: terrain-hi's and terrain-lo's `sampling glo30` (45 and 88 s of NAS a run:
+a stored dataset's blocks were read on the sampling threads as sampled, its files opened one after
+another, a whole copy made on the thread that first opened the file), slope's `working out the slope
+tiles` (20 s of slope-hi's 25, 56 s of slope-deep's 184: a neighbour's edge tiles and slope-hi's deep
+mids read on the pyramid's threads as it came to them), terrain-deep's fetched datasets (read ahead
+already, `GEO_FETCHES` threads a dataset, each decoding what it fetched).
+
+| change | where |
+|---|---|
+| **One mechanism** (`store::ahead`): `ahead`, a list read in the compute's order on threads of their own, at most a window past its cursor; `each`, every item at once, in order; `Shelf`, a thread beside the compute reading by key in batches, the compute taking each (waited for while its batch is read, else read by the taker, never twice). Lanes: a process keeps at most 8 reads in flight on the NAS and 64 on the network, whatever lists read at once. | store::ahead |
+| **The sampler reads every GeoTIFF dataset ahead**, stored ones in place on the NAS too (a whole copy on this Mac's disk is read as sampled); a dataset's files opened together first (`blocks_ahead`); the I/O threads read a block's bytes as stored (`Tiff::fetch`, held under a quarter of the cache) and the sampling's threads decode them (were: the fetch threads decoded too, past the job's grant). | inputs::dem::generic, buildstore::geotiff |
+| **The slope's terrain tiles and deep mids read beside its pyramid**: the tiles its shading reads from the NAS (`terrain_wanted`: each tile shaded from its own terrain's four edge neighbours, a missing one's ancestor; not its own pack, copied here) and slope-hi's z10 deep mids, interleaving its quadrants (`mids_order`). | terrain::slope_pack, terrain_pack::ManifestTiles::reading_ahead |
+| **The other readers on it**: get_many's spans, an assembly's mids (terrain-lo, slope-lo), the raw tiles' prefetch. | terrain::terrain_pack, slope_pack |
+
+Not done here: the blends' distance reads (`GeoSet::distance`, `Past`: a window around each group,
+mostly blocks the sampling cached), the next chunk's, dataset's or target's reads ahead (each
+known only once the stage before it has run: task #1097's pipelining), a pyramid's tiles
+(`TileSet::rolling` keeps its own fetches in flight, on its own threads already).
+
+After: **not measured yet.** The first run (main's binary, `terrain-same 6/21/20` on the M4, 10
+Nov 19:45) hung 10 min in `open()` of a NAS file (the owner's NAS work: a listing of
+`sources/fetched/glo30` took 2 min 9 s); the runs wait for the NAS to answer opens normally.
+
 ## 5. Not done, with what the data says (the ranking of what's left)
 
 1. **GSI's tiles fetched live, every run (41 % of terrain-hi: 58.6 h in 16 Japan runs; the
