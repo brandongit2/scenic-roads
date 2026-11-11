@@ -807,11 +807,14 @@ mod net {
         /// A turn of `url`'s host, waiting while its limit's reached.
         pub(super) fn take(url: &str) -> HostSlot {
             let host = host_of(url).to_string();
-            let l: &'static store::aimd::Limiter = *HOSTS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .entry(host.clone())
-                .or_insert_with(|| Box::leak(Box::new(store::aimd::Limiter::new(HOST_START, host_ceiling(&host)))));
+            let l: &'static store::aimd::Limiter =
+                *HOSTS.lock().unwrap_or_else(|e| e.into_inner()).entry(host.clone()).or_insert_with(|| {
+                    Box::leak(Box::new(store::aimd::Limiter::new(
+                        HOST_START,
+                        host_ceiling(&host),
+                        store::aimd::NET_LEAST,
+                    )))
+                });
             HostSlot { turn: l.take(), congested: Default::default(), bytes: Default::default() }
         }
 

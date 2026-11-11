@@ -5,18 +5,22 @@
 //!
 //! - **The limit** starts at `start` (2 on the NAS) and is never below 1 nor above the source's
 //!   `ceiling`. A read waits (`Limiter::take`) while the reads in flight reach it.
-//! - **Up by one a window** while reads finish near their best: a read whose latency is within
-//!   `NEAR` of the floor adds 1 / limit (so a whole window of them adds one, as TCP's congestion
-//!   avoidance does).
-//! - **Halved** when a read takes past `SLOW` times the floor, or fails as the source does when
-//!   it's overloaded or stuck (a timeout, a NAS error of the share's; an HTTP 429 or 5xx: the
-//!   caller says so, `Slot::congested`). Once a window: a read begun before the last halving
-//!   doesn't halve again (the burst that caused one is one signal).
+//! - **Up while reads finish near their best**: the reads' latency over their floor, smoothed
+//!   (`SMOOTH`: one slow answer of a host's long tail isn't the source loaded), within `NEAR`:
+//!   until the first halving one more a read (TCP's slow start: doubling a window, so a job
+//!   reaches its source's capacity in a few windows, not one a window from 2), after it 1 / limit a
+//!   read (one a window, TCP's congestion avoidance).
+//! - **Halved** when the smoothed latency passes `SLOW` times the floor, or a read fails as the
+//!   source does when it's overloaded or stuck (a timeout, a NAS error of the share's; an HTTP 429
+//!   or 5xx: the caller says so, `Slot::congested`). Once a window: a read begun before the last
+//!   halving doesn't halve again (the burst that caused one is one signal).
 //! - **The floor** is the least latency seen lately (`FLOOR_WINDOW`: the minimum over this window
 //!   and the one before), kept by size class of the read (`class`: a 4 KB read and a 32 MB span
-//!   aren't compared), so it follows a source that has become slower for good instead of halving
-//!   for ever against an old best. A read of no bytes (nothing was read: a cache answered) or whose
-//!   latency isn't its source's (a whole download's) is no sample (`Slot::unmeasured`).
+//!   aren't compared), never under the source's `least` (an answer from this Mac's own cache, in
+//!   microseconds, isn't the source's best: against it every real read would be slow), so it
+//!   follows a source that has become slower for good instead of halving for ever against an old
+//!   best. A read of no bytes (nothing was read) or whose latency isn't its source's (a whole
+//!   download's, a copy's) is no sample (`Slot::unmeasured`).
 //! - **No hang on a stuck source**: a read waits for its turn at most `TAKE_WAIT`, then goes
 //!   anyway (a call stuck in the kernel holds its place until the kernel lets it go; the reads
 //!   behind it aren't held longer than that).
@@ -24,10 +28,13 @@
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-/// A read within this many times its class's floor counts as near the best.
+/// Reads within this many times their class's floor (smoothed) count as near the best.
 pub const NEAR: f64 = 1.25;
-/// A read past this many times its class's floor halves the limit.
+/// Reads past this many times their class's floor (smoothed) halve the limit.
 pub const SLOW: f64 = 2.0;
+/// The weight of a read's latency ratio in the smoothed one (an exponential average: about the
+/// last four reads).
+pub const SMOOTH: f64 = 0.25;
 /// The floor's window (its minimum over this window and the one before).
 pub const FLOOR_WINDOW: Duration = Duration::from_secs(30);
 /// The longest a read waits for its turn before it goes anyway.
@@ -49,13 +56,18 @@ pub struct Limiter {
     st: Mutex<State>,
     cv: Condvar,
     ceiling: f64,
+    /// The least a floor is taken to be (`Limiter::new`).
+    least: Duration,
 }
 
 struct State {
     held: usize,
     limit: f64,
-    /// Halvings so far: a read begun before the last one doesn't halve again.
+    /// Halvings so far: a read begun before the last one doesn't halve again; none yet, the slow
+    /// start's climb.
     epoch: u64,
+    /// The reads' latency over their floor, smoothed (`SMOOTH`).
+    ratio: f64,
     /// By class: the least latency in this window and in the one before, and when this began.
     floors: [(Option<Duration>, Option<Duration>, Option<Instant>); CLASSES],
 }
@@ -72,13 +84,11 @@ pub enum Outcome {
 }
 
 impl Limiter {
-    /// A limiter starting at `start` reads in flight, at most `ceiling`.
-    pub const fn new(start: usize, ceiling: usize) -> Limiter {
-        Limiter {
-            st: Mutex::new(State { held: 0, limit: start as f64, epoch: 0, floors: [(None, None, None); CLASSES] }),
-            cv: Condvar::new(),
-            ceiling: ceiling as f64,
-        }
+    /// A limiter starting at `start` reads in flight, at most `ceiling`, its floors never under
+    /// `least` (the source's quickest true answer: a LAN round trip, an internet one).
+    pub const fn new(start: usize, ceiling: usize, least: Duration) -> Limiter {
+        let st = State { held: 0, limit: start as f64, epoch: 0, ratio: 1.0, floors: [(None, None, None); CLASSES] };
+        Limiter { st: Mutex::new(st), cv: Condvar::new(), ceiling: ceiling as f64, least }
     }
 
     /// A turn to read, waited for while the reads in flight reach the limit (at most `TAKE_WAIT`).
@@ -108,6 +118,7 @@ impl Limiter {
             if epoch == g.epoch {
                 g.limit = (g.limit / 2.0).max(1.0);
                 g.epoch += 1;
+                g.ratio = 1.0;
             }
         };
         match outcome {
@@ -127,12 +138,14 @@ impl Limiter {
                     f.2 = Some(now);
                 }
                 f.0 = Some(f.0.map_or(latency, |m| m.min(latency)));
-                let floor = [f.0, f.1].into_iter().flatten().min().unwrap_or(latency);
+                let floor = [f.0, f.1].into_iter().flatten().min().unwrap_or(latency).max(self.least);
                 let ratio = latency.as_secs_f64() / floor.as_secs_f64().max(1e-6);
-                if ratio > SLOW {
+                g.ratio += SMOOTH * (ratio - g.ratio);
+                if g.ratio > SLOW {
                     halve(&mut g);
-                } else if ratio <= NEAR {
-                    g.limit = (g.limit + 1.0 / g.limit).min(self.ceiling);
+                } else if g.ratio <= NEAR {
+                    let step = if g.epoch == 0 { 1.0 } else { 1.0 / g.limit };
+                    g.limit = (g.limit + step).min(self.ceiling);
                 }
             }
         }
@@ -189,11 +202,16 @@ impl Drop for Slot<'_> {
 
 /// The NAS's limiter, this process's: every read of a stored file, a pack, a mid, a whole copy
 /// (store::range's NAS reads, crate::nasfs's reads and copies here) takes its turn from it.
-pub static NAS: Limiter = Limiter::new(NAS_START, NAS_CEILING);
+pub static NAS: Limiter = Limiter::new(NAS_START, NAS_CEILING, NAS_LEAST);
 /// The NAS's start and ceiling (task #534 measured 8 streams at 57 MB/s against one at 25; past 16
 /// SMB gains nothing and the share's other users lose).
 pub const NAS_START: usize = 2;
 pub const NAS_CEILING: usize = 16;
+/// The least a NAS read's floor is taken to be: about an SMB round trip on the LAN (a read this
+/// Mac's cache answers takes microseconds).
+pub const NAS_LEAST: Duration = Duration::from_millis(2);
+/// The least a host's request's floor is taken to be: about an internet round trip.
+pub const NET_LEAST: Duration = Duration::from_millis(20);
 
 /// Whether an I/O error is the share's being overloaded or stuck (a timeout, a network failure of
 /// the mount), not the read's own (a file not there, a permission).
@@ -237,61 +255,80 @@ mod tests {
 
     #[test]
     fn the_limit_climbs_to_the_sources_capacity_and_stays_near_it() {
-        let l = Limiter::new(2, 16);
+        let l = Limiter::new(2, 16, ms(1));
         let seen = settle(&l, 6, 20, 200);
         let last = &seen[100..];
         assert!(last.iter().all(|&v| (3.0..=8.0).contains(&v)), "around 6: {:?}", &seen[190..]);
         assert!(last.iter().any(|&v| v >= 6.0), "reaches the capacity");
         // (A source with room for more than the ceiling: the ceiling.)
-        let l = Limiter::new(2, 16);
+        let l = Limiter::new(2, 16, ms(1));
         let seen = settle(&l, 100, 20, 400);
         assert_eq!(*seen.last().unwrap(), 16.0);
     }
 
     #[test]
-    fn a_slow_read_or_a_congested_one_halves_once_a_window_and_it_recovers() {
-        let l = Limiter::new(8, 16);
+    fn slow_reads_or_a_congested_one_halve_once_a_window_and_it_recovers() {
+        let l = Limiter::new(8, 16, ms(1));
         let now = Instant::now();
         let fast = Outcome::Done { bytes: 1000, latency: ms(10) };
         l.record(0, fast, now);
-        assert!(l.now().0 > 8.0, "near the floor: up");
-        let before = l.now().0;
-        // (Three slow reads begun in the same window: one halving.)
-        for _ in 0..3 {
-            l.record(0, Outcome::Done { bytes: 1000, latency: ms(50) }, now);
+        assert_eq!(l.now().0, 9.0, "near the floor, before any halving: one more a read");
+        // (One slow answer of a long tail: smoothed, not a halving.)
+        l.record(0, Outcome::Done { bytes: 1000, latency: ms(30) }, now);
+        assert_eq!(l.now().0, 9.0);
+        // (Slow ones in a row: one halving, however many in the window.)
+        for _ in 0..6 {
+            l.record(0, Outcome::Done { bytes: 1000, latency: ms(40) }, now);
         }
-        assert_eq!(l.now().0, before / 2.0);
+        assert_eq!(l.now().0, 4.5);
         l.record(1, Outcome::Congested, now);
-        assert_eq!(l.now().0, before / 4.0);
+        assert_eq!(l.now().0, 2.25);
         for _ in 0..10 {
             l.record(0, Outcome::Congested, now);
         }
-        assert_eq!(l.now().0, before / 4.0, "begun before the last halving: no more");
+        assert_eq!(l.now().0, 2.25, "begun before the last halving: no more");
         for e in 2..20 {
             l.record(e, Outcome::Congested, now);
         }
         assert_eq!(l.now().0, 1.0, "never below one");
-        // (Fast again: back up, a window at a time.)
-        for _ in 0..200 {
+        // (Fast again: back up, past the first halving one a window.)
+        l.record(20, fast, now);
+        assert_eq!(l.now().0, 2.0);
+        for _ in 0..300 {
             l.record(20, fast, now);
         }
         assert_eq!(l.now().0, 16.0);
     }
 
     #[test]
+    fn a_floor_is_never_under_the_sources_least() {
+        // (Reads this Mac's cache answers in microseconds don't make every real read slow.)
+        let l = Limiter::new(4, 16, ms(2));
+        let t = Instant::now();
+        for _ in 0..20 {
+            l.record(0, Outcome::Done { bytes: 4096, latency: Duration::from_micros(20) }, t);
+            l.record(0, Outcome::Done { bytes: 4096, latency: ms(2) }, t);
+        }
+        assert_eq!(l.now().0, 16.0, "no halving");
+    }
+
+    #[test]
     fn sizes_are_compared_within_their_class_and_the_floor_follows_a_slower_source() {
-        let l = Limiter::new(4, 16);
+        let l = Limiter::new(4, 16, ms(1));
         let t = Instant::now();
         l.record(0, Outcome::Done { bytes: 4096, latency: ms(5) }, t);
         let up = l.now().0;
-        // (A 32 MB span taking 400 ms isn't slow against 4 KB reads of 5 ms: its own class.)
-        l.record(0, Outcome::Done { bytes: 32 << 20, latency: ms(400) }, t);
+        // (32 MB spans taking 400 ms aren't slow against 4 KB reads of 5 ms: their own class.)
+        for _ in 0..4 {
+            l.record(0, Outcome::Done { bytes: 32 << 20, latency: ms(400) }, t);
+        }
         assert!(l.now().0 >= up, "no halving across classes");
         // (Two windows on, the old best is forgotten: 20 ms reads are the floor now, not slow.)
         let later = t + FLOOR_WINDOW * 2 + ms(1);
-        l.record(0, Outcome::Done { bytes: 4096, latency: ms(20) }, later);
         let v = l.now().0;
-        l.record(0, Outcome::Done { bytes: 4096, latency: ms(20) }, later + ms(1));
+        for k in 0..4 {
+            l.record(0, Outcome::Done { bytes: 4096, latency: ms(20) }, later + ms(k));
+        }
         assert!(l.now().0 > v, "near the new floor: up");
         // (Unmeasured: nothing changes.)
         let v = l.now().0;
@@ -301,7 +338,7 @@ mod tests {
 
     #[test]
     fn readers_wait_for_their_turn_and_a_quiet_one_frees_it_at_once() {
-        let l = Limiter::new(2, 16);
+        let l = Limiter::new(2, 16, ms(1));
         let a = l.take();
         let b = l.take();
         assert_eq!(l.now().1, 2);
@@ -332,7 +369,7 @@ mod tests {
     fn two_processes_reading_one_source_share_it() {
         // (Each its own limiter, the source's latency set by their reads together: their limits
         // settle near half its capacity each.)
-        let (a, b) = (Limiter::new(2, 16), Limiter::new(2, 16));
+        let (a, b) = (Limiter::new(2, 16, ms(1)), Limiter::new(2, 16, ms(1)));
         let mut now = Instant::now();
         let (cap, base) = (8usize, 10u64);
         for _ in 0..400 {
@@ -358,7 +395,7 @@ mod tests {
     /// and it settles near the store's capacity, well under the threads.
     #[test]
     fn readers_of_a_fake_slow_store_settle_near_its_capacity() {
-        let l = Limiter::new(2, 16);
+        let l = Limiter::new(2, 16, ms(1));
         let inflight = std::sync::atomic::AtomicUsize::new(0);
         let most = std::sync::atomic::AtomicUsize::new(0);
         let limits = Mutex::new(Vec::new());
