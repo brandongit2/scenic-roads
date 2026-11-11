@@ -667,10 +667,19 @@ regions built, the coverage and the drawing (no area to cover).
 **Reading:** `accepted_coverage(root, accepted, cache)` (crate::inputs::regions::read) builds the
 coverage from the stored shapes, regions in id order, shapes in stored order. The agent passes its
 cache folder: the coverage is kept there by the accepted version (`coverage/<hash16>.cov`, the
-others deleted: the shapes with their grids, task #807, so a read makes nothing again), so each Mac
-reads a version's geometry files off the NAS and grids them once, a restart none; that first read
-runs on a thread of its own, the plan's region jobs waiting for it. `scenic-build`'s steps read the
-same file, the agent naming the cache folder to its jobs (`SCENIC_CACHE`). Nothing rebuilds the coverage
+others deleted: the shapes with their grids and edge trees, tasks #807 and #1109, so a read makes
+nothing again), so each Mac reads a version's geometry files off the NAS and grids them once, a
+restart none; that first read runs on a thread of its own, the plan's region jobs waiting for it.
+The file is read in place (`store::cachefile::map`, `buildstore::coverage::from_kept`, task #1109):
+each array at a multiple of 8 bytes into it, the shapes' rings, grids and edge trees are views of
+the mapped file, its structure checked as it's read (rings closed, every cell's and run's edges
+there), so they are the file cache's pages, not the process's memory: no footprint, one copy for
+the agent and every job on the Mac, dropped by macOS under pressure and read again as asked (the
+world's 1,605 shapes were 1.74 GB of the lead's footprint read into its own memory). A version
+just made is read back from its file the same way, the one made let go. The answers are those of
+the shapes made from the rings, bit for bit (the same values). `scenic-build`'s steps read the
+same file, the agent naming the cache folder to its jobs (`SCENIC_CACHE`), a folder of the Mac's
+own disk (a mapped NAS file faults with SIGBUS when the share drops). Nothing rebuilds the coverage
 from outlines, GeoJSON or region files. `scenic-build`'s `--regions <dir>` (a scratch folder, for
 trying regions) runs the same check in memory and stores nothing. Tests build coverages with
 `Coverage::fixture` and put accepted fixtures in their records (`inputs::regions::accept_fixture`).

@@ -386,7 +386,8 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   rows they read). Nothing is a hand-kept figure: before its step has run the way it runs now, a
   target is a cold start (docs/pool.md §7.7), sized by its step's runs of an earlier way, terrain-hi's
   by its code's bound (`seam::Plan::terrain_peak`, with what its process holds of the coverage it reads,
-  `coverage::Coverage::read_peak_mb`: its rings, grids, edge trees, kept bytes and the memos' cap),
+  `coverage::Coverage::read_peak_mb`: the memos' cap and each shape's own, its rings, grids and
+  edge trees read in place from the kept file, the file cache's pages, docs/inputs.md §6.1.4),
   else run alone. Measures
   of older `coord::cost_version`s count for nothing. A member asks only for steps its disk has room
   for, never while a newer app waits, and takes the earliest step with a fitting target, from the

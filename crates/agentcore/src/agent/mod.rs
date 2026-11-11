@@ -6958,8 +6958,8 @@ impl Agent {
         if self.placement_on() {
             env.push((jobrt::jobs::AHEAD_ENV.into(), "1".into()));
         }
-        // This Mac's cache, where a job keeps what it reads again and again (the coverage:
-        // buildstore::coverage::Coverage::load).
+        // This Mac's cache, where a job keeps what it reads again and again (the coverage, read in
+        // place: inputs::inputs::regions::read::accepted_coverage).
         env.push((buildstore::coverage::CACHE_ENV.into(), self.o.home.join("cache").to_string_lossy().into_owned()));
         // Resuming on (crate::agent::resume): a pass complete by the records; a resumable job given
         // this member's hand-offs of its step its lead hasn't merged (laid over the snapshot as it
@@ -14155,7 +14155,7 @@ mod tests {
                 .coverage(&store::nasfs::NasRoot::local_for_test(&root), &m1, false)
                 .unwrap(),
         );
-        assert!(buildstore::coverage::from_kept(&mut &std::fs::read(&kept).unwrap()[..]).is_some());
+        assert!(buildstore::coverage::from_kept(store::cachefile::map(&kept).unwrap().unwrap()).is_some());
         let geoms: Vec<PathBuf> = inputs::inputs::regions::read::listed(&a)
             .unwrap()
             .iter()

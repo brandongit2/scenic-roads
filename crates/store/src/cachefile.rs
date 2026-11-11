@@ -335,25 +335,35 @@ pub fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     Err(io::Error::other(format!("{}: deleted each time it was opened", path.display())))
 }
 
-/// The cache file at `path` read through `f` as a stream under a shared lock (let go once read),
-/// never held whole in memory: a large file parsed as it's read (the regions' coverage); None when
-/// it isn't there.
-pub fn read_streamed<T>(path: &Path, f: &mut dyn FnMut(&mut dyn io::Read) -> T) -> io::Result<Option<T>> {
-    struct Counted<R>(R, u64);
-    impl<R: io::Read> io::Read for Counted<R> {
-        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-            let n = self.0.read(b)?;
-            self.1 += n as u64;
-            Ok(n)
-        }
+/// A cache file mapped read-only (`map`), held while the mapping lives: its shared lock, as `hold`'s,
+/// goes with its descriptor, so room-making leaves it until it's dropped. Its pages are the file
+/// cache's, not the process's own memory (a footprint leaves them out; macOS drops them under
+/// pressure and reads them again as they're asked), one copy for every process mapping the file.
+pub struct Mapped {
+    map: memmap2::Mmap,
+    _file: File,
+}
+
+impl Mapped {
+    pub fn bytes(&self) -> &[u8] {
+        &self.map
     }
+}
+
+/// The cache file at `path` mapped (`Mapped`): a large file read in place, never copied into the
+/// process (the regions' coverage, task #1109); None when it isn't there. Safe because a cache
+/// file's bytes never change once it has its name (`create`: made under a temporary name, never
+/// renamed over, never written again; a delete unlinks it, its pages kept while it's mapped). Only
+/// for this Mac's own disk: a mapped NAS file's page fault is a SIGBUS when the share drops
+/// (crate::range).
+pub fn map(path: &Path) -> io::Result<Option<Mapped>> {
     for _ in tries() {
         match open_shared(path)? {
             Some(file) => {
-                let mut r = Counted(io::BufReader::with_capacity(1 << 20, file), 0);
-                let v = f(&mut r);
-                crate::range::count_local(r.1);
-                return Ok(Some(v));
+                // SAFETY: the file's bytes don't change while it's mapped (above).
+                let map = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| with(e, "map", path))?;
+                crate::range::count_local(map.len() as u64);
+                return Ok(Some(Mapped { map, _file: file }));
             }
             None if !path.exists() => return Ok(None),
             None => {}

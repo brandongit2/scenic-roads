@@ -281,13 +281,20 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
     };
     let Some(dir) = cache.map(|c| c.join("coverage")) else { return made() };
     let at = dir.join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
-    // (Read and written as a stream, never whole in memory: the file holds the grids, about the
-    // coverage's own size, task #807.)
-    match store::cachefile::read_streamed(&at, &mut |r| buildstore::coverage::from_kept(r)) {
-        Ok(Some(Some(c))) => return Ok(c),
+    // (Read in place, mapped: the shapes' arrays are the file's pages, the file cache's, not this
+    // process's memory, task #1109; written as a stream, never whole in memory: the file holds the
+    // grids, about the coverage's own size, task #807.)
+    // (None when it isn't there; Some(None) when it doesn't read: not a coverage, or not mapped.)
+    let read = || match store::cachefile::map(&at) {
+        Ok(Some(m)) => Some(buildstore::coverage::from_kept(m)),
+        Ok(None) => None,
+        Err(_) => Some(None),
+    };
+    match read() {
+        Some(Some(c)) => return Ok(c),
         // (Another format's: made again in its place, not read past forever.)
-        Ok(Some(None)) => drop(store::cachefile::try_remove(&at)),
-        _ => {}
+        Some(None) => drop(store::cachefile::try_remove(&at)),
+        None => {}
     }
     let c = made()?;
     let written = store::cachefile::create(&at, &mut |t| {
@@ -303,6 +310,10 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
             if e.path() != at {
                 store::cachefile::try_remove(&e.path());
             }
+        }
+        // (The one made let go for the file just written, read in place: the same shapes.)
+        if let Some(Some(kept)) = read() {
+            return Ok(kept);
         }
     }
     Ok(c)
