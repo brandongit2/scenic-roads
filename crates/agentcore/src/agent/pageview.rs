@@ -837,19 +837,19 @@ pub(crate) mod tests {
                 .collect();
             let mut v = serde_json::json!({
                 "status": status,
-                "view": json(&super::super::pool::view_path(7)).map_or(Value::Null, |v| v["view"].clone()),
+                "view": json("state/coord/term/7/view.json").map_or(Value::Null, |v| v["view"].clone()),
                 "pause": json("state/build/pause.json").unwrap_or(Value::Null),
                 "macs": macs,
                 "at": now_s(),
             });
             let at = |p: &str| std::fs::metadata(self.0.join(p)).and_then(|m| m.modified()).ok().map(ms_of);
-            let fpath = super::super::pool::forecast_input_path(7);
-            if let (Some(t), Some(Ok(r))) = (at(&fpath), raw(&fpath).map(|b| Record::from_bytes(&b))) {
+            let fpath = "state/build/term/7/forecast-input.json";
+            if let (Some(t), Some(Ok(r))) = (at(fpath), raw(fpath).map(|b| Record::from_bytes(&b))) {
                 v["forecast_at"] = t.into();
                 v["forecast_input"] = serde_json::to_value(r)?;
             }
-            let rpath = super::super::pool::regions_path(7);
-            if let (Some(t), Some(r)) = (at(&rpath), json(&rpath)) {
+            let rpath = "state/build/term/7/regions.json";
+            if let (Some(t), Some(r)) = (at(rpath), json(rpath)) {
                 v["regions_at"] = t.into();
                 v["regions"] = r;
             }

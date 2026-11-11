@@ -3090,8 +3090,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // them if it is, and each sync and keep under the answers' lease on the NAS.)
     let _hold = agentcore::answers::Local::for_job(cache.parent().unwrap_or(&cache))?;
     let p = phase("merging the pass's answers with the NAS's");
-    let kept =
-        agentcore::answers::items(out.root(), &cache, &date).leased(agentcore::answers::Leasing::for_job(out.root()));
+    let kept = agentcore::answers::items(out.root(), &cache, &date).leased(agentcore::answers::Leasing::for_job());
     let answers = || agentcore::answers::items_files(&cache, &date);
     eprintln!("items: the pass's answers {}", kept.sync(&answers(), &scratch.join("answers"))?.words());
     drop(p);
@@ -3507,8 +3506,7 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
     }
     std::fs::write(epoch.join(".done"), b"")?;
     let e = Epoch {
-        kept: agentcore::answers::heritage(out.root(), &epoch, date)
-            .leased(agentcore::answers::Leasing::for_job(out.root())),
+        kept: agentcore::answers::heritage(out.root(), &epoch, date).leased(agentcore::answers::Leasing::for_job()),
         dir: epoch,
         _hold: hold,
     };

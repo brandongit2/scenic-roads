@@ -32,7 +32,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use store::nasfs::NasPath;
 
 /// The archives' zstd level (JSON lines: a tenth of their size).
 const LEVEL: i32 = 10;
@@ -765,31 +764,26 @@ pub fn seed(root: &store::nasfs::NasRoot, cache: &Path, scratch: &Path, lease: O
 /// so two Macs making their answers one with the NAS's never each send theirs over the other's (a
 /// merge lost: the answers fetched again). With the budgets on (jobrt::budget), in place of the
 /// agent holding the steps that keep answers while it seeds them. The lead's (docs/coordination.md
-/// step 7, crate::coord::budgets), asked through this Mac's agent's proxy (`/lease/answers`), and,
-/// while the gate's code is in (deleted one release after every member says `budgets` for a day),
-/// a file under the NAS's project folder as well, taken first: the one an older app takes
-/// (`Lease`).
-pub const LEASE: &str = "state/pool/answers.lease";
+/// step 7, crate::coord::budgets), asked through this Mac's agent's proxy (`/lease/answers`:
+/// `Lease`).
+///
 /// A lease lapses this long after its holder last renewed it (s): a holder gone (a Mac asleep, a
 /// process killed) costs a wait this long, never a torn archive (each is written whole).
 pub const LEASE_S: u64 = 600;
 /// How often a waiting taker looks again.
 const LEASE_AGAIN: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Where the answers' lease is taken: at `nas` (`LEASE` under the NAS's project folder), and through
-/// the agent's proxy `proxy` (its lead's) unless the proxy says its lead doesn't take it.
+/// Where the answers' lease is taken: through the agent's proxy at `proxy` (its lead's).
 #[derive(Clone, Debug)]
 pub struct Leasing {
-    pub nas: NasPath,
-    pub proxy: Option<String>,
+    pub proxy: String,
 }
 
 impl Leasing {
     /// A job's, with the budgets on (its agent's proxy named in its environment,
     /// jobrt::budget::PROXY_ENV); None, off.
-    pub fn for_job(root: &store::nasfs::NasRoot) -> Option<Leasing> {
-        let proxy = std::env::var(jobrt::budget::PROXY_ENV).ok()?;
-        Some(Leasing { nas: root.join(LEASE), proxy: Some(proxy) })
+    pub fn for_job() -> Option<Leasing> {
+        Some(Leasing { proxy: std::env::var(jobrt::budget::PROXY_ENV).ok()? })
     }
 }
 
@@ -802,35 +796,10 @@ impl Kept {
     }
 }
 
-/// What a lease's file says.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct LeaseFile {
-    /// Who holds it (the host's name and process).
-    by: String,
-    /// The holder's own mark, so it knows its file from another's.
-    token: String,
-    /// Until when it holds unless renewed (unix seconds).
-    until: u64,
-}
-
-/// What a try for the lease found.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Tried {
-    /// It's ours.
-    Taken,
-    /// Another holds it, until then (unix seconds; who).
-    Held(u64, String),
-}
-
-/// The answers' lease, held: renewed by a thread of its own while it's held, given up when dropped
-/// (only while it's still this holder's). The NAS's file always (`nas`), and the lead's too when
-/// the agent's proxy takes it there (`lead`): while the NAS's lease is in the code (the gate's), a
-/// job an older agent left running takes that one alone, and a job begun before the gate turned
-/// holds the one its agent's proxy said then, so a holder of the lead's holds the NAS's as well
-/// and two never sync at once.
+/// The answers' lease, held: the lead's through the agent's proxy (`proxy`), renewed by a thread
+/// of its own while it's held, given up when dropped (only while it's still this holder's).
 pub struct Lease {
-    lead: Option<String>,
-    nas: NasPath,
+    proxy: String,
     token: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     renewer: Option<std::thread::JoinHandle<()>>,
@@ -843,9 +812,7 @@ enum Asked {
     Done,
     /// Not done: another holds it (who, until when), or it's no longer this holder's.
     Not(jobrt::budget::LeaseSaid),
-    /// The lead doesn't take it (501; an older proxy's 404): the NAS's.
-    Nas,
-    /// The proxy or the lead didn't answer: why.
+    /// The proxy or the lead didn't answer (its proxy has no lead yet, or the lead is down): why.
     Unreached(String),
 }
 
@@ -870,7 +837,6 @@ fn ask(proxy: &str, op: jobrt::budget::LeaseOp, token: &str) -> Asked {
             match code {
                 200 => Asked::Done,
                 409 => Asked::Not(serde_json::from_str(&body).unwrap_or_default()),
-                404 | 501 => Asked::Nas,
                 _ => Asked::Unreached(format!("{code}: {}", body.trim())),
             }
         }
@@ -879,9 +845,8 @@ fn ask(proxy: &str, op: jobrt::budget::LeaseOp, token: &str) -> Asked {
 }
 
 impl Lease {
-    /// Takes the lease at `at`: the NAS's file (a lapsed one broken), then the lead's through the
-    /// agent's proxy when it takes it, waiting while another holds either, or while the lead
-    /// doesn't answer.
+    /// Takes the lease at `at`: the lead's through the agent's proxy, waiting while another holds
+    /// it, or while the lead doesn't answer.
     pub fn take(at: &Leasing) -> Result<Lease> {
         let token = format!(
             "{}-{}-{}",
@@ -896,37 +861,16 @@ impl Lease {
                 said = Some(s);
             }
         };
-        let by = format!("{} (pid {})", hostname(), std::process::id());
         loop {
-            match try_lease(&at.nas, &by, &token, crate::agent::jobs::now_s())? {
-                Tried::Taken => break,
-                Tried::Held(until, who) => say(format!("{who} holds it, until {until} at the latest")),
+            match ask(&at.proxy, jobrt::budget::LeaseOp::Take, &token) {
+                Asked::Done => break,
+                Asked::Not(h) => say(format!("{} holds it, until {} at the latest", h.by, h.until)),
+                Asked::Unreached(e) => say(format!("the lead isn't answering: {e}")),
             }
             std::thread::sleep(LEASE_AGAIN);
         }
-        let mut lead = None;
-        if let Some(proxy) = &at.proxy {
-            let mut renewed = std::time::Instant::now();
-            loop {
-                match ask(proxy, jobrt::budget::LeaseOp::Take, &token) {
-                    Asked::Done => {
-                        lead = Some(proxy.clone());
-                        break;
-                    }
-                    Asked::Not(h) => say(format!("{} holds the lead's, until {} at the latest", h.by, h.until)),
-                    Asked::Nas => break,
-                    Asked::Unreached(e) => say(format!("the lead isn't answering: {e}")),
-                }
-                std::thread::sleep(LEASE_AGAIN);
-                // (The NAS's kept meanwhile.)
-                if renewed.elapsed() >= std::time::Duration::from_secs(LEASE_S / 4) {
-                    renewed = std::time::Instant::now();
-                    renew_lease(&at.nas, &token, crate::agent::jobs::now_s());
-                }
-            }
-        }
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (l, p, t, s) = (lead.clone(), at.nas.clone(), token.clone(), stop.clone());
+        let (p, t, s) = (at.proxy.clone(), token.clone(), stop.clone());
         let renewer = std::thread::Builder::new()
             .name("answers-lease".into())
             .spawn(move || {
@@ -935,48 +879,29 @@ impl Lease {
                     std::thread::sleep(std::time::Duration::from_millis(250));
                     if last.elapsed() >= std::time::Duration::from_secs(LEASE_S / 4) {
                         last = std::time::Instant::now();
-                        // (A renewal that finds it another's decides nothing: on the NAS a breaker
-                        // may have it aside a moment and put it back; `ours`, before each write,
-                        // asks again then.)
-                        let renewed = renew_lease(&p, &t, crate::agent::jobs::now_s())
-                            & l.as_ref().is_none_or(|proxy| ask(proxy, jobrt::budget::LeaseOp::Renew, &t) == Asked::Done);
-                        if !renewed {
-                            eprintln!("answers: the answers' lease wasn't this process's as it renewed it (lapsed and taken, aside a moment, or the lead not answering): its next write checks it first");
+                        // (A renewal that fails decides nothing: `ours`, before each write, asks
+                        // again then.)
+                        if ask(&p, jobrt::budget::LeaseOp::Renew, &t) != Asked::Done {
+                            eprintln!("answers: the answers' lease wasn't this process's as it renewed it (lapsed and taken, or the lead not answering): its next write checks it first");
                         }
                     }
                 }
             })
             .ok();
-        Ok(Lease { lead, nas: at.nas.clone(), token, stop, renewer })
+        Ok(Lease { proxy: at.proxy.clone(), token, stop, renewer })
     }
 
-    /// Whether it's still this holder's: the NAS's file names this holder and hasn't lapsed, and
-    /// the lead renews its own only while it is (and hasn't lapsed). An error to stop the work it
-    /// guards, else.
+    /// Whether it's still this holder's: the lead renews it only while it is (and hasn't lapsed).
+    /// An error to stop the work it guards, else.
     pub fn ours(&self) -> Result<()> {
-        lease_is(&self.nas, &self.token, crate::agent::jobs::now_s())?;
-        let Some(proxy) = &self.lead else { return Ok(()) };
-        match ask(proxy, jobrt::budget::LeaseOp::Renew, &self.token) {
+        match ask(&self.proxy, jobrt::budget::LeaseOp::Renew, &self.token) {
             Asked::Done => Ok(()),
             Asked::Not(h) if h.by.is_empty() => {
                 anyhow::bail!("the answers' lease lapsed, or was given up: nothing written")
             }
             Asked::Not(h) => anyhow::bail!("the answers' lease is {}'s now: nothing written", h.by),
-            Asked::Nas => anyhow::bail!("the lead no longer keeps the answers' lease: nothing written"),
             Asked::Unreached(e) => anyhow::bail!("the lead isn't answering ({e}): nothing written"),
         }
-    }
-}
-
-/// Whether the lease at `path` is the holder of `token`'s at `now`: an error saying why not.
-pub fn lease_is(path: &NasPath, token: &str, now: u64) -> Result<()> {
-    match read_lease(path).with_context(|| format!("read {}", path.display()))? {
-        Some(h) if h.token == token && h.until > now => Ok(()),
-        Some(h) if h.token == token => {
-            anyhow::bail!("the answers' lease lapsed ({} s past its end): nothing written", now - h.until)
-        }
-        Some(h) => anyhow::bail!("the answers' lease is {}'s now: nothing written", h.by),
-        None => anyhow::bail!("the answers' lease is gone (broken by another taker): nothing written"),
     }
 }
 
@@ -986,118 +911,8 @@ impl Drop for Lease {
         if let Some(t) = self.renewer.take() {
             t.join().ok();
         }
-        if let Some(proxy) = &self.lead {
-            ask(proxy, jobrt::budget::LeaseOp::Release, &self.token);
-        }
-        release_lease(&self.nas, &self.token);
+        ask(&self.proxy, jobrt::budget::LeaseOp::Release, &self.token);
     }
-}
-
-fn hostname() -> String {
-    #[cfg(unix)]
-    {
-        let mut b = [0u8; 256];
-        // SAFETY: gethostname writes at most the length given into the buffer it's given.
-        if unsafe { libc::gethostname(b.as_mut_ptr().cast(), b.len()) } == 0 {
-            return String::from_utf8_lossy(&b[..b.iter().position(|c| *c == 0).unwrap_or(b.len())]).into_owned();
-        }
-    }
-    "unknown".into()
-}
-
-fn read_lease(path: &NasPath) -> std::io::Result<Option<LeaseFile>> {
-    match path.read() {
-        Ok(b) => Ok(serde_json::from_slice(&b).ok().or(Some(LeaseFile {
-            by: "a holder whose lease doesn't read whole".into(),
-            token: String::new(),
-            until: 0,
-        }))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-/// One try for the lease at `path` at `now` (unix seconds): made with create-new; one there that
-/// has lapsed broken (moved aside by a name of this taker's own, then removed once it's seen to be
-/// the lapsed one; one renewed meanwhile, or another's made since, is put back with create-new),
-/// then tried again.
-pub fn try_lease(path: &NasPath, by: &str, token: &str, now: u64) -> Result<Tried> {
-    try_lease_with(path, by, token, now, &mut || {})
-}
-
-/// `try_lease`, with `between` run after a lapsed lease is read and before it's moved aside (the
-/// tests': its holder renewing meanwhile).
-fn try_lease_with(path: &NasPath, by: &str, token: &str, now: u64, between: &mut dyn FnMut()) -> Result<Tried> {
-    let mine = LeaseFile { by: by.to_string(), token: token.to_string(), until: now + LEASE_S };
-    if let Some(d) = path.parent() {
-        d.create_dir_all().with_context(|| format!("make {}", d.display()))?;
-    }
-    for _ in 0..3 {
-        match create_new(path, &serde_json::to_vec(&mine)?) {
-            Ok(()) => return Ok(Tried::Taken),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e).with_context(|| format!("make {}", path.display())),
-        }
-        let Some(held) = read_lease(path)? else { continue };
-        if held.token == token {
-            return Ok(Tried::Taken);
-        }
-        if held.until > now {
-            return Ok(Tried::Held(held.until, held.by));
-        }
-        // (Lapsed: broken.)
-        between();
-        let aside = path.with_file_name(format!("{}.lapsed-{token}", path.file_name().unwrap_or_default()));
-        match path.rename(&aside) {
-            Ok(()) => {
-                let moved = read_lease(&aside)?;
-                // (Not the lapsed one as it was read: renewed since (its `until` moved on, the same
-                // token), or another's made since. Put back. Put back over a lease a third taker
-                // made meanwhile (AlreadyExists), the one moved aside is lost: its holder finds so at
-                // its next check, before it writes, or its next renewal.)
-                if moved.as_ref().is_some_and(|m| *m != held) {
-                    let b = aside.read()?;
-                    match create_new(path, &b) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                        Err(e) => return Err(e).with_context(|| format!("put back {}", path.display())),
-                    }
-                }
-                aside.remove_file().ok();
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("break the lapsed {}", path.display())),
-        }
-    }
-    let held = read_lease(path)?.map_or((now, "another".to_string()), |h| (h.until, h.by));
-    Ok(Tried::Held(held.0, held.1))
-}
-
-/// The lease at `path` renewed at `now` by the holder of `token` (written whole, by a temporary
-/// name: its one writer); whether it's still theirs.
-pub fn renew_lease(path: &NasPath, token: &str, now: u64) -> bool {
-    match read_lease(path) {
-        Ok(Some(mut h)) if h.token == token => {
-            h.until = now + LEASE_S;
-            serde_json::to_vec(&h).ok().is_some_and(|b| path.write_whole(b).is_ok())
-        }
-        // (The NAS not answering now: kept, tried again next time.)
-        Err(_) => true,
-        _ => false,
-    }
-}
-
-/// The lease at `path` given up by the holder of `token`: removed only while it's theirs.
-pub fn release_lease(path: &NasPath, token: &str) {
-    if read_lease(path).ok().flatten().is_some_and(|h| h.token == token) {
-        path.remove_file().ok();
-    }
-}
-
-fn create_new(p: &NasPath, b: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut f = p.open_with(std::fs::File::options().write(true).create_new(true))?;
-    f.write_all(b)
 }
 
 /// This Mac's hold on its copies of the answers (under the agent's cache), with writer preference
@@ -1718,139 +1533,19 @@ mod tests {
         assert_eq!(archived(&k, &scratch)["facts-2026-09-28.jsonl"], qids(&["Q1"]));
     }
 
-    /// The answers' lease: one holder; another waits while it's renewed; a lapsed one broken and
-    /// taken; a holder whose lease was broken can't renew it, nor remove the new holder's.
-    #[test]
-    fn the_answers_lease_is_one_holders_and_a_lapsed_one_is_broken() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("nas/state/pool/answers.lease");
-        let t = 1_800_000_000;
-        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m4", "a", t).unwrap(), Tried::Taken);
-        assert_eq!(
-            try_lease(&store::nasfs::NasPath::local_for_test(&p), "m4", "a", t + 1).unwrap(),
-            Tried::Taken,
-            "its own again"
-        );
-        assert_eq!(
-            try_lease(&store::nasfs::NasPath::local_for_test(&p), "m1", "b", t + 1).unwrap(),
-            Tried::Held(t + LEASE_S, "m4".into())
-        );
-        // (Renewed: held past its first end.)
-        assert!(renew_lease(&store::nasfs::NasPath::local_for_test(&p), "a", t + 500));
-        assert_eq!(
-            try_lease(&store::nasfs::NasPath::local_for_test(&p), "m1", "b", t + LEASE_S + 1).unwrap(),
-            Tried::Held(t + 500 + LEASE_S, "m4".into())
-        );
-        // (Lapsed: broken and taken.)
-        assert_eq!(
-            try_lease(&store::nasfs::NasPath::local_for_test(&p), "m1", "b", t + 500 + LEASE_S + 1).unwrap(),
-            Tried::Taken
-        );
-        assert!(
-            !renew_lease(&store::nasfs::NasPath::local_for_test(&p), "a", t + 500 + LEASE_S + 2),
-            "the old holder's isn't its own any more"
-        );
-        release_lease(&store::nasfs::NasPath::local_for_test(&p), "a");
-        assert!(p.is_file(), "the old holder can't remove the new one's");
-        release_lease(&store::nasfs::NasPath::local_for_test(&p), "b");
-        assert!(!p.exists());
-        // (Nothing left aside.)
-        assert_eq!(std::fs::read_dir(p.parent().unwrap()).unwrap().count(), 0);
-        // (A file that doesn't read whole is a lapsed one.)
-        put(&p, "{\"by\":");
-        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m1", "c", t).unwrap(), Tried::Taken);
-    }
-
-    /// A holder that renews between a taker's read of its lapsed lease and the taker's move aside
-    /// keeps it: the taker puts it back (it differs from what was read), and neither holds it twice.
-    #[test]
-    fn a_lease_renewed_while_it_is_being_broken_is_put_back() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("nas/state/pool/answers.lease");
-        let t = 1_800_000_000;
-        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m4", "a", t).unwrap(), Tried::Taken);
-        let late = t + LEASE_S + 1;
-        let (p2, mut renewed) = (p.clone(), false);
-        let r = try_lease_with(&store::nasfs::NasPath::local_for_test(&p), "m1", "b", late, &mut || {
-            renewed = renew_lease(&store::nasfs::NasPath::local_for_test(&p2), "a", late)
-        })
-        .unwrap();
-        assert!(renewed);
-        assert_eq!(r, Tried::Held(late + LEASE_S, "m4".into()));
-        assert!(
-            lease_is(&store::nasfs::NasPath::local_for_test(&p), "a", late).is_ok()
-                && lease_is(&store::nasfs::NasPath::local_for_test(&p), "b", late).is_err()
-        );
-        assert_eq!(std::fs::read_dir(p.parent().unwrap()).unwrap().count(), 1, "nothing left aside");
-    }
-
-    /// A put-back over a lease a third taker made meanwhile: the one moved aside is lost, and its
-    /// holder's check says so (it writes nothing more); one holder only.
-    #[test]
-    fn a_put_back_after_a_third_taker_leaves_one_holder() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("nas/state/pool/answers.lease");
-        let t = 1_800_000_000;
-        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m4", "a", t).unwrap(), Tried::Taken);
-        let late = t + LEASE_S + 1;
-        // (B, the breaker, has moved A's lease aside; C takes the path; B's put-back of A's fails.)
-        let aside = p.with_file_name("answers.lease.lapsed-x");
-        std::fs::rename(&p, &aside).unwrap();
-        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m2", "c", late).unwrap(), Tried::Taken);
-        assert!(create_new(&store::nasfs::NasPath::local_for_test(&p), &std::fs::read(&aside).unwrap())
-            .is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists));
-        std::fs::remove_file(&aside).unwrap();
-        // (A finds its lease gone at its check, and can't renew it; C holds it alone.)
-        assert!(
-            lease_is(&store::nasfs::NasPath::local_for_test(&p), "a", late).is_err()
-                && !renew_lease(&store::nasfs::NasPath::local_for_test(&p), "a", late)
-        );
-        assert!(lease_is(&store::nasfs::NasPath::local_for_test(&p), "c", late).is_ok());
-    }
-
-    /// The holder's renewal while a breaker has its lease aside (renewed just before the breaker
-    /// read it, so put back): the renewal fails, but the lease is still the holder's once it's
-    /// back, and its check before a write passes.
-    #[test]
-    fn a_renewal_while_the_lease_is_aside_loses_nothing() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("nas/state/pool/answers.lease");
-        let l = Lease::take(&Leasing { nas: store::nasfs::NasPath::local_for_test(&p), proxy: None }).unwrap();
-        let aside = p.with_file_name("answers.lease.lapsed-b");
-        std::fs::rename(&p, &aside).unwrap();
-        assert!(
-            !renew_lease(&store::nasfs::NasPath::local_for_test(&p), &l.token, crate::agent::jobs::now_s()),
-            "aside: not found"
-        );
-        assert!(l.ours().is_err(), "nor written meanwhile");
-        create_new(&store::nasfs::NasPath::local_for_test(&p), &std::fs::read(&aside).unwrap()).unwrap();
-        std::fs::remove_file(&aside).unwrap();
-        l.ours().unwrap();
-        drop(l);
-        assert!(!p.exists());
-    }
-
     /// A keep whose lease was lost (here: taken by another after it lapsed) writes nothing to the NAS.
     #[test]
     fn a_keep_whose_lease_is_lost_writes_nothing() {
         let d = tempfile::tempdir().unwrap();
         let (root, cache, scratch) = (d.path().join("nas"), d.path().join("cache"), d.path().join("scratch"));
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1"]));
-        let k = items(&store::nasfs::NasRoot::local_for_test(&root), &cache.join("items"), "2026-09-28")
-            .leased(on_nas(&root));
+        let (c, _p, at) = leading(d.path());
+        let k =
+            items(&store::nasfs::NasRoot::local_for_test(&root), &cache.join("items"), "2026-09-28").leased(Some(at));
         let _held = k.hold().unwrap().unwrap();
-        // (Another takes the path: the holder's file replaced.)
-        std::fs::remove_file(root.join(LEASE)).unwrap();
-        assert_eq!(
-            try_lease(
-                &store::nasfs::NasPath::local_for_test(&root.join(LEASE)),
-                "m1",
-                "other",
-                crate::agent::jobs::now_s()
-            )
-            .unwrap(),
-            Tried::Taken
-        );
+        // (Its lease lapsed, and another takes it.)
+        c.shared.lock().unwrap().small.answers.as_mut().unwrap().until = 1;
+        assert!(c.answers_lease(jobrt::budget::LeaseOp::Take, "m1", "other").unwrap().ok);
         let e = k
             .send(&hashes(&cache.join("items"), &items_files(&cache.join("items"), "2026-09-28")).unwrap(), &scratch)
             .unwrap_err();
@@ -1858,12 +1553,7 @@ mod tests {
         assert!(!k.nas.exists(), "no archive written");
         // (Its lease, given back, leaves the other's.)
         drop(_held);
-        assert!(lease_is(
-            &store::nasfs::NasPath::local_for_test(&root.join(LEASE)),
-            "other",
-            crate::agent::jobs::now_s()
-        )
-        .is_ok());
+        assert_eq!(c.shared.lock().unwrap().small.answers.as_ref().map(|l| l.token.as_str()), Some("other"));
     }
 
     /// Writer preference on this Mac: a sender waits for the step under way, and a step starting
@@ -1911,29 +1601,6 @@ mod tests {
         r2.join().unwrap();
     }
 
-    /// The two-Mac run's (docs/pool.md §13; run by hand on each Mac at once, never by the suite):
-    /// the answers' lease at `SCENIC_TEST_LEASE` (a scratch folder of the NAS, never the project
-    /// folder) taken five times, held three seconds each, each hold's start and end printed
-    /// (`held <me> <start ms> <end ms>`) for a look that no two Macs' holds overlap.
-    #[test]
-    #[ignore]
-    fn two_macs_take_the_answers_lease_in_turn() {
-        let p = PathBuf::from(
-            std::env::var("SCENIC_TEST_LEASE").expect("SCENIC_TEST_LEASE: the lease's path in a scratch folder"),
-        );
-        assert!(!p.to_string_lossy().contains("/projects/scenic-roads"), "not the project folder");
-        let me = hostname();
-        let ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-        for _ in 0..5 {
-            let l = Lease::take(&Leasing { nas: store::nasfs::NasPath::local_for_test(&p), proxy: None }).unwrap();
-            let start = ms();
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            let end = ms();
-            drop(l);
-            println!("held {me} {start} {end}");
-        }
-    }
-
     /// Leased, a sync and a keep take the lease and give it back; the agent's seed too.
     #[test]
     fn leased_syncs_keeps_and_seeds_give_the_lease_back() {
@@ -1941,38 +1608,40 @@ mod tests {
         let (root, cache, scratch) = (d.path().join("nas"), d.path().join("cache"), d.path().join("scratch"));
         put(&root.join("sources/osm/2026-09-28/pass.0000000000000001.json"), "{}");
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1"]));
-        let said = seed(&store::nasfs::NasRoot::local_for_test(&root), &cache, &scratch, on_nas(&root)).unwrap();
+        let (c, _p, at) = leading(d.path());
+        let said = seed(&store::nasfs::NasRoot::local_for_test(&root), &cache, &scratch, Some(at.clone())).unwrap();
         assert_eq!(said.len(), 1, "{said:?}");
-        assert!(!root.join(LEASE).exists());
-        let k = items(&store::nasfs::NasRoot::local_for_test(&root), &cache.join("items"), "2026-09-28")
-            .leased(on_nas(&root));
+        assert!(c.shared.lock().unwrap().small.answers.is_none());
+        let k =
+            items(&store::nasfs::NasRoot::local_for_test(&root), &cache.join("items"), "2026-09-28").leased(Some(at));
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1", "Q2"]));
         assert!(k.keep(&items_files(&cache.join("items"), "2026-09-28"), &scratch).unwrap());
         assert_eq!(k.sync(&items_files(&cache.join("items"), "2026-09-28"), &scratch).unwrap(), Synced::Same);
-        assert!(!root.join(LEASE).exists());
+        assert!(c.shared.lock().unwrap().small.answers.is_none());
     }
 
-    /// The answers' lease on the NAS's file (`LEASE` under `root`): no proxy, as with an older lead.
-    fn on_nas(root: &Path) -> Option<Leasing> {
-        Some(Leasing { nas: store::nasfs::NasRoot::local_for_test(root).join(LEASE), proxy: None })
+    /// A lead (its coordinator in process, under `d`) and a proxy taking from it: the answers'
+    /// lease through that proxy.
+    fn leading(d: &Path) -> (std::sync::Arc<crate::coord::Coordinator>, jobrt::budget::Proxy, Leasing) {
+        use jobrt::budget::{Budget, Proxy, SysClock};
+        use std::sync::Arc;
+        let c = Arc::new(crate::coord::start_for_test(&d.join("lead"), "lead", "").0);
+        let b = Arc::new(Budget::new("m-a", Arc::new(SysClock)));
+        b.set_lead(Some(Arc::new(crate::coord::budgets::InProcess(c.clone()))));
+        let p = Proxy::start(b, None).unwrap();
+        let at = Leasing { proxy: p.url() };
+        (c, p, at)
     }
 
     /// docs/coordination.md step 7: through a proxy whose budget takes from the lead, the lease is
-    /// the lead's and the NAS's: one holder, the next waiting until it's given back, a keep checking it
-    /// before it writes; a holder of the NAS's alone (an older app's job) held off too; a proxy with no
-    /// lead (501), the NAS's alone.
+    /// the lead's: one holder, the next waiting until it's given back, a keep checking it before it
+    /// writes; a proxy with no lead yet gives none.
     #[test]
     fn the_answers_lease_is_the_leads_through_the_proxy() {
-        use jobrt::budget::{Budget, Proxy, SysClock};
-        use std::sync::Arc;
         let d = tempfile::tempdir().unwrap();
         let (root, cache, scratch) = (d.path().join("nas"), d.path().join("cache"), d.path().join("scratch"));
         let nas = store::nasfs::NasRoot::local_for_test(&root);
-        let c = Arc::new(crate::coord::start_for_test(&d.path().join("lead"), "lead", "").0);
-        let b = Arc::new(Budget::new(&nas, "m-a", Arc::new(SysClock)));
-        b.set_lead(Some(Arc::new(crate::coord::budgets::InProcess(c.clone()))));
-        let p = Proxy::start(b.clone(), None).unwrap();
-        let at = Leasing { nas: nas.join(LEASE), proxy: Some(p.url()) };
+        let (c, p, at) = leading(d.path());
         let held = Lease::take(&at).unwrap();
         held.ours().unwrap();
         assert!(c.shared.lock().unwrap().small.answers.is_some());
@@ -1994,28 +1663,12 @@ mod tests {
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1"]));
         let k = items(&nas, &cache.join("items"), "2026-09-28").leased(Some(at.clone()));
         assert!(k.keep(&items_files(&cache.join("items"), "2026-09-28"), &scratch).unwrap());
-        assert!(!root.join(LEASE).exists(), "both given back");
-        // (A holder of the NAS's alone, as a job an older agent left running: a holder of the
-        // lead's waits for it too.)
-        let old = Lease::take(&Leasing { nas: nas.join(LEASE), proxy: None }).unwrap();
-        let taken = store::testkit::Signal::new();
-        let (at2, t) = (at.clone(), taken.clone());
-        let waiter = std::thread::spawn(move || {
-            let l = Lease::take(&at2).unwrap();
-            t.set();
-            drop(l);
-        });
-        // (absence)
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        assert!(!taken.is_set() && c.shared.lock().unwrap().small.answers.is_none(), "the NAS's held: it waits");
-        drop(old);
-        taken.wait("the NAS's given back: taken");
-        waiter.join().unwrap();
-        // (No lead: the NAS's.)
-        b.set_lead(None);
-        let l = Lease::take(&at).unwrap();
-        assert!(root.join(LEASE).exists());
-        drop(l);
-        assert!(!root.join(LEASE).exists());
+        assert!(c.shared.lock().unwrap().small.answers.is_none(), "given back");
+        assert!(!root.join("state/pool").exists(), "nothing on the NAS");
+        // (No lead yet: the proxy answers 503, and a taker waits.)
+        p.budget.set_lead(None);
+        assert!(
+            matches!(ask(&at.proxy, jobrt::budget::LeaseOp::Take, "t"), Asked::Unreached(e) if e.starts_with("503"))
+        );
     }
 }

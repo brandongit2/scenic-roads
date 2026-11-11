@@ -2,7 +2,7 @@
 //! channel a running job hears it on.
 //!
 //! One pause holds for every machine. The lead's coordinator keeps it (agentcore::coord: on its
-//! disk, mirrored to the NAS) and tells its workers, in its answers to their asks and beats. Each
+//! disk) and tells its workers, in its answers to their asks and beats. Each
 //! Mac's agent asks for a pause, or for the build to go on, as that Mac's menu, `scenic pause` or the
 //! map says (`Request`: a file in the agent's folder, taken up within seconds), and passes it on to
 //! the coordinator; a helper that can't reach it pauses itself meanwhile, and one that last heard
@@ -671,8 +671,8 @@ impl Hold {
 }
 
 /// A Mac's hold as last set (`held`: paused, else going on) and when (`at`, unix seconds): the
-/// later of two settings wins. Kept in its agent's folder (`HOLD`) so a restart keeps it, and on
-/// the NAS (`hold_path`), where another Mac's `scenic pause <member>` sets it.
+/// later of two settings wins. Kept in its agent's folder (`HOLD`) so a restart keeps it, and by
+/// the lead (agentcore::coord::asks), where another Mac's `scenic pause <member>` sets it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HoldState {
     #[serde(default)]
@@ -683,12 +683,6 @@ pub struct HoldState {
 
 /// The hold's file in the agent's folder.
 pub const HOLD: &str = "hold.json";
-
-/// A member's hold on the NAS, by member id: the rollout gate's (agentcore::coord::asks), read and
-/// written only while an older app may.
-pub fn hold_path(member: &str) -> String {
-    format!("state/pool/holds/{member}.json")
-}
 
 /// The owner's settings asks of the pool's lead (`scenic pool set`, agentcore::coord::asks), one file
 /// each in this folder of the agent's, taken up by its agent (`take_setting_asks`), which sends them

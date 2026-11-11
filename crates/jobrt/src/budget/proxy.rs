@@ -75,7 +75,7 @@ struct Ctx {
     limits: Limits,
     /// Clients, connections out, and the turns waiting.
     slots: std::sync::Mutex<Slots>,
-    /// A hold being taken on the NAS (one at a time; a hold told meanwhile is held here at once).
+    /// A hold being told the lead (one at a time; a hold told meanwhile is held here at once).
     holding: AtomicBool,
     /// The thread taking it.
     hold_thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -149,18 +149,12 @@ impl Proxy {
         Ok(Proxy { addr, budget, counts, net, stop, thread: Some(thread), ctx })
     }
 
-    /// Waits for the hold last told to be taken on the NAS (the tests'; the agent never waits).
+    /// Waits for the hold last told to reach the lead (the tests'; the agent never waits).
     pub fn settle_hold(&self) {
         let t = self.ctx.hold_thread.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(t) = t {
             t.join().ok();
         }
-    }
-
-    /// The members the agent knows (itself among them): the lead or the NAS away, its share of the
-    /// rate.
-    pub fn set_members(&self, n: usize) {
-        self.budget.members.store(n.max(1), Ordering::Relaxed);
     }
 
     /// What it has done, for the status: the requests to each class's hosts, and the holds told.
@@ -587,8 +581,7 @@ fn param<'a>(q: &'a str, key: &str) -> Option<&'a str> {
 /// A job's ask of the answers' lease (`/lease/answers?op=<take|renew|release>&token=<t>&pid=<p>`,
 /// agentcore::answers::Lease), asked of the lead (`Budget::answers`): 200 with the
 /// lead's word (`super::LeaseSaid`) when done, 409 with it when not (another holds it, or it's no
-/// longer this holder's); 501 when the budget has no lead (take it on the NAS); 503 when the lead
-/// didn't answer.
+/// longer this holder's); 503 when the budget has no lead yet, or the lead didn't answer.
 async fn lease_answers(s: &Conn, ctx: &Arc<Ctx>, q: &str) -> io::Result<()> {
     let token = param(q, "token").filter(|t| !t.is_empty() && t.len() <= 128);
     let (Some(op), Some(token)) = (param(q, "op").and_then(super::LeaseOp::named), token) else {
@@ -605,12 +598,7 @@ async fn lease_answers(s: &Conn, ctx: &Arc<Ctx>, q: &str) -> io::Result<()> {
             let status = if l.ok { "200 OK" } else { "409 Conflict" };
             answer(s, ctx.limits.idle, status, &serde_json::to_string(&l).unwrap_or_default()).await
         }
-        Err(super::NoLease::NoLead) => {
-            answer(s, ctx.limits.idle, "501 Not Implemented", "no lead takes it: the NAS's lease\n").await
-        }
-        Err(super::NoLease::Unreached(e)) => {
-            answer(s, ctx.limits.idle, "503 Service Unavailable", &format!("the lead: {e}\n")).await
-        }
+        Err(e) => answer(s, ctx.limits.idle, "503 Service Unavailable", &format!("the lead: {e}\n")).await,
     }
 }
 
@@ -672,7 +660,7 @@ async fn handle(s: Conn, ctx: &Arc<Ctx>) -> io::Result<()> {
                 .and_then(|v| v.parse::<f64>().ok())
                 .map_or(super::HOLD_DEFAULT_S, |v| v.ceil().max(1.0) as u64);
             net.host(param(q, "host").unwrap_or("?")).holds.fetch_add(1, Ordering::Relaxed);
-            // (Held here at once; told the lead, or on the NAS, on a thread of its own, one at a
+            // (Held here at once; told the lead on a thread of its own, one at a
             // time, so the teller isn't kept waiting on either: told is told.)
             let (now, until) = budget.hold_here(secs);
             if !ctx.holding.swap(true, Ordering::SeqCst) {
@@ -814,7 +802,8 @@ async fn relay(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Clock, Source, StepClock, Token};
+    use super::super::tests::{fake_lead, FakeLead};
+    use super::super::{Clock, StepClock, Token};
     use super::*;
     use std::collections::BTreeMap;
     use std::io::Read;
@@ -869,8 +858,13 @@ mod tests {
         Upstream { addr, heads }
     }
 
-    fn proxy(root: &store::nasfs::NasRoot, me: &str, clock: &Arc<StepClock>, up: &Upstream) -> Proxy {
-        let b = Arc::new(Budget::new(root, me, clock.clone()).with_ledger());
+    /// A budget taking from `lead`, keeping what it gives.
+    fn budget(lead: &Arc<FakeLead>, me: &str, clock: &Arc<StepClock>) -> Arc<Budget> {
+        super::super::tests::budget(lead, me, clock)
+    }
+
+    fn proxy(lead: &Arc<FakeLead>, me: &str, clock: &Arc<StepClock>, up: &Upstream) -> Proxy {
+        let b = budget(lead, me, clock);
         let a = up.addr;
         Proxy::start(b, Some(Arc::new(move |_: &str, _: u16| Some(a)))).unwrap()
     }
@@ -910,17 +904,14 @@ mod tests {
         m
     }
 
-    /// Two agents' proxies on one NAS folder, clients hammering both: every tunnel opened, the
+    /// Two agents' proxies on one lead, clients hammering both: every tunnel opened, the
     /// bytes through unchanged, and no window past its tokens across the two.
     #[test]
     fn two_agents_share_one_budget_never_past_its_rate() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let up = upstream(Arc::new(|| {}));
-        let (a, b) = (
-            proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock, &up),
-            proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-b", &clock, &up),
-        );
+        let (a, b) = (proxy(&lead, "m-a", &clock, &up), proxy(&lead, "m-b", &clock, &up));
         let mut ts = Vec::new();
         for i in 0..6 {
             let p = if i % 2 == 0 { a.addr } else { b.addr };
@@ -946,22 +937,18 @@ mod tests {
     /// A 429 told to one agent's proxy holds the other's connections till its wait ends.
     #[test]
     fn a_429_told_to_one_proxy_holds_the_other() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let up = upstream(Arc::new(|| {}));
-        let (a, b) = (
-            proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock, &up),
-            proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-b", &clock, &up),
-        );
+        let (a, b) = (proxy(&lead, "m-a", &clock, &up), proxy(&lead, "m-b", &clock, &up));
         let r = request(&a.addr, "POST /hold?s=40 HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
         assert!(r.starts_with("HTTP/1.1 200") && r.ends_with("held\n"), "{r}");
-        // (Its proxy held at once; the NAS's part on a thread: waited for here.)
+        // (Its proxy held at once; the lead told on a thread: waited for here.)
         assert!(a.budget.held_until() >= T0 + 40_000);
         a.settle_hold();
         assert_eq!(tunnel(&b.addr, "qlever.dev", b"q\n"), b"q\n");
         let t = b.budget.ledger()[0];
         assert!(t.window >= (T0 + 40_000) / 10_000, "{t:?}");
-        assert_eq!(t.source, Source::Nas);
         assert!(request(&a.addr, "GET /other HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 404"));
     }
 
@@ -969,16 +956,7 @@ mod tests {
     /// there (none beside it), and can be again once it has stopped.
     #[test]
     fn a_proxys_port_is_bound_by_none_beside_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let first = Proxy::start(
-            Arc::new(Budget::new(
-                &store::nasfs::NasRoot::local_for_test(dir.path()),
-                "m-a",
-                Arc::new(StepClock::at(T0)),
-            )),
-            None,
-        )
-        .unwrap();
+        let first = Proxy::start(Arc::new(Budget::new("m-a", Arc::new(StepClock::at(T0)))), None).unwrap();
         let port = first.port();
         assert!(listen(port).is_err());
         first.stop();
@@ -987,8 +965,8 @@ mod tests {
         assert!(listen(plain.local_addr().unwrap().port()).is_err());
     }
 
-    fn proxy_within(root: &store::nasfs::NasRoot, clock: &Arc<StepClock>, up: &Upstream, limits: Limits) -> Proxy {
-        let b = Arc::new(Budget::new(root, "m-a", clock.clone()).with_ledger());
+    fn proxy_within(lead: &Arc<FakeLead>, clock: &Arc<StepClock>, up: &Upstream, limits: Limits) -> Proxy {
+        let b = budget(lead, "m-a", clock);
         let a = up.addr;
         Proxy::start_with(b, Some(Arc::new(move |_: &str, _: u16| Some(a))), limits).unwrap()
     }
@@ -1001,49 +979,34 @@ mod tests {
     /// the test's own thread runs.
     #[test]
     fn a_silent_client_an_idle_tunnel_and_too_many_connections_are_ended() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let c = clock.clone();
         let up = upstream(Arc::new(move || c.set(c.now_ms() + 7_000)));
         let (short, long) = (Duration::from_millis(100), Duration::from_secs(60));
         // (Nothing sent: closed at its head's limit, nothing answered.)
-        let h = proxy_within(
-            &store::nasfs::NasRoot::local_for_test(&dir.path().join("h")),
-            &clock,
-            &up,
-            Limits { head: short, idle: long, conns: 8, wait: long },
-        );
+        let h = proxy_within(&lead, &clock, &up, Limits { head: short, idle: long, conns: 8, wait: long });
         let mut out = Vec::new();
         TcpStream::connect(h.addr).unwrap().read_to_end(&mut out).unwrap();
         assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
         // (A query's tunnel, its byte sent with its head; the client never ends its side.)
-        let a = proxy_within(
-            &store::nasfs::NasRoot::local_for_test(dir.path()),
-            &clock,
-            &up,
-            Limits { head: long, idle: short, conns: 8, wait: long },
-        );
+        let a = proxy_within(&lead, &clock, &up, Limits { head: long, idle: short, conns: 8, wait: long });
         let mut s = TcpStream::connect(a.addr).unwrap();
         s.write_all(b"CONNECT query.wikidata.org:443 HTTP/1.1\r\n\r\nq").unwrap();
         let mut all = Vec::new();
         s.read_to_end(&mut all).unwrap();
         assert_eq!(all, b"HTTP/1.0 200 Connection established\r\n\r\nq", "{}", String::from_utf8_lossy(&all));
         // (Charged as it ended, before the client saw its end: four tokens of the window's five
-        // spent with its own, so the next query takes the fifth, leasing every slot, or the next
-        // window's.)
+        // spent with its own, so the next query takes the fifth, every token of the window then
+        // given, or the next window's.)
         let w = a.budget.ledger()[0].window;
         assert_eq!(tunnel(&a.addr, "query.wikidata.org", b"x"), b"x");
         let next = a.budget.ledger()[1].window;
-        let leased = (0..5).filter(|s| a.budget.dir(Class::Query).join(format!("{w}-{s}")).is_file()).count();
-        assert!(next > w || leased == 5, "charged: {leased} slots of window {w}");
+        let given = lead.given.lock().unwrap().get(&(Class::Query, w)).copied().unwrap_or(0);
+        assert!(next > w || given == 5, "charged: {given} tokens of window {w}");
         // (One connection out at most, no wait: while one is open, the next is answered 503; a
         // hold told meanwhile isn't kept waiting.)
-        let b = proxy_within(
-            &store::nasfs::NasRoot::local_for_test(&dir.path().join("b")),
-            &clock,
-            &up,
-            Limits { head: long, idle: long, conns: 1, wait: Duration::ZERO },
-        );
+        let b = proxy_within(&lead, &clock, &up, Limits { head: long, idle: long, conns: 1, wait: Duration::ZERO });
         let mut open = TcpStream::connect(b.addr).unwrap();
         write!(open, "CONNECT s3.amazonaws.com:443 HTTP/1.1\r\n\r\n").unwrap();
         let mut head = [0u8; 39];
@@ -1061,16 +1024,11 @@ mod tests {
     /// moment by the host): none refused, every tunnel's bytes through, the budget taken once each.
     #[test]
     fn more_clients_than_connections_all_wait_their_turn() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let up = upstream(Arc::new(|| std::thread::sleep(Duration::from_millis(50))));
         let long = Duration::from_secs(60);
-        let a = proxy_within(
-            &store::nasfs::NasRoot::local_for_test(dir.path()),
-            &clock,
-            &up,
-            Limits { head: long, idle: long, conns: 4, wait: long },
-        );
+        let a = proxy_within(&lead, &clock, &up, Limits { head: long, idle: long, conns: 4, wait: long });
         let p = a.addr;
         let ts: Vec<_> = (0..8)
             .map(|i| {
@@ -1093,13 +1051,11 @@ mod tests {
     /// an untagged one, and one tagged for no job begun, to its host alone.
     #[test]
     fn a_jobs_tagged_traffic_is_counted_as_its() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let up = upstream(Arc::new(|| {}));
         let a = up.addr;
-        let b = Arc::new(
-            Budget::new(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", clock.clone()).with_ledger(),
-        );
+        let b = budget(&lead, "m-a", &clock);
         let p = Proxy::start(b, Some(Arc::new(move |_: &str, _: u16| Some(a)))).unwrap();
         let env = p.env_for("job2");
         assert!(env.contains(&("HTTPS_PROXY".into(), format!("http://job2:x@{}", p.addr))));
@@ -1122,11 +1078,11 @@ mod tests {
     /// next, waiting its turn.
     #[test]
     fn a_client_that_stops_reading_lets_go_of_its_connection() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let up = upstream(Arc::new(|| {}));
         let p = proxy_within(
-            &store::nasfs::NasRoot::local_for_test(dir.path()),
+            &lead,
             &clock,
             &up,
             Limits {
@@ -1157,13 +1113,11 @@ mod tests {
     /// one to a host that can't be reached among them. A host's robots.txt told is kept (task #635).
     #[test]
     fn each_hosts_traffic_retries_holds_and_robots_are_counted() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let up = upstream(Arc::new(|| {}));
         let a = up.addr;
-        let b = Arc::new(
-            Budget::new(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", clock.clone()).with_ledger(),
-        );
+        let b = budget(&lead, "m-a", &clock);
         // (gone.example: a port nothing listens on.)
         let gone = store::spawn::listen("127.0.0.1:0").unwrap().local_addr().unwrap();
         let p =
@@ -1208,46 +1162,46 @@ mod tests {
         assert_eq!((s.wiki, s.other, s.holds), (1, 2, 1));
     }
 
-    /// A hold told to a proxy whose NAS is away is held there at once all the same (told is told).
+    /// A hold told to a proxy whose lead is down is held there at once all the same (told is told).
     #[test]
-    fn a_hold_is_held_before_the_nas_is_written() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_hold_is_held_before_the_lead_is_told() {
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
+        lead.up.store(false, Ordering::SeqCst);
         let up = upstream(Arc::new(|| {}));
-        let a = proxy(&store::nasfs::NasRoot::local_for_test(&dir.path().join("away")), "m-a", &clock, &up);
+        let a = proxy(&lead, "m-a", &clock, &up);
         let r = request(&a.addr, "POST /hold?s=30 HTTP/1.1\r\n\r\n");
         assert!(r.ends_with("held\n"), "{r}");
         assert_eq!(a.budget.held_until(), T0 + 30_000);
         a.settle_hold();
-        assert!(!dir.path().join("away").exists());
     }
 
     /// A query's tunnel open for seven seconds owes three tokens past its own, paid before the next.
     #[test]
     fn a_tunnels_time_is_charged_to_the_query_services() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let c = clock.clone();
         let up = upstream(Arc::new(move || c.set(c.now_ms() + 7_000)));
-        let a = proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock, &up);
+        let a = proxy(&lead, "m-a", &clock, &up);
         assert_eq!(tunnel(&a.addr, "query.wikidata.org", b"q\n"), b"q\n");
         let w0 = a.budget.ledger()[0].window;
         assert_eq!(tunnel(&a.addr, "en.wikipedia.org", b"x"), b"x", "another class owes nothing");
         assert_eq!(tunnel(&a.addr, "query.wikidata.org", b"q\n"), b"q\n");
         let qs: Vec<_> = a.budget.ledger().into_iter().filter(|t| t.class == Class::Query).collect();
         let w1 = qs[1].window;
-        let leased = |w: u64| (0..5).filter(|s| a.budget.dir(Class::Query).join(format!("{w}-{s}")).is_file()).count();
-        assert_eq!(leased(w0) + if w1 != w0 { leased(w1) } else { 0 }, 5, "one, three owed, one");
+        let given = |w: u64| lead.given.lock().unwrap().get(&(Class::Query, w)).copied().unwrap_or(0);
+        assert_eq!(given(w0) + if w1 != w0 { given(w1) } else { 0 }, 5, "one, three owed, one");
     }
 
     /// A plain HTTP request is passed on by its path, its connection closed after it; a host not
     /// metered takes nothing.
     #[test]
     fn plain_http_is_passed_on_unmetered_but_for_wikimedia() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let up = upstream(Arc::new(|| {}));
-        let a = proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock, &up);
+        let a = proxy(&lead, "m-a", &clock, &up);
         let r = request(&a.addr, "GET http://example.test:8080/a/b?c=1 HTTP/1.1\r\nHost: example.test:8080\r\nProxy-Connection: keep-alive\r\n\r\n");
         assert!(r.starts_with("GET /a/b?c=1 HTTP/1.1\r\n"), "{r}");
         assert!(r.contains("Connection: close\r\n") && !r.contains("Proxy-Connection"), "{r}");
@@ -1357,12 +1311,11 @@ mod tests {
     /// threads; every tunnel's bytes come through; no window is past its tokens.
     #[test]
     fn many_connections_take_few_threads_and_the_budget_holds() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let up = upstream_one_thread();
         let mk = |me: &str| {
-            let root = store::nasfs::NasRoot::local_for_test(dir.path());
-            let b = Arc::new(Budget::new(&root, me, clock.clone()).with_ledger());
+            let b = budget(&lead, me, &clock);
             Proxy::start(b, Some(Arc::new(move |_: &str, _: u16| Some(up)))).unwrap()
         };
         let (a, b) = (mk("m-a"), mk("m-b"));
@@ -1420,13 +1373,11 @@ mod tests {
     /// held.
     #[test]
     fn a_dropped_connection_frees_its_slot() {
-        let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
+        let lead = fake_lead(&clock);
         let up = upstream_one_thread();
         let long = Duration::from_secs(60);
-        let b = Arc::new(
-            Budget::new(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", clock.clone()).with_ledger(),
-        );
+        let b = budget(&lead, "m-a", &clock);
         let limits = Limits { head: long, idle: long, conns: 1, wait: long };
         let p = Proxy::start_with(b, Some(Arc::new(move |_: &str, _: u16| Some(up))), limits).unwrap();
         let mut first = TcpStream::connect(p.addr).unwrap();

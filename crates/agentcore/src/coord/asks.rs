@@ -10,10 +10,8 @@
 //!   (`beats::ASKS`); an ask the lead hasn't answered stays queued, sent when it returns, and one it
 //!   refuses as it is (400; in process, `Refused`) leaves the queue, said for the owner
 //!   (crate::agent::answered). The lead's own agent hands its queue to its coordinator in process.
-//! - **Mixed versions** (the rollout gate, planned for deletion one release after every member
-//!   says `beats::ASKS` for a day): while the lead doesn't say it, or says a member heard doesn't
-//!   (`Answer::asks_on_nas`), the NAS's files go on beside (a hold's `state/pool/holds/<member>.json`,
-//!   the settings' switch files), so an older app reads what a newer one set and the reverse.
+//!   (The NAS's files beside, for apps before, a hold's `state/pool/holds/<member>.json` and the
+//!   settings' switch files, were deleted with their rollout gate, task #1036.)
 
 use anyhow::{ensure, Result};
 use jobrt::control::{Hold, HoldState};
@@ -30,16 +28,6 @@ pub use jobrt::settings::{
     Setting, SettingAsk, Settings, BATCH, NAMES, NAS_BUDGET, NAS_TARGET, OVERDUE, OVERDUE_DEFAULT, OVERDUE_RANGE,
     PLACEMENT,
 };
-
-/// A setting's switch file on the NAS (read by older apps; the rollout gate's).
-pub fn file(name: &str) -> Option<&'static str> {
-    match name {
-        PLACEMENT => Some(crate::agent::placement::SWITCH),
-        NAS_BUDGET => Some(jobrt::budget::nas::SWITCH),
-        NAS_TARGET => Some(jobrt::budget::nas::TARGET_FILE),
-        _ => None,
-    }
-}
 
 /// Another Mac's pause set, or lifted (`held` None), as of `at` (`POST /pool/hold`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

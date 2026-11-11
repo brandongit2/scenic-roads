@@ -30,12 +30,12 @@ pub const EVERY: Duration = Duration::from_secs(30);
 pub const HTTPS_EVERY: Duration = Duration::from_secs(300);
 
 /// The members in touch and their brokers, from their heartbeats (`beats`: id, heartbeat; `lead`
-/// the term's lead) at the reader's `now`: none out of touch, nor a shadow run's, nor one that
-/// never beat. `own`: this Mac's member and broker, as it is now (its heartbeat on the NAS may lag).
+/// the term's lead) at the reader's `now`: none out of touch, nor one that never beat. `own`: this
+/// Mac's member and broker, as it is now (its heartbeat as heard may lag).
 pub fn peers(beats: &[(String, Heartbeat)], lead: Option<&str>, now: u64, own: (&str, &str, &Broker)) -> Vec<Peer> {
     let mut out: Vec<Peer> = beats
         .iter()
-        .filter(|(id, h)| id != own.0 && !h.shadow && h.pool.beat > 0 && !h.pool.out_of_touch(now))
+        .filter(|(id, h)| id != own.0 && h.pool.beat > 0 && !h.pool.out_of_touch(now))
         .map(|(id, h)| Peer {
             member: id.clone(),
             host: if h.pool.host.is_empty() { id.clone() } else { h.pool.host.clone() },
@@ -76,29 +76,27 @@ mod tests {
 
     #[test]
     fn the_peers_are_the_members_in_touch_this_macs_own_as_it_is_now() {
-        let hb = |id: &str, beat: u64, broker: Option<Broker>, shadow: bool| {
+        let hb = |id: &str, beat: u64, broker: Option<Broker>| {
             (
                 id.to_string(),
                 Heartbeat {
                     pool: Beat { member: id.into(), host: format!("h{id}"), beat, ..Default::default() },
                     broker,
-                    shadow,
                     ..Default::default()
                 },
             )
         };
         let beats = vec![
-            hb("a", 1000, Some(b(&["http://100.1.1.1:8090"])), false),
-            hb("b", 1000, None, false),
-            hb("c", 300, Some(b(&[])), false),
-            hb("d", 1000, None, true),
-            hb("e", 0, None, false),
-            hb("me", 1000, Some(b(&["old"])), false),
+            hb("a", 1000, Some(b(&["http://100.1.1.1:8090"]))),
+            hb("b", 1000, None),
+            hb("c", 300, Some(b(&[]))),
+            hb("e", 0, None),
+            hb("me", 1000, Some(b(&["old"]))),
         ];
         let own = b(&["http://100.1.1.9:8090"]);
         let p = peers(&beats, Some("a"), 1000, ("me", "hme", &own));
         let ids: Vec<&str> = p.iter().map(|p| p.member.as_str()).collect();
-        assert_eq!(ids, ["a", "b", "me"], "out of touch, a shadow's and one that never beat left out");
+        assert_eq!(ids, ["a", "b", "me"], "out of touch and one that never beat left out");
         assert!(p[0].lead && !p[1].lead && !p[2].lead);
         assert_eq!(p[2].broker.as_ref(), Some(&own), "its own as it is, not as its heartbeat lags");
         assert_eq!(p[1].broker, None, "an app before the brokers");

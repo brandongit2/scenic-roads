@@ -1,7 +1,7 @@
 //! Budgets and small leases by HTTP (docs/coordination.md §8, step 7 of task #878): the pool's
-//! Wikimedia budget, the answers' lease and the members' resume progress, kept by the lead in place
-//! of their files on the NAS (`state/pool/wiki/`, `state/pool/answers.lease`,
-//! `state/pool/progress/`).
+//! Wikimedia budget, the answers' lease and the members' resume progress, kept by the lead (their
+//! files on the NAS, `state/pool/wiki/`, `state/pool/answers.lease` and `state/pool/progress/`,
+//! deleted with the gate, task #1036).
 //!
 //! - **The budget** (`POST /pool/budget/take {class}`, `POST /pool/budget/hold {s}`): each
 //!   window's tokens counted in memory (`Windows`), by the lead's clock alone, one a take, so a
@@ -19,19 +19,12 @@
 //!   with the owner's releases of it: `POST /pool/progress/release {member, job}`), for its plan,
 //!   for a day after the member's last word as before (the member may be asleep), and answers each
 //!   beat with that member's releases (`held::Answer::progress_released`).
-//! - **The gate** (`beats::BUDGETS`): a member's agent gives its proxy the lead (`OverHttp`; the
-//!   lead's own agent, `InProcess`) while the lead says it takes them and no member heard within
-//!   `beats::FORGET_S` doesn't say it, nor one heartbeats on the NAS alone (`held::on_nas`): an
-//!   older app takes its tokens and the lease on the NAS, so every Mac does meanwhile. The lead
-//!   gives batches only while every member heard says its proxy takes from it (`beats::BY_LEAD`),
-//!   and its own does (`gives`): none leases on the NAS as another takes from the lead. A member
-//!   writes its progress file on the NAS while its lead doesn't say `BUDGETS` (an older lead
-//!   reads it there); the lead reads a member's file there while that member doesn't say it. All
-//!   deleted one release after every member says it for a day (the #642 gate).
+//! - **Its source**: a member's agent gives its proxy the lead (`OverHttp`; the lead's own agent,
+//!   `InProcess`).
 //!
 //! Nothing here touches the NAS: the coordinator's handlers reach it (§2.3).
 
-use super::{beats, Shared};
+use super::Shared;
 use crate::agent::resume::Progress;
 use anyhow::Result;
 use jobrt::budget::{Class, Given, Lead, LeaseOp, LeaseSaid};
@@ -117,8 +110,6 @@ pub struct Kept {
 #[derive(Debug, Default)]
 pub struct Small {
     pub windows: Windows,
-    /// Its own agent's proxy takes from it (`Coordinator::set_budget_by_lead`): the gate's.
-    pub own_by_lead: bool,
     pub answers: Option<AnswersLease>,
     pub progress: BTreeMap<String, Kept>,
 }
@@ -133,7 +124,7 @@ impl Small {
             .filter_map(|(k, v)| Some((k[PROGRESS.len()..].to_string(), serde_json::from_value(v.clone()).ok()?)))
             .collect();
         let hold_until = docs.get(HOLD).and_then(|v| v["until_ms"].as_u64()).unwrap_or(0);
-        Small { windows: Windows { hold_until, ..Windows::default() }, own_by_lead: false, answers, progress }
+        Small { windows: Windows { hold_until, ..Windows::default() }, answers, progress }
     }
 }
 
@@ -148,29 +139,11 @@ fn lead_only(s: &Shared) -> Result<()> {
     Ok(())
 }
 
-/// `POST /pool/budget/take`: a batch only while every Mac takes from it (`gives`); else a wait
-/// for a window.
+/// `POST /pool/budget/take`: a batch, or a wait.
 pub fn take(s: &mut Shared, class: Class) -> Result<Given> {
     lead_only(s)?;
     let now = now_ms(s);
-    if !gives(s) {
-        return Ok(Given::Wait { ms: class.rate().window_ms });
-    }
     Ok(s.small.windows.take(class, now))
-}
-
-/// Whether it gives batches (the gate, docs/coordination.md step 7): every member heard within
-/// `beats::FORGET_S` says `beats::BUDGETS` (none on the NAS: `on_nas`) and says its proxy takes
-/// from the lead (`beats::BY_LEAD`), and its own agent's proxy does: no Mac leases on the NAS
-/// meanwhile, nor holds a batch from it (a move drops it, jobrt::budget::Budget::set_lead). A
-/// member that moves back to the NAS waits a window first (jobrt::budget::SWITCH_MS), by which
-/// time every batch given before the gate turned has ended.
-pub fn gives(s: &Shared) -> bool {
-    let unix = super::held::wall(s);
-    s.small.own_by_lead
-        && s.beats.as_ref().is_some_and(|b| {
-            !super::held::on_nas(s, b, unix, beats::BUDGETS) && !super::held::on_nas(s, b, unix, beats::BY_LEAD)
-        })
 }
 
 /// `POST /pool/budget/hold`: until when (ms).
@@ -263,14 +236,6 @@ pub fn release(s: &mut Shared, member: &str, job: &str) -> Result<String> {
     Ok(format!("{job}'s progress on {member} ({worker}) released: the lead runs it wherever it fits"))
 }
 
-/// Whether the budget and the answers' lease are taken on the NAS (and members write their
-/// progress files there): a member heard doesn't say `beats::BUDGETS`, or one heartbeats on the
-/// NAS alone (the gate). Without its agent's registry, as before the pool's side is attached: yes.
-pub fn on_nas(s: &Shared) -> bool {
-    let unix = super::held::wall(s);
-    s.beats.as_ref().is_none_or(|b| super::held::on_nas(s, b, unix, beats::BUDGETS))
-}
-
 /// The lead's coordinator over HTTP, a member's agent's (its proxy's lead,
 /// jobrt::budget::Budget::set_lead).
 pub struct OverHttp {
@@ -334,7 +299,7 @@ mod tests {
     /// token comes from the lead, and every request is served.
     #[test]
     fn the_wiki_budget_holds_across_three_macs() {
-        use jobrt::budget::{Budget, Source, StepClock};
+        use jobrt::budget::{Budget, StepClock};
         use std::sync::{Arc, Mutex};
         struct Here(Arc<Mutex<Windows>>, Arc<StepClock>);
         impl Lead for Here {
@@ -351,13 +316,12 @@ mod tests {
                 Err("not this test's".into())
             }
         }
-        let d = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0 + 3_000));
         let lead = Arc::new(Mutex::new(Windows::default()));
         let macs: Vec<Arc<Budget>> = ["m-a", "m-b", "m-c"]
             .into_iter()
             .map(|m| {
-                let b = Budget::new(&store::nasfs::NasRoot::local_for_test(d.path()), m, clock.clone()).with_ledger();
+                let b = Budget::new(m, clock.clone()).with_ledger();
                 b.set_lead(Some(Arc::new(Here(lead.clone(), clock.clone()))));
                 Arc::new(b)
             })
@@ -374,7 +338,6 @@ mod tests {
         ts.into_iter().for_each(|t| t.join().unwrap());
         let mut per: BTreeMap<(Class, u64), u32> = BTreeMap::new();
         for t in macs.iter().flat_map(|b| b.ledger()) {
-            assert_eq!(t.source, Source::Lead);
             *per.entry((t.class, t.window)).or_default() += 1;
         }
         assert_eq!(per.values().sum::<u32>(), 720);
@@ -386,7 +349,6 @@ mod tests {
         let last = per.keys().filter(|(c, _)| *c == Class::Wiki).map(|(_, w)| *w).max().unwrap();
         let back = lead.lock().unwrap().take(Class::Wiki, (last - 1) * 10_000);
         assert_eq!(back, Given::Wait { ms: 20_000 });
-        assert!(!d.path().join(jobrt::budget::DIR).exists(), "nothing on the NAS");
         // (Another Mac's 429 held the lead just after this Mac took a token: no Mac spends one
         // till the hold ends, this one neither.)
         use jobrt::budget::Clock;
@@ -427,20 +389,18 @@ mod tests {
         assert_eq!(Small::of(&docs).answers.map(|l| l.token), Some("c".to_string()));
     }
 
-    /// The gate: the budget goes by the lead only while every member heard says `budgets` (and
-    /// none on an older app heartbeats on the NAS); a member's beat carries its progress, the
-    /// answer the owner's releases of it; a member hearing an older lead goes back to the NAS.
+    /// A member's beat carries its progress, kept by the lead, and the answer the owner's releases
+    /// of it.
     #[test]
-    fn the_budget_goes_by_the_lead_only_while_every_member_says_it() {
+    fn a_members_beat_carries_its_progress_and_the_answer_its_releases() {
         use crate::agent::resume::Held;
-        use crate::coord::held;
+        use crate::coord::{beats, held};
         use std::sync::Arc;
         let d = tempfile::tempdir().unwrap();
         let (c, _port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
         let at_lead = Arc::new(beats::Beats::default());
-        at_lead.set_nas_too(false);
         c.set_beats(Some(at_lead.clone()));
-        let (a, b) = ("m-000000000000000a", "m-000000000000000b");
+        let a = "m-000000000000000a";
         let all = [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS];
         let beat = |m: &str, speaks: &[&str], progress: Option<Progress>| held::Beat {
             member: format!("{m}-host"),
@@ -460,33 +420,17 @@ mod tests {
             jobs: [(pass.clone(), Held { at: 100, ..Default::default() })].into(),
         };
         let ans = c.member_beat(&beat(a, &all, Some(p.clone())));
-        assert!(ans.speaks.iter().any(|w| w == beats::BUDGETS) && !ans.budgets_on_nas && !c.budgets_on_nas());
+        assert!(ans.speaks.iter().any(|w| w == beats::BUDGETS), "said for the app before");
         assert_eq!(c.progress().into_iter().map(|k| k.progress).collect::<Vec<_>>(), [p.clone()]);
-        // (No batch while a Mac may still lease on the NAS: the member's beat not yet saying its
-        // proxy takes from the lead, then the lead's own agent's not.)
-        let gives = || gives(&c.shared.lock().unwrap());
-        assert!(!gives());
-        assert!(matches!(c.budget_take(Class::Wiki).unwrap(), Given::Wait { .. }));
-        let by_lead = [&all[..], &[beats::BY_LEAD]].concat();
-        c.member_beat(&beat(a, &by_lead, Some(p.clone())));
-        assert!(!gives());
-        c.set_budget_by_lead(true);
-        assert!(gives());
-        // (An older member heard: every Mac on the NAS meanwhile.)
-        let old = c.member_beat(&beat(b, &all[..5], None));
-        assert!(old.budgets_on_nas && c.budgets_on_nas() && !gives());
         let at_a = beats::Beats::default();
-        at_a.answered(&old, 10);
-        assert!(at_a.lead_budgets() && at_a.budgets_on_nas());
+        at_a.answered(&ans, 10);
+        assert!(at_a.progress_released().is_empty());
         // (The owner's release, in the answer to the member's next beat.)
         c.release_progress(a, &pass).unwrap();
         let ans = c.member_beat(&beat(a, &all, Some(p)));
         assert_eq!(ans.progress_released, [(pass, 100)]);
         at_a.answered(&ans, 11);
         assert_eq!(at_a.progress_released().len(), 1);
-        // (An older lead: the NAS.)
-        at_a.lead_older(12);
-        assert!(!at_a.lead_budgets() && at_a.budgets_on_nas());
     }
 
     /// A member's progress kept when its beat changes it, the owner's release answered with it, and

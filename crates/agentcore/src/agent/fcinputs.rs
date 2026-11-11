@@ -1,8 +1,8 @@
 //! The forecast inputs' archive (docs/pool.md §7.9, task #933): the lead's forecast inputs
 //! (`forecast::Record`, the forecast's whole input) kept for the backtest (`scenic forecast-check
 //! --replay`, crate::agent::fccheck), by term and time. Its own write path: before it, the backtest
-//! read the terms' `forecast-input.json`, which the lead writes only while a member reads the
-//! page's files on the NAS (`Coordinator::page_on_nas`), and none has since 31 Oct 2026.
+//! read the terms' `forecast-input.json`, which the lead wrote only while a member read the
+//! page's files on the NAS (that gate deleted with task #1036), and none has since 31 Oct 2026.
 //!
 //! - **What:** an input at most every `EVERY_S` (the backtest's shortest horizon,
 //!   `fccheck::HORIZONS`), the first the lead's archive thread is handed after it: a replay costs

@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// The settings the lead keeps (`/pool/settings`), each moved from its switch file under
-/// `state/pool/` (pipeline's coord::asks::file): placement by how crucial a job is (pipeline's
+/// The settings the lead keeps (`/pool/settings`), once each a switch file under `state/pool/`:
+/// placement by how crucial a job is (pipeline's
 /// agent::placement; a boolean), the NAS's budget (crate::budget::nas's switch: its text) and the
 /// NAS's load target (crate::budget::nas::Target's share, %); and, with no switch file (an older lead
 /// refuses them): the batch length (task #927: the minutes of measured time a job of a shared step is

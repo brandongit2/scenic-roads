@@ -158,10 +158,6 @@ fn join_try() -> Duration {
     }
 }
 
-/// How often a member reads its hold on the NAS (jobrt::control::hold_path), set there by another
-/// Mac's `scenic pause <member>`.
-const HOLD_READ_EVERY: Duration = Duration::from_secs(30);
-
 /// An update's drain (`Agent::update_wait`): the time the target under way is expected to need,
 /// times UPDATE_MARGIN, at most UPDATE_CAP, never less than DRAIN_GRACE. ×1.5 because a target's
 /// measured time varies by about a third between runs (another job beside it, the NAS's load), and
@@ -881,8 +877,7 @@ pub struct Status {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nas: Option<crate::coord::NasView>,
     /// The members building now, fresh within ten minutes (the lead's: their beats,
-    /// crate::coord::beats; a member's on an older app, its `state/helpers/<host>.json`): their
-    /// own status, with their job.
+    /// crate::coord::beats): their own status, with their job.
     #[serde(default)]
     pub helpers: Vec<Status>,
     /// The members' heartbeats as the lead hears them by HTTP, its own among them (the lead's: every
@@ -975,10 +970,6 @@ pub struct PoolView {
     pub role: pool::Role,
     pub gates: pool::Gates,
     pub members: Vec<String>,
-    /// The members heard from lately, itself among them (`Side::heard_lately`): what the budgets
-    /// divide by.
-    #[serde(default)]
-    pub heard: usize,
     #[serde(default)]
     pub unacked: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -990,14 +981,6 @@ pub struct PoolView {
     /// the lead's `gc` job removes the NAS's old catalogues (gc::OLD_CATALOGUES).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all_check_map: bool,
-}
-
-impl PoolView {
-    /// The members heard from lately as view `p` last said (none, or an older app's without the
-    /// count: this one alone), for the budgets while the pool's run is busy.
-    pub fn heard_of(p: Option<&PoolView>) -> usize {
-        p.map_or(1, |p| p.heard.max(1))
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1542,10 +1525,8 @@ pub struct Agent {
     /// Placement by how crucial a job is, and work offered ahead (crate::agent::placement), as the
     /// pool's settings last said (crate::coord::asks): it acts only in the pool (`placement_on`).
     placement: bool,
-    /// The pool's switch files on the NAS as last seen by the lead (`tend_settings`: taken into its
-    /// settings when one changes, while an older app may set it there), and the settings'
-    /// generation last written for the CLI and the menu bar (`control::POOL_SETTINGS`).
-    settings_seen: BTreeMap<&'static str, Option<String>>,
+    /// The settings' generation last written for the CLI and the menu bar
+    /// (`control::POOL_SETTINGS`).
     settings_written: Option<u64>,
     /// A member's broker (crate::coord::Broker): its own jobs' tasks alone (the lead's are its
     /// coordinator's, `coord`), and when one last failed to start.
@@ -1571,10 +1552,8 @@ pub struct Agent {
     broker_failed: Option<Instant>,
     /// Its address over HTTPS and its LAN addresses last looked for, and what they were.
     broker_https: Option<(Instant, Option<String>, Vec<String>)>,
-    /// This member's progress as it last noted it (or read it, as the process began), and as it
-    /// last wrote it on the NAS (the gate's: for an older lead).
+    /// This member's progress as it last noted it (or read it, as the process began).
     held_progress: Option<resume::Progress>,
-    progress_nas: Option<resume::Progress>,
     /// The disk guard's room-making for the jobs it froze (when it began): its result decides
     /// whether they go on or one is given back.
     disk_room: Option<Instant>,
@@ -1626,15 +1605,11 @@ pub struct Agent {
     /// (`pause_local`). Kept in `pause.json`.
     pause: Option<jobrt::control::Pause>,
     pause_local: bool,
-    /// The lead's pause as last mirrored to the NAS, and whether this agent's own (kept from
-    /// before its coordinator was up) has been given to the coordinator.
-    mirrored: Option<Option<jobrt::control::Pause>>,
+    /// Whether this agent's own pause (kept from before its coordinator was up) has been given to
+    /// the coordinator.
     pause_pushed: bool,
     /// This Mac paused alone (jobrt::control::Hold, task #224) is control's (`control.hold`,
-    /// `Agent::hold`); the generation of it last written to the NAS (or read there); when the
-    /// NAS's was last read; this member's id as last seen.
-    hold_mirrored: Option<u64>,
-    hold_read: Option<Instant>,
+    /// `Agent::hold`); this member's id as last seen.
     hold_me: Option<String>,
     /// The generation of this Mac's hold last told the lead, and the lead's hold of it then
     /// (`tend_hold`: told again when the lead's word changes, as after a lead move or a lost store).
@@ -1823,10 +1798,10 @@ impl Agent {
         // agent before freed before its lock (its `proxy` dropped first), so their connections are
         // refused for moments at most, within their retries. (That port not to be had: tried
         // again by `tend_proxy`.)
-        let early_proxy = match (&lock, told_proxy_port(&o.home), o.root.clone().or_else(|| find_root(false))) {
-            (Some(_), Some(port), Some(root)) if !o.dry_run => jobrt::budget::listen(port)
+        let early_proxy = match (&lock, told_proxy_port(&o.home)) {
+            (Some(_), Some(port)) if !o.dry_run => jobrt::budget::listen(port)
                 .ok()
-                .and_then(|l| jobrt::budget::start_proxy(&root, &me, l).ok())
+                .and_then(|l| jobrt::budget::start_proxy(&me, l).ok())
                 .inspect(|p| eprintln!("agent: the budgets' proxy listens on {} (its jobs left running)", p.url())),
             _ => None,
         };
@@ -2000,7 +1975,6 @@ impl Agent {
             proxy_port: None,
             port,
             placement: false,
-            settings_seen: BTreeMap::new(),
             settings_written: None,
             broker: None,
             pageview: pageview::PageView::new(o.the_plan),
@@ -2014,7 +1988,6 @@ impl Agent {
             broker_failed: None,
             broker_https: None,
             held_progress: None,
-            progress_nas: None,
             disk_room: None,
             nas,
             lead_awake: None,
@@ -2037,13 +2010,10 @@ impl Agent {
             cheap: None,
             pause,
             pause_local: false,
-            mirrored: None,
             pause_pushed: false,
             jobs_part,
             control,
             beat,
-            hold_mirrored: None,
-            hold_read: None,
             hold_me: None,
             hold_told: None,
             cache_size: Default::default(),
@@ -2371,9 +2341,9 @@ impl Agent {
         // (Resuming on: a resumable job whose progress this Mac holds, asked for too; the lead
         // offers it to this Mac alone. Its scratch is here already: no room asked for it.)
         if self.resume_on() {
-            if let Some(p) = self.own_progress(root) {
+            if let Some(p) = self.own_progress() {
                 let now = self.resume_now();
-                let gone = self.own_released(root, &p);
+                let gone = self.own_released(&p);
                 for job in resume::asks(&p, now, &|j, at| gone.contains(&(j.to_string(), at))) {
                     if let Some(step) = job.split(' ').next().filter(|s| !can.iter().any(|c| c == s)) {
                         can.push(step.to_string());
@@ -4124,12 +4094,9 @@ impl Agent {
     /// hold as the lead keeps it (a later one, another Mac's ask, given control), and its own told
     /// the lead once it's the later. An ask for another member is **jobs**' thread's
     /// (`slots::take_member_hold`, at once), or taken here while that thread doesn't run. Leading,
-    /// its asks queued go to its coordinator in process. **The rollout gate** (`Beats::asks_on_nas`):
-    /// meanwhile its file on the NAS read every `HOLD_READ_EVERY` and its own written there once it
-    /// changed, as an older app sets and reads it.
-    fn tend_hold(&mut self, root: Option<&store::nasfs::NasRoot>) {
+    /// its asks queued go to its coordinator in process.
+    fn tend_hold(&mut self) {
         use crate::coord::asks::{Ask, HoldAsk};
-        use jobrt::control::HoldState;
         if self._lock.is_none() || self.o.dry_run {
             return;
         }
@@ -4180,41 +4147,10 @@ impl Agent {
                 }
             }
         }
-        if self.beats.as_ref().is_some_and(|b| !b.asks_on_nas()) {
-            return;
-        }
-        let Some(r) = root else { return };
-        let path = r.join(jobrt::control::hold_path(&me));
-        if self.hold_read.is_none_or(|t| t.elapsed() >= HOLD_READ_EVERY) {
-            self.hold_read = Some(Instant::now());
-            if let Ok(h) = nasread::read_switch(&path).map(|t| serde_json::from_str::<HoldState>(&t)) {
-                match h {
-                    Ok(h) if h.at > self.hold().at => {
-                        self.set_hold(h.held.clone(), h.at);
-                        let (now, g) = self.control.hold.read();
-                        self.hold_mirrored = (*now == h).then_some(g);
-                    }
-                    Ok(h) => {
-                        // (The same: mirrored. Older there, and not this: this Mac's written back.)
-                        let (now, g) = self.control.hold.read();
-                        self.hold_mirrored = (*now == h).then_some(g);
-                    }
-                    _ => self.hold_mirrored = None,
-                }
-            }
-        }
-        let (hold, g) = self.control.hold.read();
-        if self.hold_mirrored != Some(g) && hold.at > 0 {
-            match write_hold(&path, &hold) {
-                Ok(()) => self.hold_mirrored = Some(g),
-                Err(e) => eprintln!("agent: this Mac's pause on the NAS: {e:#}"),
-            }
-        }
     }
 
     /// The pool's settings now (crate::coord::asks): its coordinator's leading, the lead's as last
-    /// fetched else; None while the lead doesn't serve them (an older app: its switch files on the
-    /// NAS are read instead).
+    /// fetched else; None while the lead hasn't served them yet.
     fn pool_settings(&self) -> Option<crate::coord::asks::Settings> {
         match (&self.coord, &self.beats) {
             (Some(c), _) => Some(c.pool_settings()),
@@ -4225,54 +4161,17 @@ impl Agent {
 
     /// The pool's settings (docs/coordination.md step 5): the owner's asks (`scenic pool set`,
     /// control::SETTING_ASKS) queued for the lead (sent with the next beat; leading, given its
-    /// coordinator in process by `tend_hold`), and written to their switch files on the NAS too
-    /// while the rollout gate is on (an older app reads them there; a lead that doesn't serve the
-    /// asks too). Leading, a switch file an older app changed meanwhile taken into its settings, and
-    /// each one once while its settings have none (the first lead to keep them starts from the
-    /// files). The settings as they are written for the CLI and the menu bar
-    /// (control::POOL_SETTINGS).
-    fn tend_settings(&mut self, root: Option<&NasRoot>) {
-        use crate::coord::asks::{self, Ask, SettingAsk};
+    /// coordinator in process by `tend_hold`). The settings as they are written for the CLI and the
+    /// menu bar (control::POOL_SETTINGS).
+    fn tend_settings(&mut self) {
+        use crate::coord::asks::Ask;
         if self._lock.is_none() || self.o.dry_run {
             return;
         }
         let Some(b) = self.beats.clone() else { return };
-        let on_nas = b.asks_on_nas();
         for a in jobrt::control::take_setting_asks(&self.o.home) {
-            if on_nas {
-                match root.map(|r| write_setting(r, &a)) {
-                    Some(Ok(())) => {}
-                    Some(Err(e)) => eprintln!("agent: the setting {} on the NAS, for an older app: {e:#}", a.name),
-                    None => eprintln!("agent: the setting {}: the NAS away, an older app won't see it", a.name),
-                }
-            }
             eprintln!("agent: the setting {} asked of the lead: {}", a.name, a.value);
             b.ask(Ask::Setting(a));
-        }
-        if let (Some(c), Some(r)) = (&self.coord, root) {
-            let kept = c.pool_settings();
-            for name in asks::NAMES {
-                let Some(file) = asks::file(name) else { continue };
-                let text = match nasread::read_switch(&r.join(file)) {
-                    Ok(t) => Some(t),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(_) => continue,
-                };
-                let first = !self.settings_seen.contains_key(name);
-                if self.settings_seen.get(name) == Some(&text) {
-                    continue;
-                }
-                self.settings_seen.insert(name, text.clone());
-                if !(on_nas && !first || first && !kept.values.contains_key(name)) {
-                    continue;
-                }
-                let value = setting_of(name, text.as_deref());
-                if first && value.is_null() {
-                    continue;
-                }
-                let by = format!("its file on the NAS ({file})");
-                b.ask(Ask::Setting(SettingAsk { name: name.to_string(), value, by, at: now_s() }));
-            }
         }
         if let Some(s) = self.pool_settings().filter(|s| self.settings_written != Some(s.gen)) {
             let w = serde_json::to_vec_pretty(&s)
@@ -4364,9 +4263,9 @@ impl Agent {
         // The build's pause: this Mac's ask passed on; the lead's coordinator's.
         self.sync_pause(root.as_ref(), &mut waiting);
         // This Mac paused alone, or going on (task #224): its setting on the NAS, another member's.
-        self.tend_hold(root.as_ref());
+        self.tend_hold();
         // The pool's settings: the owner's asks sent the lead, the CLI's copy (crate::coord::asks).
-        self.tend_settings(root.as_ref());
+        self.tend_settings();
 
         nasread::phase("the running jobs");
         // The running jobs; then the Mac's memory against its floor (the memory guard:
@@ -4612,10 +4511,8 @@ impl Agent {
         let built = view.built.clone();
         let mut checklist = view.checklist.clone();
         // (Read each loop: a helper's status changes between plans.)
-        let helpers: Vec<Status> = match (&root, self.is_member()) {
-            (Some(r), false) => helpers(r, &self.host, self.beats.as_deref()),
-            _ => Vec::new(),
-        };
+        let helpers: Vec<Status> =
+            if self.is_member() { Vec::new() } else { helpers(&self.host, self.beats.as_deref()) };
         let beats = match (&self.beats, self.is_member()) {
             (Some(b), false) => b.members(now_s(), ""),
             _ => Vec::new(),
@@ -4723,12 +4620,10 @@ impl Agent {
             return Ok(ended);
         }
         // A helper's own status, never the heartbeat (the Macs' status bars show the main agent's,
-        // and its helpers'), here; to the lead in its beat, and on the NAS only while a member on
-        // an older app reads it there (crate::coord::beats). The lead's on the NAS, every Mac's page
-        // reading it until step 4 of docs/coordination.md serves the view.
+        // and its helpers'), here, and to the lead in its beat (crate::coord::beats). The lead's on
+        // the NAS too (`scenic status` and the map server read it there).
         let (local, shared) = if self.is_member() {
-            let nas = self.beats.as_ref().is_none_or(|b| b.nas_too());
-            ("helper.json".to_string(), nas.then(|| format!("state/helpers/{}.json", self.host)))
+            ("helper.json".to_string(), None)
         } else {
             ("status.json".to_string(), Some(LEAD_STATUS.to_string()))
         };
@@ -6557,15 +6452,11 @@ impl Agent {
         let (root, cache, scratch) =
             (root.long_retry(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
         // (With the budgets on, alone among the steps keeping answers here by their lock, and each
-        // archive sent under the answers' lease, its proxy's lead's or the NAS's:
-        // crate::answers::Local, Lease.)
-        let lease = crate::answers::Leasing {
-            nas: root.join(crate::answers::LEASE),
-            proxy: self.proxy.as_ref().map(|p| p.url()),
-        };
+        // archive sent under the answers' lease, its proxy's lead's: crate::answers::Local, Lease.)
+        let lease = self.proxy.as_ref().map(|p| crate::answers::Leasing { proxy: p.url() });
         match std::thread::Builder::new()
             .name("answers".into())
-            .spawn(move || crate::answers::seed(&root, &cache, &scratch, Some(lease)))
+            .spawn(move || crate::answers::seed(&root, &cache, &scratch, lease))
         {
             Ok(t) => self.answers_seed = Some(t),
             Err(e) => eprintln!("agent: the pass's answers not sent to the NAS now (its thread didn't start: {e})"),
@@ -7256,28 +7147,9 @@ impl Agent {
             None => self.pause_local = false,
         }
         if let Some(c) = &self.coord {
-            let (p, on_nas) = (c.pause(), c.page_on_nas());
+            let p = c.pause();
             if p != self.pause {
-                self.know_pause(p.clone());
-            }
-            // Mirrored to the NAS, until it's written there, while a member that reads it there is
-            // in touch (`Coordinator::page_on_nas`: the pages have it by `/pool/view` otherwise);
-            // off, written again at once when it's on.
-            if !on_nas {
-                self.mirrored = None;
-            } else if let (Some(r), false) = (root, self.mirrored.as_ref() == Some(&p)) {
-                let path = r.join("state/build/pause.json");
-                let kept = match &p {
-                    Some(x) => serde_json::to_vec(x).map_err(anyhow::Error::from).and_then(|b| path.write_whole(b)),
-                    None => path
-                        .remove_file()
-                        .or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
-                        .map_err(anyhow::Error::from),
-                };
-                match kept {
-                    Ok(()) => self.mirrored = Some(p),
-                    Err(e) => eprintln!("agent: the pause on the NAS: {e:#}"),
-                }
+                self.know_pause(p);
             }
         }
     }
@@ -7653,16 +7525,15 @@ impl Agent {
             .or_else(|| self.pool_seen.as_ref()?.restart.clone())
     }
 
-    /// The budgets' proxy: started once (taking from the pool's budget on the NAS's project folder
-    /// `root`, as this agent); told where the budget is (`budget_lead`) and the members this Mac
-    /// knows (its share of the rate with the lead or the NAS away).
-    fn tend_proxy(&mut self, root: &store::nasfs::NasRoot) {
+    /// The budgets' proxy: started once (taking from the pool's budget as this agent); told where
+    /// the budget is (`budget_lead`).
+    fn tend_proxy(&mut self) {
         if self.proxy.is_none() {
             let me = self.member_id.clone().unwrap_or_else(|| self.me.clone());
             // (On the port the jobs taken over were told, while it can be bound: `proxy_port`.)
             use jobrt::budget::listen;
             let listener = self.proxy_port.and_then(|p| listen(p).ok()).map_or_else(|| listen(0), Ok);
-            match listener.map_err(anyhow::Error::from).and_then(|l| jobrt::budget::start_proxy(root, &me, l)) {
+            match listener.map_err(anyhow::Error::from).and_then(|l| jobrt::budget::start_proxy(&me, l)) {
                 Ok(p) => {
                     eprintln!("agent: the budgets' proxy listens on {}", p.url());
                     self.proxy = Some(p);
@@ -7678,46 +7549,30 @@ impl Agent {
                 self.stop_adopted("its proxy's port was taken: its connections can't go out");
             }
         }
-        let n = if self.pool.is_some() { PoolView::heard_of(self.pool_seen.as_ref()) } else { 1 };
-        if let Some(p) = &self.proxy {
-            p.set_members(n);
-        }
         self.budget_lead();
     }
 
-    /// The Wikimedia budget's and the answers' lease's source as the gate says it
-    /// (docs/coordination.md step 7, crate::coord::budgets): the lead, while it takes them and no
-    /// member in touch takes them on the NAS (its own coordinator in process, leading; over HTTP,
-    /// a member); else the NAS, as before. Said when it changes.
+    /// The Wikimedia budget's and the answers' lease's source (docs/coordination.md step 7,
+    /// crate::coord::budgets): the lead (its own coordinator in process, leading; over HTTP, a
+    /// member); none out of the pool, nothing taken meanwhile. Said when it changes.
     fn budget_lead(&mut self) {
         use crate::coord::budgets::{InProcess, OverHttp};
         let Some(p) = &self.proxy else { return };
-        let (lead, said): (Option<std::sync::Arc<dyn jobrt::budget::Lead>>, String) =
-            match (&self.coord, &self.beats, &self.client) {
-                _ if self.pool.is_none() => (None, "the NAS (out of the pool)".into()),
-                (Some(c), _, _) if !c.budgets_on_nas() => {
-                    (Some(std::sync::Arc::new(InProcess(c.clone()))), "this Mac's coordinator".into())
-                }
-                (None, Some(b), Some(c)) if !b.budgets_on_nas() => {
-                    let (urls, token) = (c.urls(), c.token());
-                    let said = format!("the lead ({})", urls.join(", "));
-                    (Some(std::sync::Arc::new(OverHttp { urls, token, worker: self.host.clone() })), said)
-                }
-                _ => (None, "the NAS (a member in touch, or the lead, on an older app)".into()),
-            };
-        let by_lead = lead.is_some();
+        let (lead, said): (Option<std::sync::Arc<dyn jobrt::budget::Lead>>, String) = match (&self.coord, &self.client)
+        {
+            _ if self.pool.is_none() => (None, "none yet (out of the pool)".into()),
+            (Some(c), _) => (Some(std::sync::Arc::new(InProcess(c.clone()))), "this Mac's coordinator".into()),
+            (None, Some(c)) => {
+                let (urls, token) = (c.urls(), c.token());
+                let said = format!("the lead ({})", urls.join(", "));
+                (Some(std::sync::Arc::new(OverHttp { urls, token, worker: self.host.clone() })), said)
+            }
+            (None, None) => (None, "none yet (no lead known)".into()),
+        };
         if self.budget_from.as_deref() != Some(said.as_str()) {
             eprintln!("agent: the Wikimedia budget and the answers' lease from {said}");
             p.budget.set_lead(lead);
             self.budget_from = Some(said);
-        }
-        // (Said after the move, its NAS batch dropped: the lead gives batches only while every Mac
-        // says it, crate::coord::budgets::gives.)
-        if let Some(c) = &self.coord {
-            c.set_budget_by_lead(by_lead);
-        }
-        if let Some(b) = &self.beats {
-            b.set_by_lead(by_lead);
         }
     }
 
@@ -8083,16 +7938,12 @@ impl Agent {
     }
 
     /// This member's progress: as this process last noted it, else read from its disk
-    /// (`resume::FILE`), else from its file on the NAS (where an app before step 7 kept it alone;
-    /// once, or again after a read failed). None out of the pool, or when it can't be read now.
-    fn own_progress(&mut self, root: &store::nasfs::NasRoot) -> Option<resume::Progress> {
+    /// (`resume::FILE`; once, or again after a read failed). None out of the pool, or when it can't
+    /// be read now.
+    fn own_progress(&mut self) -> Option<resume::Progress> {
         if self.held_progress.is_none() {
             let me = self.member_id.clone()?;
-            let read = match resume::read_local(&self.o.home) {
-                Ok(Some(p)) if p.member == me => Ok(Some(p)),
-                Ok(_) => resume::read(root, &me),
-                Err(e) => Err(e),
-            };
+            let read = resume::read_local(&self.o.home).map(|p| p.filter(|p| p.member == me));
             match read {
                 Ok(p) => {
                     let p =
@@ -8111,8 +7962,8 @@ impl Agent {
 
     /// Notes job `job`'s progress on this Mac in its member's progress (None: dropped), written
     /// whole on its disk when that changes it, and only then, and told the lead (its next beat).
-    fn note_progress(&mut self, root: &store::nasfs::NasRoot, job: &str, held: Option<resume::Held>) {
-        let Some(mut p) = self.own_progress(root) else { return };
+    fn note_progress(&mut self, job: &str, held: Option<resume::Held>) {
+        let Some(mut p) = self.own_progress() else { return };
         let before = p.clone();
         match held {
             Some(h) => {
@@ -8130,7 +7981,6 @@ impl Agent {
             Ok(()) => {
                 self.tell_progress(&p);
                 self.held_progress = Some(p);
-                self.progress_to_nas(root);
             }
             Err(e) => eprintln!("agent: this Mac's progress of {job} not noted ({e:#}): the lead may run it elsewhere"),
         }
@@ -8148,38 +7998,13 @@ impl Agent {
         }
     }
 
-    /// The gate's (docs/coordination.md step 7): while this member's lead answers without taking
-    /// progress in the beat (an older lead, which reads it on the NAS), its file there written whole
-    /// when it differs from what was written last. (None before the lead's first answer: its next
-    /// loop has it.)
-    fn progress_to_nas(&mut self, root: &store::nasfs::NasRoot) {
-        if self.coord.is_some() || !self.beats.as_ref().is_some_and(|b| b.lead_without_budgets()) {
-            return;
-        }
-        let Some(p) = self.held_progress.clone().filter(|p| self.progress_nas.as_ref() != Some(p)) else { return };
-        match resume::write(root, &p) {
-            Ok(()) => self.progress_nas = Some(p),
-            Err(e) => eprintln!("agent: this Mac's progress not written on the NAS for its older lead ({e:#})"),
-        }
-    }
-
-    /// Whether the owner released this member's progress of `job` that began at `at`: as the lead
-    /// keeps it (its own coordinator's, leading; its last beat's answer, a member), else (an older
-    /// lead) as its file on the NAS says.
-    fn own_released(&self, root: &store::nasfs::NasRoot, p: &resume::Progress) -> BTreeSet<(String, u64)> {
-        let of_lead = match (&self.coord, &self.beats) {
-            (Some(c), _) => Some(c.progress_heard(p.clone())),
-            (None, Some(b)) if b.lead_budgets() => Some(b.progress_released()),
-            _ => None,
-        };
-        match of_lead {
-            Some(r) => r.into_iter().collect(),
-            None => p
-                .jobs
-                .iter()
-                .filter(|(j, h)| resume::released(root, &p.member, j, h.began()))
-                .map(|(j, h)| (j.clone(), h.began()))
-                .collect(),
+    /// The owner's releases of this member's progress (job, when it began) as the lead keeps them:
+    /// its own coordinator's, leading; its last beat's answer, a member.
+    fn own_released(&self, p: &resume::Progress) -> BTreeSet<(String, u64)> {
+        match (&self.coord, &self.beats) {
+            (Some(c), _) => c.progress_heard(p.clone()).into_iter().collect(),
+            (None, Some(b)) => b.progress_released().into_iter().collect(),
+            _ => BTreeSet::new(),
         }
     }
 
@@ -8188,14 +8013,13 @@ impl Agent {
         if !self.resume_on() || !resume::resumable(&spec.id) {
             return;
         }
-        let Some(root) = self.last_root.clone() else { return };
         let scratch = scratch_of(spec).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         let at = self.resume_now();
         // (Its day from when its progress began here, however often it starts again: the file read
         // first, so a read that failed before doesn't begin it anew.)
-        let Some(mine) = self.own_progress(&root) else { return };
+        let Some(mine) = self.own_progress() else { return };
         let since = mine.jobs.get(&spec.id).filter(|h| !h.done).map_or(at, resume::Held::began);
-        self.note_progress(&root, &spec.id, Some(resume::Held { at, since, done: false, scratch }));
+        self.note_progress(&spec.id, Some(resume::Held { at, since, done: false, scratch }));
     }
 
     /// A resumable job ended here (resuming on): its progress noted from now, finished or not (a
@@ -8204,15 +8028,14 @@ impl Agent {
         if !self.resume_on() || !resume::resumable(id) {
             return;
         }
-        let Some(root) = self.last_root.clone() else { return };
         let was = self.held_progress.as_ref().and_then(|p| p.jobs.get(id)).cloned();
         let at = self.resume_now();
         let (since, scratch) = was.map_or((at, String::new()), |h| (h.began(), h.scratch));
-        self.note_progress(&root, id, Some(resume::Held { at, since, done: ok, scratch }));
+        self.note_progress(id, Some(resume::Held { at, since, done: ok, scratch }));
     }
 
     /// Each loop, resuming on: this member's progress told its lead (a lead's store opened since,
-    /// or a new lead) and, the gate's, its file on the NAS for an older lead; and what's no longer
+    /// or a new lead); and what's no longer
     /// held dropped from it (a pass the records hold complete, finished here; a day past its job's
     /// last run here, or released by the owner), its scratch folder left to room-making as before.
     /// A job running here is left as it is.
@@ -8220,13 +8043,12 @@ impl Agent {
         if !self.resume_on() {
             return;
         }
-        let Some(p) = self.own_progress(root) else { return };
+        let Some(p) = self.own_progress() else { return };
         self.tell_progress(&p);
-        self.progress_to_nas(root);
         if p.jobs.is_empty() {
             return;
         }
-        let gone = self.own_released(root, &p);
+        let gone = self.own_released(&p);
         let now = self.resume_now();
         let running: BTreeSet<String> =
             self.slots.iter().filter_map(|s| s.running.as_ref()).map(|r| r.spec.id.clone()).collect();
@@ -8236,7 +8058,7 @@ impl Agent {
             if running.contains(job) {
                 // (Noted again while it runs, so the lead sees it may be running: `at` alone.)
                 if now >= h.at.saturating_add(resume::REFRESH_S) {
-                    self.note_progress(root, job, Some(resume::Held { at: now, ..h.clone() }));
+                    self.note_progress(job, Some(resume::Held { at: now, ..h.clone() }));
                 }
                 continue;
             }
@@ -8252,7 +8074,7 @@ impl Agent {
                     "a day since its job last ran here"
                 };
                 eprintln!("agent: {job}'s progress here no longer held for this Mac ({why})");
-                self.note_progress(root, job, None);
+                self.note_progress(job, None);
             }
         }
     }
@@ -8292,15 +8114,10 @@ impl Agent {
     /// process can be now (it restarts into it).
     fn pool_switch(&mut self, root: Option<&store::nasfs::NasRoot>) {
         let Some(r) = root.filter(|_| self._lock.is_some() && !self.o.dry_run) else { return };
-        self.tend_proxy(r);
+        self.tend_proxy();
         self.tend_progress(r);
-        // (The pool's setting, the lead's (crate::coord::asks); its switch file while the lead
-        // doesn't serve them, an older app.)
-        let placed = match self.pool_settings() {
-            Some(s) => Some(s.placement()),
-            None => placement::on(r),
-        };
-        if let Some(on) = placed {
+        // (The pool's setting, the lead's: crate::coord::asks.)
+        if let Some(on) = self.pool_settings().map(|s| s.placement()) {
             if on != self.placement {
                 eprintln!(
                     "agent: placement by how crucial a job is, and work offered ahead, is {}",
@@ -8747,9 +8564,7 @@ impl Agent {
         // (Its store backed up to the NAS by a thread of its own, crate::pool::store::back_up.)
         co.back_up(run.side.shared_nas());
         // The page's files: to its coordinator, which serves every Mac's page from memory
-        // (`/pool/view`, docs/coordination.md step 4); on the NAS too only while a member that reads
-        // them there is in touch (`Coordinator::page_on_nas`: the older apps' path, deleted with the
-        // #642 gate). Off, the next write when it's on again is at once.
+        // (`/pool/view`, docs/coordination.md step 4).
         let regions = self.plan.view.get().regions_view.clone();
         if let Some((key, v)) = regions.as_ref() {
             if run.regions_handed.as_ref() != Some(key) {
@@ -8759,44 +8574,6 @@ impl Agent {
         }
         if let Some((b, _)) = &fc_bytes {
             co.set_page_forecast(b);
-        }
-        if co.page_on_nas() {
-            // The coordinator's view: when it changed, at most each `pool::VIEW_EVERY`.
-            let view = serde_json::to_vec(&co.view()).unwrap_or_default();
-            let due = match &run.view_written {
-                Some((t, b, at)) => *t != term || (*b != view && at.elapsed() >= pool::VIEW_EVERY),
-                None => true,
-            };
-            if due {
-                let mut rec = serde_json::json!({ "at": now_s() });
-                rec["view"] = serde_json::from_slice(&view).unwrap_or_default();
-                match run.side.nas().write_whole(&pool::view_path(term), &serde_json::to_vec(&rec).unwrap_or_default())
-                {
-                    Ok(()) => run.view_written = Some((term, view, std::time::Instant::now())),
-                    Err(e) => eprintln!("agent: the coordinator's view of term {term}: {e:#}"),
-                }
-            }
-            // The regions, each time they're made again (and in each new term).
-            if let Some((key, v)) = regions.as_ref() {
-                if run.regions_written.as_ref() != Some(&(term, key.clone())) {
-                    match run
-                        .side
-                        .nas()
-                        .write_whole(&pool::regions_path(term), &serde_json::to_vec(&**v).unwrap_or_default())
-                    {
-                        Ok(()) => run.regions_written = Some((term, key.clone())),
-                        Err(e) => eprintln!("agent: the build page's regions of term {term}: {e:#}"),
-                    }
-                }
-            }
-            // The forecast's input, each time the forecast's made (at most each minute).
-            if let Some((b, _)) = &fc_bytes {
-                if let Err(e) = run.side.nas().write_whole(&pool::forecast_input_path(term), b) {
-                    eprintln!("agent: the forecast's input of term {term}: {e:#}");
-                }
-            }
-        } else {
-            (run.view_written, run.regions_written) = (None, None);
         }
         // Into the forecasts' archive (fcarchive) with its input (fcinputs): handed to its thread,
         // which writes in batches. (The input at its own forecast's time: an older one than the
@@ -9336,66 +9113,6 @@ fn stop_for(
     }
 }
 
-/// A member's hold (jobrt::control::HoldState) written whole to `p` on the NAS, on the writers
-/// under a deadline (`nasread::write`).
-fn write_hold(p: &NasPath, st: &jobrt::control::HoldState) -> Result<()> {
-    let b = serde_json::to_vec(st)?;
-    let owned = p.clone();
-    nasread::write(p, move || {
-        if let Some(d) = owned.parent() {
-            d.create_dir_all()?;
-        }
-        owned.write_whole(&b)
-    })
-}
-
-/// A pool setting's value as its switch file's text says it (`text` None: no file), as an older
-/// app reads it (crate::coord::asks): placement on unless `off`, missing off; the NAS budget's
-/// text (missing: its default); the NAS target's share (missing, or not one: its default).
-fn setting_of(name: &str, text: Option<&str>) -> serde_json::Value {
-    use crate::coord::asks::{NAS_BUDGET, NAS_TARGET, PLACEMENT};
-    match (name, text) {
-        (PLACEMENT, t) => t.is_some_and(|t| t.trim() != "off").into(),
-        (NAS_BUDGET, Some(t)) => t.into(),
-        (NAS_TARGET, Some(t)) => serde_json::from_str::<jobrt::budget::nas::Target>(t)
-            .ok()
-            .filter(|t| jobrt::budget::nas::TARGET_RANGE.contains(&t.pct))
-            .map_or(serde_json::Value::Null, |t| t.pct.into()),
-        _ => serde_json::Value::Null,
-    }
-}
-
-/// Setting ask `a` written to its switch file under `root`, as an older app reads it
-/// (`setting_of`'s reverse; cleared: the file removed), on the writers under a deadline.
-fn write_setting(root: &NasRoot, a: &crate::coord::asks::SettingAsk) -> Result<()> {
-    use crate::coord::asks::{NAS_TARGET, PLACEMENT};
-    let file = crate::coord::asks::file(&a.name).context("not a setting")?;
-    let p = root.join(file);
-    let text = match (a.name.as_str(), &a.value) {
-        (_, serde_json::Value::Null) => None,
-        (PLACEMENT, v) => Some(if v.as_bool() == Some(true) { "on\n".to_string() } else { "off\n".to_string() }),
-        (NAS_TARGET, v) => Some(serde_json::to_string(&jobrt::budget::nas::Target {
-            pct: v.as_u64().unwrap_or_default() as u32,
-            by: a.by.clone(),
-            at: a.at,
-        })?),
-        (_, v) => Some(v.as_str().unwrap_or_default().to_string()),
-    };
-    let owned = p.clone();
-    nasread::write(&p, move || match &text {
-        None => match owned.remove_file() {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-            _ => Ok(()),
-        },
-        Some(t) => {
-            if let Some(d) = owned.parent() {
-                d.create_dir_all()?;
-            }
-            owned.write_whole(t.as_bytes())
-        }
-    })
-}
-
 /// Why a job can't run under `c`, if it can't.
 fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
     (n.nas && !c.nas).then(|| "the NAS isn't reachable".into())
@@ -9569,32 +9286,18 @@ fn expect_same(w: &jobs::Work, done: &crate::pool::records::Keys) -> Vec<String>
         .collect()
 }
 
-/// The helpers building now: `state/helpers/<host>.json` beaten within ten minutes, but `lead`'s
-/// own. That one is from while it was a member and goes stale by itself for up to ten minutes after
-/// it takes the lead (task #816: the forecast listed its slots twice, as the lead's and as a
-/// member's, and `forecast::runs_of` numbered past the lanes). Their beats' statuses as `beats`
-/// heard them (crate::coord::beats); `state/helpers/<host>.json` for a host not heard so, while a
-/// member on an older app is in touch (`Beats::nas_too`), or with no beats (outside the pool).
-fn helpers(root: &store::nasfs::NasRoot, lead: &str, beats: Option<&crate::coord::beats::Beats>) -> Vec<Status> {
+/// The helpers building now: their beats' statuses as `beats` heard them (crate::coord::beats),
+/// beaten within ten minutes, but `lead`'s own (task #816: one from while it was a member listed
+/// its slots twice in the forecast, as the lead's and as a member's).
+fn helpers(lead: &str, beats: Option<&crate::coord::beats::Beats>) -> Vec<Status> {
     let now = now_s();
-    let mut out: BTreeMap<String, Status> = beats
+    let out: BTreeMap<String, Status> = beats
         .map(|b| b.fresh(now))
         .unwrap_or_default()
         .into_iter()
         .filter_map(|h| serde_json::from_value::<Status>(h.status?).ok())
         .map(|s| (s.host.clone(), s))
         .collect();
-    if beats.is_none_or(|b| b.nas_too()) {
-        if let Ok(rd) = root.join("state/helpers").read_dir() {
-            let nas = rd
-                .into_iter()
-                .filter(|e| e.path.extension() == Some("json"))
-                .filter_map(|e| e.path.read().ok().and_then(|b| serde_json::from_slice::<Status>(&b).ok()));
-            for s in nas {
-                out.entry(s.host.clone()).or_insert(s);
-            }
-        }
-    }
     out.into_values()
         .filter(|h| h.host != lead && now.saturating_sub(h.beat) < 600)
         .map(|h| Status { regions: Vec::new(), checklist: Vec::new(), built: BTreeMap::new(), recent: Vec::new(), ..h })
@@ -9714,8 +9417,8 @@ fn test_agent_with(o: Options, probe: fn(&NasRoot) -> bool) -> Result<Agent> {
     // would.)
     Agent::new_with(o, probe).map(|mut a| {
         a.mac = cond::Mac::TEST;
-        if let (Some(r), true, false) = (a.o.root.clone(), a._lock.is_some(), a.o.dry_run) {
-            a.tend_proxy(&r);
+        if a._lock.is_some() && !a.o.dry_run {
+            a.tend_proxy();
         }
         a
     })
@@ -10499,9 +10202,9 @@ mod tests {
     impl Agent {
         /// The hold's asks taken up as a loop's round takes them: control's look (in line), then
         /// the NAS's part.
-        pub(super) fn hold_asks(&mut self, root: Option<&store::nasfs::NasRoot>) {
+        pub(super) fn hold_asks(&mut self) {
             self.control.look();
-            self.tend_hold(root);
+            self.tend_hold();
         }
     }
 
@@ -13916,7 +13619,6 @@ mod tests {
                 role: pool::Role::Lead,
                 gates: Default::default(),
                 members: vec!["m-a".into(), "m-b".into()],
-                heard: 2,
                 unacked: 0,
                 restart: None,
                 lead: None,
@@ -15589,14 +15291,11 @@ mod pool_tests {
         std::fs::write(r.join(crate::pool::term::LEAD), format!("{{\"member\": \"{to}\"}}")).unwrap();
     }
 
-    /// Placement set on or off: the lead's setting (crate::coord::asks), and its switch file, which
-    /// a member reads until it has fetched the lead's settings.
-    fn set_placement(lead: &Agent, r: &Path, on: bool) {
+    /// Placement set on or off: the lead's setting (crate::coord::asks).
+    fn set_placement(lead: &Agent, on: bool) {
         use crate::coord::asks::{Ask, SettingAsk, PLACEMENT};
         let a = SettingAsk { name: PLACEMENT.into(), value: on.into(), by: "a test".into(), at: now_s() };
         lead.coord.as_ref().unwrap().take_ask(&Ask::Setting(a)).unwrap();
-        std::fs::create_dir_all(r.join("state/pool")).unwrap();
-        std::fs::write(r.join(placement::SWITCH), if on { "on" } else { "off" }).unwrap();
     }
 
     /// An app folder whose programs (`scenic`, `scenic-build`) hand off a save of their step's and
@@ -15845,7 +15544,7 @@ mod pool_tests {
             std::fs::read_to_string(day.path().join(format!("{me}.jsonl")))
                 .is_ok_and(|s| s.lines().any(|l| l.contains(r#""kind":"agent""#)))
         }));
-        assert!(r.join(crate::pool::beat::path(&me)).exists());
+        assert!(!r.join("state/pool/members").exists(), "its heartbeat in its beats alone");
         let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &home).unwrap();
         let pv = st.pool.expect("the pool in its status");
         assert_eq!((pv.role, pv.member.as_str()), (pool::Role::Lead, me.as_str()));
@@ -16169,7 +15868,7 @@ mod pool_tests {
         m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.is_none());
         // On: told, the forecast's slack and speeds in it.
-        set_placement(&lead, &r, true);
+        set_placement(&lead, true);
         *lead.planner().forecast.borrow_mut() = Some(forecast::Forecast {
             done_at: Some(1000),
             steps: vec![forecast::StepFc { step: "slope-hi".into(), done_at: Some(1000), ..Default::default() }],
@@ -16177,7 +15876,12 @@ mod pool_tests {
         });
         lead.planner().publish();
         lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
-        m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        // (The member's from the lead's settings, once its beat has fetched them.)
+        store::testkit::eventually("the member has placement on", || {
+            m.round().unwrap();
+            m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+            m.placement_on()
+        });
         assert_eq!(
             lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.as_ref().map(|p| p.0.slack_of("slope-hi")),
             Some(0)
@@ -16209,10 +15913,10 @@ mod pool_tests {
         let env = std::fs::read_to_string(bin.join("env-slope-hi")).unwrap();
         assert!(env.lines().any(|l| l == format!("{}=1", jobrt::jobs::AHEAD_ENV)), "{env}");
         // Off again: as before.
-        set_placement(&lead, &r, false);
+        set_placement(&lead, false);
         lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.is_none());
-        // (The member's from the lead's settings once its beat fetched them, else the file.)
+        // (The member's from the lead's settings once its beat fetched them.)
         store::testkit::eventually("the member has placement off", || {
             m.round().unwrap();
             m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
@@ -16225,8 +15929,7 @@ mod pool_tests {
     /// Resuming (crate::agent::resume): an OSM pass stopped mid-stage on a member's Mac is offered to
     /// that member alone, which resumes it in its own scratch folder with its unmerged hand-offs;
     /// finished there, it's neither run nor offered until merged; a day on (or released), the lead
-    /// runs it itself. Its progress reaches the lead in its beats (docs/coordination.md step 7); a
-    /// member on an older app's, by its file on the NAS (the gate).
+    /// runs it itself. Its progress reaches the lead in its beats (docs/coordination.md step 7).
     #[test]
     fn an_osm_pass_stopped_on_a_member_is_resumed_there_alone_and_released_after_a_day() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
@@ -16333,7 +16036,7 @@ mod pool_tests {
         // Finished there: held, unoffered, until merged (as its beat told the lead; nothing on the NAS).
         let done = || lc.progress().iter().any(|k| k.progress.member == im && k.progress.jobs[&pass].done);
         until(&mut m, |_| done());
-        assert!(resume::read(&store::nasfs::NasRoot::local_for_test(&r), &im).unwrap().is_none());
+        assert!(!r.join("state/pool/progress").exists());
         let (here, w) = planned(&mut lead);
         assert!(!here && w.iter().any(|w| w.why.contains("waiting to be merged")), "{w:?}");
         // Released, or its day out, while the member runs it under a lease: not run here too.
@@ -16366,18 +16069,6 @@ mod pool_tests {
         // (Progress begun a minute before the released one: not that release's.)
         tell(&held(at - 60, false));
         assert!(!planned(&mut lead).0 && lc.shared.lock().unwrap().resume.is_some());
-        // (The gate: a member on an older app, whose beat doesn't say `budgets`, by its file on the
-        // NAS, and its release there.)
-        tell(&resume::Progress { jobs: BTreeMap::new(), ..held(0, false) });
-        let old = "m-00000000000000ff";
-        lead.pooled().unwrap().side.know(old);
-        lead.seen_pool();
-        let older = resume::Progress { member: old.into(), worker: "old-mac".into(), ..held(at, false) };
-        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &older).unwrap();
-        let (here, w) = planned(&mut lead);
-        assert!(!here && w.iter().any(|w| w.why.contains("old-mac")), "{w:?}");
-        resume::release(&store::nasfs::NasRoot::local_for_test(&r), old, &pass).unwrap();
-        assert!(planned(&mut lead).0);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }
@@ -17314,7 +17005,6 @@ mod pool_tests {
         assert!(a.ok, "{a:?}");
         assert!(m.hold().held.is_none(), "the member itself goes on");
         for _ in 0..12 {
-            lead.hold_read = None;
             lead.round().unwrap();
             m.round().unwrap();
             std::thread::sleep(Duration::from_millis(250));
@@ -17346,13 +17036,27 @@ mod pool_tests {
         stop_jobs(&mut m);
     }
 
+    /// A member's status heard by its beat (crate::coord::beats), as the lead's registry has it.
+    fn heard_status(a: &mut Agent, st: &Status) {
+        let b = a.beats.get_or_insert_with(Default::default).clone();
+        let hb = pool::Heartbeat {
+            pool: crate::pool::Beat {
+                member: format!("m-{}", st.host),
+                host: st.host.clone(),
+                beat: st.beat,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        b.heard(hb, Vec::new(), Some(serde_json::to_value(st).unwrap()), now_s());
+    }
+
     #[test]
     fn the_forecast_gives_a_member_paused_alone_no_lanes() {
         // (Task #224: its jobs are given back and it takes nothing new until resumed.)
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
-        std::fs::create_dir_all(r.join("state/helpers")).unwrap();
         for (host, held) in [("busy-mac", false), ("held-mac", true)] {
             let st = Status {
                 host: host.into(),
@@ -17360,22 +17064,13 @@ mod pool_tests {
                 held: held.then(|| jobrt::control::Hold::new("scenic pause on held-mac")),
                 ..Default::default()
             };
-            std::fs::write(r.join(format!("state/helpers/{host}.json")), serde_json::to_vec(&st).unwrap()).unwrap();
+            heard_status(&mut a, &st);
         }
         let work: Vec<jobs::Work> = (0..40)
             .map(|i| jobs::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
-        let rec = a.planner().forecast_record(
-            &store::nasfs::NasRoot::local_for_test(&r),
-            &[],
-            &[],
-            &[],
-            &work,
-            Default::default(),
-            None,
-            &Default::default(),
-            &|_, _| 0,
-        );
+        let rec =
+            a.planner().forecast_record(&[], &[], &[], &work, Default::default(), None, &Default::default(), &|_, _| 0);
         let fc = rec.forecast(crate::agent::seam::for_tests());
         let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
         assert!(
@@ -17394,7 +17089,7 @@ mod pool_tests {
 
     #[test]
     fn a_new_lead_s_own_member_status_gives_it_no_second_lanes() {
-        // (Task #816: just after a change of lead the lead's own state/helpers file, from while it was a
+        // (Task #816: just after a change of lead the lead's own status, from while it was a
         // member, still beats fresh; read as a member's, its slots were listed twice under the
         // same names, the lanes kept one set, and forecast::runs_of numbered runs past them: the
         // forecast thread panicked "index out of bounds".)
@@ -17402,25 +17097,15 @@ mod pool_tests {
         let r = nas(d.path());
         let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
         a.mem.ramp.slots = 3;
-        std::fs::create_dir_all(r.join("state/helpers")).unwrap();
         for host in [a.host.clone(), "busy-mac".to_string()] {
             let st = Status { host: host.clone(), beat: now_s(), ..Default::default() };
-            std::fs::write(r.join(format!("state/helpers/{host}.json")), serde_json::to_vec(&st).unwrap()).unwrap();
+            heard_status(&mut a, &st);
         }
         let work: Vec<jobs::Work> = (0..200)
             .map(|i| jobs::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
-        let rec = a.planner().forecast_record(
-            &store::nasfs::NasRoot::local_for_test(&r),
-            &[],
-            &[],
-            &[],
-            &work,
-            Default::default(),
-            None,
-            &Default::default(),
-            &|_, _| 0,
-        );
+        let rec =
+            a.planner().forecast_record(&[], &[], &[], &work, Default::default(), None, &Default::default(), &|_, _| 0);
         let names: Vec<&str> = rec.input.machines.iter().map(|m| m.name.as_str()).collect();
         let mut unique = names.clone();
         unique.sort_unstable();
@@ -17438,23 +17123,13 @@ mod pool_tests {
         let r = nas(d.path());
         let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
         a.set_hold(Some(jobrt::control::Hold::new("scenic pause --here")), now_s());
-        std::fs::create_dir_all(r.join("state/helpers")).unwrap();
         let st = Status { host: "busy-mac".into(), beat: now_s(), ..Default::default() };
-        std::fs::write(r.join("state/helpers/busy-mac.json"), serde_json::to_vec(&st).unwrap()).unwrap();
+        heard_status(&mut a, &st);
         let work: Vec<jobs::Work> = (0..40)
             .map(|i| jobs::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
-        let rec = a.planner().forecast_record(
-            &store::nasfs::NasRoot::local_for_test(&r),
-            &[],
-            &[],
-            &[],
-            &work,
-            Default::default(),
-            None,
-            &Default::default(),
-            &|_, _| 0,
-        );
+        let rec =
+            a.planner().forecast_record(&[], &[], &[], &work, Default::default(), None, &Default::default(), &|_, _| 0);
         assert!(rec.input.machines.iter().all(|m| m.mac.as_deref() != Some(a.host.as_str())));
         let fc = rec.forecast(crate::agent::seam::for_tests());
         let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
@@ -17482,25 +17157,16 @@ mod pool_tests {
         a.round().unwrap();
         let home = a.o.home.clone();
         // Paused from a Mac whose clock runs an hour ahead; resumed here: this Mac's ask wins.
-        let me = a.pooled().unwrap().side.member().id.clone();
         let ahead = jobrt::control::HoldState {
             held: Some(jobrt::control::Hold::new("scenic pause on ahead")),
             at: now_s() + 3600,
         };
-        write_hold(&store::nasfs::NasPath::local_for_test(&r.join(jobrt::control::hold_path(&me))), &ahead).unwrap();
-        a.hold_read = None;
-        a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        a.set_hold(ahead.held.clone(), ahead.at);
         assert!(a.hold().held.is_some());
         let ask = jobrt::control::request_hold(&home, None, None).unwrap();
-        a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        a.hold_asks();
         assert!(jobrt::control::hold_answer(&home, &ask).is_some_and(|x| x.ok));
         assert!(a.hold().held.is_none() && a.hold().at > ahead.at);
-        // Written back over the NAS's older setting.
-        a.hold_read = None;
-        a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
-        let there: jobrt::control::HoldState =
-            serde_json::from_slice(&std::fs::read(r.join(jobrt::control::hold_path(&me))).unwrap()).unwrap();
-        assert_eq!(there, *a.hold());
         // The pool's step busy: an ask naming another Mac waits, and doesn't cut the loop's wait
         // again and again; this Mac's own is taken all the same.
         let shared = a.pool.clone().unwrap();
@@ -17514,12 +17180,12 @@ mod pool_tests {
         held_rx.recv().unwrap();
         while a.control.woken.try_recv().is_ok() {}
         jobrt::control::request_hold(&home, Some("other-mac"), Some(jobrt::control::Hold::new("x"))).unwrap();
-        a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        a.hold_asks();
         assert!(a.control.woken.try_iter().any(|m| m == bus::ControlMsg::Ask));
-        a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        a.hold_asks();
         assert!(home.join(jobrt::control::HOLD_REQUEST).exists() && a.control.woken.try_recv().is_err());
         let ask = jobrt::control::request_hold(&home, None, Some(jobrt::control::Hold::new("here"))).unwrap();
-        a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        a.hold_asks();
         assert!(jobrt::control::hold_answer(&home, &ask).is_some_and(|x| x.ok) && a.hold().held.is_some());
         tx.send(()).unwrap();
         t.join().unwrap();
@@ -17570,7 +17236,7 @@ mod pool_tests {
         // (the status says why), the build itself not paused.
         let ask =
             jobrt::control::request_hold(&home, None, Some(jobrt::control::Hold::new("scenic pause on m1"))).unwrap();
-        a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&root)));
+        a.hold_asks();
         assert!(jobrt::control::hold_answer(&home, &ask).is_some_and(|x| x.ok));
         assert!(a.hold().held.is_some() && a.pause.is_none());
         a.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
@@ -17597,7 +17263,7 @@ mod pool_tests {
         assert!(a.hold_why().is_some());
         // Resumed: work starts again.
         jobrt::control::request_hold(&home, None, None).unwrap();
-        a.hold_asks(Some(&store::nasfs::NasRoot::local_for_test(&root)));
+        a.hold_asks();
         assert!(a.hold().held.is_none() && a.hold_why().is_none() && jobrt::control::read_hold(&home).held.is_none());
     }
 
@@ -18020,7 +17686,6 @@ mod pool_tests {
             role: pool::Role::Member,
             gates: pool::Gates { term: 539, ..Default::default() },
             members: Vec::new(),
-            heard: 3,
             unacked: 0,
             restart: None,
             lead: Some(lead::View {

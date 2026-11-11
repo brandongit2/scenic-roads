@@ -1165,7 +1165,7 @@ impl Planner {
         let have = self.latest_pass(root);
         let newer = inputs::osmpass::newer_planet(root, have.as_deref()).ok().flatten();
         // (Resuming on: held for, and offered to, the member whose Mac has its progress.)
-        let held = self.resume_hold(root, newer.as_ref());
+        let held = self.resume_hold(newer.as_ref());
         if let Some((planet, date)) = newer.clone() {
             let what = format!("Reading the OpenStreetMap planet of {date}");
             let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
@@ -1939,7 +1939,6 @@ impl Planner {
 
             chains[1].splice(0..0, summits_held);
             let record = self.forecast_record(
-                root,
                 &before,
                 &planned.regions,
                 &planned.drops,
@@ -2120,7 +2119,6 @@ impl Planner {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn forecast_record(
         &self,
-        root: &store::nasfs::NasRoot,
         before: &[JobSpec],
         regions: &[seam::RegionLeft],
         drops: &[(String, String)],
@@ -2157,7 +2155,7 @@ impl Planner {
         // Each worker's speed against the lead's, from the history (half until it's measured):
         // every one that measured a cost or did shared work, asleep or not (its costs are put at the
         // lead's pace by it); the members heard from lately are the machines.
-        let helpers: Vec<Status> = helpers(root, &self.host, self.inp.beats.as_deref());
+        let helpers: Vec<Status> = helpers(&self.host, self.inp.beats.as_deref());
         let mut names: BTreeSet<String> = helpers.iter().map(|h| h.host.clone()).collect();
         names.extend(costs.values().filter_map(|c| c.worker.clone()));
         names.extend(
@@ -2894,11 +2892,7 @@ impl Planner {
     /// (crate::agent::resume::decide): None to plan it here as before; else why not, the pass
     /// offered meanwhile to the one member whose Mac holds its progress (the coordinator's
     /// `offer_resume`, none otherwise).
-    pub(super) fn resume_hold(
-        &self,
-        root: &store::nasfs::NasRoot,
-        newer: Option<&(NasPath, String)>,
-    ) -> Option<Waiting> {
+    pub(super) fn resume_hold(&self, newer: Option<&(NasPath, String)>) -> Option<Waiting> {
         let offer = |to: Option<(String, crate::coord::Offer)>| {
             if let Some(c) = &self.coord {
                 c.offer_resume(to);
@@ -2914,46 +2908,16 @@ impl Planner {
             return None;
         };
         let me = self.inp.member_id.clone()?;
-        // (The members as the loop's last pool step left them.)
-        let mut members: BTreeSet<String> =
-            self.inp.pool_seen.as_ref().map(|p| p.members.iter().cloned().collect()).unwrap_or_default();
         let id = format!("osm-pass {date}");
         let what = format!("Reading the OpenStreetMap planet of {date}");
-        members.insert(me.clone());
         // (The members' progress as the lead keeps it from their beats, its own among them, with
-        // the owner's releases; a member whose beat doesn't say `budgets` (an older app) by its
-        // file on the NAS, the gate's.)
+        // the owner's releases.)
         let kept = self.coord.as_ref().map(|c| c.progress()).unwrap_or_default();
         let mut gone: BTreeSet<(String, u64)> = BTreeSet::new();
         let mut files = Vec::new();
         for k in kept {
             gone.extend(k.released.iter().filter(|(j, _)| *j == id).map(|(_, at)| (k.progress.member.clone(), *at)));
             files.push(k.progress);
-        }
-        let by_lead = |m: &String| {
-            files.iter().any(|p: &resume::Progress| &p.member == m)
-                || self.coord.as_ref().is_some_and(|c| *m == me || c.member_speaks(m, crate::coord::beats::BUDGETS))
-        };
-        let on_nas: Vec<String> = members.iter().filter(|m| !by_lead(m)).cloned().collect();
-        for m in &on_nas {
-            match resume::read(root, m) {
-                Ok(p) => {
-                    for (j, h) in p.iter().flat_map(|p| &p.jobs) {
-                        if *j == id && resume::released(root, m, j, h.began()) {
-                            gone.insert((m.clone(), h.began()));
-                        }
-                    }
-                    files.extend(p)
-                }
-                Err(e) => {
-                    offer(None);
-                    return Some(Waiting {
-                        step: Some("osm-pass".into()),
-                        what,
-                        why: format!("a member's progress can't be read now ({e:#})"),
-                    });
-                }
-            }
         }
         // A member running it under a lease of this coordinator: not run here too, whatever its
         // file says now (released, its day out, or read stale meanwhile).

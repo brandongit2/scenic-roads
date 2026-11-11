@@ -10,13 +10,10 @@
 //!   `helpers`) read these first.
 //! - **On a member** the lead's answer fills the same registry (`answered`); its leases released
 //!   wait for the agent's loop (`take_released`).
-//! - **The NAS copies** (`state/pool/members/<id>.json`, `state/helpers/<host>.json`) are written
-//!   only while `nas_too`: on a member, until a lead speaking `SPEAKS` says no member in touch
-//!   still reads them (an older lead answers 404, or answers without `SPEAKS`: they go on); on the
-//!   lead, while a member in touch heartbeats on the NAS without `beat_http` (an older app), which
-//!   still reads the lead's heartbeat there. A heartbeat not on the NAS is still read there for such
-//!   a member; its listing is the older apps' path, dropped one release after every member speaks
-//!   `SPEAKS` (the #642 gate).
+//! - **The words** a beat and an answer say (`SPEAKS`, `VIEW`, `ASKS`, `BUDGETS`, `BY_LEAD`): steps
+//!   3, 4, 5 and 7's rollout gates read them, deleted with their NAS paths (task #1036); each is
+//!   still said, for the app before, which falls back to the NAS without it. `HANDOFF`'s gate (step
+//!   6, the journal) stands (`journal_on`).
 //!
 //! Nothing here touches the NAS: the coordinator's handlers reach it (§2.3).
 
@@ -29,8 +26,7 @@ use std::sync::Mutex;
 pub const SPEAKS: &str = "beat";
 
 /// What a member's beat says it reads: the page's data from the lead (`/pool/view`,
-/// docs/coordination.md step 4), not the NAS's files. The lead writes those
-/// (`Coordinator::page_on_nas`) while a member heard doesn't say it.
+/// docs/coordination.md step 4), not the NAS's files.
 pub const VIEW: &str = "view";
 
 /// What a lead's answer says it serves: its members' build pages (docs/roles.md §3.3). A member's
@@ -46,9 +42,7 @@ pub const ROOT: &str = "page-root";
 
 /// What a member's beat says it speaks, and a lead's answer that it serves (docs/coordination.md
 /// step 5, crate::coord::asks): the lead's messages, this member's hold and the settings'
-/// generation in the answer; its own mail, holds and settings by HTTP alone. While the lead doesn't
-/// say it, or says a member heard doesn't (`asks_on_nas`), the NAS's mailboxes, holds and switch
-/// files go on beside (`Beats::asks_on_nas`).
+/// generation in the answer; its own mail, holds and settings by HTTP alone.
 pub const ASKS: &str = "asks";
 
 /// What a member's beat says it speaks, and a lead's answer that it takes (docs/coordination.md
@@ -60,9 +54,7 @@ pub const HANDOFF: &str = "handoff";
 
 /// What a member's beat says it speaks, and a lead's answer that it serves (docs/coordination.md
 /// step 7, crate::coord::budgets): the Wikimedia budget and the answers' lease from the lead, its
-/// resume progress in its beat. While the lead doesn't say it, or says a member heard doesn't
-/// (`budgets_on_nas`), every Mac takes the budget and the lease on the NAS; a member writes its
-/// progress file there while its lead doesn't say it.
+/// resume progress in its beat.
 pub const BUDGETS: &str = "budgets";
 
 /// What a member's beat says it reads: the build's records at their one path
@@ -70,17 +62,16 @@ pub const BUDGETS: &str = "budgets";
 /// saves write that beside while a member heard doesn't say it (`per_term`).
 pub const RECORDS: &str = "records";
 
-/// What a member's beat says while its agent's proxy takes the Wikimedia budget from the lead
-/// (jobrt::budget::Budget::set_lead): the lead gives batches only while every member heard says it
-/// (crate::coord::budgets::gives), so none leases on the NAS as another takes from the lead.
+/// What a member's beat says: its agent's proxy takes the Wikimedia budget from the lead
+/// (jobrt::budget::Budget::set_lead). Said for a lead on the app before, which gives batches only
+/// while every member heard says it.
 pub const BY_LEAD: &str = "budgets-by-lead";
 
 /// A lead whose last answer is older than this (s) is taken for not reachable by a member's page:
 /// three of its beats (crate::agent::beat::EVERY, 10 s) missed.
 pub const PAGE_AWAY_S: u64 = 35;
 
-/// A member not heard from this long is forgotten (s): as the listing forgets one
-/// (crate::agent::pool::FORGET_AFTER).
+/// A member not heard from this long is forgotten (s, crate::agent::pool::FORGET_AFTER).
 pub const FORGET_S: u64 = crate::agent::pool::FORGET_AFTER.as_secs();
 
 /// Where a member keeps its lead's last answer's line, in its agent's folder (`LeadView`, written
@@ -121,7 +112,6 @@ pub struct Heard {
 struct Inner {
     heard: BTreeMap<String, Heard>,
     own: Option<Heartbeat>,
-    nas_too: bool,
     lead_takes: bool,
     released: Vec<u64>,
     /// The lead's last answer's re-grants (`Answer::threads`: lease, threads), for the agent's loop
@@ -131,9 +121,8 @@ struct Inner {
     lead_answered: Option<(u64, bool)>,
     /// Whether the lead's last answer said `ROOT`.
     lead_root: bool,
-    /// The asks (`ASKS`): whether the lead serves them, and whether their NAS files go on.
+    /// The asks (`ASKS`): whether the lead serves them.
     lead_asks: bool,
-    asks_on_nas: bool,
     /// On a member: the lead's messages to it as its last answer carried them, the number up to
     /// which its pool side took them (its beat says it), its hold as the lead keeps it, the
     /// settings as last fetched and the generation the lead last said.
@@ -154,15 +143,10 @@ struct Inner {
     lead_handoffs: Option<bool>,
     handoffs: Vec<crate::pool::Entry>,
     merged: Vec<String>,
-    /// On a member: whether its lead serves `BUDGETS` (None: not answered since this process
-    /// started), and whether they go by the NAS still (its word, `Answer::budgets_on_nas`); its resume progress as its agent last noted it (its beat
-    /// carries it), and the owner's releases of it as the lead's last answer said them.
-    lead_budgets: Option<bool>,
-    budgets_on_nas: bool,
+    /// On a member: its resume progress as its agent last noted it (its beat carries it), and the
+    /// owner's releases of it as the lead's last answer said them.
     progress: Option<crate::agent::resume::Progress>,
     progress_released: Vec<(String, u64)>,
-    /// On a member: its agent's proxy takes the budget from the lead (its beat says `BY_LEAD`).
-    by_lead: bool,
     /// On a member: the lead's line as its last answer carried it, and where it's kept
     /// (`keep_lead_view`: `LEAD_VIEW` in the agent's folder).
     lead_view: LeadView,
@@ -183,7 +167,7 @@ pub struct Beats {
 impl std::fmt::Debug for Beats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let g = self.inner.lock().unwrap();
-        f.debug_struct("Beats").field("heard", &g.heard.len()).field("nas_too", &g.nas_too).finish()
+        f.debug_struct("Beats").field("heard", &g.heard.len()).finish()
     }
 }
 
@@ -193,7 +177,6 @@ impl Default for Beats {
             inner: Mutex::new(Inner {
                 heard: BTreeMap::new(),
                 own: None,
-                nas_too: true,
                 lead_takes: false,
                 released: Vec::new(),
                 threads: Vec::new(),
@@ -201,7 +184,6 @@ impl Default for Beats {
                 lead_root: false,
                 lead_term: None,
                 lead_asks: false,
-                asks_on_nas: true,
                 from_lead: Vec::new(),
                 took: 0,
                 hold: None,
@@ -213,11 +195,8 @@ impl Default for Beats {
                 lead_handoffs: None,
                 handoffs: Vec::new(),
                 merged: Vec::new(),
-                lead_budgets: None,
-                budgets_on_nas: true,
                 progress: None,
                 progress_released: Vec::new(),
-                by_lead: false,
                 lead_view: LeadView::default(),
                 lead_view_at: None,
             }),
@@ -232,11 +211,6 @@ impl Beats {
         let mut g = self.inner.lock().unwrap();
         let n = g.heard.get(&h.pool.member).map_or(0, |x| x.n) + 1;
         g.heard.insert(h.pool.member.clone(), Heard { beat: h, status, at, n, speaks });
-    }
-
-    /// Whether member `id`'s last beat said it speaks `what`.
-    pub fn speaks(&self, id: &str, what: &str) -> bool {
-        self.inner.lock().unwrap().heard.get(id).is_some_and(|x| x.speaks.iter().any(|w| w == what))
     }
 
     /// The members heard within `FORGET_S` of `now`, the others dropped.
@@ -270,31 +244,10 @@ impl Beats {
         self.inner.lock().unwrap().own.clone()
     }
 
-    /// Whether this Mac's heartbeat and status go to the NAS too.
-    pub fn nas_too(&self) -> bool {
-        self.inner.lock().unwrap().nas_too
-    }
-
-    pub fn set_nas_too(&self, on: bool) {
-        let mut g = self.inner.lock().unwrap();
-        if g.nas_too != on {
-            eprintln!(
-                "pool: this Mac's heartbeat and status {} on the NAS",
-                if on {
-                    "written again (a member on an older app reads them)"
-                } else {
-                    "no longer written (the lead hears them by HTTP)"
-                }
-            );
-        }
-        g.nas_too = on;
-    }
-
-    /// A member's lead answered its beat at `now` (an older lead's answer, without `SPEAKS`: the
-    /// NAS copies go on): the others' heartbeats as it has them, its releases for the loop.
+    /// A member's lead answered its beat at `now`: the others' heartbeats as it has them, its
+    /// releases for the loop.
     pub fn answered(&self, a: &super::held::Answer, now: u64) {
         let takes = a.speaks.iter().any(|w| w == SPEAKS);
-        self.set_nas_too(!takes || a.nas_too);
         let mut g = self.inner.lock().unwrap();
         g.lead_takes = takes;
         g.lead_answered = Some((now, a.speaks.iter().any(|w| w == PAGE)));
@@ -313,7 +266,6 @@ impl Beats {
         g.released.extend(a.released.iter().copied());
         g.threads = a.threads.clone();
         g.lead_asks = a.speaks.iter().any(|w| w == ASKS);
-        g.asks_on_nas = !g.lead_asks || a.asks_on_nas;
         if g.lead_asks {
             g.from_lead = a.msgs.clone();
             g.hold = a.hold.clone();
@@ -321,12 +273,7 @@ impl Beats {
         }
         g.lead_handoffs = Some(a.speaks.iter().any(|w| w == HANDOFF));
         g.merged.extend(a.merged.iter().cloned());
-        let serves = a.speaks.iter().any(|w| w == BUDGETS);
-        g.lead_budgets = Some(serves);
-        g.budgets_on_nas = !serves || a.budgets_on_nas;
-        if serves {
-            g.progress_released = a.progress_released.clone();
-        }
+        g.progress_released = a.progress_released.clone();
         g.lead_view = LeadView { at: now, lead: a.lead.clone() };
         drop(g);
         self.save_lead_view();
@@ -399,26 +346,23 @@ impl Beats {
         std::mem::take(&mut self.inner.lock().unwrap().merged)
     }
 
-    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `HANDOFF`, or one
-    /// on an older app heartbeats on the NAS alone (`nas_too`): it writes the journal, which the
-    /// lead lists (the rollout gate of docs/coordination.md step 6).
+    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `HANDOFF`: it
+    /// writes the journal, which the lead lists (the rollout gate of docs/coordination.md step 6).
     pub fn journal_on(&self, now: u64) -> bool {
-        self.nas_too() || self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == HANDOFF))
+        self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == HANDOFF))
     }
 
-    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `RECORDS`, or one
-    /// on an older app heartbeats on the NAS alone (`nas_too`): its readers read the term's own
-    /// brief, which the lead's saves write beside the one path (the rollout gate of
-    /// docs/coordination.md step 8b).
+    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `RECORDS`: its
+    /// readers read the term's own brief, which the lead's saves write beside the one path (the
+    /// rollout gate of docs/coordination.md step 8b).
     pub fn per_term(&self, now: u64) -> bool {
-        self.nas_too() || self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == RECORDS))
+        self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == RECORDS))
     }
 
-    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `ROOT`, or one on
-    /// an older app heartbeats on the NAS alone (`nas_too`): it may ask the build page's old
-    /// addresses (crate::coord::oldpage).
+    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `ROOT`: it may ask
+    /// the build page's old addresses (crate::coord::oldpage).
     pub fn old_page(&self, now: u64) -> bool {
-        self.nas_too() || self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == ROOT))
+        self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == ROOT))
     }
 
     /// On a member: whether its lead's last answer said `ROOT` (crate::coord::oldpage).
@@ -426,50 +370,15 @@ impl Beats {
         self.inner.lock().unwrap().lead_root
     }
 
-    /// Whether the asks' NAS files go on (the rollout gate, crate::coord::asks): on a member, while
-    /// its lead doesn't serve `ASKS` or says a member heard doesn't speak it; on the lead, while a
-    /// member heard doesn't (`held::on_nas`, said at each beat).
-    pub fn asks_on_nas(&self) -> bool {
-        self.inner.lock().unwrap().asks_on_nas
-    }
-
-    /// The lead's word on the gate (`held::on_nas`; on the lead, which serves `ASKS`).
-    pub fn set_asks_on_nas(&self, on: bool) {
-        let mut g = self.inner.lock().unwrap();
-        g.lead_asks = true;
-        g.asks_on_nas = on;
-    }
-
-    /// Whether the lead serves `ASKS` (its last answer said so).
+    /// Whether the lead serves `ASKS` (its last answer said so; the lead's own registry once its
+    /// coordinator serves them: `set_lead_asks`).
     pub fn lead_asks(&self) -> bool {
         self.inner.lock().unwrap().lead_asks
     }
 
-    /// Whether its lead serves `BUDGETS` (its last answer said so): its progress goes in the beat
-    /// alone, the owner's releases of it in the answer.
-    pub fn lead_budgets(&self) -> bool {
-        self.inner.lock().unwrap().lead_budgets == Some(true)
-    }
-
-    /// Whether its lead answered without `BUDGETS` (an older lead, which reads members' progress
-    /// files on the NAS); false before any answer since this process started.
-    pub fn lead_without_budgets(&self) -> bool {
-        self.inner.lock().unwrap().lead_budgets == Some(false)
-    }
-
-    /// Whether the budget and the answers' lease go by the NAS (the gate): the lead doesn't serve
-    /// `BUDGETS`, or says a member heard doesn't speak it.
-    pub fn budgets_on_nas(&self) -> bool {
-        self.inner.lock().unwrap().budgets_on_nas
-    }
-
-    /// Whether its agent's proxy takes the budget from the lead (its beat says `BY_LEAD`).
-    pub fn set_by_lead(&self, on: bool) {
-        self.inner.lock().unwrap().by_lead = on;
-    }
-
-    pub fn by_lead(&self) -> bool {
-        self.inner.lock().unwrap().by_lead
+    /// On the lead: its coordinator serves the asks.
+    pub fn set_lead_asks(&self) {
+        self.inner.lock().unwrap().lead_asks = true;
     }
 
     /// Its resume progress as its agent noted it last: what its beat carries.
@@ -614,18 +523,16 @@ impl Beats {
         }
     }
 
-    /// An older lead's 404 at `now`: it takes neither the beat nor its leases' word; the NAS copies
-    /// go on. It answered, saying no line.
+    /// An older lead's 404 at `now`: it takes neither the beat nor its leases' word. It answered,
+    /// saying no line.
     pub fn lead_older(&self, now: u64) {
-        self.set_nas_too(true);
         let mut g = self.inner.lock().unwrap();
         g.lead_takes = false;
         g.lead_answered = None;
         g.lead_root = false;
         g.lead_term = None;
-        (g.lead_asks, g.asks_on_nas) = (false, true);
+        g.lead_asks = false;
         g.lead_handoffs = Some(false);
-        (g.lead_budgets, g.budgets_on_nas) = (Some(false), true);
         g.threads.clear();
         g.lead_view = LeadView { at: now, lead: None };
         drop(g);
@@ -650,14 +557,6 @@ fn save_queue(g: &Inner) {
     if let Err(e) = w {
         eprintln!("pool: its asks of the lead: {e:#}");
     }
-}
-
-/// Whether any of the members' heartbeats `beats` (as read, the NAS's for a member not heard by
-/// HTTP) is an older app's in touch at `now`, but member `me`'s: the NAS copies are still read.
-pub fn old_in_touch<'a>(beats: impl IntoIterator<Item = &'a Heartbeat>, me: &str, now: u64) -> bool {
-    beats
-        .into_iter()
-        .any(|h| h.pool.member != me && !h.shadow && !h.beat_http && h.pool.beat > 0 && !h.pool.out_of_touch(now))
 }
 
 #[cfg(test)]
@@ -685,10 +584,9 @@ mod tests {
         assert_eq!(b.asks().len(), 1, "queued once");
     }
 
-    fn hb(id: &str, at: u64, http: bool) -> Heartbeat {
+    fn hb(id: &str, at: u64) -> Heartbeat {
         Heartbeat {
             pool: crate::pool::Beat { member: id.into(), host: format!("{id}-host"), beat: at, ..Default::default() },
-            beat_http: http,
             ..Default::default()
         }
     }
@@ -698,66 +596,46 @@ mod tests {
     #[test]
     fn the_lead_answers_each_member_with_the_others() {
         let b = Beats::default();
-        b.set_own(hb("m-lead", 100, true));
-        b.heard(hb("m-a", 100, true), Vec::new(), None, 100);
-        b.heard(hb("m-b", 100, true), Vec::new(), None, 100);
+        b.set_own(hb("m-lead", 100));
+        b.heard(hb("m-a", 100), Vec::new(), None, 100);
+        b.heard(hb("m-b", 100), Vec::new(), None, 100);
         let ids = |v: Vec<Heartbeat>| v.into_iter().map(|h| h.pool.member).collect::<Vec<_>>();
         assert_eq!(ids(b.members(110, "m-a")), ["m-b", "m-lead"]);
         assert!(b.get("m-a", 110).is_some() && b.get("m-lead", 110).is_some());
-        b.heard(hb("m-b", 100 + FORGET_S, true), Vec::new(), None, 100 + FORGET_S);
+        b.heard(hb("m-b", 100 + FORGET_S), Vec::new(), None, 100 + FORGET_S);
         assert_eq!(ids(b.members(100 + FORGET_S, "m-x")), ["m-b", "m-lead"], "m-a forgotten");
         assert!(b.get("m-a", 100 + FORGET_S).is_none());
     }
 
     /// docs/coordination.md step 8b's gate: the lead writes the term's own brief beside the
-    /// one path while a member heard within `FORGET_S` doesn't say `RECORDS`, or one on an older
-    /// app heartbeats on the NAS alone; once every member heard says it, no more; a member on an
-    /// older app heard again opens it again.
+    /// one path while a member heard within `FORGET_S` doesn't say `RECORDS`; once every member
+    /// heard says it, no more; a member on an older app heard again opens it again.
     #[test]
     fn the_terms_own_records_go_on_while_a_member_heard_reads_them() {
         let b = Beats::default();
-        assert!(b.per_term(100), "no word yet: on the NAS too");
-        b.set_nas_too(false);
         assert!(!b.per_term(100), "no member heard");
         let all = || [SPEAKS, HANDOFF, RECORDS].map(str::to_string).to_vec();
-        b.heard(hb("m-a", 100, true), all(), None, 100);
-        b.heard(hb("m-b", 100, true), [SPEAKS, HANDOFF].map(str::to_string).to_vec(), None, 100);
+        b.heard(hb("m-a", 100), all(), None, 100);
+        b.heard(hb("m-b", 100), [SPEAKS, HANDOFF].map(str::to_string).to_vec(), None, 100);
         assert!(b.per_term(110), "m-b reads the term's own");
-        b.heard(hb("m-b", 120, true), all(), None, 120);
+        b.heard(hb("m-b", 120), all(), None, 120);
         assert!(!b.per_term(130));
-        b.heard(hb("m-c", 2000, true), vec![SPEAKS.into()], None, 2000);
+        b.heard(hb("m-c", 2000), vec![SPEAKS.into()], None, 2000);
         assert!(b.per_term(2000), "an older member back");
         assert!(!b.per_term(2000 + FORGET_S), "forgotten");
-        b.set_nas_too(true);
-        assert!(b.per_term(2000 + FORGET_S), "one on the NAS alone");
     }
 
-    /// A member's NAS copies go on until a lead speaking the beat says nobody reads them: an older
-    /// lead's answer (no `SPEAKS`) keeps them; a member on an older app in touch keeps them too.
+    /// A member takes the others' heartbeats from a lead that takes the beat, and its releases
+    /// from any answer.
     #[test]
-    fn the_nas_copies_stop_only_by_a_lead_that_takes_beats() {
+    fn a_member_takes_the_others_from_its_leads_answer() {
         let b = Beats::default();
-        assert!(b.nas_too());
         b.answered(&Answer { epoch: 1, released: vec![7], ..Default::default() }, 10);
-        assert!(b.nas_too(), "a step-2 lead");
         assert_eq!(b.take_released(), [7]);
         assert!(b.take_released().is_empty());
-        let a = Answer {
-            epoch: 1,
-            speaks: vec![SPEAKS.into()],
-            nas_too: true,
-            members: vec![hb("m-b", 9, true)],
-            ..Default::default()
-        };
+        let a = Answer { epoch: 1, speaks: vec![SPEAKS.into()], members: vec![hb("m-b", 9)], ..Default::default() };
         b.answered(&a, 10);
-        assert!(b.nas_too() && b.get("m-b", 10).is_some());
-        b.answered(&Answer { nas_too: false, ..a }, 11);
-        assert!(!b.nas_too());
-        // (The lead's own rule: an older app's heartbeat in touch on the NAS.)
-        let (old, new) = (hb("m-o", 1000, false), hb("m-n", 1000, true));
-        assert!(old_in_touch([&old, &new], "m-me", 1100));
-        assert!(!old_in_touch([&new], "m-me", 1100));
-        assert!(!old_in_touch([&old], "m-me", 1000 + crate::pool::beat::OUT_OF_TOUCH_S + 1), "out of touch");
+        assert!(b.get("m-b", 10).is_some());
     }
 
     /// docs/coordination.md step 8a: a member takes its lead's term from the lead's answer while

@@ -2665,9 +2665,9 @@ impl Coordinator {
     /// Where the members' beats go (`Shared::beats`).
     pub fn set_beats(&self, beats: Option<std::sync::Arc<beats::Beats>>) {
         let mut s = self.shared.lock().unwrap();
-        // (It serves the asks: its own agent's go to it in process, the gate kept as it was.)
-        if let Some(b) = beats.as_ref().filter(|b| !b.lead_asks()) {
-            b.set_asks_on_nas(b.asks_on_nas());
+        // (It serves the asks: its own agent's go to it in process.)
+        if let Some(b) = &beats {
+            b.set_lead_asks();
         }
         s.beats = beats;
         load_beats(&s);
@@ -2729,11 +2729,6 @@ impl Coordinator {
         Ok(said)
     }
 
-    /// Whether its own agent's proxy takes the budget from it (the gate's: crate::coord::budgets::gives).
-    pub fn set_budget_by_lead(&self, on: bool) {
-        self.shared.lock().unwrap().small.own_by_lead = on;
-    }
-
     /// Its own agent's resume progress (crate::agent::resume), as a member's beat carries its: the
     /// owner's releases of it.
     pub fn progress_heard(&self, p: crate::agent::resume::Progress) -> Vec<(String, u64)> {
@@ -2748,17 +2743,6 @@ impl Coordinator {
     /// The members' resume progress as it keeps it (its own among them), with the owner's releases.
     pub fn progress(&self) -> Vec<budgets::Kept> {
         self.shared.lock().unwrap().small.progress.values().cloned().collect()
-    }
-
-    /// Whether the budget, the answers' lease and progress go by the NAS still (`budgets::on_nas`:
-    /// a member heard is on an older app).
-    pub fn budgets_on_nas(&self) -> bool {
-        budgets::on_nas(&self.shared.lock().unwrap())
-    }
-
-    /// Whether member `id`'s last beat said it speaks `what` (crate::coord::beats).
-    pub fn member_speaks(&self, id: &str, what: &str) -> bool {
-        self.shared.lock().unwrap().beats.as_ref().is_some_and(|b| b.speaks(id, what))
     }
 
     /// Member `member`'s hold as it keeps it.
@@ -2918,19 +2902,6 @@ impl Coordinator {
     /// The page's regions as its agent made them again, for `/pool/view`.
     pub fn set_page_regions(&self, v: Arc<serde_json::Value>) {
         self.shared.lock().unwrap().page.regions = Some((unix_ms(), v));
-    }
-
-    /// Whether the page's files still go to the NAS (docs/coordination.md step 4's gate): while a
-    /// member on an older app is in touch (`Beats::nas_too`, no registry: true) or one heard by its
-    /// beats within `beats::FORGET_S` doesn't say it speaks `beats::VIEW` (it reads them there).
-    pub fn page_on_nas(&self) -> bool {
-        let s = self.shared.lock().unwrap();
-        let since = held::wall(&s).saturating_sub(beats::FORGET_S);
-        s.beats.as_ref().is_none_or(|b| b.nas_too())
-            || s.keep
-                .members()
-                .iter()
-                .any(|(m, h)| *m != s.lead_name && h.at > since && !h.speaks.iter().any(|w| w == beats::VIEW))
     }
 
     /// The page's data served from `pv` (crate::agent::pageview) from here on.
@@ -4672,17 +4643,11 @@ fn route(
         }
         "/pool/progress/release" => {
             // The owner's release of a member's resume progress (`scenic pool release <member>
-            // <job>`): what it released, or that it keeps none of that member's (an older app's,
-            // read on the NAS: the CLI makes its file there).
+            // <job>`): what it released.
             let v: serde_json::Value = serde_json::from_slice(body)?;
             let (member, job) = (v["member"].as_str().unwrap_or_default(), v["job"].as_str().unwrap_or_default());
             anyhow::ensure!(!member.is_empty() && !job.is_empty(), "{{\"member\": …, \"job\": …}}");
             let mut s = shared.lock().unwrap();
-            // (Progress it doesn't keep is a member's on an older app, on the NAS alone: the CLI's
-            // file there.)
-            if !s.small.progress.contains_key(member) {
-                return Ok((200, serde_json::json!({ "on_nas": true })));
-            }
             Ok((200, serde_json::json!({ "said": budgets::release(&mut s, member, job)? })))
         }
         "/pool/handoff" => {
@@ -6524,25 +6489,6 @@ mod tests {
             status: Some(serde_json::json!({ "host": format!("{m}-host") })),
             ..Default::default()
         }
-    }
-
-    /// docs/coordination.md step 4's gate: the lead writes the page's files on the NAS while a
-    /// member heard doesn't say it reads the view by HTTP (`beats::VIEW`: a step-3 app's), or one
-    /// on an older app heartbeats there (`Beats::nas_too`); not once every member says it.
-    #[test]
-    fn the_page_s_files_go_to_the_nas_only_while_a_member_reads_them_there() {
-        let (_d, c, _w) = start();
-        assert!(c.page_on_nas(), "no registry: as before");
-        let b = std::sync::Arc::new(beats::Beats::default());
-        b.set_nas_too(false);
-        c.set_beats(Some(b.clone()));
-        assert!(!c.page_on_nas(), "no member heard");
-        c.member_beat(&heard_beat("m1", &[held::SPEAKS, beats::SPEAKS]));
-        assert!(c.page_on_nas(), "a step-3 member reads them on the NAS");
-        c.member_beat(&heard_beat("m1", &[held::SPEAKS, beats::SPEAKS, beats::VIEW]));
-        assert!(!c.page_on_nas());
-        b.set_nas_too(true);
-        assert!(c.page_on_nas(), "an older app in touch");
     }
 
     /// docs/coordination.md step 4: the members' beats are in the store, so a lead's restart has
@@ -12240,10 +12186,8 @@ mod tests {
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let beats = std::sync::Arc::new(beats::Beats::default());
         c.set_beats(Some(beats.clone()));
-        beats.set_nas_too(false);
         let hb = crate::agent::pool::Heartbeat {
             pool: crate::pool::Beat { member: "m-a".into(), host: "m1".into(), beat: 1, ..Default::default() },
-            beat_http: true,
             ..Default::default()
         };
         beats.heard(hb.clone(), vec![beats::SPEAKS.into()], None, unix_now());

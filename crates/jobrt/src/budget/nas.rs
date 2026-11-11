@@ -1,5 +1,5 @@
-//! The pool's NAS and network limits (docs/pool.md §7.7, task #243), on unless the switch
-//! `state/pool/nas-budget` (`SWITCH`) says `off` (on while missing). Packing lets more jobs run
+//! The pool's NAS and network limits (docs/pool.md §7.7, task #243), on unless the pool's setting
+//! `nas-budget` (agentcore::coord::asks) says `off` (on while not set). Packing lets more jobs run
 //! at once, and the share takes 20 to 55 small-file creates a second: the lead's coordinator keeps
 //! the pool's running jobs' NAS weights together within what the NAS was measured to give
 //! (agentcore::coord's `pack`, `pick_every` and `pick_own`: the lead's own jobs too), as the Wikimedia
@@ -16,7 +16,7 @@
 //! - **The limits** are measured, never typed: `probe` makes small files and larger ones in a
 //!   folder of its own, `STREAMS` streams at once (the NAS's capacity together, task #534), reads
 //!   the larger back past the cache, lists a kept folder, stats its files, deletes the small ones
-//!   one by one, and removes the rest. The coordinator probes every `EVERY_S`, whatever the switch
+//!   one by one, and removes the rest. The coordinator probes every `EVERY_S`, whatever the setting
 //!   says, and takes the best of the last `KEEP_S`'s probes (`Probes`): a probe run while the build
 //!   loads the NAS measures what's left, so the best is the nearest to the whole. Probes taken
 //!   under load are kept too (they only ever read low, and the best of the day passes over them;
@@ -36,9 +36,6 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// The switch's file: the pool's setting `nas-budget` (agentcore::coord::asks) as an older app reads
-/// it (the rollout gate's).
-pub const SWITCH: &str = "state/pool/nas-budget";
 /// Where the coordinator's probes are made, under the project folder (a folder per process).
 pub const PROBE_DIR: &str = "state/pool/nas-probe";
 /// How often the coordinator probes (s).
@@ -55,9 +52,6 @@ pub const SMALL_FILES: usize = 12;
 pub const SMALL: usize = 4096;
 pub const LARGE: usize = 16 << 20;
 
-/// The owner's load target for the NAS's disks, pool-wide (`TARGET_FILE`, `scenic nas-target`):
-/// the busiest disk's share busy (%) the budget grants up to (`Loop`).
-pub const TARGET_FILE: &str = "state/pool/nas-target.json";
 /// The target while none is set: 85 % (headroom kept: #451's stall came at a NAS held busy).
 pub const DEFAULT_TARGET_PCT: u32 = 85;
 /// The targets that may be set (%): never 100, never so low the pool stops.

@@ -966,14 +966,21 @@ mod tests {
             let first = String::from_utf8_lossy(&b[..n]).lines().next().unwrap_or_default().to_string();
             write!(s, "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nupstream saw: {first}\n").unwrap();
         });
-        let budget = Arc::new(
-            Budget::new(
-                &store::nasfs::NasRoot::local_for_test(&d.path().join("nas")),
-                "m-test",
-                Arc::new(StepClock::at(1_800_000_000_000)),
-            )
-            .with_ledger(),
-        );
+        // (A lead that gives a token a take.)
+        struct Gives;
+        impl jobrt::budget::Lead for Gives {
+            fn take(&self, _: jobrt::budget::Class) -> Result<jobrt::budget::Given, String> {
+                Ok(jobrt::budget::Given::Batch { n: 1, window: 0, for_ms: 60_000 })
+            }
+            fn hold(&self, _: u64) -> Result<(), String> {
+                Ok(())
+            }
+            fn answers(&self, _: jobrt::budget::LeaseOp, _: &str, _: &str) -> Result<jobrt::budget::LeaseSaid, String> {
+                Err("not this test's".into())
+            }
+        }
+        let budget = Arc::new(Budget::new("m-test", Arc::new(StepClock::at(1_800_000_000_000))).with_ledger());
+        budget.set_lead(Some(Arc::new(Gives)));
         let proxy = Proxy::start(budget.clone(), Some(Arc::new(move |_: &str, _: u16| Some(up_addr)))).unwrap();
         let env: Vec<(String, String)> = proxy.env_for("job1");
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();

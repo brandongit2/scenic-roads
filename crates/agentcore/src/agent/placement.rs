@@ -1,7 +1,7 @@
 //! Placement by how crucial a job is, and work offered ahead (docs/pool.md §7.2, §12 phase 4's
-//! eleventh batch; docs/coordinator.md §3), behind the switch `state/pool/placement` (`SWITCH`; off
-//! while missing or `off` in it: the agent and its coordinator as they were, exactly). It acts only
-//! in the pool.
+//! eleventh batch; docs/coordinator.md §3), behind the pool's setting `placement`
+//! (crate::coord::asks; off while not set: the agent and its coordinator as they were, exactly). It
+//! acts only in the pool.
 //!
 //! - **How crucial** (`Placement::slack`): each step's slack in the forecast, the time between its
 //!   last target's forecast end and the whole build's (`slack`): the long poles (no slack) first.
@@ -27,21 +27,9 @@
 
 use std::collections::BTreeMap;
 
-/// The switch (`on` in it, or present; `off` in it, or missing: off, the agent as it was).
-pub const SWITCH: &str = "state/pool/placement";
-
 /// How long one draw holds (s): a target drawn to a member that doesn't ask for it in that time is
 /// drawn again.
 pub const DRAW_S: u64 = 60;
-
-/// Whether placement is on, as the switch at `root` says; None when it can't be read now.
-pub fn on(root: &store::nasfs::NasRoot) -> Option<bool> {
-    match super::nasread::read_switch(&root.join(SWITCH)) {
-        Ok(s) => Some(s.trim() != "off"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
-        Err(_) => None,
-    }
-}
 
 /// What the lead's coordinator places by (`crate::coord::Coordinator::set_placement`); a draw's
 /// weights are the coordinator's paces (crate::paces, `Sched::draw_weight`).
@@ -130,17 +118,6 @@ pub fn key(what: &str, since_s: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_switch_is_off_while_missing_or_off() {
-        let d = tempfile::tempdir().unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(false));
-        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        std::fs::write(d.path().join(SWITCH), "off\n").unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(false));
-        std::fs::write(d.path().join(SWITCH), "on\n").unwrap();
-        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(true));
-    }
 
     #[test]
     fn draws_repeat_and_share_by_speed() {

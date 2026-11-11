@@ -242,8 +242,8 @@ impl Drop for Handle {
 }
 
 /// Another member's hold ask (`hold-request.json` with a member) taken and answered: that member's
-/// hold written on the NAS (later than the setting there), or this Mac's own set (`set`) when the
-/// name is this Mac's. Left for the next try while the pool's step holds its lock.
+/// hold asked of the lead, or this Mac's own set (`set`) when the name is this Mac's. Left for the
+/// next try while the pool's step holds its lock.
 pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut(HoldState) -> bool) {
     // (Never waiting on the pool's lock: its step may hang on the NAS.)
     let pooled = m.pool.as_ref().map(super::pool::try_lock);
@@ -288,48 +288,16 @@ pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut
                 (false, "a later setting of this Mac's pause stands".to_string())
             }
         }
-        // (By the lead when it serves the asks (crate::coord::asks): queued, sent with the next beat
-        // (leading: given its coordinator in process), the held member hearing it in its next beat.
-        // On the NAS too while the rollout gate is on: an older member reads it there.)
+        // (By the lead (crate::coord::asks): queued, sent with the next beat (leading: given its
+        // coordinator in process), the held member hearing it in its next beat.)
         Ok(Some((id, name))) if beats.as_ref().is_some_and(|b| b.lead_asks()) => {
             let b = beats.as_ref().expect("the lead serves the asks");
-            let ask = Ask::Hold(HoldAsk { member: id.clone(), held: req.held.clone(), at: req.at });
+            let ask = Ask::Hold(HoldAsk { member: id, held: req.held.clone(), at: req.at });
             lead_key = Some(ask.key());
             b.ask(ask);
-            if b.asks_on_nas() {
-                if let Some(r) = m.nas.get().root.clone() {
-                    let st = HoldState { held: req.held.clone(), at: req.at };
-                    if let Err(e) = super::write_hold(&r.join(control::hold_path(&id)), &st) {
-                        eprintln!("agent: {name}'s pause on the NAS, for an older app: {e:#}");
-                    }
-                }
-            }
             (true, format!("{name} is {what} (asked of the lead: {name} takes it up with its next beat)"))
         }
-        Ok(Some((id, name))) => match m.nas.get().root.clone() {
-            None => (false, "the NAS isn't reachable from this Mac".to_string()),
-            Some(r) => {
-                // (Later than the setting there, whatever the two Macs' clocks say. Only a missing
-                // file counts as none set; one that can't be read or parsed now could hide a later
-                // setting: asked again, never a false ok.)
-                let path = r.join(control::hold_path(&id));
-                let there = match super::nasread::read_switch(&path) {
-                    Ok(t) => serde_json::from_str::<HoldState>(&t).map(|h| h.at).ok(),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(0),
-                    Err(_) => None,
-                };
-                match there {
-                    None => (false, format!("{name}'s pause on the NAS can't be read now: ask again")),
-                    Some(there) => {
-                        let st = HoldState { held: req.held.clone(), at: req.at.max(there + 1) };
-                        match super::write_hold(&path, &st) {
-                            Ok(()) => (true, format!("{name} is {what} (it takes it up within a minute)")),
-                            Err(e) => (false, format!("{name}'s pause on the NAS: {e:#}")),
-                        }
-                    }
-                }
-            }
-        },
+        Ok(Some((_, name))) => (false, format!("the lead hasn't answered this Mac yet: ask again to pause {name}")),
         Err(e) => (false, e),
     };
     eprintln!("agent: {said}");

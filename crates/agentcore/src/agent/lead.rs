@@ -298,8 +298,7 @@ fn view(run: &Run) -> View {
             ids.push(t.member.clone());
         }
     }
-    let pool_beats: Vec<crate::pool::Beat> =
-        ids.iter().filter_map(|id| side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
+    let pool_beats: Vec<crate::pool::Beat> = ids.iter().filter_map(|id| side.heartbeat(id)).map(|h| h.pool).collect();
     let mut beats: Vec<(String, Heartbeat)> = Vec::new();
     let mut members: Vec<Member> = Vec::new();
     // (The app a member needs: the term's, and once a readers' switch is recorded, the one it was
@@ -311,10 +310,6 @@ fn view(run: &Run) -> View {
     );
     for id in ids {
         let h = side.heartbeat(&id).unwrap_or_default();
-        // (Not a shadow run's heartbeat.)
-        if h.shadow {
-            continue;
-        }
         let is_lead = cur.lead.as_ref().is_some_and(|t| t.member == id);
         let host = if h.pool.host.is_empty() {
             if id == me {
@@ -800,7 +795,22 @@ mod tests {
             let (ia, ib) = (a.id(), b.id());
             a.run.side.know(&ib);
             b.run.side.know(&ia);
+            hear(&mut [&mut a, &mut b]);
             (a, b)
+        }
+
+        /// Each Mac's heartbeat heard by the others, as their beats carry it (the lead's
+        /// coordinator, and its answers to the members: crate::coord::beats), each by its own clock.
+        pub(super) fn hear(macs: &mut [&mut Mac]) {
+            let own: Vec<_> = macs.iter().filter_map(|m| m.run.side.http_beats().own()).collect();
+            for m in macs.iter_mut() {
+                let b = m.run.side.http_beats();
+                for h in own.iter().filter(|h| h.pool.member != m.id()) {
+                    let speaks =
+                        [crate::coord::held::SPEAKS, crate::coord::beats::SPEAKS, crate::coord::beats::HANDOFF];
+                    b.heard(h.clone(), speaks.map(str::to_string).to_vec(), None, m.run.side.now());
+                }
+            }
         }
 
         impl Mac {
@@ -846,6 +856,7 @@ mod tests {
                         m.go();
                     }
                 }
+                hear(macs);
             }
         }
 
@@ -857,6 +868,7 @@ mod tests {
                 for m in macs.iter_mut() {
                     m.go();
                 }
+                hear(macs);
                 if done(macs) {
                     return;
                 }
@@ -929,21 +941,21 @@ mod tests {
             pass_all(&mut [&mut b, &mut a], PROBE_S);
             a.go();
             assert!(a.run.side.all_check_map && a.run.pool_view().all_check_map, "{:?}", a.run.side.beats);
-            let hb = a.root.join(crate::pool::beat::path(&b.id())).unchecked_path();
-            let kept = std::fs::read(&hb).unwrap();
-            let mut v: serde_json::Value = serde_json::from_slice(&kept).unwrap();
-            assert_eq!(v.as_object_mut().unwrap().remove("checks_map"), Some(serde_json::Value::Bool(true)));
-            std::fs::write(&hb, serde_json::to_vec(&v).unwrap()).unwrap();
+            // (B heard on an older app: its heartbeat without `checks_map`.)
+            let mut older = b.run.side.http_beats().own().unwrap();
+            older.pool.checks_map = false;
+            a.run.side.http_beats().heard(older.clone(), Vec::new(), None, a.run.side.now());
             a.pass(PROBE_S);
             a.go();
             assert!(!a.run.side.all_check_map && !a.run.pool_view().all_check_map, "B's app looks at catalog/");
-            std::fs::remove_file(&hb).unwrap();
+            // (B not heard lately: no heartbeat.)
+            let long_ago = a.run.side.now() - crate::coord::beats::FORGET_S;
+            a.run.side.http_beats().heard(older, Vec::new(), None, long_ago);
             a.pass(PROBE_S);
             a.go();
             assert!(!a.run.side.all_check_map, "a member without a heartbeat");
             // B back on this app: they may go.
-            std::fs::write(&hb, &kept).unwrap();
-            pass_all(&mut [&mut b, &mut a], crate::pool::beat::BEAT_EVERY_S + PROBE_S);
+            pass_all(&mut [&mut b, &mut a], PROBE_S);
             a.go();
             assert!(a.run.side.all_check_map);
         }
@@ -985,7 +997,8 @@ mod tests {
             assert_eq!(b.run.side.driver().current().term, 3);
             assert!(!d.path().join("nas").join(crate::pool::term::path(4)).exists(), "no term made");
             let v = b.view();
-            assert!(v.no_lead.as_deref().is_some_and(|w| w.contains("out of touch")), "{v:?}");
+            // (A's beat not heard for its 20 min: its heartbeat forgotten.)
+            assert!(v.no_lead.as_deref().is_some_and(|w| w.contains("no heartbeat")), "{v:?}");
             assert!(v.alert.as_deref().is_some_and(|w| w.contains("the members finish their jobs and wait")), "{v:?}");
             assert!(said(&v, b.run.side.now())[0] == v.alert.clone().unwrap());
             drop(a);

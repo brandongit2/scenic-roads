@@ -88,12 +88,9 @@ mod tests {
         let away = PageAt::default();
         assert!(!gated(false, &away, None, 100), "no pool: no other app");
         let b = Beats::default();
-        assert!(gated(false, &away, Some(&b), 100), "no word yet: one may heartbeat on the NAS alone");
-        b.set_nas_too(false);
         assert!(!gated(false, &away, Some(&b), 100), "no member heard");
         let hb = |id: &str| crate::agent::pool::Heartbeat {
             pool: crate::pool::Beat { member: id.into(), host: id.into(), beat: 100, ..Default::default() },
-            beat_http: true,
             ..Default::default()
         };
         b.heard(hb("m1"), vec![ROOT.into()], None, 100);

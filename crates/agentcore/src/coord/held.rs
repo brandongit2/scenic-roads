@@ -45,19 +45,18 @@ pub struct Beat {
     /// out by apps before it (their list as of the beat).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub held_age_s: u64,
-    /// Its pool heartbeat (speaking `beats::SPEAKS`: crate::coord::beats).
+    /// Its pool heartbeat (crate::coord::beats).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat: Option<crate::agent::pool::Heartbeat>,
     /// Its agent's status (crate::agent::Status), its plan's parts left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<serde_json::Value>,
-    /// The number up to which it took the lead's messages to it (speaking `beats::ASKS`): those
-    /// the lead drops; the answer carries the rest.
+    /// The number up to which it took the lead's messages to it (crate::coord::asks): those the
+    /// lead drops; the answer carries the rest.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub took: u64,
-    /// Its jobs' hand-offs it keeps whole that the lead hasn't acknowledged, by key (speaking
-    /// `beats::HANDOFF`, crate::coord::handoffs): the answer says which are merged and which the
-    /// lead lacks.
+    /// Its jobs' hand-offs it keeps whole that the lead hasn't acknowledged, by key
+    /// (crate::coord::handoffs): the answer says which are merged and which the lead lacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs: Vec<String>,
     /// Its Mac's capacity now (crate::coord::Capacity, as its asks carry it): with its running jobs'
@@ -65,8 +64,8 @@ pub struct Beat {
     /// (docs/pool.md §7.1, Threads re-granted). Left out by apps before it; an older lead reads past it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap: Option<super::Capacity>,
-    /// Its resume progress whole (speaking `beats::BUDGETS`, crate::coord::budgets): the jobs whose
-    /// progress is on its Mac's disk. Left out by apps before it, which write it on the NAS.
+    /// Its resume progress whole (crate::coord::budgets): the jobs whose progress is on its Mac's
+    /// disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::agent::resume::Progress>,
 }
@@ -83,14 +82,9 @@ pub struct Answer {
     /// Leases it listed that aren't its here: ended (released, finished, or never granted).
     #[serde(default)]
     pub released: Vec<u64>,
-    /// What the lead takes (`beats::SPEAKS`: the heartbeat and status in the beat); left out by a
-    /// lead before it.
+    /// What the lead takes and serves (crate::coord::beats's words).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub speaks: Vec<String>,
-    /// A member on an older app in touch still reads the NAS's heartbeats and statuses: write
-    /// them there too.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub nas_too: bool,
     /// The other members' heartbeats as the lead hears them, its own among them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<crate::agent::pool::Heartbeat>,
@@ -104,10 +98,6 @@ pub struct Answer {
     /// The settings' generation (`/pool/settings`): a member fetches them when it moves.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub settings_gen: u64,
-    /// A member heard doesn't say `beats::ASKS` (an older app): the NAS's mailboxes, holds and
-    /// switch files go on beside (the rollout gate).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub asks_on_nas: bool,
     /// Of the hand-offs its beat listed (`Beat::handoffs`): those in a records snapshot the lead
     /// saved (the member drops them), and those the lead lacks (the member posts them).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -124,10 +114,6 @@ pub struct Answer {
     /// Left out by a lead before it (the jobs keep their grant), and read past by a member before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<(u64, u32)>,
-    /// A member heard doesn't say `beats::BUDGETS` (an older app): the Wikimedia budget and the
-    /// answers' lease are taken on the NAS meanwhile, by every Mac (the rollout gate).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgets_on_nas: bool,
     /// The owner's releases of this member's progress the lead keeps (job, when its progress
     /// began: crate::coord::budgets).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -175,21 +161,19 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
     s.keep.heard(&b.member, b.speaks.clone(), unix);
     refresh(s);
     let epoch = s.keep.store().map_or(0, |st| st.epoch());
-    // (Its heartbeat and status, in memory: crate::coord::beats. Without its agent's registry, as
-    // before the pool's side is attached, the member's NAS copies go on.)
+    // (Its heartbeat and status, in memory: crate::coord::beats; none before the pool's side is
+    // attached.)
     let mut a = Answer { epoch, ..Default::default() };
     if let Some(beats) = s.beats.clone() {
-        if let Some(h) = b.heartbeat.clone().filter(|_| b.speaks.iter().any(|w| w == super::beats::SPEAKS)) {
+        if let Some(h) = b.heartbeat.clone() {
             let id = h.pool.member.clone();
             s.keep.beat(&id, &h, unix);
             beats.heard(h, b.speaks.clone(), b.status.clone(), unix);
             a.members = beats.members(unix, &id);
-            if b.speaks.iter().any(|w| w == super::beats::ASKS) {
-                if let Some(i) = s.inbox.as_ref() {
-                    a.msgs = i.to(&id, b.took);
-                }
-                a.hold = s.asks.holds.get(&id).cloned();
+            if let Some(i) = s.inbox.as_ref() {
+                a.msgs = i.to(&id, b.took);
             }
+            a.hold = s.asks.holds.get(&id).cloned();
             if let Some(h) = s.handoffs.as_ref().filter(|_| b.speaks.iter().any(|w| w == super::beats::HANDOFF)) {
                 (a.merged, a.lacks) = h.answer(&id, &b.handoffs);
             }
@@ -197,6 +181,8 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
                 a.progress_released = super::budgets::heard(s, p);
             }
         }
+        // (Its words: `ASKS` and `BUDGETS` still said for the app before, which falls back to the
+        // NAS without them; `HANDOFF` once its agent has attached the hand-offs' registry.)
         a.speaks =
             [super::beats::SPEAKS, super::beats::PAGE, super::beats::ROOT, super::beats::ASKS, super::beats::BUDGETS]
                 .map(str::to_string)
@@ -204,12 +190,8 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         if s.handoffs.is_some() {
             a.speaks.push(super::beats::HANDOFF.to_string());
         }
-        a.nas_too = beats.nas_too();
         a.lead = lead_line(s);
         a.settings_gen = s.asks.settings.gen;
-        a.asks_on_nas = on_nas(s, &beats, unix, super::beats::ASKS);
-        beats.set_asks_on_nas(a.asks_on_nas);
-        a.budgets_on_nas = on_nas(s, &beats, unix, super::beats::BUDGETS);
     }
     // (As its answers' headers say it: its leases' term, its member said; a member's broker none.)
     a.term = s
@@ -289,14 +271,6 @@ fn lead_line(s: &Shared) -> Option<LeadLine> {
     let (host, said, flags) = s.said.clone()?;
     let all_new = s.old_member(s.now()).is_none();
     Some(LeadLine { host, app: s.app.clone(), said, pause: s.paused.clone(), all_new, flags })
-}
-
-/// Whether a member heard within `beats::FORGET_S` of `unix` doesn't say `word`, or one on an
-/// older app heartbeats on the NAS alone (`Beats::nas_too`): that piece's NAS files go on (the
-/// rollout gates of steps 5 and 7: `beats::ASKS`, `beats::BUDGETS`).
-pub fn on_nas(s: &Shared, beats: &super::beats::Beats, unix: u64, word: &str) -> bool {
-    let since = unix.saturating_sub(super::beats::FORGET_S);
-    beats.nas_too() || s.keep.members().values().any(|h| h.at > since && !h.speaks.iter().any(|w| w == word))
 }
 
 /// The owner's release of `member`'s jobs' leases (`scenic pool release`: that Mac is gone for

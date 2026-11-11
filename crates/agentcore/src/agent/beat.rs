@@ -105,7 +105,7 @@ impl ToLead {
             h.pool.beat = status.beat;
             h
         });
-        let mut speaks: Vec<String> = [
+        let speaks: Vec<String> = [
             held::SPEAKS,
             beats::SPEAKS,
             beats::VIEW,
@@ -114,12 +114,10 @@ impl ToLead {
             beats::BUDGETS,
             beats::RECORDS,
             beats::ROOT,
+            beats::BY_LEAD,
         ]
         .map(str::to_string)
         .to_vec();
-        if self.beats.by_lead() {
-            speaks.push(beats::BY_LEAD.to_string());
-        }
         held::Beat {
             member: self.member.clone(),
             speaks,
@@ -204,8 +202,8 @@ impl ToLead {
         }
     }
 
-    /// Posts `b` to the lead; its answer to the registry (an older lead's 404: the NAS copies go
-    /// on). Whether it failed.
+    /// Posts `b` to the lead; its answer to the registry (an older lead's 404 said so). Whether it
+    /// failed.
     fn post(&self, b: &crate::coord::held::Beat, failing: bool) -> bool {
         // (Its list's age as it goes: the loop's, stuck maybe, may lack a lease granted since,
         // which the lead then keeps. A lead that doesn't say it takes the beat may not read the

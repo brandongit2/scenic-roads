@@ -18,21 +18,18 @@
 //!   it, before anything that step said is acted on; a job's hand-off handed to a step kept (its
 //!   folder) until a saved state holding it is on disk.
 //! - **The listings** the driver asks for, made on a thread of their own one at a time, every one
-//!   handed back once, a failed one made again a minute later; and a listing of the members'
-//!   heartbeats the same way, every fifth of the time a heartbeat takes to go out of touch (two
-//!   minutes: nothing lists a folder in the loop).
+//!   handed back once, a failed one made again a minute later (nothing lists a folder in the loop).
+//! - **The members it knows**: those heard by their beats (crate::coord::beats: the lead's own, a
+//!   member's from its lead's answers), forgotten once not heard for `FORGET_AFTER`.
 //! - **The messages** between a member and the lead, by HTTP (docs/coordination.md step 5), each
 //!   numbered, the sender's last `KEPT` kept in its `mail.json`: to the lead by its coordinator's
 //!   `/pool/mail` (`post_mail`), into its store before it answers, those it hasn't taken posted
 //!   again while it answers the member's beats (none lost while it's down); from the lead in the
 //!   answer to the member's next beat (crate::coord::inbox's `to`), after the number the member
 //!   said it took. Best effort above that, as the driver's are (a message lost is told again or
-//!   made up for). **The rollout gate** (planned for deletion one release after every member says
-//!   `beats::ASKS` for a day): the mailboxes on the NAS (`MAIL`: `<to>/<from>.json`, written whole
-//!   by its sender alone, read by member id) still written to a member, or a lead, that doesn't
-//!   say it, and read while one heard doesn't (`Beats::asks_on_nas`).
-//! - **The heartbeat**: the driver's fields, the members it knows, written each step they change
-//!   and at least every two minutes, stamped as it's written, to `state/pool/members/<id>.json`.
+//!   made up for).
+//! - **The heartbeat**: the driver's fields, the members it knows, composed each step for its
+//!   agent's beat (crate::agent::beat), stamped as it's sent.
 //! - **The merge's checks** (`check`): what phase 1 checks of an entry.
 //!
 //! The pool is always on (§12 phase 4's thirteenth batch): every agent with the NAS leads or works
@@ -53,20 +50,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The members' mailboxes: `<to>/<from>.json`.
-pub const MAIL: &str = "state/pool/mail";
-/// The members' heartbeats (crate::pool::beat::path).
-pub const MEMBERS: &str = "state/pool/members";
-/// The messages a sender keeps in a mailbox: its last.
+/// The messages a sender keeps for a recipient: its last.
 const KEPT: usize = 64;
-/// How often the members' heartbeats are listed (off the loop), for the members it knows (a lead
-/// reads their mail; every member's view says which are out of touch): a fifth of the time a
-/// heartbeat takes to go out of touch (crate::pool::beat::OUT_OF_TOUCH_S), so no view of it lags
-/// that by more.
-const MEMBERS_EVERY: Duration = Duration::from_secs(crate::pool::beat::OUT_OF_TOUCH_S / 5);
-/// A member whose heartbeat file a listing doesn't find is forgotten once listings have missed it
-/// this long (twice the time a heartbeat takes to go out of touch): never on a failed listing, nor
-/// on one that misses this member's own heartbeat (the folder not there, the NAS away).
+/// A member not heard by its beat this long is forgotten (twice the time a heartbeat takes to go
+/// out of touch).
 pub const FORGET_AFTER: Duration = Duration::from_secs(2 * crate::pool::beat::OUT_OF_TOUCH_S);
 /// The members forgotten (`Side::forgotten`), in the agent's pool folder: kept across restarts.
 const FORGOTTEN: &str = "forgotten.json";
@@ -75,8 +62,6 @@ const FORGOTTEN: &str = "forgotten.json";
 pub const RECORDS: &str = "records.json";
 /// A failed listing is made again after this.
 const AGAIN: Duration = Duration::from_secs(60);
-/// The heartbeat is written at least this often.
-const BEAT_EVERY: Duration = Duration::from_secs(crate::pool::beat::BEAT_EVERY_S);
 /// A Tell the same as the last to that member is sent again only after this (the lead hears it
 /// each loop otherwise; it keeps what it was told).
 const TELL_AGAIN: Duration = Duration::from_secs(600);
@@ -164,20 +149,7 @@ impl Io for Clocked<'_> {
     }
 }
 
-/// A mailbox as its sender writes it: the last `KEPT` messages it sent its recipient, each
-/// numbered (higher is later; numbers never repeat across the sender's processes).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct Mailbox {
-    msgs: Vec<(u64, Msg)>,
-}
-
-/// A mailbox as read: each message parsed alone (`after`).
-#[derive(Deserialize)]
-struct RawMailbox {
-    msgs: Vec<(u64, serde_json::Value)>,
-}
-
-/// The messages after number `last` (from its mailbox and its posts, crate::coord::inbox), in
+/// The messages after number `last` (from its posts, crate::coord::inbox, or its lead's answers), in
 /// their sender's order, each once, and the number read up to: each message read alone, so one
 /// this app doesn't know (a newer app's) is passed over, and read past all the same (never read
 /// again, never holding the others back).
@@ -208,11 +180,6 @@ fn mail_urls(urls: &[String]) -> Vec<String> {
     urls.iter().filter(|u| origin(u).is_some_and(|o| ours(&o))).cloned().collect()
 }
 
-/// The path of the mailbox `from` sends `to`.
-pub fn mail_path(to: &str, from: &str) -> String {
-    format!("{MAIL}/{to}/{from}.json")
-}
-
 /// What a member keeps of its mail, in the agent's folder (`mail.json`): the number of the last
 /// message it took from each sender, so a restart doesn't take one again; what it sent each member
 /// lately (rewritten whole as it sends more).
@@ -230,17 +197,14 @@ struct Mail {
     posted: BTreeMap<String, u64>,
 }
 
-/// The heartbeat a member writes (`state/pool/members/<id>.json`): the driver's fields, and the
-/// members it knows.
+/// A member's heartbeat, in its beat to the lead (crate::coord::beats): the driver's fields, and
+/// the members it knows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Heartbeat {
     #[serde(flatten)]
     pub pool: Beat,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<String>,
-    /// Whether this was a shadow run's (an older app's, §12: acting on nothing; left out since).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub shadow: bool,
     /// Its Mac's conditions, for the controls (§11: whether it's home on power, on battery, away;
     /// whether it can lead now). Left out by apps before phase 3, and ignored by them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -250,13 +214,10 @@ pub struct Heartbeat {
     /// the switch off, and by apps before it (ignored by them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broker: Option<crate::coord::brokers::Broker>,
-    /// Its app takes its members' mail by HTTP when it leads (`/pool/mail`, §9) and posts its own
-    /// to a lead that says so. Left out by apps before it: their mail goes by mailbox alone.
+    /// Always so: said for a lead on the app before task #1036, which reads a heartbeat without them
+    /// as an older app's (its mail by mailbox, its heartbeat on the NAS) and falls back to the NAS.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mail_http: bool,
-    /// Its app beats to the lead by HTTP with this heartbeat (crate::coord::beats): its NAS copy
-    /// stops once the lead says no member reads it. Left out by apps before it, whose NAS copies
-    /// the lead keeps reading, writing its own there for them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub beat_http: bool,
 }
@@ -278,15 +239,10 @@ pub struct Conds {
     pub held: bool,
 }
 
-/// A listing made off the loop: its kind, and the thread making it.
+/// A listing of the journal made off the loop: what was asked, and the thread making it.
 struct Making {
-    what: Kind,
+    what: Listing,
     thread: std::thread::JoinHandle<Result<Vec<String>>>,
-}
-
-enum Kind {
-    Journal(Listing),
-    Members,
 }
 
 /// What the agent hands a step.
@@ -336,14 +292,11 @@ pub struct Side {
     pub lead_contact: (Vec<String>, String),
     /// The last Tell sent each member, and when.
     told: BTreeMap<String, (Vec<String>, Instant)>,
-    /// The members it knows (itself among them), as listed last and heard from since.
+    /// The members it knows (itself among them), as heard by their beats and of since.
     members: BTreeSet<String>,
-    members_listed: Option<Instant>,
-    members_queued: bool,
-    /// The members the listings missed, since when (`FORGET_AFTER`).
+    /// The members not heard by their beats, since when (`FORGET_AFTER`).
     missed: BTreeMap<String, Instant>,
-    /// The members forgotten: not known again from a message or a term until a listing finds
-    /// their heartbeat.
+    /// The members forgotten: not known again from a message or a term until their beat is heard.
     forgotten: BTreeSet<String>,
     /// The listings asked for and not made yet, the one being made, those made and not handed back,
     /// and when one last failed.
@@ -351,8 +304,6 @@ pub struct Side {
     making: Option<Making>,
     made: VecDeque<Listed>,
     failed_at: Option<Instant>,
-    /// The heartbeat as last written (beat left out), and when (and `ahead` then).
-    beat: Option<(Heartbeat, Instant, u64)>,
     /// It stopped for good (another process holds its lock): why.
     pub stopped: Option<String>,
     /// Its Mac's conditions as last given, for its heartbeat.
@@ -361,15 +312,13 @@ pub struct Side {
     pub broker: Option<crate::coord::brokers::Broker>,
     /// Whom it reached and whom it couldn't, for its heartbeat (crate::pool::reachable).
     pub reach: Vec<crate::pool::reachable::Reach>,
-    /// The members' heartbeats (their pool's fields, shadow runs' left out) as `Run::tend_reach`
-    /// last read them.
+    /// The members' heartbeats (their pool's fields) as `Run::tend_reach` last read them.
     pub beats: Vec<Beat>,
-    /// When (unix s) `beats` were last read whole: a round with a read failing keeps the last.
+    /// When (unix s) `beats` were last read.
     pub beats_at: Option<u64>,
-    /// Whether every member's heartbeat, as `beats` were last read whole (shadow runs' too: an
-    /// older app on that Mac), says its app's NAS check looks at `map/` (`Beat::checks_map`): the
-    /// NAS's old catalogues may go (crate::agent::gc); a member with none read counts as one that
-    /// doesn't. False until read.
+    /// Whether every member's heartbeat, as `beats` were last read, says its app's NAS check looks
+    /// at `map/` (`Beat::checks_map`): the NAS's old catalogues may go (crate::agent::gc); a member
+    /// with none heard counts as one that doesn't. False until read.
     pub all_check_map: bool,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
@@ -436,15 +385,12 @@ impl Side {
             lead_contact: Default::default(),
             told: BTreeMap::new(),
             members,
-            members_listed: None,
-            members_queued: false,
             missed: BTreeMap::new(),
             forgotten,
             asked: VecDeque::new(),
             making: None,
             made: VecDeque::new(),
             failed_at: None,
-            beat: None,
             stopped: None,
             conds: None,
             broker: None,
@@ -497,7 +443,7 @@ impl Side {
         &self.members
     }
 
-    /// Knows member `m` (its mail read from now on), before a listing of the heartbeats finds it.
+    /// Knows member `m` (its mail read from now on).
     pub fn know(&mut self, m: &str) {
         if crate::pool::is_member_id(m) {
             self.forgotten.remove(m);
@@ -505,48 +451,23 @@ impl Side {
         }
     }
 
-    /// Knows member `m` from a message or a term, unless it was forgotten (its heartbeat gone).
+    /// Knows member `m` from a message or a term, unless it was forgotten (its beat not heard).
     fn heard_of(&mut self, m: &str) {
         if !self.forgotten.contains(m) {
             self.members.insert(m.to_string());
         }
     }
 
-    /// The members heard from lately (their heartbeats as last read whole, not out of touch then),
-    /// this one among them: what the budgets divide by.
-    pub fn heard_lately(&self) -> usize {
-        let at = self.beats_at.unwrap_or(0);
-        let mut ids: BTreeSet<&str> =
-            self.beats.iter().filter(|b| b.beat > 0 && !b.out_of_touch(at)).map(|b| b.member.as_str()).collect();
-        ids.insert(&self.me.id);
-        ids.len()
-    }
-
-    /// A listing of the heartbeats taken in at `now` (`names` the files found): the members found
-    /// known, those missed `FORGET_AFTER` forgotten; members.json written.
-    fn take_members(&mut self, names: &[String], now: Instant) {
-        let mut found: BTreeSet<String> = names
-            .iter()
-            .filter_map(|n| n.strip_suffix(".json"))
-            .filter(|m| crate::pool::is_member_id(m))
-            .map(str::to_string)
-            .collect();
-        // (Those heard by HTTP within `beats::FORGET_S` are found too, and this one when its own
-        // isn't on the NAS by design: a member is forgotten once it hasn't beaten for 20 min.)
-        found.extend(self.http.fresh(self.now()).into_iter().map(|h| h.beat.pool.member));
-        let by_http = !self.http.nas_too();
-        if by_http {
-            found.insert(self.me.id.clone());
-        }
-        let written = self.beat.is_some() || by_http;
-        let gone = forget(&mut self.members, &mut self.missed, &found, &self.me.id, written, now, FORGET_AFTER);
-        let before = self.forgotten.clone();
+    /// The members heard by their beats within `beats::FORGET_S` (and this one) known at `now`,
+    /// those missed `FORGET_AFTER` forgotten; members.json written when they change.
+    fn take_members(&mut self, now: Instant) {
+        let mut found: BTreeSet<String> = self.http.fresh(self.now()).into_iter().map(|h| h.beat.pool.member).collect();
+        found.insert(self.me.id.clone());
+        let before = (self.members.clone(), self.forgotten.clone());
+        let gone = forget(&mut self.members, &mut self.missed, &found, &self.me.id, now, FORGET_AFTER);
         self.forgotten.retain(|m| !found.contains(m));
         for m in gone {
-            eprintln!(
-                "pool: member {m} forgotten: not heard from (its beat, or its heartbeat on the NAS) for {} min",
-                FORGET_AFTER.as_secs() / 60
-            );
+            eprintln!("pool: member {m} forgotten: its beat not heard for {} min", FORGET_AFTER.as_secs() / 60);
             // (Its mail not sent: nobody reads it.)
             self.mail.sent.remove(&m);
             self.mail.posted.remove(&m);
@@ -554,14 +475,16 @@ impl Side {
             self.told.remove(&m);
             self.forgotten.insert(m);
         }
-        if self.forgotten != before {
+        if self.forgotten != before.1 {
             if let Ok(b) = serde_json::to_vec(&self.forgotten) {
                 store::whole::write(&self.dir.join(FORGOTTEN), &b).ok();
             }
             self.save_mail();
         }
-        if let Ok(b) = serde_json::to_vec(&self.members) {
-            store::whole::write(&self.dir.join("members.json"), &b).ok();
+        if self.members != before.0 {
+            if let Ok(b) = serde_json::to_vec(&self.members) {
+                store::whole::write(&self.dir.join("members.json"), &b).ok();
+            }
         }
     }
 
@@ -574,16 +497,10 @@ impl Side {
         inputs::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
     }
 
-    /// Member `m`'s heartbeat as it wrote it (None: none, or one that can't be read now).
+    /// Member `m`'s heartbeat as heard by its beat (crate::coord::beats; this one's own as
+    /// composed), within `beats::FORGET_S`.
     pub fn heartbeat(&self, m: &str) -> Option<Heartbeat> {
-        self.read_heartbeat(m).ok().flatten()
-    }
-
-    /// Member `m`'s heartbeat: as heard by HTTP (crate::coord::beats), else the NAS's (a member on
-    /// an older app, or a lead before the beats); none when there's none (or it doesn't parse), an
-    /// error when the NAS couldn't be read.
-    pub fn read_heartbeat(&self, m: &str) -> Result<Option<Heartbeat>> {
-        heartbeat_of(&self.http, &*self.nas, m, self.now())
+        self.http.get(m, self.now())
     }
 
     /// This Mac's wall clock, as its steps read it.
@@ -702,8 +619,8 @@ impl Side {
         }
         self.send_mail();
         self.write_beat(&out);
+        self.take_members(self.clock.now());
         self.asked.extend(out.list.clone());
-        self.list_members();
         self.next_listing();
         out
     }
@@ -732,28 +649,24 @@ impl Side {
     }
 
     /// The messages its members sent it since it last read, each once by its number: what they
-    /// posted (its inbox, leading), the lead's in its last beat answer (a member), and while the
-    /// rollout gate is on (`Beats::asks_on_nas`) their mailboxes, by the member ids it knows (none
-    /// listed). What it read of the inbox dropped from it once its marks are on disk, and the lead
-    /// told the mark in its next beat (`Beats::set_took`).
+    /// posted (its inbox, leading), and the lead's in its last beat answer (a member). What it read
+    /// of the inbox dropped from it once its marks are on disk, and the lead told the mark in its
+    /// next beat (`Beats::set_took`).
     fn take_mail(&mut self) -> Vec<(String, Msg)> {
         let mut msgs = Vec::new();
-        let on_nas = self.http.asks_on_nas();
         let lead = self.lead().filter(|l| *l != self.me.id);
         let mut posted = self.inbox.held();
         posted.retain(|from, _| *from != self.me.id && !self.forgotten.contains(from));
-        // (A sender it doesn't know yet: known once its heartbeat is on the NAS, as a listing would
-        // find it; none there, passed over and dropped, so no post makes up a member; the NAS not
-        // read, kept for the next read.)
+        // (A sender it doesn't know yet: known once its beat is heard; none heard, passed over and
+        // dropped, so no post makes up a member.)
         let mut strangers = BTreeSet::new();
         let froms: Vec<String> = posted.keys().filter(|f| !self.members.contains(*f)).cloned().collect();
         for from in froms {
-            match self.read_heartbeat(&from) {
-                Ok(Some(_)) => self.heard_of(&from),
-                Ok(None) => {
+            match self.heartbeat(&from) {
+                Some(_) => self.heard_of(&from),
+                None => {
                     strangers.insert(from);
                 }
-                Err(_) => {}
             }
         }
         let others: Vec<String> = self.members.iter().filter(|m| **m != self.me.id).cloned().collect();
@@ -761,16 +674,6 @@ impl Side {
             let mut got = posted.remove(&from).unwrap_or_default();
             if lead.as_ref() == Some(&from) {
                 got.extend(self.http.from_lead());
-            }
-            if on_nas {
-                match self.nas.read(&mail_path(&self.me.id, &from)) {
-                    Ok(Some(b)) => match serde_json::from_slice::<RawMailbox>(&b) {
-                        Ok(mb) => got.extend(mb.msgs),
-                        Err(e) => eprintln!("pool: {from}'s mailbox doesn't read: {e}"),
-                    },
-                    Ok(None) => {}
-                    Err(e) => eprintln!("pool: reading {from}'s mail: {e:#}"),
-                }
             }
             let last = self.mail.read.get(&from).copied().unwrap_or(0);
             let (got, top) = after(got, last);
@@ -816,55 +719,29 @@ impl Side {
 
     /// Sends what it queued since: to the lead by HTTP (`post_mail`), kept while it doesn't take
     /// them (sent with the next, once it answers the member's beats again); leading, into the
-    /// queue its members' beats' answers carry (crate::coord::inbox). By mailbox only past the
-    /// rollout gate: to a lead that doesn't serve `beats::ASKS` and didn't take the post, or to a
-    /// member that doesn't say it.
+    /// queue its members' beats' answers carry (crate::coord::inbox). Nothing goes member to
+    /// member.
     fn send_mail(&mut self) {
-        use crate::coord::beats::ASKS;
         let lead = self.lead();
         let leading = lead.as_ref() == Some(&self.me.id);
         let answering = self.http.lead_answering(self.now());
         for to in std::mem::take(&mut self.mail_dirty) {
-            if lead.as_ref() == Some(&to) && !leading {
-                if self.http.lead_asks() {
-                    if !(answering && self.post_mail(&to)) {
-                        self.mail_dirty.insert(to);
-                    }
-                    continue;
-                }
-                if answering && self.post_mail(&to) {
-                    continue;
-                }
-            } else if leading {
+            if leading {
                 let q = self.mail.sent.get(&to).into_iter().flatten();
                 self.inbox.queue(&to, q.filter_map(|(n, m)| Some((*n, serde_json::to_value(m).ok()?))).collect());
-                if self.http.speaks(&to, ASKS) {
-                    continue;
-                }
-            }
-            let mb = Mailbox { msgs: self.mail.sent.get(&to).cloned().unwrap_or_default() };
-            match serde_json::to_vec(&mb)
-                .map_err(anyhow::Error::from)
-                .and_then(|b| self.nas.write_whole(&mail_path(&to, &self.me.id), &b))
-            {
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!("pool: mail to {to}: {e:#} (sent with the next)");
-                    self.told.remove(&to);
-                    self.mail_dirty.insert(to);
-                    break;
-                }
+            } else if lead.as_ref() == Some(&to) && !(answering && self.post_mail(&to)) {
+                self.mail_dirty.insert(to);
             }
         }
         self.save_mail();
     }
 
     /// Posts lead `to` what it sent it that its coordinator hasn't taken (`/pool/mail`): whether
-    /// it took them all. Not tried (false) when the lead's heartbeat doesn't say it takes mail so;
-    /// tried at its tailnet addresses alone (`mail_urls`), its broker's else its contact's.
+    /// it took them all. Tried at its tailnet addresses alone (`mail_urls`), its broker's (as its
+    /// beat says it) else its contact's.
     fn post_mail(&mut self, to: &str) -> bool {
-        let Some(hb) = self.heartbeat(to).filter(|h| h.mail_http) else { return false };
-        let mut urls = mail_urls(&hb.broker.map(|b| b.urls).unwrap_or_default());
+        let urls = self.heartbeat(to).and_then(|hb| hb.broker).map(|b| b.urls).unwrap_or_default();
+        let mut urls = mail_urls(&urls);
         if urls.is_empty() {
             urls = mail_urls(&self.lead_contact.0);
         }
@@ -915,82 +792,34 @@ impl Side {
         }
     }
 
-    /// Its heartbeat, when it changed or every two minutes: stamped as it's written.
+    /// Its heartbeat, for its agent's beat to send the lead (crate::agent::beat), stamped now.
     fn write_beat(&mut self, out: &Out) {
-        let mut hb = Heartbeat {
-            pool: Beat { beat: 0, ..out.beat.clone() },
+        let mut own = Heartbeat {
+            pool: out.beat.clone(),
             members: self.members.iter().cloned().collect(),
-            shadow: false,
             conds: self.conds,
             broker: self.broker.clone(),
             mail_http: true,
             beat_http: true,
         };
-        if hb.pool.member.is_empty() {
+        if own.pool.member.is_empty() {
             return;
         }
-        // (Its agent's beat sends it to the lead, stamped as sent: crate::agent::beat. On the NAS
-        // only while a member on an older app reads it there.)
-        let mut own = hb.clone();
         own.pool.beat = self.now();
         own.pool.reach = self.reach.clone();
         self.http.set_own(own);
-        if !self.http.nas_too() {
-            // (Written at once should a member on an older app turn up.)
-            self.beat = None;
-            return;
-        }
-        // (The reports' times alone changed: written with the next beat due, not at once.)
-        let reach = self.reach.clone();
-        hb.pool.reach = reach.iter().map(|r| crate::pool::reachable::Reach { at: 0, ..r.clone() }).collect();
-        let now = self.clock.now();
-        if self.beat.as_ref().is_some_and(|(b, at, ahead)| {
-            *b == hb && now.saturating_duration_since(*at) + Duration::from_secs(self.ahead - ahead) < BEAT_EVERY
-        }) {
-            return;
-        }
-        let mut stamped = hb.clone();
-        stamped.pool.beat = self.now();
-        stamped.pool.reach = reach;
-        match serde_json::to_vec(&stamped)
-            .map_err(anyhow::Error::from)
-            .and_then(|b| self.nas.write_whole(&crate::pool::beat::path(&self.me.id), &b))
-        {
-            Ok(()) => self.beat = Some((hb, now, self.ahead)),
-            Err(e) => eprintln!("pool: heartbeat: {e:#}"),
-        }
     }
 
-    /// The members' heartbeats listed every `MEMBERS_EVERY`, off the loop.
-    fn list_members(&mut self) {
-        let every = MEMBERS_EVERY;
-        let now = self.clock.now();
-        if self.members_listed.is_none_or(|t| now.saturating_duration_since(t) >= every) && !self.members_queued {
-            self.members_queued = true;
-        }
-    }
-
-    /// A listing made: handed back, or (the members') taken in; a failed one made again a minute on.
+    /// A listing made: handed back; a failed one made again a minute on.
     fn poll_listings(&mut self) {
         let Some(m) = self.making.take_if(|m| m.thread.is_finished()) else { return };
         let r = m.thread.join().unwrap_or_else(|_| Err(anyhow::anyhow!("the listing's thread panicked")));
         match (m.what, r) {
-            (Kind::Journal(l), Ok(keys)) => self.made.push_back(Listed { n: l.n, keys }),
-            (Kind::Journal(l), Err(e)) => {
+            (l, Ok(keys)) => self.made.push_back(Listed { n: l.n, keys }),
+            (l, Err(e)) => {
                 eprintln!("pool: listing the journal: {e:#}; made again in a minute");
                 self.asked.push_front(l);
                 self.failed_at = Some(self.clock.now());
-            }
-            (Kind::Members, Ok(names)) => {
-                self.members_listed = Some(self.clock.now());
-                self.members_queued = false;
-                let now = self.clock.now();
-                self.take_members(&names, now);
-            }
-            (Kind::Members, Err(e)) => {
-                eprintln!("pool: listing the members: {e:#}");
-                self.members_queued = false;
-                self.members_listed = Some(self.clock.now());
             }
         }
     }
@@ -1005,40 +834,24 @@ impl Side {
         if let Some(l) = self.asked.pop_front() {
             let since = l.since.clone();
             let thread = std::thread::spawn(move || journal::list(&*nas, since.as_deref()));
-            self.making = Some(Making { what: Kind::Journal(l), thread });
-        } else if self.members_queued {
-            let thread = std::thread::spawn(move || nas.list(MEMBERS));
-            self.making = Some(Making { what: Kind::Members, thread });
+            self.making = Some(Making { what: l, thread });
         }
     }
 }
 
-/// Member `m`'s heartbeat at `now`: as `beats` heard it by HTTP, else the NAS's.
-fn heartbeat_of(beats: &crate::coord::beats::Beats, nas: &dyn Nas, m: &str, now: u64) -> Result<Option<Heartbeat>> {
-    if let Some(h) = beats.get(m, now) {
-        return Ok(Some(h));
-    }
-    Ok(nas.read(&crate::pool::beat::path(m))?.and_then(|b| serde_json::from_slice(&b).ok()))
-}
-
-/// A listing of the heartbeats that found the members `found` at `now`, taken into `members`: those
-/// found known (and no longer missed); those not found missed from now, and forgotten (taken out,
-/// and returned) once missed `after`. A listing without member `me`'s own heartbeat, once it has
-/// written one (`written`), forgets nothing and starts no miss: the folder isn't all there.
+/// The members heard `found` at `now`, taken into `members`: those found known (and no longer
+/// missed); those not found missed from now, and forgotten (taken out, and returned) once missed
+/// `after`. Member `me` is never missed.
 fn forget(
     members: &mut BTreeSet<String>,
     missed: &mut BTreeMap<String, Instant>,
     found: &BTreeSet<String>,
     me: &str,
-    written: bool,
     now: Instant,
     after: Duration,
 ) -> Vec<String> {
     members.extend(found.iter().cloned());
     missed.retain(|m, _| !found.contains(m) && members.contains(m));
-    if !written || !found.contains(me) {
-        return Vec::new();
-    }
     let mut gone = Vec::new();
     for m in members.iter().filter(|m| *m != me && !found.contains(*m)) {
         let since = *missed.entry(m.clone()).or_insert(now);
@@ -1279,10 +1092,6 @@ pub struct Run {
     /// once a saved state holds them.
     outbox_drained: bool,
     marks: Vec<(PathBuf, String)>,
-    /// The coordinator's view (`view_path`) as last written: its term, its bytes, when.
-    pub view_written: Option<(u64, Vec<u8>, std::time::Instant)>,
-    /// The build page's regions as last written: the term and what they were made of.
-    pub regions_written: Option<(u64, super::RegionsKey)>,
     /// The page's regions as last handed to its coordinator (`/pool/view`): what they were made of.
     pub regions_handed: Option<super::RegionsKey>,
     /// The history's last event written.
@@ -1553,8 +1362,6 @@ impl Run {
             named_raw: BTreeSet::new(),
             outbox_drained: false,
             marks: Vec::new(),
-            view_written: None,
-            regions_written: None,
             regions_handed: None,
             history_seq: 0,
             in_touch: None,
@@ -1715,18 +1522,10 @@ impl Run {
             if let Some(l) = lead.as_ref().filter(|l| !ids.contains(l)) {
                 ids.push(l.clone());
             }
-            // (A read failing, the NAS away: the last round's kept whole, for the budgets.)
-            let read: Result<Vec<Option<Heartbeat>>> = ids.iter().map(|id| self.side.read_heartbeat(id)).collect();
-            if let Ok(read) = read {
-                // (Leading, its own heartbeat and statuses go on the NAS too while a member on an
-                // older app in touch reads them there: crate::coord::beats.)
-                if self.cx.coord.is_some() {
-                    self.side.http.set_nas_too(crate::coord::beats::old_in_touch(read.iter().flatten(), &me, now));
-                }
-                self.side.all_check_map = read.iter().all(|h| h.as_ref().is_some_and(|h| h.pool.checks_map));
-                self.side.beats = read.into_iter().flatten().filter(|h| !h.shadow).map(|h| h.pool).collect();
-                self.side.beats_at = Some(now);
-            }
+            let read: Vec<Option<Heartbeat>> = ids.iter().map(|id| self.side.heartbeat(id)).collect();
+            self.side.all_check_map = read.iter().all(|h| h.as_ref().is_some_and(|h| h.pool.checks_map));
+            self.side.beats = read.into_iter().flatten().map(|h| h.pool).collect();
+            self.side.beats_at = Some(now);
             if let Some(l) = &lead {
                 let urls = self
                     .side
@@ -1787,7 +1586,6 @@ impl Run {
             role: self.role,
             gates: self.gates.clone(),
             members: self.side.members().iter().cloned().collect(),
-            heard: self.side.heard_lately(),
             unacked: self.side.driver().mine().unacked(),
             restart: self.restart.clone(),
             lead: self.controls.view.clone(),
@@ -1849,7 +1647,7 @@ impl Run {
             if m == me {
                 return Some(lead_app.clone());
             }
-            heartbeat_of(&beats, &*nas, m, now).ok().flatten().map(|h| h.pool.app)
+            beats.get(m, now).map(|h| h.pool.app)
         };
         let lead_of = |term: u64| -> Option<String> {
             crate::pool::term::read(nas.as_ref(), term).ok().flatten().map(|t| t.member)
@@ -2168,25 +1966,6 @@ fn outbox_entries(the_plan: &dyn crate::agent::seam::Plan, outbox: &Path, member
     out
 }
 
-/// The coordinator's view of term `term` (§10): what the build page takes from its memory.
-pub fn view_path(term: u64) -> String {
-    format!("state/coord/term/{term}/view.json")
-}
-
-/// The view is written at most this often (when it changed).
-pub const VIEW_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// The lead's forecast as data of term `term` (§10; crate::agent::forecast::Record): JSON, or
-/// zstd-compressed JSON when it's large (told by its first bytes).
-pub fn forecast_input_path(term: u64) -> String {
-    format!("state/build/term/{term}/forecast-input.json")
-}
-
-/// The build page's regions of term `term` (§10, Regions; crate::agent::regionsview): JSON.
-pub fn regions_path(term: u64) -> String {
-    format!("state/build/term/{term}/regions.json")
-}
-
 /// The pool's copy of the workers' token (§8: the same on every member).
 pub const TOKEN: &str = "state/coord/token";
 
@@ -2312,7 +2091,11 @@ mod tests {
         // and read past (its number the top), so it holds nothing back and isn't read again.
         // (So are the messages of the apps before #881: "Leads", "HandTo".)
         let b = br#"{"msgs": [[5, {"Leads": 3}], [6, {"FromTheFuture": {"x": 1}}], [7, {"Tell": ["k"]}]]}"#;
-        let raw = || serde_json::from_slice::<super::RawMailbox>(b).unwrap().msgs;
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            msgs: Vec<(u64, serde_json::Value)>,
+        }
+        let raw = || serde_json::from_slice::<Raw>(b).unwrap().msgs;
         let (msgs, top) = super::after(raw(), 4);
         assert_eq!(msgs, vec![super::Msg::Tell(vec!["k".into()])]);
         assert_eq!(top, 7);
@@ -2379,27 +2162,16 @@ mod tests {
     }
 
     #[test]
-    fn a_member_missed_by_the_listings_is_forgotten_after_the_grace() {
+    fn a_member_not_heard_is_forgotten_after_the_grace() {
         let t0 = Instant::now();
         let after = FORGET_AFTER;
         let (mut members, mut missed) = (set(&[ME, B, PH]), BTreeMap::new());
-        // (Its file gone: missed from the first listing, kept until the grace has passed.)
-        assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0, after).is_empty());
-        assert!(forget(
-            &mut members,
-            &mut missed,
-            &set(&[ME, B]),
-            ME,
-            true,
-            t0 + after - Duration::from_secs(1),
-            after
-        )
-        .is_empty());
+        // (Its beat gone: missed from then, kept until the grace has passed.)
+        assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, t0, after).is_empty());
+        assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, t0 + after - Duration::from_secs(1), after)
+            .is_empty());
         assert!(members.contains(PH));
-        assert_eq!(
-            forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + after, after),
-            vec![PH.to_string()]
-        );
+        assert_eq!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, t0 + after, after), vec![PH.to_string()]);
         assert_eq!(members, set(&[ME, B]));
         assert!(missed.is_empty());
     }
@@ -2409,61 +2181,46 @@ mod tests {
         let t0 = Instant::now();
         let after = FORGET_AFTER;
         let (mut members, mut missed) = (set(&[ME, B]), BTreeMap::new());
-        forget(&mut members, &mut missed, &set(&[ME]), ME, true, t0, after);
-        // (Its file back, as a member restarting rewrites it: the miss starts over.)
-        forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + after / 2, after);
-        assert!(forget(&mut members, &mut missed, &set(&[ME]), ME, true, t0 + after + Duration::from_secs(1), after)
-            .is_empty());
+        forget(&mut members, &mut missed, &set(&[ME]), ME, t0, after);
+        // (Its beat back, as a member restarting beats again: the miss starts over.)
+        forget(&mut members, &mut missed, &set(&[ME, B]), ME, t0 + after / 2, after);
+        assert!(
+            forget(&mut members, &mut missed, &set(&[ME]), ME, t0 + after + Duration::from_secs(1), after).is_empty()
+        );
         assert!(members.contains(B));
-        // (A Mac asleep for hours, its file still there: never missed.)
+        // (A Mac heard all along: never missed.)
         let (mut members, mut missed) = (set(&[ME, B]), BTreeMap::new());
         for h in 0..24 {
-            assert!(forget(
-                &mut members,
-                &mut missed,
-                &set(&[ME, B]),
-                ME,
-                true,
-                t0 + Duration::from_secs(3600 * h),
-                after
-            )
-            .is_empty());
-        }
-        assert!(missed.is_empty());
-    }
-
-    #[test]
-    fn a_listing_without_its_own_heartbeat_forgets_nobody() {
-        let t0 = Instant::now();
-        let after = FORGET_AFTER;
-        let (mut members, mut missed) = (set(&[ME, B]), BTreeMap::new());
-        // (The folder not there, the NAS away: an empty listing, hours of it.)
-        for h in 0..10 {
-            assert!(forget(&mut members, &mut missed, &set(&[]), ME, true, t0 + Duration::from_secs(3600 * h), after)
+            assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, t0 + Duration::from_secs(3600 * h), after)
                 .is_empty());
         }
-        // (Before it has written its own heartbeat, likewise.)
-        assert!(forget(&mut members, &mut missed, &set(&[ME]), ME, false, t0 + Duration::from_secs(36000), after)
-            .is_empty());
-        assert_eq!(members, set(&[ME, B]));
         assert!(missed.is_empty());
     }
 
+    /// A member heard by its beat is known; one not heard for `FORGET_AFTER` is forgotten, and
+    /// known again only once its beat is heard (not from another Mac's message or term naming it).
     #[test]
-    fn a_forgotten_member_is_known_again_only_from_its_heartbeat() {
+    fn a_forgotten_member_is_known_again_only_from_its_beat() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("home");
         let mut s = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
-        let me = s.member().id.clone();
-        s.know(PH);
+        let now = s.now();
+        let hb = |m: &str| Heartbeat {
+            pool: Beat { member: m.into(), host: format!("{m}-host"), beat: now, ..Default::default() },
+            ..Default::default()
+        };
+        s.http_beats().heard(hb(PH), Vec::new(), None, now);
+        let t0 = s.clock.now();
+        s.take_members(t0);
+        assert!(s.members().contains(PH), "heard: known");
         s.post(PH, Msg::Tell(vec!["k".into()]));
         assert!(s.mail.sent.contains_key(PH));
-        s.beat = Some((Heartbeat::default(), s.clock.now(), 0));
-        let t0 = s.clock.now();
-        let files = |ids: &[&str]| ids.iter().map(|i| format!("{i}.json")).collect::<Vec<_>>();
-        s.take_members(&files(&[&me]), t0);
-        s.take_members(&files(&[&me]), t0 + FORGET_AFTER);
+        // (Silent for `beats::FORGET_S`: missed from then, forgotten after `FORGET_AFTER`.)
+        s.http_beats().heard(hb(PH), Vec::new(), None, now.saturating_sub(crate::coord::beats::FORGET_S));
+        s.take_members(t0);
+        assert!(s.members().contains(PH));
+        s.take_members(t0 + FORGET_AFTER);
         assert!(!s.members().contains(PH));
         // (Another Mac's message or term naming it, an older app re-advertising it: not again.)
         s.heard_of(PH);
@@ -2480,91 +2237,14 @@ mod tests {
         assert!(!s.members().contains(PH));
         s.heard_of(PH);
         assert!(!s.members().contains(PH));
-        // (Its heartbeat found again: known.)
-        s.beat = Some((Heartbeat::default(), s.clock.now(), 0));
-        s.take_members(&files(&[&me, PH]), t0 + FORGET_AFTER * 2);
+        // (Its beat heard again: known.)
+        let now = s.now();
+        s.http_beats().heard(hb(PH), Vec::new(), None, now);
+        s.take_members(t0 + FORGET_AFTER * 2);
         assert!(s.members().contains(PH));
         let gone: BTreeSet<String> =
             serde_json::from_slice(&std::fs::read(home.join("pool/forgotten.json")).unwrap()).unwrap();
         assert!(gone.is_empty());
-    }
-
-    /// docs/coordination.md §8, step 3, mixed versions: a member on an older app heartbeats on the
-    /// NAS alone, a newer one by its beat alone. The lead reads each where it is, knows both, keeps
-    /// its own heartbeat on the NAS while the older one is in touch (`old_in_touch`), and stops
-    /// once it isn't; a member heard by HTTP is forgotten once it hasn't beaten for 20 min.
-    #[test]
-    fn mixed_versions_an_old_member_s_nas_heartbeat_still_read() {
-        let d = tempfile::tempdir().unwrap();
-        let r = root(d.path());
-        let mut s = side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
-        let now = s.now();
-        let me = s.member().id.clone();
-        let hb = |m: &str, http: bool| Heartbeat {
-            pool: Beat { member: m.into(), host: format!("{m}-host"), beat: now, ..Default::default() },
-            beat_http: http,
-            ..Default::default()
-        };
-        // (PH, older: its heartbeat on the NAS. B, newer: its beat to the lead, nothing on the NAS.)
-        std::fs::create_dir_all(r.join(MEMBERS)).unwrap();
-        std::fs::write(r.join(crate::pool::beat::path(PH)), serde_json::to_vec(&hb(PH, false)).unwrap()).unwrap();
-        s.http_beats().heard(hb(B, true), Vec::new(), Some(serde_json::json!({"host": "B-host"})), now);
-        assert!(!s.read_heartbeat(PH).unwrap().unwrap().beat_http, "the NAS's");
-        assert!(s.read_heartbeat(B).unwrap().unwrap().beat_http, "the beat's");
-        let read: Vec<Heartbeat> = [PH, B].iter().filter_map(|m| s.read_heartbeat(m).unwrap()).collect();
-        assert!(crate::coord::beats::old_in_touch(&read, &me, now));
-        assert!(!crate::coord::beats::old_in_touch(&read[1..], &me, now));
-        // Both known, by the NAS's listing and by the beat.
-        let t0 = Instant::now();
-        s.take_members(&[format!("{PH}.json"), format!("{me}.json")], t0);
-        assert!(s.members().contains(PH) && s.members().contains(B));
-        // Its own heartbeat on the NAS while the older member reads it; then by the beat alone.
-        let own = r.join(crate::pool::beat::path(&me));
-        s.step(Give::default(), &any);
-        assert!(own.exists() && s.http_beats().own().is_some_and(|h| h.beat_http));
-        std::fs::remove_file(&own).unwrap();
-        s.http_beats().set_nas_too(false);
-        s.step(Give::default(), &any);
-        assert!(!own.exists(), "no NAS copy");
-        s.http_beats().set_nas_too(true);
-        s.step(Give::default(), &any);
-        assert!(own.exists(), "written again at once for an older member");
-        // B silent for `FORGET_S`: missed by the listings from then, forgotten after `FORGET_AFTER`.
-        s.http_beats().heard(hb(B, true), Vec::new(), None, now.saturating_sub(crate::coord::beats::FORGET_S));
-        s.take_members(&[format!("{PH}.json"), format!("{me}.json")], t0);
-        assert!(s.members().contains(B));
-        s.take_members(&[format!("{PH}.json"), format!("{me}.json")], t0 + FORGET_AFTER);
-        assert!(!s.members().contains(B) && s.members().contains(PH));
-    }
-
-    #[test]
-    fn the_budgets_count_the_members_heard_lately() {
-        let d = tempfile::tempdir().unwrap();
-        let r = root(d.path());
-        let mut s = side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
-        for m in [PH, B] {
-            s.know(m);
-        }
-        assert_eq!(s.heard_lately(), 1);
-        let now = 1_000_000;
-        let beat = |m: &str, at: u64| Beat { member: m.into(), beat: at, ..Default::default() };
-        s.beats = vec![beat(B, now - 30), beat(PH, now - crate::pool::beat::OUT_OF_TOUCH_S - 1)];
-        s.beats_at = Some(now);
-        assert_eq!(s.heard_lately(), 2);
-        // (The run busy: the view's count, not its members.)
-        let v = super::super::PoolView {
-            member: s.member().id.clone(),
-            role: Role::Member,
-            gates: Gates::default(),
-            members: vec![s.member().id.clone(), B.into(), PH.into()],
-            heard: s.heard_lately(),
-            unacked: 0,
-            restart: None,
-            lead: None,
-            all_check_map: false,
-        };
-        assert_eq!(super::super::PoolView::heard_of(Some(&v)), 2);
-        assert_eq!(super::super::PoolView::heard_of(None), 1);
     }
 
     fn unit_entry(member: &str, lease: LeaseId, target: &str, key: &str) -> Entry {
@@ -2600,7 +2280,6 @@ mod tests {
         let new = Heartbeat {
             pool: pool.clone(),
             members: vec!["m-000000000000000b".into()],
-            shadow: false,
             conds: Some(Conds { home: true, ac: false, battery: Some(54), held: false }),
             broker: None,
             mail_http: true,
@@ -2610,18 +2289,7 @@ mod tests {
         // An older app reads the newer's: its fields, the conditions passed over.
         let old: Before = serde_json::from_slice(&b).unwrap();
         assert_eq!((old.pool.clone(), old.members.clone()), (pool.clone(), new.members.clone()));
-        assert_eq!(
-            Beat::read(
-                &{
-                    let m = crate::pool::nas::Mem::default();
-                    m.write_whole(&crate::pool::beat::path(&pool.member), &b).unwrap();
-                    m
-                },
-                &pool.member
-            )
-            .unwrap(),
-            Some(pool.clone())
-        );
+        assert_eq!(serde_json::from_slice::<Beat>(&b).unwrap(), pool);
         // A newer app reads the older's: no conditions ("conditions unknown" in the views).
         let back: Heartbeat = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
         assert_eq!(back, Heartbeat { conds: None, mail_http: false, beat_http: false, ..new.clone() });
@@ -2637,19 +2305,29 @@ mod tests {
         let home = d.path().join("a/agent");
         let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         let id = a.member().id.clone();
-        // Its first step: term 1, its own (this Mac is the writer), taken up from today's records.
+        // Its first step: term 1, its own (this Mac is the writer), taken up from today's records;
+        // caught up at once, no member heard writing the journal (docs/coordination.md step 6's
+        // gate), so no listing of it.
         let out = a.step(Give::default(), &any);
-        assert_eq!((out.term, out.leads, out.duties, out.caught_up), (1, Some(1), true, false));
-        assert!(out.list.as_ref().is_some_and(|l| l.since.is_none()), "a take-up lists every day");
+        assert_eq!((out.term, out.leads, out.duties, out.caught_up), (1, Some(1), true, true));
+        assert!(out.list.is_none() && a.listings_out() == 0, "{:?}", out.list);
         // Its saved state on disk before anything else: naming it, the term it led.
         let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
         assert_eq!((saved.member.as_str(), saved.led), (id.as_str(), 1));
-        // Its heartbeat: the driver's fields and the members it knows.
-        let hb: Heartbeat =
-            serde_json::from_slice(&std::fs::read(r.join(crate::pool::beat::path(&id))).unwrap()).unwrap();
+        // Its heartbeat, for its agent's beat: the driver's fields and the members it knows; none
+        // on the NAS.
+        let hb = a.http_beats().own().unwrap();
         assert_eq!((hb.pool.leads, hb.members.clone()), (Some(1), vec![id.clone()]));
-        assert!(hb.pool.beat > 0 && !hb.shadow);
-        // The listing is made on a thread of its own and handed back: caught up.
+        assert!(hb.pool.beat > 0 && !r.join("state/pool/members").exists());
+        // A member heard that writes the journal (its beat without `handoff`): the journal listed,
+        // on a thread of its own, and handed back: caught up.
+        let older = Heartbeat {
+            pool: Beat { member: B.into(), host: "b".into(), beat: a.now(), ..Default::default() },
+            ..Default::default()
+        };
+        a.http_beats().heard(older, vec![crate::coord::held::SPEAKS.into()], None, a.now());
+        let out = a.step(Give::default(), &any);
+        assert!(!out.caught_up && out.list.is_some(), "{:?}", out.list);
         let out = until(&mut a, || Give::default(), |o| o.caught_up);
         assert!(out.listed_at.is_some() && a.listings_out() <= 1);
     }
@@ -2667,18 +2345,17 @@ mod tests {
         );
         a.step(Give::default(), &any);
         // Its lock file removed and taken by another process: it stops, its state saved, its
-        // hand-offs kept in it, no heartbeat written.
+        // hand-offs kept in it, no heartbeat composed.
         let lock = home.parent().unwrap().join(format!("pool-{}.lock", a.member().id));
         std::fs::remove_file(&lock).unwrap();
         let _other = MemberLock::take(home.parent().unwrap(), &a.member().id).unwrap().unwrap();
-        let beat = r.join(crate::pool::beat::path(&a.member().id));
-        std::fs::remove_file(&beat).unwrap();
+        let beat = a.http_beats().own().unwrap().pool.beat;
         let e = unit_entry(&a.member().id, LeaseId { term: 1, n: 7 }, "6/1/2", "k2");
         let out = a.step(Give { entries: vec![(e, None)], ..Default::default() }, &any);
         assert!(out.stop.is_some() && a.stopped.is_some());
         let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
         assert_eq!(saved.mine.unwritten().count(), 1, "its hand-off kept for the next process");
-        assert!(!beat.exists());
+        assert_eq!(a.http_beats().own().unwrap().pool.beat, beat);
         assert!(a.step(Give::default(), &any).stop.is_some(), "it steps no more");
     }
 
@@ -2737,6 +2414,12 @@ mod tests {
         let mut a =
             Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone()).unwrap().unwrap();
         a.set_clock(store::clock::Virtual::new());
+        // (A member heard that writes the journal: the gate open, the journal listed.)
+        let older = Heartbeat {
+            pool: Beat { member: B.into(), host: "b".into(), beat: a.now(), ..Default::default() },
+            ..Default::default()
+        };
+        a.http_beats().heard(older, vec![crate::coord::held::SPEAKS.into()], None, a.now());
         a.step(Give::default(), &any);
         // (Stepped until the failed listing, made off the loop, is back.)
         let end = Instant::now() + WATCHDOG;
@@ -2753,47 +2436,6 @@ mod tests {
         let out = until(&mut a, || Give::default(), |o| o.caught_up);
         assert!(out.listed_at.is_some());
         assert!(nas.1.load(std::sync::atomic::Ordering::SeqCst) >= 2, "made again");
-    }
-
-    #[test]
-    fn two_members_mail_entries_and_acknowledge() {
-        let d = tempfile::tempdir().unwrap();
-        let r = root(d.path());
-        let (mut a, mut b) = (
-            side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("a/agent")),
-            side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("b/agent")),
-        );
-        let (ia, ib) = (a.member().id.clone(), b.member().id.clone());
-        let lead = until(&mut a, || Give::default(), |o| o.caught_up);
-        assert_eq!(lead.leads, Some(1));
-        // B's job's hand-off, in its folder: written to the journal (its lead's answer says nothing
-        // of hand-offs: an app before step 6), told to A by mail; the folder removed once B's saved
-        // state holds it.
-        b.http_beats().answered(&crate::coord::held::Answer::default(), b.now());
-        let folder = d.path().join("b/agent/pool/jobs/1-5");
-        std::fs::create_dir_all(&folder).unwrap();
-        let e = unit_entry(&ib, LeaseId { term: 1, n: 5 }, "6/1/2", "k2");
-        let key = e.key().unwrap();
-        let out = b.step(Give { entries: vec![(e, Some(folder.clone()))], ..Default::default() }, &any);
-        assert_eq!(out.leads, None);
-        assert!(
-            out.send.iter().any(|(to, m)| *to == ia && matches!(m, Msg::Tell(k) if k.contains(&key))),
-            "{:?}",
-            out.send
-        );
-        assert!(!folder.exists() && r.join(journal::path(&key)).exists());
-        assert!(r.join(mail_path(&ia, &ib)).exists());
-        // A knows B (its heartbeats listed, or here: told), reads its mail, merges, acknowledges.
-        a.know(&ib);
-        let out = until(
-            &mut a,
-            || Give::default(),
-            |o| o.events.iter().any(|e| matches!(e, Event::Merged { applied, .. } if applied.contains(&key))),
-        );
-        assert!(out.send.iter().any(|(to, m)| *to == ib && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))));
-        assert_eq!(a.driver().records().unwrap().keys.recorded("unit", "6/1/2"), Some("k2"));
-        b.step(Give::default(), &any);
-        assert!(b.driver().mine().unacked() == 0, "acknowledged");
     }
 
     /// The lead's tailnet address as its contact says it, in the mail tests: posts to it reach
@@ -2935,10 +2577,6 @@ mod tests {
             );
         }
 
-        fn mailbox(&self) -> bool {
-            self.r.join(mail_path(&self.a.member().id, &self.b.member().id)).exists()
-        }
-
         fn posts(&self) -> usize {
             self.posts.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -3048,16 +2686,16 @@ mod tests {
     #[test]
     fn a_members_mail_goes_by_http_alone_to_a_lead_that_serves_it() {
         let mut m = mail_pool();
-        let (ia, ib) = (m.a.member().id.clone(), m.b.member().id.clone());
+        let ib = m.b.member().id.clone();
         m.b.step(Give::default(), &any);
         m.beat();
         let key = m.tell(5);
         assert_eq!(m.posts(), 1);
-        assert!(!m.mailbox(), "posted, no mailbox written");
+        assert!(!m.r.join("state/pool/mail").exists(), "posted, no mailbox written");
         assert_eq!(m.a.inbox().held()[&ib].len(), 1);
         Mail::acknowledged(&mut m.a, &ib, &key);
         assert!(m.a.inbox().held().is_empty(), "read, dropped once its mark is on disk");
-        assert!(!m.r.join(mail_path(&ib, &ia)).exists(), "the Ack by the beat alone");
+        assert!(!m.r.join("state/pool/mail").exists(), "the Ack by the beat alone");
         m.beat();
         assert!(!m.b.http_beats().from_lead().is_empty());
         m.b.step(Give::default(), &any);
@@ -3073,38 +2711,6 @@ mod tests {
         drop(m.c);
     }
 
-    /// The rollout gate (docs/coordination.md step 5): to a lead that doesn't serve the asks (an
-    /// older app) a member's mail is posted while it answers and its heartbeat says it takes mail
-    /// so, else, and when the post fails, written to its mailbox, which that lead reads.
-    #[test]
-    fn mixed_versions_an_older_lead_gets_its_mail_by_mailbox() {
-        use crate::coord::{beats, held};
-        let mut m = mail_pool();
-        let older = held::Answer { speaks: vec![beats::SPEAKS.into()], ..Default::default() };
-        m.b.http_beats().answered(&older, m.b.now());
-        assert!(!m.b.http_beats().lead_asks() && m.b.http_beats().asks_on_nas());
-        m.tell(5);
-        assert_eq!(m.posts(), 1);
-        assert!(!m.mailbox(), "taken by HTTP");
-        // Its heartbeat says nothing of mail by HTTP: not tried.
-        let ia = m.a.member().id.clone();
-        let path = m.r.join(crate::pool::beat::path(&ia));
-        let mut hb: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        hb.as_object_mut().unwrap().remove("mail_http");
-        std::fs::write(&path, serde_json::to_vec(&hb).unwrap()).unwrap();
-        m.tell(6);
-        assert_eq!(m.posts(), 1, "not tried");
-        assert!(m.mailbox());
-        // One whose coordinator has no `/pool/mail`: by mailbox.
-        let mut m = mail_pool();
-        m.b.http_beats().answered(&older, m.b.now());
-        m.b.courier = Arc::new(|_, _, _| Ok((404, serde_json::Value::Null)));
-        m.tell(5);
-        assert!(m.mailbox());
-        drop(m.c);
-        drop(m.d);
-    }
-
     /// docs/coordination.md step 5: the lead changes while a member posts (the address now answers as
     /// another member: refused, 409), or its coordinator is down: the mail stays queued, no mailbox
     /// written, and goes once the lead takes it.
@@ -3117,7 +2723,7 @@ mod tests {
         m.c.set_member(Some("m-00000000000000cc"));
         let key = m.tell(5);
         assert_eq!(m.posts(), 1);
-        assert!(!m.mailbox() && m.a.inbox().held().is_empty(), "refused: kept");
+        assert!(m.a.inbox().held().is_empty(), "refused: kept");
         m.c.set_member(Some(&m.a.member().id.clone()));
         m.b.step(Give::default(), &any);
         assert_eq!(m.posts(), 2);
@@ -3135,7 +2741,6 @@ mod tests {
         m.b.step(Give::default(), &any);
         m.beat();
         let key = m.tell(5);
-        assert!(!m.mailbox());
         // (Crashed: neither stepped again nor its state written past this.)
         let home = m.d.path().join("a/agent");
         m.c.stop();
@@ -3321,10 +2926,8 @@ mod tests {
         let key = m.tell(5);
         assert!(m.r.join(journal::path(&key)).exists());
         Mail::acknowledged(&mut m.a, &ib, &key);
-        // B on this app (and no member heartbeating on the NAS alone, as the lead's reading of
-        // them says, `tend_reach`): the gate shut.
+        // B on this app: the gate shut.
         m.beat();
-        m.a.http_beats().set_nas_too(false);
         assert!(!m.a.http_beats().journal_on(m.a.now()));
         let o = until(&mut m.a, || Give::default(), |o| o.caught_up);
         assert!(o.list.is_none());

@@ -1719,13 +1719,9 @@ mod tests {
         Member { id: id.into(), host: host.into(), app: app.into() }
     }
 
-    /// A step, its heartbeat written as the agent will.
+    /// A step.
     fn step(d: &mut Driver, io: &Mac, heard: Heard) -> Out {
-        let out = d.step(io, heard, &any);
-        let mut b = out.beat.clone();
-        b.beat = io.now();
-        b.write(io).unwrap();
-        out
+        d.step(io, heard, &any)
     }
 
     fn able() -> Heard {
