@@ -17,7 +17,8 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   before the dev tools app, goes there, and `/task-board/api/…` and `/task-board/_blob/…`, what its
   page asked behind Caddy's old path, are `/api/…` and `/_blob/…`): `board.mjs` its API
   (`/api/c/…`, photos at `/_blob/<id>`), `schema.mjs` the shape of its data, enforced on every write
-  (and read by the page, which shows what doesn't fit), `store.mjs` its file, `taskboard.db`:
+  (and imported by the page, which shows what doesn't fit), `priority.mjs` where a priority with a
+  fraction goes (below; the server's rule and the page's, one copy), `store.mjs` its file, `taskboard.db`:
   `items` (folders and tasks), `events` (history), `meta` (`status`, the status bar; `counter`, the
   next item number), `blobs` (photos). `public/task-board/index.html` is the page;
   `public/task-board/shim.js` gives it its database API (`window.claude.use("db" | "user" |
@@ -120,6 +121,21 @@ curl -s -X PATCH $B/api/c/items/i674 -H 'content-type: application/json' -d '{"s
 # → {"id":"i674","num":674,"order":52,"added":"…"}
 ```
 
+**A priority with a fraction** (#1100) slots in between, in the same transaction as the rest of the
+write, by `priority.mjs` (the page places a drag or a typed number by the same module): a POST, PATCH
+or PUT sending `"priority": 6.5` gives the task 7, and the open tasks it then runs into (at 7, then
+at 8 if one was moved there, …) move down one, as far as the first free number; tasks sharing a
+number move together, and the rest keep theirs. Open: not done or abandoned, not archived, nor inside
+an archived folder; the others keep their numbers and are never run into. A whole number is stored
+as sent and moves nothing. Each change leaves a `kind: "priority"` event on its task ("Priority 7 →
+8: moved down by #1100 placed at 6.5 (by curl)"; on the task itself "Priority 12 → 7: asked for 6.5,
+2 moved down (by curl)"), and the answer adds what it got and what moved:
+
+```bash
+curl -s -X PATCH $B/api/c/items/i1100 -H 'content-type: application/json' -d '{"priority": 6.5}'
+# → {"id":"i1100","num":1100,"order":957,"added":"…","priority":7,"moved":[{"id":"i1042","num":1042,"from":7,"to":8}]}
+```
+
 `PUT /api/c/items/<id>` replaces what a client writes (it needs `kind`, `text`, `parent`, and for a task `stage` and `where`), keeping `num`, `added` and `order`; a missing id is a 404 too. **Use PATCH**: a PUT with only `{stage}` is refused, not a wipe, but PATCH is what you mean.
 
 **The status line**: `PATCH /api/c/meta/status` with `{"now": "…"}`. The server sets `updated` (send it and it's a 400); `meta/counter` can't be written (403), nor deleted.
@@ -138,4 +154,4 @@ curl -s -X PATCH $B/api/c/meta/status -H 'content-type: application/json' -d '{"
 - **Items**: `kind` (`task` | `folder`), `text` (non-empty, ≤ 2000), `parent` (`""` or an existing folder; not itself or inside itself), `order` (number; one order over all items), `added`, `note`, `archived` (bool; `archivedAt` only with it), `photos` (blob ids from `POST /api/blob`), and `num` (whole number, from 1, unique; every item has one). Tasks only: `stage`, `where`, `priority` (number ≥ 0), `discuss` (bool), `started`, `finished` (times), `reply`. A folder with any of those is refused; unknown fields are refused.
 - **Events**: `item` (an existing item's id, or `""`), `kind`, `text` (non-empty), `t`. Only `kind` and `text` can be changed afterwards.
 - **Meta**: only `status` (`now`: string, `updated`: time) and `counter` (`next`).
-- **Fixed lists** (the values in use on 26 Oct 2026; to allow another, add it to `schema.mjs`): stage `""` (queued), `working`, `backgrounded`, `integrating`, `review`, `waiting`, `done`, `abandoned`; event kind `note`, `owner`, `stage`, `added`, `start`, `delegate`, `progress`, `review`, `merge`, `publish`, `done`, `wait`, `stop`, `bug`, `decision`; `where`: see `WHERES` (`Subagent`, `Subagent (Opus)`, `Subagent (Sonnet)`, `You`, `PM (M4)`, …). The page's editor offers `where` from the same list.
+- **Fixed lists** (the values in use on 26 Oct 2026; to allow another, add it to `schema.mjs`): stage `""` (queued), `working`, `backgrounded`, `integrating`, `review`, `waiting`, `done`, `abandoned`; event kind `note`, `owner`, `stage`, `priority` (the server's, above), `added`, `start`, `delegate`, `progress`, `review`, `merge`, `publish`, `done`, `wait`, `stop`, `bug`, `decision`; `where`: see `WHERES` (`Subagent`, `Subagent (Opus)`, `Subagent (Sonnet)`, `You`, `PM (M4)`, …). The page's editor offers `where` from the same list.
