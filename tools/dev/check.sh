@@ -26,6 +26,8 @@
 #   sharedtarget tools/dev/test/shared-target.zsh (tools/dev/bin/cargo on a toy workspace), when either changed
 #   sweep     tools/dev/test/sweep-targets.zsh (the sweep's room, on a fake disk), when the sweep, its
 #             test or the settings holding its default margin changed
+#   ran       tools/dev/test/ran.zsh (tools/dev/ran.zsh's kept folders for programs that ran, and the
+#             keep time testkit and the cargo shim say), when ran.zsh, its test, testkit or the shim changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     the tests tools/dev/affected-tests.sh prints, as one `cargo nextest run` (its --nextest),
 #             run on the test Mac (tools/app/remote-tests.sh; here when it can't be reached or SCENIC_CHECK_LOCAL=1)
@@ -165,6 +167,9 @@ else skip sharedtarget "tools/dev/bin unchanged"; fi
 if has 'tools/dev/sweep-targets.sh' || has 'tools/dev/test/sweep-targets.zsh' || has 'crates/agentcore/src/agent/settings.rs'; then
   part sweep zsh tools/dev/test/sweep-targets.zsh
 else skip sweep "the sweep unchanged"; fi
+if has 'tools/dev/ran.zsh' || has 'tools/dev/test/ran.zsh' || has 'crates/store/src/testkit.rs' || has 'tools/dev/bin/cargo'; then
+  part ran zsh tools/dev/test/ran.zsh
+else skip ran "the kept folders' rule unchanged"; fi
 if has 'tools/status/*'; then
   part swift zsh -c "swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)logs}/scenic-status tools/status/*.swift && ${(q)logs}/scenic-status --test tools/status/test"
 else skip swift "tools/status unchanged"; fi

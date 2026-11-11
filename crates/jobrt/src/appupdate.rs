@@ -308,8 +308,9 @@ mod tests {
 
     #[test]
     fn prune_removes_a_stale_copy_and_keeps_the_running_ones() {
-        let d = tempfile::tempdir().unwrap();
-        let app = d.path().join("app");
+        // (Not a tempdir: the program run from it is kept, testkit::ran_dir, #1131.)
+        let d = store::testkit::ran_dir("appupdate-prune");
+        let app = d.join("app");
         for v in ["20261001-0000-aaaaaaa", "20261002-0000-bbbbbbb", "20261003-0000-ccccccc", "20261004-0000-eeeeeee"] {
             std::fs::create_dir_all(app.join(v)).unwrap();
         }
@@ -326,7 +327,7 @@ mod tests {
         store::testkit::eventually("the copy runs", || {
             running_versions(&app) == vec!["20261001-0000-aaaaaaa".to_string()]
         });
-        prune(d.path(), "20261004-0000-eeeeeee", "20261004-0000-eeeeeee");
+        prune(&d, "20261004-0000-eeeeeee", "20261004-0000-eeeeeee");
         child.kill().ok();
         child.wait().ok();
         assert!(!tmp.exists());

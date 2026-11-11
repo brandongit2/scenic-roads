@@ -108,9 +108,11 @@ PY
   exit 1
 }
 # The stand-in root: the app's dem/ as it's published (the tracked files alone), beside inputs folders
-# with a file each, none readable.
-sr=$(mktemp -d)
-trap 'chmod -R u+rwx $sr 2>/dev/null; rm -rf $sr' EXIT
+# with a file each, none readable. A kept folder, not removed here (tools/dev/ran.zsh, #1131): its
+# .venv's libraries are loaded below, and Gatekeeper scans them after.
+source ${0:A:h:h}/dev/ran.zsh
+sr=$(ran_dir guards)
+trap 'chmod -R u+rwx $sr 2>/dev/null' EXIT
 mkdir -p $sr/dem
 git ls-files dem | while read f; do mkdir -p "$(dirname "$sr/$f")" && cp -X "$f" "$sr/$f"; done
 for d in inputs inputs/sources inputs/elevation translations descriptions; do

@@ -19,7 +19,10 @@ typeset -A cmd
 cmd[js]="node --experimental-transform-types --no-warnings --test ${(j: :)${(@q)js}}"
 cmd[devtools]='cd tools/devtools && node --test test/*.test.mjs'
 cmd[devjob]='zsh tools/dev/test/devjob.zsh'
-cmd[swift]="swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)out}/scenic-status tools/status/*.swift && ${(q)out}/scenic-status --test tools/status/test"
+# (The program it builds and runs in a kept folder, not $out: tools/dev/ran.zsh, #1131.)
+source tools/dev/ran.zsh
+bin=$(ran_dir other-tests-swift) || exit 2
+cmd[swift]="swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)bin}/scenic-status tools/status/*.swift && ${(q)bin}/scenic-status --test tools/status/test"
 cmd[shell]='zsh tools/app/test/shell.zsh'
 cmd[testguard]='zsh tools/dev/test/test-guard.zsh'
 order=(js devtools devjob swift shell testguard)

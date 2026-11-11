@@ -75,7 +75,7 @@ when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/tes
 `tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/devtools/test when
 tools/devtools or the build page's timeline modules it serves changed (#672), `tools/dev/test/devjob.zsh` when the
 dev jobs' recorder changed (#946), `tools/app/test/shell.zsh` (publish.sh's shell
-steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records) when check.sh changed, the Swift build and self-test when tools/status changed,
+steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records) when check.sh changed, the Swift build and self-test when tools/status changed, `tools/dev/test/ran.zsh` when the kept folders' rule (below) changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
 changed. The tests run as one `cargo nextest run` (#969; `affected-tests.sh --nextest <file>`
 turns the `cargo test` lines into it, saved in the log folder's `tests-nextest`): one build of
@@ -269,7 +269,8 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   (wasm32). On 4 Nov a `cargo run --release --example` held the
   lock 24 minutes while two check.sh runs waited; with a 60 s `cargo run` and two toy checks
   started 2 s after it, the checks waited 58 and 59 s before and 1 and 0 s after (M4, 4 Nov).
-  A clones folder of a gone process is deleted by the next such run.
+  A run leaves its clones (#1131): a later run removes a gone process's folder once it is unchanged
+  10 minutes ("A program that ran is kept 10 minutes", below).
 - A hold (#1123): check.sh's clippy and its tests' build take one turn. `cargo --scenic-hold
   <ready file>`, started by check.sh, takes the lock in line as any cargo, writes the ready file and
   holds it while check.sh lives; the holder's line names check.sh's pid (its processes are what a
@@ -512,7 +513,8 @@ through their dev-dependency on store, `features = ["testkit"]`):
   each other's; the one that can't, the plain-open cap, is set through a guard
   (`store::range::cap_plain_opens`) that tests take in turn and that restores it on drop (other
   tests in a `cargo test` process run under it meanwhile: a lower cap only closes files sooner).
-- **Hermetic by default:** temp folders (`tempfile::tempdir()`), never the real NAS or app home
+- **Hermetic by default:** temp folders (`tempfile::tempdir()`; for a program the test runs,
+  `store::testkit::ran_dir`, below), never the real NAS or app home
   (`agent::is_live_path`); coordinators, brokers and viewers on loopback ports from `coord::test_port()` (each test agent
   its own, its `coord_port()`): the test program holds each such port for good, a stopped one's
   listeners kept for the next on it (`coord::KEPT`), and refuses a listen anew on any other but
@@ -573,6 +575,40 @@ test` runs have no such bound.
   listening line: crates/server/tests/serves.rs), so no test asks who holds one. (`netstat -anv -p
   tcp` isn't a stand-in: started from mise's Python, as check.sh's parts are through devjob.py, it
   printed no Internet sockets at all.)
+
+## A program that ran is kept 10 minutes (#1131, 11 Nov)
+
+Gatekeeper scans a program after it starts: every file built or copied on these Macs carries
+`com.apple.provenance` (the Claude app's), so syspolicyd scans each new program at its first run (a
+fresh `cc` binary: 30-60 ms more on its first run, none after) and each library a process first
+loads, in the background, after the program is already running. When the file is gone by the time
+the scan reads it, syspolicyd crashes (`Security::Universal::architecture()` < `MachORep::signingData`,
+"Failed checking quarantine: No such file or directory" just before). launchd restarts it with a
+delay that doubles with each crash in a row, and while it is down no new process starts on the Mac:
+on 11 Nov at 01:36 every running test stalled ~110 s and a publish failed. On the M4, 38 crashes
+from 4 to 11 Nov; of the 17 the log still showed on 10-11 Nov, 15 came within 0.1 s of
+`appupdate::tests::prune_removes_a_stale_copy_and_keeps_the_running_ones` ending, which ran a copy
+of /bin/sleep from a tempdir dropped as the test ended (matched from the unified log's scans and the
+dev jobs' test times). So a program (or library) that ran is never deleted for 10 minutes:
+- **Scripts and tests** put a program they build or copy and then run (a `cc` or `swiftc` output, a
+  copied binary, a venv whose libraries are loaded) in a kept folder, never a temp folder they remove:
+  `dir=$(ran_dir <name>)` after `source tools/dev/ran.zsh` (shell), `store::testkit::ran_dir(name)`
+  (Rust tests). It is `$TMPDIR/scenic-ran/<pid>.<name>.…`, `<pid>` the script's or test process's;
+  each call first removes the folders whose process is gone and that are unchanged 10 minutes
+  (`RAN_KEEP_S`, `testkit::RAN_KEEP`). Users: shell.zsh's napper, guards.sh's stand-in root (its
+  `.venv`), other-tests.zsh's Swift self-test, the icon renderer (tools/status/icon/build.sh),
+  shared-target.zsh's toy workspace, appupdate's prune test.
+- **The cargo shim's clones** (`.scenic-runs/<pid>`, above) stay after their run; a later run
+  removes a gone process's folder once unchanged 10 minutes.
+- **Agents' scratch programs** (a `scenic-build` copied to try, a probe compiled in a scratch folder)
+  are left for at least 10 minutes after their last run before they are deleted.
+- `tools/dev/test/ran.zsh` (check.sh) checks `ran_dir` and that ran.zsh, testkit and the shim say the
+  same 10 minutes.
+Scripts a test writes and runs (the fake `ssh`, `osmium` and `caffeinate`) are scanned too, but the
+crash is in the Mach-O path and none came at their tests' end, so they stay in temp folders.
+Not changed here (the owner's): Gatekeeper and the Macs' security settings. Listing the terminal and
+Claude under Developer Tools (Privacy & Security), the setting meant to exempt what they start from
+these checks, is proposed to the owner (#1131).
 
 ## Setting up a Mac (tools/dev is tracked, #548)
 

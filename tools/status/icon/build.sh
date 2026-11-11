@@ -16,14 +16,17 @@ src=${0:A:h}
 out=$1
 tmp=$(mktemp -d)
 trap 'rm -rf $tmp' EXIT
-swiftc -O -target arm64-apple-macos26.0 -o $tmp/render $src/render.swift
+# (The renderer in a kept folder, not $tmp: tools/dev/ran.zsh, #1131.)
+source $src/../../dev/ran.zsh
+bin=$(ran_dir icon-render)
+swiftc -O -target arm64-apple-macos26.0 -o $bin/render $src/render.swift
 set=$tmp/Scenic.iconset
 mkdir $set
 for pt in 16 32 128 256 512; do
   svg=$src/icon.svg
   (( pt <= 32 )) && svg=$src/icon-small.svg
-  $tmp/render $svg $set/icon_${pt}x${pt}.png $pt
-  $tmp/render $svg $set/icon_${pt}x${pt}@2x.png $(( pt * 2 ))
+  $bin/render $svg $set/icon_${pt}x${pt}.png $pt
+  $bin/render $svg $set/icon_${pt}x${pt}@2x.png $(( pt * 2 ))
 done
 iconutil -c icns -o $out/Scenic.icns $set
 if [[ ${2:-} == --preview ]]; then

@@ -103,20 +103,30 @@ out=$(r "id=\$(proc_id); proc_alive \$id && echo live; proc_alive \"\${id%% *} T
 
 # stop_program: only the processes running that very program, by PID; one whose arguments merely
 # name it (what `pkill -f` would also stop) and another program are left.
-# (A program of its own: a copy of a system one, /bin/sleep, is stopped by macOS as it starts.)
-mkdir -p $tmp/a $tmp/b
-print -r -- '#include <unistd.h>
-int main(void) { sleep(30); return 0; }' > $tmp/napper.c
-cc -o $tmp/a/napper $tmp/napper.c && cp $tmp/a/napper $tmp/b/napper
-$tmp/a/napper 30 & pa=$!
-$tmp/b/napper 30 & pb=$!
-sh -c 'sleep 30' $tmp/a/napper & pn=$!
-out=$(r "stop_program $tmp/a/napper; echo done")
-for i in {1..50}; do kill -0 $pa 2>/dev/null || break; sleep 0.1; done
-if [[ $out != done ]]; then no "stop_program" "$out"
-elif kill -0 $pa 2>/dev/null; then no "stop_program" "the program's process still runs"
-elif ! kill -0 $pb 2>/dev/null || ! kill -0 $pn 2>/dev/null; then no "stop_program" "stopped another"
-else ok "stop_program: that program's processes alone"; fi
+# (A program of its own: a copy of a system one, /bin/sleep, is stopped by macOS as it starts. Built
+# in a kept folder, never $tmp: Gatekeeper scans a program after it starts, and syspolicyd crashed
+# when the file was gone by then, #1131. Each says it runs (its first argument, a ready file) before
+# stop_program looks: until its exec ends, which that scan can hold up, ps shows the shell that
+# started it, and stop_program found nothing to stop, #1111.)
+source ${0:A:h:h:h}/dev/ran.zsh
+nap=$(ran_dir stop-program); mkdir -p $nap/a $nap/b
+print -r -- '#include <fcntl.h>
+#include <unistd.h>
+int main(int argc, char **argv) { if (argc > 1) close(open(argv[1], O_CREAT | O_WRONLY, 0644)); sleep(30); return 0; }' > $nap/napper.c
+cc -o $nap/a/napper $nap/napper.c && cp $nap/a/napper $nap/b/napper
+$nap/a/napper $tmp/napper-a & pa=$!
+$nap/b/napper $tmp/napper-b & pb=$!
+sh -c 'sleep 30' $nap/a/napper & pn=$!
+for i in {1..1200}; do [[ -e $tmp/napper-a && -e $tmp/napper-b ]] && break; sleep 0.1; done
+if [[ ! -e $tmp/napper-a || ! -e $tmp/napper-b ]]; then no "stop_program" "the programs never ran"
+else
+  out=$(r "stop_program $nap/a/napper; echo done")
+  for i in {1..1200}; do kill -0 $pa 2>/dev/null || break; sleep 0.1; done
+  if [[ $out != done ]]; then no "stop_program" "$out"
+  elif kill -0 $pa 2>/dev/null; then no "stop_program" "the program's process still runs"
+  elif ! kill -0 $pb 2>/dev/null || ! kill -0 $pn 2>/dev/null; then no "stop_program" "stopped another"
+  else ok "stop_program: that program's processes alone"; fi
+fi
 kill $pa $pb $pn 2>/dev/null; wait $pa $pb $pn 2>/dev/null
 
 # fast_forward: in a stand-in repository, live = b; c builds on it, a is older, d diverged.

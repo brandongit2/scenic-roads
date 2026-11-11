@@ -7,7 +7,9 @@
 # when tools/dev/bin or this file changes.
 zmodload zsh/system; zmodload -F zsh/stat b:zstat
 sh=${0:A:h:h}/bin/cargo
-s=$(mktemp -d); trap 'rm -rf $s' EXIT
+# (A kept folder, never removed here: the toy's programs run from it, tools/dev/ran.zsh, #1131.)
+source ${0:A:h:h}/ran.zsh
+s=$(ran_dir shared-target)
 w=$s/.claude/worktrees; mkdir -p $w
 # The shim's records (tools/dev/devjob.zsh) go to a scratch spool, sent nowhere (a closed port).
 export SCENIC_DEVJOB_DIR=$s/devjobs SCENIC_BOARD=http://127.0.0.1:9; unset SCENIC_DEVJOB SCENIC_DEVJOB_PARENT
@@ -152,9 +154,17 @@ out=( ${(f)"$(<$s/run.out)"} )
 [[ $out[4] == 'shared None' ]] || fail "SCENIC_CARGO_SHARED outside the lock: $out[4]"
 [[ $out[5] == "cwd ${w:A}/a/src/sub" ]] || fail "not in the caller's folder: $out[5]"
 [[ $out[6] == 'arg "x y"' && $out[7] == 'arg ""' ]] || fail "arguments: $out[6,7]"
-# (Its clones go as it ends.)
-d=${${out[2]#exe }:h:h:h}; [[ ! -e $d ]] || fail "the run's clones stayed: $d"
+# (Its clones stay once it ends, #1131; the next run removes them only once unchanged 10 minutes,
+# and a folder of a gone process its PID names again is set aside, not removed.)
+d=${${out[2]#exe }:h:h:h}; [[ -e $d/bin/debug/toy ]] || fail "the run's clones went as it ended: $d"
+mkdir -p $s/shared/.scenic-runs/99999999.1 $s/shared/.scenic-runs/99999999.2
+touch -t $(date -v-11M +%Y%m%d%H%M.%S) $s/shared/.scenic-runs/99999999.1
 [[ $(cd $w/a && $sh run -q -- 'exit' 2>/dev/null) == a$'\n''arg "exit"' ]] || fail "a second run"
+[[ -e $d/bin/debug/toy ]] || fail "a gone run's clones, a moment old, went at the next run"
+[[ ! -e $s/shared/.scenic-runs/99999999.1 && -e $s/shared/.scenic-runs/99999999.2 ]] || fail "set-aside folders: 11 min old kept or a fresh one removed"
+touch -t $(date -v-11M +%Y%m%d%H%M.%S) $d
+[[ $(cd $w/a && $sh run -q -- 'exit' 2>/dev/null) == a$'\n''arg "exit"' ]] || fail "a third run"
+[[ ! -e $d ]] || fail "a gone run's clones, 11 min old, stayed"
 
 # cargo test: the tests outside the lock (env checks the folder, the environment and the clone;
 # cli starts the program's clone), the doctest by rustdoc; another build meanwhile.
