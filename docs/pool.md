@@ -696,7 +696,10 @@ changes no output (`slope_pack`'s test: a z6 tile's packs the same bytes on 2 th
 elevation pool's sampling (`terrain_base`'s `prefetch_counted`, in terrain-hi and
 terrain-deep) runs its chunks as tasks of a second pool as wide as the target's grant, one a thread
 (`control::on_outside_pool`), their passes (`dem::generic`) there too, while the target's thread
-waits, working on nothing: the job is on its grant's threads, no more. Not threads of their own
+waits, working on nothing: the job is on its grant's threads, no more. Beside them a level's tiles
+are made by as many threads again (task #1097, docs/steps.md §2, A level is a pipeline), each tile
+on a turn the sampling's threads lend while they wait (store::waits::Turns): the job computes on
+its grant's cores, no more (but for a thread back from a wait, until the tile on its turn is made). Not threads of their own
 whose passes go on a pool: on the target's own one, whose threads were waiting for them, that work
 never ran on a 1-thread grant, and every terrain-hi job stalled at 0 tiles (5 Nov, task #961); on
 another beside them the job would run on twice its grant. A thread the target starts of its own is

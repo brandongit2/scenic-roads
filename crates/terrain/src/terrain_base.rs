@@ -17,13 +17,13 @@
 //! them (the store, `sources/fetched/`, for a stored dataset, a file the job reads half or more of copied
 //! whole to this Mac first where it has room: buildstore::localread; else the network).
 
-use crate::terrain_pack::{RawSource, RawTiles};
+use crate::terrain_pack::{RawSource, RawTiles, Ready, Turns};
 use anyhow::{Context, Result};
 use buildstore::fetch::Fetch;
 use inputs::dem::declared::{Plan, Source};
 use inputs::dem::generic::{tile_resolution, Copies, Opts, Sampler};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 use store::range::RangeRead;
 
@@ -31,7 +31,7 @@ use store::range::RangeRead;
 pub const K: usize = 2;
 /// The finest zoom a plan is made for: the deepest the map stores.
 const MAX_Z: u8 = crate::terrain_zoom::DEEPEST;
-/// Tiles in flight at once while a level is sampled (`Tiles::prefetch_counted`): the memory
+/// Tiles in flight at once while a level is sampled (`Tiles::prefetch_each`): the memory
 /// `sampling_mb` declares (in crate::terrain_pack::piece_peak_mb, and what terrain-hi 7's and
 /// terrain-lo 2's runs measured, agentcore::coord::cost_version), shared among the chunks sampled at
 /// once (`at_once`), each `chunk_tiles` of them.
@@ -50,7 +50,7 @@ fn chunk_tiles(at_once: usize) -> usize {
     IN_FLIGHT / at_once.max(1)
 }
 
-/// The memory (MB) a level's chunks in flight take at most (`Tiles::prefetch_counted`): `IN_FLIGHT`
+/// The memory (MB) a level's chunks in flight take at most (`Tiles::prefetch_each`): `IN_FLIGHT`
 /// tiles' K × K points a pixel, each point's longitude and latitude
 /// (`points`), what the sampler gives it (inputs::dem::generic::Sampled: its height, dataset and
 /// blend) and works it out with (its height, first dataset and file).
@@ -251,8 +251,11 @@ impl<'a> RawFetch<'a> {
         let (m, cv) = &self.reading;
         {
             let mut n = m.lock().unwrap_or_else(|e| e.into_inner());
-            while *n >= self.most {
-                n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
+            if *n >= self.most {
+                let _w = store::waits::other();
+                while *n >= self.most {
+                    n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
+                }
             }
             *n += 1;
         }
@@ -303,7 +306,7 @@ impl Fetch for RawFetch<'_> {
 }
 
 /// The pool's base tiles, as raw tiles (crate::terrain_pack::RawSource): each sampled once, those
-/// of a level all at once (`prefetch_counted`), held until the level takes them.
+/// of a level a chunk at a time (`prefetch_each`), held until the level takes them.
 pub struct Tiles<'a> {
     plans: &'a [Plan],
     /// The plans of the levels from `ROW_Z` on, by zoom and z6 row (`row_mid`), made as first read
@@ -488,10 +491,12 @@ impl RawSource for Tiles<'_> {
         Ok((self.sample(z, &[(x, y)])?.pop().flatten(), false))
     }
 
-    // (Its chunks `at_once` at a time, the first to fail stopping the rest, as one that finds the
-    // build pausing does (jobrt::control::Paused, from `sample`). A chunk's reads mostly wait on the NAS, one at a time left a
-    // job's threads idle, task #695. The same bytes: a tile's sampling reads nothing of another's.)
-    fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], done: &AtomicU64) -> Result<usize> {
+    // (Its chunks `at_once` at a time, in the tiles' order, the first to fail stopping the rest, as
+    // one that finds the build pausing does (jobrt::control::Paused, from `sample`). A chunk's
+    // reads mostly wait on the NAS, one at a time left a job's threads idle, task #695. Each
+    // chunk's thread computes on a turn (`turns`), lent while it waits; each chunk said ready as
+    // it's held. The same bytes: a tile's sampling reads nothing of another's.)
+    fn prefetch_each(&self, z: u8, tiles: &[(u32, u32)], turns: &Turns, ready: Ready) -> Result<usize> {
         // (As many at once as the job's threads, each a task of a pool as wide as the target's
         // grant (jobrt::control::on_outside_pool), its sampler's passes there too
         // (inputs::dem::generic's, through jobrt::control::on_target_pool): the target's own thread
@@ -511,12 +516,15 @@ impl RawSource for Tiles<'_> {
                 if failed.load(Ordering::Relaxed) {
                     return Ok(());
                 }
-                let got = self.sample(z, c).inspect_err(|_| failed.store(true, Ordering::Relaxed))?;
-                let mut h = self.held.lock().unwrap();
-                for (&(x, y), t) in c.iter().zip(got) {
-                    h.insert((z, x, y), t);
+                let got =
+                    turns.computing(|| self.sample(z, c)).inspect_err(|_| failed.store(true, Ordering::Relaxed))?;
+                {
+                    let mut h = self.held.lock().unwrap();
+                    for (&(x, y), t) in c.iter().zip(got) {
+                        h.insert((z, x, y), t);
+                    }
                 }
-                done.fetch_add(c.len() as u64, Ordering::Relaxed);
+                ready(c);
             }
         };
         let k = at_once.min(chunks.len());
@@ -531,6 +539,7 @@ impl RawSource for Tiles<'_> {
 mod tests {
     use super::*;
     use inputs::dem::declared::Dataset;
+    use std::sync::atomic::AtomicU64;
 
     /// A pool of two: a GLO-30-like 1° tile in the store (its west half filled from another DEM, by
     /// its mask), then a Terrarium pyramid in the cache; a z12 tile across the mask's edge.
@@ -601,9 +610,7 @@ mod tests {
         buildstore::fetch::go_offline();
         let (png, again) = pool
             .with_tiles(&raw, |t| {
-                let done = AtomicU64::new(0);
-                t.prefetch_counted(z, &[(x, y)], &done).unwrap();
-                assert_eq!(done.load(Ordering::Relaxed), 1);
+                assert_eq!(said(t, z, &[(x, y)]).1, 1);
                 (t.get(z, x, y).unwrap().0.unwrap(), t.get(z, x, y).unwrap().0.unwrap())
             })
             .unwrap();
@@ -827,8 +834,8 @@ mod tests {
         let asked = std::sync::atomic::AtomicUsize::new(0);
         let draining = || asked.fetch_add(1, Ordering::Relaxed) >= 1;
         let paused = Tiles { draining: &draining, ..Tiles::new(&plans, &o) };
-        let done = AtomicU64::new(0);
-        let e = paused.prefetch_counted(z, &ts, &done).unwrap_err();
+        let (e, done) = said(&paused, z, &ts);
+        let e = e.unwrap_err();
         assert!(jobrt::control::is_paused(&e), "{e:#}");
         // Exactly one chunk sampled, whole: whichever worker asked first (under load the last,
         // shorter chunk's can), so its size is any chunk's, never part of one or two.
@@ -839,10 +846,10 @@ mod tests {
         let mut want: Vec<_> = one.iter().map(|&(x, y)| (z, x, y)).collect();
         want.sort();
         assert_eq!(keys, want, "the one chunk under way, whole, no other");
-        assert_eq!(done.load(Ordering::Relaxed), one.len() as u64);
+        assert_eq!(done, one.len() as u64, "said ready as held");
         // Never paused: the same bytes.
         let whole = Tiles::new(&plans, &o);
-        whole.prefetch_counted(z, &ts, &AtomicU64::new(0)).unwrap();
+        said(&whole, z, &ts).0.unwrap();
         for (k, b) in &held {
             assert!(b.is_some());
             assert_eq!(whole.held.lock().unwrap().get(k), Some(b), "{k:?}");
@@ -854,8 +861,17 @@ mod tests {
         for n in [1, 3, 7] {
             let p = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
             let t = Tiles::new(&plans, &o);
-            p.install(|| t.prefetch_counted(z, &ts, &AtomicU64::new(0))).unwrap();
+            assert_eq!(p.install(|| said(&t, z, &ts)).1, ts.len() as u64, "each tile said once");
             assert_eq!(*t.held.lock().unwrap(), all, "{n} threads");
         }
+    }
+
+    /// Tiles `ts` of zoom `z` made ready by `t` (`prefetch_each`), and how many it said ready.
+    fn said(t: &Tiles, z: u8, ts: &[(u32, u32)]) -> (Result<usize>, u64) {
+        let done = AtomicU64::new(0);
+        let r = t.prefetch_each(z, ts, &Turns::new(rayon::current_num_threads()), &|c| {
+            done.fetch_add(c.len() as u64, Ordering::Relaxed);
+        });
+        (r, done.into_inner())
     }
 }

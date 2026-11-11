@@ -185,26 +185,39 @@ impl RawSource for Fills<'_> {
         Ok((Some(roadcore::grid::encode_terrain_png(&e, 256, 256)?), a || b))
     }
 
-    fn prefetch_counted(
-        &self,
-        z: u8,
-        tiles: &[(u32, u32)],
-        done: &std::sync::atomic::AtomicU64,
-    ) -> anyhow::Result<usize> {
-        let (mut sample, mut relief) = (Vec::new(), Vec::new());
+    // (A tile is ready once each of its quarters' sources has it: the relief's read first (one of
+    // its tiles a tile, from the cache's or the NAS's raw tiles), those that read the pool too then
+    // ready as the pool's sampling has them, so none waits for the whole level's sampling.)
+    fn prefetch_each(&self, z: u8, tiles: &[(u32, u32)], turns: &Turns, ready: Ready) -> anyhow::Result<usize> {
+        let (mut sample, mut relief, mut neither) = (Vec::new(), Vec::new(), Vec::new());
+        let mut both = std::collections::HashSet::new();
         for &(x, y) in tiles {
             let q = self.quarters(z, x, y);
-            if q.contains(&Fill::Sample) {
+            let (s, r) = (q.contains(&Fill::Sample), q.contains(&Fill::Relief));
+            if s {
                 sample.push((x, y));
             }
-            if q.contains(&Fill::Relief) {
+            if r {
                 relief.push((x, y));
             }
+            if s && r {
+                both.insert((x, y));
+            }
+            if !s && !r {
+                neither.push((x, y));
+            }
         }
-        let none = std::sync::atomic::AtomicU64::new(0);
-        let n = self.pool.prefetch_counted(z, &sample, &none)? + self.relief.prefetch_counted(z, &relief, &none)?;
-        done.fetch_add(tiles.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        Ok(n)
+        if !neither.is_empty() {
+            ready(&neither);
+        }
+        let relief_ready = |got: &[(u32, u32)]| {
+            let now: Vec<(u32, u32)> = got.iter().copied().filter(|t| !both.contains(t)).collect();
+            if !now.is_empty() {
+                ready(&now);
+            }
+        };
+        Ok(self.relief.prefetch_each(z, &relief, turns, &relief_ready)?
+            + self.pool.prefetch_each(z, &sample, turns, ready)?)
     }
 
     fn built(&self, z: u8, tiles: &[(u32, u32)]) {
@@ -256,14 +269,11 @@ pub fn open_water_with(
 pub trait RawSource: Sync {
     /// The raw tile (None: AWS has none), and whether it came from AWS just now.
     fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)>;
-    /// Makes the tiles of `tiles` (zoom `z`) ready to read, counting each into `done` as it is; the
+    /// Makes the tiles of `tiles` (zoom `z`) ready to read, in their order where it can, telling
+    /// `ready` each group of them as it's ready (each tile once), its sampling's threads computing
+    /// on `turns` (store::waits::Turns: the tiles' making takes the turns their waits lend). The
     /// number that came from AWS.
-    fn prefetch_counted(
-        &self,
-        z: u8,
-        tiles: &[(u32, u32)],
-        done: &std::sync::atomic::AtomicU64,
-    ) -> anyhow::Result<usize>;
+    fn prefetch_each(&self, z: u8, tiles: &[(u32, u32)], turns: &Turns, ready: Ready) -> anyhow::Result<usize>;
     /// The tiles of zoom `z` built (a level's, or what it starts from: its children's means), so a
     /// quarter whose child isn't among them is the tile's own sample (`Fills`).
     fn built(&self, _z: u8, _tiles: &[(u32, u32)]) {}
@@ -278,17 +288,18 @@ pub trait RawSource: Sync {
     }
 }
 
+/// Told each group of tiles made ready (`RawSource::prefetch_each`).
+pub type Ready<'a> = &'a (dyn Fn(&[(u32, u32)]) + Sync);
+
+pub use store::waits::Turns;
+
 impl RawSource for RawTiles {
     fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
         RawTiles::get(self, z, x, y)
     }
-    fn prefetch_counted(
-        &self,
-        z: u8,
-        tiles: &[(u32, u32)],
-        done: &std::sync::atomic::AtomicU64,
-    ) -> anyhow::Result<usize> {
-        RawTiles::prefetch_counted(self, z, tiles, done)
+    // (Read on store::ahead's threads, which compute nothing of the job's: no turns.)
+    fn prefetch_each(&self, z: u8, tiles: &[(u32, u32)], _turns: &Turns, ready: Ready) -> anyhow::Result<usize> {
+        self.fetch_each(z, tiles, ready)
     }
 }
 
@@ -396,7 +407,6 @@ pub fn tile_lat(z: u8, ty: u32) -> f64 {
 
 use buildstore::coverage::{near_coverage, Coverage};
 use buildstore::out::Out;
-use rayon::prelude::*;
 use std::sync::Mutex;
 
 /// A layer's tiles as the build manifest has them now (its latest uploads).
@@ -1148,32 +1158,23 @@ impl RawTiles {
     /// network's lane: a download mostly waits on AWS, so far more of them than cores; a tile in
     /// the NAS's archives read there the same). The number that came from AWS.
     pub fn prefetch(&self, z: u8, tiles: &[(u32, u32)]) -> anyhow::Result<usize> {
-        self.prefetch_counted(z, tiles, &std::sync::atomic::AtomicU64::new(0))
+        self.fetch_each(z, tiles, &|_| {})
     }
 
-    /// `prefetch`, counting into `done` each tile as it's here (at once for those that were).
-    pub fn prefetch_counted(
-        &self,
-        z: u8,
-        tiles: &[(u32, u32)],
-        done: &std::sync::atomic::AtomicU64,
-    ) -> anyhow::Result<usize> {
-        let todo: Vec<(u32, u32)> = tiles
-            .iter()
-            .copied()
-            .filter(|&(x, y)| {
-                let d = self.dir.join(format!("{z}/{x}"));
-                !d.join(format!("{y}.png")).exists()
-                    && !d.join(format!("{y}.none")).exists()
-                    && !self.in_archive(z, x, y)
-            })
-            .collect();
-        done.fetch_add((tiles.len() - todo.len()) as u64, std::sync::atomic::Ordering::Relaxed);
+    /// `prefetch`, telling `ready` each tile as it's here (at once those that were).
+    fn fetch_each(&self, z: u8, tiles: &[(u32, u32)], ready: Ready) -> anyhow::Result<usize> {
+        let (todo, here): (Vec<(u32, u32)>, Vec<(u32, u32)>) = tiles.iter().partition(|&&(x, y)| {
+            let d = self.dir.join(format!("{z}/{x}"));
+            !d.join(format!("{y}.png")).exists() && !d.join(format!("{y}.none")).exists() && !self.in_archive(z, x, y)
+        });
+        if !here.is_empty() {
+            ready(&here);
+        }
         let got = store::ahead::each(todo.len(), store::ahead::Lane::Net, |i| {
             let (x, y) = todo[i];
-            let got = self.get(z, x, y);
-            done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(got?.1)
+            let got = self.get(z, x, y)?;
+            ready(&[(x, y)]);
+            Ok(got.1)
         })?;
         Ok(got.into_iter().filter(|&new| new).count())
     }
@@ -1403,26 +1404,24 @@ impl<'a> Maker<'a> {
         Ok(b)
     }
 
-    /// One level: every tile fetched or reused, then made with what the level below made
-    /// (`process`). `by_block`: its tiles made a block at a time (`blocks`: the tiles under one tile
-    /// four levels up, a z8 subtree's at z12), each kept to `log` as it's made, so a resumed run
-    /// makes only the blocks not kept; else all at once (one block). The same bytes either way: a
-    /// tile reads only its own raw tile and its children's means.
+    /// One level: its tiles sampled (or read) and made with what the level below made (`process`),
+    /// a block at a time (`blocks`: the tiles under one tile four levels up, a z8 subtree's at z12),
+    /// each tile made as soon as the sampling has it, beside the sampling of the rest (`pipeline`),
+    /// each block kept to `log` as its last tile is made, so a resumed run makes only the blocks
+    /// not kept. The same bytes whatever the order: a tile reads only its own raw tile and its
+    /// children's means.
     fn level(
         &self,
         z: u8,
         tiles: Vec<(u32, u32)>,
         quads: &HashMap<(u32, u32), Vec<f32>>,
-        by_block: bool,
         mut log: Option<&mut crate::terrain_resume::HiLog>,
     ) -> anyhow::Result<Level> {
         use crate::terrain_resume::Finished;
-        use jobrt::timings::sub;
         let up = z.min(self.block_up);
-        let blocks = if by_block { blocks(z, &tiles, self.block_up) } else { vec![tiles.clone()] };
+        let blocks = blocks(z, &tiles, self.block_up);
         // (What a resumed run's log kept of the level: its blocks, whether it ended.)
         let mut kept = log.as_deref_mut().map(|l| l.level(z)).unwrap_or_default();
-        // (A level of no tile, made whole, is one empty block.)
         let key = |b: &[(u32, u32)]| b.first().map_or((0, 0), |t| (t.0 >> up, t.1 >> up));
         let (mut outs, mut nq) = (Vec::new(), HashMap::new());
         // (A block kept: its tiles as made.)
@@ -1444,43 +1443,145 @@ impl<'a> Maker<'a> {
         let mut under: Vec<(u32, u32)> = quads.keys().copied().collect();
         under.sort_unstable();
         self.raw.built(z + 1, &under);
-        let p = sub("sampling the terrain pool into raw tiles");
-        // (Nothing kept: the level's tiles in their order, as a run without a log reads them.)
-        let want: Vec<(u32, u32)> = if todo.len() == blocks.len() {
-            tiles
-        } else {
-            todo.iter().flat_map(|&bi| blocks[bi].iter().copied()).collect()
-        };
-        self.fetched.fetch_add(self.raw.prefetch_counted(z, &want, &self.here)?, std::sync::atomic::Ordering::Relaxed);
-        drop(p);
         for b in &blocks {
             if let Some(done) = kept.blocks.remove(&key(b)) {
                 take(done, &mut outs, &mut nq);
             }
         }
-        let src = self.src;
-        let _p = sub("making the tiles, shading and encoding them");
-        for bi in todo {
-            let made: Vec<anyhow::Result<Finished>> = blocks[bi]
-                .par_iter()
-                .map(|&(x, y)| {
-                    let raw = self.get(z, x, y)?;
-                    let kids = (0..4u32).any(|k| quads.contains_key(&(x * 2 + (k & 1), y * 2 + (k >> 1))));
-                    let (b, r, q) = process(raw.filter(|_| kids || self.raw.keep(z, x, y)), z, x, y, quads, src)?;
-                    self.processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Ok((x, y, b, r, q))
-                })
-                .collect();
-            let done = made.into_iter().collect::<anyhow::Result<Vec<Finished>>>()?;
-            if let Some(l) = log.as_deref_mut() {
-                l.block(z, key(&blocks[bi]), &done)?;
+        let todo: Vec<&[(u32, u32)]> = todo.into_iter().map(|bi| blocks[bi].as_slice()).collect();
+        let log = std::sync::Mutex::new(log);
+        let keep = |b: &[(u32, u32)], done: &[Finished]| -> anyhow::Result<()> {
+            match log.lock().unwrap().as_deref_mut() {
+                Some(l) => l.block(z, key(b), done),
+                None => Ok(()),
             }
+        };
+        let made = self.pipeline(z, &todo, quads, &keep)?;
+        for done in made {
             self.finished_into(done, &mut outs, &mut nq);
         }
-        if let Some(l) = log {
+        if let Some(l) = log.into_inner().unwrap() {
             l.end(z)?;
         }
         Ok((outs, nq))
+    }
+
+    /// Level `z`'s blocks `todo` sampled and made: the sampling (`RawSource::prefetch_each`, the
+    /// blocks' tiles in turn) on this thread's pool, and beside it as many threads as that pool
+    /// has making each tile (`process`) as soon as the sampling has told it ready, each block kept
+    /// (`keep`) as its last tile is made. The making takes the turns the
+    /// sampling's waits lend (store::waits::Turns, as many as the pool's threads): it computes on
+    /// the cores the sampling leaves idle, the job on no more cores than its threads. Each block's
+    /// tiles as made, in order. A failure of the sampling (a pause's ends between chunks) lets the
+    /// tiles sampled be made first, so the blocks whole by then are kept.
+    fn pipeline(
+        &self,
+        z: u8,
+        todo: &[&[(u32, u32)]],
+        quads: &HashMap<(u32, u32), Vec<f32>>,
+        keep: &(dyn Fn(&[(u32, u32)], &[crate::terrain_resume::Finished]) -> anyhow::Result<()> + Sync),
+    ) -> anyhow::Result<Vec<Vec<crate::terrain_resume::Finished>>> {
+        use crate::terrain_resume::Finished;
+        use jobrt::timings::sub;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+        if todo.is_empty() {
+            return Ok(Vec::new());
+        }
+        let src = self.src;
+        let threads = rayon::current_num_threads().max(1);
+        let turns = Turns::new(threads);
+        // (By tile, its block and its place there, and whether it's been said ready; by block, its
+        // tiles not yet made.)
+        let at: HashMap<(u32, u32), (usize, usize)> =
+            todo.iter().enumerate().flat_map(|(j, b)| b.iter().enumerate().map(move |(i, &t)| (t, (j, i)))).collect();
+        let told: Vec<Vec<AtomicBool>> =
+            todo.iter().map(|b| b.iter().map(|_| AtomicBool::new(false)).collect()).collect();
+        let unmade: Vec<AtomicUsize> = todo.iter().map(|b| AtomicUsize::new(b.len())).collect();
+        let tiles: Vec<Mutex<Vec<Option<Finished>>>> = todo.iter().map(|b| Mutex::new(vec![None; b.len()])).collect();
+        let made: Vec<Mutex<Option<Vec<Finished>>>> = todo.iter().map(|_| Mutex::new(None)).collect();
+        // (The tiles ready to make, and whether no more will be.)
+        let queue: Mutex<(std::collections::VecDeque<(usize, usize)>, bool)> = Default::default();
+        let cv = std::sync::Condvar::new();
+        let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        let ready = |got: &[(u32, u32)]| {
+            self.here.fetch_add(got.len() as u64, Relaxed);
+            let now: Vec<(usize, usize)> = got
+                .iter()
+                .filter_map(|t| at.get(t).copied())
+                .filter(|&(j, i)| !told[j][i].swap(true, Relaxed))
+                .collect();
+            if !now.is_empty() {
+                let mut q = queue.lock().unwrap();
+                q.0.extend(now);
+                cv.notify_all();
+            }
+        };
+        let make = |j: usize, i: usize| -> anyhow::Result<()> {
+            let (x, y) = todo[j][i];
+            let raw = self.get(z, x, y)?;
+            let kids = (0..4u32).any(|k| quads.contains_key(&(x * 2 + (k & 1), y * 2 + (k >> 1))));
+            let (b, r, q) = process(raw.filter(|_| kids || self.raw.keep(z, x, y)), z, x, y, quads, src)?;
+            self.processed.fetch_add(1, Relaxed);
+            tiles[j].lock().unwrap()[i] = Some((x, y, b, r, q));
+            if unmade[j].fetch_sub(1, Relaxed) == 1 {
+                let done: Vec<Finished> =
+                    std::mem::take(&mut *tiles[j].lock().unwrap()).into_iter().map(|t| t.expect("made")).collect();
+                keep(todo[j], &done)?;
+                *made[j].lock().unwrap() = Some(done);
+            }
+            Ok(())
+        };
+        let maker = || {
+            let _p = jobrt::timings::phase("making the tiles, shading and encoding them");
+            loop {
+                let (j, i) = {
+                    let mut q = queue.lock().unwrap();
+                    loop {
+                        match q.0.pop_front() {
+                            Some(v) => break v,
+                            None if q.1 => return,
+                            None => q = cv.wait(q).unwrap(),
+                        }
+                    }
+                };
+                if failed.lock().unwrap().is_some() {
+                    continue;
+                }
+                let _turn = turns.take();
+                if let Err(e) = make(j, i) {
+                    failed.lock().unwrap().get_or_insert(e);
+                }
+            }
+        };
+        let sampled = std::thread::scope(|s| {
+            let makers: Vec<_> = (0..threads)
+                .map(|_| std::thread::Builder::new().name("making tiles".into()).spawn_scoped(s, maker))
+                .collect::<std::io::Result<_>>()?;
+            let p = sub("sampling the terrain pool into raw tiles");
+            let sampled = self.raw.prefetch_each(z, &todo.concat(), &turns, &ready);
+            drop(p);
+            {
+                let mut q = queue.lock().unwrap();
+                // (A tile its source read without saying so: made all the same, read by its
+                // making.)
+                if sampled.is_ok() {
+                    let rest = (0..todo.len()).flat_map(|j| (0..todo[j].len()).map(move |i| (j, i)));
+                    q.0.extend(rest.filter(|&(j, i)| !told[j][i].swap(true, Relaxed)));
+                }
+                q.1 = true;
+                cv.notify_all();
+            }
+            let _p = sub("making the last tiles sampled");
+            for m in makers {
+                m.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+            }
+            anyhow::Ok(sampled)
+        })?;
+        self.fetched.fetch_add(sampled?, Relaxed);
+        if let Some(e) = failed.into_inner().unwrap() {
+            return Err(e);
+        }
+        Ok(made.into_iter().map(|m| m.into_inner().unwrap().expect("each block made")).collect())
     }
 
     /// Tiles made (`level`) into a level's tiles and 2×2 means, the changed ones counted.
@@ -1504,20 +1605,18 @@ impl<'a> Maker<'a> {
     }
 
     /// A z6 tile (z6 tile `t`): its levels z12 → z9 (`levels`, `piece_levels`), from the quarters
-    /// `start` gives (its z10 tiles' deep mids), each level a block at a time (`by_block`, `level`;
-    /// else all at once: the way before task #447, kept to check the bytes against). Its hi tiles,
-    /// sorted, and its mid.
+    /// `start` gives (its z10 tiles' deep mids), each level a block at a time (`level`). Its hi
+    /// tiles, sorted, and its mid.
     fn piece(
         &self,
         levels: Vec<(u8, Vec<(u32, u32)>)>,
-        by_block: bool,
         mut log: Option<&mut crate::terrain_resume::HiLog>,
         start: Mid,
     ) -> anyhow::Result<(Vec<Made>, Mid)> {
         let mut quads: HashMap<(u32, u32), Vec<f32>> = start.quads.into_iter().collect();
         let mut hi: Vec<Made> = Vec::new();
         for (z, tiles) in levels {
-            let (outs, nq) = self.level(z, tiles, &quads, by_block, log.as_deref_mut())?;
+            let (outs, nq) = self.level(z, tiles, &quads, log.as_deref_mut())?;
             hi.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
             quads = nq;
         }
@@ -1534,7 +1633,7 @@ impl<'a> Maker<'a> {
         }
         let mut lo: Vec<Made> = Vec::new();
         for (z, tiles) in upper_levels(q) {
-            let (outs, nq) = self.level(z, tiles, &quads, false, None)?;
+            let (outs, nq) = self.level(z, tiles, &quads, None)?;
             lo.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
             quads = nq;
         }
@@ -1556,21 +1655,19 @@ pub fn make_piece(
     src: &Sources,
     levels: Vec<(u8, Vec<(u32, u32)>)>,
 ) -> anyhow::Result<(Vec<Made>, Mid)> {
-    Maker::new(raw, src).piece(levels, true, None, Mid::default())
+    Maker::new(raw, src).piece(levels, None, Mid::default())
 }
 
 /// A z6 tile's levels `levels` made from `raw` and `src` as its run makes them, its z10 tiles'
-/// deep mids `deep` taken in (its z12 tiles' quarters there): by block
-/// (`by_block`), else each level's tiles all prepared at once (`make_piece_whole`'s way). Its hi
-/// tiles, sorted, and its mid (`scenic-build terrain-same`).
+/// deep mids `deep` taken in (its z12 tiles' quarters there). Its hi tiles, sorted, and its mid
+/// (`scenic-build terrain-same`).
 pub fn make_piece_from(
     raw: &dyn RawSource,
     src: &Sources,
     levels: Vec<(u8, Vec<(u32, u32)>)>,
     deep: Mid,
-    by_block: bool,
 ) -> anyhow::Result<(Vec<Made>, Mid)> {
-    Maker::new(raw, src).piece(levels, by_block, None, deep)
+    Maker::new(raw, src).piece(levels, None, deep)
 }
 
 /// `make_piece` with its blocks kept as made and an earlier run's taken (`log`): a z10 tile's band
@@ -1581,18 +1678,7 @@ pub fn make_piece_logged(
     levels: Vec<(u8, Vec<(u32, u32)>)>,
     log: Option<&mut crate::terrain_resume::HiLog>,
 ) -> anyhow::Result<(Vec<Made>, Mid)> {
-    Maker::new(raw, src).piece(levels, true, log, Mid::default())
-}
-
-/// `make_piece` with each level's tiles all prepared at once (the way before task #447, which held
-/// a z6 tile's every z12 tile prepared: 7 GB at the 90th percentile): the same bytes, for checking
-/// them (`scenic-build terrain-same --whole`, tests).
-pub fn make_piece_whole(
-    raw: &dyn RawSource,
-    src: &Sources,
-    levels: Vec<(u8, Vec<(u32, u32)>)>,
-) -> anyhow::Result<(Vec<Made>, Mid)> {
-    Maker::new(raw, src).piece(levels, false, None, Mid::default())
+    Maker::new(raw, src).piece(levels, log, Mid::default())
 }
 
 /// The most memory (MB) a z6 tile's levels take as one run makes them (`make_piece`), from its
@@ -1621,7 +1707,7 @@ pub fn make_piece_up(
 ) -> anyhow::Result<(Vec<Made>, Mid)> {
     let mut m = Maker::new(raw, src);
     m.block_up = up;
-    m.piece(levels, true, None, Mid::default())
+    m.piece(levels, None, Mid::default())
 }
 
 /// `build_piece` keeping its blocks (crate::terrain_resume::HiLog), for tests: none offered out.
@@ -1886,11 +1972,11 @@ pub(crate) fn build_piece_kept(
             None
         };
         let began = std::time::Instant::now();
-        let (mut hi, mut mid) = mk.piece(mine, true, log.as_mut(), deep)?;
+        let (mut hi, mut mid) = mk.piece(mine, log.as_mut(), deep)?;
         offers.made_here(began.elapsed().as_secs_f64(), n);
         let _w = jobrt::timings::sub("waiting for the subtrees other workers make (or making them here)");
         let _o = store::waits::other();
-        offers.settle(&|lv| mk.piece(lv, true, None, Mid::default()), &mut hi, &mut mid)?;
+        offers.settle(&|lv| mk.piece(lv, None, Mid::default()), &mut hi, &mut mid)?;
         hi.sort_by_key(|t| (t.0, t.1, t.2));
         Ok((hi, mid))
     })?;
@@ -2070,7 +2156,7 @@ pub fn make_root(out: &Out, raw: &dyn RawSource, src: &Sources) -> anyhow::Resul
     for z in (0..=2u8).rev() {
         let n = 1u32 << z;
         let level: Vec<(u32, u32)> = (0..n).flat_map(|x| (0..n).map(move |y| (x, y))).collect();
-        let (outs, nq) = mk.level(z, level, &quads, false, None)?;
+        let (outs, nq) = mk.level(z, level, &quads, None)?;
         tiles.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
         quads = nq;
     }
@@ -2189,17 +2275,13 @@ pub(crate) mod tests {
             }
             self.inner.get(z, x, y)
         }
-        fn prefetch_counted(
-            &self,
-            z: u8,
-            tiles: &[(u32, u32)],
-            done: &std::sync::atomic::AtomicU64,
-        ) -> anyhow::Result<usize> {
+        fn prefetch_each(&self, z: u8, tiles: &[(u32, u32)], turns: &Turns, ready: Ready) -> anyhow::Result<usize> {
             let mut n = 0;
             for c in tiles.chunks(CHUNK) {
                 self.sampling()?;
-                n += self.inner.prefetch_counted(z, c, done)?;
+                n += self.inner.prefetch_each(z, c, turns, &|_| {})?;
                 self.held.lock().unwrap().extend(c.iter().map(|&(x, y)| (z, x, y)));
+                ready(c);
             }
             Ok(n)
         }
@@ -2496,14 +2578,59 @@ pub(crate) mod tests {
         fn from(&self, _z: u8, _x: u32, _y: u32) -> Option<Vec<String>> {
             self.from.clone()
         }
-        fn prefetch_counted(
-            &self,
-            _z: u8,
-            _tiles: &[(u32, u32)],
-            _done: &std::sync::atomic::AtomicU64,
-        ) -> anyhow::Result<usize> {
+        fn prefetch_each(&self, _z: u8, tiles: &[(u32, u32)], _turns: &Turns, ready: Ready) -> anyhow::Result<usize> {
+            ready(tiles);
             Ok(0)
         }
+    }
+
+    /// Task #1097: a level's first block is made while its sampling goes on to the next, on the
+    /// turn the sampling lends while it waits (one thread: one turn; held computing, the making
+    /// waits); the same tiles as made after the sampling.
+    #[test]
+    fn a_blocks_tiles_are_made_beside_the_next_blocks_sampling() {
+        /// Const's tiles, the first block said ready, the second only once the first is made.
+        struct Waits(Const);
+        impl RawSource for Waits {
+            fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+                self.0.get(z, x, y)
+            }
+            fn prefetch_each(
+                &self,
+                _z: u8,
+                tiles: &[(u32, u32)],
+                turns: &Turns,
+                ready: Ready,
+            ) -> anyhow::Result<usize> {
+                let (first, next) = tiles.split_at(2);
+                turns.computing(|| {
+                    ready(first);
+                    // (Computing, its turn held: nothing made.)
+                    assert!(self.0.asked.lock().unwrap().is_empty(), "made on a turn the sampling holds");
+                    // Waiting on its next reads: the first block made meanwhile.
+                    let _w = store::waits::other();
+                    store::testkit::eventually("the first block made", || self.0.asked.lock().unwrap().len() == 2);
+                });
+                ready(next);
+                Ok(0)
+            }
+        }
+        let src = Sources::default();
+        // (Two blocks of two z12 tiles: under z8 tiles 0/0 and 1/0.)
+        let tiles = vec![(0, 0), (1, 0), (16, 0), (17, 0)];
+        let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let raw = Waits(Const::new(100.0));
+        let (made, _) = one.install(|| Maker::new(&raw, &src).level(12, tiles.clone(), &HashMap::new(), None)).unwrap();
+        let mut asked = raw.0.asked.lock().unwrap().clone();
+        asked.sort();
+        assert_eq!(asked, tiles.iter().map(|&(x, y)| (12, x, y)).collect::<Vec<_>>(), "each made once");
+        let plain = Const::new(100.0);
+        let (after, _) = Maker::new(&plain, &src).level(12, tiles, &HashMap::new(), None).unwrap();
+        let sorted = |mut v: Vec<(u32, u32, Vec<u8>)>| {
+            v.sort_by_key(|t| (t.0, t.1));
+            v
+        };
+        assert!(sorted(made) == sorted(after), "the same tiles");
     }
 
     /// The rule (docs/steps.md §2, Terrain): a z6 tile's run samples only its finest zoom's tiles; a

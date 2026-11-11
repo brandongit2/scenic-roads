@@ -122,7 +122,9 @@ makes the same bytes on every Mac.
       relief: its lo pack.
     - **terrain-root** (z0–2), once every terrain-lo is done: from the lo packs' z3 tiles and the
       relief, at most 21 of its tiles read; seconds.
-    `scenic-build terrain-same 6/x/y [--whole]` makes a live z6 tile (its deep mids taken in) and sets
+    terrain-hi's, terrain-deep's and terrain-lo's uploads land beside the job's next target's work
+    (docs/storage.md, Uploads beside the work).
+    `scenic-build terrain-same 6/x/y` makes a live z6 tile (its deep mids taken in) and sets
     its pack's and mid's content names beside the manifest's, writing nothing to the NAS;
     `terrain-same 3/x/y` does so for a z3 tile's lo pack, `terrain-same 10/x/y` for a z10 tile's
     deep pack and mid (as its terrain-deep run makes them).
@@ -145,8 +147,18 @@ makes the same bytes on every Mac.
     fill masks, each within the run's own budget (`dem::generic::TileMemo`, `TILE_MEMO_BYTES`), the
     least recently read let go first, so a run's memory is its working set's (task #929: kept for
     the run's length, a run over a continent's GLO-30 files grew by 1.3–2.7 GB a z3 tile, measured by
-    `examples/pool_memory`). The sampling goes 16 tiles a chunk;
-    with the build pausing it stops before the next chunk (docs/pool.md §7.2, Resuming). Each is
+    `examples/pool_memory`). The sampling goes a chunk a thread of the job's grant (the 64 tiles in
+    flight shared among them, `terrain_base::chunk_tiles`), each chunk's datasets in their order
+    and its blends after them; with the build pausing it stops before the next chunk (docs/pool.md
+    §7.2, Resuming). **A level is a pipeline** (task #1097, `terrain_pack::Maker::pipeline`): its
+    tiles are sampled a block at a time (the tiles under one tile four levels up, a z8 subtree's at
+    z12), and each block's tiles are made (their children's means taken in, rounded, encoded) as
+    soon as the sampling has them all, beside the next block's sampling, on as many threads as the
+    grant; the making takes the turns the sampling's threads lend while they wait on the NAS, the
+    network or a read ahead (store::waits::Turns), so it computes on the cores those waits leave
+    idle and the job on no more than its grant's (one over while a thread back from a wait finds
+    its turn taken, until that tile is made). A block is kept to the run's resume log as its last
+    tile is made. A level waits for the one finer (its quarters are those tiles' means). Each is
     pinned in the key (`TERRAIN_V`, the datasets meeting the target by their lines and zooms there,
     its tiles near the coverage), so a rebuild with the same key gives identical packs.
   - **The source's heights, kept** (the owner's, 5 Nov): at sea (its bathymetry, its artefacts

@@ -91,10 +91,10 @@
 //!                                has there) and the blocks' tiles as the manifest's packs and mid
 //!                                have them (out/packs/8-x-y/, as `trees --blocks` writes them), for
 //!                                the checks; nothing written to the NAS
-//!   terrain-same <6/x/y> [--whole]  z6 tile 6/x/y made as its job makes it (by z8 subtree), or
-//!                                whole, its hi pack and mid written locally; or <3/x/y>, a z3
-//!                                tile's lo pack. Their content names beside the manifest's.
-//!                                Nothing written to the NAS
+//!   terrain-same <6/x/y>         z6 tile 6/x/y made as its job makes it, its hi pack and mid
+//!                                written locally; or <3/x/y>, a z3 tile's lo pack; or <10/x/y>,
+//!                                a z10 tile's deep pack and mid. Their content names beside the
+//!                                manifest's. Nothing written to the NAS
 //!   terrainsub-task <6/x/y> --out dir [--group 8/x/y] [--pass d]  a terrain z6 tile's z8 subtrees
 //!                                in their groups, each group's task file as the z6 tile's run cuts
 //!                                it (terrain::terrain_task: out/<x>-<y>/u/in.sect), for the
@@ -998,11 +998,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             return Ok(());
         }
         "terrain-same" => {
-            // terrain-same <6/x/y | 3/x/y | 10/x/y> [--whole] [--raw dir] [--pass d] [--regions dir]:
-            // z6 tile 6/x/y made as its job makes it (each level a z8 subtree's worth of tiles at a
-            // time: terrain::terrain_pack::make_piece), or with `--whole` each level's tiles all
-            // together (make_piece_whole, the way before), its hi pack and mid written in the scratch
-            // folder only; or z3 tile 3/x/y's lo tiles as its terrain-lo job makes them (make_lo),
+            // terrain-same <6/x/y | 3/x/y | 10/x/y> [--raw dir] [--pass d] [--regions dir]:
+            // z6 tile 6/x/y made as its job makes it (terrain::terrain_pack::make_piece), its hi
+            // pack and mid written in the scratch folder only; or z3 tile 3/x/y's lo tiles as its
+            // terrain-lo job makes them (make_lo),
             // its lo pack written there; or z10 tile 10/x/y's deep pack and mid as its terrain-deep
             // job makes them (terrain::terrain_deep). Their content names said beside the
             // manifest's (the same inputs give the same bytes), with the time. It only reads the NAS
@@ -1020,9 +1019,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             if t.z == terrain::terrain_deep::PACK_Z {
                 return terrain_same_deep(&out, &raw, &cov, (t.x, t.y));
             }
-            let whole = flag(&args, "--whole");
             let lo = t.z == 3;
-            anyhow::ensure!(!(lo && whole), "--whole is a z6 tile's");
             let t0 = std::time::Instant::now();
             let (made, mid) = if lo {
                 let [(q, ts)]: [(TileId, Vec<(u32, u32)>); 1] =
@@ -1042,7 +1039,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 pyramids_arg(&mut pool, &args);
                 let levels = terrain::terrain_pack::piece_levels(&cov, &sets, (t.x, t.y));
                 let (hi, mid) = with_fills(&raw, &pool, &cov, &sets, &keys, |tiles, src| {
-                    terrain::terrain_pack::make_piece_from(tiles, src, levels, deep.clone(), !whole)
+                    terrain::terrain_pack::make_piece_from(tiles, src, levels, deep.clone())
                 })?;
                 (hi, Some(mid))
             };
@@ -1070,7 +1067,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let mid_path = out.scratch_file(&format!("{ml}.sect"));
                 terrain::terrain_pack::write_mid(&mid_path, (t.x, t.y), &mid)?;
                 let mid_made = store::naming::content_name(&ml, &store::naming::hash16_file(&mid_path)?, "sect");
-                said["way"] = (if whole { "whole" } else { "by block" }).into();
                 said["mid"] = mid_made.into();
                 said["mid_manifest"] = out.get(&ml).into();
             }

@@ -227,8 +227,14 @@ impl RawSource for Inputs {
         let n = name("r", z, x, y);
         Ok((if self.r.section(&n).is_some() { Some(self.r.read(&n)?) } else { None }, false))
     }
-    fn prefetch_counted(&self, _z: u8, tiles: &[(u32, u32)], done: &std::sync::atomic::AtomicU64) -> Result<usize> {
-        done.fetch_add(tiles.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    fn prefetch_each(
+        &self,
+        _z: u8,
+        tiles: &[(u32, u32)],
+        _turns: &crate::terrain_pack::Turns,
+        ready: crate::terrain_pack::Ready,
+    ) -> Result<usize> {
+        ready(tiles);
         Ok(0)
     }
 }
@@ -596,7 +602,6 @@ mod tests {
         use jobrt::resume_log::STOP_AFTER;
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());
-        let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
         // (Its packs and mid as saved, their content names the bytes' digests; None when stopped.
         // Not stopped, also the safe points it passed: a stop never reached counts them.)
         let counted = std::cell::Cell::new(0);
@@ -658,10 +663,9 @@ mod tests {
         let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         // The whole z6 tile, and each group from its file: the same tiles, the same mid.
         let whole = crate::terrain_pack::make_piece(&raw, &src, levels.clone()).unwrap();
-        // Each level's tiles all made at once (the way before task #447), in blocks of one tile and
-        // midway to the run's own (BLOCK_UP, `whole`'s): the same bytes. (Also 1 and 3 levels up
-        // before #969: the same code, two more whole builds of this test's eight.)
-        assert!(same(&crate::terrain_pack::make_piece_whole(&raw, &src, levels.clone()).unwrap(), &whole), "whole");
+        // In blocks of one tile and midway to the run's own (BLOCK_UP, `whole`'s), each block made
+        // as its tiles are sampled beside the next's sampling: the same bytes. (Also 1 and 3
+        // levels up before #969: the same code, two more whole builds of this test's eight.)
         for up in [0, 2] {
             let by = crate::terrain_pack::make_piece_up(&raw, &src, levels.clone(), up).unwrap();
             assert!(same(&by, &whole), "blocks {up} levels up");
