@@ -611,7 +611,11 @@ LAN (`tools/app/lib.zsh`'s `on_nas_mac`: here when this is it, by its LocalHostN
 `ssh m6`, a fresh connection with keepalives, in its checkout `~/projets/scenic-roads`, whose git
 checks the order): the publishing Mac's own NAS mount plays no part. Away from home that mount is
 the NAS's Tailscale (~1 MB/s, and stale after a network change), and the app is ~840 files; so the
-app goes to the mini as one gzipped archive instead (113 MB, 43 MB packed). It
+app goes to the mini as one gzipped archive instead. (Measured from the M4 away, 11 Nov 2026: an
+app of 113 MB in 832 files, packed to 43 MB in 4.7 s, reached the mini in 4.5 s; the same files
+copied through the M4's mount had 699 written, 51 MB, when the copy failed on SMB timeouts after
+23 min. The NAS's ~1–3 file creates a second that day, from the mini too, set the mini's 11 min
+to write them.) It
 1. builds the tip of origin's main, fetched now, in its own snapshot
    (`~/Library/Caches/scenic-publish/tree`, kept as a build cache), whatever this checkout holds;
    refuses without the signing identity, or when codesign can't use its key unprompted;
