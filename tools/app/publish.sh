@@ -7,7 +7,8 @@
 # server, the only one, restarts into it once the map has been idle a minute.
 #
 #   tools/app/publish.sh              build, test, publish
-#   tools/app/publish.sh --rollback   point app/current.json back at the previous version
+#   tools/app/publish.sh --rollback   point app/current.json back at the previous version, unless
+#                                     it's before the live one's rollback floor (tools/app/rollback-floor)
 #
 # Either Mac may publish, and two publishes may run at once: each builds and tests in its own tree
 # beside the other, and only the install (app/<version>/, app/current.json) holds the lock on the NAS
@@ -73,6 +74,7 @@ if [[ $rollback == asked ]]; then
   nas_lock $lock "$who" || { echo "another publish holds $lock ($lock_held): try again once it's over"; exit 1; }
   cleanup+=('nas_unlock $lock "$who"')
   [[ -f $NAS/app/previous.json ]] || { echo "no previous version to roll back to"; exit 1; }
+  rollback_ok $NAS/app/current.json $NAS/app/previous.json || exit 1
   cp -X $NAS/app/current.json $NAS/app/current.json.tmp.old
   cp -X $NAS/app/previous.json $NAS/app/current.json.tmp && mv $NAS/app/current.json.tmp $NAS/app/current.json
   mv $NAS/app/current.json.tmp.old $NAS/app/previous.json

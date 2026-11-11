@@ -230,4 +230,18 @@ out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-1000-$C" 
 out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-0953-$B" 2>&1) && ok "fast_forward begun after a rollback" || no "fast_forward after rollback" "$out"
 rm -f $nas/app/previous.json
 
+# rollback_ok: back to a version with the live one's rollback floor, or both without one: allowed;
+# to one before the live one's floor (none, or another): refused, saying why; an unknown commit: refused.
+rf() { mkdir -p $g/tools/app; print -r -- "$1"$'\n'"# why $1" > $g/tools/app/rollback-floor; git -C $g add -A; c $2; }
+E=$(c e); F=$(rf one f); G=$(c g); H=$(rf two h)
+prev=$nas/app/previous.json
+ro() { print -r -- "{\"version\": \"20261026-0953-$1\"}" > $cur; print -r -- "{\"version\": \"20261026-0900-$2\"}" > $prev
+  (cd $g && zsh -c "source ${(q)lib}; rollback_ok $cur $prev" 2>&1) }
+out=$(ro $E $C) && ok "rollback_ok neither has a floor" || no "rollback_ok no floors" "$out"
+out=$(ro $G $F) && ok "rollback_ok same floor" || no "rollback_ok same floor" "$out"
+out=$(ro $F $E) && no "rollback_ok past a floor" "allowed" || { [[ $out == *'refused'*'why one'* ]] && ok "rollback_ok past a floor refused" || no "rollback_ok past a floor" "$out"; }
+out=$(ro $H $G) && no "rollback_ok past a new floor" "allowed" || { [[ $out == *'refused'* ]] && ok "rollback_ok past a new floor refused" || no "rollback_ok past a new floor" "$out"; }
+out=$(ro $G 0000000) && no "rollback_ok unknown commit" "allowed" || ok "rollback_ok unknown commit refused"
+rm -f $prev
+
 exit $failed

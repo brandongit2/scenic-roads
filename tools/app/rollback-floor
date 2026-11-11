@@ -1,0 +1,11 @@
+878-8c
+# The first line names the floor; publish.sh --rollback refuses to go to a version whose tree's
+# first line differs (tools/app/lib.zsh rollback_ok): an app on the other side of it can't run the
+# pool safely beside this one's NAS state. Change the first line, with the reason here, in the
+# commit that makes a rollback past it unsafe.
+#
+# 878-8c (task #1124, docs/coordination.md step 8c): the lead leads its store's epoch, the records
+# and leases numbered by it (past every term made). An app before it makes terms again, numbering
+# leases below every epoch (a later lease's hand-offs passed over), and a lead on it without its
+# own records takes up a term's old snapshot, losing what was acknowledged since. To go back past
+# it, publish a fix forward instead.
