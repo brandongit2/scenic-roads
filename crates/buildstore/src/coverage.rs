@@ -1060,6 +1060,16 @@ pub const CACHE_ENV: &str = "SCENIC_CACHE";
 
 const KEPT_MAGIC: &[u8; 8] = b"RDCOV007";
 
+/// The kept coverage's file name for the regions' accepted `version` (in the cache's `coverage/`
+/// folder, `inputs::inputs::regions::read::accepted_coverage`): `<hash16>.<format>.cov`, by the
+/// version and the file's format (`KEPT_MAGIC`), so apps of two formats on one Mac (an update's
+/// agent and the jobs an older one left) each keep their own file rather than deleting the other's
+/// as unreadable and, while that one's held, making theirs in memory for good.
+pub fn kept_name(version: &str) -> String {
+    let format = String::from_utf8_lossy(KEPT_MAGIC).to_ascii_lowercase();
+    format!("{}.{format}.cov", store::naming::hash16(version.as_bytes()))
+}
+
 /// The coverage's shapes as kept (`inputs::inputs::regions::read::accepted_coverage`): their
 /// source, country, buffer, whether water, rings (`Rings`), box, grid (`Grid`) and edge tree
 /// (`EdgeTree`), as held (task #807: the grids made again from the rings were 14 s of CPU a job),

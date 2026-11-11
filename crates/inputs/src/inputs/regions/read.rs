@@ -266,7 +266,7 @@ pub fn coverage_of(geoms: &[Geometry]) -> Coverage {
 
 /// The coverage of the regions' accepted version (§6.1.4): its enabled regions' stored geometry (a
 /// disabled region is no coverage). Where there's a `cache` (this Mac's), kept there by the version
-/// (`coverage/<hash>.cov`): the geometry files are read once per version and Mac, by one process at
+/// (`coverage/<hash>.<format>.cov`): the geometry files are read once per version and Mac, by one process at
 /// a time (`store::cachefile::making`), and the file read in place (mapped; a cache on a network
 /// filesystem isn't: made in memory, as with none).
 pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Option<&Path>) -> Result<Coverage> {
@@ -282,7 +282,7 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
         Ok(coverage_of(&geoms))
     };
     let Some(dir) = cache.map(|c| c.join("coverage")) else { return made() };
-    let at = dir.join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
+    let at = dir.join(buildstore::coverage::kept_name(&a.version));
     // (Read in place, mapped: the shapes' arrays are the file's pages, the file cache's, not this
     // process's memory, task #1109; written as a stream, never whole in memory: the file holds the
     // grids, about the coverage's own size, task #807.)

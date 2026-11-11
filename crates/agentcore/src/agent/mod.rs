@@ -14145,10 +14145,14 @@ mod tests {
             &mut m1,
         );
         let a = inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m1).unwrap();
-        // A kept file of another format is made again in its place, not read past every time.
-        let kept = home.join("cache/coverage").join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
+        // A kept file that doesn't read is made again in its place, not read past every time; an
+        // older app's file (under its own name: RDCOV006's `<hash16>.cov`) is never this one's, and
+        // is swept as this one's is written (no one holding it).
+        let kept = home.join("cache/coverage").join(buildstore::coverage::kept_name(&a.version));
+        let older = kept.with_file_name(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
         std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
-        std::fs::write(&kept, b"RDCOV001").unwrap();
+        std::fs::write(&kept, b"RDCOV007").unwrap();
+        std::fs::write(&older, b"RDCOV006").unwrap();
         let first = rings(
             &agent(&store::nasfs::NasRoot::local_for_test(&root), &home)
                 .planner()
@@ -14156,6 +14160,7 @@ mod tests {
                 .unwrap(),
         );
         assert!(buildstore::coverage::from_kept(store::cachefile::map(&kept).unwrap().unwrap()).is_some());
+        assert!(!older.exists(), "the older app's file swept once the new one's written");
         let geoms: Vec<PathBuf> = inputs::inputs::regions::read::listed(&a)
             .unwrap()
             .iter()
@@ -14202,7 +14207,7 @@ mod tests {
             &mut m3,
         );
         let a3 = inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m3).unwrap();
-        let kept3 = home.join("cache/coverage").join(format!("{}.cov", store::naming::hash16(a3.version.as_bytes())));
+        let kept3 = home.join("cache/coverage").join(buildstore::coverage::kept_name(&a3.version));
         let made3 =
             inputs::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(&root), &a3, None)
                 .unwrap();

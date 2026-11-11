@@ -351,8 +351,8 @@ impl Mapped {
 }
 
 /// The cache file at `path` mapped (`Mapped`): a large file read in place, never copied into the
-/// process (the regions' coverage, task #1109), marked used (`touch`: room-making deletes the least
-/// recently used first); None when it isn't there. Safe because a cache file's bytes never change
+/// process (the regions' coverage, task #1109); None when it isn't there. Not marked used: its
+/// folder isn't one room-making empties by use (the coverage's is kept, docs/macs.md). Safe because a cache file's bytes never change
 /// once it has its name (`create`: made under a temporary name, never renamed over, never written
 /// again; a delete unlinks it, its pages kept while it's mapped). Only on this Mac's own disk: a
 /// file on a network filesystem is an `Unsupported` error, never mapped (a mapped NAS file's page
@@ -370,7 +370,6 @@ pub fn map(path: &Path) -> io::Result<Option<Mapped>> {
                 // SAFETY: the file's bytes don't change while it's mapped (above).
                 let map = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| with(e, "map", path))?;
                 crate::range::count_local(map.len() as u64);
-                touch(path);
                 return Ok(Some(Mapped { map, _file: file }));
             }
             None if !path.exists() => return Ok(None),
@@ -381,9 +380,8 @@ pub fn map(path: &Path) -> io::Result<Option<Mapped>> {
 }
 
 /// The making of cache file `path` held by this process among the Mac's (`making`): an exclusive
-/// lock on `<path>.making` beside it, let go when dropped. (The lock file stays, empty: deleted, a
-/// process waiting on it would hold a lock on a file with no name while one coming after locks a
-/// new one; room-making or the next version's sweep takes it once no one holds it.)
+/// lock on `<path>.making` beside it, let go when dropped. (The lock file stays, empty: a sweep of
+/// its folder may delete it once no one holds it, as the coverage's next version's does.)
 pub struct Making {
     _file: File,
 }
@@ -397,19 +395,28 @@ pub fn making(path: &Path) -> io::Result<Making> {
         "{}.making",
         path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
     ));
-    if let Some(d) = lock_path.parent() {
-        make_dir(d)?;
+    for _ in tries() {
+        if let Some(d) = lock_path.parent() {
+            make_dir(d)?;
+        }
+        let f = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| with(e, "open", &lock_path))?;
+        #[cfg(unix)]
+        lock(&f, libc::LOCK_EX).map_err(|e| with(e, "lock", &lock_path))?;
+        // (Deleted while this waited for it, by a sweep once the one before let go:
+        // a lock on a file with no name, while a process coming after locks the one now named.
+        // Taken again on the file the name names.)
+        let m = f.metadata()?;
+        if links(&m) > 0 && std::fs::metadata(&lock_path).map(|n| id(&n)).ok() == Some(id(&m)) {
+            return Ok(Making { _file: f });
+        }
     }
-    let f = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|e| with(e, "open", &lock_path))?;
-    #[cfg(unix)]
-    lock(&f, libc::LOCK_EX).map_err(|e| with(e, "lock", &lock_path))?;
-    Ok(Making { _file: f })
+    Err(io::Error::other(format!("{}: deleted each time it was locked", lock_path.display())))
 }
 
 /// The bytes the caches hold under `dir` of the entries whose names start with `prefix` (all of
@@ -774,20 +781,17 @@ mod tests {
         assert_eq!(std::fs::read_dir(d.path().join("a")).unwrap().count(), 1);
     }
 
-    /// A mapped cache file (`map`, task #1109) is held while mapped, so room-making leaves it, and
-    /// marked used; its making is one process's at a time (`making`), the next waiting.
+    /// A mapped cache file (`map`, task #1109) is held while mapped, so a sweep leaves it; its
+    /// making is one process's at a time (`making`), the next waiting.
     #[test]
-    fn a_mapped_file_is_held_and_marked_used_and_made_by_one_at_a_time() {
+    fn a_mapped_file_is_held_and_made_by_one_at_a_time() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c/x.cov");
         assert!(map(&p).unwrap().is_none());
         create_bytes(&p, b"in place").unwrap();
         release(&p);
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
-        File::options().append(true).open(&p).unwrap().set_modified(old).unwrap();
         let m = map(&p).unwrap().unwrap();
         assert_eq!(m.bytes(), b"in place");
-        assert!(std::fs::metadata(&p).unwrap().modified().unwrap() > old + std::time::Duration::from_secs(3_600));
         assert_eq!(try_remove(&p), Removed::InUse);
         drop(m);
         assert_eq!(try_remove(&p), Removed::Freed(8));
@@ -804,6 +808,21 @@ mod tests {
         let_go.store(true, Ordering::SeqCst);
         drop(first);
         assert!(next.join().unwrap(), "the next made only once the first let go");
+        // Its lock file deleted while one waits on it (a sweep of its folder) and a third process
+        // making it meanwhile: the one waiting, let go, waits for the third, never making at once.
+        let first = making(&p).unwrap();
+        let next = std::thread::spawn({
+            let p = p.clone();
+            move || drop(making(&p).unwrap())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::fs::remove_file(d.path().join("c/x.cov.making")).unwrap();
+        let third = making(&p).unwrap();
+        drop(first);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!next.is_finished(), "waits for the one making it now");
+        drop(third);
+        next.join().unwrap();
     }
 
     #[test]

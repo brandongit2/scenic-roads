@@ -666,7 +666,9 @@ regions built, the coverage and the drawing (no area to cover).
 
 **Reading:** `accepted_coverage(root, accepted, cache)` (crate::inputs::regions::read) builds the
 coverage from the stored shapes, regions in id order, shapes in stored order. The agent passes its
-cache folder: the coverage is kept there by the accepted version (`coverage/<hash16>.cov`, the
+cache folder: the coverage is kept there by the accepted version and the file's format
+(`coverage/<hash16>.rdcov007.cov`, `buildstore::coverage::kept_name`: an older app's file under its
+own name, so an update's agent and the jobs an older one left never delete each other's; the
 others deleted: the shapes with their grids and edge trees, tasks #807 and #1109, so a read makes
 nothing again), so each Mac reads a version's geometry files off the NAS and grids them once, a
 restart none; that first read runs on a thread of its own, the plan's region jobs waiting for it.
@@ -681,14 +683,16 @@ just made is read back from its file the same way, the one made let go. The answ
 the shapes made from the rings, bit for bit (the same values). `scenic-build`'s steps read the
 same file, the agent naming the cache folder to its jobs (`SCENIC_CACHE`), a folder of the Mac's
 own disk (a mapped NAS file faults with SIGBUS when the share drops: a cache on a network
-filesystem isn't mapped, the coverage made in memory as with no cache). Mapping it marks it used
-(room-making deletes the least recently used first) and holds it (its shared lock) while mapped.
-A version not kept yet is made by one process of the Mac at a time (`store::cachefile::making`,
-`<hash16>.cov.making` locked), the others waiting, then reading it in place: since a job's memory
+filesystem isn't mapped, the coverage made in memory as with no cache). Mapping it holds it (its
+shared lock) while mapped, so the next version's sweep leaves it; room-making never empties the
+folder (docs/macs.md). A version not kept yet is made by one process of the Mac at a time
+(`store::cachefile::making`, `<name>.making` locked, taken again if a sweep deleted it meanwhile),
+the others waiting, then reading it in place: since a job's memory
 bound counts the coverage read in place, each making its own at once (a new version's first jobs
 on a member) would have held the whole coverage beside the others', none of it booked (task
 #1109's review). The one making it still holds it whole while it does (~1.7 GB for the world's,
-unbooked), once a version and Mac. Nothing rebuilds the coverage
+unbooked), once a version and Mac; a process that can't write the file (its disk full) or map it
+keeps the one it made, whole and unbooked, for its run (the memory guard stands behind it). Nothing rebuilds the coverage
 from outlines, GeoJSON or region files. `scenic-build`'s `--regions <dir>` (a scratch folder, for
 trying regions) runs the same check in memory and stores nothing. Tests build coverages with
 `Coverage::fixture` and put accepted fixtures in their records (`inputs::regions::accept_fixture`).

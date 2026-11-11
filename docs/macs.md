@@ -86,7 +86,8 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     not while a job an earlier agent left runs. A file a job holds stays.
   - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the z6 tile
     stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the
-    coverage as last read (`coverage/<hash16>.cov`, by the regions' accepted version).
+    coverage as last read (`coverage/<hash16>.<format>.cov`, by the regions' accepted version and the
+    file's format).
   - Nothing is deleted through a link, nor anything in the NAS's project folder.
 - **No installed map server** (task #874): the devices' map is the Mac mini's (Devices). An installed server started
   on any other Mac retires itself (`crates/server/src/retire.rs`): it removes its LaunchAgent
