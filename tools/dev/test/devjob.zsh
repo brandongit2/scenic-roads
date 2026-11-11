@@ -53,6 +53,17 @@ exec {keep}>$s/kept
 dj_wrap part fd; $reply zsh -c "print -u $keep through" > /dev/null || fail "the wrapped command"
 exec {keep}>&-
 [[ $(<$s/kept) == through ]] || fail "the wrapped command lost its caller's fd: $(<$s/kept)"
+# A name past the app's 2000 characters is cut there, not sent whole to be refused with its spans (#1123).
+rm -rf $s/*(N)
+long=${(l:5000::x:)}
+dj_start cargo $long; id=$REPLY; dj_span wait $long $EPOCHREALTIME $EPOCHREALTIME ok; dj_end $id ok
+python3 -c '
+import json, sys
+ev = [json.loads(l) for f in sys.argv[1:] for l in open(f)]
+names = [e["name"] for e in ev if e["op"] in ("start", "span")]
+assert [(len(n), n[-1]) for n in names] == [(2000, "…")] * 2, [(len(n), n[-3:]) for n in names]
+' $s/spool.ndjson*(N) $s/sending-*(N) || fail "a long name not cut to the app's limit"
+for (( i = 0; i < 600; i++ )); do zsystem flock -t 0 -f f $s/sampler.lock 2>/dev/null && break; sleep 0.1; done
 # SCENIC_DEVJOB=0: nothing.
 rm -rf $s/*(N)
 SCENIC_DEVJOB=0 dj_start check x; [[ -z $REPLY && ! -e $s/spool.ndjson ]] || fail "SCENIC_DEVJOB=0 recorded"

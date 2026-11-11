@@ -260,6 +260,22 @@ class Flush(unittest.TestCase):
             with open(os.path.join(d, "spool.ndjson")) as f:
                 self.assertEqual(len(f.readlines()), 2, "what came after waits in the spool")
 
+    def test_a_name_past_the_apps_limit_is_cut_not_refused(self):
+        # (#1123: a cargo's name is its command line; check.sh's nextest ran to 4 KB, the app refused
+        # it, and its span and every span under it were lost.)
+        with tempfile.TemporaryDirectory() as d:
+            old = devjob.DIR, devjob.SPOOL
+            devjob.DIR, devjob.SPOOL = d, os.path.join(d, "spool.ndjson")
+            try:
+                devjob.emit({"op": "start", "id": "x-1", "kind": "cargo", "name": "n" * 5000, "attrs": {}})
+                devjob.emit({"op": "span", "id": "x-2", "kind": "wait", "name": "short", "attrs": {}})
+            finally:
+                devjob.DIR, devjob.SPOOL = old
+            with open(os.path.join(d, "spool.ndjson")) as f:
+                long, short = (json.loads(x)["name"] for x in f)
+            self.assertEqual((len(long), long[-1]), (devjob.NAME_MAX, "…"))
+            self.assertEqual(short, "short")
+
 
 if __name__ == "__main__":
     unittest.main()

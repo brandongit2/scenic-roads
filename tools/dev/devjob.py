@@ -42,6 +42,10 @@ TICK_S = 2
 SAMPLE_S = 10
 # At most this much a POST (the app takes 32 MB; a publish's whole suite is about 1 MB).
 POST_MAX = 4 << 20
+# A span's name, at most (the app refuses a longer one: jobs.mjs, `str("name", 2000)`). A cargo's
+# name is its command line, and check.sh's nextest with its filterset ran to 4 KB: refused, its
+# span and every span under it (its wait for the shared build folder) were lost (#1123).
+NAME_MAX = 2000
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -77,7 +81,10 @@ def new_id():
 
 def emit(ev):
     """One event, appended to the spool in one write (lines from several processes never mix).
-    One that can't be written (a full disk) is dropped: recording never stops a job."""
+    One that can't be written (a full disk) is dropped: recording never stops a job. A name past
+    NAME_MAX is cut there, ending in "…"."""
+    if len(ev.get("name") or "") > NAME_MAX:
+        ev = dict(ev, name=ev["name"][:NAME_MAX - 1] + "…")
     try:
         os.makedirs(DIR, exist_ok=True)
         fd = os.open(SPOOL, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)

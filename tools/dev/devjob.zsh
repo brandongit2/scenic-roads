@@ -14,6 +14,8 @@
 # SCENIC_DEVJOB=0: nothing is recorded, the functions do nothing (the tests of these scripts).
 # Recording never stops its caller: a write that fails (a full disk, a folder it can't make) is
 # dropped, and every function returns 0, so a caller under errexit (publish.sh) goes on.
+# A name past devjob.py's NAME_MAX (2000 characters: the app refuses a longer one, and with it every
+# span under it) is cut there, ending in "…" (#1123: a cargo's name is its command line).
 zmodload zsh/datetime zsh/system
 typeset -g DJ_PY=${${(%):-%x}:A:h}/devjob.py
 typeset -g DJ_DIR=${SCENIC_DEVJOB_DIR:-$HOME/Library/Logs/scenic/devjobs}
@@ -23,6 +25,10 @@ if dj_on && [[ -z ${SCENIC_DEVJOB_MAC:-} ]]; then
   export SCENIC_DEVJOB_MAC=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
 fi
 
+dj_name() {  # dj_name <name>: it as a JSON string, cut at 2000 characters, in $REPLY
+  local n=$1; (( ${#n} > 2000 )) && n="${n[1,1999]}…"
+  dj_q "$n"
+}
 dj_q() {  # dj_q <string>: it as a JSON string, in $REPLY (control characters but tab and newline dropped)
   local s=$1
   s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; s=${s//$'\t'/\\t}; s=${s//[$'\x01'-$'\x1f']/}
@@ -54,7 +60,7 @@ dj_start() {
   dj_attrs "$@"; a=$REPLY
   # (A run of its own: who ran it, then its own attributes.)
   if [[ $who == '{'*'}' && $who != '{}' ]]; then in=${${a#\{}%\}}; a="${who%\}}${in:+, $in}}"; fi
-  dj_q "$kind"; k=$REPLY; dj_q "$name"; n=$REPLY; dj_q "$parent"; p=$REPLY
+  dj_q "$kind"; k=$REPLY; dj_name "$name"; n=$REPLY; dj_q "$parent"; p=$REPLY
   dj_emit "{\"op\":\"start\",\"id\":\"$id\",\"parent\":$p,\"kind\":$k,\"name\":$n,\"mac\":\"$SCENIC_DEVJOB_MAC\",\"t\":$EPOCHREALTIME,\"attrs\":$a}"
   # (Live while this shell is, as it started: a pid used again later isn't it.)
   ls=$(ps -o lstart= -p $$ 2>/dev/null) || ls=; ls=${(j: :)${=ls}}
@@ -74,7 +80,7 @@ dj_span() {
   dj_on || { REPLY=; return 0 }
   local kind=$1 name=$2 t0=$3 t1=$4 st=$5 k n p id=$SCENIC_DEVJOB_MAC-${EPOCHREALTIME/./}-$$-z$(( ++DJ_N ))
   shift 5
-  dj_q "$kind"; k=$REPLY; dj_q "$name"; n=$REPLY; dj_q "${SCENIC_DEVJOB_PARENT:-}"; p=$REPLY
+  dj_q "$kind"; k=$REPLY; dj_name "$name"; n=$REPLY; dj_q "${SCENIC_DEVJOB_PARENT:-}"; p=$REPLY
   dj_attrs "$@"
   dj_emit "{\"op\":\"span\",\"id\":\"$id\",\"parent\":$p,\"kind\":$k,\"name\":$n,\"mac\":\"$SCENIC_DEVJOB_MAC\",\"t0\":$t0,\"t1\":$t1,\"status\":\"$st\",\"attrs\":$REPLY}"
   dj_sampler
