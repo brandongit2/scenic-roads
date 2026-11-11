@@ -126,7 +126,7 @@ started() {  # started <file> <log>: waits for TOY_HOLD's <file>.started while $
 [[ $(run a) == a ]] || fail "a's first build: $(cat $s/err)"
 [[ $(run b) == b ]] || fail "b after a ran a's build"
 [[ $(run a) == a ]] || fail "a after b ran b's build"
-[[ $(cat $s/shared/.scenic-built-by) == $w/a ]] || fail "built-by not recorded"
+[[ $(cat $s/shared/.scenic-built-by) == "checksums $w/a" ]] || fail "built-by not recorded"
 # The lock: a holder that sleeps 3 s; the second cargo says it waits and then runs.
 ( zsystem flock -f fd $s/shared/.scenic-lock; print "test holder" > $s/shared/.scenic-holder; sleep 3 ) &
 sleep 0.5
@@ -211,7 +211,7 @@ print other > $s/shared/.scenic-built-by
 both=${sh:h}:$s/main/tools/dev/bin:$PATH
 PATH=$both within 60 at a version || fail "version with two shims: $(cat $s/err)"
 PATH=$both within 120 at a build -q || fail "build with two shims: $(cat $s/err)"
-[[ $(cat $s/shared/.scenic-built-by) == $w/a ]] || fail "two shims: built-by not recorded"
+[[ $(cat $s/shared/.scenic-built-by) == "checksums $w/a" ]] || fail "two shims: built-by not recorded"
 # A mise shim ahead of the real cargo, outside any checkout: mise has no cargo there, so its shim
 # runs the first other cargo on the PATH, the shim (#1108 review: they ran each other ~2,900
 # times). The stand-in mise does as mise does: `which` fails, and as cargo it runs the PATH's next.
@@ -360,32 +360,55 @@ PY
 # #1123: a crate whose sources are the bytes another worktree built is fresh, whatever its files'
 # times (c and d are two checkouts of one workspace, d's files newer than c's build); a crate
 # compiling in a file outside its package (cargo checks it by c's full path) compiles again where
-# that file differs, and one built with env!("CARGO_MANIFEST_DIR") compiles again in each checkout.
+# that file differs, and one built with env!("CARGO_MANIFEST_DIR") compiles again in each checkout;
+# a build script watching a file (rerun-if-changed, judged by time) runs again in each checkout,
+# though d's file, its bytes not c's, is dated before c's build (#1123 review: it had passed for
+# c's); within a checkout, a source edited to the same size and dated back compiles again.
 for x in c d; do
-  mkdir -p $w/$x/crates/{plain,inc,dir}/src $w/$x/shared; : > $w/$x/.git
-  printf '[workspace]\nmembers = ["crates/plain", "crates/inc", "crates/dir"]\nresolver = "2"\n' > $w/$x/Cargo.toml
-  for k in plain inc dir; do
+  mkdir -p $w/$x/crates/{plain,inc,dir,gen,dlib,user}/src $w/$x/shared; : > $w/$x/.git
+  printf '[workspace]\nmembers = ["crates/plain", "crates/inc", "crates/dir", "crates/gen", "crates/dlib", "crates/user"]\nresolver = "2"\n' > $w/$x/Cargo.toml
+  for k in plain inc dir gen dlib user; do
     printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2021"\n' $k > $w/$x/crates/$k/Cargo.toml
   done
   print 'pub fn two() -> u32 { 2 }' > $w/$x/crates/plain/src/lib.rs
   print 'fn main() { print!("{}", include_str!("../../../shared/note.txt")); }' > $w/$x/crates/inc/src/main.rs
   print 'fn main() { print!("{}", env!("CARGO_MANIFEST_DIR")); }' > $w/$x/crates/dir/src/main.rs
   print same > $w/$x/shared/note.txt
+  cat > $w/$x/crates/gen/build.rs <<'EOF'
+fn main() {
+    println!("cargo::rerun-if-changed=data.txt");
+    let d = std::fs::read_to_string("data.txt").unwrap();
+    std::fs::write(std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("d.txt"), d.trim()).unwrap();
+}
+EOF
+  print 'fn main() { print!("{}", include_str!(concat!(env!("OUT_DIR"), "/d.txt"))); }' > $w/$x/crates/gen/src/main.rs
+  print $x-data > $w/$x/crates/gen/data.txt
+  # (A crate using a tied one compiles again with it: user inlines dlib's constant.)
+  print 'pub const D: &str = env!("CARGO_MANIFEST_DIR");' > $w/$x/crates/dlib/src/lib.rs
+  print 'dlib = { path = "../dlib" }' | sed '1s/^/[dependencies]\n/' >> $w/$x/crates/user/Cargo.toml
+  print 'fn main() { print!("{}", dlib::D); }' > $w/$x/crates/user/src/main.rs
 done
+touch -t 202001010000 $w/d/crates/gen/data.txt
 built() {  # built <checkout> <cargo build args>…: the packages it compiled (not fresh), sorted
   (cd $w/$1 && $sh build --message-format json "${@:2}" 2>$s/err) | python3 -c '
 import json, sys
 print(" ".join(sorted({json.loads(l)["package_id"].split("#")[0].rsplit("/", 1)[-1] for l in sys.stdin
     if l.startswith("{") and json.loads(l).get("reason") == "compiler-artifact" and not json.loads(l)["fresh"]})))'
 }
-[[ $(built c) == "dir inc plain" ]] || fail "c's first build: $(cat $s/err)"
+[[ $(built c) == "dir dlib gen inc plain user" ]] || fail "c's first build: $(cat $s/err)"
 touch $w/d/crates/*/src/*.rs(N) $w/d/shared/note.txt
-b=$(built d); [[ $b == dir ]] || fail "d, the same sources as c's, compiled more than dir (env!): $b; $(cat $s/err; cat $s/shared/.scenic-tied)"
+b=$(built d); [[ $b == "dir dlib gen user" ]] || fail "d, the same sources as c's but gen's data, compiled other than dir and dlib (env!), user (dlib's) and gen: $b; $(cat $s/err; cat $s/shared/.scenic-tied)"
 grep -q 'dir-.*CARGO_MANIFEST_DIR names another checkout' $s/shared/.scenic-tied || fail "no tied dir: $(cat $s/shared/.scenic-tied)"
+grep -q 'gen-.*rerun-if-changed' $s/shared/.scenic-tied || fail "no tied gen: $(cat $s/shared/.scenic-tied)"
+[[ $(cd $w/d && $sh run -q -p gen 2>$s/err) == d-data ]] || fail "d's gen ran with c's data.txt: $(cat $s/err)"
+[[ $(cd $w/d && $sh run -q -p user 2>$s/err) == ${w:A}/d/crates/dlib ]] || fail "d's user ran with another checkout's dlib: $(cat $s/err)"
+print 'pub fn two() -> u32 { 3 }' > $w/d/crates/plain/src/lib.rs; touch -t 202001010000 $w/d/crates/plain/src/lib.rs
+[[ $(built d) == plain ]] || fail "d's plain, edited to the same size and dated back, not compiled again: $(cat $s/err)"
 [[ $(cd $w/d && $sh run -q -p dir 2>$s/err) == ${w:A}/d/crates/dir ]] || fail "d's dir ran with another checkout's path: $(cat $s/err)"
 print other > $w/d/shared/note.txt
 [[ $(built d) == inc ]] || fail "d's note.txt changed: not inc alone: $(built d)"
 [[ $(cd $w/d && $sh run -q -p inc 2>$s/err) == other ]] || fail "d's inc ran with c's note.txt: $(cat $s/err)"
-[[ $(built c) == "dir inc" ]] || fail "back in c: not dir and inc again: $(built c)"
+[[ $(built c) == "dir dlib gen inc plain user" ]] || fail "back in c: not dir, dlib, gen, inc, plain and user again: $(built c)"
+[[ $(cd $w/c && $sh run -q -p gen 2>$s/err) == c-data ]] || fail "c's gen ran with d's data.txt: $(cat $s/err)"
 [[ $(cd $w/c && $sh run -q -p inc 2>$s/err) == same ]] || fail "c's inc ran with d's note.txt: $(cat $s/err)"
 print "shared-target: ok"

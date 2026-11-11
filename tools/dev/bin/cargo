@@ -32,10 +32,12 @@
 # package (include_str! of web/, by its full path: cargo would check A's copy) that differs from
 # this checkout's, one built with a variable naming another checkout (env!("CARGO_MANIFEST_DIR"),
 # which cargo doesn't check: a test reads that path as it runs, store::testkit), a build script's
-# output naming one, or one built without checksums (by an older shim). So when the last build in
-# the folder came from another worktree, those units' fingerprints are deleted first (under the
-# lock; .scenic-tied lists them, with why): they compile again. Third-party crates are untouched:
-# their names hash their version, source and features.
+# output naming one, a build script watching files by rerun-if-changed (judged by time, not bytes),
+# or one built without checksums (by an older shim, or a cargo not honouring the flag: then all
+# are). So when the last build in the folder came from another checkout, those units' fingerprints
+# (and a build script run's output) are deleted first (under the lock; .scenic-tied lists them,
+# with why): they and the units using them compile again. Third-party crates are untouched: their
+# names hash their version, source and features.
 #
 # Each cargo that builds is recorded for the dev job dashboard (tools/dev/devjob.zsh): its wait for
 # the lock, the build (each crate compiled, from cargo's --timings report, which it adds), each
@@ -308,8 +310,8 @@ release() {  # lets the lock go (once), its holder line removed and its hold's t
 }
 trap 'x=$?; release; djdone $x' EXIT
 if (( hold )); then  # held until let go (USR1), stopped, or check.sh gone
+  go=0; trap 'go=1' USR1  # (before the ready file: check.sh may let it go at once)
   : > $ready || exit 1
-  go=0; trap 'go=1' USR1
   while (( ! go )) && kill -0 $PPID 2>/dev/null; do zselect -t 20; done
   dj_span build "held" $djgot $EPOCHREALTIME ok
   exit 0
@@ -385,13 +387,26 @@ def tied(recs, kept):
                 if not same(p, rel):
                     return f"it compiles in another checkout's {rel}, not this one's bytes"
                 kept.add((p, rel))
-        elif any(elsewhere(p) is not None for p in re.findall(r"/[^\s:;,=\"']+", text)):
-            return "its build script's output names another checkout"
+        else:
+            # a build script's output. What it watches by `rerun-if-changed` cargo judges by time,
+            # not checksums (cargo 1.98 checks only rustc's sources by content): this checkout's
+            # copy of a watched file, older than the run, would pass for the one it read.
+            if re.search(r"^cargo::?rerun-if-changed=", text, re.M):
+                return "its build script watches files by their times (rerun-if-changed)"
+            if any(elsewhere(p) is not None for p in re.findall(r"/[^\s:;,=\"']+", text)):
+                return "its build script's output names another checkout"
     return None
 
 found, kept, seen = [], [], 0
 def drop(fp, why):
+    """The unit compiles (or runs) again, and so do the units using it. Cargo passes a unit's
+    staleness on to its users by what it finds on disk, not by a fingerprint missing: a compile's
+    dep-info goes with its fingerprint's folder, but a build script run's record is its output,
+    outside it (without, gen's program kept the file the run had written for another checkout)."""
     shutil.rmtree(fp, ignore_errors=True)
+    d, h = os.path.dirname(os.path.dirname(fp)), fp[-16:]
+    for f in glob.glob(f"{d}/build/*-{h}/output"):
+        os.remove(f)
     found.append(f"{os.path.relpath(fp, t)}: {why}")
 
 if mode == "all":
@@ -429,15 +444,22 @@ PY
   )
 }
 djreset=$EPOCHREALTIME
-if [[ $(cat $t/.scenic-built-by 2>/dev/null) != $top ]]; then
-  # The workspace's package and target names (- and _ forms).
-  names=( ${(f)"$($real metadata --no-deps --format-version 1 --offline 2>/dev/null | python3 -c '
+# (.scenic-built-by says "checksums <checkout>": a shim from before #1123 reads another checkout's
+# name there whatever built last, and so deletes every workspace fingerprint, as it did; it can't
+# see .scenic-elsewhere's units, whose other checkout's file cargo checks by time under it.)
+if [[ $(cat $t/.scenic-built-by 2>/dev/null) != "checksums $top" ]]; then
+  # The local packages' and their targets' names (- and _ forms): the workspace's, and a path
+  # package outside it (crates/geos-src, by [patch]); the workspace's alone when the lock file
+  # can't be read as it is without the network.
+  names=( ${(f)"$({ $real metadata --format-version 1 --locked --offline 2>/dev/null ||
+      $real metadata --no-deps --format-version 1 --offline 2>/dev/null } | python3 -c '
 import json, sys
 for p in json.load(sys.stdin)["packages"]:
-    for n in [p["name"]] + [t["name"] for t in p["targets"]]: print(n); print(n.replace("-", "_"))')"} )
+    if p["source"] is None:
+        for n in [p["name"]] + [t["name"] for t in p["targets"]]: print(n); print(n.replace("-", "_"))')"} )
   if (( ! $#names )); then print -u2 "cargo: could not list the workspace's crates"; exit 1; fi
   look all $names || { print -u2 "cargo: could not look at the workspace's units"; exit 1; }
-  print -r -- $top > $t/.scenic-built-by
+  print -r -- "checksums $top" > $t/.scenic-built-by
   dj_span reset "the units tied to another checkout: $REPLY (another worktree built last)" $djreset $EPOCHREALTIME ok
   djgot=$EPOCHREALTIME
 elif [[ -s $t/.scenic-elsewhere ]]; then

@@ -294,25 +294,36 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   built in when its record names another checkout: it compiles in a file outside its package
   (agentcore's `include_bytes!` of web/buildpage) that differs from this checkout's (cargo would
   check A's copy), it was built with a variable naming another checkout (`env!("CARGO_MANIFEST_DIR")`,
-  whose value cargo doesn't check), a build script's output names one, or it was built without
-  checksums (an older shim). When the folder's last build (`.scenic-built-by`) came from another
-  worktree, the shim looks at every workspace unit's records (rustc's dep-info, cargo's own, a
-  build script's output) under the lock and deletes the tied units' fingerprints; they compile
-  again. A unit kept that compiles in another checkout's file (the same bytes then) is listed in
+  whose value cargo doesn't check), a build script's output names one, its build script watches a
+  file by `rerun-if-changed` (judged by time, below: this checkout's copy, older than A's run,
+  passed for A's), or it was built without checksums (an older shim, or a cargo not honouring the
+  flag: then every unit is, and the folder rebuilds as before #1123). When the folder's last build
+  (`.scenic-built-by`, `checksums <checkout>`) came from another checkout, the shim looks at every
+  local unit's records (the workspace's and path packages outside it, geos-src; rustc's dep-info,
+  cargo's own, a build script's output) under the lock and deletes the tied units' fingerprints,
+  and a build script run's output too: cargo passes a unit's staleness on to its users by what it
+  finds on disk, not by a missing fingerprint (#1123 review: a program including what a tied run
+  wrote kept the other checkout's). They and their users compile again. (A shim from before #1123
+  reads another checkout in `.scenic-built-by` whatever built last, and so deletes every workspace
+  fingerprint before it builds, as it did.) A unit kept that compiles in another checkout's file (the same bytes then) is listed in
   `.scenic-elsewhere` and looked at again before each build, since cargo goes on checking that
   checkout's copy, not this one's. `.scenic-tied` lists the last look's units, with why. So tests
   read their files as they run, from their package's folder (cargo and nextest run a test there:
   `std::path::absolute("../../tools/status/test")`), never by `env!("CARGO_MANIFEST_DIR")`, which
   ties the unit (store::testkit's tied every test build). A build script's `rerun-if-changed`
-  paths are judged by time even so: agentcore's and geos-src's say `rerun-if-env-changed` of a
-  variable set by nothing (cargo runs a script it compiled anew by itself, judged by content), as
-  `rerun-if-changed=build.rs` ran GEOS's CMake build and every crate linking it again in each new
-  worktree. Measured (M4, load 55-85, 11 Nov; the test build of agentcore, pipeline, store,
+  paths are judged by time even so, so such a script runs again in each checkout: agentcore's and
+  geos-src's say `rerun-if-env-changed` of a variable set by nothing (cargo runs a script it
+  compiled anew by itself, judged by content), as `rerun-if-changed=build.rs` ran GEOS's CMake
+  build and every crate linking it again in each new worktree. geos-src's compiles in GEOS's
+  `source/Version.txt`, so a new GEOS runs it again; an edit in `source/` keeping the version, only
+  with `GEOS_SRC_RERUN` set to a new value. Measured (M4, load 55-85, 11 Nov; the test build of agentcore, pipeline, store,
   terrain, jobrt and buildstore in a scratch shared folder): a new worktree's first build after
   another's, the same sources, 139 s and 20 workspace crates compiled before, 1 s and none after;
   back in the first worktree, 140 s before, 0 s after. Test: tools/dev/test/shared-target.zsh
   (check.sh): the same sources in two checkouts fresh, a differing file outside the package and an
-  `env!` path compiled again, back and forth.
+  `env!` path compiled again with the crate using it, a build script watching a file older than the
+  other checkout's run run again with the program including its output, back and forth; in one
+  checkout, a source edited to the same size and dated back compiled again.
 - Outside `.claude/worktrees/` (the main checkout) cargo builds as it would, in its own folder,
   without the lock, only recorded (as the shim's child: Dev jobs, below). Passed straight to cargo:
   commands that never build (the shim's `reads`: fmt, metadata, tree, update, version, …, found
