@@ -488,7 +488,7 @@ test` runs have no such bound.
   period, a deadline, a poll) is given a test's own short one (`beat::Handle::tick_every`,
   `nasread::fake::Hung::deadline`, a coordinator's `Shared::headers_max_ms`, `SCENIC_TEST_PROBE_S`),
   every timer scaled together, so the margin between what is measured and what would show a
-  failure stays as it was (the beat's tests: a gap allowed of 1.75 s against a hung call held 3 s,
+  failure stays as it was (the beat's tests: a gap allowed of 1.5 s against a hung call held 2.5 s,
   as 11.5 s against 20 s before; a 1-s hold under a 3.5-s gap allowed had proved nothing). Every assertion stays: what the smaller test still proves, and how, is said in its comment.
 - **A stopped coordinator refuses at once** in a test program too: the listeners it keeps for the
   next coordinator on the port (`coord::KEPT`) take each connection and close it, as a port nothing

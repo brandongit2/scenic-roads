@@ -10233,10 +10233,11 @@ mod tests {
     /// all along, whatever the period.
     const TEST_BEAT: Duration = Duration::from_millis(250);
 
-    /// The longest gap between two beats `beats_while` takes as steady: the period, and a second and
-    /// a half for the sampler and a loaded Mac (as with `beat::EVERY`'s 10 s before #1112). A beat
-    /// held by something the test makes last longer than this shows as a gap past it.
-    const BEAT_GAP: Duration = TEST_BEAT.saturating_add(Duration::from_millis(1500));
+    /// The longest gap between two beats `beats_while` takes as steady: the period, and 1.25 s for
+    /// the sampler and a loaded Mac (1.5 s with `beat::EVERY`'s 10 s before #1112; the beats' gaps
+    /// were 0.22-0.29 s at load 100 on the M4). A beat held by something the test makes last longer
+    /// than this shows as a gap past it.
+    const BEAT_GAP: Duration = TEST_BEAT.saturating_add(Duration::from_millis(1250));
 
     /// The local status' beats while `busy` runs (on this thread) for `ran` at least, the beat's
     /// timer every `TEST_BEAT`: each write's time and stamp, sampled every 50 ms on a thread of the
@@ -10281,10 +10282,10 @@ mod tests {
     }
 
     /// Task #871 step 2: the heartbeat advances each period while every NAS call hangs (the slow-NAS
-    /// fake), for 7 s (past two NAS calls' deadlines; 2 min before #969, 50 s before #1112: 10-s
-    /// periods and the calls' real 20-s deadline), the loop going round on it meanwhile; the NAS's
-    /// copy never written then. Each call is held 3 s, over `BEAT_GAP` as the real 20 s was over
-    /// 11.5: a beat that waited on one (its NAS write in line, say) shows as a gap past it.
+    /// fake), for a round of the loop in it (three calls, past two deadlines; 2 min before #969, 50 s
+    /// before #1112: 10-s periods and the calls' real 20-s deadline); the NAS's copy never written
+    /// then. Each call is held 2.5 s, over `BEAT_GAP` (1.5 s) as the real 20 s was over 11.5: a beat
+    /// that waited on one (its NAS write in line, say) shows as a gap past it.
     #[test]
     fn beat_steady_while_the_nas_hangs() {
         let d = tempfile::tempdir().unwrap();
@@ -10294,8 +10295,8 @@ mod tests {
         let before = std::fs::read(&shared).unwrap();
         a.beat.tick_every(TEST_BEAT);
         a.beat.spawn();
-        let hung = nasread::fake::hang(&root).deadline(Duration::from_secs(3));
-        let seen = beats_while(a.o.home.join("status.json"), Duration::from_secs(7), || {
+        let hung = nasread::fake::hang(&root).deadline(Duration::from_millis(2500));
+        let seen = beats_while(a.o.home.join("status.json"), Duration::from_secs(5), || {
             a.round().ok();
         });
         assert!(seen.len() >= 5, "{seen:?}");
