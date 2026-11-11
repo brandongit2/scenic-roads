@@ -480,7 +480,10 @@
 <div class="viewer" id="viewer" hidden><img id="viewer-img" alt=""><button class="btn" type="button" id="viewer-close">Close</button></div>
 <div class="ghost" id="ghost" aria-hidden="true" hidden></div>
 
-<script>
+<script type="module">
+// (The rules the server holds the board to, one copy: what a record may hold, and where a priority goes.)
+import * as schema from "./schema.mjs";
+import { isOpen as openTask, placePriority } from "./priority.mjs";
 (() => {
   "use strict";
   // ---------------------------------------------------------------------------------------------
@@ -571,8 +574,6 @@
   // ---------------------------------------------------------------------------------------------
   // Stages, filters, the model.
   const STAGES = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
-  // Done or abandoned: closed, out of the open counts.
-  const isClosed = (t) => stageOf(t) === "done" || stageOf(t) === "abandoned";
   const stageOf = (t) => (typeof t.stage === "string" && t.stage in STAGES ? t.stage : "");
   const shortWhere = (w) => String(w ?? "").replace(/\s*\(.*$/s, "").trim();
   function stageText(t) {
@@ -587,15 +588,13 @@
       default: return "";
     }
   }
-  // The schema the server enforces (schema.mjs, served beside the page): the lists the editor offers, and
-  // what a stored record is checked against. Without it (not loaded yet) nothing is checked.
-  let schema = null;
-  let WHERES = [];
-  // Records that don't fit it are shown, not dropped: a banner counts them, and lists why. (Old data
-  // may have some; the server lets none in.)
+  // The schema the server enforces (schema.mjs, served beside the page and imported above): the lists
+  // the editor offers, and what a stored record is checked against. Records that don't fit it are
+  // shown, not dropped: a banner counts them, and lists why. (Old data may have some; the server lets
+  // none in.)
   function checkRaw() {
     const bad = [];
-    if (schema && S.loaded.items) {
+    if (S.loaded.items) {
       const say = (col, id, errs) => { for (const e of errs) bad.push(`${col}/${id}: ${schema.errorText([e])}`); };
       for (const [id, d] of S.raw.items) {
         say("items", id, schema.itemErrors(d));
@@ -753,6 +752,8 @@
   const isInside = (id, anc) => !!M.byId.get(id)?.$crumbs.some((c) => c.id === anc);
   const title = (it) => String(it.text ?? "").trim() || (it.$folder ? "Untitled folder" : "Untitled task");
   const isArch = (it) => !!(it.archived || it.$archAnc);
+  // Open: not done or abandoned, nor archived (priority.mjs).
+  const isOpen = (t) => openTask(t, t.$archAnc);
   const hiddenArch = (it) => !S.showArch && isArch(it);
   const lastEvent = (id) => ms(M.ev.get(id)?.[0]?.t);
   const changedAt = (t) => Math.max(ms(t.finished) ?? -Infinity, ms(t.started) ?? -Infinity, lastEvent(t.id) ?? -Infinity);
@@ -1147,28 +1148,14 @@
     if (parent && S.collapsed.has(parent)) setCollapsed(parent, false);
     commit(placeOps(id, parent, index), { toast: `Moved ${quote(title(it))}${into}` });
   }
-  // Priorities, as the old page did them: a whole number as it is (equal numbers go together); one
-  // with a fraction (a move between two) slots in, rounded up, and the open tasks whose numbers it
-  // then runs into move down one, as far as the first free number (the rest keep theirs). Done and
-  // archived tasks keep their numbers and don't count in moves (the old page left done ones out
-  // too). Between two that share a number, a moved task takes that number too. Among equal numbers
-  // tasks go by `order`, so a drop next to one with its new number takes an order beside it. (While
-  // the open numbers run unbroken, as 2 to 13 do today, a move to the top still renumbers every one
-  // after it: some twenty writes.)
-  const isOpen = (t) => !isClosed(t) && !isArch(t);
+  // Priorities: placed by priority.mjs, the server's rule too (a whole number as it is; one with a
+  // fraction, a move between two, rounded up, the open tasks it runs into moved down one). The page
+  // writes the whole numbers it gives, each move its own edit (so Undo puts each back). Between two
+  // that share a number, a moved task takes that number too. Among equal numbers tasks go by
+  // `order`, so a drop next to one with its new number takes an order beside it.
   function placeAt(it, x) {
-    const p = Math.ceil(x);
-    const ops = [];
-    if (p !== x) {
-      let floor = p;
-      for (const o of M.tasks.filter((o) => o.id !== it.id && isOpen(o) && isNum(o.priority) && o.priority > x).sort((a, b) => a.priority - b.priority)) {
-        if (o.priority > floor) break;
-        ops.push(edit(o.id, { priority: o.priority + 1 }));
-        floor = Math.max(floor, o.priority + 1);
-      }
-    }
-    ops.push(edit(it.id, { priority: p }));
-    return { ops, to: p };
+    const r = placePriority(x, M.tasks.filter((o) => o.id !== it.id && isOpen(o)));
+    return { ops: [...r.moves.map((m) => edit(m.id, { priority: m.to })), edit(it.id, { priority: r.to })], to: r.to };
   }
   // `it` moved to `idx` among `open` (the open tasks as shown, without it).
   function moveToOps(it, open, idx) {
@@ -1368,7 +1355,7 @@
     put($("top-hist"), icon("clock"), `Top level · ${topEv}`);
     $("expand-all").hidden = $("collapse-all").hidden = !tree || !M.order.some((it) => it.$folder);
     renderChips();
-    const open = M.tasks.filter((t) => !isArch(t) && !isClosed(t));
+    const open = M.tasks.filter(isOpen);
     const done = M.tasks.filter((t) => !isArch(t) && stageOf(t) === "done").length;
     $("list-sum").textContent = !S.loaded.items ? "" : !tree && searching() ? `${M.tasks.filter(passTask).length} shown`
       : S.view === "priority" ? `${open.filter((t) => isNum(t.priority)).length} with a priority · ${open.filter((t) => !isNum(t.priority)).length} without`
@@ -1741,7 +1728,7 @@
       parts.push(f.reply);
       f.stage = h("select", { class: "inp", id: "ed-stage" }, Object.entries(STAGES).map(([v, l]) => h("option", { value: v }, l)));
       f.prio = h("input", { class: "inp num", id: "ed-prio", type: "text", inputmode: "decimal", autocomplete: "off", placeholder: "none", maxlength: "12" });
-      f.where = h("select", { class: "inp", id: "ed-where" }, WHERES.map((w) => h("option", { value: w }, w || "(nobody)")));
+      f.where = h("select", { class: "inp", id: "ed-where" }, schema.WHERES.map((w) => h("option", { value: w }, w || "(nobody)")));
       f.disc = h("button", { class: "toggle", id: "ed-disc", type: "button", "aria-pressed": "false" }, icon("bubble"), "Needs discussion");
       f.stage.disabled = ro;
       f.prio.readOnly = ro;
@@ -2719,7 +2706,6 @@
       return;
     }
     S.db = db;
-    import("./schema.mjs").then((m) => { schema = m; WHERES = m.WHERES; checkRaw(); render(); }, (e) => console.warn("backlog: the schema didn't load", e));
     const writable = c.use("user").then((u) => (u && typeof u.can === "function" ? u.can("data.write") : null)).catch(() => null);
     const w = await Promise.race([writable, sleep(1500).then(() => undefined)]);
     const take = (v) => { if (v === true || v === false) S.writable = v; if (v === false) S.readOnly = true; };
