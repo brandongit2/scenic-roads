@@ -1919,6 +1919,24 @@ fn far_from_land(data: &super::data::Datasets, c: Cell) -> bool {
     (c.0 - 1..=c.0 + 1).all(|x| (c.1 - 1..=c.1 + 1).all(|y| !(-45..45).contains(&y) || !land.has((wrap(x).0, y))))
 }
 
+/// How near land a stretch touching none is still a country's (a hole in the zones' water by a
+/// coast: the Indus delta's tidal flats, New Caledonia's lagoon): the open sea beyond every zone
+/// lies 200 nmi (370 km) or more from its coasts.
+pub const NEAR_LAND_M: f64 = 100_000.0;
+
+/// Whether land lies within `d` metres of point `p`.
+fn land_within(data: &super::data::Datasets, p: Pt, d: f64) -> bool {
+    let lat = (p[1] as f64 * 1e-7).clamp(-89.0, 89.0);
+    let cos = lat.to_radians().dcos();
+    let dy = (1.5 * d / roadcore::geo::M_PER_DEG * 1e7) as i64;
+    let dx = (dy as f64 / cos.max(0.01)) as i64;
+    let land = data.land_in([p[0] - dx, p[1] - dy, p[0] + dx, p[1] + dy]);
+    land.polys.iter().any(|poly| {
+        roadcore::geo::inside(poly, p)
+            || poly.iter().any(|r| (0..r.len()).any(|k| seg_dist_m(p, r[k], r[(k + 1) % r.len()], cos) < d))
+    })
+}
+
 /// Every 200-nmi zone of the datasets with its internal waters, by cell: where water is some
 /// country's.
 fn zones(data: &super::data::Datasets) -> TArea {
@@ -2343,11 +2361,13 @@ fn cells_pass(
             continue;
         }
         // (Each piece's country part, its open part left in the gap for the rest. A stretch touching
-        // land is a country's whole, every piece of it, unless it reaches the open sea, a cell with
-        // no land in it or round it: past a coast no zone has, the sea there stays the rest's but
-        // for the zones.)
+        // land, or a point inside one of its pieces within `NEAR_LAND_M` of land, is a country's
+        // whole, every piece of it, unless it reaches the open sea, a cell with no land in it or
+        // round it: past a coast no zone has, the sea there stays the rest's but for the zones.)
         let open = idx.iter().any(|&i| far_from_land(data, gaps[i].c));
-        let coastal = !open && idx.iter().any(|&i| gaps[i].touches);
+        let coastal = !open
+            && (idx.iter().any(|&i| gaps[i].touches)
+                || idx.iter().any(|&i| land_within(data, gaps[i].at, NEAR_LAND_M)));
         let mut parts: Vec<(usize, Area)> = Vec::new();
         for &i in idx {
             let g = &mut gaps[i];

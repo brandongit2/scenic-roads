@@ -506,8 +506,11 @@ region (its cells' pieces joined across the cells' edges, as the stretches are) 
 up to `sliver_km2` joins the region with water it shares the longest edge with, as does one
 touching none (a hole in the zones' water off any coast, where their source has a rock OSM hasn't).
 A larger stretch is some country's where it is: the whole of one touching land (a lagoon, an
-estuary, a creek the zones stop short of: the Ringkøbing Fjord, the Indus delta), unless it
-reaches the open sea (a cell with no land in it or the eight round it: past a coast no zone has),
+estuary, a creek the zones stop short of: the Ringkøbing Fjord, the Indus delta) or with a point
+inside one of its pieces within `NEAR_LAND_M` (100 km) of land (a hole in the zones' water by a
+coast: the Indus delta's tidal flats, New Caledonia's lagoon; the open sea beyond every zone lies
+370 km or more from its coasts, so the Gulf of Mexico's and the Sea of Okhotsk's enclaves stay the
+high seas), unless it reaches the open sea (a cell with no land in it or the eight round it: past a coast no zone has),
 and each piece's part inside a 200-nmi zone (any of Marine Regions' zones with its internal
 waters). That goes to the regions with water the stretch shares an edge with: to the one, or split
 among several by nearest edge (`geom::nearest`, the median line), a warning (`unnamed`, naming them

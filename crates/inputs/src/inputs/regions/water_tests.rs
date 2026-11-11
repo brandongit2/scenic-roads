@@ -1071,8 +1071,10 @@ fn sea_the_zones_stop_short_of_is_the_countries_it_borders() {
     // One land with a lagoon (about 1,000 km²) inside one region, one with a creek across two.
     let lagoon = vec![ring(30.0, 30.0, 31.0, 31.0), ring(30.3, 30.3, 30.7, 30.6)];
     let creek = vec![ring(40.0, 40.0, 42.0, 41.0), ring(40.8, 40.2, 41.2, 40.8)];
-    let w = world_more(1.002, vec![lagoon, creek]);
-    let lag = "id = \"lag\"\nname = \"Lagoon land\"\noutline = [\"box:29.9,29.9,31.1,31.1\"]\nwater = []\n";
+    // Its zone east of it with a hole (about 1,900 km²) 20 km off its coast, touching no land.
+    let zone = vec![ring(31.0, 30.0, 32.0, 31.0), ring(31.2, 30.2, 31.6, 30.6)];
+    let w = world_zones(1.002, vec![lagoon, creek], HashMap::from([(4, zone)]));
+    let lag = "id = \"lag\"\nname = \"Lagoon land\"\noutline = [\"box:29.9,29.9,31.1,31.1\"]\nwater = [\"eez:4\"]\n";
     let west = "id = \"west\"\nname = \"West\"\noutline = [\"box:39.9,39.9,41.0,41.1\"]\nwater = []\n";
     let east = "id = \"east\"\nname = \"East\"\noutline = [\"box:41.0,39.9,42.1,41.1\"]\nwater = []\n";
     let mut files = all();
@@ -1082,6 +1084,7 @@ fn sea_the_zones_stop_short_of_is_the_countries_it_borders() {
     let owner =
         |x: f64, y: f64| -> Vec<&str> { out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect() };
     assert_eq!(owner(30.5, 30.45), vec!["lag"], "the lagoon");
+    assert_eq!(owner(31.4, 30.4), vec!["lag"], "the hole in its zone off its coast");
     assert_eq!(owner(40.9, 40.5), vec!["west"], "the creek's west half");
     assert_eq!(owner(41.1, 40.5), vec!["east"], "the creek's east half");
     assert_eq!(owner(50.0, 50.0), vec!["high-seas"]);
