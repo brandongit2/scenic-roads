@@ -1295,10 +1295,11 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   sampled at once share it, `BlockCache::begin_list`, so none of their blocks is let go before it's
   decoded, to be read twice), decoded by the sampling's own threads as they come to them. How many reads are in flight
   is each source's limit, found as TCP finds its window (`store::aimd`, task #1096), whatever
-  number of chunks a process samples at once: the NAS's one a process (starting at 2, doubling a window until the
-  first halving and one a window after, while reads finish near their best latency (smoothed over
-  about four reads, the floor never under 2 ms); halved when they take twice it or a read times
-  out; 1 to 16), a host's one a host (the fetcher's, below); so the sampler doesn't wait on a chunk's few
+  number of chunks a process samples at once: the NAS's one a process (starting at 2; decided once
+  a window, on the median of its reads' latencies over their size class's floor (the least their
+  latency smoothed over about eight reads was in the last 30–60 s, never under 2 ms; an answer of
+  this Mac's own cache, under 2 ms, no sample): doubled until the first halving and one more after
+  while near the best, halved past twice it or when a read times out; 1 to 16), a host's one a host (the fetcher's, below); so the sampler doesn't wait on a chunk's few
   blocks one round trip after another, and its threads never sit in a read its points foresaw. A tile pyramid's
   tiles likewise (`TileSet::rolling`): `TILE_FETCHES` (64) kept in flight, whatever the threads
   the step was granted (task #665: a terrain job fetched GSI's tiles only on its three sampling
@@ -1317,7 +1318,7 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   through each thread's retries. The fetcher holds
   a process's requests to one host to that host's limit (`fetch::net::HostSlot`, store::aimd),
   whatever its readers keep in flight: starting at 2 (`HOST_START`), up while answers come near
-  their best (the floor never under 20 ms), halved when they slow to twice it, on a 429 or a 5xx, never past the host's ceiling
+  their best (decided as the NAS's, once a window on its median answer; the floor never under 20 ms), halved when they slow to twice it, on a 429 or a 5xx, never past the host's ceiling
   (`fetch::host_ceiling`): Amazon S3's 64 (it states 5,500 GETs a second a prefix), every other
   host's 16 (`HOST_DEFAULT`, every host's fixed cap before): the hosts read live are free services
   that publish no limit (GSI's among them, task #665 review).
