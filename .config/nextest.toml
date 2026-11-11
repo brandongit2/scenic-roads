@@ -1,35 +1,22 @@
-# Every test runs bounded (#1108; tools/dev/testing.md, "Every test bounded"): nextest says SLOW
-# each period, then ends a test that outlasts terminate-after periods (SIGTERM, then SIGKILL after
-# its grace period) and fails it as TIMEOUT. On 10 Nov a hung test ran 35 min, nothing ending it.
+# Every test runs bounded (#1108, #1112; tools/dev/testing.md, "Every test bounded"): nextest says
+# SLOW each period, then ends a test that outlasts terminate-after periods (SIGTERM, then SIGKILL
+# after its grace period) and fails it as TIMEOUT.
 #
-# The default, 10 min: twice store::testkit::WATCHDOG (5 min: a test waiting with it fails itself,
-# saying what for, first). Every test outside the list below that passed ran under 5 min in the
-# dev jobs' runs of 3-10 Nov (each under 30 s in 9-10 Nov's check.sh runs on the M4; up to 4 min
-# on 5-7 Nov's, the Mac loaded).
+# The budget (#1112): every test under 10 s alone on the M4 unloaded. The bound, 3 min: the budget
+# with room for the loaded test Mac (three suites at nice 20 beside builds), where 8-10 Nov's runs
+# took a test up to 4x its time alone at the median and 7x at the 90th percentile (the dev jobs'
+# test spans against each test alone, 10 Nov); and over store::testkit::WATCHDOG (2 min), so a
+# test waiting with it fails itself first, saying what for. A test over the bound is failed, never
+# given more: make it smaller (testing.md, "Every test bounded": the budget).
 [profile.default]
-slow-timeout = { period = "60s", terminate-after = 10 }
+slow-timeout = { period = "60s", terminate-after = 3 }
 
-# Known slow: 30-65 s in 9-10 Nov's runs, or over 5 min (half the default) in 3-10 Nov's: their
-# longest 5-12 min. 20 min. A test added here says its time.
+# Over the budget still, left for task #1096 (the terrain steps' read paths, changing now): their
+# fixtures are the steps' own z6 tiles. 15 and 28 s alone on the M4, 10 Nov; 20 min as before.
 [[profile.default.overrides]]
 filter = """
-(package(agentcore) & (
-    test(=agent::forecast::tests::a_live_scale_forecast_runs_whole_and_bounded)
-  | test(=agent::forecast::tests::a_live_scale_forecast_is_whole_and_a_wait_is_no_cpu_time)
-  | test(=agent::tests::beat_steady_while_the_nas_hangs)
-  | test(=agent::tests::beat_steady_while_planning)
-  | test(=agent::tests::a_slow_plan_delays_no_grant_pause_or_heartbeat)
-  | test(=agent::pool_tests::a_lead_paused_from_a_member_keeps_the_lead_and_resumes)))
-| (binary_id(=pipeline) & (
-    test(=offload::tests::a_task_whose_coordinator_is_gone_or_doesnt_know_the_job_is_run_here)
-  | test(=agent::build::tests::a_key_names_exactly_its_reads)))
-| (binary_id(=pipeline::cli) & test(=remote_tests_falls_back_when_ssh_hangs))
-| (package(terrain) & (
+package(terrain) & (
     test(=terrain_task::tests::a_groups_tiles_made_from_its_file_are_the_pieces_bytes)
-  | test(=terrain_task::tests::a_z6_tile_stopped_and_resumed_makes_the_same_packs)
-  | test(=slope_pack::tests::a_z6_tile_stores_every_level_down_to_its_deep_terrain)
-  | test(=polar::tests::a_block_paused_at_every_safe_point_resumes_to_the_same_tiles)
-  | test(=depth::tests::a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes)
-  | test(=depth::tests::a_fine_source_in_the_open_sea_is_built_to_its_zoom_and_averaged_down)))
+  | test(=terrain_task::tests::a_z6_tile_stopped_and_resumed_makes_the_same_packs))
 """
 slow-timeout = { period = "60s", terminate-after = 20 }

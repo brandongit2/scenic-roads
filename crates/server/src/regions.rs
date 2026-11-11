@@ -1478,9 +1478,9 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let (h, d) = (hung.clone(), dir.clone());
         std::thread::spawn(move || tx.send(listed(&h, &store::nasfs::NasPath::local_for_test(&d)).unwrap_err()).ok());
-        let e = rx
-            .recv_timeout(Duration::from_secs(300))
-            .unwrap_or_else(|_| panic!("the listing waited on the hung read: no answer in 5 min"));
+        let e = rx.recv_timeout(store::testkit::WATCHDOG).unwrap_or_else(|_| {
+            panic!("the listing waited on the hung read: no answer in {:?}", store::testkit::WATCHDOG)
+        });
         assert!(IoError::find(&e).is_some(), "{e:#}");
         release(&stuck);
         // The share still answers, so it's busy rather than away: the rest goes on.

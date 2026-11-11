@@ -8,7 +8,7 @@ use std::time::Duration;
 
 /// How long a target here may take on any grant: a hang fails the test at this, not the test run's
 /// own timeout.
-const BOUND: Duration = Duration::from_secs(300);
+const BOUND: Duration = store::testkit::WATCHDOG;
 
 /// Whether this is the test's process of its own (the threads file's variable and the target under
 /// way are the process's): run there, by name, its result asserted here, when not.

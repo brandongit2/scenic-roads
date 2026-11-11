@@ -2151,7 +2151,7 @@ mod tests {
         }
     }
 
-    const WATCHDOG: Duration = Duration::from_secs(300);
+    use store::testkit::WATCHDOG;
 
     const ME: &str = "m-0000000000000001";
     const B: &str = "m-0000000000000002";

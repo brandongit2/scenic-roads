@@ -10511,7 +10511,7 @@ mod tests {
             a.round().unwrap();
             // (A round on the hung NAS waits out each NAS call's deadline: HUNG_DEADLINE here, a
             // few seconds a round; 20 s a call, about 100 s, with the real one.)
-            assert!(r.elapsed() < Duration::from_secs(400), "the slot never freed");
+            assert!(r.elapsed() < store::testkit::WATCHDOG, "the slot never freed");
         }
         eprintln!("recorded and its slot freed in {:?} on the hung NAS", r.elapsed());
         assert!(a.mem.recent.iter().any(|j| j.id == "unit 6/1/2"), "its end recorded");

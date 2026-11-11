@@ -12026,7 +12026,7 @@ mod tests {
         let t = Instant::now();
         let mut slow = std::net::TcpStream::connect(&addr).unwrap();
         slow.write_all(b"GET / HTTP/1.1\r\nHost").unwrap();
-        slow.set_read_timeout(Some(Duration::from_secs(600))).unwrap();
+        slow.set_read_timeout(Some(store::testkit::WATCHDOG)).unwrap();
         let mut b = [0u8; 64];
         match slow.read(&mut b) {
             Ok(n) => assert!(

@@ -27,8 +27,9 @@ use std::time::{Duration, Instant};
 
 /// How long a test waits for something to happen before it fails: a watchdog, not a measure. Never
 /// reached by a test that passes, so it can be long; tools/app/test_timing.py refuses a test's own
-/// short one (a deadline under a minute on a wait).
-pub const WATCHDOG: Duration = Duration::from_secs(300);
+/// short one (a deadline under a minute on a wait). Under nextest's bound on a whole test (3 min,
+/// .config/nextest.toml), so a waiting test fails itself first, saying what for.
+pub const WATCHDOG: Duration = Duration::from_secs(120);
 
 /// How often [`eventually`] and [`wait_for`] look again.
 const POLL: Duration = Duration::from_millis(10);

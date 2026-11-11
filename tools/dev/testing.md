@@ -387,7 +387,7 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   `--- remote result discarded, local rerun ---` and runs here: what follows the last such line is
   the result (publish.sh reads its Summary and FAIL lines only from there).
 - Connecting never hangs (#637): a fresh ssh asks the ssh agent (1Password), which, locked, waits
-  for an approval for ever. The probe (a fresh connection) has 20 s, the lock calls 60 s, and the run
+  for an approval for ever. The probe (a fresh connection) has 20 s (`SCENIC_TEST_PROBE_S`, a test's shorter), the lock calls 60 s, and the run
   must print its first line (`remote-tests: connected to the test Mac`, at once) within 120 s; past a bound it runs here, saying why.
 - Runs here instead: on the test Mac itself (the M4 since 31 Oct; publish runs on the mini, so its suite goes
   to the M4); when the test Mac is down or the copy fails; when the tree
@@ -415,7 +415,7 @@ through their dev-dependency on store, `features = ["testkit"]`):
   `clock::Virtual`, which moves only when slept on (`at`/`after` run the other party at named
   moments). Such a test never sleeps and can't race.
 - **Waiting for something on the real clock: `eventually(what, cond)` or `wait_for(what, || Option)`.**
-  They poll every 10 ms under `WATCHDOG` (5 min), which only turns a hang into a failure. Never a
+  They poll every 10 ms under `WATCHDOG` (2 min), which only turns a hang into a failure. Never a
   loop of your own with a deadline: `while t.elapsed() < 5 s` is what failed takeover's test.
 - **A thread or callback saying "done": `Signal`** (`set` / `wait(what)`), not a flag polled
   with sleeps. For "has it NOT happened", a sleep marked `// (absence)` is fine: a slow Mac can only
@@ -467,17 +467,31 @@ these replace: an assert of a short `elapsed()` bound, a fixed sleep then an ass
 wait's own watchdog under a minute (`Instant::now() + 20 s`, a loop on `elapsed() < 5 s`,
 `recv_timeout(10 s)` expected to succeed). A bound that isn't a wait says why: `// (bound ok: …)`.
 
-### Every test bounded (#1108, 10 Nov)
+### Every test bounded (#1108, 10 Nov; #1112, 11 Nov)
 
 `WATCHDOG` is checked between looks: a look that never returns (a call blocked in the kernel, a
 lock never let go) defeats it. So nextest bounds every test itself (`.config/nextest.toml`, read by
 check.sh's and publish's `cargo nextest run`, here and on the test Mac): SLOW each minute, ended
-(SIGTERM, 10 s, SIGKILL) and failed as TIMEOUT at 10 min, twice `WATCHDOG`, so a waiting test fails
-itself first, saying what for; 20 min for the tests listed there: 30-65 s in 9-10 Nov's check.sh
-runs, or over 5 min in 3-10 Nov's (the dev jobs' records), their longest 5-12 min with the Mac
-loaded. Every other one that passed ran under 5 min then (under 30 s on 9-10 Nov). A test that
-comes to take over 5 min, half the bound, goes on that list with its time. `cargo test` runs have
-no such bound.
+(SIGTERM, 10 s, SIGKILL) and failed as TIMEOUT at 3 min, over `WATCHDOG` (2 min), so a waiting test
+fails itself first, saying what for. That bound is the guard on the budget below: a test over it
+fails, and is never given more. Two tests are still bounded at 20 min, listed there with why
+(terrain_task's z6 tiles, over the budget, left for #1096's change of the terrain steps). `cargo
+test` runs have no such bound.
+- **The budget (owner, 10 Nov): every test under 10 s alone on the M4 unloaded.** The bound is
+  that with room for the loaded test Mac (three suites at nice 20 beside builds): over 8-10 Nov's
+  runs (the dev jobs' test spans) a test took up to 4 times its time alone at the median, 7 times at
+  the 90th percentile. A test past the budget is made smaller, never given time: one that reruns a
+  whole job per safe point stops at a few (the first, the last, midway, a seeded sample); one on a
+  full-size fixture takes a small or mostly empty one reaching the same code; one at live scale
+  asserts the same properties on a small synthetic input, and its live-scale run is a benchmark,
+  `#[ignore]`d, run by hand (`-- --ignored`); one waiting on a timer it doesn't claim (a beat's
+  period, a deadline, a poll) is given a test's own short one (`beat::Handle::tick_every`,
+  `nasread::fake::Hung::deadline`, a coordinator's `Shared::headers_max`, `SCENIC_TEST_PROBE_S`).
+  Every assertion stays: what the smaller test still proves, and how, is said in its comment.
+- **A stopped coordinator refuses at once** in a test program too: the listeners it keeps for the
+  next coordinator on the port (`coord::KEPT`) take each connection and close it, as a port nothing
+  listens on refuses it (#1112: its clients had waited out their 15-s timeout in the backlog, 15-60
+  s of each test asking a stopped lead).
 - **No signal ends a process stuck in the kernel** (`ps` state U, then E as it exits): nextest
   waits on it, its run with it. A test's run never holds the shared build folder's lock (above),
   so such a hang delays only its own run, never another worktree's build.
