@@ -1769,3 +1769,21 @@ fn samplers_sharing_a_memo_read_each_file_at_their_own_level() {
     let shared = Sampler::sharing(&coarse, &o, &first).unwrap();
     assert_eq!(shared.sample(&lon, &lat, &|_| {}).unwrap().elev[0], alone, "its own level, the memo shared");
 }
+
+/// `picked` and `by_key` give the points a filter over every point gives, each list ascending
+/// (the blends' and the geoid's points are read in that order), across their runs' seams and in a
+/// run of its own past the last whole one (task #1098's one pass for every dataset).
+#[test]
+fn a_pick_pass_gives_a_filter_s_points_in_its_order() {
+    let n = 3 * PICK_RUN + 4321;
+    let key = |i: usize| (i.wrapping_mul(0x9e37_79b9) >> 7) % 5;
+    let lists = by_key(n, 4, |i| (key(i) < 4).then(|| key(i)));
+    assert_eq!(lists.len(), 4);
+    for (k, list) in lists.iter().enumerate() {
+        let want: Vec<u32> = (0..n).filter(|&i| key(i) == k).map(|i| i as u32).collect();
+        assert_eq!(list, &want, "key {k}");
+    }
+    let want: Vec<u32> = (0..n).filter(|&i| key(i) == 4).map(|i| i as u32).collect();
+    assert_eq!(picked(n, |i| key(i) == 4), want);
+    assert!(picked(0, |_| true).is_empty() && by_key(0, 2, |_| Some(0)) == vec![Vec::<u32>::new(); 2]);
+}

@@ -418,7 +418,8 @@ The heights are the same to the bit: every run below had the manifest's content 
 02e54b896b199b6f / mid e2a73323ce2adb71; hi 9a23248d786d9a1e / mid 5fd1d526190eb3bc; hi
 9408f71b40b661fb / mid 1d7e9fe18d7e0e28; lo b7effd8690bb7665), and a test projects a tile's grid, random points,
 repeats and NaN by a `Projector` and by `project`, and the geocentric point from its parts against
-the one expression, to the bit.
+the one expression, to the bit; another holds `picked` and `by_key` to a filter's points, ascending, across
+their runs' seams.
 
 Measured with `terrain-same` (release; `SCENIC_CACHE` the runs' own, its coverage file cloned in;
 a first run to warm the scratch's Terrarium tiles and copies not counted), main (6c769848) and the
