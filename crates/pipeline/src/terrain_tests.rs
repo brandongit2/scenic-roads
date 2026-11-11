@@ -9,7 +9,7 @@ use buildstore::out::Out;
 use offload::Offload;
 use std::path::{Path, PathBuf};
 use terrain::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles, Sources};
-use terrain::terrain_task::testkit::north_piece;
+use terrain::terrain_task::testkit::test_piece;
 use terrain::terrain_task::{groups, subtrees_arg, write_hi, Inputs, HI, KIND, MID};
 
 /// The z6 tile's run with `offload` into root `name` under `d`: its hi pack's and mid's content
@@ -98,7 +98,7 @@ fn worker(url: &str, token: &str, name: &str, home: PathBuf) -> std::thread::Joi
 fn a_pieces_subtrees_go_to_workers_and_come_back_the_same() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path();
-    let (t, cov, raw) = north_piece(p);
+    let (t, cov, raw) = test_piece(p);
     let levels = piece_levels(&cov, &terrain::terrain_zoom::test_world(12), t);
     let src = Sources { sets: terrain::terrain_zoom::test_world_ref(), ..Default::default() };
     let alone = piece(p, "alone", t, &cov, &raw, &src, None);

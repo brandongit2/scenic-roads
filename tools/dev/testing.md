@@ -565,9 +565,7 @@ lock never let go) defeats it. So nextest bounds every test itself (`.config/nex
 check.sh's and publish's `cargo nextest run`, here and on the test Mac): SLOW each minute, ended
 (SIGTERM, 10 s, SIGKILL) and failed as TIMEOUT at 3 min, over `WATCHDOG` (2 min), so a waiting test
 fails itself first, saying what for. That bound is the guard on the budget below: a test over it
-fails, and is never given more. Two tests are still bounded at 20 min, listed there with why
-(terrain_task's z6 tiles, over the budget, left for #1096's change of the terrain steps). `cargo
-test` runs have no such bound.
+fails, and is never given more. `cargo test` runs have no such bound.
 - **The budget (owner, 10 Nov): every test under 10 s alone on the M4 unloaded.** The bound is
   that with room for the loaded test Mac (three suites at nice 20 beside builds): over 8-10 Nov's
   runs (the dev jobs' test spans) a test took up to 4 times its time alone at the median, 7 times at

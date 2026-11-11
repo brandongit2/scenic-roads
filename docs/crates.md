@@ -751,7 +751,7 @@ commit; re-exports at the old paths as before.
      starting one stay, their `Offload` built by the crate's testkit (`for_test`, `client`).
    - terrain_task's tests that start a coordinator, with their helpers, to pipeline's
      `terrain_tests`; the helpers other modules' tests name out of the test modules into a
-     `testkit` module each (terrain_task's `north_piece`, terrain_pack's `synthetic_raw` and
+     `testkit` module each (terrain_task's `test_piece`, terrain_pack's `synthetic_raw` and
      `near_without_hi`).
    - the family's paths: `crate::dem`, `crate::inputs`, `crate::lakefill` → the inputs crate's,
      `crate::offload` and `crate::unit::Run` → the offload crate's, and grant_tests' re-exported

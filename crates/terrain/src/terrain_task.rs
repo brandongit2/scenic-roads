@@ -511,25 +511,26 @@ pub mod testkit {
     use crate::terrain_pack::RawTiles;
     use buildstore::coverage::Coverage;
 
-    /// A z6 tile in the far north, the coverage at a corner of four of its subtrees (12.656°E, 70.10°N: z8 columns 136–137, rows 56–57, in z6
-    /// tile 6/34/14), and its raw tiles under `d`: the z6 tile, its coverage, its raw tiles' cache.
-    pub fn north_piece(d: &Path) -> ((u32, u32), Coverage, RawTiles) {
+    /// A z6 tile near the equator, the coverage at a corner of four of its subtrees (12.656°E,
+    /// 9.78°N: z8 columns 136–137, rows 120–121, in z6 tile 6/34/30), and its raw tiles under `d`: the
+    /// z6 tile, its coverage, its raw tiles' cache. (Near the equator a tile is widest, so fewer
+    /// are near the coverage than in the far north, where it was until task #1126.)
+    pub fn test_piece(d: &Path) -> ((u32, u32), Coverage, RawTiles) {
         let cov = Coverage::fixture(
             &[buildstore::recipes::Recipe {
                 id: "r".into(),
                 name: "R".into(),
-                outline: vec!["place:12.656,70.10,1".into()],
+                outline: vec!["place:12.656,9.78,1".into()],
             }],
             None,
             d,
         )
         .unwrap();
-        let by_q = buildstore::coverage::coverage_tiles(&cov);
-        let (&q, ts) = by_q.iter().next().unwrap();
-        assert!(ts.contains(&(34, 14)), "{ts:?}");
-        crate::terrain_pack::testkit::synthetic_raw(&d.join("local"), &cov, q, &[(34, 14)]);
+        let ts: Vec<(u32, u32)> = buildstore::coverage::coverage_tiles(&cov).into_values().flatten().collect();
+        assert_eq!(ts, [(34, 30)]);
+        crate::terrain_pack::testkit::synthetic_raw(&d.join("local"), &cov, &ts);
         (
-            (34, 14),
+            (34, 30),
             cov,
             RawTiles::with_store(
                 &d.join("local"),
@@ -542,7 +543,7 @@ pub mod testkit {
 
 #[cfg(test)]
 mod tests {
-    use super::testkit::north_piece;
+    use super::testkit::test_piece;
     use super::*;
     use crate::terrain_pack::piece_levels;
     use buildstore::out::Out;
@@ -555,7 +556,7 @@ mod tests {
     fn a_z6_tile_paused_mid_sampling_resumes_to_the_same_packs() {
         use crate::terrain_pack::tests::{files_under, PauseAfter};
         let d = tempfile::tempdir().unwrap();
-        let (t, cov, raw) = north_piece(d.path());
+        let (t, cov, raw) = test_piece(d.path());
         let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         let saved = |root: &Path, scratch: &Path| -> Vec<(String, String)> {
             let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch).unwrap();
@@ -596,12 +597,14 @@ mod tests {
 
     /// A z6 tile stopped after its first safe point (a block kept, or a level's end), its
     /// second, midway, before its last and after it, each resumed: the same packs as a run never
-    /// stopped. (After each one in turn before #969, 143 s on the test Mac, a whole run each.)
+    /// stopped. (After each one in turn before #969, 143 s on the test Mac, a whole run each.
+    /// Its z6 tile near the equator since #1126, `test_piece`: 60 tiles a run where 258, the same
+    /// safe points, four blocks at z12 and one a level above, so the same stops.)
     #[test]
     fn a_z6_tile_stopped_and_resumed_makes_the_same_packs() {
         use jobrt::resume_log::STOP_AFTER;
         let d = tempfile::tempdir().unwrap();
-        let (t, cov, raw) = north_piece(d.path());
+        let (t, cov, raw) = test_piece(d.path());
         // (Its packs and mid as saved, their content names the bytes' digests; None when stopped.
         // Not stopped, also the safe points it passed: a stop never reached counts them.)
         let counted = std::cell::Cell::new(0);
@@ -653,13 +656,16 @@ mod tests {
         assert_eq!(run("voided", &without, None), Some(dry));
     }
 
+    /// Each of a z6 tile's four groups made from its file: the tiles and mid of the group made here,
+    /// and together the z6 tile's, as are its blocks of one tile and of two levels up. (Its z6 tile near the
+    /// equator since #1126, `test_piece`: the same four groups, 60 tiles a run where 258.)
     #[test]
     fn a_groups_tiles_made_from_its_file_are_the_pieces_bytes() {
         let d = tempfile::tempdir().unwrap();
-        let (t, cov, raw) = north_piece(d.path());
+        let (t, cov, raw) = test_piece(d.path());
         let levels = piece_levels(&cov, &crate::terrain_zoom::test_world(12), t);
         let gs = groups(&levels);
-        assert_eq!(gs, [vec![(136, 56)], vec![(136, 57)], vec![(137, 56)], vec![(137, 57)]]);
+        assert_eq!(gs, [vec![(136, 120)], vec![(136, 121)], vec![(137, 120)], vec![(137, 121)]]);
         let src = Sources { sets: crate::terrain_zoom::test_world_ref(), ..Default::default() };
         // The whole z6 tile, and each group from its file: the same tiles, the same mid.
         let whole = crate::terrain_pack::make_piece(&raw, &src, levels.clone()).unwrap();

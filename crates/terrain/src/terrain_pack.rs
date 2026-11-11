@@ -1835,26 +1835,18 @@ fn saying<T>(
     progress: buildstore::rawpack::Progress,
     run: impl FnOnce() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    let finished = std::sync::atomic::AtomicBool::new(false);
-    // (Set however the run ends, a panic too: the scope waits for the reporter before it goes on.)
-    struct Finished<'a>(&'a std::sync::atomic::AtomicBool);
-    impl Drop for Finished<'_> {
-        fn drop(&mut self) {
-            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
+    // (Its sender dropped however the run ends, a panic too: the reporter wakes at once and ends,
+    // and the scope, waiting for it, goes on. Task #1126: a look at a flag every 200 ms had held
+    // each run up to 200 ms past its end: terrain_task's stopped-and-resumed test, 17 runs of a
+    // z6 tile of 60 tiles, took 6.0 s where it takes 4.0, on the M4.)
+    let (done, ended) = std::sync::mpsc::channel::<()>();
     let r = std::thread::scope(|s| {
-        s.spawn(|| {
-            let mut said = std::time::Instant::now();
-            while !finished.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(200));
-                if said.elapsed() >= Duration::from_secs(5) {
-                    progress("tiles", mk.done().min(total), total);
-                    said = std::time::Instant::now();
-                }
+        s.spawn(move || {
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = ended.recv_timeout(Duration::from_secs(5)) {
+                progress("tiles", mk.done().min(total), total);
             }
         });
-        let _finished = Finished(&finished);
+        let _done = done;
         run()
     })?;
     progress("tiles", total, total);
@@ -2193,10 +2185,10 @@ pub fn make_root(out: &Out, raw: &dyn RawSource, src: &Sources) -> anyhow::Resul
 pub mod testkit {
     use super::*;
 
-    /// Raw tiles for the z3 tile of `ts` (z3 tile `q`): every z9–12 tile near `cov` and every z3–8 tile
-    /// of q; smooth slopes, every third with a one-pixel spike and a one-pixel pit (kept as read;
+    /// Raw tiles for z6 tiles `ts`: every z9–12 tile near `cov` (their z6 tiles' runs read no
+    /// other); smooth slopes, every third with a one-pixel spike and a one-pixel pit (kept as read;
     /// no repair; the level above takes them in), every seventh missing (the open sea).
-    pub fn synthetic_raw(local: &std::path::Path, cov: &Coverage, q: (u32, u32), ts: &[(u32, u32)]) {
+    pub fn synthetic_raw(local: &std::path::Path, cov: &Coverage, ts: &[(u32, u32)]) {
         let mut want: Vec<(u8, u32, u32)> = Vec::new();
         for z in 9..=12u8 {
             let s = 1u32 << (z - 6);
@@ -2210,7 +2202,6 @@ pub mod testkit {
                 }
             }
         }
-        want.extend(upper_levels(q).into_iter().flat_map(|(z, t)| t.into_iter().map(move |(x, y)| (z, x, y))));
         for &(z, x, y) in &want {
             std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
             let k = z as u32 + x + y;

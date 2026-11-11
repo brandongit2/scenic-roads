@@ -10,13 +10,3 @@
 # given more: make it smaller (testing.md, "Every test bounded": the budget).
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 3 }
-
-# Over the budget still, left for task #1096 (the terrain steps' read paths, changing now): their
-# fixtures are the steps' own z6 tiles. 15 and 28 s alone on the M4, 10 Nov; 20 min as before.
-[[profile.default.overrides]]
-filter = """
-package(terrain) & (
-    test(=terrain_task::tests::a_groups_tiles_made_from_its_file_are_the_pieces_bytes)
-  | test(=terrain_task::tests::a_z6_tile_stopped_and_resumed_makes_the_same_packs))
-"""
-slow-timeout = { period = "60s", terminate-after = 20 }
