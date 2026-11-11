@@ -204,8 +204,9 @@ and codesign.
 installed by `tools/app/install.sh`, updated by the updater).
 - **Finding the NAS:** `getfsstat(MNT_NOWAIT)`, never `statfs`. At home (`fishandchips.local`
   answers on 445) it mounts the share with `osascript` and the Keychain, at most every five minutes,
-  by the LAN name when the Keychain has it, else the bare (Tailscale) name. `nsmb.conf` makes it a
-  soft mount.
+  by the LAN name when the Keychain has it, else the bare (Tailscale) name. The per-user
+  `~/Library/Preferences/nsmb.conf` makes it a soft mount (the server adds its sections at start,
+  `store::nas::ensure_nsmb_conf`, docs/formats.md); no Mac has an `/etc/nsmb.conf`.
 - **Short NAS outages** (a dropped SMB session, the NAS restarting): a NAS read, stat or listing
   (store::nasfs, docs/nas-access.md) that fails for a moment (EIO, ENXIO, ETIMEDOUT, ESTALE…) is
   tried again for up to ~3.5 minutes in a build job or a thread of the agent's own (5 s in the
@@ -243,31 +244,29 @@ installed by `tools/app/install.sh`, updated by the updater).
       read caching on every share (slower, mostly for small-file reads).
     - Either way the server holds a dead session until it finds its TCP connection dead (its
       keepalive, minutes), which DSM doesn't expose; until then only the DSM disconnect frees it.
-  - Each Mac, `/etc/nsmb.conf` (system-wide; `sudo`, applies to mounts made afterwards), scoped to
-    the NAS (a section per name it's mounted by), not `[default]`:
+  - Each Mac's SMB client (`man nsmb.conf`; applies to mounts made afterwards). What every Mac
+    has is the per-user file's `[FISHANDCHIPS:PERSONAL]` and `[FISHANDCHIPS.LOCAL:PERSONAL]`, both
+    `soft=yes`. On a soft mount, once the client is reconnecting, SMB 2/3 calls fail with
+    ETIMEDOUT instead of waiting, any still waiting fail after 12 s of reconnecting, and the share is
+    given up as dead after 60 s (a hard mount: 10 minutes). The risk is for a program writing a
+    file in place, which a failed call can leave part-written (the pipeline's writes go to a
+    temporary name and rename, so a cut write never takes the name).
+    - `notify_off=yes` (the owner's suggestion; allowed in a `[SERVER:SHARE]` section, so it can
+      go in those two, whose other lines the server keeps): drops change notifications, one fewer
+      long-lived handle per open folder, but Finder windows on the share no longer refresh by
+      themselves.
+    - `max_resp_timeout` is left at its default, 30 s: when a call has waited that long and the
+      NAS has sent nothing at all for as long, the client drops the connection and reconnects (a
+      call answered by nothing for 2 minutes while the NAS answers others fails alone with
+      ETIMEDOUT). It is the NAS's whole connection that it times, not one call. A shorter value
+      makes those reconnects come sooner, and with `soft=yes` each fails the calls in flight; the
+      NAS's own log showed the mini's client closing connections mid-transfer on large files while
+      the NAS was 85-90 % busy (11 Nov), the likely cause of task #1140's damaged uploads.
 
-    ```
-    [fishandchips]
-    soft=yes
-    max_resp_timeout=20
-    notify_off=yes
-
-    [fishandchips.local]
-    soft=yes
-    max_resp_timeout=20
-    notify_off=yes
-    ```
-
-    `soft=yes` fails calls on a dead or unreachable NAS instead of hanging them (the agent already
-    keeps it in the per-user `~/Library/Preferences/nsmb.conf`); the risk is for a program writing a
-    file in place, which can be left part-written by a failed call (the pipeline's writes go to a
-    temporary name and rename, so a cut write never takes the name). `max_resp_timeout` (seconds)
-    shortens how long a call waits for an answer. `notify_off=yes` drops change notifications, one
-    fewer long-lived handle per open folder, but Finder windows on the share no longer refresh by
-    themselves. These keep this Mac from hanging on the NAS; they can't shorten what the server keeps
-    for a dead Mac. If a session still holds files after a crash: DSM → Control Panel → File
-    Services → SMB (or Resource Monitor → Connections), disconnect that Mac; the agent's warning
-    names the file.
+    These keep this Mac from hanging on the NAS; they can't shorten what the server keeps for a
+    dead Mac. If a session still holds files after a crash: DSM → Control Panel → File Services →
+    SMB (or Resource Monitor → Connections), disconnect that Mac; the agent's warning names the
+    file.
 - **NAS access** goes through a bounded I/O pool with timeouts. An overrun trips the breaker (offline
   banner) only when a quick probe also fails. Files are read in 1 MB pieces with handles kept open,
   never mmapped; base packs and hidata in 256 KB pages, or whole sections for scans.
