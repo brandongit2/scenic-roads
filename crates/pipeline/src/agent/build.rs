@@ -12057,6 +12057,9 @@ mod tests {
                     .flat_map(|w| w.targets.iter().map(move |(t, k)| format!("{}\t{t}\t{k}", w.step)))
                     .collect();
                 std::fs::write(format!("{out}.{round}"), lines.join("\n") + "\n").unwrap();
+                // (The whole plan as its digest above reads it, and the chains' work left.)
+                std::fs::write(format!("{out}.{round}.plan"), format!("{p:#?}")).unwrap();
+                std::fs::write(format!("{out}.{round}.chains"), format!("{fresh:#?}")).unwrap();
             }
             // (Every derived key of the plan's work from one context with a key memo, as the plan
             // derives them, and from a fresh one per target without: the same, on this state.)
