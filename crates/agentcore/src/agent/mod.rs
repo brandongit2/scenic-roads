@@ -4702,6 +4702,24 @@ impl Agent {
         p
     }
 
+    /// A round that plans: the last plan's hold waited out first (`plan::why_plan`: no plan starts
+    /// sooner after the last ended than it took, half a core at most), so a change since is planned
+    /// in this round, its status written from that plan. A test's round after a change it then
+    /// reads in the status: `round` alone skips the plan while the hold lasts, and the hold is as
+    /// long as the last plan took, longer on a loaded Mac (#1110: a 5-ms plan, its next round 4.9 ms
+    /// after). Panics unless the round planned.
+    #[cfg(test)]
+    fn round_planned(&mut self) -> Result<bool> {
+        let p = self.plan.inline().expect("a planner in line");
+        if let Some((at, took, ..)) = p.last {
+            store::testkit::eventually("the last plan's hold over", || at.elapsed() >= took);
+        }
+        let n = p.n;
+        let r = self.round()?;
+        assert!(self.plan.inline().unwrap().n > n, "the round planned");
+        Ok(r)
+    }
+
     /// This round's side as **plan** reads it (`plan::Inputs`): a copy, never a lock.
     fn plan_inputs(&self, root: Option<&NasRoot>, c: &Conditions, ended: bool) -> plan::Inputs {
         let slots = (0..self.slots.len())
@@ -7682,7 +7700,7 @@ impl Agent {
             }
         }
         if brokers::stale(self.broker_https.as_ref().map(|h| h.0), now, brokers::HTTPS_EVERY) {
-            self.broker_https = Some((now, served_https(port), coordwire::net::lan_urls(port)));
+            self.broker_https = Some((now, coordwire::net::served_https(port), coordwire::net::lan_urls(port)));
         }
     }
 
@@ -9184,15 +9202,6 @@ fn make_viewer(
             None
         }
     }
-}
-
-/// A port's address over HTTPS, when `tailscale serve` proxies it (coordwire::net::served_https); none
-/// in a unit test (`buildstore::out::testing`: no Mac's own Tailscale decides it).
-fn served_https(port: u16) -> Option<String> {
-    if buildstore::out::testing() {
-        return None;
-    }
-    coordwire::net::served_https(port)
 }
 
 /// The origins a proxy on this Mac serves its pages under (coordwire::net::names, "https://<name>"):
@@ -13893,8 +13902,8 @@ mod tests {
             .plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w)
             .iter()
             .any(|j| j.id.starts_with("inputs ")));
-        // Held (the negative v): the status says so.
-        a.round().unwrap();
+        // Held (the negative v): the status says so (as the round's plan made it, `round_planned`).
+        a.round_planned().unwrap();
         let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &home).unwrap();
         let v = st.inputs.iter().find(|v| v.unit == unit).unwrap();
         assert_eq!(v.state, inputs::inputs::view::State::Held);
@@ -13936,9 +13945,10 @@ mod tests {
             "a new lead doesn't repeat a full check less than a day old"
         );
         // Off the gate: no longer shown, nor checked; its records forgotten when asked, by a job of
-        // the lead's.
+        // the lead's. (Shown as of the round's own plan, the flag's removal in its digest: `round`
+        // alone may come within the last plan's hold and show that plan's entries, #1110.)
         std::fs::remove_file(root.join(inputs::inputs::TEST_FLAG)).unwrap();
-        b.round().unwrap();
+        b.round_planned().unwrap();
         assert!(read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &d.path().join("home-b"))
             .unwrap()
             .inputs

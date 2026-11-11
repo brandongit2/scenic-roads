@@ -273,8 +273,13 @@ fn inet4() -> Vec<std::net::Ipv4Addr> {
 }
 
 /// `port`'s address over HTTPS, when `tailscale serve` proxies it ("https://<this Mac's tailnet
-/// name>/<path>").
+/// name>/<path>"). None in a unit test (`buildstore::out::testing`): no Mac's own Tailscale decides
+/// it, and no test starts its app (#1110: each coordinator a test started ran the Tailscale app's
+/// binary, ~430 launches an agentcore run).
 pub fn served_https(port: u16) -> Option<String> {
+    if buildstore::out::testing() {
+        return None;
+    }
     let cli = [
         "/opt/homebrew/bin/tailscale",
         "/usr/local/bin/tailscale",
@@ -442,6 +447,15 @@ mod tests {
         funnel.insert("tailscale-funnel-request", HeaderValue::from_static("?1"));
         assert!(!reached("127.0.0.1".parse().unwrap(), &funnel));
         assert!(!reached("127.0.0.1".parse().unwrap(), &p));
+    }
+
+    /// A unit test's addresses are its own, never this Mac's network's: no Tailscale app started
+    /// (`served_https`), no LAN address (`lan_urls`), whatever this Mac serves (#1110).
+    #[test]
+    fn a_tests_addresses_ask_nothing_of_this_mac() {
+        assert!(buildstore::out::testing());
+        assert_eq!(served_https(18085), None);
+        assert!(lan_urls(18085).is_empty());
     }
 
     #[test]

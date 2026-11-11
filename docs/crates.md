@@ -1084,12 +1084,13 @@ commit; re-exports at the old paths as before.
         `listen_ip()`: loopback in a unit test), the ports kept (`KEPT`, `test_port`,
         `test_listener`, `listeners_on`'s refusal of a port of its own, `keep_listeners`).
       - **The rest:** agent's `join_wait`/`join_try` (were `JOIN_WAIT`/`JOIN_TRY`), the NAS part's
-        no mounting, the panics on no coordinator, broker or viewer, `served_https`; `nas::deadline`
+        no mounting, the panics on no coordinator, broker or viewer; `nas::deadline`
         (was `DEADLINE`); nasread's pools' threads (`threads`, `threads_in_all` for the status) and
         `big_read_deadline`; the planner's `sample` of a stuck plan and its check of every planned
         command (`cli::check_command`), the jobs' check of each command and `test_groups` (the
         reaper of a test's job groups); the pool's loopback mail addresses and `open_backoff`;
-        coord's `LOOPBACK_WAITS`; net's `names`, `urls`, `lan_urls`; the store's `backup_every`
+        coord's `LOOPBACK_WAITS`; net's `names`, `urls`, `lan_urls`, `served_https` (#1110: the
+        coordinator's own calls too, not only the agent's); the store's `backup_every`
         (was `BACKUP_EVERY`).
       - **Safety:** `testing()` is true exactly where pipeline's `cfg(test)` applied. It turns true
         only by `go_testing`, called only from a lib.rs's `#[cfg(test)]` `TEST_START` (or in
