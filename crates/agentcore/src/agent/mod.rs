@@ -336,6 +336,9 @@ fn write_published(home: &Path, r: &publish::LastCatalogue) -> Result<()> {
 const HUNG_SKIPS: u32 = 3;
 /// What the coordinator says while its pool step hangs on the share (`Agent::pool_skipped`).
 const HUNG: &str = "its pool step hangs (the NAS not answering)";
+/// What the lead's coordinator says from its start until its pool's step says whether it grants
+/// (`make_coordinator_on`).
+pub(crate) const UNSTEPPED: &str = "its pool's step hasn't said yet that it leads";
 /// How long the loop tries for the run when no tick is said to hold it (the pool's thread's moment's
 /// check, or a tick begun and not yet said), before passing its pool step over.
 const TRY_FOR: Duration = Duration::from_millis(200);
@@ -9306,6 +9309,9 @@ fn make_coordinator_on(
     match crate::coord::Coordinator::start(o.the_plan, &o.home.join("coord"), port, host, app) {
         Ok(c) => {
             eprintln!("agent: coordinating at {}", c.contact.urls.join(", "));
+            // (Nothing granted until its pool's step says it may: it may not lead yet, its take-up
+            // waiting, while the lead before it still grants, task #1038.)
+            c.set_moving(Some(UNSTEPPED.into()));
             Some(c)
         }
         Err(e) => {
