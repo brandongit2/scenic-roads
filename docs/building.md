@@ -333,7 +333,7 @@ from the first (`edit_held`).
   names-todo ran, and the medians (the catalogues' phases among them).
 
 **The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/coordinator.md`),
-always on. Every Mac's agent is a member; one leads each term. A process not in the pool (no NAS at
+always on. Every Mac's agent is a member; the declared one leads. A process not in the pool (no NAS at
 start, or its member lock held) starts nothing new. `scenic pool [status]` shows it, and `scenic
 status` labels the Mac by its part: "lead, coordinator", "member", or "not in the pool: waiting to
 join (why)" (`Status::role`, `out_of_pool`). The map is served by the M6 alone (always on;
@@ -351,10 +351,11 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   (Restarts).
 - **Who leads** is fixed: the Mac mini, the member `state/build/lead-member.json` declares
   (pool.md §6.1, task #881). It plans, runs a coordinator (`agentcore::coord`, port 8090) from which
-  every other worker asks for work, and merges the journal into the records. Restarting or waking,
-  it makes the next term naming itself (`state/build/terms/`) and goes on with its leases. No other
+  every other worker asks for work, and merges the hand-offs into the records. Restarted, it takes
+  its own records up in a new epoch of its coordinator's store (docs/coordination.md step 8c) and
+  goes on with its leases; woken, it goes on in the epoch it led. No other
   Mac leads: with the mini gone, the members finish their jobs and wait (pool.md §6.3). Each Mac
-  reads its role once as its agent starts (`pool::term::role`, docs/roles.md §1) and builds that
+  reads its role once as its agent starts (`pool::lead::role`, docs/roles.md §1) and builds that
   role's parts; when the owner moves the declaration, the agent restarts into its new role at once,
   its jobs handed over to the next process.
 - **What's offered** (crate::agent::every): every step to every member except the lead's own
@@ -390,21 +391,22 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   (`agent/coord/store/`, backed up to the NAS as `state/lead/store.json` every 10 min,
   docs/coordination.md §4); the workers' token and accepted devices are the pool's
   (`state/coord/`); the history is each writer's own file per day (`state/coord/history/`; days older than a week one tar each in `state/coord/history-archive/`, docs/pool.md §7.5).
-- **Every job hands off:** under a lease `<term>-<id>` it saves into `agent/pool/jobs/<term>-<id>/`
+- **Every job hands off:** under a lease `<epoch>-<id>` it saves into `agent/pool/jobs/<epoch>-<id>/`
   (`SCENIC_HANDOFF`, `buildstore::handoff`), then as an entry (its done record and costs) kept by its
   member and posted to the lead by HTTP (docs/coordination.md step 6; to the journal,
-  `state/journal/<day>/<term>-<id>.json`, for a lead on an older app). The lead merges entries
-  into its term's records all or nothing, checking each against its step's write-set
+  `state/journal/<day>/<epoch>-<id>.json`, for a lead on an older app). The lead merges entries
+  into its records all or nothing, checking each against its step's write-set
   (`agent::steps::writes`) and, for a shared step, the files it saved. Readers read its
-  term's snapshot (docs/pool.md §6.2); it writes today's files (`manifest.json`, `jobs.json`,
-  `pending.json`, `sizes.json`) from them only while a member's older app reads those. Until merged, the agent
+  snapshot at the one path, `state/build/records.json` (docs/pool.md §6.2), which it keeps on its
+  own disk first; no lead writes today's files (`manifest.json`, `jobs.json`, `pending.json`,
+  `sizes.json`), the records before the pool. Until merged, the agent
   plans with its done records on top.
 - **Raw terrain tiles a job fetches:** it packs them and puts the archives on the NAS itself, handing
   the lead only their names (`Handoff::raw`); the lead names them in the raw store's index, which
   it alone writes.
 - **A job that fails** hands off the targets it finished; the rest are held against it.
-- **A catalogue** goes out only once the lead's records reflect the journal. **GC** runs only on a
-  step that re-asserted the lead's term; it removes only what its queue on the lead frees (no
+- **A catalogue** goes out only once the lead's records reflect what's handed off. **GC** runs only
+  on a step whose read of the declaration found this Mac the lead, caught up; it removes only what its queue on the lead frees (no
   map a client holds, nor the records, name it, past its grace and every older lease), each name
   marked deleted on the lead before it goes, and the merge refuses a hand-off that brings or reused
   one being removed or removed under its lease (docs/maplog.md §7.4).

@@ -17,7 +17,7 @@ marked *today* describe main at e3fa1d53, before the split; §4's *Built* notes 
 | the pool's switch, live view | NAS switches (`nasread`, 20 s) | |
 | the pause and hold (`sync_pause`, `sync_hold`) | NAS switches, local asks | a Pause ~5 min to show |
 | the running jobs (`tend`, cancels, guards) | child processes, local disk | fast |
-| the pool's step, the coordinator's contact, the outbox | the NAS (records, mail, terms) | |
+| the pool's step, the coordinator's contact, the outbox | the NAS (records, the declaration) | |
 | the gate, the plan, the grants (lead) | the NAS records, the CPU | plan 15–100+ s |
 | the caches | local disk (already a thread) | |
 | the checklist and counts | the manifest and outlines on the NAS, the CPU | 10–105 s a pass on the M4 (30 Oct) |
@@ -46,7 +46,7 @@ they talk only by the named channels and snapshots of §3.
 | **nas** | the mount, its health (`heal`), the three `nasread` pools | the share, under deadlines | requests from other parts; mount probe every 20 s |
 | **jobs** | the slots, their child processes, leases held, the memory and disk guards | children's exits, control's orders, grants | each child event, and every 2 s |
 | **plan** (lead only) | the plan, the offers, the grants, the gate, the checklist and counts | the records snapshot, the CPU | triggered by changes (§4.4); a 5-min fallback |
-| **pool** (until #878) | the pool driver: terms, mail, member heartbeats | the NAS, through **nas** | its 1-s tick (`pool::Ticker`, today) |
+| **pool** (until #878) | the pool driver: the declaration, the records, member heartbeats | the NAS, through **nas** | its 1-s tick (`pool::Ticker`, today) |
 
 The existing side threads (forecast, phase sums, region sync, hints, sampler, live, caches) become
 workers of **plan** or **jobs** with the same in/out shape: a request in, a snapshot out.
@@ -211,8 +211,8 @@ cancel can reach it later with a higher one. The lead's coordinator is the first
 (`coord::cancel_in`), it notes the target at the newest plan's number, the running one included
 (`Coordinator::plan_started`), and never below the time in ms (`coord::lease::Cancelled`), drops it
 from the offers standing, and leaves it out of every later offer of a plan no newer
-(`Leases::unoffered`); a newer plan's offers forget it. The notes are saved with the leases and
-carried in the term's state, so a restarted or new lead keeps them while they matter. Numbers are at least the
+(`Leases::unoffered`); a newer plan's offers forget it. The notes are saved with the leases in
+the lead's store (and its NAS backup), so a restarted or new lead keeps them while they matter. Numbers are at least the
 time in ms (`plan::next_n`), so a lead started again, or another Mac leading, numbers past every
 plan before it and an old cancel drops none of its grants. A plan past `beat::LOOP_STUCK` is logged with its phase and sampled once
 (`plan::Handle::stalled`), and the status says so. The forecast's files for the NAS come back on a
@@ -294,7 +294,7 @@ instead of the agent's fields, and does its NAS calls through **nas**. Its gates
 4. **Grants follow the plan they came from.** A `Grant` carries its plan's number; the lead
    grants no target cancelled after that plan began (`coord::lease::Cancelled`), and **jobs**
    drops a grant no newer than a cancel of the same target it saw, as a second guard.
-5. **A part change stops beats first.** When this Mac's term changes (the lead losing it before its restart into its role, docs/roles.md §1),
+5. **A part change stops beats first.** When this Mac's part changes (the lead no longer declared, before its restart into its role, docs/roles.md §1),
    **beat** is told first and writes no more shared status under the old part (pool.md §7.6's rule,
    today enforced by clearing `BEATING`).
 6. **Shutdown order:** control stops taking asks; jobs hand over or stop; plan, pool stop (60 s
@@ -304,7 +304,8 @@ instead of the agent's fields, and does its NAS calls through **nas**. Its gates
 
 - **#881 (the mini as fixed lead, no election: landed).** **plan** runs only on the mini; on the M1
   and M4 it never starts. The handover and takeover machinery and the settle gate are gone from
-  **pool** (docs/pool.md §6); `pool_step`'s gates left are `leads`, `duties` and the re-assertion.
+  **pool** (docs/pool.md §6); `pool_step`'s gates left are `leads`, `duties`, `caught_up` and `vouched` (no re-assertion since
+  docs/coordination.md step 8c).
 - **#878 (pool coordination by HTTP on the lead).** When it lands, **pool** shrinks to an HTTP
   client: a member's heartbeat, mail and holds are posts to the lead's endpoint, and **beat**'s
   shared write goes there too. **nas** then serves only the jobs' and the plan's data reads. The
@@ -327,7 +328,7 @@ in tests.
 | 3 | *Done:* **control** (`agent::asks::Handle`: its thread and a kqueue watcher on the agent's folder and `cancel-requests/`, opened anew when either is made again, each look asked once it is armed (#944: looked first, a change in between was seen by neither until the sweep), a 2-s sweep behind it; inline for a single loop) on the files the endpoint writes too (`/api/hold` added beside `/api/settings`); this Mac's hold, the quit and the settings taken up and published at once, the loop's wait woken (`ControlMsg`). A cancel and another member's hold ask wake the loop, which still takes them (they need the jobs, the pool: steps 5 and #878); the hold's NAS mirror stays the loop's (`hold_on_nas`) | `asks`' poll (`EVERY`), `Asks`, `sync_hold`, `adopt_hold`, `hold_asked_anew`, `hold_ask_time`, `hold_seen`, `asks_on`, `Agent::hold` the field (control's snapshot now), `quit_ask`'s file reads and the wait's polls, the settings block in `step`, `Snap::update` | `pause_shows_within_a_second_on_a_hung_nas` and `…_while_planning`: a hold posted; its answer and a "pausing" status within 1 s, the job's channel says drain |
 | 4 | *Done:* **nas** (`agent::nas`): the mount, probe, LAN remount and the heal's remount on its thread, each look under a 30-s deadline, published as `NasView`; the planner's keys under `nasread::with_big` | the mount block in `step`, `root`'s own finding and mounting, `Agent::last_mount_try`, `Agent::probe`, `heal_step`'s unmount, `answers`' `CHECKING` (a `Mutex`: mod.rs 4 → 3 in the scan's list); the mount, probe and keys off pool.md §7.8's "still under no deadline" list | `a_hung_mount_holds_only_nas_work`: the mount fake hangs; 20 rounds each in moments, "the NAS is mounting (stuck since …)" said, a pause answered at once, the root back once it answers; `agent::nas::tests` |
 | 5 | *Done, a first slice:* **jobs**' thread (`agent::slots`): the reaper, cancels and other members' hold asks taken at once; nothing starts under a hold (checked again at the start). Left for 6–7: the slots, the guards and grants by channel | `run`'s 2/20-s timing (the 2-s look after a job's end, the 2-s look while quitting), `tend_cancels`' folder read (`take_cancels` is the thread's, or in line), `hold_on_nas`' member asks (now `slots::take_member_hold`) and its "pool step busy: ask again" refusal (asked again each tick instead); the loop woken for cancels and member asks (`ControlMsg::Ask` goes to the thread) | `a_job_is_reaped_while_the_nas_hangs`, `a_cancel_is_acted_on_within_a_second_while_planning`, `nothing_starts_under_a_hold` |
-| 6 | *Done:* **plan** (`agent::plan`) on its thread, triggered by changes (`why_plan`); grants from the last `PlanView`, numbered (`coord::Grant::plan`); the checklist, counts, gate, redos and side threads its workers; the round (`Agent::round`) **jobs**' | `step` (now `round`, which never plans), `plan_due`, `LastPlan`, `IDLE_REPLAN`, `Planned`, `start_soon`, `may_pack` (its check the grants' own), `try_pooled` (the round reads `PoolView`; a sweep's re-assert asked of the next pool step), `built_making`'s polling in the wait, the loop watchdog (`nasread::watch`, `Watchdog`, `ROUND_AT`, `WATCH_DONE`, `STALL_GRACE`, `Stall`, `stall`, `loop-stall.json`, `scenic status`'s stalled line; the plan's stall log and sample replace it), `Agent::cache_size`'s `Mutex` (a channel) | `a_slow_plan_delays_no_grant_pause_or_heartbeat`: a 3-min plan on its thread; grants from the last plan within moments, no lease twice, a pause within 1 s, the beat every 10 s. `a_hung_nas_holds_only_nas_work_while_planning`, `a_grant_from_a_plan_before_a_cancel_is_dropped`, `a_grants_plan_number_reads_across_app_versions`, `plan::tests::the_plan_is_made_on_changes` |
+| 6 | *Done:* **plan** (`agent::plan`) on its thread, triggered by changes (`why_plan`); grants from the last `PlanView`, numbered (`coord::Grant::plan`); the checklist, counts, gate, redos and side threads its workers; the round (`Agent::round`) **jobs**' | `step` (now `round`, which never plans), `plan_due`, `LastPlan`, `IDLE_REPLAN`, `Planned`, `start_soon`, `may_pack` (its check the grants' own), `try_pooled` (the round reads `PoolView`), `built_making`'s polling in the wait, the loop watchdog (`nasread::watch`, `Watchdog`, `ROUND_AT`, `WATCH_DONE`, `STALL_GRACE`, `Stall`, `stall`, `loop-stall.json`, `scenic status`'s stalled line; the plan's stall log and sample replace it), `Agent::cache_size`'s `Mutex` (a channel) | `a_slow_plan_delays_no_grant_pause_or_heartbeat`: a 3-min plan on its thread; grants from the last plan within moments, no lease twice, a pause within 1 s, the beat every 10 s. `a_hung_nas_holds_only_nas_work_while_planning`, `a_grant_from_a_plan_before_a_cancel_is_dropped`, `a_grants_plan_number_reads_across_app_versions`, `plan::tests::the_plan_is_made_on_changes` |
 | 7 | *Done:* docs: pool.md §7.8, building.md §2 and this doc as built | — | — |
 
 Steps 2 and 3 matter most to the owner (the 5-min Pause, the heartbeat) and depend only on step 1.

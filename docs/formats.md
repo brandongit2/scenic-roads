@@ -664,9 +664,11 @@ pack-idx/<hash16>.idx   indexes of the terrain packs the manifest names (agent::
                         trimmed; one unnamed and untouched for a fortnight goes; the lead's
                         alone (removed as a member starts)
 pool/                   crate::agent::pool: saved.json (crate::pool::driver::Saved: {member, mine:
-                        {entries, unwritten}, term, led, made, unfinished?, stood_down?, passing?};
-                        saved.earlier.json one set aside), mail.json ({read, sent, n}), members.json,
-                        forgotten.json, jobs/<term>-<n>/ (a job under its lease: work.json {step,
+                        {entries, unwritten}, records?: [epoch, seq]}; an older app's keys read
+                        past; saved.earlier.json one set aside), records.json (the lead's own copy
+                        of the records it saves, written before the NAS's: docs/pool.md §6.2),
+                        mail.json ({read, sent, n}), members.json,
+                        forgotten.json, jobs/<epoch>-<n>/ (a job under its lease: work.json {step,
                         targets, lease}, its hand-offs, done.txt, costs.jsonl, unmerged.json),
                         lead.json (crate::agent::lead::Kept), notes.jsonl
 cache/                  build caches (below)
@@ -786,9 +788,10 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
 {"term": <E>, "at": <unix s>, "record": <forecast::Record>}
 ```
 
-- `term`: the lead's term when it made the forecast; `at`: the forecast's time (the record's
-  `input.now`); `record`: the forecast's whole input, as `state/build/term/<E>/forecast-input.json`
-  holds it (below, Forecast input), uncompressed inside the frame.
+- `term`: the epoch its lead led in when it made the forecast (a term's number before
+  docs/coordination.md step 8c); `at`: the forecast's time (the record's `input.now`); `record`:
+  the forecast's whole input, as the terms' `state/build/term/<E>/forecast-input.json` hold it
+  (below, Forecast input), uncompressed inside the frame.
 - A frame is written with long-distance matching over a 64 MB window (`fcarchive::encoder`), so an
   input after the first in its frame is stored mostly as what changed since the ones before it.
   A reader decodes a frame whole to read one of its inputs (`fcinputs::Input::record`). A frame
@@ -1009,7 +1012,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     pool's store, `agentcore::pool::store`, docs/coordination.md §4: `snapshot.json`, `{epoch, seq,
     docs}`, written whole, and segments `<first seq>.jsonl`, one line per change after it, `{seq,
     epoch?, set: {key: value}, del: [key]}`; its documents, `agentcore::coord::kept`: `leases`
-    (`{next, holds, cancelled}`), `lease/<id>` (`{id, term, granted_at, worker, work, progress,
+    (`{next, holds, cancelled}`), `lease/<id>` (`{id, term (its epoch), granted_at, worker, work, progress,
     …}`), `cost/<key>`, `floor/<key>`, `disk/<key>`, `job_disks`, `fills` and `pause`, each as the
     files below held them; and `member/<host>`, `{speaks: ["held-leases"], at}`, a member as its
     last beat said, `agentcore::coord::held`). Read once, into a store not made yet (an agent before the store's), and
@@ -1020,7 +1023,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     `disks.json` (`{<cost key>: MB}`, rising only, docs/pool.md §7.7); `job-disks-v6.json`
     (`{<step>: [MB, …]}`, the disk its last 20 jobs took, oldest first; an older `job-disks-v5.json`
     (the same) read once whole, `pack`'s and `lo`'s targets' entries in `disks.json` dropped (task
-    #657: those of before task #396, brought back by each take-up of a term's state); else an older `job-disks-v4.json`
+    #657: those of before task #396, brought back by each take-up of the coordinator's state); else an older `job-disks-v4.json`
     (the same) read once without `pack`'s and `lo`'s runs, which counted their copies of whole base
     packs before task #396, their targets' entries in `disks.json` dropped with them; else an older
     `job-disks-v3.json`, `-v2` or `job-disks.json` (`{<step>: MB}`, the most) read once, each peak
@@ -1064,9 +1067,10 @@ class, id) within a tile. The client sends the id with the clicked point.
     from the menu and `scenic inputs check`; taken up at the agent's next
     loop. A member's agent tells the lead's coordinator (`POST /api/inputs`); the build page posts
     there directly (never `forget`).
-  - **The lead's declaration** (`agentcore::pool::term::Declared`, docs/pool.md §6.1), on the NAS:
-    `state/build/lead-member.json`, `{member, host, since}`, made once with create-new; moved by
-    the owner's edit alone.
+  - **The lead's declaration** (`buildstore::records::lead::Declared`, re-exported as
+    `agentcore::pool::lead`, docs/pool.md §6.1), on the NAS: `state/build/lead-member.json`,
+    `{member, host, since}`, made once with create-new by the first Mac in a new pool; moved by
+    the owner's edit alone. Its being there is the pool's having begun.
   - A hand-off (`buildstore::handoff`): `{changes: {logical: content name | null}, pending: {content
     name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[shard,
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last
@@ -1074,25 +1078,22 @@ class, id) within a tile. The client sends the id with the clicked point.
   - A member's status rides in its beat (docs/coordination.md step 3); the lead's
     `state/status.json` lists the members' as `helpers` and their heartbeats as `beats`.
 - **The pool** (docs/pool.md):
-  - `state/build/terms/<E>.json`: term E, create-new, `{term, member, host, app, since, how, from,
-    seq}`; `state/build/lead.json` a copy of the newest (a hint).
   - `state/build/records.json` (`{term, seq, manifest,
-    keys, pending, sizes, raw, reflected, rejected, last: {step: {target: lease}}}`; `sizes`: content name → bytes of the files the manifest names, as their jobs wrote
-    them): the lead's newest snapshot, whatever its term, a copy of the one on its disk
-    (`agent/pool/records.json`, the same bytes); readers read it (`Records::now`).
+    keys, pending, sizes, raw, reflected, rejected, last: {step: {target: lease}}}`; `term` the
+    epoch it was saved in, its key kept for older apps; `sizes`: content name → bytes of the files
+    the manifest names, as their jobs wrote them): the lead's newest snapshot, a copy of the one on
+    its disk (`agent/pool/records.json`, the same bytes); readers read it alone (`Records::now`).
     `state/build/brief.json`: `{term, seq, manifest, keys}` of that snapshot, written after it,
-    read by readers of those alone (`Brief::now`). `state/build/term/1/first.json` (term 1's first
-    snapshot), and each term's own `state/build/term/<E>/records.json`, the same form, written
-    beside by its lead (what a late write at the one path can't hide: docs/pool.md §4, invariant
-    5), and (E ≥ 2) `brief.json`, written while a member's app reads it (docs/coordination.md step
-    8b's gate). `manifest.json`, `jobs.json`, `pending.json` and `sizes.json` are
-    the records before the pool (term 1's first snapshot is made from them; its saves write them);
-    a later term's lead writes them no more (last on the live share 31 Oct: #878 step 8a).
-  - `state/journal/<day>/<term>-<n>.json`: a job's entry `{member, lease, step, handoff, at}`
+    read by readers of those alone (`Brief::now`). `manifest.json`, `jobs.json`, `pending.json`
+    and `sizes.json` are the records before the pool (a new pool's first take-up is made from
+    them); no lead writes them. The terms' files (`state/build/terms/`, `state/build/lead.json`,
+    `state/build/term/<E>/`, `state/coord/term/<E>/`) are neither written nor read since
+    docs/coordination.md step 8c, but the terms' `forecast-input.json` (the backtest's).
+  - `state/journal/<day>/<epoch>-<n>.json`: a job's entry `{member, lease, step, handoff, at}`
     (`handoff.sizes`: the bytes of each file it wrote, by content name; none in older entries);
-    `state/journal/rejected/<day>/<term>-<n>.why`. Since #878 step 6 written only by a member whose
+    `state/journal/rejected/<day>/<epoch>-<n>.why`. Since #878 step 6 written only by a member whose
     lead doesn't take hand-offs by HTTP (the same entry posted whole, `POST /pool/handoff`, kept in
-    the lead's store as `handoff/<day>/<term>-<n>` until merged: docs/coordination.md).
+    the lead's store as `handoff/<day>/<epoch>-<n>` until merged: docs/coordination.md).
   - A member's heartbeat rides in its beat (`POST /pool/beat`, docs/coordination.md step 3):
     `{member, host, app, beat, leads, addresses, reach, checks_map, members, conds: {home, ac,
     battery, held}}` (with brokers on, `broker: {urls, https, pages}`; `mail_http` and `beat_http`
@@ -1112,16 +1113,16 @@ class, id) within a tile. The client sends the id with the clicked point.
     `/pool/lease/answers`; the lease as `answers-lease` in its store), nothing on the NAS.
   - The members' mail goes by HTTP (`POST /pool/mail`; the lead's in its beats' answers): each
     sender's last 64 messages, `[[n, msg], …]`, `msg` one of `{"Tell": [keys]}`, `{"Ack": {term,
-    keys, horizon}}`, `{"Passed": term}`.
+    keys, horizon}}` (`term` the lead's epoch), `{"Cancel": …}`, `{"Retry": …}`.
   - `state/lead/store.json`: the lead's store's backup (`agentcore::pool::store::Snapshot`, `{epoch,
     seq, member, at, docs}`), each 10 min while it changed; `state/coord/token`;
-    `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`; days older than 7 are
+    `state/coord/history/<day>/<member>.jsonl` (history events, the lead's take-ups and step-downs as `kind: term`; days older than 7 are
     `state/coord/history-archive/<day>.tar`, a ustar of `<day>/<member>.jsonl`);
     `state/coord/forecasts/<day>.jsonl.zst` (the lead's forecasts, The forecasts' archive above;
     days older than 7 in `state/coord/forecasts-archive/<YYYY-MM>.tar`);
     `state/coord/forecast-inputs/<day>.jsonl.zst` (the lead's forecast inputs, The forecast
     inputs' archive above; days before the last 7 removed).
-  - Leases carry `term` and `granted_at`; `/work/done {…, journaled: true}`; `/work/done` and
+  - Leases carry `term` (the epoch they were granted in; header `x-pool-epoch` on the lead's answers) and `granted_at`; `/work/done {…, journaled: true}`; `/work/done` and
     `/work/fail` carry `floors`, `disks` (`[[cost key, MB], …]`) and `job_disk_mb`.
 - **State:** `state/status.json` (the agent's heartbeat, at least every two minutes): conditions,
   the job, `parts`/`part`, progress, `paused`/`pausing`, what waits, `pause`, `publishing`

@@ -89,9 +89,9 @@ The cycle is held together by a few thin edges from low-level code up to `agent`
 | osmpass, layers, … → agent::jobs | progress reporting (`stage`, `report`, `part`, `within`, `run_watched`, `each_line`) | items moved (step 3): jobrt's `jobs` (with the log's reading: `tail`, `said`, `parts`, `error_of`); agent::jobs re-exports them. The edge goes as for room |
 | coverage, dem → agent::recipes | the `Recipe` type | built (step 4): agent/recipes.rs is buildstore's `recipes`; agent::recipes re-exports it |
 | out → agent::steps | `steps::writes` (each step's write set, checked on every save) | built (step 6a): `Out::open` takes the write set as a function (`out::Writes`); pipeline's `out::open(root, scratch, step)` passes `agent::steps::writes` |
-| out → pool::records | out's two wrappers (`records_now`, `brief_now`), and `Out` itself: it opens from `Records::now`'s manifest and pending, and a catalogue's sizes are its (`recorded_sizes`) | built (steps 4, 6a): the wrappers are gone; which file holds the records now (`now`, `newest_over`, `brief_now`, term 1's fallbacks), the NAS's operations and the current term are buildstore's `records`, generic over what's read: `Out` reads its `Recorded`, the pool its `Records`. `read_manifest` is buildstore's |
+| out → pool::records | out's two wrappers (`records_now`, `brief_now`), and `Out` itself: it opens from `Records::now`'s manifest and pending, and a catalogue's sizes are its (`recorded_sizes`) | built (steps 4, 6a): the wrappers are gone; which file holds the records now (`now`, `brief_now`: the one path, today's files before the pool; since docs/coordination.md step 8c no terms), the NAS's operations and the declared lead are buildstore's `records`, generic over what's read: `Out` reads its `Recorded`, the pool its `Records`. `read_manifest` is buildstore's |
 | out → inputs | `in_inputs_folder` | built (step 4): it and `DROP_ROOTS` are buildstore's `inputs_folder`; inputs re-exports both |
-| out → pool::term, agent::resume | `term::DIR` (whether the pool has begun), `UNMERGED_ENV` | built (step 4): `out::TERMS` and `out::UNMERGED_ENV`; `pool::term::DIR` is `out::TERMS`, agent::resume re-exports the other |
+| out → pool::term, agent::resume | `term::DIR` (whether the pool has begun), `UNMERGED_ENV` | built (step 4): `out::UNMERGED_ENV`, agent::resume re-exports it; whether the pool has begun is `records::lead::LEAD`'s being there (step 8c: `out::TERMS` gone with the terms) |
 | fetch → control | `draining_lately` | built (step 3): `control` is jobrt's |
 | fetch, out, outlines → osmpass | osmpass's ssh helpers (out: `ssh_opened`; fetch: `proxy_addr`, in a test) and its set names (outlines: a measuring test) | built (step 4): `SSH_START`, `watched`, `ssh_opened`, `ssh_stalled` and `proxy_addr` are buildstore's `nasssh`, osmpass and agent::gc use them from there; the measuring test is osmpass's |
 | rawpack → agent, pyramids | `agent::stopping` (the agent asked to stop), `pyramids::DIR` | built (step 4): the stop flag is jobrt's `control::{ask_stop, stopping}` (agent::stopping re-exports it); the folder is `rawpack::PYRAMIDS`, which `pyramids::DIR` names |
@@ -127,8 +127,8 @@ names, webpenc as now).
 4. **buildstore** (the build's files: the NAS/store layer above `store`; built, step 4): out,
    handoff, rawpack, localread, costin, coverage, outlines, fetch, geotiff, `recipes` (the
    `Recipe` type), `inputs_folder` (the inputs folders' predicate), `nasssh` (a bounded `ssh` to
-   the NAS, from osmpass), `records` (the records' read side, step 6a: pool/nas.rs, pool::term's
-   reading, the choice of the file read; `Member`). ~13k lines (5 Nov 2026), no pipeline
+   the NAS, from osmpass), `records` (the records' read side, step 6a: pool/nas.rs, the declared lead
+   (`records::lead`), the file read; `Member`). ~13k lines (5 Nov 2026), no pipeline
    dependency. Its `Out` is plain: it reads the records itself, and a step's job is handed its
    write set (`Out::open(…, writes)`), so a crate below pipeline can open one.
 5. **inputs** (the declared inputs and the steps reading them first; built, step 6d): inputs,
@@ -589,7 +589,11 @@ The choices, against the alternatives:
   `Recorded`, which reads only the term, manifest, pending and sizes) and the brief
   (`BriefOf`: pool's `Brief`, and `read_manifest`'s manifest alone). Pool re-exports all of it at
   its old paths; `Records::{load, newest, now}` and `Brief::now` are one-line calls of these. The
-  writing (save, merge, take_up, making terms) stays in pool. No second copy of the choice.
+  writing (save, merge, take_up, making terms) stays in pool. No second copy of the choice. (Since
+  docs/coordination.md step 8c, task #1124, there are no terms: `records::term` is
+  `records::lead` (`LEAD`, `Declared`, `declared`, `declare`, the role, the app rule), re-exported
+  as `pool::lead`, and the choice is the one path's alone (`load_one`, `now`, `brief_now`,
+  `no_pool`, `TODAY`, `ONE`, `ONE_BRIEF`).)
 - **Items the steps name from the agent move to their owners** (built, 6b): the version
   constants to their step (`TERRAIN_V` terrain_pack's, `SLOPE_V` and `SLOPE_LO_V` slope_pack's;
   the plan and the steps table import them), `grown_e7` to roadcore::geo, `coverage_tiles` (with
@@ -1272,7 +1276,7 @@ its old path, and the server names their crates:
   `lan_urls`: none, loopback, none) are a test's in its own tests as in agentcore's;
 - the declared lead and this Mac's role (`LEAD`, `Declared`, `declared`, `Role`, `role`, `role_of`,
   `declare`): agentcore::pool::term → buildstore::records::term (the role moving out of pool::term
-  ahead of #878 step 8c, docs/roles.md);
+  ahead of #878 step 8c, docs/roles.md; `records::lead` since step 8c);
 - this Mac's member id and its lock (`member_id`, `read_member_id`, `MemberLock`): agentcore::pool
   → buildstore::records::member;
 - this Mac's room target read (`TARGET`, `target`, `RoomTarget`): agentcore's agent::room and
@@ -1361,7 +1365,6 @@ nasread's are agentcore's agent and coord and pipeline's agent. The families mak
 command lines with jobrt::sys's `program`, which is already below them, and agentcore's test of
 the tasks' command lines checks every family's specs in one place. nasread can't sit in jobrt at
 all: `Deadlined` implements buildstore's `Nas` (records::nas), its pools' sizes read
-`buildstore::out::testing`, and its term deadline agentcore's `pool::term::DIR`; jobrt is below
-buildstore. The two NAS reads below agentcore that are bounded keep their own bounds on purpose
+`buildstore::out::testing`; jobrt is below buildstore. The two NAS reads below agentcore that are bounded keep their own bounds on purpose
 (terrain's GeoTIFF opens, `GRIDS_AT_ONCE` at once, would starve nasread's four readers;
 buildstore::nasssh bounds an `ssh`'s start, not a call).

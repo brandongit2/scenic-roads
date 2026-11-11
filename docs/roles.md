@@ -21,8 +21,8 @@ regions' states, the build page's readers, the broker's phase shares run on ever
 
 The fix is one role, read once from the declared lead:
 
-- `pool::term::role(nas, me) -> Role::{Lead, Member, Unknown}`: `state/build/lead-member.json`
-  (`term::declared`) against this Mac's member id. `Unknown` (unread NAS, no member file yet)
+- `pool::lead::role(nas, me) -> Role::{Lead, Member, Unknown}` (buildstore::records::lead):
+  `state/build/lead-member.json` (`lead::declared`) against this Mac's member id. `Unknown` (unread NAS, no member file yet)
   starts the member's set, which is a subset of the lead's, and is read again each minute until
   known. The server's `retire::retires` calls the same function.
 - `Agent::new` builds the parts for the role (`Parts::lead()` / `Parts::member()`), and nothing
@@ -98,8 +98,9 @@ coordinator's server and folder (one at a time on a Mac; the jobs' token kept th
 outlives a change of role), started as a broker: no phase sharer, nothing kept in the pool's store,
 no job lease, and none of the files a lead keeps in the folder read or written (step 6: the leases,
 measures, jobs' disks, fills and pause there are a lead's store's first fill alone). Its answers say
-term 0 and its member, so a member still asking that Mac as the lead after a change of lead reads
-the contact again (an older member too: it compares the term). Its API is its own, not the
+epoch 0 and its member (`x-pool-epoch`, `x-pool-member`), so a member still asking that Mac as the
+lead after a change of lead reads the contact again (it answers as epoch 0, or as another member
+than the declared lead). Its API is its own, not the
 coordinator's: its addresses and jobs' token, its member, its jobs' tasks closed and leases lapsed,
 its pause, placement and the members' brokers (`coord::Brokering` is what the run's steps tell,
 the lead's coordinator or a member's broker). Of the page it serves only what the lead's page asks
@@ -213,13 +214,13 @@ files on a laptop are §8.3's.
 
 Each step ships alone and keeps the build running; each ends with its tests.
 
-1. *Built.* **The role** (§1): `pool::term::role`, used by `Agent::new` and `retire::retires`; parts built
+1. *Built.* **The role** (§1): `pool::lead::role` (`pool::term::role` until #878 step 8c), used by `Agent::new` and `retire::retires`; parts built
    by role; `o.helper` derived from it, then removed. A changed declaration restarts the agent.
    Tests: `role_reads_the_declared_lead`, `an_unknown_role_starts_the_members_parts`,
    `a_changed_declaration_restarts_into_the_new_role`; the server's retire tests on the shared
    function. As built: `Options::helper` and the CLI's `--helper` are gone (no Mac's run file passes it: the status app
    writes `run/agent` without it);
-   a role change, or the lead losing its term, restarts at once (`role_restart`), its jobs handed
+   a role change, or the lead losing the lead, restarts at once (`role_restart`), its jobs handed
    over; the coordinator is built from the role, and the in-process promotion, demotion and the
    coordinator kept on as a broker are deleted. An unknown role learnt a member's is taken in place.
 2. *Built.* **The regions' states and the checklist off members** (after #871 6–7): no `region-states`
@@ -234,7 +235,7 @@ Each step ships alone and keeps the build running; each ends with its tests.
    deleted. Tests: the brokers' task tests moved to `Broker` (`a_task_goes_out_and_comes_back`,
    `a_task_given_back_is_not_a_failure`, `a_members_broker_passes_the_owners_asks_from_any_device_to_its_agent`);
    `a_member_runs_no_phase_sharer`; `a_member_asking_the_old_lead_after_a_change_of_lead_asks_the_new_one`
-   with the old lead's Mac's broker. As built: a broker says term 0, which an older member's
+   with the old lead's Mac's broker. As built: a broker says epoch 0 (term 0 before #878 step 8c), which an older member's
    client also takes as not the lead's; an older member's broker (a coordinator made a broker)
    and a newer one answer jobs' and pages' task calls alike.
 4. *Built.* **The page on the lead** (§3.3): the 307s, the menu bar loading the lead's page, the local
@@ -281,9 +282,9 @@ Each step ships alone and keeps the build running; each ends with its tests.
    `~/Library/Caches/scenic/catalogue` go with #883 step 9 (each Mac's agent removes them at its start), not here.
 8. **The member's NAS fallbacks**, with #878's gates (§8.4): nothing to build in #882; each gate's
    deletion takes a member's share of it (the `nas-switch` pool, `beat-nas`'s status copy, the pool
-   thread's mail and journal). `pool::term::role` is buildstore::records::term's since #916 step 7a
-   (the map server reads it without the runtime; `pool::term` re-exports it), so #878 step 8c's
-   deletion of that module leaves it where it is.
+   thread's mail and journal). The role is buildstore's since #916 step 7a (the map server reads
+   it without the runtime): `records::lead` since #878 step 8c deleted `pool::term`
+   (`pool::lead` re-exports it).
 9. **Docs**: macs.md (Devices: roles; the App Macs' offline map as 7a builds it), agent-parts.md
    (the member's parts), pool.md §5 (a member no longer "passes its build page's asks to the lead": its
    port redirects), pool.md §10 (the page is the lead's), this doc folded in.
@@ -367,7 +368,7 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 | Beat poster | members | members | `POST /pool/beat` to the mini |
 | Budgets' proxy | every Mac | every Mac (jobs ask it) | it asks the mini (`/pool/budget/take`) |
 | NAS mount, heal, read and write pools | every Mac | every Mac (jobs read and write the NAS); the switch pool goes with #878 | — |
-| Pool thread (journal, mailboxes, terms) | every Mac, its NAS side gated | an HTTP client alone after #878's gates | the mini's `/pool/*` |
+| Pool thread (journal, the declaration) | every Mac, its NAS side gated | an HTTP client alone after #878's gates | the mini's `/pool/*` |
 | Menu bar | every Mac: this Mac's status and `lead-view.json` (step 5) | the same: the thin local status | the lead's line in the beat's answer |
 | Build page and its data: pageview, forecast and its archive, Catalogues map, built tiles, region steps, phase shares, history | the mini (step 4) | the mini | a member's port 307s to it (§3.3) |
 | Plan, checklist, regions' states, gate, inputs watch, redo | the mini (steps 1–2) | the mini | grants by `/work/ask` |
@@ -500,9 +501,9 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   kept state costs the laptops nothing; #882 has nothing left in agent/plan.rs or build.rs.
 - **#878 (coordination off the NAS):** its step 3 carried step 5 here. Left on the
   members: the gated NAS fallbacks (step 8 above), and records by HTTP (`GET /pool/brief`, its open
-  decision 2), which would take a job's `--expect-same` brief read off SMB. Its step 8 ("terms
-  out") deletes `pool::term`, where `role` lives (§1): `role` moves (to `pool`, reading
-  `lead-member.json`, which stays) in that step.
+  decision 2), which would take a job's `--expect-same` brief read off SMB. Its step 8c ("terms
+  out", built, task #1124) deleted `pool::term`; `role` is `buildstore::records::lead`'s
+  (re-exported as `pool::lead`), reading `lead-member.json`, which stays.
 - **#883 (the map's log):** the log, its feed, GC and its queue are the mini's already; #882 moves
   none. 7b (built) gave the mirror its cursor; on 6 Nov only the mini runs a mirror, so no
   laptop's cursor holds GC. 8a (built) and 8b are the lead's. With 7a, a laptop's two

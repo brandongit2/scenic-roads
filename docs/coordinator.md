@@ -129,10 +129,11 @@ Common rules:
   (`coord::held`, docs/coordination.md §6) holds its jobs' leases until its word instead: its beat
   to the lead every 10 s lists them, one left out is released, and they go after 12 h unheard or
   by `scenic pool release <member>`.
-- **Handing back:** a job's saves, done record and costs go back as one hand-off, written by its
-  member to the journal and merged by the lead (docs/pool.md §7.3). A task's files go back to the
+- **Handing back:** a job's saves, done record and costs go back as one hand-off, posted by its
+  member to the lead (to the journal, for a lead on an older app) and merged by the lead (docs/pool.md §7.3). A task's files go back to the
   broker that offered it; a hand-back for a gone lease is refused (410).
-- **Restarts:** token, leases and costs are kept per term (`state/coord/`, docs/pool.md §7.5); a
+- **Restarts:** leases and costs are kept in the lead's store on its disk (backed up to the NAS,
+  `state/lead/store.json`), the token in `state/coord/` (docs/pool.md §7.5); a
   worker rereads `state/coordinator.json` when it can't reach the coordinator or its token fails.
 - **Failures:** a worker's failed z6 tile isn't offered to it for an hour, doubling; a task out of
   memory goes only to workers sparing more; after two other failures the job runs it.

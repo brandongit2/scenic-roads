@@ -5,25 +5,26 @@ merges results into the build's records and publishes; the others are **members*
 fixed: the Mac mini, the member `state/build/lead-member.json` declares (§6.1, task #881). No other
 Mac ever leads: there is no election, handover or takeover. With the mini gone, the members finish
 the jobs they hold, keep their hand-offs, and wait for it. The Macs' agents are the only
-workers (§8, coordinator.md): the build page shows the build and takes the owner's asks. The pool's code is `crate::pool` (the declaration, terms, records, hand-offs, the
+workers (§8, coordinator.md): the build page shows the build and takes the owner's asks. The pool's code is `crate::pool` (the declaration, records, hand-offs, the
 driver) and `crate::agent::pool` (the agent's side of it). It is always on.
 
-The records' readers read the term's snapshot; the lead writes today's files too only while a
-member's app still reads them (§6.2).
+The records' readers read the one path's snapshot, `state/build/records.json`, which the lead alone
+writes (§6.2). There are no terms (docs/coordination.md step 8c, task #1124): the lead leads the
+epoch of its coordinator's store, which numbers its records' snapshots and its leases.
 
 ## 2. Principles
 
 1. **One agent, every Mac.** A Mac is known by a member id made once; its host name is a label.
 2. **Durable state on the NAS;** a Mac's disk holds caches and work in progress.
 3. **Nothing on the NAS is written in place by two Macs.** A file has one writer (a member's own
-   files, the lead's), or is made once with create-new (terms, the declaration, refusal notes), or
-   belongs to one term (records, the coordinator's state). A late write of a process before lands
-   where no one reads.
+   files, the lead's), or is made once with create-new (the declaration in a new pool, refusal
+   notes). A late write of a lead's process before, at the one path, is passed over by the next
+   take-up (it starts from the lead's own disk's copy) and saved over within `RESAVE_S` (§4).
 4. **Every job hands its results off** to the lead (§7.3); only the lead's merge writes the records.
 5. **Work goes where it fits,** by measured memory and disk (§7.7). Publishing and GC are the
    lead's duties, not jobs.
-6. **One lead, declared:** no Mac decides by itself to lead; a restart of the lead is a
-   re-assertion, not a restart of the build: nothing is lost, no job stops.
+6. **One lead, declared:** no Mac decides by itself to lead; a restart of the lead is a take-up
+   of its own records in a new epoch, not a restart of the build: nothing is lost, no job stops.
 7. **Tasks belong to the member whose job offers them** (§8).
 8. **Any number of Macs and pages.**
 
@@ -31,12 +32,13 @@ Where state lives:
 
 | State | Truth | On a Mac | The lead after a restart |
 | --- | --- | --- | --- |
-| Records, built files, catalogues | NAS: `state/build/`, content-named files | caches (`agent/cache/…`) | reads them |
+| Records, built files, catalogues | NAS: `state/build/`, content-named files | caches (`agent/cache/…`); the lead's own copy of the records, `agent/pool/records.json` | takes up its own copy (§6.2) |
 | Downloads | NAS: `sources/` | cache copies | nothing |
 | A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`agentcore::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
 | Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, a depth, terrain-hi or terrain-deep target's blocks, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a depth, terrain-hi or terrain-deep target's when it runs there again; the rest redone |
-| The coordinator's state, token, history | NAS: `state/coord/` | `agent/coord/` | loads it (§6.2, §7.5) |
+| The coordinator's state | the lead's disk: `agent/coord/store/` (backup on the NAS, `state/lead/store.json`) | | opens it (§6.2, §7.5) |
+| The coordinator's token, history; its contact | NAS: `state/coord/`; `state/coordinator.json` | | uses them |
 | The lead's own (its catalogues' record, daily jobs' last runs; the map's log, docs/maplog.md) | the lead's disk | `agent/publishing.json`, `agent/state.json`, `agent/maplog/` | keeps it |
 
 ## 3. What the NAS gives us
@@ -45,7 +47,7 @@ The share is SMB 3 on a Synology. The design assumes:
 
 - **Create-new is atomic**, between two Macs too: 350 trials of both Macs creating one name at
   once (O_CREAT|O_EXCL, within ±30 ms) each had exactly one winner, its bytes the file's (task #645,
-  `tools/check/nas-probe.py`). Terms, the declaration and leases rely on it.
+  `tools/check/nas-probe.py`). The declaration in a new pool, and refusal notes, rely on it.
 - **A rename can be delayed indefinitely** (a Mac sleeping between write and rename).
 - **Reads can be stale** (macOS's SMB caches). Measured between two Macs on an idle share (task
   #645, 570 trials): a file renamed over was read new within 1.1 s (median 0.02 s), a new file
@@ -116,31 +118,30 @@ The share is SMB 3 on a Synology. The design assumes:
   A writer SIGKILLed mid-write leaves only its
   temporary file (test `whole_kill`, on local disk, not SMB). No NAS file is flock'd or opened with O_EXLOCK/O_SHLOCK: every
   lock (`sys::PathLock`: the build lock, the member and agent locks; store::cachefile's holds) is
-  on a local file; terms and leases use create-new (O_EXCL), an atomic create whose handle is
-  closed once written.
+  on a local file; the declaration in a new pool uses create-new (O_EXCL), an atomic create whose
+  handle is closed once written.
 - **No conditional writes or atomic appends** between clients.
-- **Listings are slow** (3–33 s a folder under load): nothing lists in a loop; the current term is
-  found by stat'ing the next, heartbeats are read by member id, the journal (while an older member writes it) is listed off the loop.
+- **Listings are slow** (3–33 s a folder under load): nothing lists in a loop; the records are read
+  at one path, heartbeats by member id, the journal (while an older member writes it) is listed off the loop.
 
 ## 4. Invariants
 
 Checked by the simulator (§13):
 
-1. Only the declared lead makes terms (no member ever does), and one process of it at a time (the
-   member lock, §5); terms are made with create-new.
-2. The term never goes back; a lead checks `terms/<E+1>.json` before acting.
+1. Only the declared lead leads (no member ever does), and one process of it at a time (the member
+   lock, §5).
+2. Each take-up leads an epoch past every earlier one's and past the records it starts from
+   (`Io::epoch`, the store's epoch raised durably), so (epoch, seq) orders every snapshot, and
+   lease ids order, across restarts and the owner's moves.
 3. No accepted hand-off is lost: its member keeps it until a saved snapshot names it, a lead
    never takes up from records older than those it saved, nor a moved lead before its
    predecessor's last acknowledged save can be read (§6.2, §7.3); a journal entry (the rollout
-   gate's) stays in the journal, which a lead taking up its next term replays.
+   gate's) stays in the journal, which a lead taking the records up replays.
 4. Each records snapshot is one file written whole.
 5. A late write of an earlier save never sends the lead back: it takes up from the records it
-   kept on its own disk (§6.2), reading the NAS's only after another Mac led. One of an earlier
-   term's goes to its own term's snapshot, which no one reads once a later term saves, and to the
-   one path, where it's passed over: a later term is made, so a reader, and a lead taking up from
-   the NAS, read that term's own snapshot, which its lead alone writes. One of this term's (an
-   earlier process's take-up of it) is read until the lead's next save (`driver::RESAVE_S`, 10
-   minutes, at most).
+   kept on its own disk (§6.2), reading the NAS's only when they're newer (another lead saved them)
+   or it has none. At the one path, readers read it until the lead's next save
+   (`driver::RESAVE_S`, 10 minutes, at most).
 
 ## 5. Roles
 
@@ -150,63 +151,55 @@ Checked by the simulator (§13):
   step; a process that loses it stops, saving its state). A member writes its heartbeat (§10), runs
   job slots (§7), brokers its jobs' tasks (§8), and passes its build page's asks to the lead.
 - **The lead** is the declared member (§6.1): the Mac mini, always on, at home and on power. It
-  also plans (`crate::agent::build`) and runs the coordinator, merges the members' hand-offs into its term's
+  also plans (`crate::agent::build`) and runs the coordinator, merges the members' hand-offs into the
   records, publishes catalogues, runs GC, compacts the raw tiles' archives, keeps the pause and
   writes the build's status. Its slots are ordinary member slots: its agent asks its own
   coordinator for work as any member asks (§7.2).
 
 ## 6. The lead
 
-### 6.1 The declaration, and terms
+### 6.1 The declaration, and epochs
 
-**The declaration** is `state/build/lead-member.json` (`crate::pool::term::Declared`):
+**The declaration** is `state/build/lead-member.json` (`buildstore::records::lead::Declared`,
+re-exported as `crate::pool::lead`):
 
 ```json
 { "member": "m-3f9c…", "host": "Mac-mini-de-Brandon", "since": 1791300000 }
 ```
 
-- **Read every step** by the lead (`term::declared`; a read that fails keeps the last), and by a
-  member only while no answer of its lead's within `PAGE_AWAY_S` (35 s) said the term it leads
-  (docs/coordination.md step 8a): with one, the member takes that term's lead for the declared one
-  (a lead steps down at its next step once it isn't, and its answers then say no term; nor do they while its step couldn't read the declaration or the next term: `Out::vouched`). A member it
-  doesn't name never makes a term and never leads one (`Driver::step`'s `declare`).
-- **Made once** with create-new: in a new pool, by the first Mac to make term 1, which declares
-  itself (`term::declare`); in a pool past term 1, by the owner, by hand. No Mac declares itself
-  past term 1: a lead elected before #881 (any Mac, a takeover during the rollout) would make
-  itself the fixed one. With none there, no Mac leads (a lead steps down: "no lead is declared")
-  and the members wait. The pool's move to a fixed lead (task #881) is the owner's file naming the
-  mini, written before the app that reads it is published.
-- **Why a file and not a setting on each Mac, or the newest term:** one place every Mac reads, so
-  two Macs can't each think they're the lead; written once with create-new, so no Mac's process
-  replaces it; and apart from the terms, which number the lead's runs, so nothing that makes a
-  term can move the lead. No member id is named in code.
+- **Read every step** by the lead (`lead::declared`; a read that fails keeps the last), and by a
+  member only while no answer of its lead's within `PAGE_AWAY_S` (35 s) said who leads
+  (`Answer::leading`: its member id, host and app; docs/coordination.md step 8a): with one, the
+  member takes that member for the declared lead (a lead steps down at its next step once it
+  isn't, and its answers then say no one; nor do they while its step couldn't read the declaration:
+  `Out::vouched`). A member it doesn't name never leads (`Driver::step`'s `declare`).
+- **Made once** with create-new: in a new pool (no records at the one path nor its brief), by the
+  first Mac in it, which declares itself (`lead::declare`); otherwise by the owner, by hand. With
+  none there and records saved, no Mac leads (a lead steps down: "no lead is declared") and the
+  members wait. Its being there is the pool's having begun: no reader takes today's files for the
+  records then (`records::now`), and `out::check_writer` refuses every direct save of them.
+- **Why a file and not a setting on each Mac:** one place every Mac reads, so two Macs can't each
+  think they're the lead; written once with create-new, so no Mac's process replaces it. No member
+  id is named in code.
 - **Moving the lead** (the mini replaced) is the owner's edit of that file, by hand, naming the new
   Mac's member id (`scenic pool status` lists them): at its next step the old lead steps down
-  ("another member is the declared lead"), the new one makes the next term ("the declared lead,
-  after …") and takes it up from the old one's records `STALE_S` (10 min) later, once the old one's
-  last save can't read stale (§6.2), its coordinator loading the term before's state with its
-  leases (§7.5). Nothing in the app does it.
+  ("another member is the declared lead"), and the new one takes the records up from the one
+  path `STALE_S` (10 min) after it first found itself declared, once the old one's last
+  acknowledged save can't read stale (§6.2), its coordinator loading the old lead's store's
+  backup with its leases (§7.5). Nothing in the app does it.
 
-**A term** is `state/build/terms/<E>.json`, made once with create-new (`crate::pool::term`): a run
-of the lead's, between restarts and sleeps.
+**The epoch** is the lead's coordinator's store's (docs/coordination.md §4.3), bumped as the store
+opens, so once a process; a take-up raises it past the records it starts from
+(`pool::store::Store::raise_epoch`, durable before it answers), and past the NAS backup's epoch by
+`RESTORE_EPOCHS` (1000) when the backup is another Mac's (the owner moved the lead:
+`agent::pool::epochs`). The records' snapshots are numbered (epoch, seq), their JSON key still
+`term` (older apps read them); lease ids are `<epoch>-<n>`. At the move from terms the first
+take-up raises the store's epoch past the pool's last term (840 on 10 Nov: the live store's 121
+becomes 841).
 
-```json
-{ "term": 12, "member": "m-3f9c…", "host": "…", "app": "20261012-0910-1a2b3c4",
-  "since": 1791300000, "how": "restarted: re-asserted", "from": 11 }
-```
-
-- **The current term is the highest that exists.** The lead learns it at start (`term::current`,
-  from the hint `state/build/lead.json` or one listing), then only stats `<E+1>.json`
-  (`term::next`). A member learns it from its lead's beat answers (`Answer::term`, the term the
-  lead leads as its answers' `x-pool-term` says it: `Heard::lead_says`), with no NAS call, and as
-  the lead does while none came within `PAGE_AWAY_S` (an older lead, a lead not leading or its step
-  hung, none answering). It never goes back (`driver::Saved` keeps the highest seen; a lead's word
-  of an older term is passed over for the NAS). A member opening with a saved state stats that
-  state's term (gone: the terms were moved aside, the state set aside), never lists the terms.
-- **Only the declared lead makes a term:** term 1, its re-assertions (§6.6), and the term after one
-  that names another member (an elected lead's, from before #881, or after the owner's move).
-- **A term not readable whole** (its bytes not landed) has no known lead. Its maker finishes it
-  (`term::finish`; term 1's too, `term::Unfinished`) before it makes the next.
+- There are no terms (docs/coordination.md step 8c, task #1124): `state/build/terms/`,
+  `state/build/lead.json` (the hint), `state/build/term/<E>/` and `state/coord/term/<E>/` are
+  neither written nor read, but each term's `forecast-input.json` (§7.9: `fccheck::inputs`).
 - There is no app rule: the lead leads whatever app it runs (a development build, a rollback).
   Records keep keys of steps an app doesn't know (`pool::records::Keys::other`), so a downgrade loses
   nothing it can avoid (docs/buildings3d.md §3.6).
@@ -221,73 +214,61 @@ of the lead's, between restarts and sleeps.
   `Heard::named_raw`, with the next snapshot; one named but not yet off when the lead restarts is
   named again, passed over unread; an archive that index lists as merged away is never named
   again, task #607), the journal entries it reflects
-  and refused (with why), the lease that last set each target, its term and `seq` (one more each
-  save). Also saved, unchanged, `driver::RESAVE_S` (10 min) after the last save reached the NAS.
-  A save (docs/coordination.md step 8b, task #1093) goes:
+  and refused (with why), the lease that last set each target, its epoch (under the JSON key `term`) and `seq` (one more
+  each save). Also saved, unchanged, `driver::RESAVE_S` (10 min) after the last save reached the NAS.
+  A save (docs/coordination.md steps 8b and 8c, tasks #1093, #1124) goes:
   1. to the lead's own disk, `agent/pool/records.json` (`Io::keep`: written whole and flushed, its
      folder too, `seglog::write_durable`); a failure there writes nothing else, and a take-up
      isn't done (tried again next step);
   2. to the NAS's one path, `state/build/records.json`, and its brief `state/build/brief.json`
-     (`records::ONE`, `ONE_BRIEF`), whatever the term (`Nas::write_whole`);
-  3. to the term's own snapshot, `state/build/term/<E>/records.json`, always (invariant 5: what a
-     late write at the one path can't hide); and while a member heard within 20 min doesn't say it
-     reads the one path (its beat's `records` word, `beats::RECORDS`; `Beats::per_term`: the
-     rollout gate), the term's own
-     `brief.json` (an older app's reader finds none once the gate lifts, and reads the term's
-     snapshot).
+     (`records::ONE`, `ONE_BRIEF`; `Nas::write_whole`). Nothing else: no per-term snapshot or brief,
+     no today's files.
   A save kept on the lead's disk and not written whole to the NAS (past its 20-s deadline, or
   refused while an earlier write to that path still runs, crate::agent::nasread) leaves the lead
   leading: it acknowledges nothing and isn't caught up (no catalogue, no GC) until a save reaches
-  the NAS, tried each step. (Before, a take-up whose NAS save failed so dropped the lead's term and
-  restarted its agent: 9 Nov, 20:40Z, term 812.)
-- **Term 1** started from today's layout (`manifest.json`, `jobs.json`, `pending.json`): its first
-  snapshot is `term/1/first.json` (`records::first`, `term::bootstrap`).
-- **Taking up term E+1** (`records::start`): from the lead's own records, in memory (a
-  re-assertion) or kept on its disk (a restart), when they're of term E or E+1: it led the term
-  before, so there are none newer, and nothing is read (a save of its own landing late on the NAS,
-  an earlier process's write left running as it stopped, can't send it back). Else (the owner moved
-  the lead here, or its disk's copy is lost or older than its last save) the newest snapshot the
-  NAS has: the one path's, unless a term after its own has a snapshot of its own (walking down from
-  E+1 to it: a late write of an earlier term's at the one path finds term E's own); a stale read fails and is retried; never from
-  records older than those its lead saved last, `Saved::records`, or than the term it led last,
-  §7.3). A term made after another member's (the owner moved the lead) is taken up only `STALE_S`
-  (10 min) after it was made, and a lead acknowledges a hand-off only while a stat after its save
-  finds no later term: so whatever the old lead acknowledged, which no member keeps any more, is in
-  the records its successor reads. It merges what members
-  posted it and its own jobs' hand-offs; while a member writes the journal (§7.3's gate) it also
-  replays every journal entry its records don't name, in (term, lease) order. It is **caught up**
-  (`caught_up`) once every hand-off posted, told or listed is merged and saved, and, while the
-  journal is written, a listing of every day asked for under a day ago is merged; catalogues and GC
-  wait for that.
+  the NAS, tried each step.
+- **Taking the records up** (`driver::take_up`, once a process, or again after the declaration
+  names it once more): it needs its store (its epoch: the agent's first step runs before its
+  coordinator starts, so it waits a step). It starts from its own records (an earlier try's, those
+  it led last in this process, or its disk's copy), none older than `Saved::records`. It reads the
+  one path once: when that's newer by (epoch, seq) than its own (another lead saved: the owner
+  moved the lead, possibly away and back), or it has none of its own (its disk's copy lost), it
+  waits until `STALE_S` (10 min awake) has passed since this process first found itself declared,
+  reads the one path again and takes that up. With no one path, no brief and nothing saved before
+  (a new pool) it takes today's files (`manifest.json`, `jobs.json`, `pending.json`) at once. Never
+  from records older than those it saved last (`records::Older`: a stale read, tried again). It
+  then raises its epoch past theirs, numbers them (epoch, 0) and saves them. The lead before it
+  acknowledges a hand-off only while a read of the declaration after its save still names it: so
+  whatever it acknowledged, which no member keeps any more, is in the records its successor reads.
+  The history says how (`Event::TookUp`): "its own records", "the one path's records, newer than
+  its own", "the one path's records", "today's files: the pool's first".
+- **Merging**: it merges what members posted it and its own jobs' hand-offs; while a member writes
+  the journal (§7.3's gate) it also replays every journal entry its records don't name, in (epoch,
+  lease) order. It is **caught up** (`caught_up`) once every hand-off posted, told or listed is
+  merged and saved, and, while the journal is written, a listing of every day asked for under a
+  day ago is merged; catalogues and GC wait for that. A gap between its wall and awake clocks over
+  `GAP_S` (a minute: the Mac slept) while a member writes the journal makes it forget its listing
+  and the listings it asked for, and ask for a full one: what its members told it meanwhile may
+  be lost (the rollout gate's, going with it: task #1125).
 - **Acknowledgements** (`journal::Mine`): a lead acknowledges a hand-off once a saved snapshot names
-  it (in its beat's answer, `merged`; by mail, `Ack`, for one told), and the member drops it.
-- **Readers** (the jobs' `Out`, the agent's plan and status, GC, the Mac mini's map server, the CLI and the
-  checks) read the one path's snapshot, and stat the term after its own (`Records::now`,
-  buildstore::records::now: two NAS calls, where finding the current term and reading its own took
-  five). A term after it made (being taken up, its lead on an app before the one path, or an
-  earlier save landed late there), they read the current term's own, walking down to the one
-  path's term and taking the one path's where none has one (`newest_over`); with no one path,
-  the current term's own (`newest_over` with no one path), falling back to an earlier term's; before any term,
-  today's files `manifest.json`, `jobs.json`,
-  `pending.json` and `sizes.json`, which a Mac's own jobs write without a pool; no term found once
-  term 1's first snapshot is there, a stale read, is an error, never today's files. Readers of the
+  it (in its beat's answer, `merged`; by mail, `Ack`, for one told), and only while its read of
+  the declaration after that save still names it; the member drops it.
+- **Readers** (the jobs' `Out`, the agent's plan and status, GC, the Mac mini's map server, the CLI
+  and the checks) read the one path's snapshot alone (`Records::now`, buildstore::records::now: one
+  NAS call). Before the pool (no declaration) they read today's files `manifest.json`, `jobs.json`,
+  `pending.json` and `sizes.json`, which a Mac's own jobs write without a pool; with a declaration
+  and the one path not readable (a stale read), an error, never today's files. Readers of the
   manifest or keys alone (the map server's syncs every minute, the hosts, the plan and status, job
   starts, the CLI and checks) read the brief instead, the same way (`records::Brief`,
-  `state/build/brief.json`, a term's `term/<E>/brief.json`: the manifest and keys, ~4 MB against
-  the snapshot's ~15 MB, which is mostly the unverified uploads); a term without one (a lead on an
-  older app, or stopped between the two writes) is read from its snapshot (`Brief::now`). An idle
-  agent's plan digest stats the one path's snapshot and the current term's. The map server reads
-  them through its own pool (`pool::nas::ReadOnly`); it runs the lead's app once it has restarted
-  into it, after a minute of the map idle (docs/macs.md, the updater), and until then reads the
-  term's own files: its brief while the gate writes it, its snapshot after.
-- **Today's files** are the records before the pool: term 1's first snapshot is made from them and
-  its saves write them. A later term's lead writes them no more (the rollout's copy for apps that
-  read them, last written on the live share 31 Oct, was deleted with #878 step 8a); this app reads
-  the one path's snapshot.
+  `state/build/brief.json`: the manifest and keys, ~4 MB against the snapshot's ~15 MB, which is
+  mostly the unverified uploads). An idle agent's plan digest stats the one path's snapshot. The
+  map server reads them through its own pool (`pool::nas::ReadOnly`).
+- **Today's files** are the records before the pool: a new pool's first take-up is made from them.
+  No lead writes them.
 - **The coordinator's state** is in its store on its own disk (docs/coordination.md §4, task #878:
-  `agent/coord/store/`), not per term: a restart opens it, so it keeps its leases. Its backup on the
-  NAS (`state/lead/store.json`, §7.5) is what a take-up in a new process loads when another Mac led
-  before it (`took_up`: the backup naming another member).
+  `agent/coord/store/`): a restart opens it, so it keeps its leases. Its backup on the NAS
+  (`state/lead/store.json`, §7.5) is what a take-up loads when another Mac led before it
+  (`took_up`: the backup another Mac's).
 
 ### 6.3 With the lead gone
 
@@ -298,38 +279,42 @@ place:
   saved state as it ends (§7.3), and its beats list it. A renewal or end the lead doesn't answer is
   retried until it answers (its lease held meanwhile: docs/coordination.md §6); the work is on the
   member's disk either way, and is posted to the lead when it's back.
-- **Then it waits.** It asks the lead for work, and gets none until the lead answers; it makes no
-  term, however long (`Driver::step`: only the declared lead makes one).
+- **Then it waits.** It asks the lead for work, and gets none until the lead answers; it never
+  leads, however long (`Driver::step`: only the declared lead takes the records up).
 - **Every view says so** (§10): "no lead: <host> is out of touch", and after an hour the alert,
   saying to see to that Mac (awake, on the network, its agent running).
-- **The lead, back,** re-asserts (§6.6), takes up its next term from its records, merges what its
-  members post it and grants again. Its leases granted before are in the coordinator's state it loads; a
-  job whose lease lapsed meanwhile is offered again.
+- **The lead, back,** merges what its members post it and grants again: woken, in the epoch it
+  led (a sleep while a member writes the journal asks for a new full listing, §6.2); restarted, in
+  a new epoch, from its own records (§6.2). Its leases granted before are in its store; a job whose
+  lease lapsed meanwhile is offered again.
 
 ### 6.4 Asks of the lead
 
 A member's build page passes its asks (a job's cancel, a target's retry, §11) to the lead by mail
-(§9); there is no ask about who leads. `scenic lead` only shows the pool (§11).
+(§9), only once the lead's app is known (from its beat answer, `Answer::leading`) and equals its
+own (an older app's mail reader would fail on them); else it says to ask on the lead's own page.
+There is no ask about who leads. `scenic lead` only shows the pool (§11).
 
 ### 6.5 Grants and the lead's view
 
-A lead's coordinator grants only while its last step found no later term and ran within `STALL_S`
-(5 min: `Coordinator::set_moving_as_of` stamps the step's time, not the tell's, so a hang after the
-step (a history write on the share) or before the next one, or a Mac woken before its step, stops
-grants until a step runs again). Built files are content-named and never rewritten
+A lead's coordinator grants only while its agent's last step said it may (`agent::pool::moving`:
+the records taken up, its member's lock known held, still leading) and told it so within
+`UNTOLD_S` (5 min: `Coordinator::set_moving_as_of` stamps the step's time, not the tell's, so a
+hang after the step (a history write on the share) or before the next one, or a Mac woken before
+its step, stops grants until a step runs again). Built files are content-named and never rewritten
 (docs/storage.md, Immutable, content-named files), each hand-off is its own entry keyed by
 its lease, and a merge applies an entry only if no later lease set its targets (`Records::apply`;
-an earlier term's lease ids sort before a later term's), else counts it overtaken; the files it
+an earlier epoch's lease ids sort before a later epoch's), else counts it overtaken; the files it
 alone named go to GC.
 
-### 6.6 Re-asserting
+### 6.6 Stepping down
 
-The lead **re-asserts** (makes E+1 naming itself and takes it up from its own records) after a gap
-between wall and awake clocks of over a minute (sleep, clock set), a step or a gap over `STALL_S`
-(5 min), a restart (an update's, at a safe point: §7.6), a saved state that doesn't know a term
-naming it, and before every GC sweep. A create that fails because the next term is there (a late
-process of before) steps it down, and its next step makes its own. A process that finds another
-holding its member's lock stops (§5).
+There is no re-assertion: the lead leads one epoch a process, and nothing else makes one. It steps
+down when its step's read of the declaration names another member ("another member is the declared
+lead") or none ("no lead is declared"), and when another process holds its member's lock (§5).
+Its records as it led are kept in memory, for a take-up if the declaration names it again. It
+sweeps (GC) only on a step whose own read of the declaration found it the lead, caught up
+(`Out::vouched`, `Gates::vouched`), so no other lead is declared while it removes files.
 
 ### 6.7 Clocks and wakefulness
 
@@ -338,13 +323,14 @@ holding its member's lock stops (§5).
 - **The pool is stepped whatever the agent is doing** (`crate::agent::pool`'s `Ticker`): the agent's
   loop steps it about every 20 s, and the pool's own thread steps it when that loop has been quiet
   for `QUIET_S` (25 s). Jobs and the coordinator's start/stop stay with the loop. A tick held past
-  `STALL_S` is taken as hung on the share: the lead grants nothing, its coordinator's answers stop
-  saying its term (`Coordinator::set_member(None)`, until a step runs again) and the status says so,
-  with the manual fix if it lasts: disconnect that Mac's SMB session in DSM (docs/macs.md). Nothing
-  remounts a hung share by itself (the self-heal's remount waits for idle slots, `crate::agent::heal`).
-- Every coordinator answer carries `x-pool-term` and `x-pool-member`, except while its Mac has lost
-  the NAS or its pool step is taken as hung: a member counts only its current lead's answers toward
-  its reach (§6.8).
+  `UNTOLD_S` (5 min) is taken as hung on the share: the lead grants nothing, its coordinator's
+  answers stop saying its epoch and member (`Coordinator::set_member(None)`, until a step runs
+  again) and the status says so, with the manual fix if it lasts: disconnect that Mac's SMB session
+  in DSM (docs/macs.md). Nothing remounts a hung share by itself (the self-heal's remount waits for
+  idle slots, `crate::agent::heal`).
+- Every coordinator answer carries `x-pool-epoch` and `x-pool-member` (`coordwire::POOL_EPOCH`,
+  `POOL_MEMBER`), except while its Mac has lost the NAS or its pool step is taken as hung: a member
+  counts only its current lead's answers toward its reach (§6.8).
 - **The lead stays awake** (`caffeinate -i`) while it leads with leases out.
 
 ### 6.8 Reaching the lead
@@ -455,7 +441,7 @@ job's disk is its own: the parts of its halo's base packs it reads from the NAS,
 and its output (task #396; docs/steps.md §8); their runs and targets' disks from when their
 jobs copied whole base packs into a cache of the Mac's are dropped once, as `job-disks-v5.json`
 is first written, and their targets' disks again as `job-disks-v6.json` is (task #657: each take-up
-of a term's state had brought back those of 51–68 GB, which no Mac's room fitted; a term's state
+of the coordinator's state had brought back those of 51–68 GB, which no Mac's room fitted; its state
 says its disks' generation, `disks_v`, and one of before it brings neither step's to a take-up;
 docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
 peaks and targets' measures past three times its targets' median and a GB (a 35 GB peak against
@@ -1252,12 +1238,12 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
 
 - **A job's hand-off goes to the lead by HTTP** (docs/coordination.md step 6,
   `crate::coord::handoffs`): its member's driver keeps it whole in its saved state
-  (`journal::Mine`, keyed `<day>/<term>-<n>`: the lease's id, the UTC day of first try); the
+  (`journal::Mine`, keyed `<day>/<epoch>-<n>`: the lease's id, the UTC day of first try); the
   member's beat lists the keys it keeps, the lead's answer says which it lacks (posted next,
   `POST /pool/handoff`, into the lead's store before its 200) and which a saved records snapshot
   names (dropped). The lead's agent merges what its coordinator took from memory, with its own
   jobs' hand-offs (never written anywhere first). **The rollout gate:** a member whose lead doesn't
-  take them (an older app) writes them to `state/journal/<day>/<term>-<n>.json` and tells the lead
+  take them (an older app) writes them to `state/journal/<day>/<epoch>-<n>.json` and tells the lead
   by mail (§9.1), until acknowledged; the lead reads those from the journal.
 - **The lead validates at merge** (`agent::pool::check`, `records::Check`): every change within the
   step's write-set, content names matching logical names, the lease's targets. Write-sets are one
@@ -1267,7 +1253,8 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   app; otherwise it's refused (in the records' `rejected`; a journal entry's why also noted at
   `state/journal/rejected/<key>.why`, `journal::note_refusal`). The lint `tests/write_sets.rs` gates publish.
 - **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the
-  lead's whose entry carries only a done record, merged as any, from that term's lead alone.
+  lead's whose entry carries only a done record, merged only by the lead whose member it is
+  (`agent::pool::by_its_lead`).
 - **Sizes ride along:** `Out` records each file it writes with its size, and the hand-off carries
   them (`Handoff::sizes`); the merge keeps those of the files the entry names, so the `catalog` step
   never looks at them on the NAS. Entries from before carry none.
@@ -1275,7 +1262,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
 - **Nothing is lost between the lead's save and its member's drop:** a hand-off is acknowledged
   only once a snapshot naming it is saved (and the lead's driver's state saying which snapshot it
   saved last, `Saved::records`, is on its disk), and a take-up never starts from records older than
-  those (`records::start`: a stale read of the newest waits, tried again next step). The journal
+  those (`driver::take_up`, `records::Older`: a stale read of the newest waits, tried again next step). The journal
   isn't collected (its GC, task #644, is deleted with step 6): its entries since are only an older
   member's, and the folder goes with the gate.
 - **The lead lists the journal off its loop** while a member heard writes it (the gate,
@@ -1323,7 +1310,7 @@ In the pool, a pass is complete when its records name `sources/osm/<date>/pass`
 when the lead is caught up. A resuming job is given its member's unacknowledged hand-offs of its
 step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
 
-### 7.5 The coordinator across terms
+### 7.5 The coordinator across restarts
 
 - **Its state** is in the pool's store on the lead's own disk (`crate::pool::store`,
   `crate::coord::kept`; docs/coordination.md §4, task #878): each change (a grant, a finish, a
@@ -1338,7 +1325,7 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   (`took_up`, the backup naming another member): a lease granted since it is unknown to the new lead,
   its worker's next renewal refused, its job stopped and its targets out again (the work, never the
   records: the merge's lease order, §6.5).
-- Workers are a member id and an agent instance; a new term drops only instances that no longer
+- Workers are a member id and an agent instance; a take-up drops only instances that no longer
   exist.
 - **What a job waited on** (task #791): the lead's coordinator writes on each "start" and "lease"
   event `after`, the numbers of the "end"/"done" events of the jobs it waited on: for each step
@@ -1371,16 +1358,17 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   status`, a lead's planned notes) reads a day's tar alongside its folder.
 - **The contact** `state/coordinator.json`: a stopping lead removes it only if it still names its
   own addresses. A member reads it again when a request to the coordinator it has fails, and when
-  that coordinator last answered as an earlier term's lead than its pool view's (`x-pool-term`):
-  an old lead's coordinator kept on as its broker answers every ask with nothing (task #815). A view
-  behind the term keeps the newer lead's coordinator.
+  that coordinator last answered as a broker (epoch 0) or as another member than the lead its pool
+  view has (`x-pool-epoch`, `x-pool-member`): an old lead's coordinator kept on as its broker
+  answers every ask with nothing (task #815).
 - **Its port is free for the next:** children are started (`store::spawn`) only while no listener
   or connection is being made or closed, and one at a time, under one lock, so no child inherits a
   socket or another child's half-marked pipe (Darwin has no `pipe2`; task #900: two caffeinates held
   a `scutil`'s output pipe and its reader hung). The long-lived `caffeinate`s are started
   `store::spawn::detached`, every descriptor but /dev/null on 0–2 closed. clippy.toml's
   disallowed-methods, checked by publish.sh, keeps every start, listen and accept going through it.
-- With a term made, `check_writer` refuses every direct save of the records: everything hands off.
+- With a lead declared, `check_writer` refuses every direct save of the records: everything hands
+  off.
 
 ### 7.6 The lead's own slots
 
@@ -1388,8 +1376,8 @@ Jobs call the lead through one interface re-resolved each call (`crate::agent`'s
 `end_lease`): in process while this Mac leads, over HTTP otherwise, so a job carries on across the
 owner's move of the lead (§6.1). A job's tasks are offered through its own Mac's coordinator or broker; one that stopped
 answers nothing and the job runs the task itself. A process's parts are its role's, read as it
-starts (docs/roles.md §1): the declared lead's coordinator, built then, leads each term it takes
-up; a change of the declaration, or a lead losing its term, restarts the agent at once, its duties
+starts (docs/roles.md §1): the declared lead's coordinator, built then, grants in the epoch its
+take-up leads; a change of the declaration naming another role restarts the agent at once, its duties
 in flight stopped and every other job (a task leased from the lead too) handed over to the next
 process; a lead whose coordinator failed to start restarts once its first slot is free. A lead drains the hand-offs its coordinator journaled on its disk (those a member out of the
 pool told it, `journaled: false`) into its own hand-offs (`Run::drain`); every member drains,
@@ -1412,7 +1400,7 @@ and each loop the agent says which leases its slots run jobs under, each with it
 passes over them and they can always be renewed and finished, and a loop stuck past the TTL (10 min
 on a slow NAS) no longer kills its running jobs. A lease whose job ended without giving it back
 leaves the set at the next loop and lapses as any; a stopped agent's are dropped as the next one
-starts (`drop_where`, `drop_workers` taking a term up, sparing the jobs it adopts), the set not
+starts (`drop_where`, `drop_workers` at the take-up, sparing the jobs it adopts), the set not
 saved; after the owner's move of the lead the old lead's leases are a member's, lapsing as any. A beat that still
 finds its lease gone holds it again, a job of no record (buildings) by its step from its id and no
 targets (`held_work`, as `adopt_jobs` and `lease_own` do). A live job of no targets holds its whole
@@ -1663,7 +1651,7 @@ than kept by hand; progress of steps other than the OSM pass resumable on its Ma
 
 An open on the SMB share can stay stuck in the kernel for many minutes while the same file reads at
 once from a shell. The agent's NAS calls listed below go through `crate::agent::nasread`: each runs
-on a thread of a small pool and is waited for a deadline at most (20 s; a listing 60 s; a create in the terms' folder 5 minutes, so a term made but not written comes back to the driver to finish rather than lost). Past it,
+on a thread of a small pool and is waited for a deadline at most (20 s; a listing 60 s). Past it,
 the caller gets a timeout and takes it as any call that fails now, logged once per path until that
 path answers again. The stuck thread is left to its call and stays busy; while every thread of a
 pool is busy, a call to it fails at once, so stuck threads never pile up. Three pools, so one kind
@@ -1674,11 +1662,10 @@ stuck can't starve another:
 - **Records** (four threads): the loop's reads of `state/status.json`,
   the manifest (where planning reads it through `nasread`) and the regions' extract (unreadable for
   a reason other than missing: no extract job planned); and the pool's reads, stats and listings
-  (`Deadlined`, which the agent opens its member over: the driver's ticks on terms and the
-  journal, and the terms' listing as the member opens, tried three times, 10 s and 30 s apart,
-  then gone on without).
+  (`Deadlined`, which the agent opens its member over: the driver's reads of the declaration, the
+  one path and the journal).
 - **Writes** (four threads): the heartbeat (`state/status.json`, or a helper's file) and the pool's
-  writes, creates and removes (the members' heartbeats, mail, terms), and the members' holds. A write to a path is refused
+  writes, creates and removes (the members' heartbeats, mail, the records, the declaration), and the members' holds. A write to a path is refused
   at once (a timeout) while an earlier write to it is still in flight, its thread stuck: two writes
   never share one temporary name. The path is free again once that write ends.
 
@@ -1709,7 +1696,7 @@ time says the agent is alive. The beat is the only writer of either copy (the NA
 thread of its own that takes the newest body each time, under the deadline above), so no beat
 lands over a newer one (each a whole file put in place: a temporary file and a rename, one create a
 beat, so about one every 10 s a Mac, far under what SMB takes; written in place, a reader could
-read it half-written); once this Mac's term changed (it no longer leads, before its restart) it writes no shared beat (a body still
+read it half-written); once this Mac's part changed (it no longer leads, before its restart) it writes no shared beat (a body still
 waiting for the old path is dropped) until the
 loop composes one under the new part, so a former lead never rewrites `state/status.json` over
 the new lead's. A heartbeat goes out of touch when the beat itself stops (ten minutes,
@@ -1793,7 +1780,8 @@ minutes; `--json`, the same in seconds.
 
 **The forecast inputs' archive** (`agent::fcinputs`, task #933; the record in docs/formats.md, The
 forecast inputs' archive): what the backtest (below) reruns, the forecast's whole input
-(`forecast::Record`, §10) by term and time, on a write path of its own. (Before it the backtest read
+(`forecast::Record`, §10) by its lead's epoch (a term's number before step 8c; the key stays
+`term`) and time, on a write path of its own. (Before it the backtest read
 the terms' `state/build/term/<E>/forecast-input.json`, which the lead wrote only while a member
 read the page's files on the NAS, docs/coordination.md step 4's gate, deleted since: none since 31 Oct
 13:35 UTC, term 673. The inputs between then and the archive weren't kept anywhere, so that gap
@@ -2280,7 +2268,7 @@ coordinator.md §5).
 
 - **Brokers** (`crate::agent::brokers`, `crate::coord::brokers`, in the pool): each
   member's agent runs a broker for its jobs' tasks (`coord::Broker`, docs/roles.md §3.2, on the
-  pool's port; jobs given its address as `SCENIC_COORD`; its answers say term 0). Its heartbeat's `broker` gives its addresses. A
+  pool's port; jobs given its address as `SCENIC_COORD`; its answers say epoch 0). Its heartbeat's `broker` gives its addresses. A
   task lives as long as its job, whoever leads.
 - **Cross-member calls:** members allow each other's page origins (CORS, preflight for
   `Content-Type`): every address a member's page is served at (`coord::brokers::origins_of`, #919),
@@ -2351,7 +2339,7 @@ step, were deleted with its rollout gate, task #1036.)
 
 - **Heartbeat** (its own writer): label, app, resources, conditions
   (`conds`: home, power, battery, paused), slots' jobs, tasks, addresses (`broker`), reach (§6.8),
-  term led. Sent in each member's beat to the lead every 10 s (`POST /pool/beat`, docs/coordination.md
+  the epoch it leads in (`leads`, while it leads). Sent in each member's beat to the lead every 10 s (`POST /pool/beat`, docs/coordination.md
   step 3), which answers with the others' (its own among them); a member not heard for twenty
   minutes is forgotten. Nothing on the NAS (`crate::coord::beats`).
 - **Build status**, written by the lead (`state/status.json`): the
@@ -2895,12 +2883,14 @@ step, were deleted with its rollout gate, task #1036.)
   (docs/inputs.md §6.9).
 - **Views** (menu bar, build page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
-  (`lead::own_status`): the lead and its term, the declared lead when another term's lead
-  is current, each member's state, "no lead" and why, the last change of term.
+  (`lead::own_status`): the declared lead (`LeadOf`: member, host, app; on the lead's own view,
+  `since`, when it took the records up), whether this Mac leads, each member's state, "no lead"
+  and why, the last change of lead.
 - **The alert** (`lead::alert`, `ALERT_S`: an hour with no lead) says the members finish their jobs
   and wait, and to see to the lead's Mac; the menu bar's status line shows it.
-- **History:** terms made and step-downs are `term` events in the member's
-  history file (`crate::agent::lead::notes`). Members joining and leaving are the lead's `member`
+- **History:** take-ups and step-downs are `term` events (the kind kept) in the member's
+  history file (`crate::agent::lead::notes`): "took the records up in epoch E, from …", "stepped
+  down (epoch E): …". Members joining and leaving are the lead's `member`
   events (`lead::membership`): at each read of the heartbeats, a member whose beat came into
   touch ("joined the pool") or went out of it (`OUT_OF_TOUCH_S`, "left the pool (out of touch)");
   a lead's first read only sets what it compares with, so a new lead or a restart notes none.
@@ -2910,7 +2900,7 @@ step, were deleted with its rollout gate, task #1036.)
 `crate::agent::lead`, `tools/status/main.swift`, `web/buildpage/pool.js`:
 
 - **No control of who leads** (task #881): the menu bar, the build page and `scenic lead` show the
-  pool (the lead, its term, each member's state, who can't reach whom), and none moves the lead.
+  pool (the lead, each member's state, who can't reach whom), and none moves the lead.
   The owner moves it only by editing the declaration (§6.1).
 - **Build page:** Pause, and the asks below, from a page on any device (task #521: no page of the
   Mac's own first). On a Mac not leading, these go to its agent, which passes them on (the pause as
@@ -2944,7 +2934,7 @@ step, were deleted with its rollout gate, task #1036.)
   failed: no retry delay, no backoff or guard hold against its Mac, its finished targets handed
   off, and its scratch entries named for the target (exactly, or with an extension) removed, so it starts again from the start.
   With `--rerun-after-update` the coordinator holds the target (`coord::lease::Hold`, saved with
-  the leases and carried in the term's state) from every offer and the lead's own starts until it
+  the leases and kept in the lead's store) from every offer and the lead's own starts until it
   runs an app other than, and not older than, the one it was cancelled on; members get work only
   on the lead's app, so the Mac that takes it runs the newer. A cancelled job's slot is free, so
   an update waiting on it (docs/building.md §2) restarts at once. The cancel is a `cancel` event in the
@@ -2960,8 +2950,9 @@ step, were deleted with its rollout gate, task #1036.)
   agent keeps the ask in its folder (`redo.json`, over restarts) and plans a job of the `redo`
   step for it, the lead's own (`every::LEAD_ONLY`). That job changes no file (its write-set is
   empty) and hands off a done record of `<step> <target>` with no key; the merge checks it as any
-  entry (§7.3), and takes it only from the lead of its lease's term (`agent::pool::by_its_lead`:
-  another member's refused, one whose term can't be read held), and `Keys::record` forgets those targets' keys and nothing else, the lease order
+  entry (§7.3), and takes it only when its member is the merging lead itself
+  (`agent::pool::by_its_lead`: another member's, or a lead's before the owner moved the lead,
+  refused, its redo asked again), and `Keys::record` forgets those targets' keys and nothing else, the lease order
   kept by `<step>, <target>` as a prune's is (a build of the target leased before the redo,
   merged after, is passed over). The job succeeded, the ask leaves `redo.json`. The plan then
   offers the targets again under the keys it has; what reads their outputs follows by content
@@ -3013,13 +3004,14 @@ step, were deleted with its rollout gate, task #1036.)
 
 ## 12. Getting there from today
 
-Built and always on: the declared lead and its terms, the records on the lead's disk and at one path on the NAS (each term's own snapshot beside, and its brief while the gate is open), hand-offs by HTTP (the journal while the gate is open), the driver,
+Built and always on: the declared lead and its epochs, the records on the lead's disk and at one path on the NAS, hand-offs by HTTP (the journal while the gate is open), the driver,
 the views, the steps table, the memory and disk guards, write-sets, the budgets and answers' lease,
 every step to every member, every job by grant (the lead's too) and packing, the equal-machines
 forecast. Gone: the pool's on/off switch and shadow run, claims, the named writer
-(`SCENIC_BUILD_MAC`), the NAS's hand-off folders, per-Mac record writes, and (task #881) the
+(`SCENIC_BUILD_MAC`), the NAS's hand-off folders, per-Mac record writes, (task #881) the
 elected lead: handover, takeover, stand-down, the app rule, the reach vote, the battery floor and
-the lead controls.
+the lead controls, and (task #1124, docs/coordination.md step 8c) terms: their files, the lead's
+hint, each term's snapshot and brief, re-assertion.
 
 A depth, terrain-hi or terrain-deep job resumes its target at the block after the last it
 finished, from a log in its scratch folder on its Mac (§7.2, Resuming; crate::resume_log), with
@@ -3046,10 +3038,14 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   Macs run the real driver, step by step, against a model of the share: atomic create-new whose bytes
   may land late or never, delayed renames, stale reads and listings, entries cut short or erroring,
   outages, busy renames, lost answers, slow and stalling operations, skewed clocks, sleeps, restarts,
-  app upgrades and rollbacks, members leaving. Mac 0 is the declared lead: a term any other Mac
-  makes is wrong. It checks §4's invariants at every step, and at the end that the declared lead
-  leads its last term, caught up, with every entry ever written. 2,000 seeds by default; longer
-  runs are opt-in.
+  app upgrades and rollbacks, members leaving. Mac 0 is the declared lead, its store's epoch bumped
+  at each restart and raised past a take-up's records: any other Mac leading is wrong. It checks
+  §4's invariants at every step (epochs strictly rising at each take-up and past every other
+  landed records' epoch; each epoch's snapshots at the one path never going back or losing an
+  entry; no snapshot of an epoch at or after an acknowledgement's lacking an acknowledged entry),
+  and at the end that the declared lead leads, caught up, the one path naming every entry ever
+  written, and no take-up in the run's last ten minutes. 2,000 seeds by default; longer runs are
+  opt-in.
 - **Not modelled:** torn reads, other I/O errors, the member lock, a wall clock set while awake, GC,
   the coordinator (the driver's and modules' own tests cover these).
 - **The placement simulator** (`sim::place`, in the crate's tests, a few seconds a run): N
@@ -3113,7 +3109,7 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
 - **The Mac mini is the fixed lead** (task #881, the owner, 30 Oct): always on, at home, on power.
   Members never lead; with the mini gone they finish their jobs and wait. Named by a declaration on
   the NAS made once (§6.1), not a setting on each Mac (two could disagree)
-  nor the newest term (anything that makes a term would move it).
+  nor anything a Mac's process makes (that would move it).
 - **`tailscale serve` on every Mac** (`tailscale serve --bg 8090`, port 443) gives pages HTTPS;
   the agent finds it via `tailscale serve status --json` (on any port: the address keeps it) and
   puts it in its heartbeat. Without it, plain HTTP on the tailnet reaches every member, and an
