@@ -94,7 +94,7 @@ impl ToLead {
     /// The beat as it goes now, with `status` (its plan's parts left out: the lead's page reads
     /// the lead's), its heartbeat stamped now.
     fn body(&self, status: &Status) -> crate::coord::held::Beat {
-        use crate::coord::{beats, held};
+        use crate::coord::held;
         let status = Status {
             regions: Vec::new(),
             checklist: Vec::new(),
@@ -106,21 +106,9 @@ impl ToLead {
             h.pool.beat = status.beat;
             h
         });
-        let speaks: Vec<String> = [
-            held::SPEAKS,
-            beats::SPEAKS,
-            beats::VIEW,
-            beats::ASKS,
-            beats::HANDOFF,
-            beats::BUDGETS,
-            beats::ROOT,
-            beats::BY_LEAD,
-        ]
-        .map(str::to_string)
-        .to_vec();
         held::Beat {
             member: self.member.clone(),
-            speaks,
+            speaks: speaks(),
             held: self.held.clone(),
             held_age_s: 0,
             heartbeat,
@@ -204,10 +192,23 @@ impl ToLead {
     /// Posts `b` to the lead; its answer to the registry (an older lead's 404 said so). Whether it
     /// failed.
     fn post(&self, b: &crate::coord::held::Beat, failing: bool) -> bool {
+        let c = crate::coord::client::Client::at(self.urls.clone(), self.token.clone(), &self.member);
+        self.post_on(&c, b, failing, self.listed.elapsed(), now_s())
+    }
+
+    /// `post` on client `c` (the pool's simulator's, over its network), its list `age` old, at `now`
+    /// (unix s, this Mac's clock).
+    pub(crate) fn post_on(
+        &self,
+        c: &crate::coord::client::Client,
+        b: &crate::coord::held::Beat,
+        failing: bool,
+        age: Duration,
+        now: u64,
+    ) -> bool {
         // (Its list's age as it goes: the loop's, stuck maybe, may lack a lease granted since,
         // which the lead then keeps. A lead that doesn't say it takes the beat may not read the
         // age: a list older than its grace isn't sent it, the lease held as away meanwhile.)
-        let age = self.listed.elapsed();
         if !self.beats.lead_takes() && age >= crate::coord::held::OMIT_GRACE / 2 {
             return failing;
         }
@@ -216,16 +217,15 @@ impl ToLead {
             handoffs: self.beats.handoff_keys(),
             ..b.clone()
         };
-        let c = crate::coord::client::Client::at(self.urls.clone(), self.token.clone(), &self.member);
         match c.pool_beat(&b) {
             Ok(Some(a)) => {
-                self.beats.answered(&a, now_s());
-                self.send_asks(&c);
-                self.send_handoffs(&c, &a.lacks);
+                self.beats.answered(&a, now);
+                self.send_asks(c);
+                self.send_handoffs(c, &a.lacks);
                 false
             }
             Ok(None) => {
-                self.beats.lead_older(now_s());
+                self.beats.lead_older(now);
                 false
             }
             Err(e) => {
@@ -236,6 +236,14 @@ impl ToLead {
             }
         }
     }
+}
+
+/// What a member's beat says it speaks (`held::Beat::speaks`).
+pub(crate) fn speaks() -> Vec<String> {
+    use crate::coord::{beats, held};
+    [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS, beats::ROOT, beats::BY_LEAD]
+        .map(str::to_string)
+        .to_vec()
 }
 
 type Mailbox = Arc<Snap<Option<(NasPath, Vec<u8>)>>>;

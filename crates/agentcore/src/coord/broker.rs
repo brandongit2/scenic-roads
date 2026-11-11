@@ -44,7 +44,17 @@ impl Broker {
         me: &str,
         app: &str,
     ) -> Result<Broker> {
-        Ok(Broker { c: Arc::new(Coordinator::start_with(the_plan, dir, listeners.into(), me, app, Mode::Broker)?) })
+        Ok(Broker {
+            c: Arc::new(Coordinator::start_with(
+                the_plan,
+                dir,
+                Some(listeners.into()),
+                me,
+                app,
+                Mode::Broker,
+                store::clock::real(),
+            )?),
+        })
     }
 
     /// Its addresses and token (its jobs' token is `job_token`).

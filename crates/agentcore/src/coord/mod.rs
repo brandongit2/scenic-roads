@@ -580,7 +580,8 @@ impl Shared {
     fn capacities(&self, me: &str) -> Vec<(String, Capacity)> {
         let now = self.now();
         // (A capacity is refreshed only by an ask: a busy member's, older than `CAP_FRESH_S`, left out.)
-        let fresh = |c: &Capacity| unix_now().saturating_sub(c.at) < CAP_FRESH_S;
+        let unix = self.wall_s();
+        let fresh = |c: &Capacity| unix.saturating_sub(c.at) < CAP_FRESH_S;
         let own = self.own_cap.clone().filter(fresh).map(|c| (me.to_string(), c));
         let others = self
             .workers
@@ -592,6 +593,11 @@ impl Shared {
 
     pub fn now(&self) -> Instant {
         self.clock.now()
+    }
+
+    /// Its wall clock now (unix s): the real one, or a test's (`clock`).
+    pub fn wall_s(&self) -> u64 {
+        held::wall(self)
     }
 
     /// The jobs' leases saved: in the store's memory at once, on its disk by its writer (a handler
@@ -693,7 +699,7 @@ impl Shared {
         let wanted = self
             .refused
             .get(worker)
-            .is_some_and(|(at, w)| unix_now().saturating_sub(*at) < CAP_FRESH_S && w.starts_with("cores:"));
+            .is_some_and(|(at, w)| self.wall_s().saturating_sub(*at) < CAP_FRESH_S && w.starts_with("cores:"));
         let a = Ask { worker: worker.to_string(), cores: cap.cores, cap: Some(cap), ..Default::default() };
         let now = self.now();
         self.sched.regrant(&a, wanted, now)
@@ -704,9 +710,10 @@ impl Shared {
     /// and in the history, the refusal kept for the status (`refused`). None: no job.
     fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
         self.sched.batch_s = self.asks.settings.batch_s().unwrap_or(0);
-        let (picks, why) = self.sched.pack(a, offers, lead, sched::Clock { now, unix: unix_now() });
+        let unix = self.wall_s();
+        let (picks, why) = self.sched.pack(a, offers, lead, sched::Clock { now, unix });
         match why {
-            Some(w) => self.refused.insert(a.worker.clone(), (unix_now(), w)),
+            Some(w) => self.refused.insert(a.worker.clone(), (unix, w)),
             None => self.refused.remove(&a.worker),
         };
         if !picks.is_empty() {
@@ -1435,7 +1442,7 @@ impl Coordinator {
                 }
             }
         }
-        Coordinator::start_with(the_plan, &dir, listeners, me, app, Mode::Viewer)
+        Coordinator::start_with(the_plan, &dir, Some(listeners), me, app, Mode::Viewer, store::clock::real())
     }
 
     /// Starts answering on `port`, keeping its state in `dir`; `app`: the app this Mac's agent
@@ -1509,28 +1516,98 @@ impl Coordinator {
         me: &str,
         app: &str,
     ) -> Result<Coordinator> {
-        let c = Coordinator::start_with(the_plan, dir, listeners.into(), me, app, Mode::Lead)?;
+        let c =
+            Coordinator::start_with(the_plan, dir, Some(listeners.into()), me, app, Mode::Lead, store::clock::real())?;
         c.open_store()?;
         Ok(c)
+    }
+
+    /// The lead's coordinator in this process alone, answering no port, on `clock`: its requests
+    /// come by `call` (the pool's simulator, crate::pool's `sim`, over its network). No background
+    /// thread of its own (no NAS probe, no phase sharer, no listener), its store open as
+    /// `start_on`'s.
+    #[cfg(test)]
+    pub(crate) fn in_process(
+        the_plan: &'static dyn crate::agent::seam::Plan,
+        dir: &Path,
+        me: &str,
+        app: &str,
+        clock: Arc<dyn store::clock::Clock>,
+    ) -> Result<Coordinator> {
+        let c = Coordinator::start_with(the_plan, dir, None, me, app, Mode::Lead, clock)?;
+        c.open_store()?;
+        Ok(c)
+    }
+
+    /// Whether it grants now (the pool's simulator's check that two leads never do at once): the
+    /// build not paused, and its agent's last step said it may, within `UNTOLD_S` (`moving_now`).
+    #[cfg(test)]
+    pub(crate) fn granting(&self) -> bool {
+        let s = self.shared.lock().unwrap();
+        s.paused.is_none() && s.moving_now(s.wall_s()).is_none()
+    }
+
+    /// Its jobs' leases live now: (epoch, id, worker, targets).
+    #[cfg(test)]
+    pub(crate) fn live_jobs(&self) -> Vec<(u64, u64, String, Vec<String>)> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        s.leases
+            .live(now)
+            .filter(|l| matches!(l.work, Work::Job { .. }))
+            .map(|l| (l.epoch, l.id, l.worker.clone(), l.targets().iter().map(|t| t.0.clone()).collect()))
+            .collect()
+    }
+
+    /// The keys of the hand-offs its store holds taken and not yet merged (crate::coord::handoffs).
+    #[cfg(test)]
+    pub(crate) fn handoffs_taken(&self) -> Vec<String> {
+        let h = self.shared.lock().unwrap().handoffs.clone();
+        h.map(|h| h.taken().iter().filter_map(crate::pool::Entry::key).collect()).unwrap_or_default()
+    }
+
+    /// A JSON request to an in-process coordinator (`in_process`), from `from`, answered as
+    /// `http::json` answers it: `answer_json`, refused once it has stopped.
+    #[cfg(test)]
+    pub(crate) fn call(&self, path: &str, body: &[u8], from: &str) -> Result<(u16, serde_json::Value)> {
+        let stopped = self.routes.read().unwrap_or_else(|e| e.into_inner());
+        if *stopped {
+            return Ok((503, serde_json::json!({ "error": "this coordinator has stopped" })));
+        }
+        let journal = self.journal();
+        let caller = Caller { local: false, page: false, from: from.to_string() };
+        answer_json(path, body, &self.shared, &journal, &caller)
     }
 
     /// `start_on`, a member's broker (`Broker`) or a viewer alone (`viewer`): a coordinator on a
     /// wildcard `listener` answers the same on 127.0.0.1 beside it (`loopback_beside`), its jobs'
     /// address.
+    /// `listeners` None: in this process alone (`in_process`), no port served. `clock`: its time
+    /// (`Shared::clock`).
+    #[allow(clippy::too_many_arguments)]
     fn start_with(
         the_plan: &'static dyn crate::agent::seam::Plan,
         dir: &Path,
-        listeners: Listeners,
+        listeners: Option<Listeners>,
         me: &str,
         app: &str,
         mode: Mode,
+        clock: Arc<dyn store::clock::Clock>,
     ) -> Result<Coordinator> {
         let viewer = mode == Mode::Viewer;
-        let Listeners { listener, loopback } = listeners;
-        let port = listener.local_addr()?.port();
-        let loopback = match loopback {
-            None if !viewer => Self::loopback_beside(&listener)?,
-            l => l,
+        let listening = match listeners {
+            Some(Listeners { listener, loopback }) => {
+                let loopback = match loopback {
+                    None if !viewer => Self::loopback_beside(&listener)?,
+                    l => l,
+                };
+                Some((listener, loopback))
+            }
+            None => None,
+        };
+        let port = match &listening {
+            Some((l, _)) => l.local_addr()?.port(),
+            None => 0,
         };
         if viewer {
             std::fs::create_dir_all(dir)?;
@@ -1538,13 +1615,13 @@ impl Coordinator {
             std::fs::create_dir_all(dir.join("journal"))?;
         }
         let token = http::token(dir)?;
-        let now = Instant::now();
+        let now = clock.now();
         // The files of an agent before the store (crate::coord::kept), read by the lead's alone as
         // its store's first fill: a member's broker keeps no store, and a viewer's folder is its own
         // scratch (docs/roles.md §3.5: a member's agent removes them).
         let lead = mode == Mode::Lead;
         let first_fill = |f: &str| if lead { std::fs::read(dir.join(f)).ok() } else { None };
-        let mut leases = Leases::load(first_fill("leases.json"), TTL, now);
+        let mut leases = Leases::load(first_fill("leases.json"), TTL, now, clock.wall());
         // (What releases a target held for a newer app: this one, `Hold`.)
         leases.app = app.to_string();
         leases.me = me.to_string();
@@ -1675,7 +1752,7 @@ impl Coordinator {
             keep: Default::default(),
             own_cap: None,
             dir: dir.to_path_buf(),
-            clock: store::clock::real(),
+            clock,
             headers_max_ms: Arc::new((http::HEADERS_MAX.as_millis() as u64).into()),
         };
         if !viewer {
@@ -1707,6 +1784,25 @@ impl Coordinator {
             cors: cors.clone(),
         };
         let taken: Arc<std::sync::atomic::AtomicU64> = Default::default();
+        let Some((listener, loopback)) = listening else {
+            // (In this process alone: no listener, no thread of its own.)
+            drop((ctx, closed_tx));
+            return Ok(Coordinator {
+                shared,
+                contact: Contact { urls: Vec::new(), token, page: None },
+                job_token,
+                port,
+                me: me.to_string(),
+                root,
+                stopped,
+                wake,
+                closed: Mutex::new(None),
+                routes,
+                cors,
+                phases: None,
+                taken,
+            });
+        };
         let urls = http::serve(listener, loopback, port, ctx, stopped.clone(), wake.clone(), taken.clone(), closed_tx)?;
         if !viewer {
             nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string());
@@ -1928,7 +2024,7 @@ impl Coordinator {
         // (The lock held: what follows is the packing, the agent loop's phase until its next.)
         crate::agent::nasread::phase("the grants: the coordinator's packing");
         let now = s.now();
-        if s.paused.is_some() || s.moving_now(wall_now()).is_some() {
+        if s.paused.is_some() || s.moving_now(s.wall_s()).is_some() {
             return None;
         }
         let mut a = a.clone();
@@ -2142,10 +2238,11 @@ impl Coordinator {
     pub fn refusals(&self) -> BTreeMap<String, String> {
         let mut s = self.shared.lock().unwrap();
         // (Old ones let go: a worker gone asks no more.)
-        s.refused.retain(|_, (at, _)| unix_now().saturating_sub(*at) < CAP_FRESH_S);
+        let unix = s.wall_s();
+        s.refused.retain(|_, (at, _)| unix.saturating_sub(*at) < CAP_FRESH_S);
         s.refused
             .iter()
-            .filter(|(_, (at, _))| unix_now().saturating_sub(*at) < CAP_FRESH_S)
+            .filter(|(_, (at, _))| unix.saturating_sub(*at) < CAP_FRESH_S)
             .map(|(w, (_, why))| (w.clone(), why.clone()))
             .collect()
     }
@@ -2871,7 +2968,7 @@ impl Coordinator {
     pub fn set_moving_as_of(&self, why: Option<String>, as_of: u64) {
         let mut s = self.shared.lock().unwrap();
         s.moving = why;
-        s.told = Some(as_of.min(wall_now()));
+        s.told = Some(as_of.min(s.wall_s()));
     }
 
     /// The build page's regions as this Mac's agent made them (`Shared::regions`).
@@ -4219,6 +4316,24 @@ fn plain(s: &str, max: usize) -> String {
     s.chars().filter(|&c| !c.is_control() && !bidi(c)).take(max).collect::<String>().trim().to_string()
 }
 
+/// A JSON request's answer (`http::json`'s, and an in-process coordinator's: `Coordinator::call`):
+/// `route`'s, once what it changed is on the store's disk (docs/coordination.md §2, principle 5);
+/// 503 when the disk doesn't take it in time.
+fn answer_json(
+    path: &str,
+    body: &[u8],
+    shared: &Mutex<Shared>,
+    journal: &Path,
+    caller: &Caller,
+) -> Result<(u16, serde_json::Value)> {
+    let r = route(path, body, shared, journal, caller);
+    let keep = shared.lock().unwrap().keep.clone();
+    if matches!(r, Ok((200..=299, _))) && !keep.durable(keep.last()) {
+        return Ok((503, serde_json::json!({ "error": "the lead's disk didn't take the change in time" })));
+    }
+    r
+}
+
 /// What a request asks of the shared state (JSON in, JSON out): (status, body).
 fn route(
     path: &str,
@@ -4243,7 +4358,7 @@ fn route(
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
             let mut s = shared.lock().unwrap();
             // The pool's lead not fresh: nothing now (docs/pool.md §6.5).
-            if let Some(why) = s.moving_now(wall_now()) {
+            if let Some(why) = s.moving_now(s.wall_s()) {
                 s.seen(&a.worker, format!("waiting: {why}"), None, now);
                 return Ok((
                     409,
@@ -6061,13 +6176,7 @@ mod http {
             if *stopped {
                 return Ok((503, serde_json::json!({ "error": "this coordinator has stopped" })));
             }
-            let r = route(&path, &body, &c.shared, &c.journal, &caller);
-            // (What it changed on disk before its answer: docs/coordination.md §2, principle 5.)
-            let keep = c.shared.lock().unwrap().keep.clone();
-            if matches!(r, Ok((200..=299, _))) && !keep.durable(keep.last()) {
-                return Ok((503, serde_json::json!({ "error": "the lead's disk didn't take the change in time" })));
-            }
-            r
+            answer_json(&path, &body, &c.shared, &c.journal, &caller)
         });
         match routed.await {
             Ok(Ok((204, _))) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "no-store")]).into_response(),

@@ -310,11 +310,12 @@ impl Store {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).compactions
     }
 
-    /// Writes what's pending and stops the writer (what's submitted after is in memory alone).
+    /// Writes what's pending and stops the writer (what's submitted after is in memory alone). A
+    /// store stopped already (or killed) has no writer to wait for.
     pub fn stop(&self) {
         let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
         let until = Instant::now() + DURABLE_WAIT;
-        while m.durable < m.state.seq && m.failed.is_none() {
+        while !m.stop && m.durable < m.state.seq && m.failed.is_none() {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
@@ -418,6 +419,15 @@ fn compact(dir: &Path, snap: &Snapshot) -> Result<Appender> {
     Ok(a)
 }
 
+/// Writes `snap` (a store's snapshot, naming its writer and when) to the NAS (`BACKUP_PATH`), unless
+/// it's at `backed` (the `seq` last backed up): the `seq` backed up now.
+pub fn back_up_once(snap: &Snapshot, nas: &dyn Nas, backed: u64) -> Result<u64> {
+    if snap.seq != backed {
+        nas.write_whole(BACKUP_PATH, &serde_json::to_vec(snap)?)?;
+    }
+    Ok(snap.seq)
+}
+
 /// Writes `store`'s snapshot to the NAS (`BACKUP_PATH`) each `every` while it changed, as `member`,
 /// on a thread of its own, until the store stops or is dropped (and once more as it stops).
 pub fn back_up(store: &Arc<Store>, nas: Arc<dyn Nas + Send + Sync>, member: &str, every: Duration) {
@@ -435,14 +445,9 @@ pub fn back_up(store: &Arc<Store>, nas: Arc<dyn Nas + Send + Sync>, member: &str
                 };
                 let snap = Snapshot { member: member.clone(), at: crate::coord::wall_now(), ..s.snapshot() };
                 drop(s);
-                if snap.seq != backed {
-                    match serde_json::to_vec(&snap)
-                        .map_err(anyhow::Error::from)
-                        .and_then(|b| nas.write_whole(BACKUP_PATH, &b))
-                    {
-                        Ok(()) => backed = snap.seq,
-                        Err(e) => eprintln!("pool store: its backup on the NAS: {e:#}"),
-                    }
+                match back_up_once(&snap, &*nas, backed) {
+                    Ok(seq) => backed = seq,
+                    Err(e) => eprintln!("pool store: its backup on the NAS: {e:#}"),
                 }
                 if stopped {
                     return;
