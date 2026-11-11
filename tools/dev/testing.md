@@ -303,7 +303,14 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   checkout's copy, not this one's. `.scenic-tied` lists the last look's units, with why. So tests
   read their files as they run, from their package's folder (cargo and nextest run a test there:
   `std::path::absolute("../../tools/status/test")`), never by `env!("CARGO_MANIFEST_DIR")`, which
-  ties the unit (store::testkit's tied every test build). Test: tools/dev/test/shared-target.zsh
+  ties the unit (store::testkit's tied every test build). A build script's `rerun-if-changed`
+  paths are judged by time even so: agentcore's and geos-src's say `rerun-if-env-changed` of a
+  variable set by nothing (cargo runs a script it compiled anew by itself, judged by content), as
+  `rerun-if-changed=build.rs` ran GEOS's CMake build and every crate linking it again in each new
+  worktree. Measured (M4, load 55-85, 11 Nov; the test build of agentcore, pipeline, store,
+  terrain, jobrt and buildstore in a scratch shared folder): a new worktree's first build after
+  another's, the same sources, 139 s and 20 workspace crates compiled before, 1 s and none after;
+  back in the first worktree, 140 s before, 0 s after. Test: tools/dev/test/shared-target.zsh
   (check.sh): the same sources in two checkouts fresh, a differing file outside the package and an
   `env!` path compiled again, back and forth.
 - Outside `.claude/worktrees/` (the main checkout) cargo builds as it would, in its own folder,
