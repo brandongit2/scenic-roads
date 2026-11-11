@@ -16,15 +16,13 @@ rely on the agent.
   /Volumes/personal/projects/scenic-roads`), measuring what a NAS-reading step reads, scanning large
   NAS folders, or bulk copies. A small read (a log, a status file, one record) is fine from any
   Mac. On the mini:
-  - one such run at a time, using at most a quarter of its memory: it is also the lead, the map
-    server and a build worker;
   - use a scratch folder of your own and delete it afterwards;
   - timings taken there are skewed by its build jobs: when the numbers matter, ask the PM for a
     quiet period rather than pausing anything yourself.
-- **Away from home** (the M4 off the home network), don't mount the NAS share on the M4: a laptop
-  that changes network with the share mounted leaves a dead session on the NAS. Use the mini.
-- **Memory:** never start a run using more than about a quarter of its Mac's memory without asking
-  the PM; runs that size have crashed Macs.
+- **Never mount or unmount the NAS share yourself:** each Mac's agent mounts it (by its LAN name at
+  home, through Tailscale away) and remounts it as the network changes.
+- **Memory:** nothing caps an agent's own run (the pool's memory guard covers only pool jobs), and
+  runs on real data have crashed Macs. Watch the footprint of a long run on real data.
 
 ## Processes
 
