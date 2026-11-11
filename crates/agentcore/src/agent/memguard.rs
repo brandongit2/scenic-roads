@@ -798,6 +798,21 @@ impl Sampler {
         true
     }
 
+    /// Holds slot `k`'s job frozen as a guard of the agent before this one left it (task #1137:
+    /// crate::agent's `adopt_jobs`), for its memory, the disk, or both: marked so, and SIGSTOP to
+    /// its group again (its record may say so of a group someone let go on since). Each guard lets
+    /// it go on under its own rule (`thaw`, `thaw_disk`), as it does a job it froze itself.
+    pub fn hold_frozen(&self, k: usize, memory: bool, disk: bool) {
+        let Ok(mut g) = self.inner.lock() else { return };
+        let real = g.held_set.is_none() && g.disk_set.is_none();
+        let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut) else { return };
+        w.frozen |= memory;
+        w.disk_frozen |= disk;
+        if real && (w.frozen || w.disk_frozen) {
+            jobrt::sys::signal_group(w.pgid, jobrt::sys::Signal::Stop);
+        }
+    }
+
     /// While slot `k`'s job is frozen (for its memory or the disk), SIGSTOP to its group again (the
     /// agent's loop, each round): what of it a SIGSTOP missed is stopped (jobs::Running::keep_paused).
     pub fn keep_frozen(&self, k: usize) {

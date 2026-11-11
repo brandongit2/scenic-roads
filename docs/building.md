@@ -211,7 +211,8 @@ from the first (`edit_held`).
   300 ms later, none). A member it missed runs until the next round.
 - **Restarts** (task #393): a job outlives its agent. Its record (`job[-k].json` in the agent's
   folder) holds its spec, threads and log from its start, and the agent saves its slot there (its
-  lease, its grant's disk and memory, the budgets' proxy's port) whenever that changes
+  lease, its grant's disk and memory, the budgets' proxy's port, which guard holds it frozen: the
+  memory guard, the disk guard, or both) whenever that changes
   (`Agent::save_hands`); a shell at the head of its process group writes its exit status beside
   the record (`job[-k].status`). An agent that ends for anything but a quit (a newer app's
   restart, its launcher restarted, a SIGTERM) leaves its jobs running, its leases not ended
@@ -224,7 +225,8 @@ from the first (`edit_held`).
   the lead's, and is held in the member's own coordinator at once if it takes the lead in its
   process. Its channel is set to
   "run" (a drain the agent before asked for is this one's to ask again), or "drain" while this
-  Mac's build is paused (the pool's or its own), the memory guard watches it, the pool doesn't hand its folder off as left (`take_left`), the budgets' proxy listens again on
+  Mac's build is paused (the pool's or its own), the memory guard watches it, a guard's freeze
+  holds (task #1137, below), the pool doesn't hand its folder off as left (`take_left`), the budgets' proxy listens again on
   the port the job was told (task #588): the old agent stops its proxy before it lets go of
   its lock, and the new one binds the port as soon as it holds the lock, before it joins the pool,
   so the job's connections are refused only while the agent restarts. A fetch refused by its
@@ -239,7 +241,19 @@ from the first (`edit_held`).
   followed as it starts, so an app installed while it runs changes none of them.) Its end is read from the status file: a pause's 75 counts as paused;
   a group gone with no status (killed while no agent tended it) is interrupted, not failed. A
   record an older app wrote, or one with no slot saved, isn't taken over: its job is stopped at
-  start when provably ours, as before. A member's task leased from the lead (`run-task`) is taken
+  start when provably ours, as before. **A frozen job** (task #1137): an agent restarting while a
+  guard holds a job frozen (an update's drain waits on it only the time a pause gives: frozen, it
+  uses no CPU and reaches no safe point) leaves it frozen and says so in its slot, rather than letting it go on
+  first: the guard holds it because the disk or the memory is still short, and let go between two
+  agents it would grow with neither watching. The next agent holds it frozen for that guard
+  (`memguard::Sampler::hold_frozen`), which lets it go on by its own rule, as for a job it froze
+  itself (the disk at the room target again; the Mac back above its memory floor), or gives it
+  back; the memory guard's minute and its 15 minutes count from the take-over. A group found
+  stopped with no word of why (`jobs::Running::stopped`: state T; a slot an older app saved, a crash
+  before the freeze was saved), not by the build's pause, is held frozen by both guards, so it
+  goes on once neither would hold it (11 Nov, the M4: a unit the disk guard froze, taken over
+  into the next release with nothing saying so, sat stopped 78 minutes with the disk at 40 GB of
+  a 30 GB target, its slot and lease held). A member's task leased from the lead (`run-task`) is taken
   over the same way, its lease kept by the next agent's beats (docs/coordination.md §6.1) and its
   result sent from its outbox by that agent, a lead's too (one taken over as the Mac restarted into
   the lead). The app's quit stops its jobs as before (control::Quit). An adopted job offers its

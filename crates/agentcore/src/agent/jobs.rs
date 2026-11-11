@@ -561,6 +561,13 @@ impl Running {
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
+
+    /// Whether any of its group that runs is stopped (state T: a SIGSTOP, by a pause or a guard),
+    /// as a job taken over is read (task #1137: a guard's freeze an agent before this one left
+    /// with no word of it).
+    pub fn stopped(&self) -> bool {
+        self.pgid > 0 && live_members(self.pgid).into_iter().any(jobrt::sys::process_stopped)
+    }
 }
 
 /// Keeps the Mac awake while process `pid` runs: no idle sleep (on battery too: -i), no system sleep
@@ -1194,22 +1201,8 @@ mod tests {
         store::spawn::spawn(&mut c).unwrap()
     }
 
-    /// Whether process `pid` is stopped (SIGSTOP).
     fn stopped(pid: u32) -> bool {
-        const SSTOP: u32 = 4;
-        // SAFETY: proc_bsdinfo is plain old data; proc_pidinfo fills at most `size` bytes of it.
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-        let n = unsafe {
-            libc::proc_pidinfo(
-                pid as i32,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                (&mut info as *mut libc::proc_bsdinfo).cast(),
-                size,
-            )
-        };
-        n == size && info.pbi_status == SSTOP
+        jobrt::sys::process_stopped(pid as i32)
     }
 
     /// Task #987: a stop's SIGKILL is sent again while any of the group runs: a member the first

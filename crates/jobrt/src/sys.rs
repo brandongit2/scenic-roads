@@ -81,6 +81,28 @@ pub fn process_start(pid: i32) -> Option<u64> {
     }
 }
 
+/// Whether process `pid` is stopped (state T: a SIGSTOP, a guard's freeze); false when it doesn't
+/// exist or can't be read.
+pub fn process_stopped(pid: i32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // (proc_bsdinfo's pbi_status: SSTOP, <sys/proc.h>.)
+        const SSTOP: u32 = 4;
+        // SAFETY: as in `process_start`.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let n = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size)
+        };
+        n == size && info.pbi_status == SSTOP
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// A process as `process` reads it: its parent, when it started (microseconds since the epoch) and
 /// its executable (its full path, and its file name).
 #[derive(Clone, Debug, PartialEq)]

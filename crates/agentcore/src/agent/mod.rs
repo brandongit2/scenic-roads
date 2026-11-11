@@ -692,6 +692,32 @@ struct Hand {
     /// The budgets' proxy's port its job was told (the next agent's proxy listens there again).
     #[serde(default)]
     proxy_port: Option<u16>,
+    /// Which guard holds its job frozen (task #1137): the next agent holds it so and lets it go on
+    /// by that guard's rule. None in a record an older app wrote: its group read as it's taken over
+    /// (`adopt_jobs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frozen: Option<GuardFrozen>,
+}
+
+/// Which of the guards (crate::agent::memguard) froze a job (`Hand::frozen`): the memory guard
+/// (under the brake), the disk guard (short of the room target), or both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct GuardFrozen {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    memory: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    disk: bool,
+}
+
+impl GuardFrozen {
+    /// In words, for the log: "the memory guard", "the disk guard", "the memory and disk guards".
+    fn words(&self) -> &'static str {
+        match (self.memory, self.disk) {
+            (true, true) => "the memory and disk guards",
+            (true, false) => "the memory guard",
+            _ => "the disk guard",
+        }
+    }
 }
 
 /// The port the jobs the agent before left running in `home` were told their proxy is on
@@ -3835,6 +3861,11 @@ impl Agent {
             peak_mb: s.peak_mb,
             reserve_mb: s.reserve_mb,
             proxy_port: self.proxy.as_ref().map(|p| p.port()),
+            frozen: Some(GuardFrozen {
+                memory: self.sampler.frozen(k) || s.pressure_frozen.is_some(),
+                disk: self.sampler.disk_frozen(k),
+            })
+            .filter(|f| f.memory || f.disk),
         }
     }
 
@@ -3865,7 +3896,9 @@ impl Agent {
     /// The jobs running here left running as this agent ends (a newer app, its launcher restarted,
     /// SIGTERM, a change of role): each one's slot saved with its record, its lease kept, for the
     /// next agent to take it over (`adopt_jobs`), whatever its lease: the lead's own, or one leased
-    /// from the lead (a member's job or task, its lease ending only by its holder's word).
+    /// from the lead (a member's job or task, its lease ending only by its holder's word). One a
+    /// guard holds frozen is left frozen, its slot saying which guard (`Hand::frozen`): the disk or
+    /// the memory still short, let go now it would grow with no agent watching (task #1137).
     fn hand_over_jobs(&mut self) {
         self.save_hands();
         for k in 0..self.slots.len() {
@@ -3887,7 +3920,7 @@ impl Agent {
     /// (the lead's own held again in its coordinator, under a new id if the one it had ended with
     /// that agent, as a beat does; a member's kept with its lead), their grants, their channels
     /// set to run (the drain that agent asked for is this one's to ask again), and watched by the
-    /// memory guard. Those that can't be are stopped as before (`run`, jobs::stop_orphan).
+    /// memory guard, one a guard froze held frozen by it (task #1137). Those that can't be are stopped as before (`run`, jobs::stop_orphan).
     fn adopt_jobs(&mut self) {
         if self._lock.is_none() || self.o.dry_run {
             return;
@@ -3912,8 +3945,22 @@ impl Agent {
             };
             // (One of an older app runs that release's programs to its end: said, task #688.)
             let old = self.old_app_of(&r).map(|v| format!(", on app {v} (older than this agent's {})", self.app));
+            // (Frozen by a guard of the agent before: held so, each guard letting it go on by its
+            // own rule, task #1137. Its group stopped with no word of why (an older app's record,
+            // a crash before its slot was saved), not by the build's pause: frozen by both guards,
+            // so it goes on once neither would hold it.)
+            let unsaid = hand.frozen.is_none() && r.paused.is_none() && r.stopped();
+            let frozen = hand.frozen.or(unsaid.then_some(GuardFrozen { memory: true, disk: true }));
+            let held = frozen.map_or(String::new(), |f| {
+                format!(
+                    "; {} by {}, going on by {}",
+                    if unsaid { "found stopped with no word of why: held frozen" } else { "held frozen" },
+                    f.words(),
+                    if f.memory && f.disk { "their rules" } else { "its rule" }
+                )
+            });
             eprintln!(
-                "agent: took over {} (group {}), left running by the agent before this one{}{}",
+                "agent: took over {} (group {}), left running by the agent before this one{}{}{held}",
                 id,
                 r.pgid,
                 if k > 0 { format!(", in slot {}", k + 1) } else { String::new() },
@@ -3944,6 +3991,9 @@ impl Agent {
             // (One already ended, `pgid` 0, isn't watched: its end is seen at the next look.)
             if pgid > 0 {
                 self.watch_job(k, pgid);
+                if let Some(f) = frozen {
+                    self.sampler.hold_frozen(k, f.memory, f.disk);
+                }
             }
             self.note(crate::coord::history::Event {
                 worker: Some(self.worker_of(k)),
@@ -14678,6 +14728,130 @@ mod tests {
         assert_eq!(jobrt::control::said(&b.control_path(0)), Some(jobrt::control::Say::Drain));
         b.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
+    }
+
+    /// Task #1137: a job frozen as its agent restarts (into an update), taken over by the next
+    /// agent (`freeze` freezes it in the agent before, as a guard would): the next agent, its disk
+    /// room target 30 GB and 20 GB free, with its memory test figures (16 GB, 14 GB idle). The test
+    /// folder, the next agent, the job's group, its go file (the job waits for it, then ends).
+    fn frozen_then_taken_over(freeze: impl FnOnce(&mut Agent)) -> (tempfile::TempDir, Agent, i32, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let opts = || Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
+            home: home.clone(),
+            bin: d.path().join("bin"),
+            dry_run: false,
+            once: true,
+            member: false,
+        };
+        let g: u64 = 1 << 30;
+        let target = || Some(room::Target { bytes: 30 * g, by: "a test".into(), at: now_s() });
+        let mut a = test_agent(opts()).unwrap();
+        a.free_set = Some(40 * g);
+        a.room_target = target();
+        a.mem_set = Some((16 << 10, 14 << 10));
+        let go = d.path().join("go");
+        let job = JobSpec {
+            id: "unit 6/18/21".into(),
+            what: "unit 6/18/21".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), format!("while [ ! -e '{}' ]; do sleep 0.1; done", go.display())],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(jobs::Work { step: "unit".into(), targets: vec![("6/18/21".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
+        let pgid = a.slots[0].running.as_ref().unwrap().pgid;
+        freeze(&mut a);
+        store::testkit::eventually("the job stopped", || a.slots[0].running.as_ref().unwrap().stopped());
+        a.hand_over_jobs();
+        drop(a);
+        let mut b = test_agent(opts()).unwrap();
+        assert!(b.slots[0].running.as_ref().is_some_and(|r| r.adopted && r.pgid == pgid), "taken over");
+        (b.free_set, b.room_target, b.mem_set) = (Some(20 * g), target(), Some((16 << 10, 14 << 10)));
+        (d, b, pgid, go)
+    }
+
+    /// One loop of the agent's on slot 0 (`tend`, the memory guard, the disk guard: no NAS, so no
+    /// room is made), then whether its job is still stopped.
+    fn guard_loop(a: &mut Agent) -> bool {
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        a.tend(0, &cond, None, 0).unwrap();
+        a.guard();
+        a.disk_guard(None);
+        a.slots[0].running.as_ref().unwrap().stopped()
+    }
+
+    /// The job taken over (`frozen_then_taken_over`), let go on: it runs to its end.
+    fn runs_to_its_end(mut a: Agent, pgid: i32, go: &Path) {
+        store::testkit::eventually("the job going on", || !a.slots[0].running.as_ref().unwrap().stopped());
+        std::fs::write(go, "").unwrap();
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        let t = Instant::now();
+        while !a.tend(0, &cond, None, 0).unwrap() {
+            assert!(t.elapsed() < store::testkit::WATCHDOG, "the job ends");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(a.slots[0].running.is_none());
+        unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
+        assert!(!jobrt::sys::signal_group(pgid, jobrt::sys::Signal::Probe), "no process of it left");
+    }
+
+    /// Task #1137 (the M4, 11 Nov): a job the disk guard froze, its agent restarting into an update,
+    /// is held frozen by the next agent (its slot's record says so) while the disk is short of the
+    /// room target, and goes on once the target is free again, to its end.
+    #[test]
+    fn a_job_the_disk_guard_froze_is_held_across_a_take_over_and_goes_on_once_room_is_back() {
+        let (_d, mut b, pgid, go) = frozen_then_taken_over(|a| {
+            let home = a.o.home.clone();
+            a.sampler.set_disk(true, 30 << 30, &home);
+            a.sampler.set_test_disk(Some(20 << 30), None);
+            a.sampler.tick_disk();
+            assert!(a.sampler.disk_frozen(0));
+        });
+        assert!(b.sampler.disk_frozen(0) && !b.sampler.frozen(0), "frozen by the disk guard, as the record says");
+        assert!(guard_loop(&mut b) && guard_loop(&mut b), "the disk short: held frozen");
+        b.free_set = Some(40 << 30);
+        guard_loop(&mut b);
+        assert!(!b.sampler.disk_frozen(0));
+        runs_to_its_end(b, pgid, &go);
+    }
+
+    /// Task #1137: a job the memory guard froze, taken over, stays frozen while the brake is on and
+    /// goes on once the Mac is back above its floor.
+    #[test]
+    fn a_job_the_memory_guard_froze_is_held_across_a_take_over_and_goes_on_once_the_mac_is_back() {
+        let (_d, mut b, pgid, go) = frozen_then_taken_over(|a| assert!(a.sampler.freeze(0)));
+        b.free_set = Some(40 << 30);
+        assert!(b.sampler.frozen(0) && !b.sampler.disk_frozen(0), "frozen by the memory guard, as the record says");
+        b.sampler.set_test(None, Some(true));
+        assert!(guard_loop(&mut b) && b.slots[0].pressure_frozen.is_some(), "the brake on: held frozen");
+        b.sampler.set_test(None, Some(false));
+        guard_loop(&mut b);
+        assert!(!b.sampler.frozen(0) && b.slots[0].pressure_frozen.is_none());
+        runs_to_its_end(b, pgid, &go);
+    }
+
+    /// Task #1137: a job found stopped as it's taken over with no word of why (an older app's
+    /// record, as on the M4 the release after it; a crash before its slot was saved) is held frozen
+    /// by both guards: the memory back, it stays frozen while the disk is short, and goes on once
+    /// neither would hold it.
+    #[test]
+    fn a_job_found_stopped_with_no_record_of_why_goes_on_once_neither_guard_holds_it() {
+        let (_d, mut b, pgid, go) = frozen_then_taken_over(|a| {
+            let pgid = a.slots[0].running.as_ref().unwrap().pgid;
+            assert!(jobrt::sys::signal_group(pgid, jobrt::sys::Signal::Stop));
+        });
+        assert!(b.sampler.frozen(0) && b.sampler.disk_frozen(0), "held frozen by both guards");
+        assert!(guard_loop(&mut b), "the disk short: held frozen");
+        assert!(!b.sampler.frozen(0), "the memory guard lets it go: the Mac above its floor");
+        b.free_set = Some(40 << 30);
+        guard_loop(&mut b);
+        assert!(!b.sampler.disk_frozen(0));
+        runs_to_its_end(b, pgid, &go);
     }
 
     /// Task #393: a record an older app wrote (no spec, no slot saved) isn't taken over: its job is
