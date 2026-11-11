@@ -265,6 +265,8 @@ pub struct Outcome {
     /// with every other (the coast shared between them, the rest), so its key is the whole
     /// folder's (every file but the group files, which no resolution reads).
     pub keys: BTreeMap<String, String>,
+    /// How the regions with water fit, with `cover = "earth"` (the cover check's measures).
+    pub fit: super::tiles::Fit,
 }
 
 /// Every region of `folder` resolved against `ctx`, in an order where each comes after those it

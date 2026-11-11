@@ -496,9 +496,28 @@ pub fn check_folder(
         "enabled_km2": enabled_km2,
         "earth_km2": super::geom::area_km2(&super::geom::earth()),
         "most_points_one_operation": peak,
+        "fit": fit_report(&out.fit),
         "findings": findings.iter().map(|f| serde_json::json!({"check": f.check(), "message": f.message})).collect::<Vec<_>>(),
         "by_region": regions,
     }))
+}
+
+/// The cover check's measures of how the regions fit (tiles::Fit), for the report: the pairs
+/// overlapping before the check settled them and after, each stretch in no region and where it
+/// went, what is in no region after; areas in km², rounded to 0.001.
+fn fit_report(f: &super::tiles::Fit) -> serde_json::Value {
+    let r = |v: f64| (v * 1000.0).round() / 1000.0;
+    let mut gaps: Vec<&super::tiles::GapFit> = f.gaps.iter().collect();
+    gaps.sort_by(|a, b| b.km2.total_cmp(&a.km2));
+    serde_json::json!({
+        "overlaps": f.overlaps.iter().filter(|(_, v)| v.0 + v.1 >= 0.001).map(|((a, b), v)| serde_json::json!({"a": a, "b": b, "land_km2": r(v.0), "water_km2": r(v.1)})).collect::<Vec<_>>(),
+        "gaps": gaps.iter().filter(|g| g.km2 >= 0.001).map(|g| serde_json::json!({
+            "km2": r(g.km2), "zone_km2": r(g.zone_km2), "land_km2": r(g.land_km2), "touches_land": g.touches,
+            "at": [g.at[0] as f64 / 1e7, g.at[1] as f64 / 1e7], "to": g.to,
+            "edges_km": g.edges.iter().take(4).map(|(id, l)| serde_json::json!([id, r(*l)])).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        "after_overlaps": f.after_overlaps.iter().map(|((a, b), v)| serde_json::json!({"a": a, "b": b, "km2": r(*v)})).collect::<Vec<_>>(),
+        "after_gaps": f.after_gaps.iter().map(|(c, v)| serde_json::json!({"cell": [c.0 * 2, c.1 * 2], "km2": r(*v)})).collect::<Vec<_>>(),
+    })
 }
 
 /// A resolved region's area (km²). A region with water is stored as its land and its water, two

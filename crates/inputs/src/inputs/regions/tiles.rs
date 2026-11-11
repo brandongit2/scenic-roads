@@ -1030,7 +1030,22 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     drop(lands);
     trace("the cells' fills and the cover check");
     let rest_id = rests.first().map(|s| (*s).clone());
-    let rest = cells_pass(folder, data, &mut all, cover, rest_id.is_some(), rules.sliver_km2, &mut out.problems);
+    let zones = if cover { zones(data) } else { TArea::default() };
+    let rest = cells_pass(
+        folder,
+        data,
+        &zones,
+        &mut all,
+        cover,
+        rest_id.is_some(),
+        rules.sliver_km2,
+        &mut out.problems,
+        &mut out.fit,
+    );
+    drop(zones);
+    if cover {
+        fit_after(&all, rest_id.as_ref().map(|id| (id, &rest)), &mut out.fit);
+    }
     trace_gaps("at the end", data, |c| all.values().map(|t| t.get(c)).filter(|a| !a.is_empty()).collect());
     trace("stored");
     // 6. Stored: every region with water, and the rest (those without, as they resolved).
@@ -1812,11 +1827,101 @@ fn slivers(
     }
 }
 
+/// A pair of regions in a cell and the land and the water (km²) both had there.
+type Pair = (String, String, f64, f64);
+
+/// What the cover check measured of how the regions fit (`scenic-build regions-check`'s report):
+/// the overlaps and gaps the regions resolved with, before the check settled them, and after.
+#[derive(Debug, Default)]
+pub struct Fit {
+    /// Each pair's land and water both had (km²), summed over the cells.
+    pub overlaps: BTreeMap<(String, String), (f64, f64)>,
+    /// Each stretch in no region (joined across the cells' edges), and where it went.
+    pub gaps: Vec<GapFit>,
+    /// After the check: each pair's area both have (km²), and what is in no region, the rest
+    /// included, by cell (km²).
+    pub after_overlaps: BTreeMap<(String, String), f64>,
+    pub after_gaps: BTreeMap<Cell, f64>,
+}
+
+#[derive(Debug)]
+pub struct GapFit {
+    pub km2: f64,
+    /// Its part inside any country's 200-nmi zone.
+    pub zone_km2: f64,
+    /// Its land, where read (a stretch over `sliver_km2` touching land).
+    pub land_km2: f64,
+    /// Within 100 m of land.
+    pub touches: bool,
+    /// A point inside its largest piece.
+    pub at: Pt,
+    /// The regions it went to (`(rest)`: the rest's), joined by `+`.
+    pub to: String,
+    /// The edge it shares with each region with water (km), longest first.
+    pub edges: Vec<(String, f64)>,
+}
+
+/// Every 200-nmi zone of the datasets with its internal waters, by cell: where water is some
+/// country's.
+fn zones(data: &super::data::Datasets) -> TArea {
+    let shapes: Vec<&Vec<Ring>> = data.eez.values().chain(data.internal.values()).collect();
+    let parts: Vec<TArea> = pace::par_map(shapes, |rs| TArea::from_rings(rs));
+    let mut by: BTreeMap<Cell, Vec<Area>> = BTreeMap::new();
+    for t in parts {
+        for (c, a) in t.cells {
+            by.entry(c).or_default().push(a);
+        }
+    }
+    let mut t = TArea::default();
+    for (c, a) in pace::par_map(by.into_iter().collect(), |(c, v): (Cell, Vec<Area>)| (c, geom::union_all(&v))) {
+        t.set(c, a);
+    }
+    t
+}
+
+/// The regions as they end (the rest's area included): each pair's area both have and what none
+/// has, cell by cell.
+fn fit_after(all: &BTreeMap<String, TArea>, rest: Option<(&String, &TArea)>, fit: &mut Fit) {
+    let cells: Vec<Cell> = (-90..90).flat_map(|x| (-45..45).map(move |y| (x, y))).collect();
+    let done: Vec<(Cell, Vec<(String, String, f64)>, f64)> = pace::par_map(cells, |c| {
+        let pieces: Vec<(&String, &Area)> =
+            all.iter().chain(rest).filter_map(|(id, t)| t.cells.get(&c).map(|a| (id, a))).collect();
+        let boxes: Vec<Option<[i64; 4]>> = pieces.iter().map(|p| p.1.bbox()).collect();
+        let mut pairs = Vec::new();
+        for i in 0..pieces.len() {
+            for j in i + 1..pieces.len() {
+                let (Some(a), Some(b)) = (boxes[i], boxes[j]) else { continue };
+                if !(a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]) {
+                    continue;
+                }
+                let k = geom::area_km2(&pieces[i].1.intersect(pieces[j].1));
+                if k > 0.0 {
+                    pairs.push((pieces[i].0.clone(), pieces[j].0.clone(), k));
+                }
+            }
+        }
+        let u = geom::union_all(&pieces.iter().map(|p| p.1.clone()).collect::<Vec<_>>());
+        (c, pairs, geom::area_km2(&geom::box_area(cell_box(c)).minus(&u)))
+    });
+    for (c, pairs, gap) in done {
+        for (a, b, k) in pairs {
+            *fit.after_overlaps.entry((a, b)).or_default() += k;
+        }
+        if gap > 0.0 {
+            fit.after_gaps.insert(c, gap);
+        }
+    }
+}
+
 /// A piece of a cell's gap (what no region covers there), for the fill.
 struct Gap {
     c: Cell,
     sides: Sides,
     km2: f64,
+    /// Its part inside the 200-nmi zones (any country's, `zones`).
+    zone_km2: f64,
+    /// A point inside it.
+    at: Pt,
     /// Within 100 m of land.
     touches: bool,
     /// Its edge (m) with each region with water in the cell.
@@ -1896,20 +2001,23 @@ fn interior(poly: &[Ring]) -> Pt {
 /// goes to the region with water sharing the longest edge with it, land in no region over
 /// `fill_km2` is `rg-cover`, as is water in two regions in a cell or (with no rest region) in
 /// none. Returns the rest, what no region covers.
+#[allow(clippy::too_many_arguments)]
 fn cells_pass(
     folder: &Folder,
     data: &super::data::Datasets,
+    zones: &TArea,
     all: &mut BTreeMap<String, TArea>,
     cover: bool,
     rest: bool,
     fill_km2: f64,
     problems: &mut Vec<Problem>,
+    fit: &mut Fit,
 ) -> TArea {
     if !cover && !rest {
         return TArea::default();
     }
     let cells: Vec<Cell> = (-90..90).flat_map(|x| (-45..45).map(move |y| (x, y))).collect();
-    type One = (Cell, Vec<(String, Area)>, Area, Vec<Gap>, Twice, Vec<Problem>);
+    type One = (Cell, Vec<(String, Area)>, Area, Vec<Gap>, Twice, Vec<Problem>, Vec<Pair>);
     let done: Vec<One> = pace::par_map(cells, |c| {
         geom::set_label(format!("the cover check, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
         {
@@ -1925,12 +2033,13 @@ fn cells_pass(
         let mut ps = Vec::new();
         if !cover {
             let u = geom::union_all(&pieces.iter().map(|p| p.1.clone()).collect::<Vec<_>>());
-            return (c, Vec::new(), bb.minus(&u), Vec::new(), Vec::new(), ps);
+            return (c, Vec::new(), bb.minus(&u), Vec::new(), Vec::new(), ps, Vec::new());
         }
         let t0 = std::time::Instant::now();
         let land = land_and_lakes(data, c).0;
         let mut changed: Vec<(String, Area)> = Vec::new();
         let mut twice: Twice = Vec::new();
+        let mut pairs: Vec<Pair> = Vec::new();
         let boxes: Vec<Option<[i64; 4]>> = pieces.iter().map(|p| p.1.bbox()).collect();
         let near = |a: &Option<[i64; 4]>, b: &Option<[i64; 4]>| match (a, b) {
             (Some(a), Some(b)) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3],
@@ -1947,6 +2056,8 @@ fn cells_pass(
                 }
                 let sea = o.minus(&land);
                 let km2 = geom::area_km2(&sea);
+                let l = o.intersect(&land);
+                pairs.push((pieces[i].0.clone(), pieces[j].0.clone(), geom::area_km2(&l), km2));
                 if km2 > 0.1 {
                     let (a, b) = (&pieces[i].0, &pieces[j].0);
                     ps.push(Problem {
@@ -1957,7 +2068,6 @@ fn cells_pass(
                             message: format!("{a} and {b} both cover {km2:.1} km² of water in the cell from {}°, {}°: water is in one region", c.0 * 2, c.1 * 2),
                         });
                 }
-                let l = o.intersect(&land);
                 if !l.is_empty() {
                     twice.push((pieces[i].0.clone(), pieces[j].0.clone(), l));
                 }
@@ -1977,8 +2087,8 @@ fn cells_pass(
         let u = geom::union_all(&pieces.iter().map(|p| p.1.clone()).collect::<Vec<_>>());
         let gaps = bb.minus(&u);
         let t2 = t0.elapsed().as_secs_f64();
-        let mut sea = Vec::new();
         let mut out: Vec<Gap> = Vec::new();
+        let zone = zones.get(c);
         // (Whether a gap is within 100 m of land, and the edge it shares with each region: read
         // from an index of the segments, no buffer per gap.)
         let pidx = SegIndex::new(
@@ -1996,17 +2106,11 @@ fn cells_pass(
                     near(b, &gb) && lp.first().and_then(|r| r.first()).is_some_and(|v| roadcore::geo::inside(&poly, *v))
                 });
             let sides = sides(&poly, c);
+            let at = interior(&poly);
             let g = Area { polys: vec![poly] };
             let km2 = geom::area_km2(&g);
-            if km2 > fill_km2 {
-                let land = touches.then(|| gap_land(&g, &land, &twice));
-                // (Kept only if a stretch may join it across a cell's edge.)
-                if sides.iter().any(|s| !s.is_empty()) || land.as_ref().is_some_and(|l| l.km2 > fill_km2) {
-                    out.push(Gap { c, sides, km2, touches, len: Vec::new(), area: None, land });
-                }
-                sea.push(g);
-                continue;
-            }
+            let zone_km2 = if zone.is_empty() { 0.0 } else { geom::area_km2(&g.intersect(&zone)) };
+            let land = (km2 > fill_km2 && touches).then(|| gap_land(&g, &land, &twice));
             let mut len = vec![0.0f64; pieces.len()];
             {
                 for r in &g.polys[0] {
@@ -2023,7 +2127,7 @@ fn cells_pass(
                 .filter(|&k| len[k] > 0.0 && folder.regions[&pieces[k].0].1.has_water())
                 .map(|k| (pieces[k].0.clone(), len[k]))
                 .collect();
-            out.push(Gap { c, sides, km2, touches, len, area: Some(g), land: None });
+            out.push(Gap { c, sides, km2, zone_km2, at, touches, len, area: Some(g), land });
         }
         let t3 = t0.elapsed().as_secs_f64();
         if t3 > 2.0 {
@@ -2032,17 +2136,22 @@ fn cells_pass(
                     c.0 * 2, c.1 * 2, pieces.len(), land.polys.len(), t2 - t1, out.len(), t3 - t2
                 ));
         }
-        (c, changed, geom::union_all(&sea), out, twice, ps)
+        (c, changed, Area::default(), out, twice, ps, pairs)
     });
     let mut rest_t = TArea::default();
     let mut gaps: Vec<Gap> = Vec::new();
     let mut twice: HashMap<Cell, Twice> = HashMap::new();
-    for (c, changed, sea, g, t, ps) in done {
+    for (c, changed, sea, g, t, ps, pairs) in done {
         for (id, a) in changed {
             all.get_mut(&id).unwrap().set(c, a);
         }
         rest_t.set(c, sea);
         gaps.extend(g);
+        for (a, b, land, sea) in pairs {
+            let e = fit.overlaps.entry((a, b)).or_default();
+            e.0 += land;
+            e.1 += sea;
+        }
         if !t.is_empty() {
             twice.insert(c, t);
         }
@@ -2060,9 +2169,10 @@ fn cells_pass(
     for (i, r) in roots.into_iter().enumerate() {
         stretches.entry(r).or_default().push(i);
     }
+    let groups: Vec<Vec<usize>> = stretches.into_values().collect();
     let mut to: Vec<Option<String>> = vec![None; gaps.len()];
     let mut big: Vec<Vec<usize>> = Vec::new();
-    for idx in stretches.into_values() {
+    for idx in groups.iter().cloned() {
         if idx.iter().map(|&i| gaps[i].km2).sum::<f64>() > fill_km2 {
             if idx.iter().any(|&i| gaps[i].touches) {
                 big.push(idx);
@@ -2146,6 +2256,28 @@ fn cells_pass(
             files = ids.iter().filter_map(|x| folder.regions.get(*x).map(|r| r.0.clone())).collect();
         }
         problems.push(Problem { check: "rg-cover", about, found: vec![found.into()], files, message });
+    }
+    // (Measured: each stretch, where it went.)
+    for idx in &groups {
+        let mut edges: BTreeMap<&String, f64> = BTreeMap::new();
+        for &i in idx {
+            for (id, l) in &gaps[i].len {
+                *edges.entry(id).or_default() += l;
+            }
+        }
+        let mut edges: Vec<(String, f64)> = edges.into_iter().map(|(id, l)| (id.clone(), l / 1000.0)).collect();
+        edges.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let tos: BTreeSet<String> = idx.iter().map(|&i| to[i].clone().unwrap_or_else(|| "(rest)".into())).collect();
+        let largest = idx.iter().copied().max_by(|&a, &b| gaps[a].km2.total_cmp(&gaps[b].km2)).unwrap_or(idx[0]);
+        fit.gaps.push(GapFit {
+            km2: idx.iter().map(|&i| gaps[i].km2).sum(),
+            zone_km2: idx.iter().map(|&i| gaps[i].zone_km2).sum(),
+            land_km2: idx.iter().filter_map(|&i| gaps[i].land.as_ref().map(|l| l.km2)).sum(),
+            touches: idx.iter().any(|&i| gaps[i].touches),
+            at: gaps[largest].at,
+            to: tos.into_iter().collect::<Vec<_>>().join("+"),
+            edges,
+        });
     }
     // Applied cell by cell: each region's fill, and the rest's.
     let mut fill: BTreeMap<(String, Cell), Vec<Area>> = BTreeMap::new();
