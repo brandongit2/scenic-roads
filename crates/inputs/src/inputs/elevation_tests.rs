@@ -794,8 +794,8 @@ fn new_outlines_measure_a_territorys_pyramid_again() {
 }
 
 /// Task #929 review: a GeoTIFF dataset accepted before its presence was measured is measured again
-/// (its presence and bands), not taken as accepted: else the terrain's places stay its cells for
-/// good; one with its presence is taken as accepted, nothing read.
+/// in what it lacks (its bands, presence and hollow tiles), not taken as it was: else the terrain's
+/// places stay its cells for good; one with them all is taken as accepted, nothing read.
 #[test]
 fn a_dataset_accepted_before_its_presence_is_measured_again() {
     let files: BTreeMap<String, Vec<u8>> = BTreeMap::from([(
@@ -830,14 +830,111 @@ fn a_dataset_accepted_before_its_presence_is_measured_again() {
     let again = decide_with(&checks(fetch()), &files, Some(&before), &copies);
     assert!(again.report.is_none(), "{:?}", again.report);
     assert_eq!(measured(&again), want);
-    // (As accepted before task #842: its presence, no hollow tiles: measured again too.)
-    let mut before = again;
+}
+
+/// A fetch serving `fetch()`'s files that notes each range read of them (URL, offset, length).
+#[derive(Default)]
+struct Noted {
+    reads: Arc<Mutex<Vec<(String, u64, usize)>>>,
+}
+
+struct NotedFile {
+    url: String,
+    bytes: Vec<u8>,
+    reads: Arc<Mutex<Vec<(String, u64, usize)>>>,
+}
+
+impl store::range::RangeRead for NotedFile {
+    fn len(&self) -> std::result::Result<u64, store::IoError> {
+        Ok(self.bytes.len() as u64)
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> std::result::Result<Vec<u8>, store::IoError> {
+        self.reads.lock().unwrap().push((self.url.clone(), off, len));
+        store::range::RangeRead::read_at(&self.bytes, off, len)
+    }
+}
+
+impl buildstore::fetch::Fetch for Noted {
+    fn open(&self, url: &str) -> anyhow::Result<Option<Arc<dyn store::range::RangeRead>>> {
+        Ok(fetch().get(url)?.map(|bytes| {
+            Arc::new(NotedFile { url: url.into(), bytes, reads: self.reads.clone() })
+                as Arc<dyn store::range::RangeRead>
+        }))
+    }
+
+    fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        fetch().get(url)
+    }
+}
+
+impl Noted {
+    /// The reads noted so far, sorted (the hollow test reads files at once).
+    fn sorted(&self) -> Vec<(String, u64, usize)> {
+        let mut r = self.reads.lock().unwrap().clone();
+        r.sort();
+        r
+    }
+}
+
+/// Task #1088: a version of the check adding a measure (6: the hollow tiles) costs a dataset whose
+/// declaration and data are as accepted that measure alone, its files read just as the measure
+/// reads them, not its coverage, headers or presence again; one whose data changed (its index
+/// names another file) is measured whole, as a dataset never accepted is.
+#[test]
+fn an_added_measure_alone_is_read_for_a_dataset_as_accepted() {
+    let n48 = "https://e.org/t/N48E002.tif";
+    let with = |tiles: &[(&str, [f64; 4])]| -> BTreeMap<String, Vec<u8>> {
+        BTreeMap::from([
+            ("idx.toml".to_string(), decl("", "format = \"geotiff\"\nindex = \"idx.geojson\"")),
+            ("idx.geojson".to_string(), index(tiles)),
+        ])
+    };
+    let files = with(&[(n48, [2.0, 48.0, 3.0, 49.0])]);
+    let copies = Default::default();
+    let checks = |n: &Noted| Elevation::new(Arc::new(Noted { reads: n.reads.clone() }), None);
+    let measured = |d: &crate::inputs::gate::Decision| -> Measured {
+        serde_json::from_value(d.index.files["idx.toml"].facts["measured"].clone()).unwrap()
+    };
+    let whole = Noted::default();
+    let first = decide_with(&checks(&whole), &files, None, &copies);
+    assert!(first.report.is_none(), "{:?}", first.report);
+    let want = measured(&first);
+    let presence = want.presence.clone().unwrap();
+    assert!(!presence.is_empty() && want.hollow.is_some(), "{want:?}");
+    // (As accepted by version 5: its presence, no hollow tiles.)
+    let mut before = first;
     before.index.checks = format!("{UNIT} 5");
-    let e = before.index.files.get_mut("whole.toml").unwrap();
+    let e = before.index.files.get_mut("idx.toml").unwrap();
     e.facts.get_mut("measured").unwrap().as_object_mut().unwrap().remove("hollow");
-    let unread = decide_with(&checks(MapFetch::default()), &files, Some(&before), &copies);
-    assert!(unread.report.is_some(), "measured again, its data not served");
-    assert_eq!(measured(&decide_with(&checks(fetch()), &files, Some(&before), &copies)), want);
+    let added = Noted::default();
+    let again = decide_with(&checks(&added), &files, Some(&before), &copies);
+    assert!(again.report.is_none(), "{:?}", again.report);
+    assert_eq!(measured(&again), want);
+    // Its reads are the hollow test's alone, as made by itself.
+    let alone = Noted::default();
+    let open = |w: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
+        let src = buildstore::fetch::Fetch::open(&alone, w).unwrap().unwrap();
+        buildstore::geotiff::Tiff::open(src).map_err(|e| format!("{e:#}"))
+    };
+    let hollow = hollow_of(4326, &[(n48.to_string(), Some([2.0, 48.0, 3.0, 49.0]))], &presence, &open).unwrap();
+    assert_eq!(Some(hollow), want.hollow);
+    assert!(!alone.sorted().is_empty());
+    assert_eq!(added.sorted(), alone.sorted());
+    assert!(added.sorted().len() < whole.sorted().len(), "{:?} of {:?}", added.sorted(), whole.sorted());
+    // Its index naming another file: its data changed, it's measured whole, as one never accepted
+    // (one file, of another length (the fixture lists a file by its length): the hollow test's reads
+    // of several at once vary by which finds a tile's data first).
+    let other = "https://e.org/a.tif";
+    let changed = with(&[(other, [2.0, 48.0, 3.0, 49.0])]);
+    let (fresh, anew) = (Noted::default(), Noted::default());
+    let never = decide_with(&checks(&fresh), &changed, None, &Default::default());
+    let moved = decide_with(&checks(&anew), &changed, Some(&before), &copies);
+    assert!(never.report.is_none() && moved.report.is_none(), "{:?}", moved.report);
+    assert_eq!(measured(&moved), measured(&never));
+    assert!(anew.sorted().iter().all(|r| r.0 == other));
+    assert_eq!(anew.sorted(), fresh.sorted());
+    assert!(anew.sorted().len() > added.sorted().len(), "its headers and presence read too");
 }
 
 /// Task #842: of a dataset's presence, the deep tiles a finer read finds no valid pixel in are

@@ -1283,9 +1283,16 @@ again so at 1/1024 (~40 m), its sparse blocks read as the sampler reads them (no
 pixel counted where it meets the tile (its edges included), eight files at once. Only the plan
 reads it: a terrain-deep target whose every source reaching past z12 is hollow there is never run
 (docs/steps.md §2, Terrain); a place's sources and every key stay `presence`'s, so the hollow
-tiles alone move no key. Measured once a version with the presence; one accepted before it
-(checks version 5) is measured again whole (its coverage, bands and presence with it, so a file
-changed since moves its keys as any measurement would). A tile pyramid's resolution comes from its zoom at its coverage's
+tiles alone move no key. A GeoTIFF dataset's measures are made in that order, each from those
+before it (`Step`: its headers, giving its CRS, resolution, bands and coverage; its presence; its
+hollow tiles), and a dataset taken as accepted (below) that a version of the check with fewer
+measures measured is measured in those it lacks alone (task #1088): one accepted by checks version 5
+has its hollow tiles read, nothing else; by version 4, its presence and hollow tiles (a geographic
+one's headers too, for its bands). A
+measure is lacking only where it isn't none by design: a projected dataset's bands, or the world's
+presence and hollow tiles; a geographic dataset holding the world accepted without bands keeps its
+`resolution` everywhere, as accepted. A dataset whose declaration or data changed is measured whole.
+A tile pyramid's resolution comes from its zoom at its coverage's
 mid-latitude, and a tile is read to check it's 256 px (`generic::TILE_PX`). The coverage is also the
 credits' extent (§4.8).
 
@@ -1307,7 +1314,7 @@ index it names. The checks run whole on every check, files changed or not (`hold
 a finding on an unchanged dataset (an `el-geoid` the accepted sources or this check's version
 newly raise) holds it as accepted and shows it held. A dataset whose declaration and data are as
 accepted (its `keyed` with its data's) isn't measured again: its accepted `facts.measured`, before
-the cut, is taken (`Checks::seed`) and cut again; a territory's tile pyramid is, when the pass's
+the cut, is taken (`Checks::seed`), the measures it lacks made, and cut again; a territory's tile pyramid is, when the pass's
 outlines aren't those the index names. The checks themselves (`el-geoid` among them) still run on
 every check, on what's taken. Planned: files not meeting the declared territory.
 

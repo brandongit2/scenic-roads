@@ -415,6 +415,45 @@ fn hollow_level(t: &buildstore::geotiff::Tiff, px: f64) -> Result<usize> {
     Ok(best)
 }
 
+/// A GeoTIFF dataset's measures, in the order they're made, each reading what those before it
+/// found (`Elevation::measure_now`). A dataset taken as accepted (`seed`: its declaration and data
+/// as accepted) that a version of this check with fewer measures measured is measured in those
+/// it lacks alone, what it has kept (task #1088): a measure a version adds is one more step here,
+/// and costs a dataset that measure only.
+#[derive(Clone, Copy)]
+enum Step {
+    /// Its files' headers: its CRS, resolution, bands and coverage.
+    Headers,
+    /// Its presence (`presence_of`).
+    Presence,
+    /// Its hollow tiles (`hollow_of`).
+    Hollow,
+}
+
+impl Step {
+    const ALL: [Step; 3] = [Step::Headers, Step::Presence, Step::Hollow];
+
+    /// Whether `m`, measured by the steps before this one, lacks this one's measure. A measure
+    /// that's None by design isn't lacking: a projected dataset's bands, the world's presence and
+    /// hollow tiles. Nor a geographic dataset's bands holding the world: one accepted before bands
+    /// were (checks version 5) keeps its `resolution` everywhere, as it was accepted.
+    fn lacks(self, m: &Measured) -> bool {
+        match self {
+            Step::Headers => match m.crs {
+                None => true,
+                Some(c) => m.cover.is_some() && !crate::dem::proj::projected(c) && m.bands.is_none(),
+            },
+            Step::Presence => m.cover.is_some() && m.presence.is_none(),
+            Step::Hollow => m.presence.is_some() && m.hollow.is_none(),
+        }
+    }
+
+    /// Whether `m`, measured of declaration `d`, lacks any measure (a tile pyramid's has none).
+    fn lacking(d: &Declaration, m: &Measured) -> bool {
+        matches!(d.data, Data::Geotiff { .. }) && Step::ALL.iter().any(|s| s.lacks(m))
+    }
+}
+
 impl Elevation {
     /// What dataset `id` declared as `d` has, read from its data (memoized by `memo_key`).
     fn measure(
@@ -425,10 +464,14 @@ impl Elevation {
         v: &Version,
         memo_key: &str,
     ) -> std::result::Result<Measured, String> {
-        if let Some(m) = self.memo.lock().unwrap().get(memo_key) {
-            return m.clone();
-        }
-        let m = self.measure_now(id, d, territory, v);
+        // (One taken as accepted (`seed`) but measured by a version with fewer measures: measured
+        // in those it lacks alone.)
+        let prior = match self.memo.lock().unwrap().get(memo_key) {
+            Some(Ok(m)) if Step::lacking(d, m) => Some(m.clone()),
+            Some(m) => return m.clone(),
+            None => None,
+        };
+        let m = self.measure_now(id, d, territory, v, prior);
         self.memo.lock().unwrap().insert(memo_key.to_string(), m.clone());
         m
     }
@@ -479,6 +522,7 @@ impl Elevation {
         d: &Declaration,
         territory: &[String],
         v: &Version,
+        prior: Option<Measured>,
     ) -> std::result::Result<Measured, String> {
         let world = territory == ["world"];
         match &d.data {
@@ -549,12 +593,6 @@ impl Elevation {
                 if list.is_empty() {
                     return Err("names no file there is".into());
                 }
-                let mut crs = None;
-                let mut resolution: f64 = 0.0;
-                // (The index's files sampled; every other file read, its coverage its own.)
-                let mut picks: BTreeSet<usize> =
-                    sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
-                picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
                 // (A file opened: from the store, the network or the version's folder.)
                 let remote = |w: &str| -> std::result::Result<Arc<dyn store::range::RangeRead>, String> {
                     Ok(if *store {
@@ -584,86 +622,101 @@ impl Elevation {
                     };
                     header(w, src)
                 };
-                let mut masks: Vec<Mask> = Vec::new();
-                // (Each geographic file's latitudes and cell: the dataset's bands.)
-                let mut files_cells: Vec<(f64, f64, f64)> = Vec::new();
-                for k in picks {
-                    let (w, footprint) = &list[k];
-                    let t = open(w)?;
-                    let keys = t.geo_keys();
-                    let c = keys
-                        .short(buildstore::geotiff::key::PROJECTED_CS_TYPE)
-                        .or_else(|| keys.short(buildstore::geotiff::key::GEOGRAPHIC_TYPE))
-                        .ok_or_else(|| format!("{w}: names no EPSG CRS"))?;
-                    if !declared::known_crs(c) {
-                        return Err(format!("{w}: EPSG:{c} isn't a CRS the app can project"));
-                    }
-                    if index_crs.is_some_and(|ic| ic != c && !(ic == 4326 && c == 4269)) {
-                        return Err(format!(
-                            "{w} is in EPSG:{c}, its index's footprints in EPSG:{}",
-                            index_crs.unwrap()
-                        ));
-                    }
-                    if crs.is_some_and(|x| x != c) {
-                        return Err(format!("{w} is in EPSG:{c}, the dataset's other files in EPSG:{}", crs.unwrap()));
-                    }
-                    crs = Some(c);
-                    resolution =
-                        resolution.max(crate::dem::generic::resolution(&t, c, 0).map_err(|e| format!("{w}: {e:#}"))?);
-                    if !crate::dem::proj::projected(c) {
-                        files_cells.push(geographic_cell(&t).map_err(|e| format!("{w}: {e:#}"))?);
-                    }
-                    if footprint.is_none() {
-                        masks.push(valid_data(&t).map_err(|e| format!("{w}: {e:#}"))?);
-                    }
-                }
-                let crs = crs.unwrap();
-                // (Its footprints: the index's, and where the other files have valid data.)
-                let boxes: Vec<[f64; 4]> = list.iter().filter_map(|(_, b)| *b).collect();
-                let cover = if world {
-                    None
-                } else {
-                    let cells = if crate::dem::proj::projected(crs) {
-                        let held = declared::in_boxes(&boxes);
-                        declared::projected_cells_where(crs, &|x, y| held(x, y) || masks.iter().any(|m| m.holds(x, y)))
-                            .map_err(|e| format!("{e:#}"))?
-                    } else {
-                        let mut c = declared::geographic_cells(&boxes);
-                        for m in &masks {
-                            c.extend(declared::geographic_cells(&m.boxes()));
+                let mut m = prior.unwrap_or_default();
+                // (Its files' headers: its CRS, resolution and bands, and its coverage.)
+                if Step::Headers.lacks(&m) {
+                    let mut crs = None;
+                    let mut resolution: f64 = 0.0;
+                    // (The index's files sampled; every other file read, its coverage its own.)
+                    let mut picks: BTreeSet<usize> =
+                        sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
+                    picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
+                    let mut masks: Vec<Mask> = Vec::new();
+                    // (Each geographic file's latitudes and cell: the dataset's bands.)
+                    let mut files_cells: Vec<(f64, f64, f64)> = Vec::new();
+                    for k in picks {
+                        let (w, footprint) = &list[k];
+                        let t = open(w)?;
+                        let keys = t.geo_keys();
+                        let c = keys
+                            .short(buildstore::geotiff::key::PROJECTED_CS_TYPE)
+                            .or_else(|| keys.short(buildstore::geotiff::key::GEOGRAPHIC_TYPE))
+                            .ok_or_else(|| format!("{w}: names no EPSG CRS"))?;
+                        if !declared::known_crs(c) {
+                            return Err(format!("{w}: EPSG:{c} isn't a CRS the app can project"));
                         }
-                        c
-                    };
-                    if cells.is_empty() {
-                        return Err("has no valid data anywhere".into());
+                        if index_crs.is_some_and(|ic| ic != c && !(ic == 4326 && c == 4269)) {
+                            return Err(format!(
+                                "{w} is in EPSG:{c}, its index's footprints in EPSG:{}",
+                                index_crs.unwrap()
+                            ));
+                        }
+                        if crs.is_some_and(|x| x != c) {
+                            return Err(format!(
+                                "{w} is in EPSG:{c}, the dataset's other files in EPSG:{}",
+                                crs.unwrap()
+                            ));
+                        }
+                        crs = Some(c);
+                        resolution = resolution
+                            .max(crate::dem::generic::resolution(&t, c, 0).map_err(|e| format!("{w}: {e:#}"))?);
+                        if !crate::dem::proj::projected(c) {
+                            files_cells.push(geographic_cell(&t).map_err(|e| format!("{w}: {e:#}"))?);
+                        }
+                        if footprint.is_none() {
+                            masks.push(valid_data(&t).map_err(|e| format!("{w}: {e:#}"))?);
+                        }
                     }
-                    Some(declared::cells_to_boxes(&cells))
-                };
-                let bands = (!files_cells.is_empty()).then(|| declared::bands_of(&files_cells));
+                    let crs = crs.unwrap();
+                    // (Its footprints: the index's, and where the other files have valid data.)
+                    let boxes: Vec<[f64; 4]> = list.iter().filter_map(|(_, b)| *b).collect();
+                    let cover = if world {
+                        None
+                    } else {
+                        let cells = if crate::dem::proj::projected(crs) {
+                            let held = declared::in_boxes(&boxes);
+                            declared::projected_cells_where(crs, &|x, y| {
+                                held(x, y) || masks.iter().any(|m| m.holds(x, y))
+                            })
+                            .map_err(|e| format!("{e:#}"))?
+                        } else {
+                            let mut c = declared::geographic_cells(&boxes);
+                            for m in &masks {
+                                c.extend(declared::geographic_cells(&m.boxes()));
+                            }
+                            c
+                        };
+                        if cells.is_empty() {
+                            return Err("has no valid data anywhere".into());
+                        }
+                        Some(declared::cells_to_boxes(&cells))
+                    };
+                    let bands = (!files_cells.is_empty()).then(|| declared::bands_of(&files_cells));
+                    (m.crs, m.resolution, m.cover, m.bands) = (Some(crs), resolution, cover, bands);
+                }
+                let crs = m.crs.expect("measured with its headers");
                 // (Where it really has data, by deep-pack tile: crate::terrain_zoom's places.)
-                let presence = match &cover {
-                    Some(c) => Some(presence_of(crs, &list, c, &open)?),
-                    None => None,
-                };
+                if Step::Presence.lacks(&m) {
+                    let cover = m.cover.as_deref().expect("a presence is of a coverage");
+                    m.presence = Some(presence_of(crs, &list, cover, &open)?);
+                }
                 // (Of that, where a finer read finds nothing: the terrain-deep targets the plan never
                 // runs. Its files read at once, the version's own ones read first, as `open` reads them.)
-                let hollow = match &presence {
-                    Some(p) => {
-                        let mut local: BTreeMap<&str, Arc<Vec<u8>>> = BTreeMap::new();
-                        for (w, _) in list.iter().filter(|(w, _)| !w.starts_with("http")) {
-                            local.insert(w, (v.read)(w).map_err(|e| format!("{w}: {e:#}"))?);
-                        }
-                        let open = |w: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
-                            match local.get(w) {
-                                Some(b) => header(w, Arc::new(b.as_ref().clone())),
-                                None => header(w, remote(w)?),
-                            }
-                        };
-                        Some(hollow_of(crs, &list, p, &open)?)
+                if Step::Hollow.lacks(&m) {
+                    let mut local: BTreeMap<&str, Arc<Vec<u8>>> = BTreeMap::new();
+                    for (w, _) in list.iter().filter(|(w, _)| !w.starts_with("http")) {
+                        local.insert(w, (v.read)(w).map_err(|e| format!("{w}: {e:#}"))?);
                     }
-                    None => None,
-                };
-                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None, outline: None, bands, presence, hollow })
+                    let open = |w: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
+                        match local.get(w) {
+                            Some(b) => header(w, Arc::new(b.as_ref().clone())),
+                            None => header(w, remote(w)?),
+                        }
+                    };
+                    let presence = m.presence.as_deref().expect("hollow tiles are of a presence");
+                    m.hollow = Some(hollow_of(crs, &list, presence, &open)?);
+                }
+                Ok(m)
             }
         }
     }
@@ -767,9 +820,8 @@ impl Checks for Elevation {
 
     /// 3: heights no geoid chain converts, or converts only in part, found (`el-geoid`). 4: a
     /// dataset's `regions` cut it to their outlines inside its cells (`Measured::outline`). 5: a
-    /// GeoTIFF dataset's bands and presence (`Measured::bands`, `presence`), one accepted without
-    /// them measured again (`seed`). 6: its hollow tiles (`Measured::hollow`), one accepted without
-    /// them measured again.
+    /// GeoTIFF dataset's bands and presence (`Measured::bands`, `presence`). 6: its hollow tiles
+    /// (`Measured::hollow`). One accepted without a measure is measured in those it lacks (`Step`).
     fn version(&self) -> u32 {
         6
     }
@@ -995,7 +1047,7 @@ impl Checks for Elevation {
 
     /// Each accepted dataset's measurement, as measured (before its `regions` and `exclude` cut it),
     /// under the key its accepted entry names: one whose declaration and data are as accepted
-    /// isn't read again, only cut again. A tile pyramid's of a territory, measured from other
+    /// isn't read again, only cut again (read for the measures it lacks alone: `Step`). A tile pyramid's of a territory, measured from other
     /// outlines than these (or from ones the index doesn't name), is measured again.
     fn seed(&self, accepted: &super::Index) {
         let same_outlines = accepted.derived_from.as_deref().and_then(|d| {
@@ -1015,17 +1067,8 @@ impl Checks for Elevation {
             let Some(Ok(mut m)) = e.facts.get("measured").map(|v| serde_json::from_value::<Measured>(v.clone())) else {
                 continue;
             };
-            // (A GeoTIFF dataset with a coverage measured before its presence was (task #929), or its
-            // presence before its hollow tiles were (#842): measured again, its presence, hollow tiles
-            // and bands with it; else the terrain's places stay its cells, and every deep target runs.)
-            let geotiff = e.facts.get("declaration").and_then(|d| d.get("data")).and_then(|d| d.get("format"))
-                == Some(&serde_json::json!("geotiff"));
-            if geotiff
-                && (m.presence.is_none() || m.hollow.is_none())
-                && m.uncut.as_ref().or(m.cover.as_ref()).is_some_and(|c| c.as_slice() != [declared::WORLD].as_slice())
-            {
-                continue;
-            }
+            // (One measured by a version with fewer measures is taken too: `measure` makes those it
+            // lacks alone, `Step`.)
             if let Some(u) = m.uncut.take() {
                 m.cover = (u != [declared::WORLD]).then_some(u);
             }
