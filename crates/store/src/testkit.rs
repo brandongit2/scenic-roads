@@ -210,7 +210,7 @@ impl Drop for EnvVar {
 pub fn recorded_chain() -> Vec<crate::catalogue::Catalogue> {
     // (From the test's folder, its package's, as cargo and nextest run it: env!("CARGO_MANIFEST_DIR")
     // compiled one checkout's path into every test build of the shared build folder, #1123.)
-    let dir =std::path::absolute("../store/src/map/testdata").expect("the test's folder");
+    let dir = std::path::absolute("../store/src/map/testdata").expect("the test's folder");
     let mut ns: Vec<u64> = std::fs::read_dir(&dir)
         .expect("the recorded chain")
         .flatten()
