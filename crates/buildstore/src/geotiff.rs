@@ -399,8 +399,16 @@ fn loading<T, U>(
         g.loading.entry(k).or_default().clone()
     };
     // (A reader that panicked left the slot poisoned: the next one takes it all the same, finds
-    // nothing in the cache, and reads it again.)
-    let _reading = slot.lock().unwrap_or_else(|e| e.into_inner());
+    // nothing in the cache, and reads it again. One being read by another thread (a read ahead) is
+    // waited for as a wait on other work, store::waits: a computing thread lends its turn meanwhile.)
+    let _reading = match slot.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            let _w = store::waits::other();
+            slot.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    };
     // (The slot's entry goes when this read ends, however it ends, a panic too: its own entry, not
     // a newer one put under the key since.)
     struct Loading<'a> {

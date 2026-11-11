@@ -175,6 +175,8 @@ pub fn each<T: Send>(n: usize, lane: Lane, read: impl Fn(usize) -> anyhow::Resul
                     .expect("a reading thread")
             })
             .collect();
+        // (The caller waits on its reads: a computing thread's turn lent meanwhile, crate::waits.)
+        let _w = crate::waits::other();
         ws.into_iter().map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
     });
     let mut all = Vec::with_capacity(n);

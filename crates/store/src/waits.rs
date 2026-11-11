@@ -26,13 +26,17 @@
 //! given to it), except two waits' while a third, earlier kind held the instant. They are extra:
 //! the kinds' times alone add up to the wall time.
 //!
-//! Cost: nothing until `enable` (a relaxed load per call); then a lock and a clock read as a guard
+//! A guard also lends its thread's turn of a job's computing (`Turns`, task #1097), measured or not:
+//! a stage that reads as it computes gives the cores its waits leave idle to a stage that only
+//! computes.
+//!
+//! Cost: nothing until `enable` (a relaxed load and a thread-local read per call); then a lock and a clock read as a guard
 //! is taken and as it's dropped, and a read of the process's CPU time, outside the lock, when the
 //! kind holding the instant changes (hundreds of ns a guard: `waits_count_by_wall_clock_and_the_guards_cost_little`
 //! measures it), against NAS and network calls of hundreds of µs and more.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 /// What a guard waits on, in the order a wall-clock instant is given to (the first active wins).
@@ -200,13 +204,35 @@ pub fn totals() -> Totals {
     s.acc
 }
 
-/// A wait in progress: it ends when dropped.
+/// A wait in progress: it ends when dropped. On a thread computing on a job's turns (`Turns`), the
+/// outermost of its waits but the local disk's lends its turn while it lasts.
 #[must_use]
-pub struct Guard(Option<On>);
+pub struct Guard {
+    on: Option<On>,
+    /// The turns it lent its thread's turn to (None: it lent none: a nested wait, the disk's, or a
+    /// thread holding no turn).
+    lent: Option<Arc<TurnsState>>,
+    /// Whether it counts among its thread's open waits (`HELD`'s depth).
+    nested: bool,
+    /// (Its thread's: the turn it lent is its thread's.)
+    _thread: std::marker::PhantomData<*const ()>,
+}
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        if let Some(k) = self.0 {
+        if self.nested {
+            HELD.with(|h| {
+                if let Some((_, depth)) = h.borrow_mut().as_mut() {
+                    *depth -= 1;
+                }
+            });
+        }
+        if let Some(t) = self.lent.take() {
+            // (Taken back without waiting: a wait never blocks on a turn, so no turn holder waits
+            // on a thread that waits for one.)
+            t.change(1);
+        }
+        if let Some(k) = self.on {
             let change = {
                 let mut s = lock();
                 let now = Instant::now();
@@ -221,8 +247,10 @@ impl Drop for Guard {
 
 /// A wait on `on` from now until the guard is dropped (`nas`, `net`, `disk`, `other`).
 fn wait(on: On) -> Guard {
+    let (lent, nested) = lend(on);
+    let mut g = Guard { on: None, lent, nested, _thread: std::marker::PhantomData };
     if !enabled() {
-        return Guard(None);
+        return g;
     }
     let change = {
         let mut s = lock();
@@ -232,7 +260,8 @@ fn wait(on: On) -> Guard {
         s.retop().map(|c| (c, now))
     };
     reread(change);
-    Guard(Some(on))
+    g.on = Some(on);
+    g
 }
 
 /// A NAS call in progress.
@@ -253,6 +282,117 @@ pub fn disk() -> Guard {
 /// A wait on other work (another worker, a thread, a lock) in progress.
 pub fn other() -> Guard {
     wait(On::Other)
+}
+
+/// A job's computing held to so many threads at once, its waits lending their turns (task #1097):
+/// the threads of a stage that reads as it computes (the terrain's sampling) each hold a turn
+/// while they run (`computing`) and lend it while they wait on the NAS, the network or other work
+/// (a guard of `nas`, `net` or `other`; the local disk's, mostly reads from memory, lend none);
+/// a stage that only computes (the terrain's tiles made from the samples) takes a turn for each
+/// piece of its work (`take`), waiting while every turn is held. So the second computes on the
+/// cores the first's waits leave idle, and the two together on no more threads than there are
+/// turns (a job's grant: docs/pool.md §7.1, Threads granted), but for a thread back from a wait
+/// while its turn was taken, until that piece of work ends: a turn is taken back without waiting,
+/// so nothing holding a turn ever waits on a thread waiting for one.
+#[derive(Clone)]
+pub struct Turns(Arc<TurnsState>);
+
+/// How many turns there are and how many are held (`Turns`).
+pub struct TurnsState {
+    n: usize,
+    held: Mutex<isize>,
+    cv: std::sync::Condvar,
+}
+
+impl TurnsState {
+    /// The turns held changed by `d` (a turn given back wakes a taker).
+    fn change(&self, d: isize) {
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) += d;
+        if d < 0 {
+            self.cv.notify_all();
+        }
+    }
+}
+
+thread_local! {
+    /// The turns this thread holds one of (`Turns::computing`, `Turns::take`) and how many of its
+    /// waits are open (the outermost lends the turn).
+    static HELD: std::cell::RefCell<Option<(Arc<TurnsState>, u32)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A wait's turn lent (`Guard`): the turns, where this thread holds one and this is its outermost
+/// wait but the disk's; and whether it counts among this thread's open waits.
+fn lend(on: On) -> (Option<Arc<TurnsState>>, bool) {
+    if on == On::Disk {
+        return (None, false);
+    }
+    HELD.with(|h| match h.borrow_mut().as_mut() {
+        None => (None, false),
+        Some((t, depth)) => {
+            *depth += 1;
+            if *depth > 1 {
+                return (None, true);
+            }
+            t.change(-1);
+            (Some(t.clone()), true)
+        }
+    })
+}
+
+/// A turn held by this thread (`Turns::computing`, `Turns::take`), given back as it's dropped.
+#[must_use]
+pub struct Turn {
+    turns: Option<Arc<TurnsState>>,
+    _thread: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        if let Some(t) = self.turns.take() {
+            HELD.with(|h| *h.borrow_mut() = None);
+            t.change(-1);
+        }
+    }
+}
+
+impl Turns {
+    /// `n` turns (at least one).
+    pub fn new(n: usize) -> Turns {
+        Turns(Arc::new(TurnsState { n: n.max(1), held: Mutex::new(0), cv: Default::default() }))
+    }
+
+    /// How many turns are held now (those lent to waits not counted).
+    pub fn held(&self) -> isize {
+        *self.0.held.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `f` run holding a turn, taken without waiting (a stage reading as it computes: its threads
+    /// are the turns'), lent while it waits (`Guard`). On a thread holding one already, `f` alone.
+    pub fn computing<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _t = self.hold(false);
+        f()
+    }
+
+    /// A turn, waited for while every one is held (a stage that only computes); given back as it's
+    /// dropped. On a thread holding one already, nothing more.
+    pub fn take(&self) -> Turn {
+        self.hold(true)
+    }
+
+    fn hold(&self, wait: bool) -> Turn {
+        if HELD.with(|h| h.borrow().is_some()) {
+            return Turn { turns: None, _thread: std::marker::PhantomData };
+        }
+        {
+            let mut g = self.0.held.lock().unwrap_or_else(|e| e.into_inner());
+            while wait && *g >= self.0.n as isize {
+                g = self.0.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+            *g += 1;
+        }
+        HELD.with(|h| *h.borrow_mut() = Some((self.0.clone(), 0)));
+        Turn { turns: Some(self.0.clone()), _thread: std::marker::PhantomData }
+    }
 }
 
 #[cfg(test)]
@@ -364,5 +504,58 @@ mod tests {
         let each = (crate::testkit::thread_cpu_ns() - c0) as f64 / n as f64;
         eprintln!("a guard costs {each:.0} ns");
         assert!(each < 20_000.0, "{each} ns of CPU a guard"); // (bound ok: CPU time, not wall)
+    }
+
+    /// Task #1097: two threads computing on two turns hold both; a taker waits until one of them
+    /// waits (on the NAS, the network or other work, not the disk), and runs on the turn it lends;
+    /// the lender back takes its turn without waiting (three held, until the taker's ends), and
+    /// nested waits lend one turn.
+    #[test]
+    fn a_taker_computes_on_the_turns_waits_lend() {
+        use crate::testkit::{eventually, Signal};
+        let turns = Turns::new(2);
+        let (go_wait, waiting, go_back, back, go_end) =
+            (Signal::new(), Signal::new(), Signal::new(), Signal::new(), Signal::new());
+        let took = Signal::new();
+        std::thread::scope(|s| {
+            // A: computing; lends its turn while it waits on other work (a disk wait inside lends
+            // nothing more), then takes it back.
+            s.spawn(|| {
+                turns.computing(|| {
+                    go_wait.wait("A told to wait");
+                    {
+                        let _d = disk();
+                        let _w = other();
+                        let _n = nas();
+                        waiting.set();
+                        go_back.wait("A told back");
+                    }
+                    back.set();
+                    go_end.wait("A told to end");
+                })
+            });
+            // B: computing throughout.
+            s.spawn(|| turns.computing(|| go_end.wait("B told to end")));
+            eventually("both computing", || turns.held() == 2);
+            // C: takes a turn, which waits while both are held.
+            s.spawn(|| {
+                let _t = turns.take();
+                took.set();
+                go_end.wait("C told to end");
+            });
+            assert!(!took.is_set(), "every turn held: the taker waits");
+            go_wait.set();
+            waiting.wait("A waiting");
+            took.wait("C on A's turn");
+            assert_eq!(turns.held(), 2, "A's turn lent once for its nested waits, C's taken");
+            go_back.set();
+            back.wait("A back");
+            assert_eq!(turns.held(), 3, "A back without waiting: over by one until C ends");
+            go_end.set();
+        });
+        assert_eq!(turns.held(), 0);
+        // A thread holding none lends none.
+        drop(other());
+        assert_eq!(turns.held(), 0);
     }
 }

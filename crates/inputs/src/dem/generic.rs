@@ -604,6 +604,10 @@ impl GeoSet<'_> {
                 }
             }
         };
+        // (Not open yet: opened here, or waited for where another thread opens it, a wait on the
+        // NAS's or the network's reads (a header, a whole local copy): store::waits, a computing
+        // thread's turn lent meanwhile.)
+        let _w = cell.get().is_none().then(store::waits::other);
         cell.get_or_init(|| {
             (|| -> Result<(Arc<Tiff>, usize, Option<Lane>)> {
                 let url = &self.files[k].0;
@@ -1437,8 +1441,13 @@ impl TileSet<'_> {
             while done < n_items {
                 let batch = {
                     let mut g = lock();
-                    while g.ready.is_empty() && g.failed.is_none() {
-                        g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                    // (Waiting on the fetches: a wait on other work, store::waits, a computing
+                    // thread's turn lent meanwhile.)
+                    if g.ready.is_empty() && g.failed.is_none() {
+                        let _w = store::waits::other();
+                        while g.ready.is_empty() && g.failed.is_none() {
+                            g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                        }
                     }
                     if let Some(e) = g.failed.take() {
                         return Err(e);
