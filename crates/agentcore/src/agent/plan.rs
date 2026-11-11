@@ -837,13 +837,26 @@ impl Planner {
         self.locked && !self.o.dry_run
     }
 
-    /// The records' manifest and the planning keys (`planning_keys`), from one read of the records.
+    /// The records' brief to plan by (crate::agent::brief): the one its coordinator serves, in
+    /// process; the NAS's while it serves none (its agent's first save not made yet, or not
+    /// leading).
+    pub(super) fn brief_now(
+        &self,
+        root: &store::nasfs::NasRoot,
+    ) -> Result<std::sync::Arc<crate::pool::records::Brief>> {
+        match self.coord.as_deref().and_then(|c| c.brief()) {
+            Some(h) => Ok(h.brief),
+            None => brief::on_nas(root).map(std::sync::Arc::new),
+        }
+    }
+
+    /// The records' manifest and the planning keys (`planning_keys`), from one brief.
     pub(super) fn planning_records(
         &self,
         root: &store::nasfs::NasRoot,
     ) -> Result<(BTreeMap<String, String>, crate::pool::records::Keys)> {
-        let r = crate::pool::records::Brief::now(root)?;
-        Ok((r.manifest, r.keys.with_waiting(&self.handoff_bases(root))?))
+        let r = self.brief_now(root)?;
+        Ok((r.manifest.clone(), r.keys.clone().with_waiting(&self.handoff_bases(root))?))
     }
 
     /// The plan offered through this Mac's coordinator (docs/pool.md §7.2), in its order: each
@@ -1012,6 +1025,9 @@ impl Planner {
         // (The records: the one path's snapshot, which the lead rewrites whole with each save
         // (docs/coordination.md steps 8b, 8c); today's files before the pool.)
         stat(&mut h, (&root.join(crate::pool::records::ONE)).into());
+        // (And the brief its coordinator serves, the plan's (`brief_now`): a save seen at once, an
+        // SMB stat's cache not waited out.)
+        self.coord.as_deref().and_then(|c| c.brief_mark()).hash(&mut h);
         for f in ["state/build/manifest.json", "state/build/jobs.json"] {
             stat(&mut h, (&root.join(f)).into());
         }
@@ -2612,7 +2628,8 @@ impl Planner {
             items.extend(self.o.the_plan.checklist_to_come());
             return self.o.the_plan.fold(&items, &next, &notes);
         };
-        let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
+        let b = self.brief_now(root).unwrap_or_default();
+        let (manifest, keys) = (&b.manifest, &b.keys);
         // Countries the pass couldn't assemble, kept as the previous pass's outlines: said on the
         // pass's line until a pass has them whole (buildstore::outlines::assemble).
         if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
@@ -2671,7 +2688,8 @@ impl Planner {
         root: &store::nasfs::NasRoot,
     ) -> Option<std::thread::JoinHandle<(BTreeMap<String, BTreeMap<&'static str, [usize; 2]>>, Duration)>> {
         let date = self.latest_pass(root)?;
-        let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
+        let b = self.brief_now(root).unwrap_or_default();
+        let (manifest, keys) = (b.manifest.clone(), b.keys.clone());
         let covs = self.coverage(root, &manifest, false).ok()?;
         let count = self.held_plan.region_counts(root, date, manifest, covs, keys);
         let run = move || {

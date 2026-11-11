@@ -52,6 +52,13 @@ static TESTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// (`unmerged`), which `Out` lays over the snapshot (agentcore::agent::resume).
 pub const UNMERGED_ENV: &str = "SCENIC_UNMERGED";
 
+/// A job's environment: the records' brief its agent had from the lead as it started the job (a
+/// local file, the lead's answer to `GET /pool/brief`, or its own coordinator's: docs/coordination.md
+/// step 8d), which a job that hands off (`SCENIC_HANDOFF`) opens its manifest from in place of the
+/// NAS's snapshot: never older than the records its lease was granted from. Not set (a lead on an
+/// older app, or a job outside the pool): the NAS's, as before.
+pub const BRIEF_ENV: &str = "SCENIC_BRIEF";
+
 /// The outputs of a run.
 pub struct Out {
     root: store::nasfs::NasRoot,
@@ -296,7 +303,9 @@ impl Out {
     /// The records at `root`, with this Mac's unmerged hand-offs its agent names (`UNMERGED_ENV`).
     fn open_here(root: &store::nasfs::NasRoot, scratch: &Path) -> Result<Self> {
         let unmerged = std::env::var_os(UNMERGED_ENV).map(PathBuf::from);
-        Self::open_with(root, scratch, unmerged.as_deref())
+        let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
+        let brief = std::env::var_os(BRIEF_ENV).map(PathBuf::from);
+        Self::open_from(root, scratch, unmerged.as_deref(), handoff, brief.as_deref())
     }
 
     /// The records at `root`, with this Mac's hand-offs for the job's step its lead hasn't merged
@@ -307,11 +316,27 @@ impl Out {
     /// job that hands off (`SCENIC_HANDOFF`): one that saves the records has none. They're the snapshot's,
     /// not this job's changes: its saves hand off only its own.
     pub fn open_with(root: &store::nasfs::NasRoot, scratch: &Path, unmerged: Option<&Path>) -> Result<Self> {
+        let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
+        Self::open_from(root, scratch, unmerged, handoff, None)
+    }
+
+    /// `open_with`, the job handing off to `handoff` (`SCENIC_HANDOFF`), its manifest from the
+    /// brief its agent wrote at `brief` (`BRIEF_ENV`) when it hands off: one NAS read fewer (the
+    /// snapshot, ~14 MB), and never older than its lease.
+    fn open_from(
+        root: &store::nasfs::NasRoot,
+        scratch: &Path,
+        unmerged: Option<&Path>,
+        handoff: Option<PathBuf>,
+        brief: Option<&Path>,
+    ) -> Result<Self> {
         let _p = jobrt::timings::phase("reading records");
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
-        let records: crate::records::Recorded = crate::records::now(root)?;
-        let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
+        let records: crate::records::Recorded = match (&handoff, brief) {
+            (Some(_), Some(b)) => crate::records::from_brief(b)?,
+            _ => crate::records::now(root)?,
+        };
         let mut manifest = records.manifest;
         if let Some(p) = unmerged {
             let b = std::fs::read(p).with_context(|| format!("read this Mac's unmerged hand-offs, {}", p.display()))?;
@@ -1397,6 +1422,32 @@ mod tests {
             Some(&d.path().join("missing.json"))
         )
         .is_err());
+    }
+
+    /// docs/coordination.md step 8d: a job that hands off opens its manifest from the brief its
+    /// agent wrote (`BRIEF_ENV`), reading no records on the NAS (a pool's root with none readable
+    /// there: an error for a reader of the NAS); one that doesn't hand off reads the NAS as before,
+    /// brief or not; a brief that can't be read fails the job rather than open other records.
+    #[test]
+    fn a_job_handing_off_opens_from_its_agents_brief() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join(crate::records::lead::LEAD), b"{}").unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let brief = d.path().join("brief.json");
+        std::fs::write(
+            &brief,
+            r#"{"term":849,"seq":3,"manifest":{"base/6-1-1":"base/6-1-1.1111111111111111.base"},"keys":{}}"#,
+        )
+        .unwrap();
+        let (scratch, hand) = (d.path().join("scratch"), Some(d.path().join("handoff")));
+        let out = Out::open_from(&nas, &scratch, None, hand.clone(), Some(&brief)).unwrap();
+        assert_eq!(out.get("base/6-1-1"), Some("base/6-1-1.1111111111111111.base"));
+        assert!(out.pending.is_empty() && out.handoff.is_some());
+        assert!(Out::open_from(&nas, &scratch, None, None, Some(&brief)).is_err(), "the NAS's, unreadable");
+        assert!(Out::open_from(&nas, &scratch, None, hand.clone(), None).is_err(), "no brief: the NAS's");
+        assert!(Out::open_from(&nas, &scratch, None, hand, Some(&d.path().join("gone.json"))).is_err());
     }
 
     /// One read gives the name's hash and the checksum, each as hashing the bytes alone gives it,

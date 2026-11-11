@@ -48,6 +48,7 @@ pub mod answered;
 pub mod asks;
 pub mod backup;
 pub mod beat;
+pub mod brief;
 pub mod brokers;
 pub mod builtview;
 pub mod bus;
@@ -277,18 +278,9 @@ fn role_name(r: Role) -> &'static str {
     }
 }
 
-/// The build's records' manifest and keys as a reader has them now (crate::pool::records::Brief::now), read
-/// within `nasread::DEADLINE` (a call named by the brief's one path, `BRIEFS`): none (empty ones)
-/// when they can't be read now.
-fn records_deadlined(root: &store::nasfs::NasRoot) -> crate::pool::records::Brief {
-    let r = root.clone();
-    nasread::with(&root.join(BRIEFS), move || crate::pool::records::Brief::now(&r).map_err(std::io::Error::other))
-        .unwrap_or_default()
-}
-
-/// The brief's one path (crate::pool::records::ONE_BRIEF), as the NAS calls reading the briefs
-/// name it.
-const BRIEFS: &str = crate::pool::records::ONE_BRIEF;
+/// Where an agent writes the records' brief its jobs open from (buildstore::out::BRIEF_ENV), in
+/// its folder.
+const BRIEF_FILE: &str = "brief.json";
 
 /// `SCENIC_TEST_WORKER` when set: the name the agent works and reports under in place of its Mac's
 /// (the two-Mac test's alone, tools/check/pool-two-macs.sh: a member beside the lead on one Mac,
@@ -1522,6 +1514,10 @@ pub struct Agent {
     proxy: Option<jobrt::budget::Proxy>,
     /// Where its proxy's budget is taken from, as last said (`budget_lead`).
     budget_from: Option<String>,
+    /// The records' brief as it last had it from its lead (crate::agent::brief), and the (epoch,
+    /// seq) of the one its jobs' file holds (`brief_for_job`).
+    briefs: brief::Briefs,
+    brief_written: Option<(u64, u64)>,
     /// Held unless another agent runs (then this one only plans and reports: a dry run).
     _lock: Option<AgentLock>,
     /// The port the proxy listened on for the jobs this agent took over (`adopt_jobs`): its own
@@ -1977,6 +1973,8 @@ impl Agent {
             guard_backoff: BTreeMap::new(),
             proxy: early_proxy,
             budget_from: None,
+            briefs: Default::default(),
+            brief_written: None,
             proxy_port: None,
             port,
             placement: false,
@@ -2059,9 +2057,13 @@ impl Agent {
         Ok(a)
     }
 
-    /// The keys to plan with, as a start checks an offered step's targets against them.
+    /// The keys to plan with, as a start checks an offered step's targets against them: the records'
+    /// brief its coordinator serves (crate::agent::brief), the NAS's while it serves none.
     fn planning_keys_here(&self, root: &NasRoot) -> Result<crate::pool::records::Keys> {
-        planning_keys(root, self.handoff_bases(root))
+        match self.coord.as_deref().and_then(|c| c.brief()) {
+            Some(h) => h.brief.keys.clone().with_waiting(&self.handoff_bases(root)),
+            None => planning_keys(root, self.handoff_bases(root)),
+        }
     }
 
     /// Where hand-offs wait to be drained into the journal: the coordinator's journal on this Mac.
@@ -2860,7 +2862,7 @@ impl Agent {
             // (Under the NAS's deadline: none read, nothing expected the same.)
             let same = expect_same(
                 &jobs::Work { step: step.to_string(), targets: targets.to_vec() },
-                &records_deadlined(root).keys,
+                &self.brief_now(root).keys,
             );
             if !same.is_empty() {
                 cmd.extend(["--expect-same".to_string(), same.join(",")]);
@@ -5457,7 +5459,18 @@ impl Agent {
             waiting.push(Waiting { step: step_of(&spec.id), what: what.clone(), why: h.why() });
             return false;
         }
-        if let Err(e) = self.start(k, spec, c) {
+        // The records' brief its job opens from, the lead's now (crate::agent::brief): the lead
+        // not answering, not started, its lease given back, not held against its targets.
+        let brief = match self.brief_for_job(k) {
+            Ok(b) => b,
+            Err(why) => {
+                let why = format!("the lead's records' brief can't be had now ({why}): given back, not started");
+                waiting.push(Waiting { step: step_of(&spec.id), what: what.clone(), why: why.clone() });
+                self.end_lease(k, Outcome::Interrupted, &[], &why);
+                return false;
+            }
+        };
+        if let Err(e) = self.start(k, spec, c, brief.as_deref()) {
             // It couldn't even start (a missing program, a full disk): retried later.
             eprintln!("agent: can't start {id}: {e:#}");
             self.end_lease(k, Outcome::Failed, &[], &format!("couldn't start: {e:#}"));
@@ -6781,7 +6794,47 @@ impl Agent {
         (room::TARGET_ENV.into(), (self.floor_for(&step) >> 20).to_string())
     }
 
-    fn start(&mut self, k: usize, mut spec: JobSpec, c: &Conditions) -> Result<()> {
+    /// The lead as this agent asks it for the records' brief (crate::agent::brief): its own
+    /// coordinator leading, its client to the lead a member; none out of the pool.
+    fn brief_lead(&self) -> brief::Lead<'_> {
+        match (&self.coord, &self.client) {
+            _ if self.pool.is_none() => brief::Lead::None,
+            (Some(c), _) => brief::Lead::Here(c),
+            (None, Some(c)) => brief::Lead::At(c),
+            (None, None) => brief::Lead::None,
+        }
+    }
+
+    /// The records' brief now (crate::agent::brief::Briefs::now): none (empty) when none can be read.
+    fn brief_now(&self, root: &store::nasfs::NasRoot) -> std::sync::Arc<crate::pool::records::Brief> {
+        self.briefs.now(self.brief_lead(), root).unwrap_or_default()
+    }
+
+    /// The brief slot `k`'s job opens from (buildstore::out::BRIEF_ENV), a job of a pool's lease: the
+    /// lead's as of now, in this agent's folder (`BRIEF_FILE`, written again only when it's another);
+    /// None, the job reads the NAS's (the lead's app serves none, or none saved yet: `Fresh::Nas`; not
+    /// a pool's job). An error: the lead didn't answer (`Fresh::Away`), or the file can't be written.
+    fn brief_for_job(&mut self, k: usize) -> std::result::Result<Option<PathBuf>, String> {
+        if !matches!(self.slots[k].lease, Some(Held::Pooled { .. })) {
+            return Ok(None);
+        }
+        let h = match self.briefs.fresh(self.brief_lead()) {
+            brief::Fresh::Got(h) => h,
+            brief::Fresh::Nas(why) => {
+                eprintln!("agent: the job reads the records' brief on the NAS: {why}");
+                return Ok(None);
+            }
+            brief::Fresh::Away(why) => return Err(why),
+        };
+        let p = self.o.home.join(BRIEF_FILE);
+        if self.brief_written != Some(h.mark) || !p.exists() {
+            store::whole::write(&p, &h.json).map_err(|e| format!("write {}: {e:#}", p.display()))?;
+            self.brief_written = Some(h.mark);
+        }
+        Ok(Some(p))
+    }
+
+    fn start(&mut self, k: usize, mut spec: JobSpec, c: &Conditions, brief: Option<&Path>) -> Result<()> {
         let cores = mac_cores() as usize;
         // The threads its grant says (crate::coord's `pack`: its measured cores within those its Mac
         // has left), the lead's own jobs' and a member's alike. A grant that says none (an older
@@ -6845,6 +6898,10 @@ impl Agent {
             // (A member's job offers its tasks through this Mac's broker, docs/pool.md §8.)
             env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", b.port())));
             env.push(("SCENIC_COORD_TOKEN".into(), b.job_token().to_string()));
+        }
+        // The records' brief it opens from, the lead's as it starts (`brief_for_job`).
+        if let Some(b) = brief {
+            env.push((buildstore::out::BRIEF_ENV.into(), b.to_string_lossy().into_owned()));
         }
         // Placement on: its tasks offered ahead, with their head starts (crate::agent::placement).
         if self.placement_on() {
@@ -7790,6 +7847,7 @@ impl Agent {
             .get_or_insert_with(|| builtview::BuiltView::new(self.o.the_plan, root, Some(cv.clone())))
             .clone();
         if !coord.has_built() {
+            bv.served_by(&coord);
             coord.set_built(bv);
         }
         if !coord.has_pageview() {
@@ -15606,6 +15664,9 @@ mod pool_tests {
         });
         let env = std::fs::read_to_string(bin.join("env-backup")).unwrap();
         assert!(env.contains("SCENIC_HANDOFF="), "{env}");
+        // (It opens the records' brief its coordinator serves, written in its agent's folder:
+        // docs/coordination.md step 8d.)
+        assert!(env.contains(&format!("SCENIC_BRIEF={}", home.join(BRIEF_FILE).display())), "{env}");
         assert!(env.contains(&format!("{}", home.join("pool/jobs/1-").display())), "{env}");
         let rec = a.pooled().unwrap().side.driver().records().unwrap().clone();
         assert!(rec
@@ -15759,6 +15820,13 @@ mod pool_tests {
         assert!(m.is_member() && m.coord.is_none());
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
         assert_ne!(il, im);
+        // The NAS's brief stale (an SMB cache's, a late write): the member's job opens the lead's as
+        // it starts, never older than the records its lease was granted from (docs/coordination.md
+        // step 8d), and no NAS records.
+        until(&mut lead, |l| l.coord.as_ref().unwrap().brief_mark().is_some());
+        let granted = lead.coord.as_ref().unwrap().brief_mark().unwrap();
+        std::fs::write(r.join(crate::pool::records::ONE_BRIEF), r#"{"term":1,"seq":0,"manifest":{},"keys":{}}"#)
+            .unwrap();
         // The lead's coordinator offers slope; the member asks, and runs it under `1-<lease>`.
         lead.coord.as_ref().unwrap().offer(
             "2026-09-28",
@@ -15769,14 +15837,13 @@ mod pool_tests {
             }],
         );
         until(&mut m, |m| m.slots[0].running.is_some() || m.pooled().is_some_and(|p| !p.entries.is_empty()));
-        let env = std::fs::read_to_string(bin.join("env-slope-hi")).unwrap_or_default();
         until(&mut m, |m| m.slots[0].running.is_none() && m.pooled().is_some_and(|p| p.entries.is_empty()));
-        assert!(
-            std::fs::read_to_string(bin.join("env-slope-hi"))
-                .unwrap()
-                .contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())),
-            "{env}"
-        );
+        let env = std::fs::read_to_string(bin.join("env-slope-hi")).unwrap();
+        assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
+        let brief = d.path().join("m/agent").join(BRIEF_FILE);
+        assert!(env.contains(&format!("SCENIC_BRIEF={}", brief.display())), "{env}");
+        let had: crate::pool::records::Brief = serde_json::from_slice(&std::fs::read(&brief).unwrap()).unwrap();
+        assert!((had.epoch, had.seq) >= granted, "{:?} older than {granted:?}", (had.epoch, had.seq));
         // Its entry posted to the lead by its beat (docs/coordination.md step 6); the lead merges it.
         lead.pooled().unwrap().side.know(&im);
         lead.seen_pool();
@@ -15802,6 +15869,58 @@ mod pool_tests {
         assert!(lead.coord.as_ref().unwrap().held("slope-hi").is_empty());
         let lid: LeaseId = key.rsplit('/').next().unwrap().parse().unwrap();
         assert_eq!(lid.epoch, 1);
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+    }
+
+    /// docs/coordination.md step 8d: a member's job of a pool's lease opens the lead's brief as it
+    /// starts. Its lead not answering, none: the job isn't started, its lease given back (a stale
+    /// copy is what the merge's refusals come from); a lead on an app before this step (no such
+    /// route), the NAS's, as before; the lead back, its brief, written again only once it's another.
+    #[test]
+    fn a_members_job_has_the_leads_brief_or_waits_for_the_lead() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let bin = app(d.path());
+        let o = |who: &str| Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
+            home: d.path().join(who).join("agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            member: false,
+        };
+        let mut lead = test_agent(o("l")).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        crate::agent::gc::sweeps_done_for_tests(&lead.o.home);
+        lead.round().unwrap();
+        until(&mut lead, |l| l.coord.as_ref().unwrap().brief_mark().is_some());
+        let served = lead.coord.as_ref().unwrap().brief().unwrap();
+        let mut m = test_agent(o("m")).unwrap();
+        m.mac = MEMBER_MAC;
+        m.round().unwrap();
+        assert!(m.is_member() && m.pool.is_some());
+        let token = lead.coord.as_ref().unwrap().contact.token.clone();
+        let at = |url: String| Some(crate::coord::client::Client::at(vec![url], token.clone(), "m"));
+        let dir = d.path().join("m/agent/pool/jobs/1-9");
+        m.slots[0].lease = Some(Held::Pooled { id: 9, epoch: 1, dir, own: false });
+        let file = d.path().join("m/agent").join(BRIEF_FILE);
+        // The lead away: no brief, so no start.
+        m.client = at(coordwire::testkit::dead());
+        assert!(m.brief_for_job(0).is_err() && !file.exists());
+        // A lead on an older app: the NAS's (no file named).
+        let (old, _) = coordwire::testkit::answering(404);
+        m.client = at(old);
+        assert_eq!(m.brief_for_job(0), Ok(None));
+        // The lead back: its brief, the bytes it serves.
+        m.client = at(format!("http://127.0.0.1:{}", lead.coord.as_ref().unwrap().port()));
+        assert_eq!(m.brief_for_job(0), Ok(Some(file.clone())));
+        assert_eq!(std::fs::read(&file).unwrap(), *served.json);
+        // Not a pool's lease: none asked.
+        m.slots[0].lease = Some(Held::Own(1));
+        m.client = at(coordwire::testkit::dead());
+        assert_eq!(m.brief_for_job(0), Ok(None));
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }
@@ -16488,7 +16607,7 @@ mod pool_tests {
             record: None,
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        lead.start(0, job.clone(), &cond).unwrap();
+        lead.start(0, job.clone(), &cond, None).unwrap();
         let im = m.pooled().unwrap().side.member().id.clone();
         move_lead(&r, &im);
         let end = Instant::now() + WATCHDOG;
@@ -16500,7 +16619,7 @@ mod pool_tests {
         }
         assert!(lead.slots[0].running.is_some(), "at once, its job running");
         // A task leased from the lead runs in the member's first slot as it restarts.
-        m.start(0, job, &cond).unwrap();
+        m.start(0, job, &cond, None).unwrap();
         m.slots[0].lease = Some(Held::Leased { lease: 7, dir: m.outbox().join("7") });
         assert!(lead.restart_now().unwrap().contains("the lead → a member"), "{:?}", lead.restart_now());
         assert!(m.restart_now().unwrap().contains("a member → the lead"), "{:?}", m.restart_now());
@@ -16703,15 +16822,17 @@ mod pool_tests {
         m.round().unwrap();
         // (Each held call given up after the tests' short deadline, not the real 20 s the brief's
         // reader below waited out, #1112: "held" is the fake's count, whatever the deadline.)
-        let hung = nasread::fake::hang(&store::nasfs::NasRoot::local_for_test(&r).join(BRIEFS).unchecked_path())
-            .deadline(super::tests::HUNG_DEADLINE);
+        let hung = nasread::fake::hang(
+            &store::nasfs::NasRoot::local_for_test(&r).join(crate::pool::records::ONE_BRIEF).unchecked_path(),
+        )
+        .deadline(super::tests::HUNG_DEADLINE);
         for _ in 0..5 {
             m.round().unwrap();
         }
         assert_eq!(hung.held(), 0, "the member's rounds asked for no brief");
         // (The fake sees a reader of the briefs, the plan's checklist's: held, it returns past
         // the deadline with none.)
-        let read = records_deadlined(&store::nasfs::NasRoot::local_for_test(&r));
+        let read = brief::on_nas(&store::nasfs::NasRoot::local_for_test(&r)).unwrap_or_default();
         assert!(hung.held() == 1 && read.keys.recorded("unit", "6/1/1").is_none());
         drop(hung);
         lead.plan.stop(Duration::ZERO);
@@ -16782,7 +16903,7 @@ mod pool_tests {
             record: None,
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        a.start(0, spec, &cond).unwrap();
+        a.start(0, spec, &cond, None).unwrap();
         assert_eq!(a.slots[0].timings_out, None);
         // Taken as its lease ends, whichever way: a stopped job's too.
         a.slots[0].timings_out = rec();

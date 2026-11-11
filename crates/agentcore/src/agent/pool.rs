@@ -488,13 +488,13 @@ impl Side {
         }
     }
 
-    /// The app the newer readers' switch (the regions', the elevation datasets') was recorded on, when the records have it
-    /// (inputs::inputs::regions::read::switch_app): a member on an older one is "app too old".
-    pub fn regions_app(&self) -> std::result::Result<Option<String>, String> {
+    /// The app the newer readers' switch (the regions', the elevation datasets') was recorded on, when
+    /// the records' manifest `m` has it (inputs::inputs::regions::read::switch_app): a member on an
+    /// older one is "app too old".
+    pub fn regions_app(&self, m: &BTreeMap<String, String>) -> std::result::Result<Option<String>, String> {
         let read =
             |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };
-        let m = crate::pool::records::Brief::now(&*self.nas).map_err(|e| format!("the records: {e:#}"))?.manifest;
-        inputs::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
+        inputs::inputs::regions::read::switch_app(m, &read).map_err(|e| format!("{e:#}"))
     }
 
     /// Member `m`'s heartbeat as heard by its beat (crate::coord::beats; this one's own as
@@ -1070,6 +1070,8 @@ pub struct Run {
     /// The lead's member, and when this Mac first saw it lead (its own clock): a request that
     /// failed before then was another lead's.
     lead_seen: Option<(String, u64)>,
+    /// The records' brief as it last had it from the lead (crate::agent::brief), for its view.
+    briefs: super::brief::Briefs,
 }
 
 /// Since when a tick has held the run (the awake clock, `awake`), 0 while none does: set and read
@@ -1318,7 +1320,30 @@ impl Run {
             broker_told: None,
             prober: Prober::default(),
             lead_seen: None,
+            briefs: Default::default(),
         }
+    }
+
+    /// The records' brief for its view (crate::agent::brief::Briefs::now): its coordinator's,
+    /// leading; a member's lead's over HTTP, while it answers the member's beats (else the last one
+    /// had); the NAS's when that's the one.
+    pub fn brief(&self) -> anyhow::Result<Arc<crate::pool::records::Brief>> {
+        use super::brief::Lead;
+        let root = self.cx.root.clone().context("no NAS")?;
+        if let Some(c) = self.cx.coord.as_deref().filter(|_| self.side.driver().leads().is_some()) {
+            return self.briefs.now(Lead::Here(c), &root);
+        }
+        if self.side.driver().declared().is_none() || self.cx.lead_urls.is_empty() {
+            return self.briefs.now(Lead::None, &root);
+        }
+        if !self.side.http.lead_answering(self.side.now()) {
+            if let Some(h) = self.briefs.held() {
+                return Ok(h.brief);
+            }
+        }
+        let host = self.side.member().host.clone();
+        let c = crate::coord::client::Client::at(self.cx.lead_urls.clone(), self.cx.lead_token.clone(), &host);
+        self.briefs.now(Lead::At(&c), &root)
     }
 
     /// Whether the pool's own thread steps it now: the agent's loop isn't, no step has run for

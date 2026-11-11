@@ -113,6 +113,15 @@ pub fn brief_now<B: Brief>(nas: &dyn Nas) -> Result<B> {
     }
 }
 
+/// The parts of a records' brief a job's `Out` reads, its agent's local copy at `p`
+/// (crate::out::BRIEF_ENV): the manifest; no unverified uploads nor sizes (a job that hands off
+/// keeps none: crate::out::Out::open_with).
+pub(crate) fn from_brief(p: &std::path::Path) -> Result<Recorded> {
+    let b = std::fs::read(p).with_context(|| format!("read the records' brief its agent wrote, {}", p.display()))?;
+    let l: Listed = serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))?;
+    Ok(Recorded { manifest: l.manifest, ..Default::default() })
+}
+
 /// The parts of the build's records an `Out` reads (crate::out::Out::open_with,
 /// `recorded_sizes`).
 #[derive(Default, Deserialize)]

@@ -208,6 +208,14 @@ pub fn after(
     // this step's own read of the declaration found it (`Out::vouched`).
     if let Some(c) = coord {
         c.set_led(out.leads.filter(|_| out.vouched).map(|e| (e, run.side.member().clone())));
+        // The records' brief it serves (docs/coordination.md step 8d): as last saved whole, on its
+        // disk and the NAS's one path; none once it no longer leads.
+        let d = run.side.driver();
+        match d.records() {
+            Some(r) if d.saved_records() == Some((r.epoch, r.seq)) => c.set_brief(Some(r)),
+            Some(_) => {}
+            None => c.set_brief(None),
+        }
     }
     // The history.
     let notes = notes(&out.events, &run.side.member().host, now);
@@ -296,7 +304,7 @@ fn view(run: &Run) -> View {
     let mut members: Vec<Member> = Vec::new();
     // (The app a member needs: the lead's, and once a readers' switch is recorded, the one it was
     // recorded on, whichever is newer: an older one is "app too old".)
-    let regions = side.regions_app();
+    let regions = run.brief().map_err(|e| format!("the records: {e:#}")).and_then(|b| side.regions_app(&b.manifest));
     let lead_app = lead.as_ref().map(|l| l.app.as_str()).filter(|a| !a.is_empty());
     let need = inputs::inputs::regions::read::needed_app(lead_app, regions.as_ref().ok().and_then(|r| r.as_deref()));
     for id in ids {

@@ -8,7 +8,8 @@
 //! whose published files (crate::agent::steps::output_named) the manifest doesn't name, e.g. a deep
 //! tile with no fine data there (terrain::terrain_deep, `PRESENCE`), sent as `empty: {step: [i]}`,
 //! indexes into the step's list (6,276 of terrain-deep's 7,243 in term 599's brief, 29 Oct: ~50 KB on 247 KB). The keys and the
-//! manifest come from one read of the records' brief.
+//! manifest come from one brief: the one the lead's coordinator serves, in process
+//! (crate::agent::brief, docs/coordination.md step 8d); the NAS's while it serves none.
 //!
 //! And which are published (task #866): a target is published only while the map (its log as
 //! crate::agent::cataloguesview follows it: `names`, its `f/` names) still names one of its
@@ -151,6 +152,8 @@ pub struct BuiltView {
     root: store::nasfs::NasRoot,
     /// The catalogues read (the latest's names publish a tile); None: not told.
     catalogues: Option<Arc<super::cataloguesview::CataloguesView>>,
+    /// The coordinator serving it, whose records' brief it reads (`served_by`); none told: the NAS's.
+    lead: Mutex<std::sync::Weak<crate::coord::Coordinator>>,
     read: Mutex<Read>,
     reading: AtomicBool,
 }
@@ -173,6 +176,7 @@ impl BuiltView {
             the_plan,
             root: root.short_retry(),
             catalogues,
+            lead: Mutex::new(std::sync::Weak::new()),
             read: Mutex::new(Read::default()),
             reading: AtomicBool::new(false),
         })
@@ -212,9 +216,19 @@ impl BuiltView {
         a
     }
 
+    /// Served by `c` (its `/api/built`): the records' brief read from it from now on.
+    pub fn served_by(&self, c: &Arc<crate::coord::Coordinator>) {
+        *self.lead.lock().unwrap() = Arc::downgrade(c);
+    }
+
     /// Reads the keys and the manifest (the last read kept when they can't be read now).
     pub fn refresh(&self) {
-        let got = crate::pool::records::Brief::now(&self.root).map(|b| {
+        let served = self.lead.lock().unwrap().upgrade().and_then(|c| c.brief());
+        let brief = match served {
+            Some(h) => Ok(h.brief),
+            None => crate::pool::records::Brief::now(&self.root).map(Arc::new),
+        };
+        let got = brief.map(|b| {
             let steps = tiles_of(self.the_plan, &b.keys);
             let empty = empty_of(self.the_plan, &steps, &b.manifest);
             (steps, empty, dropped_of(self.the_plan, &b.keys))
