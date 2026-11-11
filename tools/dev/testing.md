@@ -65,7 +65,12 @@ Not seen: a run through a shell function or alias, a script file, or a substitut
 
 Run `tools/dev/check.sh` in your worktree after your last commit, and report only after it prints
 PASS. It runs what publish would refuse your work on: `cargo fmt --check`, publish's clippy line
-(`-D clippy::disallowed_methods`: processes only through `store::spawn`), `tools/app/guards.sh`,
+(`-D clippy::disallowed_methods`: processes only through `store::spawn`) on the crates the change
+affects (#1123: the packages of the tests' set below and those holding a changed file; every crate
+when a manifest, Cargo.lock, clippy.toml, the toolchain, `.cargo/`, a crate outside the workspace or
+rustflags in the environment changed; none, skipped, when no crate did: the lint flags a call where
+it's written, and a user of a changed crate no longer compiling is the tests' build's to find, or
+publish's whole clippy line's), `tools/app/guards.sh`,
 when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/test/*.test.{ts,mjs}` and
 `tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/devtools/test when
 tools/devtools or the build page's timeline modules it serves changed (#672), `tools/dev/test/devjob.zsh` when the
@@ -83,6 +88,10 @@ them for nothing. Each test is its own process, as in publish's suite. guards.sh
 source_names: scan tests of crates/ and dem/, run by the tests part whenever a file they read
 changed; #887: they had built the pipeline's tests on this Mac, ~5 min, beside the test Mac's run).
 Tests build without debug info (`debug = false` in Cargo.toml's `[profile.test]`, #918), every run alike: check.sh's, publish's and an agent's own.
+Clippy runs after the other parts, just before the tests; when both run and the tests run on this Mac
+(the test Mac itself), they take one turn with the shared build folder (#1123, below: a hold, let
+go as the first test starts), so the tests' build doesn't queue again behind other agents (10 Nov:
+clippy waited 118 s, then the tests' build another 86 s).
 `tools/dev/test/check-reuse.zsh` runs when the reuse rule's files (check.sh, check-reuse.py,
 affected-tests.sh, merge-ok.sh) or the test changed.
 One PASS/FAIL/REUSE line per part with its wall and CPU time here (the tests part also the test Mac's);
@@ -261,11 +270,42 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   lock 24 minutes while two check.sh runs waited; with a 60 s `cargo run` and two toy checks
   started 2 s after it, the checks waited 58 and 59 s before and 1 and 0 s after (M4, 4 Nov).
   A clones folder of a gone process is deleted by the next such run.
-- Correct across worktrees: cargo judges a workspace crate fresh by mtimes, and its artifact names
-  don't depend on the checkout's path, so worktree A's build would pass as fresh for worktree B's
-  older sources. When the folder's last build (`.scenic-built-by`) came from another worktree, the
-  workspace crates' fingerprints are deleted first, under the lock: they compile again, reusing their
-  incremental state where the code is the same. Test: tools/dev/test/shared-target.zsh (check.sh).
+- A hold (#1123): check.sh's clippy and its tests' build take one turn. `cargo --scenic-hold
+  <ready file>`, started by check.sh, takes the lock in line as any cargo, writes the ready file and
+  holds it while check.sh lives; the holder's line names check.sh's pid (its processes are what a
+  long hold's report shows) and the hold's own, `(hold <pid>)`. A cargo with `SCENIC_CARGO_HOLD`
+  naming a hold the holder's line still names builds without taking the lock; where it would let
+  the lock go (nextest's first test, a test's or run's programs cloned) it lets the hold go (USR1).
+  remote-tests.sh lets it go when the tests go to the test Mac, check.sh after its tests part (or
+  as it exits); programs never get the variable. A waiter behind a hold waits through clippy and the
+  tests' build, which before queued apart (clippy waited 118 s on 10 Nov, then the tests' build 86 s
+  more behind two agents); a long test run still holds no one up.
+- Shared across worktrees, correctly (#1123): a workspace crate's artifact names don't depend on
+  the checkout's path, so worktree B can use what worktree A built. Cargo judges freshness here by
+  the sources' checksums (`-Z checksum-freshness`, unstable in cargo 1.98: the shim takes cargo's
+  channel for a nightly's, `__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS`, and makes
+  `tools/dev/bin/rustc-checksums` the rustc wrapper, which gives `RUSTC_BOOTSTRAP=1` to the compiles
+  carrying cargo's `-Z checksum-hash-algorithm` alone, not to a build script's version or feature
+  probes, then runs the wrapper cargo's config names, sccache). By times, a fresh worktree's files
+  are newer than any build and B's older sources passed for A's build, so until #1123 every
+  workspace crate's fingerprint was deleted whenever another worktree had built last, and every
+  crate compiled again (113 s in a check's tests part, 10 Nov). Cargo checks a source by a path
+  relative to its package, or by a full path outside it, so a unit is tied to the checkout it was
+  built in when its record names another checkout: it compiles in a file outside its package
+  (agentcore's `include_bytes!` of web/buildpage) that differs from this checkout's (cargo would
+  check A's copy), it was built with a variable naming another checkout (`env!("CARGO_MANIFEST_DIR")`,
+  whose value cargo doesn't check), a build script's output names one, or it was built without
+  checksums (an older shim). When the folder's last build (`.scenic-built-by`) came from another
+  worktree, the shim looks at every workspace unit's records (rustc's dep-info, cargo's own, a
+  build script's output) under the lock and deletes the tied units' fingerprints; they compile
+  again. A unit kept that compiles in another checkout's file (the same bytes then) is listed in
+  `.scenic-elsewhere` and looked at again before each build, since cargo goes on checking that
+  checkout's copy, not this one's. `.scenic-tied` lists the last look's units, with why. So tests
+  read their files as they run, from their package's folder (cargo and nextest run a test there:
+  `std::path::absolute("../../tools/status/test")`), never by `env!("CARGO_MANIFEST_DIR")`, which
+  ties the unit (store::testkit's tied every test build). Test: tools/dev/test/shared-target.zsh
+  (check.sh): the same sources in two checkouts fresh, a differing file outside the package and an
+  `env!` path compiled again, back and forth.
 - Outside `.claude/worktrees/` (the main checkout) cargo builds as it would, in its own folder,
   without the lock, only recorded (as the shim's child: Dev jobs, below). Passed straight to cargo:
   commands that never build (the shim's `reads`: fmt, metadata, tree, update, version, …, found
@@ -281,7 +321,10 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   never copied there.
 - sccache still wraps rustc inside `.claude/worktrees/` (the untracked
   `.claude/worktrees/.cargo/config.toml`, #439; ~/Library/Caches/scenic-sccache, 10 GB cap): it
-  refills third-party crates after a sweep.
+  refills third-party crates after a sweep. It can't share the workspace's crates across worktrees
+  (#1123): it passes incremental compiles (the workspace's, in dev and test) and binaries (every
+  test program) through uncached, and hashes every `CARGO_*` variable, `CARGO_MANIFEST_DIR` (the
+  checkout's path) among them; its Rust hit rate on the M4 was 4 % (17 of 426, 10 Nov).
 - Room (#954): tools/dev/sweep-targets.sh (launchd, every 20 min) keeps the Mac's room target free
   for the pool. Once free disk falls below the room target (`room-target.json` in the agent's
   folder, the build page's "Disk room target") plus the sweep's margin (`sweep-margin.json` beside
@@ -301,8 +344,9 @@ The dev job dashboard (the dev tools app's `/jobs/`, tools/devtools/README.md) s
 check.sh (each part, its compiles from cargo's output), publish.sh (each step), remote-tests.sh
 (the waits for the test Mac's key and a slot, the copy, the run there, each compile, suite and
 test from what it prints: cargo test's tests by when they ended, nextest's by their own times) and
-every cargo build through tools/dev/bin/cargo (in a worktree: its wait for the shared folder, the reset of the
-workspace's fingerprints, the build with each crate compiled from cargo's `--timings` report, which
+every cargo build through tools/dev/bin/cargo (in a worktree: its wait for the shared folder, a
+check's hold of it (a `cargo` span of its own, its wait and its `held` time), the reset of the units
+tied to another checkout, the build with each crate compiled from cargo's `--timings` report, which
 the shim adds and moves out of the shared folder, each program run: a test binary a suite; a
 measurement run, an example or a release run, and a backtest, `--replay` or a backtest test, so
 named; in the main checkout: the build and its crates). A span started inside another's (a cargo in a check's part) is part of it: each job exports
@@ -325,7 +369,10 @@ the test Mac and its compiles, suites and tests are that Mac's; the job says the
   whatever the spool. What a job pays: a `python3 devjob.py who` (~0.1 s: git's branch and commits)
   at a run of its own's start, a line appended per event. A wrapped command (check.sh's parts,
   remote-tests.sh, publish's release build and clippy) writes to a pipe, its stderr with its stdout:
-  no terminal, so cargo prints no colour there.
+  no terminal, so cargo prints no colour there. A name past the app's 2000 characters is cut there
+  (devjob.py's `NAME_MAX`, devjob.zsh's `dj_name`, #1123): a cargo's name is its command line, and
+  the app refused check.sh's nextest (4 KB with its filterset), losing its span and every span under
+  it, the tests part's wait for the shared folder with them (45 refusals on 10 Nov).
 - **A test that runs a recording script** (check.sh, publish.sh, remote-tests.sh, the shim) sets
   `SCENIC_DEVJOB=0` (nothing recorded) or a scratch `SCENIC_DEVJOB_DIR` with `SCENIC_BOARD` on a
   closed port, as `tools/dev/test/shared-target.zsh` does to check the shim's records: a test's

@@ -61,7 +61,7 @@ them.
   process's memory; a test-Mac run's Mac, load and CPU). Kinds: `check` with a `part` each, `publish`
   with a `step` each, `tests` (a remote-tests.sh run) with its `wait`s (the test Mac's key, a slot),
   `copy`, `run` on the test Mac, `compile`s, `suite`s and `test`s; `cargo` with its `wait` for the
-  shared build folder, `reset` of the workspace's fingerprints, `build` and each `crate` compiled
+  shared build folder, `reset` (the units tied to another checkout), `build` and each `crate` compiled
   (cargo's `--timings` report), each test binary run as a `suite`, a `program` run.
 - **Each Mac's load** (1-minute load average), memory free (`kern.memorystatus_level`, %) and swap
   used, every 10 s while any recorded job runs on it (`samples`), and its chip, memory and cores
