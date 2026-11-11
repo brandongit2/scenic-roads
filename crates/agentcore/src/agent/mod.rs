@@ -12823,7 +12823,7 @@ mod tests {
     /// A lead for a test agent's proxy, which has none out of the pool: a token a take, and the
     /// answers' lease to each holder that asks (one holder at a time, as the lead's).
     #[derive(Default)]
-    struct TestLead(std::sync::Mutex<Option<String>>);
+    struct TestLead(std::sync::RwLock<Option<String>>);
 
     impl jobrt::budget::Lead for TestLead {
         fn take(&self, _: jobrt::budget::Class) -> std::result::Result<jobrt::budget::Given, String> {
@@ -12839,7 +12839,7 @@ mod tests {
             token: &str,
         ) -> std::result::Result<jobrt::budget::LeaseSaid, String> {
             use jobrt::budget::LeaseOp;
-            let mut held = self.0.lock().unwrap();
+            let mut held = self.0.write().unwrap();
             let mine = held.as_deref() == Some(token);
             let ok = match op {
                 LeaseOp::Take => mine || held.is_none(),
