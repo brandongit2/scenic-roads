@@ -693,10 +693,10 @@ reads the file once as each target begins and runs that target on a rayon pool t
 timings' main thread carried onto the pool's thread (`timings::Main`); a change written while a
 target runs waits for the next, so no target changes threads under way, and the thread count
 changes no output (`slope_pack`'s test: a z6 tile's packs the same bytes on 2 threads and on 8). The
-elevation pool's sampling (`terrain_base`'s `prefetch_counted`, in terrain-hi and
+elevation pool's sampling (`terrain_base`'s `prefetch_each`, in terrain-hi and
 terrain-deep) runs its chunks as tasks of a second pool as wide as the target's grant, one a thread
 (`control::on_outside_pool`), their passes (`dem::generic`) there too, while the target's thread
-waits, working on nothing: the job is on its grant's threads, no more. Beside them a level's tiles
+waits, working on nothing. Beside them a level's tiles
 are made by as many threads again (task #1097, docs/steps.md §2, A level is a pipeline), each tile
 on a turn the sampling's threads lend while they wait (store::waits::Turns): the job computes on
 its grant's cores, no more (but for a thread back from a wait, until the tile on its turn is made). Not threads of their own

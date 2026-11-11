@@ -330,6 +330,61 @@ the limit still halved every few seconds at 8–16 in flight (the Wi-Fi full, no
 was not timed: on the M1 its `terrain-same` peaks 4.3–6.1 GB (6/18/22, 6/40/54 too), past the quarter
 of its memory an agent's run may take; terrain-deep, slope and the network's limits not timed.
 
+## 4g. What task #1097 did (11 Nov): stages that overlap
+
+Each step's stages in the order a target ran them (→ waits for the stage before, ‖ beside it):
+
+| step | before | after |
+|---|---|---|
+| terrain-deep, terrain-hi, terrain-lo: a level (`terrain_pack::Maker`) | the level's tiles all sampled (its chunks on the grant's threads; in a chunk each dataset in its order, then the blends, then EGM2008) → the level's tiles made (their children's means taken in, rounded, encoded) a block at a time → the next level | each tile made as soon as its chunk is sampled ‖ the sampling of the rest, on the turns the sampling's waits lend (store::waits::Turns) → the level's last tiles made → the next level |
+| terrain-deep | its levels → its deep pack and mid written → uploaded → the next z10 tile | its levels → written → the next z10 tile ‖ its uploads (`Landing`, as terrain-hi's were) |
+| terrain-lo | its levels → its lo pack written and uploaded → the next z3 tile | its levels → written → the next z3 tile ‖ its upload |
+| terrain-hi | its levels → written → the next z6 tile ‖ its uploads | its levels as above, the rest the same |
+| slope-hi | the terrain packs' indexes → its own terrain hi pack copied here (the NAS, one sequential read) → its pyramid (edge tiles and deep mids read ahead, #1096) → written → the next z6 tile ‖ its uploads | its own pack copied while the z6 tile before it is made (`slope_pack::Batch`, slope-deep's since #928) → the indexes → its pyramid → written → the next ‖ its uploads |
+| slope-deep | the next target's pack copied ahead, the uploads beside (#928) | the same (`Batch::deep`) |
+
+What still waits, on what it reads: a chunk's later dataset on the earlier one's pass over that
+chunk (which points are left; the chunks themselves go side by side, a chunk a thread of the
+grant), the blends on the chunk's datasets, a level on the finer level's tiles (its quarters are
+their means, and whether a child is built decides a quarter's sampling), a pack on its last level,
+a target's pyramid on its own pack's copy (the first of a job). The making computes only on turns
+the sampling lends: where the sampling keeps every thread computing nothing is gained (as it
+shouldn't: the grant is the job's cores), and where the Mac's cores are all taken a lent turn's
+core isn't idle either. Not read ahead: a chunk's next dataset (its points known only once the
+dataset before has run over the chunk; a sampling thread waiting on its first blocks lends its
+turn to the making instead).
+
+Measured with `terrain-same` (release; the NAS read only; `SCENIC_CACHE` a cache of the runs' own,
+its coverage file cloned in, so the regions are read from this Mac; a target's Terrarium tiles and
+whole local copies warmed by a first run not counted). On the M4, main (03e6cd6b) and the branch
+side by side, each round both at once, so both see the same load (the M4 at load 20–110, other
+agents' work); on the M1 in a quiet period (11 Nov 02:24–02:37, its pool agent paused; one depth job
+of 2 threads still running there to its safe point), ABBA. "s" is the target's own (`secs`, the
+regions' read and the process's start not in it), busy the run's CPU over its wall, peak the
+process's footprint (`time -l`). Every run's packs and mids had the manifest's content names (deep
+02e54b896b199b6f / mid e2a73323ce2adb71; hi 9a23248d786d9a1e / mid 5fd1d526190eb3bc; lo
+b7effd8690bb7665).
+
+| step, target | Mac, threads | main s | branch s | change | busy of the threads | peak MB |
+|---|---|---|---|---|---|---|
+| terrain-deep 10/321/338 (HRDEM 1 m, 2 m, GLO-30, Terrarium; 3,733 tiles) | M4, 5, 3 rounds | 199.6, 191.8, 277.7 | 166.8, 159.2, 217.0 | −33, −33, −61 s (−16 to −22 %) | 2.79, 2.97, 2.33 → 3.32, 3.59, 2.93 of 5 | 6226–6735 → 6215–6529 |
+| terrain-hi 6/37/17 (GLO-30, Terrarium; 1,344 tiles) | M4, 3, 3 rounds | 97.5, 93.4, 90.2 | 89.7, 87.7, 72.1 | −8, −6, −18 s (−11 % mean) | 1.30, 1.33, 1.34 → 1.43, 1.43, 1.66 of 3 | 4952–5019 → 4861–5002 |
+| terrain-lo 3/7/6 (1,365 tiles) | M1, 3, ABBA ×3 | 49.9, 56.8, 57.4 | 43.7, 43.4, 45.4 | −10.5 s mean, of which the levels −2.7 s (33.5 → 30.8 s; the rest the NAS's reads of the mids and declarations, 13 s slower in two of main's runs) | 1.79 → 2.20 of 3 | 3718–3792 → 3730–3762 |
+
+The CPU of a run didn't change (deep 654–675 s both, hi 122–130, lo 99–101): the making ran on
+cores the sampling left idle. Where the sampling waits most (deep: HRDEM's blocks over the network)
+the most is hidden; terrain-lo's levels are its making's (26 s of CPU-bound encoding on 3 threads
+after 4 s of sampling from this Mac's cache), so a few seconds. The peaks are the same: a tile is
+made soon after it's sampled, so fewer raw tiles are held than when a level's were all sampled
+first, and the making holds a tile a thread. No step's cost version moved: its memory is what it
+was, and its busy cores are measured afresh by the uses' window and the jobs' beats.
+
+slope-hi (`measure_a_slope_batch hi 37/17,37/18,38/17,38/18`, 4 threads, the M4, two rounds, each
+a batch then its z6 tiles alone, the same content names): waiting on a z6 tile's own pack's copy
+9.7 and 6.9 s for the four alone, 2.8 and 3.9 s as a batch (the first's alone; the others' 12.2 s
+of copying ahead beside the work); the batches 117.1 and 127.8 s against 141.9 and 127.8 s alone,
+within the M4's noise. slope-deep unchanged (its batch since #928), not timed again.
+
 ## 5. Not done, with what the data says (the ranking of what's left)
 
 1. **GSI's tiles fetched live, every run (41 % of terrain-hi: 58.6 h in 16 Japan runs; the

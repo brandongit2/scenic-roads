@@ -2242,7 +2242,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// Raw tiles `inner`'s, sampled as crate::terrain_base::Tiles samples the pool: `CHUNK` tiles a
-    /// call of `prefetch_counted`, or a tile read not prefetched; once `left` of those have run, the
+    /// call of `prefetch_each`, or a tile read not prefetched; once `left` of those have run, the
     /// next finds the build pausing (jobrt::control::Paused, task #705).
     pub(crate) struct PauseAfter<'a> {
         inner: &'a dyn RawSource,

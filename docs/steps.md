@@ -152,8 +152,8 @@ makes the same bytes on every Mac.
     and its blends after them; with the build pausing it stops before the next chunk (docs/pool.md
     §7.2, Resuming). **A level is a pipeline** (task #1097, `terrain_pack::Maker::pipeline`): its
     tiles are sampled a block at a time (the tiles under one tile four levels up, a z8 subtree's at
-    z12), and each block's tiles are made (their children's means taken in, rounded, encoded) as
-    soon as the sampling has them all, beside the next block's sampling, on as many threads as the
+    z12), and each tile is made (its children's means taken in, rounded, encoded) as soon as its
+    chunk is sampled, beside the sampling of the rest, on as many threads as the
     grant; the making takes the turns the sampling's threads lend while they wait on the NAS, the
     network or a read ahead (store::waits::Turns), so it computes on the cores those waits leave
     idle and the job on no more than its grant's (one over while a thread back from a wait finds
