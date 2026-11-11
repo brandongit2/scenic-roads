@@ -2002,7 +2002,7 @@ struct Gap {
     touches: bool,
     /// Its edge (m) with each region with water in the cell.
     len: Vec<(String, f64)>,
-    /// Kept while it may still go to a region (up to `fill_km2`); a larger one is the rest's.
+    /// What of it is still to go: to a region, or else to the rest (None once given away whole).
     area: Option<Area>,
     /// Its land, the land of it two regions had, and a point inside its largest piece of land:
     /// read at once for a gap over `fill_km2`, later for one whose stretch is.
@@ -2073,10 +2073,11 @@ fn interior(poly: &[Ring]) -> Pt {
 }
 
 /// With `cover`: land in two regions taken from those of them with water, cell by cell; then the
-/// gaps, joined across the cells' edges into stretches: one within 100 m of land up to `fill_km2`
-/// goes to the region with water sharing the longest edge with it, land in no region over
-/// `fill_km2` is `rg-cover`, as is water in two regions in a cell or (with no rest region) in
-/// none. Returns the rest, what no region covers.
+/// gaps, joined across the cells' edges into stretches: one up to `fill_km2` goes to the region
+/// with water sharing the longest edge with it, a larger one's country part (by a coast, or inside
+/// a zone) to the regions it borders; land in no region over `fill_km2` is `rg-cover`, as is water
+/// in two regions in a cell, in none (with no rest region) or in the rest inside a zone. Measured
+/// into `fit`. Returns the rest, what no region covers.
 #[allow(clippy::too_many_arguments)]
 fn cells_pass(
     folder: &Folder,
@@ -2254,9 +2255,10 @@ fn cells_pass(
         }
     }
     trace("the gaps joined across the cells' edges");
-    // The gaps' stretches, each decided whole: one over `fill_km2` touching no land is the rest's
-    // (one touching land, an error if its land is over it); the others, a hole in the zones' water
-    // off any coast too, go to the region with water sharing the longest edge with them.
+    // The gaps' stretches: one up to `fill_km2`, a hole in the zones' water off any coast too, goes
+    // whole to the region with water sharing the longest edge with it; of a larger one (its land
+    // over `fill_km2` an error), what is some country's goes to the regions it borders (below), the
+    // rest the rest's.
     let roots = joined(&gaps.iter().map(|g| (g.c, &g.sides)).collect::<Vec<_>>());
     let mut stretches: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (i, r) in roots.into_iter().enumerate() {
