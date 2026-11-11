@@ -248,11 +248,13 @@ nas_fonts() {
   COPYFILE_DISABLE=1 tar -c --no-xattrs --no-acls --no-fflags --no-mac-metadata -C $1/app/fonts .
 }
 
+# app_files <folder>: the app's files in <folder>, sorted, .DS_Store and AppleDouble files left out.
+app_files() { (cd $1 && find . -type f ! -name .DS_Store ! -name '._*' | sed 's|^\./||' | sort); }
 # app_manifest <folder> <version>: app/current.json's content for the app in <folder>: its version,
-# and every file (.DS_Store and AppleDouble files left out) with its SHA-256, which every Mac's
+# and every file (app_files) with its SHA-256, which every Mac's
 # updater checks its copy against.
 app_manifest() {
-  (cd $1 && find . -type f ! -name .DS_Store ! -name '._*' | sed 's|^\./||' | sort | python3 -c "
+  app_files $1 | (cd $1 && python3 -c "
 import hashlib, json, sys
 files = [l.strip() for l in sys.stdin if l.strip()]
 sha = {f: hashlib.sha256(open(f, 'rb').read()).hexdigest() for f in files}
@@ -303,31 +305,45 @@ nas_send() {
 # nas_install <nas> <version> <commit> <began> <bytes> <sha256> <from>: publish.sh's install, the
 # NAS's Mac's side (nas_send above, the other). The archive read from stdin whole into a local file
 # (~/Library/Caches/scenic-publish/incoming/<pid>.tgz) and checked by its size and SHA-256 (an
-# upload cut short installs nothing); then under the NAS's lock (nas_lock, waited for while another
-# publish holds it) the order checked (fast_forward) and the app extracted beside its folder
-# (app/<version>.tmp) and checked against its manifest; then "@@ready", and the go-ahead read
-# (within $nas_go_wait s, 300), else nothing goes in; then, whatever the connection and the signals,
+# upload cut short installs nothing), then unpacked beside it (<pid>/) and checked against its
+# manifest; the order checked (fast_forward); the app written beside its folder on the NAS
+# (app/<version>.tmp) and its files listed back; then under the NAS's lock (nas_lock, waited for
+# while another publish holds it) the order checked again, "@@ready", and the go-ahead read (within
+# $nas_go_wait s, 300), else nothing goes in; then, whatever the connection and the signals,
 # app/<version>/, nas/fetch-planet.sh when it differs, previous.json and current.json, in that
 # order, and "@@installed <version>".
 nas_install() {
   local nas=$1 version=$2 head=$3 began=$4 bytes=$5 sum=$6 from=$7
   local inc=~/Library/Caches/scenic-publish/incoming lock=$1/app/publish.lock dest=$1/app/$2
   local who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ) for $from"
-  local in=$inc/$$.tgz f got go said=
-  typeset -ga _nas_cleanup=()
-  at_end _nas_end
-  trap '' PIPE  # (the connection closed: a write fails, ending this under errexit, cleaned up)
+  local in=$inc/$$.tgz loc=$inc/$$ f got go said=
+  _nas_begin
   [[ -d $nas/app ]] || { print -r -- "the NAS isn't mounted at $nas on ${who%% *}"; return 2; }
-  mkdir -p $inc
-  for f in $inc/*.tgz(N); do kill -0 ${${f:t}%.tgz} 2>/dev/null || rm -f $f; done  # (gone receivers')
-  _nas_cleanup+=("rm -f ${(q)in}")
+  for f in $inc/*(N); do kill -0 ${${f:t}%%.*} 2>/dev/null || rm -rf $f; done  # (gone receivers')
+  _nas_cleanup+=("rm -rf ${(q)in} ${(q)loc}")
   head -c $bytes > $in
   got=$(stat -f %z $in)
   (( got == bytes )) || { print -r -- "the upload ended short ($got of $bytes bytes): nothing installed"; return 1; }
   [[ $(shasum -a 256 $in) == "$sum "* ]] || { print -r -- "the upload's SHA-256 isn't the one sent: nothing installed"; return 1; }
   print -r -- @@received
+  # (The manifest checked on this Mac's disk, not by reading the NAS's copy back: on 11 Nov that
+  # read took up to 89 s, the write 5-9 s.)
+  mkdir $loc && tar -xzf $in -C $loc
+  [[ $(app_manifest $loc/app $version) == "$(<$loc/manifest.json)" ]] \
+    || { print -r -- "the app sent isn't its manifest's: nothing installed"; return 1; }
   git cat-file -e "$head^{commit}" 2>/dev/null || git fetch -q origin main 2>/dev/null || true
   git cat-file -e "$head^{commit}" 2>/dev/null || { print -r -- "$head isn't in ${who%% *}'s $PWD, nor its origin's main"; return 1; }
+  # (Checked first unlocked, so a publish that can't go in writes nothing; again under the lock.)
+  fast_forward $nas/app/current.json $head "$began" || return 1
+  [[ ! -e $dest ]] || { print -r -- "$dest exists already"; return 1; }
+  mkdir $dest.tmp || { print -r -- "$dest.tmp exists already (another install of this version)"; return 1; }
+  _nas_cleanup+=("rm -rf ${(q)dest}.tmp")
+  # (-m: no file's time set, a round trip a file on the share: the write took 3-7 times as long
+  # with them on 11 Nov; the Macs' copies don't keep them.)
+  tar -xzmf $in -C $dest.tmp --strip-components 1 --no-same-owner --no-xattrs --no-acls --no-fflags --no-mac-metadata app
+  [[ $(app_files $dest.tmp) == "$(app_files $loc/app)" ]] \
+    || { print -r -- "the app written to the NAS isn't the one sent (its files differ): nothing installed"; return 1; }
+  # The lock held only from here: the slow write above runs beside another publish's install.
   until nas_lock $lock "$who"; do
     [[ -n $said ]] || { print -r -- "waiting for the publish holding $lock ($lock_held)"; said=1; }
     sleep ${nas_lock_poll:-10}
@@ -336,30 +352,41 @@ nas_install() {
   # (Again, under the lock: the publish that went in meanwhile may be newer, or a rollback since.)
   fast_forward $nas/app/current.json $head "$began" || return 1
   [[ ! -e $dest ]] || { print -r -- "$dest exists already"; return 1; }
-  rm -rf $dest.tmp; mkdir -p $dest.tmp
-  _nas_cleanup+=("rm -rf ${(q)dest}.tmp")
-  tar -xzf $in -C $dest.tmp --no-same-owner --no-xattrs --no-acls --no-fflags --no-mac-metadata
-  [[ $(app_manifest $dest.tmp/app $version) == "$(<$dest.tmp/manifest.json)" ]] \
-    || { print -r -- "the app written to the NAS isn't its manifest's: nothing installed"; return 1; }
+  # (Signals ignored from before the go-ahead's read, so none lands between it and the writes; the
+  # publishing Mac gone ends the read all the same: its end of the stream closes.)
+  trap '' INT TERM HUP
   print -r -- @@ready
   IFS= read -r -t ${nas_go_wait:-300} go || go=
   [[ $go == go ]] || { print -r -- "no go-ahead from $from: nothing installed"; return 1; }
-  trap '' INT TERM HUP
-  mv $dest.tmp/app $dest
+  mv $dest.tmp $dest
   # The NAS's own planet fetch (DSM's Task Scheduler runs it daily): the repository's copy, when it
   # differs. (Before the version goes live: a failure here publishes nothing.)
-  if ! cmp -s $dest.tmp/fetch-planet.sh $nas/nas/fetch-planet.sh; then
+  if ! cmp -s $loc/fetch-planet.sh $nas/nas/fetch-planet.sh; then
     mkdir -p $nas/nas
-    cp -X $dest.tmp/fetch-planet.sh $nas/nas/fetch-planet.sh.tmp && chmod 755 $nas/nas/fetch-planet.sh.tmp
+    cp -X $loc/fetch-planet.sh $nas/nas/fetch-planet.sh.tmp && chmod 755 $nas/nas/fetch-planet.sh.tmp
     mv $nas/nas/fetch-planet.sh.tmp $nas/nas/fetch-planet.sh
     print -r -- "updated nas/fetch-planet.sh" || true
   fi
   [[ ! -f $nas/app/current.json ]] || cp -X $nas/app/current.json $nas/app/previous.json
-  cp -X $dest.tmp/manifest.json $nas/app/current.json.tmp
+  cp -X $loc/manifest.json $nas/app/current.json.tmp
   mv $nas/app/current.json.tmp $nas/app/current.json
   print -r -- "@@installed $version" || true
 }
-# (Its cleanup's commands carry their values: it runs as the script ends, the function's locals gone.)
+# _nas_begin: nas_install's and nas_rollback's start. Their cleanup (_nas_end, as the script ends:
+# its commands carry their values, the function's locals gone) put in place; SIGPIPE ignored, so a
+# write to a closed connection fails, ending the script under errexit, cleaned up; and their errors
+# kept in a file (incoming/<pid>.err), shown as they end: zsh exits at once, cleaning nothing up,
+# on a write to a stderr whose reader is gone, SIGPIPE ignored or not (exit 141: on 11 Nov, the
+# lock left held and the version not made live after the go-ahead).
+_nas_begin() {
+  typeset -ga _nas_cleanup=()
+  typeset -g _nas_err=~/Library/Caches/scenic-publish/incoming/$$.err
+  at_end _nas_end
+  trap '' PIPE
+  mkdir -p ${_nas_err:h}
+  exec 2>$_nas_err
+  _nas_cleanup+=("cat ${(q)_nas_err} || true; rm -f ${(q)_nas_err}")
+}
 _nas_end() { local rc=$? c; for c in $_nas_cleanup; do eval $c; done; return $rc; }
 
 # nas_rollback <nas> <from>: publish.sh --rollback, on the NAS's Mac: app/current.json and
@@ -367,8 +394,7 @@ _nas_end() { local rc=$? c; for c in $_nas_cleanup; do eval $c; done; return $rc
 nas_rollback() {
   local nas=$1 lock=$1/app/publish.lock
   local who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ) for $2"
-  typeset -ga _nas_cleanup=()
-  at_end _nas_end
+  _nas_begin
   [[ -d $nas/app ]] || { print -r -- "the NAS isn't mounted at $nas on ${who%% *}"; return 2; }
   nas_lock $lock "$who" || { print -r -- "another publish holds $lock ($lock_held): try again once it's over"; return 1; }
   _nas_cleanup+=("nas_unlock ${(q)lock} ${(q)who}")

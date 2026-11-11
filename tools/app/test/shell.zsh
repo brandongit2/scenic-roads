@@ -275,7 +275,7 @@ ni() {  # <archive> <args after nas_install's NAS root...>: nas_install itself, 
 sum() { local s=$(shasum -a 256 $1); print -r -- ${s%% *}; }
 lv() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }  # (lib.zsh's live_version)
 # (Nothing half-written: no version folder but the live ones, no .tmp, no lock, no incoming archive.)
-clean() { [[ -z $(ls $N/app | grep -v -e '^current.json$' -e '^previous.json$' -e "^${1:-none}\$" -e "^${2:-none}\$") && -z $(ls $inc 2>/dev/null) ]]; }
+clean() { [[ -z $(ls $N/app | grep -vxF -e current.json -e previous.json ${@/#/-e}) && -z $(ls $inc 2>/dev/null) ]]; }
 V1=20261111-0001-$B V2=20261111-0002-$C V0=20261111-0003-$A
 mkdir -p $inc; zsh -c 'exit 0' & dp=$!; wait $dp; print x > $inc/$dp.tgz  # (a gone receiver's)
 mk $V1 v1
@@ -292,7 +292,7 @@ out=$(ns $V2 $C $V1 $tmp/v2.tgz)
 mk $V0 v0
 out=$(ns $V0 $A $V2 $tmp/v0.tgz)
 [[ $out == *'older than the live version'*'rc=1 state=' && $(lv $N/app/current.json) == $V2 ]] && clean $V1 $V2 \
-  && ok "nas_install: an older commit refused under the lock, nothing written" || no "nas_install older" "$out"
+  && ok "nas_install: an older commit refused, nothing written" || no "nas_install older" "$out"
 # An upload cut short, or not the one sent; an app not its manifest's; no go-ahead: nothing goes in.
 mk 20261111-0004-$C v3
 b3=$(stat -f %z $tmp/v3.tgz); s3=$(sum $tmp/v3.tgz)
@@ -307,15 +307,17 @@ out=$(ns 20261111-0005-$C $C $V2 $tmp/v4.tgz)
 out=$(ni $tmp/v3.tgz 20261111-0004-$C $C $V2 $b3 $s3 'test 1')
 [[ $out == *'@@ready'*'no go-ahead'* && $(lv $N/app/current.json) == $V2 ]] && clean $V1 $V2 \
   && ok "nas_install: no go-ahead, nothing installed" || no "nas_install go-ahead" "$out"
-# Another publish's install under way: waited for, saying so once, then installed.
+# Another publish's install under way: the app written meanwhile, the lock waited for (saying so
+# once), then installed.
 mk 20261111-0006-$C v5
 print -r -- "other 1 now" > $N/app/publish.lock
 ns 20261111-0006-$C $C $V2 $tmp/v5.tgz 'export nas_lock_poll=0.1' > $tmp/wait.out & wp=$!
 upon waiting $tmp/wait.out
+[[ -f $N/app/20261111-0006-$C.tmp/server ]] && written=1 || written=
 sleep 0.5; rm -f $N/app/publish.lock; wait $wp
 out=$(<$tmp/wait.out)
-[[ $(grep -c waiting <<< $out) == 1 && $out == *'(other 1 now'*'rc=0 state=live' && $(lv $N/app/current.json) == 20261111-0006-$C ]] \
-  && ok "nas_install waits for another publish's lock" || no "nas_install lock wait" "$out"
+[[ -n $written && $(grep -c waiting <<< $out) == 1 && $out == *'(other 1 now'*'rc=0 state=live' && $(lv $N/app/current.json) == 20261111-0006-$C ]] \
+  && ok "nas_install waits for another publish's lock, its app written meanwhile" || no "nas_install lock wait" "$out"
 # The NAS's Mac unreachable: nothing sent, nothing changed.
 out=$(ns 20261111-0007-$C $C 20261111-0006-$C $tmp/v3.tgz 'nas_mac=none; nas_host=nas-mac.invalid')
 [[ $out == *"can't reach the NAS's Mac (nas-mac.invalid)"*'rc=1 state=' && $(lv $N/app/current.json) == 20261111-0006-$C ]] \
@@ -324,5 +326,13 @@ out=$(ns 20261111-0007-$C $C 20261111-0006-$C $tmp/v3.tgz 'nas_mac=none; nas_hos
 out=$(cd $g && HOME=$hm zsh -c "set -euo pipefail; source ${(q)lib}; nas_mac=$here; nas_repo=${(q)g}; on_nas_mac nas_rollback $N 'test 1'" 2>&1)
 [[ $out == "rolled back to $V2" && $(lv $N/app/current.json) == $V2 && $(lv $N/app/previous.json) == 20261111-0006-$C && ! -e $N/app/publish.lock ]] \
   && ok "nas_rollback through the NAS's Mac" || no "nas_rollback" "$out"
+
+# The go-ahead, then the publishing Mac gone (its reader closed as "@@ready" came): installed all the
+# same, the lock freed.
+out=$( { cat $tmp/v3.tgz; sleep 0.5; print go; } | (cd $g && HOME=$hm zsh -euo pipefail -c "source ${(q)lib}; nas_install $N 20261111-0004-$C $C $V2 $b3 $s3 'test 1'" 2>&1; print -r -- "rc=$?" > $tmp/gone.rc) \
+  | { while IFS= read -r l; do print -r -- $l; [[ $l != @@ready ]] || break; done; } )
+[[ $out == *@@ready && $(<$tmp/gone.rc) == rc=0 && $(lv $N/app/current.json) == 20261111-0004-$C && $(lv $N/app/previous.json) == $V2 ]] \
+  && clean $V1 $V2 20261111-0006-$C 20261111-0004-$C && ok "nas_install: the go-ahead, then the connection gone: installed, the lock freed" \
+  || no "nas_install gone after go" "$out / $(<$tmp/gone.rc) / $(ls $N/app)"
 
 exit $failed

@@ -615,7 +615,8 @@ app goes to the mini as one gzipped archive instead. (Measured from the M4 away,
 app of 113 MB in 832 files, packed to 43 MB in 4.7 s, reached the mini in 4.5 s; the same files
 copied through the M4's mount had 699 written, 51 MB, when the copy failed on SMB timeouts after
 23 min. The NAS's ~1–3 file creates a second that day, from the mini too, set the mini's 11 min
-to write them.) It
+to write them; later that day, with no file's time set (`tar -m`), the mini wrote the 840 files in
+5–9 s, against 23–37 s with them, and reading them back took 89–170 s.) It
 1. builds the tip of origin's main, fetched now, in its own snapshot
    (`~/Library/Caches/scenic-publish/tree`, kept as a build cache), whatever this checkout holds;
    refuses without the signing identity, or when codesign can't use its key unprompted;
@@ -637,15 +638,19 @@ to write them.) It
    `app_manifest`) and `tools/nas/fetch-planet.sh`, and sends them as one archive to the NAS's Mac
    (`nas_send`), whose `nas_install`:
    receives it whole into `~/Library/Caches/scenic-publish/incoming/<pid>.tgz` and checks its size
-   and SHA-256 (an upload cut short installs nothing); takes the lock on the NAS
-   (`app/publish.lock`, create-new; one over six hours old taken over, as is one whose process on
-   the NAS's Mac is gone), waiting while another publish holds it; checks the order again; extracts
-   the app beside its folder (`app/<version>.tmp`) and checks it against the manifest; then, on the
-   publishing Mac's go-ahead (asked for once all that passed; none within 5 min, nothing goes in),
-   whatever the connection does next, moves it to `app/<version>/`, copies `fetch-planet.sh` to the
-   NAS's `nas/` when it differs, the old `current.json` to `previous.json`, writes `current.json`
-   (the manifest), and frees the lock. The archive is removed as it ends, and any left by a
-   receiver that's gone at the next install.
+   and SHA-256 (an upload cut short installs nothing), unpacks it beside it and checks the app
+   against the manifest (on the mini's disk: nothing is read back from the NAS); checks the order;
+   writes the app beside its folder (`app/<version>.tmp`, no file's time set) and lists its files
+   back; takes the lock on the NAS (`app/publish.lock`, create-new; one over six hours old taken
+   over, as is one whose process on the NAS's Mac is gone), waiting while another publish holds it,
+   so the slow write runs beside another install, the lock held only to go live; checks the order
+   again; then, on the publishing Mac's go-ahead (asked for once all that passed; none within 5 min,
+   nothing goes in), whatever the connection or signals do next, moves it to `app/<version>/`,
+   copies `fetch-planet.sh` to the NAS's `nas/` when it differs, the old `current.json` to
+   `previous.json`, writes `current.json` (the manifest), and frees the lock. Its errors go to a
+   file beside the archive, shown as it ends (zsh ends at once on a write to a closed stderr, so a
+   lost connection would otherwise end it with the lock held). The archive and its unpacked copy
+   are removed as it ends, and any left by a receiver that's gone at the next install.
 
 Two publishes may run at once: the second takes a second tree (`tree-2`, kept as a build cache
 like the first, failed builds included, and removed by a publish that finds it unused for 3 days;

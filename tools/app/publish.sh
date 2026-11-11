@@ -292,18 +292,19 @@ else
     || { echo "no fonts folder (data/fonts, or the NAS's app/fonts through the NAS's Mac)"; exit 1; }
 fi
 # The manifest (app/current.json's content), made here from what is sent: the NAS's Mac checks what
-# it wrote against it. With the NAS's planet fetch (DSM's Task Scheduler runs it daily), which it
+# received against it. With the NAS's planet fetch (DSM's Task Scheduler runs it daily), which it
 # installs when it differs. One gzipped stream, its size and SHA-256 checked on arrival.
 app_manifest $app $version > $sb/send/manifest.json
 cp -X tools/nas/fetch-planet.sh $sb/send/
 COPYFILE_DISABLE=1 tar -czf $sb/app.tgz --no-xattrs --no-acls --no-fflags --no-mac-metadata -C $sb/send app manifest.json fetch-planet.sh
 dj_attr $djrun upload_bytes $(stat -f %z $sb/app.tgz)
-# The install, on the NAS's Mac (lib.zsh's nas_send and nas_install): the archive received whole;
-# then under the lock on the NAS, the one part two publishes can't run at once (waited for while
-# another publish installs; one older than six hours is taken over; freed only by its holder), the
-# order checked again (the publish that went in meanwhile may be newer, or a rollback since), the
-# app written beside its folder and checked; then on this side's go-ahead, app/<version>/, the
-# planet fetch, previous.json and current.json. Nothing goes in on a failure before the go-ahead.
+# The install, on the NAS's Mac (lib.zsh's nas_send and nas_install): the archive received whole
+# and checked, the order checked, the app written beside its folder; then under the lock on the
+# NAS, the one part two publishes can't run at once (waited for while another publish installs; one
+# older than six hours, or whose process is gone, taken over; freed only by its holder), the order
+# checked again (the publish that went in meanwhile may be newer, or a rollback since); then on this
+# side's go-ahead, app/<version>/, the planet fetch, previous.json and current.json. Nothing goes in
+# on a failure before the go-ahead.
 step install
 nas_send $NAS $version $head "$began" $sb/app.tgz "$from" || exit $?
 published=$version
