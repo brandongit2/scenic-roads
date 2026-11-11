@@ -112,11 +112,11 @@ source ${0:A:h:h:h}/dev/ran.zsh
 nap=$(ran_dir stop-program); mkdir -p $nap/a $nap/b
 print -r -- '#include <fcntl.h>
 #include <unistd.h>
-int main(int argc, char **argv) { if (argc > 1) close(open(argv[1], O_CREAT | O_WRONLY, 0644)); sleep(30); return 0; }' > $nap/napper.c
+int main(int argc, char **argv) { if (argc > 1) close(open(argv[1], O_CREAT | O_WRONLY, 0644)); sleep(300); return 0; }' > $nap/napper.c
 cc -o $nap/a/napper $nap/napper.c && cp $nap/a/napper $nap/b/napper
 $nap/a/napper $tmp/napper-a & pa=$!
 $nap/b/napper $tmp/napper-b & pb=$!
-sh -c 'sleep 30' $nap/a/napper & pn=$!
+sh -c 'while sleep 1; do :; done' $nap/a/napper & pn=$!  # (a loop: sh stays, its arguments naming the program; a lone sleep replaced it)
 for i in {1..1200}; do [[ -e $tmp/napper-a && -e $tmp/napper-b ]] && break; sleep 0.1; done
 if [[ ! -e $tmp/napper-a || ! -e $tmp/napper-b ]]; then no "stop_program" "the programs never ran"
 else

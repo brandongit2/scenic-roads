@@ -12,8 +12,10 @@ source ${0:A:h:h}/remote-tests.sh
 # (The repo's toolchain on the PATH, as check.sh has it: the toy crate is built outside the repo,
 # where mise's cargo shim finds no version and fails.)
 eval "$(cd ${0:A:h:h:h:h} && mise env -s zsh 2>/dev/null)" 2>/dev/null
-tmp=$(mktemp -d)
-trap 'rm -rf $tmp' EXIT
+# (A kept folder, never removed here: the toy crates' programs and tests run from it,
+# tools/dev/ran.zsh, #1131.)
+source ${0:A:h:h:h}/dev/ran.zsh
+tmp=$(ran_dir remote-tests)
 failed=0
 ok() { print "PASS  $1" }
 no() { print "FAIL  $1: $2"; failed=1 }

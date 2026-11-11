@@ -203,8 +203,9 @@ mod tests {
             return;
         }
         let repo = std::path::absolute("../../dem").unwrap();
-        let d = tempfile::tempdir().unwrap();
-        let home = d.path().canonicalize().unwrap();
+        // (Not a tempdir: its Python loads the environment's libraries, which Gatekeeper scans after;
+        // kept, testkit::ran_dir, #1131.)
+        let home = store::testkit::ran_dir("pyenv").canonicalize().unwrap();
         let mut dems = Vec::new();
         for v in ["20261001-0000-aaaaaaa", "20261002-0000-bbbbbbb"] {
             let dd = home.join("app").join(v).join("dem");

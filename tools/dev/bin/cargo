@@ -162,8 +162,8 @@ djdone() {  # the span ended by how this script exits: 0 ok, by a signal stopped
 # its cargo built, the shell let the lock go with that build still running.) A child of a shell
 # without job control starts with SIGINT and SIGQUIT ignored, so a forwarded INT did nothing: spawn
 # gives them back.
-child=0 sig=0 r=
-fwd() { sig=$1; (( child )) && kill -$1 $child 2>/dev/null; (( child )) || { leave; exit $(( 128 + $1 )) } }
+child=0 sig=0
+fwd() { sig=$1; (( child )) && kill -$1 $child 2>/dev/null; (( child )) || exit $(( 128 + $1 )) }
 trap 'fwd 1' HUP; trap 'fwd 2' INT; trap 'fwd 15' TERM
 spawn() { ( trap - INT QUIT; "$@" ) <&0 & child=$! }  # spawn <function that execs>
 realcargo() { exec $real "$@" }
@@ -171,9 +171,7 @@ waitchild() {  # the child's status, once it is gone (a trapped signal ends a wa
   local s; while :; do wait $child; s=$?; kill -0 $child 2>/dev/null || break; done
   child=0; return $s
 }
-stopped() { (( sig )) && { leave; exit $(( $1 ? $1 : 128 + sig )) } }
-# This run's clones are left where they are, dated now (see "This run's clones" below).
-leave() { [[ -n $r && -d $r ]] && touch $r }
+stopped() { (( sig )) && exit $(( $1 ? $1 : 128 + sig )) }
 whole() { spawn realcargo "$@"; waitchild; rc=$?; built $rc; stopped $rc; exit $rc }  # cargo, the lock to its end
 built() {  # built <cargo's status>: the build's span, from the lock to cargo's end, and its timing report moved for the sampler
   dj_on && [[ -n $djid ]] || return 0
@@ -506,13 +504,14 @@ host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 # This run's clones, in the shared folder (an APFS clone is a copy only on the same volume). A run
 # leaves them (#1131): Gatekeeper scans a program's file after it starts, and syspolicyd crashed
 # whenever the file was gone by then (38 times, 4-11 Nov; while it restarts no new process starts
-# on the Mac, for up to minutes). Those of a run whose process is gone go once unchanged RAN_KEEP_S
-# (tools/dev/ran.zsh's, the rule's for every program that ran); a folder of this shell's PID (a
-# gone process's, the PID reused) is set aside under another name to go the same way.
-runs=$t/.scenic-runs RAN_KEEP_S=600
-for d in $runs/<->(N/ms+$(( RAN_KEEP_S - 1 ))); do kill -0 ${d:t} 2>/dev/null || rm -rf $d; done
-for d in $runs/<->.<->(N/ms+$(( RAN_KEEP_S - 1 ))); do rm -rf $d; done
-r=$runs/$$; [[ -e $r ]] && mv $r $r.$EPOCHSECONDS; mkdir -p $r/bin || exit 1
+# on the Mac, for up to minutes). Those of a run whose process is gone go RAN_KEEP_S after it was
+# first seen gone (tools/dev/ran.zsh's ran_clean, the rule's for every program that ran); a folder
+# of this shell's PID (a gone process's, the PID reused) is set aside under another name, kept
+# while this shell lives and then cleaned as any.
+source ${self:h:h}/ran.zsh
+runs=$t/.scenic-runs
+mkdir -p $runs && ran_clean $runs
+r=$runs/$$; [[ -e $r ]] && mv $r $(mktemp -d $r.XXXXXX); mkdir -p $r/bin || exit 1
 mode=record; [[ $sub == nextest ]] && mode=nextest
 # (The runner: /bin/sh writes the environment to a file in $r, then starts this script on it.)
 sh='m=$1 d=$2; shift 2; e=$(/usr/bin/mktemp "$d/env.XXXXXX") && /usr/bin/env -0 > "$e" && exec /bin/zsh "$0" "$m" "$d" "$e" "$@"'
@@ -529,7 +528,6 @@ if [[ $mode == nextest ]]; then
     st=ok; (( rc )) && st=fail; (( sig )) && st=stopped
     dj_span tests "nextest run" $djnx $EPOCHREALTIME $st exit $rc
   else built $rc; fi
-  leave
   exit $rc
 fi
 
@@ -537,7 +535,7 @@ spawn realcargo "${args[@]}"; waitchild; rc=$?
 built $rc
 stopped $rc
 recs=( $r/*.cwd(N) ); recs=( ${recs%.cwd} )
-if (( ! $#recs )); then leave; exit $rc; fi
+if (( ! $#recs )); then exit $rc; fi
 # As cargo: stop at the first failure unless --no-fail-fast; -q: no "Running" lines. (Only the
 # options before `--`: after it they are the programs'.)
 nff=${own[(I)--no-fail-fast]} quiet=$(( ${own[(I)-q]} + ${own[(I)--quiet]} ))
@@ -578,7 +576,7 @@ for rec in $recs; do
   if [[ $sub == (run|r) ]]; then
     for p in ${x:h}/*(N.x); do [[ $p == $x ]] || clone $p $r/bin >/dev/null; done
   fi
-  cl[$rec]=$(clone $x $r/bin) && binexe $rec || { print -u2 "cargo: could not clone $x into $r/bin"; leave; exit 1; }
+  cl[$rec]=$(clone $x $r/bin) && binexe $rec || { print -u2 "cargo: could not clone $x into $r/bin"; exit 1; }
 done
 letgo
 # Each a child, the last too, so its run is timed and its status known (a signal to this shell goes
@@ -592,6 +590,5 @@ for rec in $recs; do
     (( nff )) || break
   fi
 done
-leave
 (( first )) && exit $first
 exit $rc

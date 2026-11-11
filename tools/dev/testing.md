@@ -269,8 +269,8 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   (wasm32). On 4 Nov a `cargo run --release --example` held the
   lock 24 minutes while two check.sh runs waited; with a 60 s `cargo run` and two toy checks
   started 2 s after it, the checks waited 58 and 59 s before and 1 and 0 s after (M4, 4 Nov).
-  A run leaves its clones (#1131): a later run removes a gone process's folder once it is unchanged
-  10 minutes ("A program that ran is kept 10 minutes", below).
+  A run leaves its clones (#1131): a later run removes a gone process's folder 10 minutes after one
+  first saw it gone ("A program that ran is kept 10 minutes", below).
 - A hold (#1123): check.sh's clippy and its tests' build take one turn. `cargo --scenic-hold
   <ready file>`, started by check.sh, takes the lock in line as any cargo, writes the ready file and
   holds it while check.sh lives; the holder's line names check.sh's pid (its processes are what a
@@ -397,8 +397,7 @@ the test Mac and its compiles, suites and tests are that Mac's; the job says the
   closed port, as `tools/dev/test/shared-target.zsh` does to check the shim's records: a test's
   toy runs are not the owner's. remote-tests.sh doesn't send `SCENIC_DEVJOB*` to the test Mac.
 - The shim runs each program as its child, the last too (it had replaced itself with the last, so
-  neither its time nor its status could be known); a signal to the shim goes on to it, and its
-  clones go when it ends.
+  neither its time nor its status could be known); a signal to the shim goes on to it.
 Test: `tools/dev/test/devjob.zsh` (check.sh when the recorder changes; publish's other tests):
 devjob.py's own (`test_devjob.py`: reading outputs and timing reports, the wrapper, the sampler's
 send and its end of a gone span) and devjob.zsh's events, whatever the names hold.
@@ -594,18 +593,29 @@ dev jobs' test times). So a program (or library) that ran is never deleted for 1
   copied binary, a venv whose libraries are loaded) in a kept folder, never a temp folder they remove:
   `dir=$(ran_dir <name>)` after `source tools/dev/ran.zsh` (shell), `store::testkit::ran_dir(name)`
   (Rust tests). It is `$TMPDIR/scenic-ran/<pid>.<name>.…`, `<pid>` the script's or test process's;
-  each call first removes the folders whose process is gone and that are unchanged 10 minutes
-  (`RAN_KEEP_S`, `testkit::RAN_KEEP`). Users: shell.zsh's napper, guards.sh's stand-in root (its
-  `.venv`), other-tests.zsh's Swift self-test, the icon renderer (tools/status/icon/build.sh),
-  shared-target.zsh's toy workspace, appupdate's prune test.
-- **The cargo shim's clones** (`.scenic-runs/<pid>`, above) stay after their run; a later run
-  removes a gone process's folder once unchanged 10 minutes.
+  each call first cleans the folder (`ran_clean`): a folder whose process is gone is marked
+  (`.scenic-gone`) when first seen so and removed once marked 10 minutes (`RAN_KEEP_S`,
+  `testkit::RAN_KEEP`). Not by the folder's own time: a script may run a program from its folder
+  long after it last wrote there (shared-target.zsh runs for minutes). Users: shell.zsh's napper,
+  guards.sh's stand-in root (its `.venv`), other-tests.zsh's Swift self-test, the icon renderer
+  (tools/status/icon/build.sh), shared-target.zsh's and remote-tests.zsh's toy crates, appupdate's
+  prune test, pyenv's `made_once_and_shared` (its environment's numpy and shapely loaded).
+- **The cargo shim's clones** (`.scenic-runs/<pid>`, above) stay after their run; each run cleans
+  the folder with `ran_clean`. A shim killed outright (`kill -9`) leaves its cargo or nextest
+  running; their programs started before it was seen gone, so are in the rule, but a later test
+  of that run starting a removed clone fails (as it did before #1131, sooner).
 - **Agents' scratch programs** (a `scenic-build` copied to try, a probe compiled in a scratch folder)
   are left for at least 10 minutes after their last run before they are deleted.
-- `tools/dev/test/ran.zsh` (check.sh) checks `ran_dir` and that ran.zsh, testkit and the shim say the
-  same 10 minutes.
-Scripts a test writes and runs (the fake `ssh`, `osmium` and `caffeinate`) are scanned too, but the
-crash is in the Mach-O path and none came at their tests' end, so they stay in temp folders.
+- `tools/dev/test/ran.zsh` (check.sh) checks `ran_dir` and `ran_clean`, that testkit says the same
+  10 minutes and that the shim cleans with `ran_clean`; shared-target.zsh, the shim's clones kept.
+Scripts a test writes and runs (the fake `ssh`, `osmium`, `caffeinate`, `scenic-build` and steps:
+dozens of tests, hundreds of runs a suite) are scanned too, but every crash report's stack is the
+Mach-O path (`MachORep::signingData`) and none came at their tests' end, so they stay in temp folders.
+Not covered: cargo replacing a build script or proc macro in the shared folder that an earlier
+build just ran (the next build, under the lock; tests run from clones), the sweep's removals under
+room pressure (least recently used first), and the test Mac's slots, whose next run rebuilds the
+test programs the last ran, and whose room rule removes a slot's build folder, least recently used
+first.
 Not changed here (the owner's): Gatekeeper and the Macs' security settings. Listing the terminal and
 Claude under Developer Tools (Privacy & Security), the setting meant to exempt what they start from
 these checks, is proposed to the owner (#1131).

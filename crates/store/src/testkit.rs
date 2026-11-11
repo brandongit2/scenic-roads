@@ -156,17 +156,19 @@ impl Drop for TestChild {
     }
 }
 
-/// How long a folder a program ran from is kept once its test process is gone ([`ran_dir`]; the
-/// same as tools/dev/ran.zsh's `RAN_KEEP_S` and the cargo shim's, tools/dev/test/ran.zsh checks).
+/// How long a folder a program ran from is kept once its test process was first seen gone
+/// ([`ran_dir`]; the same as tools/dev/ran.zsh's `RAN_KEEP_S`, which the cargo shim's clones go by:
+/// tools/dev/test/ran.zsh checks).
 pub const RAN_KEEP: Duration = Duration::from_secs(600);
 
 /// A new folder for a program the test copies or builds and then runs (#1131; tools/dev/testing.md,
 /// "A program that ran is kept 10 minutes"): `$TMPDIR/scenic-ran/<pid>.<name>.<n>`, never removed by
 /// the test. Gatekeeper scans a program's file after it starts, and syspolicyd crashed whenever the
 /// file was gone by then (a tempdir dropped as the test ended: appupdate's prune test, 15 of 17
-/// crashes on 10-11 Nov); while it restarts no process starts on the Mac. Each call first removes
-/// the folders whose process is gone and that are unchanged for [`RAN_KEEP`], as tools/dev/ran.zsh's
-/// `ran_dir` does in the same folder.
+/// crashes on 10-11 Nov); while it restarts no process starts on the Mac. Each call first cleans the
+/// folder as tools/dev/ran.zsh's `ran_clean` does: a folder whose process is gone is marked
+/// (`.scenic-gone`) when first seen so, and removed once marked for [`RAN_KEEP`] (the folder's own
+/// time says nothing of when a program last ran from it).
 pub fn ran_dir(name: &str) -> PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join("scenic-ran");
@@ -175,11 +177,20 @@ pub fn ran_dir(name: &str) -> PathBuf {
         let Some(pid) = e.file_name().to_str().and_then(|n| n.split('.').next()?.parse::<i32>().ok()) else {
             continue;
         };
-        let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|a| a >= RAN_KEEP));
         // SAFETY: signal 0 only asks whether the process exists (EPERM: it does, another user's).
         let gone = unsafe { libc::kill(pid, 0) } != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        if old && gone {
-            let _ = std::fs::remove_dir_all(e.path());
+        if !gone || !e.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let mark = e.path().join(".scenic-gone");
+        match std::fs::metadata(&mark).and_then(|m| m.modified()) {
+            Ok(t) if t.elapsed().is_ok_and(|a| a >= RAN_KEEP) => {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+            Ok(_) => {}
+            Err(_) => {
+                let _ = std::fs::File::create(&mark);
+            }
         }
     }
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos();
@@ -310,34 +321,39 @@ mod tests {
         assert!(std::env::var_os(k).is_none() && std::env::var_os("SCENIC_TESTKIT_PROBE_2").is_none());
     }
 
-    /// A ran folder goes only once its process is gone and it is unchanged for RAN_KEEP.
+    /// A ran folder goes only once its process has been seen gone for RAN_KEEP: marked when first
+    /// seen gone (however old the folder), removed once the mark is that old; a live process's never.
     #[test]
-    fn a_ran_folder_goes_once_its_process_is_gone_and_it_is_old() {
+    fn a_ran_folder_goes_once_its_process_has_been_seen_gone_long_enough() {
         let mut c = crate::spawn::command("/usr/bin/true");
         let mut child = crate::spawn::spawn(&mut c).unwrap();
         let gone = child.id();
         child.wait().unwrap();
         let root = std::env::temp_dir().join("scenic-ran");
         std::fs::create_dir_all(&root).unwrap();
-        let aged = |name: String| {
+        let long_ago = std::time::SystemTime::now() - RAN_KEEP - Duration::from_secs(60);
+        let folder = |name: String, marked: Option<std::time::SystemTime>| {
             let p = root.join(name);
             std::fs::create_dir_all(&p).unwrap();
-            let t = std::time::SystemTime::now() - RAN_KEEP - Duration::from_secs(60);
-            std::fs::File::open(&p).unwrap().set_modified(t).unwrap();
+            if let Some(t) = marked {
+                std::fs::File::create(p.join(".scenic-gone")).unwrap().set_modified(t).unwrap();
+            }
+            std::fs::File::open(&p).unwrap().set_modified(long_ago).unwrap();
             p
         };
-        let old = aged(format!("{gone}.testkit-old.0"));
-        let live = aged(format!("{}.testkit-live.0", std::process::id()));
-        let fresh = root.join(format!("{gone}.testkit-fresh.0"));
-        std::fs::create_dir_all(&fresh).unwrap();
+        let seen_long_ago = folder(format!("{gone}.testkit-old.0"), Some(long_ago));
+        let unseen = folder(format!("{gone}.testkit-unseen.0"), None);
+        let seen_now = folder(format!("{gone}.testkit-now.0"), Some(std::time::SystemTime::now()));
+        let live = folder(format!("{}.testkit-live.0", std::process::id()), Some(long_ago));
         let d = ran_dir("testkit");
         assert!(d.is_dir() && d.starts_with(&root));
         assert!(d.file_name().unwrap().to_str().unwrap().starts_with(&format!("{}.testkit.", std::process::id())));
-        assert!(!old.exists(), "a gone process's, old: removed");
-        assert!(live.exists(), "a live process's, old: kept");
-        assert!(fresh.exists(), "a gone process's, fresh: kept");
-        for p in [d, live, fresh] {
-            std::fs::remove_dir(p).unwrap();
+        assert!(!seen_long_ago.exists(), "a gone process's, seen gone long ago: removed");
+        assert!(unseen.join(".scenic-gone").exists(), "a gone process's, an old folder first seen gone: marked");
+        assert!(seen_now.exists(), "a gone process's, seen gone just now: kept");
+        assert!(live.exists(), "a live process's, marked long ago: kept");
+        for p in [d, unseen, seen_now, live] {
+            std::fs::remove_dir_all(p).unwrap();
         }
     }
 }

@@ -154,17 +154,20 @@ out=( ${(f)"$(<$s/run.out)"} )
 [[ $out[4] == 'shared None' ]] || fail "SCENIC_CARGO_SHARED outside the lock: $out[4]"
 [[ $out[5] == "cwd ${w:A}/a/src/sub" ]] || fail "not in the caller's folder: $out[5]"
 [[ $out[6] == 'arg "x y"' && $out[7] == 'arg ""' ]] || fail "arguments: $out[6,7]"
-# (Its clones stay once it ends, #1131; the next run removes them only once unchanged 10 minutes,
-# and a folder of a gone process its PID names again is set aside, not removed.)
+# (Its clones stay once it ends, #1131: the next run marks them seen gone, and a run removes them
+# once marked 10 minutes, tools/dev/ran.zsh's ran_clean, as a gone PID's set-aside folder.)
 d=${${out[2]#exe }:h:h:h}; [[ -e $d/bin/debug/toy ]] || fail "the run's clones went as it ended: $d"
+old=$(date -v-11M +%Y%m%d%H%M.%S)
 mkdir -p $s/shared/.scenic-runs/99999999.1 $s/shared/.scenic-runs/99999999.2
-touch -t $(date -v-11M +%Y%m%d%H%M.%S) $s/shared/.scenic-runs/99999999.1
+touch $s/shared/.scenic-runs/99999999.1/.scenic-gone; touch -t $old $s/shared/.scenic-runs/99999999.1/.scenic-gone
+touch -t $old $d $s/shared/.scenic-runs/99999999.2
 [[ $(cd $w/a && $sh run -q -- 'exit' 2>/dev/null) == a$'\n''arg "exit"' ]] || fail "a second run"
-[[ -e $d/bin/debug/toy ]] || fail "a gone run's clones, a moment old, went at the next run"
-[[ ! -e $s/shared/.scenic-runs/99999999.1 && -e $s/shared/.scenic-runs/99999999.2 ]] || fail "set-aside folders: 11 min old kept or a fresh one removed"
-touch -t $(date -v-11M +%Y%m%d%H%M.%S) $d
+[[ -e $d/bin/debug/toy && -e $d/.scenic-gone ]] || fail "a gone run's clones, 11 min old, not kept and marked at the next run"
+[[ ! -e $s/shared/.scenic-runs/99999999.1 ]] || fail "a set-aside folder seen gone 11 min ago stayed"
+[[ -e $s/shared/.scenic-runs/99999999.2/.scenic-gone ]] || fail "a set-aside folder first seen gone went, or wasn't marked"
+touch -t $old $d/.scenic-gone
 [[ $(cd $w/a && $sh run -q -- 'exit' 2>/dev/null) == a$'\n''arg "exit"' ]] || fail "a third run"
-[[ ! -e $d ]] || fail "a gone run's clones, 11 min old, stayed"
+[[ ! -e $d ]] || fail "a gone run's clones, seen gone 11 min ago, stayed"
 
 # cargo test: the tests outside the lock (env checks the folder, the environment and the clone;
 # cli starts the program's clone), the doctest by rustdoc; another build meanwhile.
