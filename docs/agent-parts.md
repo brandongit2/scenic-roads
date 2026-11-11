@@ -44,6 +44,7 @@ they talk only by the named channels and snapshots of §3.
 | **control** | this Mac's hold, the quit ask, cancels, retries, redos, the owner's settings (room target, in-use share, memory floor) | the agent's HTTP endpoint and a watcher on the agent's folder | each request, at once |
 | **beat** | the status document and its writes (local copy, NAS / lead) | a steady timer, and `Changed` events | every 10 s, and at once on a state change |
 | **nas** | the mount, its health (`heal`), the three `nasread` pools | the share, under deadlines | requests from other parts; mount probe every 20 s |
+| **dsm** | this Mac's stale SMB sessions on the NAS, dropped through DSM's web API (`agent::dsm`, docs/macs.md) | DSM, 10 s a request; the pool's lock for a drop that ends the live session | the loop's asks: the start, leaving home, a pause, the heal's remount; a failed one again each minute |
 | **jobs** | the slots, their child processes, leases held, the memory and disk guards | children's exits, control's orders, grants | each child event, and every 2 s |
 | **plan** (lead only) | the plan, the offers, the grants, the gate, the checklist and counts | the records snapshot, the CPU | triggered by changes (§4.4); a 5-min fallback |
 | **pool** (until #878) | the pool driver: the declaration, the records, member heartbeats | the NAS, through **nas** | its 1-s tick (`pool::Ticker`, today) |

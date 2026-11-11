@@ -54,6 +54,7 @@ pub mod builtview;
 pub mod bus;
 pub mod cataloguesview;
 pub mod cond;
+pub mod dsm;
 pub mod every;
 pub mod fcarchive;
 pub mod fccheck;
@@ -1606,6 +1607,10 @@ pub struct Agent {
     heal: heal::Heal,
     /// How many of this process's stuck calls were taken in (`store::whole::stuck_after`).
     heal_seen: u64,
+    /// **dsm**: this Mac's stale SMB sessions dropped through DSM (crate::agent::dsm), a looping
+    /// agent's; and when, from what each round sees.
+    dsm: Option<dsm::Part>,
+    dsm_watch: dsm::Watch,
     /// Who this agent is ("<host> <pid>").
     me: String,
     /// What the coordinator's paces (crate::paces) are worked out from: the history's last event
@@ -2027,6 +2032,8 @@ impl Agent {
             sleep: SleepWatch::default(),
             heal: Default::default(),
             heal_seen: 0,
+            dsm: None,
+            dsm_watch: dsm::Watch::new(now_s(), &o.home),
             _lock: lock,
             o,
             me,
@@ -3700,6 +3707,9 @@ impl Agent {
             self.control.spawn();
             self.beat.spawn();
             self.nas.spawn();
+            if self.mac == cond::Mac::Real {
+                self.dsm = dsm::Part::spawn(dsm::Api::nas(), self.pool.clone());
+            }
             // **plan** on its thread: it plans on changes, the round granting from its last plan.
             self.plan.spawn();
         }
@@ -4116,7 +4126,28 @@ impl Agent {
         // (**nas** unmounts it under the pool's lock, a tick never writing as the share goes, and
         // mounts it again at once.)
         self.nas.ask(nas::Req::Remount(self.pool.clone()));
+        // (And this Mac's other sessions on the NAS: a second address's, one from before a crash.)
+        if let Some(d) = &self.dsm {
+            let (why, mine) = dsm::Watch::remount(now_s(), store::nas::own_addrs());
+            d.ask(why, mine, self.last_root.clone());
+        }
         self.heal.remounted(now_s());
+    }
+
+    /// This Mac's stale SMB sessions on the NAS dropped through DSM (crate::agent::dsm) as the
+    /// round sees it: at the start, on leaving home (`home`), once paused with no job running.
+    fn tend_dsm(&mut self, home: bool, root: Option<&NasRoot>) {
+        if self.dsm.is_none() {
+            return;
+        }
+        let paused = self.own_pause().filter(|_| self.idle()).map(|p| p.at);
+        let seen = dsm::Seen { now: now_s(), home, nas: root.is_some(), addrs: store::nas::own_addrs(), paused };
+        let asks = self.dsm_watch.round(&seen);
+        if let Some(d) = &self.dsm {
+            for (why, mine) in asks {
+                d.ask(why, mine, root.cloned());
+            }
+        }
     }
 
     /// This Mac's hold as control has it now.
@@ -4286,6 +4317,7 @@ impl Agent {
         }
         nasread::phase("this Mac's settings");
         let home = cond::home(home, root.is_some() && self.mac.lan_mounted());
+        self.tend_dsm(home, root.as_ref());
         // The owner's asks and settings as control took them up (crate::agent::asks; in line for
         // an agent whose parts don't run): the room target, the in-use share, the memory floor.
         self.control.look();

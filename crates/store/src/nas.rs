@@ -29,6 +29,75 @@ pub const SMB_URL: &str = "smb://brandontsang@fishandchips.local/personal";
 /// The share by the bare name, for a Mac whose Keychain has the password only for that name.
 pub const SMB_URL_BARE: &str = "smb://brandontsang@fishandchips/personal";
 
+/// The SMB user every Mac mounts the share as (`SMB_URL`'s).
+pub fn smb_user() -> &'static str {
+    SMB_URL.strip_prefix("smb://").and_then(|r| r.split_once('@')).map_or("", |(u, _)| u)
+}
+
+/// DSM's web API (docs/macs.md, Stale SMB handles): HTTPS on its usual port, its certificate the
+/// tailnet name's (Let's Encrypt, through Tailscale), so it is checked against that name however
+/// the NAS is reached (`dsm_addrs`).
+pub const DSM_NAME: &str = "fishandchips.tail23e9f2.ts.net";
+pub const DSM_PORT: u16 = 5001;
+
+/// Where DSM is reached, in order: the NAS's LAN addresses (at home: `LAN_HOST` resolves), then its
+/// tailnet name's (Tailscale's DNS, at home or away). Empty when neither resolves.
+pub fn dsm_addrs() -> Vec<std::net::SocketAddr> {
+    use std::net::ToSocketAddrs;
+    [LAN_HOST, DSM_NAME].iter().flat_map(|h| (*h, DSM_PORT).to_socket_addrs().into_iter().flatten()).collect()
+}
+
+/// This Mac's own addresses now: every interface's that is up, but loopback and link-local (its
+/// LAN's, its Tailscale's).
+#[cfg(target_os = "macos")]
+pub fn own_addrs() -> Vec<std::net::IpAddr> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let mut out = Vec::new();
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `head` with a list it allocates, freed below by freeifaddrs.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return out;
+    }
+    let mut p = head;
+    while !p.is_null() {
+        // SAFETY: `p` is a node of the list getifaddrs returned, not yet freed.
+        let a = unsafe { &*p };
+        p = a.ifa_next;
+        if a.ifa_addr.is_null() || a.ifa_flags & libc::IFF_UP as u32 == 0 {
+            continue;
+        }
+        // SAFETY: `ifa_addr` points to a sockaddr of the family it says, as getifaddrs gives it.
+        let ip = unsafe {
+            match (*a.ifa_addr).sa_family as i32 {
+                libc::AF_INET => {
+                    let sin = &*(a.ifa_addr as *const libc::sockaddr_in);
+                    IpAddr::V4(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)))
+                }
+                libc::AF_INET6 => {
+                    let sin6 = &*(a.ifa_addr as *const libc::sockaddr_in6);
+                    IpAddr::V6(Ipv6Addr::from(sin6.sin6_addr.s6_addr))
+                }
+                _ => continue,
+            }
+        };
+        let link_local = match ip {
+            IpAddr::V4(v) => v.is_link_local(),
+            IpAddr::V6(v) => v.segments()[0] & 0xffc0 == 0xfe80,
+        };
+        if !ip.is_loopback() && !link_local && !out.contains(&ip) {
+            out.push(ip);
+        }
+    }
+    // SAFETY: the list getifaddrs allocated, freed once.
+    unsafe { libc::freeifaddrs(head) };
+    out
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn own_addrs() -> Vec<std::net::IpAddr> {
+    Vec::new()
+}
+
 /// The NAS by SSH (docs/macs.md: keys from every Mac), by its LAN name, and where the share is on
 /// it (producers/depth/repack.py's NAS_ROOT is its project folder).
 pub const SSH: &str = "brandontsang@fishandchips.local";
@@ -379,6 +448,14 @@ fn with_soft(text: &str, name: &str) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_smb_user_and_this_macs_addresses() {
+        assert_eq!(smb_user(), "brandontsang");
+        assert!(SMB_URL_BARE.contains(&format!("//{}@", smb_user())));
+        let own = own_addrs();
+        assert!(!own.is_empty() && own.iter().all(|a| !a.is_loopback()), "{own:?}");
+    }
 
     #[test]
     fn mount_names() {

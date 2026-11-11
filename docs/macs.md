@@ -227,10 +227,40 @@ installed by `tools/app/install.sh`, updated by the updater).
   A drain waits 30 minutes at most (jobs running, or the pool's lock never free), then is given
   up without cutting a job and the interval doubles. Drains come at most
   every 30 minutes; when calls stay busy after a remount, the status warns naming the file (another
-  Mac's dead session, most likely: disconnect it in DSM) and the interval doubles, up to 4 hours,
-  back to 30 minutes after 10 quiet ones. A remount ends only this Mac's session. (The "home
-  again" remount from the tunnel to the LAN name still waits for idle, with no drain: the tunnel
-  works meanwhile, only slower, so stopping new work for it isn't worth it.)
+  Mac's dead session, most likely: its agent drops it when it starts again; else disconnect it in
+  DSM) and the interval doubles, up to 4 hours, back to 30 minutes after 10 quiet ones. A remount
+  ends only this Mac's sessions. (The "home again" remount from the tunnel to the LAN name still
+  waits for idle, with no drain: the tunnel works meanwhile, only slower, so stopping new work for
+  it isn't worth it.)
+- **Dropping this Mac's dead sessions in DSM** (`crate::agent::dsm`, task #567): the agent ends
+  its own Mac's stale SMB sessions on the NAS through DSM's web API (`SYNO.API.Auth` login and
+  logout, `SYNO.Core.CurrentConnection` list and kick_connection; HTTPS on 5001, the certificate
+  checked against the NAS's tailnet name `fishandchips.tail23e9f2.ts.net`, reached at home by the
+  NAS's LAN address and away through Tailscale; logged out after each use). The account is
+  `NAS_DSM_USER` / `NAS_DSM_PASS` in `inputs/keys.env` (`scenic-sessions`: in administrators,
+  which kicking another user's connection takes, with only the DSM application allowed); never
+  printed or logged. A session is this Mac's when it is SMB, of the share's user (`brandontsang`),
+  holds the `personal` share (DSM lists one row per client connection with every share it holds;
+  Time Machine's own connection is never touched), and comes from one of this Mac's addresses: those
+  it has now, or, away from home, the LAN addresses it had there (`home-addresses.json` in the
+  agent's folder, written while at home), for 24 hours at most and only for sessions that last
+  connected a share before the Mac was last seen at home, so an address the LAN has since given
+  another Mac is never taken for this one's. Sessions through Tailscale are never dropped: the
+  NAS's Tailscale runs in userspace, so every tunnelled client shows as 127.0.0.1. When:
+  - at the agent's start, once the share answers: the sessions that last connected before the start,
+    but the newest (the live one);
+  - when the agent sees it has left home (at home: yes, then no): those of the addresses it had at
+    home. Dropping beats unmounting here: by then the LAN is gone, so a forced unmount ends nothing
+    on the NAS (no word reaches it), and the share is mounted again through Tailscale at once; only
+    DSM, reached through Tailscale, can end the session the NAS still holds. A drop that doesn't
+    reach DSM (no network yet) is tried again each minute for half an hour;
+  - once this Mac is paused (from the menu bar, alone or with the build) and no job runs here, at
+    home: all its sessions, the live one too, under the pool's lock (a pause from before the
+    agent's start, its jobs already ended, counts as dropped by the earlier agent). It reconnects at its next
+    call, holding none of the jobs' leases, so a Mac paused and then carried away asleep leaves
+    little behind until it wakes and drops the rest;
+  - with the self-heal's remount: all its sessions (another address's, one from before a crash).
+  A failure (DSM not reached, no keys, refused) is a warning in the agent's log and stops nothing.
 - **Settings that shorten a dead client's hold** (the owner applies them; nothing in the repo
   changes system settings). They are server-wide trade-offs:
   - Synology, DSM Control Panel → File Services → SMB → Advanced settings:
@@ -243,7 +273,8 @@ installed by `tools/app/install.sh`, updated by the updater).
       dead client makes others wait for a break it never answers; off, every client loses its
       read caching on every share (slower, mostly for small-file reads).
     - Either way the server holds a dead session until it finds its TCP connection dead (its
-      keepalive, minutes), which DSM doesn't expose; until then only the DSM disconnect frees it.
+      keepalive, minutes), which DSM doesn't expose; until then only the DSM disconnect frees it
+      (the agents' own, above, for their Macs).
   - Each Mac's SMB client (`man nsmb.conf`; applies to mounts made afterwards). What every Mac
     has is the per-user file's `[FISHANDCHIPS:PERSONAL]` and `[FISHANDCHIPS.LOCAL:PERSONAL]`, both
     `soft=yes`. On a soft mount, once the client is reconnecting, SMB 2/3 calls fail with
@@ -264,9 +295,9 @@ installed by `tools/app/install.sh`, updated by the updater).
       the NAS was 85-90 % busy (11 Nov), the likely cause of task #1140's damaged uploads.
 
     These keep this Mac from hanging on the NAS; they can't shorten what the server keeps for a
-    dead Mac. If a session still holds files after a crash: DSM → Control Panel → File Services →
-    SMB (or Resource Monitor → Connections), disconnect that Mac; the agent's warning names the
-    file.
+    dead Mac. A Mac's agent drops its own dead sessions (above); one still held by a Mac that
+    doesn't come back, or through Tailscale: DSM → Resource Monitor → Connections, disconnect that
+    Mac; the agent's warning names the file.
 - **NAS access** goes through a bounded I/O pool with timeouts. An overrun trips the breaker (offline
   banner) only when a quick probe also fails. Files are read in 1 MB pieces with handles kept open,
   never mmapped; base packs and hidata in 256 KB pages, or whole sections for scans.

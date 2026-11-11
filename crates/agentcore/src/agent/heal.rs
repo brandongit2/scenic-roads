@@ -2,7 +2,9 @@
 //! this Mac (the agent's own, and its Rust jobs' through `store::whole::STUCK_ENV`) keep staying
 //! "Resource busy" past `codecs::whole`'s retries, the agent remounts its share, which ends this
 //! Mac's SMB session and with it every handle the session held (a process here killed with a file
-//! open). It can't free another Mac's session: that one ends when the server drops it.
+//! open), and this Mac's other sessions are dropped through DSM with it (crate::agent::dsm). It
+//! can't free another Mac's session: that one ends when the server drops it or that Mac's agent
+//! drops it.
 //!
 //! A forced unmount fails every file open on the share, so the agent drains first: no new job is
 //! taken or granted on this Mac (heartbeats and leases go on), and the remount waits for the slots
@@ -119,7 +121,7 @@ impl Heal {
     pub fn warning(&self) -> Option<String> {
         self.warn.as_ref().map(|p| {
             format!(
-                "NAS calls stay busy after a remount (on {p}): another Mac's dead SMB session may hold it, disconnect it in DSM (docs/macs.md); remounts back off to every {} min",
+                "NAS calls stay busy after a remount (on {p}): another Mac's dead SMB session may hold it (its agent drops it when it starts again; else disconnect it in DSM, docs/macs.md); remounts back off to every {} min",
                 self.every() / 60
             )
         })

@@ -85,7 +85,9 @@ The share is SMB 3 on a Synology. The design assumes:
   `scache: <dir> not removed …`. Calls still busy past the retries (a read busy for 5 s, a rename aside or into
   place busy) are noted with their file, the agent's own and its Rust jobs' (`whole::stuck`,
   `whole::STUCK_ENV`); three within 10 minutes drain this Mac's new work and then remount the
-  share (`crate::agent::heal`, docs/macs.md). A build job's read that the share fails for a
+  share (`crate::agent::heal`, docs/macs.md), this Mac's other sessions on the NAS dropped through
+  DSM with it (`crate::agent::dsm`, which also drops them at the agent's start, on leaving home and
+  once paused: docs/macs.md). A build job's read that the share fails for a
   moment (`store::retry`, task #656; since #663 every read, stat and listing through
   store::nasfs, docs/nas-access.md §2, but the agent's loop's, the pool's and the coordinator's,
   which fail at once, and the server's, 5 s: EIO, ENXIO "Device not configured", ETIMEDOUT and the other
