@@ -510,10 +510,13 @@ estuary, a creek the zones stop short of: the Ringkøbing Fjord, the Indus delta
 inside one of its pieces within `NEAR_LAND_M` (100 km) of land (a hole in the zones' water by a
 coast: the Indus delta's tidal flats, New Caledonia's lagoon; the open sea beyond every zone lies
 370 km or more from its coasts, so the Gulf of Mexico's and the Sea of Okhotsk's enclaves stay the
-high seas), unless it reaches the open sea (a cell with no land in it or the eight round it: past a coast no zone has),
+high seas), unless it reaches the open sea (a cell with no land in it, the rows above and below
+or as many columns either side as make 111 km at its poleward edge, one up to 60°, all at the
+poles' rows: at least 110 km from any coast, past a coast no zone has, as Antarctica's),
 and each piece's part inside a 200-nmi zone (any of Marine Regions' zones with its internal
 waters). That goes to the regions with water the stretch shares an edge with: to the one, or split
-among several by nearest edge (`geom::nearest`, the median line), a warning (`unnamed`, naming them
+among several by nearest edge (`geom::nearest`, the median line; a piece with none of them in or
+next to its cell to the one sharing the stretch's longest edge), a warning (`unnamed`, naming them
 and their shares) when it is split among countries (the regions' top folders, or a file at the top:
 a province and its country's waters are one) and over `sliver_km2`: a place no region names,
 likely disputed, whose owner a region's water should name. What's left of it, the open sea beyond every zone, stays. Land in no region
@@ -744,6 +747,8 @@ pair's overlap, each cell's gap and the rest's water inside a zone.
 #### 6.1.8 Checks
 
 All errors but `rg-cover`'s `unnamed` and `overlap-settled`, warnings; ids `rg-<check>.<hash16>`.
+Those two warnings' ids are their regions' (and `unnamed`'s place, to 0.1°), not their sizes, so a
+new pass moving a coast a little doesn't hold an accepted one's files again.
 
 | Check | Raised when |
 |---|---|

@@ -1912,11 +1912,16 @@ pub struct GapFit {
     pub edges: Vec<(String, f64)>,
 }
 
-/// Whether no land lies in the cell or the eight round it (at least a cell's width, 110-220 km,
-/// from any coast: no lagoon or creek reaches there).
-fn far_from_land(data: &super::data::Datasets, c: Cell) -> bool {
+/// Whether no land lies in the cell or round it: the rows above and below, and as many columns
+/// either side as make at least 111 km at the cell's poleward edge (one up to 60°, more nearer a
+/// pole, where a column narrows: at 80° three, 116 km; every column at the poles' rows). So at
+/// least 110 km from any coast: no lagoon or creek reaches there.
+pub(super) fn far_from_land(data: &super::data::Datasets, c: Cell) -> bool {
     let Some(land) = &data.land else { return true };
-    (c.0 - 1..=c.0 + 1).all(|x| (c.1 - 1..=c.1 + 1).all(|y| !(-45..45).contains(&y) || !land.has((wrap(x).0, y))))
+    let edge = (c.1 * 2).abs().max((c.1 * 2 + 2).abs()) as f64;
+    let cos = edge.to_radians().dcos();
+    let kx = ((0.5 / cos.max(1e-9)).ceil() as i64).clamp(1, COLS / 2);
+    (c.0 - kx..=c.0 + kx).all(|x| (c.1 - 1..=c.1 + 1).all(|y| !(-45..45).contains(&y) || !land.has((wrap(x).0, y))))
 }
 
 /// How near land a stretch touching none is still a country's (a hole in the zones' water by a
@@ -2246,7 +2251,9 @@ fn cells_pass(
                 warning: true,
                 check: "rg-cover",
                 about: vec![a.clone(), b.clone()],
-                found: vec!["overlap-settled".into(), format!("{land:.0}")],
+                // (Its identity the pair, not its size: a new pass moving the outlines a little
+                // doesn't ask again for what was accepted.)
+                found: vec!["overlap-settled".into()],
                 files: [a, b].iter().filter_map(|x| folder.regions.get(*x).map(|r| r.0.clone())).collect(),
                 message: format!(
                     "{a} and {b} both have {land:.1} km² of land: the cover check gives each piece of it to the neighbour sharing its longest edge; take it out of one (minus), or accept"
@@ -2391,7 +2398,8 @@ fn cells_pass(
             }
         }
         let near: Vec<&String> = edge.keys().copied().collect();
-        if near.is_empty() {
+        let longest = edge.iter().max_by(|x, y| x.1.total_cmp(y.1).then(y.0.cmp(x.0))).map(|(id, _)| (*id).clone());
+        let Some(longest) = longest else {
             // (Nothing to give it to: the rest's, and the check below says so.)
             for (i, a) in parts {
                 let g = &mut gaps[i];
@@ -2401,13 +2409,18 @@ fn cells_pass(
                 });
             }
             continue;
-        }
+        };
         let split: Vec<Vec<(String, Cell, Area)>> = pace::par_map(parts, |(i, a)| {
             let c = gaps[i].c;
             if near.len() == 1 {
                 return vec![(near[0].clone(), c, a)];
             }
             let sides: Vec<Area> = near.iter().map(|id| all[*id].around(c, 1, 1)).collect();
+            if sides.iter().all(Area::is_empty) {
+                // (None of them in or next to its cell, a long stretch's far piece: to the one
+                // sharing the stretch's longest edge, never dropped.)
+                return vec![(longest.clone(), c, a)];
+            }
             let diag = a.bbox().map_or(0.0, |b| geom::length_m([b[0], b[1]], [b[2], b[3]]));
             let step = (diag / 100.0).clamp(10.0, 1000.0);
             (0..near.len())
@@ -2441,7 +2454,8 @@ fn cells_pass(
                 check: "rg-cover",
                 files: ids.iter().filter_map(|x| folder.regions.get(x).map(|r| r.0.clone())).collect(),
                 about: ids,
-                found: vec!["unnamed".into(), format!("{:.0}", km2), format!("{},{}", v[0] / 1_000_000, v[1] / 1_000_000)],
+                // (Its identity the regions and the place to 0.1°, not its size, as above.)
+                found: vec!["unnamed".into(), format!("{},{}", v[0] / 1_000_000, v[1] / 1_000_000)],
                 message: format!(
                     "{km2:.0} km² of water by {:.4}°, {:.4}° is in no region's parts and borders several: split by nearest edge ({shares}); name its owner in a region's water, or accept",
                     v[0] as f64 / 1e7,

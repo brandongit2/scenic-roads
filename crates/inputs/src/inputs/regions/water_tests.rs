@@ -1092,6 +1092,8 @@ fn sea_the_zones_stop_short_of_is_the_countries_it_borders() {
     let said: Vec<_> = out.problems.iter().collect();
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(said[0].warning && said[0].found[0] == "unnamed" && said[0].about == vec!["east", "west"], "{said:?}");
+    // (Its identity the regions and the place, not its size: a new pass's coastline asks nothing again.)
+    assert_eq!(said[0].found.len(), 2, "{said:?}");
     assert!(out.fit.after_overlaps.values().all(|k| *k <= tiles::HAIR_KM2), "{:?}", out.fit.after_overlaps);
     assert!(out.fit.after_gaps.is_empty(), "{:?}", out.fit.after_gaps);
     // Two regions of one country (one top folder): split the same, nothing said.
@@ -1113,4 +1115,46 @@ fn a_zone_no_region_has_is_an_error() {
         out.problems
     );
     assert!(out.fit.rest_in_zones.values().sum::<f64>() > 1000.0, "{:?}", out.fit.rest_in_zones);
+}
+
+/// The open sea stays the rest's by a coast: past a coast no zone has (Antarctica's), however near
+/// its land, and in a hole in the zones' water 100 km or more from any land (the Gulf of Mexico's,
+/// the Sea of Okhotsk's high seas) though land lies in the cells round it (#1127).
+#[test]
+fn the_open_sea_by_a_coast_stays_the_high_seas() {
+    let ring = |w: f64, s: f64, e: f64, n: f64| bx(w, s, e, n).remove(0);
+    // A land no zone has; an island in a zone with a hole (about 12,000 km²) 185 km from it.
+    let bare = vec![ring(60.0, 0.2, 61.0, 0.8)];
+    let island = vec![ring(45.5, 50.2, 45.7, 50.4)];
+    let zone = vec![ring(40.0, 49.0, 46.5, 54.0), ring(42.5, 51.5, 43.5, 52.5)];
+    let w = world_zones(1.002, vec![bare, island], HashMap::from([(5, zone)]));
+    // (The hole's cells have land round them: not the open sea by that test, by its distance.)
+    assert!(!tiles::far_from_land(&w.data, (21, 25)) && !tiles::far_from_land(&w.data, (21, 26)));
+    let bare = "id = \"bare\"\nname = \"Bare\"\noutline = [\"box:59.9,0.1,61.1,0.9\"]\nwater = []\n";
+    let isl = "id = \"dough\"\nname = \"Dough\"\noutline = [\"box:45.4,50.1,45.8,50.5\"]\nwater = [\"eez:5\"]\n";
+    let mut files = all();
+    files.extend([("bare.toml", bare), ("dough.toml", isl)]);
+    let out = run(&w, &files);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    let owner =
+        |x: f64, y: f64| -> Vec<&str> { out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect() };
+    assert_eq!(owner(61.5, 0.5), vec!["high-seas"], "55 km off a coast no zone has");
+    assert_eq!(owner(43.0, 52.0), vec!["high-seas"], "the hole in the zone");
+    assert_eq!(owner(44.0, 52.0), vec!["dough"], "its zone");
+}
+
+/// The open sea's test reaches at least 110 km either side whatever the latitude: a column of cells
+/// narrows toward a pole, so more of them are read there (#1127).
+#[test]
+fn the_open_sea_is_far_from_land_at_any_latitude() {
+    let land = vec![bx(0.5, 0.5, 1.0, 1.0), bx(0.5, 80.5, 1.0, 81.0)];
+    let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
+    assert!(!tiles::far_from_land(&data, (1, 0)));
+    assert!(tiles::far_from_land(&data, (2, 0)), "a column on, 2° at the equator");
+    assert!(!tiles::far_from_land(&data, (2, 40)), "two columns on at 82°: 60 km");
+    assert!(!tiles::far_from_land(&data, (4, 40)));
+    assert!(tiles::far_from_land(&data, (5, 40)), "five columns on at 82°: 150 km");
+    assert!(!tiles::far_from_land(&data, (3, 41)), "three columns on at 84°: 70 km");
+    assert!(tiles::far_from_land(&data, (0, 42)), "two rows on");
 }
