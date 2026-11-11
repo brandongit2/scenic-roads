@@ -156,8 +156,6 @@ pub struct Report {
     pub inputs_held: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inputs_skipped: Option<String>,
-    /// The pool's journal entries its records don't reflect yet (the gate's copies they name kept).
-    pub unmerged: usize,
     /// The names removed steps made (`RETIRED`) this run dropped from the manifest.
     pub retired_dropped: usize,
     /// The depth packs no current depth target names (`DepthKeep`) this run dropped from the
@@ -490,125 +488,28 @@ fn nas_ssh() -> Vec<String> {
     a
 }
 
-/// What the pool's records and journal name beyond today's manifest (docs/pool.md §7.3, §7.7): the
-/// newest records' manifest and pending uploads (today's files are the pool's start's: no lead
-/// writes them), and every journal entry those records don't reflect yet, refused ones
-/// aside: a hand-off not merged yet (its member away for weeks, its entry written but untold) keeps
-/// what it names, its changes and
-/// its uploads (the gate's copies an index of it lists: `inputs_kept`). Empty with the pool never
-/// on (no journal); an error when any of them can't be read now, or an entry the records don't name
-/// doesn't read whole (short, damaged, or not there as listed: a read cut short says nothing of the
-/// entry): the inputs sweep then sweeps nothing that pass (said: `inputs_walk`), until the lead has
-/// refused the entry (one unreadable for `driver::UNREADABLE_S` awake), which the records
-/// then name. With no lead declared (crate::pool::lead::declared: the pool not begun, or its
-/// declaration not readable whole), no one refuses: an entry unreadable whose day is `PASS_OVER_S` past is passed over, said as a warning,
-/// so the hold is bounded either way.
-#[derive(Debug, Default)]
-pub struct Unmerged {
-    /// Content names, of the records and of the entries not merged.
-    pub files: BTreeSet<String>,
-    /// The (logical, content) names of those entries' changes, for the sweeps that read what a
-    /// file names (the gate's indexes).
-    pub changes: Vec<(String, String)>,
-    /// The newest records' manifest (logical, content): the one path's (today's file before the pool).
-    pub records: Vec<(String, String)>,
-    /// How many entries weren't merged.
-    pub entries: usize,
-    /// The entries passed over, unreadable with no lead declared (`PASS_OVER_S`), said.
-    pub warnings: Vec<String>,
-}
-
-/// How long an entry stays unreadable, no lead declared, before GC passes over it: three days. An
-/// entry is written whole in seconds (by a temporary name), and a lead refuses one its reads find
-/// not whole for `driver::UNREADABLE_S` (an hour) awake; three days is that hour with a margin for
-/// the lead's Mac asleep, the lead moved, or a share answering stale reads a while. Passing over isn't removing: the entry's files go only by GC's own rules, as any file
-/// the map, manifest or records don't name.
-pub const PASS_OVER_S: u64 = 3 * 86400;
-const _: () = assert!(PASS_OVER_S >= crate::pool::driver::UNREADABLE_S + 2 * 86400);
-
-/// `now`: unix seconds, which `PASS_OVER_S` is counted to (by the entry's day, its key's: one
-/// whose day is before `now - PASS_OVER_S`'s was written longer ago than that).
-pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
-    use crate::pool::{journal, lead, records::Records};
-    let mut u = Unmerged::default();
-    match root.join(journal::DIR).metadata() {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(u),
-        Err(e) => return Err(e).context("the journal"),
-    }
-    let nas = root.clone();
-    // (Led: a lead declared; only then does anyone refuse.)
-    let led = lead::declared(&nas).context("the lead's declaration")?.is_some();
-    let r = Records::now(&nas).context("the newest records")?;
-    let cutoff = journal::day(now.saturating_sub(PASS_OVER_S)).unwrap_or_default();
-    u.files.extend(r.manifest.values().cloned());
-    u.records = r.manifest.iter().map(|(l, c)| (l.clone(), c.clone())).collect();
-    u.files.extend(r.pending.keys().cloned());
-    for key in journal::list(&nas, None).context("the journal")? {
-        if r.reflected.contains(&key) || r.rejected.contains_key(&key) {
-            continue;
-        }
-        match journal::read(&nas, &key).with_context(|| format!("journal entry {key}"))? {
-            journal::Read::Entry(e) => {
-                u.entries += 1;
-                u.files.extend(e.handoff.pending.keys().cloned());
-                for (l, c) in e.handoff.changes {
-                    if let Some(c) = c {
-                        u.files.insert(c.clone());
-                        u.changes.push((l, c));
-                    }
-                }
-            }
-            // (The lead decides an entry is lost: it refuses one it can't read whole for an hour
-            // awake, and the records then name it. No lead declared, one `PASS_OVER_S` old is passed.)
-            unreadable => {
-                let what = match unreadable {
-                    journal::Read::Short => "doesn't read whole".to_string(),
-                    journal::Read::Damaged(why) => format!("reads damaged ({why})"),
-                    _ => "isn't there as read, listed".to_string(),
-                };
-                let day = key.split('/').next().unwrap_or_default();
-                if !led && !cutoff.is_empty() && day < cutoff.as_str() {
-                    u.warnings.push(format!(
-                        "journal entry {key} {what}, no lead declared to refuse it, for over {} days: passed over",
-                        PASS_OVER_S / 86400
-                    ));
-                    continue;
-                }
-                anyhow::bail!("journal entry {key} {what} (not refused yet: nothing removed)");
-            }
-        }
-    }
-    Ok(u)
-}
-
-/// What GC keeps of `sources/inputs/` (docs/inputs.md §4.9): what the records name (`manifest`,
-/// today's file, and with the pool on the newest records' own manifest (today's is the pool's
-/// start's):
-/// the units' accepted indexes, listings and held reports), the files each such index lists, the
-/// same of every journal entry the newest records don't reflect yet (pool.md §7.3: an entry not
-/// merged may name a version the records will), the files listed by every index whose time is
+/// What GC keeps of `sources/inputs/` (docs/inputs.md §4.9): what the records name (`manifest`, the
+/// newest records' brief's, today's file before the pool: the units' accepted indexes, listings and
+/// held reports), the files each such index lists, the files listed by every index whose time is
 /// within `within` of `now` (one made lately, or replaced lately: the check touches the index it
 /// replaces), and the index each check's state made within `within` names as replaced, with its
 /// files (whatever that index's own time: a touch that failed loses nothing). So a version replaced
 /// stays restorable for `within` and a step reading the version it planned with finds its files.
 /// Units' names may be nested (`timetables/gtfs`): every folder under `sources/inputs/` is walked.
-/// An error when any of them can't be read now: nothing there is swept then.
+/// An error when any of them can't be read now: nothing there is swept then. (A hand-off not merged
+/// yet isn't read: the lead's queue holds what a merged one brings, and the merge refuses one
+/// bringing a name GC removed, its job's work done again: crate::agent::gcqueue.)
 pub fn inputs_kept(
     root: &store::nasfs::NasRoot,
     manifest: &std::collections::BTreeMap<String, String>,
-    um: &Unmerged,
     within: Duration,
     now: SystemTime,
 ) -> Result<BTreeSet<String>> {
     let mut keep: BTreeSet<String> = BTreeSet::new();
     let ours = |(l, c): &(String, String)| c.starts_with("sources/inputs/").then(|| (l.clone(), c.clone()));
-    // Today's manifest, the newest records' and the journal's entries not merged yet (with the
-    // pool on: `unmerged`, read once for the whole sweep).
-    let mut named: Vec<(String, String)> =
+    // The records' manifest (read once for the whole sweep).
+    let named: Vec<(String, String)> =
         manifest.iter().map(|(l, c)| (l.clone(), c.clone())).filter_map(|p| ours(&p)).collect();
-    named.extend(um.records.iter().filter_map(ours));
-    named.extend(um.changes.iter().filter_map(ours));
     let index_files = |c: &str, keep: &mut BTreeSet<String>| -> Result<()> {
         keep.extend(
             inputs::inputs::read_index(root, c)?
@@ -1202,14 +1103,11 @@ fn inputs_walk(
     rep: &mut Report,
 ) -> Result<Flow> {
     let _p = jobrt::timings::phase("sweeping the inputs' copies");
-    let read_keep = |rep: &mut Report| -> Result<BTreeSet<String>> {
+    let read_keep = || -> Result<BTreeSet<String>> {
         let m = buildstore::records::read_manifest(root).context("the build manifest")?;
-        let um = unmerged(root, crate::agent::jobs::now_s()).context("the pool's records or journal")?;
-        rep.unmerged = um.entries;
-        rep.warnings.extend(um.warnings.iter().cloned());
-        inputs_kept(root, &m, &um, Duration::from_secs(INPUTS_KEEP_S), SystemTime::now())
+        inputs_kept(root, &m, Duration::from_secs(INPUTS_KEEP_S), SystemTime::now())
     };
-    let mut keep = match read_keep(rep) {
+    let mut keep = match read_keep() {
         Ok(k) => (k, std::time::Instant::now()),
         Err(e) => {
             rep.inputs_skipped = Some(format!("{e:#}"));
@@ -1222,7 +1120,7 @@ fn inputs_walk(
         // since brings is held by the lead only that long, after the records naming its index are
         // seen, and nothing touches a copy reused.)
         if keep.1.elapsed() >= Duration::from_secs(KEEP_FRESH_S) {
-            let k = read_keep(rep).context("nothing more removed: what keeps the inputs' copies not read again")?;
+            let k = read_keep().context("nothing more removed: what keeps the inputs' copies not read again")?;
             keep = (k, std::time::Instant::now());
         }
         let keep = &keep.0;
@@ -2003,7 +1901,7 @@ mod tests {
     }
 
     /// The gate's copies (docs/inputs.md §4.9): kept while the manifest's index or report names
-    /// them, or a journal entry not merged yet does, or a version replaced lately; the rest, old,
+    /// them, or a version replaced lately; the rest, old,
     /// told the lead and removed, but those it holds as they're told; the inputs folders and the
     /// rest of `sources/` never swept; none swept while an index can't be read. A link isn't gone
     /// through.
@@ -2031,13 +1929,7 @@ mod tests {
         put(&kept, "x", 60);
         put(&format!("{u}/a.2222222222222222.jsonl"), "x", 60); // an old version: goes
         put(&format!("{u}/a.3333333333333333.jsonl"), "x", 3); // young: stays
-        put(&format!("{u}/b.4444444444444444.jsonl"), "x", 60); // an unmerged entry's index lists it
         put(&format!("{u}/@index.5555555555555555.json"), &index("_gate-test", &[&kept]), 60);
-        put(
-            &format!("{u}/@index.6666666666666666.json"),
-            &index("_gate-test", &[&format!("{u}/b.4444444444444444.jsonl")]),
-            60,
-        );
         put(&format!("{u}/@held.7777777777777777.json"), "{}", 60);
         put(&format!("{u}/@held.8888888888888888.json"), "{}", 60); // an old report: goes
         put(&format!("{u}/c.9999999999999990.jsonl"), "x", 60); // old, but the lead holds it as told
@@ -2056,18 +1948,6 @@ mod tests {
             60,
         );
         fs::write(root.join("state/build/manifest.json"), serde_json::json!({format!("{u}/@index"): format!("{u}/@index.5555555555555555.json"), format!("{u}/@held"): format!("{u}/@held.7777777777777777.json"), format!("{n}/@index"): format!("{n}/@index.aaaaaaaaaaaaaaad.json")}).to_string()).unwrap();
-        // A journal entry the records don't reflect, naming the newer index.
-        let entry = crate::pool::journal::Entry {
-            member: "m-0000000000000001".into(),
-            lease: crate::pool::journal::LeaseId { epoch: 1, n: 7 },
-            step: "inputs".into(),
-            handoff: buildstore::handoff::Handoff {
-                changes: [(format!("{u}/@index"), Some(format!("{u}/@index.6666666666666666.json")))].into(),
-                ..Default::default()
-            },
-            at: 1_791_500_000,
-        };
-        crate::pool::journal::write(&store::nasfs::NasRoot::local_for_test(root), &entry).unwrap();
         // (The lead's queue: its records hold the copy a hand-off just brought, `c`.)
         let q_dir = tempfile::tempdir().unwrap();
         let q = GcQueue::default();
@@ -2083,7 +1963,7 @@ mod tests {
             run(&nas, &Asked { sweeps: Some(&sweeps), ..Default::default() }, &ways_for_tests(&lead)).unwrap()
         };
         let r = pass();
-        assert_eq!((r.inputs_skipped.as_deref(), r.unmerged, r.inputs_held), (None, 1, 1), "{r:?}");
+        assert_eq!((r.inputs_skipped.as_deref(), r.inputs_held), (None, 1), "{r:?}");
         assert_eq!(r.inputs_removed, 3, "{r:?}");
         assert!(
             !root.join(format!("{u}/a.2222222222222222.jsonl")).exists()
@@ -2094,9 +1974,7 @@ mod tests {
             kept.clone(),
             held.clone(),
             format!("{u}/a.3333333333333333.jsonl"),
-            format!("{u}/b.4444444444444444.jsonl"),
             format!("{u}/@index.5555555555555555.json"),
-            format!("{u}/@index.6666666666666666.json"),
             format!("{u}/@held.7777777777777777.json"),
             format!("{n}/c.aaaaaaaaaaaaaaab.zip"),
             "inputs/_gate-test/a.jsonl".into(),
@@ -2143,73 +2021,6 @@ mod tests {
         let r = pass();
         assert!(r.inputs_skipped.is_some() && r.inputs_removed == 0);
         assert!(root.join(format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl")).exists());
-    }
-
-    /// The journal's entries the newest records don't reflect yet (`unmerged`, what keeps the
-    /// gate's copies an entry's index lists): counted with their files, however old; none once
-    /// merged (or refused); one not whole yet an error (the inputs sweep sweeps nothing), until
-    /// refused, or with no lead declared, `PASS_OVER_S` old.
-    #[test]
-    fn an_unmerged_entry_keeps_its_files() {
-        use crate::pool::journal::{self, Entry, LeaseId};
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path();
-        let (a, b) = ("layers/roads/hi/6-1-2.1111111111111111.pack", "layers/roads/hi/6-1-3.2222222222222222.pack");
-        fs::create_dir_all(root.join("state/build")).unwrap();
-        fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
-        // An entry of a member away three weeks, written, never merged: its change and its upload.
-        let nas = store::nasfs::NasRoot::local_for_test(root);
-        let mut h = buildstore::handoff::Handoff::default();
-        h.changes.insert("layers/roads/hi/6-1-2".into(), Some(a.into()));
-        h.pending.insert(b.into(), "0".repeat(64));
-        let e = Entry {
-            member: "m-0000000000000002".into(),
-            lease: LeaseId { epoch: 1, n: 4 },
-            step: "pack".into(),
-            handoff: h,
-            at: 1_791_500_000,
-        };
-        journal::write(&nas, &e).unwrap();
-        let now = crate::agent::jobs::now_s();
-        let u = unmerged(&nas, now).unwrap();
-        assert_eq!(u.entries, 1);
-        assert!(u.files.contains(a) && u.files.contains(b), "{:?}", u.files);
-        // Merged (the lead's records reflect it): nothing of its own.
-        let me = crate::pool::Member { id: "m-0000000000000001".into(), host: "a".into(), app: "development".into() };
-        crate::pool::lead::declare(&nas, &me, 1_791_500_000).unwrap().unwrap();
-        let mut rec = crate::pool::records::Records { epoch: 1, ..Default::default() };
-        rec.reflected.insert(e.key().unwrap());
-        rec.save(&nas, &|_| Ok(())).unwrap();
-        let u = unmerged(&nas, now).unwrap();
-        assert!(u.entries == 0 && !u.files.contains(a));
-        // A lead declared: an entry that doesn't read whole, or reads damaged, is an error until
-        // refused.
-        let entry_at = |key: &str, bytes: &[u8]| {
-            let p = root.join(journal::DIR).join(format!("{key}.json"));
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, bytes).unwrap();
-            p
-        };
-        let short_key = format!("{}/1-5", journal::day(now - 10 * 86400).unwrap());
-        entry_at(&short_key, b"{\"member\": ");
-        assert!(format!("{:#}", unmerged(&nas, now).unwrap_err()).contains("1-5"));
-        let damaged_key = format!("{}/1-6", journal::day(now).unwrap());
-        entry_at(&damaged_key, b"{\"not\": \"an entry\"}");
-        rec.rejected.insert(short_key, "never whole".into());
-        rec.save(&nas, &|_| Ok(())).unwrap();
-        assert!(format!("{:#}", unmerged(&nas, now).unwrap_err()).contains("damaged"));
-        rec.rejected.insert(damaged_key, "damaged".into());
-        rec.save(&nas, &|_| Ok(())).unwrap();
-        assert!(unmerged(&nas, now).unwrap().warnings.is_empty());
-        // No lead declared (its declaration not readable whole): no one refuses. An entry unreadable
-        // from today is an error; one whose day is over `PASS_OVER_S` past is passed over, said.
-        fs::write(root.join(crate::pool::lead::LEAD), b"{\"member\": ").unwrap();
-        let young = entry_at(&format!("{}/1-8", journal::day(now).unwrap()), b"{\"member\": ");
-        assert!(format!("{:#}", unmerged(&nas, now).unwrap_err()).contains("1-8"));
-        fs::remove_file(&young).unwrap();
-        entry_at(&format!("{}/1-7", journal::day(now - 10 * 86400).unwrap()), b"{\"member\": ");
-        let u = unmerged(&nas, now).unwrap();
-        assert!(u.warnings.len() == 1 && u.warnings[0].contains("1-7") && u.warnings[0].contains("passed over"));
     }
 
     /// Task #701: a removed step's names (`RETIRED`) leave the manifest in one save, the rest kept

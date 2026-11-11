@@ -22,24 +22,19 @@
 //!
 //! - **does its NAS operations through `Io`** (crate::pool::nas::Nas, two clocks, its own disk's
 //!   copy of the records and its store's epoch): the lead's declaration read, the records' save
-//!   (about 14 MB), and while a member writes the journal its jobs' entries written and entries
-//!   merged for `BUSY_S` at most (the rest in the next steps); a take-up's read of the one path;
-//!   never a listing of the journal, never a sleep, no thread of its own. What's slow (a listing of
-//!   the journal, 3 to 33 s a folder on the share under load) it asks for in its output
-//!   (`Out::list`), for the agent to make off the loop and hand back, with the ask's number, in a
-//!   later step (`Heard::listed`): every listing asked for, however long it takes, one that fails
-//!   made again. It asks for no other while its last is out; one out `OVERDUE_S` with none handed
-//!   back meanwhile (lost, or that slow) it says, and asks again, and whichever comes back counts;
+//!   (about 14 MB), a take-up's read of the one path; never a listing, never a sleep, no thread of
+//!   its own. Hand-offs come and go by HTTP (crate::coord::handoffs): the lead merges them from
+//!   memory;
 //! - **reads the clocks itself**, where a decision needs the time: the agent passes no time in;
 //! - **takes what was heard since the last step** (`Heard`): the members' messages to it, the
-//!   build pages' asks, the hand-offs of its jobs that ended, those its members posted it, the
-//!   listing it asked for, its lead's word;
+//!   build pages' asks, the hand-offs of its jobs that ended, those its members posted it and those
+//!   its lead's saved records name, its lead's word;
 //! - **gives what to do now** (`Out`): the messages to send, by member id, over the pool's API
-//!   (best effort: a message lost is told again or made up for); the pool's fields of this Mac's
-//!   heartbeat, to write with the rest of it, stamped as it's written; the epoch it leads, if it
-//!   leads, and what it may do as that now: grant jobs and plan (`duties`); publish a catalogue
-//!   only while its records reflect what's handed off (`caught_up`), and sweep (GC) only on a step
-//!   whose own read of the declaration found it the lead (`vouched`); a listing to make; and what
+//!   (best effort: a message lost is made up for); the pool's fields of this Mac's heartbeat, to
+//!   write with the rest of it, stamped as it's written; the epoch it leads, if it leads, and what
+//!   it may do as that now: grant jobs and plan (`duties`); publish a catalogue only while its
+//!   records reflect what's handed off (`caught_up`), and sweep (GC) only on a step whose own read
+//!   of the declaration found it the lead (`vouched`); the hand-offs to acknowledge; and what
 //!   happened (`Event`s: epochs taken up and stepped down from; errors), for the history and the
 //!   log;
 //! - **never fails**: an error stops only the duty that met it (said in an `Event::Failed`), and
@@ -54,8 +49,7 @@
 //! on that step's `Out`** (a take-up's grants, its messages, its acknowledgements). **A job's
 //! hand-off is kept until a `Saved` from a step it was handed to is on the agent's disk**: before
 //! that, a crash loses it. A `Saved` that's lost, or another member's (this Mac's member file lost,
-//! a new id made; or a copy of another Mac's folder), counts for nothing but its jobs' hand-offs not
-//! written yet.
+//! a new id made; or a copy of another Mac's folder), counts for nothing but its jobs' hand-offs.
 //!
 //! # The fixed lead (§6, task #881; no terms, docs/coordination.md step 8c)
 //!
@@ -83,7 +77,7 @@
 //! every step.
 
 use super::beat::Beat;
-use super::journal::{self, Entry, Mine};
+use super::journal::{Entry, Mine};
 use super::nas::Nas;
 use super::records::{self, Check, Records};
 use super::{Member, MemberLock};
@@ -92,54 +86,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// More than this unaccounted for, between steps or within one (its wall clock and its awake clock
-/// apart: the Mac slept, or its wall clock was set), and a lead whose members write the journal
-/// lists it again before it's caught up: what they told it meanwhile was lost (s).
-pub const GAP_S: u64 = 60;
 /// The longest a read is taken to stay stale (s). Measured (task #645, tools/check/nas-probe.py, two
 /// Macs, 24 Oct, idle share, 570 trials): another Mac's rename over a file was read within 1.1 s,
 /// a new file opened within 0.12 s; a stat or listing kept a removed file, and a listing missed a
 /// new one, up to 33.5 s (macOS's SMB attribute and folder caches, ~30 s). 600 s is 18 times that
 /// tail, with room for a share under load (task #630 saw one name stale for 40 minutes: past any
-/// such bound, which `MOVED_ON_S` refuses as damage). A take-up that reads the one path waits this
+/// such bound). A take-up that reads the one path waits this
 /// long awake after its process found itself declared, so the last save the lead before it
 /// acknowledged is in what it reads.
 pub const STALE_S: u64 = 600;
-/// The time a step spends writing its jobs' entries, and reading entries to merge, before it leaves
-/// the rest to the next steps (on a share under load each takes seconds) (s).
-pub const BUSY_S: u64 = 60;
-/// How often a lead lists the journal's last days for entries no member told it of (their member
-/// gone, or told a lead that was no longer current, and gone since) (s).
-pub const SWEEP_S: u64 = 600;
-/// The days back from today a sweep lists (a take-up lists every day not forgotten).
-pub const SWEEP_DAYS: u64 = 2;
-/// A lead lists every day of the journal not forgotten at least this often (its take-up's listing,
-/// then again `AHEAD_S` before this one's a day old), and its records reflect the journal
-/// (`Out::caught_up`) only by such a listing begun this recently (s): an entry written late into an
-/// old day (kept unwritten while its Mac was away), its member gone before telling of it, waits no
-/// longer than this.
-pub const RELIST_S: u64 = 86_400;
-/// How long before its listing of every day is a day old a lead asks for the next (s): time to make
-/// it, on a share under load.
-pub const AHEAD_S: u64 = 3600;
-/// A lead's last listing asked for, out this long with none handed back meanwhile (the agent lost
-/// it, or it's that slow), is overdue: said, and the next asked for, the first kept (s).
-pub const OVERDUE_S: u64 = 7200;
-/// An entry a lead's reads find not whole (short, or not there) over this long awake is refused
-/// (s): no stale read lasts so long, and its file won't be whole (cut short on the share, or
-/// removed). So is one whose reads fail while the share answers the step's others (a file the
-/// share errors on); a read that fails when none answered (the share away) starts the time again.
-pub const UNREADABLE_S: u64 = 3600;
-/// An entry a member told it of, not read whole over this long awake once an entry that member
-/// told it of later is read whole, is refused (s; §7.3): its writer has moved on. The member told
-/// of it only once its write returned (renamed into place whole: `Nas::write_whole`), and its later
-/// write reached the share and this Mac's reads, so no rename of this one is still to land; what's
-/// left is this Mac's SMB client answering from a stale name (task #630: the lead's own entry read
-/// as not there for 40 minutes, whole on the share) or the share's damage. Refusing loses only the
-/// job's work, done again; the hour held every catalogue. Past a stale read's usual `STALE_S`.
-pub const MOVED_ON_S: u64 = STALE_S;
-/// How long an entry waits to be read whole before its lead says so, once (s).
-const WAIT_SAID_S: u64 = 600;
 /// A lead saves its records again, changed or not, once this long awake has passed since its last
 /// save reached the NAS (s), so that an older save landing late over the one path (records::ONE)
 /// stays there this long at most (docs/coordination.md step 8b). Within one process a write past
@@ -180,21 +135,6 @@ pub trait Io: Nas {
 /// A message between members, over the pool's API.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Msg {
-    /// From a member to the lead it knows: its journal entries that lead hasn't acknowledged. (A
-    /// member writes to the journal, and tells, only while its lead doesn't take hand-offs by HTTP:
-    /// the rollout gate of docs/coordination.md step 6, deleted with it.)
-    Tell(Vec<String>),
-    /// From the lead, in `epoch` (under the key `term` older apps read): those entries are in a
-    /// snapshot of its records it saved (applied, passed over or refused). (`horizon` always empty:
-    /// read by apps before step 6, which forgot what they had acknowledged before it; deleted with
-    /// the gate.)
-    Ack {
-        #[serde(rename = "term")]
-        epoch: u64,
-        keys: Vec<String>,
-        #[serde(default)]
-        horizon: String,
-    },
     /// A build page's ask to cancel a job (§11), passed on to the lead by the member whose page
     /// asked; sent only to a lead on the sender's own app (an older one wouldn't read it).
     Cancel(jobrt::control::Cancel),
@@ -233,13 +173,9 @@ pub struct Heard {
     pub msgs: Vec<(String, Msg)>,
     /// The asks from this Mac (its build page's).
     pub asks: Vec<Ask>,
-    /// The hand-offs of its jobs that ended: kept whole (in `Saved`) until written to the journal;
-    /// the agent may drop one once a `Saved` from this step is on its disk.
+    /// The hand-offs of its jobs that ended: kept whole (in `Saved`) until a lead's saved records
+    /// name them; the agent may drop one once a `Saved` from this step is on its disk.
     pub entries: Vec<Entry>,
-    /// A listing of the journal it asked for (`Out::list`), done since, with the ask's number. The
-    /// agent makes every listing asked for, however long it takes (one that fails made again), and
-    /// hands each back once: any of a lead's asks still out counts when it's back.
-    pub listed: Option<Listed>,
     /// Raw tiles' archives its records hold (`Records::raw`) that the agent has named in the raw
     /// store's index since (buildstore::rawpack::name_handed, the index saved): taken off the records,
     /// saved with this step's snapshot. (One named and not taken off yet, a restart between, is
@@ -249,51 +185,14 @@ pub struct Heard {
     /// acknowledged: merged from memory, acknowledged once a snapshot naming them is saved
     /// (`Out::merged`).
     pub handed: Vec<Entry>,
-    /// A member: its hand-offs kept whole that its lead's saved records name (its beats' answers):
-    /// dropped.
+    /// A member: its hand-offs that its lead's saved records name (its beats' answers): dropped.
     pub merged: Vec<String>,
-    /// A member: how its hand-offs go to its lead (`Route`).
-    pub route: Route,
-    /// Leading: no member writes its hand-offs to the journal now (none heard is on an app before
-    /// docs/coordination.md step 6): it lists the journal no more, and is caught up without a
-    /// listing. (The rollout gate, deleted with it.)
-    pub http_only: bool,
     /// A member: the lead its lead's beat answered it is (crate::coord::held::Answer::leading),
     /// that answer fresh (within crate::coord::beats::PAGE_AWAY_S: crate::coord::beats::Beats::
     /// lead_says). Its lead is learnt from it, and the NAS's declaration isn't read; None (a lead
     /// not leading, none answering lately: the owner may have moved the lead) reads it
     /// (docs/coordination.md step 8a).
     pub lead_says: Option<Member>,
-}
-
-/// How a member's hand-offs go to its lead.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Route {
-    /// Written to the journal and told by mail: a lead on an app before docs/coordination.md step 6
-    /// (its answer says nothing of hand-offs, or it answers the beat 404). (The rollout gate.)
-    #[default]
-    Journal,
-    /// Kept whole, posted by its beat (crate::agent::beat), acknowledged in the answers
-    /// (`Heard::merged`): a lead that says it takes them.
-    Http,
-    /// Kept whole: its lead hasn't answered since this process started.
-    Wait,
-}
-
-/// A listing of the journal to make, off the loop (crate::pool::journal::list).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Listing {
-    /// The ask's number, handed back with the keys.
-    pub n: u64,
-    /// The first day to list (YYYY-MM-DD); every day when None.
-    pub since: Option<String>,
-}
-
-/// A listing made: the ask's number (`Listing::n`) and the keys it found.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Listed {
-    pub n: u64,
-    pub keys: Vec<String>,
 }
 
 /// What the step came to.
@@ -315,29 +214,18 @@ pub struct Out {
     pub vouched: bool,
     /// Leading, whether it may grant jobs and plan now (its member's lock known held).
     pub duties: bool,
-    /// Leading, its records reflect what's handed off: every hand-off posted, told or listed is
-    /// merged and saved (on a share under load a loop leaves some to the next; a journal entry never
-    /// read whole is refused after `UNREADABLE_S`, or `MOVED_ON_S`), and while a member writes the
-    /// journal (`Heard::http_only` not said) a listing of every day (its take-up's, or the daily
-    /// one) asked for less than `RELIST_S` ago is merged too. A catalogue waits for it (and
-    /// `duties`); GC too (and `vouched`): an entry not merged yet may hold uploads the records don't
-    /// name.
+    /// Leading, its records reflect what's handed off: every hand-off posted it, and its own jobs',
+    /// is merged and saved. A catalogue waits for it (and `duties`); GC too (and `vouched`).
     pub caught_up: bool,
-    /// Leading: the entries its check holds (`records::HOLD`: from a member on a newer app), with
+    /// Leading: the hand-offs its check holds (`records::HOLD`: from a member on a newer app), with
     /// why: neither merged nor refused, merged again every step until the check takes or refuses
     /// them. They don't keep it from being `caught_up`.
     pub held: Vec<(String, String)>,
-    /// Leading: when it asked for the newest listing of every day its records reflect (this Mac's
-    /// clock; within `RELIST_S` while `caught_up`): caught up, every entry the listing found,
-    /// written before it as far as a read may be stale, is merged.
-    pub listed_at: Option<u64>,
     /// This process isn't the member's only one (another process holds its lock:
     /// `MemberLock::check`), and why. The agent saves this step's `Saved` (the hand-offs handed to
-    /// the step are kept in it, for this folder's next process to write), writes no heartbeat (this
+    /// the step are kept in it, for this folder's next process to post), writes no heartbeat (this
     /// step's is empty), sends nothing, steps no more, and leaves the pool.
     pub stop: Option<String>,
-    /// A listing of the journal to make, handed back in `Heard::listed`.
-    pub list: Option<Listing>,
     /// Leading: the hand-offs posted it (`Heard::handed`) that a snapshot it saved names, to
     /// acknowledge (crate::coord::handoffs) once this step's `Saved` is on disk.
     pub merged: Vec<String>,
@@ -354,16 +242,9 @@ pub enum Event {
     TookUp { epoch: u64, how: String },
     /// No longer leads (in epoch `epoch`): why.
     SteppedDown { epoch: u64, why: String },
-    /// Journal entries merged: applied, passed over (an older lease's), refused; and whether they
-    /// came from a listing.
-    /// (`done`: the applied entries' jobs done, crate::pool::records::Merged::done.)
-    Merged {
-        applied: Vec<String>,
-        overtaken: usize,
-        refused: usize,
-        listed: bool,
-        done: Vec<crate::pool::records::MergedJob>,
-    },
+    /// Hand-offs merged: applied, passed over (an older lease's), refused (`done`: the applied ones'
+    /// jobs done, crate::pool::records::Merged::done).
+    Merged { applied: Vec<String>, overtaken: usize, refused: usize, done: Vec<crate::pool::records::MergedJob> },
     /// Something it couldn't do this step, to try again: what, and why.
     Waits { what: &'static str, why: String },
     /// A duty met an error and stopped there; the step went on.
@@ -376,12 +257,10 @@ pub enum Event {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Saved {
     /// The member it's of: another's (this Mac's member file lost and a new id made; or a copy of
-    /// another Mac's folder, its id made again there) counts for nothing but its hand-offs not
-    /// written yet.
+    /// another Mac's folder, its id made again there) counts for nothing but its jobs' hand-offs.
     #[serde(default)]
     pub member: String,
-    /// Its jobs' hand-offs, kept until a lead's saved records name them (whole, or by key once
-    /// written to the journal for an older lead).
+    /// Its jobs' hand-offs, kept until a lead's saved records name them.
     pub mine: Mine,
     /// The records it last saved leading (epoch, seq; a term's, before step 8c): a take-up never
     /// starts from older ones, whose saves acknowledged hand-offs no member keeps now.
@@ -396,53 +275,15 @@ struct Lead {
     epoch: u64,
     since: u64,
     records: Records,
-    /// The entries members told it of and it hasn't acknowledged: who told it, and when it first
-    /// did (awake clock).
-    told: BTreeMap<String, (String, u64)>,
-    /// By member, the latest first telling (awake clock) of an entry of its read whole: its writer
-    /// has moved on past what it told before (`MOVED_ON_S`).
-    whole_told: BTreeMap<String, u64>,
-    /// Entries told or listed not read whole yet (not readable yet, or past the step's time for
-    /// reading): read again from the next step on.
-    waiting: BTreeSet<String>,
-    /// Of those, the ones its reads found not whole, or failed on while the share answered, since
-    /// when (awake clock; a read that failed, the share away, starts it again), and whether they
-    /// failed last; and those it said wait long (`WAIT_SAID_S`).
-    unreadable: BTreeMap<String, (u64, bool)>,
-    said: BTreeSet<String>,
-    /// Where the next step's reads of those start: they're read in turn.
-    turn: usize,
-    /// When it asked for the newest listing of every day it merged (its take-up's, or a later one):
-    /// None before one is merged.
-    listed_at: Option<u64>,
     /// Changes not saved to the NAS yet (on its own disk or not), and when its last save reached
     /// the NAS (awake clock: `RESAVE_S`).
     dirty: bool,
     saved_at: u64,
-    /// Entries refused: their refusals to note once that's saved.
-    refused: Vec<(String, String)>,
-    /// Entries its check holds (`records::HOLD`), with why: merged again every step.
+    /// The hand-offs its check holds (`records::HOLD`), with why: merged again every step.
     held: BTreeMap<String, String>,
     /// Its clocks (wall, awake) at its last step whose read of the declaration found it the lead
     /// (`VOUCH_S`); None before one.
     vouched_at: Option<(u64, u64)>,
-}
-
-/// A listing asked for and not handed back yet (by its number, in `Driver::asked`).
-#[derive(Clone, Copy, Debug)]
-struct Asked {
-    /// When (this Mac's clock).
-    at: u64,
-    /// Of every day not forgotten (a take-up's, or the daily one), not the last days' (a sweep's).
-    full: bool,
-}
-
-/// What a lead's step merges: what members told it by mail, a listing made, what they posted.
-struct Given<'a> {
-    tells: Vec<(String, Vec<String>)>,
-    listed: Option<Listed>,
-    handed: Vec<Entry>,
-    named_raw: &'a [String],
 }
 
 /// A member's part in the pool, one step at a time (see the module's doc: the contract).
@@ -465,18 +306,6 @@ pub struct Driver {
     /// and the moment (awake clock) before which its take-up waits (`STALE_S`).
     declared_at: Option<u64>,
     wait_until: Option<u64>,
-    /// The listing due next (a take-up's: every day); those asked for and not back, by number (any
-    /// counts when it's back; a day old, forgotten); the asks' number; when it last asked, and when
-    /// a listing last came back (this Mac's clock).
-    due: Option<(Option<String>, bool)>,
-    asked: BTreeMap<u64, Asked>,
-    asks: u64,
-    swept: u64,
-    back: u64,
-    /// Leading: a member writes the journal (`Heard::http_only` not said), as its last step heard.
-    journal: bool,
-    /// Its clocks (wall, awake) at its last step's end: a gap since (`GAP_S`) asks for a listing.
-    clocks: Option<(u64, u64)>,
     /// The lead's declaration as last read (lead::declared), or as its lead's answer said it: the
     /// member that leads; and that member as last known (its app known only from its answer, or
     /// when it's this Mac).
@@ -484,19 +313,11 @@ pub struct Driver {
     lead_member: Option<Member>,
 }
 
-/// Whether the clocks went `was` → `now` (wall, awake) with more than `GAP_S` unaccounted for: the
-/// Mac slept, or its wall clock was set, either way.
-fn gap(was: (u64, u64), now: (u64, u64)) -> bool {
-    let wall = now.0 as i64 - was.0 as i64;
-    let awake = now.1 as i64 - was.1 as i64;
-    (wall - awake).unsigned_abs() > GAP_S
-}
-
 impl Driver {
     /// The driver of member `me` (its app the process's), holding its lock, from what it saved
     /// last. Another member's state (a copy of the agent's folder, or this Mac's member file lost
     /// and a new id made), or one naming none (lost, or never saved), counts for nothing but its
-    /// jobs' hand-offs not written yet: those are written, the same bytes whoever writes them.
+    /// jobs' hand-offs: those are posted, the same bytes whoever posts them.
     pub fn new(me: Member, saved: Saved, lock: MemberLock) -> Driver {
         Driver { lock: Some(lock), ..Driver::without(me, saved) }
     }
@@ -512,7 +333,7 @@ impl Driver {
         let saved = if known {
             saved
         } else {
-            Saved { member: me.id.clone(), mine: saved.mine.unwritten_only(), ..Default::default() }
+            Saved { member: me.id.clone(), mine: saved.mine.foreign(), ..Default::default() }
         };
         Driver {
             me,
@@ -525,13 +346,6 @@ impl Driver {
             spare: None,
             declared_at: None,
             wait_until: None,
-            due: None,
-            asked: BTreeMap::new(),
-            asks: 0,
-            swept: 0,
-            back: 0,
-            journal: true,
-            clocks: None,
             declared: None,
             lead_member: None,
         }
@@ -548,7 +362,7 @@ impl Driver {
         &self.me
     }
 
-    /// Its journal entries, as `Saved` keeps them.
+    /// Its jobs' hand-offs, as `Saved` keeps them.
     pub fn mine(&self) -> &Mine {
         &self.saved.mine
     }
@@ -606,7 +420,7 @@ impl Driver {
         }
         if let Some(why) = &self.stopped {
             // (Its jobs' hand-offs kept, in the state the agent saves: this folder's next process
-            // writes them.)
+            // posts them.)
             for e in heard.entries {
                 if let Err(err) = self.saved.mine.add(e) {
                     out.events.push(Event::Failed { what: "keep an entry", why: format!("{err:#}") });
@@ -616,25 +430,29 @@ impl Driver {
             return out;
         }
         let start = (io.now(), io.awake());
-        let busy = start.1 + BUSY_S;
-        if self.clocks.is_some_and(|was| gap(was, start)) {
-            self.slept();
-        }
-        // Its jobs' entries, kept whole.
+        // Its jobs' hand-offs, kept whole; those an app before task #1125 wrote to the NAS's journal
+        // read back whole.
         for e in heard.entries {
             if let Err(err) = self.saved.mine.add(e) {
                 out.events.push(Event::Failed { what: "keep an entry", why: format!("{err:#}") });
             }
         }
         self.saved.mine.acked_all(&heard.merged);
-        self.journal = !heard.http_only;
+        let (dropped, failed) = self.saved.mine.read_back(io);
+        for (k, why) in dropped {
+            out.events.push(Event::Failed {
+                what: "read back an older app's journal entry",
+                why: format!("{k}: {why}: dropped, its job's work done again"),
+            });
+        }
+        for (k, err) in failed {
+            out.events
+                .push(Event::Waits { what: "read back an older app's journal entry", why: format!("{k}: {err:#}") });
+        }
         // What it heard.
-        let mut tells = Vec::new();
         let mut acts: Vec<Act> = Vec::new();
-        for (from, m) in heard.msgs {
+        for (_, m) in heard.msgs {
             match m {
-                Msg::Tell(keys) => tells.push((from, keys)),
-                Msg::Ack { keys, .. } => self.saved.mine.acked_all(&keys),
                 Msg::Cancel(c) => acts.push(Act::Cancel(c)),
                 Msg::Retry(r) => acts.push(Act::Retry(r)),
             }
@@ -653,13 +471,6 @@ impl Driver {
             }
             None => self.declare(io, &mut out),
         };
-        // A member's entries to the journal, for a lead that doesn't take them by HTTP (the gate);
-        // the declared lead merges its own from memory.
-        if !mine && heard.route == Route::Journal {
-            for (k, err) in self.saved.mine.write_while(io, &|| io.awake() < busy) {
-                out.events.push(Event::Failed { what: "write an entry", why: format!("{k}: {err:#}") });
-            }
-        }
         // A lead leads while it's declared; the declared lead, not leading, takes the records up.
         if self.lead.is_some() && !mine {
             let why =
@@ -677,8 +488,7 @@ impl Driver {
             l.vouched_at = Some(start);
         }
         if self.lead.is_some() {
-            let given = Given { tells, listed: heard.listed, handed: heard.handed, named_raw: &heard.named_raw };
-            self.lead_step(io, &mut out, given, check, busy, read);
+            self.lead_step(io, &mut out, heard.handed, &heard.named_raw, check);
         }
         // The pages' asks: acted on leading, else passed on to a lead on this app (an older app's
         // mail reader would fail on them).
@@ -701,20 +511,7 @@ impl Driver {
                 }),
             }
         }
-        // Telling the lead it knows of its entries in the journal.
-        if let Some(to) = self.declared.as_ref().filter(|d| **d != self.me.id) {
-            let keys = self.saved.mine.to_tell();
-            if !keys.is_empty() {
-                out.send.push((to.clone(), Msg::Tell(keys)));
-            }
-        }
-        // (A step that slept midway: what members told it meanwhile was lost too.)
         let end = (io.now(), io.awake());
-        if gap(start, end) {
-            self.slept();
-        }
-        self.clocks = Some(end);
-        self.listings(io, &mut out);
         out.beat = self.beat(io);
         if let Some(l) = &self.lead {
             out.leads = Some(l.epoch);
@@ -733,10 +530,7 @@ impl Driver {
                     ),
                 });
             }
-            out.caught_up = (!self.journal || l.listed_at.is_some_and(|at| io.now().saturating_sub(at) < RELIST_S))
-                && !l.dirty
-                && l.waiting.is_empty();
-            out.listed_at = l.listed_at;
+            out.caught_up = !l.dirty;
             out.held = l.held.iter().map(|(k, w)| (k.clone(), w.clone())).collect();
         }
         // (Its lock not known held this step: no duties, catalogue or sweep until it's checked
@@ -746,17 +540,6 @@ impl Driver {
             (out.duties, out.caught_up, out.vouched) = (false, false, false);
         }
         out
-    }
-
-    /// It slept (or its wall clock was set): leading while a member writes the journal, what its
-    /// members told it meanwhile was lost, so it's caught up only by a listing asked for from now
-    /// on, those out forgotten (their keys merged as any when back).
-    fn slept(&mut self) {
-        if let Some(l) = self.lead.as_mut().filter(|_| self.journal) {
-            l.listed_at = None;
-            self.due = Some((None, true));
-            self.asked.clear();
-        }
     }
 
     fn step_down(&mut self, out: &mut Out, why: &str) {
@@ -958,8 +741,7 @@ impl Driver {
         if r.epoch != epoch {
             (r.epoch, r.seq) = (epoch, 0);
         }
-        // (Nothing merged yet: its members post it their hand-offs once they know it leads, and a
-        // listing of the journal follows while one writes it.)
+        // (Nothing merged yet: its members post it their hand-offs once they know it leads.)
         let dirty = match r.save(io, &|b| io.keep(b)) {
             Ok(()) => {
                 self.saved.records = Some((r.epoch, r.seq));
@@ -985,68 +767,22 @@ impl Driver {
             epoch,
             since: io.now(),
             records: r,
-            told: BTreeMap::new(),
-            whole_told: BTreeMap::new(),
-            waiting: BTreeSet::new(),
-            unreadable: BTreeMap::new(),
-            said: BTreeSet::new(),
-            turn: 0,
-            listed_at: None,
             dirty,
             saved_at: io.awake(),
-            refused: Vec::new(),
             held: BTreeMap::new(),
             vouched_at: None,
         });
-        // A take-up lists the journal, every day, while a member writes it.
-        self.due = self.journal.then_some((None, true));
-        self.asked.clear();
     }
 
-    /// The lead's step: merge what members posted it and told it, its own jobs' hand-offs and what
-    /// a listing found (and what's waiting to be read whole), save, acknowledge, note the refusals.
-    fn lead_step(&mut self, io: &dyn Io, out: &mut Out, given: Given, check: Check, busy: u64, vouched: bool) {
-        let Given { tells, listed, handed, named_raw } = given;
+    /// The lead's step: merge what members posted it (`handed`) and its own jobs' hand-offs, take off
+    /// the raw archives the agent named, save, acknowledge.
+    fn lead_step(&mut self, io: &dyn Io, out: &mut Out, handed: Vec<Entry>, named_raw: &[String], check: Check) {
         let me = self.me.id.clone();
-        let own: Vec<String> = self.saved.mine.to_tell();
         // (Held whole: members' posted by HTTP, and its own jobs', by key.)
-        let mut whole: BTreeMap<String, Entry> = BTreeMap::new();
-        for e in handed.into_iter().chain(self.saved.mine.unwritten_entries().cloned()) {
-            if let Some(k) = e.key() {
-                whole.insert(k, e);
-            }
-        }
-        let now = io.now();
-        let told_at = io.awake();
+        let whole: BTreeMap<String, Entry> =
+            handed.into_iter().chain(self.saved.mine.entries().cloned()).filter_map(|e| Some((e.key()?, e))).collect();
         let l = self.lead.as_mut().expect("leading");
         let e = l.epoch;
-        for (from, keys) in tells.into_iter().chain([(me.clone(), own)]) {
-            for k in keys {
-                l.told.entry(k).or_insert_with(|| (from.clone(), told_at));
-            }
-        }
-        let mut keys: Vec<String> = l
-            .told
-            .keys()
-            .chain(&l.waiting)
-            .chain(l.held.keys())
-            .chain(whole.keys())
-            .filter(|k| !l.records.handles(k))
-            .cloned()
-            .collect();
-        let from_listing = listed.is_some();
-        if let Some(listed) = listed {
-            // (A listing of every day, its take-up's or a daily one: once merged and saved, the
-            // records reflect the journal as it was when it was asked for; any of its asks still
-            // out, the newest's time kept. Keys asked for before its take-up are merged as any.)
-            self.back = now;
-            if let Some(a) = self.asked.remove(&listed.n) {
-                if a.full {
-                    l.listed_at = Some(l.listed_at.map_or(a.at, |at| at.max(a.at)));
-                }
-            }
-            keys.extend(listed.keys.into_iter().filter(|k| !l.records.handles(k)));
-        }
         // The raw archives the agent named: off the records, for good.
         if !named_raw.is_empty() {
             let named: BTreeSet<&str> = named_raw.iter().map(String::as_str).collect();
@@ -1054,131 +790,22 @@ impl Driver {
             l.records.raw.retain(|(_, p)| !named.contains(p.name.as_str()));
             l.dirty |= l.records.raw.len() != was;
         }
-        // Read while the step's time for it lasts, the rest left to the next step: first those no
-        // read has found not whole or failed on (a step's leftovers among them), the oldest lease
-        // first; then the others in turn, from where the last step's reads of them stopped, so each
-        // is read again every few steps however many wait. (Read first, entries that won't be whole
-        // took all the time on a share under load and left the others waiting; read in one order,
-        // the last of them waited behind the first until those were refused, an hour on.)
-        records::by_lease(&mut keys);
-        keys.dedup();
-        let (fresh, mut again): (Vec<String>, Vec<String>) =
-            keys.into_iter().partition(|k| !l.unreadable.contains_key(k));
-        if !again.is_empty() {
-            let at = l.turn % again.len();
-            again.rotate_left(at);
-        }
-        let n = again.len();
-        let keys: Vec<String> = fresh.into_iter().chain(again).collect();
-        let read = |k: &str| match whole.get(k) {
-            Some(e) => Ok(super::journal::Read::Entry(e.clone())),
-            None => super::journal::read(io, k),
-        };
-        let m = records::merge_from(&read, &mut l.records, &keys, check, &|| io.awake() < busy);
-        // (Each member's entries read whole: how far its writer has moved on.)
-        for k in m.applied.iter().chain(&m.overtaken).chain(m.refused.iter().map(|(k, _)| k)) {
-            if let Some((from, at)) = l.told.get(k) {
-                let w = l.whole_told.entry(from.clone()).or_default();
-                *w = (*w).max(*at);
-            }
-        }
-        l.turn = l.turn.wrapping_add(n - m.unread.iter().filter(|k| l.unreadable.contains_key(*k)).count().min(n));
+        let m = records::merge(&mut l.records, whole.values(), check);
         if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
             l.dirty = true;
-            l.refused.extend(m.refused.iter().cloned());
             out.events.push(Event::Merged {
                 applied: m.applied.clone(),
                 overtaken: m.overtaken.len(),
                 refused: m.refused.len(),
-                listed: from_listing,
                 done: m.done.clone(),
             });
         }
-        // What its check holds is merged again next step (said once as it's first held); what it
-        // read this step and didn't hold is no longer held.
-        let unread: BTreeSet<&String> = m.unread.iter().collect();
-        let was: BTreeSet<String> = l.held.keys().cloned().collect();
-        let records = &l.records;
-        l.held.retain(|k, _| unread.contains(k) && !records.handles(k));
-        for (k, why) in &m.held {
-            if l.held.insert(k.clone(), why.clone()).is_none() && !was.contains(k) {
-                out.events.push(Event::Waits { what: "merge an entry", why: format!("{k}: {why}") });
-            }
+        // What its check holds is merged again next step (said once as it's first held).
+        let held: BTreeMap<String, String> = m.held.into_iter().collect();
+        for (k, why) in held.iter().filter(|(k, _)| !l.held.contains_key(*k)) {
+            out.events.push(Event::Waits { what: "merge an entry", why: format!("{k}: {why}") });
         }
-        // What isn't read whole yet is read again next step; what's handled or forgotten, done.
-        l.waiting.extend(m.waiting.iter().chain(&m.unread).chain(&m.failed).cloned());
-        l.waiting.retain(|k| !l.records.handles(k));
-        // What its reads find not whole over `UNREADABLE_S` never will be: refused, as a damaged
-        // entry is (its work done again). So what its reads fail on while the share answers the
-        // step's others (its read of the declaration, or reads of other entries): a file the share
-        // errors on. A read that failed when none answered (the share away) says nothing, and
-        // starts the time again; one the step's time left unread keeps it, and isn't refused
-        // unread.
-        let answered = vouched
-            || !(m.applied.is_empty() && m.overtaken.is_empty() && m.refused.is_empty() && m.waiting.is_empty());
-        let awake = io.awake();
-        for k in &m.failed {
-            if answered {
-                l.unreadable.entry(k.clone()).or_insert((awake, true)).1 = true;
-            } else {
-                l.unreadable.remove(k);
-            }
-        }
-        for k in &m.waiting {
-            l.unreadable.entry(k.clone()).or_insert((awake, false)).1 = false;
-        }
-        l.unreadable.retain(|k, _| l.waiting.contains(k));
-        let read: Vec<String> = m.waiting.iter().chain(m.failed.iter().filter(|_| answered)).cloned().collect();
-        // (One waiting long: said, once, naming it.)
-        for k in &read {
-            if let Some(&(at, failing)) =
-                l.unreadable.get(k).filter(|&&(at, _)| awake.saturating_sub(at) >= WAIT_SAID_S)
-            {
-                if l.said.insert(k.clone()) {
-                    let how =
-                        if failing { "its reads failing, the share answering others" } else { "short, or not there" };
-                    out.events.push(Event::Waits {
-                        what: "read an entry whole",
-                        why: format!("{k}: {how}, for {} minutes", awake.saturating_sub(at) / 60),
-                    });
-                }
-            }
-        }
-        l.said.retain(|k| l.waiting.contains(k));
-        // (Refused after an hour; after `MOVED_ON_S` once its writer has moved on: an entry it
-        // told of later is read whole.)
-        let moved_on =
-            |k: &String| l.told.get(k).is_some_and(|(from, at)| l.whole_told.get(from).is_some_and(|w| w > at));
-        let never: Vec<(String, String)> = read
-            .into_iter()
-            .filter_map(|k| {
-                let since = awake.saturating_sub(l.unreadable.get(&k)?.0);
-                let why = if since >= UNREADABLE_S {
-                    format!("not read whole in {} minutes", UNREADABLE_S / 60)
-                } else if since >= MOVED_ON_S && moved_on(&k) {
-                    format!("not read whole in {} minutes, its writer's later entries read whole", since / 60)
-                } else {
-                    return None;
-                };
-                Some((k, why))
-            })
-            .collect();
-        if !never.is_empty() {
-            for (k, why) in &never {
-                l.records.refuse(k, why);
-                l.waiting.remove(k);
-                l.unreadable.remove(k);
-                l.refused.push((k.clone(), why.clone()));
-            }
-            l.dirty = true;
-            out.events.push(Event::Merged {
-                applied: Vec::new(),
-                overtaken: 0,
-                refused: never.len(),
-                listed: false,
-                done: Vec::new(),
-            });
-        }
+        l.held = held;
         // (Saved again unchanged `RESAVE_S` on: an older save landed late over the one path stays
         // that long at most. That save failing leaves nothing unsaved: tried again next step.)
         if l.dirty || io.awake().saturating_sub(l.saved_at) >= RESAVE_S {
@@ -1194,104 +821,38 @@ impl Driver {
                 }
             }
         }
-        // Refusals its saved records name (this step's, or an earlier one's): noted for the owner. (A note not made now is only the owner's
-        // loss.)
-        if !l.dirty {
-            for (k, why) in std::mem::take(&mut l.refused) {
-                if let Err(err) = journal::note_refusal(io, &k, &why) {
-                    out.events.push(Event::Failed { what: "note a refusal", why: format!("{k}: {err:#}") });
-                }
-            }
-        }
-        // Acknowledged: what a saved snapshot names. Told by mail, an answer by mail; posted by
-        // HTTP, by the coordinator (`Out::merged`); its own, dropped.
-        if !l.dirty {
-            let mut acks: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for (k, (from, _)) in &l.told {
-                if l.records.handles(k) {
-                    acks.entry(from.clone()).or_default().push(k.clone());
-                }
-            }
-            let named: Vec<String> = whole.into_keys().filter(|k| l.records.handles(k)).collect();
-            // (Only while the declaration, read after the save, still names it: the owner moved the
-            // lead, the next lead may have read its records before this save, and what's
-            // acknowledged is on no member's disk then. Its take-up reads them `STALE_S` after
-            // finding itself declared, so a save this read follows is in what it reads (`take_up`).
-            // Not acknowledged now: next step, while it still leads; else its members keep them for
-            // the next lead.)
-            if !acks.is_empty() || !named.is_empty() {
-                match lead::declared(io) {
-                    Ok(Some(d)) if d.member == me => {}
-                    Ok(d) => {
-                        let who =
-                            d.map_or("no member".to_string(), |d| if d.host.is_empty() { d.member } else { d.host });
-                        return out.events.push(Event::Waits {
-                            what: "acknowledge hand-offs",
-                            why: format!("the declaration names {who} after its save: its next lead has them"),
-                        });
-                    }
-                    Err(err) => {
-                        return out.events.push(Event::Failed {
-                            what: "acknowledge hand-offs",
-                            why: format!("whether it's still the declared lead after its save: {err:#}"),
-                        })
-                    }
-                }
-            }
-            for (to, keys) in acks {
-                for k in &keys {
-                    l.told.remove(k);
-                }
-                if to == me {
-                    self.saved.mine.acked_all(&keys);
-                } else {
-                    out.send.push((to, Msg::Ack { epoch: e, keys, horizon: String::new() }));
-                }
-            }
-            self.saved.mine.acked_all(&named);
-            out.merged = named;
-        }
-    }
-
-    /// The listings it asks for: of every day, a take-up's, then daily (`RELIST_S`); and of the
-    /// last days every `SWEEP_S`. One at a time, none while its last is out (the agent hands every
-    /// one back, however long it takes); its last out `OVERDUE_S` with none back meanwhile (lost,
-    /// or that slow) is said, and the next asked for all the same. Whichever comes back counts:
-    /// each ask is kept until it's a day old, its listing too old by then to count.
-    fn listings(&mut self, io: &dyn Io, out: &mut Out) {
-        let Some(l) = self.lead.as_ref().filter(|_| self.journal) else {
-            self.due = None;
+        // Acknowledged: what a saved snapshot names. Posted by HTTP, by the coordinator
+        // (`Out::merged`); its own, dropped.
+        if l.dirty {
             return;
-        };
-        let now = io.now();
-        self.asked.retain(|_, a| now.saturating_sub(a.at) < RELIST_S);
-        if let Some(a) = self.asked.get(&self.asks) {
-            let quiet = now.saturating_sub(a.at.max(self.back));
-            if quiet < OVERDUE_S {
-                return;
+        }
+        let named: Vec<String> = whole.into_keys().filter(|k| l.records.handles(k)).collect();
+        if named.is_empty() {
+            return;
+        }
+        // (Only while the declaration, read after the save, still names it: the owner moved the
+        // lead, the next lead may have read its records before this save, and what's acknowledged
+        // is on no member's disk then. Its take-up reads them `STALE_S` after finding itself
+        // declared, so a save this read follows is in what it reads (`take_up`). Not acknowledged
+        // now: next step, while it still leads; else its members keep them for the next lead.)
+        match lead::declared(io) {
+            Ok(Some(d)) if d.member == me => {}
+            Ok(d) => {
+                let who = d.map_or("no member".to_string(), |d| if d.host.is_empty() { d.member } else { d.host });
+                return out.events.push(Event::Waits {
+                    what: "acknowledge hand-offs",
+                    why: format!("the declaration names {who} after its save: its next lead has them"),
+                });
             }
-            out.events.push(Event::Waits {
-                what: "have a listing back",
-                why: format!(
-                    "listing {} of the journal, asked for {} minutes ago, none back for {} minutes: asked for again",
-                    self.asks,
-                    now.saturating_sub(a.at) / 60,
-                    quiet / 60
-                ),
-            });
+            Err(err) => {
+                return out.events.push(Event::Failed {
+                    what: "acknowledge hand-offs",
+                    why: format!("whether it's still the declared lead after its save: {err:#}"),
+                })
+            }
         }
-        if self.due.is_none() && l.listed_at.is_none_or(|at| now.saturating_sub(at) + AHEAD_S >= RELIST_S) {
-            self.due = Some((None, true));
-        }
-        if self.due.is_none() && now.abs_diff(self.swept) >= SWEEP_S {
-            self.due = Some((journal::day(now.saturating_sub(SWEEP_DAYS * 86_400)), false));
-        }
-        if let Some((since, full)) = self.due.take() {
-            self.asks += 1;
-            self.asked.insert(self.asks, Asked { at: now, full });
-            self.swept = now;
-            out.list = Some(Listing { n: self.asks, since });
-        }
+        self.saved.mine.acked_all(&named);
+        out.merged = named;
     }
 
     /// The pool's fields of its heartbeat: the epoch it leads in.
@@ -1443,52 +1004,6 @@ mod tests {
         }
     }
 
-    /// A Mac on a share under load: each create, read, stat and whole write takes `.1` s, awake.
-    struct Slow<'a>(Mac<'a>, Cell<u64>);
-
-    impl Nas for Slow<'_> {
-        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
-            self.0.pass(self.1.get());
-            self.0.create_new(path, bytes)
-        }
-        fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
-            self.0.pass(self.1.get());
-            self.0.write_whole(path, bytes)
-        }
-        fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
-            self.0.pass(self.1.get());
-            self.0.read(path)
-        }
-        fn exists(&self, path: &str) -> Result<bool> {
-            self.0.pass(self.1.get());
-            self.0.exists(path)
-        }
-        fn list(&self, dir: &str) -> Result<Vec<String>> {
-            self.0.list(dir)
-        }
-        fn remove(&self, path: &str) -> Result<()> {
-            self.0.remove(path)
-        }
-    }
-
-    impl Io for Slow<'_> {
-        fn now(&self) -> u64 {
-            self.0.now()
-        }
-        fn awake(&self) -> u64 {
-            self.0.awake()
-        }
-        fn kept(&self) -> Result<Option<Vec<u8>>> {
-            self.0.kept()
-        }
-        fn keep(&self, records: &[u8]) -> Result<()> {
-            self.0.keep(records)
-        }
-        fn epoch(&self, past: u64) -> Result<u64> {
-            self.0.epoch(past)
-        }
-    }
-
     fn any(_: &Entry, _: &Records) -> std::result::Result<(), String> {
         Ok(())
     }
@@ -1611,33 +1126,39 @@ mod tests {
     }
 
     #[test]
-    fn with_the_lead_gone_a_member_writes_its_jobs_hand_offs_and_waits() {
-        // (Task #881) A silent; B's jobs end: their hand-offs go to the journal (A takes none by
-        // HTTP: the gate), B tells A of them (its mail waits for A), and B leads nothing; A back,
-        // it merges them.
+    fn with_the_lead_gone_a_member_keeps_its_jobs_hand_offs_and_waits() {
+        // (Task #881) A silent; B's jobs end: their hand-offs are kept whole in its saved state,
+        // nothing written to the NAS nor sent, and B leads nothing; A back, posted them (B's beat),
+        // it merges them, and B drops them once A's answer says so.
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
         let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
-        caught_up(&mut a, &ia, able());
+        step(&mut a, &ia, able());
         step(&mut b, &ib, able());
         ib.pass(3 * 3600);
         let e = entry(B, 1, 5, "6-1-5");
         let key = e.key().unwrap();
+        let before = mem.0.borrow().clone();
         let o = step(&mut b, &ib, Heard { entries: vec![e], ..able() });
-        assert_eq!(o.leads, None);
-        assert!(matches!(journal::read(&mem, &key).unwrap(), journal::Read::Entry(_)), "written");
-        assert!(o.send.iter().any(|(to, m)| to == A && matches!(m, Msg::Tell(k) if k.contains(&key))), "{:?}", o.send);
+        assert!(o.leads.is_none() && o.send.is_empty(), "{o:?}");
+        assert_eq!(*mem.0.borrow(), before, "nothing written");
+        assert_eq!(b.saved().mine.keys().collect::<Vec<_>>(), [&key], "kept whole");
         for _ in 0..10 {
             ib.pass(600);
             assert_eq!(step(&mut b, &ib, able()).leads, None);
         }
-        // A back (its sleep no matter: no other lead could have saved), told: merged, same epoch.
+        // A back (its sleep no matter: no other lead could have saved), posted it: merged, same
+        // epoch, acknowledged.
         ia.wall.set(ib.now());
-        let o = caught_up(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() });
-        assert_eq!(o.leads, Some(1), "{:?}", o.events);
-        assert!(a.records().unwrap().handles(&key), "{:?}", o.events);
+        let handed = b.mine().entries().cloned().collect();
+        let o = step(&mut a, &ia, Heard { handed, ..able() });
+        assert_eq!((o.leads, o.merged.clone()), (Some(1), vec![key.clone()]), "{:?}", o.events);
+        assert!(one(&mem).handles(&key), "{:?}", o.events);
+        ib.pass(20);
+        step(&mut b, &ib, Heard { merged: o.merged, ..able() });
+        assert_eq!(b.mine().unacked(), 0, "dropped once its lead's saved records name it");
     }
 
     /// docs/coordination.md step 8c: the owner moves the lead (another Mac in the mini's place): A
@@ -1650,17 +1171,16 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let http = || Heard { http_only: true, ..able() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
         let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
         ia.store.set(40);
-        assert_eq!(step(&mut a, &ia, http()).leads, Some(40));
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(40));
         ia.pass(20);
-        step(&mut a, &ia, Heard { handed: vec![entry(B, 40, 1, "6-1-1")], ..http() });
-        step(&mut b, &ib, http());
+        step(&mut a, &ia, Heard { handed: vec![entry(B, 40, 1, "6-1-1")], ..able() });
+        step(&mut b, &ib, able());
         declare(&mem, B);
         ia.pass(20);
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert!(
             o.leads.is_none()
                 && o.events
@@ -1670,16 +1190,16 @@ mod tests {
             o.events
         );
         ib.pass(20);
-        let o = step(&mut b, &ib, http());
+        let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, None, "waits `STALE_S` after finding itself declared: {:?}", o.events);
         ib.pass(STALE_S - 20);
-        assert_eq!(step(&mut b, &ib, http()).leads, None);
+        assert_eq!(step(&mut b, &ib, able()).leads, None);
         ib.pass(20);
-        let o = step(&mut b, &ib, http());
+        let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, Some(41), "past A's epoch: {:?}", o.events);
         assert_eq!(b.records().unwrap().keys.recorded("unit", "6-1-1"), Some("k1"), "from A's records");
         ib.pass(20);
-        step(&mut b, &ib, Heard { handed: vec![entry(A, 41, 2, "6-1-2")], ..http() });
+        step(&mut b, &ib, Heard { handed: vec![entry(A, 41, 2, "6-1-2")], ..able() });
         assert_eq!((one(&mem).epoch, one(&mem).keys.recorded("unit", "6-1-2")), (41, Some("k2")));
         // Moved back while A's agent was stopped: its own disk's copy is older than the one path's.
         declare(&mem, A);
@@ -1687,7 +1207,7 @@ mod tests {
         ia.wall.set(ib.now());
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
         ia.pass(20);
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert!(
             o.leads.is_none()
                 && o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("newer than its own"))),
@@ -1695,7 +1215,7 @@ mod tests {
             o.events
         );
         ia.pass(STALE_S);
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert_eq!(o.leads, Some(42), "{:?}", o.events);
         assert_eq!(a.records().unwrap().keys.recorded("unit", "6-1-2"), Some("k2"), "B's records, not its own");
     }
@@ -1758,7 +1278,6 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let http = || Heard { http_only: true, ..able() };
         // (The move from terms: the lead declared, its records numbered by the pool's last term, its
         // store's epoch below it.)
         declare(&mem, A);
@@ -1768,12 +1287,12 @@ mod tests {
         let saved = Saved { member: A.into(), records: Some((840, 7)), ..Default::default() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), saved);
         ia.store.set(121);
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert_eq!(o.leads, Some(841), "past the pool's last term: {:?}", o.events);
         let e = entry(A, 841, 1, "6-1-1");
         let key = e.key().unwrap();
         ia.pass(20);
-        let o = step(&mut a, &ia, Heard { handed: vec![e], ..http() });
+        let o = step(&mut a, &ia, Heard { handed: vec![e], ..able() });
         assert_eq!(o.merged, std::slice::from_ref(&key), "{:?}", o.events);
         // An earlier save lands late over the one path.
         let late = serde_json::to_vec(&Records { epoch: 841, seq: 1, ..Default::default() }).unwrap();
@@ -1783,7 +1302,7 @@ mod tests {
         let io = Logged(&ia, Default::default());
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
         ia.pass(20);
-        let o = a.step(&io, http(), &any);
+        let o = a.step(&io, able(), &any);
         assert_eq!(o.leads, Some(842), "{:?}", o.events);
         assert!(a.records().unwrap().handles(&key), "its own disk's records");
         assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { epoch: 842, how } if how == "its own records")));
@@ -1801,9 +1320,9 @@ mod tests {
         ib.store.set(ia.store.get() + 1);
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
         ib.pass(20);
-        assert_eq!(step(&mut a, &ib, http()).leads, None);
+        assert_eq!(step(&mut a, &ib, able()).leads, None);
         ib.pass(STALE_S);
-        let o = step(&mut a, &ib, http());
+        let o = step(&mut a, &ib, able());
         assert_eq!(o.leads, Some(843), "{:?}", o.events);
         assert!(a.records().unwrap().handles(&key));
     }
@@ -1821,7 +1340,7 @@ mod tests {
         let e = entry(B, 1, 5, "6-1-5");
         let key = e.key().unwrap();
         ia.pass(20);
-        step(&mut a, &ia, Heard { handed: vec![e], http_only: true, ..able() });
+        step(&mut a, &ia, Heard { handed: vec![e], ..able() });
         let saved = a.saved();
         assert_eq!(saved.records, Some((1, one(&mem).seq)));
         // (The one path read stale: an older save's; or not there at all.)
@@ -1871,11 +1390,10 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let http = || Heard { http_only: true, ..able() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         let b = std::cell::RefCell::new(Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default()));
-        step(&mut b.borrow_mut(), &ib, http());
+        step(&mut b.borrow_mut(), &ib, able());
         let e = entry(B, 1, 5, "6-1-5");
         let key = e.key().unwrap();
         ia.pass(20);
@@ -1887,23 +1405,23 @@ mod tests {
                 records::ONE.to_string(),
                 Box::new(|| {
                     declare(&mem, B);
-                    let o = step(&mut b.borrow_mut(), &ib, http());
+                    let o = step(&mut b.borrow_mut(), &ib, able());
                     assert_eq!(o.leads, None, "{:?}", o.events);
                 }),
             ))),
         };
-        let o = a.step(&race, Heard { handed: vec![e], ..http() }, &any);
+        let o = a.step(&race, Heard { handed: vec![e], ..able() }, &any);
         assert!(one(&mem).handles(&key));
         assert!(o.merged.is_empty(), "nothing acknowledged: {:?}", o.events);
         assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what: "acknowledge hand-offs", .. })));
         drop(race);
         ia.pass(20);
-        assert_eq!(step(&mut a, &ia, http()).leads, None, "A steps down");
+        assert_eq!(step(&mut a, &ia, able()).leads, None, "A steps down");
         let mut b = b.into_inner();
         ib.pass(STALE_S - 30);
-        assert_eq!(step(&mut b, &ib, http()).leads, None);
+        assert_eq!(step(&mut b, &ib, able()).leads, None);
         ib.pass(30);
-        let o = step(&mut b, &ib, http());
+        let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert!(b.records().unwrap().handles(&key), "A's last save");
     }
@@ -1916,23 +1434,22 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let http = || Heard { http_only: true, ..able() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
-        step(&mut b, &ib, http());
+        step(&mut b, &ib, able());
         let was = mem.read(lead::LEAD).unwrap();
         declare(&mem, B);
         ib.pass(20);
-        assert_eq!(step(&mut b, &ib, http()).leads, None, "waits");
+        assert_eq!(step(&mut b, &ib, able()).leads, None, "waits");
         let e = entry(B, 1, 5, "6-1-5");
         let key = e.key().unwrap();
         ia.wall.set(ib.now());
         let stale = Racing { mac: &ia, stale: [(lead::LEAD.to_string(), was)].into(), before: Default::default() };
-        let o = a.step(&stale, Heard { handed: vec![e], ..http() }, &any);
+        let o = a.step(&stale, Heard { handed: vec![e], ..able() }, &any);
         assert_eq!(o.merged, std::slice::from_ref(&key), "acknowledged, stale: {:?}", o.events);
         ib.pass(STALE_S);
-        let o = step(&mut b, &ib, http());
+        let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert!(b.records().unwrap().handles(&key), "in B's records");
     }
@@ -1946,29 +1463,28 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib, ic) = (Mac::new(&mem), Mac::new(&mem), Mac::new(&mem));
-        let http = || Heard { http_only: true, ..able() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         let late = mem.read(records::ONE).unwrap().unwrap();
         let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
         let mut c = Driver::unlocked(member(C, "M4", V2), Saved::default());
         declare(&mem, B);
-        step(&mut b, &ib, http());
+        step(&mut b, &ib, able());
         ib.pass(STALE_S);
-        assert_eq!(step(&mut b, &ib, http()).leads, Some(2));
+        assert_eq!(step(&mut b, &ib, able()).leads, Some(2));
         let e = entry(B, 2, 1, "6-1-5");
         let key = e.key().unwrap();
         ib.pass(20);
-        let o = step(&mut b, &ib, Heard { handed: vec![e], ..http() });
+        let o = step(&mut b, &ib, Heard { handed: vec![e], ..able() });
         assert_eq!(o.merged, std::slice::from_ref(&key), "acknowledged: {:?}", o.events);
         // A's write lands; the owner moves the lead to C.
         mem.write_whole(records::ONE, &late).unwrap();
         declare(&mem, C);
         ib.pass(20);
-        assert_eq!(step(&mut b, &ib, http()).leads, None, "B steps down");
-        step(&mut c, &ic, http());
+        assert_eq!(step(&mut b, &ib, able()).leads, None, "B steps down");
+        step(&mut c, &ic, able());
         ic.pass(STALE_S);
-        let o = step(&mut c, &ic, http());
+        let o = step(&mut c, &ic, able());
         assert_eq!(o.leads, None, "C waits: {:?}", o.events);
         assert!(
             o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("brief"))),
@@ -1978,7 +1494,7 @@ mod tests {
         // Declared again, B leads from its own records, and saves them over A's.
         declare(&mem, B);
         ib.pass(20);
-        let o = step(&mut b, &ib, http());
+        let o = step(&mut b, &ib, able());
         assert!(o.leads.is_some_and(|e| e > 2), "{:?}", o.events);
         assert!(one(&mem).handles(&key), "the hand-off back on the one path");
     }
@@ -1991,22 +1507,21 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let http = || Heard { http_only: true, ..able() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert_eq!((o.leads, o.duties), (Some(1), true));
         *ia.fail.borrow_mut() = Some(lead::LEAD.into());
         ia.down.set(true);
         ia.pass(VOUCH_S - 20);
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert_eq!((o.leads, o.vouched, o.duties), (Some(1), false, true), "{:?}", o.events);
         ia.pass(20);
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert_eq!((o.leads, o.duties), (Some(1), false), "{:?}", o.events);
         assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what: "grant jobs", .. })));
         ia.down.set(false);
         ia.pass(20);
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert_eq!((o.leads, o.vouched, o.duties), (Some(1), true, true), "{:?}", o.events);
     }
 
@@ -2020,24 +1535,23 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let http = || Heard { http_only: true, ..able() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         *ia.wfail.borrow_mut() = Some("records.json".into());
         ia.pass(20);
         ia.restart();
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert_eq!((o.leads, o.vouched, o.caught_up), (Some(2), true, false), "{:?}", o.events);
         assert!(o.events.iter().any(|e| matches!(e, Event::Failed { what: "save the records", .. })));
         let e = entry(A, 2, 1, "6-1-1");
         let key = e.key().unwrap();
         ia.pass(20);
-        let o = step(&mut a, &ia, Heard { handed: vec![e.clone()], ..http() });
+        let o = step(&mut a, &ia, Heard { handed: vec![e.clone()], ..able() });
         assert!(o.merged.is_empty() && !o.caught_up && o.duties, "{:?}", o.events);
         *ia.wfail.borrow_mut() = None;
         ia.pass(20);
-        let o = step(&mut a, &ia, Heard { handed: vec![e], ..http() });
+        let o = step(&mut a, &ia, Heard { handed: vec![e], ..able() });
         assert_eq!((o.leads, o.caught_up), (Some(2), true), "{:?}", o.events);
         assert_eq!(o.merged, [key.clone()]);
         let now: Records = buildstore::records::now(&mem).unwrap();
@@ -2047,12 +1561,12 @@ mod tests {
         ia.pass(20);
         ia.restart();
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert_eq!(o.leads, None, "{:?}", o.events);
         assert!(o.events.iter().any(|e| matches!(e, Event::Failed { what: "keep the records", .. })));
         ia.local_fails.set(false);
         ia.pass(20);
-        let o = step(&mut a, &ia, http());
+        let o = step(&mut a, &ia, able());
         assert_eq!(o.leads, Some(3), "{:?}", o.events);
         assert_eq!(a.records().unwrap().seq, 2, "numbered on from the try kept");
         assert!(a.records().unwrap().handles(&key));
@@ -2124,69 +1638,66 @@ mod tests {
     }
 
     #[test]
-    fn a_new_lead_is_caught_up_once_its_listing_is_merged() {
-        // After a restart the lead's records lack an entry only a listing finds (its member gone,
-        // never told of it). (Review N2: its duties and its own word were all the agent had, and
-        // both were true before the listing came back.)
-        let mem = Mem::default();
-        setup(&mem);
-        let ib = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        step(&mut a, &ib, able());
-        let x = journal::write(&mem, &entry(C, 1, 7, "6-1-1")).unwrap();
-        ib.pass(700);
-        let mut b = Driver::unlocked(member(A, "Mac-mini", V1), a.saved());
-        let o = step(&mut b, &ib, able());
-        assert_eq!(o.leads, Some(2), "{:?}", o.events);
-        assert!(o.duties && o.vouched && !o.caught_up, "vouched for, not whole");
-        let list = o.list.expect("a listing asked for");
-        assert_eq!(list.since, None, "every day");
-        assert!(!one(&mem).handles(&x));
-        ib.pass(20);
-        assert!(!step(&mut b, &ib, able()).caught_up, "not before it's back");
-        // An older ask's listing doesn't count; this one's does.
-        ib.pass(20);
-        let o = step(&mut b, &ib, Heard { listed: Some(Listed { n: list.n + 7, keys: Vec::new() }), ..able() });
-        assert!(!o.caught_up);
-        ib.pass(20);
-        let o = step(
-            &mut b,
-            &ib,
-            Heard { listed: Some(Listed { n: list.n, keys: journal::list(&mem, None).unwrap() }), ..able() },
-        );
-        assert!(o.caught_up, "{:?}", o.events);
-        assert!(one(&mem).handles(&x));
-    }
-
-    #[test]
-    fn a_lead_lists_the_journal_only_while_a_member_writes_it() {
-        // (docs/coordination.md step 6, the rollout gate) No member writes the journal: the lead
-        // asks for no listing, and is caught up once what's posted it is merged and saved.
+    fn a_lead_merges_what_s_posted_it_with_no_journal_read() {
+        // (Task #1125) Hand-offs by HTTP alone: the lead merges what's posted it from memory,
+        // saves, then acknowledges (`merged`); it neither lists nor reads the NAS's journal, and is
+        // caught up once what's posted it is saved.
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
+        let io = Logged(&ia, Default::default());
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let http = || Heard { http_only: true, ..able() };
-        let o = step(&mut a, &ia, http());
-        assert_eq!(o.leads, Some(1), "{:?}", o.events);
-        assert!(o.list.is_none() && o.caught_up, "no listing: {:?}", o.list);
-        // A hand-off posted: merged from memory, saved, then acknowledged (`merged`).
+        let o = a.step(&io, able(), &any);
+        assert!(o.leads == Some(1) && o.caught_up, "{:?}", o.events);
         let e = entry(B, 1, 5, "6-1-5");
         let key = e.key().unwrap();
         ia.pass(20);
-        let o = step(&mut a, &ia, Heard { handed: vec![e.clone()], ..http() });
-        assert_eq!(o.merged, std::slice::from_ref(&key));
+        let o = a.step(&io, Heard { handed: vec![e.clone()], ..able() }, &any);
+        assert!(o.caught_up && o.merged == [key.clone()], "{:?}", o.events);
         assert!(one(&mem).handles(&key), "in the snapshot saved");
-        assert!(!mem.exists(&journal::path(&key)).unwrap(), "no journal");
-        // Posted again: passed over, acknowledged again, merged once.
+        // Posted again (its member's beat listing it to a restarted lead): passed over, acknowledged
+        // again, merged once.
         ia.pass(20);
-        let o = step(&mut a, &ia, Heard { handed: vec![e], ..http() });
+        let o = a.step(&io, Heard { handed: vec![e], ..able() }, &any);
         assert!(o.merged == [key.clone()] && !o.events.iter().any(|e| matches!(e, Event::Merged { .. })), "{o:?}");
-        // A member writing the journal heard: a listing of every day asked for, caught up only once
-        // it's merged.
-        ia.pass(20);
-        let o = step(&mut a, &ia, able());
-        assert!(!o.caught_up && o.list.as_ref().is_some_and(|l| l.since.is_none()), "{:?}", o.list);
+        for _ in 0..40 {
+            ia.pass(600);
+            a.step(&io, able(), &any);
+        }
+        let calls = io.take();
+        assert!(!calls.iter().any(|c| c.contains("journal") || c.starts_with("list ")), "{calls:#?}");
+    }
+
+    #[test]
+    fn an_older_app_s_journal_entries_are_read_back_and_posted() {
+        // (Task #1125) B ran an app before #1125 that wrote a hand-off to the NAS's journal for an
+        // older lead and kept its key, unacknowledged. Its first step reads it back whole: kept, to
+        // post; a key whose file isn't there is dropped, said; a read that fails is tried again.
+        let mem = Mem::default();
+        setup(&mem);
+        declare(&mem, A);
+        let ib = Mac::new(&mem);
+        let (e, gone) = (entry(B, 1, 5, "6-1-5"), entry(B, 1, 6, "6-1-6"));
+        let (key, gone) = (e.key().unwrap(), gone.key().unwrap());
+        mem.write_whole(&format!("state/journal/{key}.json"), &serde_json::to_vec(&e).unwrap()).unwrap();
+        let saved: Saved =
+            serde_json::from_value(serde_json::json!({ "member": B, "mine": { "entries": [key, gone] } })).unwrap();
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), saved);
+        *ib.fail.borrow_mut() = Some("state/journal".into());
+        ib.down.set(true);
+        let o = step(&mut b, &ib, able());
+        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what, .. } if what.contains("journal"))), "{o:?}");
+        assert_eq!((b.mine().keys().count(), b.mine().unacked()), (0, 2), "tried again");
+        ib.down.set(false);
+        ib.pass(20);
+        let o = step(&mut b, &ib, able());
+        assert_eq!(b.mine().keys().collect::<Vec<_>>(), [&key], "read back whole, to post");
+        assert!(
+            o.events.iter().any(|ev| matches!(ev, Event::Failed { why, .. } if why.contains(&gone))),
+            "{:?}",
+            o.events
+        );
+        assert_eq!(b.mine().unacked(), 1);
     }
 
     #[test]
@@ -2201,7 +1712,7 @@ mod tests {
         ia.pass(20);
         let o = step(&mut a, &ia, Heard { entries: vec![e], ..able() });
         assert!(o.events.iter().any(|e| matches!(e, Event::Merged { applied, .. } if applied.contains(&key))));
-        assert!(!mem.exists(&journal::path(&key)).unwrap(), "not written");
+        assert!(!mem.0.borrow().keys().any(|p| p.contains("journal")), "not written");
         assert_eq!(a.mine().unacked(), 0, "dropped once saved");
     }
 
@@ -2327,13 +1838,12 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let http = || Heard { http_only: true, ..able() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         let e = entry(A, 1, 1, "6-1-1");
         let key = e.key().unwrap();
         ia.pass(20);
-        step(&mut a, &ia, Heard { handed: vec![e], ..http() });
+        step(&mut a, &ia, Heard { handed: vec![e], ..able() });
         assert!(one(&mem).handles(&key));
         mem.write_whole(
             records::ONE,
@@ -2344,7 +1854,7 @@ mod tests {
         let mut steps = 0;
         while !read() {
             ia.pass(20);
-            step(&mut a, &ia, http());
+            step(&mut a, &ia, able());
             steps += 1;
             assert!(steps * 20 <= RESAVE_S + 20, "still the late save after {steps} steps");
         }
@@ -2392,40 +1902,19 @@ mod tests {
         assert_eq!(a.records().unwrap().raw, saved.raw);
     }
 
-    #[test]
-    fn a_listed_entry_not_readable_yet_is_kept_and_read_again() {
-        // A listing names an entry its next read doesn't see yet (a stale read): it lands a moment
-        // later, and no member will tell of it. (Review N6: dropped, until the next listing.)
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
-        let e = entry(C, 1, 9, "6-1-1");
-        let key = e.key().unwrap();
-        ia.pass(20);
-        let o = step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![key.clone()] }), ..able() });
-        assert!(!o.caught_up, "an entry listed waits");
-        journal::write(&mem, &e).unwrap();
-        ia.pass(20);
-        let o = step(&mut a, &ia, able());
-        assert!(one(&mem).handles(&key) && o.caught_up, "{:?}", o.events);
-    }
-
-    /// An entry its check holds (`records::HOLD`: a member's on a newer app, outside this app's
-    /// write-sets) is neither merged nor refused, merged again every step, said once, and keeps
-    /// no catalogue back; once the check takes it (the lead on that app), it's merged.
+    /// A hand-off its check holds (`records::HOLD`: a member's on a newer app, outside this app's
+    /// write-sets) is neither merged nor refused, merged again every step (posted, it stays in the
+    /// coordinator's store until merged), said once, and keeps no catalogue back; once the check
+    /// takes it (the lead on that app), it's merged and acknowledged.
     #[test]
     fn an_entry_held_is_merged_again_until_taken() {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
-        ia.pass(20);
-        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
+        step(&mut a, &ia, able());
         let e = entry(B, 1, 3, "6-1-1");
-        let key = journal::write(&mem, &e).unwrap();
+        let key = e.key().unwrap();
         let hold = std::cell::Cell::new(true);
         let check = |_: &Entry, _: &Records| {
             if hold.get() {
@@ -2436,121 +1925,28 @@ mod tests {
         };
         let said =
             |o: &Out| o.events.iter().filter(|ev| matches!(ev, Event::Waits { what: "merge an entry", .. })).count();
+        let posted = || Heard { handed: vec![e.clone()], ..able() };
         ia.pass(20);
-        let o = a.step(&ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() }, &check);
+        let o = a.step(&ia, posted(), &check);
         assert_eq!(o.held, [(key.clone(), "its member runs a newer app".to_string())]);
-        assert!(o.caught_up && said(&o) == 1 && o.send.is_empty(), "{:?}", o.events);
-        let r = one(&mem);
-        assert!(!r.handles(&key) && journal::refusal(&mem, &key).unwrap().is_none(), "neither merged nor refused");
+        assert!(o.caught_up && said(&o) == 1 && o.merged.is_empty(), "{:?}", o.events);
+        assert!(!one(&mem).handles(&key), "neither merged nor refused");
         // Merged again the next step, held still, not said again; nothing acknowledged.
         ia.pass(20);
-        let o = a.step(&ia, able(), &check);
-        assert!(o.held.len() == 1 && said(&o) == 0 && o.send.is_empty(), "{:?}", o.events);
-        // Taken: merged, acknowledged to its member, no longer held.
+        let o = a.step(&ia, posted(), &check);
+        assert!(o.held.len() == 1 && said(&o) == 0 && o.merged.is_empty(), "{:?}", o.events);
+        // Taken: merged, acknowledged, no longer held.
         hold.set(false);
         ia.pass(20);
-        let o = a.step(&ia, able(), &check);
+        let o = a.step(&ia, posted(), &check);
         assert!(o.held.is_empty() && one(&mem).reflected.contains(&key), "{:?}", o.events);
-        assert!(
-            o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))),
-            "{:?}",
-            o.send
-        );
+        assert_eq!(o.merged, [key]);
     }
 
     #[test]
-    fn an_entry_never_read_whole_is_refused_after_an_hour() {
-        // B tells the lead of an entry whose file the share cut short for good (a NAS that lost a
-        // renamed file's last bytes). Read again every step, it kept the lead from being caught up
-        // for ever: no catalogue, no sweep.
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
-        ia.pass(20);
-        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
-        let key = entry(B, 1, 3, "6-1-1").key().unwrap();
-        mem.write_whole(&journal::path(&key), b"{\"member\":").unwrap();
-        ia.pass(20);
-        assert!(
-            !step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() }).caught_up,
-            "told of it, not whole"
-        );
-        for _ in 0..11 {
-            ia.pass(300);
-            assert!(!step(&mut a, &ia, able()).caught_up, "55 minutes: read again");
-        }
-        ia.pass(300);
-        let o = step(&mut a, &ia, able());
-        assert!(o.caught_up, "{:?}", o.events);
-        let why = one(&mem).rejected.get(&key).cloned();
-        assert!(why.as_deref().is_some_and(|w| w.contains("not read whole")), "{why:?}");
-        assert_eq!(journal::refusal(&mem, &key).unwrap(), why, "noted for the owner");
-        assert!(
-            o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))),
-            "{:?}",
-            o.send
-        );
-    }
-
-    /// Task #630: B tells the lead of its entry 3, which the lead's reads find short (`short`) or
-    /// not there, and of entry 4, whole: a step later (`later`), or with 3. Whether entry 3 is
-    /// refused 10 minutes on, and the steps' outcomes 5 and 10 minutes on.
-    fn told_not_whole(short: bool, later: bool) -> (bool, Out, Out) {
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
-        ia.pass(20);
-        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
-        let key = entry(B, 1, 3, "6-1-1").key().unwrap();
-        if short {
-            mem.write_whole(&journal::path(&key), b"{\"member\":").unwrap();
-        }
-        let next = journal::write(&mem, &entry(B, 1, 4, "6-1-2")).unwrap();
-        let tell = |keys: Vec<String>| Heard { msgs: vec![(B.into(), Msg::Tell(keys))], ..able() };
-        ia.pass(20);
-        let first = if later { vec![key.clone()] } else { vec![key.clone(), next.clone()] };
-        assert!(!step(&mut a, &ia, tell(first)).caught_up, "told of it, not whole");
-        ia.pass(20);
-        step(&mut a, &ia, tell(vec![key.clone(), next.clone()]));
-        assert!(one(&mem).handles(&next), "the later one merged");
-        ia.pass(300);
-        let at_5 = step(&mut a, &ia, tell(vec![key.clone()]));
-        ia.pass(300);
-        let at_10 = step(&mut a, &ia, tell(vec![key.clone()]));
-        let refused = one(&mem).rejected.contains_key(&key);
-        (refused, at_5, at_10)
-    }
-
-    #[test]
-    fn an_entry_not_whole_is_refused_in_minutes_once_its_writer_moved_on() {
-        // On 24 Oct the lead's own entry read as not there for 40 minutes (its SMB client's stale
-        // name; whole on the share), and no catalogue went out: one waits for every entry read.
-        for short in [true, false] {
-            let (refused, at_5, at_10) = told_not_whole(short, true);
-            assert!(!at_5.caught_up, "short {short}: 5 minutes: read again");
-            assert!(refused && at_10.caught_up, "short {short}: {:?}", at_10.events);
-        }
-    }
-
-    #[test]
-    fn an_entry_told_with_the_one_read_whole_waits_its_hour() {
-        // Entry 4 told with entry 3, not after: B's write of 3 may not have returned before 4's.
-        for short in [true, false] {
-            let (refused, _, at_10) = told_not_whole(short, false);
-            assert!(!refused && !at_10.caught_up, "short {short}: {:?}", at_10.events);
-        }
-    }
-
-    #[test]
-    fn a_lost_member_files_unwritten_hand_offs_are_kept() {
-        // This Mac's member file lost, a new id made (D), its saved state A's: a hand-off its
-        // jobs left unwritten is merged, the same bytes (the lead's own from memory, never the
-        // journal's); what A led counts for nothing.
-        // (Re-review F5.)
+    fn a_lost_member_files_hand_offs_are_kept() {
+        // This Mac's member file lost, a new id made (D), its saved state A's: a hand-off its jobs
+        // left is merged, the same bytes; what A led counts for nothing. (Re-review F5.)
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
@@ -2561,9 +1957,8 @@ mod tests {
         let d = "m-000000000000000d";
         let mut dr = Driver::unlocked(member(d, "Mac-mini", V1), saved);
         let s = dr.saved();
-        assert_eq!((s.member.as_str(), s.records, s.mine.unwritten().count()), (d, None, 1));
+        assert_eq!((s.member.as_str(), s.records, s.mine.keys().count()), (d, None, 1));
         assert_eq!(step(&mut dr, &ia, able()).leads, Some(1));
-        assert!(matches!(journal::read(&mem, &key).unwrap(), journal::Read::Missing), "not written");
         assert!(one(&mem).handles(&key), "merged");
     }
 
@@ -2579,9 +1974,9 @@ mod tests {
         let ia = Mac::new(&mem);
         let mut a =
             Driver::new(member(A, "Mac-mini", V1), Saved::default(), MemberLock::take(dir.path(), A).unwrap().unwrap());
-        let list = step(&mut a, &ia, able()).list.unwrap();
+        step(&mut a, &ia, able());
         ia.pass(20);
-        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() }).duties);
+        assert!(step(&mut a, &ia, able()).duties);
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
         ia.pass(20);
         let o = step(&mut a, &ia, able());
@@ -2624,318 +2019,12 @@ mod tests {
         assert!(o.stop.is_some() && o.leads.is_none() && o.send.is_empty(), "{o:?}");
         assert!(o.events.iter().any(|e| matches!(e, Event::SteppedDown { epoch: 1, .. })), "{:?}", o.events);
         assert!(
-            a.saved().mine.unwritten().any(|k| *k == e.key().unwrap()),
+            a.saved().mine.keys().any(|k| *k == e.key().unwrap()),
             "the hand-off handed to it kept, for the agent to save"
         );
         ia.pass(20);
         assert!(a.step(&ia, able(), &any).stop.is_some(), "for good");
         assert_eq!(*mem.0.borrow(), before, "nothing written");
         drop(second);
-    }
-
-    #[test]
-    fn a_step_reads_entries_to_merge_for_a_minute_at_most() {
-        // B tells the lead of twenty entries on a share taking five seconds an operation: a step
-        // reads them for a minute at most, leaving the rest to the next ones. (Re-review M20.)
-        let mem = Mem::default();
-        setup(&mem);
-        let io = Slow(Mac::new(&mem), Cell::new(0));
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = a.step(&io, able(), &any).list.unwrap();
-        io.0.pass(20);
-        a.step(&io, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }, &any);
-        let keys: Vec<String> = (1..=20).map(|n| journal::write(&mem, &entry(B, 1, n, "6-1-1")).unwrap()).collect();
-        io.1.set(5);
-        io.0.pass(20);
-        let start = io.0.awake();
-        let o = a.step(&io, Heard { msgs: vec![(B.into(), Msg::Tell(keys.clone()))], ..able() }, &any);
-        let merged = |m: &Mem| keys.iter().filter(|k| one(m).handles(k)).count();
-        let first = merged(&mem);
-        assert!(first > 0 && first < 20 && !o.caught_up, "{first} merged in one step");
-        assert!(io.0.awake() - start < BUSY_S + 60, "{} s", io.0.awake() - start);
-        for _ in 0..10 {
-            io.0.pass(20);
-            a.step(&io, able(), &any);
-        }
-        assert_eq!(merged(&mem), 20);
-    }
-
-    #[test]
-    fn entries_found_not_whole_are_read_in_turn() {
-        // Forty entries B told the lead of, cut short, on a share taking five seconds an operation:
-        // a step reads a few of them. Once the last by lease is whole, a step reads it within a
-        // few: those found not whole are read in turn. (Read each step from the first, it waited
-        // until the others were refused, an hour on: seed 1003691 of the four-hour runs.)
-        let mem = Mem::default();
-        setup(&mem);
-        let io = Slow(Mac::new(&mem), Cell::new(0));
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = a.step(&io, able(), &any).list.unwrap();
-        io.0.pass(20);
-        a.step(&io, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }, &any);
-        let entries: Vec<Entry> = (1..=40).map(|n| entry(B, 1, n, "6-1-1")).collect();
-        let keys: Vec<String> = entries.iter().map(|e| e.key().unwrap()).collect();
-        for k in &keys {
-            mem.write_whole(&journal::path(k), b"{\"member\":").unwrap();
-        }
-        io.1.set(5);
-        io.0.pass(20);
-        a.step(&io, Heard { msgs: vec![(B.into(), Msg::Tell(keys.clone()))], ..able() }, &any);
-        for _ in 0..10 {
-            io.0.pass(20);
-            a.step(&io, able(), &any);
-        }
-        // Each read and found not whole by now; the last made whole.
-        journal::write(&mem, &entries[39]).unwrap();
-        let mut steps = 0;
-        while !one(&mem).handles(&keys[39]) {
-            steps += 1;
-            assert!(steps <= 8, "not merged in eight steps");
-            io.0.pass(20);
-            a.step(&io, able(), &any);
-        }
-        let r = one(&mem);
-        assert!(keys[..39].iter().all(|k| !r.handles(k)), "the others still waiting");
-    }
-
-    #[test]
-    fn rr2_a_read_that_always_fails_for_one_entry_is_refused_after_an_hour() {
-        // One entry's reads fail every time (a file the share errors on: EIO, EACCES), the share
-        // answering every other read. (Re-review 2, L1: each failed read started its hour again,
-        // so it was never refused: never caught up, no handover settled, and nothing said why.)
-        // Said at ten minutes, refused at sixty, caught up after.
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = step(&mut a, &ia, able()).list.unwrap();
-        ia.pass(20);
-        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() }).caught_up);
-        let key = journal::write(&mem, &entry(C, 1, 3, "6-1-1")).unwrap();
-        *ia.fail.borrow_mut() = Some(key.clone());
-        ia.down.set(true);
-        ia.pass(20);
-        step(&mut a, &ia, Heard { msgs: vec![(C.into(), Msg::Tell(vec![key.clone()]))], ..able() });
-        let (mut said, mut caught) = (None, None);
-        for i in 1..=200 {
-            ia.pass(20);
-            let o = step(&mut a, &ia, able());
-            if o.events
-                .iter()
-                .any(|e| matches!(e, Event::Waits { what: "read an entry whole", why } if why.contains(&key)))
-            {
-                said.get_or_insert(i);
-            }
-            if o.caught_up {
-                caught.get_or_insert(i);
-            }
-        }
-        assert!(said.is_some_and(|i| (30..=31).contains(&i)), "said at ten minutes: step {said:?}");
-        assert!(caught.is_some_and(|i| (180..=181).contains(&i)), "caught up at sixty: step {caught:?}");
-        let why = one(&mem).rejected.get(&key).cloned();
-        assert!(why.is_some_and(|w| w.contains("not read whole")), "refused");
-    }
-
-    #[test]
-    fn rr_the_hour_rule_and_a_share_that_doesnt_answer() {
-        // B tells A of an entry; the share answers none of A's reads for two hours (away): not
-        // refused; then read whole, applied. (The re-review's.)
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = step(&mut a, &ia, able()).list.unwrap();
-        ia.pass(20);
-        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() }).caught_up);
-        let key = journal::write(&mem, &entry(B, 1, 3, "6-1-1")).unwrap();
-        ia.down.set(true);
-        ia.pass(20);
-        step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() });
-        for _ in 0..24 {
-            ia.pass(300);
-            assert!(!step(&mut a, &ia, able()).caught_up);
-        }
-        ia.down.set(false);
-        ia.pass(20);
-        assert!(step(&mut a, &ia, able()).caught_up);
-        let r = one(&mem);
-        assert!(r.reflected.contains(&key), "applied, not refused: {:?}", r.rejected);
-    }
-
-    #[test]
-    fn rr_the_hour_rule_counts_an_outage_after_a_first_read_not_whole() {
-        // The entry reads not whole once (not there yet as A reads it), then the share answers none
-        // of A's reads for 70 minutes (away). (Re-review F1: refused at minute 60, on time alone,
-        // though it was whole on the share all along: an hour's reads that answer count, and a read
-        // that fails, none answering, starts the hour again.)
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = step(&mut a, &ia, able()).list.unwrap();
-        ia.pass(20);
-        step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() });
-        let e = entry(B, 1, 3, "6-1-1");
-        let key = e.key().unwrap();
-        ia.pass(20);
-        step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() });
-        journal::write(&mem, &e).unwrap();
-        ia.down.set(true);
-        for _ in 0..70 {
-            ia.pass(60);
-            step(&mut a, &ia, able());
-            assert!(!one(&mem).rejected.contains_key(&key), "refused while every read of it failed");
-        }
-        ia.down.set(false);
-        ia.pass(60);
-        assert!(step(&mut a, &ia, able()).caught_up);
-        assert!(one(&mem).reflected.contains(&key), "applied once the share answers");
-    }
-
-    #[test]
-    fn a_lead_lists_every_day_and_is_caught_up_only_by_a_listing_less_than_a_day_old() {
-        // Its take-up's listing merged, its sweeps' handed back; the daily one asked for an hour
-        // ahead and kept out: not caught up once its listing is a day old, nothing asked for
-        // meanwhile; caught up once it's handed back. (Re-review F3; re-review 2, M2.)
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let list = step(&mut a, &ia, able()).list.unwrap();
-        let at = ia.now();
-        ia.pass(20);
-        assert_eq!(
-            step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).listed_at,
-            Some(at)
-        );
-        let (mut daily, mut heard) = (None, able());
-        while ia.now() < at + RELIST_S {
-            ia.pass(300);
-            let o = step(&mut a, &ia, std::mem::replace(&mut heard, able()));
-            assert_eq!(o.caught_up, ia.now() < at + RELIST_S, "{} s after its listing", ia.now() - at);
-            match o.list {
-                Some(_) if daily.is_some() => panic!("asked for a listing while one is out"),
-                Some(l) if l.since.is_none() => daily = Some((ia.now() - at, l)),
-                Some(l) => heard = Heard { listed: Some(Listed { n: l.n, keys: Vec::new() }), ..able() },
-                None => {}
-            }
-        }
-        let (when, l) = daily.expect("asked for");
-        assert!(when + AHEAD_S >= RELIST_S && when < RELIST_S, "an hour ahead: {when}");
-        for _ in 0..6 {
-            ia.pass(300);
-            assert!(step(&mut a, &ia, able()).list.is_none(), "nothing asked for while it's out");
-        }
-        ia.pass(20);
-        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: l.n, keys: Vec::new() }), ..able() }).caught_up);
-    }
-
-    #[test]
-    fn rr2_a_listing_of_every_day_slower_than_listing_s_counts() {
-        // The agent makes one listing at a time, each of every day taking 20 minutes (a journal of
-        // 36 day folders at 33 s a folder, no GC yet), a sweep's two. (Re-review 2, M2: asked again
-        // after 15 minutes, each listing came back under an older ask's number, merged as any: the
-        // lead was never caught up.) None is asked for while one is out, and each counts.
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let mut queue: std::collections::VecDeque<(Listing, u64)> = Default::default();
-        let mut running: Option<(Listing, u64)> = None;
-        let (mut first, mut last, mut most, mut heard) = (None, false, 0, able());
-        for i in 0..(3 * 60 * 24 * 2) {
-            let o = step(&mut a, &ia, std::mem::replace(&mut heard, able()));
-            if o.caught_up {
-                first.get_or_insert(i);
-            }
-            last = o.caught_up;
-            if let Some(l) = o.list {
-                let d = if l.since.is_none() { 1200 } else { 120 };
-                queue.push_back((l, d));
-            }
-            most = most.max(queue.len() + usize::from(running.is_some()));
-            ia.pass(20);
-            if running.is_none() {
-                running = queue.pop_front().map(|(l, d)| (l, ia.now() + d));
-            }
-            if let Some((l, done)) = running.take() {
-                if ia.now() >= done {
-                    heard = Heard {
-                        listed: Some(Listed { n: l.n, keys: journal::list(&mem, l.since.as_deref()).unwrap() }),
-                        ..able()
-                    };
-                } else {
-                    running = Some((l, done));
-                }
-            }
-        }
-        assert!(first.is_some_and(|i| i <= 62), "caught up once its take-up's listing is back: step {first:?}");
-        assert!(last, "two days on, its daily listings back");
-        assert_eq!(most, 1, "one listing out at a time");
-    }
-
-    #[test]
-    fn a_listing_lost_is_asked_for_again_once_overdue() {
-        // A lead that never sleeps (the M4, on power) whose agent loses its take-up's
-        // listing, never handing it back. (Re-review 3: it was never caught up again, so no
-        // catalogue and no GC, and nothing said why.) Nothing else is asked for while it's out; two
-        // hours on with none back, it's said and asked for again; once that one's back it's caught
-        // up, and the first, back late after all, counts for no more.
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        let lost = step(&mut a, &ia, able()).list.unwrap();
-        let (mut again, mut said) = (None, 0);
-        while again.is_none() {
-            assert!(ia.now() < T0 + OVERDUE_S + 60, "not asked for again");
-            ia.pass(20);
-            let o = step(&mut a, &ia, able());
-            assert!(!o.caught_up);
-            said += o.events.iter().filter(|e| matches!(e, Event::Waits { what: "have a listing back", .. })).count();
-            again = o.list;
-        }
-        let again = again.unwrap();
-        assert!(
-            ia.now() >= T0 + OVERDUE_S && again.since.is_none() && again.n > lost.n,
-            "every day, two hours on: {again:?}"
-        );
-        assert_eq!(said, 1, "said once");
-        ia.pass(20);
-        let o = step(&mut a, &ia, Heard { listed: Some(Listed { n: again.n, keys: Vec::new() }), ..able() });
-        assert!(o.caught_up, "{:?}", o.events);
-        let at = o.listed_at;
-        ia.pass(20);
-        let o = step(&mut a, &ia, Heard { listed: Some(Listed { n: lost.n, keys: Vec::new() }), ..able() });
-        assert!(o.caught_up && o.listed_at == at, "{:?}", o.listed_at);
-    }
-
-    #[test]
-    fn a_note_of_a_stale_leads_refusal_holds_no_lead() {
-        // (Review 2's last scenario: the current lead's own check decides.)
-        let mem = Mem::default();
-        setup(&mem);
-        let x = journal::write(&mem, &entry(C, 1, 7, "6-1-1")).unwrap();
-        journal::note_refusal(&mem, &x, "a stale lead's why").unwrap();
-        let mut r = Records { epoch: 2, ..Default::default() };
-        assert_eq!(records::merge(&mem, &mut r, std::slice::from_ref(&x), &any).applied, std::slice::from_ref(&x));
-        assert!(journal::list(&mem, None).unwrap().contains(&x));
-    }
-
-    /// Steps `d` with `heard`, then on, answering the listings it asks for, until it's caught up.
-    fn caught_up(d: &mut Driver, io: &Mac, heard: Heard) -> Out {
-        let mut heard = heard;
-        let mut seen = Vec::new();
-        for _ in 0..30 {
-            io.pass(20);
-            let o = step(d, io, std::mem::replace(&mut heard, able()));
-            seen.push(format!("{:?} {:?} {} {:?}", o.leads, o.list, o.caught_up, o.events));
-            if let Some(l) = &o.list {
-                heard.listed = Some(Listed { n: l.n, keys: journal::list(io, l.since.as_deref()).unwrap() });
-            } else if o.caught_up {
-                return o;
-            }
-        }
-        panic!("never caught up: {seen:#?}");
     }
 }

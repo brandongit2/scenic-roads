@@ -2,11 +2,11 @@
 //! sixth batch): a step's job changes the manifest only through `buildstore::out::Out`, which puts
 //! and removes only its step's outputs (pipeline::agent::steps::writes, the function the lead's merge
 //! checks every entry by). So every item outside `#[cfg(test)]` code that makes or writes a
-//! hand-off (`handoff::write(`, a `Handoff { … }` or `Handoff::default()` made) or a journal entry
-//! (`journal::write(`), or names the manifest's file or the journal's folder by path, is `Out`
+//! hand-off (`handoff::write(`, a `Handoff { … }` or `Handoff::default()` made), or names the
+//! manifest's file or the old journal's folder by path, is `Out`
 //! itself, or is listed in `EXEMPT` by file, item and what the line says, with why (a reader's
 //! too, so each new line naming them is looked at): the merge's own paths (the coordinator journaling a helper's
-//! hand-off, the driver writing a job's entry, the lead writing today's files from its records),
+//! hand-off, the lead writing today's files from its records),
 //! and the writers of what lies outside the records (the raw tiles' archives a hand-off names). A
 //! new writer fails here until it goes through `Out` or is listed; an exemption that no longer
 //! matches a line fails too, so the list can't go stale. Run by tools/app/publish.sh: it gates
@@ -19,15 +19,16 @@ mod common;
 
 use common::*;
 
-/// What writes or makes a hand-off or a journal entry, in a line's code (its strings blanked).
-const MARKERS: &[&str] = &["handoff::write(", "journal::write(", "Handoff {", "Handoff::default("];
+/// What writes or makes a hand-off, in a line's code (its strings blanked).
+const MARKERS: &[&str] = &["handoff::write(", "Handoff {", "Handoff::default("];
 
-/// The records' paths, named in a line (its strings too): the manifest's file and the journal's
-/// folder. Their readers are listed too, so a new line naming them is looked at.
+/// The records' paths, named in a line (its strings too): the manifest's file and the old journal's
+/// folder (no app writes it since task #1125). Their readers are listed too, so a new line naming
+/// them is looked at.
 const PATHS: &[&str] = &["state/build/manifest.json", "state/build/sizes.json", "state/journal"];
 
-/// Whether line `l` (raw, its comment cut) with code `c` makes or writes a hand-off or an entry,
-/// or names the manifest's file or the journal's folder.
+/// Whether line `l` (raw, its comment cut) with code `c` makes or writes a hand-off, or names the
+/// manifest's file or the old journal's folder.
 fn writes_records(l: &str, c: &str) -> bool {
     let made =
         MARKERS.iter().any(|m| c.contains(m)) && !c.contains("struct Handoff {") && !c.contains("impl Handoff {");
@@ -44,9 +45,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"state/build/manifest.json\"", "regions-fixture: a scratch folder's records for a two-Mac procedure, never the project folder's"),
     ("crates/inputs/src/inputs/served.rs", "RECORDS", "\"state/build/manifest.json\"", "today's manifest file: a test's records before the pool (the map server reads the records' one path, `manifest`)"),
     ("crates/buildstore/src/records/mod.rs", "TODAY", "\"state/build/manifest.json\"", "today's files, the records read before the pool and term 1's first snapshot made from them"),
-    ("crates/agentcore/src/pool/journal.rs", "DIR", "\"state/journal\"", "the journal's own module: its folder"),
-    ("crates/agentcore/src/pool/journal.rs", "REJECTED", "\"state/journal/rejected\"", "the journal's own module: the refusals' notes"),
-    ("crates/agentcore/src/agent/pool.rs", "entry_of", "Handoff::default()", "a pooled job's entry: the hand-offs its job's Out wrote, gathered for the journal"),
+    ("crates/agentcore/src/pool/journal.rs", "DIR", "\"state/journal\"", "the old journal's folder, read for an older app's saved keys alone (Mine::read_back)"),
+    ("crates/agentcore/src/agent/pool.rs", "entry_of", "Handoff::default()", "a pooled job's entry: the hand-offs its job's Out wrote, gathered for the pool"),
     ("crates/agentcore/src/agent/resume.rs", "unmerged", "-> Handoff {", "its signature: the member's unacknowledged entries laid together for its job's Out to read (never handed off)"),
     ("crates/agentcore/src/agent/resume.rs", "unmerged", "Handoff::default()", "a resumable job's member's unacknowledged entries laid together, for its Out to read over the snapshot (never handed off: its own saves are)"),
     ("crates/inputs/src/inputs/elevation_tests.rs", "the_check_job_records_the_switch_once_with_the_first_accepted_index", "\"state/build/manifest.json\"), b\"{}\"", "a test's scratch NAS root: its empty records"),
@@ -118,7 +118,7 @@ fn anchored(lines: &[&str], i: usize, l: &str, anchor: &str) -> Option<usize> {
 #[test]
 fn nothing_writes_the_records_but_through_out() {
     let (bad, _) = scan();
-    assert!(bad.is_empty(), "the records written outside buildstore::out::Out (a hand-off, a journal entry, the manifest's file); write through Out, or list the item in EXEMPT with why:\n{}", bad.join("\n"));
+    assert!(bad.is_empty(), "the records written outside buildstore::out::Out (a hand-off, the manifest's file); write through Out, or list the item in EXEMPT with why:\n{}", bad.join("\n"));
 }
 
 /// Every exemption still matches a line it exempts.
@@ -132,16 +132,12 @@ fn every_exemption_matches_a_line() {
     );
 }
 
-/// The markers: a hand-off made or written, an entry written, the manifest's file written; not the
+/// The markers: a hand-off made or written, the manifest's file written; not the
 /// type's own definition, a read of the manifest, or a marker in a string.
 #[test]
 fn the_markers() {
     let w = |l: &str| writes_records(l, &code_of(l));
-    assert!(
-        w("crate::handoff::write(&dir, &h)?;")
-            && w("let h = Handoff { raw, ..Default::default() };")
-            && w("journal::write(&nas, &e)?;")
-    );
+    assert!(w("crate::handoff::write(&dir, &h)?;") && w("let h = Handoff { raw, ..Default::default() };"));
     assert!(
         w("std::fs::write(root.join(\"state/build/manifest.json\"), b)?;")
             && w("nas.write_whole(\"state/build/manifest.json\", &b)?;")

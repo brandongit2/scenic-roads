@@ -360,8 +360,9 @@ fn own_cost_key(id: &str) -> String {
     crate::coord::cost_key(j.step, j.target())
 }
 
-/// Why the lead's catalogue waits while its pool's records don't reflect the journal (`Gates::publish`).
-const UNPUBLISHED: &str = "waits for the pool's records to reflect the journal (a listing of every day merged)";
+/// Why the lead's catalogue waits while its pool's records don't reflect what's handed off
+/// (`Gates::publish`).
+const UNPUBLISHED: &str = "waits for the pool's records to reflect what's handed off (merged and saved)";
 
 /// Whether `spec` is an offered step's work in the plan (crate::agent::every::offered): it marks the
 /// step's place in the plan's order, its targets granted to any member (this Mac's own agent among
@@ -516,8 +517,8 @@ enum Outcome {
     Failed,
 }
 
-/// How a pooled job's end is told to a lead over HTTP (`end_lease`): done (its hand-off in the
-/// journal), given back, or failed, with what its targets took at least.
+/// How a pooled job's end is told to a lead over HTTP (`end_lease`): done (its hand-off with the
+/// pool), given back, or failed, with what its targets took at least.
 #[derive(Clone, Debug)]
 enum Tell {
     Done(Box<crate::coord::Done>),
@@ -720,7 +721,7 @@ enum Held {
     Leased { lease: u64, dir: PathBuf },
     /// A job's while the pool is on (docs/pool.md §7.3), the lead's own (`own`: its coordinator's
     /// lease) or a member's (the lead's): it saves into `dir` (crate::agent::pool::job_dir), and
-    /// the agent hands that to the pool's journal as an entry of its lease, `<epoch>-<id>` (its
+    /// the agent hands that to the pool as a hand-off of its lease, `<epoch>-<id>` (its
     /// epoch kept under the key `term`, as before docs/coordination.md step 8c).
     Pooled {
         id: u64,
@@ -2147,7 +2148,7 @@ impl Agent {
     /// its outbox folder: ::offload): its outputs and what it took, or its failure. A folder
     /// stays until the coordinator has it (or says its lease is gone: then its work was offered
     /// again, and it's dropped), across restarts; one left by a task that died with an earlier agent
-    /// is given back. (A job's work goes through the journal: crate::agent::pool.)
+    /// is given back. (A job's work goes to the pool as a hand-off: crate::agent::pool.)
     fn send_outbox(&mut self, root: &store::nasfs::NasRoot, waiting: &mut Vec<Waiting>) {
         let Ok(rd) = std::fs::read_dir(self.outbox()) else { return };
         // (Every slot's: a member's packed jobs' too.)
@@ -2159,7 +2160,7 @@ impl Agent {
                 _ => None,
             })
             .collect();
-        // (A job's folder, run out of the pool, drained into the journal: pool::Run::drain_outbox;
+        // (A job's folder, run out of the pool, drained into the pool's hand-offs: pool::Run::drain_outbox;
         // tasks' alone here.)
         let dirs: Vec<PathBuf> = rd
             .flatten()
@@ -2490,7 +2491,7 @@ impl Agent {
                 // its step's whole hand-off as the lead's own job's, no done record: its target,
                 // the pass's date, is no step's target. crate::agent::resume.)
                 let resumed = resume::RESUMABLE.contains(&step.as_str()) && !every::offered(self.o.the_plan, &step);
-                // (In the pool, its folder is its lease's, `<epoch>-<lease>`, handed to the journal.)
+                // (In the pool, its folder is its lease's, `<epoch>-<lease>`, handed to the pool.)
                 let pooled = self.pool.is_some().then_some(crate::pool::journal::LeaseId { epoch, n: lease });
                 let dir = match pooled {
                     Some(l) => pool::job_dir(&self.o.home, l),
@@ -2682,7 +2683,7 @@ impl Agent {
             .filter(|j| !offered_job(self.o.the_plan, j) && self.wait_reason(j, c).is_some())
             .map(|j| j.id.clone())
             .collect();
-        // (A catalogue while the pool's records don't reflect the journal (`Gates::publish`): not asked
+        // (A catalogue while the pool's records don't reflect what's handed off (`Gates::publish`): not asked
         // for, said waiting here. Granted, it would only wait in `try_start_said`, and be granted,
         // logged and leased again every loop: 41 times in the 40 minutes of task #630. The gates as
         // the round's last pool step left them: the grant never waits on the pool's run.)
@@ -2802,7 +2803,7 @@ impl Agent {
     }
 
     /// Lease `n` of this Mac's coordinator held for `spec` in slot `k`: in the pool, with the folder
-    /// its job saves into (`<epoch>-<n>`, handed to the journal as it ends: docs/pool.md §7.3), its
+    /// its job saves into (`<epoch>-<n>`, handed to the pool as it ends: docs/pool.md §7.3), its
     /// step and targets kept there; out of it, the lease alone. False (the lease ended, why said)
     /// when its folder can't be made.
     fn lease_own(
@@ -2937,7 +2938,7 @@ impl Agent {
             }
             Some(Held::Pooled { id, dir, own, .. }) => {
                 // Its hand-off (its saves, the targets it finished, whatever stopped it) to the
-                // journal, by the pool's next step; its folder kept until a saved state holds it.
+                // pool, by the pool's next step; its folder kept until a saved state holds it.
                 let kept: Option<pool::JobKept> =
                     std::fs::read(dir.join("work.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
                 let costs = read_costs(&if own { self.costs_path(k) } else { dir.join("costs.jsonl") });
@@ -2993,7 +2994,7 @@ impl Agent {
                     // a lead's duty as pass-sets', by having ended so, whatever it handed off.)
                     let no_targets = kept.as_ref().is_some_and(|w| w.targets.is_empty());
                     // Out of the pool (its member's lock held by another process), nothing goes to
-                    // the pool's journal from this process: the hand-off goes to the lead to journal
+                    // the pool's hand-offs from this process: the hand-off goes to the lead to journal
                     // itself (`journaled: false`; its coordinator journals it whole before the
                     // lease ends, or answers an error and it's told again), and the folder goes once
                     // the lead answers (`told`). Saying "journaled" here would end the lease with
@@ -3196,7 +3197,7 @@ impl Agent {
     /// Lease `id`'s end answered by the lead: the folder of a job that ended out of the pool, its
     /// hand-off given to the lead to journal (`unjournaled`), removed, so the next process doesn't
     /// hand it off again (`pool::left_jobs`); kept when the lead `refused` it (its checks are a
-    /// hand-off's, stricter than a journal entry's), for the next process to hand off as a job it
+    /// hand-off's, stricter than the pool's), for the next process to hand off as a job it
     /// left.
     fn told(&mut self, id: u64, refused: bool) {
         if let Some(dir) = self.unjournaled.remove(&id) {
@@ -3674,7 +3675,7 @@ impl Agent {
             self.plan.spawn();
         }
         if self._lock.is_some() {
-            // (What they finished went to the journal with their hand-offs, as they saved.)
+            // (What they finished went to the pool with their hand-offs, as they saved.)
             // (A member's packed jobs' slots too: every record an earlier agent may have left.)
             // (But those this agent took over, `adopt_jobs`.)
             for k in 0..MAX_SLOTS {
@@ -4864,7 +4865,7 @@ impl Agent {
                 .is_some_and(|w| w.targets.iter().any(|(t, key)| self.o.the_plan.is_none_key(&w.step, t, key)));
             // The targets it finished: every one when it succeeded, else those it noted done as
             // each was saved (jobrt::control::done), whatever stopped it, so they aren't built
-            // again: handed off with the job's lease (the journal has their saves).
+            // again: handed off with the job's lease (its hand-off has their saves).
             let done = self.finished_targets(k, ok);
             let r = self.slots[k].running.as_mut().unwrap();
             let note = if ok {
@@ -8107,9 +8108,7 @@ impl Agent {
     }
 
     /// This member's hand-offs for `step` its lead hasn't acknowledged, laid in lease order
-    /// (crate::agent::resume::unmerged): unwritten, handed from a job and not yet stepped, or
-    /// written and not acknowledged by the lead (read from the journal; one that
-    /// can't be read now left out).
+    /// (crate::agent::resume::unmerged): kept, or handed from a job and not yet stepped.
     fn unmerged_for(&self, step: &str) -> Result<buildstore::handoff::Handoff> {
         let Some(shared) = &self.pool else { return Ok(Default::default()) };
         // (A tick holding the run, on a slow share: waited for a while, never for good.)
@@ -8124,10 +8123,8 @@ impl Agent {
             );
             std::thread::sleep(Duration::from_millis(100));
         };
-        let mine = run.side.driver().mine();
-        let mut es: Vec<crate::pool::journal::Entry> = mine.unwritten_entries().cloned().collect();
+        let mut es: Vec<crate::pool::journal::Entry> = run.side.driver().mine().entries().cloned().collect();
         es.extend(run.entries.iter().map(|(e, _)| e.clone()));
-        es.extend(resume::unacked(run.side.nas(), step, &mine.to_tell()));
         Ok(resume::unmerged(step, &es))
     }
 
@@ -8202,7 +8199,7 @@ impl Agent {
     }
 
     /// The pool's step while it's on (docs/pool.md §12): the hand-offs from before the pool drained
-    /// into the journal, the driver's step; then, leading, its
+    /// into its member's, the driver's step; then, leading, its
     /// coordinator told the epoch and whether it grants, and what the lead keeps written (the raw
     /// tiles' archives named, its store's backup, its history). What it may do now; None when the pool isn't on. The pool's own thread
     /// (`pool::Ticker`) steps nothing from its start to its end, and steps the driver itself while
@@ -15797,7 +15794,7 @@ mod pool_tests {
             Some("layers/slope/lo/3-2-2.0123456789abcdef.pack")
         );
         let key = rec.reflected.iter().find(|k| k.contains("/1-")).cloned().unwrap();
-        assert!(!r.join(crate::pool::journal::path(&key)).exists(), "not by the journal");
+        assert!(!r.join("state/journal").exists(), "nothing by the NAS's journal");
         // Acknowledged: the member keeps it no more.
         until(&mut m, |m| m.pooled().unwrap().side.driver().mine().unacked() == 0);
         // The lead's coordinator ended the lease, its target kept out of offers until the plan shows
@@ -15811,7 +15808,7 @@ mod pool_tests {
 
     /// Every step to every member (crate::agent::every): a member asks for every step the lead may
     /// offer with its disk's room, takes `pack` by its measures, runs it in its lease's folder, and
-    /// its entry reaches the lead's records through the journal.
+    /// its hand-off reaches the lead's records.
     #[test]
     fn every_step_a_member_takes_pack_and_its_entry_is_merged() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
@@ -17454,7 +17451,7 @@ mod pool_tests {
         // Not caught up: no catalogue, no sweep.
         let mut w = Vec::new();
         assert!(!a.try_start(0, job("catalog"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
-        assert!(w.iter().any(|w| w.why.contains("reflect the journal")), "{w:?}");
+        assert!(w.iter().any(|w| w.why == UNPUBLISHED), "{w:?}");
         assert!(!a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
         // Caught up: the catalogue; the sweep only on a step whose read of the declaration found it
         // the lead.
@@ -17699,7 +17696,7 @@ mod pool_tests {
         a.slots[0].lease = Some(Held::Pooled { id: g.lease, epoch: 1, dir: dir.clone(), own: false });
         assert!(a.beat(0, None), "its lease renewed with the lead");
         assert!(c.held("unit").contains("6/12/25"));
-        // It ends well: told done for the lead to journal (nothing is in the pool's journal from
+        // It ends well: told done for the lead to journal (nothing is in the pool's hand-offs from
         // here), owed while the lead isn't reached, its folder kept meanwhile.
         let cl = a.client.take();
         a.end_lease(0, Outcome::Done, &[("6/12/25".into(), "k".into())], "");

@@ -18,10 +18,10 @@
 //!   (`POST /pool/progress/release`), which keeps it with the member's progress (naming the progress
 //!   it releases by its time) and tells the member in its beats' answers.
 //! - **The job sees its earlier attempts:** its agent lays this member's hand-offs for the job's
-//!   step that its lead hasn't acknowledged (unwritten, or written and not yet in the current term's
-//!   records) into a file of the job's folder (`unmerged`), named to the job by `UNMERGED_ENV`, which
-//!   buildstore::out::Out lays over the snapshot as it opens: a pass restarted after sleep finds its
-//!   earlier stages' outputs before the lead has merged them.
+//!   step that its lead hasn't acknowledged (not yet in its saved records) into a file of the job's
+//!   folder (`unmerged`), named to the job by `UNMERGED_ENV`, which buildstore::out::Out lays
+//!   over the snapshot as it opens: a pass restarted after sleep finds its earlier stages' outputs
+//!   before the lead has merged them.
 //! - **A pass complete by its records:** `sources/osm/<date>/pass` in the merged records (today's
 //!   manifest, which the lead writes from them), not a `pass.*.json` file on the NAS
 //!   (inputs::osmpass::latest_pass_by), the agent's planning and its jobs' alike (`RESUME_ENV` in
@@ -181,21 +181,6 @@ pub fn asks(p: &Progress, now: u64, released: &dyn Fn(&str, u64) -> bool) -> Vec
     p.jobs.iter().filter(|(j, h)| !h.done && live(h, now, released(j, h.began()))).map(|(j, _)| j.clone()).collect()
 }
 
-/// This member's written entries of `step` its lead hasn't acknowledged (`keys`), read from the
-/// journal: one a lead refused (its why noted beside the journal: crate::pool::journal::refusal)
-/// left out, as is one that can't be read now.
-pub fn unacked(nas: &dyn crate::pool::nas::Nas, step: &str, keys: &[String]) -> Vec<Entry> {
-    let mut out = Vec::new();
-    for key in keys {
-        let Ok(crate::pool::journal::Read::Entry(e)) = crate::pool::journal::read(nas, key) else { continue };
-        if e.step != step || !matches!(crate::pool::journal::refusal(nas, key), Ok(None)) {
-            continue;
-        }
-        out.push(e);
-    }
-    out
-}
-
 /// This member's entries for `step`, in lease order, laid one over another: what its jobs of
 /// that step handed off that its lead hasn't acknowledged (`Out` lays it over the snapshot).
 pub fn unmerged<'a>(step: &str, entries: impl IntoIterator<Item = &'a Entry>) -> Handoff {
@@ -308,32 +293,6 @@ mod tests {
         p.jobs.get_mut(PASS).unwrap().done = true;
         assert!(running_elsewhere(PASS, "m-lead", &[p], T).is_none());
         assert!(REFRESH_S * 4 == FRESH_S);
-    }
-
-    /// The journal's entries a resumed job lays: its step's, a refused one left out.
-    #[test]
-    fn a_refused_entry_is_not_laid_over_the_snapshot() {
-        let d = tempfile::tempdir().unwrap();
-        let nas = store::nasfs::NasRoot::local_for_test(d.path());
-        let e = |n: u64, step: &str| Entry {
-            member: "m-b".into(),
-            lease: LeaseId { epoch: 2, n },
-            step: step.into(),
-            handoff: Handoff {
-                changes: [(format!("sources/osm/d/x{n}"), Some("c".to_string()))].into(),
-                ..Default::default()
-            },
-            at: T,
-        };
-        let keys: Vec<String> = [e(1, "osm-pass"), e(2, "osm-pass"), e(3, "terrain")]
-            .iter()
-            .map(|x| crate::pool::journal::write(&nas, x).unwrap())
-            .collect();
-        crate::pool::journal::note_refusal(&nas, &keys[1], "outside its step's write-set").unwrap();
-        let mut missing = keys.clone();
-        missing.push("2026-01-01/2-9".into());
-        let got = unacked(&nas, "osm-pass", &missing);
-        assert_eq!(got.iter().map(|e| e.lease.n).collect::<Vec<_>>(), [1]);
     }
 
     #[test]

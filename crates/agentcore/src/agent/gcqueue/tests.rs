@@ -1,6 +1,4 @@
 use super::*;
-use crate::pool::journal;
-use crate::pool::nas::Mem;
 use crate::pool::records::{self, Records};
 use buildstore::handoff::Handoff;
 use serde_json::json;
@@ -143,18 +141,15 @@ fn a_reuse_of_a_deleted_name_is_refused_and_redone() {
     let at = lease(LeaseId { epoch: 2, n: 7 });
     assert!(q.removing(&[name.to_string()], &h, at).unwrap().is_empty());
     q.gone(&[name.to_string()], &[], T0 + 100, at).unwrap();
-    let nas = Mem::default();
     let mut r = Records { epoch: 2, ..Default::default() };
     let check = |e: &Entry, _: &Records| refusal(&q, e, T0 + 150).map_or(Ok(()), Err);
-    let reused = journal::write(&nas, &entry(5, name)).unwrap();
-    let m = records::merge(&nas, &mut r, &[reused.clone()], &check);
+    let m = records::merge(&mut r, [&entry(5, name)], &check);
     assert_eq!(m.refused.len(), 1, "{m:?}");
     assert!(m.refused[0].1.contains(name), "{}", m.refused[0].1);
     assert_eq!(r.keys.recorded("unit", "6-1-1"), None, "offered again");
     assert!(!r.manifest.contains_key("base/6-1-1"));
     // The redo, its lease granted after the deletion (its file uploaded afresh): merged.
-    let redo = journal::write(&nas, &entry(8, name)).unwrap();
-    let m = records::merge(&nas, &mut r, &[redo], &check);
+    let m = records::merge(&mut r, [&entry(8, name)], &check);
     assert_eq!(m.applied.len(), 1, "{m:?}");
     assert_eq!(r.manifest["base/6-1-1"], name);
     // A name not deleted: no refusal. And the deletion survives a restart.

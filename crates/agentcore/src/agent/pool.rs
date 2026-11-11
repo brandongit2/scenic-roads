@@ -7,7 +7,7 @@
 //!   (`Run::in_step`), and by the pool's own thread (`Ticker`) whenever that loop hasn't stepped it
 //!   for `QUIET_S` (a plan, a job being stopped, a share slow to answer): `Run::tick`, every `TICK_S`
 //!   while the loop stays busy. A tick does what's the pool's alone: the driver's step (its
-//!   heartbeat, mail and listings with it), the history, the view (`VIEW`), whether the
+//!   heartbeat and mail with it), the history, the view (`VIEW`), whether the
 //!   coordinator grants. What's the agent's (its jobs, its coordinator's start and stop, the state a
 //!   take-up loads: `Run::pending_took_up`) waits for its loop's next step. One step at a
 //!   time, each file of the pool's written by the run alone.
@@ -17,8 +17,9 @@
 //! - **The saved state** (`Saved`) written whole to the agent's folder after every step that changed
 //!   it, before anything that step said is acted on; a job's hand-off handed to a step kept (its
 //!   folder) until a saved state holding it is on disk.
-//! - **The listings** the driver asks for, made on a thread of their own one at a time, every one
-//!   handed back once, a failed one made again a minute later (nothing lists a folder in the loop).
+//! - **The hand-offs** its jobs handed it, kept whole in the saved state for its beat to list and
+//!   post to the lead (crate::coord::handoffs), dropped once the lead's answer says its saved records
+//!   name them; leading, those its members posted it, merged by the driver.
 //! - **The members it knows**: those heard by their beats (crate::coord::beats: the lead's own, a
 //!   member's from its lead's answers), forgotten once not heard for `FORGET_AFTER`.
 //! - **The messages** between a member and the lead, by HTTP (docs/coordination.md step 5), each
@@ -26,18 +27,17 @@
 //!   `/pool/mail` (`post_mail`), into its store before it answers, those it hasn't taken posted
 //!   again while it answers the member's beats (none lost while it's down); from the lead in the
 //!   answer to the member's next beat (crate::coord::inbox's `to`), after the number the member
-//!   said it took. Best effort above that, as the driver's are (a message lost is told again or
-//!   made up for).
+//!   said it took. Best effort above that, as the driver's are (a message lost is made up for).
 //! - **The heartbeat**: the driver's fields, the members it knows, composed each step for its
 //!   agent's beat (crate::agent::beat), stamped as it's sent.
-//! - **The merge's checks** (`check`): what phase 1 checks of an entry.
+//! - **The merge's checks** (`check`): what phase 1 checks of a hand-off.
 //!
 //! The pool is always on (§12 phase 4's thirteenth batch): every agent with the NAS leads or works
 //! as a member: the declared lead (crate::pool::lead::declared, the Mac mini) leads, every other
 //! Mac is a member (task #881). (`state/pool/enabled`, the switch of before, is no longer read; an
 //! older app reads it, so it stays on the NAS until none runs.)
 
-use crate::pool::driver::{self, Driver, Event, Heard, Io, Listed, Listing, Msg, Out, Saved};
+use crate::pool::driver::{self, Driver, Event, Heard, Io, Msg, Out, Saved};
 use crate::pool::journal::{self, Entry};
 use crate::pool::nas::{Created, Nas};
 use crate::pool::records::Records;
@@ -45,7 +45,7 @@ use crate::pool::{Beat, Member, MemberLock};
 use anyhow::{Context, Result};
 use buildstore::handoff::Handoff;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -60,11 +60,6 @@ const FORGOTTEN: &str = "forgotten.json";
 /// The records this Mac last saved leading, in the agent's pool folder (crate::pool::driver::Io::
 /// keep, docs/coordination.md step 8b): what its next take-up starts from.
 pub const RECORDS: &str = "records.json";
-/// A failed listing is made again after this.
-const AGAIN: Duration = Duration::from_secs(60);
-/// A Tell the same as the last to that member is sent again only after this (the lead hears it
-/// each loop otherwise; it keeps what it was told).
-const TELL_AGAIN: Duration = Duration::from_secs(600);
 /// The pool's own thread (`Ticker`) steps the driver when no step has run for this long (s, awake)…
 pub const TICK_S: u64 = 20;
 /// …and the agent's loop hasn't stepped it for this long (s, awake): its loop steps it about every
@@ -88,7 +83,7 @@ pub fn read_view(home: &Path) -> Option<PoolFile> {
     std::fs::read(home.join("pool").join(VIEW)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// A NAS the driver's steps and the listings' thread share.
+/// A NAS the driver's steps and the agent's threads share.
 pub type SharedNas = Arc<dyn Nas + Send + Sync>;
 
 /// Its coordinator's store's epoch, raised past a take-up's records first (crate::pool::driver::
@@ -278,12 +273,6 @@ pub struct Conds {
     pub held: bool,
 }
 
-/// A listing of the journal made off the loop: what was asked, and the thread making it.
-struct Making {
-    what: Listing,
-    thread: std::thread::JoinHandle<Result<Vec<String>>>,
-}
-
 /// What the agent hands a step.
 #[derive(Default)]
 pub struct Give {
@@ -327,20 +316,12 @@ pub struct Side {
     /// NAS says (`Cx::lead_urls`, `lead_token`).
     pub courier: Courier,
     pub lead_contact: (Vec<String>, String),
-    /// The last Tell sent each member, and when.
-    told: BTreeMap<String, (Vec<String>, Instant)>,
     /// The members it knows (itself among them), as heard by their beats and of since.
     members: BTreeSet<String>,
     /// The members not heard by their beats, since when (`FORGET_AFTER`).
     missed: BTreeMap<String, Instant>,
     /// The members forgotten: not known again from a message or as the lead until their beat is heard.
     forgotten: BTreeSet<String>,
-    /// The listings asked for and not made yet, the one being made, those made and not handed back,
-    /// and when one last failed.
-    asked: VecDeque<Listing>,
-    making: Option<Making>,
-    made: VecDeque<Listed>,
-    failed_at: Option<Instant>,
     /// It stopped for good (another process holds its lock): why.
     pub stopped: Option<String>,
     /// Its Mac's conditions as last given, for its heartbeat.
@@ -410,14 +391,9 @@ impl Side {
             http,
             courier: http_courier(),
             lead_contact: Default::default(),
-            told: BTreeMap::new(),
             members,
             missed: BTreeMap::new(),
             forgotten,
-            asked: VecDeque::new(),
-            making: None,
-            made: VecDeque::new(),
-            failed_at: None,
             stopped: None,
             conds: None,
             broker: None,
@@ -500,7 +476,6 @@ impl Side {
             self.mail.sent.remove(&m);
             self.mail.posted.remove(&m);
             self.mail_dirty.remove(&m);
-            self.told.remove(&m);
             self.forgotten.insert(m);
         }
         if self.forgotten != before.1 {
@@ -554,11 +529,6 @@ impl Side {
         }
     }
 
-    /// The listings asked for and not handed back yet (asked, being made, made).
-    pub fn listings_out(&self) -> usize {
-        self.asked.len() + self.making.is_some() as usize + self.made.len()
-    }
-
     /// A new driver for this member from its saved state, as a new process would make one: the
     /// lock let go and taken again.
     pub fn restart(&mut self) -> Result<()> {
@@ -576,8 +546,6 @@ impl Side {
         };
         self.driver = Some(Driver::new(self.me.clone(), saved, lock));
         self.written = written;
-        self.asked.clear();
-        self.made.clear();
         Ok(())
     }
 
@@ -591,16 +559,15 @@ impl Side {
         self.dir.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_else(|| self.dir.clone())
     }
 
-    /// One step: what it heard (its mail, the listings made), what the agent gives, the driver's
-    /// step with `check`, its saved state written if it changed; then, only once that's on disk, the
-    /// step's messages sent, its heartbeat written, the listings it asked for begun. A step whose
+    /// One step: what it heard (its mail, the hand-offs posted it, its lead's answers), what the agent
+    /// gives, the driver's step with `check`, its saved state written if it changed; then, only once
+    /// that's on disk, the step's messages sent, its heartbeat written. A step whose
     /// state couldn't be written does none of that, and says the lead may do nothing now (its
     /// duties, catalogues and sweeps held) until one is.
     pub fn step(&mut self, give: Give, check: crate::pool::records::Check) -> Out {
         if let Some(why) = &self.stopped {
             return Out { stop: Some(why.clone()), ..Default::default() };
         }
-        self.poll_listings();
         let msgs = self.take_mail();
         let (entries, folders): (Vec<Entry>, Vec<Option<PathBuf>>) = give.entries.into_iter().unzip();
         self.folders.extend(folders.into_iter().flatten());
@@ -609,12 +576,9 @@ impl Side {
             msgs,
             asks: give.asks,
             entries,
-            listed: self.made.pop_front(),
             named_raw: give.named_raw,
             handed: self.handoffs.taken(),
             merged: self.http.take_merged(),
-            route: self.http.handoff_route(),
-            http_only: !self.http.journal_on(now),
             lead_says: self.http.lead_says(now),
         };
         self.conds = give.conds;
@@ -642,13 +606,11 @@ impl Side {
             out.events.push(Event::Failed { what: "save the member's state", why: format!("{e:#}") });
             (out.duties, out.caught_up, out.vouched) = (false, false, false);
             out.send.clear();
-            // (Its listings are made all the same: the driver counts them asked.)
-            self.asked.extend(out.list.clone());
             return out;
         }
         // (Its hand-offs kept whole for its beat to list and post; those posted it, merged and
         // saved, acknowledged: both only now that the state saying so is on disk.)
-        self.http.set_handoffs(self.driver().mine().unwritten_entries().cloned().collect());
+        self.http.set_handoffs(self.driver().mine().entries().cloned().collect());
         self.handoffs.merged(&out.merged);
         if let Some(l) = self.driver().declared().map(str::to_string) {
             self.heard_of(&l);
@@ -660,8 +622,6 @@ impl Side {
         self.send_mail();
         self.write_beat(&out);
         self.take_members(self.clock.now());
-        self.asked.extend(out.list.clone());
-        self.next_listing();
         out
     }
 
@@ -732,19 +692,12 @@ impl Side {
         msgs
     }
 
-    /// Queues message `m` to member `to` (a Tell the same as the last, sent lately, is passed over).
+    /// Queues message `m` to member `to`.
     fn post(&mut self, to: &str, m: Msg) {
         if self.forgotten.contains(to) {
             return;
         }
         self.heard_of(to);
-        if let Msg::Tell(keys) = &m {
-            let now = self.clock.now();
-            if self.told.get(to).is_some_and(|(k, at)| k == keys && now.saturating_duration_since(*at) < TELL_AGAIN) {
-                return;
-            }
-            self.told.insert(to.to_string(), (keys.clone(), now));
-        }
         // (Numbered from the clock in milliseconds, and on from the last: never again across this
         // member's processes.)
         let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
@@ -849,34 +802,6 @@ impl Side {
         own.pool.reach = self.reach.clone();
         self.http.set_own(own);
     }
-
-    /// A listing made: handed back; a failed one made again a minute on.
-    fn poll_listings(&mut self) {
-        let Some(m) = self.making.take_if(|m| m.thread.is_finished()) else { return };
-        let r = m.thread.join().unwrap_or_else(|_| Err(anyhow::anyhow!("the listing's thread panicked")));
-        match (m.what, r) {
-            (l, Ok(keys)) => self.made.push_back(Listed { n: l.n, keys }),
-            (l, Err(e)) => {
-                eprintln!("pool: listing the journal: {e:#}; made again in a minute");
-                self.asked.push_front(l);
-                self.failed_at = Some(self.clock.now());
-            }
-        }
-    }
-
-    /// The next listing begun, when none is being made: the journal's asked first.
-    fn next_listing(&mut self) {
-        let now = self.clock.now();
-        if self.making.is_some() || self.failed_at.is_some_and(|t| now.saturating_duration_since(t) < AGAIN) {
-            return;
-        }
-        let nas = self.nas.clone();
-        if let Some(l) = self.asked.pop_front() {
-            let since = l.since.clone();
-            let thread = std::thread::spawn(move || journal::list(&*nas, since.as_deref()));
-            self.making = Some(Making { what: l, thread });
-        }
-    }
 }
 
 /// The members heard `found` at `now`, taken into `members`: those found known (and no longer
@@ -923,7 +848,7 @@ fn load_saved(p: &Path) -> (Saved, Vec<u8>) {
     }
 }
 
-/// The merge's checks of a journal entry (docs/pool.md §7.3): its done record is its own step's
+/// The merge's checks of a hand-off (docs/pool.md §7.3): its done record is its own step's
 /// and names targets; every change is to a logical name, as a content name of it, and within its
 /// step's outputs (crate::agent::steps::outside: the function its job's `Out` wrote by, so an entry
 /// it refuses is one an older app's job, or a damaged one, made); each raw tiles' archive it names
@@ -1021,11 +946,10 @@ pub fn said(e: &Event) -> String {
     match e {
         Event::TookUp { epoch, how } => format!("took up the records in epoch {epoch}, from {how}"),
         Event::SteppedDown { epoch, why } => format!("no longer leads (epoch {epoch}): {why}"),
-        Event::Merged { applied, overtaken, refused, listed, .. } => format!(
-            "merged {} entr{} ({overtaken} passed over, {refused} refused){}",
+        Event::Merged { applied, overtaken, refused, .. } => format!(
+            "merged {} entr{} ({overtaken} passed over, {refused} refused)",
             applied.len(),
-            if applied.len() == 1 { "y" } else { "ies" },
-            if *listed { ", a listing's" } else { "" }
+            if applied.len() == 1 { "y" } else { "ies" }
         ),
         Event::Waits { what, why } => format!("waits to {what}: {why}"),
         Event::Failed { what, why } => format!("couldn't {what}: {why}"),
@@ -1054,14 +978,12 @@ pub struct Gates {
     pub leads: Option<u64>,
     /// Leading: grant jobs and plan.
     pub duties: bool,
-    /// Leading: its records reflect the journal (a catalogue may go out).
+    /// Leading: its records reflect what's handed off (a catalogue may go out).
     pub caught_up: bool,
     /// Leading: its step's own read of the declaration found it the lead (a sweep may run, caught
     /// up).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub vouched: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub listed_at: Option<u64>,
     /// Leading: the entries it holds, with why (`check_from`: from a member on a newer app,
     /// outside this app's write-sets), neither merged nor refused until it runs that app.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1070,14 +992,7 @@ pub struct Gates {
 
 impl Gates {
     fn of(o: &Out) -> Gates {
-        Gates {
-            leads: o.leads,
-            duties: o.duties,
-            caught_up: o.caught_up,
-            vouched: o.vouched,
-            listed_at: o.listed_at,
-            held: o.held.clone(),
-        }
+        Gates { leads: o.leads, duties: o.duties, caught_up: o.caught_up, vouched: o.vouched, held: o.held.clone() }
     }
 
     /// A catalogue may be published now.
@@ -1097,7 +1012,7 @@ pub const SWEEPS: [&str; 1] = ["gc"];
 /// The steps that publish (a catalogue: the lead's, once caught up).
 pub const PUBLISHES: [&str; 2] = ["catalog", "catalog-held"];
 /// Lease numbers at and above this are hand-offs a lead's coordinator journaled on its disk, drained
-/// into the pool's journal by its member (`Run::drain`; epoch 0: no lead's). Below it, a job
+/// into its member's hand-offs (`Run::drain`; epoch 0: no lead's). Below it, a job
 /// run out of the pool keeps the lease the lead's coordinator gave it (`Run::drain_outbox`).
 pub const DRAINED: u64 = 1 << 62;
 
@@ -1754,7 +1669,7 @@ impl Run {
     }
 
     /// The hand-offs a lead's coordinator journaled on its disk (`journal`), drained into this
-    /// member's journal entries: those a member out of the pool told it (`journaled: false`, its
+    /// member's hand-offs: those a member out of the pool told it (`journaled: false`, its
     /// member's lock held by another process), which the coordinator wrote whole before ending the
     /// lease. Each is removed once a saved state holding its entry is on disk.
     pub fn drain(&mut self, journal: &Path) {
@@ -1787,7 +1702,7 @@ impl Run {
     /// process, or the NAS not reached as it started) and left in its outbox (`outbox/<lease>/`, a
     /// `jobs::Work` kept with its saves): their hand-offs not told to the lead (the process ended
     /// first, the lead refused it, or it was given back or failed), drained into this member's
-    /// journal entries, once a process. Each folder is removed once a saved state holding its entry
+    /// hand-offs, once a process. Each folder is removed once a saved state holding its entry
     /// is on disk; until then send_outbox passes over it (it has `work.json`) and the member asks
     /// for no task.
     pub fn drain_outbox(&mut self, outbox: &Path) {
@@ -1862,7 +1777,7 @@ pub fn job_dir(home: &Path, lease: journal::LeaseId) -> PathBuf {
     home.join("pool/jobs").join(lease.to_string())
 }
 
-/// The journal entry of the job whose folder is `dir` (`job_dir`): its saves, in the order written,
+/// The hand-off of the job whose folder is `dir` (`job_dir`): its saves, in the order written,
 /// and the targets it finished (`done`; none: it finished none). A shared step's changes only to
 /// the files of the targets it finished (one it was on when it stopped may have saved part of its
 /// own); another step's (the OSM pass's stages) all of them. None when it hands off nothing; an
@@ -2105,15 +2020,19 @@ mod tests {
     fn a_message_this_app_doesnt_know_is_read_past() {
         // (Task #409 review) a newer app's message among the others: passed over, the rest taken,
         // and read past (its number the top), so it holds nothing back and isn't read again.
-        // (So are the messages of the apps before #881: "Leads", "HandTo".)
-        let b = br#"{"msgs": [[5, {"Leads": 3}], [6, {"FromTheFuture": {"x": 1}}], [7, {"Tell": ["k"]}]]}"#;
+        // (So are the messages of the apps before #881, "Leads", "HandTo", and before #1125, "Tell",
+        // "Ack".)
+        let b = br#"{"msgs": [[4, {"Tell": ["k"]}], [5, {"Leads": 3}], [6, {"FromTheFuture": {"x": 1}}], [7, {"Retry": {"target": "6/1/2"}}]]}"#;
         #[derive(serde::Deserialize)]
         struct Raw {
             msgs: Vec<(u64, serde_json::Value)>,
         }
         let raw = || serde_json::from_slice::<Raw>(b).unwrap().msgs;
-        let (msgs, top) = super::after(raw(), 4);
-        assert_eq!(msgs, vec![super::Msg::Tell(vec!["k".into()])]);
+        let (msgs, top) = super::after(raw(), 3);
+        assert_eq!(
+            msgs,
+            vec![super::Msg::Retry(jobrt::control::Retry { target: "6/1/2".into(), ..Default::default() })]
+        );
         assert_eq!(top, 7);
         let (msgs, top) = super::after(raw(), 7);
         assert!(msgs.is_empty() && top == 7);
@@ -2122,6 +2041,11 @@ mod tests {
     use super::*;
 
     use crate::pool::journal::LeaseId;
+
+    /// A build page's ask to retry target `t`, as a member passes it on to the lead.
+    fn retry(t: &str) -> Msg {
+        Msg::Retry(jobrt::control::Retry { target: t.into(), ..Default::default() })
+    }
 
     /// A NAS folder as the pool begins: today's records, and this Mac named their writer.
     fn root(d: &Path) -> PathBuf {
@@ -2153,8 +2077,8 @@ mod tests {
         Ok(())
     }
 
-    /// Steps `s` until `done` says so (each step's listings made off its loop meanwhile, as long
-    /// as a busy Mac takes: five minutes is a watchdog, not a measure).
+    /// Steps `s` until `done` says so (as long as a busy Mac takes: five minutes is a watchdog, not
+    /// a measure).
     fn until(s: &mut Side, give: impl Fn() -> Give, done: impl Fn(&Out) -> bool) -> Out {
         let end = Instant::now() + WATCHDOG;
         loop {
@@ -2230,7 +2154,7 @@ mod tests {
         let t0 = s.clock.now();
         s.take_members(t0);
         assert!(s.members().contains(PH), "heard: known");
-        s.post(PH, Msg::Tell(vec!["k".into()]));
+        s.post(PH, retry("6/1/2"));
         assert!(s.mail.sent.contains_key(PH));
         // (Silent for `beats::FORGET_S`: missed from then, forgotten after `FORGET_AFTER`.)
         s.http_beats().heard(hb(PH), Vec::new(), None, now.saturating_sub(crate::coord::beats::FORGET_S));
@@ -2246,7 +2170,7 @@ mod tests {
         assert!(!saved.contains(PH));
         // (Its queued mail dropped, nothing posted to it, and so after a restart.)
         assert!(!s.mail.sent.contains_key(PH));
-        s.post(PH, Msg::Tell(vec!["k".into()]));
+        s.post(PH, retry("6/1/2"));
         assert!(!s.mail.sent.contains_key(PH));
         drop(s);
         let mut s = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
@@ -2315,18 +2239,16 @@ mod tests {
     }
 
     #[test]
-    fn a_member_steps_saves_its_state_beats_and_lists_off_its_loop() {
+    fn a_member_steps_saves_its_state_and_beats() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
         let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         let id = a.member().id.clone();
         // Its first step: the first Mac in the pool, it declares itself and leads epoch 1, taken up
-        // from today's records; caught up at once, no member heard writing the journal
-        // (docs/coordination.md step 6's gate), so no listing of it.
+        // from today's records; caught up at once.
         let out = a.step(Give::default(), &any);
         assert_eq!((out.leads, out.duties, out.caught_up), (Some(1), true, true));
-        assert!(out.list.is_none() && a.listings_out() == 0, "{:?}", out.list);
         // Its saved state on disk before anything else: naming it, the records it saved.
         let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
         assert_eq!((saved.member.as_str(), saved.records), (id.as_str(), Some((1, 1))));
@@ -2335,17 +2257,15 @@ mod tests {
         let hb = a.http_beats().own().unwrap();
         assert_eq!((hb.pool.leads, hb.members.clone()), (Some(1), vec![id.clone()]));
         assert!(hb.pool.beat > 0 && !r.join("state/pool/members").exists());
-        // A member heard that writes the journal (its beat without `handoff`): the journal listed,
-        // on a thread of its own, and handed back: caught up.
+        // A member heard on an app before step 6 (its beat without `handoff`): nothing listed or
+        // read for it (task #1125), caught up all the same.
         let older = Heartbeat {
             pool: Beat { member: B.into(), host: "b".into(), beat: a.now(), ..Default::default() },
             ..Default::default()
         };
         a.http_beats().heard(older, vec![crate::coord::held::SPEAKS.into()], None, a.now());
         let out = a.step(Give::default(), &any);
-        assert!(!out.caught_up && out.list.is_some(), "{:?}", out.list);
-        let out = until(&mut a, || Give::default(), |o| o.caught_up);
-        assert!(out.listed_at.is_some() && a.listings_out() <= 1);
+        assert!(out.caught_up && !r.join("state/journal").exists(), "{:?}", out.events);
     }
 
     #[test]
@@ -2370,67 +2290,9 @@ mod tests {
         let out = a.step(Give { entries: vec![(e, None)], ..Default::default() }, &any);
         assert!(out.stop.is_some() && a.stopped.is_some());
         let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
-        assert_eq!(saved.mine.unwritten().count(), 1, "its hand-off kept for the next process");
+        assert_eq!(saved.mine.keys().count(), 1, "its hand-off kept for the next process");
         assert_eq!(a.http_beats().own().unwrap().pool.beat, beat);
         assert!(a.step(Give::default(), &any).stop.is_some(), "it steps no more");
-    }
-
-    #[test]
-    fn a_failed_listing_is_made_again_and_handed_back() {
-        // (A NAS whose first listing of the journal fails.)
-        struct Flaky(store::nasfs::NasRoot, std::sync::atomic::AtomicU32);
-        impl Nas for Flaky {
-            fn create_new(&self, p: &str, b: &[u8]) -> Result<Created> {
-                self.0.create_new(p, b)
-            }
-            fn write_whole(&self, p: &str, b: &[u8]) -> Result<()> {
-                self.0.write_whole(p, b)
-            }
-            fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
-                self.0.read(p)
-            }
-            fn exists(&self, p: &str) -> Result<bool> {
-                self.0.exists(p)
-            }
-            fn list(&self, dir: &str) -> Result<Vec<String>> {
-                if dir == journal::DIR && self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                    anyhow::bail!("the share went away");
-                }
-                self.0.list(dir)
-            }
-            fn remove(&self, p: &str) -> Result<()> {
-                self.0.remove(p)
-            }
-        }
-        let d = tempfile::tempdir().unwrap();
-        let r = root(d.path());
-        let home = d.path().join("a/agent");
-        let nas = Arc::new(Flaky(store::nasfs::NasRoot::local_for_test(&r), Default::default()));
-        let mut a =
-            Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone()).unwrap().unwrap();
-        a.set_clock(store::clock::Virtual::new());
-        // (A member heard that writes the journal: the gate open, the journal listed.)
-        let older = Heartbeat {
-            pool: Beat { member: B.into(), host: "b".into(), beat: a.now(), ..Default::default() },
-            ..Default::default()
-        };
-        a.http_beats().heard(older, vec![crate::coord::held::SPEAKS.into()], None, a.now());
-        a.step(Give::default(), &any);
-        // (Stepped until the failed listing, made off the loop, is back.)
-        let end = Instant::now() + WATCHDOG;
-        let out = loop {
-            let out = a.step(Give::default(), &any);
-            if a.failed_at.is_some() {
-                break out;
-            }
-            assert!(Instant::now() < end, "the failing listing never came back");
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        assert!(!out.caught_up, "the failed one isn't handed back");
-        a.failed_at = a.failed_at.map(|t| t - AGAIN);
-        let out = until(&mut a, || Give::default(), |o| o.caught_up);
-        assert!(out.listed_at.is_some());
-        assert!(nas.1.load(std::sync::atomic::Ordering::SeqCst) >= 2, "made again");
     }
 
     /// The lead's tailnet address as its contact says it, in the mail tests: posts to it reach
@@ -2520,17 +2382,16 @@ mod tests {
         fn by_http(&mut self) {
             self.c.set_handoffs(Some(self.a.handoffs()));
             self.b.step(Give::default(), &any);
-            self.beat();
-            assert_eq!(self.b.http_beats().handoff_route(), driver::Route::Http);
+            assert!(self.beat().speaks.iter().any(|w| w == crate::coord::beats::HANDOFF));
         }
 
-        /// B's job's hand-off `n`, handed to its step: kept whole, neither written nor told.
+        /// B's job's hand-off `n`, handed to its step: kept whole, nothing written nor sent.
         fn hand_off(&mut self, n: u64) -> Entry {
             let ib = self.b.member().id.clone();
             let e = unit_entry(&ib, LeaseId { epoch: 1, n }, &format!("6/1/{n}"), &format!("k{n}"));
             let out = self.b.step(Give { entries: vec![(e.clone(), None)], ..Default::default() }, &any);
             let key = e.key().unwrap();
-            assert!(out.send.is_empty() && !self.r.join(journal::path(&key)).exists(), "{:?}", out.send);
+            assert!(out.send.is_empty() && !self.r.join("state/journal").exists(), "{:?}", out.send);
             assert_eq!(self.b.http_beats().handoff_keys(), [key]);
             e
         }
@@ -2545,30 +2406,20 @@ mod tests {
             assert_eq!(self.b.driver().mine().unacked(), 0, "dropped once merged");
         }
 
-        /// B's job's entry `n`: B's Tell of it to A sent.
-        fn tell(&mut self, n: u64) -> String {
-            let (ia, ib) = (self.a.member().id.clone(), self.b.member().id.clone());
-            let e = unit_entry(&ib, LeaseId { epoch: 1, n }, &format!("6/1/{n}"), "k2");
-            let key = e.key().unwrap();
-            let out = self.b.step(Give { entries: vec![(e, None)], ..Default::default() }, &any);
-            assert!(
-                out.send.iter().any(|(to, m)| *to == ia && matches!(m, Msg::Tell(k) if k.contains(&key))),
-                "{:?}",
-                out.send
-            );
-            key
+        /// B's page's ask to retry target `t`, passed on to A by mail (its step sends it).
+        fn ask(&mut self, t: &str) -> String {
+            let ia = self.a.member().id.clone();
+            self.b.post(&ia, retry(t));
+            self.b.step(Give::default(), &any);
+            t.to_string()
         }
 
-        /// A steps until it merged `key` and acknowledged it to B.
-        fn acknowledged(a: &mut Side, ib: &str, key: &str) {
+        /// A steps until it acts on B's ask to retry target `t`.
+        fn acted(a: &mut Side, t: &str) {
             until(
                 a,
                 || Give::default(),
-                |o| {
-                    o.send
-                        .iter()
-                        .any(|(to, m)| to == ib && matches!(m, Msg::Ack { keys, .. } if keys.iter().any(|k| k == key)))
-                },
+                |o| o.acts.iter().any(|x| matches!(x, driver::Act::Retry(r) if r.target == t)),
             );
         }
 
@@ -2577,10 +2428,6 @@ mod tests {
         }
     }
 
-    /// docs/coordination.md step 5: a member's mail to a lead that serves the asks goes by HTTP alone
-    /// (no mailbox written), taken from its store once, and acknowledged; the lead's Ack comes back
-    /// in the answer to the member's next beat (no mailbox either), dropped by the lead once the
-    /// member's beat says it took it.
     /// A NAS whose lead's declaration doesn't answer while `hung` (a share stuck on it); every other
     /// call the share's.
     struct DeclarationHung(SharedNas, Arc<std::sync::atomic::AtomicBool>);
@@ -2684,19 +2531,12 @@ mod tests {
         let ib = m.b.member().id.clone();
         m.b.step(Give::default(), &any);
         m.beat();
-        let key = m.tell(5);
+        let t = m.ask("6/1/5");
         assert_eq!(m.posts(), 1);
         assert!(!m.r.join("state/pool/mail").exists(), "posted, no mailbox written");
         assert_eq!(m.a.inbox().held()[&ib].len(), 1);
-        Mail::acknowledged(&mut m.a, &ib, &key);
+        Mail::acted(&mut m.a, &t);
         assert!(m.a.inbox().held().is_empty(), "read, dropped once its mark is on disk");
-        assert!(!m.r.join("state/pool/mail").exists(), "the Ack by the beat alone");
-        m.beat();
-        assert!(!m.b.http_beats().from_lead().is_empty());
-        m.b.step(Give::default(), &any);
-        assert!(m.b.driver().mine().unacked() == 0, "acknowledged");
-        m.beat();
-        assert!(m.b.http_beats().from_lead().is_empty(), "the lead dropped what B took");
         // (Review) a post from an id with no heartbeat makes up no member: passed over, dropped.
         let stranger = "m-00000000000000dd";
         m.a.inbox().put(stranger, vec![(1, serde_json::json!({"Leads": 9}))]).unwrap();
@@ -2716,14 +2556,14 @@ mod tests {
         m.b.step(Give::default(), &any);
         m.beat();
         m.c.set_member(Some("m-00000000000000cc"));
-        let key = m.tell(5);
+        let t = m.ask("6/1/5");
         assert_eq!(m.posts(), 1);
         assert!(m.a.inbox().held().is_empty(), "refused: kept");
         m.c.set_member(Some(&m.a.member().id.clone()));
         m.b.step(Give::default(), &any);
         assert_eq!(m.posts(), 2);
         assert_eq!(m.a.inbox().held()[&ib].len(), 1);
-        Mail::acknowledged(&mut m.a, &ib, &key);
+        Mail::acted(&mut m.a, &t);
         drop(m.c);
     }
 
@@ -2735,7 +2575,7 @@ mod tests {
         let ib = m.b.member().id.clone();
         m.b.step(Give::default(), &any);
         m.beat();
-        let key = m.tell(5);
+        let t = m.ask("6/1/5");
         // (Crashed: neither stepped again nor its state written past this.)
         let home = m.d.path().join("a/agent");
         m.c.stop();
@@ -2746,7 +2586,7 @@ mod tests {
         c.set_inbox(Some(a.inbox()));
         assert_eq!(a.inbox().held()[&ib].len(), 1, "from its store");
         a.know(&ib);
-        Mail::acknowledged(&mut a, &ib, &key);
+        Mail::acted(&mut a, &t);
         c.stop();
     }
 
@@ -2896,36 +2736,42 @@ mod tests {
         drop(m.c);
     }
 
-    /// The rollout gate (docs/coordination.md step 6): a member on an app before it writes its
-    /// hand-offs to the journal and tells the lead by mail; the lead still merges them, and lists
-    /// the journal while such a member is heard (none once every member says it posts them).
+    /// Mixed versions (task #1125): a member on an app before #1125 writes its hand-offs to the
+    /// NAS's journal, which no lead reads now, for a lead whose answer doesn't say `handoff`. This
+    /// lead says it in every answer, its pool side's registries attached or not (its agent's first
+    /// step after its coordinator starts): such a member keeps them, and posts them once the lead
+    /// lacks them.
     #[test]
-    fn mixed_versions_an_older_member_s_journal_hand_off_is_merged() {
+    fn mixed_versions_an_older_member_never_falls_back_to_the_journal() {
         use crate::coord::{beats, held};
         let mut m = mail_pool();
-        m.c.set_handoffs(Some(m.a.handoffs()));
+        let d = tempfile::tempdir().unwrap();
+        let (bare, _) = crate::coord::start_for_test(&d.path().join("coord"), "a", "");
         let ib = m.b.member().id.clone();
         m.b.step(Give::default(), &any);
-        // (B as an older app: its beat says nothing of hand-offs, nor do the answers it reads.)
+        m.beat();
+        let e = m.hand_off(5);
+        let key = e.key().unwrap();
         let old = held::Beat {
             member: "b-host".into(),
-            speaks: [held::SPEAKS, beats::SPEAKS, beats::ASKS].map(str::to_string).to_vec(),
+            speaks: [held::SPEAKS, beats::SPEAKS, beats::ASKS, beats::HANDOFF].map(str::to_string).to_vec(),
             heartbeat: m.b.http_beats().own(),
+            handoffs: vec![key.clone()],
             ..Default::default()
         };
+        // (A coordinator its agent hasn't stepped yet: no registry of any kind.)
+        let a = bare.member_beat(&old);
+        assert!(a.speaks.iter().any(|w| w == beats::HANDOFF) && a.lacks.is_empty() && a.merged.is_empty(), "{a:?}");
+        // (Its beats' registry attached, its hand-offs' not yet.)
         let a = m.c.member_beat(&old);
-        assert!(a.speaks.iter().any(|w| w == beats::HANDOFF), "this lead takes them");
-        m.b.http_beats()
-            .answered(&held::Answer { speaks: vec![beats::SPEAKS.into(), beats::ASKS.into()], ..a }, m.b.now());
-        assert!(m.a.http_beats().journal_on(m.a.now()), "the gate open");
-        let key = m.tell(5);
-        assert!(m.r.join(journal::path(&key)).exists());
-        Mail::acknowledged(&mut m.a, &ib, &key);
-        // B on this app: the gate shut.
-        m.beat();
-        assert!(!m.a.http_beats().journal_on(m.a.now()));
-        let o = until(&mut m.a, || Give::default(), |o| o.caught_up);
-        assert!(o.list.is_none());
+        assert!(a.speaks.iter().any(|w| w == beats::HANDOFF) && a.lacks.is_empty(), "{a:?}");
+        // Attached: lacked, posted, merged.
+        m.c.set_handoffs(Some(m.a.handoffs()));
+        assert_eq!(m.c.member_beat(&old).lacks, [key.clone()]);
+        m.post(&e);
+        m.merged(&key);
+        assert!(!m.r.join("state/journal").exists(), "{ib}: nothing by the journal");
+        bare.stop();
         drop(m.c);
     }
 
@@ -3432,8 +3278,8 @@ mod tests {
     }
 
     /// Ticks `r` as its pool's own thread would (`TICK_S` apart: its agent's loop busy) until
-    /// `done`; the other runs ticked in turn, their clocks moved alike (their listings made off
-    /// their steps meanwhile: five minutes is a watchdog, not a measure).
+    /// `done`; the other runs ticked in turn, their clocks moved alike (five minutes is a watchdog,
+    /// not a measure).
     fn tick_until(runs: &mut [&mut Run], done: impl Fn(&[&mut Run]) -> bool) {
         let end = Instant::now() + WATCHDOG;
         loop {

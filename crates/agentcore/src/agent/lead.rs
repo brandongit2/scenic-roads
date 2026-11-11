@@ -683,7 +683,7 @@ mod tests {
         let events = [
             Event::TookUp { epoch: 842, how: "its own records".into() },
             Event::SteppedDown { epoch: 842, why: "another member is the declared lead".into() },
-            Event::Merged { applied: vec![], overtaken: 0, refused: 0, listed: false, done: vec![] },
+            Event::Merged { applied: vec![], overtaken: 0, refused: 0, done: vec![] },
         ];
         let n = notes(&events, "mini", 5);
         let said: Vec<&str> = n.iter().map(|e| e.note.as_str()).collect();

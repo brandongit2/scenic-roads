@@ -175,7 +175,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
                 a.msgs = i.to(&id, b.took);
             }
             a.hold = s.asks.holds.get(&id).cloned();
-            if let Some(h) = s.handoffs.as_ref().filter(|_| b.speaks.iter().any(|w| w == super::beats::HANDOFF)) {
+            if let Some(h) = s.handoffs.as_ref() {
                 (a.merged, a.lacks) = h.answer(&id, &b.handoffs);
             }
             if let Some(p) = b.progress.clone().filter(|p| p.member == id) {
@@ -183,17 +183,19 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
             }
         }
         // (Its words: `ASKS` and `BUDGETS` still said for the app before, which falls back to the
-        // NAS without them; `HANDOFF` once its agent has attached the hand-offs' registry.)
+        // NAS without them.)
         a.speaks =
             [super::beats::SPEAKS, super::beats::PAGE, super::beats::ROOT, super::beats::ASKS, super::beats::BUDGETS]
                 .map(str::to_string)
                 .to_vec();
-        if s.handoffs.is_some() {
-            a.speaks.push(super::beats::HANDOFF.to_string());
-        }
         a.lead = lead_line(s);
         a.settings_gen = s.asks.settings.gen;
     }
+    // (`HANDOFF` in every answer, its agent's registry attached or not: a member on an app before
+    // task #1125 writes its hand-offs to the NAS's journal, which no lead reads now, for a lead
+    // whose answer doesn't say it. Before the registry is attached the answer says none merged nor
+    // lacking, and the member keeps them.)
+    a.speaks.push(super::beats::HANDOFF.to_string());
     // (As its answers' headers say it: its leases' epoch, its member said; a member's broker none.)
     a.leading = s
         .led

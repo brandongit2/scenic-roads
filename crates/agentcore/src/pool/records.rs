@@ -18,7 +18,7 @@
 //! buildstore::records's, generic over what's read (task #916 step 6a, docs/crates.md §6): here,
 //! the whole records.
 
-use super::journal::{self, Entry, LeaseId};
+use super::journal::{Entry, LeaseId};
 use super::nas::Nas;
 use anyhow::Result;
 use buildstore::rawpack::Pack;
@@ -288,7 +288,7 @@ impl Keys {
 }
 
 /// The steps renamed (task #639: by the pack each makes), old name to new. What an older app
-/// recorded under an old name (the records' keys, a hand-off's done targets, a journal entry) is
+/// recorded under an old name (the records' keys, a hand-off's done targets, an older app's hand-off) is
 /// the step's under its new one (`current`), so nothing is built again for the name alone.
 pub const RENAMED: [(&str, &str); 2] = [("terrain", "terrain-hi"), ("slope", "slope-hi")];
 
@@ -297,7 +297,7 @@ pub fn current(step: &str) -> &str {
     RENAMED.iter().find(|(old, _)| *old == step).map_or(step, |(_, new)| new)
 }
 
-/// A check of a journal entry before it's applied, given the records it would apply to (§7.3: its
+/// A check of a hand-off before it's applied, given the records it would apply to (§7.3: its
 /// writes within its step's write-set, its content names matching their logical names, its lease's
 /// targets and keys): why it's refused, if it is; or, its why beginning `HOLD`, why it's held
 /// (neither applied nor refused: merged again later, `Merged::held`).
@@ -336,10 +336,10 @@ pub struct Records {
     /// named again: passed over unread.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub raw: Vec<(String, Pack)>,
-    /// The journal entries applied (or passed over: `apply`), by key (crate::pool::journal::Entry::key).
+    /// The hand-offs applied (or passed over: `apply`), by key (crate::pool::journal::Entry::key).
     #[serde(default)]
     pub reflected: BTreeSet<String>,
-    /// The journal entries refused, with why.
+    /// The hand-offs refused, with why.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub rejected: BTreeMap<String, String>,
     /// The lease of the last done record applied, by step and target (`slots`): an entry of an older
@@ -349,7 +349,7 @@ pub struct Records {
 }
 
 /// A snapshot's manifest and keys alone (a quarter of its bytes: the unverified uploads, the sizes
-/// and the journal's names left out), written whole by the lead after each snapshot (`ONE_BRIEF`),
+/// and the hand-offs' names left out), written whole by the lead after each snapshot (`ONE_BRIEF`),
 /// for the readers that need no more (`Brief::now`): the map server's syncs, the hosts, the agent's
 /// planning, a catalog's checks. One read pairs keys and manifest of one version (invariant 4).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -482,16 +482,16 @@ impl Records {
         nas.write_whole(ONE_BRIEF, &brief)
     }
 
-    /// Whether journal entry `key` is in them: applied (or passed over), or refused.
+    /// Whether hand-off `key` is in them: applied (or passed over), or refused.
     pub fn handles(&self, key: &str) -> bool {
         self.reflected.contains(key) || self.rejected.contains_key(key)
     }
 
-    /// Applies journal entry `e`, under key `key`, as buildstore::handoff's merge did: its manifest
+    /// Applies hand-off `e`, under key `key`, as buildstore::handoff's merge did: its manifest
     /// changes, its uploads pending and checked, its done record in the keys, its raw archives to
     /// name; and names it. Passed over (named, nothing applied: false) when a later lease's entry
-    /// set any of its targets already (lease order across merges: a member back from sleep tells
-    /// of an older lease's entry after a newer one's was merged).
+    /// set any of its targets already (lease order across merges: a member back from sleep posts
+    /// an older lease's hand-off after a newer one's was merged).
     pub fn apply(&mut self, key: &str, e: &Entry) -> bool {
         let h = &e.handoff;
         let slots: Vec<(String, String)> =
@@ -529,92 +529,46 @@ impl Records {
         true
     }
 
-    /// Names journal entry `key` refused, with why.
+    /// Names hand-off `key` refused, with why.
     pub fn refuse(&mut self, key: &str, why: &str) {
         self.rejected.insert(key.to_string(), why.to_string());
     }
 }
 
-/// What a merge did, by journal key.
+/// What a merge did, by hand-off key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Merged {
     /// Applied to the records.
     pub applied: Vec<String>,
-    /// Named in the records with nothing applied: a later lease's entry set their targets already.
+    /// Named in the records with nothing applied: a later lease's hand-off set their targets already.
     pub overtaken: Vec<String>,
-    /// Refused, with why: their refusals to note once the records naming them are saved.
+    /// Refused, with why (named so in the records).
     pub refused: Vec<(String, String)>,
-    /// Read and not whole (being written, not seen yet, cut short, or removed): to merge later.
-    pub waiting: Vec<String>,
-    /// Not read: the reading stopped (`merge_while`); to merge later.
-    pub unread: Vec<String>,
-    /// Not read: the read failed (the share didn't answer), which says nothing of the entry; to
-    /// merge later.
-    pub failed: Vec<String>,
-    /// Read, and held by the check (`HOLD`), with why: neither applied nor refused; to merge later.
+    /// Held by the check (`HOLD`), with why: neither applied nor refused; to merge later.
     pub held: Vec<(String, String)>,
     /// Of those applied, each one's job done (its key, member, step and targets), for publishing's
     /// times (crate::pubtimes).
     pub done: Vec<MergedJob>,
 }
 
-/// A merged entry's job done: its key, member, step and targets.
+/// A merged hand-off's job done: its key, member, step and targets.
 pub type MergedJob = (String, String, String, Vec<String>);
 
-/// Merges the journal entries `keys` the records don't name yet: each read, checked and applied,
-/// or refused, in lease order: this lead's check decides, whatever another lead's refusal
-/// (crate::pool::journal::refusal). Nothing is written: the caller saves the records, then notes
-/// the refusals (crate::pool::journal::note_refusal) and acknowledges what the saved records name.
-pub fn merge(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check) -> Merged {
-    merge_while(nas, r, keys, check, &|| true)
-}
-
-/// `merge`, reading entries only while `more()` says so (asked before each read): on a share under
-/// load a read takes seconds, and a backlog of thousands must not hold one loop for an hour. The
-/// keys not read are left in `Merged::unread`, to merge later; give the oldest leases first, as
-/// `by_lease` orders them, so the order of what's applied holds across merges too.
-pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check, more: &dyn Fn() -> bool) -> Merged {
-    merge_from(&|k| journal::read(nas, k), r, keys, check, more)
-}
-
-/// `merge_while`, each entry as `read` has it: the journal's (`journal::read`), or a hand-off the
-/// lead holds whole (posted by HTTP, docs/coordination.md step 6; its own jobs').
-pub fn merge_from(
-    read_one: &dyn Fn(&str) -> Result<journal::Read>,
-    r: &mut Records,
-    keys: &[String],
-    check: Check,
-    more: &dyn Fn() -> bool,
-) -> Merged {
+/// Merges hand-offs `entries` the records don't name yet, in lease order (one without a key, its
+/// time not a day, passed over: none is kept so): each checked and applied, or refused, or held
+/// (`HOLD`). Nothing is written: the caller saves the records, then acknowledges what the saved
+/// records name.
+pub fn merge<'a>(r: &mut Records, entries: impl IntoIterator<Item = &'a Entry>, check: Check) -> Merged {
     let mut out = Merged::default();
-    let mut read: BTreeMap<(LeaseId, String), Entry> = BTreeMap::new();
-    let mut seen = BTreeSet::new();
-    let mut stopped = false;
-    for k in keys {
-        if r.handles(k) || !seen.insert(k.as_str()) {
-            continue;
-        }
-        stopped = stopped || !more();
-        if stopped {
-            out.unread.push(k.clone());
-            continue;
-        }
-        match read_one(k) {
-            Ok(journal::Read::Entry(e)) => {
-                read.insert((e.lease, k.clone()), e);
-            }
-            Ok(journal::Read::Damaged(why)) => {
-                r.refuse(k, &why);
-                out.refused.push((k.clone(), why));
-            }
-            Ok(journal::Read::Short | journal::Read::Missing) => out.waiting.push(k.clone()),
-            Err(_) => out.failed.push(k.clone()),
-        }
-    }
-    for ((_, k), e) in read {
-        match check(&e, r) {
+    let todo: BTreeMap<(LeaseId, String), &Entry> = entries
+        .into_iter()
+        .filter_map(|e| Some(((e.lease, e.key()?), e)))
+        .filter(|((_, k), _)| !r.handles(k))
+        .collect();
+    for ((_, k), e) in todo {
+        match check(e, r) {
             Ok(()) => {
-                if r.apply(&k, &e) {
+                if r.apply(&k, e) {
                     if let Some((step, targets)) = &e.handoff.done {
                         out.done.push((
                             k.clone(),
@@ -638,12 +592,6 @@ pub fn merge_from(
         }
     }
     out
-}
-
-/// Journal keys in the order of their leases (`<day>/<epoch>-<n>`: by epoch, then number, then key):
-/// the order a merge applies them in.
-pub fn by_lease(keys: &mut [String]) {
-    keys.sort_by_cached_key(|k| (k.rsplit('/').next().and_then(|l| l.parse::<LeaseId>().ok()), k.clone()));
 }
 
 /// A take-up's error when the records it reads are older than those its lead saved last
@@ -686,11 +634,9 @@ impl std::error::Error for Unsaved {}
 #[cfg(test)]
 mod tests {
     use super::super::journal::LeaseId;
-    use super::super::nas::{Created, Mem};
+    use super::super::nas::Mem;
     use super::*;
-    use anyhow::bail;
     use buildstore::handoff::Handoff;
-    use std::cell::Cell;
 
     const DAY: u64 = 1_791_300_000;
 
@@ -769,41 +715,11 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_entrys_refusal_is_noted_and_checked_again_when_told_again() {
-        // A lead's check refuses an entry (say, its app's write-sets are older) and notes why once
-        // the records naming it are saved. Told again by its member to a lead whose records lack it
-        // (a lead whose disk's copy was lost, its last save not on the NAS), or found by a listing:
-        // that lead's own check decides. (Review M1: the lead whose check would take it refused it
-        // unread.)
-        let nas = Mem::default();
-        let x = journal::write(&nas, &built(1, 5, "6-1-1", "k5")).unwrap();
-        let stale = |_: &Entry, _: &Records| Err::<(), String>("6-1-1 leased again since".into());
-        let mut r1 = Records { epoch: 1, ..Default::default() };
-        let m = merge(&nas, &mut r1, std::slice::from_ref(&x), &stale);
-        save(&mut r1, &nas).unwrap();
-        for (k, why) in &m.refused {
-            journal::note_refusal(&nas, k, why).unwrap();
-        }
-        assert_eq!(journal::refusal(&nas, &x).unwrap().as_deref(), Some("6-1-1 leased again since"));
-        let mut r2 = Records { epoch: 2, ..Default::default() };
-        assert_eq!(journal::list(&nas, None).unwrap(), std::slice::from_ref(&x));
-        let m2 = merge(&nas, &mut r2.clone(), std::slice::from_ref(&x), &any);
-        assert_eq!(m2.applied, std::slice::from_ref(&x), "{m2:?}");
-        let m3 = merge(&nas, &mut r2, &journal::list(&nas, None).unwrap(), &any);
-        assert_eq!(m3.applied, std::slice::from_ref(&x), "{m3:?}");
-        assert_eq!(r2.keys.unit.get("6-1-1").map(String::as_str), Some("k5"));
-    }
-
-    #[test]
     fn a_merge_applies_in_lease_order_and_refuses_what_its_check_refuses() {
-        let nas = Mem::default();
         let mut r = Records { epoch: 3, ..Default::default() };
-        // Told in another order than leased: the later lease's key wins.
+        // Handed in another order than leased: the later lease's key wins.
         let (a, b) = (built(3, 9, "6-1-1", "k9"), built(3, 2, "6-1-1", "k2"));
         let bad = Entry { step: "bogus".into(), ..built(3, 5, "6-1-3", "kx") };
-        let keys: Vec<String> = [&a, &b, &bad].iter().map(|e| journal::write(&nas, e).unwrap()).collect();
-        let short = "2026-10-06/3-7".to_string();
-        nas.create_new(&journal::path(&short), b"").unwrap();
         let check = |e: &Entry, _: &Records| {
             if e.step == "bogus" {
                 Err("writes outside its step's names".to_string())
@@ -811,48 +727,55 @@ mod tests {
                 Ok(())
             }
         };
-        let mut told = keys.clone();
-        told.push(short.clone());
-        told.push(keys[0].clone());
-        let m = merge(&nas, &mut r, &told, &check);
+        let m = merge(&mut r, [&a, &b, &bad, &a], &check);
         assert_eq!(m.applied, [b.key().unwrap(), a.key().unwrap()]);
         assert_eq!(m.refused, [(bad.key().unwrap(), "writes outside its step's names".to_string())]);
-        assert_eq!(m.waiting, [short]);
         assert_eq!(r.keys.unit.get("6-1-1").map(String::as_str), Some("k9"));
         assert_eq!(r.manifest.get("base/6-1-1").map(String::as_str), Some("base/6-1-1.k9.base"));
         assert!(!r.manifest.contains_key("base/6-1-3") && r.handles(&bad.key().unwrap()) && r.pending.len() == 2);
-        // Told again: nothing more.
-        assert_eq!(merge(&nas, &mut r, &keys, &check), Merged::default());
+        assert_eq!(r.rejected[&bad.key().unwrap()], "writes outside its step's names", "why, in the records");
+        // Handed again: nothing more.
+        assert_eq!(merge(&mut r, [&a, &b, &bad], &check), Merged::default());
+        // Held by its check: neither applied nor refused, merged again later.
+        let c = built(3, 11, "6-1-4", "k11");
+        let hold = |_: &Entry, _: &Records| Err::<(), String>(format!("{HOLD}a newer app's"));
+        let m = merge(&mut r, [&c], &hold);
+        assert_eq!(m.held, [(c.key().unwrap(), "a newer app's".to_string())]);
+        assert!(!r.handles(&c.key().unwrap()));
+        assert_eq!(merge(&mut r, [&c], &any).applied, [c.key().unwrap()]);
+    }
+
+    /// Merges hand-off `e` alone: its key, and what the merge did.
+    fn merge1(r: &mut Records, e: &Entry, check: Check) -> (String, Merged) {
+        (e.key().unwrap(), merge(r, [e], check))
     }
 
     #[test]
     fn an_older_lease_merged_after_a_newer_one_is_passed_over() {
         // (Review M5: lease order held only within one merge, and an older lease's entry merged
         // later won.)
-        let nas = Mem::default();
         let mut r = Records { epoch: 3, ..Default::default() };
-        let newer = journal::write(&nas, &built(3, 9, "6-1-1", "k9")).unwrap();
-        let older = journal::write(&nas, &built(3, 5, "6-1-1", "k5")).unwrap();
-        assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&newer), &any).applied, std::slice::from_ref(&newer));
-        let m = merge(&nas, &mut r, std::slice::from_ref(&older), &any);
+        let (newer, m) = merge1(&mut r, &built(3, 9, "6-1-1", "k9"), &any);
+        assert_eq!(m.applied, [newer]);
+        let (older, m) = merge1(&mut r, &built(3, 5, "6-1-1", "k5"), &any);
         assert_eq!((m.applied.len(), m.overtaken.clone()), (0, vec![older.clone()]));
         assert_eq!(r.keys.unit.get("6-1-1").map(String::as_str), Some("k9"), "the newer lease's key");
         assert_eq!(r.manifest.get("base/6-1-1").map(String::as_str), Some("base/6-1-1.k9.base"));
         assert!(r.handles(&older), "named: it doesn't wait");
         // An older lease's entry for other targets, and a later prune of the unit, apply; a build
         // older than the prune doesn't bring it back.
-        let other = journal::write(&nas, &built(3, 4, "6-1-2", "k4")).unwrap();
-        assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&other), &any).applied, [other]);
+        let (other, m) = merge1(&mut r, &built(3, 4, "6-1-2", "k4"), &any);
+        assert_eq!(m.applied, [other]);
         let h = Handoff {
             changes: [("base/6-1-1".to_string(), None)].into(),
             done: Some(("prune".into(), vec![("unit 6-1-1".into(), String::new())])),
             ..Default::default()
         };
-        let prune =
-            journal::write(&nas, &Entry { step: "prune".into(), handoff: h, ..built(3, 12, "6-1-1", "-") }).unwrap();
-        assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&prune), &any).applied, [prune]);
-        let late = journal::write(&nas, &built(3, 10, "6-1-1", "k10")).unwrap();
-        assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&late), &any).overtaken, [late]);
+        let (prune, m) =
+            merge1(&mut r, &Entry { step: "prune".into(), handoff: h, ..built(3, 12, "6-1-1", "-") }, &any);
+        assert_eq!(m.applied, [prune]);
+        let (late, m) = merge1(&mut r, &built(3, 10, "6-1-1", "k10"), &any);
+        assert_eq!(m.overtaken, [late]);
         assert!(!r.manifest.contains_key("base/6-1-1") && !r.keys.unit.contains_key("6-1-1"));
         assert_eq!(r.last["unit"]["6-1-1"], LeaseId { epoch: 3, n: 12 });
         // Kept in the snapshot, for the next lead.
@@ -865,14 +788,9 @@ mod tests {
     /// same redo again changes nothing.
     #[test]
     fn a_redo_forgets_its_targets_keys_alone() {
-        let nas = Mem::default();
         let mut r = Records { epoch: 3, ..Default::default() };
         let check = |e: &Entry, r: &Records| crate::agent::pool::check(crate::agent::seam::for_tests(), e, r);
-        let keys: Vec<String> = [built(3, 1, "6-1-1", "k1"), built(3, 2, "6-1-2", "k2")]
-            .iter()
-            .map(|e| journal::write(&nas, e).unwrap())
-            .collect();
-        assert_eq!(merge(&nas, &mut r, &keys, &any).applied.len(), 2);
+        assert_eq!(merge(&mut r, &[built(3, 1, "6-1-1", "k1"), built(3, 2, "6-1-2", "k2")], &any).applied.len(), 2);
         let redo = |n: u64| {
             let h = Handoff {
                 done: Some((
@@ -884,9 +802,8 @@ mod tests {
             Entry { step: crate::agent::redo::STEP.into(), handoff: h, ..built(3, n, "-", "-") }
         };
         let (manifest, before) = (r.manifest.clone(), r.keys.clone());
-        let k = journal::write(&nas, &redo(5)).unwrap();
         let (ts, marks) = (["6-1-1".to_string()], crate::agent::redo::marks(&r, "unit", &["6-1-1".to_string()]));
-        let m = merge(&nas, &mut r, std::slice::from_ref(&k), &check);
+        let (k, m) = merge1(&mut r, &redo(5), &check);
         // (#789: what `scenic redo --run` follows: the redo's lease is the target's mark now.)
         assert_ne!(crate::agent::redo::marks(&r, "unit", &ts), marks);
         assert_eq!(r.last["unit"]["6-1-1"], LeaseId { epoch: 3, n: 5 });
@@ -894,12 +811,11 @@ mod tests {
         assert_eq!(r.keys.unit.get("6-1-1"), None);
         assert_eq!(r.keys.unit.get("6-1-2").map(String::as_str), Some("k2"), "the other target's kept");
         assert_eq!(r.manifest, manifest, "no file changed");
-        let late = journal::write(&nas, &built(3, 4, "6-1-1", "k4")).unwrap();
-        assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&late), &any).overtaken, [late]);
+        let (late, m) = merge1(&mut r, &built(3, 4, "6-1-1", "k4"), &any);
+        assert_eq!(m.overtaken, [late]);
         assert_eq!(r.keys.unit.get("6-1-1"), None, "a build leased before the redo doesn't bring its key back");
         let again = r.keys.clone();
-        let k = journal::write(&nas, &redo(6)).unwrap();
-        merge(&nas, &mut r, std::slice::from_ref(&k), &check);
+        merge1(&mut r, &redo(6), &check);
         assert_eq!(r.keys, again, "a second redo changes nothing");
         // (Review: a redo's slots are its step's alone, under its old names too.)
         assert_eq!(slots("redo", "pois 6/1/1"), [("pois".to_string(), "6/1/1".to_string())]);
@@ -907,73 +823,8 @@ mod tests {
             slots("redo", "terrain-hi 6/1/1"),
             [("terrain-hi".to_string(), "6/1/1".to_string()), ("terrain".into(), "6/1/1".into())]
         );
-        let next = journal::write(&nas, &built(3, 7, "6-1-1", "k1")).unwrap();
-        assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&next), &any).applied, [next]);
+        let (next, m) = merge1(&mut r, &built(3, 7, "6-1-1", "k1"), &any);
+        assert_eq!(m.applied, [next]);
         assert_eq!(r.keys, before, "built again under its key");
-    }
-
-    #[test]
-    fn a_merge_reads_while_its_budget_lasts_and_leaves_the_rest() {
-        // (Review 2: a lead taking up from an old snapshot read every entry since in one loop, on a
-        // share under load an hour of reads.)
-        let nas = Mem::default();
-        let mut r = Records { epoch: 3, ..Default::default() };
-        let mut keys: Vec<String> = [(3, 9, "6-1-1"), (2, 4, "6-1-2"), (3, 1, "6-1-3")]
-            .iter()
-            .map(|&(t, n, u)| journal::write(&nas, &built(t, n, u, "k")).unwrap())
-            .collect();
-        by_lease(&mut keys);
-        assert_eq!(keys, ["2026-10-06/2-4", "2026-10-06/3-1", "2026-10-06/3-9"]);
-        let reads = Cell::new(0);
-        let m = merge_while(&nas, &mut r, &keys, &any, &|| {
-            reads.set(reads.get() + 1);
-            reads.get() <= 2
-        });
-        assert_eq!((m.applied, m.unread.clone()), (keys[..2].to_vec(), keys[2..].to_vec()));
-        assert_eq!(merge(&nas, &mut r, &m.unread, &any).applied, keys[2..]);
-    }
-
-    #[test]
-    fn a_read_that_fails_is_told_from_one_not_whole_and_the_rest_read() {
-        // (A share that doesn't answer says nothing of an entry: a lead refuses one only once its
-        // reads answer that it isn't whole, for an hour: driver::UNREADABLE_S.)
-        struct Failing(Mem, String);
-        impl Nas for Failing {
-            fn create_new(&self, p: &str, bytes: &[u8]) -> Result<Created> {
-                self.0.create_new(p, bytes)
-            }
-            fn write_whole(&self, p: &str, bytes: &[u8]) -> Result<()> {
-                self.0.write_whole(p, bytes)
-            }
-            fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
-                if p == self.1 {
-                    bail!("read {p}: the share didn't answer");
-                }
-                self.0.read(p)
-            }
-            fn exists(&self, p: &str) -> Result<bool> {
-                self.0.exists(p)
-            }
-            fn list(&self, dir: &str) -> Result<Vec<String>> {
-                self.0.list(dir)
-            }
-            fn remove(&self, p: &str) -> Result<()> {
-                self.0.remove(p)
-            }
-        }
-        let mem = Mem::default();
-        let keys: Vec<String> = [(3, 1, "6-1-1"), (3, 2, "6-1-2")]
-            .iter()
-            .map(|&(t, n, u)| journal::write(&mem, &built(t, n, u, "k")).unwrap())
-            .collect();
-        let short = "2026-10-06/3-3".to_string();
-        mem.write_whole(&journal::path(&short), b"{\"member\":").unwrap();
-        let nas = Failing(mem, journal::path(&keys[0]));
-        let mut r = Records { epoch: 3, ..Default::default() };
-        let m = merge(&nas, &mut r, &[keys.clone(), vec![short.clone()]].concat(), &any);
-        assert_eq!(
-            (m.failed, m.unread, m.applied, m.waiting),
-            (vec![keys[0].clone()], vec![], vec![keys[1].clone()], vec![short])
-        );
     }
 }

@@ -41,12 +41,6 @@ pub struct Beat {
     pub checks_map: bool,
 }
 
-/// The path of member `member`'s heartbeat in the simulator's share model (crate::pool::sim; no
-/// app writes heartbeats on the NAS since task #1036).
-pub fn path(member: &str) -> String {
-    format!("state/pool/members/{member}.json")
-}
-
 impl Beat {
     /// Its member.
     pub fn member(&self) -> Member {
