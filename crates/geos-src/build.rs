@@ -1,9 +1,14 @@
+// GEOS's version, compiled into this script: a new GEOS (its release tarball in source/) changes
+// the script, which cargo then runs again (#1123 review).
+const _GEOS_VERSION: &str = include_str!("source/Version.txt");
+
 fn main() {
-    // Run again only when this script changes: cargo runs a script it compiled anew by itself, and
-    // judges that by content (tools/dev/bin/cargo, #1123). `rerun-if-changed=build.rs` was judged by
-    // the file's time, so every new worktree ran GEOS's whole CMake build again, and every crate
-    // linking it compiled again. A variable named here alone turns off cargo's default (any file of
-    // the package); GEOS_SRC_RERUN is set by nothing. (As before, `source/` isn't watched.)
+    // Run again only when this script changes (with it GEOS's version, above): cargo runs a script
+    // it compiled anew by itself, and judges that by content (tools/dev/bin/cargo, #1123).
+    // `rerun-if-changed=build.rs` was judged by the file's time, so every new worktree ran GEOS's
+    // whole CMake build again, and every crate linking it compiled again. A variable named here
+    // alone turns off cargo's default (any file of the package, by time). An edit inside source/
+    // that leaves Version.txt as it is runs it again only with GEOS_SRC_RERUN set to a new value.
     println!("cargo:rerun-if-env-changed=GEOS_SRC_RERUN");
 
     let mut libgeos_config = cmake::Config::new("source");
