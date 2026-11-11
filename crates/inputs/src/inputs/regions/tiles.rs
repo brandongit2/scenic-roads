@@ -2342,15 +2342,17 @@ fn cells_pass(
         if idx.iter().map(|&i| gaps[i].km2).sum::<f64>() <= fill_km2 {
             continue;
         }
-        // (Each piece's country part, its open part left in the gap for the rest. Touching land, a
-        // piece is a country's unless its stretch reaches the open sea, a cell with no land in it
-        // or round it: past a coast no zone has, the sea there stays the rest's but for the zones.)
+        // (Each piece's country part, its open part left in the gap for the rest. A stretch touching
+        // land is a country's whole, every piece of it, unless it reaches the open sea, a cell with
+        // no land in it or round it: past a coast no zone has, the sea there stays the rest's but
+        // for the zones.)
         let open = idx.iter().any(|&i| far_from_land(data, gaps[i].c));
+        let coastal = !open && idx.iter().any(|&i| gaps[i].touches);
         let mut parts: Vec<(usize, Area)> = Vec::new();
         for &i in idx {
             let g = &mut gaps[i];
             let Some(a) = g.area.take() else { continue };
-            if g.touches && !open {
+            if coastal {
                 parts.push((i, a));
             } else if g.zone_km2 > 0.0 {
                 let z = zones.get(g.c);
@@ -2400,7 +2402,14 @@ fn cells_pass(
             *by.entry(id).or_default() += geom::area_km2(a);
         }
         let km2: f64 = by.values().sum();
-        if by.len() > 1 && km2 > fill_km2 {
+        // (The countries it's split among, as the folder is laid out: a region's top folder, or the
+        // file itself at the top; a province and its country's waters are one.)
+        let tops: BTreeSet<&str> = by
+            .keys()
+            .filter_map(|id| folder.regions.get(*id))
+            .map(|(p, _)| p.split_once('/').map_or(p.as_str(), |(t, _)| t))
+            .collect();
+        if tops.len() > 1 && km2 > fill_km2 {
             // (Split between countries by nearest edge: a place no region names, likely disputed.)
             let v = gaps[idx.iter().copied().max_by(|&a, &b| gaps[a].km2.total_cmp(&gaps[b].km2)).unwrap_or(idx[0])].at;
             let ids: Vec<String> = by.keys().map(|s| s.to_string()).collect();

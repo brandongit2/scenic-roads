@@ -1091,6 +1091,11 @@ fn sea_the_zones_stop_short_of_is_the_countries_it_borders() {
     assert!(said[0].warning && said[0].found[0] == "unnamed" && said[0].about == vec!["east", "west"], "{said:?}");
     assert!(out.fit.after_overlaps.values().all(|k| *k <= tiles::HAIR_KM2), "{:?}", out.fit.after_overlaps);
     assert!(out.fit.after_gaps.is_empty(), "{:?}", out.fit.after_gaps);
+    // Two regions of one country (one top folder): split the same, nothing said.
+    let mut files = all();
+    files.extend([("lag.toml", lag), ("c/west.toml", west), ("c/east.toml", east)]);
+    let out = run(&w, &files);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
 }
 
 /// A zone no region names and none borders is the rest's, and an error: the high seas take only

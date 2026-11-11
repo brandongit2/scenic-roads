@@ -505,14 +505,15 @@ like Croatia's and Serbia's on the Danube). Then each piece still in no
 region (its cells' pieces joined across the cells' edges, as the stretches are) within 100 m of land
 up to `sliver_km2` joins the region with water it shares the longest edge with, as does one
 touching none (a hole in the zones' water off any coast, where their source has a rock OSM hasn't).
-A larger stretch is some country's where it is: each of its pieces touching land (a lagoon, an
-estuary, a creek the zones stop short of: the Ringkøbing Fjord, the Indus delta), unless the stretch
+A larger stretch is some country's where it is: the whole of one touching land (a lagoon, an
+estuary, a creek the zones stop short of: the Ringkøbing Fjord, the Indus delta), unless it
 reaches the open sea (a cell with no land in it or the eight round it: past a coast no zone has),
 and each piece's part inside a 200-nmi zone (any of Marine Regions' zones with its internal
 waters). That goes to the regions with water the stretch shares an edge with: to the one, or split
 among several by nearest edge (`geom::nearest`, the median line), a warning (`unnamed`, naming them
-and their shares) when it is split and over `sliver_km2`: a place no region names, likely disputed,
-whose owner a region's water should name. What's left of it, the open sea beyond every zone, stays. Land in no region
+and their shares) when it is split among countries (the regions' top folders, or a file at the top:
+a province and its country's waters are one) and over `sliver_km2`: a place no region names,
+likely disputed, whose owner a region's water should name. What's left of it, the open sea beyond every zone, stays. Land in no region
 over `sliver_km2` (a stretch joined across the cells' edges) is an error (`rg-cover`), found at a
 point inside its largest part of land and naming the regions with water that had any of it both
 (taken from both); where most of such a stretch is land two regions with water both had, the error
