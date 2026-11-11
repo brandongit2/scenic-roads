@@ -4001,7 +4001,7 @@ fn load_beats(s: &Shared) {
     }
 }
 
-/// What the page takes from a coordinator's memory (`Coordinator::view`): the pause, each lease (when
+/// What the page takes from a coordinator's memory (`Coordinator::pool_view`): the pause, each lease (when
 /// its job began: `Lease::began`) and worker, the tasks by state and `task_mb`, its times as unix
 /// seconds (`unix_of`).
 fn view_of(s: &Shared) -> serde_json::Value {
