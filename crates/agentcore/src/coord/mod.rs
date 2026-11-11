@@ -2874,14 +2874,6 @@ impl Coordinator {
         std::mem::take(&mut self.shared.lock().unwrap().inputs_asks)
     }
 
-    /// What the build page takes from the coordinator's memory (`/api/swarm`'s pause, leases,
-    /// workers, tasks by state and `task_mb`), for the lead's `state/coord/term/<E>/view.json`
-    /// (docs/pool.md §10): its times as unix seconds (a lease's `granted` and last `beat`, a
-    /// worker's `seen`), so it's the same until something changes. Taken under the lock.
-    pub fn view(&self) -> serde_json::Value {
-        view_of(&self.shared.lock().unwrap())
-    }
-
     /// `/pool/view`'s answer to `ask`, taken here (the lead's own page: crate::agent::pageview).
     pub fn pool_view(&self, ask: &ViewAsk) -> serde_json::Value {
         let dir = self.shared.lock().unwrap().dir.clone();
@@ -4051,7 +4043,7 @@ fn view_of(s: &Shared) -> serde_json::Value {
     serde_json::json!({ "pause": s.paused, "leases": leases, "workers": workers, "tasks": tasks })
 }
 
-/// A view's leases and workers (`view_of`, or the lead's `view.json` read on another Mac) as the
+/// A view's leases and workers (`view_of`) as the
 /// page takes them at unix time `unix`: each time an age (a lease's `for_s`, `beat_s` and
 /// `lapses_in_s`, a worker's `seen_s`) in place of its unix seconds.
 pub fn ages(view: &serde_json::Value, unix: u64) -> (serde_json::Value, serde_json::Value) {
@@ -7095,12 +7087,12 @@ mod tests {
         assert!(sw["tasks"].is_object() && sw["leases"].as_array().unwrap().is_empty());
         // (Task #409) the view the lead writes: the same workers, tasks and task_mb, its times as
         // unix seconds, and the same until something changes.
-        let v = c.view();
+        let v = view_of(&c.shared.lock().unwrap());
         assert_eq!((&v["tasks"], &v["task_mb"], &v["pause"]), (&sw["tasks"], &sw["task_mb"], &sw["pause"]));
         let vm1 = v["workers"].as_array().unwrap().iter().find(|x| x["name"] == "m1").unwrap();
         assert_eq!((&vm1["fit"], &vm1["label"], &vm1["done"]), (&m1["fit"], &m1["label"], &m1["done"]));
         assert!(vm1["seen"].as_u64().unwrap() + 5 >= unix_now() && vm1.get("seen_s").is_none());
-        assert_eq!(c.view(), v);
+        assert_eq!(view_of(&c.shared.lock().unwrap()), v);
     }
 
     #[test]
@@ -7264,11 +7256,11 @@ mod tests {
         // (Task #518: what its job is doing now, as its beat says, kept on the lease and shown.)
         let live = crate::agent::jobs::Live { phase: Some("z6 tiles".into()), targets: 1, ..Default::default() };
         assert!(w.beat_told(g.lease, None, Some(live), None).unwrap().0);
-        let v = c.view();
+        let v = view_of(&c.shared.lock().unwrap());
         assert_eq!(v["leases"][0]["live"]["phase"], "z6 tiles", "{v}");
         let long = crate::agent::jobs::Live { target: Some("x".repeat(WHAT_MAX + 50)), ..Default::default() };
         assert!(w.beat_told(g.lease, None, Some(long), None).unwrap().0);
-        let v = c.view();
+        let v = view_of(&c.shared.lock().unwrap());
         assert_eq!(v["leases"][0]["live"]["target"].as_str().unwrap().len(), WHAT_MAX, "capped at the lead");
         assert!(c.cancel(&Cancel::new("6/1/1", None, true, "scenic job cancel on m4")).is_empty());
         assert!(c.cancel(&Cancel::new("6/55/25", Some("pack"), true, "x")).is_empty(), "another step's");

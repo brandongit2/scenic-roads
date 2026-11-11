@@ -10687,7 +10687,12 @@ mod tests {
         let mut w = Vec::new();
         assert!(a.lead_grants(&view.jobs, view.n, &c, &r, &mut w).is_empty(), "{w:?}");
         assert!(!a.try_start_said(0, own_job("a-test one"), &c, None, &mut w));
-        assert!(a.slots.iter().all(|s| s.running.is_none()), "nothing started under the hold");
+        // (One started before the hold, the loop no longer slowed by the NAS's hold file, task
+        // #1036: told to stop at its next safe point.)
+        assert!(
+            a.slots.iter().filter_map(|s| s.running.as_ref()).all(|r| r.pausing.is_some()),
+            "nothing started under the hold"
+        );
         drop(hung);
         a.plan.stop(Duration::ZERO);
     }
@@ -12815,6 +12820,44 @@ mod tests {
     }
 
     /// An agent that runs jobs (no dry run), the NAS at `root`: the lead's, or a member's.
+    /// A lead for a test agent's proxy, which has none out of the pool: a token a take, and the
+    /// answers' lease to each holder that asks (one holder at a time, as the lead's).
+    #[derive(Default)]
+    struct TestLead(std::sync::Mutex<Option<String>>);
+
+    impl jobrt::budget::Lead for TestLead {
+        fn take(&self, _: jobrt::budget::Class) -> std::result::Result<jobrt::budget::Given, String> {
+            Ok(jobrt::budget::Given::Batch { n: 1, window: 0, for_ms: 60_000 })
+        }
+        fn hold(&self, _: u64) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn answers(
+            &self,
+            op: jobrt::budget::LeaseOp,
+            by: &str,
+            token: &str,
+        ) -> std::result::Result<jobrt::budget::LeaseSaid, String> {
+            use jobrt::budget::LeaseOp;
+            let mut held = self.0.lock().unwrap();
+            let mine = held.as_deref() == Some(token);
+            let ok = match op {
+                LeaseOp::Take => mine || held.is_none(),
+                LeaseOp::Renew => mine,
+                LeaseOp::Release => mine,
+            };
+            if ok {
+                *held = (op != LeaseOp::Release).then(|| token.to_string());
+            }
+            Ok(jobrt::budget::LeaseSaid { ok, by: by.to_string(), until: u64::MAX })
+        }
+    }
+
+    /// Agent `a`'s proxy given a `TestLead`.
+    fn give_lead(a: &Agent) {
+        a.proxy.as_ref().expect("its proxy").budget.set_lead(Some(std::sync::Arc::new(TestLead::default())));
+    }
+
     fn running_agent(root: &store::nasfs::NasRoot, home: &Path, helper: bool) -> Agent {
         test_agent(Options {
             the_plan: crate::agent::seam::for_tests(),
@@ -12930,6 +12973,7 @@ mod tests {
         assert!(!archive.exists());
         // The lead's: not while a job runs here, nor without the NAS; then once.
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("m4"), false);
+        give_lead(&a);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(a.try_start(
             0,
@@ -14435,6 +14479,7 @@ mod tests {
         };
         let mut a = test_agent(opts()).unwrap();
         a.free_set = Some(40 << 30);
+        give_lead(&a);
         let port = a.proxy.as_ref().expect("its proxy").addr.port();
         let (first, go) = (d.path().join("first"), d.path().join("go"));
         let get = format!("/usr/bin/curl -sS -m 20 http://en.{}/w/api.php", jobrt::budget::WIKIMEDIA[0]);
@@ -14477,6 +14522,7 @@ mod tests {
         b.mac = cond::Mac::TEST;
         assert!(b.slots[0].running.as_ref().is_some_and(|r| r.adopted && r.pgid == pgid));
         let p = b.proxy.as_ref().expect("the next agent's proxy, at once");
+        give_lead(&b);
         assert_eq!(p.addr.port(), port, "on the port its job was told");
         assert_eq!(wiki(p), 0);
         // Its next request: answered through the next agent's proxy, metered there.
