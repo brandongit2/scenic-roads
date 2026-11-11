@@ -451,9 +451,14 @@ impl Records {
 
     /// Saves them as the next snapshot (`seq` one more): kept by `keep` first (the lead's own
     /// disk, what its take-up starts from: docs/coordination.md step 8b), nothing written to the
-    /// NAS unless that's done; then whole to the one path and its brief (`ONE`, `ONE_BRIEF`). The
-    /// number goes up even when a write fails, so no two versions that may land share one.
-    pub fn save(&mut self, nas: &dyn Nas, keep: Keep) -> std::result::Result<(), Unsaved> {
+    /// NAS unless that's done; then whole to the one path and its brief (`ONE`, `ONE_BRIEF`), the
+    /// brief only while the declaration (read between) still names `lead` (when given): a save
+    /// that lands late, its lead moved meanwhile, leaves the next lead's brief, so a take-up's
+    /// fence (`brief_mark`) sees the one path's records older than it (task #1038, the
+    /// simulator: a lead asleep mid-save wrote both over the next lead's, and a take-up from them
+    /// lost what that lead acknowledged). A read that fails writes it, as before. The number goes
+    /// up even when a write fails, so no two versions that may land share one.
+    pub fn save(&mut self, nas: &dyn Nas, keep: Keep, lead: Option<&str>) -> std::result::Result<(), Unsaved> {
         if self.epoch < 1 {
             return Err(Unsaved::Kept(anyhow::anyhow!("records of no epoch")));
         }
@@ -463,11 +468,11 @@ impl Records {
         self.sizes.retain(|c, _| named.contains(c));
         let b = serde_json::to_vec(self).map_err(|e| Unsaved::Kept(e.into()))?;
         keep(&b).map_err(Unsaved::Kept)?;
-        self.put(nas, &b).map_err(Unsaved::Nas)
+        self.put(nas, &b, lead).map_err(Unsaved::Nas)
     }
 
     /// Their NAS files, `b` the snapshot's bytes (`save`).
-    fn put(&self, nas: &dyn Nas, b: &[u8]) -> Result<()> {
+    fn put(&self, nas: &dyn Nas, b: &[u8], lead: Option<&str>) -> Result<()> {
         // (Brief's fields, borrowed.)
         #[derive(Serialize)]
         struct B<'a> {
@@ -479,6 +484,13 @@ impl Records {
         let brief =
             serde_json::to_vec(&B { term: self.epoch, seq: self.seq, manifest: &self.manifest, keys: &self.keys })?;
         nas.write_whole(ONE, b)?;
+        if let (Some(me), Ok(Some(d))) = (lead, buildstore::records::lead::declared(nas)) {
+            anyhow::ensure!(
+                d.member == me,
+                "{ONE} written, its brief not: {} is the declared lead now (this save landed late)",
+                d.host
+            );
+        }
         nas.write_whole(ONE_BRIEF, &brief)
     }
 
@@ -642,7 +654,7 @@ mod tests {
 
     /// Saves `r` to the NAS alone.
     fn save(r: &mut Records, nas: &dyn Nas) -> std::result::Result<(), Unsaved> {
-        r.save(nas, &|_| Ok(()))
+        r.save(nas, &|_| Ok(()), None)
     }
 
     /// An entry of lease `epoch`-`n` building unit `t` with key `k`.
@@ -711,7 +723,33 @@ mod tests {
         fresh.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
         fresh.write_whole(buildstore::records::lead::LEAD, br#"{"member": "m-000000000000000a"}"#).unwrap();
         assert!(Records::now(&fresh).is_err() && Brief::now(&fresh).is_err());
-        assert!(Records { epoch: 0, ..r }.save(&nas, &|_| Ok(())).is_err(), "records of no epoch");
+        assert!(Records { epoch: 0, ..r }.save(&nas, &|_| Ok(()), None).is_err(), "records of no epoch");
+    }
+
+    /// Task #1038: a save whose lead the declaration no longer names (it landed late, the lead
+    /// moved meanwhile) writes the one path and not its brief: the next lead's brief stays, newer,
+    /// for a take-up's fence (`brief_mark`).
+    #[test]
+    fn a_save_landing_after_a_move_leaves_the_next_leads_brief() {
+        let nas = Mem::default();
+        let lead = |m: &str| {
+            let d = format!("{{\"member\": \"{m}\", \"host\": \"{m}\"}}");
+            nas.write_whole(buildstore::records::lead::LEAD, d.as_bytes()).unwrap()
+        };
+        lead("a");
+        let mut next = Records { epoch: 1002, ..Default::default() };
+        next.save(&nas, &|_| Ok(()), Some("a")).unwrap();
+        assert_eq!(brief_mark(&nas).unwrap(), Some((1002, 1)));
+        lead("b");
+        let mut late = Records { epoch: 1, seq: 7, ..Default::default() };
+        let err = late.save(&nas, &|_| Ok(()), Some("a")).unwrap_err();
+        assert!(matches!(err, Unsaved::Nas(_)), "{err}");
+        assert_eq!(
+            serde_json::from_slice::<Records>(&nas.read(ONE).unwrap().unwrap()).unwrap().epoch,
+            1,
+            "the one path's written"
+        );
+        assert_eq!(brief_mark(&nas).unwrap(), Some((1002, 1)), "its brief not");
     }
 
     #[test]

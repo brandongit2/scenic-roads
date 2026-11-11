@@ -785,7 +785,7 @@ impl Driver {
             (r.epoch, r.seq) = (epoch, 0);
         }
         // (Nothing merged yet: its members post it their hand-offs once they know it leads.)
-        let dirty = match r.save(io, &|b| io.keep(b)) {
+        let dirty = match r.save(io, &|b| io.keep(b), Some(&self.me.id)) {
             Ok(()) => {
                 self.saved.records = Some((r.epoch, r.seq));
                 false
@@ -855,7 +855,7 @@ impl Driver {
         // (Saved again unchanged `RESAVE_S` on: an older save landed late over the one path stays
         // that long at most. That save failing leaves nothing unsaved: tried again next step.)
         if l.dirty || io.awake().saturating_sub(l.saved_at) >= RESAVE_S {
-            match l.records.save(io, &|b| io.keep(b)) {
+            match l.records.save(io, &|b| io.keep(b), Some(&me)) {
                 Ok(()) => {
                     (l.dirty, l.saved_at) = (false, io.awake());
                     self.saved.records = Some((l.records.epoch, l.records.seq));
@@ -1422,9 +1422,9 @@ mod tests {
     #[test]
     fn a_lead_moved_mid_step_acknowledges_nothing() {
         // (Task #878 step 6 review) The owner moves the lead to B while A's step merges a hand-off:
-        // the declaration names B before A's save lands. A, reading the declaration after its save,
-        // acknowledges nothing (its member keeps it, for B); B takes up only `STALE_S` after finding
-        // itself declared, from A's last save.
+        // the declaration names B before A's save lands. A, reading the declaration before its
+        // brief and after its save, writes no brief and acknowledges nothing (its member keeps it,
+        // for B); B takes up only `STALE_S` after finding itself declared, from A's last save.
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
@@ -1451,7 +1451,14 @@ mod tests {
         let o = a.step(&race, Heard { handed: vec![e], ..able() }, &any);
         assert!(one(&mem).handles(&key));
         assert!(o.merged.is_empty(), "nothing acknowledged: {:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what: "acknowledge hand-offs", .. })));
+        // (Its save wrote the one path, not its brief: the declaration names B, task #1038.)
+        assert!(
+            o.events
+                .iter()
+                .any(|e| matches!(e, Event::Failed { what: "save the records", why } if why.contains("its brief not"))),
+            "{:?}",
+            o.events
+        );
         drop(race);
         ia.pass(20);
         assert_eq!(step(&mut a, &ia, able()).leads, None, "A steps down");
