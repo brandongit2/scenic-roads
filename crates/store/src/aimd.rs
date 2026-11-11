@@ -40,16 +40,16 @@ pub const SMOOTH: f64 = 0.25;
 pub const FLOOR_WINDOW: Duration = Duration::from_secs(30);
 /// The longest a read waits for its turn before it goes anyway.
 pub const TAKE_WAIT: Duration = Duration::from_secs(120);
-/// Size classes: below 64 KB, 1 MB, 8 MB, and the rest.
-const CLASSES: usize = 4;
+/// Size classes: a power of two each (`class`), to 2^39 bytes.
+const CLASSES: usize = 40;
 
-fn class(bytes: u64) -> usize {
-    match bytes {
-        0..65_536 => 0,
-        65_536..1_048_576 => 1,
-        1_048_576..8_388_608 => 2,
-        _ => 3,
-    }
+/// A read of `bytes`' size class (its power of two), and its latency as a read of the class's
+/// least size (latency × that over `bytes`: within a class a read twice as long would otherwise
+/// look twice as slow, and a source reading whole files of every size never looked near its best,
+/// task #1096's first measures).
+fn class(bytes: u64) -> (usize, f64) {
+    let k = (63 - bytes.max(1).leading_zeros() as usize).min(CLASSES - 1);
+    (k, (1u64 << k) as f64 / bytes.max(1) as f64)
 }
 
 /// One source's limit: the reads in flight, the limit, the floors.
@@ -141,8 +141,9 @@ impl Limiter {
             Outcome::Unmeasured => {}
             Outcome::Congested => halve(&mut g),
             Outcome::Done { bytes, latency } => {
-                let c = &mut g.classes[class(bytes)];
-                let x = latency.as_secs_f64().max(self.least.as_secs_f64());
+                let (k, scale) = class(bytes);
+                let c = &mut g.classes[k];
+                let x = (latency.as_secs_f64() * scale).max(self.least.as_secs_f64());
                 let sm = c.smooth.map_or(x, |m| m + SMOOTH * (x - m));
                 c.smooth = Some(sm);
                 // (A new window: this one's minimum becomes the one before; two or more windows
@@ -311,6 +312,21 @@ mod tests {
         assert_eq!(l.now().0, 2.0);
         for _ in 0..300 {
             l.record(20, fast, now);
+        }
+        assert_eq!(l.now().0, 16.0);
+    }
+
+    #[test]
+    fn reads_of_mixed_sizes_in_a_class_look_near_their_best() {
+        assert_eq!(class(4096), (12, 1.0));
+        assert_eq!(class(0).0, 0);
+        assert!((class(6144).1 - 4096.0 / 6144.0).abs() < 1e-12);
+        // (Whole files from 1 to 2 MB read at one rate: never slow, always near the best.)
+        let l = Limiter::new(2, 16, ms(1));
+        let t = Instant::now();
+        for i in 0..64u64 {
+            let bytes = (1 << 20) + (i % 8) * (1 << 17);
+            l.record(0, Outcome::Done { bytes, latency: ms(bytes / 100_000) }, t);
         }
         assert_eq!(l.now().0, 16.0);
     }
