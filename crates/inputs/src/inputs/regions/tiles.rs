@@ -2409,8 +2409,7 @@ fn cells_pass(
             }
         }
         let near: Vec<&String> = edge.keys().copied().collect();
-        let longest = edge.iter().max_by(|x, y| x.1.total_cmp(y.1).then(y.0.cmp(x.0))).map(|(id, _)| (*id).clone());
-        let Some(longest) = longest else {
+        if near.is_empty() {
             // (Nothing to give it to: the rest's, and the check below says so.)
             for (i, a) in parts {
                 let g = &mut gaps[i];
@@ -2420,7 +2419,7 @@ fn cells_pass(
                 });
             }
             continue;
-        };
+        }
         // (Within one country (one top folder), the provinces it borders (its regions with land)
         // take what lies outside the zones, the country's waters (its regions of water alone) only
         // the zones' part: a fjord is its shore's, not cut by a median with the country's waters.
@@ -2432,8 +2431,9 @@ fn cells_pass(
             Vec::new()
         };
         let waters: Vec<&String> = near.iter().copied().filter(|id| !provinces.contains(id)).collect();
-        // (A piece shared among `among` by nearest edge; to the stretch's longest edge's region where
-        // none of them is in or next to its cell, never dropped.)
+        // (A piece shared among `among` by nearest edge; to the one of them sharing the longest edge
+        // with the stretch where none of them is in or next to its cell, never dropped: a
+        // province's piece goes to a province even where the country's waters share the longest.)
         let share = |c: Cell, a: Area, among: &[&String]| -> Vec<(String, Cell, Area)> {
             if a.is_empty() {
                 return Vec::new();
@@ -2443,7 +2443,7 @@ fn cells_pass(
             }
             let sides: Vec<Area> = among.iter().map(|id| all[*id].around(c, 1, 1)).collect();
             if sides.iter().all(Area::is_empty) {
-                let to = among.iter().find(|id| ***id == longest).unwrap_or(&among[0]);
+                let to = among.iter().max_by(|x, y| edge[*x].total_cmp(&edge[*y]).then(y.cmp(x))).unwrap_or(&among[0]);
                 return vec![((*to).clone(), c, a)];
             }
             let diag = a.bbox().map_or(0.0, |b| geom::length_m([b[0], b[1]], [b[2], b[3]]));

@@ -516,7 +516,7 @@ poles' rows: at least 110 km from any coast, past a coast no zone has, as Antarc
 and each piece's part inside a 200-nmi zone (any of Marine Regions' zones with its internal
 waters). That goes to the regions with water the stretch shares an edge with: to the one, or split
 among several by nearest edge (`geom::nearest`, the median line; a piece with none of them in or
-next to its cell to the one sharing the stretch's longest edge). Within one country (the regions'
+next to its cell to the one of them sharing the longest edge with the stretch). Within one country (the regions'
 top folders, or a file at the top: a province and its country's waters are one), its shore's: the
 regions with land it borders (its provinces, by their land or their own coastal water) take what
 lies outside the zones, the one whole, several split among themselves alone, and the country's
