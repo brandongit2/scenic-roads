@@ -148,6 +148,12 @@ const WAIT_SAID_S: u64 = 600;
 /// moved it, may land after any: readers read it meanwhile, and a take-up passes over it (its
 /// lead's own copy is newer).
 pub const RESAVE_S: u64 = STALE_S;
+/// A lead grants and plans (`Out::duties`) only while a read of the declaration found it the lead
+/// less than this long ago, by both its clocks (s): one whose reads fail (a hung or slow share)
+/// stops before a lead the owner declared meanwhile takes up, `STALE_S` after first finding itself
+/// declared, so two leads never grant at once (as a stale read lasts `STALE_S` at most; the
+/// owner's edit read stale by the old lead counts from that read).
+pub const VOUCH_S: u64 = STALE_S / 2;
 
 /// What the driver needs of the world: the NAS's operations, this Mac's clocks, its own copy of
 /// the records it leads, and its store's epoch.
@@ -417,6 +423,9 @@ struct Lead {
     refused: Vec<(String, String)>,
     /// Entries its check holds (`records::HOLD`), with why: merged again every step.
     held: BTreeMap<String, String>,
+    /// Its clocks (wall, awake) at its last step whose read of the declaration found it the lead
+    /// (`VOUCH_S`); None before one.
+    vouched_at: Option<(u64, u64)>,
 }
 
 /// A listing asked for and not handed back yet (by its number, in `Driver::asked`).
@@ -664,6 +673,9 @@ impl Driver {
         } else {
             (self.declared_at, self.wait_until) = (None, None);
         }
+        if let Some(l) = self.lead.as_mut().filter(|_| read) {
+            l.vouched_at = Some(start);
+        }
         if self.lead.is_some() {
             let given = Given { tells, listed: heard.listed, handed: heard.handed, named_raw: &heard.named_raw };
             self.lead_step(io, &mut out, given, check, busy, read);
@@ -707,7 +719,20 @@ impl Driver {
         if let Some(l) = &self.lead {
             out.leads = Some(l.epoch);
             out.vouched = read;
-            out.duties = true;
+            // (Its last read naming it `VOUCH_S` old or more: it may not lead now, the owner's move
+            // unread. No grants or plans until a read names it again.)
+            let (wall, awake) = end;
+            out.duties = l
+                .vouched_at
+                .is_some_and(|(w, a)| wall.saturating_sub(w) < VOUCH_S && awake.saturating_sub(a) < VOUCH_S);
+            if !out.duties {
+                out.events.push(Event::Waits {
+                    what: "grant jobs",
+                    why: format!(
+                        "no read of the declaration has named it the lead in the last {VOUCH_S} s: it may not lead now"
+                    ),
+                });
+            }
             out.caught_up = (!self.journal || l.listed_at.is_some_and(|at| io.now().saturating_sub(at) < RELIST_S))
                 && !l.dirty
                 && l.waiting.is_empty();
@@ -847,6 +872,12 @@ impl Driver {
             None => self.spare.clone().or_else(|| self.kept(io, out)),
         }
         .filter(|r| saved.is_none_or(|s| (r.epoch, r.seq) >= s));
+        // (The brief read first: a save writes it after its snapshot, so one landing meanwhile
+        // leaves the snapshot read no older than the brief.)
+        let mark = match records::brief_mark(io) {
+            Ok(m) => m,
+            Err(e) => return out.events.push(Event::Waits { what: "take up the records", why: format!("{e:#}") }),
+        };
         let one = match records::load_one(io) {
             Ok(o) => o,
             Err(e) => return out.events.push(Event::Waits { what: "take up the records", why: format!("{e:#}") }),
@@ -889,6 +920,23 @@ impl Driver {
             },
         };
         let mut r = base;
+        // (Nor from records older than the one path's brief: a save landed late over the one path
+        // (an earlier lead's, left running as it stopped or as the owner moved the lead), over the
+        // newer snapshot the brief is of, whose lead may have acknowledged what they lack. The
+        // fence the terms' own paths were, before step 8c. Tried again: a stale read passes; else
+        // the Mac whose records the brief is of has them on its disk, and leads from them once
+        // declared again.)
+        if let Some((e, seq)) = mark.filter(|m| (r.epoch, r.seq) < *m) {
+            return out.events.push(Event::Waits {
+                what: "take up the records",
+                why: format!(
+                    "the newest records read are epoch {}'s at {}, older than the one path's brief (epoch {e}'s at \
+                     {seq}): a save landed late over the one path, or a stale read (tried again; if this lasts, the \
+                     records are on the disk of the Mac that led epoch {e}: declare it again)",
+                    r.epoch, r.seq
+                ),
+            });
+        }
         // (Never from records older than those its lead last saved: a stale read's. What their
         // saves acknowledged is on no member's disk any more: docs/coordination.md step 6.)
         if let Some((e, seq)) = saved.filter(|s| (r.epoch, r.seq) < *s) {
@@ -948,6 +996,7 @@ impl Driver {
             saved_at: io.awake(),
             refused: Vec::new(),
             held: BTreeMap::new(),
+            vouched_at: None,
         });
         // A take-up lists the journal, every day, while a member writes it.
         self.due = self.journal.then_some((None, true));
@@ -1886,6 +1935,79 @@ mod tests {
         let o = step(&mut b, &ib, http());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert!(b.records().unwrap().handles(&key), "in B's records");
+    }
+
+    /// docs/coordination.md step 8c (8b's per-term paths' case): A's save, left running as the
+    /// owner moved the lead to B, lands at the one path after B saved and acknowledged a hand-off.
+    /// C, declared next, never takes up from it (the one path's brief is B's, newer): it waits; B,
+    /// declared again, leads on from its own, and its save puts the hand-off back on the one path.
+    #[test]
+    fn a_late_save_of_an_earlier_lead_never_hides_a_later_one() {
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib, ic) = (Mac::new(&mem), Mac::new(&mem), Mac::new(&mem));
+        let http = || Heard { http_only: true, ..able() };
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, http()).leads, Some(1));
+        let late = mem.read(records::ONE).unwrap().unwrap();
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+        let mut c = Driver::unlocked(member(C, "M4", V2), Saved::default());
+        declare(&mem, B);
+        step(&mut b, &ib, http());
+        ib.pass(STALE_S);
+        assert_eq!(step(&mut b, &ib, http()).leads, Some(2));
+        let e = entry(B, 2, 1, "6-1-5");
+        let key = e.key().unwrap();
+        ib.pass(20);
+        let o = step(&mut b, &ib, Heard { handed: vec![e], ..http() });
+        assert_eq!(o.merged, std::slice::from_ref(&key), "acknowledged: {:?}", o.events);
+        // A's write lands; the owner moves the lead to C.
+        mem.write_whole(records::ONE, &late).unwrap();
+        declare(&mem, C);
+        ib.pass(20);
+        assert_eq!(step(&mut b, &ib, http()).leads, None, "B steps down");
+        step(&mut c, &ic, http());
+        ic.pass(STALE_S);
+        let o = step(&mut c, &ic, http());
+        assert_eq!(o.leads, None, "C waits: {:?}", o.events);
+        assert!(
+            o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("brief"))),
+            "{:?}",
+            o.events
+        );
+        // Declared again, B leads from its own records, and saves them over A's.
+        declare(&mem, B);
+        ib.pass(20);
+        let o = step(&mut b, &ib, http());
+        assert!(o.leads.is_some_and(|e| e > 2), "{:?}", o.events);
+        assert!(one(&mem).handles(&key), "the hand-off back on the one path");
+    }
+
+    /// A lead whose reads of the declaration fail (a hung share) leads on, but grants and plans
+    /// only while one named it less than `VOUCH_S` ago: the owner may have moved the lead, and the
+    /// next lead takes up `STALE_S` after finding itself declared, so the two never grant at once.
+    #[test]
+    fn a_lead_whose_declaration_reads_fail_stops_granting_before_a_next_lead_could() {
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let http = || Heard { http_only: true, ..able() };
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        let o = step(&mut a, &ia, http());
+        assert_eq!((o.leads, o.duties), (Some(1), true));
+        *ia.fail.borrow_mut() = Some(lead::LEAD.into());
+        ia.down.set(true);
+        ia.pass(VOUCH_S - 20);
+        let o = step(&mut a, &ia, http());
+        assert_eq!((o.leads, o.vouched, o.duties), (Some(1), false, true), "{:?}", o.events);
+        ia.pass(20);
+        let o = step(&mut a, &ia, http());
+        assert_eq!((o.leads, o.duties), (Some(1), false), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what: "grant jobs", .. })));
+        ia.down.set(false);
+        ia.pass(20);
+        let o = step(&mut a, &ia, http());
+        assert_eq!((o.leads, o.vouched, o.duties), (Some(1), true, true), "{:?}", o.events);
     }
 
     /// docs/coordination.md step 8b, as on 9 Nov at 20:40Z: a lead whose take-up's NAS write fails

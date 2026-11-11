@@ -412,6 +412,21 @@ pub fn load_one(nas: &dyn Nas) -> Result<Option<Records>> {
     buildstore::records::load_one(nas)
 }
 
+/// The (epoch, seq) of the one path's brief (`ONE_BRIEF`) as read now; None when there's none: a
+/// lead's take-up's fence (crate::pool::driver). A save writes its brief only once its snapshot is
+/// written whole at the one path, so a snapshot older than the brief there is one that landed late
+/// over a newer save's (an earlier lead's write left running): its brief's epoch and seq say so.
+pub fn brief_mark(nas: &dyn Nas) -> Result<Option<(u64, u64)>> {
+    #[derive(Deserialize)]
+    struct Mark {
+        term: u64,
+        seq: u64,
+    }
+    let Some(b) = nas.read(ONE_BRIEF)? else { return Ok(None) };
+    let m: Mark = serde_json::from_slice(&b).map_err(|e| anyhow::anyhow!("parse {ONE_BRIEF}: {e}"))?;
+    Ok(Some((m.term, m.seq)))
+}
+
 impl Records {
     /// The build's records as today's three files hold them (before the pool: its first take-up's).
     /// The pending read before the manifest (a save writes the manifest first: every upload the

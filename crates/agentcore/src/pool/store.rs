@@ -273,8 +273,13 @@ impl Store {
     pub fn raise_epoch(&self, past: u64) -> Result<u64> {
         let seq = {
             let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
+            // (Already past: durable all the same before it answers. A raise whose wait timed out
+            // is in memory alone until its line is written, and its retry lands here.)
             if m.state.epoch > past {
-                return Ok(m.state.epoch);
+                let (epoch, seq) = (m.state.epoch, m.state.seq);
+                drop(m);
+                ensure!(self.wait(seq, DURABLE_WAIT), "the store's epoch {epoch} isn't on its disk");
+                return Ok(epoch);
             }
             let l = Line { seq: m.state.seq + 1, epoch: Some(past + 1), ..Default::default() };
             match line_bytes(&l) {

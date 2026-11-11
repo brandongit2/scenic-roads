@@ -1367,12 +1367,15 @@ pub fn lead_answered(answered: Option<&crate::coord::client::Answered>, lead: Op
 }
 
 /// What the coordinator answers asks for jobs with, by the gates (None: it grants): its take-up's
-/// state not loaded yet (`pending`), its member's lock not known held, or no longer leading.
+/// state not loaded yet (`pending`), its member's lock or the declaration not read lately (`driver::VOUCH_S`), or
+/// no longer leading.
 pub fn moving(g: &Gates, pending: bool) -> Option<String> {
     match () {
         _ if g.leads.is_some() && pending => Some("taking the records up".into()),
         _ if g.leads.is_some() && g.duties => None,
-        _ if g.leads.is_some() => Some("its member's lock not known held".into()),
+        _ if g.leads.is_some() => {
+            Some("not sure it leads: its member's lock, or the declaration, not read lately".into())
+        }
         _ => Some("no longer leads".into()),
     }
 }
