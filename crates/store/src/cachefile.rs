@@ -804,7 +804,7 @@ mod tests {
                 let_go.load(Ordering::SeqCst)
             }
         });
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(200)); // (sleep ok: the next asks meanwhile; checked by the flag it reads)
         let_go.store(true, Ordering::SeqCst);
         drop(first);
         assert!(next.join().unwrap(), "the next made only once the first let go");
@@ -815,11 +815,11 @@ mod tests {
             let p = p.clone();
             move || drop(making(&p).unwrap())
         });
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(200)); // (sleep ok: the next waits on the first meanwhile)
         std::fs::remove_file(d.path().join("c/x.cov.making")).unwrap();
         let third = making(&p).unwrap();
         drop(first);
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(std::time::Duration::from_millis(300)); // (absence) it doesn't take the lock meanwhile
         assert!(!next.is_finished(), "waits for the one making it now");
         drop(third);
         next.join().unwrap();
