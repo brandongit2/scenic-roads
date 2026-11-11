@@ -95,7 +95,7 @@ fn ensure_local(f: &File) -> Result<()> {
 }
 
 /// The network filesystem `f` lives on (an SMB share: "smbfs"); None when the kernel calls it local.
-fn network_fs(f: &File) -> io::Result<Option<String>> {
+pub(crate) fn network_fs(f: &File) -> io::Result<Option<String>> {
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;

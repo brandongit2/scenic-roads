@@ -680,7 +680,15 @@ plan bench of 11 Nov, 4 MB read in place; the file 1.62 GB with the edge trees, 
 just made is read back from its file the same way, the one made let go. The answers are those of
 the shapes made from the rings, bit for bit (the same values). `scenic-build`'s steps read the
 same file, the agent naming the cache folder to its jobs (`SCENIC_CACHE`), a folder of the Mac's
-own disk (a mapped NAS file faults with SIGBUS when the share drops). Nothing rebuilds the coverage
+own disk (a mapped NAS file faults with SIGBUS when the share drops: a cache on a network
+filesystem isn't mapped, the coverage made in memory as with no cache). Mapping it marks it used
+(room-making deletes the least recently used first) and holds it (its shared lock) while mapped.
+A version not kept yet is made by one process of the Mac at a time (`store::cachefile::making`,
+`<hash16>.cov.making` locked), the others waiting, then reading it in place: since a job's memory
+bound counts the coverage read in place, each making its own at once (a new version's first jobs
+on a member) would have held the whole coverage beside the others', none of it booked (task
+#1109's review). The one making it still holds it whole while it does (~1.7 GB for the world's,
+unbooked), once a version and Mac. Nothing rebuilds the coverage
 from outlines, GeoJSON or region files. `scenic-build`'s `--regions <dir>` (a scratch folder, for
 trying regions) runs the same check in memory and stores nothing. Tests build coverages with
 `Coverage::fixture` and put accepted fixtures in their records (`inputs::regions::accept_fixture`).

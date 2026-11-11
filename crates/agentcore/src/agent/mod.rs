@@ -14192,6 +14192,44 @@ mod tests {
             ),
             first
         );
+        // A version being made by another process of the Mac (task #1109's review: one at a time):
+        // a reader waits for it and reads it in place, its geometry files never read.
+        let mut m3 = BTreeMap::new();
+        inputs::inputs::regions::accept_fixture(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            (&root).into(),
+            &r("-21.9,64.3"),
+            &mut m3,
+        );
+        let a3 = inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m3).unwrap();
+        let kept3 = home.join("cache/coverage").join(format!("{}.cov", store::naming::hash16(a3.version.as_bytes())));
+        let made3 =
+            inputs::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(&root), &a3, None)
+                .unwrap();
+        let making = store::cachefile::making(&kept3).unwrap();
+        let reader = std::thread::spawn({
+            let (root, a3, cache) = (root.clone(), a3.clone(), home.join("cache"));
+            move || {
+                inputs::inputs::regions::read::accepted_coverage(
+                    &store::nasfs::NasRoot::local_for_test(&root),
+                    &a3,
+                    Some(&cache),
+                )
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!reader.is_finished(), "waits while another makes it");
+        for l in inputs::inputs::regions::read::listed(&a3).unwrap() {
+            std::fs::remove_file(root.join(&l.stored.as_ref().unwrap().geometry)).ok();
+        }
+        store::cachefile::create(&kept3, &mut |t| std::fs::write(t, buildstore::coverage::kept_bytes(&made3))).unwrap();
+        store::cachefile::release(&kept3);
+        drop(making);
+        let read3 = reader.join().unwrap().unwrap();
+        assert_eq!(
+            read3.shapes.iter().map(|s| s.rings.clone()).collect::<Vec<_>>(),
+            made3.shapes.iter().map(|s| s.rings.clone()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

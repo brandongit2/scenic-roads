@@ -351,18 +351,26 @@ impl Mapped {
 }
 
 /// The cache file at `path` mapped (`Mapped`): a large file read in place, never copied into the
-/// process (the regions' coverage, task #1109); None when it isn't there. Safe because a cache
-/// file's bytes never change once it has its name (`create`: made under a temporary name, never
-/// renamed over, never written again; a delete unlinks it, its pages kept while it's mapped). Only
-/// for this Mac's own disk: a mapped NAS file's page fault is a SIGBUS when the share drops
-/// (crate::range).
+/// process (the regions' coverage, task #1109), marked used (`touch`: room-making deletes the least
+/// recently used first); None when it isn't there. Safe because a cache file's bytes never change
+/// once it has its name (`create`: made under a temporary name, never renamed over, never written
+/// again; a delete unlinks it, its pages kept while it's mapped). Only on this Mac's own disk: a
+/// file on a network filesystem is an `Unsupported` error, never mapped (a mapped NAS file's page
+/// fault is a SIGBUS when the share drops, crate::range).
 pub fn map(path: &Path) -> io::Result<Option<Mapped>> {
     for _ in tries() {
         match open_shared(path)? {
             Some(file) => {
+                if let Some(fs) = crate::range::network_fs(&file).map_err(|e| with(e, "statfs", path))? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        format!("{} is on a network filesystem ({fs}): never mapped", path.display()),
+                    ));
+                }
                 // SAFETY: the file's bytes don't change while it's mapped (above).
                 let map = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| with(e, "map", path))?;
                 crate::range::count_local(map.len() as u64);
+                touch(path);
                 return Ok(Some(Mapped { map, _file: file }));
             }
             None if !path.exists() => return Ok(None),
@@ -370,6 +378,38 @@ pub fn map(path: &Path) -> io::Result<Option<Mapped>> {
         }
     }
     Err(io::Error::other(format!("{}: deleted each time it was opened", path.display())))
+}
+
+/// The making of cache file `path` held by this process among the Mac's (`making`): an exclusive
+/// lock on `<path>.making` beside it, let go when dropped. (The lock file stays, empty: deleted, a
+/// process waiting on it would hold a lock on a file with no name while one coming after locks a
+/// new one; room-making or the next version's sweep takes it once no one holds it.)
+pub struct Making {
+    _file: File,
+}
+
+/// Waits until no other process of the Mac is making cache file `path`, then holds its making
+/// (`Making`): for a file each process would otherwise make itself at once, at a cost its memory
+/// isn't booked for (the regions' coverage, task #1109's review). The caller looks for `path` again
+/// once it holds it: the one before may have made it.
+pub fn making(path: &Path) -> io::Result<Making> {
+    let lock_path = path.with_file_name(format!(
+        "{}.making",
+        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    ));
+    if let Some(d) = lock_path.parent() {
+        make_dir(d)?;
+    }
+    let f = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| with(e, "open", &lock_path))?;
+    #[cfg(unix)]
+    lock(&f, libc::LOCK_EX).map_err(|e| with(e, "lock", &lock_path))?;
+    Ok(Making { _file: f })
 }
 
 /// The bytes the caches hold under `dir` of the entries whose names start with `prefix` (all of
@@ -732,6 +772,38 @@ mod tests {
         release(&p);
         // (No temporary files left.)
         assert_eq!(std::fs::read_dir(d.path().join("a")).unwrap().count(), 1);
+    }
+
+    /// A mapped cache file (`map`, task #1109) is held while mapped, so room-making leaves it, and
+    /// marked used; its making is one process's at a time (`making`), the next waiting.
+    #[test]
+    fn a_mapped_file_is_held_and_marked_used_and_made_by_one_at_a_time() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c/x.cov");
+        assert!(map(&p).unwrap().is_none());
+        create_bytes(&p, b"in place").unwrap();
+        release(&p);
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+        File::options().append(true).open(&p).unwrap().set_modified(old).unwrap();
+        let m = map(&p).unwrap().unwrap();
+        assert_eq!(m.bytes(), b"in place");
+        assert!(std::fs::metadata(&p).unwrap().modified().unwrap() > old + std::time::Duration::from_secs(3_600));
+        assert_eq!(try_remove(&p), Removed::InUse);
+        drop(m);
+        assert_eq!(try_remove(&p), Removed::Freed(8));
+        let first = making(&p).unwrap();
+        let let_go = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let next = std::thread::spawn({
+            let (p, let_go) = (p.clone(), let_go.clone());
+            move || {
+                let _m = making(&p).unwrap();
+                let_go.load(Ordering::SeqCst)
+            }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let_go.store(true, Ordering::SeqCst);
+        drop(first);
+        assert!(next.join().unwrap(), "the next made only once the first let go");
     }
 
     #[test]

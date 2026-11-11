@@ -266,7 +266,9 @@ pub fn coverage_of(geoms: &[Geometry]) -> Coverage {
 
 /// The coverage of the regions' accepted version (§6.1.4): its enabled regions' stored geometry (a
 /// disabled region is no coverage). Where there's a `cache` (this Mac's), kept there by the version
-/// (`coverage/<hash>.cov`): the geometry files are read once per version and Mac.
+/// (`coverage/<hash>.cov`): the geometry files are read once per version and Mac, by one process at
+/// a time (`store::cachefile::making`), and the file read in place (mapped; a cache on a network
+/// filesystem isn't: made in memory, as with none).
 pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Option<&Path>) -> Result<Coverage> {
     let made = || -> Result<Coverage> {
         let l = enabled(a)?;
@@ -284,17 +286,35 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
     // (Read in place, mapped: the shapes' arrays are the file's pages, the file cache's, not this
     // process's memory, task #1109; written as a stream, never whole in memory: the file holds the
     // grids, about the coverage's own size, task #807.)
-    // (None when it isn't there; Some(None) when it doesn't read: not a coverage, or not mapped.)
+    enum Kept {
+        Read(Coverage),
+        /// Not there.
+        None,
+        /// There, but not read: another format's, or not a coverage.
+        Unread,
+        /// On a network filesystem: never mapped (store::cachefile::map), so no cache.
+        Remote,
+    }
     let read = || match store::cachefile::map(&at) {
-        Ok(Some(m)) => Some(buildstore::coverage::from_kept(m)),
-        Ok(None) => None,
-        Err(_) => Some(None),
+        Ok(Some(m)) => buildstore::coverage::from_kept(m).map_or(Kept::Unread, Kept::Read),
+        Ok(None) => Kept::None,
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Kept::Remote,
+        Err(_) => Kept::Unread,
     };
+    if let Kept::Read(c) = read() {
+        return Ok(c);
+    }
+    // (One process of the Mac makes it at a time, the others waiting to read it in place: each
+    // making its own at once held the whole coverage in its memory beside the others', a cost no
+    // job's memory is booked for since it reads in place, Coverage::read_peak_mb. The making not
+    // held: made here.)
+    let _making = store::cachefile::making(&at);
     match read() {
-        Some(Some(c)) => return Ok(c),
+        Kept::Read(c) => return Ok(c),
+        Kept::Remote => return made(),
         // (Another format's: made again in its place, not read past forever.)
-        Some(None) => drop(store::cachefile::try_remove(&at)),
-        None => {}
+        Kept::Unread => drop(store::cachefile::try_remove(&at)),
+        Kept::None => {}
     }
     let c = made()?;
     let written = store::cachefile::create(&at, &mut |t| {
@@ -312,7 +332,7 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
             }
         }
         // (The one made let go for the file just written, read in place: the same shapes.)
-        if let Some(Some(kept)) = read() {
+        if let Kept::Read(kept) = read() {
             return Ok(kept);
         }
     }
