@@ -144,7 +144,9 @@ fn close_kept_connections() {
             let kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
             for s in kept.values().flat_map(|l| std::iter::once(&l.listener).chain(&l.loopback)) {
                 // (Nonblocking: it takes only what waits, then lets the lock go.)
-                while store::spawn::sockets(|| s.accept().map(drop)).is_ok() {}
+                while let Ok((c, _)) = store::spawn::accept(s) {
+                    store::spawn::sockets(|| drop(c));
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(5));
