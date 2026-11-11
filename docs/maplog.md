@@ -341,13 +341,23 @@ its snapshot, not `fsync`ed per request). The clients:
 | a job leased with files of the map as inputs (names-todo, regions' checks) | its lease | yes, until it ends (§7.2) |
 | the NAS snapshot | `snapshot` | yes: a reader may start from it |
 
-A client unheard for `CURSOR_TTL` (7 days) is dropped from the set: a laptop away for a month
-doesn't hold GC. When it comes back its `since` is likely older than the log's oldest batch, and it
-resets from the snapshot; its own mirror holds its downloads' files whatever happened on the NAS
-(§6.2). A mirror (`mirror/<host>`) is reset too whenever the lead didn't hold its cursor, its
-`since` within the log or not (`store::map::feed::MIRROR`): one never heard (a new Mac, the switch,
-a cursor lost with a lead restart), unheard `CURSOR_TTL`, or held at one `seq` behind the head that
-long (an Update that never gets through, its files missing or no room, holds GC a week at most).
+A client unheard for `CURSOR_TTL` (6 hours, `store::map::gc::CURSOR_TTL_S`) is dropped from the
+set: a laptop's map server runs on demand and quits 30 minutes after its last use (docs/roles.md
+§8.3), its cursors left at the map it was at, and those hold GC 6 hours, not until it next opens.
+Live clients ask far more often: a server long-polls (`WAIT_S`, 30 s), a mirror asks each round (a
+minute apart, longer only while a round copies). Each hour of `CURSOR_TTL` keeps an hour's freed
+files behind a client that stopped asking (task #1134: at 7 days, a laptop's cursor left on 7 Nov
+held 54,575 of the queue's 55,604 names on 11 Nov, the NAS at 97%). When a client comes back it
+takes the batches since its `seq`, or resets from the snapshot when that's older than the log's
+oldest batch; a server serving its old map until its first answer may meet a file gone, and its
+own mirror holds its downloads' files whatever happened on the NAS (§6.2). A mirror
+(`mirror/<host>`) is reset too whenever the lead didn't hold its cursor, its `since` within the log
+or not (`store::map::feed::MIRROR`): one never heard (a new Mac, the switch, a cursor lost with a
+lead restart), unheard `CURSOR_TTL`, or held at one `seq` behind the head that long (an Update that
+never gets through, its files missing or no room, holds GC `CURSOR_TTL` at most). The NAS
+snapshot's cursor (`snapshot`) is the lead's own, noted as it writes a snapshot (on a publish, an
+hour or more apart): it holds whenever it was noted, since the snapshots kept hold their files
+whether the build publishes or not (`store::map::feed::SNAPSHOT`).
 
 The cursors are the lead's memory, saved with its snapshot (hourly, `SNAPSHOT_EVERY_S`) and
 restored at its start. A restart loses only what was heard since: a cursor that moved on is
@@ -406,7 +416,7 @@ files for its logical names, as today. The page's switch to a new map stays keye
     map, a kill) leaves the cursor where it was.
   - **Reset** (`{"reset"}`: older than the log, the Mac away long enough for the lead to hold no
     batch from there; or a cursor the lead didn't hold, §5.4: never heard, unheard `CURSOR_TTL`, or
-    a week at one `seq` behind the head): the mirror's sync is whole each round (what's wanted
+    that long at one `seq` behind the head): the mirror's sync is whole each round (what's wanted
     against what's here), so it needs no snapshot; what a reset changes is that an older map's
     files may be gone from the NAS, so each Update of a map older than the one served goes on at
     the one served (`Downloads::resync`). What a download keeps is on the Mac and stays.
@@ -768,8 +778,9 @@ and the Macs go with step 9, GC's with steps 8a and 8b.
    landed, or built inside it from the start (one snapshot, one backup, but waits for #878).
 2. **`GRACE`:** an hour (decided: the owner's, 10 Nov, task #1106), a margin for readers outside
    the cursor set (§7.2). Longer costs room (a day's freed files, 50 to 240 GB, per day of grace).
-3. **`CURSOR_TTL`:** 7 days proposed for a client that stops asking. Shorter frees sooner; a Mac
-   away longer resets from the snapshot either way and loses nothing (its mirror is its own).
+3. **`CURSOR_TTL`:** 6 hours for a client that stops asking (task #1134). Shorter frees sooner; a
+   Mac away longer resets from the snapshot either way and loses nothing (its mirror is its own).
+   The NAS snapshot's cursor never lapses (§5.4).
 4. **The orphan sweep over SSH:** listing on the NAS itself (`find -printf`, one call a folder,
    seconds for the whole share) instead of SMB listings, if the lead (the Mac mini) can use SSH
    unattended; today's GC verifies uploads over SSH only where it can. Proposed: SMB, chunked, which
@@ -850,7 +861,8 @@ gc`'s flags (`crates/agentcore/src/cli/scenic.rs:198`; 8b, built: `--shadow-due`
 map are the lead's already, so with the lead fixed on the mini they are where #882 puts them, and
 #882 moves none of them. What #882 leaves on the laptops is what is a client here: their own map
 server for the offline map (the owner's decision of 1 Nov, 2) and its mirror (7b), each a cursor
-that `CURSOR_TTL` drops while a laptop is away, so a laptop never holds GC up for long. #874
+that `CURSOR_TTL` (6 hours) drops once the server has quit or the laptop is away, so a laptop never
+holds GC up for long. #874
 retired the laptops' servers, a regression #882 step 7a mended: a laptop's server runs on demand,
 started by its menu bar, and its cursors exist only while it runs (docs/roles.md §8.3). A lead moved
 to another Mac starts its log from the NAS's snapshot and loses its queue (§4.5; the orphan sweep
@@ -894,7 +906,7 @@ The gate's 1,077 are the inputs sweep's (§7.6), by the indexes that hold them.
 
 1. The map log is its own store on the lead, so it lands without waiting for #878; #878's pool store may absorb it later.
 2. `GRACE` is an hour (the owner's, 10 Nov, task #1106: §7.2).
-3. `CURSOR_TTL` is 7 days.
+3. `CURSOR_TTL` is 6 hours (task #1134, 11 Nov: §5.4).
 4. The orphan sweep runs over SMB in chunks for now.
 5. Rolling the map back to an earlier publish is not planned (the owner's, 10 Nov).
 6. Cursors are saved with the log's snapshot. A lead restart can only bring a cursor back older, which keeps files longer and never frees one early.

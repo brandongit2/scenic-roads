@@ -109,6 +109,46 @@ fn due_waits_for_every_cursor_the_grace_and_older_leases() {
     assert!(due(&all_past, None, late).is_empty());
 }
 
+/// Task #1134: a laptop's map server, on demand, asks while it runs and then quits, its cursor
+/// left behind at the map it was at; the lead's queue held 54,575 names (all but 1,029) behind
+/// the M1's, unheard 4 days, for its 7-day TTL, while the mini's server and mirror and the NAS
+/// snapshot were long past them. Unheard `CURSOR_TTL_S` (hours), it holds nothing; asking again,
+/// it holds again from its `seq`. The NAS snapshot's cursor, which the lead notes as it writes one
+/// (on a publish, so hours apart when the build publishes nothing), holds however long ago.
+#[test]
+fn a_quit_servers_cursor_holds_gc_hours_not_days_and_the_snapshots_always() {
+    let d = tempfile::tempdir().unwrap();
+    let m1 = map(1, &[("a", "a.1.pack")]);
+    let q = GcQueue::default();
+    q.open(d.path(), &m1).unwrap();
+    super::records(&q, &records(1, &[]), T0);
+    let (b2, m2) = to(&m1, &[("a", "a.2.pack")], 2);
+    let (b3, m3) = to(&m2, &[("a", "a.3.pack")], 3);
+    q.batch(&b2, T0);
+    q.batch(&b3, T0);
+    let feed = store::map::feed::Feed::new();
+    feed.start(std::sync::Arc::new(m3), 1, &[b2, b3], BTreeMap::new());
+    // The M1's server at map 1, then gone; the mini's long-polling at the head; the snapshot at 3.
+    feed.changes(1, Some("server/m1"), T0);
+    feed.note_snapshot(3, T0);
+    let due_at = |now: u64| {
+        feed.changes(3, Some("server/mini"), now);
+        q.due(&Holders { cursors: &feed.cursors(), oldest_lease: None, now })
+    };
+    let both = vec!["a.1.pack".to_string(), "a.2.pack".to_string()];
+    assert!(due_at(T0 + GRACE_S).is_empty(), "the M1's cursor at 1 holds both");
+    assert!(due_at(T0 + CURSOR_TTL_S - 1).is_empty(), "heard within the TTL");
+    assert_eq!(due_at(T0 + CURSOR_TTL_S), both, "unheard the TTL: nothing held, the snapshot's at 3 neither");
+    assert!(CURSOR_TTL_S <= 6 * 3600, "hours, not days: each hour keeps an hour's freed files");
+    // Back, at 1 still: it holds them again until it moves on.
+    feed.changes(1, Some("server/m1"), T0 + CURSOR_TTL_S + 5);
+    assert!(due_at(T0 + CURSOR_TTL_S + 10).is_empty());
+    // The snapshot's cursor, noted at 2 long ago, holds what map 2 names: a.2, never a.1.
+    feed.changes(3, Some("server/m1"), T0 + CURSOR_TTL_S + 20);
+    feed.note_snapshot(2, T0);
+    assert_eq!(due_at(T0 + 9 * CURSOR_TTL_S), vec!["a.1.pack".to_string()], "the snapshot's never lapses");
+}
+
 fn entry(n: u64, content: &str) -> Entry {
     let h = Handoff {
         changes: [("base/6-1-1".to_string(), Some(content.to_string()))].into(),

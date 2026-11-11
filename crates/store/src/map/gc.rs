@@ -29,9 +29,14 @@ pub const FILE: &str = "gc.jsonl";
 /// refuses one bringing a name deleted under its lease, however long it was held (§7.4). Each day
 /// of grace holds a day's freed files on the NAS (§7.2).
 pub const GRACE_S: u64 = 3600;
-/// A client unheard this long no longer holds anything: a laptop away a month doesn't hold GC; on
-/// its return it resets from the snapshot (PM's decision 3, 30 Oct; docs/maplog.md §5.4).
-pub const CURSOR_TTL_S: u64 = 7 * 86400;
+/// A client unheard this long no longer holds anything (docs/maplog.md §5.4); on its return it
+/// takes the batches since, or resets, and loses nothing (its mirror is its own). Live clients ask
+/// far more often: a map server long-polls (`feed::WAIT_S`), a mirror asks each round (a minute
+/// apart, longer only while a round copies); the NAS snapshot's cursor, the lead's own, never
+/// lapses (`feed::SNAPSHOT`). Each hour of it is an hour of freed files kept behind a client that
+/// stopped asking: a laptop's map server runs on demand and quits, its cursor left at the map it
+/// was at (task #1134: 7 days held 54,575 names on a NAS at 97%).
+pub const CURSOR_TTL_S: u64 = 6 * 3600;
 
 /// A lease's id as the pool numbers them (agentcore's `pool::journal::LeaseId`): the epoch of the
 /// lead's store it was granted in (under the key `term`, as when leases were numbered by the pool's
@@ -315,9 +320,15 @@ impl Inner {
         written
     }
 
-    /// The oldest `seq` a client heard within `CURSOR_TTL_S` is at.
+    /// The oldest `seq` a client heard within `CURSOR_TTL_S` is at, the NAS snapshot's however
+    /// long ago the lead noted it (the snapshots it keeps there hold their files while they're kept,
+    /// published or not).
     fn floor(h: &Holders) -> Option<u64> {
-        h.cursors.values().filter(|c| h.now.saturating_sub(c.heard) < CURSOR_TTL_S).map(|c| c.seq).min()
+        h.cursors
+            .iter()
+            .filter(|(id, c)| *id == super::feed::SNAPSHOT || h.now.saturating_sub(c.heard) < CURSOR_TTL_S)
+            .map(|(_, c)| c.seq)
+            .min()
     }
 
     /// Whether queued `q` has outlasted its holders: `GRACE_S`, every cursor (`floor`), every live

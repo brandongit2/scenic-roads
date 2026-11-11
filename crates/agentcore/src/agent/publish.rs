@@ -392,9 +392,6 @@ fn unix(t: std::time::SystemTime) -> u64 {
     t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// The NAS snapshot's cursor among the clients' (docs/maplog.md §5.4): the oldest kept there.
-pub const SNAPSHOT_CLIENT: &str = "snapshot";
-
 /// What a publish did to the log.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Wrote {
@@ -584,7 +581,7 @@ impl Writer {
             Ok(oldest) => {
                 eprintln!("maplog: the map at {} written to the NAS", map.seq);
                 // (A reader may start from the oldest kept: it holds its files, docs/maplog.md §5.4.)
-                self.here.feed.note(SNAPSHOT_CLIENT, oldest, unix(now));
+                self.here.feed.note_snapshot(oldest, unix(now));
             }
             Err(e) => eprintln!("maplog: writing the map's snapshot to the NAS: {e:#}"),
         }

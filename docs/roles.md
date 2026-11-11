@@ -437,8 +437,8 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   last use (a request but the polls, or a copy of the mirror's under way:
   `updater::quit_when_unused`). Resident, it would cost what the mini's does (1.7–1.8 GB, 3 % of a
   core with the phone's use); on demand, nothing while closed; the downloads are as current as the
-  last time it ran. Its cursors hold the files of the map it was at for at most `CURSOR_TTL_S` (7
-  days) after it closes.
+  last time it ran. Its cursors hold the files of the map it was at for at most `CURSOR_TTL_S` (6
+  hours) after it closes.
   Tested on the M1, 6 Nov (a debug build, `--home` a scratch folder, the process sandboxed from
   the coordinator's port 8090, the mini's map log): it answered on 127.0.0.1 and `::1` alone (not
   the LAN address), took the NAS's map (1640) with the lead away and kept it at once, served the
@@ -510,7 +510,7 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   none. 7b (built) gave the mirror its cursor; on 6 Nov only the mini runs a mirror, so no
   laptop's cursor holds GC. 8a (built) and 8b are the lead's. With 7a, a laptop's two
   cursors exist only while its map runs and `CURSOR_TTL_S` drops them, so it never holds GC more
-  than 7 days. Step 9 (built) removes `catalog/` on every Mac, at its agent's start.
+  than 6 hours after it closes. Step 9 (built) removes `catalog/` on every Mac, at its agent's start.
 
 ### 8.5 What the steps left save
 

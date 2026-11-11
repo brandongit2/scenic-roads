@@ -4,9 +4,9 @@
 //! records drops it (the manifest's names and the pending uploads': `records`), while the other
 //! holder doesn't name it; the orphan sweep queues what it finds on the NAS that nothing holds
 //! (crate::agent::gc, §7.5). A name named again leaves the queue. A queued name is **due** when
-//! every client's cursor heard within `CURSOR_TTL_S` (the NAS snapshot's among them) is at or past
-//! the `seq` it was freed at, `GRACE_S` has passed since, every live lease was granted after it,
-//! the records have been seen and no holder names it.
+//! every client's cursor heard within `CURSOR_TTL_S` (6 h), and the NAS snapshot's however long
+//! ago the lead noted it, is at or past the `seq` it was freed at, `GRACE_S` has passed since,
+//! every live lease was granted after it, the records have been seen and no holder names it.
 //!
 //! The queue lives beside the map's log, in the lead's `maplog/` (store::map::gc::FILE), so it
 //! survives a lead restart. A lead disk lost loses it: what it held is found again by the orphan

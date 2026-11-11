@@ -27,6 +27,9 @@ pub const WAIT_S: u64 = 30;
 pub const MIRROR: &str = "mirror/";
 /// A map server's cursor's name, before its host (crates/server's maplog; docs/maplog.md §6.1).
 pub const SERVER: &str = "server/";
+/// The NAS snapshot's cursor (docs/maplog.md §4.4, §5.4): the oldest snapshot kept there, noted by
+/// the lead as it writes one (`note_snapshot`); never unheard, as it asks nothing (gc's `floor`).
+pub const SNAPSHOT: &str = "snapshot";
 
 #[derive(Default)]
 struct Inner {
@@ -193,11 +196,11 @@ impl Feed {
         }
     }
 
-    /// Client `client`'s cursor set to `seq`, heard at `now`, by the lead itself: a holder that asks
-    /// no `changes` (the NAS snapshot, `snapshot`, docs/maplog.md §5.4).
-    pub fn note(&self, client: &str, seq: u64, now: u64) {
+    /// The NAS snapshot's cursor (`SNAPSHOT`) set to `seq`, the oldest kept there, at `now`, by the
+    /// lead itself: a holder that asks no `changes` (docs/maplog.md §5.4).
+    pub fn note_snapshot(&self, seq: u64, now: u64) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.cursors.insert(client.to_string(), Cursor { seq, heard: now, at: now, ..Default::default() });
+        g.cursors.insert(SNAPSHOT.to_string(), Cursor { seq, heard: now, at: now, ..Default::default() });
     }
 
     /// The clients' cursors as last heard (saved with the log's snapshot).
@@ -305,9 +308,9 @@ mod tests {
         assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000)).reset, Some(5), "never heard");
         assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1001)).batches.len(), 1);
         assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000 + ttl - 1)).batches.len(), 1);
-        assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000 + ttl)).reset, Some(5), "at 4 a week");
+        assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000 + ttl)).reset, Some(5), "at 4 the TTL");
         assert_eq!(answer(f.changes(5, Some("mirror/m1"), 1000 + ttl)).batches.len(), 0);
-        assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000 + 3 * ttl)).reset, Some(5), "unheard a week");
+        assert_eq!(answer(f.changes(4, Some("mirror/m1"), 1000 + 3 * ttl)).reset, Some(5), "unheard the TTL");
         assert_eq!(answer(f.changes(5, Some("mirror/m2"), 9 * ttl)).batches.len(), 0, "at the head");
         assert_eq!(answer(f.changes(4, Some("server/m1"), 0)).batches.len(), 1);
         assert_eq!(answer(f.changes(4, Some("server/m1"), 9 * ttl)).batches.len(), 1);

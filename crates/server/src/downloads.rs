@@ -981,9 +981,9 @@ impl Downloads {
     }
 
     /// The lead answered the mirror's cursor a reset (docs/maplog.md §6.2: outside its log, or not
-    /// held by GC: new, unheard a week, or a week at one map): each Update of a map older than the
-    /// one served goes on at the one served, whose files the NAS has (an older map's may have gone
-    /// with GC meanwhile). What a download keeps is here and stays. Whether any moved.
+    /// held by GC: new, or unheard or at one map `CURSOR_TTL_S`, 6 h): each Update of a map older
+    /// than the one served goes on at the one served, whose files the NAS has (an older map's may
+    /// have gone with GC meanwhile). What a download keeps is here and stays. Whether any moved.
     fn resync(&self, plan: &Plan) -> bool {
         let cur = plan.current;
         let stale = |p: &Pin| p.to.is_some_and(|t| plan.eff(t) < cur);
