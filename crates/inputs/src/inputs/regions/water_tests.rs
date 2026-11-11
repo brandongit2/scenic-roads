@@ -1177,9 +1177,13 @@ fn a_countrys_inlet_is_its_shores_not_its_waters() {
     // The country's zone round the land, stopping at its outer coast (the inlets outside it).
     let zone = vec![ring(69.5, 9.5, 72.5, 11.5), ring(70.0, 10.0, 72.0, 11.0)];
     let w = world_zones(1.002, land, HashMap::from([(6, zone)]));
-    let p1 = "id = \"p1\"\nname = \"West\"\noutline = [\"box:69.9,9.9,71.0,11.1\"]\nwater = []\n";
-    let p2 = "id = \"p2\"\nname = \"East\"\noutline = [\"box:71.0,9.9,72.1,11.1\"]\nwater = []\n";
-    let cw = "id = \"cw\"\nname = \"Its waters\"\nwater = [\"eez:6\"]\n";
+    // The provinces' own water a strip 2 km wide along their coasts, so the inlets border their
+    // water, not their land; the country's waters the zone less theirs.
+    let p1 = "id = \"p1\"\nname = \"West\"\noutline = [\"box:69.9,9.9,71.0,11.1\"]\n\
+              water = [{ nearest = { buffer = \"land:p1\", by = \"2 km\" }, to = [\"land:p1\"], than = [\"land:p2\"] }]\n";
+    let p2 = "id = \"p2\"\nname = \"East\"\noutline = [\"box:71.0,9.9,72.1,11.1\"]\n\
+              water = [{ nearest = { buffer = \"land:p2\", by = \"2 km\" }, to = [\"land:p2\"], than = [\"land:p1\"] }]\n";
+    let cw = "id = \"cw\"\nname = \"Its waters\"\nwater = [{ minus = [\"eez:6\", \"group:c\"] }]\n";
     let mut files = all();
     files.extend([("c/p1.toml", p1), ("c/p2.toml", p2), ("c/cw.toml", cw)]);
     let out = run(&w, &files);

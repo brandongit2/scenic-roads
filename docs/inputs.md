@@ -518,9 +518,9 @@ waters). That goes to the regions with water the stretch shares an edge with: to
 among several by nearest edge (`geom::nearest`, the median line; a piece with none of them in or
 next to its cell to the one sharing the stretch's longest edge). Within one country (the regions'
 top folders, or a file at the top: a province and its country's waters are one), its shore's: the
-regions whose land it borders (its edge along the coastline) take what lies outside the zones, the
-one whole, several split among themselves alone, and the country's other regions (its waters) only
-the part inside a zone, so a fjord isn't cut by a median with the country's waters
+regions with land it borders (its provinces, by their land or their own coastal water) take what
+lies outside the zones, the one whole, several split among themselves alone, and the country's
+regions of water alone (its waters) only the part inside a zone, so a fjord isn't cut by a median with the country's waters
 (Avannaata's, Sakha's, Nunavut's). Across countries, all of them share it by nearest edge, a
 warning (`unnamed`, naming them and their shares) when it's over `sliver_km2`: a place no region
 names, likely disputed, whose owner a region's water should name. What's left of it, the open sea beyond every zone, stays. Land in no region

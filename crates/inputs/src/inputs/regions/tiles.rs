@@ -1046,6 +1046,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         folder,
         data,
         &zones,
+        &land_empty,
         &mut all,
         cover,
         rest_id.is_some(),
@@ -2016,8 +2017,6 @@ struct Gap {
     touches: bool,
     /// Its edge (m) with each region with water in the cell.
     len: Vec<(String, f64)>,
-    /// Of that, its edge along the coastline (m): with each region's land.
-    shore: Vec<(String, f64)>,
     /// What of it is still to go: to a region, or else to the rest (None once given away whole).
     area: Option<Area>,
     /// Its land, the land of it two regions had, and a point inside its largest piece of land:
@@ -2099,6 +2098,7 @@ fn cells_pass(
     folder: &Folder,
     data: &super::data::Datasets,
     zones: &TArea,
+    land_empty: &BTreeMap<String, bool>,
     all: &mut BTreeMap<String, TArea>,
     cover: bool,
     rest: bool,
@@ -2205,9 +2205,7 @@ fn cells_pass(
             let km2 = geom::area_km2(&g);
             let zone_km2 = if zone.is_empty() { 0.0 } else { geom::area_km2(&g.intersect(&zone)) };
             let land = (km2 > fill_km2 && touches).then(|| gap_land(&g, &land, &twice));
-            // (Its edge with each region, and of that the edge along the coastline: with the
-            // region's land.)
-            let (mut len, mut shore) = (vec![0.0f64; pieces.len()], vec![0.0f64; pieces.len()]);
+            let mut len = vec![0.0f64; pieces.len()];
             {
                 for r in &g.polys[0] {
                     for k in 0..r.len() {
@@ -2215,21 +2213,15 @@ fn cells_pass(
                         let m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
                         if let Some(owner) = pidx.on(m) {
                             len[owner] += seg_m(a, b);
-                            if lidx.on(m).is_some() {
-                                shore[owner] += seg_m(a, b);
-                            }
                         }
                     }
                 }
             }
-            let ours = |v: &[f64]| -> Vec<(String, f64)> {
-                (0..pieces.len())
-                    .filter(|&k| v[k] > 0.0 && folder.regions[&pieces[k].0].1.has_water())
-                    .map(|k| (pieces[k].0.clone(), v[k]))
-                    .collect()
-            };
-            let (len, shore) = (ours(&len), ours(&shore));
-            out.push(Gap { c, sides, km2, zone_km2, at, touches, len, shore, area: Some(g), land });
+            let len = (0..pieces.len())
+                .filter(|&k| len[k] > 0.0 && folder.regions[&pieces[k].0].1.has_water())
+                .map(|k| (pieces[k].0.clone(), len[k]))
+                .collect();
+            out.push(Gap { c, sides, km2, zone_km2, at, touches, len, area: Some(g), land });
         }
         let t3 = t0.elapsed().as_secs_f64();
         if t3 > 2.0 {
@@ -2429,17 +2421,16 @@ fn cells_pass(
             }
             continue;
         };
-        // (Within one country (one top folder), the provinces whose land it borders take what lies
-        // outside the zones, the country's other regions (its waters) only the zones' part: a fjord
-        // is its shore's, not cut by a median with the country's waters. Across countries, all of
-        // them share it by nearest edge.)
+        // (Within one country (one top folder), the provinces it borders (its regions with land)
+        // take what lies outside the zones, the country's waters (its regions of water alone) only
+        // the zones' part: a fjord is its shore's, not cut by a median with the country's waters.
+        // Across countries, all of them share it by nearest edge.)
         let one_country = near.iter().map(|id| country_of(folder, id)).collect::<BTreeSet<_>>().len() == 1;
-        let mut shore: BTreeSet<&String> = BTreeSet::new();
-        for &i in idx {
-            shore.extend(gaps[i].shore.iter().map(|(id, _)| id).filter(|id| near.contains(id)));
-        }
-        let provinces: Vec<&String> =
-            if one_country && near.len() > 1 { shore.into_iter().collect() } else { Vec::new() };
+        let provinces: Vec<&String> = if one_country && near.len() > 1 {
+            near.iter().copied().filter(|id| !land_empty.get(*id).copied().unwrap_or(true)).collect()
+        } else {
+            Vec::new()
+        };
         let waters: Vec<&String> = near.iter().copied().filter(|id| !provinces.contains(id)).collect();
         // (A piece shared among `among` by nearest edge; to the stretch's longest edge's region where
         // none of them is in or next to its cell, never dropped.)
