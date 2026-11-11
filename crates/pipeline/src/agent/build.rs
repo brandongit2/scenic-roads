@@ -11879,7 +11879,12 @@ mod tests {
 
     /// The plan's phases timed on a real root, read only (`SCENIC_BENCH_ROOT`: the NAS's project
     /// folder; `SCENIC_BENCH_IDX`: a copy of an agent's `pack-idx`, which the terrain indexes are
-    /// read from and kept in). Twice over one coverage, as the agent's loops reuse theirs.
+    /// read from and kept in). Twice over one coverage, as the agent's loops reuse theirs. With
+    /// `SCENIC_BENCH_CACHE` (a folder of this Mac's disk), the coverage is read as the agent reads it,
+    /// from its file there (made first when it isn't); without, made from the geometry files.
+    /// `SCENIC_BENCH_BRIEF`: a file the records are read from when it's there, else written with
+    /// the current brief (so runs of two builds plan the same state). Each lap says the process's
+    /// footprint and its peak.
     #[test]
     #[ignore]
     fn bench_plan_on_a_real_root() {
@@ -11887,21 +11892,68 @@ mod tests {
         let root = std::path::PathBuf::from(root);
         let t = std::time::Instant::now();
         let lap = |what: &str, t: &mut std::time::Instant| {
-            eprintln!("bench: {what}: {:.2} s", t.elapsed().as_secs_f64());
+            // SAFETY: the call fills the struct we own, of the flavour asked for.
+            let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+            let ok = unsafe {
+                libc::proc_pid_rusage(
+                    libc::getpid(),
+                    libc::RUSAGE_INFO_V4,
+                    &mut info as *mut libc::rusage_info_v4 as *mut libc::rusage_info_t,
+                )
+            } == 0;
+            let mb = |b: u64| if ok { format!("{} MB", b >> 20) } else { "?".into() };
+            eprintln!(
+                "bench: {what}: {:.2} s (footprint {}, peak {})",
+                t.elapsed().as_secs_f64(),
+                mb(info.ri_phys_footprint),
+                mb(info.ri_lifetime_max_phys_footprint)
+            );
             *t = std::time::Instant::now();
         };
         let mut t = t;
-        // (The records as the agent reads them: the current term's brief.)
-        let agentcore::pool::records::Brief { manifest: m, keys, .. } =
-            agentcore::pool::records::Brief::now(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        // (The records as the agent reads them: the current term's brief, or the one kept.)
+        let kept = std::env::var("SCENIC_BENCH_BRIEF").ok().map(std::path::PathBuf::from);
+        let brief = match kept.as_ref().filter(|p| p.exists()) {
+            Some(p) => serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap(),
+            None => {
+                let b = agentcore::pool::records::Brief::now(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+                if let Some(p) = &kept {
+                    std::fs::write(p, serde_json::to_vec(&b).unwrap()).unwrap();
+                }
+                b
+            }
+        };
+        let agentcore::pool::records::Brief { manifest: m, keys, epoch, seq } = brief;
         let date = inputs::osmpass::latest_pass_by(&store::nasfs::NasRoot::local_for_test(&root), false).unwrap();
         let a = inputs::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
-        lap("reading records", &mut t);
-        let cov =
-            inputs::inputs::regions::read::accepted_coverage(&store::nasfs::NasRoot::local_for_test(&root), &a, None)
-                .unwrap();
+        lap(&format!("reading records (term {epoch}, seq {seq}, regions {})", a.version), &mut t);
+        let cache = std::env::var("SCENIC_BENCH_CACHE").ok().map(std::path::PathBuf::from);
+        let read = || {
+            inputs::inputs::regions::read::accepted_coverage(
+                &store::nasfs::NasRoot::local_for_test(&root),
+                &a,
+                cache.as_deref(),
+            )
+            .unwrap()
+        };
+        if cache.is_some() {
+            // (Its file made when it isn't there, then read as a restarted agent reads it.)
+            drop(read());
+            lap("the coverage's file", &mut t);
+        }
+        let cov = read();
         let each = cov.by_region();
-        lap(&format!("making the coverage ({} shapes, {} regions)", cov.shapes.len(), each.len()), &mut t);
+        lap(
+            &format!(
+                "{} the coverage ({} shapes, {} regions; digest {}, version {})",
+                if cache.is_some() { "reading" } else { "making" },
+                cov.shapes.len(),
+                each.len(),
+                cov.digest(),
+                cov.version()
+            ),
+            &mut t,
+        );
         let reach =
             roads::reach::Reaches::load(&store::nasfs::NasRoot::local_for_test(&root), &m, &date).ok().flatten();
         let mut tiles = TerrainTiles::new(std::env::var("SCENIC_BENCH_IDX").ok().map(std::path::PathBuf::from));
