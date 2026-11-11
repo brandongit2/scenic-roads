@@ -816,22 +816,26 @@ fn terrain_wanted(
     want.into_iter().map(|(a, b, c)| (a.0, b, c)).collect()
 }
 
-/// The z10 tiles of a z6 tile's deep mids in the order its pyramid is likely to take them: each
-/// tile's place in its z6 tile as a quadtree path read from the bottom level up, so the tiles one
-/// after another lie in different quadrants, as the pyramid's threads work on its quadrants side
-/// by side (`Pyramid::node`).
-fn mids_order(mut fs: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+/// The z10 tiles of a z6 tile's deep mids in the order its pyramid, on `threads` threads, is likely
+/// to take them: each thread goes depth first through a run of the tiles in quadtree order (rayon
+/// splits `Pyramid::node`'s children in halves, a thread taking the first and another the second,
+/// and so on down), so that order is cut into a run a thread and the runs interleaved: the next few
+/// mids are the next of each thread's. (Task #1096 review: a path read from the bottom level up
+/// interleaved the quadrants but jumped about within each, so the few read ahead were mostly
+/// ones no thread was near.)
+fn mids_order(mut fs: Vec<(u32, u32)>, threads: usize) -> Vec<(u32, u32)> {
     let k = PACK_Z - 6;
     let key = |&(x, y): &(u32, u32)| {
         let mut v = 0u32;
-        for b in 0..k {
-            let digit = ((x >> b) & 1) | (((y >> b) & 1) << 1);
-            v = (v << 2) | digit;
+        for b in (0..k).rev() {
+            v = (v << 2) | ((x >> b) & 1) | (((y >> b) & 1) << 1);
         }
         v
     };
     fs.sort_by_key(key);
-    fs
+    let runs = threads.clamp(1, fs.len().max(1));
+    let per = fs.len().div_ceil(runs);
+    (0..per).flat_map(|i| (0..runs).map(move |r| r * per + i)).filter_map(|j| fs.get(j).copied()).collect()
 }
 
 /// A deep mid's bytes read ahead of its pyramid's taking it (`DeepQuadrants`): a few at a time
@@ -925,7 +929,7 @@ pub fn build_piece_later(
         failed: Default::default(),
     };
     let done = |z: u8, x: u32, y: u32| if z == FIRST_Z { deep.take(x, y) } else { None };
-    let order = mids_order(mids.keys().copied().collect());
+    let order = mids_order(mids.keys().copied().collect(), rayon::current_num_threads().min(THREADS));
     let (hi, lo) = mids_ahead.beside(&order, MIDS_AHEAD / 2, MIDS_AHEAD, read_mids, || {
         terr.reading_ahead(&want, || piece(&terrain, &tiles, &done, t, &count))
     });
@@ -1517,11 +1521,27 @@ mod tests {
         assert!(want[..first13].iter().all(|t| t.0 == 14) && want[first13..].iter().all(|t| t.0 == 13));
         // (Only the zooms `own` takes: a hi pyramid's z13 tops come from their deep mids.)
         assert!(terrain_wanted(&tiles, |z| z < 14, &has).iter().all(|t| t.0 == 13));
+        // (The mids: on one thread, depth first (a quadrant's whole before the next, and so on
+        // down); on four, a quadrant a thread, the next four one of each, each quadrant's depth
+        // first; on any number, each once.)
         let fs: Vec<(u32, u32)> = (0..16).flat_map(|x| (0..16).map(move |y| (x, y))).collect();
-        let mut o = mids_order(fs.clone());
-        assert_ne!(o, fs);
-        o.sort_unstable();
-        assert_eq!(o, fs);
+        let quadrant = |&(x, y): &(u32, u32)| (x >> 3) | ((y >> 3) << 1);
+        let one = mids_order(fs.clone(), 1);
+        assert_eq!(&one[..5], [(0, 0), (1, 0), (0, 1), (1, 1), (2, 0)]);
+        assert!(one.windows(2).all(|w| quadrant(&w[0]) <= quadrant(&w[1])));
+        let four = mids_order(fs.clone(), 4);
+        assert_eq!(&four[..5], [(0, 0), (8, 0), (0, 8), (8, 8), (1, 0)]);
+        for q in 0..4 {
+            let mine: Vec<(u32, u32)> = four.iter().copied().filter(|f| quadrant(f) == q).collect();
+            let theirs: Vec<(u32, u32)> = one.iter().copied().filter(|f| quadrant(f) == q).collect();
+            assert_eq!(mine, theirs, "quadrant {q} depth first");
+        }
+        for threads in [1, 2, 3, 4, 5, 16, 300] {
+            let mut o = mids_order(fs[..fs.len() - threads % 7].to_vec(), threads);
+            o.sort_unstable();
+            assert_eq!(o, fs[..fs.len() - threads % 7], "{threads} threads");
+        }
+        assert!(mids_order(Vec::new(), 4).is_empty());
     }
 
     /// Task #952: a missing deep tile (z13 on) is made from its nearest ancestor within the deep
