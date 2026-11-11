@@ -37,8 +37,12 @@ use std::time::{Duration, Instant};
 
 /// A window whose median read is within this many times its class's floor counts as near the best.
 pub const NEAR: f64 = 1.25;
-/// A window whose median read is past this many times its class's floor halves the limit.
-pub const SLOW: f64 = 2.0;
+/// A window whose median read is past this many times its class's floor halves the limit. (Not
+/// two: on the M1's Wi-Fi the NAS's whole reads of a few KB to a few MB took one to four times
+/// their floor at 8–16 in flight, the link full, not the NAS loaded; at two the limit was halved
+/// every few seconds, down to 2–3, and `terrain-same 3/7/6` was 3 % slower than main, whose 16
+/// readers had no limit; at three as quick: docs/phase-times.md §4f.)
+pub const SLOW: f64 = 3.0;
 /// The weight of a read's latency in its class's smoothed one (an exponential average: about the
 /// last eight reads).
 pub const SMOOTH: f64 = 0.125;
@@ -454,18 +458,18 @@ mod tests {
         // (32 MB spans taking 400 ms aren't slow against 4 KB reads of 5 ms: their own class.)
         reads(&l, 8, 32 << 20, ms(400), t);
         assert!(l.now().0 >= up, "no halving across classes");
-        // (The source four times slower for good: halved while the old best is in the floor's
-        // window, then, the floor's windows on, 20 ms reads are the floor, near: up again.)
+        // (The source six times slower for good: halved while the old best is in the floor's
+        // window, then, the floor's windows on, 30 ms reads are the floor, near: up again.)
         let v = l.now().0;
         let later = t + FLOOR_WINDOW * 2 + ms(1);
         for k in 0..32 {
-            l.record(l.window(), Outcome::Done { bytes: 4096, latency: ms(20) }, later + ms(k));
+            l.record(l.window(), Outcome::Done { bytes: 4096, latency: ms(30) }, later + ms(k));
         }
         assert!(l.now().0 < v, "slower than the floor: halved");
         let v = l.now().0;
         let later = later + FLOOR_WINDOW * 2 + ms(1);
         for k in 0..32 {
-            l.record(l.window(), Outcome::Done { bytes: 4096, latency: ms(20) }, later + ms(k));
+            l.record(l.window(), Outcome::Done { bytes: 4096, latency: ms(30) }, later + ms(k));
         }
         assert!(l.now().0 > v, "near the new floor: up");
         // (Unmeasured: nothing changes.)

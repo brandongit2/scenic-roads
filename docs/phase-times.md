@@ -295,7 +295,7 @@ already, `GEO_FETCHES` threads a dataset, each decoding what it fetched).
 
 | change | where |
 |---|---|
-| **One mechanism** (`store::ahead`): `ahead`, a list read in the compute's order on threads of their own, at most a window past its cursor; `each`, every item at once, in order; `Shelf`, a thread beside the compute reading by key in batches, the compute taking each (waited for while its batch is read, else read by the taker, never twice). How many at once: each source's limit, found as TCP finds its window (`store::aimd`, the owner's design of 10 Nov): the NAS's one a process (from 2, decided once a window on the median of its reads' latency over their size class's floor (the least their smoothed latency was over the last 30–60 s, never under 2 ms; this Mac's cache's answers no samples): doubled until the first halving and one more a window after while near it, halved past twice it or when a read times out, 1 to 16), every read of the NAS taking its turn where it goes (store::range, nasfs: so a raw tile from the NAS's archives counts on the NAS, one from AWS on AWS's); a host's one a host in the fetcher (halved on a slow answer, a 429 or a 5xx; S3's ceiling 64, every other host's 16). No allowance handed out: a quiet reader holds nothing. | store::ahead, store::aimd, buildstore::fetch |
+| **One mechanism** (`store::ahead`): `ahead`, a list read in the compute's order on threads of their own, at most a window past its cursor; `each`, every item at once, in order; `Shelf`, a thread beside the compute reading by key in batches, the compute taking each (waited for while its batch is read, else read by the taker, never twice). How many at once: each source's limit, found as TCP finds its window (`store::aimd`, the owner's design of 10 Nov): the NAS's one a process (from 2, decided once a window on the median of its reads' latency over their size class's floor (the least their smoothed latency was over the last 30–60 s, never under 2 ms; this Mac's cache's answers no samples): doubled until the first halving and one more a window after while near it, halved past three times it or when a read times out, 1 to 16), every read of the NAS taking its turn where it goes (store::range, nasfs: so a raw tile from the NAS's archives counts on the NAS, one from AWS on AWS's); a host's one a host in the fetcher (halved on a slow answer, a 429 or a 5xx; S3's ceiling 64, every other host's 16). No allowance handed out: a quiet reader holds nothing. | store::ahead, store::aimd, buildstore::fetch |
 | **The sampler reads every GeoTIFF dataset ahead**, stored ones in place on the NAS too (a whole copy on this Mac's disk is read as sampled); a dataset's files opened together first (`blocks_ahead`); the I/O threads read a block's bytes as stored (`Tiff::fetch`, held within the cache's budget, under a quarter of it shared by the chunks sampled at once) and the sampling's threads decode them (were: the fetch threads decoded too, past the job's grant). | inputs::dem::generic, buildstore::geotiff |
 | **The slope's terrain tiles and deep mids read beside its pyramid**: the tiles its shading reads from the NAS (`terrain_wanted`: each tile shaded from its own terrain's four edge neighbours, a missing one's ancestor; not its own pack, copied here) and slope-hi's z10 deep mids, in the order its threads take them (`mids_order`: the depth-first order cut into a run a thread, the runs interleaved). | terrain::slope_pack, terrain_pack::ManifestTiles::reading_ahead |
 | **The other readers on it**: get_many's spans, an assembly's mids (terrain-lo, slope-lo), the raw tiles' prefetch. | terrain::terrain_pack, slope_pack |
@@ -305,27 +305,30 @@ mostly blocks the sampling cached), the next chunk's, dataset's or target's read
 known only once the stage before it has run: task #1097's pipelining), a pyramid's tiles
 (`TileSet::rolling` keeps its own fetches in flight, on its own threads already).
 
-After: **not settled.** `terrain-same 6/21/20` (2 threads, the M4, 10 Nov 21:28–23:40; the
-same hi pack, 73ce142272d963ef, the manifest's, every run), main's binary against this branch's
-in turn, a run's wall s and busy cores of 2:
+After, on the M1 in a quiet period (11 Nov 00:10–01:04: its pool agent paused, nothing else of
+ours running there; the NAS shared with the M4's pool job), `terrain-same 3/7/6` (3 threads; a fresh
+`SCENIC_CACHE` each run, so the regions and outlines are read from the NAS as a job's first run on a
+Mac reads them; 3.7 GB peak), main (eb0bfc65) and the branch in turn, ABBA, a run's wall s (NAS
+wait s):
 
-| binary | runs |
-|---|---|
-| main (71cbb7a1) | 235 (0.86), 199 (1.04), 246 (0.88), 419 (0.57), 285 (0.79), 261 (0.89) |
-| read ahead, fixed lanes (62fbfbde) | 247 (0.95), 489 (0.53) |
-| AIMD, the first draft (6dbf96eb) | 355 (0.64) |
-| AIMD smoothed, slow start (ab32d61f) | 274 (0.85), 189 (1.13) |
-| AIMD, each class's smoothed floor (a9b7cd53) | 442 (0.55), 349 (0.70), 375 (0.67) |
+| binary | runs | mean wall | mean NAS wait |
+|---|---|---|---|
+| main | 123.3 (17.0), 129.4 (23.0), 134.7 (27.4), 124.8 (16.7), 129.4 (20.8), 127.3 (19.9), 133.0 (26.1), 142.4 (36.2), 127.3 (20.2), 123.7 (17.1), 131.0 (24.3), 129.2 (22.8) | 129.6 (sd 5.3) | 22.6 |
+| AIMD as first built (67e0de55) | 155.6 (48.1), 150.3 (43.0), 158.0 (50.0) | 154.6 | 47.0 |
+| decided once a window, a slowdown past 2× (af087bdd) | 131.6 (23.5), 128.2 (20.5), 133.9 (25.1), 132.4 (23.6), 142.2 (33.3), 131.3 (22.4) | 133.3 | 24.7 |
+| the same, past 3× (this branch) | 127.1 (19.5), 127.7 (20.4), 131.6 (24.3), 128.9 (21.6), 125.6 (17.8), 142.0 (34.3) | 130.5 (sd 6.0) | 23.0 |
 
-The Mac was loaded throughout (load 45–95: the live pool's terrain-deep job, other agents' builds,
-and from about 22:30 #1116's own `terrain-same` timing beside the runs from 22:27 on), so one
-binary's runs spread by 2× and no change is shown. What the runs did show: the first AIMD draft
-held the NAS's and hosts' limits near their start (cache hits as floors, single slow answers
-halving, a climb of one a window), fixed by ab32d61f; a9b7cd53's floor of the smoothed latency in
-four wide size classes still kept the limit low when whole files of many sizes were read
-(`reading the regions and their outlines` 83 → 152 s), fixed by 2d6c3170's classes of a power of
-two, not yet timed. terrain-deep, terrain-lo and the slope steps not timed. Owed: the runs on a
-quiet Mac.
+Busy threads 1.3 of 3 in every binary (CPU 168–170 s a run); the NAS's part is `reading the regions
+and their outlines` (16 threads reading the regions' files whole, `read_all`), the rest CPU. A trace of the
+NAS's limiter showed why the first build was slow: each read's own smoothed latency decided, and the
+smoothing began afresh at each halving, so one slow answer of the share's long tail (25–500 ms over
+the M1's Wi-Fi) halved again: 290 halvings in the phase's first 36 s, the limit held at 1–2 where
+main's readers kept 16 in flight; and 64 KB reads this Mac's cache answered in 20 µs had become the
+floor of the NAS's real ones. Deciding once a window on its median read fixed the most of it; at 2×
+the limit still halved every few seconds at 8–16 in flight (the Wi-Fi full, not the NAS loaded), at
+3× it is as quick as main: +0.9 s, within the runs' own spread. terrain-hi (`6/21/20`, 2 threads)
+was not timed: on the M1 its `terrain-same` peaks 4.3–6.1 GB (6/18/22, 6/40/54 too), past the quarter
+of its memory an agent's run may take; terrain-deep, slope and the network's limits not timed.
 
 ## 5. Not done, with what the data says (the ranking of what's left)
 
