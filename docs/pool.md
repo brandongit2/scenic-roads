@@ -129,10 +129,16 @@ The share is SMB 3 on a Synology. The design assumes:
 Checked by the simulator (§13):
 
 1. Only the declared lead leads (no member ever does), and one process of it at a time (the member
-   lock, §5).
+   lock, §5). A lead grants and plans only while a read of the declaration named it less than
+   `driver::VOUCH_S` (5 minutes) ago: one whose reads fail stops before a lead the owner declared
+   meanwhile takes up (`STALE_S` after finding itself declared), so two never grant at once.
 2. Each take-up leads an epoch past every earlier one's and past the records it starts from
-   (`Io::epoch`, the store's epoch raised durably), so (epoch, seq) orders every snapshot, and
-   lease ids order, across restarts and the owner's moves.
+   (`Io::epoch`, the store's epoch raised durably, its retry too), so (epoch, seq) orders every
+   snapshot, and lease ids order, across restarts and the owner's moves. Across a move it is past
+   what the NAS shows of the lead before (the one path, its brief, and the store's backup by
+   `RESTORE_EPOCHS`); a lead before whose take-up never reached the NAS (every save and backup
+   failing) may have granted in an epoch the next one repeats (not covered: its leases' hand-offs
+   are taken by lease order, at worst a job built again).
 3. No accepted hand-off is lost: its member keeps it until a saved snapshot names it, a lead
    never takes up from records older than those it saved, nor a moved lead before its
    predecessor's last acknowledged save can be read (§6.2, §7.3); a journal entry (the rollout
@@ -140,7 +146,12 @@ Checked by the simulator (§13):
 4. Each records snapshot is one file written whole.
 5. A late write of an earlier save never sends the lead back: it takes up from the records it
    kept on its own disk (§6.2), reading the NAS's only when they're newer (another lead saved them)
-   or it has none. At the one path, readers read it until the lead's next save
+   or it has none; and never from records older than the one path's brief (`records::brief_mark`):
+   a save writes its brief only once its snapshot is whole at the one path, so a snapshot older
+   than the brief beside it is an earlier lead's write that landed late over a newer save (what the
+   terms' own paths fenced before #878 step 8c). Such a take-up waits, saying so: the records the
+   brief is of are on the disk of the Mac that saved them, which leads from them once declared
+   again. At the one path, readers read a late write until the lead's next save
    (`driver::RESAVE_S`, 10 minutes, at most).
 
 ## 5. Roles

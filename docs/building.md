@@ -625,7 +625,7 @@ fetched): one of an older or diverged commit fails, saying so, as does one begun
 of this Mac that is gone is taken over at once. Its last line is `published <version>` or
 `publish: FAILED …`.
 
-`publish.sh --rollback` swaps `current.json` and `previous.json`. The agent never fetches from git.
+`publish.sh --rollback` swaps `current.json` and `previous.json`, unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
 
 The publishing Mac's signing identity, set up once by the owner at that Mac (the key never leaves
 the keychains). An ssh session can't use the login keychain the desktop unlocked, so a Mac that
