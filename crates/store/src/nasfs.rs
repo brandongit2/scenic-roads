@@ -265,7 +265,8 @@ fn not_found(e: &anyhow::Error) -> bool {
 }
 
 /// A whole file's read under a turn of the process's NAS limit (crate::aimd): its bytes and time
-/// a sample, a timeout of the share's a halving.
+/// a sample, a timeout of the share's a halving. A turn a try (`NasPath::retry` outside it): a
+/// retry's wait holds no turn, and each try's failure is its own signal.
 fn taking_turn(read: impl FnOnce() -> io::Result<Vec<u8>>) -> io::Result<Vec<u8>> {
     let mut turn = crate::aimd::NAS.take();
     let r = read();
@@ -450,7 +451,7 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let b = taking_turn(|| self.retry("read", || crate::whole::read(&p)))?;
+        let b = self.retry("read", || taking_turn(|| crate::whole::read(&p)))?;
         counted_read(&p, b.len() as u64, t);
         Ok(b)
     }
@@ -466,7 +467,7 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let b = taking_turn(|| self.retry("read", || crate::whole::read_replaced(&p)))?;
+        let b = self.retry("read", || taking_turn(|| crate::whole::read_replaced(&p)))?;
         counted_read(&p, b.len() as u64, t);
         Ok(b)
     }
@@ -477,8 +478,8 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let b = taking_turn(|| {
-            self.retry("read", || {
+        let b = self.retry("read", || {
+            taking_turn(|| {
                 let mut f = crate::whole::retried(&p, &|q| std::fs::File::open(q))?;
                 #[cfg(target_os = "macos")]
                 {
