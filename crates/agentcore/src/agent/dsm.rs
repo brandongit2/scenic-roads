@@ -245,13 +245,13 @@ pub struct Api {
     agent: ureq::Agent,
 }
 
-/// The NAS's DSM addresses for its tailnet name (store::nas::dsm_addrs), kept a minute (away from
-/// home, the LAN name's lookup takes seconds to fail, and a drop makes four requests); any other
-/// name as usual.
+/// The NAS's DSM addresses for its tailnet name (store::nas::dsm_addrs), looked up once (an `Api`
+/// serves one drop: away from home, the LAN name's lookup takes seconds to fail, and a drop makes
+/// four requests); any other name as usual.
 #[derive(Debug, Default)]
 struct NasResolver {
     other: ureq::unversioned::resolver::DefaultResolver,
-    last: std::sync::Mutex<Option<(Instant, Vec<std::net::SocketAddr>)>>,
+    addrs: std::sync::OnceLock<Vec<std::net::SocketAddr>>,
 }
 
 impl ureq::unversioned::resolver::Resolver for NasResolver {
@@ -264,15 +264,7 @@ impl ureq::unversioned::resolver::Resolver for NasResolver {
         if uri.host() != Some(store::nas::DSM_NAME) {
             return self.other.resolve(uri, config, timeout);
         }
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        let addrs = match &*last {
-            Some((t, a)) if t.elapsed() < Duration::from_secs(60) && !a.is_empty() => a.clone(),
-            _ => {
-                let a = store::nas::dsm_addrs();
-                *last = Some((Instant::now(), a.clone()));
-                a
-            }
-        };
+        let addrs = self.addrs.get_or_init(store::nas::dsm_addrs).clone();
         let mut out = self.empty();
         for a in addrs.into_iter().take(16) {
             out.push(a);
@@ -300,7 +292,7 @@ fn error_words(code: i64) -> &'static str {
 }
 
 impl Api {
-    /// The NAS's.
+    /// The NAS's, for one drop.
     pub fn nas() -> Api {
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(TIMEOUT))
@@ -568,9 +560,9 @@ pub struct Part {
 }
 
 impl Part {
-    /// Its thread, kicking through `api`; the live session's kicks under the pool's lock (`pool`,
-    /// when this Mac is in it).
-    pub fn spawn(api: Api, pool: Option<super::pool::Shared>) -> Option<Part> {
+    /// Its thread, kicking through an `api` made for each drop; the live session's kicks under the
+    /// pool's lock (`pool`, when this Mac is in it).
+    pub fn spawn(api: fn() -> Api, pool: Option<super::pool::Shared>) -> Option<Part> {
         let (tx, rx) = mpsc::channel();
         let started = std::thread::Builder::new().name("dsm".into()).spawn(move || run(api, pool, rx));
         match started {
@@ -587,7 +579,7 @@ impl Part {
     }
 }
 
-fn run(api: Api, pool: Option<super::pool::Shared>, rx: Receiver<Ask>) {
+fn run(api: fn() -> Api, pool: Option<super::pool::Shared>, rx: Receiver<Ask>) {
     let mut keys: Option<Keys> = None;
     let mut told_keys = false;
     // (Drops to try again: the ask, its tries left, when next.)
@@ -636,7 +628,7 @@ fn run(api: Api, pool: Option<super::pool::Shared>, rx: Receiver<Ask>) {
             continue;
         }
         let pool = pool.as_ref().filter(|_| a.why.kicks_live());
-        match api.drop_mine(k, &mine, super::jobs::now_s(), pool) {
+        match api().drop_mine(k, &mine, super::jobs::now_s(), pool) {
             Ok(d) if d.is_empty() => {}
             Ok(d) => eprintln!(
                 "agent: DSM: {}: ended this Mac's SMB sessions {}",
@@ -656,7 +648,7 @@ fn run(api: Api, pool: Option<super::pool::Shared>, rx: Receiver<Ask>) {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, RwLock};
 
     const SYSTIME: &str = "Wed Nov 11 15:00:00 2026\n";
     /// Our clock as the listing's `systime` is read.
@@ -890,12 +882,22 @@ mod tests {
         }
     }
 
-    fn serve(fake: Arc<Mutex<Fake>>) -> String {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    fn serve(fake: Arc<RwLock<Fake>>) -> String {
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
         let base = format!("http://{}", l.local_addr().unwrap());
-        std::thread::spawn(move || {
-            for s in l.incoming() {
-                let Ok(mut s) = s else { return };
+        // (store::spawn::accept takes only a connection waiting: polled.)
+        l.set_nonblocking(true).unwrap();
+        std::thread::spawn(move || loop {
+            let mut s = match store::spawn::accept(&l) {
+                Ok((s, _)) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+                Err(_) => return,
+            };
+            s.set_nonblocking(false).unwrap();
+            {
                 let mut r = BufReader::new(s.try_clone().unwrap());
                 let mut line = String::new();
                 r.read_line(&mut line).unwrap();
@@ -918,7 +920,7 @@ mod tests {
                     .filter_map(|kv| kv.split_once('='))
                     .map(|(k, v)| (decode(k), decode(v)))
                     .collect();
-                let b = answer(&mut fake.lock().unwrap(), line.trim(), form).to_string();
+                let b = answer(&mut fake.write().unwrap(), line.trim(), form).to_string();
                 let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", b.len());
                 s.write_all(head.as_bytes()).and_then(|_| s.write_all(b.as_bytes())).ok();
             }
@@ -934,7 +936,7 @@ mod tests {
     /// sessions kicked and no other, logged out after.
     #[test]
     fn a_drop_kicks_only_this_macs_and_logs_out() {
-        let fake = Arc::new(Mutex::new(Fake {
+        let fake = Arc::new(RwLock::new(Fake {
             conns: vec![
                 conn(1, "192.168.2.15", "personal", "2026/11/08 09:09:51"),
                 conn(2, "192.168.2.33", "personal", "2026/11/11 06:58:17"),
@@ -947,7 +949,7 @@ mod tests {
         let m = Mine { now: vec![ip("192.168.2.15")], before: NOW - 600, keep_newest: true, home: None };
         let d = api.drop_mine(&keys(), &m, NOW, None).unwrap();
         assert_eq!(pids(&d), vec![1]);
-        let f = fake.lock().unwrap();
+        let f = fake.write().unwrap();
         assert_eq!(pids(&f.conns), vec![2, 3, 4]);
         assert!(f.sessions.is_empty(), "logged out");
         let methods: Vec<String> =
@@ -959,7 +961,7 @@ mod tests {
     /// A kick refused for one connection (gone by then) ends the others: what ended is read back.
     #[test]
     fn a_partly_refused_kick_says_what_ended() {
-        let fake = Arc::new(Mutex::new(Fake {
+        let fake = Arc::new(RwLock::new(Fake {
             conns: vec![
                 conn(1, "192.168.2.15", "personal", "2026/11/08 09:09:51"),
                 conn(2, "192.168.2.15", "personal", "2026/11/09 09:09:51"),
@@ -973,19 +975,19 @@ mod tests {
         // All refused: the error.
         let e = api.drop_mine(&keys(), &m, NOW, None).unwrap_err();
         assert!(matches!(e, Failed::Refused(_)) && e.to_string().contains("105"), "{e}");
-        assert!(fake.lock().unwrap().sessions.is_empty(), "logged out after a failure too");
+        assert!(fake.write().unwrap().sessions.is_empty(), "logged out after a failure too");
     }
 
     /// Bad keys are refused, saying so; a DSM not there is "not reached" (tried again).
     #[test]
     fn failures_say_why() {
-        let fake = Arc::new(Mutex::new(Fake::default()));
+        let fake = Arc::new(RwLock::new(Fake::default()));
         let api = Api::at(&serve(fake));
         let bad = parse_keys("NAS_DSM_USER=scenic-sessions\nNAS_DSM_PASS=wrong\n").unwrap();
         let m = Mine { now: vec![ip("192.168.2.15")], before: NOW, keep_newest: false, home: None };
         let e = api.drop_mine(&bad, &m, NOW, None).unwrap_err();
         assert!(matches!(e, Failed::Refused(_)) && e.to_string().contains("wrong password"), "{e}");
-        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = store::spawn::listen("127.0.0.1:0").unwrap();
         let base = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
         assert!(matches!(Api::at(&base).drop_mine(&keys(), &m, NOW, None), Err(Failed::Unreached(_))));

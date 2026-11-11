@@ -3708,7 +3708,7 @@ impl Agent {
             self.beat.spawn();
             self.nas.spawn();
             if self.mac == cond::Mac::Real {
-                self.dsm = dsm::Part::spawn(dsm::Api::nas(), self.pool.clone());
+                self.dsm = dsm::Part::spawn(dsm::Api::nas, self.pool.clone());
             }
             // **plan** on its thread: it plans on changes, the round granting from its last plan.
             self.plan.spawn();
