@@ -1326,7 +1326,7 @@ impl Run {
 
     /// The records' brief for its view (crate::agent::brief::Briefs::now): its coordinator's,
     /// leading; a member's lead's over HTTP, while it answers the member's beats (else the last one
-    /// had); the NAS's when that's the one.
+    /// had, not asked); the NAS's when that's the one.
     pub fn brief(&self) -> anyhow::Result<Arc<crate::pool::records::Brief>> {
         use super::brief::Lead;
         let root = self.cx.root.clone().context("no NAS")?;
@@ -1336,10 +1336,13 @@ impl Run {
         if self.side.driver().declared().is_none() || self.cx.lead_urls.is_empty() {
             return self.cx.briefs.now(Lead::None, &root);
         }
+        // (The lead not answering: not asked, so the view's step isn't held up by the client's
+        // timeouts; the NAS's when none was had.)
         if !self.side.http.lead_answering(self.side.now()) {
-            if let Some(h) = self.cx.briefs.held() {
-                return Ok(h.brief);
-            }
+            return match self.cx.briefs.held() {
+                Some(h) => Ok(h.brief),
+                None => self.cx.briefs.now(Lead::None, &root),
+            };
         }
         let host = self.side.member().host.clone();
         let c = crate::coord::client::Client::at(self.cx.lead_urls.clone(), self.cx.lead_token.clone(), &host);

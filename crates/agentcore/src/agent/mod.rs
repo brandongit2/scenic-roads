@@ -2860,7 +2860,7 @@ impl Agent {
         cmd.extend(targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != step));
         cmd.extend(self.step_args(step, pass));
         if matches!(step, "trees" | "terrain-hi" | "slope-hi") {
-            // (Under the NAS's deadline: none read, nothing expected the same.)
+            // (The lead's brief, crate::agent::brief; none to be had, nothing expected the same.)
             let same = expect_same(
                 &jobs::Work { step: step.to_string(), targets: targets.to_vec() },
                 &self.brief_now(root).keys,

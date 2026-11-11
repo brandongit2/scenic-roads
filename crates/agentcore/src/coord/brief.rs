@@ -11,7 +11,7 @@ use crate::pool::records::{Brief, Records};
 use anyhow::Result;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::Arc;
 
 /// The route.
@@ -122,17 +122,14 @@ pub fn answer(served: Option<&Served>, h: &HeaderMap) -> Response {
         )
             .into_response();
     }
-    // (A client that takes no gzip, a person's curl: unpacked, as the NAS's file.)
-    let mut b = Vec::with_capacity(s.held.json.len());
-    if flate2::read::GzDecoder::new(&s.gz[..]).read_to_end(&mut b).is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    (common, [(header::CONTENT_TYPE, json), (header::VARY, vary)], b).into_response()
+    // (A client that takes no gzip, a person's curl: the bytes held, as the NAS's file.)
+    (common, [(header::CONTENT_TYPE, json), (header::VARY, vary)], s.held.json.to_vec()).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     fn records(seq: u64) -> Records {
         let mut r = Records { epoch: 849, seq, ..Default::default() };
