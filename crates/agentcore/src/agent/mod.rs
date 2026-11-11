@@ -6443,17 +6443,19 @@ impl Agent {
         }
         self.orphans.retain(jobs::Group::is_the_jobs);
         let busy = self.slots.iter().any(|s| s.running.is_some()) || !self.orphans.is_empty();
-        let Some(root) =
-            root.filter(|_| !self.answers_seeded && !busy && self.leads() && self._lock.is_some() && !self.o.dry_run)
-        else {
+        // (Alone among the steps keeping answers here by their lock, and each archive sent under the
+        // answers' lease, its proxy's lead's: crate::answers::Local, Lease. No proxy yet: not now,
+        // never unleased.)
+        let (Some(root), Some(proxy)) = (
+            root.filter(|_| !self.answers_seeded && !busy && self.leads() && self._lock.is_some() && !self.o.dry_run),
+            self.proxy.as_ref(),
+        ) else {
             return;
         };
+        let lease = Some(crate::answers::Leasing { proxy: proxy.url() });
         self.answers_seeded = true;
         let (root, cache, scratch) =
             (root.long_retry(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
-        // (With the budgets on, alone among the steps keeping answers here by their lock, and each
-        // archive sent under the answers' lease, its proxy's lead's: crate::answers::Local, Lease.)
-        let lease = self.proxy.as_ref().map(|p| crate::answers::Leasing { proxy: p.url() });
         match std::thread::Builder::new()
             .name("answers".into())
             .spawn(move || crate::answers::seed(&root, &cache, &scratch, lease))
@@ -10683,15 +10685,22 @@ mod tests {
             a.round().ok();
             a_job_running(a);
         });
-        // Under the hold: nothing granted, nothing started.
+        // Under the hold (answered and shown by now): nothing granted, nothing started, by a start
+        // asked nor by the rounds going on.
+        let held_at = Instant::now();
         let mut w = Vec::new();
         assert!(a.lead_grants(&view.jobs, view.n, &c, &r, &mut w).is_empty(), "{w:?}");
         assert!(!a.try_start_said(0, own_job("a-test one"), &c, None, &mut w));
-        // (One started before the hold, the loop no longer slowed by the NAS's hold file, task
-        // #1036: told to stop at its next safe point.)
+        for _ in 0..3 {
+            a.round().ok();
+        }
+        // (A job the rounds started before the hold, as they may: told to stop at its next safe
+        // point.)
+        let running: Vec<_> = a.slots.iter().filter_map(|s| s.running.as_ref()).collect();
         assert!(
-            a.slots.iter().filter_map(|s| s.running.as_ref()).all(|r| r.pausing.is_some()),
-            "nothing started under the hold"
+            running.iter().all(|r| r.started_at < held_at && r.pausing.is_some()),
+            "nothing started under the hold: {:?}",
+            running.iter().map(|r| (&r.spec.id, r.pausing.clone())).collect::<Vec<_>>()
         );
         drop(hung);
         a.plan.stop(Duration::ZERO);
