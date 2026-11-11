@@ -147,11 +147,10 @@ pub enum Source<'a> {
 /// Writes `src` under `root` as `<logical>.<hash16>.<ext>` and returns that name (relative to
 /// `root`). The bytes go to `<name>.tmp` first, are read back past the client's cache and checked
 /// against the hash, and only then renamed into place, so a reader never sees a partial or damaged
-/// file under a content name. A read-back that differs is read once more: matching then, the file
-/// is taken (the first read went wrong); differing again, the source is checked, and while it is
-/// unchanged the file is written again, `WRITE_TRIES` writes at most (task #1140: on the NAS, a
-/// write in a session reconnect of the Mac's SMB client came back other bytes of the same length);
-/// a source changed since it was hashed fails at once. Each such step is a line on stderr. When the
+/// file under a content name. A read-back that differs, its source unchanged, is written again,
+/// `WRITE_TRIES` writes at most (task #1140: on the NAS, a write in a session reconnect of the
+/// Mac's SMB client read back other bytes of the same length); a source changed since it was
+/// hashed fails at once. Each write again is a line on stderr. When the
 /// name already exists with the right size nothing is written; an existing content-named file is
 /// never overwritten (one with the wrong size is an error to resolve by hand, not a file to replace).
 ///
@@ -210,42 +209,27 @@ fn write_atomic_as(
     loop {
         write_tmp(&tmp.0, src).with_context(|| format!("write {}", tmp.0.display()))?;
         writes += 1;
-        let read = || reread(&tmp.0).with_context(|| format!("read back {}", tmp.0.display()));
-        let first = read()?;
-        if first == (hash.clone(), size) {
+        let (got, got_size) = reread(&tmp.0).with_context(|| format!("read back {}", tmp.0.display()))?;
+        if got == hash && got_size == size {
             break;
         }
-        // (Read again: a read that went wrong once leaves the file as written; one that reads
-        // wrong again is the file itself.)
-        let (got, got_size) = &first;
+        // Its source unchanged, written again, whichever went wrong, the write or its read-back
+        // (task #1140: on the NAS, in a session reconnect of the Mac's SMB client): a file is
+        // taken only on a read-back that matches the write just made.
         let what = format!("{}: read back {got} ({got_size} bytes), expected {hash} ({size} bytes)", tmp.0.display());
-        let second = read()?;
-        if second == (hash.clone(), size) {
-            eprintln!("{what}; read again, it matched: the first read went wrong, the file is whole");
-            break;
+        if let Source::File(p) = src {
+            // (Bytes are borrowed for the call: they can't change.)
+            let now = fs::metadata(p).with_context(|| format!("stat {}", p.display()))?.len();
+            let now = (hash16_file(p)?, now);
+            ensure!(
+                now == (hash.clone(), size),
+                "{what}; the source changed since it was hashed (now {} with {} bytes)",
+                now.0,
+                now.1
+            );
         }
-        // The file is as the share holds it. Its source the same still: the write went wrong on
-        // its way (task #1140: one in a session reconnect of the Mac's SMB client), written again.
-        let now = match src {
-            // (Borrowed for the call: it can't change.)
-            Source::Bytes(_) => (hash.clone(), size),
-            Source::File(p) => {
-                let size = fs::metadata(p).with_context(|| format!("stat {}", p.display()))?.len();
-                (hash16_file(p)?, size)
-            }
-        };
-        let again = if second == first { "the same again" } else { "other bytes again" };
-        ensure!(
-            now == (hash.clone(), size),
-            "{what}, {again}; the source changed since it was hashed (now {} with {} bytes)",
-            now.0,
-            now.1
-        );
-        ensure!(
-            writes < WRITE_TRIES,
-            "{what}, {again}, the source unchanged; the write was corrupted {writes} times running"
-        );
-        eprintln!("{what}, {again}, the source unchanged: the write was corrupted, written again");
+        ensure!(writes < WRITE_TRIES, "{what}, the source unchanged; {writes} writes read back wrong running");
+        eprintln!("{what}, the source unchanged: written again");
     }
     match rename_no_replace(&tmp.0, &dest) {
         Ok(()) => {
@@ -278,7 +262,7 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
     // (Past the client's cache: a write returns once its bytes went to the share, so the bytes
     // counted moved are the share's and the closing sync has no backlog to flush unseen: an
     // upload's progress is judged by them, pipeline's `Out::settle`.)
-    no_cache(&out);
+    no_cache(&out)?;
     // (Each write's bytes counted the NAS's as it goes, so a long upload's job is seen moving by
     // its beats, task #990; the file made is its caller's to count, as it lands.)
     match src {
@@ -307,53 +291,40 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
     }
     out.sync_all()?;
     #[cfg(test)]
-    if faults::take(|f| &mut f.writes) {
+    if faults::take() {
         faults::damage(tmp)?;
     }
     Ok(())
 }
 
-/// Hash and size of a just-written file, read back past the client's cache where the OS allows it.
+/// Hash and size of a just-written file, read back past the client's cache: on a fresh descriptor
+/// with `F_NOCACHE`, which the Mac's SMB client reads from the server (the cached range dropped
+/// first), never from its pages.
 fn reread(path: &Path) -> io::Result<(String, u64)> {
     let f = File::open(path)?;
-    no_cache(&f);
+    no_cache(&f)?;
     let size = f.metadata()?.len();
-    let hash = hash16_reader(f)?;
-    #[cfg(test)]
-    if faults::take(|f| &mut f.reads) {
-        return Ok(("0".repeat(HASH_LEN), size));
-    }
-    Ok((hash, size))
+    Ok((hash16_reader(f)?, size))
 }
 
-/// Tests' faults in `write_atomic`'s writes and read-backs, this thread's.
+/// Tests' fault in `write_atomic`'s writes: this thread's next writes left damaged.
 #[cfg(test)]
 mod faults {
-    #[derive(Clone, Copy, Default)]
-    pub struct Faults {
-        /// Writes whose file is left damaged (a byte flipped), the next ones.
-        pub writes: u32,
-        /// Read-backs that read other bytes than the file's, the next ones.
-        pub reads: u32,
-    }
-
     thread_local! {
-        static NOW: std::cell::Cell<Faults> = const { std::cell::Cell::new(Faults { writes: 0, reads: 0 }) };
+        static DAMAGED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     }
 
-    pub fn set(f: Faults) {
-        NOW.with(|n| n.set(f));
+    /// This thread's next `n` writes are left damaged.
+    pub fn damage_next(n: u32) {
+        DAMAGED.with(|d| d.set(n));
     }
 
-    /// Whether the fault `which` picks is due (then one fewer of it is).
-    pub fn take(which: impl FnOnce(&mut Faults) -> &mut u32) -> bool {
-        NOW.with(|n| {
-            let mut f = n.get();
-            let c = which(&mut f);
-            let due = *c > 0;
-            *c = c.saturating_sub(1);
-            n.set(f);
-            due
+    /// Whether this write is to be damaged (then one fewer is).
+    pub fn take() -> bool {
+        DAMAGED.with(|d| {
+            let n = d.get();
+            d.set(n.saturating_sub(1));
+            n > 0
         })
     }
 
@@ -368,18 +339,21 @@ mod faults {
     }
 }
 
-/// Asks the OS not to serve this descriptor's reads from its cache (best effort; macOS only).
-fn no_cache(f: &File) {
+/// Asks the OS not to serve this descriptor's reads and writes through its cache (`F_NOCACHE`,
+/// macOS only; elsewhere nothing): an error when it refuses, as a read-back through the cache
+/// checks nothing.
+fn no_cache(f: &File) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
-        // SAFETY: plain fcntl on a descriptor we own; failure only means reads may be cached.
-        unsafe {
-            libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1);
+        // SAFETY: plain fcntl on a descriptor we own.
+        if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
+            return Err(io::Error::last_os_error());
         }
     }
     #[cfg(not(target_os = "macos"))]
     let _ = f;
+    Ok(())
 }
 
 /// `<path>.<host>-<pid>.tmp`: this Mac's and this process's, so two writers of the same name (the
@@ -563,8 +537,8 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_write_is_written_again_and_a_misread_read_again() {
-        use faults::{set, Faults};
+    fn a_write_read_back_wrong_is_written_again() {
+        use faults::damage_next;
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
         fs::create_dir(&root).unwrap();
@@ -575,30 +549,23 @@ mod tests {
         let landed = |name: &str| fs::read(root.join(name)).unwrap() == big;
         let left = || fs::read_dir(&root).unwrap().count();
 
-        // A read-back that went wrong once: read again, matching, the file taken as written.
-        set(Faults { writes: 0, reads: 1 });
+        // A write read back wrong, its source unchanged: written again, and the next lands whole;
+        // all but the last of WRITE_TRIES read back wrong, the last lands. From bytes as from a file.
+        damage_next(1);
         let name = write_atomic(nr, "a", "bin", Source::File(&src)).unwrap();
         assert!(landed(&name));
         fs::remove_file(root.join(&name)).unwrap();
-
-        // A write the share took damaged (both read-backs agree), its source unchanged: written
-        // again, and the second lands whole. From bytes as from a file.
-        set(Faults { writes: 1, reads: 0 });
-        let name = write_atomic(nr, "a", "bin", Source::File(&src)).unwrap();
-        assert!(landed(&name));
-        fs::remove_file(root.join(&name)).unwrap();
-        set(Faults { writes: 1, reads: 0 });
+        damage_next(WRITE_TRIES - 1);
         assert_eq!(write_atomic(nr, "a", "bin", Source::Bytes(&big)).unwrap(), name);
         assert!(landed(&name));
         fs::remove_file(root.join(&name)).unwrap();
 
-        // Every write damaged: it gives up after WRITE_TRIES of them, leaving nothing.
-        set(Faults { writes: WRITE_TRIES, reads: 0 });
+        // Every write read back wrong: it gives up after WRITE_TRIES of them, leaving nothing.
+        damage_next(WRITE_TRIES);
         let e = write_atomic(nr, "a", "bin", Source::File(&src)).unwrap_err();
-        assert!(format!("{e:#}").contains(&format!("corrupted {WRITE_TRIES} times running")), "{e:#}");
+        assert!(format!("{e:#}").contains(&format!("{WRITE_TRIES} writes read back wrong running")), "{e:#}");
         assert_eq!(left(), 0);
         // (Its faults all taken: the next write lands at once.)
-        set(Faults::default());
         assert!(landed(&write_atomic(nr, "a", "bin", Source::File(&src)).unwrap()));
 
         // A source changed since it was hashed is never written again (the hash given is stale).

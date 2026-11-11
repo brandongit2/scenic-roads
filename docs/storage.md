@@ -39,13 +39,15 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
 
 **Immutable, content-named files.**
 - Every built file is `<logical>.<hash16>.<ext>`, never rewritten. A write goes to `<name>.tmp`, is
-  read back past the client's cache and checked against its hash, then renamed
-  (`store::naming::write_atomic`). A read-back that differs is read once more: matching, the file is
-  taken (the first read went wrong); differing again with its source unchanged, the file is written
-  again, three writes at most; a source changed since it was hashed fails at once. Each is a line in
-  the job's log (task #1140: on 9 and 11 Nov three packs of 511-823 MB from the Mac mini, and on
-  24 Oct one of 185 MB from the M4, read back the same length but other bytes, and failed their
-  jobs; the mini's SMB session had reconnected during the 11 Nov one's upload). An unchanged file keeps its name, so a
+  read back past the client's cache (a fresh descriptor with `F_NOCACHE`, which the Mac's SMB
+  client reads from the server; one it refuses fails the write) and checked against its hash, then
+  renamed (`store::naming::write_atomic`). A read-back that differs, its source unchanged, is
+  written again, three writes at most, each a line in the job's log; a source changed since it was
+  hashed fails at once (task #1140: on 9 and 11 Nov three packs of 511-823 MB from the Mac mini,
+  and on 24 Oct one of 185 MB from the M4, read back the same length but other bytes, and failed
+  their jobs; the mini's SMB session had reconnected during the 11 Nov one's upload). Each write
+  and read-back moves the whole file: the writes are counted as the NAS's bytes written, the
+  read-backs in no NAS count. An unchanged file keeps its name, so a
   rebuild uploads only what changed; one already there is reused as it is, nothing written to it,
   and named in the job's hand-off (`Handoff::reused`), which the merge checks against GC's deletions
   (docs/maplog.md §7.4). One the manifest already names under the same logical name takes one look
