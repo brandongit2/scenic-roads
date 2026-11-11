@@ -2942,8 +2942,8 @@ step, were deleted with its rollout gate, task #1036.)
   merged after, is passed over). The job succeeded, the ask leaves `redo.json`. The plan then
   offers the targets again under the keys it has; what reads their outputs follows by content
   (slope-hi's key names the terrain hi pack's content, the assemblies' keys their z6 tiles'
-  mids), and the old files leave the manifest as the new ones replace them, for GC (§7.3, 14
-  days). The coordinator answers the ask with the last lease it granted before it
+  mids), and the old files leave the manifest as the new ones replace them, for GC (its queue
+  on the lead: an hour's grace once nothing holds them, docs/maplog.md §7.2). The coordinator answers the ask with the last lease it granted before it
   (`after`); the redo's job is leased later. The command then follows the newest records until
   the redo's merge lands in them: each target's last merged lease (`Records::last`) is later than
   `after`, so a job leased before the ask that merges meanwhile isn't taken for the redo; a lead

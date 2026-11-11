@@ -538,8 +538,10 @@ writer) and, if none holds it, appends `{name, freed_seq, freed_at}` to the GC q
 it) leaves the queue. A file is **due** when:
 
 - every client's cursor is past its `freed_seq` (the map no client holds names it), and
-- `GRACE` (2 days) has passed since `freed_at` (a margin for clients outside the cursor set, and
-  for the owner to look at a bad publish before its files go), and
+- `GRACE` (an hour) has passed since `freed_at` (a margin for readers outside the cursor set: a
+  request in flight as the map server's cursor moves on, seconds, minutes at most for a large range
+  read; an ad-hoc script. Browser tabs hold no file names: they ask the map server for tiles by
+  z/x/y, and it resolves them through its own map, a cursor), and
 - every live lease was granted after its `freed_at` (a job running since then may have looked it up
   by name; leases are clients too, §5.4), and
 - the records and the map still don't name it (checked again at the moment it goes).
@@ -556,6 +558,13 @@ lease granted before it was freed (the third rule), or refused at the merge (§7
 takes holds its names from then until the records after it are seen (`GcQueue::bringing`, step
 8b). The NAS snapshot is a client (`snapshot`, its cursor the oldest of the snapshots kept there).
 Deletions are kept for the merge's refusal while a lease up to theirs may still be handed off (§7.4).
+The grace keeps no hand-off safe, so its length doesn't bound one: a member asleep or a lead down
+for longer than the grace, holding a hand-off whose job reused a file freed under its lease, finds
+it refused at the merge and its targets done again, never the records naming a deleted file
+(`a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused`). Why no longer (task #1106):
+each day of grace holds a day's freed files (2,000 to 9,000 names, some 26 MB each: 50 to 240 GB)
+on a NAS at 97%, and no window to look at a bad publish is wanted: publishes are small and many a
+day, a bad one is fixed by the next, and the map isn't rolled back to an earlier `seq` (§10, 5).
 The mirror's client (`mirror/<host>`, §5.4, §6.2, step 7b) holds the files of the oldest `seq` a
 download still copies, so the queue's deletions keep them.
 
@@ -683,7 +692,7 @@ Built (step 8b, `gc::Sweeps`): three passes, each with its own cursor, after the
 the duties once a day (the names to drop, the archives, the forecast inputs' old days, the old
 catalogues once asked, the uploads' check: each resumable by what it saved as it went, so a pass
 cut short is taken again whole); the inputs sweep (`gc::inputs_walk`) a pass every 14 days, its
-holders read as it starts and again once `KEEP_FRESH_S` (a day, half the grace for which the lead holds a copy a merge took) old, each copy told the lead (`/gc/removing`) before it goes, the lead
+holders read as it starts and again before a chunk once `KEEP_FRESH_S` (30 minutes, half the grace for which the lead holds a copy a merge took) old, each copy told the lead (`/gc/removing`) before it goes, the lead
 answering those it holds now; and the orphan sweep (§7.5), which takes the stray `.tmp` files and a
 retired pass's planet as it lists. A removed step's files and a retired pass's content-named ones
 are the queue's (`by_the_queue`), the orphan sweep finding those named before the queue was. A
@@ -750,16 +759,17 @@ and the Macs go with step 9, GC's with steps 8a and 8b.
 1. **Its own store or #878's:** the map log as its own store on the lead (proposed: lands without
    waiting on #878; one writer thread of its own), folded into the pool store once #878's step 1 has
    landed, or built inside it from the start (one snapshot, one backup, but waits for #878).
-2. **`GRACE`:** 2 days proposed. It's the only time a bad publish's previous files survive the
-   cursors passing them. Longer costs room (about a day's churn of packs per day of grace).
+2. **`GRACE`:** an hour (decided: the owner's, 10 Nov, task #1106), a margin for readers outside
+   the cursor set (§7.2). Longer costs room (a day's freed files, 50 to 240 GB, per day of grace).
 3. **`CURSOR_TTL`:** 7 days proposed for a client that stops asking. Shorter frees sooner; a Mac
    away longer resets from the snapshot either way and loses nothing (its mirror is its own).
 4. **The orphan sweep over SSH:** listing on the NAS itself (`find -printf`, one call a folder,
    seconds for the whole share) instead of SMB listings, if the lead (the Mac mini) can use SSH
    unattended; today's GC verifies uploads over SSH only where it can. Proposed: SMB, chunked, which
    needs nothing new; SSH as a later speed-up.
-5. **Rolling back a publish:** the log makes "map as of `seq` s" cheap to compute while its files
-   are within `GRACE`. Proposed: not built now (no one asks for it); the grace keeps the option.
+5. **Rolling back a publish:** not planned (the owner's, 10 Nov): the map is never set back to an
+   earlier `seq`; a bad publish is fixed by the next. (`publish.sh --rollback` rolls the app back,
+   not the map: docs/building.md.)
 6. **Clients' cursors durable:** proposed not `fsync`ed per request (saved with the log's snapshot):
    a lead restart that loses an hour of cursor advances only delays GC by that hour.
 
@@ -876,10 +886,10 @@ The gate's 1,077 are the inputs sweep's (§7.6), by the indexes that hold them.
 ## Decisions (PM, 30 Oct night)
 
 1. The map log is its own store on the lead, so it lands without waiting for #878; #878's pool store may absorb it later.
-2. `GRACE` is 2 days.
+2. `GRACE` is an hour (the owner's, 10 Nov, task #1106: §7.2).
 3. `CURSOR_TTL` is 7 days.
 4. The orphan sweep runs over SMB in chunks for now.
-5. Rolling back a publish is not built; the grace keeps the option open.
+5. Rolling the map back to an earlier publish is not planned (the owner's, 10 Nov).
 6. Cursors are saved with the log's snapshot. A lead restart can only bring a cursor back older, which keeps files longer and never frees one early.
 
 ## Decisions (PM, 1 Nov)

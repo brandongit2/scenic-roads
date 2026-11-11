@@ -22,9 +22,13 @@ use std::sync::Mutex;
 
 /// The queue's file in the map log's folder.
 pub const FILE: &str = "gc.jsonl";
-/// How long a freed name waits once no client holds it: a margin for clients outside the cursor
-/// set, and for the owner to look at a bad publish before its files go (PM's decision 2, 30 Oct).
-pub const GRACE_S: u64 = 2 * 86400;
+/// How long a freed name waits once no client holds it (docs/maplog.md §7.2): a margin for readers
+/// outside the cursor set, which hold a name for seconds to minutes (a request in flight as the map
+/// server's cursor moves on, an ad-hoc script); browser tabs never hold one (the map server
+/// resolves their tiles by its own map, a cursor). Not what keeps a hand-off safe: the merge
+/// refuses one bringing a name deleted under its lease, however long it was held (§7.4). Task
+/// #1106: two days held some 120 to 480 GB on a NAS at 97%.
+pub const GRACE_S: u64 = 3600;
 /// A client unheard this long no longer holds anything: a laptop away a month doesn't hold GC; on
 /// its return it resets from the snapshot (PM's decision 3, 30 Oct; docs/maplog.md §5.4).
 pub const CURSOR_TTL_S: u64 = 7 * 86400;

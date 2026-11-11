@@ -136,7 +136,7 @@ it stopped.
   (its changes, its uploads and the files its job reused, `Handoff::reused`). The lead's agent
   queues each content name the map's log or the records stop naming (`agent::gcqueue`,
   `agent/maplog/gc.jsonl`); a name is due once every client's cursor is past the map that freed it,
-  2 days have passed (`GRACE_S`) and every live lease was granted after it was freed.
+  an hour has passed (`GRACE_S`) and every live lease was granted after it was freed.
 - **By the queue:** each run first takes the due names from the lead's coordinator 200 at a time
   (`POST /gc/chunk`; `gc::CHUNK_NAMES`): the lead checks each against its holders as of then and
   marks the rest deleted in its queue, the newest lease granted then theirs, on its disk before it
@@ -176,8 +176,9 @@ it stopped.
     `.rgeo`, and the regions' `.rgeo` an elevation dataset's `measured.outline` was cut by, which
     its plans read while that index is accepted). The rest, 14 days old, is told the lead 200 at a
     time (`POST /gc/removing`), which answers those something holds now (kept) and marks the rest,
-    removed then as a chunk is. What keeps them is read as the pass starts and again once a day
-    old (`gc::KEEP_FRESH_S`, half the grace for which the lead holds a copy a merge took). None is
+    removed then as a chunk is. What keeps them is read as the pass starts and again before a
+    chunk once 30 minutes old (`gc::KEEP_FRESH_S`, half the grace for which the lead holds a copy a
+    merge took). None is
     swept while what keeps them can't be read (said).
   No sweep goes through a link (a file reached by one has a path no holder names).
 - **Removed steps' data** (`agent::gc::RETIRED`, logical-name prefixes; today `sources/terrain-z8-`,

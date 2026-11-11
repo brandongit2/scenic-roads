@@ -573,9 +573,8 @@ log line prefix `catalog-stats:` and the phase names (scenic-build's "sorting th
   gives every credit and builds the coverage from the recipes.
 - `files`' sizes: the records' (from each file's job's hand-off) or the map's (the same content
   name, the same bytes); the step looks at the NAS only for a file neither has.
-- GC's roots: the map (its snapshots on the NAS, the lead's map now), the names the lead's GC queue
-  freed in the last 14 days, and the build manifest; an unreferenced file goes once also older than
-  14 days (docs/storage.md). While publishing is held (`inputs/hold-catalog`), the map the step
+- GC: a file goes once neither the map a client holds nor the records name it, by the lead's GC
+  queue (docs/maplog.md §7, docs/storage.md). While publishing is held (`inputs/hold-catalog`), the map the step
   would publish is written whole to `map-held/<seq>.json.zst` (a snapshot, the newest three kept).
 
 ## On each Mac (`~/Library/Application Support/scenic/`)

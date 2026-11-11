@@ -477,3 +477,69 @@ fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
     c.member_beat(&beat("m4", &[], &[]));
     assert_eq!(q.deletions_kept(), 0);
 }
+
+/// Task #1106: the grace (an hour) isn't what keeps a hand-off safe. m4's job, its lease granted
+/// first, reuses a file a publish then frees; its live lease holds the file past the grace. m4
+/// sleeps with its hand-off unposted: its lease released, the file is due once the grace has
+/// passed from its freeing, and a chunk removes it; m4 back hours later, its hand-off is refused
+/// (the deletion kept while m4 owes the lease), its targets done again, and the redo merges.
+#[test]
+fn a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused() {
+    use crate::coord::{beats, held, lease::Work};
+    let d = tempfile::tempdir().unwrap();
+    let (c, _port) = crate::coord::start_for_test(&d.path().join("lead"), "m1", "");
+    let dir = d.path().join("maplog");
+    std::fs::create_dir_all(&dir).unwrap();
+    let name = "base/6-1-1.k0.base";
+    let m1 = map(1, &[("base/6-1-1", name)]);
+    let q = std::sync::Arc::new(GcQueue::default());
+    q.open(&dir, &m1).unwrap();
+    c.set_epoch(3);
+    c.set_maplog(store::map::feed::Feed::new(), q.clone());
+    super::records(&q, &records(1, &[]), T0);
+    let beat = |m: &str, held: &[u64], handoffs: &[String]| held::Beat {
+        member: m.into(),
+        speaks: vec![held::SPEAKS.into(), beats::HANDOFF.into()],
+        held: held.iter().copied().collect(),
+        handoffs: handoffs.to_vec(),
+        ..Default::default()
+    };
+    let grant = |worker: &str| {
+        let mut s = c.shared.lock().unwrap();
+        let now = s.now();
+        let work = Work::Job { step: "unit".into(), targets: vec![("6-1-1".into(), "k5".into())] };
+        s.leases.grant_at(worker, work, now, T0)
+    };
+    let id = grant("m4");
+    c.member_beat(&beat("m4", &[id], &[]));
+    c.member_beat(&beat("m2", &[], &[]));
+    // A publish frees `name` a second after m4's job found it on the NAS; every cursor passes it.
+    let (b2, _) = to(&m1, &[("base/6-1-1", "base/6-1-1.k9.base")], 2);
+    q.batch(&b2, T0 + 1);
+    let freed = T0 + 1;
+    let cursors: BTreeMap<String, Cursor> =
+        [("server/m6".to_string(), Cursor { seq: 2, heard: freed, at: freed, ..Default::default() })].into();
+    let h = |now: u64, lease: Option<u64>| Holders { cursors: &cursors, oldest_lease: lease, now };
+    assert!(q.due(&h(freed + GRACE_S - 1, None)).is_empty(), "within the grace");
+    assert!(q.due(&h(freed + GRACE_S, Some(T0))).is_empty(), "m4's live lease, granted before it was freed");
+    // m4 asleep: the lead releases its lease, m2 beating all the while; the grace passed, it's due.
+    c.shared.lock().unwrap().leases.drop_where(|l| l.id == id);
+    c.member_beat(&beat("m2", &[], &[]));
+    let now = freed + GRACE_S;
+    let mark = lease(c.lease_bounds().1);
+    assert_eq!(q.chunk(&h(now, None), mark, 200, &|_| true).unwrap(), [name]);
+    q.gone(&[name.to_string()], &[], now, mark).unwrap();
+    assert_eq!(q.deletions_kept(), 1, "kept: m4 may still hand off under its lease");
+    // m4 back three hours on, its hand-off (reusing `name`) listed: refused, its targets done again.
+    let later = T0 + 3 * GRACE_S;
+    let reused = Entry {
+        lease: LeaseId { epoch: 3, n: id },
+        handoff: Handoff { reused: vec![name.to_string()], ..Default::default() },
+        ..entry(5, "base/6-1-1.k5.base")
+    };
+    c.member_beat(&beat("m4", &[], &[reused.key().unwrap()]));
+    let why = refusal(&q, &reused, later).expect("refused");
+    assert!(why.contains(name), "{why}");
+    let redo = Entry { lease: LeaseId { epoch: 3, n: grant("m2") }, ..reused.clone() };
+    assert!(refusal(&q, &redo, later).is_none(), "the redo merges");
+}

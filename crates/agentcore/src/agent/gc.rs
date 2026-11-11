@@ -1090,8 +1090,8 @@ fn orphan_walk(
 
 /// The gate's checked copies (`sources/inputs/`, docs/inputs.md §4.9), a folder at a time from the
 /// one it reached: a content-named file nothing keeps (`inputs_kept`, read as the walk starts and
-/// again once `KEEP_FRESH_S` old: the lead's holders as each is told cover what was accepted
-/// since) and `INPUTS_KEEP_S` old told the
+/// again before a chunk is told once `KEEP_FRESH_S` old: the lead's holders as each is told cover
+/// what was accepted since) and `INPUTS_KEEP_S` old told the
 /// lead (`Lead::removing`), `CHUNK_NAMES` at a time, those it doesn't hold removed (`remove_told`);
 /// a `.tmp` file `TMP_AGE_S` old removed. None swept while what keeps them can't be read (said).
 fn inputs_walk(
@@ -1116,14 +1116,6 @@ fn inputs_walk(
     };
     let roots = [Root { dir: "sources/inputs".into(), only: None, pass: false }];
     walk(root, &roots, reached, &mut |_, dir, entries| {
-        // (What keeps them read again once half the queue's grace old: a copy a hand-off merged
-        // since brings is held by the lead only that long, after the records naming its index are
-        // seen, and nothing touches a copy reused.)
-        if keep.1.elapsed() >= Duration::from_secs(KEEP_FRESH_S) {
-            let k = read_keep().context("nothing more removed: what keeps the inputs' copies not read again")?;
-            keep = (k, std::time::Instant::now());
-        }
-        let keep = &keep.0;
         let mut due = Vec::new();
         for e in entries {
             meta(1, 1, 0);
@@ -1138,7 +1130,8 @@ fn inputs_walk(
                     remove_plain(&e.path, ways, dry_run)?;
                     rep.tmp_removed += 1;
                 }
-            } else if store::naming::parse_content_name(&rel).is_some() && !keep.contains(&rel) && age > INPUTS_KEEP_S {
+            } else if store::naming::parse_content_name(&rel).is_some() && !keep.0.contains(&rel) && age > INPUTS_KEEP_S
+            {
                 due.push(rel);
             }
         }
@@ -1147,9 +1140,22 @@ fn inputs_walk(
             rep.inputs_removed += due.len();
         } else {
             for chunk in due.chunks(CHUNK_NAMES) {
+                // (What keeps them read again once `KEEP_FRESH_S` old, before each chunk, not each
+                // folder: a copy a hand-off merged since brings is held by the lead only the
+                // queue's grace once the records naming its index are seen, and nothing touches a
+                // copy reused, so a folder's chunks mustn't outlast the other half.)
+                if keep.1.elapsed() >= Duration::from_secs(KEEP_FRESH_S) {
+                    let k =
+                        read_keep().context("nothing more removed: what keeps the inputs' copies not read again")?;
+                    keep = (k, std::time::Instant::now());
+                }
+                let chunk: Vec<String> = chunk.iter().filter(|n| !keep.0.contains(*n)).cloned().collect();
+                if chunk.is_empty() {
+                    continue;
+                }
                 let held: BTreeSet<String> = ways
                     .lead
-                    .removing(chunk)
+                    .removing(&chunk)
                     .context("nothing more removed: GC's queue on the lead wasn't told")?
                     .into_iter()
                     .collect();
@@ -1169,8 +1175,11 @@ fn inputs_walk(
 }
 
 /// How old what keeps the gate's copies (`inputs_kept`) may be as `inputs_walk` tells the lead a
-/// folder's: half GC's grace (store::map::gc::GRACE_S), so a copy the merge took since, which the
-/// lead holds that long, is among them by then.
+/// chunk: half GC's grace (store::map::gc::GRACE_S, so 30 minutes), so a copy the merge took
+/// since, which the lead holds that long once the records naming its index are seen, is among
+/// them by then; the other half covers a chunk's removals (200 at the tenth percentile of the
+/// share's probed rate, 2.5 a second: 80 s) and those records reaching the NAS. A re-read lists `sources/inputs/` and
+/// reads its young indexes (the sweep's whole pass took 193 s on 7 Nov), so it stays cheap.
 pub const KEEP_FRESH_S: u64 = store::map::gc::GRACE_S / 2;
 
 /// A file no content name is (a stray `.tmp`, a retired pass's planet) removed (a dry run: said);
