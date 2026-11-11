@@ -127,9 +127,13 @@ or PUT sending `"priority": 6.5` gives the task 7, and the open tasks it then ru
 at 8 if one was moved there, …) move down one, as far as the first free number; tasks sharing a
 number move together, and the rest keep theirs. Open: not done or abandoned, not archived, nor inside
 an archived folder; the others keep their numbers and are never run into. A whole number is stored
-as sent and moves nothing. Each change leaves a `kind: "priority"` event on its task ("Priority 7 →
+as sent and moves nothing; 0.5 gives 1; a negative number or one sent as text is refused (400) with
+the rest of the write, nothing moved. Each change leaves a `kind: "priority"` event on its task ("Priority 7 →
 8: moved down by #1100 placed at 6.5 (by curl)"; on the task itself "Priority 12 → 7: asked for 6.5,
-2 moved down (by curl)"), and the answer adds what it got and what moved:
+2 moved down (by curl)"; its number unchanged, "Priority 7: asked for 6.5, …"), and the answer adds
+what it got and what moved (below). The page works the moves out with the same module and sends each
+as a whole number, its own edit, so Undo puts each back: those leave no `priority` event (a drag or
+⌥↑ leaves the page's own note on the task it moved).
 
 ```bash
 curl -s -X PATCH $B/api/c/items/i1100 -H 'content-type: application/json' -d '{"priority": 6.5}'

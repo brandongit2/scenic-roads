@@ -1,5 +1,5 @@
 // The dev job dashboard's API (jobs.mjs): events merged into spans whatever their order, a bad line
-// refused without the rest, and what the page reads. Run: node --test tools/devtools/test/
+// refused without the rest, and what the page reads. Run: node --test tools/devtools/test/*.test.mjs
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";

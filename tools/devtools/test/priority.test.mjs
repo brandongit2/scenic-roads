@@ -1,5 +1,5 @@
 // A task's priority with a fraction (#1100): placed by priority.mjs, by the server on a POST or PATCH
-// as by the page. Run: node --test tools/devtools/test/
+// as by the page. Run: node --test tools/devtools/test/*.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -122,6 +122,29 @@ test("a refused write moves nothing", async (t) => {
   assert.equal(r.status, 400);
   assert.equal(JSON.stringify([b.store.list("items"), b.store.list("events")]), before);
   assert.equal(b.prio(a), 6);
+});
+
+test("a priority that isn't a number from 0, or on a folder, is refused, nothing moved; one placed on its own number says so", async (t) => {
+  const b = await board(t);
+  const [a, c] = [await b.add({ priority: 3 }), await b.add({ priority: 4 })];
+  const before = JSON.stringify([b.store.list("items"), b.store.list("events")]);
+  for (const bad of [{ priority: "2.5" }, { priority: -0.5 }, { priority: true }, { priority: 2.5, stage: "nope" }]) {
+    assert.equal((await b.patch(a, bad)).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await b.call("POST", "/api/c/items", { kind: "folder", text: "f", priority: 1.5 })).status, 400);
+  assert.equal(JSON.stringify([b.store.list("items"), b.store.list("events")]), before);
+  const r = await b.patch(a, { priority: 2.5 });
+  assert.deepEqual([r.body.priority, r.body.moved, b.prio(c)], [3, [], 4], "4 is past 3: nothing moves");
+  assert.deepEqual(b.events(a), ["Priority 3: asked for 2.5 (by curl)"]);
+});
+
+test("PUT with a fraction is placed too", async (t) => {
+  const b = await board(t);
+  const [a, c] = [await b.add({ priority: 2 }), await b.add({ priority: 9 })];
+  const r = await b.call("PUT", `/api/c/items/${c}`, { kind: "task", text: "t", parent: "", stage: "", where: "Subagent", priority: 1.5 });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([r.body.priority, r.body.moved.map((m) => [m.id, m.from, m.to])], [2, [[a, 2, 3]]]);
+  assert.deepEqual([b.prio(a), b.prio(c)], [3, 2]);
 });
 
 test("the page places priorities with the same module, not a copy", () => {

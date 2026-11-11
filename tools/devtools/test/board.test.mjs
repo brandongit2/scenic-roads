@@ -1,5 +1,5 @@
 // The task board's API: what it assigns, and that every invalid shape is refused with a 400 that
-// says why and writes nothing (#672). Run: node --test tools/devtools/test/
+// says why and writes nothing (#672). Run: node --test tools/devtools/test/*.test.mjs
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";

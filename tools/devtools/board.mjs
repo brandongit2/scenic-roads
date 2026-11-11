@@ -85,7 +85,7 @@ export function makeBoard(store, changed) {
       logEvent(m.id, "priority", `Priority ${m.from} → ${m.to}: moved down by #${doc.num} placed at ${x} (by ${by})`);
       return { id: m.id, num: o.num, from: m.from, to: m.to };
     });
-    logEvent(id, "priority", `Priority ${typeof old === "number" ? `${old} → ` : ""}${to}: asked for ${x}${moved.length ? `, ${moved.length} moved down` : ""} (by ${by})`);
+    logEvent(id, "priority", `Priority ${typeof old === "number" && old !== to ? `${old} → ` : ""}${to}: asked for ${x}${moved.length ? `, ${moved.length} moved down` : ""} (by ${by})`);
     return { priority: to, moved };
   }
 
