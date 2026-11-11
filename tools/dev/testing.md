@@ -717,3 +717,15 @@ clock), the tests parts run on the M4 only, against the same selection of 5 Nov'
   a level fewer (the same counts asserted). depth's fine source 12.1 → 6.8 s, 20.1 → 9.8 s, the survey 5 z14 tiles across, not 15:
   each level's mean checked at the same point, at z12 and z14 as before. slope_pack's pyramid 2.2 → 0.6 s, 24.0 → 6.1 s, z0-4 not z0-5: three runs and the tops as before.
 - **Not touched**: the live-scale forecast (with #993) and a key names exactly its reads (agent/build.rs, with #916 6f2), the costliest left beside terrain_task's.
+
+#1123, measured 11 Nov on the M4 (load 40-85), in a scratch shared folder, the test build of
+agentcore, pipeline, store, terrain, jobrt and buildstore (340 units) with its workspace units'
+fingerprints and incremental state deleted, then #1123's affected tests (1,385 + 79):
+- **Opt-level 0 for the workspace's crates in tests, dependencies at 3: tried and left.** The build
+  117 and 129 s → 58 and 77 s (cargo's units 334 → 153 s of compile); the tests' run 122 s → 643 s,
+  25 tests slow past a minute and 4 of depth's past nextest's 3-min bound. `[profile.test]` stays at 1.
+- **Fewer test binaries (pipeline's 13 integration tests in one or two): not done.** Their compile
+  and link, 15 programs, 15 s of the 334 s, each 0.4-1.6 s but cli's 4.6 s, built beside the rest
+  (the critical path is agentcore's lib and its unit tests, 43 + 65 s: #1025's split is the lever);
+  merging them would trade per-file `//! scans:` lines, affected-tests.sh's `--test` targets and
+  check-reuse.py's per-test reads for a few seconds.
