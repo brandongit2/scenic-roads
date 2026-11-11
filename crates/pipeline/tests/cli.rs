@@ -379,7 +379,8 @@ fn every_shell_tool_checks_its_arguments() {
 
 /// tools/app/remote-tests.sh never hangs connecting (#637): with an `ssh` that never returns (as
 /// when 1Password, the ssh agent, waits for an approval), its fresh-connection probe is stopped
-/// within its 20 s bound and the command runs here, saying why.
+/// within its bound (2 s here, SCENIC_TEST_PROBE_S; the real 20 s was this test's 20 s, #1112) and the
+/// command runs here, saying why.
 #[test]
 fn remote_tests_falls_back_when_ssh_hangs() {
     use std::os::unix::fs::PermissionsExt;
@@ -397,6 +398,7 @@ fn remote_tests_falls_back_when_ssh_hangs() {
         .args(["k637", src.to_str().unwrap(), "echo ran-here"])
         .env("PATH", path)
         .env("SCENIC_TEST_HOST", "hung-host")
+        .env("SCENIC_TEST_PROBE_S", "2")
         // (Not this Mac by name, or the script would run here at once, never trying the ssh.)
         .env("SCENIC_TEST_MAC", "not-this-mac")
         // (A test's run isn't one of the dev job dashboard's: tools/dev/devjob.zsh.)
@@ -408,6 +410,6 @@ fn remote_tests_falls_back_when_ssh_hangs() {
     let o = store::spawn::output(&mut cmd).unwrap();
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "{out}");
-    assert!(out.contains("no fresh ssh connection to hung-host within 20 s"), "{out}");
+    assert!(out.contains("no fresh ssh connection to hung-host within 2 s"), "{out}");
     assert!(out.lines().any(|l| l == "ran-here"), "{out}");
 }

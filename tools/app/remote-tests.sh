@@ -65,6 +65,8 @@
 # reach it from another Mac (SCENIC_TEST_HOST, an ssh alias, `m4` by default).
 test_mac=${SCENIC_TEST_MAC:-Brandons-MacBook-Pro}
 host=${SCENIC_TEST_HOST:-m4}
+# The fresh-connection probe's bound in seconds (a test's shorter: SCENIC_TEST_PROBE_S).
+probe_s=${SCENIC_TEST_PROBE_S:-20}
 self=${0:A}
 setopt extendedglob
 # Owner ids (proc_id, proc_alive) are tools/app/lib.zsh's: sourced here, and sent ahead of this
@@ -381,8 +383,8 @@ local_main() {  # <key> <source dir> <command>
   elif [[ $(scutil --get LocalHostName 2>/dev/null) == $test_mac ]]; then why="this is the test Mac"
   elif [[ -d $src/data/build ]]; then why="the tree has ignored test data in data/build, which the test Mac's copy wouldn't"
   # (A fresh connection, as the run's own: its key from the agent, which may wait for an approval.)
-  elif ! bounded 20 ssh -o ConnectTimeout=10 -o BatchMode=yes -o ControlPath=none $host true 2>/dev/null; then
-    why="no fresh ssh connection to $host within 20 s (down, or the ssh agent, 1Password, locked or waiting for an approval)"
+  elif ! bounded $probe_s ssh -o ConnectTimeout=10 -o BatchMode=yes -o ControlPath=none $host true 2>/dev/null; then
+    why="no fresh ssh connection to $host within $probe_s s (down, or the ssh agent, 1Password, locked or waiting for an approval)"
   fi
   if [[ -n $why ]]; then
     print "remote-tests: running here ($why; load $(loadavg))"
