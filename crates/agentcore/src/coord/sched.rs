@@ -399,7 +399,7 @@ impl Backfill {
 /// on the rayon pool the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `terrain-deep`: its
 /// band past z12 made on that pool, its reads ahead waiting on the network (terrain::terrain_deep); `bld-fetch`: its
 /// downloads bounded by its `--jobs` (3 by default, at most
-/// 4), waiting on the network; `pyramids-fill`: its fetches a host's requests in flight (buildstore::fetch::HOST_REQUESTS),
+/// 4), waiting on the network; `pyramids-fill`: its fetches a host's requests in flight (buildstore::fetch's limit a host, store::aimd),
 /// waiting on the network, its own work (whole-PNG checks, packing) a fraction of a core (task #823:
 /// counted as the whole Mac, its first job held 6 of the mini's 12 cores).
 pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrain-deep", "bld-fetch", "pyramids-fill"];

@@ -19,7 +19,7 @@
 //!   request is held to `TILE_WITHIN`, and asked again past it. A GeoTIFF dataset's blocks are read
 //!   likewise ahead of their sampling (`read_ahead`, on store::ahead's threads, task #1096), its
 //!   files first opened together (`GeoSet::blocks_ahead`): a stored file read in place on the NAS
-//!   (its lane's reads in flight held to store::ahead::AT_ONCE's) as a fetched one over the
+//!   (each read taking its turn of the process's NAS limit, store::aimd) as a fetched one over the
 //!   network, up to `GEO_AHEAD` blocks past the chunk being sampled, each once and as stored
 //!   (buildstore::geotiff::Tiff::fetch), decoded by the sampling's own threads as they come to it;
 //!   so the sampler's threads wait on no read the chunk's points foresaw. A whole copy on this

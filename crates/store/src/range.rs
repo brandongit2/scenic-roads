@@ -448,9 +448,15 @@ impl RangeRead for PlainFile {
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         check_range(self.len, off, len)?;
         let _w = if self.local { crate::waits::disk() } else { crate::waits::nas() };
+        // (A NAS read takes its turn of the process's NAS limit, crate::aimd: its latency or its
+        // failure tells the limit.)
+        let mut turn = (!self.local).then(|| crate::aimd::NAS.take());
         let mut b = vec![0u8; len];
         if let Err(e) = self.handle().and_then(|f| self.read_once(&f, &mut b, off)) {
             if !crate::retry::handle_gone(&e) {
+                if crate::aimd::nas_congested(&e) {
+                    turn.as_mut().map(crate::aimd::Slot::congested);
+                }
                 return Err(IoError::Io(e));
             }
             let what = format!("{}: read {len} bytes at {off}", self.path.display());
@@ -467,6 +473,9 @@ impl RangeRead for PlainFile {
                 },
             )
             .map_err(IoError::Io)?;
+        }
+        if let Some(t) = turn.as_mut() {
+            t.read(len as u64);
         }
         if self.local {
             count_local(len as u64);

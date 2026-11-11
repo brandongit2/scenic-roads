@@ -330,9 +330,9 @@ pub struct Filled {
 }
 
 /// Each of `want`'s tiles (by template) that its store under `dir` lacks fetched by `fetch`
-/// (as many at once as the fetcher lets a host have in flight, buildstore::fetch's `HOST_REQUESTS`:
-/// a layer's tiles are one host's, fetched a layer at a time, and more would wait on its slots;
-/// task #896) and packed there (buildstore::rawpack::Packer::for_pyramid, its local work in
+/// (on as many threads as a host's limit can ever let be in flight, store::ahead::NET_THREADS: the
+/// fetcher's limit for the host, buildstore::fetch's, holds how many go at once, found as its
+/// answers come; a layer's tiles are one host's, fetched a layer at a time; tasks #896, #1096) and packed there (buildstore::rawpack::Packer::for_pyramid, its local work in
 /// `work`): a job's archives handed off to `handoff` (`SCENIC_HANDOFF`) for the lead to name, else
 /// the index changed here, under `root`'s build lock. Restartable: a tile packed stays; one cut short is
 /// fetched again. `progress` is told the tiles asked of the network so far of all those the layers'
@@ -355,7 +355,7 @@ pub fn fill(
 ) -> Result<Filled> {
     use rayon::prelude::*;
     let mut done = Filled::default();
-    let threads = rayon::ThreadPoolBuilder::new().num_threads(buildstore::fetch::HOST_REQUESTS).build()?;
+    let threads = rayon::ThreadPoolBuilder::new().num_threads(store::ahead::NET_THREADS).build()?;
     // (Each layer's tiles its store lacks, worked out first: the whole fill's count for `progress`.)
     let mut todos: Vec<(&String, Vec<(u8, u32, u32)>)> = Vec::new();
     for (template, tiles) in want {

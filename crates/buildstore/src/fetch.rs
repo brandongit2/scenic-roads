@@ -594,12 +594,28 @@ pub fn download(url: &str, to: &Path, whole: &dyn Fn(&Path) -> bool, coming: &dy
 static NET: std::sync::LazyLock<net::Net> = std::sync::LazyLock::new(net::Net::new);
 
 /// Requests to one host this process has in flight at most, whichever readers ask (the
-/// elevation sampler's pool, its reading ahead, a pyramid's tile fetches): what one step asks
-/// of a server at once stays bounded however many threads read. A request holds its slot
-/// through its retries' waits. Modest, as the hosts read live are free services that publish no
-/// limit (GSI's cyberjapandata.gsi.go.jp among them, task #665 review): a pool of four jobs
-/// asks one host 64 at once at most.
-pub const HOST_REQUESTS: usize = 16;
+/// elevation sampler's pool, its reading ahead, a pyramid's tile fetches): found as TCP finds its
+/// window (store::aimd, task #1096), a limiter a host, starting at `HOST_START`, up while answers
+/// come near their best latency, halved on a slow answer, a 429 or a 5xx, never past the host's
+/// ceiling (`host_ceiling`). A request holds its turn through its retries' waits (they count in
+/// its latency, as the host's own slowness).
+pub const HOST_START: usize = 2;
+
+/// A host's ceiling: its provider's stated limit where it states one, else `HOST_DEFAULT`.
+/// Amazon S3 (`*.amazonaws.com`: the Terrarium tiles, the stores read live) states 5,500 GETs a
+/// second a prefix (its performance guidelines), far past `HOST_S3`. The hosts read live that
+/// publish no limit (GSI's cyberjapandata.gsi.go.jp among them, task #665 review) get the
+/// conservative default.
+pub fn host_ceiling(host: &str) -> usize {
+    let h = host.split(':').next().unwrap_or(host);
+    if h.ends_with(".amazonaws.com") {
+        HOST_S3
+    } else {
+        HOST_DEFAULT
+    }
+}
+pub const HOST_S3: usize = 64;
+pub const HOST_DEFAULT: usize = 8;
 
 mod net {
     //! HTTP: range requests with retries (as the Python steps' GDAL did: 10 retries, from 2 s,
@@ -774,40 +790,59 @@ mod net {
         }
     }
 
-    pub use super::HOST_REQUESTS;
-
-    /// The requests in flight by host.
-    static HOSTS: std::sync::LazyLock<(Mutex<HashMap<String, usize>>, std::sync::Condvar)> =
+    /// The limiters by host (one a host this process has asked, kept for its life: a few).
+    static HOSTS: std::sync::LazyLock<Mutex<HashMap<String, &'static store::aimd::Limiter>>> =
         std::sync::LazyLock::new(Default::default);
 
-    /// One of a host's `HOST_REQUESTS` slots, given back when dropped.
-    pub(super) struct HostSlot(String);
+    /// A request's turn of its host's limit (store::aimd), given back when dropped: its latency a
+    /// sample (`read`), unless it said the host is overloaded (`congested`: a 429, a 5xx) or isn't
+    /// to be measured (`unmeasured`: a whole download).
+    pub(super) struct HostSlot {
+        turn: store::aimd::Slot<'static>,
+        congested: std::sync::atomic::AtomicBool,
+        bytes: std::sync::atomic::AtomicU64,
+    }
 
     impl HostSlot {
-        /// A slot of `url`'s host, waiting while all of them are taken.
+        /// A turn of `url`'s host, waiting while its limit's reached.
         pub(super) fn take(url: &str) -> HostSlot {
             let host = host_of(url).to_string();
-            let (m, cv) = &*HOSTS;
-            let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
-            while g.get(&host).copied().unwrap_or(0) >= HOST_REQUESTS {
-                g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
-            }
-            *g.entry(host.clone()).or_default() += 1;
-            HostSlot(host)
+            let l: &'static store::aimd::Limiter = *HOSTS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(host.clone())
+                .or_insert_with(|| Box::leak(Box::new(store::aimd::Limiter::new(HOST_START, host_ceiling(&host)))));
+            HostSlot { turn: l.take(), congested: Default::default(), bytes: Default::default() }
+        }
+
+        /// The host answered as an overloaded one does (a 429, a 5xx).
+        pub(super) fn congested(&self) {
+            self.congested.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        /// The request got `n` bytes.
+        pub(super) fn read(&self, n: usize) {
+            self.bytes.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        /// No sample of the host's latency (a whole download: its time is its length's).
+        pub(super) fn unmeasured(&mut self) {
+            self.turn.unmeasured();
+        }
+
+        /// The host's limit now and its requests in flight (tests).
+        #[cfg(test)]
+        pub(super) fn host_now(url: &str) -> (f64, usize) {
+            HOSTS.lock().unwrap().get(host_of(url)).map_or((HOST_START as f64, 0), |l| l.now())
         }
     }
 
     impl Drop for HostSlot {
         fn drop(&mut self) {
-            let (m, cv) = &*HOSTS;
-            let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(n) = g.get_mut(&self.0) {
-                *n -= 1;
-                if *n == 0 {
-                    g.remove(&self.0);
-                }
+            if self.congested.load(std::sync::atomic::Ordering::Relaxed) {
+                self.turn.congested();
             }
-            cv.notify_all();
+            self.turn.read(self.bytes.load(std::sync::atomic::Ordering::Relaxed));
         }
     }
 
@@ -1065,7 +1100,7 @@ mod net {
         /// The file's length and first bytes; None when the server has no such file.
         fn head(&self, url: &str) -> Result<Option<(u64, Vec<u8>)>> {
             let _w = store::waits::net();
-            let _slot = HostSlot::take(url);
+            let slot = HostSlot::take(url);
             let mut forbidden = 0;
             self.retrying(url, || {
                 crate::fetch::online(url)?;
@@ -1083,6 +1118,7 @@ mod net {
                         match r.body_mut().with_config().limit(READ_AHEAD + 1).read_to_vec() {
                             Ok(b) if b.len() as u64 == READ_AHEAD.min(total) => {
                                 fetched(b.len());
+                                slot.read(b.len());
                                 Ok(Ok(Some((total, b))))
                             }
                             Ok(b) => Ok(Err(format!("{} of {} bytes", b.len(), READ_AHEAD.min(total)))),
@@ -1102,7 +1138,10 @@ mod net {
                     416 => Ok(Ok(Some((0, Vec::new())))),
                     _ if says_none(&r, &mut forbidden) => Ok(Ok(None)),
                     403 => Ok(Err("status 403".into())),
-                    c if transient(c) => Ok(Err(format!("status {c}"))),
+                    c if transient(c) => {
+                        slot.congested();
+                        Ok(Err(format!("status {c}")))
+                    }
                     c => bail!("{url}: status {c}"),
                 }
             })
@@ -1120,7 +1159,7 @@ mod net {
         pub(super) fn range(&self, url: &str, s: u64, e: u64) -> Result<Vec<u8>> {
             const CHUNK: usize = 1 << 20;
             let _w = store::waits::net();
-            let _slot = HostSlot::take(url);
+            let slot = HostSlot::take(url);
             let want = (e - s) as usize;
             let mut out: Vec<u8> = Vec::with_capacity(want);
             let (mut idle, mut requests) = (0u32, 0u32);
@@ -1186,7 +1225,10 @@ mod net {
                         // (The whole file: a resumed request whose If-Range no longer matches, or a
                         // server that ignores ranges; either way not what was asked for.)
                         200 if first.is_some() => Ok(Err("the file changed while it was read".into())),
-                        c if transient(c) => Ok(Err(format!("status {c}"))),
+                        c if transient(c) => {
+                            slot.congested();
+                            Ok(Err(format!("status {c}")))
+                        }
                         c => bail!("{url}: bytes {from}-{}: status {c}", e - 1),
                     }
                 })()?;
@@ -1230,7 +1272,8 @@ mod net {
         ) -> Result<bool> {
             use std::io::Read;
             let _w = store::waits::net();
-            let _slot = HostSlot::take(url);
+            let mut slot = HostSlot::take(url);
+            slot.unmeasured();
             let (mut missing, mut forbidden) = (0, 0);
             self.retrying(url, || {
                 crate::fetch::online(url)?;
@@ -1311,7 +1354,7 @@ mod net {
         pub(super) fn get_by(&self, url: &str, deadline: Option<super::Within>) -> Result<Option<Vec<u8>>> {
             down_check(self.down.as_deref(), url)?;
             let _w = store::waits::net();
-            let _slot = HostSlot::take(url);
+            let slot = HostSlot::take(url);
             let mut last = String::new();
             let mut all_late = true;
             // (Late: an answer that began, its body slow. A connection or a name that timed
@@ -1344,6 +1387,7 @@ mod net {
                         200 => match r.body_mut().with_config().limit(64 << 20).read_to_vec() {
                             Ok(b) => {
                                 fetched(b.len());
+                                slot.read(b.len());
                                 return Ok(Some(b));
                             }
                             Err(e) => {
@@ -1353,6 +1397,9 @@ mod net {
                         },
                         _ if says_none(&r, &mut forbidden) => return Ok(None),
                         c => {
+                            if transient(c) {
+                                slot.congested();
+                            }
                             all_late = false;
                             last = format!("status {c}");
                         }
@@ -1607,12 +1654,15 @@ mod tests {
         );
     }
 
-    /// Task #397: a host's requests in flight are capped (`HOST_REQUESTS`), another host's not
-    /// held up by them, and a slot given back lets a waiting request go.
+    /// Task #397, #1096: a host's requests in flight are held to its limit (store::aimd, starting at
+    /// `HOST_START`), another host's not held up by them, and a turn given back lets a waiting
+    /// request go; a 429 or 5xx halves it, answers near the best raise it, never past the host's
+    /// ceiling (S3's own, the rest the conservative default).
     #[test]
-    fn a_hosts_requests_at_once_are_capped() {
-        use super::net::{HostSlot, HOST_REQUESTS};
-        let held: Vec<HostSlot> = (0..HOST_REQUESTS).map(|_| HostSlot::take("https://capped.test/a.tif")).collect();
+    fn a_hosts_requests_at_once_are_held_to_its_limit() {
+        use super::net::HostSlot;
+        let url = "https://capped.test/a.tif";
+        let held: Vec<HostSlot> = (0..HOST_START).map(|_| HostSlot::take(url)).collect();
         let _other = HostSlot::take("https://other.test/b.tif");
         let (tx, rx) = std::sync::mpsc::channel();
         let t = std::thread::spawn(move || {
@@ -1621,10 +1671,24 @@ mod tests {
             drop(s);
         });
         let wait = std::time::Duration::from_millis(100);
-        assert!(rx.recv_timeout(wait).is_err(), "a request past the cap waits");
+        assert!(rx.recv_timeout(wait).is_err(), "a request past the limit waits");
         drop(held);
-        assert!(rx.recv_timeout(store::testkit::WATCHDOG).is_ok(), "and goes once a slot is free");
+        assert!(rx.recv_timeout(store::testkit::WATCHDOG).is_ok(), "and goes once a turn is free");
         t.join().unwrap();
+        // (Answers of a few KB, alike: up, a window at a time, to the default ceiling.)
+        let url = "https://steady.test/t.png";
+        for _ in 0..200 {
+            let s = HostSlot::take(url);
+            s.read(4096);
+        }
+        assert_eq!(HostSlot::host_now(url), (HOST_DEFAULT as f64, 0));
+        let s = HostSlot::take(url);
+        s.congested();
+        drop(s);
+        assert_eq!(HostSlot::host_now(url).0, HOST_DEFAULT as f64 / 2.0, "a 429 or 5xx halves it");
+        assert_eq!(host_ceiling("elevation-tiles-prod.s3.amazonaws.com"), HOST_S3);
+        assert_eq!(host_ceiling("s3.amazonaws.com:443"), HOST_S3);
+        assert_eq!(host_ceiling("cyberjapandata.gsi.go.jp"), HOST_DEFAULT);
     }
 
     #[test]

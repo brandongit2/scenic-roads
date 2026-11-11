@@ -1293,10 +1293,12 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   a level read whole, `read_level_whole`, has nothing to read ahead), at most `GEO_AHEAD` (128)
   blocks past the chunk being sampled and no more than the list's share of that quarter (the chunks
   sampled at once share it, `BlockCache::begin_list`, so none of their blocks is let go before it's
-  decoded, to be read twice), decoded by the sampling's own threads as they come to them. A process keeps at most 8
-  reads in flight on the NAS and 64 on the network (`store::ahead::AT_ONCE`), whatever number of
-  chunks it samples at once, so the sampler doesn't wait on a chunk's few blocks one round trip
-  after another, and its threads never sit in a read its points foresaw. A tile pyramid's
+  decoded, to be read twice), decoded by the sampling's own threads as they come to them. How many reads are in flight
+  is each source's limit, found as TCP finds its window (`store::aimd`, task #1096), whatever
+  number of chunks a process samples at once: the NAS's one a process (starting at 2, up by one a
+  window while reads finish near their best latency, halved on a read past twice it or a timeout,
+  1 to 16), a host's one a host (the fetcher's, below); so the sampler doesn't wait on a chunk's few
+  blocks one round trip after another, and its threads never sit in a read its points foresaw. A tile pyramid's
   tiles likewise (`TileSet::rolling`): `TILE_FETCHES` (64) kept in flight, whatever the threads
   the step was granted (task #665: a terrain job fetched GSI's tiles only on its three sampling
   threads, one at a time each, about 2 tiles a second where the host answers 15 at once); the
@@ -1312,9 +1314,12 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   out its retries gives up at once (`fetch::cancellable`), and every retry checks its host's
   down note first (`SCENIC_FETCH_DOWN`), so a host that stopped answering doesn't hold the step
   through each thread's retries. The fetcher holds
-  a process's requests to one host to `fetch::net::HOST_REQUESTS` (16) at once, whatever its
-  readers keep in flight: the hosts read live are free services that publish no limit (GSI's
-  among them), so a pool of four jobs asks one host 64 at once at most (task #665 review).
+  a process's requests to one host to that host's limit (`fetch::net::HostSlot`, store::aimd),
+  whatever its readers keep in flight: starting at 2 (`HOST_START`), up while answers come near
+  their best, halved on a slow answer, a 429 or a 5xx, never past the host's ceiling
+  (`fetch::host_ceiling`): Amazon S3's 64 (it states 5,500 GETs a second a prefix), every other
+  host's 8 (`HOST_DEFAULT`): the hosts read live are free services that publish no limit (GSI's
+  among them, task #665 review).
 - **Heights brought to EGM2008** (step 3, crate::dem::geoid), each dataset's before the blend (A's
   and B's alike): the conversions are declared sources (§6.9, role `geoid`, any number), each
   linking two references by `params.from` and `to`: a separation grid (`geoid-grid`: one GeoTIFF in

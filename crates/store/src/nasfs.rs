@@ -264,6 +264,33 @@ fn not_found(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.downcast_ref::<io::Error>().is_some_and(|io| io.kind() == io::ErrorKind::NotFound))
 }
 
+/// A whole file's read under a turn of the process's NAS limit (crate::aimd): its bytes and time
+/// a sample, a timeout of the share's a halving.
+fn taking_turn(read: impl FnOnce() -> io::Result<Vec<u8>>) -> io::Result<Vec<u8>> {
+    let mut turn = crate::aimd::NAS.take();
+    let r = read();
+    match &r {
+        Ok(b) => turn.read(b.len() as u64),
+        Err(e) if crate::aimd::nas_congested(e) => turn.congested(),
+        Err(_) => {}
+    }
+    r
+}
+
+/// A whole copy here under a turn of the process's NAS limit (crate::aimd): its time no sample (a
+/// copy's length is its file's), a failure as the share's a halving (`congested`).
+fn copying_turn<T, E>(copy: impl FnOnce() -> Result<T, E>, congested: impl Fn(&E) -> bool) -> Result<T, E> {
+    let mut turn = crate::aimd::NAS.take();
+    turn.unmeasured();
+    let r = copy();
+    if let Err(e) = &r {
+        if congested(e) {
+            turn.congested();
+        }
+    }
+    r
+}
+
 impl NasPath {
     /// A local file standing in for a NAS one, in a test (its folder the root): never on the real
     /// NAS or in the app's home.
@@ -423,7 +450,7 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let b = self.retry("read", || crate::whole::read(&p))?;
+        let b = taking_turn(|| self.retry("read", || crate::whole::read(&p)))?;
         counted_read(&p, b.len() as u64, t);
         Ok(b)
     }
@@ -439,7 +466,7 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let b = self.retry("read", || crate::whole::read_replaced(&p))?;
+        let b = taking_turn(|| self.retry("read", || crate::whole::read_replaced(&p)))?;
         counted_read(&p, b.len() as u64, t);
         Ok(b)
     }
@@ -450,19 +477,21 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let b = self.retry("read", || {
-            let mut f = crate::whole::retried(&p, &|q| std::fs::File::open(q))?;
-            #[cfg(target_os = "macos")]
-            {
-                use std::os::fd::AsRawFd;
-                // SAFETY: fcntl on a descriptor this function owns, with an int argument.
-                if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
-                    return Err(io::Error::last_os_error());
+        let b = taking_turn(|| {
+            self.retry("read", || {
+                let mut f = crate::whole::retried(&p, &|q| std::fs::File::open(q))?;
+                #[cfg(target_os = "macos")]
+                {
+                    use std::os::fd::AsRawFd;
+                    // SAFETY: fcntl on a descriptor this function owns, with an int argument.
+                    if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
                 }
-            }
-            let mut b = Vec::new();
-            f.read_to_end(&mut b)?;
-            Ok(b)
+                let mut b = Vec::new();
+                f.read_to_end(&mut b)?;
+                Ok(b)
+            })
         })?;
         counted_read(&p, b.len() as u64, t);
         Ok(b)
@@ -559,7 +588,10 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let (n, _) = crate::whole::copy_held(&p, dst, &mut copy_counter())?;
+        let (n, _) = copying_turn(
+            || crate::whole::copy_held(&p, dst, &mut copy_counter()),
+            |e| e.downcast_ref::<io::Error>().is_some_and(crate::aimd::nas_congested),
+        )?;
         nasio::opened(&p, n, ms_since(t));
         Ok(n)
     }
@@ -571,7 +603,8 @@ impl NasPath {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let (n, _) = crate::sys::copy_data_held(&p, dst, &mut copy_counter())?;
+        let (n, _) =
+            copying_turn(|| crate::sys::copy_data_held(&p, dst, &mut copy_counter()), crate::aimd::nas_congested)?;
         nasio::opened(&p, n, ms_since(t));
         Ok(n)
     }

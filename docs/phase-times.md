@@ -223,7 +223,7 @@ time grows to 144 s at 14 threads, the SMB reads').
 
 **pyramids-fill** (GSI's tiles fetched and packed onto the NAS) has no CPU to speak of (CPU/wall
 0.03 in its live runs, 35–58 min a z6 tile): its fetches are its own pool, as many as the fetcher lets a host
-have in flight (`fetch::HOST_REQUESTS`, 16; task #896: was its own figure, `pyramids::FETCHES`),
+have in flight (then `fetch::HOST_REQUESTS`, 16; since task #1096 the host's limit, store::aimd; task #896: was its own figure, `pyramids::FETCHES`),
 whatever threads the job is given, so its rate is GSI's.
 
 **The live runs since part 1's publish (16:00 UTC):** no terrain-hi or terrain-lo ran by 18:40
@@ -295,7 +295,7 @@ already, `GEO_FETCHES` threads a dataset, each decoding what it fetched).
 
 | change | where |
 |---|---|
-| **One mechanism** (`store::ahead`): `ahead`, a list read in the compute's order on threads of their own, at most a window past its cursor; `each`, every item at once, in order; `Shelf`, a thread beside the compute reading by key in batches, the compute taking each (waited for while its batch is read, else read by the taker, never twice). Lanes: a process keeps at most 8 reads in flight on the NAS and 64 on the network, whatever lists read at once. | store::ahead |
+| **One mechanism** (`store::ahead`): `ahead`, a list read in the compute's order on threads of their own, at most a window past its cursor; `each`, every item at once, in order; `Shelf`, a thread beside the compute reading by key in batches, the compute taking each (waited for while its batch is read, else read by the taker, never twice). How many at once: each source's limit, found as TCP finds its window (`store::aimd`, the owner's design of 10 Nov): the NAS's one a process (from 2, up by one a window while reads finish near their best latency, kept by size class over the last 30–60 s, halved once a window on a read past twice it or a timeout, 1 to 16), every read of the NAS taking its turn where it goes (store::range, nasfs: so a raw tile from the NAS's archives counts on the NAS, one from AWS on AWS's); a host's one a host in the fetcher (halved on a slow answer, a 429 or a 5xx; S3's ceiling 64, every other host's 8). No allowance handed out: a quiet reader holds nothing. | store::ahead, store::aimd, buildstore::fetch |
 | **The sampler reads every GeoTIFF dataset ahead**, stored ones in place on the NAS too (a whole copy on this Mac's disk is read as sampled); a dataset's files opened together first (`blocks_ahead`); the I/O threads read a block's bytes as stored (`Tiff::fetch`, held within the cache's budget, under a quarter of it shared by the chunks sampled at once) and the sampling's threads decode them (were: the fetch threads decoded too, past the job's grant). | inputs::dem::generic, buildstore::geotiff |
 | **The slope's terrain tiles and deep mids read beside its pyramid**: the tiles its shading reads from the NAS (`terrain_wanted`: each tile shaded from its own terrain's four edge neighbours, a missing one's ancestor; not its own pack, copied here) and slope-hi's z10 deep mids, in the order its threads take them (`mids_order`: the depth-first order cut into a run a thread, the runs interleaved). | terrain::slope_pack, terrain_pack::ManifestTiles::reading_ahead |
 | **The other readers on it**: get_many's spans, an assembly's mids (terrain-lo, slope-lo), the raw tiles' prefetch. | terrain::terrain_pack, slope_pack |

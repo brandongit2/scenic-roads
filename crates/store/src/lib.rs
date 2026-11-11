@@ -4,6 +4,7 @@
 //! reads made ahead of the compute using them (`ahead`).
 
 pub mod ahead;
+pub mod aimd;
 pub mod blobs;
 pub mod cachefile;
 pub mod catalogue;
