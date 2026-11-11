@@ -1,10 +1,10 @@
 // What the task board's data may look like: one schema per collection (items, events, meta),
-// enforced by server.mjs on every create and update (migrate.mjs checked the data already there).
-// Pure functions, no I/O. A document that doesn't fit gets a list of {field, message}: every reason
-// at once, in words the caller can act on.
+// enforced by board.mjs on every create and update, and imported by the page (which shows what
+// doesn't fit). Pure functions, no I/O. A document that doesn't fit gets a list of {field, message}:
+// every reason at once, in words the caller can act on.
 
-// The fixed lists are the values in use on 26 Oct 2026, kept in one place; the page reads them
-// from GET /api/schema. To allow a new one, add it here.
+// The fixed lists are the values in use on 26 Oct 2026, kept in one place (scripts read them from
+// GET /api/schema). To allow a new one, add it here.
 export const STAGES = ["", "working", "backgrounded", "integrating", "review", "waiting", "done", "abandoned"]; // "" = queued
 export const ITEM_KINDS = ["task", "folder"];
 export const WHERES = [
@@ -12,7 +12,7 @@ export const WHERES = [
   "worktree agent (Opus)", "worktree agent on the M1 (Opus)", "agent, this Mac", "PM (M4)", "Claude", "You", "Pipeline (lead)",
   "Build Mac process (dem/bldfetch.py, started by hand)",
 ];
-export const EVENT_KINDS = ["note", "owner", "stage", "added", "start", "delegate", "progress", "review", "merge", "publish", "done", "wait", "stop", "bug", "decision"];
+export const EVENT_KINDS = ["note", "owner", "stage", "priority", "added", "start", "delegate", "progress", "review", "merge", "publish", "done", "wait", "stop", "bug", "decision"];
 
 // Times are one format everywhere: ISO 8601, UTC, to the millisecond (what Date#toISOString gives),
 // which also sorts as text. Accepted on the way in: the same with or without the fraction
@@ -151,7 +151,7 @@ export function sentErrors(sent, allowed, owned) {
 }
 export const errorText = (errs) => errs.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join("; ");
 
-// The browser page reads this (GET /api/schema): the lists, and which fields are tasks'.
+// GET /api/schema, for scripts: the lists, and which fields are tasks'.
 export function describe() {
   const f = (fields) => Object.fromEntries(Object.entries(fields).map(([k, s]) => [k, { type: s.type, ...(s.values ? { values: s.values } : {}), ...(s.max ? { max: s.max } : {}), ...(s.min !== undefined ? { min: s.min } : {}), ...(s.server ? { server: true } : {}), ...(s.task ? { taskOnly: true } : {}) }]));
   return {

@@ -49,8 +49,9 @@ export function makeServer({ board: boardStore, jobs: jobsStore }) {
     if (p === "/") return path.join(here, "public/index.html");
     // (A task's own address, /task-board/709, is the board's page too: it opens with #709 selected.)
     if (p === "/task-board/" || /^\/task-board\/\d+$/.test(p)) return path.join(here, "public/task-board/index.html");
-    // (schema.mjs is the board page's too: it checks what it shows by the same rules.)
-    if (p === "/task-board/schema.mjs") return path.join(here, "schema.mjs");
+    // (schema.mjs and priority.mjs are the board page's too: it checks what it shows by the same
+    // rules, and places a priority by the same rule.)
+    if (p === "/task-board/schema.mjs" || p === "/task-board/priority.mjs") return path.join(here, p.slice(12));
     if (p === "/jobs/") return path.join(here, "public/jobs/index.html");
     if (p.startsWith("/lib/buildpage/")) return PAGE_LIB.has(p.slice(15)) ? path.join(PAGE_DIR, p.slice(15)) : null;
     const f = path.join(here, "public", path.normalize(p));

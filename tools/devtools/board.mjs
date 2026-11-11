@@ -1,13 +1,16 @@
 // The task board's API (README.md): items, events and meta in the board's SQLite file (store.mjs),
 // every write checked against schema.mjs. A client sends content only: the server gives a new item
 // its num, id, order and added time, a new event its id and time, and keeps the counter. A write that
-// doesn't fit is refused with 400 and every reason, and nothing is written.
+// doesn't fit is refused with 400 and every reason, and nothing is written. A task's priority with a
+// fraction is placed by priority.mjs, the page's rule too: rounded up, the open tasks it runs into
+// moved down one.
 import crypto from "node:crypto";
 import {
   ITEM_FIELDS, ITEM_CREATE, EVENT_CREATE, ITEM_EDIT, EVENT_EDIT,
   itemErrors, eventErrors, metaErrors, sentErrors, errorText, normTime, validId, describe,
 } from "./schema.mjs";
 import { refuse, send, fail, readBody, jsonBody } from "./http.mjs";
+import { isOpen, placePriority } from "./priority.mjs";
 
 const STAGE_LABEL = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
 const IMAGE = /^image\/(png|jpeg|gif|webp|avif|heic|heif)$/;
@@ -44,15 +47,46 @@ export function makeBoard(store, changed) {
   if (!store.get("meta", "counter")) store.put("meta", "counter", { next: store.maxNum() + 1 });
   if (!store.get("meta", "status")) store.put("meta", "status", { now: "", updated: nowIso() });
 
+  // What wrote a change, for its history event: the page, or the client's User-Agent.
+  const byWho = (req) => {
+    const ua = String(req.headers["user-agent"] || "unknown");
+    return /Mozilla/.test(ua) ? "the page" : ua.split(/[ /]/)[0];
+  };
+  const logEvent = (item, kind, text) => store.put("events", crypto.randomUUID(), { item, t: nowIso(), kind, text });
   // Every change of a task's stage leaves a history event, whoever writes it (the page, a script):
-  // `kind: "stage"`, the old and new stages, and what wrote it (the page, or the client's User-Agent).
+  // `kind: "stage"`, the old and new stages, and what wrote it.
   function logStage(id, before, after, req) {
     const from = before?.stage ?? "", to = after?.stage ?? "";
     if (!after || after.kind !== "task" || (before && from === to) || (!before && to === "")) return;
-    const ua = String(req.headers["user-agent"] || "unknown");
-    const by = /Mozilla/.test(ua) ? "the page" : ua.split(/[ /]/)[0];
-    const text = before ? `Stage ${STAGE_LABEL[from] ?? from} → ${STAGE_LABEL[to] ?? to} (by ${by})` : `Stage ${STAGE_LABEL[to] ?? to} (by ${by})`;
-    store.put("events", crypto.randomUUID(), { item: id, t: nowIso(), kind: "stage", text });
+    const by = byWho(req);
+    logEvent(id, "stage", before ? `Stage ${STAGE_LABEL[from] ?? from} → ${STAGE_LABEL[to] ?? to} (by ${by})` : `Stage ${STAGE_LABEL[to] ?? to} (by ${by})`);
+  }
+
+  // A task's priority sent with a fraction (`doc`, about to be written as `id`; `before`, what it
+  // was): placed by priority.mjs, in the caller's transaction. The task's own number is set in `doc`;
+  // each open task it runs into is written moved down one. Each change leaves a `kind: "priority"`
+  // event. Returns {priority, moved: [{id, num, from, to}]}, or null for a whole number (stored as sent).
+  function placeIfFraction(id, doc, before, req) {
+    const x = doc.priority;
+    if (doc.kind !== "task" || typeof x !== "number" || Number.isInteger(x)) return null;
+    const items = new Map(store.list("items").map((d) => [d.id, d.data]));
+    const inArchived = (d) => {
+      for (let p = d.parent, n = 0; p && n < 10000; p = items.get(p)?.parent, n++) if (items.get(p)?.archived) return true;
+      return false;
+    };
+    const others = [];
+    for (const [oid, o] of items) if (oid !== id && o.kind === "task" && isOpen(o, inArchived(o))) others.push({ id: oid, priority: o.priority });
+    const { to, moves } = placePriority(x, others);
+    doc.priority = to;
+    const by = byWho(req), old = before?.priority;
+    const moved = moves.map((m) => {
+      const o = items.get(m.id);
+      store.put("items", m.id, { ...o, priority: m.to });
+      logEvent(m.id, "priority", `Priority ${m.from} → ${m.to}: moved down by #${doc.num} placed at ${x} (by ${by})`);
+      return { id: m.id, num: o.num, from: m.from, to: m.to };
+    });
+    logEvent(id, "priority", `Priority ${typeof old === "number" ? `${old} → ` : ""}${to}: asked for ${x}${moved.length ? `, ${moved.length} moved down` : ""} (by ${by})`);
+    return { priority: to, moved };
   }
 
   // ---- items -------------------------------------------------------------------------------------
@@ -89,10 +123,11 @@ export function makeBoard(store, changed) {
       checkParent("", doc.parent);
       let id = `i${doc.num}`;
       while (store.get("items", id)) id = newId();
+      const placed = placeIfFraction(id, doc, null, req);
       store.put("items", id, doc);
       logStage(id, null, doc, req);
       changed("items", "events");
-      return { id, ...ownFields(doc) };
+      return { id, ...ownFields(doc), ...placed };
     });
   }
   const ownFields = (d) => ({ num: d.num, order: d.order, added: d.added });
@@ -112,10 +147,11 @@ export function makeBoard(store, changed) {
       refuseIf(itemErrors(doc));
       checkParent(id, doc.parent);
       if (doc.kind !== "folder" && store.childrenOf(id).length) invalid([{ field: "kind", message: `${id} holds ${store.childrenOf(id).length} item(s); only folders hold items, so it stays a folder` }]);
+      const placed = "priority" in sent ? placeIfFraction(id, doc, cur, req) : null;
       store.put("items", id, doc);
       logStage(id, cur, doc, req);
       changed("items", "events");
-      return { id, ...ownFields(doc) };
+      return { id, ...ownFields(doc), ...placed };
     });
   }
 

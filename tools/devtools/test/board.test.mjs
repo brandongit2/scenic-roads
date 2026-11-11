@@ -69,7 +69,7 @@ test("POST items: the server assigns num, id, order and added, and keeps the cou
   assert.equal(f.body.id, "i1");
   assert.equal(f.body.order, 1);
   assert.match(f.body.added, ISO);
-  const a = await post("items", { text: "First", parent: folder, note: "n", priority: 2.5 });
+  const a = await post("items", { text: "First", parent: folder, note: "n", priority: 2 });
   const b = await post("items", { text: "Second", parent: folder, stage: "working", where: "You" });
   const g = await post("items", { kind: "folder", text: "Another folder" });
   const c = await post("items", { text: "Third" });
@@ -78,7 +78,7 @@ test("POST items: the server assigns num, id, order and added, and keeps the cou
   assert.deepEqual([a.body.num, b.body.num, g.body.num, c.body.num], [2, 3, 4, 5], "tasks and folders from one counter");
   assert.deepEqual([a.body.order, b.body.order, g.body.order, c.body.order], [2, 3, 4, 5], "last in the one order over all items");
   assert.match(a.body.added, ISO);
-  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "First", parent: folder, note: "n", priority: 2.5, stage: "", where: "Subagent", num: a.body.num, order: 2, added: a.body.added });
+  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "First", parent: folder, note: "n", priority: 2, stage: "", where: "Subagent", num: a.body.num, order: 2, added: a.body.added });
   assert.equal((await get("items", g.body.id)).num, 4);
   assert.equal((await get("meta", "counter")).next, c.body.num + 1);
   // working at birth leaves a stage event, dated by the server
@@ -293,7 +293,7 @@ test("routes: nothing else is open", async () => {
 
 test("the app's pages, the board's schema and the dashboard's timeline are served", async () => {
   for (const [url, type] of [["/", /text\/html/], ["/task-board/", /text\/html/], ["/task-board/709", /text\/html/], ["/task-board/shim.js", /javascript/],
-    ["/task-board/schema.mjs", /javascript/], ["/jobs/", /text\/html/], ["/jobs/jobs.js", /javascript/], ["/lib/buildpage/timeline.js", /javascript/], ["/lib/buildpage/dom.js", /javascript/], ["/lib/buildpage/words.js", /javascript/], ["/favicon.svg", /svg/]]) {
+    ["/task-board/schema.mjs", /javascript/], ["/task-board/priority.mjs", /javascript/], ["/jobs/", /text\/html/], ["/jobs/jobs.js", /javascript/], ["/lib/buildpage/timeline.js", /javascript/], ["/lib/buildpage/dom.js", /javascript/], ["/lib/buildpage/words.js", /javascript/], ["/favicon.svg", /svg/]]) {
     const r = await fetch(base + url);
     assert.equal(r.status, 200, url);
     assert.match(r.headers.get("content-type"), type, url);
