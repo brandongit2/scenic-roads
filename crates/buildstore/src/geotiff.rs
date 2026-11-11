@@ -273,10 +273,17 @@ impl Block {
 /// the image and the block. The budget bounds what the cache keeps, not the process: a block a
 /// reader holds (an `Arc<Block>` out of `Tiff::block`) lives on after the cache lets it go, so
 /// many threads each holding one hold that much over it.
+///
+/// It also holds blocks read ahead and not yet decoded (`Tiff::fetch`: their bytes as stored, read
+/// on an I/O thread ahead of the compute: store::ahead), under a quarter of its budget, the oldest
+/// out first past it; a block's decode takes its bytes from there, not the file.
 pub struct BlockCache {
     map: HashMap<(u64, usize, u64), (Arc<Block>, u64)>,
     /// The blocks being read now: a thread asking for one waits on its lock (`Tiff::block`).
     loading: HashMap<(u64, usize, u64), Arc<Mutex<()>>>,
+    /// The blocks read ahead, as stored, until decoded (`Tiff::fetch`), and their bytes.
+    raw: HashMap<(u64, usize, u64), (Vec<u8>, u64)>,
+    raw_bytes: usize,
     tick: u64,
     bytes: usize,
     cap: usize,
@@ -285,7 +292,39 @@ pub struct BlockCache {
 impl BlockCache {
     /// A cache holding up to `bytes` of decoded blocks.
     pub fn new(bytes: usize) -> BlockCache {
-        BlockCache { map: HashMap::new(), loading: HashMap::new(), tick: 0, bytes: 0, cap: bytes }
+        BlockCache {
+            map: HashMap::new(),
+            loading: HashMap::new(),
+            raw: HashMap::new(),
+            raw_bytes: 0,
+            tick: 0,
+            bytes: 0,
+            cap: bytes,
+        }
+    }
+
+    /// The bytes of blocks read ahead and not yet decoded (`Tiff::fetch`).
+    pub fn held_raw(&self) -> usize {
+        self.raw_bytes
+    }
+
+    fn put_raw(&mut self, k: (u64, usize, u64), b: Vec<u8>) {
+        self.tick += 1;
+        self.raw_bytes += b.len();
+        if let Some(old) = self.raw.insert(k, (b, self.tick)) {
+            self.raw_bytes -= old.0.len();
+        }
+        while self.raw_bytes > self.cap / 4 && self.raw.len() > 1 {
+            let oldest = *self.raw.iter().min_by_key(|e| e.1 .1).unwrap().0;
+            let (b, _) = self.raw.remove(&oldest).unwrap();
+            self.raw_bytes -= b.len();
+        }
+    }
+
+    fn take_raw(&mut self, k: (u64, usize, u64)) -> Option<Vec<u8>> {
+        let (b, _) = self.raw.remove(&k)?;
+        self.raw_bytes -= b.len();
+        Some(b)
     }
 
     /// What the cache holds at most, in bytes.
@@ -314,6 +353,47 @@ impl BlockCache {
             self.bytes -= b.bytes();
         }
     }
+}
+
+/// `read` run under block `k`'s loading slot in cache `c` (other readers of it wait meanwhile), its
+/// result as Ok; or, where `there` finds what it's for in the cache (before the slot is taken, and
+/// again once it's held: another reader may have just put it there), that as Err, nothing read.
+fn loading<T, U>(
+    c: &Mutex<BlockCache>,
+    k: (u64, usize, u64),
+    there: impl Fn(&mut BlockCache) -> Option<U>,
+    read: impl FnOnce() -> Result<T>,
+) -> Result<std::result::Result<T, U>> {
+    let slot = {
+        let mut g = c.lock().unwrap();
+        if let Some(u) = there(&mut g) {
+            return Ok(Err(u));
+        }
+        g.loading.entry(k).or_default().clone()
+    };
+    // (A reader that panicked left the slot poisoned: the next one takes it all the same, finds
+    // nothing in the cache, and reads it again.)
+    let _reading = slot.lock().unwrap_or_else(|e| e.into_inner());
+    // (The slot's entry goes when this read ends, however it ends, a panic too: its own entry, not
+    // a newer one put under the key since.)
+    struct Loading<'a> {
+        cache: &'a Mutex<BlockCache>,
+        k: (u64, usize, u64),
+        slot: &'a Arc<Mutex<()>>,
+    }
+    impl Drop for Loading<'_> {
+        fn drop(&mut self) {
+            let mut g = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            if g.loading.get(&self.k).is_some_and(|s| Arc::ptr_eq(s, self.slot)) {
+                g.loading.remove(&self.k);
+            }
+        }
+    }
+    let _entry = Loading { cache: c, k, slot: &slot };
+    if let Some(u) = there(&mut c.lock().unwrap()) {
+        return Ok(Err(u));
+    }
+    read().map(Ok)
 }
 
 /// How many bytes a header's read fetches at once (`Windowed`): a directory, its out-of-line
@@ -855,43 +935,51 @@ impl Tiff {
     pub fn block(&self, level: usize, bx: u32, by: u32) -> Result<Arc<Block>> {
         let img = self.level(level)?;
         let index = by as u64 * img.blocks_across() as u64 + bx as u64;
-        let decode = || -> Result<Arc<Block>> {
-            Ok(Arc::new(self.decode(img, index, by).with_context(|| format!("TIFF block {bx},{by} of image {level}"))?))
+        let decode = |raw: Option<Vec<u8>>| -> Result<Arc<Block>> {
+            Ok(Arc::new(
+                self.decode(img, index, by, raw).with_context(|| format!("TIFF block {bx},{by} of image {level}"))?,
+            ))
         };
-        let Some((id, c)) = &self.cache else { return decode() };
+        let Some((id, c)) = &self.cache else { return decode(None) };
         let k = (*id, level, index);
-        let slot = {
-            let mut g = c.lock().unwrap();
-            if let Some(b) = g.get(k) {
-                return Ok(b);
-            }
-            g.loading.entry(k).or_default().clone()
+        let read = || {
+            // (Its bytes read ahead (`fetch`), else from the file.)
+            let raw = c.lock().unwrap().take_raw(k);
+            let b = decode(raw)?;
+            c.lock().unwrap().put(k, b.clone());
+            Ok(b)
         };
-        // (A reader that panicked left the slot poisoned: the next one takes it all the same,
-        // finds no block in the cache, and reads it again.)
-        let _reading = slot.lock().unwrap_or_else(|e| e.into_inner());
-        // (The slot's entry goes when this read ends, however it ends, a panic too: its own
-        // entry, not a newer one put under the key since.)
-        struct Loading<'a> {
-            cache: &'a Mutex<BlockCache>,
-            k: (u64, usize, u64),
-            slot: &'a Arc<Mutex<()>>,
+        match loading(c, k, |g| g.get(k), read)? {
+            Ok(b) | Err(b) => Ok(b),
         }
-        impl Drop for Loading<'_> {
-            fn drop(&mut self) {
-                let mut g = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                if g.loading.get(&self.k).is_some_and(|s| Arc::ptr_eq(s, self.slot)) {
-                    g.loading.remove(&self.k);
-                }
+    }
+
+    /// Block (`bx`, `by`) of image `level` read as stored, not decoded, into the cache
+    /// (`BlockCache`'s held bytes), for its decode to take when it's asked for (`block`): a read
+    /// ahead of the compute (store::ahead), on a thread of its own, so the compute's threads
+    /// decode and sample and never wait on the file. Nothing read where the block is decoded or
+    /// held already, or sparse; a block being read (by `block` or another `fetch`) is waited for.
+    /// No cache: nothing to hold it in, nothing read.
+    pub fn fetch(&self, level: usize, bx: u32, by: u32) -> Result<()> {
+        let Some((id, c)) = &self.cache else { return Ok(()) };
+        let img = self.level(level)?;
+        let index = by as u64 * img.blocks_across() as u64 + bx as u64;
+        let k = (*id, level, index);
+        let there = |g: &mut BlockCache| (g.raw.contains_key(&k) || g.get(k).is_some()).then_some(());
+        let read = || {
+            let (off, n) = (self.strile(&img.offsets, index)?, self.strile(&img.counts, index)?);
+            if off != 0 && n != 0 {
+                ensure!(n <= 1 << 30, "a TIFF block of {n} bytes");
+                let raw = self
+                    .src
+                    .read_at(off, n as usize)
+                    .with_context(|| format!("TIFF block {bx},{by} of image {level}"))?;
+                c.lock().unwrap().put_raw(k, raw);
             }
-        }
-        let _entry = Loading { cache: c, k, slot: &slot };
-        if let Some(b) = c.lock().unwrap().get(k) {
-            return Ok(b);
-        }
-        let b = decode()?;
-        c.lock().unwrap().put(k, b.clone());
-        Ok(b)
+            Ok(())
+        };
+        let (Ok(()) | Err(())) = loading(c, k, there, read)?;
+        Ok(())
     }
 
     /// Image `level`'s blocks read in one range and served from memory from now on (task #807:
@@ -937,7 +1025,9 @@ impl Tiff {
         Ok((off != 0 && n != 0).then_some((off, n)))
     }
 
-    fn decode(&self, img: &Image, index: u64, by: u32) -> Result<Block> {
+    /// Block `index` of `img` (`by` its row) decoded, from `raw`, its bytes as stored where they
+    /// were read ahead (`fetch`), else read from the file.
+    fn decode(&self, img: &Image, index: u64, by: u32, raw: Option<Vec<u8>>) -> Result<Block> {
         let rows = if img.tiled { img.block_h } else { img.block_h.min(img.height - by * img.block_h) } as usize;
         let width = img.block_w as usize;
         let spb = if img.planar == 2 { 1 } else { img.spp as usize };
@@ -951,7 +1041,10 @@ impl Tiff {
             return Ok(Block { width, height: rows, data: filled(img, width * rows, self.nodata.unwrap_or(0.0)) });
         } else {
             ensure!(n <= 1 << 30, "a TIFF block of {n} bytes");
-            let raw = self.src.read_at(off, n as usize)?;
+            let raw = match raw {
+                Some(r) => r,
+                None => self.src.read_at(off, n as usize)?,
+            };
             decompress(img.compression, &raw, expect)?
         };
         if img.predictor == 3 {
@@ -2107,6 +2200,45 @@ mod tests {
         assert!(at_open <= 2, "{at_open} reads to open a file larger than a window");
         assert_eq!(t.block(0, 1, 1).unwrap().f32_at(0, 0), data[256 * 1024 + 256]);
         assert_eq!(reads(&src), at_open + 1, "a block: one read");
+    }
+
+    /// Task #1096: a block read ahead (`fetch`) is read once, as stored, and decoded only when it's
+    /// asked for (`block`), from the bytes held, the file not read again; the held bytes go as it's
+    /// decoded; a block decoded or held already isn't read again, nor a block fetched at once by
+    /// several threads; the pixels are the file's.
+    #[test]
+    fn a_block_read_ahead_is_read_once_and_decoded_when_asked_for() {
+        let (data, src, t) = slow();
+        let reads = || src.reads.lock().unwrap().values().sum::<usize>();
+        let held = |t: &Tiff| t.cache.as_ref().unwrap().1.lock().unwrap().held_raw();
+        let at_open = reads();
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| t.fetch(0, 1, 0).unwrap());
+            }
+        });
+        assert_eq!(reads(), at_open + 1, "fetched by four threads at once: one read");
+        assert!(held(&t) > 0, "held as stored, not decoded");
+        t.fetch(0, 1, 0).unwrap();
+        assert_eq!(reads(), at_open + 1, "held already: not read again");
+        assert_eq!(t.block(0, 1, 0).unwrap().f32_at(3, 2), data[2 * 512 + 256 + 3]);
+        assert_eq!(reads(), at_open + 1, "decoded from the held bytes");
+        assert_eq!(held(&t), 0, "the held bytes go once decoded");
+        t.fetch(0, 1, 0).unwrap();
+        assert_eq!(reads(), at_open + 1, "decoded already: nothing read");
+        // (A fetch and the sampling's own ask at once: one read between them.)
+        std::thread::scope(|s| {
+            s.spawn(|| t.fetch(0, 0, 1).unwrap());
+            s.spawn(|| assert_eq!(t.block(0, 0, 1).unwrap().f32_at(0, 0), data[256 * 512]));
+        });
+        assert_eq!(reads(), at_open + 2);
+        assert_eq!(t.read_window(0, 0, 0, 512, 512).unwrap(), data);
+        assert_eq!(reads(), at_open + 4, "the two blocks never asked for: a read each");
+        // (No cache: nothing to hold a block in, nothing read.)
+        let bare = Tiff::open(src.clone()).unwrap();
+        let before = reads();
+        bare.fetch(0, 1, 1).unwrap();
+        assert_eq!(reads(), before);
     }
 
     /// Task #807: a level read whole is one read, its blocks then read from memory, the same pixels;

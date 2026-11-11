@@ -1669,8 +1669,26 @@ fn stored_files_read_finely_are_copied_here_and_read_the_same() {
     assert!(want.0.iter().any(|&e| f32::from_bits(e).is_finite()));
     assert_eq!(run(&fine, Some([9.0, 45.0, 10.0853, 47.0])), want);
     assert_eq!(copies(), ["T0_DEM.tif", "T0_FLM.tif", "T1_FLM.tif"]);
+    // (Read ahead, task #1096: the blocks of a file read in place on the NAS's lane, a copy's not at
+    // all: read here as sampled.)
+    let ahead = |area: Option<[f64; 4]>| -> (usize, bool) {
+        let local = area.map(|area| crate::dem::generic::Copies { local: &local, area });
+        let o = Opts { fetch: &f, store: Some(root.join("sources/fetched")), local };
+        let s = Sampler::new(&fine, &o).unwrap();
+        let Set::Geo(g) = &s.sets[0] else { panic!("a GeoTIFF dataset") };
+        let sel: Vec<u32> = (0..lon.len() as u32).collect();
+        let parts: Vec<&[u32]> = sel.chunks(100).collect();
+        let (blocks, starts, _) = g.blocks_ahead(&parts, &lon, &lat).unwrap();
+        assert_eq!(starts.len(), parts.len() + 1);
+        (blocks.len(), blocks.iter().all(|b| b.4 == Lane::Nas))
+    };
+    let (in_place, nas) = ahead(None);
+    assert!(in_place > 0 && nas, "{in_place} blocks read ahead in place");
+    let (one_copied, nas) = ahead(Some([9.0, 45.0, 10.0853, 47.0]));
+    assert!(one_copied > 0 && one_copied < in_place && nas, "{one_copied} of {in_place}: T1's alone");
     // Over an area holding both: both copied, and read from the copies the same.
     assert_eq!(run(&fine, Some(whole)), want);
+    assert_eq!(ahead(Some(whole)), (0, true), "both copied: nothing read ahead");
     assert_eq!(copies(), ["T0_DEM.tif", "T0_FLM.tif", "T1_DEM.tif", "T1_FLM.tif"]);
     // A copy of another length: deleted and copied again.
     let copy = cache.join("blobs/sources/fetched/glo/T0_DEM.tif");

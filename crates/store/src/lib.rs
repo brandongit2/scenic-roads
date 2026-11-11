@@ -1,7 +1,9 @@
 //! NAS storage for the map (docs/storage.md–4, docs/formats.md): content-named immutable files,
 //! packs of tiles, sectioned files, catalogues, the map and its log (docs/maplog.md), the bounded
-//! NAS I/O pool, finding and mounting the share, the per-Mac mirror and PMTiles reading.
+//! NAS I/O pool, finding and mounting the share, the per-Mac mirror and PMTiles reading, and the
+//! reads made ahead of the compute using them (`ahead`).
 
+pub mod ahead;
 pub mod blobs;
 pub mod cachefile;
 pub mod catalogue;

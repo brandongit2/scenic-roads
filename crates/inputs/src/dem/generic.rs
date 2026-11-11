@@ -17,9 +17,13 @@
 //!   it arrives (`TileSet::rolling`), so a stage reading few points a tile (the blends) waits on
 //!   the network no longer than it must, and a slow tile holds up its own points alone. A tile's
 //!   request is held to `TILE_WITHIN`, and asked again past it. A GeoTIFF dataset's blocks are read
-//!   likewise ahead of their sampling (`read_ahead`): `GEO_FETCHES` at once, up to `GEO_AHEAD`
-//!   blocks past the chunk being sampled, each once (buildstore::geotiff::Tiff::block); so the sampler
-//!   waits on several requests at once, not on a chunk's few blocks in turn.
+//!   likewise ahead of their sampling (`read_ahead`, on store::ahead's threads, task #1096), its
+//!   files first opened together (`GeoSet::blocks_ahead`): a stored file read in place on the NAS
+//!   (its lane's reads in flight held to store::ahead::AT_ONCE's) as a fetched one over the
+//!   network, up to `GEO_AHEAD` blocks past the chunk being sampled, each once and as stored
+//!   (buildstore::geotiff::Tiff::fetch), decoded by the sampling's own threads as they come to it;
+//!   so the sampler's threads wait on no read the chunk's points foresaw. A whole copy on this
+//!   Mac's disk is read as sampled.
 //! - **The distance to the invalid area** is looked for pixel by pixel only where it can be found.
 //!   The points are grouped, a GeoTIFF's by file and square of `DIST_CELL` pixels, a pyramid's by
 //!   tile, and the groups measured in parallel. Each block (or tile) read is noted as clean when
@@ -45,6 +49,7 @@ use rayon::prelude::*;
 use roadcore::geo::MERC_M_PER_DEG;
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
+use store::ahead::Lane;
 use store::range::{PlainFile, RangeRead};
 
 /// How the files are read.
@@ -122,10 +127,8 @@ pub struct Sampled {
 /// tens of files a dataset, and sampling reads each block once).
 pub const CACHE_BYTES: usize = 512 << 20;
 
-/// How many of a fetched GeoTIFF dataset's blocks are fetched at once ahead of their sampling
-/// (natively; a stored one's are read as sampled), and how many blocks past the end of the chunk being sampled they go
+/// How many blocks past the end of the chunk being sampled a GeoTIFF dataset's reading ahead goes
 /// at most (`ahead_for` holds that to a quarter of the cache).
-pub const GEO_FETCHES: usize = 32;
 pub const GEO_AHEAD: usize = 128;
 
 /// How many blocks of `block_bytes` (decoded) to read ahead with a cache of `cache_bytes`:
@@ -139,61 +142,29 @@ pub fn ahead_for(cache_bytes: usize, block_bytes: usize) -> usize {
 /// many blocks past the part being sampled to go (`ahead_for`).
 type Ahead = (Vec<AheadBlock>, Vec<usize>, usize);
 
-/// A file's blocks to read ahead: the file, its level, the block's column and row.
-type AheadBlock = (Arc<Tiff>, usize, u32, u32);
+/// A file's block to read ahead: the file, its level, the block's column and row, and the lane its
+/// file is read on.
+type AheadBlock = (Arc<Tiff>, usize, u32, u32, Lane);
 
 /// Runs `run` (the sampling of parts in turn, calling its argument with a part's number before
-/// sampling it) while `GEO_FETCHES` threads read `ahead`'s blocks into the cache, in the list's
-/// order, at most its count past the end of the part being sampled. A failed read stops the
-/// reading ahead (the sampling's own read of that block says why); so does `run`'s end, however
-/// it ends, a read waiting to retry too (buildstore::fetch::cancellable): a host that gives no answer
-/// doesn't keep the threads, or the step, waiting out their retries. No list: `run` alone.
+/// sampling it) while `ahead`'s blocks are read as stored on store::ahead's threads (`Tiff::fetch`),
+/// in the list's order, at most its count past the end of the part being sampled. A failed read
+/// stops the reading ahead (the sampling's own read of that block says why); so does `run`'s end,
+/// however it ends, a read waiting to retry too (buildstore::fetch::cancellable): a host that gives
+/// no answer doesn't keep the threads, or the step, waiting out their retries. No list: `run` alone.
 fn read_ahead<R>(ahead: Option<&Ahead>, run: impl FnOnce(&dyn Fn(usize)) -> R) -> R {
     let Some((blocks, starts, n_ahead)) = ahead.filter(|a| a.0.len() > 1) else { return run(&|_| {}) };
-    // (The next block to read, how far reading may go, and whether to stop.)
-    let st = Mutex::new((0usize, 0usize, false));
-    let cv = Condvar::new();
-    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let stop = || {
-        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        st.lock().unwrap_or_else(|e| e.into_inner()).2 = true;
-        cv.notify_all();
-    };
-    // (Stopped however `run` ends, a panic too, so the threads end.)
-    struct Stop<F: Fn()>(F);
-    impl<F: Fn()> Drop for Stop<F> {
-        fn drop(&mut self) {
-            (self.0)()
-        }
-    }
-    std::thread::scope(|s| {
-        for _ in 0..GEO_FETCHES.min(blocks.len()) {
-            s.spawn(|| loop {
-                let i = {
-                    let mut g = st.lock().unwrap_or_else(|e| e.into_inner());
-                    while !g.2 && g.0 < blocks.len() && g.0 >= g.1 {
-                        g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
-                    }
-                    if g.2 || g.0 >= blocks.len() {
-                        return;
-                    }
-                    g.0 += 1;
-                    g.0 - 1
-                };
-                let (t, level, bx, by) = &blocks[i];
-                if buildstore::fetch::cancellable(&cancel, || t.block(*level, *bx, *by)).is_err() {
-                    stop();
-                    return;
-                }
-            });
-        }
-        let _stop = Stop(&stop);
-        run(&|part: usize| {
-            let mut g = st.lock().unwrap_or_else(|e| e.into_inner());
-            g.1 = g.1.max(starts[(part + 1).min(starts.len() - 1)] + n_ahead);
-            cv.notify_all();
-        })
-    })
+    store::ahead::ahead(
+        blocks.len(),
+        *n_ahead,
+        |i| Some(blocks[i].4),
+        |i, stop| {
+            let (t, level, bx, by, _) = &blocks[i];
+            buildstore::fetch::cancellable(stop, || t.fetch(*level, *bx, *by))
+        },
+        // (The part's blocks and `n_ahead` past them.)
+        |c| run(&|part: usize| c.at(starts[(part + 1).min(starts.len() - 1)])),
+    )
 }
 
 /// Each open file's id in the shared cache.
@@ -501,18 +472,39 @@ fn in_box(b: &[f64; 4], x: f64, y: f64) -> bool {
 }
 
 impl GeoSet<'_> {
+    /// The lane file `url`'s reads wait on (store::ahead): the NAS's for a stored file, else the
+    /// network's.
+    fn lane(&self, url: &str) -> Lane {
+        if self.store.is_some() && !url.starts_with('/') {
+            Lane::Nas
+        } else {
+            Lane::Net
+        }
+    }
+
     /// A file by URL, from the store where the dataset is kept there, open, with its image read
     /// (`pick`'s level) : a stored file of which the job reads `COPY_SHARE` or more (`pick`'s
-    /// share) copied to this Mac first (`Opts::local`; the same bytes) and read there.
-    fn source(&self, url: &str, pick: impl Fn(&Tiff) -> Result<(usize, f64)>) -> Result<Option<(Tiff, usize)>> {
+    /// share) copied to this Mac first (`Opts::local`; the same bytes) and read there. With the
+    /// lane its blocks are read ahead on (`lane`; None: a copy on this Mac's disk, read as
+    /// sampled).
+    fn source(
+        &self,
+        url: &str,
+        pick: impl Fn(&Tiff) -> Result<(usize, f64)>,
+    ) -> Result<Option<(Tiff, usize, Option<Lane>)>> {
         let local = self.o.local.map(|c| c.local);
-        let (read, nas) = match &self.store {
+        // (The lane: a stored file's the NAS's while it's read in place there, none for a copy
+        // here; a fetched one's the network's.)
+        let (read, nas, lane) = match &self.store {
             Some(dir) if !url.starts_with('/') => match stored(self.id, dir, url, local)? {
-                Some(s) => (s.read, s.nas),
+                Some(s) => {
+                    let lane = s.nas.is_some().then_some(Lane::Nas);
+                    (s.read, s.nas, lane)
+                }
                 None => return Ok(None),
             },
             _ => match open_url(self.o.fetch, url)? {
-                Some(r) => (r, None),
+                Some(r) => (r, None, Some(Lane::Net)),
                 None => return Ok(None),
             },
         };
@@ -523,16 +515,16 @@ impl GeoSet<'_> {
             if share >= COPY_SHARE {
                 if let store::nasfs::Place::Local(l) = local.path_sized(&f, len) {
                     let t = Tiff::open(Arc::new(PlainFile::open(&l)?)).with_context(|| url.to_string())?;
-                    return Ok(Some((t, k)));
+                    return Ok(Some((t, k, None)));
                 }
             }
         }
         // (A stored file read in place on the NAS at an overview (terrain-lo's GLO-30): the level
         // read in one range, not a round trip a block, task #807.)
         if in_place && k > 0 {
-            return Ok(Some((t.read_level_whole(k, LEVEL_WHOLE_MAX)?, k)));
+            return Ok(Some((t.read_level_whole(k, LEVEL_WHOLE_MAX)?, k, lane)));
         }
-        Ok(Some((t, k)))
+        Ok(Some((t, k, lane)))
     }
 
     /// File `k`'s fill mask, read once (None: it has none).
@@ -553,7 +545,7 @@ impl GeoSet<'_> {
         let fresh = cell.get().is_none();
         let got = cell.get_or_init(|| {
             (|| -> Result<Option<Arc<Mask>>> {
-                let (t, _) = self
+                let (t, ..) = self
                     .source(url, |_| Ok((0, 1.0)))?
                     .with_context(|| format!("{}: its fill mask {url} isn't on the server", self.id))?;
                 Ok(Some(Arc::new(Mask::of(t).with_context(|| url.clone())?)))
@@ -576,6 +568,11 @@ impl GeoSet<'_> {
     /// File `k` open, with the level read: opened once a run, whatever the threads asking at once
     /// (a cell a file, as `mask`'s: two opens would each read its blocks into the cache).
     fn open(&self, k: usize) -> Result<(Arc<Tiff>, usize)> {
+        self.opened(k).map(|(t, level, _)| (t, level))
+    }
+
+    /// `open`, with the lane its blocks are read ahead on (`source`).
+    fn opened(&self, k: usize) -> Result<(Arc<Tiff>, usize, Option<Lane>)> {
         // (By its URL and the detail read: samplers sharing the memo, a level each, read their own
         // overview of it, and their plans' file lists needn't agree.)
         let key = (format!("{} {}", self.id, self.files[k].0), self.read_resolution.map(f64::to_bits));
@@ -591,7 +588,7 @@ impl GeoSet<'_> {
             }
         };
         cell.get_or_init(|| {
-            (|| -> Result<(Arc<Tiff>, usize)> {
+            (|| -> Result<(Arc<Tiff>, usize, Option<Lane>)> {
                 let url = &self.files[k].0;
                 // (The share of file `k` read: its level's, of its box inside the job's area.)
                 let inside = match (self.o.local, self.files[k].1) {
@@ -605,9 +602,9 @@ impl GeoSet<'_> {
                         "{}: {url}, which its index lists, isn't on the server (the index is out of date?)",
                         self.id
                     ),
-                    Some((t, level)) => {
+                    Some((t, level, lane)) => {
                         let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        Ok((Arc::new(t.with_shared_cache(id, self.cache.clone())), level))
+                        Ok((Arc::new(t.with_shared_cache(id, self.cache.clone())), level, lane))
                     }
                 }
             })()
@@ -669,12 +666,14 @@ impl GeoSet<'_> {
     }
 
     /// The blocks sampling `parts` in turn reads first (each point's first file's: `blocks_read`),
-    /// in that order, each once; and where each part's begin in that list (and its end).
+    /// in that order, each once, but a copy's on this Mac's disk; and where each part's begin in
+    /// that list (and its end). The files are opened first, together, on store::ahead's threads
+    /// (each a header's round trip or two, a whole copy made here: one after another, a z3 tile's
+    /// many files had kept a sampling thread waiting on the NAS).
     fn blocks_ahead(&self, parts: &[&[u32]], x: &[f64], y: &[f64]) -> Result<Ahead> {
-        let mut seen: HashMap<usize, Seen> = HashMap::new();
-        let (mut out, mut starts) = (Vec::new(), Vec::with_capacity(parts.len() + 1));
+        let mut by_part: Vec<std::collections::BTreeMap<usize, (Vec<f64>, Vec<f64>)>> = Vec::with_capacity(parts.len());
+        let mut files = std::collections::BTreeSet::new();
         for part in parts {
-            starts.push(out.len());
             let mut by: std::collections::BTreeMap<usize, (Vec<f64>, Vec<f64>)> = Default::default();
             let mut kept = None;
             for &i in *part {
@@ -683,13 +682,26 @@ impl GeoSet<'_> {
                     let e = by.entry(k).or_default();
                     e.0.push(px);
                     e.1.push(py);
+                    files.insert(k);
                 }
             }
+            by_part.push(by);
+        }
+        let files: Vec<usize> = files.into_iter().collect();
+        let lane = files.first().map_or(Lane::Nas, |&k| self.lane(&self.files[k].0));
+        let opened: HashMap<usize, (Arc<Tiff>, usize, Option<Lane>)> =
+            files.iter().copied().zip(store::ahead::each(files.len(), lane, |i| self.opened(files[i]))?).collect();
+        let mut seen: HashMap<usize, Seen> = HashMap::new();
+        let (mut out, mut starts) = (Vec::new(), Vec::with_capacity(parts.len() + 1));
+        for by in by_part {
+            starts.push(out.len());
             for (k, (xs, ys)) in by {
-                let (t, level) = self.open(k)?;
+                let (t, level, lane) = &opened[&k];
                 let mut b = Vec::new();
-                blocks_read(&t, level, &xs, &ys, seen.entry(k).or_default(), &mut b)?;
-                out.extend(b.into_iter().map(|(bx, by)| (t.clone(), level, bx, by)));
+                blocks_read(t, *level, &xs, &ys, seen.entry(k).or_default(), &mut b)?;
+                if let Some(lane) = lane {
+                    out.extend(b.into_iter().map(|(bx, by)| (t.clone(), *level, bx, by, *lane)));
+                }
             }
         }
         starts.push(out.len());
@@ -1157,7 +1169,7 @@ impl<K: std::hash::Hash + Eq + Clone, V> Lru<K, V> {
 type MaskCell = std::sync::OnceLock<Result<Option<Arc<Mask>>, String>>;
 
 /// An open file's cell (`GeoSet::open`): the file and its level read, or why it couldn't be opened.
-type OpenCell = std::sync::OnceLock<Result<(Arc<Tiff>, usize), String>>;
+type OpenCell = std::sync::OnceLock<Result<(Arc<Tiff>, usize, Option<Lane>), String>>;
 
 /// A memo's entry: None while it's being fetched (or its fetch failed), then the file or None.
 type Slot = Arc<Mutex<Option<Option<Arc<[u8]>>>>>;
@@ -1803,11 +1815,11 @@ impl Reader<'_, '_> {
     }
 
     /// What to read ahead of sampling `parts` in turn (`read_ahead`): a GeoTIFF dataset's blocks,
-    /// where they're fetched (not the store's: those are read on the NAS as sampled); None
-    /// otherwise (a pyramid fetches its tiles ahead itself).
+    /// fetched or stored on the NAS alike (a copy's on this Mac's disk aren't); None otherwise (a
+    /// pyramid fetches its tiles ahead itself).
     fn ahead(&self, parts: &[&[u32]], lon: &[f64], lat: &[f64]) -> Result<Option<Ahead>> {
         match self {
-            Reader::Geo(g, xy) if g.store.is_none() => {
+            Reader::Geo(g, xy) => {
                 let (x, y) = native(xy, lon, lat);
                 Ok(Some(g.blocks_ahead(parts, x, y)?))
             }
