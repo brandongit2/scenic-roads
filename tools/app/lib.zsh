@@ -387,7 +387,9 @@ _nas_begin() {
   exec 2>$_nas_err
   _nas_cleanup+=("cat ${(q)_nas_err} || true; rm -f ${(q)_nas_err}")
 }
-_nas_end() { local rc=$? c; for c in $_nas_cleanup; do eval $c; done; return $rc; }
+# (The last put first: the lock freed before the NAS's half-written folder is removed, minutes for
+# its 840 files on 11 Nov.)
+_nas_end() { local rc=$? c; for c in ${(Oa)_nas_cleanup}; do eval $c; done; return $rc; }
 
 # nas_rollback <nas> <from>: publish.sh --rollback, on the NAS's Mac: app/current.json and
 # previous.json swapped under the NAS's lock (not waited for), unless rollback_ok refuses.
