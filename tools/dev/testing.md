@@ -70,12 +70,12 @@ affects (#1123: the packages of the tests' set below and those holding a changed
 when a manifest, Cargo.lock, clippy.toml, the toolchain, `.cargo/`, a crate outside the workspace or
 rustflags in the environment changed; none, skipped, when no crate did: the lint flags a call where
 it's written, and a user of a changed crate no longer compiling is the tests' build's to find, or
-publish's whole clippy line's), `tools/app/guards.sh`,
+publish's whole clippy line's), the production build (`prod`, below), `tools/app/guards.sh`,
 when web/ or a `tools/check/*.test.mjs` changed: `node --test` of every `web/test/*.test.{ts,mjs}` and
 `tools/check/*.test.mjs` (globbed, so a new test file runs without editing a list), the web typecheck and build (after `tools/dev/web-deps.sh`, which gives a fresh worktree its `web/node_modules`: `pnpm install --frozen-lockfile --offline` from this Mac's shared pnpm store, only when node_modules is missing or not a finished install of this lockfile (its `node_modules/.web-deps-lock` stamp); a package the store lacks is an error naming the one online install that fills it; publish.sh runs it with `--online`), `node --test` of tools/devtools/test when
 tools/devtools or the build page's timeline modules it serves changed (#672), `tools/dev/test/devjob.zsh` when the
 dev jobs' recorder changed (#946), `tools/app/test/shell.zsh` (publish.sh's shell
-steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records) when check.sh changed, the Swift build and self-test when tools/status changed, `tools/dev/test/ran.zsh` when the kept folders' rule (below) changed,
+steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, `tools/dev/test/test-guard.zsh` when the test guard changed, `tools/dev/test/git-guard.zsh` when the git guard (below) changed, `tools/dev/test/check-record.zsh` (check.sh itself on a toy repo: what it records) and `tools/dev/test/check-prod.zsh` (its prod part, below) when check.sh changed, the Swift build and self-test when tools/status changed, `tools/dev/test/ran.zsh` when the kept folders' rule (below) changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
 changed. The tests run as one `cargo nextest run` (#969; `affected-tests.sh --nextest <file>`
 turns the `cargo test` lines into it, saved in the log folder's `tests-nextest`): one build of
@@ -88,10 +88,35 @@ them for nothing. Each test is its own process, as in publish's suite. guards.sh
 source_names: scan tests of crates/ and dem/, run by the tests part whenever a file they read
 changed; #887: they had built the pipeline's tests on this Mac, ~5 min, beside the test Mac's run).
 Tests build without debug info (`debug = false` in Cargo.toml's `[profile.test]`, #918), every run alike: check.sh's, publish's and an agent's own.
-Clippy runs after the other parts, just before the tests; when both run and the tests run on this Mac
-(the test Mac itself), they take one turn with the shared build folder (#1123, below: a hold, let
+Clippy runs after the other parts, then prod, just before the tests; when two of the three run
+here, they take one turn with the shared build folder (#1123, below: a hold, let
 go as the first test starts), so the tests' build doesn't queue again behind other agents (10 Nov:
 clippy waited 118 s, then the tests' build another 86 s).
+
+**prod: the production build (#1133, 11 Nov).** `cargo check -q --workspace --lib --bins`: every
+workspace library and program compiled as publish's release build compiles them, with no test
+target and so no dev-dependency's feature. Clippy's `--all-targets` and the tests' build turn on
+every crate's `testkit` through the dev-dependencies (resolver 2 unifies a run's features, and the
+crates' dev-dependencies ask for the testkit), so neither compiles production code without it: #1097's
+StopCarry read `STOP_AFTER`, which exists only under `cfg(any(test, feature = "testkit"))`,
+passed check.sh and its review, and publish's release build was the first to fail. Resolver 2
+keeps dev-dependencies' features out of a build of no test target: measured 11 Nov, every
+workspace unit of this part is built with no feature, and #1097's code put back fails it
+(`cannot find value STOP_AFTER`). It runs when a crate or what all of them build from changed
+(clippy's rule for `--workspace` or a crate's `-p`, without the tests' packages), whole workspace
+(a crate's user may be what breaks), in the check profile and the shared build folder, where what
+the change doesn't reach is fresh: ~20 s on the M4 after another worktree's builds (load 60). Its
+inputs are clippy's, so clippy's reuse stands for it (`REUSE prod`). Its test,
+`tools/dev/test/check-prod.zsh`, runs check.sh on a toy workspace with the real cargo: a library's
+and a program's production code using an item only the testkit has pass clippy (the change's other
+crate turning the testkit on, as #1097's users did) and fail prod; gated, they pass; no crate
+changed skips it; clippy's reuse reuses it.
+
+What the release build ships: publish.sh's `cargo build --release -p server -p pipeline` builds all
+three programs installed (`app_programs`: server, and pipeline's scenic and scenic-build), and
+those two packages reach every workspace crate as a normal dependency, so it compiles each library
+as prod does. Not built by either: tools/bldfield (its own workspace, a hand-run tool, not
+installed; fmt only); the status app is Swift (its own part).
 `tools/dev/test/check-reuse.zsh` runs when the reuse rule's files (check.sh, check-reuse.py,
 affected-tests.sh, merge-ok.sh) or the test changed.
 One PASS/FAIL/REUSE line per part with its wall and CPU time here (the tests part also the test Mac's);
@@ -271,14 +296,14 @@ there itself. Third-party crates and unchanged code compile once per Mac, not on
   started 2 s after it, the checks waited 58 and 59 s before and 1 and 0 s after (M4, 4 Nov).
   A run leaves its clones (#1131): a later run removes a gone process's folder 10 minutes after one
   first saw it gone ("A program that ran is kept 10 minutes", below).
-- A hold (#1123): check.sh's clippy and its tests' build take one turn. `cargo --scenic-hold
+- A hold (#1123): check.sh's clippy, prod (#1133) and its tests' build take one turn. `cargo --scenic-hold
   <ready file>`, started by check.sh, takes the lock in line as any cargo, writes the ready file and
   holds it while check.sh lives; the holder's line names check.sh's pid (its processes are what a
   long hold's report shows) and the hold's own, `(hold <pid>)`. A cargo with `SCENIC_CARGO_HOLD`
   naming a hold the holder's line still names builds without taking the lock; where it would let
   the lock go (nextest's first test, a test's or run's programs cloned) it lets the hold go (USR1).
   remote-tests.sh lets it go when the tests go to the test Mac, check.sh after its tests part (or
-  as it exits); programs never get the variable. A waiter behind a hold waits through clippy and the
+  as it exits); programs never get the variable. A waiter behind a hold waits through clippy, prod and the
   tests' build, which before queued apart (clippy waited 118 s on 10 Nov, then the tests' build 86 s
   more behind two agents); a long test run still holds no one up.
 - Shared across worktrees, correctly (#1123): a workspace crate's artifact names don't depend on

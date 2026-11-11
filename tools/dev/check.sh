@@ -10,6 +10,10 @@
 #             -D clippy::disallowed_methods (processes only through store::spawn; clippy.toml). Run
 #             after the parts below but the tests, with the tests' build in one turn with the shared
 #             build folder (a hold, let go as the first test starts) when the tests run here
+#   prod      every workspace library and program as publish's release build compiles them (#1133):
+#             cargo check -q --workspace --lib --bins, no test target, so no dev-dependency's feature
+#             (testkit), when a crate or what all of them build from changed; in the hold with clippy
+#             and the tests' build; reused with clippy (the same inputs)
 #   guards    tools/app/guards.sh, its fmt and two tests left to the fmt and tests parts
 #             (SCENIC_GUARDS_IN_CHECK=1: tools/dev/affected-tests.sh runs both whenever their files change)
 #   web       tools/dev/web-deps.sh (web/node_modules from pnpm's store, when missing or stale), node --test of web/test/*.test.{ts,mjs} and tools/check/*.test.mjs (by glob), pnpm
@@ -22,6 +26,8 @@
 #   gitguard  tools/dev/test/git-guard.zsh (whose checkout a git write goes to), when the git guard,
 #             shell-guard.sh or shellwords.py changed
 #   record    tools/dev/test/check-record.zsh (this script on a toy repo: what it records), when it changed
+#   prodtest  tools/dev/test/check-prod.zsh (this script's clippy and prod on a toy workspace, real cargo),
+#             when it changed
 #   reuse     tools/dev/test/check-reuse.zsh (the reuse rule, below), when it or what it tests changed
 #   sharedtarget tools/dev/test/shared-target.zsh (tools/dev/bin/cargo on a toy workspace), when either changed
 #   sweep     tools/dev/test/sweep-targets.zsh (the sweep's room, on a fake disk), when the sweep, its
@@ -159,6 +165,8 @@ if has 'tools/dev/(git|shell)-guard*' || has 'tools/dev/shellwords.py' || has 't
 else skip gitguard "the git guard unchanged"; fi
 if has 'tools/dev/check.sh' || has 'tools/dev/test/check-record.zsh'; then part record zsh tools/dev/test/check-record.zsh
 else skip record "check.sh unchanged"; fi
+if has 'tools/dev/check.sh' || has 'tools/dev/test/check-prod.zsh'; then part prodtest zsh tools/dev/test/check-prod.zsh
+else skip prodtest "check.sh unchanged"; fi
 if has 'tools/dev/check*' || has 'tools/dev/affected-tests.sh' || has 'tools/dev/merge-ok.sh' || has 'tools/dev/test/check-reuse.zsh'; then
   part reuse zsh tools/dev/test/check-reuse.zsh
 else skip reuse "the reuse rule unchanged"; fi
@@ -182,8 +190,9 @@ if (( ${#tests} )) && [[ ${verdict[tests]:-} != reuse ]] && ! [[ ${verdict[tests
 # workspace, rustflags); none when no crate did. (Its lint, disallowed_methods, flags a call where
 # it is written; a user of a changed crate that no longer compiles is the tests' build's, or
 # publish's whole clippy line's.)
+# $rustin: 1 when a crate or what all of them build from changed (the prod part's rule, below).
 clippyset() {  # the packages, as `-p <name>`… or `--workspace`, in $reply; none: no crate changed
-  reply=()
+  reply=() rustin=1
   local f m; local -a members pk
   members=( ${(f)"$(python3 -c 'import tomllib; print("\n".join(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["members"]))')"} ) ||
     { reply=( --workspace ); return }
@@ -197,12 +206,13 @@ clippyset() {  # the packages, as `-p <name>`… or `--workspace`, in $reply; no
         pk+=( ${m#crates/} ) ;;
     esac
   done
+  (( ${#pk} )) || rustin=0
   for f in $tests; do [[ $f =~ ' -p ([^ ]+)' ]] && pk+=( $match[1] ); done
   for m in ${(ou)pk}; do reply+=( -p $m ); done
 }
-# One turn with the shared build folder from clippy through the tests' build (#1123), when both
-# run here: a hold (tools/dev/bin/cargo --scenic-hold, in line as any cargo) that clippy's and the
-# tests' cargos build under, let go as the first test starts, when the tests go to the test Mac
+# One turn with the shared build folder from clippy through prod and the tests' build (#1123, #1133),
+# when two of them run here: a hold (tools/dev/bin/cargo --scenic-hold, in line as any cargo) that
+# their cargos build under, let go as the first test starts, when the tests go to the test Mac
 # (remote-tests.sh), or after the tests part. Before, clippy let the folder go and the tests' build
 # queued again (86 s behind two agents, 10 Nov).
 holdpid=
@@ -214,22 +224,34 @@ holdon() {
   while [[ ! -e $ready ]] && kill -0 $holdpid 2>/dev/null; do sleep 0.2; done
   if [[ -e $ready ]]; then
     export SCENIC_CARGO_HOLD=$holdpid
-    print "the shared build folder held for clippy and the tests' build (waited $(printf %.0f $(( EPOCHREALTIME - t0 ))) s)"
+    print "the shared build folder held for clippy, prod and the tests' build (waited $(printf %.0f $(( EPOCHREALTIME - t0 ))) s)"
   else print "not held ($logs/hold.log): each cargo takes its turn"; holdpid=; fi
 }
 holdoff() {
   [[ -n $holdpid ]] || return 0
   kill -USR1 $holdpid 2>/dev/null; wait $holdpid 2>/dev/null; holdpid=; unset SCENIC_CARGO_HOLD
 }
+clippyset; cset=( $reply )
+if [[ ${verdict[clippy]:-} == reuse ]]; then nrun=0; else nrun=$(( (${#cset} > 0) + rustin )); fi
+(( nrun + willtest >= 2 )) && holdon
 if [[ ${verdict[clippy]:-} == reuse ]]; then reuse clippy ${from[clippy]} ${why[clippy]}
 else notreused clippy
-  clippyset
-  if (( ${#reply} )); then
-    (( willtest )) && holdon
-    print -r -- "${(j: :)reply}" > $logs/clippy-packages
-    part --parse cargo clippy cargo clippy -q $reply --all-targets -- -A clippy::all -D clippy::disallowed_methods
+  if (( ${#cset} )); then
+    print -r -- "${(j: :)cset}" > $logs/clippy-packages
+    part --parse cargo clippy cargo clippy -q $cset --all-targets -- -A clippy::all -D clippy::disallowed_methods
   else skip clippy "no workspace crate changed"; fi
 fi
+# The production build (#1133): every workspace library and program as publish's release build
+# compiles them, with no test target and so no dev-dependency's feature (resolver 2: a testkit turned
+# on only by dev-dependencies stays off). Clippy's --all-targets and the tests' build turn on every
+# crate's testkit through the dev-dependencies, so a testkit-only item used in production code passed
+# both, and publish's release build was the first to fail (#1097's StopCarry, 11 Nov). The check
+# profile, in the shared build folder: what no change reaches is fresh. Whole workspace (a crate's
+# user may be what breaks), run when a crate or what all build from changed; its inputs are clippy's,
+# so clippy's reuse stands for it.
+if [[ ${verdict[clippy]:-} == reuse ]]; then reuse prod ${from[clippy]} ${why[clippy]}
+elif (( rustin )); then part --parse cargo prod cargo check -q --workspace --lib --bins
+else skip prod "no workspace crate changed"; fi
 # The tests run on the test Mac (tools/app/remote-tests.sh, #442: an exact copy of this tree, a build
 # folder per test slot, three runs at a time there, the rest queued); here on the test Mac itself
 # (the publishing Mac), when it is down, or with SCENIC_CHECK_LOCAL=1.

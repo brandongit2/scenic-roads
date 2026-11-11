@@ -22,11 +22,11 @@ for r in tools/dev/affected-tests.sh tools/dev/bin/cargo tools/app/remote-tests.
     (( ${runner[(Ie)$s]} )) || [[ $s == tools/dev/test/* ]] || bad "$r names $s, not in check-reuse.py's RUNNER"
   done
 done
-for s in ${(f)"$(grep -E '^\s*(if .*then )?part (--parse [^ ]+ )?(clippy|tests) ' $repo/tools/dev/check.sh | grep -oE 'tools/[A-Za-z0-9_./-]+')"}; do
-  (( ${runner[(Ie)$s]} )) || bad "check.sh's clippy or tests line names $s, not in RUNNER"
+for s in ${(f)"$(grep -E '^\s*((el)?if .*then )?part (--parse [^ ]+ )?(clippy|prod|tests) ' $repo/tools/dev/check.sh | grep -oE 'tools/[A-Za-z0-9_./-]+')"}; do
+  (( ${runner[(Ie)$s]} )) || bad "check.sh's clippy, prod or tests line names $s, not in RUNNER"
 done
 grep -q '^rt=$root/tools/app/remote-tests.sh$' $repo/tools/dev/check.sh || bad "check.sh's tests run through something other than tools/app/remote-tests.sh"
-(( fail )) || ok "KNOWN covers the repo; clippy and tests run only RUNNER's scripts"
+(( fail )) || ok "KNOWN covers the repo; clippy, prod and tests run only RUNNER's scripts"
 
 # -- the rule, on a toy repo
 tmp=$(mktemp -d); trap 'rm -rf $tmp' EXIT

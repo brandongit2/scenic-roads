@@ -10,7 +10,8 @@ tests part). Prints one line a part, tab-separated:
   <part> reuse  <P>  <why>             skip it: its pass at commit P holds here
   tests  partial <P> <why>             run only the `cmd` lines after it; P's pass holds for the rest
   tests  cmd    -    <command>
-The parts are clippy and tests (the others are never reused).
+The parts are clippy and tests (the others are never reused); check.sh's prod part, whose inputs are
+clippy's, takes clippy's verdict.
 
 The rule. A pass at P, recorded with its base (`at`, the merge-base it was checked against), its
 tree key and (tests) the hash of its test commands (the commands kept in check-tests/<hash> beside
@@ -52,7 +53,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # The Rust build's inputs besides its package folders: what cargo, rustc and clippy read.
 BUILD = ["crates", "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml", "mise.toml",
          ".mise.toml", "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml", ".cargo", ".config"]
-# The scripts that run clippy and tests (check.sh's lines, the test set, the shim, the test Mac's run, the
+# The scripts that run clippy, prod and tests (check.sh's lines, the test set, the shim, the test Mac's run, the
 # dev jobs' recorder wrapping them).
 # tools/dev/test/check-reuse.zsh checks they run no other repo script.
 RUNNER = ["tools/dev/check.sh", "tools/dev/check-reuse.py", "tools/dev/affected-tests.sh",
