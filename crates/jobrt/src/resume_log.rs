@@ -112,24 +112,38 @@ thread_local! {
 /// counting it down as on the caller; `back` hands what's left to the caller.
 pub struct StopCarry(std::sync::Mutex<Option<usize>>);
 
+// (The count exists only where `STOP_AFTER` does, tests and the testkit; elsewhere a carry is
+// empty and `on` just runs `f`.)
 impl StopCarry {
     /// The calling thread's.
     pub fn here() -> StopCarry {
-        StopCarry(std::sync::Mutex::new(STOP_AFTER.get()))
+        #[cfg(any(test, feature = "testkit"))]
+        let n = STOP_AFTER.get();
+        #[cfg(not(any(test, feature = "testkit")))]
+        let n = None;
+        StopCarry(std::sync::Mutex::new(n))
     }
 
     /// `f` (a block kept) on this thread, under the caller's count.
     pub fn on<R>(&self, f: impl FnOnce() -> R) -> R {
-        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        STOP_AFTER.set(*g);
-        let r = f();
-        *g = STOP_AFTER.take();
-        r
+        #[cfg(any(test, feature = "testkit"))]
+        {
+            let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            STOP_AFTER.set(*g);
+            let r = f();
+            *g = STOP_AFTER.take();
+            r
+        }
+        #[cfg(not(any(test, feature = "testkit")))]
+        f()
     }
 
     /// What's left, the caller's again.
     pub fn back(self) {
+        #[cfg(any(test, feature = "testkit"))]
         STOP_AFTER.set(self.0.into_inner().unwrap_or_else(|e| e.into_inner()));
+        #[cfg(not(any(test, feature = "testkit")))]
+        let _ = self;
     }
 }
 
