@@ -10,6 +10,11 @@
 //!   waited for there (its own lock), and one never listed is read by the compute itself.
 //! - **`each`**: every item read at once on such threads, the results in order (a z3 tile's mids,
 //!   a pack's spans), the first failure stopping the rest.
+//! - **`Shelf`**: what a thread beside the compute reads by key (`Shelf::beside`), in the order
+//!   the compute is expected to want it, a batch at a time (the slope's terrain tiles from its
+//!   neighbours' packs, its deep mids), for the compute to take (`Shelf::take`): one being read is
+//!   waited for, one not read yet the taker reads itself (it then never is here), so no compute
+//!   thread waits on a read it could make sooner, and no key is read twice.
 //! - **Lanes** (`Lane`): a process keeps at most `AT_ONCE` reads in flight on each, whatever
 //!   number of lists read at once (a terrain job samples a chunk a thread, each with its own
 //!   list): the NAS's share stays what SMB's throughput wants (a few calls in flight) and the
@@ -209,6 +214,160 @@ pub fn each<T: Send>(n: usize, lane: Lane, read: impl Fn(usize) -> anyhow::Resul
     Ok(all.into_iter().map(|m| m.1).collect())
 }
 
+/// Values read ahead by key (`fill`, on a thread beside the compute) until the compute takes them
+/// (`take`). See the module's doc.
+pub struct Shelf<K, V> {
+    st: Mutex<ShelfState<K, V>>,
+    cv: Condvar,
+}
+
+struct ShelfState<K, V> {
+    /// Read, not taken yet.
+    ready: std::collections::HashMap<K, V>,
+    /// Being read now (a batch).
+    flight: std::collections::HashSet<K>,
+    /// To be read, in a later batch.
+    queued: std::collections::HashSet<K>,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V> Default for Shelf<K, V> {
+    fn default() -> Self {
+        let st = ShelfState { ready: Default::default(), flight: Default::default(), queued: Default::default() };
+        Shelf { st: Mutex::new(st), cv: Condvar::new() }
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Clone + Send + Sync, V: Send> Shelf<K, V> {
+    /// Runs `run` while `keys` are read onto the shelf in their order on a thread beside it,
+    /// `batch` at a time (`read`: a batch's values, in its order), no further while `window` values
+    /// wait there untaken (taken ones make room), till all are read, `run` ends (checked between
+    /// batches and while it waits) or a batch fails: then the keys not read are left to their
+    /// takers. The keys are listed before `run` starts, so no taker comes before them; a key listed
+    /// twice, or on the shelf already, is read once.
+    pub fn beside<R>(
+        &self,
+        keys: &[K],
+        batch: usize,
+        window: usize,
+        read: impl Fn(&[K]) -> anyhow::Result<Vec<V>> + Sync,
+        run: impl FnOnce() -> R,
+    ) -> R {
+        {
+            let mut g = self.st.lock().unwrap_or_else(|e| e.into_inner());
+            for k in keys {
+                if !g.ready.contains_key(k) && !g.flight.contains(k) {
+                    g.queued.insert(k.clone());
+                }
+            }
+        }
+        let stop = AtomicBool::new(false);
+        // (Stopped however `run` ends, a panic too, so the thread ends.)
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .name("shelf".into())
+                .spawn_scoped(s, || self.fill(keys, batch, window, &stop, &read))
+                .expect("a shelf's reading thread");
+            let _stop = Stop(&stop);
+            run()
+        })
+    }
+
+    fn fill(
+        &self,
+        keys: &[K],
+        batch: usize,
+        window: usize,
+        stop: &AtomicBool,
+        read: &(dyn Fn(&[K]) -> anyhow::Result<Vec<V>> + Sync),
+    ) {
+        let mut at = 0;
+        while at < keys.len() {
+            let mine: Vec<K> = {
+                let mut g = self.st.lock().unwrap_or_else(|e| e.into_inner());
+                while g.ready.len() >= window.max(1) && !stop.load(Ordering::Relaxed) {
+                    // (Woken by a take; the end seen within a tenth of a second.)
+                    let tenth = std::time::Duration::from_millis(100);
+                    g = self.cv.wait_timeout(g, tenth).unwrap_or_else(|e| e.into_inner()).0;
+                }
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let mut mine = Vec::new();
+                while at < keys.len() && mine.len() < batch.max(1) {
+                    if g.queued.remove(&keys[at]) {
+                        g.flight.insert(keys[at].clone());
+                        mine.push(keys[at].clone());
+                    }
+                    at += 1;
+                }
+                mine
+            };
+            if mine.is_empty() {
+                continue;
+            }
+            let got = read(&mine);
+            let mut g = self.st.lock().unwrap_or_else(|e| e.into_inner());
+            for k in &mine {
+                g.flight.remove(k);
+            }
+            let failed = match got {
+                Ok(vs) if vs.len() == mine.len() => {
+                    for (k, v) in mine.into_iter().zip(vs) {
+                        g.ready.insert(k, v);
+                    }
+                    false
+                }
+                _ => true,
+            };
+            self.cv.notify_all();
+            if failed {
+                break;
+            }
+        }
+        // (What's left unread, its takers read.)
+        let mut g = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        for k in &keys[at.min(keys.len())..] {
+            g.queued.remove(k);
+        }
+        self.cv.notify_all();
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V> Shelf<K, V> {
+    /// Key `k`'s value from the shelf: there, or once its batch is read (waited for); None when
+    /// it isn't to be read (any more, or never was): the taker reads it itself, and the shelf
+    /// never will. Taken once: a second take is None.
+    pub fn take(&self, k: &K) -> Option<V> {
+        let mut g = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(v) = g.ready.remove(k) {
+                self.cv.notify_all();
+                return Some(v);
+            }
+            if !g.flight.contains(k) {
+                g.queued.remove(k);
+                return None;
+            }
+            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// The shelf emptied: what was read and not taken let go, what was to be read left to its
+    /// takers.
+    pub fn clear(&self) {
+        let mut g = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        g.ready.clear();
+        g.queued.clear();
+        self.cv.notify_all();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,15 +446,79 @@ mod tests {
     }
 
     #[test]
+    fn a_shelf_hands_each_key_once_read_ahead_waited_for_or_read_by_its_taker() {
+        let shelf: Shelf<u32, u32> = Shelf::default();
+        let reads = Mutex::new(Vec::new());
+        let keys: Vec<u32> = (0..40).chain([3, 7]).collect();
+        // (Batches of 4, at most 8 waiting: the taker takes them in a scrambled order.)
+        let read = |b: &[u32]| {
+            reads.lock().unwrap().extend_from_slice(b);
+            std::thread::sleep(Duration::from_millis(2));
+            Ok(b.iter().map(|k| k * 10).collect())
+        };
+        let (got, inline) = shelf.beside(&keys, 4, 8, read, || {
+            // (Once the first batch is under way: its keys are waited for, not read here.)
+            let t0 = std::time::Instant::now();
+            while reads.lock().unwrap().is_empty() {
+                assert!(t0.elapsed() < Duration::from_secs(60), "the shelf never read");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let mut got = Vec::new();
+            let mut inline = Vec::new();
+            for k in (0..40u32).map(|i| (i * 7) % 40) {
+                match shelf.take(&k) {
+                    Some(v) => got.push((k, v)),
+                    None => inline.push(k),
+                }
+            }
+            (got, inline)
+        });
+        assert!(got.iter().all(|&(k, v)| v == k * 10));
+        assert_eq!(got.len() + inline.len(), 40);
+        assert!(!got.is_empty(), "nothing read ahead");
+        let reads = reads.into_inner().unwrap();
+        for k in &inline {
+            assert!(!reads.contains(k), "{k}, taken as not to be read, was read by the shelf");
+        }
+        let mut sorted = reads.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), reads.len(), "a key read twice: {reads:?}");
+        assert_eq!(shelf.take(&0), None, "taken once");
+        // (A failed batch: its keys and the rest left to their takers.)
+        let shelf: Shelf<u32, u32> = Shelf::default();
+        let failed = AtomicBool::new(false);
+        let read = |b: &[u32]| {
+            if b[0] == 2 {
+                failed.store(true, Ordering::SeqCst);
+                anyhow::bail!("no")
+            }
+            Ok(vec![b[0]])
+        };
+        let wait = || {
+            while !failed.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        shelf.beside(&[1, 2, 3], 1, 8, read, wait);
+        assert_eq!((shelf.take(&1), shelf.take(&2), shelf.take(&3)), (Some(1), None, None));
+    }
+
+    #[test]
     fn a_failed_read_or_the_computes_end_stops_the_reading_ahead() {
-        let n = AtomicUsize::new(0);
+        // (Reads begun once the failure was in: at most one a thread, taken before it was.)
+        let (failed, after, all) = (AtomicBool::new(false), AtomicUsize::new(0), AtomicUsize::new(0));
         ahead(
             1000,
             1000,
             |_| Some(Lane::Nas),
             |i, _| {
-                n.fetch_add(1, Ordering::Relaxed);
+                all.fetch_add(1, Ordering::Relaxed);
+                if failed.load(Ordering::SeqCst) {
+                    after.fetch_add(1, Ordering::Relaxed);
+                }
                 if i == 2 {
+                    failed.store(true, Ordering::SeqCst);
                     anyhow::bail!("gone")
                 }
                 std::thread::sleep(Duration::from_millis(1));
@@ -303,21 +526,29 @@ mod tests {
             },
             |_| std::thread::sleep(Duration::from_millis(50)),
         );
-        assert!(n.load(Ordering::Relaxed) < 100, "{} read after a failure", n.load(Ordering::Relaxed));
-        // (The compute ending at once: a read waiting sees `stop` and the threads end.)
-        let saw = AtomicBool::new(false);
+        let (after, all) = (after.into_inner(), all.into_inner());
+        assert!(after <= AT_ONCE[Lane::Nas as usize], "{after} reads begun after the failure");
+        assert!(all < 1000, "every item read: the failure stopped nothing");
+        // (The compute ending while a read waits on a host that never answers: the read sees `stop`
+        // and the threads end, the call with them.)
+        let (started, saw) = (AtomicBool::new(false), AtomicBool::new(false));
         ahead(
             4,
             4,
             |_| Some(Lane::Net),
             |_, stop| {
+                started.store(true, Ordering::Relaxed);
                 while !stop.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 saw.store(true, Ordering::Relaxed);
                 Ok(())
             },
-            |_| (),
+            |_| {
+                while !started.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            },
         );
         assert!(saw.load(Ordering::Relaxed));
     }

@@ -491,7 +491,7 @@ impl RawSource for Tiles<'_> {
     // (Its chunks `at_once` at a time, the first to fail stopping the rest, as one that finds the
     // build pausing does (jobrt::control::Paused, from `sample`). A chunk's reads mostly wait on the NAS, one at a time left a
     // job's threads idle, task #695. The same bytes: a tile's sampling reads nothing of another's.)
-    fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
+    fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], done: &AtomicU64) -> Result<usize> {
         // (As many at once as the job's threads, each a task of a pool as wide as the target's
         // grant (jobrt::control::on_outside_pool), its sampler's passes there too
         // (inputs::dem::generic's, through jobrt::control::on_target_pool): the target's own thread
@@ -602,7 +602,7 @@ mod tests {
         let (png, again) = pool
             .with_tiles(&raw, |t| {
                 let done = AtomicU64::new(0);
-                t.prefetch_counted(z, &[(x, y)], 1, &done).unwrap();
+                t.prefetch_counted(z, &[(x, y)], &done).unwrap();
                 assert_eq!(done.load(Ordering::Relaxed), 1);
                 (t.get(z, x, y).unwrap().0.unwrap(), t.get(z, x, y).unwrap().0.unwrap())
             })
@@ -828,7 +828,7 @@ mod tests {
         let draining = || asked.fetch_add(1, Ordering::Relaxed) >= 1;
         let paused = Tiles { draining: &draining, ..Tiles::new(&plans, &o) };
         let done = AtomicU64::new(0);
-        let e = paused.prefetch_counted(z, &ts, 1, &done).unwrap_err();
+        let e = paused.prefetch_counted(z, &ts, &done).unwrap_err();
         assert!(jobrt::control::is_paused(&e), "{e:#}");
         // Exactly one chunk sampled, whole: whichever worker asked first (under load the last,
         // shorter chunk's can), so its size is any chunk's, never part of one or two.
@@ -842,7 +842,7 @@ mod tests {
         assert_eq!(done.load(Ordering::Relaxed), one.len() as u64);
         // Never paused: the same bytes.
         let whole = Tiles::new(&plans, &o);
-        whole.prefetch_counted(z, &ts, 1, &AtomicU64::new(0)).unwrap();
+        whole.prefetch_counted(z, &ts, &AtomicU64::new(0)).unwrap();
         for (k, b) in &held {
             assert!(b.is_some());
             assert_eq!(whole.held.lock().unwrap().get(k), Some(b), "{k:?}");
@@ -854,7 +854,7 @@ mod tests {
         for n in [1, 3, 7] {
             let p = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
             let t = Tiles::new(&plans, &o);
-            p.install(|| t.prefetch_counted(z, &ts, n, &AtomicU64::new(0))).unwrap();
+            p.install(|| t.prefetch_counted(z, &ts, &AtomicU64::new(0))).unwrap();
             assert_eq!(*t.held.lock().unwrap(), all, "{n} threads");
         }
     }

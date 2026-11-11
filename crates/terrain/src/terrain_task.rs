@@ -227,13 +227,7 @@ impl RawSource for Inputs {
         let n = name("r", z, x, y);
         Ok((if self.r.section(&n).is_some() { Some(self.r.read(&n)?) } else { None }, false))
     }
-    fn prefetch_counted(
-        &self,
-        _z: u8,
-        tiles: &[(u32, u32)],
-        _threads: usize,
-        done: &std::sync::atomic::AtomicU64,
-    ) -> Result<usize> {
+    fn prefetch_counted(&self, _z: u8, tiles: &[(u32, u32)], done: &std::sync::atomic::AtomicU64) -> Result<usize> {
         done.fetch_add(tiles.len() as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(0)
     }

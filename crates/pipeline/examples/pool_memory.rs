@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     pool.with_tiles(&raw, |tiles| -> anyhow::Result<()> {
         for &t in &xy {
             let t0 = std::time::Instant::now();
-            tiles.prefetch_counted(z, &[t], 1, &AtomicU64::new(0))?;
+            tiles.prefetch_counted(z, &[t], &AtomicU64::new(0))?;
             let data = tiles.get(z, t.0, t.1)?.0.is_some();
             peak = peak.max(mb());
             println!("{z}/{}/{}: data {data}, {:.1} s, footprint {} MB", t.0, t.1, t0.elapsed().as_secs_f64(), mb());

@@ -499,9 +499,6 @@ fn mid_waits() -> Vec<std::time::Duration> {
     }
 }
 
-/// How many mids an assembly reads at once (`read_mids`): each a round trip or two to the share.
-const MIDS_AT_ONCE: usize = 8;
-
 fn read_file(p: &std::path::Path) -> std::io::Result<Vec<u8>> {
     std::fs::read(p)
 }
@@ -786,6 +783,61 @@ fn terrain_reads(
     )
 }
 
+/// The terrain tiles the pyramid of `tiles` reads to shade its tiles from their own terrain
+/// (`shade_tile`: a tile whose children among `tiles` don't cover it, at a zoom `own` takes): each
+/// one's own and its four edge neighbours', a missing one's nearest ancestor as `Terrain::tile`
+/// finds it (`has`), each once, the finest first (a subtree's leaves are shaded before their
+/// parents): what its run reads ahead (crate::terrain_pack::ManifestTiles::reading_ahead).
+fn terrain_wanted(
+    tiles: &HashSet<(u8, u32, u32)>,
+    own: impl Fn(u8) -> bool,
+    has: &(dyn Fn(u8, u32, u32) -> bool + Sync),
+) -> Vec<(u8, u32, u32)> {
+    let mut want = BTreeSet::new();
+    for &(z, x, y) in tiles {
+        let covered = z < MAX_Z && (0..4u32).all(|k| tiles.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))));
+        if covered || !own(z) {
+            continue;
+        }
+        let n = 1i64 << z;
+        for (dx, dy) in [(0i64, 0i64), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let (nx, ny) = ((x as i64 + dx).rem_euclid(n) as u32, y as i64 + dy);
+            if ny < 0 || ny >= n {
+                continue;
+            }
+            let ny = ny as u32;
+            let found =
+                (0..=z - fallback_floor(z)).map(|dz| (z - dz, nx >> dz, ny >> dz)).find(|&(a, b, c)| has(a, b, c));
+            if let Some((a, b, c)) = found {
+                want.insert((std::cmp::Reverse(a), b, c));
+            }
+        }
+    }
+    want.into_iter().map(|(a, b, c)| (a.0, b, c)).collect()
+}
+
+/// The z10 tiles of a z6 tile's deep mids in the order its pyramid is likely to take them: each
+/// tile's place in its z6 tile as a quadtree path read from the bottom level up, so the tiles one
+/// after another lie in different quadrants, as the pyramid's threads work on its quadrants side
+/// by side (`Pyramid::node`).
+fn mids_order(mut fs: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    let k = PACK_Z - 6;
+    let key = |&(x, y): &(u32, u32)| {
+        let mut v = 0u32;
+        for b in 0..k {
+            let digit = ((x >> b) & 1) | (((y >> b) & 1) << 1);
+            v = (v << 2) | digit;
+        }
+        v
+    };
+    fs.sort_by_key(key);
+    fs
+}
+
+/// A deep mid's bytes read ahead of its pyramid's taking it (`DeepQuadrants`): a few at a time
+/// (each a few MB), at most `MIDS_AHEAD` read and not yet taken.
+const MIDS_AHEAD: usize = 8;
+
 /// Makes z6 tile `t`'s slope (a slope-hi z6 tile) from the build's terrain packs and its z10 tiles'
 /// deep mids (their slope-deep runs': `build_deep`), and uploads it: its hi pack (z9–12; none when it
 /// made no tile, its terrain having no hi tile: the manifest's then dropped) and its mid
@@ -840,9 +892,23 @@ pub fn build_piece_later(
     drop(p);
     on("slope tiles worked out", 0, count.total);
     let p = phase("working out the slope tiles");
+    // (Its z10 tiles' deep mids and the terrain tiles its pyramid reads from the NAS (its
+    // neighbours' edge tiles, its lo tiles), read on threads beside its compute (task #1096), each
+    // taken from there as the pyramid comes to it.)
+    let mids_ahead: store::ahead::Shelf<(u32, u32), Vec<u8>> = Default::default();
+    let read_mids = |fs: &[(u32, u32)]| {
+        store::ahead::each(fs.len(), store::ahead::Lane::Nas, |i| {
+            let p = out.path(&mids[&fs[i]]);
+            read_whole(store::nasfs::Loc::Nas(&p)).map_err(anyhow::Error::from)
+        })
+    };
+    let want = terrain_wanted(&tiles, |z| z < FIRST_Z, &has);
     let read = |f: (u32, u32)| -> Result<DeepMid> {
         let c = &mids[&f];
-        let (of, mid) = read_deep_mid(&out.path(c))?;
+        let (of, mid) = match mids_ahead.take(&f) {
+            Some(b) => deep_mid_from(b, &out.path(c).display().to_string())?,
+            None => read_deep_mid(&out.path(c))?,
+        };
         anyhow::ensure!(of == f, "{c} is 10/{}/{}'s deep mid", of.0, of.1);
         anyhow::ensure!(
             mid.quadrants.keys().eq(tops[&f].iter()),
@@ -859,7 +925,10 @@ pub fn build_piece_later(
         failed: Default::default(),
     };
     let done = |z: u8, x: u32, y: u32| if z == FIRST_Z { deep.take(x, y) } else { None };
-    let (hi, lo) = piece(&terrain, &tiles, &done, t, &count);
+    let order = mids_order(mids.keys().copied().collect());
+    let (hi, lo) = mids_ahead.beside(&order, MIDS_AHEAD / 2, MIDS_AHEAD, read_mids, || {
+        terr.reading_ahead(&want, || piece(&terrain, &tiles, &done, t, &count))
+    });
     if let Some(e) = deep.failed.into_inner().unwrap() {
         return Err(e.context(format!("piece 6/{}/{}: a deep mid", t.0, t.1)));
     }
@@ -1021,7 +1090,10 @@ fn build_deep_with(
     drop(p);
     on("slope tiles worked out", 0, count.total);
     let p = phase("working out the slope tiles");
-    let (made, mid) = deep_part(&terrain, &tiles, &count);
+    // (The terrain tiles it reads from the NAS, its neighbours' edge tiles, read on a thread beside
+    // its compute, task #1096.)
+    let want = terrain_wanted(&tiles, |_| true, &has);
+    let (made, mid) = terr.reading_ahead(&want, || deep_part(&terrain, &tiles, &count));
     drop(terrain);
     drop(p);
     let p = phase("writing its deep pack and deep mid");
@@ -1117,8 +1189,14 @@ pub fn write_deep_mid(path: &std::path::Path, t: (u32, u32), mid: &DeepMid) -> R
 pub fn read_deep_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<((u32, u32), DeepMid)> {
     use anyhow::Context;
     let path = path.into();
-    let what = || path.display();
-    let bytes = read_whole(path).with_context(what)?;
+    let bytes = read_whole(path).with_context(|| path.display())?;
+    deep_mid_from(bytes, &path.display())
+}
+
+/// A deep mid from its bytes (`read_deep_mid`'s; `shown`: where they were read, for its errors).
+fn deep_mid_from(bytes: Vec<u8>, shown: &str) -> Result<((u32, u32), DeepMid)> {
+    use anyhow::Context;
+    let what = || shown.to_string();
     let r = store::sect::SectReader::open(bytes).with_context(what)?;
     let m = r.meta();
     anyhow::ensure!(
@@ -1169,7 +1247,7 @@ fn read_mids(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<BTreeMap<(u3
             todo.push((t, c.to_string()));
         }
     }
-    let got = crate::layers::read_each(todo.len(), MIDS_AT_ONCE, |i| {
+    let got = store::ahead::each(todo.len(), store::ahead::Lane::Nas, |i| {
         let (t, c) = &todo[i];
         let (of, tiles) = read_mid(&out.path(c))?;
         anyhow::ensure!(of == *t, "{c} is 6/{}/{}'s mid", of.0, of.1);
@@ -1404,6 +1482,46 @@ mod tests {
                 assert_eq!(shade_tile(&terrain, z, x, y), shade_direct(&get, z, x, y), "{z}/{x}/{y}");
             }
         }
+    }
+
+    /// Task #1096: what a pyramid reads ahead is what its shading reads: the tiles shaded from their
+    /// own terrain (not those their children cover) and their four edge neighbours, a missing one's
+    /// nearest ancestor in its stead, each once, the finest first; a tile covered by its children
+    /// reads nothing of its own; the mids' order is a permutation.
+    #[test]
+    fn a_pyramids_terrain_read_ahead_is_what_its_shading_reads() {
+        let kids = [(14, 16, 16), (14, 17, 16), (14, 16, 17), (14, 17, 17), (14, 18, 16)];
+        let tiles = with_ancestors(kids, 13);
+        let has = |z: u8, x: u32, y: u32| !(z == 14 && x == 19 && y == 16);
+        let want = terrain_wanted(&tiles, |_| true, &has);
+        // (What `shade_tile` reads for each tile shaded from its own terrain.)
+        let flat = roadcore::grid::encode_terrain_png(&vec![100.0; 256 * 256], 256, 256).unwrap();
+        let read = Mutex::new(BTreeSet::new());
+        let get = |z: u8, x: u32, y: u32| {
+            read.lock().unwrap().insert((z, x, y));
+            Some(flat.clone())
+        };
+        let terrain = Terrain::new(&get, &has);
+        for &(z, x, y) in &tiles {
+            if !(0..4u32).all(|k| tiles.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1)))) {
+                assert!(shade_tile(&terrain, z, x, y).is_some());
+            }
+        }
+        let asked = read.into_inner().unwrap();
+        let got: BTreeSet<(u8, u32, u32)> = want.iter().copied().collect();
+        assert_eq!(got, asked);
+        assert_eq!(got.len(), want.len(), "each once");
+        assert!(want.contains(&(13, 9, 8)), "the missing 14/19/16's ancestor (and 13/9/8's own: one kid alone)");
+        assert!(!want.contains(&(13, 7, 8)), "13/8/8 is covered by its children: its neighbours aren't read");
+        let first13 = want.iter().position(|t| t.0 == 13).unwrap();
+        assert!(want[..first13].iter().all(|t| t.0 == 14) && want[first13..].iter().all(|t| t.0 == 13));
+        // (Only the zooms `own` takes: a hi pyramid's z13 tops come from their deep mids.)
+        assert!(terrain_wanted(&tiles, |z| z < 14, &has).iter().all(|t| t.0 == 13));
+        let fs: Vec<(u32, u32)> = (0..16).flat_map(|x| (0..16).map(move |y| (x, y))).collect();
+        let mut o = mids_order(fs.clone());
+        assert_ne!(o, fs);
+        o.sort_unstable();
+        assert_eq!(o, fs);
     }
 
     /// Task #952: a missing deep tile (z13 on) is made from its nearest ancestor within the deep

@@ -24,12 +24,6 @@ use std::time::Duration;
 /// at 0 m; every dataset read at sea).
 pub const TERRAIN_V: u32 = 11;
 
-/// Raw tiles got at once (each mostly waits on the NAS or S3; S3's requests themselves held to
-/// buildstore::fetch::HOST_REQUESTS a host).
-const FETCH_THREADS: usize = 64;
-/// A z3 tile's mids read at once (`build_lo`): SMB's throughput wants a few calls in flight.
-const MID_READERS: usize = 8;
-
 /// The base's template in tests (nothing fetched: a test goes offline, or has its tiles).
 #[cfg(any(test, feature = "testkit"))]
 pub const TEST_BASE: &str = "https://tiles.test/{z}/{x}/{y}.png";
@@ -195,7 +189,6 @@ impl RawSource for Fills<'_> {
         &self,
         z: u8,
         tiles: &[(u32, u32)],
-        threads: usize,
         done: &std::sync::atomic::AtomicU64,
     ) -> anyhow::Result<usize> {
         let (mut sample, mut relief) = (Vec::new(), Vec::new());
@@ -209,8 +202,7 @@ impl RawSource for Fills<'_> {
             }
         }
         let none = std::sync::atomic::AtomicU64::new(0);
-        let n = self.pool.prefetch_counted(z, &sample, threads, &none)?
-            + self.relief.prefetch_counted(z, &relief, threads, &none)?;
+        let n = self.pool.prefetch_counted(z, &sample, &none)? + self.relief.prefetch_counted(z, &relief, &none)?;
         done.fetch_add(tiles.len() as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(n)
     }
@@ -270,7 +262,6 @@ pub trait RawSource: Sync {
         &self,
         z: u8,
         tiles: &[(u32, u32)],
-        threads: usize,
         done: &std::sync::atomic::AtomicU64,
     ) -> anyhow::Result<usize>;
     /// The tiles of zoom `z` built (a level's, or what it starts from: its children's means), so a
@@ -295,10 +286,9 @@ impl RawSource for RawTiles {
         &self,
         z: u8,
         tiles: &[(u32, u32)],
-        threads: usize,
         done: &std::sync::atomic::AtomicU64,
     ) -> anyhow::Result<usize> {
-        RawTiles::prefetch_counted(self, z, tiles, threads, done)
+        RawTiles::prefetch_counted(self, z, tiles, done)
     }
 }
 
@@ -421,6 +411,8 @@ pub struct ManifestTiles {
     /// (`with_copies`, `copy_here`), and the copies made or being made, by logical name: deleted
     /// when let go (`keep_only`) or with this.
     copies: Option<(std::path::PathBuf, Mutex<HashMap<String, std::path::PathBuf>>)>,
+    /// Tiles read ahead of the compute asking for them (`read_ahead`), until `get` takes them.
+    ahead: store::ahead::Shelf<(u8, u32, u32), Option<Vec<u8>>>,
 }
 
 /// A pack open: its file and index. Kept for the job's life, so its reads go through a
@@ -451,7 +443,13 @@ impl ManifestTiles {
             .take_while(|(l, _)| l.starts_with(&prefix))
             .map(|(l, c)| (l.clone(), out.path(c)))
             .collect();
-        ManifestTiles { layer: layer.to_string(), files, open: Mutex::new(HashMap::new()), copies: None }
+        ManifestTiles {
+            layer: layer.to_string(),
+            files,
+            open: Mutex::new(HashMap::new()),
+            copies: None,
+            ahead: Default::default(),
+        }
     }
 
     /// `new`, the packs `copy_here` is asked for copied into `dir` (the job's scratch) whole and
@@ -515,8 +513,12 @@ impl ManifestTiles {
     }
 
     /// Tile (z, x, y), read under `nas_call`'s deadline and retries (each try on its pack's file
-    /// opened again where the last met its handle gone: `OpenPack`).
+    /// opened again where the last met its handle gone: `OpenPack`); one read ahead
+    /// (`read_ahead`) taken from there, or waited for while it's being read.
     pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+        if let Some(t) = self.ahead.take(&(z, x, y)) {
+            return Ok(t);
+        }
         let Some(e) = self.pack(z, x, y)? else { return Ok(None) };
         let Some(ent) = e.idx.find(z, x, y) else { return Ok(None) };
         let (off, len) = (ent.offset, ent.len as usize);
@@ -526,13 +528,29 @@ impl ManifestTiles {
         Ok(Some(b))
     }
 
+    /// `run`, while tiles `want` are read (in their order, a batch at a time, `get_many`) on a
+    /// thread beside it, ahead of its `get`s of them (task #1096: a slope run's edge tiles from its
+    /// neighbours' packs, each a round trip to the share, had kept its compute threads waiting on
+    /// the NAS): each kept until `get` takes it (store::ahead::Shelf: one being read is waited for,
+    /// one not read yet `get` reads itself). A tile of a pack copied here is read there as asked,
+    /// not ahead. The same bytes either way.
+    pub fn reading_ahead<R>(&self, want: &[(u8, u32, u32)], run: impl FnOnce() -> R) -> R {
+        let here: std::collections::HashSet<String> = match &self.copies {
+            Some((_, made)) => made.lock().unwrap().keys().cloned().collect(),
+            None => Default::default(),
+        };
+        let want: Vec<(u8, u32, u32)> =
+            want.iter().copied().filter(|&(z, x, y)| !here.contains(&Self::logical(&self.layer, z, x, y))).collect();
+        self.ahead.beside(&want, AHEAD_BATCH, AHEAD_WINDOW, |b| self.get_many(b), run)
+    }
+
     /// Tiles `want` (each as `get` gives it), read a pack at a time in spans: the tiles' bytes in the
     /// pack's order, neighbours a gap of under `SPAN_GAP` apart read together, up to `SPAN_MAX` a
     /// read, the spans in parallel. A z6 tile reading thousands of a pack's tiles makes a few dozen
     /// reads of the share instead of a round trip a tile, and moves little it doesn't use. Each
-    /// span's read is under `nas_call`'s deadline and retries (as `get`'s), on `SPAN_READERS` threads
-    /// of its own (not rayon's: a job computing meanwhile, the peaks' next z6 tile read ahead,
-    /// doesn't hold them up).
+    /// span's read is under `nas_call`'s deadline and retries (as `get`'s), on store::ahead's
+    /// threads (`each`, the NAS's lane: not rayon's, so a job computing meanwhile, the peaks' next
+    /// z6 tile read ahead, doesn't hold them up).
     pub fn get_many(&self, want: &[(u8, u32, u32)]) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
         const SPAN_GAP: u64 = 256 << 10;
         const SPAN_MAX: u64 = 32 << 20;
@@ -564,34 +582,18 @@ impl ManifestTiles {
                 }
             }
         }
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let read: Vec<anyhow::Result<Vec<(usize, Vec<u8>)>>> = std::thread::scope(|sc| {
-            let readers: Vec<_> = (0..SPAN_READERS.min(spans.len()))
-                .map(|_| {
-                    sc.spawn(|| {
-                        let mut mine = Vec::new();
-                        loop {
-                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some((e, s0, s1, ts)) = spans.get(k) else { break };
-                            let (e, s0, n) = (e.clone(), *s0, (s1 - s0) as usize);
-                            let what = format!("{}'s bytes {s0}..{s1}", self.layer);
-                            let b = nas_call(&what, NAS_DEADLINE, &store::retry::waits(), move || e.read(s0, n));
-                            mine.push(b.map_err(anyhow::Error::from).map(|b| {
-                                ts.iter()
-                                    .map(|&(o, l, i)| {
-                                        (i, b[(o - s0) as usize..(o - s0) as usize + l as usize].to_vec())
-                                    })
-                                    .collect()
-                            }));
-                        }
-                        mine
-                    })
-                })
-                .collect();
-            readers.into_iter().flat_map(|r| r.join().expect("a span reader panicked")).collect()
-        });
+        let read = store::ahead::each(spans.len(), store::ahead::Lane::Nas, |k| {
+            let (e, s0, s1, ts) = &spans[k];
+            let (e, s0, n) = (e.clone(), *s0, (s1 - s0) as usize);
+            let what = format!("{}'s bytes {s0}..{s1}", self.layer);
+            let b = nas_call(&what, NAS_DEADLINE, &store::retry::waits(), move || e.read(s0, n))?;
+            Ok(ts
+                .iter()
+                .map(|&(o, l, i)| (i, b[(o - s0) as usize..(o - s0) as usize + l as usize].to_vec()))
+                .collect::<Vec<_>>())
+        })?;
         for r in read {
-            for (i, b) in r? {
+            for (i, b) in r {
                 got[i] = Some(b);
             }
         }
@@ -652,10 +654,12 @@ impl ManifestTiles {
     }
 
     /// The packs open, copied here or not, kept only where `keep` says (by logical name): the rest
-    /// closed and their copies deleted (one being made too: `copy_here` drops it as it ends), so a
-    /// reader kept for a whole job holds what's still to be read and no more. A pack let go and
-    /// read again is opened again where it is, the NAS's, or copied again when asked.
+    /// closed and their copies deleted (one being made too: `copy_here` drops it as it ends), and
+    /// the tiles read ahead and not taken let go, so a reader kept for a whole job holds what's
+    /// still to be read and no more. A pack let go and read again is opened again where it is, the
+    /// NAS's, or copied again when asked.
     pub fn keep_only(&self, keep: &dyn Fn(&str) -> bool) {
+        self.ahead.clear();
         // (Copies first, under their lock: a copy ending meanwhile then finds itself let go, and
         // its open pack never outlives this.)
         if let Some((_, made)) = &self.copies {
@@ -680,8 +684,10 @@ impl Drop for ManifestTiles {
 /// 0.5 MB/s) before it fails: an SMB call can stay stuck in the kernel for many minutes.
 pub const NAS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// The threads `get_many` reads a layer's spans on (SMB's throughput wants a few calls in flight).
-const SPAN_READERS: usize = 8;
+/// The tiles `read_ahead` reads in one `get_many` (its spans read together), and the most it keeps
+/// read and not yet taken (a terrain tile is ~100 KB: ~100 MB at most).
+const AHEAD_BATCH: usize = 64;
+const AHEAD_WINDOW: usize = 1024;
 
 /// `f` on a thread of its own, waited for `deadline` at most (past it, `TimedOut`, not tried again:
 /// the thread stuck in it left behind, the job's own retry takes over), tried again after each of
@@ -1138,10 +1144,11 @@ impl RawTiles {
         true
     }
 
-    /// Fetches the tiles of `tiles` (zoom `z`) not here yet, `threads` at a time: a download mostly
-    /// waits on AWS, so far more of them than cores. The number that came from AWS.
-    pub fn prefetch(&self, z: u8, tiles: &[(u32, u32)], threads: usize) -> anyhow::Result<usize> {
-        self.prefetch_counted(z, tiles, threads, &std::sync::atomic::AtomicU64::new(0))
+    /// Fetches the tiles of `tiles` (zoom `z`) not here yet, on store::ahead's threads (`each`, the
+    /// network's lane: a download mostly waits on AWS, so far more of them than cores; a tile in
+    /// the NAS's archives read there the same). The number that came from AWS.
+    pub fn prefetch(&self, z: u8, tiles: &[(u32, u32)]) -> anyhow::Result<usize> {
+        self.prefetch_counted(z, tiles, &std::sync::atomic::AtomicU64::new(0))
     }
 
     /// `prefetch`, counting into `done` each tile as it's here (at once for those that were).
@@ -1149,10 +1156,8 @@ impl RawTiles {
         &self,
         z: u8,
         tiles: &[(u32, u32)],
-        threads: usize,
         done: &std::sync::atomic::AtomicU64,
     ) -> anyhow::Result<usize> {
-        use rayon::prelude::*;
         let todo: Vec<(u32, u32)> = tiles
             .iter()
             .copied()
@@ -1164,22 +1169,13 @@ impl RawTiles {
             })
             .collect();
         done.fetch_add((tiles.len() - todo.len()) as u64, std::sync::atomic::Ordering::Relaxed);
-        if todo.is_empty() {
-            return Ok(0);
-        }
-        let fetched = std::sync::atomic::AtomicUsize::new(0);
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
-        pool.install(|| {
-            todo.par_iter().try_for_each(|&(x, y)| -> anyhow::Result<()> {
-                let got = self.get(z, x, y);
-                done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if got?.1 {
-                    fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                Ok(())
-            })
+        let got = store::ahead::each(todo.len(), store::ahead::Lane::Net, |i| {
+            let (x, y) = todo[i];
+            let got = self.get(z, x, y);
+            done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(got?.1)
         })?;
-        Ok(fetched.into_inner())
+        Ok(got.into_iter().filter(|&new| new).count())
     }
 
     /// The raw tile fetched again (a cached one that doesn't decode), replacing the cached one.
@@ -1455,10 +1451,7 @@ impl<'a> Maker<'a> {
         } else {
             todo.iter().flat_map(|&bi| blocks[bi].iter().copied()).collect()
         };
-        self.fetched.fetch_add(
-            self.raw.prefetch_counted(z, &want, FETCH_THREADS, &self.here)?,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.fetched.fetch_add(self.raw.prefetch_counted(z, &want, &self.here)?, std::sync::atomic::Ordering::Relaxed);
         drop(p);
         for b in &blocks {
             if let Some(done) = kept.blocks.remove(&key(b)) {
@@ -2011,7 +2004,7 @@ pub fn make_lo(
         paths.push((t, c.to_string(), out.path(c)));
     }
     p.count(0, paths.len() as u64);
-    let mids: Vec<((u32, u32), Mid)> = crate::layers::read_each(paths.len(), MID_READERS, |i| {
+    let mids: Vec<((u32, u32), Mid)> = store::ahead::each(paths.len(), store::ahead::Lane::Nas, |i| {
         let (t, c, path) = &paths[i];
         let (of, mid) = read_mid(path)?;
         anyhow::ensure!(of == *t, "{c} is 6/{}/{}'s mid", of.0, of.1);
@@ -2200,13 +2193,12 @@ pub(crate) mod tests {
             &self,
             z: u8,
             tiles: &[(u32, u32)],
-            threads: usize,
             done: &std::sync::atomic::AtomicU64,
         ) -> anyhow::Result<usize> {
             let mut n = 0;
             for c in tiles.chunks(CHUNK) {
                 self.sampling()?;
-                n += self.inner.prefetch_counted(z, c, threads, done)?;
+                n += self.inner.prefetch_counted(z, c, done)?;
                 self.held.lock().unwrap().extend(c.iter().map(|&(x, y)| (z, x, y)));
             }
             Ok(n)
@@ -2472,7 +2464,7 @@ pub(crate) mod tests {
             crate::terrain_pack::TEST_BASE,
         );
         for _ in 0..=RANGED / 2 {
-            assert_eq!(fresh.prefetch(12, &[(2048, 1365), (2049, 1365)], 2).unwrap(), 0);
+            assert_eq!(fresh.prefetch(12, &[(2048, 1365), (2049, 1365)]).unwrap(), 0);
         }
         assert!(!d.path().join("fresh/12/2048/1365.png").exists() && !d.path().join("fresh/packs").exists());
         assert_eq!(fresh.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
@@ -2508,7 +2500,6 @@ pub(crate) mod tests {
             &self,
             _z: u8,
             _tiles: &[(u32, u32)],
-            _threads: usize,
             _done: &std::sync::atomic::AtomicU64,
         ) -> anyhow::Result<usize> {
             Ok(0)

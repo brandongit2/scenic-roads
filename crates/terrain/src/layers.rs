@@ -54,42 +54,6 @@ pub fn drop(out: &mut Out, logicals: &[String]) -> usize {
     gone.len()
 }
 
-/// `read(i)` for each `i` below `n`, `at_once` at a time (a z3 tile's mids: each a few MB, mostly
-/// waiting on the NAS), in `i`'s order; the first failure fails it, and no more are started.
-pub fn read_each<T: Send>(n: usize, at_once: usize, read: impl Fn(usize) -> Result<T> + Sync) -> Result<Vec<T>> {
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let failed = std::sync::atomic::AtomicBool::new(false);
-    let got: Vec<Result<Vec<(usize, T)>>> = std::thread::scope(|s| {
-        let ws: Vec<_> = (0..at_once.min(n))
-            .map(|_| {
-                s.spawn(|| {
-                    let mut got = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if i >= n || failed.load(std::sync::atomic::Ordering::Relaxed) {
-                            return Ok(got);
-                        }
-                        match read(i) {
-                            Ok(v) => got.push((i, v)),
-                            Err(e) => {
-                                failed.store(true, std::sync::atomic::Ordering::Relaxed);
-                                return Err(e);
-                            }
-                        }
-                    }
-                })
-            })
-            .collect();
-        ws.into_iter().map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
-    });
-    let mut all = Vec::with_capacity(n);
-    for g in got {
-        all.extend(g?);
-    }
-    all.sort_by_key(|m| m.0);
-    Ok(all.into_iter().map(|m| m.1).collect())
-}
-
 /// A layer's packs as the catalogue lists them.
 #[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LayerOut {
@@ -407,14 +371,6 @@ mod tests {
         assert_eq!(deep_logical("terrain", 500, 300), deep);
         assert_eq!(mid_logical("terrain", 31, 20), "work/terrain-mid/6-31-20");
         assert_eq!(mid_logical("bldfield", 1, 2), "work/bldfield-mid/6-1-2");
-    }
-
-    /// `read_each` keeps the order and fails at a failure.
-    #[test]
-    fn read_each_in_order_and_failing() {
-        assert_eq!(read_each(50, 8, |i| Ok(i * 2)).unwrap(), (0..50).map(|i| i * 2).collect::<Vec<_>>());
-        assert!(read_each(50, 8, |i| if i == 17 { anyhow::bail!("no") } else { Ok(i) }).is_err());
-        assert!(read_each(0, 8, Ok).unwrap().is_empty());
     }
 }
 
