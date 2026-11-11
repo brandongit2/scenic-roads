@@ -1,5 +1,10 @@
 fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
+    // Run again only when this script changes: cargo runs a script it compiled anew by itself, and
+    // judges that by content (tools/dev/bin/cargo, #1123). `rerun-if-changed=build.rs` was judged by
+    // the file's time, so every new worktree ran GEOS's whole CMake build again, and every crate
+    // linking it compiled again. A variable named here alone turns off cargo's default (any file of
+    // the package); GEOS_SRC_RERUN is set by nothing. (As before, `source/` isn't watched.)
+    println!("cargo:rerun-if-env-changed=GEOS_SRC_RERUN");
 
     let mut libgeos_config = cmake::Config::new("source");
     libgeos_config
