@@ -1241,7 +1241,7 @@ fn deep_mid_from(bytes: Vec<u8>, shown: &str) -> Result<((u32, u32), DeepMid)> {
 }
 
 /// The mids of z3 tile `q`'s z6 tiles `ts` that have one, each read whole and checked (`read_mid`),
-/// `MIDS_AT_ONCE` at once (one after another, each section a read, a z3 tile's 60-odd mids took
+/// at once on store::ahead's threads (`each`, the NAS's lane; one after another, each section a read, a z3 tile's 60-odd mids took
 /// most of an assembly's time: task #400). The first failure fails it.
 fn read_mids(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<BTreeMap<(u32, u32), Vec<Made>>> {
     let mut todo: Vec<((u32, u32), String)> = Vec::new();

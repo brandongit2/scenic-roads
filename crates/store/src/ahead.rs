@@ -72,8 +72,9 @@ impl Drop for Permit {
     }
 }
 
-/// The reads a lane has in flight now (tests).
-pub fn in_flight(lane: Lane) -> usize {
+/// The reads a lane has in flight now.
+#[cfg(test)]
+fn in_flight(lane: Lane) -> usize {
     *GATES[lane as usize].held.lock().unwrap_or_else(|e| e.into_inner())
 }
 
