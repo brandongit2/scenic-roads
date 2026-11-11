@@ -5,8 +5,8 @@
 //!
 //! - **The limit** starts at `start` (2 on the NAS) and is never below 1 nor above the source's
 //!   `ceiling`. A read waits (`Limiter::take`) while the reads in flight reach it.
-//! - **Up while reads finish near their best**: the reads' latency over their floor, smoothed
-//!   (`SMOOTH`: one slow answer of a host's long tail isn't the source loaded), within `NEAR`:
+//! - **Up while reads finish near their best**: a size class's latency smoothed (`SMOOTH`: one
+//!   slow answer of a host's long tail isn't the source loaded) over its floor, within `NEAR`:
 //!   until the first halving one more a read (TCP's slow start: doubling a window, so a job
 //!   reaches its source's capacity in a few windows, not one a window from 2), after it 1 / limit a
 //!   read (one a window, TCP's congestion avoidance).
@@ -14,9 +14,10 @@
 //!   source does when it's overloaded or stuck (a timeout, a NAS error of the share's; an HTTP 429
 //!   or 5xx: the caller says so, `Slot::congested`). Once a window: a read begun before the last
 //!   halving doesn't halve again (the burst that caused one is one signal).
-//! - **The floor** is the least latency seen lately (`FLOOR_WINDOW`: the minimum over this window
-//!   and the one before), kept by size class of the read (`class`: a 4 KB read and a 32 MB span
-//!   aren't compared), never under the source's `least` (an answer from this Mac's own cache, in
+//! - **The floor** is the least the smoothed latency was lately (`FLOOR_WINDOW`: the minimum over
+//!   this window and the one before; one lucky answer isn't a run of reads' best), kept by size
+//!   class of the read (`class`: a 4 KB read and a 32 MB span aren't compared), no read taken as
+//!   quicker than the source's `least` (an answer from this Mac's own cache, in
 //!   microseconds, isn't the source's best: against it every real read would be slow), so it
 //!   follows a source that has become slower for good instead of halving for ever against an old
 //!   best. A read of no bytes (nothing was read) or whose latency isn't its source's (a whole
@@ -66,11 +67,23 @@ struct State {
     /// Halvings so far: a read begun before the last one doesn't halve again; none yet, the slow
     /// start's climb.
     epoch: u64,
-    /// The reads' latency over their floor, smoothed (`SMOOTH`).
-    ratio: f64,
-    /// By class: the least latency in this window and in the one before, and when this began.
-    floors: [(Option<Duration>, Option<Duration>, Option<Instant>); CLASSES],
+    /// By size class (`class`): its reads' latency smoothed and its floor.
+    classes: [Class; CLASSES],
 }
+
+/// A size class's latency (seconds), smoothed (`SMOOTH`: none since the last halving), and its
+/// floor: the least the smoothed latency was in this window and in the one before, and when this
+/// window began. (The smoothed latency's floor, not a single read's: one lucky answer of a source
+/// with a long tail isn't its best for a run of reads.)
+#[derive(Clone, Copy)]
+struct Class {
+    smooth: Option<f64>,
+    min: Option<f64>,
+    before: Option<f64>,
+    since: Option<Instant>,
+}
+
+const NO_CLASS: Class = Class { smooth: None, min: None, before: None, since: None };
 
 /// What a read's end tells its limiter (`Limiter::record`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -87,7 +100,7 @@ impl Limiter {
     /// A limiter starting at `start` reads in flight, at most `ceiling`, its floors never under
     /// `least` (the source's quickest true answer: a LAN round trip, an internet one).
     pub const fn new(start: usize, ceiling: usize, least: Duration) -> Limiter {
-        let st = State { held: 0, limit: start as f64, epoch: 0, ratio: 1.0, floors: [(None, None, None); CLASSES] };
+        let st = State { held: 0, limit: start as f64, epoch: 0, classes: [NO_CLASS; CLASSES] };
         Limiter { st: Mutex::new(st), cv: Condvar::new(), ceiling: ceiling as f64, least }
     }
 
@@ -118,32 +131,34 @@ impl Limiter {
             if epoch == g.epoch {
                 g.limit = (g.limit / 2.0).max(1.0);
                 g.epoch += 1;
-                g.ratio = 1.0;
+                // (Smoothed afresh from the reads made at the new limit.)
+                for c in &mut g.classes {
+                    c.smooth = None;
+                }
             }
         };
         match outcome {
             Outcome::Unmeasured => {}
             Outcome::Congested => halve(&mut g),
             Outcome::Done { bytes, latency } => {
-                let f = &mut g.floors[class(bytes)];
+                let c = &mut g.classes[class(bytes)];
+                let x = latency.as_secs_f64().max(self.least.as_secs_f64());
+                let sm = c.smooth.map_or(x, |m| m + SMOOTH * (x - m));
+                c.smooth = Some(sm);
                 // (A new window: this one's minimum becomes the one before; two or more windows
                 // on, both are forgotten.)
-                if let Some(age) = f.2.map(|t| now.duration_since(t)) {
-                    if age >= FLOOR_WINDOW * 2 {
-                        *f = (None, None, Some(now));
-                    } else if age >= FLOOR_WINDOW {
-                        *f = (None, f.0, Some(now));
-                    }
-                } else {
-                    f.2 = Some(now);
+                match c.since.map(|t| now.duration_since(t)) {
+                    Some(age) if age >= FLOOR_WINDOW * 2 => (c.min, c.before, c.since) = (None, None, Some(now)),
+                    Some(age) if age >= FLOOR_WINDOW => (c.min, c.before, c.since) = (None, c.min, Some(now)),
+                    Some(_) => {}
+                    None => c.since = Some(now),
                 }
-                f.0 = Some(f.0.map_or(latency, |m| m.min(latency)));
-                let floor = [f.0, f.1].into_iter().flatten().min().unwrap_or(latency).max(self.least);
-                let ratio = latency.as_secs_f64() / floor.as_secs_f64().max(1e-6);
-                g.ratio += SMOOTH * (ratio - g.ratio);
-                if g.ratio > SLOW {
+                c.min = Some(c.min.map_or(sm, |m| m.min(sm)));
+                let floor = [c.min, c.before].into_iter().flatten().fold(f64::INFINITY, f64::min);
+                let ratio = sm / floor.max(1e-9);
+                if ratio > SLOW {
                     halve(&mut g);
-                } else if g.ratio <= NEAR {
+                } else if ratio <= NEAR {
                     let step = if g.epoch == 0 { 1.0 } else { 1.0 / g.limit };
                     g.limit = (g.limit + step).min(self.ceiling);
                 }
