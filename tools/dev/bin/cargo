@@ -84,7 +84,7 @@ if [[ ${1:-} == --scenic-(record|nextest) ]]; then
   if (( ! ${@[(I)--list]} )); then
     : >> $dir/started
     # (Outside the lock: a cargo it starts takes it.)
-    vars=( ${vars:#SCENIC_CARGO_SHARED=*} )
+    vars=( ${vars:#SCENIC_CARGO_(SHARED|HOLD)=*} )
   fi
   shift; exec /usr/bin/env -i "${vars[@]}" $c "$@"
 fi
@@ -103,6 +103,13 @@ done
 top=$PWD; while [[ $top != / && ! -e $top/.git ]]; do top=${top:h}; done  # the checkout (a worktree's .git is a file)
 [[ -z ${SCENIC_CARGO_SHARED:-} ]] || exec $real "$@"
 inside=0; [[ $top == */.claude/worktrees/* ]] && inside=1
+# `cargo --scenic-hold <ready file>` (check.sh, #1123): holds the shared folder for the cargos of
+# the process that started it (see "A hold", below), which it names; inside a worktree only.
+hold=0
+if [[ ${1:-} == --scenic-hold ]]; then
+  (( inside )) && [[ -n ${2:-} ]] || { print -u2 "cargo --scenic-hold <ready file>: in an agent worktree"; exit 2; }
+  hold=1 ready=$2; set -- hold
+fi
 args=( "$@" ); si=0
 # The subcommand: the first word neither an option nor the value of a cargo option taking one.
 for (( i = 1; i <= $#args; i++ )); do
@@ -123,8 +130,8 @@ own=( "${(@)args[1,${args[(i)--]}-1]}" )  # cargo's own arguments (after `--`, a
 builds=( b bench build c check clean d doc fix install package publish r report run rustc rustdoc t test clippy miri nextest )
 reads=( add config fetch fmt generate-lockfile git-checkout help info init locate-project login logout metadata new owner pkgid read-manifest remove rm search tree uninstall update vendor verify-project version yank )
 asks=${own[(I)(-h|--help|-V|--version)]}
-[[ -z $sub ]] || (( $reads[(Ie)$sub] || asks )) && exec $real "$@"
-(( $builds[(Ie)$sub] || ! inside )) || print -u2 -r -- "cargo (tools/dev/bin): \`$sub\` isn't known to build or not: run under the shared build folder's lock"
+(( ! hold )) && { [[ -z $sub ]] || (( $reads[(Ie)$sub] || asks )) } && exec $real "$@"
+(( $builds[(Ie)$sub] || ! inside || hold )) || print -u2 -r -- "cargo (tools/dev/bin): \`$sub\` isn't known to build or not: run under the shared build folder's lock"
 t=${SCENIC_SHARED_TARGET:-$HOME/Library/Caches/scenic-target}
 # (Where cargo writes its timing report: the shared folder, or outside a worktree its own.)
 tdir=$t; (( inside )) || tdir=${CARGO_TARGET_DIR:-$top/target}
@@ -136,7 +143,8 @@ case " $* " in
   *" --example "*|*" --example="*) purpose=measurement ;;
   *) [[ $sub == (r|run|bench) ]] && (( ${own[(I)(-r|--release)]} )) && purpose=measurement ;;
 esac
-dj_start cargo "cargo ${(j: :)own}" args "$*" checkout ${top:t} ${purpose:+purpose} ${purpose:+$purpose}; djid=$REPLY
+name="cargo ${(j: :)own}"; (( hold )) && name="hold the shared build folder (check.sh: clippy, then the tests' build)"
+dj_start cargo $name args "$*" checkout ${top:t} ${purpose:+purpose} ${purpose:+$purpose}; djid=$REPLY
 # (Its crates' times: cargo's timing report, for the commands that make one; the sampler reads it.)
 if [[ -n $djid && $sub == (b|build|c|check|t|test|bench|r|run|clippy|d|doc|rustc|rustdoc) ]] && (( ! ${own[(I)--timings*]} )); then
   args=( "${(@)args[1,si]}" --timings "${(@)args[si+1,-1]}" ); set -- "${args[@]}"
@@ -263,12 +271,33 @@ report() {  # report <holder line> <its age, s>
   if (( sum > 0 )); then say "  using CPU: $(printf %.1f $sum)% (ps's %cpu, summed; sccache compiles third-party crates in its own server)"
   else say "  using no CPU: it may be stuck (the shim doesn't kill it; tools/dev/testing.md)"; fi
 }
+# A hold (#1123): check.sh runs clippy, then the tests' build, as one turn with the folder: a
+# `cargo --scenic-hold` started by check.sh takes the lock in line as any cargo, then holds it
+# while check.sh lives, its line naming check.sh's pid (whose processes a long hold's report shows)
+# and itself, `(hold <pid>)`. A cargo under it (SCENIC_CARGO_HOLD, that pid, exported by check.sh to
+# those two parts) builds without taking the lock while the holder's line still names it; at the
+# point a cargo would let go (the first test nextest starts, #1108; a test's or run's programs
+# cloned), it lets the hold go (USR1), so a long test run holds no one up. Its programs don't get
+# SCENIC_CARGO_HOLD: a cargo a test starts takes the lock. remote-tests.sh lets it go when the tests
+# run on the test Mac; check.sh when its tests part ends, or when it does.
+byhold=
+if (( ! hold )) && [[ -n ${SCENIC_CARGO_HOLD:-} && $(cat $holder 2>/dev/null) == *" (hold $SCENIC_CARGO_HOLD)" ]] &&
+    [[ $(ps -o command= -p $SCENIC_CARGO_HOLD 2>/dev/null) == *--scenic-hold* ]]; then
+  byhold=$SCENIC_CARGO_HOLD
+fi
+letgo() {  # the folder let go: the hold this cargo ran under, or its own lock
+  if [[ -n $byhold ]]; then kill -USR1 $byhold 2>/dev/null; byhold=; else release; fi
+}
 fd=0 took=0
 djt0=$EPOCHREALTIME
-take || exit 1
+(( hold )) && me="${top:t} pid $PPID: check.sh's clippy, then its tests' build (hold $$)"
+if [[ -z $byhold ]]; then
+  take || exit 1
+  djgot=$EPOCHREALTIME
+  (( djgot - djt0 >= 0.2 )) && dj_span wait "the shared build folder" $djt0 $djgot ok
+  took=$EPOCHSECONDS; print -r -- "${me/: / since $(strftime %T $took): }" > $holder  # (since it holds, not since it waited)
+fi
 djgot=$EPOCHREALTIME
-(( djgot - djt0 >= 0.2 )) && dj_span wait "the shared build folder" $djt0 $djgot ok
-took=$EPOCHSECONDS; print -r -- "${me/: cargo/ since $(strftime %T $took): cargo}" > $holder  # (since it holds, not since it waited)
 release() {  # lets the lock go (once), its holder line removed and its hold's time kept
   (( fd )) || return 0
   rm -f $holder
@@ -278,6 +307,13 @@ release() {  # lets the lock go (once), its holder line removed and its hold's t
   zsystem flock -u $fd; fd=0
 }
 trap 'x=$?; release; djdone $x' EXIT
+if (( hold )); then  # held until let go (USR1), stopped, or check.sh gone
+  : > $ready || exit 1
+  go=0; trap 'go=1' USR1
+  while (( ! go )) && kill -0 $PPID 2>/dev/null; do zselect -t 20; done
+  dj_span build "held" $djgot $EPOCHREALTIME ok
+  exit 0
+fi
 # The units tied to another checkout (see above) lose their fingerprints, and so compile again:
 # look all, when another worktree built last (every workspace unit, by its package and target
 # names); look kept, else, the units kept that compile in another checkout's file (.scenic-elsewhere:
@@ -455,7 +491,7 @@ if [[ $mode == nextest ]]; then
   # Nextest builds, lists every binary (each cloned by the runner), then runs tests from the clones.
   spawn realcargo "${args[@]}"
   while kill -0 $child 2>/dev/null && [[ ! -e $r/started ]]; do zselect -t 20; done
-  release
+  letgo
   # (The build until its first test; then the tests, nextest's run.)
   [[ -e $r/started ]] && { built 0; djnx=$EPOCHREALTIME }
   waitchild; rc=$?
@@ -480,7 +516,7 @@ prog() {  # prog <record> <clone>: the program as cargo would start it
   readz $1.argv; args=( "${reply[@]}" )
   readz $1.env; vars=( "${reply[@]}" )
   # (Outside the lock a cargo it starts must take the lock again.)
-  vars=( ${vars:#SCENIC_CARGO_SHARED=*} )
+  vars=( ${vars:#SCENIC_CARGO_(SHARED|HOLD)=*} )
   cd -- "$(<$1.cwd)" || return 1
   exec /usr/bin/env -i "${vars[@]}" $2 "${(@)args[2,-1]}"
 }
@@ -514,7 +550,7 @@ for rec in $recs; do
   fi
   cl[$rec]=$(clone $x $r/bin) && binexe $rec || { print -u2 "cargo: could not clone $x into $r/bin"; rm -rf $r; exit 1; }
 done
-release
+letgo
 # Each a child, the last too, so its run is timed and its status known (a signal to this shell goes
 # on to it, see fwd).
 for rec in $recs; do

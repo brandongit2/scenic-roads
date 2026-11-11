@@ -4,8 +4,12 @@
 #   tools/dev/check.sh
 # It checks the branch's change against main (merge-base..working tree, untracked files included):
 #   fmt       cargo fmt --check (and tools/bldfield's)
-#   clippy    publish's line: cargo clippy -q --workspace --all-targets -- -A clippy::all
-#             -D clippy::disallowed_methods (processes only through store::spawn; clippy.toml)
+#   clippy    publish's line on the crates the change affects (#1123: the tests' packages and those
+#             changed; every crate when a manifest, the lints or the toolchain changed; none when no
+#             crate did): cargo clippy -q -p … --all-targets -- -A clippy::all
+#             -D clippy::disallowed_methods (processes only through store::spawn; clippy.toml). Run
+#             after the parts below but the tests, with the tests' build in one turn with the shared
+#             build folder (a hold, let go as the first test starts) when the tests run here
 #   guards    tools/app/guards.sh, its fmt and two tests left to the fmt and tests parts
 #             (SCENIC_GUARDS_IN_CHECK=1: tools/dev/affected-tests.sh runs both whenever their files change)
 #   web       tools/dev/web-deps.sh (web/node_modules from pnpm's store, when missing or stale), node --test of web/test/*.test.{ts,mjs} and tools/check/*.test.mjs (by glob), pnpm
@@ -78,7 +82,7 @@ source ${0:A:h}/devjob.zsh
 dj_start check "check ${root:t}" log $logs base ${base:0:7}; djrun=$REPLY djstatus=stopped djwhy=
 export SCENIC_DEVJOB_PARENT=$djrun
 # (zsh runs no EXIT trap on a signal: a TERM or INT ends it by exit, so the run is ended "stopped".)
-trap 'dj_end $djrun $djstatus ${djwhy:+why} ${djwhy:+$djwhy}' EXIT
+trap '[[ -n ${holdpid:-} ]] && kill $holdpid 2>/dev/null; dj_end $djrun $djstatus ${djwhy:+why} ${djwhy:+$djwhy}' EXIT
 trap 'exit 143' TERM; trap 'exit 130' INT
 # (`--no-renames`: a moved file is its old path and its new one, as check-reuse.py reads X; with
 # renames, 6f4's move of agent/settings.rs hid the old path the sweep's test is run by.)
@@ -136,9 +140,6 @@ fi
 notreused() { [[ -n ${why[$1]:-} ]] && print -r -- "$1: not reused: ${why[$1]}" }
 
 part fmt zsh -c 'cargo fmt --check && cargo fmt --check --manifest-path tools/bldfield/Cargo.toml'
-if [[ ${verdict[clippy]:-} == reuse ]]; then reuse clippy ${from[clippy]} ${why[clippy]}
-else notreused clippy
-  part --parse cargo clippy cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods; fi
 part guards env SCENIC_GUARDS_IN_CHECK=1 tools/app/guards.sh
 if has 'web/*' || has 'tools/check/*.test.mjs'; then
   webtests=( web/test/*.test.(ts|mjs)(N) tools/check/*.test.mjs(N) )
@@ -167,6 +168,63 @@ else skip sweep "the sweep unchanged"; fi
 if has 'tools/status/*'; then
   part swift zsh -c "swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)logs}/scenic-status tools/status/*.swift && ${(q)logs}/scenic-status --test tools/status/test"
 else skip swift "tools/status unchanged"; fi
+# The tests, those that will run (not reused; of a partial reuse, those run again).
+willtest=0
+if (( ${#tests} )) && [[ ${verdict[tests]:-} != reuse ]] && ! [[ ${verdict[tests]:-} == partial && ${#again} == 0 ]]; then willtest=1; fi
+# Clippy on the crates the change affects (#1123): the packages of the tests' set (affected-tests.sh,
+# before any reuse) and those holding a changed file; every crate when what all of them build from
+# changed (a manifest, Cargo.lock, clippy.toml, the toolchain, .cargo/, a crate outside the
+# workspace, rustflags); none when no crate did. (Its lint, disallowed_methods, flags a call where
+# it is written; a user of a changed crate that no longer compiles is the tests' build's, or
+# publish's whole clippy line's.)
+clippyset() {  # the packages, as `-p <name>`… or `--workspace`, in $reply; none: no crate changed
+  reply=()
+  local f m; local -a members pk
+  members=( ${(f)"$(python3 -c 'import tomllib; print("\n".join(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["members"]))')"} ) ||
+    { reply=( --workspace ); return }
+  (( ${#buildenv} )) && { reply=( --workspace ); return }
+  for f in $changed; do
+    case $f in
+      Cargo.toml|Cargo.lock|clippy.toml|rust-toolchain*|.cargo/*|crates/*/Cargo.toml) reply=( --workspace ); return ;;
+      crates/*)
+        m=${f#crates/}; m=crates/${m%%/*}
+        (( ${members[(Ie)$m]} )) || { reply=( --workspace ); return }
+        pk+=( ${m#crates/} ) ;;
+    esac
+  done
+  for f in $tests; do [[ $f =~ ' -p ([^ ]+)' ]] && pk+=( $match[1] ); done
+  for m in ${(ou)pk}; do reply+=( -p $m ); done
+}
+# One turn with the shared build folder from clippy through the tests' build (#1123), when both
+# run here: a hold (tools/dev/bin/cargo --scenic-hold, in line as any cargo) that clippy's and the
+# tests' cargos build under, let go as the first test starts, when the tests go to the test Mac
+# (remote-tests.sh), or after the tests part. Before, clippy let the folder go and the tests' build
+# queued again (86 s behind two agents, 10 Nov).
+holdpid=
+holdon() {
+  [[ $root == */.claude/worktrees/* ]] || return 0
+  local ready=$logs/hold-ready t0=$EPOCHREALTIME
+  print -n "hold ... "
+  $root/tools/dev/bin/cargo --scenic-hold $ready 2>$logs/hold.log & holdpid=$!
+  while [[ ! -e $ready ]] && kill -0 $holdpid 2>/dev/null; do sleep 0.2; done
+  if [[ -e $ready ]]; then
+    export SCENIC_CARGO_HOLD=$holdpid
+    print "the shared build folder held for clippy and the tests' build (waited $(printf %.0f $(( EPOCHREALTIME - t0 ))) s)"
+  else print "not held ($logs/hold.log): each cargo takes its turn"; holdpid=; fi
+}
+holdoff() {
+  [[ -n $holdpid ]] || return 0
+  kill -USR1 $holdpid 2>/dev/null; wait $holdpid 2>/dev/null; holdpid=; unset SCENIC_CARGO_HOLD
+}
+if [[ ${verdict[clippy]:-} == reuse ]]; then reuse clippy ${from[clippy]} ${why[clippy]}
+else notreused clippy
+  clippyset
+  if (( ${#reply} )); then
+    (( willtest )) && holdon
+    print -r -- "${(j: :)reply}" > $logs/clippy-packages
+    part --parse cargo clippy cargo clippy -q $reply --all-targets -- -A clippy::all -D clippy::disallowed_methods
+  else skip clippy "no workspace crate changed"; fi
+fi
 # The tests run on the test Mac (tools/app/remote-tests.sh, #442: an exact copy of this tree, a build
 # folder per test slot, three runs at a time there, the rest queued); here on the test Mac itself
 # (the publishing Mac), when it is down, or with SCENIC_CHECK_LOCAL=1.
@@ -202,6 +260,7 @@ else
   else skip tests "no affected Rust tests"; fi
   [[ $reused == *" reused tests="* ]] && summary[-1]+="  (only these; the rest reused from ${from[tests]:0:7})"
 fi
+holdoff
 py=( ${(M)changed:#(producers|dem)/*.py} ); py=( ${py:#*/.venv/*} )
 # (A deleted file's folder: its remaining .py files, which may have imported it.)
 kept=( ${^py}(N) ); gone=( ${py:|kept} ); py=( $kept )

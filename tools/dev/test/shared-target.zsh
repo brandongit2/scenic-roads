@@ -75,6 +75,8 @@ mod tests {
         assert_eq!(exe.parent().and_then(|d| d.file_name()).unwrap(), "deps", "{}", exe.display());
         // (Outside the lock: a cargo it started would take it.)
         assert!(std::env::var("SCENIC_CARGO_SHARED").is_err(), "SCENIC_CARGO_SHARED");
+        // (Nor under a hold: a cargo it started would take it, #1123.)
+        assert!(std::env::var("SCENIC_CARGO_HOLD").is_err(), "SCENIC_CARGO_HOLD");
     }
     #[test]
     fn fails_when_asked() {
@@ -298,6 +300,28 @@ wait $waiting || fail "the build after a clean: $(cat $s/after.err)"
 zstat -A ino2 +inode $s/shared/.scenic-lock && (( ino2[1] == ino[1] )) || fail "the clean replaced the lock"
 [[ -e $s/shared/.scenic-holds ]] || fail "the clean deleted the holds"
 unset TOY_ORDER
+
+# #1123: a hold (check.sh's clippy, then its tests' build): taken in line as any cargo, its line
+# naming the process it holds for and itself; a cargo under it (SCENIC_CARGO_HOLD) builds without
+# waiting while another worktree's waits; a nextest run under it lets it go as its first test
+# starts, and the waiter gets the folder then; a cargo not under it (a stale SCENIC_CARGO_HOLD) waits.
+rm -f $s/ready
+(cd $w/a && exec $sh --scenic-hold $s/ready 2>$s/hold.err) & hp=$!
+for (( i = 0; i < 600; i++ )); do [[ -e $s/ready ]] && break; sleep 0.1; done
+[[ -e $s/ready ]] || fail "the hold never held: $(cat $s/hold.err)"
+grep -q "^a pid $$ since .*: check.sh's clippy, then its tests' build (hold $hp)\$" $s/shared/.scenic-holder || fail "the hold's line: $(cat $s/shared/.scenic-holder)"
+(cd $w/b && exec $sh build -q 2>$s/hw.err) & wp=$!
+until_in $s/hw.err "place 1 in line; held by: a pid $$ .*\(hold $hp\)"
+SCENIC_CARGO_HOLD=$hp within 120 at a build -q --tests || fail "a build under the hold: $(cat $s/err)"
+grep -q waiting $s/err && fail "a build under the hold waited: $(cat $s/err)"
+SCENIC_CARGO_HOLD=1 within 60 at a version >/dev/null || fail "version"
+(cd $w/a && SCENIC_CARGO_HOLD=$hp TOY_HOLD=$s/go6 exec $sh nextest run > $s/nx6.out 2>&1) & held=$!
+started $s/go6 $s/nx6.out
+for (( i = 0; i < 600; i++ )); do kill -0 $hp 2>/dev/null || break; sleep 0.1; done
+kill -0 $hp 2>/dev/null && fail "the hold outlived the first test"
+wait $wp || fail "the waiter behind the hold: $(cat $s/hw.err)"
+: > $s/go6; wait $held || fail "nextest under the hold: $(cat $s/nx6.out)"
+[[ ! -e $s/shared/.scenic-holder ]] || fail "a holder's line left: $(cat $s/shared/.scenic-holder)"
 
 # Outside .claude/worktrees: plain cargo, the shared folder untouched.
 mkdir -p $s/plain/src; : > $s/plain/.git; cp $w/a/Cargo.toml $s/plain/; cp -R $w/a/src $s/plain/

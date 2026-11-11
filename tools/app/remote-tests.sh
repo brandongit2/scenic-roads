@@ -390,6 +390,12 @@ local_main() {  # <key> <source dir> <command>
     print "remote-tests: running here ($why; load $(loadavg))"
     run_local $src "$cmd"; return
   fi
+  # (check.sh's hold of this Mac's shared build folder goes, #1123: the test Mac builds these tests.
+  # A local rerun after builds as any cargo, in line.)
+  if [[ -n ${SCENIC_CARGO_HOLD:-} && $(ps -o command= -p $SCENIC_CARGO_HOLD 2>/dev/null) == *--scenic-hold* ]]; then
+    kill -USR1 $SCENIC_CARGO_HOLD
+  fi
+  unset SCENIC_CARGO_HOLD
   # The key's lock, held until this script exits.
   local me=$(scutil --get LocalHostName 2>/dev/null) owner held waited=0 out rc
   owner="$me $(proc_id) $RANDOM$RANDOM"
