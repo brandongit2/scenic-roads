@@ -30,7 +30,7 @@ fn scan(dir: &Path, found: &mut Vec<String>) {
 
 #[test]
 fn no_instant_is_dated_back_from_now() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let crates = &std::path::absolute("../").unwrap();
     let mut found = Vec::new();
     scan(crates, &mut found);
     assert!(

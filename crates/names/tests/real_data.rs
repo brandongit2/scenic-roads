@@ -19,7 +19,7 @@ fn converted() -> PathBuf {
 }
 
 fn build(file: &str) -> Option<PathBuf> {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/build").join(file);
+    let p = std::path::absolute("../../data/build").unwrap().join(file);
     if p.exists() {
         Some(p)
     } else {

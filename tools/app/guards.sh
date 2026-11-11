@@ -40,7 +40,7 @@ done
 python3 - <<'PY' || exit 1
 import glob, re, sys
 bad = [t for t in sorted(glob.glob("crates/*/tests/*.rs"))
-       if re.search(r'\b(?:root|repo)\(\)|CARGO_MANIFEST_DIR"\)\)\.(?:join|parent)\("\.\./|\.parent\(\)', s := open(t).read())
+       if re.search(r'\b(?:root|repo)\(\)|CARGO_MANIFEST_DIR"\)\)\.(?:join|parent)\("\.\./|\babsolute\("\.\./|\.parent\(\)', s := open(t).read())
        and not re.search(r"^//! scans: \S", s, re.M)]
 for t in bad: print(t + ": reads the repo's files without a `//! scans: <path prefix> …` line (tools/dev/testing.md)")
 # (And the line covers what it names: `repo().join("README.md")` under no prefix of cli.rs's, #969.)

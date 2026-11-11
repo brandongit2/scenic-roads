@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 pub fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    std::path::absolute("../..").unwrap().canonicalize().unwrap()
 }
 
 pub fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {

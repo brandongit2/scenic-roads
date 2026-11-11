@@ -11,7 +11,7 @@ use clap::Command;
 use std::path::Path;
 
 fn repo() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    std::path::absolute("../..").unwrap()
 }
 
 /// The built binary of each of this crate's programs, as cargo and nextest name it when the test

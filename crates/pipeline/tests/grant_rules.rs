@@ -76,7 +76,7 @@ fn code(text: &str) -> Vec<&str> {
 #[test]
 fn no_grant_rule_lives_outside_the_scheduler() {
     // (Paths from crates/: every crate's sources.)
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let root = &std::path::absolute("../").unwrap();
     let mut files = Vec::new();
     for c in std::fs::read_dir(root).unwrap().flatten() {
         if c.path().join("src").is_dir() {

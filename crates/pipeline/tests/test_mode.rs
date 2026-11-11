@@ -28,7 +28,7 @@ fn a_build_with_the_dev_dependencies_has_no_test_time_behaviour() {
 /// integration tests: the test above.
 #[test]
 fn only_the_runtime_s_and_pipeline_s_unit_tests_run_testing() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = std::path::absolute("../..").unwrap();
     let crates = root.join("crates");
     let mut starts = Vec::new();
     let mut deps: Vec<(String, Vec<String>)> = Vec::new();
@@ -182,7 +182,7 @@ fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// test code (tests/common's test_lines).
 #[test]
 fn only_dev_dependencies_turn_testkit_on() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = std::path::absolute("../..").unwrap();
     let mut bad = Vec::new();
     for e in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
         let Ok(toml) = std::fs::read_to_string(e.path().join("Cargo.toml")) else { continue };

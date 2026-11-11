@@ -76,7 +76,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
 ];
 
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    std::path::absolute("../..").unwrap().canonicalize().unwrap()
 }
 
 fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {

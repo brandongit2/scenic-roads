@@ -9,7 +9,7 @@ use std::path::Path;
 
 #[test]
 fn a_python_programs_phases_come_in_under_the_phase_that_ran_it() {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/check/timings_py.py");
+    let script = std::path::absolute("../../tools/check/timings_py.py").unwrap();
     timings::start("test");
     {
         let _p = timings::phase("python step");
