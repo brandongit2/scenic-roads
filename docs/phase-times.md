@@ -305,9 +305,27 @@ mostly blocks the sampling cached), the next chunk's, dataset's or target's read
 known only once the stage before it has run: task #1097's pipelining), a pyramid's tiles
 (`TileSet::rolling` keeps its own fetches in flight, on its own threads already).
 
-After: **not measured yet.** The first run (main's binary, `terrain-same 6/21/20` on the M4, 10
-Nov 19:45) hung 10 min in `open()` of a NAS file (the owner's NAS work: a listing of
-`sources/fetched/glo30` took 2 min 9 s); the runs wait for the NAS to answer opens normally.
+After: **not settled.** `terrain-same 6/21/20` (2 threads, the M4, 10 Nov 21:28–23:40; the
+same hi pack, 73ce142272d963ef, the manifest's, every run), main's binary against this branch's
+in turn, a run's wall s and busy cores of 2:
+
+| binary | runs |
+|---|---|
+| main (71cbb7a1) | 235 (0.86), 199 (1.04), 246 (0.88), 419 (0.57), 285 (0.79), 261 (0.89) |
+| read ahead, fixed lanes (62fbfbde) | 247 (0.95), 489 (0.53) |
+| AIMD, the first draft (6dbf96eb) | 355 (0.64) |
+| AIMD smoothed, slow start (ab32d61f) | 274 (0.85), 189 (1.13) |
+| AIMD, each class's smoothed floor (a9b7cd53) | 442 (0.55), 349 (0.70), 375 (0.67) |
+
+The Mac was loaded throughout (load 45–95: the live pool's terrain-deep job, other agents' builds,
+and from about 22:30 #1116's own `terrain-same` timing beside the runs from 22:27 on), so one
+binary's runs spread by 2× and no change is shown. What the runs did show: the first AIMD draft
+held the NAS's and hosts' limits near their start (cache hits as floors, single slow answers
+halving, a climb of one a window), fixed by ab32d61f; a9b7cd53's floor of the smoothed latency in
+four wide size classes still kept the limit low when whole files of many sizes were read
+(`reading the regions and their outlines` 83 → 152 s), fixed by 2d6c3170's classes of a power of
+two, not yet timed. terrain-deep, terrain-lo and the slope steps not timed. Owed: the runs on a
+quiet Mac.
 
 ## 5. Not done, with what the data says (the ranking of what's left)
 
