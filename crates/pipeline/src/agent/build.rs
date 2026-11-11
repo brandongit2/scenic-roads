@@ -6383,22 +6383,23 @@ mod tests {
             }
             for (l, m2, _) in f.one_changed().into_iter().filter(|c| !c.0.starts_with("input ")) {
                 let moved = f.keys(&steps, &m2, &f.inputs);
+                let (own, content) = (format!("{l}="), f.m[&l].as_str());
                 for (step, base) in &all {
                     let after = &moved[step];
                     for (t, lines) in base {
                         let lines = lines.as_ref().unwrap();
-                        let named = lines.iter().any(|s| s.contains(&format!("{l}=")) || s.contains(&f.m[&l]));
+                        let named = lines.iter().any(|s| s.contains(&own) || s.contains(content));
                         // (A key that can't be worked out after the change, its input unread: no
                         // key to compare.)
                         let Some(a) = after.get(t).and_then(|k| k.as_ref()) else { continue };
-                        let a = Some(a);
-                        let changed = a != Some(lines);
-                        // (What changed besides the entry's own line: the tiles read inside it.)
-                        let tiles_only = a.is_some_and(|a| {
-                            a.iter()
-                                .filter(|s| !lines.contains(s))
-                                .all(|s| s.contains(" tile ") || s.contains(&format!("{l}=")))
-                        });
+                        let changed = a != lines;
+                        // (What changed besides the entry's own line: the tiles read inside it. Its
+                        // lines looked up in a set, #1112: a slope target's thousands of tile lines
+                        // searched one by one were half the test's 21 s.)
+                        let tiles_only = changed && {
+                            let was: std::collections::HashSet<&String> = lines.iter().collect();
+                            a.iter().filter(|s| !was.contains(s)).all(|s| s.contains(" tile ") || s.contains(&own))
+                        };
                         assert!(
                             changed == named || (changed && tiles_only),
                             "{} {step} {t}: {l} changed (named in its lines: {named}, key changed: {changed}) {lines:#?}",
