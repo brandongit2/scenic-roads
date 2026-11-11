@@ -107,6 +107,32 @@ thread_local! {
     pub static STOP_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
+/// The calling thread's `STOP_AFTER`, carried to the threads its work keeps blocks on (task #1097:
+/// a terrain level's tiles made, and their blocks kept, on threads beside its sampling), each keep
+/// counting it down as on the caller; `back` hands what's left to the caller.
+pub struct StopCarry(std::sync::Mutex<Option<usize>>);
+
+impl StopCarry {
+    /// The calling thread's.
+    pub fn here() -> StopCarry {
+        StopCarry(std::sync::Mutex::new(STOP_AFTER.get()))
+    }
+
+    /// `f` (a block kept) on this thread, under the caller's count.
+    pub fn on<R>(&self, f: impl FnOnce() -> R) -> R {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        STOP_AFTER.set(*g);
+        let r = f();
+        *g = STOP_AFTER.take();
+        r
+    }
+
+    /// What's left, the caller's again.
+    pub fn back(self) {
+        STOP_AFTER.set(self.0.into_inner().unwrap_or_else(|e| e.into_inner()));
+    }
+}
+
 /// A target's blocks kept so far, and its log open to append.
 pub struct Log {
     path: PathBuf,

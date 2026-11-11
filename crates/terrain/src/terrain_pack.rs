@@ -1450,13 +1450,17 @@ impl<'a> Maker<'a> {
         }
         let todo: Vec<&[(u32, u32)]> = todo.into_iter().map(|bi| blocks[bi].as_slice()).collect();
         let log = std::sync::Mutex::new(log);
+        // (Kept on the making's threads: a test's stop, jobrt::resume_log::STOP_AFTER, counted there.)
+        let stops = jobrt::resume_log::StopCarry::here();
         let keep = |b: &[(u32, u32)], done: &[Finished]| -> anyhow::Result<()> {
             match log.lock().unwrap().as_deref_mut() {
-                Some(l) => l.block(z, key(b), done),
+                Some(l) => stops.on(|| l.block(z, key(b), done)),
                 None => Ok(()),
             }
         };
-        let made = self.pipeline(z, &todo, quads, &keep)?;
+        let made = self.pipeline(z, &todo, quads, &keep);
+        stops.back();
+        let made = made?;
         for done in made {
             self.finished_into(done, &mut outs, &mut nq);
         }
