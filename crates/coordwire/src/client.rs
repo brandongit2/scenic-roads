@@ -481,7 +481,9 @@ impl Client {
         }
     }
 
-    /// One try of a request at `url`, on a kept connection or (`anew`) a new one.
+    /// One try of a request at `url`, on a kept connection or (`anew`) a new one; a GET's
+    /// `If-None-Match` saying `if_none_match`.
+    #[allow(clippy::too_many_arguments)]
     fn send(
         &self,
         method: &str,
@@ -490,6 +492,7 @@ impl Client {
         token: &str,
         body: Option<&[u8]>,
         anew: bool,
+        if_none_match: Option<&str>,
     ) -> std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error> {
         let full = format!("{url}{path}");
         let auth = format!("Bearer {token}");
@@ -498,14 +501,19 @@ impl Client {
         let idle = if anew { Duration::ZERO } else { IDLE };
         USE.set(Use::default());
         match (method, body) {
-            ("GET", _) => agent
-                .get(&full)
-                .config()
-                .max_idle_age(idle)
-                .build()
-                .header("Authorization", &auth)
-                .header("X-Worker", &self.worker)
-                .call(),
+            ("GET", _) => {
+                let r = agent
+                    .get(&full)
+                    .config()
+                    .max_idle_age(idle)
+                    .build()
+                    .header("Authorization", &auth)
+                    .header("X-Worker", &self.worker);
+                match if_none_match {
+                    Some(t) => r.header("If-None-Match", t).call(),
+                    None => r.call(),
+                }
+            }
             ("PUT", Some(b)) => agent
                 .put(&full)
                 .config()
@@ -529,11 +537,23 @@ impl Client {
     /// One request, at each address in turn until one answers; once more after reading the contact
     /// again when none did or the token was refused. Its status and body.
     pub fn request(&self, method: &str, path: &str, body: Option<&[u8]>) -> Result<(u16, Vec<u8>)> {
+        self.request_tagged(method, path, body, None).map(|(code, b, _)| (code, b))
+    }
+
+    /// `request`, a GET's `If-None-Match` saying `tag` (a 304 for an answer still that one); with
+    /// the answer's `ETag`.
+    fn request_tagged(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        tag: Option<&str>,
+    ) -> Result<(u16, Vec<u8>, Option<String>)> {
         if let Some(Some(why)) = &*self.round.lock().unwrap() {
             bail!("not tried: the coordinator didn't answer earlier in this round ({why})");
         }
         let mut unanswered = false;
-        let r = self.request_now(method, path, body, &mut unanswered);
+        let r = self.request_now(method, path, body, tag, &mut unanswered);
         // (No answer: every address failed while connecting or closed its connection unanswered,
         // or an answer broke off before it was whole. Not a connected lead's slow request run past
         // its time, nor any HTTP answer.)
@@ -551,8 +571,9 @@ impl Client {
         method: &str,
         path: &str,
         body: Option<&[u8]>,
+        tag: Option<&str>,
         unanswered: &mut bool,
-    ) -> Result<(u16, Vec<u8>)> {
+    ) -> Result<(u16, Vec<u8>, Option<String>)> {
         let mut last = None;
         // (Whether every address failed while connecting: only that says it can't be reached, not
         // a long request that ran past its time.)
@@ -572,11 +593,11 @@ impl Client {
             let c = self.contact.lock().unwrap().clone();
             let _w = store::waits::net();
             for url in &c.urls {
-                let mut r = self.send(method, url, path, &c.token, body, false);
+                let mut r = self.send(method, url, path, &c.token, body, false, tag);
                 // (A kept connection the coordinator closed before it read the request: again, on a
                 // new one.)
                 if r.as_ref().err().is_some_and(|e| USE.get().again(e)) {
-                    r = self.send(method, url, path, &c.token, body, true);
+                    r = self.send(method, url, path, &c.token, body, true, tag);
                 }
                 match r {
                     Ok(mut resp) => {
@@ -605,7 +626,7 @@ impl Client {
                             let u = cur.urls.remove(i);
                             cur.urls.insert(0, u);
                         }
-                        return Ok((code, b));
+                        return Ok((code, b, h("etag")));
                     }
                     Err(e) => {
                         connecting = Some(connecting.unwrap_or(true) && connect_phase(&e));
@@ -684,6 +705,12 @@ impl Client {
             (503, _) => Ok(None),
             (c, b) => bail!("{path}: {c} {}", String::from_utf8_lossy(&b)),
         }
+    }
+
+    /// A conditional GET (`If-None-Match: tag`): the status (304: still `tag`), the body and the
+    /// answer's `ETag` (the records' brief, `/pool/brief`: docs/coordination.md step 8d).
+    pub fn get_tagged(&self, path: &str, tag: Option<&str>) -> Result<(u16, Vec<u8>, Option<String>)> {
+        self.request_tagged("GET", path, None, tag)
     }
 
     /// Sends a file (a task's output).

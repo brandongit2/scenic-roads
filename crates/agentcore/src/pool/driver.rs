@@ -364,6 +364,11 @@ impl Driver {
         &self.saved.mine
     }
 
+    /// The (epoch, seq) of the records it last saved whole (its disk and the NAS's one path).
+    pub fn saved_records(&self) -> Option<(u64, u64)> {
+        self.saved.records
+    }
+
     /// The epoch it leads in.
     pub fn leads(&self) -> Option<u64> {
         self.lead.as_ref().map(|l| l.epoch)

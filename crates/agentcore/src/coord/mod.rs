@@ -28,6 +28,7 @@
 
 pub mod asks;
 pub mod beats;
+pub mod brief;
 pub mod broker;
 pub mod brokers;
 pub mod budgets;
@@ -452,6 +453,10 @@ pub struct Shared {
     /// leases are granted in and `pool_member` is said (`held::Answer::leading`), so a member learns
     /// its lead without the NAS (docs/coordination.md steps 8a, 8c).
     pub led: Option<(u64, crate::pool::Member)>,
+    /// The records' brief its agent last saved whole while leading (`Coordinator::set_brief`),
+    /// served by `GET /pool/brief` (crate::coord::brief, docs/coordination.md step 8d); None
+    /// before the first save, or not leading.
+    pub brief: Option<Arc<brief::Served>>,
     /// Where the members' messages to this Mac's member go (`/pool/mail`, `inbox`): its agent's
     /// (`Coordinator::set_inbox`); None, refused (the member keeps them queued).
     pub inbox: Option<std::sync::Arc<inbox::Inbox>>,
@@ -1634,6 +1639,7 @@ impl Coordinator {
             min_app: None,
             pool_member: None,
             led: None,
+            brief: None,
             inbox: None,
             handoffs: None,
             asks: asks::Lead::default(),
@@ -2807,6 +2813,34 @@ impl Coordinator {
     /// beats' answers (`Shared::led`).
     pub fn set_led(&self, led: Option<(u64, crate::pool::Member)>) {
         self.shared.lock().unwrap().led = led;
+    }
+
+    /// The records' brief served from now on (`/pool/brief`, crate::coord::brief): `records`, as
+    /// its agent's driver saved them whole (on its disk and the NAS's one path), gzipped here, on
+    /// the caller's thread; the same (epoch, seq) as the one served, nothing done. None: none (no
+    /// longer leading).
+    pub fn set_brief(&self, records: Option<&crate::pool::records::Records>) {
+        let Some(r) = records else {
+            self.shared.lock().unwrap().brief = None;
+            return;
+        };
+        if self.brief_mark() == Some((r.epoch, r.seq)) {
+            return;
+        }
+        match brief::Served::of(r) {
+            Ok(b) => self.shared.lock().unwrap().brief = Some(Arc::new(b)),
+            Err(e) => eprintln!("coordinator: the records' brief of epoch {} seq {}: {e:#}", r.epoch, r.seq),
+        }
+    }
+
+    /// The (epoch, seq) of the brief it serves.
+    pub fn brief_mark(&self) -> Option<(u64, u64)> {
+        self.shared.lock().unwrap().brief.as_ref().map(|b| b.held.mark)
+    }
+
+    /// The brief it serves, as its own agent reads it (crate::agent::brief): in process, no copy.
+    pub fn brief(&self) -> Option<brief::Held> {
+        self.shared.lock().unwrap().brief.as_ref().map(|b| b.held.clone())
     }
 
     /// The epoch lease `id` was granted in (0: none, or the pool off).
@@ -5510,6 +5544,7 @@ mod http {
             .route(crate::agent::gc::GONE, any(json))
             .route(crate::agent::gc::ORPHANS, any(json))
             .route("/pool/view", any(json))
+            .route(super::brief::PATH, get(brief))
             .route("/task/{*rest}", any(json));
         // The build page at the root (its files; a proxy may serve it under a path: tools/caddy's
         // /build/, its addresses relative), its data and the owner's asks under /api/.
@@ -5724,6 +5759,12 @@ mod http {
                 drop(permit);
             });
         }
+    }
+
+    /// `GET /pool/brief`: the records' brief from memory (crate::coord::brief).
+    async fn brief(State(c): State<Ctx>, h: HeaderMap) -> Response {
+        let served = c.shared.lock().unwrap().brief.clone();
+        super::brief::answer(served.as_deref(), &h)
     }
 
     fn error(code: StatusCode, why: impl std::fmt::Display) -> Response {
