@@ -3604,7 +3604,9 @@ mod tests {
         // (The coverage read first, on its own thread: the plan's regions wait for it.)
         let t = Instant::now();
         while let Err(why) = p.coverage(&root, &manifest, false) {
-            assert!(t.elapsed() < store::testkit::WATCHDOG, "{why}");
+            // (30 min, not `WATCHDOG`: a run by hand, ignored by the suites, over the live
+            // records' coverage, which the NAS can take minutes to read.)
+            assert!(t.elapsed() < Duration::from_secs(1800), "{why}");
             std::thread::sleep(Duration::from_millis(500));
         }
         eprintln!("frozen: the coverage in {:.1} s", t.elapsed().as_secs_f64());
