@@ -1735,6 +1735,20 @@ impl Run {
     }
 }
 
+/// Another Mac's lead's state, from its store's backup `b` (the owner moved the lead here), taken
+/// up by coordinator `c`: its leases, measures and pause, and the members' words; and that Mac's
+/// own, a member now (it speaks held leases as they do: the jobs of its own slots held by its word
+/// here, not lapsing after `TTL` and granted again while they run: task #1038, the pool's
+/// simulator's seed 10054). How many leases.
+pub fn load_backup(c: &crate::coord::Coordinator, b: &crate::pool::store::Snapshot) -> anyhow::Result<usize> {
+    let mut st = crate::coord::kept::Loaded::of(&b.docs).pool_state();
+    if !b.member.is_empty() {
+        let speaks = vec![crate::coord::held::SPEAKS.to_string()];
+        st.members.entry(b.member.clone()).or_insert(crate::coord::kept::Heard { speaks, at: b.at });
+    }
+    c.load_pool_state(&st)
+}
+
 /// A take-up (`Event::TookUp`), as the lead's coordinator takes it (§6.2, §7.5): the leases it
 /// grants from now in that epoch; at this process's first, another Mac's state, when the store's
 /// backup on the NAS is another Mac's (the owner moved the lead here: its leases, so every job out
@@ -1769,8 +1783,7 @@ pub fn took_up(
             }
         };
         if let Some(b) = backup {
-            let st = crate::coord::kept::Loaded::of(&b.docs).pool_state();
-            match c.load_pool_state(&st) {
+            match load_backup(c, &b) {
                 Ok(n) => eprintln!(
                     "pool: epoch {epoch}'s coordinator took up {n} lease{} from {}'s store",
                     if n == 1 { "" } else { "s" },

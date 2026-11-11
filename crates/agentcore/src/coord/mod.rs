@@ -6587,6 +6587,32 @@ mod tests {
         assert_eq!(next.away().iter().map(|a| (a.0.as_str(), a.1)).collect::<Vec<_>>(), [("m1", 1)]);
     }
 
+    /// Task #1038 (the pool's simulator, seed 10054): the lead before, a member now, holds its own
+    /// slots' leases by its word at the lead taking up its backup (agent::pool::load_backup): its
+    /// job's target is granted to no one while it's away, as a member's.
+    #[test]
+    fn the_lead_befores_own_job_is_held_by_its_word_at_the_next() {
+        let (_d, c, w) = start();
+        measure_units(&c, 1);
+        unit_offer(&c, "6/1/1");
+        // (Its own slot's job: worker m1, the lead before, never heard by a beat.)
+        w.ask(&ask(8192)).unwrap().expect("granted");
+        let store = c.shared.lock().unwrap().keep.store().cloned().unwrap();
+        let b = crate::pool::store::Snapshot { member: "m1".into(), at: wall_now(), ..store.snapshot() };
+        let (_d2, next, w2) = start();
+        let clock = store::clock::Virtual::new();
+        next.shared.lock().unwrap().clock = clock.clone();
+        measure_units(&next, 1);
+        assert_eq!(crate::agent::pool::load_backup(&next, &b).unwrap(), 1);
+        let other = client::Client::at(w2.urls(), next.contact.token.clone(), "m6");
+        for _ in 0..4 {
+            clock.advance(Duration::from_secs(1800));
+            assert!(next.expire().is_empty(), "nothing lapses");
+            unit_offer(&next, "6/1/1");
+            assert!(other.ask(&Ask { worker: "m6".into(), ..ask(8192) }).unwrap().is_none(), "never granted again");
+        }
+    }
+
     /// Task #1038 (the pool's simulator, seed 37): a member's beat sent before its ask and taken
     /// after the grant, past `OMIT_GRACE` (held on its way), lists what it held before: it releases
     /// nothing; its next beat, sent after, leaving the lease out, ends it.

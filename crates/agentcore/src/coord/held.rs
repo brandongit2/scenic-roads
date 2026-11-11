@@ -5,7 +5,8 @@
 //!   owes the lead). The lead confirms each listed and releases each of that member's jobs' leases
 //!   left out (`lease::Leases::word`): a crashed job, an agent restarted without it, a grant whose
 //!   answer never reached it (one granted within `OMIT_GRACE` excepted: its answer may still be on
-//!   its way; one loaded at a restart, never). The answer says the lead's epoch and the leases listed
+//!   its way; one loaded at a restart, never; nor any by a beat sent before a beat or ask the lead
+//!   took from that member since, `Sent`). The answer says the lead's epoch and the leases listed
 //!   that aren't that member's here (ended meanwhile: its jobs stop as their own beats are refused).
 //! - **Gated by what the member speaks** (`SPEAKS`): the lead applies the rule to a member whose
 //!   last beat says it speaks it; an older member's leases lapse after `coord::TTL` unrenewed as
