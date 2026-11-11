@@ -522,6 +522,7 @@ fn fit_report(f: &super::tiles::Fit) -> serde_json::Value {
         "gaps": gaps.iter().filter(|g| g.km2 >= 0.001).map(|g| serde_json::json!({
             "km2": r(g.km2), "zone_km2": r(g.zone_km2), "land_km2": r(g.land_km2), "touches_land": g.touches,
             "at": [g.at[0] as f64 / 1e7, g.at[1] as f64 / 1e7], "to": g.to,
+            "shares_km2": g.shares.iter().map(|(id, k)| serde_json::json!([id, r(*k)])).collect::<Vec<_>>(),
             "edges_km": g.edges.iter().take(4).map(|(id, l)| serde_json::json!([id, r(*l)])).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "after_overlaps": f.after_overlaps.iter().map(|((a, b), v)| serde_json::json!({"a": a, "b": b, "km2": r(*v)})).collect::<Vec<_>>(),
         "rest_in_zones": f.rest_in_zones.iter().map(|(c, v)| serde_json::json!({"cell": [c.0 * 2, c.1 * 2], "km2": r(*v)})).collect::<Vec<_>>(),

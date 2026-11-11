@@ -1910,6 +1910,9 @@ pub struct GapFit {
     pub to: String,
     /// The edge it shares with each region with water (km), longest first.
     pub edges: Vec<(String, f64)>,
+    /// What each region took of it (km²), where it was over `sliver_km2` and given out by the rule
+    /// for a country's water.
+    pub shares: Vec<(String, f64)>,
 }
 
 /// Whether no land lies in the cell or round it: the rows above and below, and as many columns
@@ -1928,6 +1931,12 @@ pub(super) fn far_from_land(data: &super::data::Datasets, c: Cell) -> bool {
 /// coast: the Indus delta's tidal flats, New Caledonia's lagoon): the open sea beyond every zone
 /// lies 200 nmi (370 km) or more from its coasts.
 pub const NEAR_LAND_M: f64 = 100_000.0;
+
+/// A region's country, as the folder is laid out: its file's top folder, or the file itself at the
+/// top (a province and its country's waters are one).
+fn country_of<'a>(folder: &'a Folder, id: &'a str) -> &'a str {
+    folder.regions.get(id).map_or(id, |(p, _)| p.split_once('/').map_or(p.as_str(), |(t, _)| t))
+}
 
 /// Whether land lies within `d` metres of point `p`.
 fn land_within(data: &super::data::Datasets, p: Pt, d: f64) -> bool {
@@ -2007,6 +2016,8 @@ struct Gap {
     touches: bool,
     /// Its edge (m) with each region with water in the cell.
     len: Vec<(String, f64)>,
+    /// Of that, its edge along the coastline (m): with each region's land.
+    shore: Vec<(String, f64)>,
     /// What of it is still to go: to a region, or else to the rest (None once given away whole).
     area: Option<Area>,
     /// Its land, the land of it two regions had, and a point inside its largest piece of land:
@@ -2194,7 +2205,9 @@ fn cells_pass(
             let km2 = geom::area_km2(&g);
             let zone_km2 = if zone.is_empty() { 0.0 } else { geom::area_km2(&g.intersect(&zone)) };
             let land = (km2 > fill_km2 && touches).then(|| gap_land(&g, &land, &twice));
-            let mut len = vec![0.0f64; pieces.len()];
+            // (Its edge with each region, and of that the edge along the coastline: with the
+            // region's land.)
+            let (mut len, mut shore) = (vec![0.0f64; pieces.len()], vec![0.0f64; pieces.len()]);
             {
                 for r in &g.polys[0] {
                     for k in 0..r.len() {
@@ -2202,15 +2215,21 @@ fn cells_pass(
                         let m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
                         if let Some(owner) = pidx.on(m) {
                             len[owner] += seg_m(a, b);
+                            if lidx.on(m).is_some() {
+                                shore[owner] += seg_m(a, b);
+                            }
                         }
                     }
                 }
             }
-            let len = (0..pieces.len())
-                .filter(|&k| len[k] > 0.0 && folder.regions[&pieces[k].0].1.has_water())
-                .map(|k| (pieces[k].0.clone(), len[k]))
-                .collect();
-            out.push(Gap { c, sides, km2, zone_km2, at, touches, len, area: Some(g), land });
+            let ours = |v: &[f64]| -> Vec<(String, f64)> {
+                (0..pieces.len())
+                    .filter(|&k| v[k] > 0.0 && folder.regions[&pieces[k].0].1.has_water())
+                    .map(|k| (pieces[k].0.clone(), v[k]))
+                    .collect()
+            };
+            let (len, shore) = (ours(&len), ours(&shore));
+            out.push(Gap { c, sides, km2, zone_km2, at, touches, len, shore, area: Some(g), land });
         }
         let t3 = t0.elapsed().as_secs_f64();
         if t3 > 2.0 {
@@ -2364,7 +2383,7 @@ fn cells_pass(
     // water they border, split by nearest edge where several do; the rest takes only what's left,
     // the open sea beyond every zone.
     let mut given: Vec<(String, Cell, Area)> = Vec::new();
-    let mut handed: Vec<BTreeSet<String>> = vec![BTreeSet::new(); groups.len()];
+    let mut handed: Vec<BTreeMap<String, f64>> = vec![BTreeMap::new(); groups.len()];
     for (gi, idx) in groups.iter().enumerate() {
         if idx.iter().map(|&i| gaps[i].km2).sum::<f64>() <= fill_km2 {
             continue;
@@ -2410,26 +2429,54 @@ fn cells_pass(
             }
             continue;
         };
-        let split: Vec<Vec<(String, Cell, Area)>> = pace::par_map(parts, |(i, a)| {
-            let c = gaps[i].c;
-            if near.len() == 1 {
-                return vec![(near[0].clone(), c, a)];
+        // (Within one country (one top folder), the provinces whose land it borders take what lies
+        // outside the zones, the country's other regions (its waters) only the zones' part: a fjord
+        // is its shore's, not cut by a median with the country's waters. Across countries, all of
+        // them share it by nearest edge.)
+        let one_country = near.iter().map(|id| country_of(folder, id)).collect::<BTreeSet<_>>().len() == 1;
+        let mut shore: BTreeSet<&String> = BTreeSet::new();
+        for &i in idx {
+            shore.extend(gaps[i].shore.iter().map(|(id, _)| id).filter(|id| near.contains(id)));
+        }
+        let provinces: Vec<&String> =
+            if one_country && near.len() > 1 { shore.into_iter().collect() } else { Vec::new() };
+        let waters: Vec<&String> = near.iter().copied().filter(|id| !provinces.contains(id)).collect();
+        // (A piece shared among `among` by nearest edge; to the stretch's longest edge's region where
+        // none of them is in or next to its cell, never dropped.)
+        let share = |c: Cell, a: Area, among: &[&String]| -> Vec<(String, Cell, Area)> {
+            if a.is_empty() {
+                return Vec::new();
             }
-            let sides: Vec<Area> = near.iter().map(|id| all[*id].around(c, 1, 1)).collect();
+            if among.len() == 1 {
+                return vec![(among[0].clone(), c, a)];
+            }
+            let sides: Vec<Area> = among.iter().map(|id| all[*id].around(c, 1, 1)).collect();
             if sides.iter().all(Area::is_empty) {
-                // (None of them in or next to its cell, a long stretch's far piece: to the one
-                // sharing the stretch's longest edge, never dropped.)
-                return vec![(longest.clone(), c, a)];
+                let to = among.iter().find(|id| ***id == longest).unwrap_or(&among[0]);
+                return vec![((*to).clone(), c, a)];
             }
             let diag = a.bbox().map_or(0.0, |b| geom::length_m([b[0], b[1]], [b[2], b[3]]));
             let step = (diag / 100.0).clamp(10.0, 1000.0);
-            (0..near.len())
+            (0..among.len())
                 .map(|k| {
                     let than: Vec<Area> =
                         sides.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, s)| s.clone()).collect();
-                    (near[k].clone(), c, geom::nearest(&a, &sides[k..=k], &than, step))
+                    (among[k].clone(), c, geom::nearest(&a, &sides[k..=k], &than, step))
                 })
                 .collect()
+        };
+        let split: Vec<Vec<(String, Cell, Area)>> = pace::par_map(parts, |(i, a)| {
+            let c = gaps[i].c;
+            if provinces.is_empty() {
+                return share(c, a, &near);
+            }
+            if waters.is_empty() {
+                return share(c, a, &provinces);
+            }
+            let z = a.intersect(&zones.get(c));
+            let mut v = share(c, a.minus(&z), &provinces);
+            v.extend(share(c, z, &waters));
+            v
         });
         let split: Vec<(String, Cell, Area)> = split.into_iter().flatten().filter(|x| !x.2.is_empty()).collect();
         let mut by: BTreeMap<&String, f64> = BTreeMap::new();
@@ -2437,13 +2484,7 @@ fn cells_pass(
             *by.entry(id).or_default() += geom::area_km2(a);
         }
         let km2: f64 = by.values().sum();
-        // (The countries it's split among, as the folder is laid out: a region's top folder, or the
-        // file itself at the top; a province and its country's waters are one.)
-        let tops: BTreeSet<&str> = by
-            .keys()
-            .filter_map(|id| folder.regions.get(*id))
-            .map(|(p, _)| p.split_once('/').map_or(p.as_str(), |(t, _)| t))
-            .collect();
+        let tops: BTreeSet<&str> = by.keys().map(|id| country_of(folder, id)).collect();
         if tops.len() > 1 && km2 > fill_km2 {
             // (Split between countries by nearest edge: a place no region names, likely disputed.)
             let v = gaps[idx.iter().copied().max_by(|&a, &b| gaps[a].km2.total_cmp(&gaps[b].km2)).unwrap_or(idx[0])].at;
@@ -2463,7 +2504,7 @@ fn cells_pass(
                 ),
             });
         }
-        handed[gi] = by.keys().map(|s| s.to_string()).collect();
+        handed[gi] = by.iter().map(|(id, k)| (id.to_string(), *k)).collect();
         given.extend(split);
     }
     // (Measured: each stretch, where it went.)
@@ -2476,7 +2517,7 @@ fn cells_pass(
         }
         let mut edges: Vec<(String, f64)> = edges.into_iter().map(|(id, l)| (id.clone(), l / 1000.0)).collect();
         edges.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-        let mut tos: BTreeSet<String> = handed[gi].clone();
+        let mut tos: BTreeSet<String> = handed[gi].keys().cloned().collect();
         for &i in idx {
             match &to[i] {
                 Some(id) => {
@@ -2496,6 +2537,7 @@ fn cells_pass(
             touches: idx.iter().any(|&i| gaps[i].touches),
             at: gaps[largest].at,
             to: tos.into_iter().collect::<Vec<_>>().join("+"),
+            shares: handed[gi].iter().map(|(id, k)| (id.clone(), *k)).collect(),
             edges,
         });
     }

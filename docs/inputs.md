@@ -516,10 +516,14 @@ poles' rows: at least 110 km from any coast, past a coast no zone has, as Antarc
 and each piece's part inside a 200-nmi zone (any of Marine Regions' zones with its internal
 waters). That goes to the regions with water the stretch shares an edge with: to the one, or split
 among several by nearest edge (`geom::nearest`, the median line; a piece with none of them in or
-next to its cell to the one sharing the stretch's longest edge), a warning (`unnamed`, naming them
-and their shares) when it is split among countries (the regions' top folders, or a file at the top:
-a province and its country's waters are one) and over `sliver_km2`: a place no region names,
-likely disputed, whose owner a region's water should name. What's left of it, the open sea beyond every zone, stays. Land in no region
+next to its cell to the one sharing the stretch's longest edge). Within one country (the regions'
+top folders, or a file at the top: a province and its country's waters are one), its shore's: the
+regions whose land it borders (its edge along the coastline) take what lies outside the zones, the
+one whole, several split among themselves alone, and the country's other regions (its waters) only
+the part inside a zone, so a fjord isn't cut by a median with the country's waters
+(Avannaata's, Sakha's, Nunavut's). Across countries, all of them share it by nearest edge, a
+warning (`unnamed`, naming them and their shares) when it's over `sliver_km2`: a place no region
+names, likely disputed, whose owner a region's water should name. What's left of it, the open sea beyond every zone, stays. Land in no region
 over `sliver_km2` (a stretch joined across the cells' edges) is an error (`rg-cover`), found at a
 point inside its largest part of land and naming the regions with water that had any of it both
 (taken from both); where most of such a stretch is land two regions with water both had, the error
@@ -774,7 +778,7 @@ new pass moving a coast a little doesn't hold an accepted one's files again.
 | `rg-hand-out` | a `hand_out_all` region left with land or water no region of its folder could take |
 | `rg-rest` | `rest` in more than one region's water |
 | `rg-rules` | a `_rules.toml` that doesn't parse or has an unknown field or value |
-| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region, or mostly in two regions with water, over `sliver_km2`; the rest's water inside a zone (`rest-in-zone`), two regions overlapping or area in none after the check (`overlap-after`, `gap-after`), each over `HAIR_KM2` (0.1 km²); a warning: a stretch in no region's parts over `sliver_km2` split among several regions by nearest edge (`unnamed`), land two regions both had over `LAND_OVERLAP_KM2` (`overlap-settled`) |
+| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region, or mostly in two regions with water, over `sliver_km2`; the rest's water inside a zone (`rest-in-zone`), two regions overlapping or area in none after the check (`overlap-after`, `gap-after`), each over `HAIR_KM2` (0.1 km²); a warning: a stretch in no region's parts over `sliver_km2` split among several countries' regions by nearest edge (`unnamed`), land two regions both had over `LAND_OVERLAP_KM2` (`overlap-settled`) |
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.

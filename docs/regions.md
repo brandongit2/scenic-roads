@@ -11,7 +11,8 @@ high seas as the rest: docs/inputs.md §6.1.3). Overlaps are harmless to the bui
 gaps unless `inputs/regions/_rules.toml` says the regions cover the Earth once (`cover = "earth"`),
 when the check fills and checks them: one partition, every border two regions share one edge of
 both, and the high seas only the open sea beyond every 200-nmi zone (water the zones stop short of,
-a lagoon or a creek, goes to the countries it borders). Water is no step's target but the depth's: a z6 tile, map
+a lagoon or a creek, goes to the countries it borders; within one country, to the provinces whose
+shore it is, the country's waters region taking only what's inside its zone). Water is no step's target but the depth's: a z6 tile, map
 tile, terrain, slope, tree cover or buildings' tile is built only near land (`Coverage::meets_rect`).
 A region with no land (a sea zone, the high seas) is coverage for the depth alone
 (`Coverage::depth_only`). A region of land and water is coverage like any other, its water held

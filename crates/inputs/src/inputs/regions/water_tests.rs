@@ -1158,3 +1158,44 @@ fn the_open_sea_is_far_from_land_at_any_latitude() {
     assert!(!tiles::far_from_land(&data, (3, 41)), "three columns on at 84°: 70 km");
     assert!(tiles::far_from_land(&data, (0, 42)), "two rows on");
 }
+
+/// Within one country (one top folder), water the zones stop short of is its shore's: an inlet
+/// only one province's land borders is that province's whole, one two provinces border is split
+/// between them alone, never by a median with the country's waters region beside them; the
+/// country's waters take only what's inside the zone (#1127).
+#[test]
+fn a_countrys_inlet_is_its_shores_not_its_waters() {
+    let ring = |w: f64, s: f64, e: f64, n: f64| bx(w, s, e, n).remove(0);
+    // Land 70-72°E, 10-11°N with two inlets open to the north (each about 2,400 km²): one in the
+    // west province, one across the provinces' border at 71°E.
+    let land = vec![
+        vec![ring(70.0, 10.0, 72.0, 10.5)],
+        vec![ring(70.0, 10.5, 70.3, 11.0)],
+        vec![ring(70.7, 10.5, 70.8, 11.0)],
+        vec![ring(71.2, 10.5, 72.0, 11.0)],
+    ];
+    // The country's zone round the land, stopping at its outer coast (the inlets outside it).
+    let zone = vec![ring(69.5, 9.5, 72.5, 11.5), ring(70.0, 10.0, 72.0, 11.0)];
+    let w = world_zones(1.002, land, HashMap::from([(6, zone)]));
+    let p1 = "id = \"p1\"\nname = \"West\"\noutline = [\"box:69.9,9.9,71.0,11.1\"]\nwater = []\n";
+    let p2 = "id = \"p2\"\nname = \"East\"\noutline = [\"box:71.0,9.9,72.1,11.1\"]\nwater = []\n";
+    let cw = "id = \"cw\"\nname = \"Its waters\"\nwater = [\"eez:6\"]\n";
+    let mut files = all();
+    files.extend([("c/p1.toml", p1), ("c/p2.toml", p2), ("c/cw.toml", cw)]);
+    let out = run(&w, &files);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    let owner =
+        |x: f64, y: f64| -> Vec<&str> { out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect() };
+    // The west inlet, its mouth too (nearer the waters' edge than any coast), the west province's.
+    assert_eq!(owner(70.5, 10.6), vec!["p1"]);
+    assert_eq!(owner(70.5, 10.99), vec!["p1"], "the inlet's mouth");
+    // The inlet across the border: each side to its province, none to the waters.
+    assert_eq!(owner(70.9, 10.99), vec!["p1"]);
+    assert_eq!(owner(71.1, 10.99), vec!["p2"]);
+    assert_eq!(owner(71.0, 11.2), vec!["cw"], "the zone beyond");
+    let given: Vec<_> =
+        out.fit.gaps.iter().filter(|g| g.shares.iter().any(|(id, _)| id == "p1" || id == "p2")).collect();
+    assert_eq!(given.len(), 2, "{given:?}");
+    assert!(given.iter().all(|g| g.shares.iter().all(|(id, _)| id != "cw")), "{given:?}");
+}
