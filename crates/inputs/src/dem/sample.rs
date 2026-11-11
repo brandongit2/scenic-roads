@@ -105,7 +105,8 @@ pub fn sample_raster_noting(t: &Tiff, level: usize, px: &[f64], py: &[f64], clea
             rf,
         ));
     }
-    pts.sort_by_key(|p| p.0);
+    // (Unstable: a block's points are sampled each alone, whatever their order.)
+    pts.sort_unstable_by_key(|p| p.0);
     let mut groups: Vec<&[(i64, u32, f64, f64)]> = Vec::new();
     let mut s = 0;
     for e in 1..=pts.len() {
@@ -166,6 +167,9 @@ pub fn blocks_read(
     let (w, h) = (img.width as i64, img.height as i64);
     let nbx = (w + BLOCK - 1) / BLOCK;
     let (tw, th) = (img.block_w as i64, img.block_h as i64);
+    // (The window of the point before: its neighbours mostly share it, so it's looked up in
+    // `seen` once a run of them, not a point.)
+    let mut last = None;
     for (&x, &y) in px.iter().zip(py) {
         let cf = (x - gt[0]) / gt[1] - 0.5;
         let rf = (y - gt[3]) / gt[5] - 0.5;
@@ -173,6 +177,10 @@ pub fn blocks_read(
             continue;
         }
         let k = block_key(w, (cf.floor() as i64).clamp(0, w - 1), (rf.floor() as i64).clamp(0, h - 1));
+        if last == Some(k) {
+            continue;
+        }
+        last = Some(k);
         if !seen.windows.insert(k) {
             continue;
         }

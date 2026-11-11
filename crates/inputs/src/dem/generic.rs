@@ -692,20 +692,35 @@ impl GeoSet<'_> {
     /// (each a header's round trip or two, a whole copy made here: one after another, a z3 tile's
     /// many files had kept a sampling thread waiting on the NAS).
     fn blocks_ahead(&self, parts: &[&[u32]], x: &[f64], y: &[f64]) -> Result<Ahead> {
-        let mut by_part: Vec<std::collections::BTreeMap<usize, (Vec<f64>, Vec<f64>)>> = Vec::with_capacity(parts.len());
+        let mut by_part: Vec<Vec<(usize, Vec<f64>, Vec<f64>)>> = Vec::with_capacity(parts.len());
         let mut files = std::collections::BTreeSet::new();
         for part in parts {
-            let mut by: std::collections::BTreeMap<usize, (Vec<f64>, Vec<f64>)> = Default::default();
+            // (By file, in the order of the files: a point's file looked up only where it isn't
+            // the point before's, as a run of neighbours shares one.)
+            let mut by: Vec<(usize, Vec<f64>, Vec<f64>)> = Vec::new();
+            let mut place: HashMap<usize, usize> = HashMap::new();
+            let mut last: Option<(usize, usize)> = None;
             let mut kept = None;
             for &i in *part {
                 let (px, py) = (x[i as usize], y[i as usize]);
                 if let Some(k) = self.holding(&mut kept, px, py).next() {
-                    let e = by.entry(k).or_default();
-                    e.0.push(px);
-                    e.1.push(py);
-                    files.insert(k);
+                    let at = match last {
+                        Some((lk, at)) if lk == k => at,
+                        _ => {
+                            let at = *place.entry(k).or_insert_with(|| {
+                                by.push((k, Vec::new(), Vec::new()));
+                                by.len() - 1
+                            });
+                            last = Some((k, at));
+                            at
+                        }
+                    };
+                    by[at].1.push(px);
+                    by[at].2.push(py);
                 }
             }
+            by.sort_unstable_by_key(|e| e.0);
+            files.extend(by.iter().map(|e| e.0));
             by_part.push(by);
         }
         let files: Vec<usize> = files.into_iter().collect();
@@ -716,7 +731,7 @@ impl GeoSet<'_> {
         let (mut out, mut starts) = (Vec::new(), Vec::with_capacity(parts.len() + 1));
         for by in by_part {
             starts.push(out.len());
-            for (k, (xs, ys)) in by {
+            for (k, xs, ys) in by {
                 let (t, level, lane) = &opened[&k];
                 let mut b = Vec::new();
                 blocks_read(t, *level, &xs, &ys, seen.entry(k).or_default(), &mut b)?;
@@ -754,16 +769,15 @@ impl GeoSet<'_> {
         let mut ks = file.to_vec();
         ks.sort_unstable();
         ks.dedup();
-        let gts: HashMap<u32, [f64; 6]> = ks
-            .into_iter()
-            .map(|k| {
-                let (t, level) = self.open(k as usize)?;
-                Ok((k, t.transform(level)?))
-            })
-            .collect::<Result<_>>()?;
+        // (By the file's number: a point's looked up twice, hashing it had been a tenth of this.)
+        let mut gts = vec![[f64::NAN; 6]; self.files.len()];
+        for k in ks {
+            let (t, level) = self.open(k as usize)?;
+            gts[k as usize] = t.transform(level)?;
+        }
         // (Point `j`'s place in its file's pixels, from pixel centres.)
         let at = |j: usize| {
-            let (i, gt) = (sel[j] as usize, &gts[&file[j]]);
+            let (i, gt) = (sel[j] as usize, &gts[file[j] as usize]);
             ((x[i] - gt[0]) / gt[1] - 0.5, (y[i] - gt[3]) / gt[5] - 0.5)
         };
         let keys: Vec<(u32, i64, i64)> = jobrt::control::on_target_pool(|| {
@@ -797,7 +811,7 @@ impl GeoSet<'_> {
                         .flat_map(|&(s, e)| s..e)
                         .map(|j| {
                             let (cf, rf) = at(j);
-                            let (mx, my) = pixel_m(self.crs, &gts[&file[j]], lat[sel[j] as usize]);
+                            let (mx, my) = pixel_m(self.crs, &gts[file[j] as usize], lat[sel[j] as usize]);
                             let rx = (radius[j] / mx).ceil() as i64 + 1;
                             let ry = (radius[j] / my).ceil() as i64 + 1;
                             let (c0, r0) = (cf.floor() as i64, rf.floor() as i64);
@@ -1942,8 +1956,49 @@ impl Mono<'_> {
     }
 }
 
+/// The points picked among `0..n`, ascending: in runs on the target's pool, each into a list of
+/// its own, joined once (a pass over a batch's millions of points a dataset, `Sampler::sample`).
+fn picked(n: usize, pick: impl Fn(usize) -> bool + Sync) -> Vec<u32> {
+    by_key(n, 1, |i| pick(i).then_some(0)).pop().unwrap_or_default()
+}
+
+/// The points among `0..n` by their key below `keys` (None: in none), each list ascending: one
+/// pass, in runs on the target's pool.
+fn by_key(n: usize, keys: usize, key: impl Fn(usize) -> Option<usize> + Sync) -> Vec<Vec<u32>> {
+    let runs: Vec<Vec<Vec<u32>>> = jobrt::control::on_target_pool(|| {
+        (0..n.div_ceil(PICK_RUN))
+            .into_par_iter()
+            .map(|r| {
+                let mut out = vec![Vec::new(); keys];
+                for i in r * PICK_RUN..((r + 1) * PICK_RUN).min(n) {
+                    if let Some(k) = key(i) {
+                        out[k].push(i as u32);
+                    }
+                }
+                out
+            })
+            .collect()
+    });
+    (0..keys)
+        .map(|k| {
+            let mut v = Vec::with_capacity(runs.iter().map(|r| r[k].len()).sum());
+            for r in &runs {
+                v.extend_from_slice(&r[k]);
+            }
+            v
+        })
+        .collect()
+}
+
+/// The points a run of `by_key` takes.
+const PICK_RUN: usize = 1 << 16;
+
 /// Points sampled together whose box `Cover::contains_box` answers at once.
 const MEMBER_RUN: usize = 1024;
+
+/// Neighbouring points projected by one `Projector` (`Sampler::projections`): 32 rows of a sampled
+/// tile, whose 512 columns it works out once.
+const PROJECTED_RUN: usize = 1 << 14;
 
 /// Whether `cover` holds each of points `lon`, `lat` (`Cover::contains`, by point): runs of
 /// `MEMBER_RUN` neighbours answered by their box where it can be (a terrain tile's rows, inside a
@@ -2051,12 +2106,24 @@ impl<'a> Sampler<'a> {
             let ks: Vec<usize> = (0..self.sets.len()).filter(|&m| self.sets[m].projected_crs() == Some(crs)).collect();
             let member = |i: usize| ks.iter().any(|&m| held(m, i));
             let p = Projection::of(crs).expect("a projected CRS");
-            let xy = jobrt::control::on_target_pool(|| {
-                (0..lon.len())
-                    .into_par_iter()
-                    .map(|i| if member(i) { p.project(lon[i], lat[i]) } else { (f64::NAN, f64::NAN) })
-                    .unzip()
+            // (In runs of neighbours, each projected by a `Projector`: a row's latitude and its
+            // columns' longitudes worked out once a run, not a point.)
+            let n = lon.len();
+            let (mut xs, mut ys) = (vec![f64::NAN; n], vec![f64::NAN; n]);
+            jobrt::control::on_target_pool(|| {
+                xs.par_chunks_mut(PROJECTED_RUN).zip(ys.par_chunks_mut(PROJECTED_RUN)).enumerate().for_each(
+                    |(r, (xs, ys))| {
+                        let mut pr = p.projector();
+                        for (j, (x, y)) in xs.iter_mut().zip(ys).enumerate() {
+                            let i = r * PROJECTED_RUN + j;
+                            if member(i) {
+                                (*x, *y) = pr.project(lon[i], lat[i]);
+                            }
+                        }
+                    },
+                )
             });
+            let xy = (xs, ys);
             out.insert(crs, Arc::new(xy));
         }
         out
@@ -2104,12 +2171,7 @@ impl<'a> Sampler<'a> {
             let p = phase(&format!("sampling {}", ds.id));
             let since = buildstore::fetch::fetched_bytes();
             let r = self.sets[k].reader(&xy);
-            let sel: Vec<u32> = jobrt::control::on_target_pool(|| {
-                (0..n as u32)
-                    .into_par_iter()
-                    .filter(|&i| first[i as usize] == u16::MAX && covers[k][i as usize])
-                    .collect()
-            });
+            let sel = picked(n, |i| first[i] == u16::MAX && covers[k][i]);
             // (By tile or file, so a chunk reads each tile once, not once per chunk.)
             let sel = r.in_reading_order(sel, lon, lat);
             if !sel.is_empty() {
@@ -2152,19 +2214,18 @@ impl<'a> Sampler<'a> {
         let mut dist = vec![f64::INFINITY; n];
         mono.say(to_sample as f64 / total);
         let mut blended = 0usize;
-        for k in 0..plan.datasets.len() {
+        // (Each dataset's points, those it was the first with data for: one pass over the points,
+        // not one a dataset.)
+        let by_first = by_key(n, plan.datasets.len(), |i| (first[i] != u16::MAX).then_some(first[i] as usize));
+        for (k, of_k) in by_first.iter().enumerate() {
             let (sel, radius): (Vec<u32>, Vec<f64>) = jobrt::control::on_target_pool(|| {
-                (0..n)
-                    .into_par_iter()
-                    .filter_map(|i| {
-                        if first[i] as usize != k {
-                            return None;
-                        }
+                of_k.par_iter()
+                    .filter_map(|&i| {
                         let coarsest = (k + 1..plan.datasets.len())
-                            .filter(|&m| covers[m][i])
+                            .filter(|&m| covers[m][i as usize])
                             .map(|m| res[m])
                             .fold(0.0f64, f64::max);
-                        (coarsest > 0.0).then(|| (i as u32, 4.0 * coarsest.max(res[k])))
+                        (coarsest > 0.0).then(|| (i, 4.0 * coarsest.max(res[k])))
                     })
                     .unzip()
             });
@@ -2185,15 +2246,14 @@ impl<'a> Sampler<'a> {
         }
         let mut b = vec![f32::NAN; n];
         let mut second = vec![u16::MAX; n];
+        // (The points within a band, once: each dataset's second heights picked among them.)
+        let near = picked(n, |i| dist[i].is_finite());
         for (k, r) in readers.iter().enumerate() {
             let sel: Vec<u32> = jobrt::control::on_target_pool(|| {
-                (0..n as u32)
-                    .into_par_iter()
+                near.par_iter()
+                    .copied()
                     .filter(|&i| {
-                        dist[i as usize].is_finite()
-                            && second[i as usize] == u16::MAX
-                            && (first[i as usize] as usize) < k
-                            && covers[k][i as usize]
+                        second[i as usize] == u16::MAX && (first[i as usize] as usize) < k && covers[k][i as usize]
                     })
                     .collect()
             });
@@ -2235,18 +2295,18 @@ impl<'a> Sampler<'a> {
         let mut unconverted = 0usize;
         let mut b_kept = vec![false; n];
         let mut a_converted = vec![false; n];
+        // (Each dataset's first heights and second ones, by one pass each: a height is there
+        // (finite) where its dataset is, `first` and `second` set with it.)
+        let by_second = by_key(n, plan.datasets.len(), |i| (second[i] != u16::MAX).then_some(second[i] as usize));
         for (k, ds) in plan.datasets.iter().enumerate() {
             let Some(c) = &ds.convert else { continue };
-            for (vals, from, firsts) in [(&mut a, &first, true), (&mut b, &second, false)] {
-                let sel: Vec<usize> = jobrt::control::on_target_pool(|| {
-                    (0..n).into_par_iter().filter(|&i| from[i] as usize == k && vals[i].is_finite()).collect()
-                });
+            for (vals, sel, firsts) in [(&mut a, &by_first[k], true), (&mut b, &by_second[k], false)] {
                 if sel.is_empty() {
                     continue;
                 }
-                let (lo, la): (Vec<f64>, Vec<f64>) = sel.iter().map(|&i| (lon[i], lat[i])).unzip();
+                let (lo, la): (Vec<f64>, Vec<f64>) = sel.iter().map(|&i| (lon[i as usize], lat[i as usize])).unzip();
                 let off = grids.offsets(c, &lo, &la)?;
-                for (&i, d) in sel.iter().zip(off) {
+                for (i, d) in sel.iter().map(|&i| i as usize).zip(off) {
                     if d.is_finite() {
                         vals[i] = (vals[i] as f64 + d) as f32;
                         if firsts {

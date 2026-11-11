@@ -40,11 +40,18 @@ impl Ellipsoid {
     pub const WGS84: (f64, f64) = (roadcore::geo::WGS84_A, roadcore::geo::WGS84_RF);
     pub const GRS80: (f64, f64) = (6378137.0, 298.257222101);
 
-    /// Geodetic (radians, height 0) to geocentric.
-    fn cartesian(&self, lam: f64, phi: f64) -> [f64; 3] {
+    /// Geodetic (height 0) to geocentric, from its latitude's part (`row`) and its longitude's
+    /// (`column`): x = n·cos φ·cos λ, y = n·cos φ·sin λ, multiplied left to right as one expression
+    /// was, so the points of a grid share a row's and a column's.
+    fn cartesian(&self, row: Row, column: Column) -> [f64; 3] {
+        [row.n_cos * column.cos, row.n_cos * column.sin, row.z]
+    }
+
+    /// The part of `cartesian` latitude `phi` (radians) alone decides.
+    fn row(&self, phi: f64) -> Row {
         let (cosphi, sinphi) = (phi.dcos(), phi.dsin());
         let n = self.a / (-(self.es * sinphi)).mul_add(sinphi, 1.0).sqrt();
-        [n * cosphi * lam.dcos(), n * cosphi * lam.dsin(), n.mul_add(1.0 - self.es, 0.0) * sinphi]
+        Row { n_cos: n * cosphi, z: n.mul_add(1.0 - self.es, 0.0) * sinphi }
     }
 
     /// Geocentric to geodetic (radians), PROJ's `cart` inverse (Bowring).
@@ -96,6 +103,26 @@ fn adjlon(l: f64) -> f64 {
     l - PI
 }
 
+/// A latitude's part of its points' geocentric coordinates (`Ellipsoid::row`): n·cos φ, and z.
+#[derive(Clone, Copy, Debug)]
+struct Row {
+    n_cos: f64,
+    z: f64,
+}
+
+/// A longitude's part (`column`): cos λ, sin λ.
+#[derive(Clone, Copy, Debug)]
+struct Column {
+    cos: f64,
+    sin: f64,
+}
+
+/// WGS 84 longitude `lon`'s (degrees) part of its points' geocentric coordinates.
+fn column(lon: f64) -> Column {
+    let lam = lon * DEG_TO_RAD;
+    Column { cos: lam.dcos(), sin: lam.dsin() }
+}
+
 /// WGS 84 to NAD83(CSRS) by EPSG's "NAD83(CSRS) to WGS 84 (2)" (EPSG:1946), inverted: geocentric,
 /// the Helmert, back to geodetic on GRS 80.
 #[derive(Clone, Debug)]
@@ -119,9 +146,15 @@ impl Csrs {
         }
     }
 
-    /// NAD83(CSRS) longitude, latitude (radians) of WGS 84 `lon`, `lat` (degrees).
-    fn of(&self, lon: f64, lat: f64) -> (f64, f64) {
-        let c = self.wgs.cartesian(lon * DEG_TO_RAD, lat * DEG_TO_RAD);
+    /// WGS 84 latitude `lat`'s (degrees) part of its points' geocentric coordinates.
+    fn row(&self, lat: f64) -> Row {
+        self.wgs.row(lat * DEG_TO_RAD)
+    }
+
+    /// NAD83(CSRS) longitude, latitude (radians) of the WGS 84 point of latitude part `row`
+    /// (`Csrs::row`) and longitude part `column` (`column`).
+    fn of(&self, row: Row, column: Column) -> (f64, f64) {
+        let c = self.wgs.cartesian(row, column);
         let (x, y, z) = (c[0] - self.t[0], c[1] - self.t[1], c[2] - self.t[2]);
         let [f, t, p] = self.r;
         // The rotation matrix transposed: R00 = R11 = R22 = 1, R01 = p, R02 = -t, R10 = -p,
@@ -172,7 +205,12 @@ impl Atlas {
 
     /// EPSG:3979 x, y (m) of WGS 84 `lon`, `lat` (degrees).
     pub fn project(&self, lon: f64, lat: f64) -> (f64, f64) {
-        let (lam, phi) = self.csrs.of(lon, lat);
+        self.of(self.csrs.row(lat), column(lon))
+    }
+
+    /// `project` of a point's latitude and longitude parts (`Csrs::row`, `column`).
+    fn of(&self, row: Row, column: Column) -> (f64, f64) {
+        let (lam, phi) = self.csrs.of(row, column);
         let grs = &self.csrs.grs;
         // Lambert conformal conic.
         let lam = adjlon(adjlon(lam) - self.lam0);
@@ -214,6 +252,64 @@ impl Projection {
             Projection::Utm(u) => u.project(lon, lat),
             Projection::Polar(p) => roadcore::polar::forward(*p, lon, lat),
         }
+    }
+}
+
+/// Many points projected in turn, to `Projection::project`'s bits, the work a latitude or a
+/// longitude decides alone shared by the points sharing it: a sampled tile's points lie in rows of
+/// one latitude and columns of one longitude (the terrain's `terrain_base::points`), so a row's
+/// trigonometry and a column's are done once, not a point's (task #1098: the projection to
+/// EPSG:3979 was 28 % of a terrain-deep run's CPU).
+pub struct Projector<'p> {
+    p: &'p Projection,
+    /// The latitude last projected (its bits) and its part.
+    row: Option<(u64, Row)>,
+    /// Longitudes' parts by their bits: `COLUMNS` slots, each the last longitude hashed there.
+    columns: Vec<Option<(u64, Column)>>,
+}
+
+/// The longitudes a `Projector` keeps: a tile's 512 sample columns, with room.
+const COLUMNS: usize = 2048;
+
+impl Projector<'_> {
+    /// x, y (m) of WGS 84 `lon`, `lat` (degrees), as `Projection::project` has them.
+    pub fn project(&mut self, lon: f64, lat: f64) -> (f64, f64) {
+        let csrs = match self.p {
+            Projection::Atlas(a) => &a.csrs,
+            Projection::Utm(u) => &u.csrs,
+            Projection::Polar(p) => return roadcore::polar::forward(*p, lon, lat),
+        };
+        let row = match self.row {
+            Some((b, r)) if b == lat.to_bits() => r,
+            _ => {
+                let r = csrs.row(lat);
+                self.row = Some((lat.to_bits(), r));
+                r
+            }
+        };
+        let bits = lon.to_bits();
+        let slot =
+            ((bits ^ (bits >> 29)).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> (64 - COLUMNS.trailing_zeros())) as usize;
+        let column = match self.columns[slot] {
+            Some((b, c)) if b == bits => c,
+            _ => {
+                let c = column(lon);
+                self.columns[slot] = Some((bits, c));
+                c
+            }
+        };
+        match self.p {
+            Projection::Atlas(a) => a.of(row, column),
+            Projection::Utm(u) => u.of(row, column),
+            Projection::Polar(_) => unreachable!("projected above"),
+        }
+    }
+}
+
+impl Projection {
+    /// A `Projector` of points by this projection.
+    pub fn projector(&self) -> Projector<'_> {
+        Projector { p: self, row: None, columns: vec![None; COLUMNS] }
     }
 }
 
@@ -330,7 +426,12 @@ impl Utm {
 
     /// NAD83 / UTM x, y (m) of WGS 84 `lon`, `lat` (degrees).
     pub fn project(&self, lon: f64, lat: f64) -> (f64, f64) {
-        let (lam, phi) = self.csrs.of(lon, lat);
+        self.of(self.csrs.row(lat), column(lon))
+    }
+
+    /// `project` of a point's latitude and longitude parts (`Csrs::row`, `column`).
+    fn of(&self, row: Row, column: Column) -> (f64, f64) {
+        let (lam, phi) = self.csrs.of(row, column);
         let lam = adjlon(adjlon(lam) - self.lam0);
         let cn = gatg(&self.cbg, phi, (2.0 * phi).dcos(), (2.0 * phi).dsin());
         let (sin_cn, cos_cn) = (cn.dsin(), cn.dcos());
@@ -400,6 +501,64 @@ mod tests {
         // McMurdo (166.67° E, 77.85° S) at Snyder 21-33, 21-34 worked by hand in f64.
         let (x, y) = Projection::of(3031).unwrap().project(166.67, -77.85);
         assert!((x - 305_467.162_732).abs() < 1e-3 && (y + 1_289_201.537_714).abs() < 1e-3, "{x} {y}");
+    }
+
+    /// A projector's points are `project`'s to the bit: a tile's grid of rows and columns (its
+    /// longitudes kept and their slots shared), points at random, repeats out of order, NaN.
+    #[test]
+    fn a_projector_projects_as_project_does() {
+        let mut s = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for crs in [3979, 26918, 3031, 3413] {
+            let p = Projection::of(crs).unwrap();
+            let mut pr = p.projector();
+            let (lon0, lat0) = match crs {
+                3979 => (-75.3, 45.1),
+                26918 => (-73.9, 44.2),
+                3031 => (166.0, -77.0),
+                _ => (-40.0, 72.0),
+            };
+            let mut pts: Vec<(f64, f64)> = Vec::new();
+            for r in 0..64 {
+                for c in 0..3000 {
+                    pts.push((lon0 + (c as f64 + 0.5) / 3000.0 * 0.01, lat0 + (r as f64 + 0.5) / 64.0 * 0.01));
+                }
+            }
+            for _ in 0..20_000 {
+                pts.push((lon0 + next() - 0.5, lat0 + next() - 0.5));
+            }
+            let n = pts.len();
+            for k in 0..20_000 {
+                pts.push(pts[(k * 7919) % n]);
+            }
+            pts.extend([(f64::NAN, lat0), (lon0, f64::NAN), (lon0, lat0)]);
+            // (The geocentric point from its row's and column's parts is the one expression's
+            // before them, task #1098's.)
+            let wgs = Ellipsoid::new(Ellipsoid::WGS84.0, Ellipsoid::WGS84.1);
+            for &(lon, lat) in &pts {
+                let (lam, phi) = (lon * DEG_TO_RAD, lat * DEG_TO_RAD);
+                let (cosphi, sinphi) = (phi.dcos(), phi.dsin());
+                let n = wgs.a / (-(wgs.es * sinphi)).mul_add(sinphi, 1.0).sqrt();
+                let one = [n * cosphi * lam.dcos(), n * cosphi * lam.dsin(), n.mul_add(1.0 - wgs.es, 0.0) * sinphi];
+                let parts = wgs.cartesian(wgs.row(phi), column(lon));
+                for (a, b) in one.iter().zip(parts) {
+                    assert!(a.to_bits() == b.to_bits() || a.is_nan() && b.is_nan(), "{lon} {lat}: {one:?} {parts:?}");
+                }
+            }
+            for (lon, lat) in pts {
+                let (a, b) = (p.project(lon, lat), pr.project(lon, lat));
+                assert!(
+                    a.0.to_bits() == b.0.to_bits() && a.1.to_bits() == b.1.to_bits()
+                        || a.0.is_nan() && b.0.is_nan() && a.1.is_nan() && b.1.is_nan(),
+                    "{crs}: {lon} {lat}: {a:?} {b:?}"
+                );
+            }
+        }
     }
 
     #[test]
