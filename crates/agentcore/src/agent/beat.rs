@@ -5,9 +5,10 @@
 //! goes) as a snapshot; this Mac's hold is **control**'s (crate::agent::asks). The beat composes
 //! the two and writes them: every `EVERY`, and at once (`DEBOUNCE`) when told a state changed
 //! (`BeatMsg::Changed`). The local copy is written here, on this Mac's disk; the shared one (the
-//! NAS) by a writer thread of its own that takes the newest body each time it's free, under
-//! nasread's deadline, so a hung share holds neither the timer nor the local copy; a body for a
-//! path the view no longer shares (past a part change) is dropped unwritten.
+//! NAS: the lead's `state/status.json` alone) by a writer thread of its own, started with the first
+//! body to share (a member's never is: none on a member's Mac), that takes the newest body each
+//! time it's free, under nasread's deadline, so a hung share holds neither the timer nor the local
+//! copy; a body for a path the view no longer shares (past a part change) is dropped unwritten.
 //!
 //! One writer of each copy, in order, each a whole document from snapshots at least as new as the
 //! last: no beat lands over a newer one. The
@@ -250,8 +251,10 @@ pub struct Beat {
     home: PathBuf,
     view: Arc<Snap<Option<LoopView>>>,
     hold: Arc<Snap<HoldState>>,
-    /// The shared copy's writer, once the beat runs on its thread (else written in line).
+    /// The shared copy's writer, once the beat runs on its thread (`threaded`) and has a body to
+    /// share (else written in line).
     nas: Option<(Mailbox, SyncSender<()>)>,
+    threaded: bool,
     /// How it writes the shared copy.
     write_nas: NasWrite,
     /// The lead's poster, once the beat runs on its thread (else posted in line).
@@ -297,6 +300,36 @@ impl Beat {
         Some((status, v.local.clone(), v.shared.clone(), v.lead.clone()))
     }
 
+    /// Its NAS writer's thread, started now (the beat on its thread, and a first body to share);
+    /// None when it isn't (written in line).
+    fn nas_writer(&mut self) -> Option<&(Mailbox, SyncSender<()>)> {
+        if self.nas.is_none() && self.threaded {
+            let mail: Mailbox = Snap::new(None);
+            let (wake, woken) = mpsc::sync_channel::<()>(1);
+            let (m, view, write_nas) = (mail.clone(), self.view.clone(), self.write_nas.clone());
+            let nas = std::thread::Builder::new().name("beat-nas".into()).spawn(move || {
+                let mut failing = false;
+                while woken.recv().is_ok() {
+                    // (The newest body each time: one written late is never older than one before.
+                    // One for a path the view no longer shares, past a part change, is dropped.)
+                    let Some((p, body)) = m.get().as_ref().clone() else { continue };
+                    if view.get().as_ref().as_ref().and_then(|v| v.shared.as_ref()) != Some(&p) {
+                        continue;
+                    }
+                    failing = said(write_nas(&p, body), failing);
+                }
+            });
+            match nas {
+                Ok(_) => self.nas = Some((mail, wake)),
+                Err(e) => {
+                    eprintln!("agent: the heartbeat's NAS writer: {e}");
+                    self.threaded = false;
+                }
+            }
+        }
+        self.nas.as_ref()
+    }
+
     /// One beat written: here, to the lead (on its poster, or in line), and to the NAS (on its
     /// writer, or in line).
     pub fn write(&mut self) {
@@ -316,7 +349,7 @@ impl Beat {
             }
         }
         let Some(p) = shared else { return };
-        match &self.nas {
+        match self.nas_writer() {
             Some((mail, wake)) => {
                 mail.set(Some((p, body)));
                 wake.try_send(()).ok();
@@ -359,6 +392,7 @@ impl Handle {
             view: view.clone(),
             hold,
             nas: None,
+            threaded: false,
             write_nas: Arc::new(write_beat),
             poster: None,
             failing: false,
@@ -411,28 +445,12 @@ impl Handle {
         self.inline.is_none()
     }
 
-    /// Its thread and its NAS writer's started: from now it beats every `EVERY`, whatever the loop
-    /// does, and at once on a change. It ends when the handle goes, writing its last.
+    /// Its thread and its poster's started (its NAS writer's with the first body to share): from now
+    /// it beats every `EVERY`, whatever the loop does, and at once on a change. It ends when the
+    /// handle goes, writing its last.
     pub fn spawn(&mut self) {
         let Some((mut beat, rx)) = self.inline.take() else { return };
-        let mail: Mailbox = Snap::new(None);
-        let (wake, woken) = mpsc::sync_channel::<()>(1);
-        let (m, view, write_nas) = (mail.clone(), beat.view.clone(), beat.write_nas.clone());
-        let nas = std::thread::Builder::new().name("beat-nas".into()).spawn(move || {
-            let mut failing = false;
-            while woken.recv().is_ok() {
-                // (The newest body each time: one written late is never older than one before. One
-                // for a path the view no longer shares, past a part change, is dropped.)
-                let Some((p, body)) = m.get().as_ref().clone() else { continue };
-                if view.get().as_ref().as_ref().and_then(|v| v.shared.as_ref()) != Some(&p) {
-                    continue;
-                }
-                failing = said(write_nas(&p, body), failing);
-            }
-        });
-        if nas.is_ok() {
-            beat.nas = Some((mail, wake));
-        }
+        beat.threaded = true;
         let post: LeadBox = Snap::new(None);
         let (wake, woken) = mpsc::sync_channel::<()>(1);
         let p = post.clone();
