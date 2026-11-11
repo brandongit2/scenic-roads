@@ -431,18 +431,33 @@ mod tests {
 
     /// Task #1116: a phase's `cpu_s` is its own work's since records' version 2; the floor reads the
     /// job's CPU while it was open (`job_cpu_s`), as a version 1 record's `cpu_s` said it: the same
-    /// threads kept.
+    /// threads kept. (Review: each main phase's job's CPU above what its overlap alone keeps, and
+    /// its own CPU below, so reading `cpu_s` would keep fewer.)
     #[test]
     fn the_floor_reads_the_jobs_cpu_while_a_phase_was_open() {
-        let v1 = timed("pack", 4, 100.0, 150.0, vec![phase(60.0, 30.0, true, false), phase(40.0, 120.0, true, true)]);
-        let own = |wall_s: f64, cpu_s: f64, job: Option<f64>, background: bool| jobrt::timings::PhaseRec {
-            job_cpu_s: job,
-            ..phase(wall_s, cpu_s, true, background)
+        let v1 = timed(
+            "pack",
+            4,
+            100.0,
+            230.0,
+            vec![phase(60.0, 90.0, true, false), phase(20.0, 50.0, false, false), phase(40.0, 120.0, true, true)],
+        );
+        let own = |wall_s: f64, cpu_s: f64, job: Option<f64>, overlapped: bool, background: bool| {
+            jobrt::timings::PhaseRec { job_cpu_s: job, ..phase(wall_s, cpu_s, overlapped, background) }
         };
-        let mut v2 =
-            timed("pack", 4, 100.0, 150.0, vec![own(60.0, 6.0, Some(30.0), false), own(40.0, 120.0, None, true)]);
+        let v2 = timed(
+            "pack",
+            4,
+            100.0,
+            230.0,
+            vec![
+                own(60.0, 6.0, Some(90.0), true, false),
+                own(20.0, 2.0, Some(50.0), false, false),
+                own(40.0, 120.0, None, true, true),
+            ],
+        );
         assert_eq!(v1[0].phases, v2[0].phases);
-        assert_eq!(v2.remove(0).phases[0], (60.0, 0.5f64.max(40.0 / 60.0)));
+        assert_eq!(v2[0].phases, [(60.0, 1.5), (20.0, 2.5)]);
     }
 
     /// Task #948: the phases' floor. pack on the M4 (a run of 4 Nov): half an hour reading base packs

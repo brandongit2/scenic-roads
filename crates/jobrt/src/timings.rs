@@ -769,11 +769,16 @@ pub fn on() -> bool {
     run().lock().unwrap().as_ref().is_some_and(|r| !r.finished)
 }
 
-/// An open phase: it ends when dropped.
+/// An open phase: it ends when dropped, on the thread it opened on (not `Send`, as a lock's guard
+/// isn't: its thread's CPU is charged to it, and its thread's stack holds it, until it ends there;
+/// `count` from any thread).
 pub struct Phase {
     open: Option<Arc<Open>>,
     t: Instant,
+    _here: Here,
 }
+
+type Here = std::marker::PhantomData<std::sync::MutexGuard<'static, ()>>;
 
 impl Phase {
     /// Adds bytes and files moved to it.
@@ -789,7 +794,7 @@ impl Phase {
 
     /// A phase that times nothing (no run being timed).
     pub fn none() -> Phase {
-        Phase { open: None, t: Instant::now() }
+        Phase { open: None, t: Instant::now(), _here: Here::default() }
     }
 }
 
@@ -882,7 +887,7 @@ fn open(name: &str) -> Phase {
     STACK.with(|s| s.borrow_mut().push(o.clone()));
     r.on_span(me, this_port(), Some(o.clone()));
     r.overhead_ns += t_in.elapsed().as_nanos() as u64;
-    Phase { open: Some(o), t: Instant::now() }
+    Phase { open: Some(o), t: Instant::now(), _here: Here::default() }
 }
 
 impl Drop for Phase {

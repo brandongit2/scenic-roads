@@ -781,21 +781,24 @@ const PARTS: [&str; 9] = [
     "Walking the world's roads and writing their values",
 ];
 
-/// The part under way's phase (jobrt::timings), ended as the next begins (`part`) or the pass ends
-/// (`end_part`).
-static PART: std::sync::Mutex<Option<jobrt::timings::Phase>> = std::sync::Mutex::new(None);
+thread_local! {
+    /// The part under way's phase (jobrt::timings), ended as the next begins (`part`) or the pass
+    /// ends (`end_part`): on the pass's thread, as a phase ends where it began.
+    static PART: std::cell::RefCell<Option<jobrt::timings::Phase>> = const { std::cell::RefCell::new(None) };
+}
 
 /// Part `i` of the pass begins (`PARTS`), its progress one item's (`one`) until it says its own.
 fn part(i: usize, one: &str) {
     end_part();
-    *PART.lock().unwrap() = Some(jobrt::timings::phase(one));
+    let p = jobrt::timings::phase(one);
+    PART.with(|s| *s.borrow_mut() = Some(p));
     jobrt::jobs::part(i, &PARTS);
     jobrt::jobs::stage(0, 1, one);
 }
 
 /// The part under way's phase ended.
 fn end_part() {
-    let p = PART.lock().unwrap().take();
+    let p = PART.with(|s| s.borrow_mut().take());
     drop(p);
 }
 
