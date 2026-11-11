@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::agent::beat::ToLead;
+use crate::agent::brief::{Briefs, Fresh};
 use crate::coord::beats::Beats;
 use crate::coord::client::LeaseCalls;
 use crate::coord::handoffs::Handoffs;
@@ -24,6 +25,14 @@ use std::time::Duration;
 /// the lead's own in process); that one of its jobs reads the current records.
 const P_ASK: f64 = 0.5;
 const P_READ: f64 = 0.2;
+/// Per loop: that its map server asks its lead's feed (`/map/changes`); that the lead's `gc` job
+/// takes a chunk (`/gc/chunk`); per job, that it finds its targets' files on the NAS as its brief
+/// names them and takes them as they are (its hand-off reusing them, `Handoff::reused`).
+const P_MAP: f64 = 0.5;
+const P_GC: f64 = 0.2;
+const P_REUSE: f64 = 0.3;
+/// A `gc` job's chunk (crate::agent::gc::CHUNK_NAMES's, smaller: the simulator's names are few).
+const GC_CHUNK: usize = 20;
 /// A job's run (s).
 const JOB_S: (u64, u64) = (60, 900);
 /// The lead's store backed up this often (s: `pool::store::backup_every`).
@@ -38,6 +47,9 @@ struct Job {
     epoch: u64,
     n: u64,
     targets: Vec<String>,
+    /// Its targets' keys as its brief named them, their files found on the NAS and taken as they
+    /// are (none: built anew).
+    reused: Vec<(String, String)>,
     ends: u64,
 }
 
@@ -71,6 +83,12 @@ pub(super) struct Mac {
     failing: bool,
     /// Leading: its store's backup's `seq` last written, and when (the run's time).
     backed: (u64, u64),
+    /// Leading: GC's queue (opened on its map log's folder as its coordinator starts), and the
+    /// records it last published the map of.
+    gc: Option<Arc<store::map::gc::GcQueue>>,
+    published: Option<(u64, u64)>,
+    /// The brief it last had from its lead over the network (crate::agent::brief::Briefs).
+    briefs: Briefs,
 }
 
 impl Mac {
@@ -96,6 +114,9 @@ impl Mac {
             lead: None,
             failing: false,
             backed: (0, 0),
+            gc: None,
+            published: None,
+            briefs: Briefs::default(),
         }
     }
 
@@ -131,6 +152,7 @@ impl Mac {
     fn start_coord(&mut self) -> Result<()> {
         let (k, me, app) = (self.k, self.me.clone(), self.me.app.clone());
         let (beats, handoffs) = (self.beats.clone(), self.handoffs.clone());
+        let mut gc = None;
         self.sim.alive(|w| -> Result<()> {
             let dir = w.macs[k].dir.join("coord");
             let clock = store::clock::Virtual::new_at(std::time::UNIX_EPOCH + Duration::from_secs(w.clock(k)));
@@ -139,6 +161,15 @@ impl Mac {
             c.set_member(Some(&me.id));
             c.set_beats(Some(beats));
             c.set_handoffs(Some(handoffs));
+            // (Its map log's feed and GC's queue, on its disk: the queue's file opened again.)
+            let maplog = w.macs[k].dir.join("maplog");
+            std::fs::create_dir_all(&maplog)?;
+            let (gen, seq) = (w.macs[k].gen, w.macs[k].map_seq);
+            let q = Arc::new(store::map::gc::GcQueue::default());
+            q.open(&maplog, &map_of(seq, &w.maps.get(&(k, gen, seq)).cloned().unwrap_or_default()))?;
+            c.set_maplog(w.macs[k].feed.clone(), q.clone());
+            gc = Some(q);
+            w.macs[k].coords += 1;
             let cost = Cost {
                 peak_mb: 1_000,
                 secs: 1_500,
@@ -159,6 +190,7 @@ impl Mac {
             w.note(|| format!("mac{k}'s coordinator starts, its store's epoch {e}"));
             Ok(())
         })??;
+        (self.gc, self.published) = (gc, None);
         self.backed = (0, self.sim.quiet(|w| w.t)?);
         Ok(())
     }
@@ -199,6 +231,7 @@ impl Mac {
         (self.beats, self.handoffs) = (Arc::new(Beats::default()), Arc::new(Handoffs::default()));
         self.running.clear();
         (self.took, self.lead, self.failing) = (false, None, false);
+        (self.gc, self.published, self.briefs) = (None, None, Briefs::default());
         if self.leads.take().is_some() {
             self.sim.quiet(|w| w.leads(k, None))?;
         }
@@ -254,18 +287,31 @@ impl Mac {
             self.sim.alive(|w| w.told_merged(k, &merged))?;
             heard.lead_says = self.beats.lead_says(now);
         }
-        let out = self.driver.step(&self.sim, heard, &check);
+        // (The merge's checks: the simulator's, then GC's refusal, as crate::agent::pool's step
+        // checks: last, since one it lets merge holds its names from GC's chunks.)
+        let gc = self.gc.clone().filter(|_| leading);
+        let checks = |e: &Entry, r: &Records| {
+            check(e, r)?;
+            match gc.as_deref().and_then(|q| crate::agent::gcqueue::refusal(q, e, now)) {
+                Some(why) => Err(why),
+                None => Ok(()),
+            }
+        };
+        let out = self.driver.step(&self.sim, heard, &checks);
+        // (When its checks ran, as the agent takes it right after its step: what its coordinator
+        // grants by counts from then, a sleep after included, `Shared::told`.)
+        let checked = Io::now(&self.sim);
         // (Its process died during the step: nothing of it saved or acted on.)
         if self.sim.quiet(|w| w.macs[k].crashed)? {
             return Ok(());
         }
         self.saved = self.driver.saved();
         self.unsaved.clear();
-        self.after(out, faulting, &given)
+        self.after(out, faulting, &given, checked)
     }
 
     /// What its driver's step came to, its state saved: acted on.
-    fn after(&mut self, out: Out, faulting: bool, given: &[String]) -> Result<()> {
+    fn after(&mut self, out: Out, faulting: bool, given: &[String], checked: u64) -> Result<()> {
         let k = self.k;
         let mine: BTreeSet<String> = self.saved.mine.keys().cloned().collect();
         let caught = out.leads.is_some() && out.caught_up;
@@ -287,7 +333,7 @@ impl Mac {
             self.sim.op(|w, me| w.ack(me, e, &out.merged))?;
         }
         if self.role == Role::Lead {
-            self.lead_after(&out, faulting)?;
+            self.lead_after(&out, faulting, checked)?;
         } else {
             self.member_after(&out, faulting)?;
         }
@@ -307,7 +353,7 @@ impl Mac {
     /// The lead's agent after its step (crate::agent::pool's step, `took_up`, `lead::after`): its
     /// coordinator told what the step came to, the plan's work offered, its own slot's job asked
     /// for, its store backed up when due, its contact published.
-    fn lead_after(&mut self, out: &Out, faulting: bool) -> Result<()> {
+    fn lead_after(&mut self, out: &Out, faulting: bool, checked: u64) -> Result<()> {
         let k = self.k;
         let (me, h) = (self.me.clone(), self.handoffs.clone());
         // (Another Mac's lead before it left its store's backup: taken up once a process.)
@@ -321,7 +367,6 @@ impl Mac {
         let own: Vec<u64> = self.running.iter().map(|j| j.n).collect();
         let records = self.driver.records().cloned();
         let saved_records = self.driver.saved_records();
-        let checked = Io::now(&self.sim);
         let gates = crate::agent::pool::Gates {
             leads: out.leads,
             duties: out.duties,
@@ -331,6 +376,11 @@ impl Mac {
         };
         let ask = faulting && self.running.is_empty() && self.rng.chance(P_ASK);
         let cap = self.capacity(checked);
+        let q = self.gc.clone();
+        let publish = saved_records
+            .filter(|s| records.as_ref().is_some_and(|r| (r.epoch, r.seq) == *s) && self.published != Some(*s));
+        let collect = out.duties && out.vouched && self.rng.chance(P_GC);
+        let poll = self.rng.chance(P_MAP);
         let granted = self.sim.alive(|w| -> Result<Option<crate::coord::Grant>> {
             let Some(c) = w.macs[k].coord.clone() else { return Ok(None) };
             w.tick(k);
@@ -362,6 +412,28 @@ impl Mac {
                 Some(_) => {}
                 None => c.set_brief(None),
             }
+            // (Its map published after each save that reached the NAS, GC's queue told of the
+            // records; its `gc` job's chunk, removed, said gone; its own map server's ask.)
+            if let (Some(r), Some(q), Some(_)) = (&records, &q, publish) {
+                let now = w.clock(k);
+                w.publish(k, r, q, now);
+            }
+            if collect {
+                let ask = format!("{{\"max\": {GC_CHUNK}}}");
+                let (code, v) = c.call(crate::agent::gc::CHUNK, ask.as_bytes(), &me.host)?;
+                let names: Vec<String> = serde_json::from_value(v["names"].clone()).unwrap_or_default();
+                if code == 200 && !names.is_empty() {
+                    w.gc_removes(k, &names, records.as_ref());
+                    let gone = serde_json::json!({ "gone": names });
+                    let (code, v) = c.call(crate::agent::gc::GONE, &serde_json::to_vec(&gone)?, &me.host)?;
+                    if code != 200 {
+                        w.note(|| format!("mac{k}'s gc job: its gone: {code} {v}"));
+                    }
+                }
+            }
+            if poll {
+                w.map_poll(k, k);
+            }
             c.set_moving_as_of(crate::agent::pool::moving(&gates, false), checked);
             c.keep_own(own.iter().map(|&n| (n, 0)).collect());
             c.set_plan(1);
@@ -375,6 +447,9 @@ impl Mac {
             w.one_granting();
             Ok(g)
         })??;
+        if let Some(p) = publish {
+            self.published = Some(p);
+        }
         if let Some(g) = granted {
             self.start_job(g, k)?;
         }
@@ -423,6 +498,9 @@ impl Mac {
                 .map(|m| m as usize);
         }
         let Some(to) = self.lead else { return Ok(()) };
+        if self.rng.chance(P_MAP) {
+            self.sim.op(|w, me| w.map_poll(me, to))?;
+        }
         let now = Io::now(&self.sim);
         self.beats.set_own(crate::agent::pool::Heartbeat { pool: out.beat.clone(), ..Default::default() });
         self.beats.set_handoffs(self.driver.mine().entries().cloned().collect());
@@ -511,18 +589,74 @@ impl Mac {
         }
     }
 
-    /// The job grant `g` of Mac `by`'s coordinator gives it starts.
+    /// The job grant `g` of Mac `by`'s coordinator gives it starts, with the brief its lead has
+    /// now (crate::agent::brief::Briefs::fresh: in process leading, else over the network; the NAS's
+    /// when the lead serves none yet): the lead not answering, it doesn't start, its lease left out
+    /// of its next beat (docs/coordination.md step 8d). Now and then its targets' files as that
+    /// brief names them are found on the NAS and taken as they are.
     fn start_job(&mut self, g: crate::coord::Grant, by: usize) -> Result<()> {
         let Granted::Job { targets, .. } = g.work else { return Ok(()) };
         let targets: Vec<String> = targets.into_iter().map(|t| t.0).collect();
-        let k = self.k;
+        let (k, lease) = (self.k, (g.epoch, g.lease));
         let worker = host(k);
+        let here = self.sim.alive(|w| {
+            let c = w.macs[by].coord.clone();
+            let mark = c.as_ref().and_then(|c| c.brief()).map(|h| h.mark);
+            w.grant_marks.entry(lease).or_insert((by, w.macs[by].coords, mark));
+            c.filter(|_| by == k)
+        })?;
+        let fresh = match &here {
+            Some(c) => {
+                self.sim.alive(|w| w.served = Some((k, w.macs[k].coords)))?;
+                self.briefs.fresh(crate::agent::brief::Lead::Here(c))
+            }
+            None if by == k => Fresh::Away("its coordinator is gone".into()),
+            None => self.briefs.fresh(crate::agent::brief::Lead::At(&self.client(by))),
+        };
+        let brief = match fresh {
+            Fresh::Got(h) => {
+                self.sim.alive(|w| {
+                    let from = w.served;
+                    w.opens(k, lease, from, h.mark)
+                })?;
+                Some(h.brief)
+            }
+            Fresh::Nas(_) => {
+                self.sim.count("jobs opening the NAS's brief (their lead serves none yet)");
+                match Nas::read(&self.sim, records::ONE_BRIEF) {
+                    Ok(Some(b)) => serde_json::from_slice::<records::Brief>(&b).ok().map(Arc::new),
+                    _ => None,
+                }
+            }
+            Fresh::Away(why) => {
+                self.sim.count("jobs not started: the lead away");
+                self.sim.note(|| format!("mac{k} doesn't start {}-{}: the lead's brief: {why}", lease.0, lease.1));
+                return Ok(());
+            }
+        };
+        let Some(brief) = brief else {
+            self.sim.count("jobs not started: no brief");
+            return Ok(());
+        };
+        let mut reused = Vec::new();
+        if self.rng.chance(P_REUSE) {
+            let keys: Option<Vec<(String, String)>> =
+                targets.iter().map(|t| brief.keys.unit.get(t).map(|key| (t.clone(), key.clone()))).collect();
+            if let Some(keys) = keys {
+                let gone = self.sim.alive(|w| keys.iter().any(|(t, key)| w.removed.contains_key(&content(t, key))))?;
+                if gone {
+                    self.sim.count("jobs finding a file their brief names gone: built anew");
+                } else {
+                    reused = keys;
+                }
+            }
+        }
         let d = self.rng.range(JOB_S.0, JOB_S.1);
         let ends = self.sim.alive(|w| {
             w.starts(k, by, g.epoch, g.lease, &worker, &targets);
             w.t + d
         })?;
-        self.running.push(Job { epoch: g.epoch, n: g.lease, targets, ends });
+        self.running.push(Job { epoch: g.epoch, n: g.lease, targets, reused, ends });
         Ok(())
     }
 
@@ -552,7 +686,8 @@ impl Mac {
         Ok(())
     }
 
-    /// Its job `j`'s hand-off: its units built with a new key, now and then a prune, one that
+    /// Its job `j`'s hand-off: its targets' files reused as its brief named them (refused when GC
+    /// removed one under its lease); else its units built with a new key, now and then a prune, one that
     /// writes outside its step's outputs too (refused by every lead), or a flaky one (refused by
     /// the lead of an odd epoch).
     fn entry(&mut self, j: &Job, now: u64) -> Entry {
@@ -566,6 +701,12 @@ impl Mac {
             ..Default::default()
         };
         let h = match self.rng.below(20) {
+            _ if !j.reused.is_empty() => Handoff {
+                changes: j.reused.iter().map(|(t, key)| (logical(t), Some(content(t, key)))).collect(),
+                reused: j.reused.iter().map(|(t, key)| content(t, key)).collect(),
+                done: Some((STEP.into(), j.reused.clone())),
+                ..Default::default()
+            },
             0 => Handoff {
                 changes: ts
                     .iter()

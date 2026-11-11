@@ -14,13 +14,22 @@
 //! restored, `Store::restore`, on a real folder); the member's beat (`agent::beat::ToLead::post_on`:
 //! its body, the lead's answer into `coord::beats::Beats`, the hand-offs it lacks posted) on
 //! coordwire's client (`Client::through`: its rounds and errors, `LeaseCalls`' asks), the
-//! grants' wire types.
+//! grants' wire types; the records' brief a job opens (crate::agent::brief::Briefs::fresh: the
+//! lead's coordinator's in process, a member's over the network, `GET /pool/brief` answered from
+//! `Coordinator::brief`; the lead away, the job not started); GC on the lead (its queue,
+//! store::map::gc::GcQueue, on the Mac's own folder, opened again at each start; the map's feed
+//! and its clients' cursors, store::map::feed::Feed; the coordinator's `/gc/chunk` and `/gc/gone`;
+//! the merge's refusal, crate::agent::gcqueue::refusal), with its grace (`GRACE_S`, 1 h) and its
+//! cursors' TTL (`CURSOR_TTL_S`, 6 h) as they are.
 //!
 //! **Modelled** (`mac`): the agent's loop around them (its slots and jobs, when it asks and beats,
 //! its role read from the declaration and its restart into a new one, `agent::pool::took_up`'s and
 //! `epochs`' few lines, `lead::after`'s calls), the jobs (a few minutes each, their hand-offs
-//! drawn), the network (`World::call`), the NAS (below), the clocks, the owner (moving the lead,
-//! restoring its disk). The store's files are written without their `fsync` (`seglog::UNSYNCED`):
+//! drawn: now and then taking their targets' files as their brief names them, `Handoff::reused`),
+//! the map's publishing (a batch of the map's log after each save of the records, `World::publish`)
+//! and the map servers' asks of the lead's feed (`World::map_poll`), the `gc` job (a chunk now and
+//! then, removed at once), the network (`World::call`), the NAS (below), the clocks, the owner
+//! (moving the lead, restoring its disk). The store's files are written without their `fsync` (`seglog::UNSYNCED`):
 //! a crash is the files cut by the simulator itself.
 //!
 //! The NAS's model (`World`): create-new is atomic on the server, and the file's bytes land a step
@@ -51,8 +60,11 @@
 //! been made in the run's last ten minutes. Checked throughout: no target under two live leases
 //! (the jobs running, all Macs', and each coordinator's table), two leads never granting at once,
 //! no lease id granted twice, every hand-off merged once or refused with why (never applied again
-//! once acknowledged), acknowledgements only of what a saved snapshot names, and §4's epoch and
-//! records invariants.
+//! once acknowledged), acknowledgements only of what a saved snapshot names, §4's epoch and
+//! records invariants, a job's brief never older than the one its lease was granted from (from the
+//! same coordinator), GC removing no name the records it saw name nor one a map server heard within
+//! the cursor TTL serves, and no records naming a name GC removed (but another disk's queue's,
+//! docs/maplog.md §7.2's limit, counted).
 
 mod mac;
 mod place;
@@ -177,6 +189,11 @@ struct Cfg {
     restores: bool,
     /// The owner moving the lead.
     moves: bool,
+    /// How many Macs (0: two to four, by the seed).
+    macs: usize,
+    /// Mac 1 asleep from five minutes in for seven hours: its map server unheard past GC's cursor
+    /// TTL (store::map::gc::CURSOR_TTL_S), its member's hand-offs kept past the grace.
+    nap: bool,
 }
 
 impl Cfg {
@@ -201,6 +218,8 @@ impl Cfg {
             crashes: false,
             restores: false,
             moves: false,
+            macs: 0,
+            nap: false,
         }
     }
 
@@ -312,6 +331,18 @@ struct MacW {
     lose: bool,
     /// The keys of the hand-offs its driver keeps (`Saved::mine`), as of its last step saved.
     mine: BTreeSet<String>,
+    /// Its disk's map log, as the lead's agent keeps it (modelled: crate::agent::publish): the
+    /// map's `seq` it published last, and the map's feed with its clients' cursors
+    /// (store::map::feed::Feed, kept across its restarts as the log's snapshot keeps them); its GC
+    /// queue's file beside (store::map::gc::FILE, opened at each start of its coordinator). All
+    /// gone with its disk (`gen`: how many disks it has had).
+    map_seq: u64,
+    feed: Arc<store::map::feed::Feed>,
+    gen: u64,
+    /// Its map server's map: the lead's Mac whose log it follows, that disk's `gen`, its `seq`.
+    map_at: Option<(usize, u64, u64)>,
+    /// Its coordinators started so far (each one's number, for the briefs it serves).
+    coords: u64,
 }
 
 /// What a Mac keeps of what it read and stat'ed: the bytes (None: no file), and until when.
@@ -414,6 +445,20 @@ struct World {
     cut: Vec<u64>,
     deaf: Vec<u64>,
     late: Vec<Late>,
+    /// Each map a lead's Mac published (that Mac, its disk's `gen`, the `seq`): the content names
+    /// it holds.
+    maps: BTreeMap<(usize, u64, u64), BTreeSet<String>>,
+    /// The content names GC removed from the NAS: by which Mac's queue (its disk's `gen`), when.
+    removed: BTreeMap<String, (usize, u64, u64)>,
+    /// Each map server's last ask of a lead's feed (server, lead): when, by the lead's clock.
+    polled: BTreeMap<(usize, usize), u64>,
+    /// Each job's lease's grant: the coordinator that granted it (its Mac, its number) and the
+    /// brief it served then (docs/coordination.md step 8d).
+    grant_marks: BTreeMap<(u64, u64), (usize, u64, Option<(u64, u64)>)>,
+    /// The brief last served over the network: by which coordinator (its Mac, its number).
+    served: Option<(usize, u64)>,
+    /// The hand-offs a landed snapshot refused for a name GC removed.
+    gc_refused: BTreeSet<String>,
     /// The run's folder (each Mac's under it), kept until the run ends.
     _dir: tempfile::TempDir,
     wrong: Vec<String>,
@@ -532,6 +577,11 @@ impl World {
                     crashed: false,
                     lose: false,
                     mine: BTreeSet::new(),
+                    map_seq: 0,
+                    feed: store::map::feed::Feed::new(),
+                    gen: 0,
+                    map_at: None,
+                    coords: 0,
                 }
             })
             .collect();
@@ -580,6 +630,12 @@ impl World {
             cut: vec![0; n],
             deaf: vec![0; n],
             late: Vec::new(),
+            maps: BTreeMap::new(),
+            removed: BTreeMap::new(),
+            polled: BTreeMap::new(),
+            grant_marks: BTreeMap::new(),
+            served: None,
+            gc_refused: BTreeSet::new(),
             _dir: dir,
             wrong: Vec::new(),
             counts: BTreeMap::new(),
@@ -709,6 +765,10 @@ impl World {
     }
 
     fn faults(&mut self, me: usize) {
+        if self.cfg.nap && me == 1 && self.t >= 300 && !self.counts.contains_key("Macs asleep seven hours") {
+            self.sleep(1, 7 * 3600);
+            self.count("Macs asleep seven hours");
+        }
         if self.cfg.fails && self.rng.chance(P_AWAY) {
             let d = self.rng.range(60, 600);
             self.away[me] = self.away[me].max(self.t + d);
@@ -833,6 +893,9 @@ impl World {
         self.macs[k].local = None;
         std::fs::remove_dir_all(&self.macs[k].dir).ok();
         self.stored[k].clear();
+        // (Its map log and GC's queue with it: a new disk's start afresh, docs/maplog.md §7.2.)
+        let m = &mut self.macs[k];
+        (m.map_seq, m.feed, m.gen) = (0, store::map::feed::Feed::new(), m.gen + 1);
         let backup = self.files.get(crate::pool::store::BACKUP_PATH).cloned();
         let snap = backup.and_then(|b| serde_json::from_slice::<crate::pool::store::Snapshot>(&b).ok());
         match snap {
@@ -886,23 +949,31 @@ impl World {
 
     // The network.
 
-    /// Mac `from`'s request to Mac `to`'s coordinator (`path`, `body`): what came of it.
-    fn call(&mut self, from: usize, to: usize, path: &str, body: &[u8]) -> Wired {
+    /// Whether Mac `from`'s request reaches Mac `to`'s coordinator: None, or what came of it.
+    fn reaches(&mut self, from: usize, to: usize) -> Option<Wired> {
         if !self.awake(to) || self.macs[to].crashed {
-            return Wired::Unreached(format!("mac{to} doesn't answer"));
+            return Some(Wired::Unreached(format!("mac{to} doesn't answer")));
         }
         if self.macs[to].coord.is_none() {
-            return Wired::Unreached(format!("mac{to} runs no coordinator"));
+            return Some(Wired::Unreached(format!("mac{to} runs no coordinator")));
         }
         if from != to && (self.cut[from] > self.t || self.cut[to] > self.t) {
             self.count("requests across a cut");
-            return Wired::Unreached(format!("mac{from} and mac{to} are cut off"));
+            return Some(Wired::Unreached(format!("mac{from} and mac{to} are cut off")));
+        }
+        if self.cfg.net && self.faulting() && from != to && self.rng.chance(P_DROP) {
+            self.count("requests dropped");
+            return Some(Wired::Unreached("dropped".into()));
+        }
+        None
+    }
+
+    /// Mac `from`'s request to Mac `to`'s coordinator (`path`, `body`): what came of it.
+    fn call(&mut self, from: usize, to: usize, path: &str, body: &[u8]) -> Wired {
+        if let Some(w) = self.reaches(from, to) {
+            return w;
         }
         let faulting = self.cfg.net && self.faulting() && from != to;
-        if faulting && self.rng.chance(P_DROP) {
-            self.count("requests dropped");
-            return Wired::Unreached("dropped".into());
-        }
         if faulting && self.rng.chance(P_DELAY) {
             let d = self.rng.range(1, 60);
             if d > CLIENT_S {
@@ -913,14 +984,14 @@ impl World {
             self.count("requests delayed");
             self.macs[from].busy_until = self.macs[from].busy_until.max(self.t + d);
         }
-        let Some((code, v)) = self.deliver(from, to, path, body) else {
+        let Some((code, b)) = self.deliver(from, to, path, body) else {
             return Wired::TimedOut("the connection closed unanswered".into());
         };
         if (faulting && self.rng.chance(P_ANSWER_LOST)) || self.deaf[from] > self.t {
             self.count("answers lost");
             return Wired::TimedOut("the answer was lost".into());
         }
-        Wired::Answered(code, serde_json::to_vec(&v).unwrap_or_default())
+        Wired::Answered(code, b)
     }
 
     /// The requests delayed past their clients' time that arrive now: done, their answers lost.
@@ -940,11 +1011,19 @@ impl World {
     }
 
     /// Request `path` delivered to Mac `to`'s coordinator: its answer, as `http::json` gives it (an
-    /// error a 400); None when its process was killed as its change went to its store
-    /// (`Cfg::kills`).
-    fn deliver(&mut self, from: usize, to: usize, path: &str, body: &[u8]) -> Option<(u16, serde_json::Value)> {
+    /// error a 400), or `GET /pool/brief` its (crate::coord::brief: the brief's bytes, 503 while it
+    /// has none; never gzipped nor 304 here); None when its process was killed as its change went
+    /// to its store (`Cfg::kills`).
+    fn deliver(&mut self, from: usize, to: usize, path: &str, body: &[u8]) -> Option<(u16, Vec<u8>)> {
         let c = self.macs[to].coord.clone()?;
         self.tick(to);
+        if path == crate::coord::brief::PATH {
+            self.served = Some((to, self.macs[to].coords));
+            return Some(match c.brief() {
+                Some(h) => (200, h.json.to_vec()),
+                None => (503, b"{\"error\": \"no brief saved yet\"}".to_vec()),
+            });
+        }
         let store = c.shared.lock().unwrap().keep.store().cloned();
         let before = store.as_ref().map(|s| (s.last(), log_len(&self.macs[to].dir)));
         let r = match c.call(path, body, &host(from)) {
@@ -957,7 +1036,7 @@ impl World {
             return None;
         }
         self.seen_coord(to);
-        Some(r)
+        Some((r.0, serde_json::to_vec(&r.1).unwrap_or_default()))
     }
 
     /// Lead `k`'s process killed as a request's change goes to its store: the change's line landed
@@ -1240,6 +1319,11 @@ impl World {
                 ));
             }
             let handled: BTreeSet<String> = r.reflected.iter().chain(r.rejected.keys()).cloned().collect();
+            for (k, why) in &r.rejected {
+                if why.contains("by GC") && self.gc_refused.insert(k.clone()) {
+                    self.count("hand-offs refused: a name GC removed under their lease");
+                }
+            }
             if let Some(k) = handled.iter().find(|k| !self.made.contains_key(*k)) {
                 self.wrong(format!("epoch {e}'s records name {k}, which no job handed off"));
             }
@@ -1264,8 +1348,126 @@ impl World {
                     lost.len()
                 ));
             }
+            // (No content name GC removed: but one another disk's queue removed, which this lead's
+            // queue never knew of, docs/maplog.md §7.2's limit of a lead moved or its disk
+            // replaced, found only by the uploads' check.)
+            let gen = self.macs[me].gen;
+            for n in r.manifest.values() {
+                match self.removed.get(n) {
+                    Some(&(by, g, at)) if by == me && g == gen => self.wrong(format!(
+                        "epoch {e}'s records at {} name {n}, which mac{me}'s GC removed at {at}",
+                        r.seq
+                    )),
+                    Some(_) => self.count("records naming a file another disk's GC removed"),
+                    None => {}
+                }
+            }
             self.note(|| format!("mac{me} saves epoch {e}'s records at {} ({} hand-offs)", r.seq, handled.len()));
             self.landed.insert(e, (r.seq, handled));
+        }
+    }
+
+    // The map and GC (docs/maplog.md §5.4, §7).
+
+    /// Lead `k`'s agent publishes the map of records `r` (modelled: a batch of the map's log after
+    /// each save that reached the NAS, setting the names the records name and freeing those its
+    /// last map named and these don't), into its feed and GC's queue `q` (`GcQueue::batch`), then
+    /// tells the queue of the records as saved (crate::agent::gcqueue::records, as the agent's
+    /// loop does), at `now` (its clock).
+    fn publish(&mut self, k: usize, r: &Records, q: &store::map::gc::GcQueue, now: u64) {
+        let (gen, seq) = (self.macs[k].gen, self.macs[k].map_seq);
+        let names: BTreeSet<String> = r.manifest.values().cloned().collect();
+        let was = self.maps.get(&(k, gen, seq)).cloned().unwrap_or_default();
+        if seq == 0 || names != was {
+            let set: BTreeMap<String, serde_json::Value> = names
+                .iter()
+                .filter(|n| !was.contains(*n))
+                .map(|n| (format!("f/{n}"), serde_json::json!({ "file": n })))
+                .collect();
+            let b = store::map::Batch {
+                seq: seq + 1,
+                at: now.to_string(),
+                set: serde_json::from_value(serde_json::json!(set)).expect("entries"),
+                freed: was.difference(&names).cloned().collect(),
+                ..Default::default()
+            };
+            let map = Arc::new(map_of(seq + 1, &names));
+            self.macs[k].feed.push(map, &b);
+            q.batch(&b, now);
+            self.maps.insert((k, gen, seq + 1), names);
+            self.macs[k].map_seq = seq + 1;
+        }
+        crate::agent::gcqueue::records(q, r, now);
+    }
+
+    /// Mac `from`'s map server asks lead `to`'s feed for the changes since its map (`/map/changes`,
+    /// store::map::feed::Feed::changes: its cursor noted as heard now), over the network, and
+    /// takes the head's map (by its batches, or a reset).
+    fn map_poll(&mut self, from: usize, to: usize) {
+        if self.reaches(from, to).is_some() {
+            return;
+        }
+        self.tick(to);
+        let (now, gen) = (self.clock(to), self.macs[to].gen);
+        let since = match self.macs[from].map_at {
+            Some((l, g, s)) if (l, g) == (to, gen) => s,
+            _ => 0,
+        };
+        use store::map::feed::Changes;
+        let head = match self.macs[to].feed.changes(since, Some(&host(from)), now) {
+            Changes::NotReady => return,
+            Changes::Reset(h) | Changes::Batches { head: h, .. } => h,
+        };
+        self.polled.insert((from, to), now);
+        self.macs[from].map_at = Some((to, gen, head));
+    }
+
+    /// Lead `k`'s GC removed `names` from the NAS (its queue told them deleted first, `/gc/chunk`):
+    /// none the records it last saw name, nor the map of a map server heard within GC's cursor TTL
+    /// (store::map::gc::CURSOR_TTL_S); one whose server it hasn't heard so long counted.
+    fn gc_removes(&mut self, k: usize, names: &[String], records: Option<&Records>) {
+        let (gen, now) = (self.macs[k].gen, self.clock(k));
+        for n in names {
+            if records.is_some_and(|r| r.manifest.values().any(|v| v == n)) {
+                self.wrong(format!("mac{k}'s GC removed {n}, which the records it saw name"));
+            }
+            for j in 0..self.macs.len() {
+                let Some((l, g, seq)) = self.macs[j].map_at.filter(|&(l, g, _)| (l, g) == (k, gen)) else { continue };
+                if !self.maps.get(&(l, g, seq)).is_some_and(|m| m.contains(n)) {
+                    continue;
+                }
+                let heard = self.polled.get(&(j, k)).copied().unwrap_or(0);
+                if now.saturating_sub(heard) < store::map::gc::CURSOR_TTL_S {
+                    self.wrong(format!(
+                        "mac{k}'s GC removed {n}, which mac{j}'s map server (heard {} s ago) serves",
+                        now - heard
+                    ));
+                } else {
+                    self.count("names GC removed from a map server unheard past the cursor TTL");
+                }
+            }
+            self.note(|| format!("mac{k}'s GC removes {n}"));
+            // (Again by another disk's queue, which never knew of the first: a removal of nothing,
+            // gone already counting as gone.)
+            match self.removed.insert(n.clone(), (k, gen, self.t)) {
+                Some((by, g, _)) if (by, g) == (k, gen) => self.wrong(format!("mac{k}'s GC removed {n} twice")),
+                Some(_) => self.count("names GC removed again by another disk's queue"),
+                None => {}
+            }
+            self.count("names GC removed");
+        }
+    }
+
+    /// Mac `me` opens the brief for its job of lease (`epoch`, `n`), had from Mac `from`'s
+    /// coordinator (its number `coord`): never older than the one that coordinator served as it
+    /// granted the lease (docs/coordination.md step 8d).
+    fn opens(&mut self, me: usize, lease: (u64, u64), from: Option<(usize, u64)>, mark: (u64, u64)) {
+        let Some(&(by, c, Some(at))) = self.grant_marks.get(&lease) else { return };
+        if from == Some((by, c)) && mark < at {
+            self.wrong(format!(
+                "mac{me}'s job of {}-{} opens the brief of {mark:?}, older than {at:?} its lease was granted from",
+                lease.0, lease.1
+            ));
         }
     }
 
@@ -1278,6 +1480,9 @@ impl World {
         {
             self.count("hand-offs outside their step's outputs, refused by every lead");
             Kind::Refused
+        } else if !e.handoff.reused.is_empty() {
+            self.count("hand-offs reusing files on the NAS");
+            Kind::Either
         } else if flaky(e) {
             Kind::Either
         } else {
@@ -1420,7 +1625,8 @@ impl World {
             if k == d && leads == Some(h) && !self.macs[k].caught {
                 self.wrong(format!("the lead mac{d} isn't caught up at the end"));
             }
-            if k != d && leads.is_some() {
+            // (A Mac gone for good never wakes to read the move: it leads nothing.)
+            if k != d && leads.is_some() && !self.macs[k].gone {
                 self.wrong(format!("mac{k} leads {leads:?} at the end, mac{d} declared"));
             }
         }
@@ -1460,6 +1666,13 @@ fn last_segment(dir: &std::path::Path) -> Option<PathBuf> {
     let store = dir.join("coord/store");
     let last = *store::seglog::segments(&store).ok()?.last()?;
     Some(store.join(store::seglog::segment_name(last)))
+}
+
+/// The map at `seq` holding content names `names`, each at its logical name's `f/` key.
+fn map_of(seq: u64, names: &BTreeSet<String>) -> store::map::Map {
+    let e: BTreeMap<String, serde_json::Value> =
+        names.iter().map(|n| (format!("f/{n}"), serde_json::json!({ "file": n }))).collect();
+    store::map::Map::new(seq, String::new(), serde_json::from_value(serde_json::json!(e)).expect("entries"))
 }
 
 /// The world, shared by the Macs' threads.
@@ -1669,7 +1882,7 @@ struct Ran {
 /// Runs seed `seed`: two to four Macs, by the seed.
 fn run(seed: u64, cfg: Cfg, tracing: bool) -> Ran {
     store::seglog::UNSYNCED.store(true, Ordering::Relaxed);
-    let macs = 2 + (seed % 3) as usize;
+    let macs = if cfg.macs > 0 { cfg.macs } else { 2 + (seed % 3) as usize };
     let sh = Arc::new(Shared { w: Mutex::new(World::new(seed, macs, cfg, tracing)), cv: Condvar::new() });
     let threads: Vec<_> = (0..macs)
         .map(|k| {
@@ -1764,7 +1977,7 @@ fn var(name: &str, or: u64) -> u64 {
 
 /// Each kind of take-up and fault, and what the knobs bring, that the default runs must see at
 /// least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 29] = [
+const KINDS: [&str; 31] = [
     "hand-offs outside their step's outputs, refused by every lead",
     "take-ups from its own records",
     "take-ups from the one path's records",
@@ -1794,6 +2007,8 @@ const KINDS: [&str; 29] = [
     "lead stores restored from the backup",
     "leads moved",
     "leads moved with their reads failing",
+    "jobs not started: the lead away",
+    "hand-offs reusing files on the NAS",
 ];
 
 #[test]
@@ -1876,6 +2091,35 @@ fn every_fault_at_once_keeps_the_invariants() {
     let counts = check_all(10_000..10_000 + var("POOL_SIM_SEEDS", 60), Cfg::all);
     for what in ["leads killed mid-append", "lead stores restored from the backup", "leads moved", "Macs cut off"] {
         assert!(counts.get(what).is_some_and(|&n| n >= 3), "{what}: {counts:?}");
+    }
+}
+
+#[test]
+fn gc_keeps_its_grace_and_cursors_through_hours_away() {
+    // GC on the lead (docs/maplog.md §7, tasks #1106, #1134) through hours of faults: three Macs,
+    // mac1 asleep seven hours from five minutes in (its map server unheard past CURSOR_TTL_S, 6 h),
+    // Macs cut off for up to six hours, the network's faults. A name is removed only past GRACE_S
+    // (1 h), the records it saw naming none, nor any map server heard within the TTL; no records
+    // name a removed name (but another disk's queue's, counted). A hand-off reusing a name removed
+    // under its lease is refused, saying why (counted: rare, since a live lease, an away member's
+    // too, holds every name freed after its grant, and a member's map server heard holds its map's).
+    let faults = 7 * 3600 + 1800;
+    let counts = check_all(30_000..30_000 + var("POOL_SIM_SEEDS", 12), |_| Cfg {
+        faults,
+        end: faults + 1500,
+        macs: 3,
+        nap: true,
+        net: true,
+        partitions: true,
+        ..Cfg::pool()
+    });
+    eprintln!("{counts:#?}");
+    for what in [
+        "names GC removed",
+        "names GC removed from a map server unheard past the cursor TTL",
+        "Macs asleep seven hours",
+    ] {
+        assert!(counts.get(what).is_some_and(|&n| n >= 1), "{what}: {counts:?}");
     }
 }
 
