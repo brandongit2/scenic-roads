@@ -1295,6 +1295,10 @@ UTM north zone (EPSG:26901–26923: USGS's 1 m tiles; NAD83(2011) taken as NAD83
 the same Helmert, not PROJ's null pick for EPSG:269zz, a metre off in the north-east), for the
 input check, the plan (`declared::projected_cells`, `plan_converted`) and the sampler
 (`proj::Projection`, in crate::dem::generic) and the deep terrain's reading ahead (`terrain_deep::plan_files`, `plan_items`).
+The sampler projects a batch's points by `proj::Projector` (task #1098): a sampled tile's rows
+share a latitude and its columns a longitude, so the sines and cosines of the geocentric point
+(x = (n·cos φ)·cos λ, y = (n·cos φ)·sin λ, as the one expression multiplied them) are worked out
+a row's and a column's, the rest a point's: the same bits as `Projection::project`.
 
 **Ingesting.**
 - **Order at a point:** the datasets covering it by `rank`, then resolution (finest first), then

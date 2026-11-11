@@ -394,6 +394,76 @@ a batch then its z6 tiles alone, the same content names): waiting on a z6 tile's
 of copying ahead beside the work); the batches 117.1 and 127.8 s against 141.9 and 127.8 s alone,
 within the M4's noise. slope-deep unchanged (its batch since #928), not timed again.
 
+## 4h. What task #1098 did (11 Nov): the sampler's per-point costs
+
+Profiled on the M4 with `sample` (140 s of `terrain-same 10/321/338`'s sampling, 4 threads, main at
+6c769848), of the process's CPU: the points' projection to EPSG:3979 (`Sampler::projections`) 29 %
+(the profiler lost some of its frames: its `atan2` with no caller adds 6 % more), the WebP encode
+17.5 % (#888's `combined` 7.2 %, libwebp's `GetCombinedEntropyUnrefined_C` 2.1 %, `VP8LHashChainFill`
+2.0 %), the blends' distances 13.4 %, the GeoTIFF sampling 8.8 %, the read-ahead's list of blocks
+(`Reader::ahead`) 6.6 %, and parallel filters over every point of a batch 8 % (each dataset's points,
+each blend's, each geoid conversion's, a pass each over the 4.2 M points of a chunk). Hashing with
+SipHash a point (the read-ahead's windows and files, the distances' file transforms) was 4 % of it.
+The LZW decode was 1 %, the block decode and read under 2 %: no block is decoded twice.
+
+| change | before → after (the profile's share of the CPU) |
+|---|---|
+| **A batch projected by `proj::Projector`**: a sampled tile's rows share a latitude and its columns a longitude, so the geocentric point's sines and cosines (x = (n·cos φ)·cos λ, y = (n·cos φ)·sin λ: the one expression multiplied left to right, the same bits) are a row's and a column's (its latitude kept, its longitudes in 2,048 slots by their bits), the Helmert, the geodetic latitude and the Lambert a point's. | the projection 29 % → 25 % of a CPU that is itself a fifth less: its `sin`, `cos` and `rem_pio2` 10.9 % → 5.2 % of the samples, about 100 → 61 thousand samples in the same 140 s |
+| **A dataset's points, the blends' and the geoid's picked in one pass a batch** (`picked`, `by_key`: runs of 65,536 points on the target's pool, each list ascending as before): were a rayon filter over every point of the batch for each dataset, each blend and each geoid conversion (the geoid's and the blends' now by one pass grouping the points by their first and their second dataset). | 8 % → 1 % |
+| **The read-ahead's blocks listed with a point's file and window looked up only where they aren't the point before's** (`GeoSet::blocks_ahead`, `sample::blocks_read`): were a BTreeMap entry and a SipHash insert a point. | 6.6 % → 2.9 % |
+| **The distances' file transforms by file number** (`GeoSet::distance`): were a SipHash lookup twice a point. | the distances 13.4 % → 8.4 % (with the rest of the run a fifth less) |
+| **A block's points sorted unstable** (`sample_raster_noting`: each is sampled alone, so their order within a block changes nothing). | its sort 1.5 % → under 0.5 % |
+
+The heights are the same to the bit: every run below had the manifest's content names (deep
+02e54b896b199b6f / mid e2a73323ce2adb71; hi 9a23248d786d9a1e / mid 5fd1d526190eb3bc; hi
+9408f71b40b661fb / mid 1d7e9fe18d7e0e28; lo b7effd8690bb7665), and a test projects a tile's grid, random points,
+repeats and NaN by a `Projector` and by `project`, and the geocentric point from its parts against
+the one expression, to the bit.
+
+Measured with `terrain-same` (release; `SCENIC_CACHE` the runs' own, its coverage file cloned in;
+a first run to warm the scratch's Terrarium tiles and copies not counted), main (6c769848) and the
+branch ABBA, the M4 at load 7–41 (other agents' work and the pool's jobs: its wall is noisy, its CPU
+less so). CPU is user + sys of the process (`time -l`). The deep pair's branch build also tested whether any file of the CRS could hold a point's square before projecting it, cut since: HRDEM's files are 500 km squares, so it left no point unprojected there.
+
+| step, target | threads | main CPU s | branch CPU s | change | main wall s | branch wall s |
+|---|---|---|---|---|---|---|
+| terrain-deep 10/321/338 (HRDEM 1 m, 2 m, GLO-30, Terrarium; 3,733 tiles) | 4 | 573.1, 624.9 | 484.9, 473.5 | −20 % | 168.6, 254.9 | 182.5, 149.8 |
+| terrain-hi 6/37/17 (GLO-30, Terrarium; 1,344 tiles) | 3 | 105.9, 115.2 | 99.0, 100.0 | −10 % | 74.2, 75.8 | 59.7, 56.1 |
+| terrain-hi 6/16/19 (HRDEM, GLO-30; its deep mids taken in) | 3 | 33.3, 32.7 | 32.4, 28.6 | −8 % | 70.0, 35.5 | 80.9, 45.1 |
+| terrain-lo 3/7/6 (1,365 tiles; its levels mostly the encode) | 3 | 72.4, 70.4 | 80.0, 72.1 | none (+6 %, within the runs' spread) | 111.8, 73.8 | 121.9, 180.5 |
+
+10/321/338's phases by their own CPU (task #1116), main → branch: the sampling's own threads'
+`sampling hrdem-1m` 67 → 46 s, `sampling hrdem` 28 → 17 s, `sampling glo30` 25 → 16 s, `blending the
+edges` 89 → 61 s, `bringing the heights to EGM2008` 19 → 6 s, the pool's work in `sampling the
+terrain pool into raw tiles` 197 → 148 s (the projections, the filters, the reading order); `making
+the tiles, shading and encoding them` 169 → 167 s, unchanged. slope-hi and slope-deep read no
+elevation dataset and share only the WebP encode with the terrain, which this task didn't change: not
+timed.
+
+Not done:
+- **An affine (or any) fit of the projection per square.** It cannot keep the heights to the bit:
+  a point's bilinear weights are `(c − ⌊c⌋)` rounded to an f32, and an f32 near 0.5 has an ulp of
+  6·10⁻⁸ pixel (less nearer 0), so a point moved by δ pixels lands in another f32 for a share of the
+  points near δ/ulp (all of them past about 10⁻⁷), and the blends' distances (and so their weights)
+  move with any δ at all. An affine fit's error over a square of side L is about L²/(8R) (R the
+  Earth's radius): under 10⁻⁹ m only for L under about 0.2 m. A fit over 64 m squares (δ about
+  10⁻⁴ m) would change most points' heights in their last f32 bits, and after the rounding to 1 cm
+  and Terrarium's 1/256 m some pixels a quantum (§4b's geoid lattice changed 26 of 328 M pixels for a
+  comparable change), every terrain key with them (a rebuild of the world). What it would save: the
+  projection is now about a quarter of the profile's CPU, some 100 of a 10/321/338 run's 480 CPU s. A
+  fallback to the exact projection where a point's weights or distances could change would fall back
+  for nearly every point (the margin above), so no gain. Left for the owner's decision.
+- **The WebP encode** (now about a quarter of a deep run's CPU in the profile): its combined
+  entropy kept for each accumulated histogram (libwebp passes one for every mode or multiplier tried
+  on a tile, the tile's own histogram 20 of 256 bins full on average) was tried and was 7 % slower
+  than #888's `combined` over 20 terrain tiles (the 1 KB comparison and the misses cost more than the
+  empty bins saved: #888's runs at about 100 ns a call, 116,000 calls a tile): not kept.
+  `GetCombinedEntropyUnrefined_C` (2–3 %), `VP8LHashChainFill` (2–3 %) and the colour transforms'
+  collection (1.6 %, SSE2 in libwebp, no NEON) are each a small share; not done.
+- **The EGM2008 conversion**: its own CPU on 10/321/338 is 19 s on main, 6 s here (its filters
+  went with the picking above); the 276 CPU s of the board's median terrain-deep run is likely a record before
+  task #1116, whose phase CPU counted the other threads' work (this file's head).
+
 ## 5. Not done, with what the data says (the ranking of what's left)
 
 1. **GSI's tiles fetched live, every run (41 % of terrain-hi: 58.6 h in 16 Japan runs; the
