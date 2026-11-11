@@ -69,14 +69,18 @@
 #                                                   to plan (the fake pass job marks its filter done
 #                                                   in its scratch folder, notes the unmerged file
 #                                                   it was given, and hands off the pass's marker)
-#   pool-two-macs.sh progress <folder> <member> <host> <date> [done]
-#                                                   that member's progress file holding the pass of
-#                                                   <date>, noted now (as its Mac's agent notes a
-#                                                   pass stopped there mid-stage)
-#   pool-two-macs.sh placement <folder> [off]       state/pool/placement in the scratch folder:
-#                                                   members' asks and tasks placed by how crucial
-#                                                   and by measured speed, jobs offering ahead
-#                                                   (`off`: the switch removed)
+#   pool-two-macs.sh progress <dir> <member> <host> <date> [done]
+#                                                   that member's progress (<dir>/agent/progress.json,
+#                                                   on its Mac's disk) holding the pass of <date>,
+#                                                   noted now (as its Mac's agent notes a pass
+#                                                   stopped there mid-stage); before its agent
+#                                                   starts, which reads it once and tells the lead
+#                                                   in its beats
+#   pool-two-macs.sh placement <dir> [off]          the pool's setting `placement` asked of <dir>'s
+#                                                   agent (`scenic pool set`), which sends it to the
+#                                                   lead: members' asks and tasks placed by how
+#                                                   crucial and by measured speed, jobs offering
+#                                                   ahead (`off`: off)
 #   pool-two-macs.sh task <dir> [off]               each fake job offers a task through its Mac's
 #                                                   coordinator or broker (SCENIC_COORD) before it
 #                                                   sleeps, and notes the task's state as it ends
@@ -303,9 +307,9 @@ EOF
     if [[ -n ${5:-} ]]; then print -n $5 > $d/mem-mb; else rm -f $d/mem-mb; fi
     ;;
   placement)
-    r=${2:?the scratch folder}
-    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
-    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/placement; else mkdir -p $r/state/pool; : > $r/state/pool/placement; fi
+    d=${2:?its folder}; d=${d:a}
+    v=on; [[ ${3:-} == off ]] && v=off
+    $d/v/app/current/scenic-real pool set placement $v --home $d/agent
     ;;
   task)
     d=${2:?its folder}
@@ -319,11 +323,10 @@ EOF
     print -n jar > $r/sources/basemap/planetiler.jar
     ;;
   progress)
-    r=${2:?the scratch folder} m=${3:?its member} h=${4:?its host} date=${5:?the pass date}
-    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
-    mkdir -p $r/state/pool/progress
+    d=${2:?its folder} m=${3:?its member} h=${4:?its host} date=${5:?the pass date}
+    mkdir -p $d/agent
     done=false; [[ ${6:-} == done ]] && done=true
-    print -n "{\"member\":\"$m\",\"worker\":\"$h\",\"jobs\":{\"osm-pass $date\":{\"at\":$(date +%s),\"done\":$done}}}" > $r/state/pool/progress/$m.json
+    print -n "{\"member\":\"$m\",\"worker\":\"$h\",\"jobs\":{\"osm-pass $date\":{\"at\":$(date +%s),\"done\":$done}}}" > $d/agent/progress.json
     ;;
   newest)
     d=${2:?its folder}
