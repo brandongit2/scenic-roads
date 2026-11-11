@@ -460,6 +460,14 @@ impl Land {
         })
     }
 
+    /// Whether the cell (wrapped column) has any land, without reading it.
+    pub fn has(&self, c: Cell) -> bool {
+        match self {
+            Land::Memory(m) => m.get(&c).is_some_and(|a| !a.is_empty()),
+            Land::File { index, .. } => index.contains_key(&c),
+        }
+    }
+
     /// Whether it has any land.
     pub fn is_empty(&self) -> bool {
         match self {

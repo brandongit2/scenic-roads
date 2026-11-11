@@ -502,13 +502,25 @@ none of its land joins the region with water it shares the longest edge with; an
 (2°), land in two regions is taken from those of them with water. Then each piece still in no
 region (its cells' pieces joined across the cells' edges, as the stretches are) within 100 m of land
 up to `sliver_km2` joins the region with water it shares the longest edge with, as does one
-touching none (a hole in the zones' water off any coast, where their source has a rock OSM hasn't);
-one over `sliver_km2` touching none stays. Land in no region
+touching none (a hole in the zones' water off any coast, where their source has a rock OSM hasn't).
+A larger stretch is some country's where it is: each of its pieces touching land (a lagoon, an
+estuary, a creek the zones stop short of: the Ringkøbing Fjord, the Indus delta), unless the stretch
+reaches the open sea (a cell with no land in it or the eight round it: past a coast no zone has),
+and each piece's part inside a 200-nmi zone (any of Marine Regions' zones with its internal
+waters). That goes to the regions with water the stretch shares an edge with: to the one, or split
+among several by nearest edge (`geom::nearest`, the median line), a warning (`unnamed`, naming them
+and their shares) when it is split and over `sliver_km2`: a place no region names, likely disputed,
+whose owner a region's water should name. What's left of it, the open sea beyond every zone, stays. Land in no region
 over `sliver_km2` (a stretch joined across the cells' edges) is an error (`rg-cover`), found at a
 point inside its largest part of land and naming the regions with water that had any of it both
 (taken from both); where most of such a stretch is land two regions with water both had, the error
 is that land in two regions (`overlap`), at a point inside it, naming them. The region whose water is
-`rest` takes what's left; without one, water left is an error, as is water in two regions. A region
+`rest` takes what's left, the high seas; without one, water left is an error, as is water in two
+regions. The rest's water inside a zone over `HAIR_KM2` (0.1 km²) in a cell is an error
+(`rest-in-zone`: no region with water borders it). Then the regions as they end are measured cell by
+cell (`tiles::Fit`): two regions both covering more than `HAIR_KM2` (summed over the cells), or a
+cell's area in no region, the rest included, over it, is an error (`overlap-after`, `gap-after`):
+one partition: every border two regions share, land or water, is one edge of both. A region
 without `water` resolves as before, and no new rule changes it: a hand-out gives only to regions
 with water (naming one without is `rg-ref`), and one without `water` may not name one with it
 (`rg-ref`). So old and new files sit together, and `cover = "earth"` only holds once every
@@ -714,13 +726,18 @@ whole; a cell it can't read fails the check (an error, not findings, never a pan
 regions. Without it a region with water is held (`rg-data`). `scenic-build regions-land --set <pbf>
 --to <file>` makes it from a local coastline set into a local file.
 
-`scenic-build regions-check --dir <folder> --declarations <folder> [--land <file>]` runs the check on a scratch folder in memory with the datasets those declarations name,
+`scenic-build regions-check --dir <folder> --declarations <folder> [--land <file>] [--geometry <dir>]` runs the check on a scratch folder in memory with the datasets those declarations name
+(`--geometry`: each region's stored geometry written there as `<id>.rgeo`, to look at),
 and reports each region's size (a region with water's land and water each read cell by cell and
-summed, never one overlay of the whole: the high seas' would be ~200,000 points).
+summed, never one overlay of the whole: the high seas' would be ~200,000 points), and, with
+`cover`, how they fit (`fit`, from `tiles::Fit`): each pair's land and water both had before the
+cover check settled them, each stretch in no region (its area, its share inside a zone, its land,
+whether it touches land, a point in it, the regions it borders and where it went), and after: each
+pair's overlap, each cell's gap and the rest's water inside a zone.
 
 #### 6.1.8 Checks
 
-All errors; ids `rg-<check>.<hash16>`.
+All errors but `rg-cover`'s `unnamed`, a warning; ids `rg-<check>.<hash16>`.
 
 | Check | Raised when |
 |---|---|
@@ -746,7 +763,7 @@ All errors; ids `rg-<check>.<hash16>`.
 | `rg-hand-out` | a `hand_out_all` region left with land or water no region of its folder could take |
 | `rg-rest` | `rest` in more than one region's water |
 | `rg-rules` | a `_rules.toml` that doesn't parse or has an unknown field or value |
-| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region, or mostly in two regions with water, over `sliver_km2` |
+| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region, or mostly in two regions with water, over `sliver_km2`; the rest's water inside a zone (`rest-in-zone`), two regions overlapping or area in none after the check (`overlap-after`, `gap-after`), each over `HAIR_KM2` (0.1 km²); a warning: a stretch in no region's parts over `sliver_km2` split among several regions by nearest edge (`unnamed`) |
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.

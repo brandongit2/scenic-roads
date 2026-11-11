@@ -189,6 +189,11 @@ fn world_with(north: f64) -> World {
 
 /// The world with more land.
 fn world_more(north: f64, more: Vec<Vec<geom::Ring>>) -> World {
+    world_zones(north, more, HashMap::new())
+}
+
+/// The world with more land and more zones.
+fn world_zones(north: f64, more: Vec<Vec<geom::Ring>>, zones: HashMap<u64, Vec<geom::Ring>>) -> World {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(
         d.path(),
@@ -203,7 +208,8 @@ fn world_more(north: f64, more: Vec<Vec<geom::Ring>>) -> World {
         vec![bx(0.0, 0.0, 1.2, north), bx(2.0, 0.0, 3.0, 1.0), bx(1.6, 1.4, 1.62, 1.42), bx(20.0, 20.0, 21.0, 21.0)];
     let land = [land, more].concat();
     let zone1 = vec![bx(-1.0, -1.0, 4.0, 2.5)[0].clone()];
-    let eez = HashMap::from([(1, zone1), (2, bx(5.0, 5.0, 6.0, 6.0))]);
+    let mut eez = HashMap::from([(1, zone1), (2, bx(5.0, 5.0, 6.0, 6.0))]);
+    eez.extend(zones);
     let lakes = HashMap::from([(77, bx(0.2, 0.2, 0.4, 0.4)), (78, bx(0.6, 0.6, 0.61, 0.61))]);
     let data = Datasets::from_parts(eez, HashMap::new(), HashMap::new(), lakes, land, "fixture");
     World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d }
@@ -1042,4 +1048,49 @@ fn the_land_file_reads_back_by_cell() {
     let last = *t.cells.keys().last().unwrap();
     assert!(s.cell(last).is_empty());
     assert!(s.failed().unwrap_err().to_string().contains("the regions' land"));
+}
+
+/// Land round a hole of sea (a lagoon, a creek the zones stop short of): the hole is the land's
+/// country's, never the rest's; one hole two regions border is split at the median line between
+/// their coasts, a warning that names them (#1127).
+#[test]
+fn sea_the_zones_stop_short_of_is_the_countries_it_borders() {
+    let ring = |w: f64, s: f64, e: f64, n: f64| bx(w, s, e, n).remove(0);
+    // One land with a lagoon (about 1,000 km²) inside one region, one with a creek across two.
+    let lagoon = vec![ring(30.0, 30.0, 31.0, 31.0), ring(30.3, 30.3, 30.7, 30.6)];
+    let creek = vec![ring(40.0, 40.0, 42.0, 41.0), ring(40.8, 40.2, 41.2, 40.8)];
+    let w = world_more(1.002, vec![lagoon, creek]);
+    let lag = "id = \"lag\"\nname = \"Lagoon land\"\noutline = [\"box:29.9,29.9,31.1,31.1\"]\nwater = []\n";
+    let west = "id = \"west\"\nname = \"West\"\noutline = [\"box:39.9,39.9,41.0,41.1\"]\nwater = []\n";
+    let east = "id = \"east\"\nname = \"East\"\noutline = [\"box:41.0,39.9,42.1,41.1\"]\nwater = []\n";
+    let mut files = all();
+    files.extend([("lag.toml", lag), ("west.toml", west), ("east.toml", east)]);
+    let out = run(&w, &files);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    let owner =
+        |x: f64, y: f64| -> Vec<&str> { out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect() };
+    assert_eq!(owner(30.5, 30.45), vec!["lag"], "the lagoon");
+    assert_eq!(owner(40.9, 40.5), vec!["west"], "the creek's west half");
+    assert_eq!(owner(41.1, 40.5), vec!["east"], "the creek's east half");
+    assert_eq!(owner(50.0, 50.0), vec!["high-seas"]);
+    // Only the creek is said: split between two regions by nearest edge.
+    let said: Vec<_> = out.problems.iter().collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].warning && said[0].found[0] == "unnamed" && said[0].about == vec!["east", "west"], "{said:?}");
+    assert!(out.fit.after_overlaps.values().all(|k| *k <= tiles::HAIR_KM2), "{:?}", out.fit.after_overlaps);
+    assert!(out.fit.after_gaps.is_empty(), "{:?}", out.fit.after_gaps);
+}
+
+/// A zone no region names and none borders is the rest's, and an error: the high seas take only
+/// the water beyond every zone (#1127).
+#[test]
+fn a_zone_no_region_has_is_an_error() {
+    let w = world_zones(1.002, Vec::new(), HashMap::from([(3, bx(60.0, 60.0, 60.5, 60.5))]));
+    let out = run(&w, &all());
+    assert!(
+        out.problems.iter().any(|p| !p.warning && p.check == "rg-cover" && p.found == vec!["rest-in-zone"]),
+        "{:?}",
+        out.problems
+    );
+    assert!(out.fit.rest_in_zones.values().sum::<f64>() > 1000.0, "{:?}", out.fit.rest_in_zones);
 }

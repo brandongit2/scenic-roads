@@ -19,10 +19,12 @@ use super::stored::{Drawn, Geometry, Shape};
 use buildstore::outlines::Outlines;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A problem that holds files (an error finding, §6.1.8): its check (`rg-<check>`), what it's about
+/// A problem that holds files (an error finding, §6.1.8, or a warning one): its check (`rg-<check>`), what it's about
 /// (region ids, file names: the finding's identity), what was found, the files it holds, in words.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Problem {
+    /// A warning (usable, likely a mistake: held until accepted), not an error.
+    pub warning: bool,
     pub check: &'static str,
     pub about: Vec<String>,
     pub found: Vec<String>,
@@ -163,6 +165,7 @@ impl Folder {
         }
         for (id, ps) in by_id.into_iter().filter(|(_, ps)| ps.len() > 1) {
             f.problems.push(Problem {
+                warning: false,
                 check: "rg-dup-id",
                 about: vec![id.clone()],
                 found: ps.clone(),
@@ -177,6 +180,7 @@ impl Folder {
         }
         for (n, ps) in by_name.into_iter().filter(|(_, ps)| ps.len() > 1) {
             f.problems.push(Problem {
+                warning: false,
                 check: "rg-dup-id",
                 about: vec![n.clone()],
                 found: ps.clone(),
@@ -301,6 +305,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
         if let Some(d) = folder.deps(r).into_iter().find(|d| folder.regions.get(d).is_some_and(|(_, x)| x.has_water()))
         {
             out.problems.push(Problem {
+                warning: false,
                 check: "rg-ref",
                 about: vec![id.clone(), format!("region:{d}")],
                 found: vec!["water".into()],
@@ -332,6 +337,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
                     return (
                         id.clone(),
                         Err(Problem {
+                            warning: false,
                             check: "rg-ref",
                             about: vec![id.to_string(), format!("region:{dep}")],
                             found: vec!["held".into()],
@@ -450,6 +456,7 @@ fn visit(
             ring.sort();
             let files: Vec<String> = ring.iter().filter_map(|r| folder.regions.get(r).map(|x| x.0.clone())).collect();
             out.problems.push(Problem {
+                warning: false,
                 check: "rg-loop",
                 about: ring.clone(),
                 found: Vec::new(),
@@ -468,6 +475,7 @@ fn visit(
     for dep in deps.iter().map(String::as_str) {
         if !folder.regions.contains_key(dep) {
             out.problems.push(Problem {
+                warning: false,
                 check: "rg-ref",
                 about: vec![id.to_string(), format!("region:{dep}")],
                 found: Vec::new(),
@@ -486,6 +494,7 @@ fn visit(
     }
     if let Some(dep) = deps.iter().map(String::as_str).find(|d| held.contains(*d)) {
         out.problems.push(Problem {
+            warning: false,
             check: "rg-ref",
             about: vec![id.to_string(), format!("region:{dep}")],
             found: vec!["held".into()],
@@ -519,7 +528,7 @@ fn visit(
 }
 
 fn problem(check: &'static str, r: &Region, path: &str, found: Vec<String>, message: String) -> Problem {
-    Problem { check, about: vec![r.id.clone()], found, files: vec![path.to_string()], message }
+    Problem { warning: false, check, about: vec![r.id.clone()], found, files: vec![path.to_string()], message }
 }
 
 /// A part's geometry before the frame: rings (or a line's points), E7, as read.
@@ -696,6 +705,7 @@ pub(super) fn gather(
                         format!("{}: {key}: no shape file of that name in the folder", r.id),
                     )),
                     Some((sp, Err(e))) => ps.push(Problem {
+                        warning: false,
                         check: "rg-shape",
                         about: vec![r.id.clone()],
                         found: vec![key.clone(), e.clone()],

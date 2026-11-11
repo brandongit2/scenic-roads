@@ -131,7 +131,7 @@
 //!                                or time changed)
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   catalogue                      publish a catalogue of the build manifest
-//!   regions-check --dir d [--declarations d] [--report f]   the regions' check on a scratch
+//!   regions-check --dir d [--declarations d] [--report f] [--geometry d]   the regions' check on a scratch
 //!                                folder, in memory: findings and sizes. Reads only
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing). `--help` (or
@@ -327,7 +327,16 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // made by hand), with --declarations; else the records' for the current pass.)
         let land = opt(&args, "--land").map(PathBuf::from);
         let m = buildstore::records::read_manifest(&root)?;
-        let rep = ::inputs::inputs::regions::read::check_folder(&root, &m, &dir, decl.as_deref(), land.as_deref())?;
+        // (`--geometry <dir>`: each region resolved written there as <id>.rgeo, to look at.)
+        let geometry = opt(&args, "--geometry").map(PathBuf::from);
+        let rep = ::inputs::inputs::regions::read::check_folder(
+            &root,
+            &m,
+            &dir,
+            decl.as_deref(),
+            land.as_deref(),
+            geometry.as_deref(),
+        )?;
         let n = rep["findings"].as_array().map_or(0, Vec::len);
         println!(
             "regions-check: {} files, {} regions, {} resolved, {:.0} km² of the Earth's {:.0}; {n} findings",

@@ -389,8 +389,9 @@ pub fn coverage_of_folder(
     Ok((coverage_of(&geoms), n))
 }
 
-/// A scratch folder of region files checked (`scenic-build regions-check`): every finding, and each
-/// region resolved, with its size. Against the records' current pass, the datasets those that
+/// A scratch folder of region files checked (`scenic-build regions-check`): every finding, each
+/// region resolved, with its size, and how they fit (`fit`); `geometry`, a folder each region's
+/// stored geometry is written to. Against the records' current pass, the datasets those that
 /// `declarations` (a folder of source declarations) names when given; reads, stores nothing.
 pub fn check_folder(
     root: &store::nasfs::NasRoot,
@@ -398,6 +399,7 @@ pub fn check_folder(
     dir: &Path,
     declarations: Option<&Path>,
     land: Option<&Path>,
+    geometry: Option<&Path>,
 ) -> Result<serde_json::Value> {
     let mut paths = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), String::new())];
@@ -470,6 +472,12 @@ pub fn check_folder(
     findings.extend(out.problems.iter().map(super::problem_finding));
     let mut regions = serde_json::Map::new();
     let (mut total, mut enabled_km2) = (0.0, 0.0);
+    if let Some(d) = geometry {
+        std::fs::create_dir_all(d)?;
+        for (id, res) in &out.resolved {
+            std::fs::write(d.join(format!("{id}.rgeo")), res.geometry.encode())?;
+        }
+    }
     for (id, res) in &out.resolved {
         super::geom::set_label(format!("the report's size of {id}"));
         let km2 = km2_of(&res.geometry.shapes, folder.regions[id].1.has_water());
@@ -516,6 +524,7 @@ fn fit_report(f: &super::tiles::Fit) -> serde_json::Value {
             "at": [g.at[0] as f64 / 1e7, g.at[1] as f64 / 1e7], "to": g.to,
             "edges_km": g.edges.iter().take(4).map(|(id, l)| serde_json::json!([id, r(*l)])).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "after_overlaps": f.after_overlaps.iter().map(|((a, b), v)| serde_json::json!({"a": a, "b": b, "km2": r(*v)})).collect::<Vec<_>>(),
+        "rest_in_zones": f.rest_in_zones.iter().map(|(c, v)| serde_json::json!({"cell": [c.0 * 2, c.1 * 2], "km2": r(*v)})).collect::<Vec<_>>(),
         "after_gaps": f.after_gaps.iter().map(|(c, v)| serde_json::json!({"cell": [c.0 * 2, c.1 * 2], "km2": r(*v)})).collect::<Vec<_>>(),
     })
 }

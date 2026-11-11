@@ -163,6 +163,7 @@ pub fn get_problems(g: &mut Get) -> Result<Vec<Problem>> {
     (0..g.count(40)?)
         .map(|_| {
             Ok(Problem {
+                warning: false,
                 check: check_name(&String::from_utf8(g.bytes()?)?),
                 about: get_strs(g)?,
                 found: get_strs(g)?,

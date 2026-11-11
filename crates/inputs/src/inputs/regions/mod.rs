@@ -67,8 +67,10 @@ pub struct Regions {
 /// coast's land and sea within COAST_REACH_M go to the nearest region, split at the median line.
 /// 9: #468: land mostly in two regions with water said as an overlap; nearest-coast splits reach
 /// past 450 km. 10: #468: the 12-nautical-mile line stored with the pins; the coastline's land the
-/// pass's own, by cell. 11: #862: roadcore::geo's one Earth and even-odd test, `det`'s maths.)
-pub const RESOLUTION: u32 = 11;
+/// pass's own, by cell. 11: #862: roadcore::geo's one Earth and even-odd test, `det`'s maths.
+/// 12: #1127: with cover, a stretch in no region over sliver_km2 that is some country's (touching
+/// land, or inside a 200-nmi zone) goes to the regions with water it borders, never the rest.)
+pub const RESOLUTION: u32 = 12;
 
 /// What `derive` records a region was resolved from (`resolved_from`): its resolution key
 /// (`resolve::Outcome::keys`) with `RESOLUTION`.
@@ -196,7 +198,14 @@ fn finding(f: &file::Fault, path: &str) -> Finding {
 pub fn problem_finding(p: &resolve::Problem) -> Finding {
     let about: Vec<&str> = p.about.iter().map(String::as_str).collect();
     let found: Vec<&str> = p.found.iter().map(String::as_str).collect();
-    Finding::new(p.check, Level::Error, &about, &found, p.files.clone(), p.message.clone())
+    Finding::new(
+        p.check,
+        if p.warning { Level::Warning } else { Level::Error },
+        &about,
+        &found,
+        p.files.clone(),
+        p.message.clone(),
+    )
 }
 
 impl Checks for Regions {
