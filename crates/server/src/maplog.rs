@@ -388,25 +388,38 @@ pub struct MirrorLink {
     link: Link,
     client: String,
     synced: Option<u64>,
+    /// A reset answered and not yet acted on (`tell`, `reset_done`): the lead's head then.
+    reset: Option<u64>,
 }
 
 impl MirrorLink {
     /// The mirror's link, for the server following the lead of `cfg` (its cursor `mirror/<host>`).
     pub fn new(d: Arc<Data>, cfg: &Config) -> MirrorLink {
         let host = cfg.client.strip_prefix(store::map::feed::SERVER).unwrap_or(&cfg.client);
-        MirrorLink { link: Link::new(d, cfg), client: format!("{}{host}", store::map::feed::MIRROR), synced: None }
+        let client = format!("{}{host}", store::map::feed::MIRROR);
+        MirrorLink { link: Link::new(d, cfg), client, synced: None, reset: None }
     }
 
     /// Says the cursor (`since`) and the map the round copies: the lead's head when it answers a
-    /// reset (the cursor outside the batches it holds, or not held: store::map::feed::MIRROR). The
-    /// lead away, asked again next round.
+    /// reset (the cursor outside the batches it holds, or not held: store::map::feed::MIRROR), or
+    /// answered one before that the caller hasn't acted on (`reset_done`). The lead answers a reset
+    /// once: its next answer has heard the cursor, so a reset the caller can't act on yet is kept
+    /// here. The lead away, asked again next round.
     pub fn tell(&mut self, since: u64, copying: u64) -> Option<u64> {
         let mut path = format!("/map/changes?since={since}&client={}&copying={copying}", self.client);
         if let Some(s) = self.synced {
             path.push_str(&format!("&synced={s}"));
         }
-        let b = self.link.get(&path, 10).ok()?;
-        serde_json::from_slice::<Answer>(&b).ok()?.reset
+        let answered = self.link.get(&path, 10).ok().and_then(|b| serde_json::from_slice::<Answer>(&b).ok());
+        if let Some(head) = answered.and_then(|a| a.reset) {
+            self.reset = Some(self.reset.map_or(head, |r| r.max(head)));
+        }
+        self.reset
+    }
+
+    /// The reset `tell` gave acted on.
+    pub fn reset_done(&mut self) {
+        self.reset = None;
     }
 
     /// A round through everything wanted at map `n`: said at once (with the cursor `since`) when

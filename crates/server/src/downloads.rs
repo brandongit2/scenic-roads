@@ -981,9 +981,10 @@ impl Downloads {
     }
 
     /// The lead answered the mirror's cursor a reset (docs/maplog.md §6.2: outside its log, or not
-    /// held by GC: new, or unheard or at one map `CURSOR_TTL_S`, 6 h): each Update of a map older
-    /// than the one served goes on at the one served, whose files the NAS has (an older map's may
-    /// have gone with GC meanwhile). What a download keeps is here and stays. Whether any moved.
+    /// held by GC: new, or unheard or at one map `CURSOR_TTL_S`, 6 h), and the map served is the
+    /// head it answered or past it (`once`): each Update of a map older than the one served goes
+    /// on at the one served, whose files the NAS has (an older map's may have gone with GC
+    /// meanwhile). What a download keeps is here and stays. Whether any moved.
     fn resync(&self, plan: &Plan) -> bool {
         let cur = plan.current;
         let stale = |p: &Pin| p.to.is_some_and(|t| plan.eff(t) < cur);
@@ -1281,10 +1282,13 @@ fn once(s: &crate::AppState, m: &Mirror, mut lead: Option<&mut crate::maplog::Mi
     }
     let slow = || s.data.agent_busy();
     // (Its cursor said to the lead before it copies: the files it's after are kept on the NAS. One
-    // the lead resets: the Updates of an older map go on at the one served.)
+    // the lead resets: the Updates of an older map go on at the one served, once that's the lead's
+    // head or past it. Before, it's this server's map kept on this Mac, a start or a wake not yet
+    // caught up (crate::maplog), whose files GC may have removed as well: the reset waits.)
     if let Some(l) = lead.as_deref_mut() {
         let since = plan.copies_from(m);
-        if let Some(head) = l.tell(since, plan.current) {
+        if let Some(head) = l.tell(since, plan.current).filter(|&h| plan.current >= h) {
+            l.reset_done();
             if since < head && s.downloads.resync(&plan) {
                 return true;
             }

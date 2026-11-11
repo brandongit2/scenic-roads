@@ -1857,3 +1857,42 @@ async fn a_cursor_older_than_the_log_resyncs_the_updates() {
     assert!(m.has(&roads3) && !m.has(&new_roads) && !m.has(&old_roads));
     assert_eq!(mirror_cursor(&feed), (3, Some(3), Some(3)));
 }
+
+/// Task #1134 review: a reset answered while the map served is older than the lead's head (a
+/// laptop's server started, or woken, from the map it kept, not yet caught up) waits for it: the
+/// Update isn't moved on to that map, whose files GC may have removed too (here map 3's roads,
+/// gone from the NAS), but to the head once it's served. The lead answers the reset once (the
+/// mirror never heard), so the mirror's link keeps it till then.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reset_waits_for_the_map_served_to_reach_the_leads_head() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = store::nasfs::NasRoot::local_for_test(nas.path());
+    catalogue(&root);
+    let s = crate::test_state_with(home.path(), &root, true);
+    let (second, _new_roads, _aside) =
+        an_update_held_up(&s, &root, nas.path(), &mut |s| settle(s), &mut |c| serve(&s, nas.path(), c, None)).await;
+    let roads = "layers/roads/hi/6-31-21";
+    // Map 3 served, its roads made again; the lead's head is 4, the roads made again since, and
+    // GC has removed map 3's.
+    let mut third = second.clone();
+    third.n = 3;
+    let roads3 = put(&root, &mut third, roads, 26_000);
+    third.validate().unwrap();
+    let mut fourth = third.clone();
+    fourth.n = 4;
+    let roads4 = put(&root, &mut fourth, roads, 27_000);
+    fourth.validate().unwrap();
+    tokio::task::block_in_place(|| serve(&s, nas.path(), &third, None));
+    std::fs::remove_file(nas.path().join(&roads3)).unwrap();
+    let feed = store::map::feed::Feed::new();
+    feed.start(Arc::new(store::map::Map::of(&fourth).unwrap()), 0, &[], Default::default());
+    let (_lead, mut link) = mirror_link(&s, home.path(), &feed);
+    tokio::task::block_in_place(|| settle_told(&s, &mut link));
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 1, to: Some(2) }, "not on to map 3");
+    // Map 4 served: the reset acted on, the Update goes on at 4 and gets through.
+    tokio::task::block_in_place(|| serve(&s, nas.path(), &fourth, None));
+    tokio::task::block_in_place(|| settle_told(&s, &mut link));
+    assert_eq!(s.downloads.asked().regions[0].pin, Pin { cat: 4, to: None });
+    assert!(s.data.mirror.as_ref().unwrap().has(&roads4));
+    assert_eq!(mirror_cursor(&feed), (4, Some(4), Some(4)));
+}

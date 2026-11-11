@@ -349,15 +349,22 @@ minute apart, longer only while a round copies). Each hour of `CURSOR_TTL` keeps
 files behind a client that stopped asking (task #1134: at 7 days, a laptop's cursor left on 7 Nov
 held 54,575 of the queue's 55,604 names on 11 Nov, the NAS at 97%). When a client comes back it
 takes the batches since its `seq`, or resets from the snapshot when that's older than the log's
-oldest batch; a server serving its old map until its first answer may meet a file gone, and its
-own mirror holds its downloads' files whatever happened on the NAS (§6.2). A mirror
+oldest batch. Until then a server serves the map it kept (a start: `current.json.zst`; a wake from
+sleep: the one in memory, until its long poll in flight times out, `WAIT_S` + 30 s) and may meet
+a file of it gone: that request fails (content names: never other bytes), and the next asks the
+map it has caught up to. Its own mirror holds its downloads' files whatever happened on the NAS,
+and a reset of the mirror's cursor waits for the server to catch up (§6.2). A mirror
 (`mirror/<host>`) is reset too whenever the lead didn't hold its cursor, its `since` within the log
 or not (`store::map::feed::MIRROR`): one never heard (a new Mac, the switch, a cursor lost with a
 lead restart), unheard `CURSOR_TTL`, or held at one `seq` behind the head that long (an Update that
 never gets through, its files missing or no room, holds GC `CURSOR_TTL` at most). The NAS
 snapshot's cursor (`snapshot`) is the lead's own, noted as it writes a snapshot (on a publish, an
 hour or more apart): it holds whenever it was noted, since the snapshots kept hold their files
-whether the build publishes or not (`store::map::feed::SNAPSHOT`).
+whether the build publishes or not (`store::map::feed::SNAPSHOT`); a reader of the newest
+(`newest_nas`: a server with no map and no lead, `lakefill`, `coastcheck`) may be an hour of
+publishes behind the head. It is saved and restored with the others, so whatever stops writing
+the NAS snapshots (#1119 drops them) drops this cursor with them: left, it would hold every name
+freed after it for good.
 
 The cursors are the lead's memory, saved with its snapshot (hourly, `SNAPSHOT_EVERY_S`) and
 restored at its start. A restart loses only what was heard since: a cursor that moved on is
@@ -419,7 +426,10 @@ files for its logical names, as today. The page's switch to a new map stays keye
     that long at one `seq` behind the head): the mirror's sync is whole each round (what's wanted
     against what's here), so it needs no snapshot; what a reset changes is that an older map's
     files may be gone from the NAS, so each Update of a map older than the one served goes on at
-    the one served (`Downloads::resync`). What a download keeps is on the Mac and stays.
+    the one served (`Downloads::resync`), once that is the head the lead answered or past it: a
+    server just started or woken serves the map it kept until it catches up, whose files may be
+    gone too, so the reset waits for it (`MirrorLink` keeps it: the lead answers it once). What a
+    download keeps is on the Mac and stays.
   - **Away from the NAS or the lead:** with no NAS the mirror copies nothing and says nothing (it
     lets go only what no download wants); with the lead away it copies as before, its cursor said
     again next round. The map serves what's here either way.

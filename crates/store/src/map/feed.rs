@@ -29,6 +29,8 @@ pub const MIRROR: &str = "mirror/";
 pub const SERVER: &str = "server/";
 /// The NAS snapshot's cursor (docs/maplog.md §4.4, §5.4): the oldest snapshot kept there, noted by
 /// the lead as it writes one (`note_snapshot`); never unheard, as it asks nothing (gc's `floor`).
+/// Saved and restored with the other cursors: whatever stops writing the NAS snapshots must drop
+/// it too, or it holds every name freed after it for good.
 pub const SNAPSHOT: &str = "snapshot";
 
 #[derive(Default)]
